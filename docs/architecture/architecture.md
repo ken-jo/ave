@@ -469,6 +469,14 @@ those limits further (not when the endpoint reported the ceiling, which is sent 
 and thinking controls beside the route's output resolution, and the recorded numeric
 reasoning budget matches that serialized value
 (`src/shared/run-model-settings.ts`); see `docs/design/model-capability-catalog.md`.
+A model's window, price, input modalities and reasoning levels come from the user's
+settings, the endpoint's report or the catalog, never from its name. Where none states
+them, the window is the 128K host fallback (source `fallback`), the price is unknown,
+images are refused and an OpenAI-family request sends no reasoning effort. Host-owned
+values live in `src/shared/model-host-policy.ts`: the 32,000 default output, the 128K
+fallback, the credible-window ceiling, TPM defaults, and the request-shape table (the
+Claude 1M beta header and interleaved-thinking generations, adaptive vs numeric thinking,
+the Responses-vs-Chat wire choice).
 The catalog in force is chosen once per launch (`src/core/model-catalog/bundled.ts`): a
 `AVE_MODEL_CATALOG` pin (`bundled`, a cached `<sha256>`, or an absolute file path; a pin
 that cannot be honoured fails boot), else the verified refreshed copy in

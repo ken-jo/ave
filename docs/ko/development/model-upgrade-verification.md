@@ -1,6 +1,7 @@
 # Model Upgrade Verification — Claude / OpenAI / Gemini 모델 추가/교체 시 절차
 
-> 새 Claude / OpenAI / Gemini 모델을 정적 카탈로그 (`src/shared/pricing-data.ts`) 또는
+> 새 Claude / OpenAI / Gemini 모델을 모델 카탈로그 스냅샷 (`bun run generate:model-catalog -- --fetch`),
+> 호스트 request-shape 표 (`src/shared/model-host-policy.ts`) 또는
 > 기본 모델 (`src/shared/llm-vendor-defaults.ts:LLM_VENDOR_DEFAULTS`) 에 추가/교체할 때 반드시
 > 거쳐야 할 verification step. 정적 와이어링만 통과시키면 *코드는 베타 헤더를
 > 보내지만 API 는 무시* 같은 silent drift 가 가능하므로 empirical 라이브 검증을
@@ -8,10 +9,10 @@
 
 ## 1. 배경 — 왜 라이브 검증이 필요한가
 
-Ave 는 모델별 capability (context window, 베타 헤더, 기본 thinking 모드) 를 다음 두 곳에 정적 선언한다:
+Ave 는 모델별 capability 를 다음 두 곳에서 읽는다 (`docs/design/model-capability-catalog.md`):
 
-1. `src/shared/pricing-data.ts` — `DEFAULT_PRICING` 에 `inputPer1M / outputPer1M / contextWindow / contextWindow1MBeta / cacheReadPer1M / cacheWritePer1M`.
-2. `src/engine/llm/vercel/adapter.ts` — `contextWindow1MBeta` 가 set 된 Claude 모델에 자동으로 `anthropic-beta: context-1m-2025-08-07` 헤더 송신.
+1. 모델 카탈로그 — `src/core/model-catalog/bundled-snapshot.json` (models.dev 에서 생성; 창 크기, 출력 한도, 입력 modality, reasoning level, 가격).
+2. 호스트 request-shape 표 — `src/shared/model-host-policy.ts` 의 `CLAUDE_REQUEST_SHAPES`. Claude Sonnet / Opus 4.6 처럼 1M 창에 `anthropic-beta: context-1m-2025-08-07` 헤더가 필요한 모델과 interleaved thinking 세대를 선언하고, adapter 가 이 표대로 헤더를 보낸다.
 
 이 두 곳만 채우면 typecheck + 단위 테스트 다 통과한다. 그러나 다음 silent drift 시나리오가 가능하다:
 
@@ -25,8 +26,8 @@ Ave 는 모델별 capability (context window, 베타 헤더, 기본 thinking 모
 
 ### Step 1 — 정적 와이어링 추가
 
-- `src/shared/pricing-data.ts:DEFAULT_PRICING.<vendor>` 에 모델 항목 추가
-- 베타 헤더가 필요한 경우 `src/engine/llm/vercel/adapter.ts` 의 분기 (`contextWindow1MBeta` 등) 가 새 모델을 자동 catch 하는지 확인 — *벤더-스코프 분기지 모델-스코프 분기가 아니므로* 보통 추가 코드 불필요
+- 카탈로그가 새 모델을 아직 모르면 `bun run generate:model-catalog -- --fetch` 로 스냅샷 갱신 (모르는 모델은 128K fallback · 가격 unknown 으로 동작)
+- 베타 헤더가 필요한 경우 `src/shared/model-host-policy.ts` 의 `CLAUDE_REQUEST_SHAPES` 에 행 추가 — 카탈로그는 1M 창이 헤더를 요구한다는 사실을 싣지 않는다
 - `src/shared/llm-vendor-defaults.ts:LLM_VENDOR_DEFAULTS` 의 기본 모델(`.model`)을 교체하는 경우 동시 변경
 
 ### Step 2 — 라이브 호출 검증 (필수)
@@ -47,7 +48,7 @@ curl https://api.anthropic.com/v1/messages \
 
 - `200 OK` + 정상 `content` ⇒ 모델 id + 베타 헤더 모두 수용. **PASS**.
 - `400 invalid_request_error` + `model:` 메시지 ⇒ 모델 id 오타 또는 비공개. PR 보류.
-- `400 invalid_request_error` + `beta:` 메시지 ⇒ 베타 헤더 무효 (deprecated / typo). adapter 의 베타 헤더 상수 (`CONTEXT_1M_BETA` 등) 재확인.
+- `400 invalid_request_error` + `beta:` 메시지 ⇒ 베타 헤더 무효 (deprecated / typo). `src/shared/model-host-policy.ts` 의 베타 헤더 상수 (`CONTEXT_1M_BETA` 등) 재확인.
 - `404 not_found_error` ⇒ 모델 id 비공개. PR 보류.
 - `429 / 529` ⇒ rate / overload — 잠시 후 재시도. silent drift 가 아니므로 통과로 카운트하지 않는다 (재시도 후 200 받으면 PASS).
 
@@ -57,7 +58,7 @@ curl https://api.anthropic.com/v1/messages \
 
 ### Step 3 — 큰 컨텍스트 검증 (1M-tier 모델 한정)
 
-`contextWindow1MBeta` 가 설정된 모델은 베타 헤더가 *수용* 되는 것과 *실제 1M 윈도우를 제공* 하는 것이 다를 수 있다. 다음 중 하나로 확인:
+request-shape 표에서 `context1MBeta` 인 모델은 베타 헤더가 *수용* 되는 것과 *실제 1M 윈도우를 제공* 하는 것이 다를 수 있다. 다음 중 하나로 확인:
 
 - Ave app 실행 후 settings 에서 해당 모델 활성화 → 큰 파일 attach 로 누적 input 250K+ 도달 → stream 정상 종료 = 1M 활성. `prompt is too long` / `context_length_exceeded` 에러 = 200K fallback.
 - 또는 200K+ 길이 dummy 메시지를 직접 curl 로 보내 200 응답 확인.
@@ -73,13 +74,13 @@ curl https://api.anthropic.com/v1/messages \
 
 검증 결과 없는 카탈로그 변경 PR 은 review 차단.
 
-## 3. 자동화 가능성 (현 시점 deferred)
+## 3. 자동화
 
-이슈 #858 의 dynamic model catalog (models.dev style) 가 도입되면 step 1+2 의 일부가 자동화될 수 있다. 그 시점까지는 본 절차가 유일한 방어선이다. #858 reopen trigger 는 "카탈로그 PR 빈도가 분기 6+ 회 도달 또는 0/0 fallback pricing 으로 사용자 cost 표시가 0$ 되는 사례 발생" — 그 전까지는 ROI 부족으로 보류.
+창 크기·가격·modality 는 models.dev 카탈로그가 제공하고, 실행 중인 앱은 하루 한 번 갱신한다 (#2501, `docs/design/model-capability-catalog.md` §7). 카탈로그가 싣지 않는 request shape (베타 헤더) 와 라이브 수용 여부는 여전히 본 절차로 확인한다.
 
 ## 4. 관련 SoT
 
-- `src/shared/pricing-data.ts` — pricing + context window catalog
-- `src/engine/llm/vercel/adapter.ts:CONTEXT_1M_BETA` — Claude 1M beta header 상수
+- `src/core/model-catalog/bundled-snapshot.json` — 창 크기 · 가격 · modality · reasoning (`bun run generate:model-catalog`)
+- `src/shared/model-host-policy.ts` — 호스트 정책: request-shape 표 (Claude 1M beta header, interleaved thinking), 128K fallback 창, TPM 기본값
 - `src/shared/llm-vendor-defaults.ts:LLM_VENDOR_DEFAULTS` — 벤더별 기본 모델
 - 본 문서 — verification 절차

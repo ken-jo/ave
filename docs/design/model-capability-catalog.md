@@ -1,36 +1,36 @@
 # Model capability catalog
 
-Status: decided (issue #2501, owner decisions of 2026-10-12); being implemented in the
-seven slices of §9. Slices 1 (the contract, the generator, the bundled snapshot and its
-provenance), 2 (context windows, §4), 3 (output limits, reasoning levels and run
-records, §5), 4 (images and tools, §6), 5 (prices, §6) and 6 (refresh, §7) are
-implemented.
+Status: decided (issue #2501, owner decisions of 2026-10-12); implemented in the seven
+slices of §9: the contract, the generator, the bundled snapshot and its provenance (1),
+context windows (2, §4), output limits, reasoning levels and run records (3, §5), images
+and tools (4, §6), prices (5, §6), refresh (6, §7), and the removal of the hand-kept
+table and name rules with the host-policy module that keeps what the catalog cannot say
+(7, §8).
 
 Anchors: `src/shared/model-catalog/` (types, provider map, normalizer),
 `src/core/model-catalog/` (document hashing and verification, the bundled snapshot),
 `scripts/lib/model-catalog.ts` and `scripts/generate-model-catalog.ts` (the generator),
 `scripts/model-catalog/` (the committed input), `src/shared/model-pricing.ts` (price
-resolution, §6). Today's hand-kept tables are
-`src/shared/pricing-data.ts`, `src/engine/llm/vendor-capabilities.ts` and the name
-predicates in `src/engine/llm/vercel/adapter.ts`.
+resolution, §6), `src/shared/model-host-policy.ts` (host-owned defaults and the
+request-shape table, §8).
 
 ## 1. Problem
 
-What Ave knows about a model — its context window, how many tokens it may produce, what
-it accepts as input, how its reasoning is controlled and what it costs — lives in four
-hand-kept places that disagree with each other and with the providers:
+What Ave knew about a model — its context window, how many tokens it may produce, what
+it accepts as input, how its reasoning is controlled and what it costs — lived in four
+hand-kept places that disagreed with each other and with the providers:
 
-- `DEFAULT_PRICING` holds windows and prices for about 85 rows. Unknown models fall to
-  `FALLBACK_PRICING` (128K window, zero price), and a zero price is read as free.
-- Vision support is a pair of regex lists over model names.
-- Reasoning controls are name predicates (`isOpenAIReasoningModel`,
+- `DEFAULT_PRICING` held windows and prices for about 85 rows. Unknown models fell to
+  `FALLBACK_PRICING` (128K window, zero price), and a zero price was read as free.
+- Vision support was a pair of regex lists over model names.
+- Reasoning controls were name predicates (`isOpenAIReasoningModel`,
   `supportsAdaptiveThinking`, …) in the request adapter.
-- The output ceiling is a host constant (32,000) for every model; the ceiling a model
-  endpoint reports (`maxOutputTokens` from `/models`) is carried and never applied, and
-  the renderer's cost estimate assumes 4,096.
+- The output ceiling was a host constant (32,000) for every model; the ceiling a model
+  endpoint reports (`maxOutputTokens` from `/models`) was carried and never applied, and
+  the renderer's cost estimate assumed 4,096.
 
-Every new model is a code change in several files, and a model the tables do not know
-gets wrong limits silently.
+Every new model was a code change in several files, and a model the tables did not know
+got wrong limits silently.
 
 ## 2. Source
 
@@ -138,8 +138,9 @@ from the committed input under `scripts/model-catalog/`:
 | `models-dev-LICENSE.txt` | the license text at that head |
 
 `--fetch` downloads a new input and regenerates; `--check` (run by `check:gate-core` in CI
-and in the pre-push hook) fails when the snapshot differs from what the input generates;
-`--report` prints the comparison of §8. Both JSON files are laid out one model per line, so
+and in the pre-push hook) fails when the snapshot differs from what the input generates.
+(A `--report` mode compared the hand-kept table with the snapshot for §8; it went with the
+table in slice 7.) Both JSON files are laid out one model per line, so
 a refresh's diff is one line per changed model. `--fetch` writes nothing unless every
 required download succeeded (a failed GitHub API call only leaves the upstream head and
 schema blob out; a failed license download fails the run). The snapshot of 2026-10-12
@@ -155,16 +156,15 @@ Precedence, per fact, using one catalog document selected at boot (§7):
 3. metadata from the selected catalog;
 4. a host fallback, recorded as source `host-fallback`.
 
-A field absent from a refreshed catalog does not consult the bundled copy. During
-migration, the legacy pricing table still fills unknown context windows before the
-host fallback, as described below.
+A field absent from a refreshed catalog does not consult the bundled copy. The host
+fallbacks are in `src/shared/model-host-policy.ts` (§8).
 
 **Implemented for the context window (slice 2).** `resolveModelContextWindow`
 (`src/shared/context-budget.ts`) now answers, in order: `vendor-setting` (declared
 `llm.vendors.<v>.contextWindow`), `provider-reported` (the route's `/models` row),
-`model-catalog` (with `catalogEntry`, the `<provider>/<id>` that answered),
-`pricing-catalog` (the hand-kept table, for a model the catalog does not know; slice 7
-removes it) and `fallback` (128K). Refreshed metadata (slice 6) joins as a whole
+`model-catalog` (with `catalogEntry`, the `<provider>/<id>` that answered) and `fallback`
+(`FALLBACK_CONTEXT_WINDOW`, 128K). Until slice 7 the hand-kept table answered as
+`pricing-catalog` between the catalog and the fallback. Refreshed metadata (slice 6) joins as a whole
 document, not per fact: a verified refreshed copy no older than the bundled snapshot
 replaces it at boot (§7), so `model-catalog` answers from whichever catalog is in force and
 a run record's `modelCatalogSha256` names it.
@@ -213,7 +213,7 @@ certificate-authenticated API hosts. A different
 host may serve a different deployment under the same id: a gateway exposing `gpt-5.2` for
 a 64K deployment and listing only that id does not establish the public model's 400K
 window or 272K prompt cap. Name uniqueness within the catalog cannot identify what the
-gateway runs. Both implicit catalog limits and legacy pricing windows are skipped there;
+gateway runs. Implicit catalog limits are skipped there;
 absent a declaration or endpoint report, the source is explicitly `fallback`, and the
 engine probes the endpoint for metadata. The 128K fallback remains a guess; a deployment
 that reports no limits needs an explicit capacity setting. A product-specific path also must match where
@@ -245,13 +245,12 @@ setup file (`src/__tests__/vitest-model-catalog.ts`); one test empties it and ru
 own install step (`installBundledModelCatalog`), so a boot that resolved a model before
 installing one would fail there.
 
-Windows the snapshot of 2026-10-12 changes against the table (the rest agree): GPT-5.4
+Windows the snapshot of 2026-10-12 changed against the table (the rest agreed): GPT-5.4
 Pro 1.1M → 1,050,000; GPT-4.1, 4.1 mini and nano 1M → 1,047,576; Gemini 2.5 Pro and Flash
-1M → 1,048,576, Gemini 2.5 Flash-Lite 128K → 1,048,576. Copilot routes are not among them:
-the Copilot vendor maps to no catalog provider and is being removed (§3.4). Claude Sonnet
-and Opus 4.6 stay at 1M: the
-catalog lists the window the adapter's beta header already delivers, and the decision to
-send that header stays on the table until slice 7.
+1M → 1,048,576, Gemini 2.5 Flash-Lite 128K → 1,048,576. Claude Sonnet and Opus 4.6 stay at
+1M: the catalog lists the window the adapter's beta header delivers, and the decision to
+send that header is the host's request-shape table's (§8). The models the table described
+and the catalog does not, which now take the fallback, are listed in §8.
 
 ## 5. Output and reasoning (slice 3)
 
@@ -297,22 +296,29 @@ Implemented.
   generic row's named entry, and an SDK-managed route ignores a dormant endpoint.
   Where the catalog
   knows the model, it decides whether an OpenAI-family route (OpenAI, Azure) sends
-  `reasoning_effort` and at what level. Copilot maps to no catalog provider (§3.4), so
-  the name rules decide there; they send an effort only to OpenAI reasoning models, and
-  none to a Claude model on Copilot. The level Ave's budget maps to is sent if
+  `reasoning_effort` and at what level. The level Ave's budget maps to is sent if
   the model accepts it, else the nearest accepted level below it, else the lowest
   accepted. An adaptive Claude effort is held to the model's accepted levels the same
-  way. Where the catalog does not know the model, the previous name rules decide (slice 7
-  removes them). Request shape stays a host rule: adaptive vs numeric Claude thinking,
-  interleaved numeric thinking, and the Responses-vs-Chat routing. The catalog lists
+  way. Where nobody states the levels — the catalog does not know the model, lists no
+  levels for it, or the route's endpoint does not establish its identity (§4: a custom
+  `baseUrl`, an Azure deployment alias, Copilot, which maps to no catalog provider) — an
+  OpenAI-family request carries no `reasoning_effort`, and the plan says so
+  (`kind: "none"`, `source: "host-fallback"`, with the requested level). A level guessed
+  from a name is a 400 on a model that does not take it; naming the entry with
+  `catalogModel` supplies the levels. Until slice 7 name rules (`isOpenAIReasoningModel`,
+  `supportsReasoningEffortNone`) guessed one. Request shape stays a host rule, in the
+  request-shape table (§8): adaptive vs numeric Claude thinking, interleaved numeric
+  thinking, and the Responses-vs-Chat routing. A Claude model whose reasoning the catalog
+  does not state still gets the thinking its request shape takes (`source:
+  "request-shape"`). The catalog lists
   effort levels for models that take numeric thinking and carries no interleaving flag
   for Anthropic. Numeric budgets keep the adapter's existing rule: below `max_tokens`,
   except with interleaved thinking, where the provider allows the budget to span the
   turn. Behavior changes against the bundled snapshot: GPT-5 sends `minimal` (was `low`)
   and GPT-5.1 sends `none` (was `low`) for a budget at or below 500; a model the catalog
   marks as not reasoning gets no reasoning control, including numeric or adaptive
-  thinking. A reasoning model whose levels the catalog does
-  not list keeps the name rule: absent levels are unknown, not none.
+  thinking. A reasoning model whose levels the catalog does not list sends no effort:
+  absent levels are unknown, not none, and unknown is not guessed.
   Chat Completions answers 400 to `reasoning_effort` on a GPT-5 turn that carries tools
   on the chat-only route. A custom `baseUrl` does not change the adapter's selected
   protocol; the responses route still carries effort with tools. That rule lives in `planReasoning`
@@ -357,27 +363,27 @@ Slice 4 is implemented.
   2. the endpoint's `/models` report (`inputModalities`; an empty list states nothing);
   3. the catalog entry's `modalities.input` for the model id, matched by name only
      where the endpoint establishes the model's identity (§4);
-  4. the name rules, where nobody states the modalities (slice 7 removes them).
+  4. nobody states the modalities: the turn may not carry images. Until slice 7 regex
+     lists over model names (`supportsVisionByName`) guessed here.
 
-  **Image input** defaults to **Automatic**, preserving that fallback. **Supported**
+  **Image input** defaults to **Automatic**, which applies that order. **Supported**
   and **Not supported** are stored in `llm.vendors.<vendor>.imageInput`, keyed by the
   serialized pair `[presetId or "", modelId]`. Declarations are merged per key;
   returning to Automatic clears only that model's declaration. A preset's declaration
   cannot change another preset or the generic provider. It changes image support only,
   retaining other reported modalities and leaving context, output and tools alone.
 
-  The name rules are in `supportsVisionByName` in the same module. A stated catalog
-  input list without `image`, including an empty list, refuses images.
+  A stated catalog input list without `image`, including an empty list, refuses images.
 
   `resolveContextWindowForRoute(...).inputModalities` carries steps 1–3 for the active
   route. The renderer passes it to the composer and the send path, which refuse on the
   same condition. A named entry missing from the catalog states nothing: the endpoint
-  report can still answer, then the name rule, without another automatic catalog match.
+  report can still answer, else nothing is stated, without another automatic catalog match.
   The settings vision badge uses the same resolver with the row's saved declarations,
   named entry and saved endpoint report.
   The API transport checks the same resolved route before sending any user or
   tool-result image, including direct calls and replayed history. A caller without a
-  route uses the catalog under the same endpoint-identity rule, then the name rules. A fallback resolves its own model rather than
+  route uses the catalog under the same endpoint-identity rule. A fallback resolves its own model rather than
   inheriting the primary route's reported or named capabilities.
   A transport refusal carries `image-input-unsupported`; the stream collector
   presents localized recovery guidance for retained conversation images and
@@ -427,13 +433,17 @@ answers the rates with their source:
    deployment pays and is taken whole: no catalog tier or reasoning rate is mixed in,
    and a stated zero is a known $0.
 2. `model-catalog` — the entry `resolveCatalogKey` finds (§4), with `catalogEntry`.
-3. `pricing-catalog` — the hand-kept row, for a model the catalog does not price
-   (slice 7 removes it). Azure deployments still never borrow OpenAI's row.
-4. `unknown` — shown as unknown, never as $0.
+3. `unknown` — shown as unknown, never as $0.
 
-A catalog entry with no price, or with only one of input and output, is unknown at its
-rank; one that lists input and output at zero falls through as well, and when nothing
-else prices the model the answer is `unknown` with `catalogListsZero` naming the entry.
+Until slice 7 the hand-kept row answered as `pricing-catalog` between the catalog and
+`unknown`. A price snapshot an earlier build recorded with that source is still read back
+as recorded (`RecordedModelPricing`); a recorded long-context surcharge
+(`surchargeInputThreshold` and its multipliers) is read as the prompt-size tier it priced
+as, which gives the same USD.
+
+A catalog entry with no price, or with only one of input and output, is unknown; one that
+lists input and output at zero is too, and the answer is `unknown` with `catalogListsZero`
+naming the entry.
 A self-hosted route is not priced from the entry its user named as `catalogModel` (§4):
 that names the model for its limits, and the public price is not what the user's own
 endpoint costs.
@@ -475,14 +485,15 @@ the setting raw, so an environment-forced list prices the estimate and the badge
 prices the dashboard. Before, the renderer applied no correction at all. The estimate's
 tooltip names who stated the rates, or that the catalog listed the model at zero.
 
-Prices the snapshot of 2026-10-12 changes against the table: models the table listed
+Prices the snapshot of 2026-10-12 changed against the table: models the table listed
 at zero or not at all are now priced — Gemini 2.5 Pro, Flash and Flash-Lite, GPT-5.1,
 5.2 and 5.3 Codex, GPT-4o and 4o mini, GPT-4.1 nano, o1, o3, o4-mini, Claude Haiku 5.5 (with
 its 100K tier) and Vertex AI models among them; GPT-5 mini drops from $1.25/$10 to the
 listed $0.25/$2; Azure deployments named for a model the catalog's `azure` provider
 lists are priced at that entry (before, Azure was unpriced without a correction).
-Claude's dated ids (`claude-sonnet-4-20250514`, `claude-3-*`) still price from the
-table.
+Claude's dated ids the catalog does not list (`claude-sonnet-4-20250514`,
+`claude-opus-4-20250514`, `claude-3-*`) priced from the table until slice 7 and are
+unknown since (§8).
 
 ## 7. Refresh (slice 6)
 
@@ -550,36 +561,59 @@ table.
   server sees the IP address and ordinary transport headers. It is documented in `architecture.md` and on the
   Trust & Security page (`web/app/docs/host/trust-security`, `web/app/en/docs/host/trust-security`).
 
-## 8. What the hand-kept table has that the catalog does not
+## 8. What the hand-kept table had that the catalog does not (slice 7)
 
-`bun run generate:model-catalog -- --report` compares every `DEFAULT_PRICING` row with the
-snapshot. Against the snapshot of 2026-10-12: 38 rows have a catalog entry, 36 of them
-differ (mostly cache rates the table derives at run time, and OpenAI and Gemini rows the
-table lists at zero); 47 rows have none. Slice 7 removes the table only after each of
-these is answered:
+Before slice 7 a `--report` mode compared every `DEFAULT_PRICING` row with the snapshot.
+Against the snapshot of 2026-10-12: 38 rows had a catalog entry by exact id, 36 of them
+differing (mostly cache rates the table derived at run time, and OpenAI and Gemini rows the
+table listed at zero); 47 rows had none. Slice 7 removed the table, the name rules and the
+report after answering each kind of row:
 
-- **Dated and retired ids** (`claude-sonnet-4-20250514`, `claude-3-*`, `gpt-4.1-2025-04-14`,
-  `o3-2025-04-16`, `gemini-1.5-*`, …): resolved by the aliases of §4 or allowed to fall to
-  the host fallback.
-- **Copilot rows**: the Copilot vendor maps to no catalog provider and is being removed
-  (§3.4); its rows go with it.
+- **Dated ids of listed models** (`gpt-4.1-2025-04-14`, `o3-2025-04-16`,
+  `o4-mini-2025-04-24`) resolve to their entry by the date-suffix step of §4.
+- **Dated and retired ids the catalog does not list** take the host fallback: a 128K
+  window, an unknown price, no stated modalities (images refused) and, for an OpenAI-family
+  route, no reasoning effort. No alias joins them (§4 allows an alias only between ids
+  documented to name one model, and the `anthropic` provider lists no entry for Claude
+  Sonnet 4, Opus 4 or Claude 3): `claude-sonnet-4-20250514` and `claude-opus-4-20250514`
+  (were 200K), `claude-3-5-sonnet-20241022`, `claude-3-5-haiku-20241022`,
+  `claude-3-opus-20240229`, `claude-3-sonnet-20240229`, `claude-3-haiku-20240307` (200K);
+  `gpt-5.3`, `gpt-5.2-codex`, `gpt-5.1-reasoning`, `gpt-5.1-pro`, `gpt-5.1-codex`,
+  `gpt-5.1-codex-mini`, `gpt-5.1-codex-max` (400K), `o1-mini` (128K), `gpt-4-32k`
+  (32,768: the fallback is larger than the retired model's window); `gemini-2.0-flash`
+  (1,048,576), `gemini-2.0-flash-lite` (128K), `gemini-1.5-pro` (2,097,152),
+  `gemini-1.5-flash` and `gemini-1.5-flash-8b` (1,048,576). The table also matched any id
+  that began with one of its keys (`gpt-5.4-preview`, `gpt-5.5-codex` through `gpt-5`,
+  `claude-opus-4-6-eval`), case-insensitively; such an id now resolves only through the
+  steps of §4, which is the guess §4 refuses. A Codex subscription model id the catalog
+  does not list budgets against the same fallback; Codex's own report can only tighten it.
+- **Copilot rows** go with the Copilot vendor's empty mapping (§3.4): its routes take what
+  GitHub's `/models` reports, else the fallback.
 - **Self-hosted rows** (`openai-compatible`: `Qwen3.6-35B-A3B-NVFP4` 262,144,
-  `Nemotron-3-Nano-30B-A3B-FP8` 131,072): the vendor maps to no catalog provider by design;
-  these windows come from the endpoint's report or the user's setting.
+  `Nemotron-3-Nano-30B-A3B-FP8` 131,072): these windows come from the endpoint's report or
+  the user's `contextWindow`, else the fallback, which the engine logs once per route.
 - **Fields with no catalog counterpart:**
-  - `contextWindow1MBeta` (Claude Sonnet 4.6 and Opus 4.6, also under Copilot) — the
-    catalog lists these models at 1M with no note that 1M needs a beta header. That is a
-    request-shape fact, and it moves to a host-owned request-shape table with the
-    interleaved-thinking handling (slice 7).
+  - `contextWindow1MBeta` (Claude Sonnet 4.6 and Opus 4.6) — a request-shape fact, now a
+    row of the host's request-shape table (`CLAUDE_REQUEST_SHAPES` in
+    `src/shared/model-host-policy.ts`), beside the interleaved-thinking generations, the
+    adaptive-thinking rule and the Responses-vs-Chat wire choice. The rows match exactly
+    the ids the table and the adapter's regex matched (any id beginning with
+    `claude-sonnet-4-6` or `claude-opus-4-6`; Opus 4, 4.0, 4.1, 4.5 and Sonnet 4, 4.0, 4.5
+    with an optional date or `-latest`). The window itself is the catalog's 1M.
   - `surchargeInputThreshold` / multipliers (GPT-5.4 and 5.4 Pro) — the catalog states the
-    same prices as a tier at 272,000 (2× input, 1.5× output), and slice 5 prices those
-    models from the tier; the table's form is read only for a model priced from the
-    table, and goes with it.
-  - `tpmDefault` (GPT-5.4 mini and nano) — a host throttling default, kept in the
-    host-policy module.
+    same prices as a tier at 272,000 (2× input, 1.5× output). Recorded snapshots that carry
+    the old form are read as that tier (§6).
+  - `tpmDefault` (GPT-5.4 mini and nano, 200K) — a host throttling default, in the
+    host-policy module (`hostTpmDefault`), for the same vendors (OpenAI, and Azure
+    deployments, which borrowed OpenAI's rows) and the same case-folded id prefix.
 
-Host-owned values stay in that module: the 32,000 default output, the 128K fallback window,
-`MAX_CREDIBLE_CONTEXT_WINDOW`, `tpmDefault` and the request-shape features.
+Host-owned values live in that module: the 32,000 default output
+(`DEFAULT_LLM_OUTPUT_TOKEN_LIMIT`), the 128K fallback window (`FALLBACK_CONTEXT_WINDOW`),
+`MAX_CREDIBLE_CONTEXT_WINDOW`, the TPM defaults and the request-shape table. None of it
+describes a model's capacity, price, modalities or reasoning levels.
+
+The output and tool capabilities never had name rules: an unknown output ceiling clamps
+nothing (§5) and an unknown tool capability sends tools (§6).
 
 ## 9. Slices
 
@@ -594,6 +628,7 @@ Each slice is one pull request against `main`, opened in order:
 6. Refresh, the setting and policy, `AVE_MODEL_CATALOG`, the network documentation.
    Shipped as described in §7.
 7. Removal of the superseded tables and predicates, the request-shape table, documentation.
+   Shipped as described in §8.
 
 This page goes stale when a slice changes what it describes; update it in that slice's
 commit.
