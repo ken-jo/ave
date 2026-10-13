@@ -152,14 +152,14 @@ describe("PluginUninstallCleanupJournal", () => {
     journal.prepare({
       pluginId: "sampleportal",
       installPluginId: "sampleportal",
-      secretKeys: ["attendanceToken"],
+      secretKeys: ["checkinToken"],
       authPartitions: ["persist:plugin-auth:sampleportal"],
       cleanupCache: false,
     });
     journal.beginAttempt("sampleportal");
 
     const raw = await readFile(path, "utf8");
-    expect(raw).toContain("attendanceToken");
+    expect(raw).toContain("checkinToken");
     expect(raw).not.toContain("super-secret-value");
     expect(raw).not.toContain("EPERM: operator home path");
   });

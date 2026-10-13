@@ -340,14 +340,11 @@ can never see a `Tool[]`).
 | **R (removal)** | Delete legacy `toolSchemas`/`uiActions`/`PluginUiActionSpec` + removed-field plumbing + dormant deprecation machinery + compat branch (§3). **First-party-only assumption:** the removal gate verifies first-party + catalog manifests; a sideloaded third-party LEGACY manifest fails load post-R with the schema's clear reject error (accepted — the ecosystem is first-party at this stage) | removal gate §3.2 green; sweep §3.3 = 0; tsc/vitest/build green |
 
 **Cross-repo sweep (must move in-session per CLAUDE.md §Cross-repo contract sync):**
-`ave` (host) · `ave-plugin-sdk` (v5.22.0 → **v6**) · 6 plugins (`meeting`, `mail`, `assistant`,
-`local-indexer`, `portal`, `git`) · `ave-plugin-template` · `agent-marketplace` (catalog
+`ave` (host) · `ave-plugin-sdk` (v5.22.0 → **v6**) · every first-party plugin · `ave-plugin-template` · `agent-marketplace` (catalog
 `PluginMarketplaceItem.tools`/`.toolSchemas` mirror + publisher schema).
 
 ## 6. Open items (non-blocking)
 
-- `ave-plugin-assistant-briefing-routine` has **no** standalone `plugin.json` (verified) — excluded
-  from the migration set.
 - b1 lazy per-server CDN-allowlist registration: confirm the `webRequest` filter can be (re)installed for a
   dynamic partition name without leaking a prior server's allowlist.
 - a4: the host-side `writesToOwnSandbox` derivation replaces the reviewer input. **Cache-identity RESOLVED

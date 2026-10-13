@@ -105,7 +105,7 @@ describe("resolvePluginOperationAccount", () => {
       generationId: "generation-a",
       appSessionId: "window-a",
       ...predecessor,
-      readTool: "attendance_read",
+      readTool: "checkin_read",
       readOperation: "today",
     }, predecessorDomain);
     anonymousCoordinator.poisonDomain(predecessorDomain);
@@ -143,7 +143,7 @@ describe("resolvePluginOperationAccount", () => {
       generationId: "generation-a",
       appSessionId: "window-c",
       ...firstLogin,
-      readTool: "attendance_read",
+      readTool: "checkin_read",
       readOperation: "today",
     }, firstLoginDomain);
     authenticatedCoordinator.poisonDomain(firstLoginDomain);

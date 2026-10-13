@@ -404,7 +404,7 @@
               <div class="boot-list">
                 <div><span class="ver">Installed for you</span> Meeting 0.9.0 <button class="btn ghost" type="button">Uninstall</button></div>
                 <div><span class="ver">Installed for you</span> Local Indexer 0.4.10 <button class="btn ghost" type="button">Uninstall</button></div>
-                <div><span class="ver">Required by your organization</span> <svg class="i" style="color:var(--faint-fg)"><use href="#i-lock"/></svg> Portal 3.2.0 from corp</div>
+                <div><span class="ver">Required by your organization</span> <svg class="i" style="color:var(--faint-fg)"><use href="#i-lock"/></svg> Team Hub 3.2.0 from corp</div>
                 <div><span class="ver">No longer managed by Ave</span> Legacy Uploader — your organization can keep it up to date by registering its marketplace.</div>
               </div>
             </div>
@@ -981,10 +981,10 @@
             <div style="display:grid; gap:4px">
               <strong style="font-size:12px">Required by your organization, not installed</strong>
               <ul class="urows warnrows">
-                <li><span>Your organization requires wiki-search from corp, but that marketplace has not been reached yet.</span>
+                <li><span>Your organization requires docs-search from acme, but that marketplace has not been reached yet.</span>
                   <div class="row"><button class="btn" type="button">Refresh source</button></div></li>
-                <li><span>Your organization requires portal from corp, but that marketplace does not list it.</span>
-                  <span class="ver">portal is installed from team-tools instead; it may stand in the way.</span>
+                <li><span>Your organization requires team-hub from corp, but that marketplace does not list it.</span>
+                  <span class="ver">team-hub is installed from team-tools instead; it may stand in the way.</span>
                   <div class="row"><button class="btn" type="button">Refresh source</button><button class="btn danger" type="button">Remove from team-tools…</button></div></li>
                 <li><span>Your organization requires notes-sync from corp, but that marketplace is hidden, so nothing installs from it. Show it again in Sources.</span>
                   <div class="row"><button class="btn" type="button" data-go="folders">Show sources</button></div></li>
@@ -1046,7 +1046,7 @@
               <div class="grid" style="grid-template-columns:repeat(auto-fill, minmax(200px, 1fr))">
                 <article class="card"><div class="card-top"><div class="glyph">Mt</div><div><h3>Meeting</h3><span class="ver">0.8.4</span></div></div><p class="desc">Record meetings, transcribe audio, and produce summaries.</p><div class="card-foot"><span class="badge official"><svg class="i"><use href="#i-shield"/></svg>Ave Official</span><span class="state update">Update 0.9.0</span></div></article>
                 <article class="card"><div class="card-top"><div class="glyph">Pr</div><div><h3>Proofread</h3><span class="ver">1.2.0</span></div></div><p class="desc">Korean proofreading skill from a team folder.</p><div class="card-foot"><span class="badge">team-share</span><span class="badge">Local folder</span><span class="state installed">Installed</span></div></article>
-                <article class="card"><div class="card-top"><div class="glyph">PT</div><div><h3>Portal</h3><span class="ver">3.2.0</span></div></div><p class="desc">Portal approvals and schedules.</p><div class="card-foot"><span class="badge">corp</span><span class="state required" title="Your organization's policy file requires this package, so it cannot be uninstalled or disabled here.">Required by your organization</span></div></article>
+                <article class="card"><div class="card-top"><div class="glyph">TH</div><div><h3>Team Hub</h3><span class="ver">3.2.0</span></div></div><p class="desc">Team requests and schedules.</p><div class="card-foot"><span class="badge">corp</span><span class="state required" title="Your organization's policy file requires this package, so it cannot be uninstalled or disabled here.">Required by your organization</span></div></article>
               </div>
             </div>
             <aside class="sheet" aria-label="Package sheet, automatic updates">
@@ -1200,14 +1200,14 @@
     { g: "Is", n: "Issue Sync", k: "plugin", d: "Two-way issue sync and sprint summaries for your team’s tracker.", s: "team-tools", v: "2.1.0", st: ["install", "Install"] },
     { g: "Mt", n: "Meeting", k: "plugin", d: "Team fork with a custom transcript template.", s: "team-tools", v: "0.9.1-team", st: ["blocked", "Installed from Ave Official"] },
     { g: "Pg", n: "Postgres", k: "mcp", d: "Query a PostgreSQL database through a read-only MCP server.", s: "official", v: "0.6.2", st: ["install", "Install"] },
-    { g: "Wk", n: "Wiki Search", k: "mcp", d: "Search the internal wiki. Available on the company network.", s: "corp", v: "1.3.0", st: ["install", "Install"] },
+    { g: "Ds", n: "Docs Search", k: "mcp", d: "Search team documents. Available on your organization's network.", s: "corp", v: "1.3.0", st: ["install", "Install"] },
     { g: "Nd", n: "Nord", k: "theme", d: "Arctic, north-bluish palette with calm contrast.", s: "official", v: "1.0.2", st: ["installed", "Installed"] },
     { g: "Aa", n: "Pretendard", k: "font", d: "Neutral sans for Korean and Latin, nine weights.", s: "official", v: "1.3.9", st: ["install", "Install"] },
     { g: "日", n: "日本語", k: "language", d: "Japanese interface language. 98% of messages translated.", s: "official", v: "0.10.0", st: ["install", "Install"] },
     { g: "Ad", n: "API Designer", k: "skill", d: "Design REST or GraphQL APIs, versioning, pagination and error formats.", s: "official", v: "1.1.0", st: ["installed", "Installed"] },
     { g: "Rf", n: "Release Captain", k: "agent", d: "Coordinates release checklists across repositories.", s: "team-tools", v: "0.3.0", st: ["blocked", "Requires Ave 0.12"] },
     { g: "Ba", n: "Browser Automation", k: "mcp", d: "Headless browser server. Withdrawn by its publisher.", s: "official", v: "0.6.2", st: ["yanked", "Yanked"] },
-    { g: "PT", n: "Portal", k: "plugin", d: "Portal approvals and schedules. Kept installed by your organization.", s: "corp", v: "3.2.0", st: ["required", "Required by your organization"] },
+    { g: "TH", n: "Team Hub", k: "plugin", d: "Team requests and schedules. Kept installed by your organization.", s: "corp", v: "3.2.0", st: ["required", "Required by your organization"] },
     { g: "Dg", n: "Diagram Kit", k: "skill", d: "Draw sequence and flow diagrams from a description.", s: "old-team", v: "1.0.4", st: ["removed", "Source removed"] }
   ];
   const badge = (s) => s === "official"

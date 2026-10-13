@@ -62,17 +62,17 @@ function pluginGeneration(generationId: string, pluginVersion: string): ActivePl
         ownerPluginId: "plugin-one",
         ownerVersion: pluginVersion,
         kind: "skill",
-        localId: "attendance",
-        path: "skills/attendance",
+        localId: "checkin",
+        path: "skills/checkin",
         fingerprint,
         files: [
           {
-            path: "skills/attendance/SKILL.md",
-            content: "---\nname: attendance\ndescription: d\n---\nbody",
+            path: "skills/checkin/SKILL.md",
+            content: "---\nname: checkin\ndescription: d\n---\nbody",
             sha256: fingerprint,
           },
           {
-            path: "skills/attendance/references/policy.md",
+            path: "skills/checkin/references/policy.md",
             content: "POLICY",
             sha256: "c".repeat(64),
           },
@@ -161,7 +161,7 @@ describe("skill_read — plugin generation binding", () => {
       const overlay = new SkillOverlay();
       overlay.register(
         "session-x",
-        store.loadPluginGeneration(generation, "plugin:plugin-one:attendance")!,
+        store.loadPluginGeneration(generation, "plugin:plugin-one:checkin")!,
       );
       let released = 0;
       const tool = createSkillReadTool({
@@ -170,7 +170,7 @@ describe("skill_read — plugin generation binding", () => {
         acquirePluginGeneration: async () => ({ generation, release: () => { released += 1; } }),
       });
       const r = await tool.execute(
-        { skillName: "plugin:plugin-one:attendance", resourcePath: "references/policy.md" },
+        { skillName: "plugin:plugin-one:checkin", resourcePath: "references/policy.md" },
         ctx(),
       );
       expect(r.isError).toBe(false);
@@ -191,7 +191,7 @@ describe("skill_read — plugin generation binding", () => {
       const overlay = new SkillOverlay();
       overlay.register(
         "session-x",
-        store.loadPluginGeneration(approved, "plugin:plugin-one:attendance")!,
+        store.loadPluginGeneration(approved, "plugin:plugin-one:checkin")!,
       );
       let released = 0;
       const tool = createSkillReadTool({
@@ -200,7 +200,7 @@ describe("skill_read — plugin generation binding", () => {
         acquirePluginGeneration: async () => ({ generation: live, release: () => { released += 1; } }),
       });
       const r = await tool.execute(
-        { skillName: "plugin:plugin-one:attendance", resourcePath: "references/policy.md" },
+        { skillName: "plugin:plugin-one:checkin", resourcePath: "references/policy.md" },
         ctx(),
       );
       expect(r.isError).toBe(true);
@@ -220,11 +220,11 @@ describe("skill_read — plugin generation binding", () => {
       const overlay = new SkillOverlay();
       overlay.register(
         "session-x",
-        store.loadPluginGeneration(generation, "plugin:plugin-one:attendance")!,
+        store.loadPluginGeneration(generation, "plugin:plugin-one:checkin")!,
       );
       const tool = createSkillReadTool({ store, overlay });
       const r = await tool.execute(
-        { skillName: "plugin:plugin-one:attendance", resourcePath: "references/policy.md" },
+        { skillName: "plugin:plugin-one:checkin", resourcePath: "references/policy.md" },
         ctx(),
       );
       expect(r.isError).toBe(true);

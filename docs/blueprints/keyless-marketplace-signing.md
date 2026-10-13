@@ -196,28 +196,16 @@ verbatim:
 > Sigstore Public Good Instance, but it does not have a transparency log and
 > only federates with GitHub Actions.
 
-Every Ave plugin repository is private — verified against the org:
-
-```
-ave-plugin-meeting          PRIVATE
-ave-plugin-local-indexer    PRIVATE
-ave-plugin-mail         PRIVATE
-ave-plugin-portal               PRIVATE
-ave-plugin-assistant   PRIVATE
-ave-plugin-template         PRIVATE
-agent-marketplace             PRIVATE
-ave                     PUBLIC
-ave-plugin-sdk              PUBLIC
-marketplace-whitelist        PUBLIC
-```
+At the time of writing, the plugin repositories were private while the host
+and the SDK were public.
 
 Two consequences, and they pull in opposite directions:
 
 - **Good.** Signing does not publish private repository names, tag names, commit
   SHAs, or the internal reusable-workflow path to a globally readable log.
-  `ave-plugin-portal` is an internal-API integration whose *existence* is currently
-  gated to the internal network (`_version_publicly_visible`). Putting it in
-  public Rekor would defeat that, permanently and unremovably. Public Sigstore is
+  A plugin whose catalog visibility is gated to a private network
+  (`_version_publicly_visible`) would lose that gate, permanently and
+  unremovably, once it appears in public Rekor. Public Sigstore is
   therefore not an option for Ave regardless of anything else.
 - **Bad, and it must be said plainly.** *Public auditability is the property
   Sigstore is most famous for, and Ave does not get it.* There is no Rekor entry
@@ -255,9 +243,8 @@ two facts do not compose.
 
 The escape routes, and why each is closed:
 
-- **Make the plugin repos public.** Not available. `ave-plugin-portal` is an
-  internal-API integration whose catalog visibility is deliberately gated to the
-  internal network, and `marketplace-internal-visibility` exists precisely to
+- **Make the plugin repos public.** Not available. A plugin whose catalog visibility is
+  deliberately gated to a private network cannot be made public, and `marketplace-internal-visibility` exists precisely to
   keep its existence off the public catalog. Publishing the repository would
   defeat that more thoroughly than the catalog gate protects it. The same
   argument applies to `ave-plugin-mail`.

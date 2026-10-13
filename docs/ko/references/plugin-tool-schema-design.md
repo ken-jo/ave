@@ -401,7 +401,7 @@ OAuth-flow 를 소유한 플러그인이 호스트 Settings UI 에 generic 미�
     },
   ],
   "auth": {
-    "label": "Microsoft 계정",      // optional; 기본 manifest.name
+    "label": "메일 계정",      // optional; 기본 manifest.name
     "statusTool": "mail_status",  // 필수, visibility ["app"]
     "loginTool": "mail_auth",     // 필수, visibility ["app"]
     "logoutTool": "mail_signout", // optional, visibility ["app"]
@@ -441,7 +441,7 @@ interface PluginAuthStatusResult {
   ],
   "emittedEvents": ["mail.auth.changed" /* ... */],
   "auth": {
-    "label": "Microsoft 계정",
+    "label": "메일 계정",
     "statusTool": "mail_status",
     "loginTool": "mail_auth",
     "logoutTool": "mail_signout",
@@ -451,27 +451,27 @@ interface PluginAuthStatusResult {
 
 #### 2.4.1 `auth.partitionDomains` — 파티션 뷰어 allow-list (#649)
 
-OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>` 파티션 안에서 외부 페이지(예: Outlook 캘린더 web UI)를 열기 위한 _hostname allow-list_. `hostApi.openAuthPartitionViewer({ url })` 호출이 이 리스트를 게이트로 사용한다 — URL 의 host 가 리스트에 매치되지 않으면 즉시 throw + audit.
+OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>` 파티션 안에서 외부 페이지(예: 웹 캘린더 UI)를 열기 위한 _hostname allow-list_. `hostApi.openAuthPartitionViewer({ url })` 호출이 이 리스트를 게이트로 사용한다 — URL 의 host 가 리스트에 매치되지 않으면 즉시 throw + audit.
 
-**매칭 룰** — dot-boundary suffix-match. `outlook.office.com` 가 리스트에 있으면:
-- `outlook.office.com` ✅
-- `mail.outlook.office.com` ✅
-- `outlook.office.com.attacker.com` ❌ (전형적인 typosquat)
-- `notoutlook.office.com` ❌
+**매칭 룰** — dot-boundary suffix-match. `webmail.example.com` 가 리스트에 있으면:
+- `webmail.example.com` ✅
+- `mail.webmail.example.com` ✅
+- `webmail.example.com.attacker.com` ❌ (전형적인 typosquat)
+- `notwebmail.example.com` ❌
 
 **거부 패턴** — SDK schema 와 호스트 `host-allow-list.ts` 가 보안적으로 중요한 패턴을 **둘 다** 거부한다 (hand-edited manifest 가 schema 를 우회해도 호스트가 한 번 더 잡음). 형식 오류성 패턴은 SDK schema 만 publish-time 에 거부한다 (호스트는 단순히 매칭 실패로 처리되어 dead entry 가 됨).
 
 | 패턴 | SDK schema | 호스트 | 거부 이유 |
 |------------------------------------------------------------------------------ |------------- |----------------------- |------------------------------------------------------------------------ |
-| `*`, `*.office.com` | ✅ | ✅ | wildcard 는 모든 sub-domain 매치 → blanket consent surface |
+| `*`, `*.example.com` | ✅ | ✅ | wildcard 는 모든 sub-domain 매치 → blanket consent surface |
 | `localhost`, `intranet` | ✅ | ✅ | single-label 은 동일 등록자 suffix 의 모든 site 와 blanket-match |
 | `com`, `co.kr`, `or.kr`, `go.kr`, `kr`, `net`, `org`, `io`, `ai`, `dev`, `app` | ✅ | ✅ | 공개 등록 suffix — 모든 등록자 site 와 blanket-match |
-| `https://outlook.office.com/path` | ✅ | ✅ (slash detection) | URL/path → host 만 받음 |
+| `https://webmail.example.com/path` | ✅ | ✅ (slash detection) | URL/path → host 만 받음 |
 | `xn--80ak6aa92e.com` | ✅ | ✅ | IDN-punycode 는 homoglyph 위험 (e.g. `аррӏе.com`); ASCII brand domain 만 |
 | (entry 17개 이상) | ✅ (maxItems) | ✅ (`MAX_HOSTS=16`) | over-broad consent surface |
-| `Outlook.Office.com` | ✅ | (lowercase 정규화) | schema 는 소문자만 허용; 호스트는 정규화 후 매칭 |
-| `outlook.office.com:443` | ✅ | (매칭 실패, dead entry) | URL.hostname 에 포트가 없어 매칭 안 됨 |
-| `outlook..office.com`, `-foo.com`, `foo-.com`, `.outlook.com`, `outlook.com.` | ✅ | (매칭 실패, dead entry) | 정상 URL hostname 과 매칭 안 됨 |
+| `WebMail.Example.com` | ✅ | (lowercase 정규화) | schema 는 소문자만 허용; 호스트는 정규화 후 매칭 |
+| `webmail.example.com:443` | ✅ | (매칭 실패, dead entry) | URL.hostname 에 포트가 없어 매칭 안 됨 |
+| `webmail..example.com`, `-foo.com`, `foo-.com`, `.example.com`, `example.com.` | ✅ | (매칭 실패, dead entry) | 정상 URL hostname 과 매칭 안 됨 |
 | (label > 63자 또는 hostname > 253자) | ✅ (RFC 1035) | (매칭 실패, dead entry) | 정상 URL 에 그런 host 없음 |
 
 **3 layer defense** — 매니페스트 publish 시 SDK schema 가 한 번, 호스트 load 시 `normalizeAllowedHosts` 가 한 번, viewer-open 호출 시 `urlHostMatchesAllowList` 가 한 번.
@@ -484,7 +484,7 @@ OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>`
 2. `auth.partitionDomains[]` 에 non-empty hostname 리스트 선언
 3. (선택) `auth.{statusTool, loginTool, logoutTool}` 로 host UI 뱃지/버튼 surface 활성화
 
-**예시 (mail 플러그인 — Outlook 캘린더 뷰어 surface 추가)**
+**예시 (웹 캘린더 뷰어 surface 를 여는 플러그인)**
 
 ```jsonc
 {
@@ -493,7 +493,7 @@ OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>`
   "extensions": { "ai.agent-connector.ave": {
   "capabilities": ["external-auth-consumer"],
   "tools": [
-    { "name": "mail_open_outlook_calendar", "description": "Outlook 캘린더 뷰어를 연다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["model", "app"] } },
+    { "name": "mail_open_calendar", "description": "웹 캘린더 뷰어를 연다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["model", "app"] } },
     },
     /* ... 기타 tool ... */
     { "name": "mail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
@@ -505,14 +505,13 @@ OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>`
   ],
   "emittedEvents": ["mail.auth.changed"],
   "auth": {
-    "label": "Microsoft 계정",
+    "label": "메일 계정",
     "statusTool": "mail_status",
     "loginTool": "mail_auth",
     "logoutTool": "mail_signout",
     "partitionDomains": [
-      "outlook.office.com",
-      "login.microsoftonline.com",
-      "office365.com",
+      "calendar.example.com",
+      "login.example.com",
     ],
   },
   } }
@@ -799,24 +798,24 @@ const suggestion = await hostApi.callLlm(
 ```typescript
 // 플러그인이 포털 쿠키를 수집하는 예
 const cookies = await hostApi.openAuthWindow({
-  url: "http://example.corp/",
-  completionUrlPatterns: ["api.example.corp/portal/main", "example.corp"],
-  cookieHosts: ["sso.example.corp", "api.example.corp", "example.corp"],
+  url: "http://example.com/",
+  completionUrlPatterns: ["api.example.com/portal/main", "example.com"],
+  cookieHosts: ["sso.example.com", "api.example.com", "example.com"],
   timeoutMs: 300_000,
   windowTitle: "포털 로그인",
 });
 
 // 반환된 쿠키로 직접 HTTP 요청
 const jar = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-const res = await fetch("https://api.example.corp/api/...", { headers: { Cookie: jar },
+const res = await fetch("https://api.example.com/api/...", { headers: { Cookie: jar },
 });
 ```
 
 - Electron 내장 Chromium `BrowserWindow` + `session.cookies` API 사용 — **Selenium/webdriver 의존 제거**.
 - 사용자가 창 안에서 SSO 로그인 수행 → `completionUrlPatterns` 중 하나와 매칭되는 URL로 navigate되면 쿠키 수집 후 창 자동 close.
-- `cookieHosts`는 **도메인 suffix 매칭** (선행 점 정규화) — `evil-example.corp`이 `example.corp`에 매칭되지 않도록 엄격 비교.
+- `cookieHosts`는 **도메인 suffix 매칭** (선행 점 정규화) — `evil-example.com`이 `example.com`에 매칭되지 않도록 엄격 비교.
 - 타임아웃(기본 5분), 사용자 창 수동 close, `loadURL` 실패 모두 reject.
-- `persistPartition`(예: `persist:corp-auth`)을 지정하면 영구 세션 격리 — 여러 포털 간 쿠키 교차 방지.
+- `persistPartition`(예: `persist:sample-auth`)을 지정하면 영구 세션 격리 — 여러 포털 간 쿠키 교차 방지.
 - **Capability gate**: `manifest.capabilities[]` 에 `external-auth-consumer` 선언 필수. 미선언 시 호출은 `throw` 되고 AuditLogger 에 `open_auth_window_capability_denied` 레코드가 남는다.
 - 허용된 호출도 AuditLogger 에 기록되어 어떤 플러그인이 어떤 포털에 대해 쿠키를 수집했는지 추적 가능.
 - 로그/감사에는 **URL 의 origin + path 만** 기록 — SAML/OAuth 응답 URL 에 담기는 `SAMLRequest` / `code` / `state` / 세션 토큰은 민감 자산이므로 query/hash 를 제외한다.

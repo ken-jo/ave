@@ -655,27 +655,6 @@ export const scenarios: Record<string, ScenarioEntry> = {
   // Their keys depict those plugins' own UI, which lives in their own
   // repositories. See PLUGIN_REPOSITORY_KEYS_OUT_OF_SCOPE below.
 
-  // ---- integration (meeting + outlook) ------------------------------------------------
-  'meeting-outlook-mail': {
-    topic: 'integration',
-    skip: 'Requires live Outlook OAuth + generated minutes. Plugin UI + live OAuth, both out of scope.',
-  },
-  'meeting-outlook-mail-2': { topic: 'integration', skip: 'Same as meeting-outlook-mail.' },
-
-  // ---- meeting (recording) ------------------------------------------------
-  'meeting-record': {
-    topic: 'meeting',
-    skip:
-      'The live-recording mini-widget is a separate detached BrowserWindow the meeting plugin ' +
-      'opens only after meeting_start begins a session (needs an active audio device / injected ' +
-      'PCM chunks); its waveform/transcript render is meaningless without a real audio source. ' +
-      'The meeting panel keys are out of scope too (PLUGIN_REPOSITORY_KEYS_OUT_OF_SCOPE).',
-  },
-  'meeting-record-stt': {
-    topic: 'meeting',
-    skip: 'Requires real STT audio pipeline streaming chunks — explicitly called out as infeasible to seed.',
-  },
-
   // Host alert cards and their accepted prompts.
   'alert-meeting-end-trigger': {
     topic: 'alerts',

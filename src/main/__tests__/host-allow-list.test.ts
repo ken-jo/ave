@@ -17,7 +17,7 @@ import {
 
 describe("normalizeHost", () => {
   it("lowercases + trims + strips a leading dot", () => {
-    expect(normalizeHost(" .Outlook.OFFICE.com ")).toBe("outlook.office.com");
+    expect(normalizeHost(" .WebMail.EXAMPLE.com ")).toBe("webmail.example.com");
   });
 
   it("returns an empty string for an empty/whitespace input", () => {
@@ -30,11 +30,11 @@ describe("normalizeAllowedHosts", () => {
   it("dedupes + normalizes + preserves order", () => {
     expect(
       normalizeAllowedHosts([
-        "Outlook.Office.com",
-        ".outlook.office.com",
+        "WebMail.Example.com",
+        ".webmail.example.com",
         "login.microsoftonline.com",
       ]),
-    ).toEqual(["outlook.office.com", "login.microsoftonline.com"]);
+    ).toEqual(["webmail.example.com", "login.microsoftonline.com"]);
   });
 
   it("refuses wildcard entries", () => {
@@ -126,7 +126,7 @@ describe("normalizeAllowedHosts", () => {
   });
 
   it("refuses a URL pasted in place of a hostname", () => {
-    expect(() => normalizeAllowedHosts(["https://outlook.office.com/"])).toThrow(
+    expect(() => normalizeAllowedHosts(["https://webmail.example.com/"])).toThrow(
       /hostname, not a URL/,
     );
   });
@@ -138,27 +138,27 @@ describe("normalizeAllowedHosts", () => {
 });
 
 describe("urlHostMatchesAllowList — dot-boundary suffix-match", () => {
-  const allow = normalizeAllowedHosts(["outlook.office.com", "login.microsoftonline.com"]);
+  const allow = normalizeAllowedHosts(["webmail.example.com", "login.microsoftonline.com"]);
 
   it("matches the exact host", () => {
-    expect(urlHostMatchesAllowList("outlook.office.com", allow)).toBe(true);
+    expect(urlHostMatchesAllowList("webmail.example.com", allow)).toBe(true);
   });
 
   it("matches a sub-domain via dot boundary", () => {
-    expect(urlHostMatchesAllowList("mail.outlook.office.com", allow)).toBe(true);
+    expect(urlHostMatchesAllowList("mail.webmail.example.com", allow)).toBe(true);
   });
 
   it("does NOT match a domain that merely ends with the literal suffix", () => {
     // The classic typosquat — string-endsWith would say yes, but dot-boundary
-    // rejects it because `outlook.office.com.attacker.com` is not under
-    // `outlook.office.com`.
+    // rejects it because `webmail.example.com.attacker.com` is not under
+    // `webmail.example.com`.
     expect(
-      urlHostMatchesAllowList("outlook.office.com.attacker.com", allow),
+      urlHostMatchesAllowList("webmail.example.com.attacker.com", allow),
     ).toBe(false);
   });
 
   it("does NOT match an unrelated host that shares a final-label", () => {
-    expect(urlHostMatchesAllowList("notoutlook.office.com", allow)).toBe(false);
+    expect(urlHostMatchesAllowList("notwebmail.example.com", allow)).toBe(false);
   });
 
   it("does NOT match a different IdP", () => {
@@ -167,11 +167,11 @@ describe("urlHostMatchesAllowList — dot-boundary suffix-match", () => {
 });
 
 describe("urlMatchesAllowList — URL parsing", () => {
-  const allow = normalizeAllowedHosts(["outlook.office.com"]);
+  const allow = normalizeAllowedHosts(["webmail.example.com"]);
 
   it("accepts https URLs whose host matches", () => {
     expect(
-      urlMatchesAllowList("https://outlook.office.com/calendar/view/week", allow),
+      urlMatchesAllowList("https://webmail.example.com/calendar/view/week", allow),
     ).toBe(true);
   });
 
@@ -187,7 +187,7 @@ describe("urlMatchesAllowList — URL parsing", () => {
   it("uses URL.hostname rather than string searching (subdomain in the path is not a match)", () => {
     expect(
       urlMatchesAllowList(
-        "https://attacker.example/redirect?to=https://outlook.office.com/",
+        "https://attacker.example/redirect?to=https://webmail.example.com/",
         allow,
       ),
     ).toBe(false);

@@ -15,7 +15,7 @@ const principal = {
   accountHash: "acct-hash",
 };
 const requiredRead = {
-  readTool: "portal_attendance_read",
+  readTool: "portal_checkin_read",
   readOperations: ["today"],
   maxAgeMs: 1_000,
 } as const;
@@ -25,7 +25,7 @@ describe("PluginOperationGrantCoordinator", () => {
   it("derives one Host-owned domain for every governed operation in an account", () => {
     const tools = [
       {
-        name: "portal_attendance_read",
+        name: "portal_checkin_read",
         pluginId: "sampleportal",
         pluginGeneration: { generationId: "gen-1" },
         operationPolicy: {
@@ -37,7 +37,7 @@ describe("PluginOperationGrantCoordinator", () => {
         },
       },
       {
-        name: "portal_attendance_write",
+        name: "portal_checkin_write",
         pluginId: "sampleportal",
         pluginGeneration: { generationId: "gen-1" },
         operationPolicy: {
@@ -47,7 +47,7 @@ describe("PluginOperationGrantCoordinator", () => {
               kind: "write" as const,
               minimumRisk: "write" as const,
               requiresRead: {
-                tool: "portal_attendance_read",
+                tool: "portal_checkin_read",
                 operations: ["today", "week"],
                 maxAgeMs: 1_000,
               },
@@ -59,13 +59,13 @@ describe("PluginOperationGrantCoordinator", () => {
 
     const readDomain = pluginOperationExecutionDomain(
       principal,
-      "portal_attendance_read",
+      "portal_checkin_read",
       "today",
       tools,
     );
     const writeDomain = pluginOperationExecutionDomain(
       { ...principal, appSessionId: "another-window" },
-      "portal_attendance_write",
+      "portal_checkin_write",
       "clock",
       tools,
     );
@@ -75,7 +75,7 @@ describe("PluginOperationGrantCoordinator", () => {
         accountScopeHash: "another-account-scope",
         accountHash: "another-account",
       },
-      "portal_attendance_write",
+      "portal_checkin_write",
       "clock",
       tools,
     );
@@ -85,7 +85,7 @@ describe("PluginOperationGrantCoordinator", () => {
     expect(
       pluginOperationExecutionDomain(
         principal,
-        "portal_attendance_read",
+        "portal_checkin_read",
         "week",
         tools,
       ),
@@ -140,10 +140,10 @@ describe("PluginOperationGrantCoordinator", () => {
     };
     const replacementDomain = pluginOperationExecutionDomain(
       replacementPrincipal,
-      "portal_attendance_write",
+      "portal_checkin_write",
       "clock",
       [{
-        name: "portal_attendance_write",
+        name: "portal_checkin_write",
         pluginId: principal.ownerPluginId,
         pluginGeneration: {
           generationId: replacementPrincipal.generationId,
@@ -526,7 +526,7 @@ describe("PluginOperationGrantCoordinator", () => {
     ) =>
       coordinator.issue({
         ...sessionPrincipal,
-        toolName: "portal_attendance_write",
+        toolName: "portal_checkin_write",
         operation: "clock",
         intentHash: "shared-account-intent",
         readRevision,
@@ -534,7 +534,7 @@ describe("PluginOperationGrantCoordinator", () => {
       }, grantDomain, requiredRead);
     const expectedFor = (sessionPrincipal: PluginOperationPrincipal) => ({
       ...sessionPrincipal,
-      toolName: "portal_attendance_write",
+      toolName: "portal_checkin_write",
       operation: "clock",
       intentHash: "shared-account-intent",
       requiresRead: true,
@@ -587,13 +587,13 @@ describe("PluginOperationGrantCoordinator", () => {
     let now = 1_000;
     const coordinator = new PluginOperationGrantCoordinator(() => now);
     const readRevision = coordinator.recordRead(
-      { ...principal, readTool: "portal_attendance_read", readOperation: "today" },
+      { ...principal, readTool: "portal_checkin_read", readOperation: "today" },
       grantDomain,
     );
-    expect(coordinator.latestRequiredRead(principal, "portal_attendance_read", ["today"], 1_000, grantDomain)).toBe(readRevision);
+    expect(coordinator.latestRequiredRead(principal, "portal_checkin_read", ["today"], 1_000, grantDomain)).toBe(readRevision);
     const grant = coordinator.issue({
       ...principal,
-      toolName: "portal_attendance_write",
+      toolName: "portal_checkin_write",
       operation: "clock",
       intentHash: "intent",
       readRevision,
@@ -601,16 +601,16 @@ describe("PluginOperationGrantCoordinator", () => {
     }, grantDomain, requiredRead);
     const expected = {
       ...principal,
-      toolName: "portal_attendance_write",
+      toolName: "portal_checkin_write",
       operation: "clock",
       intentHash: "intent",
       requiresRead: true,
     };
-    expect(coordinator.latestRequiredRead(principal, "portal_attendance_read", ["today"], 1_000, grantDomain)).toBeUndefined();
+    expect(coordinator.latestRequiredRead(principal, "portal_checkin_read", ["today"], 1_000, grantDomain)).toBeUndefined();
     expect(coordinator.consume(grant.token, expected, grantDomain)).toEqual({ ok: true, grantId: grant.grantId });
     expect(coordinator.consume(grant.token, expected, grantDomain)).toMatchObject({ ok: false, reason: expect.stringContaining("already consumed") });
     now += 2_000;
-    expect(coordinator.latestRequiredRead(principal, "portal_attendance_read", ["today"], 1_000, grantDomain)).toBeUndefined();
+    expect(coordinator.latestRequiredRead(principal, "portal_checkin_read", ["today"], 1_000, grantDomain)).toBeUndefined();
   });
 
   it("does not let later reads clear an indeterminate post-hook domain", () => {
@@ -643,7 +643,7 @@ describe("PluginOperationGrantCoordinator", () => {
     const coordinator = new PluginOperationGrantCoordinator(() => 1_000);
     const directBinding = {
       ...principal,
-      toolName: "portal_parking_write",
+      toolName: "portal_booking_write",
       operation: "reserve",
       intentHash: "direct-write",
       readRevision: null,
@@ -744,7 +744,7 @@ describe("PluginOperationGrantCoordinator", () => {
     }, grantDomain);
     const grant = coordinator.issue({
       ...principal,
-      toolName: "portal_parking_write",
+      toolName: "portal_booking_write",
       operation: "apply",
       intentHash: "one",
       readRevision,
@@ -752,7 +752,7 @@ describe("PluginOperationGrantCoordinator", () => {
     }, grantDomain, requiredRead);
     const expected = {
       ...principal,
-      toolName: "portal_parking_write",
+      toolName: "portal_booking_write",
       operation: "apply",
       intentHash: "one",
       requiresRead: true,
@@ -810,12 +810,12 @@ describe("PluginOperationGrantCoordinator", () => {
     const coordinator = new PluginOperationGrantCoordinator(() => 50);
     const readRevision = coordinator.recordRead({
       ...principal,
-      readTool: "portal_attendance_read",
+      readTool: "portal_checkin_read",
       readOperation: "today",
     }, grantDomain);
     const expected = {
       ...principal,
-      toolName: "portal_attendance_write",
+      toolName: "portal_checkin_write",
       operation: "clock",
       intentHash: "intent",
       requiresRead: true,
@@ -839,7 +839,7 @@ describe("PluginOperationGrantCoordinator", () => {
     expect(
       coordinator.latestRequiredRead(
         principal,
-        "portal_attendance_read",
+        "portal_checkin_read",
         ["today"],
         1_000,
         grantDomain,
@@ -868,7 +868,7 @@ describe("PluginOperationGrantCoordinator", () => {
       }, grantDomain);
       coordinator.issue({
         ...sessionPrincipal,
-        toolName: "portal_attendance_write",
+        toolName: "portal_checkin_write",
         operation: "clock",
         intentHash: `intent-${index}`,
         readRevision,
@@ -904,7 +904,7 @@ describe("PluginOperationGrantCoordinator", () => {
     }, grantDomain);
     const firstGrant = coordinator.issue({
       ...survivingPrincipal,
-      toolName: "portal_attendance_write",
+      toolName: "portal_checkin_write",
       operation: "clock",
       intentHash: "surviving-session",
       readRevision: firstRead,
@@ -917,7 +917,7 @@ describe("PluginOperationGrantCoordinator", () => {
     }, grantDomain);
     const secondGrant = coordinator.issue({
       ...survivingPrincipal,
-      toolName: "portal_attendance_write",
+      toolName: "portal_checkin_write",
       operation: "clock",
       intentHash: "surviving-session",
       readRevision: secondRead,
@@ -925,7 +925,7 @@ describe("PluginOperationGrantCoordinator", () => {
     }, grantDomain, requiredRead);
     const expected = {
       ...survivingPrincipal,
-      toolName: "portal_attendance_write",
+      toolName: "portal_checkin_write",
       operation: "clock",
       intentHash: "surviving-session",
       requiresRead: true,
@@ -980,7 +980,7 @@ describe("PluginOperationGrantCoordinator", () => {
     }, grantDomain);
     const issue = () => coordinator.issue({
       ...principal,
-      toolName: "portal_attendance_write",
+      toolName: "portal_checkin_write",
       operation: "clock",
       intentHash: "same-intent",
       readRevision,
@@ -1016,7 +1016,7 @@ describe("PluginOperationGrantCoordinator", () => {
       }, grantDomain);
       const grant = coordinator.issue({
         ...principal,
-        toolName: "portal_attendance_write",
+        toolName: "portal_checkin_write",
         operation: "clock",
         intentHash: "same-intent",
         readRevision,
@@ -1030,7 +1030,7 @@ describe("PluginOperationGrantCoordinator", () => {
       }, grantDomain);
       const expected = {
         ...principal,
-        toolName: "portal_attendance_write",
+        toolName: "portal_checkin_write",
         operation: "clock",
         intentHash: "same-intent",
         requiresRead: true,
@@ -1056,7 +1056,7 @@ describe("PluginOperationGrantCoordinator", () => {
       } as const;
       const issue = (readRevision: string) => coordinator.issue({
         ...principal,
-        toolName: "portal_attendance_write",
+        toolName: "portal_checkin_write",
         operation: "clock",
         intentHash: "same-intent",
         readRevision,
@@ -1076,7 +1076,7 @@ describe("PluginOperationGrantCoordinator", () => {
       const secondGrant = issue(secondRead);
       const expected = {
         ...principal,
-        toolName: "portal_attendance_write",
+        toolName: "portal_checkin_write",
         operation: "clock",
         intentHash: "same-intent",
         requiresRead: true,
@@ -1103,7 +1103,7 @@ describe("PluginOperationGrantCoordinator", () => {
     }, grantDomain);
     const grant = coordinator.issue({
       ...principal,
-      toolName: "portal_attendance_write",
+      toolName: "portal_checkin_write",
       operation: "clock",
       intentHash: "same-intent",
       readRevision,
@@ -1113,7 +1113,7 @@ describe("PluginOperationGrantCoordinator", () => {
     now += requiredRead.maxAgeMs + 1;
     expect(coordinator.consume(grant.token, {
       ...principal,
-      toolName: "portal_attendance_write",
+      toolName: "portal_checkin_write",
       operation: "clock",
       intentHash: "same-intent",
       requiresRead: true,

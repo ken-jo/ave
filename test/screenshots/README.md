@@ -111,7 +111,6 @@ screenshottable; the plugin's view renders inside an Electron `<webview>`.
 
 | Key(s) | Reason |
 |---|---|
-| `meeting-record`, `meeting-record-stt`, `meeting-outlook-mail*` (2 keys) | Need live audio, a completed STT recording or Outlook OAuth. |
 | `agent-hub-my-work`, `agent-hub-team-board` | **No agent-hub plugin bundle exists**; nothing to install. |
 
 ### Scenarios with capture steps

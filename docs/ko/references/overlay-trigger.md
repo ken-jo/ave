@@ -116,7 +116,7 @@ context.hostApi.onEvent("email.action.needed", async (payload) => {
 
   // L4: trigger
   const res = await context.hostApi.triggerConversation({
-    prompt: `회의 요청 이메일을 받았습니다. 발신자: ${sanitize(String(event.sender ?? ""))}, 캘린더 등록과 회의실 예약을 도와드릴까요?`,
+    prompt: `회의 요청 이메일을 받았습니다. 발신자: ${sanitize(String(event.sender ?? ""))}, 캘린더 등록을 도와드릴까요?`,
     source: "overlay:meeting-detection",
     context: { emailId: event.id },           // body 는 절대 prompt 에 안 넣음
     visibility: "user-visible",

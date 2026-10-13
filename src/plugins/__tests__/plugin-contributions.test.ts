@@ -33,12 +33,12 @@ describe("plugin contribution declarations", () => {
 
   it("resolves structured owner-local identities for all contribution kinds", () => {
     const resolved = resolvePluginContributionDeclarations(manifest({
-      skills: [{ id: "attendance", path: "skills/attendance" }],
+      skills: [{ id: "checkin", path: "skills/checkin" }],
       hooks: [{ id: "audit", path: "hooks/audit.json" }],
       mcpServers: [{ id: "portal", path: "mcp/portal.json" }],
     }));
     expect(resolved.map(({ ownerPluginId, ownerVersion, kind, localId, path }) => ({ ownerPluginId, ownerVersion, kind, localId, path }))).toEqual([
-      { ownerPluginId: "bundle-host-test", ownerVersion: "1.0.0", kind: "skill", localId: "attendance", path: "skills/attendance" },
+      { ownerPluginId: "bundle-host-test", ownerVersion: "1.0.0", kind: "skill", localId: "checkin", path: "skills/checkin" },
       { ownerPluginId: "bundle-host-test", ownerVersion: "1.0.0", kind: "hook", localId: "audit", path: "hooks/audit.json" },
       { ownerPluginId: "bundle-host-test", ownerVersion: "1.0.0", kind: "mcpServer", localId: "portal", path: "mcp/portal.json" },
     ]);
@@ -47,7 +47,7 @@ describe("plugin contribution declarations", () => {
 
   it.each([
     "/absolute", "C:/drive", "//server/share", "../escape", "skills/../escape",
-    "skills//attendance", "skills/./attendance", "skills\\attendance", "skills/%2e%2e/escape",
+    "skills//checkin", "skills/./checkin", "skills\\checkin", "skills/%2e%2e/escape",
   ])("rejects unsafe or ambiguous path %s", (path) => {
     expect(() => normalizePluginContributionPath("bundle-host-test", "skill:x", path)).toThrow(PluginContributionError);
   });
@@ -81,21 +81,21 @@ describe("plugin contribution declarations", () => {
 
 describe("plugin contribution inventory", () => {
   const full = manifest({
-    skills: [{ id: "attendance", path: "skills/attendance" }],
+    skills: [{ id: "checkin", path: "skills/checkin" }],
     hooks: [{ id: "audit", path: "hooks/audit.json" }],
     mcpServers: [{ id: "portal", path: "mcp/portal.json" }],
   });
 
   it("requires the expected member kind and SKILL.md entry", () => {
     expect(validatePluginContributionInventory(full, [
-      { path: "skills/attendance/SKILL.md", kind: "file" },
-      { path: "skills/attendance/references/policy.md", kind: "file" },
+      { path: "skills/checkin/SKILL.md", kind: "file" },
+      { path: "skills/checkin/references/policy.md", kind: "file" },
       { path: "hooks/audit.json", kind: "file" },
       { path: "mcp/portal.json", kind: "file" },
     ])).toHaveLength(3);
 
     expect(() => validatePluginContributionInventory(full, [
-      { path: "skills/attendance/readme.md", kind: "file" },
+      { path: "skills/checkin/readme.md", kind: "file" },
       { path: "hooks/audit.json", kind: "file" },
       { path: "mcp/portal.json", kind: "file" },
     ])).toThrow(/skill_entry_missing/);
@@ -103,8 +103,8 @@ describe("plugin contribution inventory", () => {
 
   it("rejects wrong member kinds and children below exact single-file contributions", () => {
     expect(() => validatePluginContributionInventory(manifest({
-      skills: [{ id: "attendance", path: "skills/attendance" }],
-    }), [{ path: "skills/attendance", kind: "file" }])).toThrow(/declared_directory_wrong_kind/);
+      skills: [{ id: "checkin", path: "skills/checkin" }],
+    }), [{ path: "skills/checkin", kind: "file" }])).toThrow(/declared_directory_wrong_kind/);
     expect(() => validatePluginContributionInventory(manifest({
       hooks: [{ id: "audit", path: "hooks/audit.json" }],
     }), [{ path: "hooks/audit.json", kind: "directory" }])).toThrow(/declared_file_wrong_kind/);
@@ -138,16 +138,16 @@ describe("materializePluginContributions", () => {
   it("captures immutable verified bytes and fingerprints", async () => {
     const root = await mkdtemp(join(tmpdir(), "ave-contributions-"));
     roots.push(root);
-    await mkdir(join(root, "skills", "attendance", "references"), { recursive: true });
-    await writeFile(join(root, "skills", "attendance", "SKILL.md"), "# Attendance\n");
-    await writeFile(join(root, "skills", "attendance", "references", "policy.md"), "read before write\n");
+    await mkdir(join(root, "skills", "checkin", "references"), { recursive: true });
+    await writeFile(join(root, "skills", "checkin", "SKILL.md"), "# Checkin\n");
+    await writeFile(join(root, "skills", "checkin", "references", "policy.md"), "read before write\n");
     const result = await materializePluginContributions(root, manifest({
-      skills: [{ id: "attendance", path: "skills/attendance" }],
+      skills: [{ id: "checkin", path: "skills/checkin" }],
     }));
     expect(result).toHaveLength(1);
     expect(result[0].files.map((file) => file.path)).toEqual([
-      "skills/attendance/SKILL.md",
-      "skills/attendance/references/policy.md",
+      "skills/checkin/SKILL.md",
+      "skills/checkin/references/policy.md",
     ]);
     expect(result[0].fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(Object.isFrozen(result[0].files)).toBe(true);
@@ -156,16 +156,16 @@ describe("materializePluginContributions", () => {
   it("fingerprints reference assets from exact bytes rather than decoded text", async () => {
     const root = await mkdtemp(join(tmpdir(), "ave-contributions-bytes-"));
     roots.push(root);
-    const skillPath = "skills/attendance/SKILL.md";
-    const assetPath = "skills/attendance/assets/icon.bin";
-    const skillBytes = Buffer.from("# Attendance\n", "utf8");
+    const skillPath = "skills/checkin/SKILL.md";
+    const assetPath = "skills/checkin/assets/icon.bin";
+    const skillBytes = Buffer.from("# Checkin\n", "utf8");
     const assetBytes = Buffer.from([0xff, 0xfe, 0x00, 0x41]);
-    await mkdir(join(root, "skills", "attendance", "assets"), { recursive: true });
+    await mkdir(join(root, "skills", "checkin", "assets"), { recursive: true });
     await writeFile(join(root, skillPath), skillBytes);
     await writeFile(join(root, assetPath), assetBytes);
 
     const [contribution] = await materializePluginContributions(root, manifest({
-      skills: [{ id: "attendance", path: "skills/attendance" }],
+      skills: [{ id: "checkin", path: "skills/checkin" }],
     }));
     const expectedFiles = [
       { path: skillPath, sha256: createHash("sha256").update(skillBytes).digest("hex") },
@@ -182,11 +182,11 @@ describe("materializePluginContributions", () => {
   it.skipIf(process.platform === "win32")("rejects installed symlinks before reading contribution bytes", async () => {
     const root = await mkdtemp(join(tmpdir(), "ave-contributions-link-"));
     roots.push(root);
-    await mkdir(join(root, "skills", "attendance"), { recursive: true });
-    await symlink("/tmp", join(root, "skills", "attendance", "escape"), "dir");
-    await writeFile(join(root, "skills", "attendance", "SKILL.md"), "# Attendance\n");
+    await mkdir(join(root, "skills", "checkin"), { recursive: true });
+    await symlink("/tmp", join(root, "skills", "checkin", "escape"), "dir");
+    await writeFile(join(root, "skills", "checkin", "SKILL.md"), "# Checkin\n");
     await expect(materializePluginContributions(root, manifest({
-      skills: [{ id: "attendance", path: "skills/attendance" }],
+      skills: [{ id: "checkin", path: "skills/checkin" }],
     }))).rejects.toThrow(/unsupported_member_kind/);
   });
 

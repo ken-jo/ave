@@ -2069,7 +2069,7 @@ describe("skill_load tool", () => {
       emit: () => undefined,
     });
     const result = await tool.execute(
-      { skillName: "plugin:sampleportal:attendance" },
+      { skillName: "plugin:sampleportal:checkin" },
       ctx("sess-plugin"),
     );
     expect(result.isError).toBe(true);

@@ -423,14 +423,14 @@ describe("preload — plugin webview asset URLs", () => {
     ) => Promise<unknown>;
 
     await callPluginMethod(
-      "attendance_write",
+      "checkin_write",
       { operation: "clock_in" },
       { operationGrantToken: "grant-once" },
     );
 
     expect(mockInvoke).toHaveBeenCalledWith(
       "ave:plugins:call",
-      "attendance_write",
+      "checkin_write",
       { operation: "clock_in" },
       { userAction: false, operationGrantToken: "grant-once" },
     );
@@ -452,10 +452,10 @@ describe("preload — plugin webview asset URLs", () => {
       ): Promise<unknown>;
     };
 
-    await mcp.readUiResource("plugin:sampleportal:mcp:work", "ui://attendance", "generation-a");
+    await mcp.readUiResource("plugin:sampleportal:mcp:work", "ui://checkin", "generation-a");
     await mcp.callTool(
       "plugin:sampleportal:mcp:work",
-      "attendance_read",
+      "checkin_read",
       { operation: "today" },
       "generation-a",
     );
@@ -463,13 +463,13 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenCalledWith(
       "ave:mcp:ui-resource",
       "plugin:sampleportal:mcp:work",
-      "ui://attendance",
+      "ui://checkin",
       "generation-a",
     );
     expect(mockInvoke).toHaveBeenCalledWith(
       "ave:mcp:call-tool",
       "plugin:sampleportal:mcp:work",
-      "attendance_read",
+      "checkin_read",
       { operation: "today" },
       "generation-a",
     );

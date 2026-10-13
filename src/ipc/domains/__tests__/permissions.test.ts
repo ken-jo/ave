@@ -1440,7 +1440,7 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
 
     const result = await invoke(PERMISSIONS.userApprovalRecord, {
       requestId: "req-one-shot",
-      toolName: "portal_attendance_write",
+      toolName: "portal_checkin_write",
       args: '{"operation":"clock"}',
       source: "plugin",
       scope: "session",

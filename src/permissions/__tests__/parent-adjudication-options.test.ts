@@ -342,7 +342,7 @@ describe("tier 3 — where a background escalation goes", () => {
     expect(append).not.toHaveBeenCalled();
   });
 
-  it("keeps the dock when attendance cannot be established", async () => {
+  it("keeps the dock when checkin cannot be established", async () => {
     const { queue, append } = fakeQueue();
     const { gate, wc } = makeGate({
       deferredQueue: queue,

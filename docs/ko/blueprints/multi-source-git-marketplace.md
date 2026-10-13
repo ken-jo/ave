@@ -23,7 +23,7 @@
 | 공식 마켓플레이스 저장소 위치(와 선택적 미러) | 2026-09-23 결정: `ken-jo/agent-marketplace`(2026-09-24 `ave-marketplace-index`에서 이름 변경). 공식 플러그인 소스도 담는 모노레포. 구현 기간에는 프라이빗, 7단계 전에 공개 전환 또는 이전(설계서 §2.1, §3.1) | 1단계 상수 `OFFICIAL_MARKETPLACE`, 0단계 |
 | 플러그인 릴리스 자산을 빌드하는, 호스팅 계정의 동작하는 CI | 저장소 이전 계획 | 0단계 릴리스 핀 |
 | 서비스 도메인 기본값(바꾸지 않으면 `https://former-site.invalid`) | 오너 | 5단계 |
-| 지금의 관리 설치에 기대는 조직(포털 플러그인)이 사내 마켓플레이스와 `requiredInstalls`가 담긴 정책 파일을 준비 | 각 조직 | 7단계 1번 |
+| 지금의 관리 설치에 기대는 조직이 사내 마켓플레이스와 `requiredInstalls`가 담긴 정책 파일을 준비 | 각 조직 | 7단계 1번 |
 
 ## 1. 단계 한눈에 보기
 
@@ -53,7 +53,7 @@ P6뿐입니다.
 | 0.2 | 검증 워크플로: descriptor·인덱스 스키마(ave `schemas/marketplace/`에서 가져오고 drift 테스트), 플러그인 계약(설계서 §5.6: ave 태그 시점으로 복사, 오프라인 해시 검사와 네트워크 태그 검사), 콘텐츠 한도, 이름 규칙, 시크릿 스캔, `minAppVersion` 존재, 플러그인 `authority`가 릴리스된 `plugin.json`과 같음, 버전 엄격 증가, `(kind,name,version)` → 커밋 하나, `latest`는 회수되지 않은 버전 |
 | 0.3 | 인덱스 생성기 + "커밋된 인덱스 = 다시 만든 인덱스" 검사 |
 | 0.4 | 릴리스 워크플로(설계서 §6.3): `main`에서, 소스 버전의 `<name>-v<X.Y.Z>` 태그가 없는 플러그인을 빌드하고 태그를 달아 `{name}-{X.Y.Z}.zip`을 이 저장소의 릴리스 자산으로 올린 뒤 핀 PR을 엶. 핀 PR의 CI는 자산을 내려받아 해시하고 풀어서 `plugin.json`을 descriptor와 대조 |
-| 0.5 | 각 공식 플러그인의 소스를 히스토리와 함께 `plugins/<name>/source/`로 가져옴(`meeting`, `local-indexer`, `mail`, `assistant`. 레포가 없는 `hello-world`는 현재 서버가 합성하는 패키지로 다시 만듦), `ave-plugin-template`은 `templates/plugin/`으로. 각 플러그인은 자기 lockfile을 두고 자기 디렉터리에서 빌드. 각 플러그인을 `@ave/plugin-sdk` git 의존에서 복사해 둔 계약과 `tools/`의 공용 빌드 헬퍼로 전환(설계서 §5.6). `plugin.json`에 `requires.minAppVersion` 설정, `installPolicy` 제거(설계서 §5.3). `ave-plugin-repo`은 공식 플러그인이 아니고 `portal`는 소유자의 git으로 옮기므로 둘 다 가져오지 않음 |
+| 0.5 | 각 공식 플러그인의 소스를 히스토리와 함께 `plugins/<name>/source/`로 가져옴(각 공식 플러그인. 레포가 없는 `hello-world`는 현재 서버가 합성하는 패키지로 다시 만듦), `ave-plugin-template`은 `templates/plugin/`으로. 각 플러그인은 자기 lockfile을 두고 자기 디렉터리에서 빌드. 각 플러그인을 `@ave/plugin-sdk` git 의존에서 복사해 둔 계약과 `tools/`의 공용 빌드 헬퍼로 전환(설계서 §5.6). `plugin.json`에 `requires.minAppVersion` 설정, `installPolicy` 제거(설계서 §5.3). `ave-plugin-repo`은 공식 플러그인이 아니고 `portal`는 소유자의 git으로 옮기므로 둘 다 가져오지 않음 |
 | 0.6 | 한 번만 실행하는 콘텐츠 변환 스크립트: 현재 시드 세트의 모든 에이전트, 스킬(Agent Skills 레이아웃, 설계서 §5.2), MCP 패키지, 기본이 아닌 테마 번들을 번들 id 그대로 `theme.json`으로, 한국어 카탈로그를 `korean` 언어 패키지로, 공급자 시드(모두 내장 벤더)를 벤더 패키지로, 메시징 연결(서버에 없음) |
 | 0.7 | 현재 게시된 모든 플러그인의 descriptor를, 0.5에서 가져온 소스로 0.4가 빌드한 릴리스 자산에 핀. `HOST_SECRET_GRANTS`에 있는 플러그인(지금은 `meeting`, `local-indexer`)은 `versions[]`에 현장에 아직 설치된 이전 버전 중 앱이 불러올 수 있는 것(Agent Plugins 매니페스트 라인, `minAppVersion` 0.7.0, 설계서 §16.3)도 모두 나열: 각 버전마다 현재 서버가 제공하는 zip을 그대로 그 버전의 릴리스 자산으로 올리고 그 sha256으로 핀해서, 이관된 설치본이 grant를 유지하게 함(설계서 §16.3) |
 | 0.8 | 현재 유효한 공식 패키지 폐기를 담은 `policy/revocations.json` |

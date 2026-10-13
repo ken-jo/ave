@@ -61,7 +61,7 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
   roots.push(root);
   const pluginRoot = join(root, "plugin");
   const cacheRoot = join(root, "cache");
-  await mkdir(join(pluginRoot, "skills", "attendance"), { recursive: true });
+  await mkdir(join(pluginRoot, "skills", "checkin"), { recursive: true });
   await mkdir(join(pluginRoot, "hooks"), { recursive: true });
   await mkdir(join(pluginRoot, "mcp"), { recursive: true });
   const manifest = {
@@ -70,7 +70,7 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
     version: "1.0.0",
     entry: "dist/index.js",
     tools: [],
-    skills: [{ id: "attendance", path: "skills/attendance" }],
+    skills: [{ id: "checkin", path: "skills/checkin" }],
     hooks: [{ id: "policy", path: "hooks/policy.json" }],
     mcpServers: [{ id: "portal", path: "mcp/portal.json" }],
   } as unknown as PluginManifest;
@@ -90,13 +90,13 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
     }] }), "utf8");
   }
   await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
-  await writeFile(join(pluginRoot, "skills", "attendance", "SKILL.md"), "---\nname: attendance\ndescription: Attendance workflow\n---\nUse the portal attendance API.", "utf8");
+  await writeFile(join(pluginRoot, "skills", "checkin", "SKILL.md"), "---\nname: checkin\ndescription: Checkin workflow\n---\nUse the portal checkin API.", "utf8");
   await writeFile(join(pluginRoot, "hooks", "policy.json"), hookContent, "utf8");
   await writeFile(join(pluginRoot, "mcp", "portal.json"), JSON.stringify({ transport: "http", url: "https://portal.example.test/mcp" }), "utf8");
   await mkdir(join(cacheRoot, "sampleportal"), { recursive: true });
   const payloadFiles = [
     "plugin.json",
-    "skills/attendance/SKILL.md",
+    "skills/checkin/SKILL.md",
     "hooks/policy.json",
     "mcp/portal.json",
   ];
@@ -291,7 +291,7 @@ describe("PluginBundleLifecycle", () => {
       expect.anything(),
       undefined,
     );
-    expect(skillStore.listCatalogSync()).toEqual([expect.objectContaining({ name: "plugin:sampleportal:attendance" })]);
+    expect(skillStore.listCatalogSync()).toEqual([expect.objectContaining({ name: "plugin:sampleportal:checkin" })]);
     expect(hookManager.size()).toBe(0);
     expect(prepareBundledGeneration).toHaveBeenCalledWith(
       expect.objectContaining({ pluginId: "sampleportal" }),
@@ -1376,7 +1376,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     expect(approved.approvalDigest).toMatch(/^[a-f0-9]{64}$/u);
 
     // Only the skill text changed: a remote server's approval digest is the same.
-    await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nUse the portal attendance API, carefully." });
+    await release("1.1.0", { "skills/checkin/SKILL.md": "---\nname: checkin\ndescription: Checkin workflow\n---\nUse the portal checkin API, carefully." });
     await lifecycle.activate("sampleportal");
     const carried = row();
     expect(carried.generationId).not.toBe(approved.generationId);
@@ -1401,7 +1401,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     await lifecycle.activate("sampleportal");
     await lifecycle.approveMcpServer("sampleportal", "portal", reviewed(lifecycle, "mcpServer", "portal"));
     const source = row();
-    await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nChanged." });
+    await release("1.1.0", { "skills/checkin/SKILL.md": "---\nname: checkin\ndescription: Checkin workflow\n---\nChanged." });
     // The user revokes the approval while the update is being prepared.
     let carriedTo: string | undefined;
     loopbackManager.prepareGeneration.mockImplementationOnce(async (manifest: PluginManifest, generationId: string) => {
@@ -1423,7 +1423,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     const { lifecycle, release, row, cacheRoot } = await updatable({ loopbackManager });
     await lifecycle.activate("sampleportal");
     await lifecycle.approveMcpServer("sampleportal", "portal", reviewed(lifecycle, "mcpServer", "portal"));
-    await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nChanged." });
+    await release("1.1.0", { "skills/checkin/SKILL.md": "---\nname: checkin\ndescription: Checkin workflow\n---\nChanged." });
     loopbackManager.prepareGeneration.mockRejectedValueOnce(new Error("tool registry refused the candidate"));
     const approvedBefore = JSON.stringify(lifecycle.listContributionTrust("sampleportal"));
     await expect(lifecycle.activate("sampleportal")).rejects.toThrow();
@@ -1457,7 +1457,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     const written = JSON.parse(await readFile(trustPath, "utf8"));
     expect(written).toMatchObject({ version: 3, approvals: [expect.objectContaining({ generationId: identity.generationId, approvalDigest: identity.approvalDigest })] });
 
-    await second.release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nChanged." });
+    await second.release("1.1.0", { "skills/checkin/SKILL.md": "---\nname: checkin\ndescription: Checkin workflow\n---\nChanged." });
     await second.lifecycle.activate("sampleportal");
     expect(second.row()).toMatchObject({ pluginVersion: "1.1.0", status: "approved" });
     await second.lifecycle.waitForRetirements();

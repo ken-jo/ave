@@ -55,7 +55,7 @@ its own `configSchema` (`disabledDetectors`, `osNotificationsEnabled`,
 `osNotificationIntents`), a prompt/summary split so opaque ids reach the model
 but not the card, and relay events so other plugins could act. Every one of
 those is delivery, and delivery is the host's job. What the host must **not**
-take is the content: mail keywords, sender allow-lists, meeting-room phrasing,
+take is the content: mail keywords, sender allow-lists, facility phrasing,
 organisation names and tool names all stay in the plugins that own the signal
 (`AGENTS.md` > Architecture and security invariants; the decoupling audit
 `src/plugins/__tests__/app-plugin-decoupling-audit.test.ts`).
@@ -602,7 +602,7 @@ export const ALERTS = {
 | Mechanism | Fate | Deprecation owner | Removal condition |
 | --- | --- | --- | --- |
 | `notificationEvents` | Deprecated at the alerts release. Keeps working through the window; the host warns once per plugin at load when a manifest declares both `alerts.kinds` and `notificationEvents`, and the marketplace repository check flags a descriptor that declares `notificationEvents` with `minAppVersion` at or above the alerts release. | ave maintainer | The follow-on release PR adds `notificationEvents` to `RETIRED_EXTENSION_FIELDS` (`manifest-validation.ts:95`), which drops the field with a warning instead of failing the strict vendor block (`manifest-validation.ts:447-493`), and removes `registerPluginNotifications` and the contract type. Prerequisite: `local-indexer` has published a version on the alert contract. |
-| `triggerConversation` | **Survives** for one-time suggestions: a plugin-authored prompt that seeds a conversation once (the local-indexer rescan suggestion, `plugins/local-indexer/source/src/rescanSuggestion.ts:210`; the daily-briefing routine suggestion below). Those carry no third-party content and need arguments a typed slot cannot express (`routine_schedule` calls). Structural limit, not a review rule: a plugin whose manifest declares an `alerts` block also declares its overlay suggestion sources — `alerts.suggestions: ["overlay:mail-daily-briefing-routine"]`, at most 4 entries, each a full `triggerConversation` `source` string that validation checks against `OVERLAY_TRIGGER_SOURCE_PATTERN` (`^overlay:[a-z][a-z0-9-]*$`, `staged-origins.ts:108`) and the `--` ban — and for such a plugin `triggerConversation` accepts only a declared source (`ConversationTriggerResult.reason: "source_not_declared"`, a new member of the union at `public-contract.ts:1989-1994`) and at most one acceptance per declared source per 30 days (`reason: "suggestion_limit"`; `trigger-gate.ts`, stored in the `alerts` namespace). The overlay source is distinct from the routine's idempotency marker (`RoutineRecord.source`, `suggestion:mail:daily-briefing`, checked with `hasRoutineBySource`), exactly as assistant keeps `overlay:assistant-daily-briefing-routine` and `suggestion:assistant:daily-briefing` apart (`dailyBriefingRoutineSuggestion.ts:18,21`). Declaring the source is the grant; the fixed list is what stops a plugin from rotating suffixes on the free source string, which the source pattern would otherwise allow. Scoping is fail-closed: a manifest that carries an `alerts` block counts as "declared" even when the block is refused as malformed, so a deliberately broken block cannot evade the limit. So the path can only serve a handful of one-time suggestions. The limit is scoped to plugins on the contract because the plugins that are not yet on it are exactly the ones the transition must not silence: assistant 0.11.3 raises every recurring alert through `triggerConversation` with one fixed `source` per intent (`decide.ts:160,282,362,428,498`, `meeting-room-suggest-detector.ts:261`, `webex-link-missing-detector.ts:196`, `video-conference-reserved-detector.ts:167`, `meeting-summary-detector.ts:140`), and while it is installed its successors' kinds are blocked — an unscoped limit would leave that window, which is indefinite for a policy-locked package, with no alerts at all. Declaring `alerts` is the plugin's statement that its recurring alerts use the contract. Until the scoping is lifted, a plugin without an `alerts` block evades the limit; that is accepted — such a plugin has the unlimited path today and loses it at the follow-on release, when every official plugin is on the contract. `visibility` and `priority` are accepted and ignored. | ave maintainer | `visibility` and `priority` leave `ConversationTriggerSpec` in the follow-on release PR, which also drops the `alerts`-block scoping once `notificationEvents` is retired and every official plugin is on the contract. |
+| `triggerConversation` | **Survives** for one-time suggestions: a plugin-authored prompt that seeds a conversation once (the local-indexer rescan suggestion, `plugins/local-indexer/source/src/rescanSuggestion.ts:210`). Those carry no third-party content and need arguments a typed slot cannot express (`routine_schedule` calls). Structural limit, not a review rule: a plugin whose manifest declares an `alerts` block also declares its overlay suggestion sources — `alerts.suggestions: ["overlay:<plugin>-routine-setup"]`, at most 4 entries, each a full `triggerConversation` `source` string that validation checks against `OVERLAY_TRIGGER_SOURCE_PATTERN` (`^overlay:[a-z][a-z0-9-]*$`, `staged-origins.ts:108`) and the `--` ban — and for such a plugin `triggerConversation` accepts only a declared source (`ConversationTriggerResult.reason: "source_not_declared"`, a new member of the union at `public-contract.ts:1989-1994`) and at most one acceptance per declared source per 30 days (`reason: "suggestion_limit"`; `trigger-gate.ts`, stored in the `alerts` namespace). The overlay source is distinct from the routine's idempotency marker (`RoutineRecord.source`, `suggestion:<plugin>:<intent>`, checked with `hasRoutineBySource`). Declaring the source is the grant; the fixed list is what stops a plugin from rotating suffixes on the free source string, which the source pattern would otherwise allow. Scoping is fail-closed: a manifest that carries an `alerts` block counts as "declared" even when the block is refused as malformed, so a deliberately broken block cannot evade the limit. So the path can only serve a handful of one-time suggestions. The limit is scoped to plugins on the contract because the plugins that are not yet on it are exactly the ones the transition must not silence: assistant 0.11.3 raises every recurring alert through `triggerConversation` with one fixed `source` per intent (`decide.ts:160,282,362,428,498`, `meeting-summary-detector.ts:140`), and while it is installed its successors' kinds are blocked — an unscoped limit would leave that window, which is indefinite for a policy-locked package, with no alerts at all. Declaring `alerts` is the plugin's statement that its recurring alerts use the contract. Until the scoping is lifted, a plugin without an `alerts` block evades the limit; that is accepted — such a plugin has the unlimited path today and loses it at the follow-on release, when every official plugin is on the contract. `visibility` and `priority` are accepted and ignored. | ave maintainer | `visibility` and `priority` leave `ConversationTriggerSpec` in the follow-on release PR, which also drops the `alerts`-block scoping once `notificationEvents` is retired and every official plugin is on the contract. |
 | `workProposals` / `proposeWork` | Unchanged. A proposal is durable work; an alert is a time-bound nudge. | — | — |
 
 ## Plugin-side changes
@@ -668,18 +668,6 @@ Gains:
   `hostPlugin.ts:373`): the watcher itself emits no `calendar.event.added` on
   first load (`calendarWatcher.ts:141-146`) and `injectEvent` (`:106`) emits
   none, and it sees today only.
-- The daily-briefing tool **`mail_daily_briefing`**: assistant's
-  isolated generate function moved in — mail list, two-day calendar, then a
-  tool-less `hostApi.callLlm` with the plugin's injection banner and
-  directives, returning the briefing text. Raw mail never enters a session
-  that holds write tools (`mail_email_reply`, `mail_calendar_create`);
-  the briefing routine calls this one tool.
-- `host:overlay`, for one suggestion: the daily-briefing routine setup
-  (Migration). Two sources, as in assistant: the overlay trigger's
-  `source: "overlay:mail-daily-briefing-routine"`, declared in
-  `alerts.suggestions`, and the proposed routine's idempotency marker
-  `source: "suggestion:mail:daily-briefing"`, checked with
-  `hasRoutineBySource`.
 
 Deleted: `eventSubscriptions: ["assistant.snapshot.requested"]`, the
 `pluginAccess.plugins[assistant]` grant, the `mail.snapshot.ready`
@@ -721,29 +709,11 @@ Gains:
 Deleted now: both `notificationEvents` entries (`meeting.summary.created`
 with raw title and summary, `meeting.summary.degraded`).
 
-### portal 0.21.5 → 0.22.0 (company git; `requires.minAppVersion`: the alerts release)
-
-Gains: `alerts.kinds` `room-suggest`, `webex-link-missing`,
-`conference-prep-register`, all `defaultEnabled: false`, with the plugin's own
-templates (they may name portal facilities and tools) and `inherits` from
-assistant's three portal intents; `eventSubscriptions: ["calendar.event.added"]`
-with a grant to `mail` (the portal detectors took only `added` in
-assistant; running them over `calendar.events.loaded` would re-alert on
-every boot); moved
-`meeting-room-suggest-detector.ts`, `webex-link-missing-detector.ts`,
-`video-conference-reserved-detector.ts` and templates;
-`dependencies: [{ pluginId: "meeting", required: false }]` because the
-prep-register prompt tells the model to call `meeting_bulk_upsert_preps`. The
-reservation detector runs in-process at the `portal.video-conference.reserved`
-emit site (`ave-plugin-portal/src/hostPlugin.ts:2667`); the event stays for other
-subscribers. `host:overlay` is not needed: alerts do not use it.
-
 ### assistant
 
 No further version. Retired by revocation (below). Its chat tools
-`assistant_set_detector_enabled`, `assistant_list_detectors` and
-`assistant_generate_daily_briefing` retire with it; the Settings section
-replaces the first two and `mail_daily_briefing` the third. Its
+`assistant_set_detector_enabled` and `assistant_list_detectors` retire with
+it; the Settings section replaces them. Its
 marketplace index entry **stays** until the legacy-binding window closes
 (`docs/design/multi-source-git-marketplace.md` §16.3 binds a pre-marketplace
 install only when the id exists in the official snapshot; a user upgrading
@@ -1093,37 +1063,13 @@ the successors without the host naming any plugin.
    automation is switched on this way. This carries a customised sender list
    (`*`, extra domains) and turns meeting's calendar automation on for former
    assistant users only.
-4. **The daily-briefing routine.** The record with
-   `source: "suggestion:assistant:daily-briefing"` has a pre-prompt that
-   calls `assistant_generate_daily_briefing` and
-   `request_plugin({pluginId:'assistant'})`, and a scope of
-   `{ mode: "allow", ids: ["assistant"] }`
-   (`dailyBriefingRoutineSuggestion.ts`). The generic host rule for the
+4. **Routines whose plugins are gone.** The generic host rule for the
    scheduler: a scheduled `llm-session` routine whose allow-list names **no**
    installed plugin (registry) is skipped with
    `lastSkippedReason: "plugins-missing"`; one with some allow-listed plugins
    missing runs and is marked `needsAttention` with the missing ids;
    `RoutinePanel.tsx` shows both with a remove action. "Installed", not
-   "loaded", so a plugin update at the scheduled minute is not a skip. The
-   replacement is proposed once by `mail` 0.6.0
-   (`hasRoutineBySource("suggestion:mail:daily-briefing")`, ledger in its
-   data dir): a routine whose pre-prompt calls `mail_daily_briefing` and
-   presents its result, scope `{ mode: "allow", ids: ["mail"] }`. That
-   scope still exposes mail's write tools (`mail_email_reply`,
-   `mail_calendar_create`, `mail_calendar_delete`) to the routine's
-   session, and the briefing text is a summary of untrusted mail; the
-   routine therefore relies on the tool-stage headless lane
-   (`src/tools/pipeline/reviewer-dispatch.ts:80-101`), which is always on:
-   with no reviewer attached every gated tool is denied ("headless reviewer
-   not wired"), and with a reviewer attached only a `low` verdict passes —
-   the lane denies non-low (`src/permissions/permission-manager.ts:133`).
-   The effect-boundary deny in `effect-enforcement.ts:326-340` is not the
-   guarantee: it sits behind `features.hostClassifiesRisk`, which defaults
-   to false (`src/boot/steps/plugin-runtime.ts:291-294`, "pure pass-through";
-   `host-api-factory.ts:968`). So the briefing can propose a reply, never
-   send one; a test pins that `mail_email_reply` is refused in a routine
-   under default settings. That lane is a stated dependency of this design,
-   not a new rule.
+   "loaded", so a plugin update at the scheduled minute is not a skip.
 
 ## Host module changes on current main
 
@@ -1366,9 +1312,7 @@ within 60 s cost one Graph call; meeting emits the request at start and
 when its automation is switched on (including the `configInherits` restart),
 and keys its
 once-per-`eventId` sets across its own subscriptions and the relay events;
-portal does not subscribe to `calendar.events.loaded`;
-`mail_daily_briefing` calls `callLlm` with no tools and the injection
-banner.
+portal does not subscribe to `calendar.events.loaded`.
 
 CDP checks (port 9222 against a built app; the `test/e2e/ui` harness):
 
@@ -1513,8 +1457,6 @@ published the same day as the monorepo commit. Gates: ported suites,
 - The routine session's write-tool guard is the tool-stage headless lane
   (`reviewer-dispatch.ts`), which denies non-low; the effect-boundary lane
   is off by default and is not relied on.
-- The daily briefing is one `mail` tool with a tool-less LLM call and a
-  routine scoped to `mail` only.
 - The OS notification body is static.
 - `alerts` stays outside `PLUGIN_AUTHORITY_FIELDS`; consent for kinds that
   appear in an update comes from the resolve-off rule, not from review.

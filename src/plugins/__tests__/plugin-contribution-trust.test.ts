@@ -16,7 +16,7 @@ describe("PluginContributionTrustStore", () => {
     pluginId: "sampleportal",
     pluginVersion: "1.0.0",
     generationId: "1".repeat(64),
-    localId: "attendance_policy",
+    localId: "checkin_policy",
     fingerprint: "a".repeat(64),
   };
 

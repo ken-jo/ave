@@ -11,8 +11,8 @@
  *
  * Both must agree on the matching rules so a single drifted rule on one side
  * doesn't open a phishing window on the other. Dot-boundary suffix-match is
- * the SoT here (`outlook.office.com` allow-list lets `mail.outlook.office.com`
- * through but never `outlook.office.com.attacker.com`).
+ * the SoT here (`webmail.example.com` allow-list lets `mail.webmail.example.com`
+ * through but never `webmail.example.com.attacker.com`).
  *
  * Defensive choices:
  * - Single-label TLDs (`com`, `co.kr`) cannot appear in the allow-list — any
@@ -155,9 +155,9 @@ export function normalizeAllowedHosts(
 
 /**
  * Does `urlHost` (already lowercased via `new URL().hostname`) belong to one
- * of the allow-list hosts? Dot-boundary match — `outlook.office.com` allows
- * `mail.outlook.office.com` and `outlook.office.com` itself, but never
- * `outlook.office.com.attacker.com` or `notoutlook.office.com`.
+ * of the allow-list hosts? Dot-boundary match — `webmail.example.com` allows
+ * `mail.webmail.example.com` and `webmail.example.com` itself, but never
+ * `webmail.example.com.attacker.com` or `notwebmail.example.com`.
  *
  * Allow-list MUST already be normalized via `normalizeAllowedHosts` (caller's
  * responsibility — we don't normalize here per call so the hot path stays

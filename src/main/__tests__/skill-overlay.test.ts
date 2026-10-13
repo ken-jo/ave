@@ -86,13 +86,13 @@ describe("SkillOverlay — R2-SEC-LOW-2 body fence neutralization", () => {
   it("removes only overlays owned by a retired plugin generation", () => {
     const ov = new SkillOverlay();
     ov.register("session", {
-      ...makeSkill("plugin:plugin-one:attendance", "old"),
-      approvalKey: "plugin-one|1.0.0|g1|attendance|hash",
+      ...makeSkill("plugin:plugin-one:checkin", "old"),
+      approvalKey: "plugin-one|1.0.0|g1|checkin|hash",
       pluginOwner: {
         pluginId: "plugin-one",
         pluginVersion: "1.0.0",
         generationId: "g1",
-        localId: "attendance",
+        localId: "checkin",
         fingerprint: "hash",
       },
     });

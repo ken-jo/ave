@@ -809,8 +809,8 @@
               "loginTool": "samplemail_auth",
               "logoutTool": "samplemail_signout",
               "partitionDomains": [
-                "outlook.office.com",
-                "outlook.office365.com",
+                "webmail.example.com",
+                "webmail.example.net",
                 "outlook.live.com",
                 "login.live.com",
                 "login.microsoftonline.com"

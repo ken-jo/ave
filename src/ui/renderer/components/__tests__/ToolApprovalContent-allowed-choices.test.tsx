@@ -13,7 +13,7 @@ function makeOneShotPluginRequest(): ApprovalRequest {
     category: "tool",
     kind: "tool",
     allowedChoices: ["allow-once", "deny-once"],
-    toolName: "portal_attendance_write",
+    toolName: "portal_checkin_write",
     toolCategory: "write",
     args: { operation: "clock" },
     reason: "plugin operation grant",

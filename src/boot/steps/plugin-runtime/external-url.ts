@@ -13,13 +13,13 @@ import { validateExternalUrl } from "../../../shared/external-url.js";
  * §B3 — Stable persistent partition for the in-app external-link viewer.
  *
  * Without `persist:`, every link window starts with empty cookies, so SSO
- * portals (outlook.office.com, calendar webLinks, etc.) re-prompt for login
+ * portals (webmail.example.com, calendar webLinks, etc.) re-prompt for login
  * on every open. A shared `persist:` partition lets the user log in once
  * per external service and keep the session across the app's lifetime.
  *
  * A SHARED partition (not per-plugin) is intentional: cookies are
  * origin-scoped by the browser, so two plugins both opening
- * outlook.office.com SHOULD see the same logged-in session — that's the
+ * webmail.example.com SHOULD see the same logged-in session — that's the
  * whole point. Per-plugin partitions would force re-login each time a
  * different plugin opened the same host. The viewer is sandboxed
  * (`sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`)

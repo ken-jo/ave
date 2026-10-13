@@ -175,7 +175,7 @@ export class AuditWriter {
     auditDirectory?: string,
     audit?: ToolExecutionAuditMetadata,
   ): Promise<void> {
-    // Operation-governed tools may carry attendance, identity, or reservation
+    // Operation-governed tools may carry presence, identity, or reservation
     // payloads. Their audit contract is metadata-only: operation + outcome.
     // The bearer/account hash are held in ToolPermissionContext and are never
     // serialized here.

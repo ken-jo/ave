@@ -20,7 +20,7 @@
  *   - Navigation outside the allow-list is canceled in three places —
  *     `will-navigate` (renderer-initiated), `will-redirect` (server
  *     3xx), and `setWindowOpenHandler` always denies — so a phishing
- *     redirect from `outlook.office.com` to `attacker.example` cannot
+ *     redirect from `webmail.example.com` to `attacker.example` cannot
  *     persuade the user to re-authenticate inside the partition.
  *   - Downloads from this session are canceled — the partition holds
  *     real auth cookies, and an attacker page should not be able to

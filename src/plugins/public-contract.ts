@@ -330,8 +330,8 @@ export interface PluginAuthSpec {
    * Each entry must contain at least one dot; wildcards, single-label hosts,
    * bare public-suffix entries (`com`, `co.kr`, …), and IDN-punycode labels
    * (`xn--*`) are refused at manifest load time. Up to 16 entries. Suffix
-   * match is dot-boundary (`outlook.office.com` allows
-   * `mail.outlook.office.com` but not `outlook.office.com.attacker.com`).
+   * match is dot-boundary (`webmail.example.com` allows
+   * `mail.webmail.example.com` but not `webmail.example.com.attacker.com`).
    *
    * See `docs/references/plugin-tool-schema-design.md` §2.4.1 for the full
    * contract (rejection table, three-layer defense, worked example).

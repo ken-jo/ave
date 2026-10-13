@@ -7,8 +7,7 @@ number of them carry content that was never meant to leave the machine.
 
 This document is the worklist for replacing them. It is not a deletion plan.
 Images stay where they are until a replacement exists, so the docs pages never
-point at nothing. Consent from the people who appear in the current images is
-settled; that is why this is a scheduled re-shoot and not an incident.
+point at nothing. An image that cannot wait for its replacement is withdrawn instead.
 
 **This file is published in a public repository. Describe what has to change,
 never the content itself.** "The signature block carries a direct phone number —
@@ -34,15 +33,8 @@ Twenty-four images have been replaced with seeded captures so far, and the
 ratchet now stands at **9**. Seventeen of the twenty-four moved it:
 `plugin-permission-grant`, the six `alert-*` cards, the four `meeting-*`
 panel images, the three third-party `local-indexer-*` panel images, and the three
-`local-indexer-search*` answers. Between them they carried the worst of the
-backlog — two work addresses, a
-colleague's name, grade and full organisational path, two base64 calendar
-identifiers from which a mailbox identifier is recoverable, a live conference
-join link printed alongside its password and host key, a verbatim
-speaker-attributed transcript of a real meeting, an internal work-document
-tree printed across a folder row, a progress line and a document list, and a full
-network path naming a file-server host, an administrative share and an
-individual's account. The other seven replacements were `keep` rows, and
+`local-indexer-search*` answers. Between them they carried most of the
+backlog. The other seven replacements were `keep` rows, and
 replacing a `keep` row leaves the backlog count alone by construction (the
 ratchet counts `third-party` entries only). Those seven were still worth
 replacing: two of them printed the publisher's own home directory across several
@@ -66,9 +58,8 @@ overlay drawn across the entire frame. It sits a few luminance levels away from
 the background, which makes it close to invisible at normal viewing and easy to
 miss when triaging thumbnails.
 
-Every image in this set was amplification-checked. The overlay is confirmed on
-exactly three: `outlook-login-trigger.png`, `outlook-login-window.png` and
-`outlook-login-after.png`. A first, coarser pass also suspected it on
+Every image in this set was amplification-checked. The overlay was confirmed on
+exactly three captures, all since removed from the tree. A first, coarser pass also suspected it on
 `plugin-permission-grant.png` and `meeting-minutes.png`; a tighter check against
 flat regions of those two showed the texture was gradient banding and desktop
 wallpaper, not a stamp. Both are recorded here as clean of the overlay — each
@@ -241,10 +232,10 @@ the result before committing.
 
 | File | `screenshots.ts` key | Docs page(s) | Retake as |
 | --- | --- | --- | --- |
-| `meeting-outlook-mail.png` | `meeting-outlook-mail` | `/docs/host/integration-recipes` | **Highest severity in this list.** Two recipients with names, grades and full organisational paths, and a sender signature block carrying a department chain and a direct mobile number. Retake with fabricated recipients and a demo signature. |
-| `meeting-outlook-mail-2.png` | `meeting-outlook-mail-2` | `/docs/host/integration-recipes` | Same recipients; signature partly in frame. Retake as the second step of the same fabricated flow. |
-| `meeting-record.png` | `meeting-record` | `/docs/plugins/meeting` | Briefing panel lists a mandatory internal training entry naming two employer sites. Retake with a fabricated day's agenda. |
-| `meeting-record-stt.png` | `meeting-record-stt` | `/docs/plugins/meeting` | Same briefing plus an interim transcription of a real meeting. Retake from the fabricated recording. |
+| `meeting-outlook-mail.png` | `meeting-outlook-mail` | (removed) | Withdrawn pending a fabricated retake. |
+| `meeting-outlook-mail-2.png` | `meeting-outlook-mail-2` | (removed) | Withdrawn pending a fabricated retake. |
+| `meeting-record.png` | `meeting-record` | (removed) | Withdrawn pending a fabricated retake. |
+| `meeting-record-stt.png` | `meeting-record-stt` | (removed) | Withdrawn pending a fabricated retake. |
 
 ### `redact` — 2
 
@@ -258,8 +249,8 @@ screenshot exists to show.
 
 | File | `screenshots.ts` key | Docs page(s) | Region, and why masking is enough |
 | --- | --- | --- | --- |
-| `agent-hub-my-work.png` | `agent-hub-my-work` | `/docs/plugins/agent-hub` | The board itself runs on seeded demo identities. Only the right-hand day-schedule column is real, pulled from a live calendar: mask that column. The subject of the shot is the personal board on the left, which is untouched. Note the plugin is decommissioned — confirm the page should still exist before spending effort. |
-| `agent-hub-team-board.png` | `agent-hub-team-board` | `/docs/plugins/agent-hub` | Same shape: seeded team rows, real right-hand schedule column. Mask the right column only. Same decommissioning question applies. |
+| `agent-hub-my-work.png` | `agent-hub-my-work` | (removed) | Withdrawn; the plugin is decommissioned. |
+| `agent-hub-team-board.png` | `agent-hub-team-board` | (removed) | Withdrawn; the plugin is decommissioned. |
 
 ### `replaced` — 20
 
@@ -281,17 +272,17 @@ otherwise byte-identical.
 | `chat-permission-risk.png` | `chat-permission-risk` | A HIGH-risk shell approval with its impact detail expanded. The verdict comes from the scripted reviewer — see the tamper check under "The scripted provider". |
 | `chat-permission-llm-review.png` | `chat-permission-llm-review` | The in-flight review card for a shell call, captured while the scripted reviewer's answer is still streaming. |
 | `alert-meeting-end-trigger.png` | `alert-meeting-end-trigger` | A fabricated meeting-end summary card. |
-| `alert-meeting-end-trigger-2.png` | `alert-meeting-end-trigger-2` | Its confirmed state with the follow-up options. Replaces a frame of internal commercial subject matter. |
-| `meeting-upcoming.png` | `meeting-upcoming` | The real upcoming-meeting panel over a fabricated prep seeded into `preps.json`. Replaces the frame that printed a live conference join link next to its meeting password, host key and meeting key, plus three people's names, grades and organisational paths. |
+| `alert-meeting-end-trigger-2.png` | `alert-meeting-end-trigger-2` | Its confirmed state with the follow-up options. Replaces an earlier frame that was withdrawn. |
+| `meeting-upcoming.png` | `meeting-upcoming` | The real upcoming-meeting panel over a fabricated prep seeded into `preps.json`. Replaces an earlier frame that was withdrawn. |
 | `meeting-minutes.png` | `meeting-minutes` | The minutes detail view of a fabricated finalised session: summary, highlights, action items. |
 | `meeting-minutes-2.png` | `meeting-minutes-2` | The 중간 리파인 sub-tab of the same session — two intermediate summaries over a growing prefix of the transcript. |
-| `meeting-minutes-3.png` | `meeting-minutes-3` | The 전사 sub-tab of the same session — eight invented utterances across three role-labelled speakers. Replaces a verbatim transcript of other people's recorded speech. |
+| `meeting-minutes-3.png` | `meeting-minutes-3` | The 전사 sub-tab of the same session — eight invented utterances across three role-labelled speakers. Replaces an earlier frame that was withdrawn. |
 | `local-indexer-add-folder.png` | `local-indexer-add-folder` | A registered-but-unscanned folder under a fabricated corpus path, with the supported-format chips. Its caption promised an include/exclude dialog the panel has never had; the caption now describes the panel. |
 | `local-indexer-indexing.png` | `local-indexer-indexing` | A scan genuinely in flight — the frame waits for the guest's own summary to report a processed document, so the counters, the current file and the folder's 스캔 중 row all carry real values rather than the zeroes of the instant after the button press. |
-| `local-indexer-home.png` | `local-indexer-home` | The panel after a full scan of the fabricated corpus: eighteen documents, the folder marked 완료. Was a `keep` row that printed a real indexed folder. |
+| `local-indexer-home.png` | `local-indexer-home` | The panel after a full scan of the fabricated corpus: eighteen documents, the folder marked 완료. Replaces an earlier `keep` frame. |
 | `local-indexer-index-search.png` | `local-indexer-index-search` | The document filter narrowing the same eighteen to the twelve monthly reports. |
-| `local-indexer-search.png` | `local-indexer-search` | A question answered out of the index the same run just built: one real `index_search` call over the fabricated corpus, its hit list open, and a scripted answer citing the two documents it returned. Replaces a frame that cited internal deck filenames. |
-| `local-indexer-search-2.png` | `local-indexer-search-2` | The same shape asking where a document is. The answer prints the corpus path — the feature the caption promises — and that path now names a fabricated folder under the OS's own public directory. Replaces the highest-severity frame in the reshoot list: a full network path naming a file-server host, an administrative share and an individual's account. |
+| `local-indexer-search.png` | `local-indexer-search` | A question answered out of the index the same run just built: one real `index_search` call over the fabricated corpus, its hit list open, and a scripted answer citing the two documents it returned. Replaces an earlier frame that was withdrawn. |
+| `local-indexer-search-2.png` | `local-indexer-search-2` | The same shape asking where a document is. The answer prints the corpus path — the feature the caption promises — and that path now names a fabricated folder under the OS's own public directory. Replaces an earlier frame that was withdrawn. |
 | `local-indexer-search-3.png` | `local-indexer-search-3` | The turn after it: the same answer reformatted into a one-page handout. Scripted as its own capture, because a capture cannot resume another capture's app. |
 
 `plugin-permission-grant` and the four `meeting-*` rows are the ones that need
@@ -474,10 +465,8 @@ every outstanding fork, clone, and open change based on the rewritten range. Tha
 is a coordinated operation with real breakage, and it is the owner's call, not a
 side effect of this worklist. Two things worth weighing: the site has already
 served these images publicly, so history rewriting reduces future retrieval but
-does not undo past exposure; and the conferencing credentials in
-`meeting-upcoming.png` are the one class where rotation is both possible and more
-effective than any history operation — that meeting's password and host key
-should simply be considered burned.
+does not undo past exposure; where an earlier frame showed a credential,
+rotating it is more effective than any history operation.
 
 **This worklist does not re-audit the superseded internal-portal set.** Those 17
 are handled by the in-flight change and were not re-inspected here.

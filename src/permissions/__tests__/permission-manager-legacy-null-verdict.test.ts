@@ -490,7 +490,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
   });
 
   it("reviewer audit persists the Host-owned governed projection", async () => {
-    await pm.dispatchReviewer("plugin_attendance_read", {
+    await pm.dispatchReviewer("plugin_checkin_read", {
       source: "plugin",
       category: "read",
       pathFields: [],

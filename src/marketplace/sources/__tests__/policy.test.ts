@@ -52,7 +52,7 @@ const DESIGN_EXAMPLE = {
   allowDisablingOfficial: false,
   additional: [{ id: "corp", url: "https://git.corp.example/ave/marketplace.git" }],
   defaultInstalls: [
-    { kind: "plugin", name: "wiki-search", source: "corp" },
+    { kind: "plugin", name: "docs-search", source: "corp" },
     { kind: "plugin", name: "sampleportal", source: "corp" },
   ],
   requiredInstalls: [{ kind: "plugin", name: "sampleportal", source: "corp" }],
@@ -89,7 +89,7 @@ describe("loadMarketplacePolicy", () => {
       },
     ]);
     expect(policy.requiredInstalls).toEqual([{ kind: "plugin", name: "sampleportal", source: "corp" }]);
-    expect(policy.defaultInstalls).toEqual([{ kind: "plugin", name: "wiki-search", source: "corp" }]);
+    expect(policy.defaultInstalls).toEqual([{ kind: "plugin", name: "docs-search", source: "corp" }]);
     expect(policy.allowDirectInstall).toBe(true);
     expect(policy.allowDisablingOfficial).toBe(false);
   });

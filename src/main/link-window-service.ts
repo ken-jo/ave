@@ -132,7 +132,7 @@ export interface OpenLinkWindowOptions {
  * Microsoft AAD's KMSI ("Stay signed in?") gating treats UAs containing
  * `Electron/...` as embedded browsers and refuses to issue the persistent
  * `ESTSAUTHPERSISTENT` cookie — which is why even after a successful login,
- * reopening outlook.office.com asks the user to sign in again. Mimicking Edge
+ * reopening webmail.example.com asks the user to sign in again. Mimicking Edge
  * (the `Edg/<major>` token) puts us back on the supported-browser path.
  *
  * Exported for unit tests; runtime code calls it indirectly via

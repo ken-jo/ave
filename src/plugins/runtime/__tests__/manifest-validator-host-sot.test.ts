@@ -136,7 +136,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
       description: "Atomic contribution bundle fixture.",
       entry: "dist/index.js",
       tools: [],
-      skills: [{ id: "attendance", path: "skills/attendance" }],
+      skills: [{ id: "checkin", path: "skills/checkin" }],
       hooks: [{ id: "audit", path: "hooks/audit.json" }],
       mcpServers: [{ id: "portal", path: "mcp/portal.json" }],
     })),
@@ -151,7 +151,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
       description: "Atomic contribution bundle fixture.",
       entry: "dist/index.js",
       tools: [],
-      skills: [{ id: "invalid-id", path: "skills/attendance", trust: true }],
+      skills: [{ id: "invalid-id", path: "skills/checkin", trust: true }],
     })),
     ).toBe(false);
     expect(validator.errors).toEqual(expect.arrayContaining([

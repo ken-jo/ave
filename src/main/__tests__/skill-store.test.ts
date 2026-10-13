@@ -30,12 +30,12 @@ function pluginGeneration(pluginId: string, generationId: string, body: string):
       ownerPluginId: pluginId,
       ownerVersion: generationId === "g1" ? "1.0.0" : "2.0.0",
       kind: "skill",
-      localId: "attendance",
-      path: "skills/attendance",
+      localId: "checkin",
+      path: "skills/checkin",
       fingerprint,
       files: [{
-        path: "skills/attendance/SKILL.md",
-        content: `---\nname: attendance\ndescription: Attendance guidance\n---\n${body}`,
+        path: "skills/checkin/SKILL.md",
+        content: `---\nname: checkin\ndescription: Checkin guidance\n---\n${body}`,
         sha256: fingerprint,
       }],
     }],
@@ -49,15 +49,15 @@ describe("SkillStore — C2 traversal & allowlist", () => {
       const store = new SkillStore({ userDir: dir });
       store.publishPluginGeneration(pluginGeneration("plugin-one", "g1", "one"));
       store.publishPluginGeneration(pluginGeneration("plugin-two", "g1", "two"));
-      const one = await store.load("plugin:plugin-one:attendance");
-      const two = await store.load("plugin:plugin-two:attendance");
+      const one = await store.load("plugin:plugin-one:checkin");
+      const two = await store.load("plugin:plugin-two:checkin");
       expect(one?.body).toBe("one");
       expect(two?.body).toBe("two");
-      expect(one?.filePath).toBe("plugin://plugin-one/attendance/SKILL.md");
+      expect(one?.filePath).toBe("plugin://plugin-one/checkin/SKILL.md");
       expect(one?.approvalKey).not.toBe(two?.approvalKey);
       expect(store.listCatalogSync().map((entry) => entry.name)).toEqual([
-        "plugin:plugin-one:attendance",
-        "plugin:plugin-two:attendance",
+        "plugin:plugin-one:checkin",
+        "plugin:plugin-two:checkin",
       ]);
     } finally {
       await cleanupTmpDir(dir);
@@ -69,15 +69,15 @@ describe("SkillStore — C2 traversal & allowlist", () => {
     try {
       const store = new SkillStore({ userDir: dir });
       store.publishPluginGeneration(pluginGeneration("plugin-one", "g1", "old"));
-      const old = await store.load("plugin:plugin-one:attendance");
+      const old = await store.load("plugin:plugin-one:checkin");
       store.publishPluginGeneration(pluginGeneration("plugin-one", "g2", "new"));
-      const current = await store.load("plugin:plugin-one:attendance");
+      const current = await store.load("plugin:plugin-one:checkin");
       expect(current?.body).toBe("new");
       expect(current?.approvalKey).not.toBe(old?.approvalKey);
       store.removePluginGeneration("plugin-one", "g1");
-      expect(await store.load("plugin:plugin-one:attendance")).toBe(current);
+      expect(await store.load("plugin:plugin-one:checkin")).toBe(current);
       store.removePluginGeneration("plugin-one", "g2");
-      expect(await store.load("plugin:plugin-one:attendance")).toBeNull();
+      expect(await store.load("plugin:plugin-one:checkin")).toBeNull();
     } finally {
       await cleanupTmpDir(dir);
     }
@@ -509,22 +509,22 @@ describe("SkillStore — bundled resources (stage-3)", () => {
       const contribution = generation.contributions[0] as { files: Array<{ path: string; content: string; sha256: string }> };
       contribution.files = [
         ...contribution.files,
-        { path: "skills/attendance/references/policy.md", content: "POLICY", sha256: "c".repeat(64) },
+        { path: "skills/checkin/references/policy.md", content: "POLICY", sha256: "c".repeat(64) },
       ];
       const store = new SkillStore({ userDir: dir });
       store.publishPluginGeneration(generation);
-      const skill = store.loadPluginGeneration(generation, "plugin:plugin-one:attendance");
+      const skill = store.loadPluginGeneration(generation, "plugin:plugin-one:checkin");
       expect(skill?.resources.map((r) => r.path)).toEqual(["references/policy.md"]);
-      const read = store.readPluginResource(generation, "plugin:plugin-one:attendance", "references/policy.md");
+      const read = store.readPluginResource(generation, "plugin:plugin-one:checkin", "references/policy.md");
       expect(read?.content).toBe("POLICY");
       expect(
-        store.readPluginResource(generation, "plugin:plugin-one:attendance", "references/missing.md"),
+        store.readPluginResource(generation, "plugin:plugin-one:checkin", "references/missing.md"),
       ).toBeNull();
       expect(
-        store.readPluginResource(generation, "plugin:plugin-one:attendance", "SKILL.md"),
+        store.readPluginResource(generation, "plugin:plugin-one:checkin", "SKILL.md"),
       ).toBeNull();
       expect(() =>
-        store.readPluginResource(generation, "plugin:plugin-one:attendance", "../../escape.md"),
+        store.readPluginResource(generation, "plugin:plugin-one:checkin", "../../escape.md"),
       ).toThrow();
     } finally {
       await cleanupTmpDir(dir);

@@ -36,10 +36,10 @@ describe("sanitizeZipEntryPath — reserved runtime directories", () => {
 
 describe("sanitizeZipEntryPath", () => {
   it("preserves an unambiguous relative POSIX member name", () => {
-    expect(sanitizeZipEntryPath("sampleportal", "skills/attendance/SKILL.md")).toBe(
-      "skills/attendance/SKILL.md",
+    expect(sanitizeZipEntryPath("sampleportal", "skills/checkin/SKILL.md")).toBe(
+      "skills/checkin/SKILL.md",
     );
-    expect(sanitizeZipEntryPath("sampleportal", "skills/attendance/")).toBe("skills/attendance");
+    expect(sanitizeZipEntryPath("sampleportal", "skills/checkin/")).toBe("skills/checkin");
     expect(sanitizeZipEntryPath("sampleportal", "")).toBeNull();
   });
 
@@ -58,7 +58,7 @@ describe("sanitizeZipEntryPath", () => {
 
   it.each([
     "plugin.json.",
-    "skills/attendance ",
+    "skills/checkin ",
     "CON",
     "con.txt",
     "hooks/AUX.json",

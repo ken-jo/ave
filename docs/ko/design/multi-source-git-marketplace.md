@@ -235,8 +235,7 @@ package.json                     # workspaces: plugins/*/source, templates/plugi
 공식 플러그인은 이 저장소에서 개발합니다. 소스는 패키지 디렉터리 바로 아래가
 아니라 디스크립터 옆의 `source/`에 둡니다. 그래서 패키지 디렉터리에는
 `plugin.json`이 없고 트리 단계도 선언되지 않습니다(§6.2). 공식 플러그인은 릴리스
-자산으로만 설치되며, 이는 호스트 시크릿 권한(§10.3)의 조건이기도 합니다. 내부
-포털 플러그인처럼 공식이 아닌 플러그인은 소유자의 저장소에 두고, 그 소유자의
+자산으로만 설치되며, 이는 호스트 시크릿 권한(§10.3)의 조건이기도 합니다. 공식이 아닌 플러그인은 소유자의 저장소에 두고, 그 소유자의
 마켓플레이스가 나열합니다.
 
 ### 3.2 커스텀 마켓플레이스
@@ -1865,7 +1864,7 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
       { "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" },
       { "id": "team-share", "path": "\\\\files.corp\\ave\\marketplace" }      // a folder: `path` instead of `url`
     ],
-    "defaultInstalls": [{ "kind": "plugin", "name": "wiki-search", "source": "corp" }],
+    "defaultInstalls": [{ "kind": "plugin", "name": "docs-search", "source": "acme" }],
     "requiredInstalls": [{ "kind": "plugin", "name": "portal", "source": "corp" }]
   },
   "service": { "baseUrl": "https://ave.corp.example" }
@@ -2802,7 +2801,7 @@ Retry가 있는 `failed` 상태.
 - `installSource: "admin"`은 `user`가 되고, 그 패키지들의 키는
   `packages/default-installs.json`에 이미 적용된 것으로 기록되므로 다시 설치하거나
   제거하지 않습니다.
-- 어떤 공식 패키지와도 맞지 않는 항목(지금은 포털 플러그인)은 "출처 모름 —
+- 어떤 공식 패키지와도 맞지 않는 항목은 "출처 모름 —
   업데이트 없음"으로 계속 실행되고, grant를 받지 않으며, 더는 잠기지 않습니다.
   조직이 사내 마켓플레이스를 등록하고(`additional`) `requiredInstalls`에 올릴
   때까지 그렇게 남고, 그다음 부팅에서 그 소스에 묶입니다. 부팅 알림은 이 항목들을

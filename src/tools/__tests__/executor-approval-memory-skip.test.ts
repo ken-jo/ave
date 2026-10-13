@@ -215,7 +215,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     };
 
     const result = await tryUserApprovalMemorySkip(
-      "plugin_attendance_read",
+      "plugin_checkin_read",
       "plugin",
       "read",
       [],
@@ -231,7 +231,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       {},
       undefined,
       undefined,
-      "com.ave.attendance",
+      "com.ave.checkin",
       undefined,
       { operation: "status" },
     );

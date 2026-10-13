@@ -242,7 +242,7 @@ describe("ToolExecutor plugin operation governance", () => {
     const outsideDirectory = mkdtempSync(
       join(tmpdir(), "ave-governed-outside-"),
     );
-    const outsideFile = join(outsideDirectory, "attendance.json");
+    const outsideFile = join(outsideDirectory, "checkin.json");
     writeFileSync(outsideFile, "blocked", "utf8");
 
     try {

@@ -797,11 +797,11 @@ v0.6.3 에서 플러그인 하나였던 격리 대상이 이번 릴리즈에서 
 전부로 확대되었습니다. 각 승격은 해당 플러그인이 자식 프로세스 경계를 실제로
 넘을 수 있는지 실측한 뒤에만 이루어졌습니다.
 
-- **메일·캘린더 플러그인 격리 실행** (#2257)
+- **플러그인 격리 실행** (#2257)
 - **`local-indexer` 격리 실행** (#2264)
 - **`meeting` 격리 실행** (#2268)
-- **포털 플러그인 격리 실행** (#2272) — 마지막 관문이었던 브라우저 의존을 제거한
-  플러그인 0.20.0 과 짝을 이룹니다.
+- **플러그인 격리 실행** (#2272) — 마지막 관문이었던 브라우저 의존을 제거한
+  플러그인 릴리스와 짝을 이룹니다.
 
 경계를 넘기 위해 필요했던 호스트 쪽 기반:
 
@@ -825,7 +825,7 @@ v0.6.3 에서 플러그인 하나였던 격리 대상이 이번 릴리즈에서 
 
 ### 플러그인 인증·자격증명
 
-- **포털 세션 쿠키를 호스트 볼트에 보관**합니다 (#2254). 파티션 자체가 볼트가
+- **플러그인 세션 쿠키를 호스트 볼트에 보관**합니다 (#2254). 파티션 자체가 볼트가
   되어 플러그인이 쿠키 값을 직접 들고 있지 않습니다.
 - **인증 리다이렉트를 호스트가 받아냅니다** (#2256).
 
@@ -1269,7 +1269,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### Plugins / Routines
 
-- **Assistant plugin routine cleanup** (PR #1404) — removes the legacy assistant-plugin wakeup fixture and aligns the briefing routine path with the current plugin behavior.
+- **Routine cleanup** (PR #1404) — removes a legacy plugin wakeup fixture and aligns a routine path with the current plugin behavior.
 
 ### 검증
 

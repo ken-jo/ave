@@ -1579,7 +1579,7 @@ flowchart LR
 | ---- | ------------- | ----------------------- | ------------------------------------------ |
 | 1    | 명시적 명령어 | `/meeting start`        | Command Executor 직접 실행        |
 | 2    | 앱/플러그인 envelope | Host가 검증한 app/overlay 입력 | provenance를 보존해 ConversationLoop 진입 |
-| 3    | 일반 대화     | "출장 품의 작성해줘"    | 모델이 Skill 지침과 Tool catalog를 사용 |
+| 3    | 일반 대화     | "출장 계획 작성해줘"    | 모델이 Skill 지침과 Tool catalog를 사용 |
 
 **확장 설계 노트**
 
@@ -2900,11 +2900,11 @@ flowchart TB
 | 🏢 **상위 조직** | 실/본부 단위 | 상위 조직 소속 에이전트 | 크로스팀 프로젝트 공유 |
 | 🌐 **전체 공개** | 전사 | 모든 에이전트 | 전사 차원 인사이트·팁 |
 
-| 구분 | 품의 결재 | 에이전트 요청 승인 |
+| 구분 | 조직 결재 | 에이전트 요청 승인 |
 |---------- |------------------------------- |------------------------------------------------------------------------- |
 | **주체** | 사용자 본인 → 상위 결재자 | 에이전트 → 에이전트 소유자(사용자) |
 | **대상** | 예산·인사·구매 등 공식 프로세스 | **파일 전송** · **상호작용 허용** · **문서 공유** · **일지 공개 범위** 등 |
-| **시스템** | 전자결재 시스템 (기존 internal) | Ave Agent Approval (클라이언트 내장) |
+| **시스템** | 조직의 기존 결재 시스템 | Ave Agent Approval (클라이언트 내장) |
 | **흐름** | 사용자 → 팀장 → 실장 → ... | 타인 에이전트 → 내 에이전트 → **나에게 승인 요청** → 승인/거부 |
 
 ### 8.2 자율 행위 vs 승인 필요 행위
@@ -3194,7 +3194,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
     }
   ],
         "skills": [{
-          "id": "attendance", "path": "skills/attendance" }],
+          "id": "checkin", "path": "skills/checkin" }],
     "hooks": [{
       "id": "audit",
       "path": "hooks/audit.json" }],
@@ -3479,13 +3479,13 @@ PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전�
 ```jsonc
 {
   "auth": {
-    "label": "Microsoft 계정",      // optional; 기본은 manifest.name
+    "label": "메일 계정",           // optional; 기본은 manifest.name
     "statusTool": "mail_status",     // 필수, app-only Tool
     "loginTool": "mail_auth",        // 필수, app-only Tool
     "logoutTool": "mail_signout",    // optional, app-only Tool
     "partitionDomains": [             // optional — `openAuthPartitionViewer` 호출 시만 필수
-      "outlook.office.com",
-      "login.microsoftonline.com",
+      "webmail.example.com",
+      "login.example.com",
     ],
   },
 }
@@ -3986,7 +3986,7 @@ graph TB
     end
 
     subgraph "사업부 플러그인 예시"
-        BU_HR["HR Portal Plugin<br/>(인사·출장·품의)"]
+        BU_HR["Travel Plugin<br/>(출장·정산)"]
         BU_IT["IT Helpdesk Plugin<br/>(IT 지원·SW 도입)"]
         BU_FIN["Finance Plugin<br/>(회계·정산·예산)"]
         BU_MKT["Marketing Plugin<br/>(캠페인·보고)"]
@@ -4042,7 +4042,7 @@ graph LR
     AUTH_MW --> POLICY_MW["Policy Middleware<br/>(거버넌스 정책 적용)"]
     POLICY_MW --> ROUTER["Service Router"]
 
-    ROUTER -->|"/hr/*"| HR["HR System"]
+    ROUTER -->|"/travel/*"| HR["Travel System"]
     ROUTER -->|"/it/*"| IT["IT Helpdesk"]
     ROUTER -->|"/finance/*"| FIN["Finance System"]
     ROUTER -->|"/legal/*"| LEGAL["Legal System"]
@@ -4067,13 +4067,13 @@ philosophy.md에서 제시한 실제 업무 시나리오가 아키텍처의 어�
 ```mermaid
 flowchart TB
     subgraph "예시 1: 처음 떠나는 출장"
-        U1["출장 품의 작성해줘"]
-        U1 --> KW1["KW: 출장, 품의"]
-        KW1 --> SK1["Skill: HR Plugin<br/>(출장 에이전트)"]
+        U1["출장 계획 작성해줘"]
+        U1 --> KW1["KW: 출장, 계획"]
+        KW1 --> SK1["Skill: Travel Plugin<br/>(출장 에이전트)"]
         SK1 --> MEM1["Memory: 사용자 프로필·부서"]
         MEM1 --> IDX1["Local/Server Index:<br/>출장 규정·양식 검색"]
-        IDX1 --> LG1["the LLM backend: 품의서 초안 생성"]
-        LG1 --> RESULT1["✅ 품의서 초안 + 체크리스트 + 다음 스텝"]
+        IDX1 --> LG1["the LLM backend: 출장 계획서 초안 생성"]
+        LG1 --> RESULT1["✅ 출장 계획서 초안 + 체크리스트 + 다음 스텝"]
     end
 
     subgraph "예시 2: 소프트웨어 도구 도입"
@@ -4108,7 +4108,7 @@ flowchart TB
 
 | 시나리오       | Input Classification | Notes | Local Index | Server Index |   the LLM backend    | Agent Hub |    Plugin     | Overlay Trigger |   Agent Approval    |
 | ------------ | :-------: | :---: | :---------: | :----------: | :-------------: | :-------: | :-----------: | :-------------: | :-------------------: |
-| 출장 품의      |    ✅     |  ✅   |   ✅ 양식   |   ✅ 규정    |   ✅ 초안   |     -     |   HR Plugin   |      -      |          -          |
+| 출장 계획      |    ✅     |  ✅   |   ✅ 양식   |   ✅ 규정    |   ✅ 초안   |     -     |   Travel Plugin   |      -      |          -          |
 | SW 도입        |    ✅     |   -   |  ✅ 가이드  |  ✅ 가이드   |   ✅ 요약   | ✅ 담당자 |   IT Plugin   |      -      |          -          |
 | 팀 보고        |    ✅     |   -   |      -      |      -       |  ✅ 보고서  |  ✅ 팀원  |       -       |      -      | ✅ 데이터 수집 승인 |
 | 이메일 처리    |    ✅     |  ✅   |   ✅ 문서   |      -       |   ✅ 답장   |     -     | Email Plugin  |  ✅ 태스크  |          -          |
@@ -4120,32 +4120,32 @@ flowchart TB
 
 ## 13. Data Flow
 
-### 13.1 End-to-End: 출장 품의 작성해줘
+### 13.1 End-to-End: 출장 계획 작성해줘
 
 ```mermaid
 flowchart TB
-    USER["👤 출장 품의 작성해줘<br/>다음주 화요일 도쿄"]
+    USER["👤 출장 계획 작성해줘<br/>다음주 화요일 도쿄"]
 
     subgraph "Layer 2 — Client Intelligence"
         KW["① Input Classifier<br/>일반 입력 판별"]
-        ROUTE["② Route Engine<br/>HR Plugin 매칭"]
+        ROUTE["② Route Engine<br/>Travel Plugin 매칭"]
         MEM["③ Memory Recall<br/>사용자 프로필·과거 출장"]
         IDX["④ Local + Server Index<br/>출장 규정·양식 검색"]
     end
 
     subgraph "Layer 3 — Execution"
-        TOOL["⑤ Tool: HR API Connector<br/>양식 데이터 준비"]
-        LLM_BACKEND_CALL["⑥ the LLM backend 추론<br/>품의서 초안 생성"]
+        TOOL["⑤ Tool: Travel API Connector<br/>양식 데이터 준비"]
+        LLM_BACKEND_CALL["⑥ the LLM backend 추론<br/>출장 계획서 초안 생성"]
     end
 
     subgraph "Layer 5 — Governance"
         POLICY_CHECK["⑦ Policy Check<br/>출장 한도·규정 확인"]
-        AUDIT_WRITE["⑧ Audit Log<br/>품의 이력 기록"]
+        AUDIT_WRITE["⑧ Audit Log<br/>출장 계획 이력 기록"]
     end
 
     subgraph "Layer 1 — Presentation"
-        RENDER["⑨ UI 렌더링<br/>품의서 초안 + 체크리스트"]
-        ACTION["⑩ 사용자 확인 → 결재 제출"]
+        RENDER["⑨ UI 렌더링<br/>출장 계획서 초안 + 체크리스트"]
+        ACTION["⑩ 사용자 확인 → 제출"]
     end
 
     USER --> KW --> ROUTE --> MEM --> IDX
@@ -4795,7 +4795,7 @@ v4 §14 배포·거버넌스 체계는 유지된다. v5 는 개발 조직 운영
 > - [ ] Post-Turn Memory Extraction 규칙 정의
 > - [ ] Tool Permission 규칙 DSL 설계 (allow/deny 패턴 문법)
 > - [ ] Shell AST Parser 위험 패턴 카탈로그 확정
-> - [ ] MCP 서버 연동 프로토타입 (enterprise HR API — SSE transport)
+> - [ ] MCP 서버 연동 프로토타입 (enterprise travel API — SSE transport)
 > - [ ] Feature Flag 서비스 인프라 선정 및 PoC
 > - [ ] 빌트인 도구 API 상세 인터페이스 정의 (§6.4 카탈로그 기반)
 > - [ ] PageIndex 핵심 로직 Rust 포팅 타당성 검토 (Phase 2)

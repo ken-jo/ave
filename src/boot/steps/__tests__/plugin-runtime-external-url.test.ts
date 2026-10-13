@@ -47,12 +47,12 @@ describe("routeExternalUrl (§B3)", () => {
   it("uses a stable persistPartition across calls so SSO cookies survive between opens", async () => {
     const stub = makeStub("in-app");
     await routeExternalUrl({
-      url: "https://outlook.office.com/mail/deeplink/compose?to=a@b.com",
+      url: "https://webmail.example.com/mail/deeplink/compose?to=a@b.com",
       pluginId: "p-samplemail",
       ...stub,
     });
     await routeExternalUrl({
-      url: "https://outlook.office.com/mail/deeplink/compose?to=c@d.com",
+      url: "https://webmail.example.com/mail/deeplink/compose?to=c@d.com",
       pluginId: "p-samplemail",
       ...stub,
     });
