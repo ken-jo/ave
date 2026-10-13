@@ -191,4 +191,28 @@ describe("plugin-owned Hook projections", () => {
       "other-hooks",
     ]);
   });
+
+  it("keeps another plugin's Hooks when a prepared Hook removal publishes", () => {
+    const base = generation("1.0.0", "g1");
+    const other: ActivePluginGeneration = {
+      ...base,
+      pluginId: "other-hooks",
+      contributions: base.contributions.map((contribution) => ({ ...contribution, ownerPluginId: "other-hooks" })),
+    };
+    const [first] = preparePluginHookGeneration(base, payloadRoot, join(payloadRoot, "data"));
+    const [second] = preparePluginHookGeneration(other, payloadRoot, join(payloadRoot, "data"));
+    const trust = new PluginHookTrustStore();
+    trust.approve(first);
+    trust.approve(second);
+    const manager = new ScriptHookManager();
+    manager.publishPluginGeneration([first], trust);
+    const removal = manager.preparePluginGeneration([], trust, {
+      pluginId: first.owner.pluginId, generationId: first.owner.activationId,
+    });
+
+    manager.publishPluginGeneration([second], trust);
+    removal.publish();
+
+    expect(manager.hooksOfType("pre").map((entry) => entry.owner?.pluginId)).toEqual(["other-hooks"]);
+  });
 });

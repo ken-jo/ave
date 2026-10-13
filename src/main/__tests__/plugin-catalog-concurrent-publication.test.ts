@@ -55,13 +55,13 @@ function skillGeneration(pluginId: string, generationId: string): ActivePluginGe
   });
 }
 
-function promptGeneration(pluginId: string): ActivePluginGeneration {
+function promptGeneration(pluginId: string, kind: "template" | "persona" = "template"): ActivePluginGeneration {
   return generation(pluginId, "g1", {
     kind: "prompt",
     localId: "brief",
     path: "prompts/brief.md",
     filePath: "prompts/brief.md",
-    content: "---\nname: brief\ndescription: Brief template\nkind: template\n---\nWrite a brief.",
+    content: `---\nname: brief\ndescription: Brief guidance\nkind: ${kind}\n---\nWrite a brief.`,
   });
 }
 
@@ -114,5 +114,32 @@ describe("plugin catalog publication under concurrent plugin loads", () => {
     removal.publish();
 
     expect(store.listTemplates().map((template) => template.id)).toEqual(["extension:catalog_second:brief"]);
+  });
+
+  it("keeps a plugin's personas published while another plugin's generation was being prepared", async () => {
+    const store = new PersonaPromptStore({ userDir: tempDir() });
+    const first = store.preparePluginGeneration(promptGeneration("first-plugin", "persona"));
+    const second = store.preparePluginGeneration(promptGeneration("second-plugin", "persona"));
+
+    first.publish();
+    second.publish();
+
+    expect((await store.list()).map((persona) => persona.id)).toEqual([
+      "extension:first-plugin:brief",
+      "extension:second-plugin:brief",
+    ]);
+    expect(await store.get("extension:first-plugin:brief")).toMatchObject({ systemPromptAdd: "Write a brief." });
+  });
+
+  it("keeps a plugin's personas published while another plugin's removal was being prepared", async () => {
+    const store = new PersonaPromptStore({ userDir: tempDir() });
+    store.preparePluginGeneration(promptGeneration("first-plugin", "persona")).publish();
+    const removal = store.preparePluginRemoval("first-plugin");
+
+    store.preparePluginGeneration(promptGeneration("second-plugin", "persona")).publish();
+    removal.publish();
+
+    expect(await store.get("extension:first-plugin:brief")).toBeNull();
+    expect(await store.get("extension:second-plugin:brief")).toMatchObject({ systemPromptAdd: "Write a brief." });
   });
 });

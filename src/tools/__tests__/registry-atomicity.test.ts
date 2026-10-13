@@ -114,4 +114,26 @@ describe("ToolRegistry MCP generation replacement", () => {
     expect(registry.findByName("plugin_orion_write")?.pluginId).toBe("orion-api");
     expect(registry.findByName("other_read")?.pluginId).toBe("other-plugin");
   });
+
+  it.each(["publish", "cancel"] as const)("releases runtime-only method claims on %s without exposing tools", (settle) => {
+    const registry = new ToolRegistry();
+    const prepared = registry.reservePluginReplacement("first-plugin", [], [], ["runtime_method"]);
+
+    expect(prepared.replacementTools).toEqual([]);
+    expect(registry.findByName("runtime_method")).toBeUndefined();
+    expect(() => registry.reservePluginReplacement("second-plugin", [], [], ["runtime_method"]))
+      .toThrow("Tool name is already reserved: runtime_method");
+    expect(() => registry.register(pluginTool("runtime_method", "second-plugin"))).toThrow(/reserved/);
+    const unrelated = registry.reservePluginReplacement("second-plugin", [pluginTool("other_method", "second-plugin")]);
+    unrelated.publish();
+
+    prepared[settle]();
+    expect(registry.findByName("runtime_method")).toBeUndefined();
+    expect(registry.findByName("other_method")?.pluginId).toBe("second-plugin");
+    const next = registry.reservePluginReplacement("second-plugin", [], [], ["runtime_method"]);
+    prepared.cancel();
+    expect(() => registry.reservePluginReplacement("third-plugin", [], [], ["runtime_method"]))
+      .toThrow("Tool name is already reserved: runtime_method");
+    next.cancel();
+  });
 });

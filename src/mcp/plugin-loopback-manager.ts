@@ -92,6 +92,7 @@ export class PluginLoopbackManager {
           manifest.id,
           tools,
           predecessorMcpServerIds,
+          manifest.tools.map((tool) => tool.name),
         ),
         published: false,
         disconnectPredecessor: false,

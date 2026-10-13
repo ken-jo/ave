@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { PluginRuntimeGenerationProjection } from "../../plugin-host-generation.js";
 import type { PluginManifest } from "../../types.js";
 import { PluginRuntime } from "../index.js";
@@ -67,6 +67,42 @@ describe("concurrent plugin generation publication", () => {
     expect(runtime.getPluginRoot("concurrent_first")).toBeUndefined();
     expect(runtime.getPluginRoot("concurrent_second")).toBe("/tmp/concurrent_second");
     expect([...runtime.getMethodMap().keys()]).toEqual(["concurrent_second_tool"]);
+  });
+
+  it("keeps both plugins' disposers when their prepared generations publish", () => {
+    const runtime = runtimeFixture();
+    const firstDispose = vi.fn();
+    const secondDispose = vi.fn();
+    const first = runtime.prepareRuntimeGeneration({
+      ...projection("first-plugin", "first_tool", "1"), disposers: [firstDispose],
+    }, undefined);
+    const second = runtime.prepareRuntimeGeneration({
+      ...projection("second-plugin", "second_tool", "2"), disposers: [secondDispose],
+    }, undefined);
+
+    first.publish();
+    second.publish();
+
+    expect(runtime.getRuntimeGenerationProjection("first-plugin")?.disposers).toEqual([firstDispose]);
+    expect(runtime.getRuntimeGenerationProjection("second-plugin")?.disposers).toEqual([secondDispose]);
+    expect(firstDispose).not.toHaveBeenCalled();
+    expect(secondDispose).not.toHaveBeenCalled();
+  });
+
+  it("keeps another plugin's disposers when a prepared removal publishes", () => {
+    const runtime = runtimeFixture();
+    const secondDispose = vi.fn();
+    runtime.publishRuntimeGeneration(projection("first-plugin", "first_tool", "1"), undefined);
+    const removal = runtime.prepareRuntimeRemoval("first-plugin", "1".repeat(64));
+
+    runtime.publishRuntimeGeneration({
+      ...projection("second-plugin", "second_tool", "2"), disposers: [secondDispose],
+    }, undefined);
+    removal.publish();
+
+    expect(runtime.getRuntimeGenerationProjection("first-plugin")).toBeUndefined();
+    expect(runtime.getRuntimeGenerationProjection("second-plugin")?.disposers).toEqual([secondDispose]);
+    expect(secondDispose).not.toHaveBeenCalled();
   });
 
   it("keeps a plugin published while another plugin's removal was being prepared", () => {

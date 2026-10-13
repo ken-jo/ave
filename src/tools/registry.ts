@@ -376,11 +376,12 @@ export class ToolRegistry {
     });
   }
 
-  /** Prebuild a plugin-owned registry snapshot; publish is assignment-only. */
+  /** Reserve a plugin replacement, including runtime methods omitted from discovery. */
   reservePluginReplacement(
     pluginId: string,
     replacementTools: readonly Tool[],
     predecessorMcpServerIds: Iterable<string> = [],
+    runtimeMethodNames: Iterable<string> = [],
   ): PreparedPluginRegistryReplacement {
     if (!pluginId) throw new Error("Plugin registry replacement requires pluginId");
     if (this.reservedPluginOwners.has(pluginId)) {
@@ -401,6 +402,7 @@ export class ToolRegistry {
         affectedNames.add(name);
       }
     }
+    const reservedNames = new Set([...affectedNames, ...runtimeMethodNames]);
     const nextVersioned = this.cloneVersioned();
     for (const [name, versionMap] of nextVersioned) {
       for (const [version, tool] of versionMap) {
@@ -421,21 +423,21 @@ export class ToolRegistry {
         throw new Error(`MCP tool owner is already reserved: ${owner}`);
       }
     }
-    for (const name of affectedNames) {
+    for (const name of reservedNames) {
       if (this.reservedMcpToolNames.has(name)) {
         throw new Error(`Tool name is already reserved: ${name}`);
       }
     }
     this.reservedPluginOwners.set(pluginId, token);
     for (const owner of mcpPredecessors) this.reservedMcpOwners.set(owner, token);
-    for (const name of affectedNames) this.reservedMcpToolNames.set(name, token);
+    for (const name of reservedNames) this.reservedMcpToolNames.set(name, token);
     let settled = false;
     const release = () => {
       if (this.reservedPluginOwners.get(pluginId) === token) this.reservedPluginOwners.delete(pluginId);
       for (const owner of mcpPredecessors) {
         if (this.reservedMcpOwners.get(owner) === token) this.reservedMcpOwners.delete(owner);
       }
-      for (const name of affectedNames) {
+      for (const name of reservedNames) {
         if (this.reservedMcpToolNames.get(name) === token) this.reservedMcpToolNames.delete(name);
       }
     };
