@@ -16,7 +16,7 @@ import {
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
 import { BareRepo } from "../repo.js";
-import type { GitRemote } from "../run-git.js";
+import type { GitCommands, GitRemote } from "../run-git.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const execFileAsync = promisify(execFile);
@@ -289,6 +289,98 @@ describe("BareRepo", () => {
     it("reads a symlink as a rule violation, not as its target", async () => {
       await bare.ensureBlobs(hostileRemote, symlinkCommit, ["plugins/evil"]);
       await expectCode(bare.readFile(symlinkCommit, "plugins/evil/link", 1024), "CONTENT_RULE_VIOLATION");
+    });
+  });
+
+  // GitLab answers a repository path without `.git` with a redirect to the same path with `.git`;
+  // the stored address never carries `.git`, and git follows no redirect.
+  describe("a host that redirects the address to its .git form", () => {
+    let suffixed: FixtureRepo;
+    let head: string;
+
+    beforeAll(() => {
+      suffixed = createFixtureRepo(root, "suffixed.git");
+      head = suffixed.commit({ "marketplace.json": "{\"v\":3}\n", "plugins/gamma/ave-package.json": "{\"name\":\"gamma\"}\n" }, "suffixed");
+    });
+    afterAll(async () => {
+      await removeFixtureRepo(suffixed);
+    });
+
+    function redirectedRemote(name: string): GitRemote {
+      return { ...remote, url: normalizeSourceUrl(server.url(`${name}.git`)) };
+    }
+
+    function requestsTo(name: string): number {
+      return server.seen.filter((request) => request.path.split("/")[1] === name).length;
+    }
+
+    it("lists, fetches and exports at the .git address on the same host", async () => {
+      server.redirect("suffixed", `${server.origin}/suffixed.git`);
+      const redirected = redirectedRemote("suffixed");
+      expect(redirected.url.url).toBe(server.url("suffixed"));
+      const bare = await BareRepo.init(t.runner, localRepoDir());
+      expect((await bare.lsRemote(redirected)).get("HEAD")).toBe(head);
+      expect(await bare.refNames(redirected, 10)).toEqual(["main"]);
+      expect(await bare.fetchRef(redirected, undefined, "pin")).toBe(head);
+      const dest = join(scratch, `suffixed-${counter}`);
+      const files = await bare.exportPath(redirected, head, "plugins/gamma", dest, LIMITS);
+      expect(files.map((file) => file.path)).toEqual(["ave-package.json"]);
+      expect(requestsTo("suffixed")).toBeGreaterThan(0);
+      expect(requestsTo("suffixed.git")).toBeGreaterThan(0);
+    });
+
+    it("never requests the redirect's Location, and reports the redirect when the .git address has no repository", async () => {
+      server.redirect("elsewhere", `${server.origin}/landing/info/refs?service=git-upload-pack`);
+      const bare = await BareRepo.init(t.runner, localRepoDir());
+      const error = await bare.lsRemote(redirectedRemote("elsewhere")).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(MarketplaceError);
+      expect((error as MarketplaceError).code).toBe("SOURCE_UNREACHABLE");
+      expect((error as MarketplaceError).detail).toEqual({ reason: "http-status", host: "127.0.0.1", status: 302 });
+      expect(requestsTo("elsewhere.git")).toBeGreaterThan(0);
+      expect(requestsTo("landing")).toBe(0);
+    });
+
+    /** A runner that fails with `failures` in order, then succeeds, recording the address of each call. */
+    function scriptedRunner(failures: MarketplaceError[]): { runner: GitCommands; addresses: string[] } {
+      const addresses: string[] = [];
+      return {
+        addresses,
+        runner: {
+          run: async (args) => {
+            addresses.push(args[args.indexOf("--") + 1] ?? "");
+            const failure = failures.shift();
+            if (failure) throw failure;
+            return { stdout: Buffer.alloc(0), stderr: "" };
+          },
+        },
+      };
+    }
+
+    const redirected = (host: string) =>
+      new MarketplaceError("SOURCE_UNREACHABLE", "redirected", { detail: { reason: "http-status", host, status: 301 } });
+
+    it("never retries over ssh", async () => {
+      const sshRemote: GitRemote = { ...remote, url: normalizeSourceUrl("ssh://git@git.example.invalid/group/repo") };
+      const { runner, addresses } = scriptedRunner([redirected("git.example.invalid")]);
+      await expectCode(new BareRepo(runner, scratch).lsRemote(sshRemote), "SOURCE_UNREACHABLE");
+      expect(addresses).toEqual([sshRemote.url.url]);
+    });
+
+    it("reports what the .git address answered when it is not a missing repository", async () => {
+      const { runner, addresses } = scriptedRunner([
+        redirected("127.0.0.1"),
+        new MarketplaceError("SOURCE_AUTH_REQUIRED", "sign-in needed", { detail: { reason: "token", host: "127.0.0.1" } }),
+      ]);
+      const target = redirectedRemote("private");
+      await expectCode(new BareRepo(runner, scratch).lsRemote(target), "SOURCE_AUTH_REQUIRED");
+      expect(addresses).toEqual([target.url.url, `${target.url.url}.git`]);
+    });
+
+    it("does not retry an address that answers without a redirect", async () => {
+      const bare = await BareRepo.init(t.runner, localRepoDir());
+      await expectCode(bare.lsRemote({ ...remote, url: normalizeSourceUrl(server.url("absent")) }), "SOURCE_UNREACHABLE");
+      expect(requestsTo("absent")).toBeGreaterThan(0);
+      expect(requestsTo("absent.git")).toBe(0);
     });
   });
 });
