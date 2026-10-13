@@ -14,9 +14,7 @@ describe("Linux packaged executable selection", () => {
     expect(preferences).toEqual([
       "/linux-arm64-unpacked/Ave",
       "/linux-arm64-unpacked/ave",
-      "/linux-arm64-unpacked/ave",
       "/linux-unpacked/Ave",
-      "/linux-unpacked/ave",
       "/linux-unpacked/ave",
     ]);
     expect(linuxExecutablePreferenceSuffixes("x64", "\\")[0]).toBe("\\linux-x64-unpacked\\Ave");

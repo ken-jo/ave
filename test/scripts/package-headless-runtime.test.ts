@@ -45,8 +45,8 @@ it.skipIf(process.platform === "win32")("blocks an inherited preload before ever
   const module = await import(packager) as { HEADLESS_LAUNCHER: string };
   const root = mkdtempSync(join(tmpdir(), "native-launch-environment-"));
   roots.push(root);
-  writeFixtureFile(root, "ave", module.HEADLESS_LAUNCHER);
-  chmodSync(join(root, "ave"), 0o755);
+  writeFixtureFile(root, "retiredname", module.HEADLESS_LAUNCHER);
+  chmodSync(join(root, "retiredname"), 0o755);
   const preloadMarker = join(root, "preload-executed");
   writeFixtureFile(root, "malicious-preload.cjs", `
 require("node:fs").writeFileSync(${JSON.stringify(preloadMarker)}, "executed");
@@ -75,7 +75,7 @@ process.stdout.write(JSON.stringify({ args: process.argv.slice(2) }) + "\\n");
     `--create-permission-audit-self-test=${"b".repeat(64)}`,
     "--runtime-check",
   ]) {
-    const result = spawnSync(join(root, "ave"), [command], {
+    const result = spawnSync(join(root, "retiredname"), [command], {
       encoding: "utf8",
       env: {
         ...process.env,
@@ -222,7 +222,7 @@ describe("native packaged payload extraction", () => {
     const result = writeLauncherAndMarkerWithUmask(root);
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);
-    expect(statSync(join(root, "ave")).mode & 0o777).toBe(0o755);
+    expect(statSync(join(root, "retiredname")).mode & 0o777).toBe(0o755);
     expect(statSync(headlessPackagedMarkerPath(join(root, "app"))).mode & 0o777).toBe(0o444);
 
     const second = writeLauncherAndMarkerWithUmask(root);

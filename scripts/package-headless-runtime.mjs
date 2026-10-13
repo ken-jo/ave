@@ -115,7 +115,7 @@ export function writePackagedRuntimeMarker(app) {
 }
 
 export function writeHeadlessLauncher(root) {
-  const launcherPath = join(root, "ave");
+  const launcherPath = join(root, "retiredname");
   writeFileSync(launcherPath, HEADLESS_LAUNCHER, { flag: "wx", mode: 0o755 });
   chmodSync(launcherPath, 0o755);
   return launcherPath;
@@ -210,7 +210,7 @@ function main() {
     desktopArchive: { name: basename(archive), ...archiveBinding },
     runtime: { ...runtime, binary: nodeBinding, license: licenseBinding },
     entry: "app/dist/src/main/headless.js",
-    launcher: "ave",
+    launcher: "retiredname",
     packagedMarker: relative(options.out, packagedMarker).split("\\").join("/"),
     boundary,
     nativeRuntime,

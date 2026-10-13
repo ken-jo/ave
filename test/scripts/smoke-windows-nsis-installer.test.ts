@@ -173,7 +173,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     };
     const owned = {
       target: "c:\\PROGRAM FILES\\ave\\Ave.exe",
-      workingDirectory: "c:\\PROGRAM FILES\\Ave",
+      workingDirectory: "c:\\PROGRAM FILES\\ave",
       arguments: "",
       description: "Ave",
       appUserModelId: "ai.agent-connector.ave",
@@ -708,7 +708,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     const validEntry = {
       key: `HKEY_LOCAL_MACHINE\\${WINDOWS_UNINSTALL_REGISTRY_PATH}\\Ave`,
       view: "64",
-      values: { DisplayName: "Ave" },
+      values: { DisplayName: "RETIREDNAME" },
     };
     const validTree = {
       keyExists: true,
@@ -909,7 +909,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     const validEntry = {
       key: `HKEY_LOCAL_MACHINE\\${WINDOWS_UNINSTALL_REGISTRY_PATH}\\Ave`,
       view: "64",
-      values: { DisplayName: "Ave" },
+      values: { DisplayName: "RETIREDNAME" },
     };
     const validResult = {
       keyExists: true,

@@ -2,7 +2,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, join, sep } from "node:path";
 
 export function linuxExecutablePreferenceSuffixes(arch, separator) {
-  const names = ["Ave", "ave", "ave"];
+  const names = ["Ave", "ave"];
   return [
     ...names.map((name) => `${separator}linux-${arch}-unpacked${separator}${name}`),
     ...names.map((name) => `${separator}linux-unpacked${separator}${name}`),
@@ -79,7 +79,7 @@ export function findPackagedExecutable(target, releaseDir) {
   }
 
   if (target === "linux") {
-    const executableNames = new Set(["Ave", "ave", "ave"]);
+    const executableNames = new Set(["Ave", "ave"]);
     const matches = files.filter((file) =>
       file.split(sep).some((part) => part === "linux-unpacked" || /^linux-.+-unpacked$/u.test(part)) &&
       executableNames.has(basename(file)) &&
