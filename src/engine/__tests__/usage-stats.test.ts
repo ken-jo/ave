@@ -385,7 +385,7 @@ describe("usage-stats", () => {
       ).toBeCloseTo(24.5, 5);
     });
 
-    it.each(["openai", "copilot", "azure-foundry"] as const)(
+    it.each(["openai", "azure-foundry"] as const)(
       "%s — cache fields split prompt_tokens into fresh + discounted cached input",
       (vendor) => {
         // 1M prompt input contains 0.25M cached input. Cost is:
@@ -405,7 +405,7 @@ describe("usage-stats", () => {
       },
     );
 
-    it.each(["openai", "copilot", "azure-foundry"] as const)(
+    it.each(["openai", "azure-foundry"] as const)(
       "%s — missing cached-input rate treats cached prompt tokens as ordinary input",
       (vendor) => {
         expect(

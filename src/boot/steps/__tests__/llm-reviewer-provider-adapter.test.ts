@@ -33,7 +33,6 @@ const VENDORS = [
   "openai",
   "claude",
   "gemini",
-  "copilot",
   "azure-foundry",
   "vertex-ai",
 ] as const;

@@ -102,12 +102,8 @@ input. It has two fault outcomes:
 an Ave vendor id meets a catalog provider id. It is exhaustive over `LLMVendor`, so a new
 vendor fails typecheck until it is placed. A vendor maps to the catalog providers whose API
 host is the vendor's endpoint: Qwen and Qwen Code to `alibaba-cn` (DashScope's mainland
-host, not the international `alibaba`), Doubao to `volcengine` (Ark). Copilot maps to
-`[]`: Ave's Copilot vendor called GitHub Models (`models.github.ai`), which the catalog does
-not list and which GitHub retired on 2026-07-30; the catalog's `github-copilot` provider is
-the Copilot API (`api.githubcopilot.com`), another service. The vendor itself is being
-removed (owner decision of 2026-10-12; a re-added Copilot integration is tracked in #2657 and
-gets its mapping then), so it has no catalog mapping. The generic
+host, not the international `alibaba`), Doubao to `volcengine` (Ark). Removed vendors
+have no entry in the map; an unrelated catalog service cannot re-enable them. The generic
 OpenAI-compatible endpoint, local runtimes (Ollama, LM Studio) and vendors no catalog
 provider serves at their endpoint (SambaNova, LiteLLM, v0, HiCap, Nous, Huawei MaaS, Ask
 Sage, OCA) map to `[]`: their limits come from what the endpoint reports and what the user
@@ -217,13 +213,12 @@ these is answered:
 - **Dated and retired ids** (`claude-sonnet-4-20250514`, `claude-3-*`, `gpt-4.1-2025-04-14`,
   `o3-2025-04-16`, `gemini-1.5-*`, …): resolved by the aliases of §4 or allowed to fall to
   the host fallback.
-- **Copilot rows**: the Copilot vendor maps to no catalog provider and is being removed
-  (§3.4); its rows go with it.
+- **Retired vendor rows**: absent from both the vendor union and the provider map (§3.4).
 - **Self-hosted rows** (`openai-compatible`: `Qwen3.6-35B-A3B-NVFP4` 262,144,
   `Nemotron-3-Nano-30B-A3B-FP8` 131,072): the vendor maps to no catalog provider by design;
   these windows come from the endpoint's report or the user's setting.
 - **Fields with no catalog counterpart:**
-  - `contextWindow1MBeta` (Claude Sonnet 4.6 and Opus 4.6, also under Copilot) — the
+  - `contextWindow1MBeta` (Claude Sonnet 4.6 and Opus 4.6) — the
     catalog lists these models at 1M with no note that 1M needs a beta header. That is a
     request-shape fact, and it moves to a host-owned request-shape table with the
     interleaved-thinking handling (slice 7).

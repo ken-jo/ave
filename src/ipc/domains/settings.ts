@@ -318,6 +318,7 @@ function activeLlmIdentity(llm: LLMSettings): string {
   const block = llm.vendors?.[provider];
   return JSON.stringify({
     provider,
+    retiredProvider: llm.retiredProvider ?? null,
     marketplaceProviderPresetId:
       provider === "openai-compatible"
         ? (llm.marketplaceProviderPresetId ?? null)
@@ -1072,7 +1073,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   // read-only — sender guard optional
   ipcMain.handle(CHANNELS.settings.hasApiKey, (_e, vendor?: string) => {
     const secretKey = llmSecretKeyForInput(deps, vendor);
-    return secretKey ? settingsService.getSecret(secretKey) !== null : false;
+    if (!secretKey) return false;
+    // A retired profile can still choose a provider with a saved key. Presence
+    // is enough for that settings chooser; the credential itself stays fenced.
+    if (settingsService.get("llm").retiredProvider) return settingsService.hasStoredSecret(secretKey);
+    return settingsService.getSecret(secretKey) !== null;
   });
 
   ipcMain.handle(CHANNELS.settings.deleteApiKey, async (e, vendor: string) => {

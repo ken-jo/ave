@@ -13,8 +13,6 @@
  *           o1, o1-mini, o3-mini reasoning models do NOT (text-only).
  *           gpt-3.5* does NOT.
  *   - Google Gemini 1.5 / 2.x family all support vision.
- *   - GitHub Copilot routes via OpenAI/Anthropic models — assume false unless
- *     model name matches a known vision-capable upstream.
  *   - Azure Foundry / Vertex AI — defer to underlying model name.
  */
 import type { LLMVendor } from "./types.js";
@@ -69,8 +67,6 @@ export function supportsVision(vendor: LLMVendor, model: string): boolean {
     case "openai":
     case "azure-foundry":
       return /^(gpt-4|gpt-5|chatgpt)/i.test(m);
-    case "copilot":
-      return /^(gpt-4|gpt-5|claude-)/i.test(m);
     default:
       if (isOpenAICompatibleVendor(vendor)) {
         return /^(gpt-4|gpt-5|claude-|gemini-|qwen|kimi|glm|mimo|llama|meta-llama|nvidia\/)/i.test(m);
@@ -95,7 +91,7 @@ export function supportsVision(vendor: LLMVendor, model: string): boolean {
  * vendors fall back to the existing truncation notice until their prefill path
  * is wired:
  *   - claude  → assistant-prefill (blocked while extended thinking is ON)
- *   - openai/gemini/copilot/azure-foundry/vertex → append partial + "continue"
+ *   - openai/gemini/azure-foundry/vertex → append partial + "continue"
  *     user reprompt + host stitch
  * Shares the {@link isSelfHostedVllmVendor} SOT with the adapter's
  * `chat_template_kwargs`/`continue_final_message` guard so the request-shaping

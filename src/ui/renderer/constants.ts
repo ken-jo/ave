@@ -67,7 +67,6 @@ const CORE_VENDOR_UI: Record<Exclude<LLMVendor, OpenAICompatiblePresetVendor>, V
   claude: { label: "Anthropic Claude", placeholder: "sk-ant-...", needsBaseUrl: false },
   openai: { label: "OpenAI", placeholder: "sk-...", needsBaseUrl: false },
   gemini: { label: "Google Gemini", placeholder: "AIza...", needsBaseUrl: false },
-  copilot: { label: "GitHub Copilot", placeholder: "ghp_...", needsBaseUrl: false },
   "azure-foundry": {
     label: "Azure AI Foundry",
     get placeholder() { return t("constants.vendorAzureFoundryPlaceholder"); },

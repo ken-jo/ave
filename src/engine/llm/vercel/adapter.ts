@@ -37,7 +37,6 @@ import { projectToolCallForWire } from "../types.js";
 import {
   isOpenAICompatibleVendor,
   isSelfHostedVllmVendor,
-  COPILOT_BASE_URL,
 } from "../../../shared/llm-vendor-defaults.js";
 import { createLogger } from "../../../lib/logger.js";
 import { normalizeLocalUserContentParts } from "../../../main/subscription-attachment-input.js";
@@ -376,20 +375,18 @@ export class VercelUnifiedProvider implements LLMProvider {
           ? "low"
           : rawReasoningEffort;
       const isOpenAIReasoning =
-        (slot === "openai" || slot === "copilot" || slot === "azure-foundry") &&
+        (slot === "openai" || slot === "azure-foundry") &&
         isOpenAIReasoningModel(params.model);
 
       // Guard: Chat Completions returns 400 when reasoning_effort is set
-      // alongside tools for gpt-5.x. Drop the flag on tool turns for:
-      //   - copilot (always Chat Completions)
-      //   - openai with a custom baseUrl (may point at a Chat-Completions proxy
-      //     that cannot be assumed to support Responses API).
+      // alongside tools for gpt-5.x. Drop the flag on tool turns for openai
+      // with a custom baseUrl (it may point at a Chat-Completions proxy that
+      // cannot be assumed to support Responses API).
       // Native OpenAI (no baseUrl override) uses Responses API and has no such
       // restriction.
       const isGpt5 = params.model.toLowerCase().includes("gpt-5");
       const suppressReasoningForToolTurn =
-        (slot === "copilot" && isGpt5 && hasTools) ||
-        (slot === "openai" && Boolean(this.baseUrl) && isGpt5 && hasTools);
+        slot === "openai" && Boolean(this.baseUrl) && isGpt5 && hasTools;
 
       const useReasoning =
         params.enableThinking === true &&
@@ -680,16 +677,6 @@ export class VercelUnifiedProvider implements LLMProvider {
       return isOpenAIReasoningModel(modelId)
         ? openai.responses(modelId)
         : openai.chat(modelId);
-    }
-
-    if (slot === "copilot") {
-      // GitHub Copilot / Models endpoint speaks Chat Completions only.
-      const openai = createOpenAI({
-        apiKey: this.apiKey,
-        baseURL: this.baseUrl || COPILOT_BASE_URL,
-        ...(this.customFetch ? { fetch: this.customFetch } : {}),
-      });
-      return openai.chat(modelId);
     }
 
     if (isOpenAICompatibleVendor(slot)) {
