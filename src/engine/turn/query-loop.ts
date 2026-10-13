@@ -46,7 +46,7 @@ import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { vendorSupportsLengthContinuation } from "../llm/vendor-capabilities.js";
 import { rejectedToolNameFromError, withoutDroppedTools } from "../llm/rejected-tool-schema.js";
 import { nextToolTrustOrigin, rationaleProvenanceFor } from "./trust-origin.js";
-import { contextBudgetForCurrentRuntime } from "./compaction.js";
+import { contextBudgetForCurrentRuntime, warnUnstatedReasoningOnce } from "./compaction.js";
 import { markStaleToolResults, evictAgedToolResultImages, isContextLengthError } from "../auto-compact.js";
 import { stripSuggestedReplies } from "../suggested-replies.js";
 import { GUIDE_JOINED_MAX_CHARS, mergeGuidanceApprovalReasonPrefixes } from "./guidance-limits.js";
@@ -1047,6 +1047,7 @@ export async function queryLoop(
           catalogModel: apiRound.catalogModel,
           request: { hasTools: toolSchemas.length > 0 },
         });
+        warnUnstatedReasoningOnce({ identity: runtimeContextBudget.identity, vendor: llmSettings.provider, model }, reasoning);
         requestModelSettings = { ...modelSettingsBase, ...(reasoning ? { reasoning } : {}) };
       }
       const stream = await collectActiveRuntimeRoundStream(

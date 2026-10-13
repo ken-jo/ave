@@ -40,6 +40,7 @@ import {
   type LlmRouteSettings,
 } from "../../shared/context-budget.js";
 import { refreshRouteModelList } from "../llm/model-list.js";
+import type { ReasoningPlan } from "../llm/reasoning-plan.js";
 import type { SubscriptionChatRuntimeSelection } from "../../shared/subscription-runtime.js";
 
 const log = createLogger("ave");
@@ -111,6 +112,29 @@ function warnUnresolvedCatalogModelOnce(identity: string, catalogModel: string):
   log.warn(
     `context budget: llm.vendors.<vendor>.catalogModel '${catalogModel}' for '${identity}' names no model catalog entry — `
     + "the window comes from the next source. Name an entry as <provider>/<id> from the catalog.",
+  );
+}
+
+const unstatedReasoningWarned = new Set<string>();
+
+/**
+ * Warn once per route that a thinking-enabled request carries no reasoning
+ * control because nobody states the effort levels its model accepts (the
+ * reasoning plan's `host-fallback`). Such a request also asks for no reasoning
+ * summary, so reasoning the user turned on would otherwise vanish from the
+ * turn without a word — on an Azure deployment, a Copilot route or a custom
+ * endpoint whose model the catalog cannot identify.
+ */
+export function warnUnstatedReasoningOnce(
+  route: { identity: string; vendor: string; model: string },
+  plan: Pick<ReasoningPlan, "kind" | "source" | "suppressed"> | undefined,
+): void {
+  if (plan === undefined || plan.kind !== "none" || plan.source !== "host-fallback" || plan.suppressed !== undefined) return;
+  if (unstatedReasoningWarned.has(route.identity)) return;
+  unstatedReasoningWarned.add(route.identity);
+  log.warn(
+    `reasoning: no effort levels known for model '${route.model}' on '${route.identity}' — the request carries no reasoning_effort and no reasoning summary. `
+    + `Name the catalog entry the endpoint serves as llm.vendors.${route.vendor}.catalogModel (<provider>/<id>).`,
   );
 }
 
