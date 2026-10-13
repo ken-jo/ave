@@ -189,7 +189,8 @@ The catalog key is found by one `resolveCatalogKey(catalog, vendor, model)`
 exact id; an Ave alias (`src/shared/model-catalog/aliases.ts`, empty today — every
 vendor id the snapshot can describe is found by the other steps, and an alias may only
 join two ids documented to name one model); an entry whose `canonicalId` is the id;
-the id without a release-date suffix; the id with case and version separators folded
+the id without a release-date suffix (`-YYYYMMDD`, `-YYYY-MM-DD`, or `-MMDD` with a valid
+month and day); the id with case and version separators folded
 (`claude-sonnet-4-6` against a listed `claude-sonnet-4.6`); the same ignoring a path prefix
 on either side (`openai/gpt-5.4` → Requesty's `gpt-5.4`). The alias step also drops a
 Vertex version tag (`@default`, `@20250929`) from either side, since Vertex lists Claude as
@@ -572,7 +573,9 @@ table listed at zero); 47 rows had none. Slice 7 removed the table, the name rul
 report after answering each kind of row:
 
 - **Dated ids of listed models** (`gpt-4.1-2025-04-14`, `o3-2025-04-16`,
-  `o4-mini-2025-04-24`) resolve to their entry by the date-suffix step of §4.
+  `o4-mini-2025-04-24`, and month-day snapshots such as `gpt-3.5-turbo-0125`,
+  `gpt-3.5-turbo-1106` and `gpt-4-0613`) resolve to their entry by the date-suffix step of
+  §4, which reads `-YYYYMMDD`, `-YYYY-MM-DD` and `-MMDD` (a valid month and day only).
 - **Dated and retired ids the catalog does not list** take the host fallback: a 128K
   window, an unknown price, no stated modalities (images refused) and, for an OpenAI-family
   route, no reasoning effort. No alias joins them (§4 allows an alias only between ids
@@ -582,13 +585,11 @@ report after answering each kind of row:
   `claude-3-opus-20240229`, `claude-3-sonnet-20240229`, `claude-3-haiku-20240307` (200K);
   `gpt-5.3`, `gpt-5.2-codex`, `gpt-5.1-reasoning`, `gpt-5.1-pro`, `gpt-5.1-codex`,
   `gpt-5.1-codex-mini`, `gpt-5.1-codex-max` (400K), `o1-mini` (128K); `gpt-4-32k`
-  (32,768), `gpt-3.5-turbo-0125`, `gpt-3.5-turbo-1106` and `gpt-3.5-turbo-instruct`
-  (16,385), where the fallback is larger than the model's real window, so preflight
-  compaction cannot fire before the provider's context error. The date-suffix step does
-  not read a four-digit `-0125` suffix. These are deprecated snapshots: `-1106` shut down
-  on 2026-09-28 and `-0125` shuts down on 2026-10-23; the undated `gpt-3.5-turbo` and
-  `gpt-4` are catalogued at 16,385 and 8,192. A route still on one of them should declare
-  `contextWindow`. Also: `gemini-2.0-flash`
+  (32,768) and `gpt-3.5-turbo-instruct` (16,385), where the fallback is larger than the
+  model's real window, so preflight compaction cannot fire before the provider's context
+  error; a route still on one of them should declare `contextWindow`. (The `-0125` and
+  `-1106` snapshots of `gpt-3.5-turbo` were in this list until the date-suffix step read
+  `-MMDD`; they now take the catalogued `gpt-3.5-turbo` entry's 16,385.) Also: `gemini-2.0-flash`
   (1,048,576), `gemini-2.0-flash-lite` (128K), `gemini-1.5-pro` (2,097,152),
   `gemini-1.5-flash` and `gemini-1.5-flash-8b` (1,048,576). The table also matched any id
   that began with one of its keys (`gpt-5.4-preview`, `gpt-5.5-codex` through `gpt-5`,

@@ -11,7 +11,7 @@
  *     Vertex lists Claude as `claude-opus-4-6@default`, Ave names it
  *     `claude-opus-4-6`;
  *  3. an entry whose `canonicalId` is the id given (`<lab>/<model>`);
- *  4. the id without a release-date suffix (`-20250514`, `-2025-04-16`);
+ *  4. the id without a release-date suffix (`-20250514`, `-2025-04-16`, `-0125`);
  *  5. the id with case and version separators folded (`4-6` against `4.6`);
  *  6. the same, ignoring a path prefix on either side (`openai/gpt-5.4`
  *     against `gpt-5.4`): gateways disagree about whether the lab is part of
@@ -46,7 +46,12 @@ export interface CatalogModelHit {
 
 type Catalog = Pick<ModelCatalogDocument, "providers">;
 
-const DATE_SUFFIX = /-(?:\d{8}|\d{4}-\d{2}-\d{2})$/u;
+/**
+ * A release-date snapshot suffix: `-YYYYMMDD`, `-YYYY-MM-DD`, or the month-day
+ * `-MMDD` OpenAI (`gpt-3.5-turbo-0125`), DeepSeek and Moonshot use. Four digits
+ * that are no month and day are a version, not a snapshot.
+ */
+const DATE_SUFFIX = /-(?:\d{8}|\d{4}-\d{2}-\d{2}|(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))$/u;
 /** Vertex AI's model version tag: `@default` or a release date. */
 const VERSION_TAG = /@(?:default|\d{8})$/u;
 
