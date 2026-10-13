@@ -196,7 +196,6 @@ describe("repository identity source of truth", () => {
     const missed = [
       ".github/CONTRIBUTING.md",
       ".github/ISSUE_TEMPLATE/config.yml",
-      ".github/SECURITY.md",
       ".github/workflows/ci.yml",
       ".github/workflows/web-deploy.yml",
       "docs/ko/guides/windows-setup.md",

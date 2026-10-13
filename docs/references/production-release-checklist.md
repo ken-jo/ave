@@ -116,7 +116,8 @@ the following:
 - the draft has all versioned assets and update metadata; and
 - the public release body prominently states that it is unsigned/not notarized,
   calls out Windows SmartScreen/Unknown publisher and macOS Gatekeeper, directs
-  users to the official GitHub Release, and gives Linux checksum guidance.
+  users to the official download host (`https://downloads.agent-connector.ai`),
+  and gives Linux checksum guidance against the R2 feed `latest-linux.yml`.
 
 A future signed release must add its own reviewed workflow and positive
 platform signature/notarization evidence before it can make signed claims.
