@@ -86,6 +86,7 @@ function makeAuditLogger() {
 
 interface SettingsOverrides {
   provider: string;
+  retiredProvider?: string;
   marketplaceProviderPresetId?: string;
   /** Defaults to "the active preset is installed", the realistic state. */
   installedProviderPresetIds?: readonly string[];
@@ -99,6 +100,7 @@ function makeSettingsService(overrides: SettingsOverrides) {
       if (key === "llm") {
         return {
           provider: overrides.provider,
+          ...(overrides.retiredProvider ? { retiredProvider: overrides.retiredProvider } : {}),
           ...(overrides.marketplaceProviderPresetId
             ? { marketplaceProviderPresetId: overrides.marketplaceProviderPresetId }
             : {}),
@@ -151,6 +153,40 @@ describe("resolveApiKey — signal.aborted at entry", () => {
 });
 
 describe("resolveApiKey — Tier-1 own-namespace short-circuit", () => {
+  it.each(["openai", "azure-foundry"])("rejects an implicit %s provider choice while retirement is pending before reading any key", async (provider) => {
+    const manifest = manifestFor("plugin-x", []);
+    const settings = makeSettingsService({
+      provider,
+      retiredProvider: "copilot",
+      secrets: { [`plugin.plugin-x.llm.apiKey.${provider}`]: "fixture-owned-credential" },
+    });
+    const result = await resolveApiKey(
+      { purpose: "llm" },
+      { pluginId: "plugin-x", manifest, manifestSha256: manifestSha(manifest), settingsService: settings as never, auditLogger: makeAuditLogger(), ...NO_GRANT },
+    );
+    expect(result).toEqual({ ok: false, reason: "no-host-vendor" });
+    expect(settings.getSecret).not.toHaveBeenCalled();
+  });
+
+  it("allows an explicitly named plugin-owned provider while retirement is pending", async () => {
+    const manifest = manifestFor("plugin-x", []);
+    const settings = makeSettingsService({
+      provider: "azure-foundry",
+      retiredProvider: "copilot",
+      secrets: { "plugin.plugin-x.llm.apiKey.openai": "fixture-owned-credential" },
+    });
+    const result = await resolveApiKey(
+      { purpose: "llm", vendor: "openai" },
+      { pluginId: "plugin-x", manifest, manifestSha256: manifestSha(manifest), settingsService: settings as never, auditLogger: makeAuditLogger(), ...NO_GRANT },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.vendor).toBe("openai");
+      expect(result.bearer()).toBe("fixture-owned-credential");
+      result.release();
+    }
+  });
+
   it("returns ok=true when plugin.<id>.llm.apiKey.<vendor> is set in settings", async () => {
     const manifest = manifestFor("plugin-x", []);
     const settings = makeSettingsService({

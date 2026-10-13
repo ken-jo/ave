@@ -46,6 +46,11 @@ export class ApprovalSurfaceClaims {
     };
   }
 
+  /** Whether this claim still holds the surface after another view acquired it. */
+  isClaimCurrent(surfaceId: string, ownsSession: (sessionId: string) => boolean): boolean {
+    return this.owners.get(surfaceId) === ownsSession;
+  }
+
   /** The surface drawing `sessionId`'s cards, if any surface claimed it. */
   ownerOf(sessionId: string): string | null {
     for (const [surfaceId, ownsSession] of this.owners) {

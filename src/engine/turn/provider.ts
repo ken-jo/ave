@@ -153,6 +153,13 @@ export function buildProvider(deps: ConversationLoopDeps): LLMProvider | null {
         return null;
       }
     }
+    // The stored profile named a removed vendor and the load moved it to the
+    // default. Until the user picks a provider, the API route reads as not
+    // configured: a key saved for the default (possibly paid) vendor must not
+    // be used on their behalf.
+    if (llmSettings.retiredProvider) {
+      return null;
+    }
     const vendor = llmSettings.provider;
     const block = getLlmVendorSettings(llmSettings.vendors, vendor);
     const hasMarketplaceProviderPresetSelection =

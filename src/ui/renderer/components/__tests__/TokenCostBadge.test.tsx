@@ -41,7 +41,6 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
   it.each<{ vendor: LLMVendor; pricing: ModelPricing; label: string }>([
     { vendor: "claude", pricing: sonnet, label: "claude — cache additive at Anthropic ratios" },
     { vendor: "openai", pricing: gpt, label: "openai — provider-raw input includes cached tokens" },
-    { vendor: "copilot", pricing: gpt, label: "copilot — provider-raw input includes cached tokens" },
     { vendor: "azure-foundry", pricing: gpt, label: "azure-foundry — provider-raw input includes cached tokens" },
     { vendor: "gemini", pricing: flash, label: "gemini — provider-raw input includes cached tokens, zero list price" },
     { vendor: "vertex-ai", pricing: flash, label: "vertex-ai — provider-raw input includes cached tokens, zero list price" },

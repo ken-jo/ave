@@ -678,6 +678,13 @@ export function mergeLlmPatch(
       ...entry,
       model: normalizeLlmVendorModel(entry.provider, entry.model),
     }));
+  const isProviderSelectionAccepted = isLLMVendor(partial.provider)
+    && activeProvider === partial.provider
+    && !removedActiveMarketplaceProviderPreset
+    && (activeProvider !== "openai-compatible"
+      || !requestedMarketplaceProviderPresetId
+      || (typeof requestedMarketplaceProviderPresetId === "string"
+        && marketplaceProviderPresetId === requestedMarketplaceProviderPresetId.trim()));
   return {
     activeChatRuntime,
     provider: activeProvider,
@@ -696,6 +703,12 @@ export function mergeLlmPatch(
     pinnedModels: normalizePinnedModels(
       "pinnedModels" in partial ? partial.pinnedModels : base.pinnedModels,
     ),
+    // The retired-provider marker is set by the settings load only. A patch
+    // whose provider selection is accepted resolves it. A missing provider or
+    // preset that gets coerced to the default does not authorize that default.
+    ...(base.retiredProvider && !isProviderSelectionAccepted
+      ? { retiredProvider: base.retiredProvider }
+      : {}),
     // `llm.hostResolverMap` is deliberately NOT carried forward. The manual
     // Chromium host-resolver map was removed with the private-endpoint access
     // path, so a value still on disk from an older build is inert. Dropping it

@@ -14,6 +14,9 @@ import type { InputStatusRow } from "../../hooks/use-input-status-row.js";
 import { TEST_IDS, testIdSelector } from "../../../../shared/test-ids.js";
 import { getLlmThinkingBudgetRungs } from "../../../../shared/llm-vendor-defaults.js";
 import { readRepoFile } from "../../../../__tests__/test-helpers.js";
+import { mergeLlmPatch } from "../../../../data/settings-normalization.js";
+import type { LLMSettingsPatch } from "../../../../data/settings-store.js";
+import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.js";
 
 const mockPreset: RolePreset = { id: "default", name: "기본", systemPromptAdd: "", isDefault: true };
 const codingPreset: RolePreset = { id: "coding", name: "코딩", systemPromptAdd: "Code carefully." };
@@ -524,6 +527,27 @@ describe("permission card (status-row permission cell)", () => {
 });
 
 describe("model card (status-row model cell)", () => {
+  it.each([{ pinnedModels: [] }, { pinnedModels: ["gpt-5.4"] }])("releases retirement after explicitly picking the migrated model: %j", async ({ pinnedModels }) => {
+    const settings = fakeAppSettings({ llm: {
+      provider: "openai",
+      retiredProvider: "copilot",
+      pinnedModels,
+      vendors: { openai: { model: "gpt-5.4" } },
+    } });
+    getSettings.mockResolvedValue(settings);
+    updateSettings.mockImplementation(async (patch: { llm?: LLMSettingsPatch }) => {
+      settings.llm = mergeLlmPatch(settings.llm, patch.llm ?? {}, settings.marketplace.installedProviderIds, settings.marketplace.installedProviderPresets);
+      return settings;
+    });
+    const { getByTestId, findByTestId, queryByTestId } = renderBar();
+    fireEvent.click(getByTestId("iab-status-model"));
+    const model = await findByTestId("model-quick-picker-option:openai:gpt-5.4");
+    await act(async () => { fireEvent.click(model); });
+    await waitFor(() => expect(settings.llm.retiredProvider).toBeUndefined());
+    expect(updateSettings).toHaveBeenCalledWith({ llm: { provider: "openai", vendors: { openai: { model: "gpt-5.4" } } } });
+    await waitFor(() => expect(queryByTestId("model-quick-picker")).toBeNull());
+  });
+
   /** Settings where two models are pinned and offered, and one pinned id is offered by nothing. */
   const settingsWithPins = () => ({
     llm: {

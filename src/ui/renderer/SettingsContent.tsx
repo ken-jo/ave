@@ -583,6 +583,7 @@ export function SettingsContent({
             <LlmTab
               api={api}
               vendor={s.vendor}
+              retiredLlmProvider={s.retiredLlmProvider}
               baseUrl={s.baseUrl}
               hasKey={s.hasKey}
               setHasKey={s.setHasKey}

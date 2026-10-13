@@ -41,11 +41,6 @@ describe("supportsVision", () => {
   it("empty model name returns false", () => {
     expect(supportsVision("claude", "")).toBe(false);
   });
-
-  it("copilot routing falls back by model name", () => {
-    expect(supportsVision("copilot", "gpt-4.1")).toBe(true);
-    expect(supportsVision("copilot", "gpt-3.5-turbo")).toBe(false);
-  });
 });
 
 describe("vendorSupportsLengthContinuation", () => {
