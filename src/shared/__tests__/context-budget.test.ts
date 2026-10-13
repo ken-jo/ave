@@ -5,13 +5,16 @@ import {
   getPreflightThreshold,
   llmRouteCatalogAddress,
   resolveContextWindowForRoute,
+  listingJudgesRetirement,
   resolveInputModalities,
   resolveModelContextWindow,
+  resolveModelRetirement,
   resolveOutputTokenLimit,
+  resolveRouteModelRetirement,
 } from "../context-budget.js";
 import { FALLBACK_CONTEXT_WINDOW, MAX_CREDIBLE_CONTEXT_WINDOW } from "../model-host-policy.js";
 import { freshAllVendorBlocks, llmImageInputKey } from "../llm-vendor-defaults.js";
-import { llmModelListCacheKey, type LlmModelListCache } from "../llm-model-list.js";
+import { llmModelListCacheKey, type LlmModelListCache, type LlmModelListCacheEntry } from "../llm-model-list.js";
 import { activeModelCatalog, installModelCatalog } from "../model-catalog/active.js";
 import type { CatalogModel, ModelCatalogDocument } from "../model-catalog/types.js";
 
@@ -929,5 +932,76 @@ describe("context limits behind a custom endpoint", () => {
     expect(resolveContextWindowForRoute(route)).toMatchObject({
       contextWindow: 400_000, source: "model-catalog", inputLimit: 272_000,
     });
+  });
+});
+
+describe("resolveModelRetirement — design §6.1", () => {
+  const listing = (models: string[], complete = true): LlmModelListCacheEntry => ({
+    vendor: "openai",
+    endpoint: "https://api.openai.com/v1/models",
+    models,
+    ...(complete ? { complete: true as const } : {}),
+    fetchedAt: "2026-10-13T00:00:00.000Z",
+  });
+
+  it("retires a model the active catalog marks deprecated where the route establishes it", () => {
+    expect(activeModelCatalog().providers.openai?.models["o4-mini"]?.status).toBe("deprecated");
+    expect(resolveModelRetirement({ vendor: "openai", model: "o4-mini" })).toBe("catalog-deprecated");
+    // A dated snapshot of a deprecated model resolves to it.
+    expect(resolveModelRetirement({ vendor: "openai", model: "o4-mini-2025-04-16" })).toBe("catalog-deprecated");
+  });
+
+  it("does not retire by catalog where the route does not establish the model", () => {
+    expect(resolveModelRetirement({ vendor: "azure-foundry", model: "o4-mini" })).toBeUndefined();
+    expect(resolveModelRetirement({ vendor: "openai", model: "o4-mini", baseUrl: "https://proxy.invalid/v1" })).toBeUndefined();
+    expect(resolveModelRetirement({ vendor: "openai-compatible", model: "o4-mini" })).toBeUndefined();
+  });
+
+  it("keeps a model the catalog lists without a deprecated status", () => {
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4o" })).toBeUndefined();
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-5.4" })).toBeUndefined();
+  });
+
+  it("retires a model the vendor's own complete listing no longer names", () => {
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4o", listing: listing(["gpt-5.4"]) })).toBe("unlisted");
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4o", listing: listing(["GPT-4O"]) })).toBeUndefined();
+    expect(resolveModelRetirement({
+      vendor: "deepseek", model: "deepseek-chat", listing: { ...listing(["deepseek-v4-flash"]), vendor: "deepseek" },
+    })).toBe("unlisted");
+  });
+
+  it("proves nothing from a partial, missing or non-native listing", () => {
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4o", listing: listing(["gpt-5.4"], false) })).toBeUndefined();
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4o" })).toBeUndefined();
+    for (const [vendor, baseUrl] of [
+      ["openai", "https://proxy.invalid/v1"],
+      ["azure-foundry", "https://synthetic.openai.azure.com/openai/v1"],
+      ["openai-compatible", "https://models.invalid/v1"],
+      ["ollama", "http://127.0.0.1:11434/v1"],
+      ["lmstudio", undefined],
+      ["openrouter", undefined],
+      ["requesty", undefined],
+      ["vercel-ai-gateway", undefined],
+      ["huggingface", undefined],
+      ["aihubmix", undefined],
+      ["kilo", undefined],
+      ["litellm", undefined],
+    ] as const) {
+      expect(listingJudgesRetirement(vendor, baseUrl), `${vendor} ${baseUrl}`).toBe(false);
+      expect(resolveModelRetirement({ vendor, model: "fixture-model", ...(baseUrl ? { baseUrl } : {}), listing: listing(["other"]) }))
+        .toBeUndefined();
+    }
+    expect(listingJudgesRetirement("openai")).toBe(true);
+    expect(listingJudgesRetirement("openai", "https://api.openai.com/v1")).toBe(true);
+    expect(listingJudgesRetirement("deepseek")).toBe(true);
+  });
+
+  it("judges the active route from the listing cached at its own address", () => {
+    const vendors = freshAllVendorBlocks();
+    vendors.openai = { ...vendors.openai, model: "gpt-4o" };
+    const key = llmModelListCacheKey("openai", undefined, undefined);
+    const llm = { provider: "openai" as const, vendors, modelListCache: { [key]: listing(["gpt-5.4"]) } };
+    expect(resolveRouteModelRetirement(llm)).toBe("unlisted");
+    expect(resolveRouteModelRetirement({ ...llm, modelListCache: {} })).toBeUndefined();
   });
 });

@@ -54,6 +54,13 @@ export interface OpenAICompatibleVendorPreset {
   baseUrl: string;
   defaultModel: string;
   modelOptions: readonly string[];
+  /**
+   * The endpoint routes to models other providers serve. Its `/models` answer
+   * says what this gateway forwards today, not whether the model's own vendor
+   * still serves it, so it never proves a model retired (design
+   * `model-capability-catalog.md` §6.1).
+   */
+  gateway?: true;
 }
 
 export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
@@ -65,13 +72,14 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     baseUrl: "https://openrouter.ai/api/v1",
     defaultModel: "anthropic/claude-sonnet-4.6",
     modelOptions: ["anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "openrouter/free"],
+    gateway: true,
   },
   deepseek: {
     label: "DeepSeek",
     apiKeyPlaceholder: "sk-...",
     baseUrl: "https://api.deepseek.com/v1",
-    defaultModel: "deepseek-v4-flash",
-    modelOptions: ["deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"],
+    defaultModel: "deepseek-flash",
+    modelOptions: ["deepseek-flash", "deepseek-chat", "deepseek-reasoner"],
   },
   xai: {
     label: "xAI",
@@ -84,8 +92,8 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     label: "Together AI",
     apiKeyPlaceholder: "tog_...",
     baseUrl: "https://api.together.xyz/v1",
-    defaultModel: "Qwen/Qwen3.5-397B-A17B",
-    modelOptions: ["Qwen/Qwen3.5-397B-A17B", "meta-llama/Llama-3.3-70B-Instruct-Turbo"],
+    defaultModel: "Qwen/Qwen3.6-Plus",
+    modelOptions: ["Qwen/Qwen3.6-Plus", "meta-llama/Llama-3.3-70B-Instruct-Turbo"],
   },
   fireworks: {
     label: "Fireworks AI",
@@ -133,8 +141,8 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     label: "Baseten",
     apiKeyPlaceholder: "baseten_...",
     baseUrl: "https://inference.baseten.co/v1",
-    defaultModel: "deepseek-ai/DeepSeek-V3.1",
-    modelOptions: ["deepseek-ai/DeepSeek-V3.1"],
+    defaultModel: "deepseek-ai/DeepSeek-V4.1-Flash",
+    modelOptions: ["deepseek-ai/DeepSeek-V4.1-Flash"],
   },
   requesty: {
     label: "Requesty",
@@ -142,6 +150,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     baseUrl: "https://router.requesty.ai/v1",
     defaultModel: "openai/gpt-5.4",
     modelOptions: ["openai/gpt-5.4", "anthropic/claude-sonnet-4.6"],
+    gateway: true,
   },
   litellm: {
     label: "LiteLLM",
@@ -149,6 +158,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     baseUrl: "http://localhost:4000/v1",
     defaultModel: "gpt-5.4",
     modelOptions: ["gpt-5.4", "claude-sonnet-4-6"],
+    gateway: true,
   },
   huggingface: {
     label: "Hugging Face",
@@ -156,6 +166,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     baseUrl: "https://router.huggingface.co/v1",
     defaultModel: "MiniMaxAI/MiniMax-M2.5",
     modelOptions: ["MiniMaxAI/MiniMax-M2.5"],
+    gateway: true,
   },
   "vercel-ai-gateway": {
     label: "Vercel AI Gateway",
@@ -163,6 +174,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     baseUrl: "https://ai-gateway.vercel.sh/v1",
     defaultModel: "alibaba/qwen3.6-plus",
     modelOptions: ["alibaba/qwen3.6-plus", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4"],
+    gateway: true,
   },
   "vercel-v0": {
     label: "Vercel V0",
@@ -177,6 +189,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     baseUrl: "https://api.aihubmix.com/v1",
     defaultModel: "gpt-5.4-mini",
     modelOptions: ["gpt-5.4-mini", "claude-sonnet-4-6"],
+    gateway: true,
   },
   hicap: {
     label: "HiCap",
@@ -210,8 +223,8 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     label: "Xiaomi",
     apiKeyPlaceholder: "mi_...",
     baseUrl: "https://api.xiaomimimo.com/v1",
-    defaultModel: "mimo-v2-omni",
-    modelOptions: ["mimo-v2-omni"],
+    defaultModel: "mimo-v2.6-flash",
+    modelOptions: ["mimo-v2.6-flash"],
   },
   kilo: {
     label: "Kilo Gateway",
@@ -219,6 +232,7 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     baseUrl: "https://api.kilo.ai/api/gateway",
     defaultModel: "gpt-5.4",
     modelOptions: ["gpt-5.4", "claude-sonnet-4-6"],
+    gateway: true,
   },
   zai: {
     label: "Z.AI",
@@ -327,6 +341,39 @@ export type RetiredLLMVendor = (typeof RETIRED_LLM_VENDOR_IDS)[number];
 
 export function isRetiredLLMVendor(v: unknown): v is RetiredLLMVendor {
   return typeof v === "string" && (RETIRED_LLM_VENDOR_IDS as readonly string[]).includes(v);
+}
+
+/**
+ * Why a saved model counts as retired (design `model-capability-catalog.md`
+ * §6.1): the active catalog marks it `deprecated`, or the vendor's own
+ * complete `/models` listing on its native host no longer names it.
+ */
+export type LlmModelRetirementReason = "catalog-deprecated" | "unlisted";
+
+/** The saved active model that the last settings load judged retired. */
+export interface RetiredLlmModel {
+  vendor: LLMVendor;
+  model: string;
+  reason: LlmModelRetirementReason;
+}
+
+/**
+ * The value of `llm.retiredProvider`: the removed vendor the stored profile
+ * named (a string, as #2658 writes it) or the retired model it named (an
+ * object). Either leaves the route unresolved until the user picks one.
+ */
+export type LlmRouteRetirement = RetiredLLMVendor | RetiredLlmModel;
+
+export function isRetiredLlmModelMarker(v: unknown): v is RetiredLlmModel {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
+  const record = v as Partial<Record<keyof RetiredLlmModel, unknown>>;
+  return isLLMVendor(record.vendor)
+    && typeof record.model === "string" && record.model.trim() !== ""
+    && (record.reason === "catalog-deprecated" || record.reason === "unlisted");
+}
+
+export function isLlmRouteRetirement(v: unknown): v is LlmRouteRetirement {
+  return isRetiredLLMVendor(v) || isRetiredLlmModelMarker(v);
 }
 
 /**
@@ -746,14 +793,14 @@ export type LLMVendorSettingsMap = Partial<
   Record<LLMVendor, LLMVendorSettings>
 >;
 
-const RETIRED_LLM_MODEL_IDS = new Set(["gpt-4o"]);
-
 const CORE_DEFAULT_MODEL = {
   claude: "claude-sonnet-4-6",
   openai: "gpt-5.4-mini",
   gemini: "gemini-2.5-flash",
   "azure-foundry": "gpt-5.4-mini",
-  "vertex-ai": "gemini-2.5-flash",
+  // The catalog marks Vertex's Gemini 2.5 models deprecated (design
+  // `model-capability-catalog.md` §6.1), so they are not offered there.
+  "vertex-ai": "gemini-3.5-flash",
   // Handshake-only: no static default. A fresh openai-compatible block ships
   // with an EMPTY model so the runtime treats it as "not configured" until the
   // user selects a model fetched live from their endpoint's /models handshake
@@ -788,7 +835,6 @@ const CORE_VENDOR_MODEL_OPTIONS = {
       "gpt-5.4-pro",
       "gpt-4.1",
       "gpt-4.1-mini",
-      "o4-mini",
       "o3",
     ],
     gemini: [
@@ -806,10 +852,10 @@ const CORE_VENDOR_MODEL_OPTIONS = {
       "gpt-4.1-mini",
     ],
     "vertex-ai": [
-      "gemini-2.5-flash",
-      "gemini-2.5-pro",
+      "gemini-3.5-flash",
+      "gemini-3.1-pro-preview",
       "gemini-2.0-flash",
-      "gemini-2.5-flash-lite",
+      "gemini-3.1-flash-lite",
     ],
     // Self-hosted OpenAI-compatible endpoints (vLLM / SGLang / llama.cpp …),
     // including a LiteLLM gateway that fronts several backends behind one /v1
@@ -850,14 +896,6 @@ export function isModelAvailableForVendor(
 ): boolean {
   if (!isLLMVendor(vendor)) return false;
   return LLM_VENDOR_MODEL_OPTIONS[vendor].includes(model);
-}
-
-export function isRetiredLlmModel(model: string): boolean {
-  return RETIRED_LLM_MODEL_IDS.has(model.trim().toLowerCase());
-}
-
-export function normalizeLlmVendorModel(vendor: LLMVendor, model: string): string {
-  return isRetiredLlmModel(model) ? DEFAULT_MODEL[vendor] : model;
 }
 
 function defaultBlock(vendor: LLMVendor): LLMVendorSettings {
@@ -971,9 +1009,7 @@ export function getLlmVendorSettings(
   const defaults = LLM_VENDOR_DEFAULTS[vendor];
   const stored = vendors?.[vendor];
   const model =
-    typeof stored?.model === "string"
-      ? normalizeLlmVendorModel(vendor, stored.model)
-      : defaults.model;
+    typeof stored?.model === "string" ? stored.model : defaults.model;
   const presetModels = normalizeLlmPresetModels(vendor, stored?.presetModels);
   // A hand-edited `0`, fraction or negative would otherwise ride the `...stored`
   // spread all the way to the transport, which reads any non-positive value as

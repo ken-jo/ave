@@ -494,6 +494,61 @@ Claude's dated ids the catalog does not list (`claude-sonnet-4-20250514`,
 `claude-opus-4-20250514`, `claude-3-*`) priced from the table until slice 7 and are
 unknown since (§8).
 
+### 6.1 Retired models (slice 7 follow-up, owner direction 2026-10-13)
+
+A model is **retired** on a route when either source says so; nothing else does, and the
+host keeps no list of retired names (`RETIRED_LLM_MODEL_IDS`, which retired `gpt-4o` by
+name, is gone):
+
+- **(a) The catalog.** The active catalog marks the model `status: "deprecated"`. Judged
+  only where the route itself establishes the model (`catalogModelFor` without a named
+  entry, §4): a user's `catalogModel` declaration describes a model's shape, not whether
+  that host still serves it, so an Azure deployment declared `openai/gpt-4` is not retired
+  because OpenAI deprecated `gpt-4`. A dated id resolves through §4 like any other fact.
+- **(b) The vendor's own listing.** The route's last successful `/models` answer is
+  complete and names no id equal to the model, ignoring case (no folding or aliases).
+  Only a public vendor that serves its own models, on its native host, can prove this
+  (`listingJudgesRetirement` in `src/shared/context-budget.ts`): the provider map (§3.4)
+  maps the vendor, the vendor is not a gateway (`gateway: true` on the preset — OpenRouter,
+  Requesty, LiteLLM, Hugging Face, Vercel AI Gateway, AI Hub Mix, Kilo), and
+  `allowsImplicitModelLimits` holds (never Azure, never a custom `baseUrl`). Local,
+  self-hosted, custom and gateway endpoints list what they happen to route, so a missing
+  id there says nothing. A listing is **complete** (`complete: true` on the cache entry)
+  only when the response carried no continuation marker (`has_more: true`,
+  `next_page_token`, `nextPageToken`) and every id fit the cache cap; the settings
+  normalizer drops the flag when it truncates. A failed, partial or absent listing — and
+  every cache entry written before the flag existed — proves nothing: unknown, not
+  retired.
+
+`resolveModelRetirement` is the one rule; the settings pickers, the composer's model
+card and the settings load call it. A retired model is not offered in the model picker,
+the fallback picker or the composer card.
+
+A **saved selection** pointing at a retired model reuses the unresolved-choice flow #2658
+built for removed vendors: the same `llm.retiredProvider` marker, which now holds either
+the removed vendor id (a string, unchanged) or `{ vendor, model, reason }`. Every gate of
+that flow applies as is: API-key chat and host credentials are withheld (the route reads
+as not configured), the window notice shows (`app.retiredModelNotice*`, naming the model
+and the reason), the chooser shows no selection and does not offer the retired model, an
+ordinary save preserves the marker, and an explicit pick clears it. The settings load
+sets it and judges afresh on every launch, so a model that comes back is released and a
+stored marker for a model the profile no longer names is dropped; a retired vendor wins
+over a retired model. The marker is not derived on patch: a listing that lands mid-session
+hides the model from the pickers at once but marks the saved selection at the next
+launch. A saved fallback at a retired model is kept as saved; its picker shows no
+selection ("… is retired — choose a model") and the engine's fallback walk is unchanged.
+
+Shipped defaults and curated options the bundled catalog deprecates were replaced so a
+fresh profile is never born retired (a test holds every vendor's default and curated
+line to the rule): OpenAI drops `o4-mini`; Vertex AI moves from Gemini 2.5 to
+`gemini-3.5-flash` / `gemini-3.1-pro-preview` / `gemini-3.1-flash-lite` (its complexity
+tiers follow); DeepSeek `deepseek-v4-flash` → `deepseek-flash`; Together
+`Qwen/Qwen3.5-397B-A17B` → `Qwen/Qwen3.6-Plus`; Baseten `deepseek-ai/DeepSeek-V3.1` →
+`deepseek-ai/DeepSeek-V4.1-Flash`; Xiaomi `mimo-v2-omni` → `mimo-v2.6-flash`. Removing the
+name list makes `gpt-4o` selectable again on OpenAI (the catalog lists it without a
+deprecated status); `gpt-3.5-turbo`, `gpt-4`, `o1`, `o3-mini`, `o4-mini` and the other
+OpenAI entries the catalog deprecates are no longer offered there.
+
 ## 7. Refresh (slice 6)
 
 - Setting `llm.modelCatalogRefresh: "auto" | "off"`, default `"auto"` (owner decision,

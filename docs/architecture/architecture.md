@@ -477,6 +477,15 @@ values live in `src/shared/model-host-policy.ts`: the 32,000 default output, the
 fallback, the credible-window ceiling, TPM defaults, and the request-shape table (the
 Claude 1M beta header and interleaved-thinking generations, adaptive vs numeric thinking,
 the Responses-vs-Chat wire choice).
+A model is retired when the active catalog marks it `deprecated` where the route
+establishes its identity, or when a public vendor's own complete `/models` listing on its
+native host no longer names it (`resolveModelRetirement`, `src/shared/context-budget.ts`;
+never for local, self-hosted, gateway, custom-`baseUrl` or Azure routes, and a failed or
+partial listing proves nothing). The host keeps no retired-name list. Retired models are
+not offered in any picker; a saved selection at one sets the `llm.retiredProvider` marker
+at settings load (`{ vendor, model, reason }` beside the removed-vendor string), which
+withholds API-key chat and credentials until the user picks — the same flow as a removed
+vendor. See [retired models](../design/model-capability-catalog.md#61-retired-models-slice-7-follow-up-owner-direction-2026-10-13).
 The catalog in force is chosen once per launch (`src/core/model-catalog/bundled.ts`): a
 `AVE_MODEL_CATALOG` pin (`bundled`, a cached `<sha256>`, or an absolute file path; a pin
 that cannot be honoured fails boot), else the verified refreshed copy in

@@ -15,13 +15,23 @@ import { FALLBACK_CONTEXT_WINDOW, MAX_CREDIBLE_CONTEXT_WINDOW } from "./model-ho
 import {
   activeLlmRouteModel,
   getLlmVendorSettings,
+  isLLMVendor,
+  isOpenAICompatiblePresetVendor,
   llmRouteImageInput,
+  OPENAI_COMPATIBLE_VENDOR_PRESETS,
   requestedLlmOutputTokenLimit,
+  type LlmModelRetirementReason,
   type LlmOutputTokenLimitSource,
   type LLMVendor,
   type LLMVendorSettingsMap,
 } from "./llm-vendor-defaults.js";
-import { cachedModelListEntry, type LlmModelListCache } from "./llm-model-list.js";
+import {
+  cachedModelListEntry,
+  llmModelListCacheKey,
+  type LlmModelListCache,
+  type LlmModelListCacheEntry,
+} from "./llm-model-list.js";
+import { CATALOG_PROVIDERS_BY_VENDOR } from "./model-catalog/provider-map.js";
 import { activeModelCatalog } from "./model-catalog/active.js";
 import { allowsImplicitModelLimits, lookupCatalogModel, resolveCatalogKey, type CatalogModelHit } from "./model-catalog/resolve.js";
 import type { MarketplaceProviderModelDiscoveryPolicy } from "./marketplace-package-assets.js";
@@ -175,6 +185,64 @@ export function catalogModelFor(vendor: string, model: string, catalogModel?: st
   if (catalogModel !== undefined) return lookupCatalogModel(catalog, catalogModel);
   if (!allowsImplicitModelLimits(vendor, baseUrl)) return undefined;
   return resolveCatalogKey(catalog, vendor, model);
+}
+
+/**
+ * Whether a route's own `/models` answer can prove one of its models retired
+ * (design `model-capability-catalog.md` §6.1): a public vendor that serves its
+ * own models, reached on its native host. Local runtimes, self-hosted and
+ * custom endpoints (no catalog provider), gateways, Azure deployments and any
+ * custom `baseUrl` list what that endpoint happens to route, so a missing id
+ * there says nothing about the model.
+ */
+export function listingJudgesRetirement(vendor: string, baseUrl?: string): boolean {
+  if (!isLLMVendor(vendor) || CATALOG_PROVIDERS_BY_VENDOR[vendor].length === 0) return false;
+  if (isOpenAICompatiblePresetVendor(vendor) && OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].gateway) return false;
+  return allowsImplicitModelLimits(vendor, baseUrl);
+}
+
+/**
+ * Why `model` is retired on this route, or `undefined` when nothing proves it.
+ *
+ * Retired means the active catalog marks the model the route serves
+ * `deprecated` — judged only where the route itself establishes that identity;
+ * a user's `catalogModel` declaration describes a model's shape, not whether
+ * this host still serves it — or the route's last successful listing was
+ * complete, comes from a route that {@link listingJudgesRetirement}, and names
+ * no id equal to `model` ignoring case. A failed, partial or missing listing
+ * proves nothing.
+ */
+export function resolveModelRetirement(params: {
+  vendor: string;
+  model: string;
+  baseUrl?: string;
+  /** The route's last successful `/models` answer, from the settings cache. */
+  listing?: LlmModelListCacheEntry;
+}): LlmModelRetirementReason | undefined {
+  const model = params.model.trim();
+  if (!model) return undefined;
+  if (catalogModelFor(params.vendor, model, undefined, params.baseUrl)?.model.status === "deprecated") {
+    return "catalog-deprecated";
+  }
+  const listing = params.listing;
+  if (listing?.complete !== true || !listingJudgesRetirement(params.vendor, params.baseUrl)) return undefined;
+  const wanted = model.toLowerCase();
+  return listing.models.some((id) => id.toLowerCase() === wanted) ? undefined : "unlisted";
+}
+
+/** {@link resolveModelRetirement} for a model on the active route's address. */
+export function resolveRouteModelRetirement(
+  llm: LlmRouteSettings,
+  installedProviderPresets?: readonly LlmRouteProviderPreset[],
+  modelOverride?: string,
+): LlmModelRetirementReason | undefined {
+  const address = llmRouteCatalogAddress(llm, installedProviderPresets);
+  return resolveModelRetirement({
+    vendor: address.vendor,
+    model: activeLlmRouteModel(llm, modelOverride),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
+    listing: llm.modelListCache?.[llmModelListCacheKey(address.vendor, address.baseUrl, address.credentialScope)],
+  });
 }
 
 /** The settings a route's context window is read out of. */

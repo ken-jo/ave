@@ -23,15 +23,19 @@ import {
 import type { AlertSettings, RetiredPluginConfigRecord } from "../shared/alerts-types.js";
 import {
   isMarketplaceEligibleLLMVendor,
+  activeLlmRouteModel,
   isRetiredLLMVendor,
   LLM_VENDORS,
   RETIRED_LLM_VENDOR_IDS,
   type LLMVendor,
+  type LlmRouteRetirement,
   type RetiredLLMVendor,
+  type RetiredLlmModel,
   type LLMVendorSettingsMap,
   type LLMVendorSettings,
   type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
+import { resolveRouteModelRetirement } from "../shared/context-budget.js";
 import type { GitRuntimeMode } from "../shared/git-runtime-mode.js";
 import { isThemeId } from "../shared/theme-bundles.js";
 import {
@@ -183,6 +187,18 @@ function retiredLlmProviderOf(rawLlm: unknown): RetiredLLMVendor | undefined {
   const record = rawLlm as { provider?: unknown; retiredProvider?: unknown };
   if (isRetiredLLMVendor(record.provider)) return record.provider;
   return isRetiredLLMVendor(record.retiredProvider) ? record.retiredProvider : undefined;
+}
+
+/**
+ * The active API route's saved model, when the catalog or the vendor's own
+ * listing says it is retired (design `model-capability-catalog.md` §6.1).
+ * Judged afresh on every load, so a model that comes back is released and a
+ * stored marker for a model the profile no longer names is dropped.
+ */
+function retiredLlmModelOf(llm: LLMSettings): RetiredLlmModel | undefined {
+  const reason = resolveRouteModelRetirement(llm);
+  if (!reason) return undefined;
+  return { vendor: llm.provider, model: activeLlmRouteModel(llm), reason };
 }
 
 /**
@@ -354,8 +370,14 @@ export interface LLMSettings {
    * window shows a notice, so a key the user saved for another, paid vendor is
    * not used until they choose a provider themselves. Saving a provider from
    * Settings clears it. Only the settings load sets it; no patch can.
+   *
+   * The same marker carries a retired model (an object, not a vendor id):
+   * the load found the active route's saved model deprecated in the catalog
+   * or missing from its vendor's complete listing (design
+   * `model-capability-catalog.md` §6.1). Every gate above applies unchanged:
+   * the route stays unresolved until the user picks a model.
    */
-  retiredProvider?: RetiredLLMVendor;
+  retiredProvider?: LlmRouteRetirement;
   /**
    * The model catalog refresh (design `model-capability-catalog.md` §7).
    * Absent means the default, `"auto"`: once a day the host fetches the public
@@ -2123,6 +2145,9 @@ export class SettingsService {
       if (retiredProvider) {
         llm = { ...llm, retiredProvider };
         if (isRetiredLLMVendor((rawLlm as { provider?: unknown }).provider)) migrationWriteBack = true;
+      } else {
+        const retiredModel = retiredLlmModelOf(llm);
+        if (retiredModel) llm = { ...llm, retiredProvider: retiredModel };
       }
       const marketplaceParsed: Record<string, unknown> = { ...(parsed.marketplace ?? {}) };
       // One-time: drop the server marketplace's settings and write the file

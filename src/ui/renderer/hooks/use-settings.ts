@@ -8,9 +8,10 @@ import {
   getLlmVendorSettings,
   narrowLlmVendor,
   isLLMVendor,
-  isRetiredLLMVendor,
+  isLlmRouteRetirement,
+  isRetiredLlmModelMarker,
   type LLMVendor,
-  type RetiredLLMVendor,
+  type LlmRouteRetirement,
 } from "../../../shared/llm-vendor-defaults.js";
 import {
   DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
@@ -21,7 +22,14 @@ import {
   type SubscriptionRuntimeId,
 } from "../../../shared/subscription-runtime.js";
 import { selectSubscriptionRuntimeUiPolicy, type SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
-import { resolveContextWindowForRoute, type ResolvedOutputTokenLimit, type RouteInputModalities } from "../../../shared/context-budget.js";
+import {
+  llmRouteCatalogAddress,
+  resolveContextWindowForRoute,
+  resolveModelRetirement,
+  type ResolvedOutputTokenLimit,
+  type RouteInputModalities,
+} from "../../../shared/context-budget.js";
+import { llmModelListCacheKey, type LlmModelListCacheEntry } from "../../../shared/llm-model-list.js";
 import { syncPricingOverrides } from "./use-pricing-overrides.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../../shared/model-host-policy.js";
 import {
@@ -121,10 +129,11 @@ export interface UseSettingsResult {
   /** True when the active vendor can run with no stored API key. */
   llmReadyWithoutApiKey: boolean;
   /**
-   * The removed vendor the stored profile was moved off, until the user picks
-   * a provider in Settings. API-key chat is not ready while it is set.
+   * The removed vendor the stored profile was moved off, or the retired model
+   * it names, until the user picks in Settings. API-key chat is not ready
+   * while it is set.
    */
-  retiredLlmProvider: RetiredLLMVendor | null;
+  retiredLlmProvider: LlmRouteRetirement | null;
   /** Single source of truth for selected subscription chat and attachment UX. */
   subscriptionRuntimePolicy: SubscriptionRuntimeUiPolicy;
   /** Active subscription runtime after untrusted settings boundary validation. */
@@ -161,7 +170,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     DEFAULT_PROCESSING_DISPLAY_LEVEL,
   );
   const [llmReadyWithoutApiKey, setLlmReadyWithoutApiKey] = useState(false);
-  const [retiredLlmProvider, setRetiredLlmProvider] = useState<RetiredLLMVendor | null>(null);
+  const [retiredLlmProvider, setRetiredLlmProvider] = useState<LlmRouteRetirement | null>(null);
   const [activeSubscriptionRuntime, setActiveSubscriptionRuntime] =
     useState<SubscriptionChatRuntimeSelection | null>(null);
   const [subscriptionRuntimeCapabilities, setSubscriptionRuntimeCapabilities] =
@@ -210,7 +219,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
         settings.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
       );
       setLlmReadyWithoutApiKey(canUseSettingsWithoutApiKey(settings, provider));
-      setRetiredLlmProvider(isRetiredLLMVendor(settings.llm.retiredProvider) ? settings.llm.retiredProvider : null);
+      setRetiredLlmProvider(isLlmRouteRetirement(settings.llm.retiredProvider) ? settings.llm.retiredProvider : null);
       const nextSubscriptionRuntime = activeSubscriptionRuntimeFromSettings(settings);
       const runtimeChanged = !sameSubscriptionRuntime(
         activeSubscriptionRuntimeRef.current,
@@ -426,7 +435,15 @@ export type ModelCardChoice = ApiModelCardChoice | SubscriptionModelCardChoice;
 export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
   const pinned = llm.pinnedModels ?? [];
   const offered = new Map<string, Set<LLMVendor>>();
-  const offer = (vendor: LLMVendor, modelId: string) => {
+  const activeAddress = llmRouteCatalogAddress(llm);
+  const activeListing = llm.modelListCache?.[
+    llmModelListCacheKey(activeAddress.vendor, activeAddress.baseUrl, activeAddress.credentialScope)
+  ];
+  // A retired model is not a choice (design `model-capability-catalog.md` §6.1).
+  const retired = (vendor: LLMVendor, modelId: string, baseUrl?: string, listing?: LlmModelListCacheEntry) =>
+    resolveModelRetirement({ vendor, model: modelId, ...(baseUrl ? { baseUrl } : {}), ...(listing ? { listing } : {}) }) !== undefined;
+  const offer = (vendor: LLMVendor, modelId: string, baseUrl?: string, listing?: LlmModelListCacheEntry) => {
+    if (retired(vendor, modelId, baseUrl, listing)) return;
     let models = offered.get(modelId);
     if (!models) {
       models = new Set();
@@ -443,9 +460,11 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
     // The cache is persisted host data keyed by vendor string; only entries
     // naming a known vendor can be offered as a pick.
     if (!isLLMVendor(entry.vendor)) continue;
-    for (const modelId of entry.models) offer(entry.vendor, modelId);
+    for (const modelId of entry.models) offer(entry.vendor, modelId, entry.baseUrl, entry);
   }
-  for (const modelId of getVendorOption(active).modelOptions) offer(active, modelId);
+  for (const modelId of getVendorOption(active).modelOptions) {
+    offer(active, modelId, activeAddress.baseUrl, activeListing);
+  }
   const activeBlock = llm.vendors[active];
   const currentModel = activeBlock && llmRouteModel(
     activeBlock,
@@ -473,7 +492,12 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
       });
     }
   }
-  if (subscription === null && currentModel && !choices.some((choice) =>
+  // A retired vendor leaves its configured model as an unselected candidate;
+  // a retired model is not offered at all.
+  const currentRetired = currentModel !== undefined && currentModel !== ""
+    && (isRetiredLlmModelMarker(llm.retiredProvider)
+      || retired(active, currentModel, activeAddress.baseUrl, activeListing));
+  if (subscription === null && currentModel && !currentRetired && !choices.some((choice) =>
     choice.kind === "api" && choice.vendor === active && choice.modelId === currentModel
   )) {
     choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: !llm.retiredProvider });

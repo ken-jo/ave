@@ -36,7 +36,6 @@ import {
   type LLMVendorSettingsMap,
   type LLMVendorSettings,
   type MarketplaceEligibleLLMVendor,
-  normalizeLlmVendorModel,
 } from "../shared/llm-vendor-defaults.js";
 import {
   DEFAULT_BUNDLE_ID,
@@ -598,6 +597,8 @@ function normalizeLlmModelListCache(
       endpoint: entry.endpoint.trim(),
       models,
       ...(modelEntries ? { modelEntries } : {}),
+      // A list the cap cut short no longer names every id the endpoint served.
+      ...(entry.complete === true && models.length < MAX_CACHED_LLM_MODEL_IDS ? { complete: true } : {}),
       fetchedAt,
     };
     if (Object.keys(result).length >= MAX_LLM_MODEL_LIST_CACHE_ENTRIES) break;
@@ -685,11 +686,7 @@ export function mergeLlmPatch(
       isLLMVendor(entry.provider) &&
       isLlmProviderEnabled(entry.provider, installedProviderIds) &&
       !(marketplaceProviderPresetId && entry.provider === "openai-compatible")
-    )
-    .map((entry) => ({
-      ...entry,
-      model: normalizeLlmVendorModel(entry.provider, entry.model),
-    }));
+    );
   const isProviderSelectionAccepted = isLLMVendor(partial.provider)
     && activeProvider === partial.provider
     && !removedActiveMarketplaceProviderPreset

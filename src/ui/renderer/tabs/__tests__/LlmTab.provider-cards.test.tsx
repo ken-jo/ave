@@ -11,6 +11,7 @@ import type {
 } from "../../../../shared/marketplace-package-assets.js";
 import type { SubscriptionProviderView } from "../SubscriptionProvidersSection.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
+import { t } from "../../../../i18n/runtime.js";
 import { freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
 import { resolveContextWindowForRoute } from "../../../../shared/context-budget.js";
 import { supportsVision } from "../../../../engine/llm/vendor-capabilities.js";
@@ -426,8 +427,8 @@ describe("LlmTab provider cards", () => {
   });
   it.each([
     { model: "GPT-4.1", reportedModel: "gpt-4.1", inputModalities: ["text"], supportedParameters: ["tools"], vision: false, tools: true },
-    { model: "GPT-4", reportedModel: "gpt-4", inputModalities: ["text", "image"], supportedParameters: ["tools"], vision: true, tools: true },
-    { model: "GPT-3.5-Turbo", reportedModel: "gpt-3.5-turbo", inputModalities: ["text"], supportedParameters: ["tools"], vision: false, tools: true },
+    { model: "GPT-4o", reportedModel: "gpt-4o", inputModalities: ["text", "image"], supportedParameters: ["tools"], vision: true, tools: true },
+    { model: "Text-Embedding-3-Small", reportedModel: "text-embedding-3-small", inputModalities: ["text"], supportedParameters: ["tools"], vision: false, tools: true },
   ])("matches engine capabilities when the saved model and report differ in case: $model", async ({ model, reportedModel, inputModalities, supportedParameters, vision, tools }) => {
     const modelListCache: LlmModelListCache = {
       [llmModelListCacheKey("openai")]: {
@@ -472,16 +473,16 @@ describe("LlmTab provider cards", () => {
   });
 
   it.each([false, true].flatMap((reversed) => [
-    { reversed, model: "GPT-3.5-Turbo", vision: true, tools: true },
-    { reversed, model: "gpt-3.5-turbo", vision: false, tools: false },
-    { reversed, model: "gPt-3.5-tUrBo", vision: false, tools: false },
+    { reversed, model: "Text-Embedding-3-Small", vision: true, tools: true },
+    { reversed, model: "text-embedding-3-small", vision: false, tools: false },
+    { reversed, model: "tExT-eMbEdDiNg-3-sMaLl", vision: false, tools: false },
   ]))("keeps case-distinct model badges separate: $model ($reversed)", async ({ reversed, model, vision, tools }) => {
     const modelListCache: LlmModelListCache = {
       [llmModelListCacheKey("openai")]: {
-        vendor: "openai", models: ["GPT-3.5-Turbo", "gpt-3.5-turbo"], endpoint: "https://provider.invalid/v1/models",
+        vendor: "openai", models: ["Text-Embedding-3-Small", "text-embedding-3-small"], endpoint: "https://provider.invalid/v1/models",
         modelEntries: [
-          { id: "GPT-3.5-Turbo", inputModalities: ["text", "image"], supportedParameters: ["tools"] },
-          { id: "gpt-3.5-turbo", inputModalities: ["text"], supportedParameters: ["temperature"] },
+          { id: "Text-Embedding-3-Small", inputModalities: ["text", "image"], supportedParameters: ["tools"] },
+          { id: "text-embedding-3-small", inputModalities: ["text"], supportedParameters: ["temperature"] },
         ],
         fetchedAt: new Date(0).toISOString(),
       },
@@ -560,10 +561,10 @@ describe("LlmTab provider cards", () => {
   });
 
   it.each([
-    { model: "gpt-3.5-turbo", badge: true },
+    { model: "text-embedding-3-small", badge: true },
     { model: "gpt-4.1", badge: false },
     { model: "a-served-model", badge: false },
-    { model: "gpt-3.5-turbo", supportedParameters: ["tools"], badge: false },
+    { model: "text-embedding-3-small", supportedParameters: ["tools"], badge: false },
   ])("shows the no-tools badge only for a route that withholds tools: %j", async ({ model, supportedParameters, badge }) => {
     const { api } = profileApi({ vendors: { openai: { model } } }, {
       hasApiKey: storedKeysFor("openai"),
@@ -594,8 +595,8 @@ describe("LlmTab provider cards", () => {
 
   it.each([
     { model: "gpt-4.1", catalogModel: "openai/gpt-3.5-turbo", badge: true },
-    { model: "gpt-3.5-turbo", catalogModel: "openai/gpt-4.1", badge: false },
-    { model: "gpt-3.5-turbo", catalogModel: "openai/not-listed", badge: false },
+    { model: "text-embedding-3-small", catalogModel: "openai/gpt-4.1", badge: false },
+    { model: "text-embedding-3-small", catalogModel: "openai/not-listed", badge: false },
     { model: "gpt-4.1", catalogModel: "openai/gpt-3.5-turbo", supportedParameters: ["tools"], badge: true },
   ])("uses the vendor route's named catalog entry for the tool badge: %j", async ({ model, catalogModel, supportedParameters, badge }) => {
     const { api } = profileApi({
@@ -695,7 +696,7 @@ describe("LlmTab provider cards", () => {
     { baseUrl: "https://gateway.invalid/v1", badge: false },
     { baseUrl: "https://api.openai.com/v1", badge: true },
   ])("follows the engine's endpoint identity for a same-name model's tool badge: $baseUrl", async ({ baseUrl, badge }) => {
-    const model = "gpt-3.5-turbo";
+    const model = "text-embedding-3-small";
     const { api } = profileApi({ vendors: { openai: { model, baseUrl } } }, {
       hasApiKey: storedKeysFor("openai"),
       listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
@@ -711,7 +712,7 @@ describe("LlmTab provider cards", () => {
   ])("matches a fallback row's tool badge under its saved endpoint like the engine: $baseUrl", async ({ baseUrl, badge }) => {
     // provider.ts builds a fallback on the vendor block's saved baseUrl, and the
     // adapter matches the catalog under that endpoint's identity.
-    const model = "gpt-3.5-turbo";
+    const model = "text-embedding-3-small";
     const { api } = profileApi({ vendors: { openai: { model, baseUrl } } }, {
       hasApiKey: storedKeysFor("openai", "claude"),
       listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
@@ -732,8 +733,63 @@ describe("LlmTab provider cards", () => {
     expect(Boolean(within(option).queryByTestId(`llm-tab:model-no-tools:${model}`))).toBe(badge);
   });
 
+  it("hides a model the catalog deprecates from the chooser, the saved one included (design §6.1)", async () => {
+    const { api } = profileApi({ vendors: { openai: { model: "o4-mini" } } }, {
+      hasApiKey: storedKeysFor("openai"),
+      // The endpoint still answers with it; the catalog's status decides.
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true, vendor: "openai", endpoint: "https://api.openai.com/v1/models",
+        models: ["gpt-5.4", "o3", "o4-mini"], fetchedAt: "2026-10-13T00:00:00.000Z",
+      } satisfies LlmModelListResult),
+    });
+    await renderTab(api, {
+      vendor: "openai", model: "o4-mini",
+      retiredLlmProvider: { vendor: "openai", model: "o4-mini", reason: "catalog-deprecated" },
+    });
+    const ids = await chooserModelIds();
+    expect(ids).toContain("gpt-5.4");
+    expect(ids).toContain("o3");
+    expect(ids).not.toContain("o4-mini");
+  });
+
+  it("hides a model the vendor's complete listing dropped, and leaves a saved fallback at it unselected", async () => {
+    const listing = {
+      vendor: "openai",
+      endpoint: "https://api.openai.com/v1/models",
+      models: ["gpt-5.4", "gpt-5.4-mini"],
+      complete: true,
+      fetchedAt: "2026-10-13T00:00:00.000Z",
+    };
+    const { api } = profileApi({
+      vendors: { openai: { model: "gpt-5.4" } },
+      modelListCache: { ["openai\n\n"]: listing },
+    }, {
+      hasApiKey: storedKeysFor("openai", "claude"),
+      listLlmModels: vi.fn(async ({ vendor }: { vendor: string }) => (vendor === "openai"
+        ? { ...listing, ok: true, complete: true }
+        : new Promise<LlmModelListResult>(() => {})) as LlmModelListResult),
+    });
+    await renderTab(api, {
+      vendor: "claude", model: "claude-sonnet-4-6",
+      fallbackOpen: true, fallbackChain: [{ provider: "openai", model: "gpt-4.1" }],
+    });
+    const section = screen.getByTestId("fallback-chain-section");
+    const triggers = [...section.querySelectorAll<HTMLElement>("[role='combobox']")];
+    const modelTrigger = triggers[triggers.length - 1]!;
+    await waitFor(() => expect(modelTrigger).toHaveTextContent(t("llmTab.modelRetiredPlaceholder", { model: "gpt-4.1" })));
+    openMenu(modelTrigger);
+    const ids = await waitFor(() => {
+      const found = [...document.querySelectorAll<HTMLElement>("[role='option']")]
+        .map((node) => node.querySelector("[data-model-id]")?.getAttribute("data-model-id") ?? node.textContent ?? "");
+      expect(found.length).toBeGreaterThan(0);
+      return found;
+    });
+    expect(ids).toContain("gpt-5.4");
+    expect(ids).not.toContain("gpt-4.1");
+  });
+
   it.each(["pending", "failed"])("keeps the tool badge consistent with the engine during a %s capability cache save", async (saveState) => {
-    const model = "gpt-3.5-turbo";
+    const model = "text-embedding-3-small";
     const { api } = profileApi({
       vendors: { openai: { model } },
     }, {
@@ -1597,12 +1653,12 @@ describe("LlmTab chat-route availability", () => {
       expect(screen.queryByTestId("llm-tab:connection-blocked:vertex-ai")).toBeNull());
     // With the project stored the row is choosable like any other — through
     // the one chooser, with no second control of its own.
-    expect(await chooserModelIds()).toContain("gemini-2.5-flash");
-    expect(chooserGroupText("gemini-2.5-flash")).toMatch(/Vertex/i);
+    expect(await chooserModelIds()).toContain("gemini-3.5-flash");
+    expect(chooserGroupText("gemini-3.5-flash")).toMatch(/Vertex/i);
 
-    pickChooserOption("gemini-2.5-flash");
+    pickChooserOption("gemini-3.5-flash");
     await waitFor(() => expect(hooks.selectApiVendorModel)
-      .toHaveBeenCalledWith("vertex-ai", "gemini-2.5-flash"));
+      .toHaveBeenCalledWith("vertex-ai", "gemini-3.5-flash"));
   });
 });
 

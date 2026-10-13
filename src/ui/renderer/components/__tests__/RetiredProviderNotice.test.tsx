@@ -23,6 +23,25 @@ describe("RetiredProviderNotice", () => {
     expect(onChooseProvider).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["catalog-deprecated", "app.retiredModelNoticeBodyDeprecated"],
+    ["unlisted", "app.retiredModelNoticeBodyUnlisted"],
+  ] as const)("names a retired model and why it is retired (%s)", (reason, bodyKey) => {
+    const onChooseProvider = vi.fn();
+    render(<RetiredProviderNotice retiredProvider={{ vendor: "openai", model: "o4-mini", reason }} onChooseProvider={onChooseProvider} />);
+    const notice = screen.getByTestId("retired-provider-notice");
+    expect(notice).toHaveAttribute("data-retired-model", "o4-mini");
+    expect(notice).toHaveAttribute("data-retired-reason", reason);
+    expect(notice).not.toHaveAttribute("data-retired-provider");
+    expect(notice).toHaveTextContent(t("app.retiredModelNoticeTitle", { model: "o4-mini" }));
+    expect(notice).toHaveTextContent(t(bodyKey));
+    expect(notice.textContent).toContain("o4-mini");
+    expect(notice.textContent).not.toMatch(/app\.retired|\[object Object\]|GitHub/);
+    expect(screen.getByTestId("retired-provider-notice-action")).toHaveTextContent(t("app.retiredModelNoticeAction"));
+    fireEvent.click(screen.getByTestId("retired-provider-notice-action"));
+    expect(onChooseProvider).toHaveBeenCalledTimes(1);
+  });
+
   it("is not dismissible: it renders until the marker is gone, and not at all without one", () => {
     const { rerender } = render(<RetiredProviderNotice retiredProvider="copilot" onChooseProvider={vi.fn()} />);
     expect(screen.queryByRole("button", { name: /dismiss|✕/i })).toBeNull();

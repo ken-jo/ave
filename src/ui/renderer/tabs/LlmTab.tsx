@@ -37,7 +37,6 @@ import {
   type LLMVendor,
   isOpenAICompatiblePresetVendor,
   isOpenAICompatibleVendor,
-  isRetiredLlmModel,
   isSelfHostedTrustedNetworkVendor,
   llmRouteModel,
   llmImageInputKey,
@@ -83,7 +82,7 @@ import { TEST_IDS } from "../../../shared/test-ids.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
-import { resolveInputModalities, resolveToolCallSupport, type ResolvedToolCallSupport } from "../../../shared/context-budget.js";
+import { resolveInputModalities, resolveModelRetirement, resolveToolCallSupport, type ResolvedToolCallSupport } from "../../../shared/context-budget.js";
 
 export interface FallbackEntry {
   provider: LLMVendor;
@@ -696,6 +695,7 @@ function modelOptionsFor(
   syncedOptions?: readonly string[],
   info: ProviderOption | VendorOption = getVendorInfo(vendorId),
   modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy,
+  isRetired: (model: string) => boolean = () => false,
 ): string[] {
   const hasSynced = Boolean(syncedOptions && syncedOptions.length > 0);
   // Handshake-only: for every provider whose catalogue is the endpoint's word
@@ -723,11 +723,33 @@ function modelOptionsFor(
   }
 
   const currentModel = selectedModel.trim();
-  if (currentModel && !isRetiredLlmModel(currentModel) && !options.includes(currentModel)) {
+  if (currentModel && !options.includes(currentModel)) {
     options.unshift(currentModel);
   }
 
-  return options;
+  // A retired model is not a choice, the saved one included: a saved
+  // selection pointing at one shows as unresolved instead (design
+  // `model-capability-catalog.md` §6.1).
+  return options.filter((option) => !isRetired(option));
+}
+
+/**
+ * Whether a model is retired on the route this cache key names, judged from
+ * the catalog and that route's last successful listing.
+ */
+function modelRetiredOn(
+  cache: LlmModelListCache,
+  modelListKey: string | undefined,
+  vendorId: string,
+): (model: string) => boolean {
+  const [, baseUrl = ""] = modelListKey?.split("\n") ?? [];
+  const listing = modelListKey ? cache[modelListKey] : undefined;
+  return (model) => resolveModelRetirement({
+    vendor: vendorId,
+    model,
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(listing ? { listing } : {}),
+  }) !== undefined;
 }
 
 /**
@@ -1253,9 +1275,7 @@ export function LlmTab(props: LlmTabProps) {
   const activeModelListCredentialScope = selectedMarketplaceProviderPreset?.providerId ?? "";
   const hasOnSave = typeof onSave === "function";
   const trimmedModel = model.trim();
-  const activeModelValue = trimmedModel && !isRetiredLlmModel(trimmedModel)
-    ? trimmedModel
-    : vendorInfo.defaultModel;
+  const activeModelValue = trimmedModel || vendorInfo.defaultModel;
   const [marketplaceProviderIds, setMarketplaceProviderIds] = useState<readonly string[]>([]);
   /** What is actually stored for each vendor, mirrored so the typed fields can
    *  say whether they still hold something uncommitted. */
@@ -1442,6 +1462,7 @@ export function LlmTab(props: LlmTabProps) {
               endpoint: result.endpoint,
               models: result.models,
               ...(result.modelEntries ? { modelEntries: result.modelEntries } : {}),
+              ...(result.complete ? { complete: true } : {}),
               fetchedAt: result.fetchedAt,
             };
             const nextCache = {
@@ -2109,8 +2130,11 @@ export function LlmTab(props: LlmTabProps) {
     const selectedModel = rowCredentialId(row) === activeApiRowId
       ? activeModelValue
       : rowSavedModel(row);
-    return modelOptionsFor(vendorId, selectedModel, synced, rowInfo, discoveryPolicy);
-  }, [activeApiRowId, activeModelValue, installedPresetById, modelLists, rowSavedModel]);
+    return modelOptionsFor(
+      vendorId, selectedModel, synced, rowInfo, discoveryPolicy,
+      modelRetiredOn(savedModelListCache, row.modelListKey, vendorId),
+    );
+  }, [activeApiRowId, activeModelValue, installedPresetById, modelLists, rowSavedModel, savedModelListCache]);
 
   /**
    * What stops this row's API route from answering a chat turn, or null.
@@ -3254,14 +3278,21 @@ export function LlmTab(props: LlmTabProps) {
               {fallbackChain.map((entry, idx) => {
                 const fallbackVendorInfo = getVendorInfo(entry.provider);
                 const trimmedFallbackModel = entry.model.trim();
-                const fallbackModelValue = trimmedFallbackModel && !isRetiredLlmModel(trimmedFallbackModel)
-                  ? trimmedFallbackModel
-                  : fallbackVendorInfo.defaultModel;
-                const fallbackModelList = modelLists[vendorModelListKey(entry.provider)];
+                const fallbackModelListKey = vendorModelListKey(entry.provider);
+                const fallbackModelRetired = modelRetiredOn(savedModelListCache, fallbackModelListKey, entry.provider);
+                const savedFallbackModel = trimmedFallbackModel || fallbackVendorInfo.defaultModel;
+                // A saved fallback at a retired model stays unselected until
+                // the user picks another; it is not swapped for a default.
+                const retiredFallbackModel = fallbackModelRetired(savedFallbackModel) ? savedFallbackModel : null;
+                const fallbackModelValue = retiredFallbackModel ? "" : savedFallbackModel;
+                const fallbackModelList = modelLists[fallbackModelListKey];
                 const fallbackModelOptions = modelOptionsFor(
                   entry.provider,
                   fallbackModelValue,
                   optionsFromModelListState(fallbackModelList),
+                  undefined,
+                  undefined,
+                  fallbackModelRetired,
                 );
                 return (
                   <div key={idx} className="flex min-w-0 flex-col gap-2 sm:flex-row">
@@ -3294,7 +3325,11 @@ export function LlmTab(props: LlmTabProps) {
                       }}
                     >
                       <SelectTrigger className="min-w-0 flex-1 text-xs">
-                        <SelectValue placeholder={fallbackVendorInfo.defaultModel} />
+                        <SelectValue
+                          placeholder={retiredFallbackModel
+                            ? t("llmTab.modelRetiredPlaceholder", { model: retiredFallbackModel })
+                            : fallbackVendorInfo.defaultModel}
+                        />
                       </SelectTrigger>
                       <SelectContent className={SELECT_POPUP_LAYOUT}>
                         {fallbackModelOptions.map((option) => (

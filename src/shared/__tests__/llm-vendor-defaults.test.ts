@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { resolveModelRetirement } from "../context-budget.js";
 import {
   BUILT_IN_LLM_VENDOR_IDS,
   DEFAULT_VISIBLE_LLM_VENDOR_IDS,
@@ -22,10 +23,8 @@ import {
   isApiKeyOptionalLlmVendor,
   isDefaultVisibleLLMVendor,
   isMarketplaceEligibleLLMVendor,
-  isRetiredLlmModel,
   isSelfHostedTrustedNetworkVendor,
   isSelfHostedVllmVendor,
-  normalizeLlmVendorModel,
   DEFAULT_LLM_VENDOR,
   narrowLlmVendor,
   isRetiredLLMVendor,
@@ -303,12 +302,19 @@ describe("LLM vendor defaults", () => {
     }
   });
 
-  it("normalizes the retired exact gpt-4o model id to each provider default", () => {
-    expect(isRetiredLlmModel("gpt-4o")).toBe(true);
-    expect(isRetiredLlmModel("gpt-4o-mini")).toBe(false);
-    expect(isRetiredLlmModel("gpt-4o-deployment")).toBe(false);
-    expect(normalizeLlmVendorModel("openai", "gpt-4o")).toBe("gpt-5.4-mini");
-    expect(normalizeLlmVendorModel("azure-foundry", "gpt-4o")).toBe("gpt-5.4-mini");
+  it("ships no default or curated model the active catalog retires (design §6.1)", () => {
+    const retired = LLM_VENDORS.flatMap((vendor) =>
+      [LLM_VENDOR_DEFAULTS[vendor].model, ...LLM_VENDOR_MODEL_OPTIONS[vendor]]
+        .filter((model) => model && resolveModelRetirement({ vendor, model }) !== undefined)
+        .map((model) => `${vendor}/${model}`));
+    expect(retired).toEqual([]);
+  });
+
+  it("keeps a stored model id as saved; no name list retires it", () => {
+    // Retirement is judged from the catalog and the vendor's own listing
+    // (resolveModelRetirement), never by rewriting the id on read.
+    expect(getLlmVendorSettings({ openai: { model: "gpt-4o" } } as never, "openai").model).toBe("gpt-4o");
+    expect(getLlmVendorSettings({ "azure-foundry": { model: "gpt-4o" } } as never, "azure-foundry").model).toBe("gpt-4o");
   });
 
   it("uses gemini-2.5-flash as the Gemini default model", () => {

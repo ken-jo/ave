@@ -73,6 +73,13 @@ export type LlmModelListCacheEntry = {
   endpoint: string;
   models: string[];
   modelEntries?: LlmModelListEntry[];
+  /**
+   * Set when this answer is the endpoint's whole list: the response carried no
+   * continuation marker and every id fit the cache. Only a complete listing
+   * can prove a model gone (`resolveModelRetirement`); without it, including
+   * every entry written before this field existed, a missing id is unknown.
+   */
+  complete?: true;
   fetchedAt: string;
 };
 
@@ -135,6 +142,8 @@ export type LlmModelListResult =
       endpoint: string;
       models: string[];
       modelEntries?: LlmModelListEntry[];
+      /** See {@link LlmModelListCacheEntry.complete}. */
+      complete?: true;
       fetchedAt: string;
     }
   | {
