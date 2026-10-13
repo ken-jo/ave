@@ -52,6 +52,23 @@ describe("website public URLs", () => {
     expect(existsSync(join(web, "public/.well-known/former-service.json"))).toBe(true);
     expect(existsSync(join(web, "public/announcements/v1.json"))).toBe(true);
   });
+
+  it("publishes the service document under both the Ave and the legacy Ave name", () => {
+    // Ave fetches ave-service.json; installed Ave apps still fetch former-service.json.
+    const ave = JSON.parse(read("web/public/.well-known/ave-service.json")) as unknown;
+    const ave = JSON.parse(read("web/public/.well-known/former-service.json")) as unknown;
+    expect(ave).toEqual(ave);
+    const headers = read("web/public/_headers");
+    expect(headers).toContain("/.well-known/ave-service.json");
+    expect(headers).toContain("/.well-known/former-service.json");
+  });
+
+  it("copies both service documents into the static export when it is built", () => {
+    const out = join(web, "out/.well-known");
+    if (!existsSync(out)) return expect(existsSync(join(web, "out"))).toBe(false);
+    const built = (name: string) => JSON.parse(readFileSync(join(out, name), "utf8")) as unknown;
+    expect(built("ave-service.json")).toEqual(built("former-service.json"));
+  });
 });
 
 describe("Ave to Ave reinstall notice", () => {

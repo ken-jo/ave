@@ -3,8 +3,8 @@
 > **Current: v4 (Ave renewal, end of file).** Sections 1–v3.1 are kept as history;
 > where they conflict with v4, v4 wins.
 
-> The visual language for **docs.former-site.invalid**, derived from the Ave Marketplace
-> (`marketplace.former-site.invalid`) as the structural foundation and refined with premium
+> The visual language for the Ave docs (**former-site.invalid/docs**), derived from the marketplace
+> site (`marketplace.former-site.invalid`) as the structural foundation and refined with premium
 > cues from the current generation of premium product marketing surfaces.
 >
 > **North star:** _restraint over decoration_. A calm, near‑monochrome, system‑font
@@ -79,7 +79,7 @@ periwinkle glow, while reading as marketplace‑neutral.
 | `glow-tint` | `rgba(183,191,217,0.09)` | Circular icon‑chip fill |
 
 > There is intentionally **no saturated text/link accent.** Links are ink with an
-> underline affordance. If brand continuity is later required, the Ave teal
+> underline affordance. If brand continuity is later required, the original brand teal
 > (`#007c72`) can be re‑introduced as `accent` for links/focus only — but the default
 > system is monochrome by design.
 
