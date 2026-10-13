@@ -4089,6 +4089,18 @@ describe("retired model profile (design model-capability-catalog §6.1)", () => 
     expect(service.getSecret("llm.apiKey.openai")).toBe("credential-marker");
   });
 
+  it("drops a deprecated-tier marker an earlier build stored for the same model, releasing its keys", () => {
+    writeProfile({
+      provider: "openai",
+      vendors: { openai: { model: "o4-mini" } },
+      retiredProvider: { vendor: "openai", model: "o4-mini", reason: "catalog-deprecated" },
+    });
+    writePlainSecrets(join(userDataPath, "ave-secrets.json"), { "llm.apiKey.openai": "credential-marker" });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+    expect(service.get("llm").retiredProvider).toBeUndefined();
+    expect(service.getSecret("llm.apiKey.openai")).toBe("credential-marker");
+  });
+
   it("retires a deprecated model the vendor's complete listing also dropped: the listing outranks the catalog", () => {
     writeProfile({ provider: "openai", vendors: { openai: { model: "o4-mini" } }, modelListCache: listingWithout(["gpt-5.4"]) });
     const llm = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");
