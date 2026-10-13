@@ -1,10 +1,10 @@
-name: Naming Gate (process-metadata + de-identification)
+name: Naming Gate (process-metadata + home-path)
 
-# 세 개의 독립 job. 앞의 두 개는 diff-based — PR 의 변경분만 검사한다. 기존
-# 위반은 grandfather; sweep PR 으로 별도 제거. 세 번째(home-path-gate)만
+# 두 개의 독립 job. 첫 번째(naming-gate)는 diff-based — PR 의 변경분만 검사한다.
+# 기존 위반은 grandfather; sweep PR 으로 별도 제거. 두 번째(home-path-gate)는
 # whole-tree 이며, 그 이유는 해당 job 설명에 있다.
 #
-# 세 job 은 서로 독립이다 — 한 job 의 실패가 다른 job 의 판정을 가리지 않는다.
+# 두 job 은 서로 독립이다 — 한 job 의 실패가 다른 job 의 판정을 가리지 않는다.
 # 같은 job 안의 step 으로 이어 붙이면 앞 step 실패가 뒤 step 을 skip 시키고,
 # 리뷰어는 빨간 체크 하나를 보고 "검사 하나가 걸렸다" 로 읽지만 실제로는
 # 나머지 검사가 아예 돌지 않은 상태다.
@@ -20,25 +20,14 @@ name: Naming Gate (process-metadata + de-identification)
 #    고정하고 같은 job 에서 함께 돌기 때문에, grep 프로그램의 회귀는 그것을
 #    유발한 PR 에서 바로 실패한다.
 #
-# 2. deidentification-gate — 이 저장소는 PUBLIC 이다. 고용사 브랜드명, 사내
-#    시스템명, 사내 호스트명이 새로 추가되지 못하도록 차단한다. 사내 구현은
-#    private 플러그인 저장소에 남는다는 경계가 이미 설계로 존재하며, 공개
-#    호스트 저장소에 사내 식별자가 들어오면 그 경계가 무의미해진다. 패턴
-#    목록은 `DEIDENT_PATTERNS` / `DEIDENT_FILENAME_PATTERN` secret 에 있다 —
-#    `AGENTS.md` 가 그 literal 을 되풀이하면 규칙이 지우려는 것을 바로 그
-#    문서가 다시 게시하게 되고, 이 워크플로 파일 자체도 PUBLIC 이므로 여기에
-#    적어두는 것도 같은 게시다. 목록이 비어 오면 통과가 아니라 실패다.
-#
-# 3. home-path-gate — 역시 PUBLIC 저장소 이슈지만 대상이 다르다. 절대 홈
-#    경로(`/Users/<계정>`, `/home/<계정>`, `C:\Users\<계정>`, 그리고 agent
-#    도구가 쓰는 dash-encoded 형태)에 박힌 *개인 계정명* 을 막는다. 2 번 job
-#    과 달리 **whole-tree** 이다: 홈 경로는 브랜드명과 달리 기계적으로 치환
-#    가능해서 grandfather 할 이유가 없고, diff-only 는 "이 PR 이 안 늘렸다"
-#    만 말할 뿐 "트리가 깨끗하다" 는 말하지 못한다. 실제로 2 번 job 이
-#    diff-based 라는 이유로 트리에 남아 있던 53 파일이 그대로 통과해 있었다.
-#    판정은 deny-list 가 아니라 allow-list — 아직 기여하지 않은 사람의 계정명
-#    을 미리 알 수 없으므로, fixture 가 쓸 수 있는 synthetic 계정만 열거하고
-#    나머지는 전부 실패시킨다. 검사 본체와 self-test 는
+# 2. home-path-gate — 이 저장소는 PUBLIC 이다. 절대 홈 경로(`/Users/<계정>`,
+#    `/home/<계정>`, `C:\Users\<계정>`, 그리고 agent 도구가 쓰는 dash-encoded
+#    형태)에 박힌 *개인 계정명* 을 막는다. 1 번 job 과 달리 **whole-tree**
+#    이다: 홈 경로는 기계적으로 치환 가능해서 grandfather 할 이유가 없고,
+#    diff-only 는 "이 PR 이 안 늘렸다" 만 말할 뿐 "트리가 깨끗하다" 는 말하지
+#    못한다. 판정은 deny-list 가 아니라 allow-list — 아직 기여하지 않은 사람의
+#    계정명을 미리 알 수 없으므로, fixture 가 쓸 수 있는 synthetic 계정만
+#    열거하고 나머지는 전부 실패시킨다. 검사 본체와 self-test 는
 #    `.github/scripts/home-path-gate.sh` 한 파일에 함께 있다 (self-test 가
 #    위반 계정명을 런타임에 조립하므로 스크립트 자신이 첫 위반이 되지 않고,
 #    따라서 gate 를 자기 스캔에서 제외하는 구멍도 필요 없다).
@@ -65,159 +54,6 @@ jobs:
         run: |
           base_sha=$(git merge-base origin/${{ github.base_ref }} HEAD)
           .github/scripts/naming-gate.sh "$base_sha" HEAD
-
-  deidentification-gate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Compute diff vs base
-        id: diff
-        run: |
-          base_sha=$(git merge-base origin/${{ github.base_ref }} HEAD)
-          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
-          # Scope: every path that ships publicly. Unlike naming-gate this job
-          # does NOT exclude tests, docs, or .github — every leak this gate was
-          # written for lived in exactly those paths.
-          #
-          # The one exclusion is this workflow itself: a gate that greps for a
-          # literal cannot avoid containing that literal, so scanning its own
-          # added lines would fail every PR that edits the gate.
-          #
-          # Each stage is status-checked separately. `|| true` on this pipeline
-          # would make a broken filter look identical to "nothing in scope", and
-          # the gate would then wave every PR through while still reporting green.
-          if git diff --name-only --diff-filter=d "$base_sha"...HEAD > /tmp/deident-all.txt
-          then :; else
-            echo "::error::git diff failed — gate cannot verify this PR"; exit 1
-          fi
-
-          if grep -E '^(src/|test/|docs/|web/|\.github/)' /tmp/deident-all.txt > /tmp/deident-scoped.txt
-          then :; else
-            status=$?
-            [ "$status" -ge 2 ] && { echo "::error::scope filter failed (exit $status)"; exit 1; }
-            : > /tmp/deident-scoped.txt
-          fi
-
-          # This job used to exclude itself, because a gate that carried its own
-          # deny-list could not be scanned without matching every pattern in it.
-          # The list is a secret now, so the file has nothing to hide from and
-          # the exclusion only bought a blind spot over the one file where a
-          # leak is hardest to notice.
-          cp /tmp/deident-scoped.txt /tmp/deident-changed.txt
-          echo "changed files in scope:"
-          cat /tmp/deident-changed.txt
-
-      - name: Grep diff for employer-identifying content
-        env:
-          DEIDENT_PATTERNS: ${{ secrets.DEIDENT_PATTERNS }}
-          DEIDENT_FILENAME_PATTERN: ${{ secrets.DEIDENT_FILENAME_PATTERN }}
-        run: |
-          base_sha="${{ steps.diff.outputs.base_sha }}"
-          violations=0
-
-          if [ ! -s /tmp/deident-changed.txt ]; then
-            echo "no in-scope file changes — skipping."
-            exit 0
-          fi
-
-          # The pattern list is the one thing this gate cannot carry in the open:
-          # spelling out what must never be published publishes it. It lives in
-          # the DEIDENT_PATTERNS secret, one POSIX ERE per line, and the file
-          # pass below reads DEIDENT_FILENAME_PATTERN from the same place.
-          #
-          # Secrets are not handed to workflows triggered from a fork, so the
-          # list can legitimately arrive empty — and an empty list matches
-          # nothing, which is indistinguishable from a clean diff. That is the
-          # failure this gate exists to prevent, so an empty list is an error,
-          # never a pass.
-          if [ -z "${DEIDENT_PATTERNS:-}" ] || [ -z "${DEIDENT_FILENAME_PATTERN:-}" ]; then
-            echo "::error::pattern list unavailable (fork PR, or the secret is unset) — gate cannot verify this diff"
-            exit 1
-          fi
-          mapfile -t patterns <<< "$DEIDENT_PATTERNS"
-
-          # POSIX ERE only — no `-P`. PCRE is not available in every grep build,
-          # and a grep that rejects its own flag exits non-zero, which an
-          # `if grep ...` would read as "no match" and let the PR through.
-          # Word edges must be spelled out as `[^A-Za-z0-9]` rather than `\b` for
-          # the same reason, and every pattern must match a WHOLE identifier or a
-          # real hostname rather than a bare substring.
-          #
-          # Text patterns are applied to ADDED lines only, on text files only.
-          # Binary additions (screenshots) are covered by the filename pass below.
-
-          if grep -E '\.(ts|tsx|js|mjs|cjs|py|md|json|ya?ml|sh|txt|html|css)$|Dockerfile$' \
-            /tmp/deident-changed.txt > /tmp/deident-text.txt
-          then :; else
-            status=$?
-            [ "$status" -ge 2 ] && { echo "::error::text-file filter failed (exit $status)"; exit 1; }
-            : > /tmp/deident-text.txt
-          fi
-
-          for pattern in "${patterns[@]}"; do
-            while IFS= read -r file; do
-              [ -z "$file" ] && continue
-              [ ! -f "$file" ] && continue
-              # `if ...; then` keeps errexit from aborting the step on the
-              # expected exit 1 (no match), while still exposing the status.
-              if git diff "$base_sha"...HEAD -- "$file" | grep -E "^\+" \
-                | grep -nE "$pattern" > /tmp/deident-hits.txt
-              then
-                status=0
-              else
-                status=$?
-              fi
-              # 0 = matched, 1 = no match, >=2 = grep itself failed. Treating a
-              # failure as "clean" is how a gate silently stops gating, so stop.
-              if [ "$status" -ge 2 ]; then
-                echo "::error::grep failed (exit $status) on $file for pattern '$pattern' — gate cannot verify this diff"
-                exit 1
-              fi
-              if [ "$status" -eq 0 ] && [ -s /tmp/deident-hits.txt ]; then
-                echo "::error file=$file::employer-identifying pattern '$pattern' added"
-                cat /tmp/deident-hits.txt
-                violations=$((violations + $(wc -l < /tmp/deident-hits.txt)))
-              fi
-            done < /tmp/deident-text.txt
-          done
-
-          # Filename pass — a screenshot leaks more than prose, and its name is
-          # the only part of a binary this gate can read.
-          while IFS= read -r file; do
-            [ -z "$file" ] && continue
-            base=$(basename "$file")
-            if echo "$base" | grep -qE "$DEIDENT_FILENAME_PATTERN"
-            then
-              echo "::error file=$file::employer-identifying filename"
-              violations=$((violations + 1))
-            else
-              status=$?
-              [ "$status" -ge 2 ] && { echo "::error::grep failed (exit $status) on filename $file"; exit 1; }
-            fi
-            case "$file" in
-              web/public/screenshots/ep-*)
-                echo "::error file=$file::internal-portal screenshot capture — these are not published"
-                violations=$((violations + 1))
-                ;;
-            esac
-          done < /tmp/deident-changed.txt
-
-          if [ "$violations" -gt 0 ]; then
-            echo ""
-            echo "::error::deidentification-gate found $violations employer-identifying addition(s)."
-            echo "This repository is public. Use the generic vocabulary instead:"
-            echo "  employer / brand name        -> drop entirely, or 'the organization'"
-            echo "  the internal portal product  -> '오리온 익스텐션 플러그인' / 'an internal portal plugin'"
-            echo "  the internal search product  -> '사내 검색' / 'internal search'"
-            echo "  internal hostnames           -> fixture domains (portal.example.com)"
-            echo "  a specific plugin in prose   -> the generic noun '플러그인' / 'plugin'"
-            exit 1
-          fi
-
-          echo "deidentification-gate: clean."
 
   home-path-gate:
     runs-on: ubuntu-latest

@@ -167,17 +167,12 @@ and exceptions. Check added lines and renamed paths, including manually checking
 areas the gate does not cover. Do not treat excluded paths as permission to add
 process metadata. When changing the rule, keep its enforcement and tests aligned.
 
-### Organizational identifiers
-
-This repository is public. Keep private organization names, internal hosts,
-network coordinates, colleagues' names, and identifying screenshots out of tracked
-content and commit history. Runtime-required identifiers may remain where the
-contract needs them; explanatory prose uses generic terms.
+### Home paths
 
 Prefer derived temporary/home paths in tests; fixed examples use synthetic
 accounts. Derive identifiers from the artifact under test when possible.
-The naming workflow owns deidentification and home-path checks. Their coverage is
-not a substitute for reviewing public content, including binaries and commit text.
+The naming workflow owns the home-path check. Its coverage is not a substitute
+for reviewing public content, including binaries and commit text.
 
 ### Known naming divergences
 

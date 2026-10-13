@@ -6,10 +6,9 @@
 # whoever wrote it, and a path like the one a checkout sits under carries the
 # directory layout of that machine as well. Both are permanent once pushed.
 #
-# The `deidentification-gate` job next to this one matches employer vocabulary
-# on ADDED lines only, so it grandfathers whatever already sits in the tree.
-# That is the right shape for a brand name, where the backlog is prose someone
-# has to rewrite. It is the wrong shape here: a home path is mechanical to
+# A diff scan matches ADDED lines only, so it grandfathers whatever already
+# sits in the tree. That is the right shape for prose someone has to rewrite.
+# It is the wrong shape here: a home path is mechanical to
 # replace, the tree is clean as of the commit that added this script, and a
 # diff scan cannot tell a reviewer whether the tree is still clean. So this
 # gate reads every tracked text file every run. If it passes, the whole tree is
