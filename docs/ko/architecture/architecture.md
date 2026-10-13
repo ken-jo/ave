@@ -3435,7 +3435,7 @@ stateDiagram-v2
 
 **Plugin-Owned OAuth Authentication (PR 3 — 신 정책)**
 
-PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전되었다. 이는 §9.4a 의 일반 정책 — _플러그인은 HostApi 만으로 호스트 자원 접근_ — 에 대한 정당한 예외이며, 이후 다른 OAuth-기반 플러그인 (Slack / Notion / Google 등) 도 동일 패턴을 따른다.
+PR 3 에서 메일 플러그인의 Graph 인증이 호스트에서 플러그인으로 이전되었다. 이는 §9.4a 의 일반 정책 — _플러그인은 HostApi 만으로 호스트 자원 접근_ — 에 대한 정당한 예외이며, 이후 다른 OAuth-기반 플러그인 (Slack / Notion / Google 등) 도 동일 패턴을 따른다.
 
 **원칙**
 - OAuth 흐름이 필요한 플러그인은 자체적으로 다음을 소유할 수 있다:

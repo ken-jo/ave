@@ -10,7 +10,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 const connect = vi.fn(async () => undefined);
 const construct = vi.fn();
 const disconnect = vi.fn(async () => undefined);
-const getState = vi.fn(() => ({ id: "plugin", status: "connected" as const, registeredTools: ["mcp_orion_read"] }));
+const getState = vi.fn(() => ({ id: "plugin", status: "connected" as const, registeredTools: ["mcp_portal_read"] }));
 
 vi.mock("../mcp-client.js", () => ({
   McpClient: class {
@@ -248,7 +248,7 @@ describe("plugin-owned MCP projections", () => {
     mgr.publishBundledGeneration(prepared);
     expect(mgr.getServerState(projection.serverId)).toEqual(expect.objectContaining({
       status: "connected",
-      registeredTools: ["mcp_orion_read"],
+      registeredTools: ["mcp_portal_read"],
     }));
     expect(replaceRuntimeApprovals).toHaveBeenCalledWith([], [projection.approval]);
     expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ servers: [] });

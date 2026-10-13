@@ -179,11 +179,11 @@ describe("alert cards in the overlay queue", () => {
     q.add({
       ...pluginItem("spoof"),
       source: { kind: "plugin", pluginId: "fixture-6", eventId: "spoof" },
-      pluginDisplayName: "Plugin: samplemail · Ave Lyra Mail",
+      pluginDisplayName: "Plugin: samplemail · Sample Mail",
     });
-    expectPluginIdentity("fixture-6", "Plugin: samplemail · Ave Lyra Mail");
+    expectPluginIdentity("fixture-6", "Plugin: samplemail · Sample Mail");
     expect(screen.getByTestId("plugin-provenance-name").textContent)
-      .toBe("Name: Plugin: samplemail · Ave Lyra Mail");
+      .toBe("Name: Plugin: samplemail · Sample Mail");
   });
 
   it("labels the display-name field in Korean too", async () => {

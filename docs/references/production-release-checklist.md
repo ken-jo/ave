@@ -195,7 +195,7 @@ Perform on each platform artifact before uploading:
 
 - [ ] App launches to the splash screen and transitions to the main window
 - [ ] Settings -> API key entry -> one chat turn succeeds
-- [ ] Local Indexer, Meeting, and Ave Lyra Mail plugins are listed in Settings -> Plugins
+- [ ] Local Indexer, Meeting, and the mail & calendar extension are listed in Settings -> Plugins
 - [ ] Auto-update settings toggle works (default ON) in Settings -> General
 - [ ] Crash reporting OFF -> dumps are stored only in `~/.ave/crash-dumps/`
 - [ ] Crash reporting ON + URL configured -> test crash attempts upload

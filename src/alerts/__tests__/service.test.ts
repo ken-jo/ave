@@ -313,21 +313,21 @@ describe("an accepted alert", () => {
     const h = await harness();
     await h.service.register("fixture-6", {
       ...manifest([{ ...KINDS[0]!, label: { en: "Security notice" } }]),
-      name: "Plugin: samplemail · Ave Lyra Mail",
+      name: "Plugin: samplemail · Sample Mail",
     });
     await h.service.raise("fixture-6", reply());
-    expect(h.shown[0]?.pluginDisplayName).toBe("Plugin: samplemail · Ave Lyra Mail");
-    expect(h.fired[0]?.title).toBe("Extension [fixture-6] · Plugin samplemail Ave Lyra Mail · Security notice");
+    expect(h.shown[0]?.pluginDisplayName).toBe("Plugin: samplemail · Sample Mail");
+    expect(h.fired[0]?.title).toBe("Extension [fixture-6] · Plugin samplemail Sample Mail · Security notice");
   });
 
   it("does not let a display name or kind title create another bracketed id field", async () => {
     const h = await harness();
     await h.service.register("fixture-6", {
       ...manifest([{ ...KINDS[0]!, label: { en: "Plugin [another] · Security notice" } }]),
-      name: "Plugin [samplemail] · Ave Lyra Mail",
+      name: "Plugin [samplemail] · Sample Mail",
     });
     await h.service.raise("fixture-6", reply());
-    expect(h.fired[0]?.title).toBe("Extension [fixture-6] · Plugin samplemail Ave Lyra Mail · Plugin another Security notice");
+    expect(h.fired[0]?.title).toBe("Extension [fixture-6] · Plugin samplemail Sample Mail · Plugin another Security notice");
   });
 
   it("keeps the full maximum-length plugin id in a capped notification title", async () => {

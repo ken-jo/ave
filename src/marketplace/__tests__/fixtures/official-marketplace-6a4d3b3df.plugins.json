@@ -770,7 +770,7 @@
       "kind": "plugin",
       "name": "samplemail",
       "path": "plugins/samplemail",
-      "displayName": "Ave Lyra Mail",
+      "displayName": "Sample Mail",
       "description": "Microsoft Graph 통합 플러그인 — Outlook 이메일 + Outlook 캘린더 (calendar/email 두 플러그인을 통합). Microsoft Graph API 기반 폴링 watcher, 답장 작성, 일정 충돌 감지, 반복 패턴 분석.",
       "latest": "0.5.3",
       "versions": [

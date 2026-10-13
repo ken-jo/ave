@@ -16,8 +16,8 @@ import { VIEW_FIXTURE_ID } from '../fixtures/e2e-plugins/view-fixture.js';
  *     rationale (live OAuth, real STT, external signals, etc). Keys outside
  *     this harness entirely are listed at the bottom of this file.
  *
- * Keyed by the same string keys as `shots` in screenshots.ts so a docs-site
- * key maps 1:1 to a matrix entry and an output filename `<key>.png`.
+ * Each key maps 1:1 to an output filename `<key>.png`; the keys are kept so a
+ * future docs-site capture set can reuse them.
  */
 export interface ScenarioContext {
   app: ElectronApplication;
@@ -25,7 +25,7 @@ export interface ScenarioContext {
 }
 
 export interface ScenarioEntry {
-  /** docs-site topic, mirrored from screenshots.ts for readability/grouping. */
+  /** docs-site topic, for readability and grouping. */
   topic: string;
   /** Element to crop the capture to. Full-window screenshot if omitted. */
   locator?: string;
