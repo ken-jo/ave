@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { parse as parseYaml } from "yaml";
 import { openFeatureNamespace, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
-import { isPackageName } from "../marketplace/catalog/types.js";
+import { isPackageName, MARKETPLACE_DESCRIPTOR_FILE } from "../marketplace/catalog/types.js";
 import { checkContentFiles, contentFileProblem } from "../marketplace/content/rules.js";
 import { deriveAgentPluginComponents, parsePackagePrompt } from "../marketplace/content/agent-plugin-components.js";
 import { parseFrontmatter, parseFrontmatterBlock } from "../main/skill-store.js";
@@ -28,7 +28,7 @@ function draftName(name: string): string {
 }
 
 function filePath(path: string): string {
-  if (path === "ave-package.json") throw new Error(`${path} is a sharing descriptor`);
+  if (path === MARKETPLACE_DESCRIPTOR_FILE) throw new Error(`${path} is a sharing descriptor`);
   if (path.split("/").some((part) => !part || part === "." || part === "..") || path.includes("\\") || path.includes("\0") || contentFileProblem("agent-plugin", path)) {
     throw new Error(`Invalid Studio package path: ${path}`);
   }

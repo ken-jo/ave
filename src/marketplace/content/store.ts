@@ -22,10 +22,10 @@ import { dirname, join } from "node:path";
 import { createMarketplaceLogger } from "../log.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { assertNotRequiredByPolicy } from "../boot-installs/run.js";
-import type { PackageDescriptor } from "../catalog/types.js";
+import { MARKETPLACE_DESCRIPTOR_FILE, type PackageDescriptor } from "../catalog/types.js";
 import type { ComponentConsent, ReviewedComponentConsent } from "../../shared/git-marketplace.js";
 import { MarketplaceError } from "../errors.js";
-import { DESCRIPTOR_NAME, readDescriptorAtVersion, type PackagePlan, type RepositoryAccess } from "../resolve/descriptor.js";
+import { readDescriptorAtVersion, type PackagePlan, type RepositoryAccess } from "../resolve/descriptor.js";
 import { classifyInstall, type InstallAction, type InstalledPackage } from "../resolve/identity.js";
 import { treeDigest } from "../resolve/plugin-ladder.js";
 import { deriveAgentPluginComponents } from "./agent-plugin-components.js";
@@ -125,7 +125,7 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
     );
     const files: ContentFile[] = [];
     for (const file of exported) {
-      if (file.path === DESCRIPTOR_NAME) continue;
+      if (file.path === MARKETPLACE_DESCRIPTOR_FILE) continue;
       files.push({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))), executable: file.executable });
     }
     checkContentFiles(dataPlan.kind, files);

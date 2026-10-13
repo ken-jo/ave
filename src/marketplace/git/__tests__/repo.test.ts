@@ -179,8 +179,8 @@ describe("BareRepo", () => {
     const dest = mkdtempSync(join(scratch, "export-"));
     const files = await bare.exportPath(remote, first, "plugins/alpha", dest, LIMITS);
     expect(files).toEqual([
-      { path: "dist/index.js", size: "export {};\n".length, executable: false },
       { path: "ave-package.json", size: "{\"name\":\"alpha\"}\n".length, executable: false },
+      { path: "dist/index.js", size: "export {};\n".length, executable: false },
     ]);
     expect(readFileSync(join(dest, "dist/index.js"), "utf8")).toBe("export {};\n");
     expect(missingBlobs(bare.dir, first, "skills")).toHaveLength(1);

@@ -26,7 +26,7 @@ import {
   PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_MESSAGE,
 } from "../../plugins/process-entry.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
-import { isPackageName, type PackageDescriptor } from "../catalog/types.js";
+import { isPackageName, MARKETPLACE_DESCRIPTOR_FILE, type PackageDescriptor } from "../catalog/types.js";
 import { validateDescriptorText, validateSynthesizedDescriptor, type CredentialDetail } from "../catalog/validate.js";
 import type { MarketplaceErrorCode, MarketplaceErrorDetail } from "../errors.js";
 import { assertRepoPath } from "../git/repo.js";
@@ -35,13 +35,13 @@ import { manifestAuthority } from "../resolve/manifest-rules.js";
 import { deriveAgentPluginComponents } from "../content/agent-plugin-components.js";
 import { checkContentFiles, CONTENT_RULES } from "../content/rules.js";
 
-export const DIRECT_FILES = ["ave-package.json", "plugin.json", "SKILL.md", "AGENTS.md", "server.json"] as const;
+export const DIRECT_FILES = [MARKETPLACE_DESCRIPTOR_FILE, "plugin.json", "SKILL.md", "AGENTS.md", "server.json"] as const;
 
 export type DirectDetectedFile = (typeof DIRECT_FILES)[number];
 
 /** Per-file read limits: the descriptor's, the plugin manifest's, and the entry files'. */
 const LIMITS: Readonly<Record<DirectDetectedFile, number>> = {
-  "ave-package.json": 256 * 1024,
+  [MARKETPLACE_DESCRIPTOR_FILE]: 256 * 1024,
   "plugin.json": 1024 * 1024,
   "SKILL.md": 1024 * 1024,
   "AGENTS.md": 1024 * 1024,
@@ -136,7 +136,7 @@ async function fromPluginManifest(source: string, input: DirectReadInput): Promi
       // unreadable folder, a broken classifier), which reaches the caller
       // unchanged; only what the tree holds is this package's fault.
       const exported = await input.tree.exportPath(input.path, dest, { maxFiles: rule.maxFiles + 1, maxBytes: rule.maxBytes + 256 * 1024 });
-      const files = await Promise.all(exported.filter((file) => file.path !== "ave-package.json")
+      const files = await Promise.all(exported.filter((file) => file.path !== MARKETPLACE_DESCRIPTOR_FILE)
         .map(async (file) => ({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))) })));
       let components: ReturnType<typeof deriveAgentPluginComponents>;
       try {
@@ -260,7 +260,7 @@ export async function readDirectPackage(input: DirectReadInput): Promise<DirectR
     const bytes = await input.tree.readFile(filePath(input.path, file), LIMITS[file]);
     if (bytes === null) continue;
     const source = bytes.toString("utf8");
-    if (file === "ave-package.json") {
+    if (file === MARKETPLACE_DESCRIPTOR_FILE) {
       const checked = validateDescriptorText(source, { direct: true });
       return checked.ok
         ? { ok: true, found: { descriptor: checked.value, detectedFrom: file, versionSynthesized: false } }

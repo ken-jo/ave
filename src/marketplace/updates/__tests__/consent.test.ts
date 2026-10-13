@@ -33,7 +33,7 @@ interface PluginShape {
 function pluginPayload(shape: PluginShape = {}): { document: unknown; files: PayloadFile[] } {
   const ave: Record<string, unknown> = {
     capabilities: ["notes.read"],
-    requires: { minAppVersion: "0.13.0", hostProtocol: "1", capabilities: ["calendar"], ...shape.requires },
+    requires: { minAppVersion: "0.13.0", hostProtocol: "2", capabilities: ["calendar"], ...shape.requires },
     mcpServers: [{ id: "notes", path: "mcp/notes.json" }],
     hooks: [{ id: "audit", path: "hooks/audit.json" }],
     ...(shape.skill ? { skills: [{ id: "helper", path: "skills/helper" }] } : {}),
@@ -97,7 +97,7 @@ describe("consentFingerprint: one row per field, each change alone needs review"
     ["authority.dependencies", plugin({ authority: { dependencies: ["calendar"] } })],
     ["authority.sandbox", plugin({ authority: { sandbox: { filesystem: "none" } } })],
     ["minAppVersion", plugin({ requires: { minAppVersion: "0.14.0" } })],
-    ["hostProtocol", plugin({ requires: { hostProtocol: "2" } })],
+    ["hostProtocol", plugin({ requires: { hostProtocol: "3" } })],
     ["entryForm", plugin({ process: true })],
     ["contributionKinds", plugin({ skill: true })],
     ["mcpServer:notes", plugin({ server: "console.log('changed')" })],
@@ -117,7 +117,7 @@ describe("consentFingerprint: one row per field, each change alone needs review"
   const agentBase = agent();
   const agentRows: Array<[string, ConsentFingerprint]> = [
     ["minAppVersion", agent({ minAppVersion: "0.14.0" })],
-    ["hostProtocol", agent({ hostProtocol: "2" })],
+    ["hostProtocol", agent({ hostProtocol: "3" })],
     ["componentKinds", agent({ components: components({ prompts: [{ name: "draft", kind: "template", digest: "c".repeat(64) }] }) })],
     ["mcpServer:notes", agent({ files: [AGENT_FILES[0]!, file("server.js", "server v2"), AGENT_FILES[2]!] })],
     ["hook:0", agent({ files: [AGENT_FILES[0]!, AGENT_FILES[1]!, file("hook.js", "hook v2")] })],
@@ -210,12 +210,12 @@ describe("checkpoint one: the catalog", () => {
   });
 
   it("an authority field the index row carries differs without a download", () => {
-    const authority = { capabilities: ["notes.read", "notes.write"], requires: { minAppVersion: "0.13.0", hostProtocol: "1", capabilities: ["calendar"] } };
+    const authority = { capabilities: ["notes.read", "notes.write"], requires: { minAppVersion: "0.13.0", hostProtocol: "2", capabilities: ["calendar"] } };
     expect(catalogDelta(plugin(), version({ authority })).map((entry) => entry.field)).toEqual(["authority.capabilities"]);
   });
 
   it("a field the index does not carry is pending, not equal: no difference yet", () => {
-    const authority = { capabilities: ["notes.read"], requires: { minAppVersion: "0.13.0", hostProtocol: "1", capabilities: ["calendar"] } };
+    const authority = { capabilities: ["notes.read"], requires: { minAppVersion: "0.13.0", hostProtocol: "2", capabilities: ["calendar"] } };
     // Bundled MCP servers and hooks are not in the index: only the staged bytes show them.
     expect(catalogDelta(plugin(), version({ authority }))).toEqual([]);
   });

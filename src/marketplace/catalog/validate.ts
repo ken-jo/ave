@@ -28,6 +28,7 @@ import { isRecord } from "../../shared/is-record.js";
 import { compareSemver } from "../../shared/semver-compare.js";
 import { parseStrictJson } from "./strict-json.js";
 import {
+  MARKETPLACE_DESCRIPTOR_FILE,
   MARKETPLACE_INDEX_FILE,
   NULL_OBJECT_ID,
   type AgentPluginComponents,
@@ -437,7 +438,7 @@ export interface DescriptorContext {
 export function validateDescriptorText(text: string, context: DescriptorContext): Validation<PackageDescriptor> {
   const parsed = parse(text);
   if (!parsed.ok) return parsed;
-  return validateDescriptorValue(parsed.value, context, "ave-package.json");
+  return validateDescriptorValue(parsed.value, context, MARKETPLACE_DESCRIPTOR_FILE);
 }
 
 function validateDescriptorValue(document: unknown, context: DescriptorContext, file: string): Validation<PackageDescriptor> {

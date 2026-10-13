@@ -116,15 +116,25 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-/** `<owner>/<repo>` in the forms that name a GitHub repository. The name is
- *  this repository's, or `ave` so that a rename still catches the old. */
-const REPOSITORY_REFERENCE = new RegExp(
-  String.raw`(?:github\.com[/:]|repos/|-R\s+|--repo[ =]|repository:\s*["']?|["'\x60])` +
-    String.raw`([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/(` +
-    [...new Set([identity.repo, "ave"])].map(escapeRegExp).join("|") +
-    String.raw`)(?:\.git)?(?![\w.-])`,
-  "gu",
-);
+/** `<owner>/<repo>`: the owner, then this repository's name or `ave` so
+ *  that a rename still catches the old. */
+const REPOSITORY_SLUG =
+  String.raw`([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/(` +
+  [...new Set([identity.repo, "ave"])].map(escapeRegExp).join("|") +
+  String.raw`)(?:\.git)?`;
+
+/**
+ * The forms that name a GitHub repository. A quoted slug must end the quoted
+ * token: `"notifications/ave/log"` is a path in the plugin host protocol's
+ * `ave/*` namespace, not the repository `notifications/ave`.
+ */
+const REPOSITORY_REFERENCES = [
+  new RegExp(
+    String.raw`(?:github\.com[/:]|repos/|-R\s+|--repo[ =]|repository:\s*["']?)` + REPOSITORY_SLUG + String.raw`(?![\w.-])`,
+    "gu",
+  ),
+  new RegExp(String.raw`["'\x60]` + REPOSITORY_SLUG + String.raw`(?![\w./-])`, "gu"),
+];
 
 const DEPRECATION_OWNER = /(?:organization\s+)?owner[\s*/#]+role\s+of\s+`([^`]+)`/gu;
 
@@ -183,11 +193,13 @@ describe("repository identity source of truth", () => {
     const mismatches: string[] = [];
     const covered = new Set<string>();
     for (const [path, source] of checkedTexts()) {
-      for (const match of source.matchAll(REPOSITORY_REFERENCE)) {
-        covered.add(path);
-        const named = `${match[1]}/${match[2]}`;
-        if (named !== identity.slug) {
-          mismatches.push(`${path}:${lineOf(source, match.index ?? 0)} names ${named}`);
+      for (const reference of REPOSITORY_REFERENCES) {
+        for (const match of source.matchAll(reference)) {
+          covered.add(path);
+          const named = `${match[1]}/${match[2]}`;
+          if (named !== identity.slug) {
+            mismatches.push(`${path}:${lineOf(source, match.index ?? 0)} names ${named}`);
+          }
         }
       }
     }

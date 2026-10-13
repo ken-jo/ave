@@ -395,7 +395,7 @@ describe("runtime manifest validation of a process entry", () => {
       version: "1.0.0",
       description: "A process entry fixture.",
       tools: [pureTool("process_kit_ping")],
-      requires: overrides.requires ?? { minAppVersion: "0.13.0", hostProtocol: "2" },
+      requires: overrides.requires ?? { minAppVersion: "0.13.0", hostProtocol: "3" },
     };
     if ("process" in overrides) manifest.process = overrides.process;
     if ("entry" in overrides) manifest.entry = overrides.entry;
@@ -439,8 +439,8 @@ describe("runtime manifest validation of a process entry", () => {
   });
 
   it.each([
-    ["0.12.0", { minAppVersion: "0.12.0", hostProtocol: "2" }],
-    ["no minAppVersion", { hostProtocol: "2" }],
+    ["0.12.0", { minAppVersion: "0.12.0", hostProtocol: "3" }],
+    ["no minAppVersion", { hostProtocol: "3" }],
   ])("refuses %s, naming requires.minAppVersion", async (_name, requires) => {
     await expect(parse({ process: PROCESS, requires })).rejects.toThrow(/requires\.minAppVersion.*0\.13\.0 or newer/u);
   });

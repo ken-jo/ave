@@ -164,7 +164,7 @@ describe("ServiceClient", () => {
 
   it("reads announcements and the telemetry endpoint from the build base", async () => {
     const { service } = client({
-      [`${OLD}/.well-known/former-service.json`]: doc({ telemetry: "/telemetry/events" }),
+      [`${OLD}/.well-known/ave-service.json`]: doc({ telemetry: "/telemetry/events" }),
       [`${OLD}/announcements/v1.json`]: { announcements: [announcement(1), { id: "x" }] },
     });
     expect(service.telemetryEndpoint()).toBeUndefined();
@@ -176,8 +176,8 @@ describe("ServiceClient", () => {
 
   it("follows a move the new base confirms, records it, and reads the new base from then on", async () => {
     const routes = {
-      [`${OLD}/.well-known/former-service.json`]: doc({ movedTo: NEW }),
-      [`${NEW}/.well-known/former-service.json`]: doc({ movedFrom: OLD }),
+      [`${OLD}/.well-known/ave-service.json`]: doc({ movedTo: NEW }),
+      [`${NEW}/.well-known/ave-service.json`]: doc({ movedFrom: OLD }),
       [`${NEW}/announcements/v1.json`]: [announcement(2)],
     };
     const first = client(routes);
@@ -186,13 +186,13 @@ describe("ServiceClient", () => {
 
     const second = client(routes);
     expect((await second.service.announcements()).map((item) => item.id)).toEqual([2]);
-    expect(second.fetchImpl.mock.calls.map(([url]) => String(url))).not.toContain(`${OLD}/.well-known/former-service.json`);
+    expect(second.fetchImpl.mock.calls.map(([url]) => String(url))).not.toContain(`${OLD}/.well-known/ave-service.json`);
   });
 
   it("stays when the new base does not name the old one in movedFrom", async () => {
     const { service } = client({
-      [`${OLD}/.well-known/former-service.json`]: doc({ movedTo: NEW }),
-      [`${NEW}/.well-known/former-service.json`]: doc({ movedFrom: "https://other.example" }),
+      [`${OLD}/.well-known/ave-service.json`]: doc({ movedTo: NEW }),
+      [`${NEW}/.well-known/ave-service.json`]: doc({ movedFrom: "https://other.example" }),
     });
     await expect(service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
     expect(existsSync(statePath)).toBe(false);
@@ -201,9 +201,9 @@ describe("ServiceClient", () => {
   it("follows at most one move per build constant", async () => {
     const third = "https://third.example";
     const routes = {
-      [`${OLD}/.well-known/former-service.json`]: doc({ movedTo: NEW }),
-      [`${NEW}/.well-known/former-service.json`]: doc({ movedFrom: OLD, movedTo: third }),
-      [`${third}/.well-known/former-service.json`]: doc({ movedFrom: NEW }),
+      [`${OLD}/.well-known/ave-service.json`]: doc({ movedTo: NEW }),
+      [`${NEW}/.well-known/ave-service.json`]: doc({ movedFrom: OLD, movedTo: third }),
+      [`${third}/.well-known/ave-service.json`]: doc({ movedFrom: NEW }),
     };
     await expect(client(routes).service.refresh()).resolves.toMatchObject({ base: NEW });
     await expect(client(routes).service.refresh()).resolves.toMatchObject({ base: NEW, source: "moved" });
@@ -211,11 +211,11 @@ describe("ServiceClient", () => {
 
   it("drops a move made under another build constant", async () => {
     await client({
-      [`${OLD}/.well-known/former-service.json`]: doc({ movedTo: NEW }),
-      [`${NEW}/.well-known/former-service.json`]: doc({ movedFrom: OLD }),
+      [`${OLD}/.well-known/ave-service.json`]: doc({ movedTo: NEW }),
+      [`${NEW}/.well-known/ave-service.json`]: doc({ movedFrom: OLD }),
     }).service.refresh();
     const shipped = "https://ave-next.example";
-    const { service } = client({ [`${shipped}/.well-known/former-service.json`]: doc() }, { buildBase: shipped });
+    const { service } = client({ [`${shipped}/.well-known/ave-service.json`]: doc() }, { buildBase: shipped });
     await expect(service.refresh()).resolves.toMatchObject({ base: shipped, source: "build" });
     expect(existsSync(statePath)).toBe(false);
   });
@@ -223,23 +223,23 @@ describe("ServiceClient", () => {
   it("drops a move record it cannot read", async () => {
     mkdirSync(join(dir, "marketplaces"), { recursive: true });
     writeFileSync(statePath, "{ not json");
-    await expect(client({ [`${OLD}/.well-known/former-service.json`]: doc() }).service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
+    await expect(client({ [`${OLD}/.well-known/ave-service.json`]: doc() }).service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
     expect(existsSync(statePath)).toBe(false);
   });
 
   it("prefers the policy base and never follows a move from it", async () => {
     const corp = "https://ave.corp.example";
     const { service, fetchImpl } = client(
-      { [`${corp}/.well-known/former-service.json`]: doc({ movedTo: NEW }) },
+      { [`${corp}/.well-known/ave-service.json`]: doc({ movedTo: NEW }) },
       { policyBase: async () => corp },
     );
     await expect(service.refresh()).resolves.toMatchObject({ base: corp, source: "policy" });
-    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([`${corp}/.well-known/former-service.json`]);
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([`${corp}/.well-known/ave-service.json`]);
     expect(existsSync(statePath)).toBe(false);
   });
 
   it("fails closed on an invalid policy instead of reading the public base", async () => {
-    const { service, fetchImpl } = client({ [`${OLD}/.well-known/former-service.json`]: doc() }, {
+    const { service, fetchImpl } = client({ [`${OLD}/.well-known/ave-service.json`]: doc() }, {
       policyBase: async () => {
         throw new Error("policy service section is invalid");
       },
@@ -249,18 +249,18 @@ describe("ServiceClient", () => {
   });
 
   it("treats a redirect as a failure, so no request leaves the origin", async () => {
-    const { service } = client({ [`${OLD}/.well-known/former-service.json`]: 302 });
+    const { service } = client({ [`${OLD}/.well-known/ave-service.json`]: 302 });
     await expect(service.refresh()).rejects.toThrow("HTTP 302");
   });
 
   it("refuses a document over its size cap", async () => {
-    const { service } = client({ [`${OLD}/.well-known/former-service.json`]: { ...doc(), padding: "x".repeat(70 * 1024) } });
+    const { service } = client({ [`${OLD}/.well-known/ave-service.json`]: { ...doc(), padding: "x".repeat(70 * 1024) } });
     await expect(service.refresh()).rejects.toThrow(/larger than/u);
   });
 
   it("keeps the last announcements read when a later read fails, and throws with none read yet", async () => {
     const routes: Record<string, unknown> = {
-      [`${OLD}/.well-known/former-service.json`]: doc(),
+      [`${OLD}/.well-known/ave-service.json`]: doc(),
       [`${OLD}/announcements/v1.json`]: [announcement(3)],
     };
     const { service } = client(routes);
@@ -274,12 +274,12 @@ describe("ServiceClient", () => {
 
   it("keeps the last announcements through a document outage on the same base", async () => {
     const routes: Record<string, unknown> = {
-      [`${OLD}/.well-known/former-service.json`]: doc(),
+      [`${OLD}/.well-known/ave-service.json`]: doc(),
       [`${OLD}/announcements/v1.json`]: [announcement(4)],
     };
     const { service } = client(routes);
     await service.announcements();
-    delete routes[`${OLD}/.well-known/former-service.json`];
+    delete routes[`${OLD}/.well-known/ave-service.json`];
     await expect(service.announcements()).resolves.toMatchObject([{ id: 4 }]);
   });
 
@@ -287,7 +287,7 @@ describe("ServiceClient", () => {
     let policy: () => Promise<string | null> = async () => null;
     const { service } = client(
       {
-        [`${OLD}/.well-known/former-service.json`]: doc({ telemetry: "/telemetry/events" }),
+        [`${OLD}/.well-known/ave-service.json`]: doc({ telemetry: "/telemetry/events" }),
         [`${OLD}/announcements/v1.json`]: [announcement(5)],
       },
       { policyBase: () => policy() },
@@ -308,7 +308,7 @@ describe("ServiceClient", () => {
     let policy: string | null = null;
     const { service } = client(
       {
-        [`${OLD}/.well-known/former-service.json`]: doc({ telemetry: "/telemetry/events" }),
+        [`${OLD}/.well-known/ave-service.json`]: doc({ telemetry: "/telemetry/events" }),
         [`${OLD}/announcements/v1.json`]: [announcement(6)],
       },
       { policyBase: async () => policy },
@@ -320,7 +320,7 @@ describe("ServiceClient", () => {
   });
 
   it("distinguishes an endpoint not known yet from one the document does not name", async () => {
-    const { service } = client({ [`${OLD}/.well-known/former-service.json`]: doc() });
+    const { service } = client({ [`${OLD}/.well-known/ave-service.json`]: doc() });
     expect(service.telemetryEndpoint()).toBeUndefined();
     await service.refresh();
     expect(service.telemetryEndpoint()).toBeNull();
@@ -337,7 +337,7 @@ describe("ServiceClient", () => {
     service.ensureResolved();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
 
-    routes[`${OLD}/.well-known/former-service.json`] = doc({ telemetry: "/telemetry/events" });
+    routes[`${OLD}/.well-known/ave-service.json`] = doc({ telemetry: "/telemetry/events" });
     now = new Date("2026-09-23T00:10:01.000Z");
     service.ensureResolved();
     await vi.waitFor(() => expect(service.telemetryEndpoint()).toBe(`${OLD}/telemetry/events`));
@@ -347,7 +347,7 @@ describe("ServiceClient", () => {
 
   it("ensureResolved reads the document again once it is older than six hours", async () => {
     let now = new Date("2026-09-23T00:00:00.000Z");
-    const routes: Record<string, unknown> = { [`${OLD}/.well-known/former-service.json`]: doc({ telemetry: "/telemetry/events" }) };
+    const routes: Record<string, unknown> = { [`${OLD}/.well-known/ave-service.json`]: doc({ telemetry: "/telemetry/events" }) };
     let policy: () => Promise<string | null> = async () => null;
     const { service, fetchImpl } = client(routes, { now: () => now, policyBase: () => policy() });
     service.ensureResolved();
@@ -368,26 +368,26 @@ describe("ServiceClient", () => {
 
   it("does not keep the old base's announcements when a move accepted in the same refresh fails to list the new base's", async () => {
     const routes: Record<string, unknown> = {
-      [`${OLD}/.well-known/former-service.json`]: doc(),
+      [`${OLD}/.well-known/ave-service.json`]: doc(),
       [`${OLD}/announcements/v1.json`]: [announcement(7)],
     };
     const { service } = client(routes);
     await service.announcements();
-    routes[`${OLD}/.well-known/former-service.json`] = doc({ movedTo: NEW });
-    routes[`${NEW}/.well-known/former-service.json`] = doc({ movedFrom: OLD });
+    routes[`${OLD}/.well-known/ave-service.json`] = doc({ movedTo: NEW });
+    routes[`${NEW}/.well-known/ave-service.json`] = doc({ movedFrom: OLD });
     await expect(service.announcements()).rejects.toThrow("HTTP 404");
   });
 
   it("keeps the build base's announcements when a move cannot be recorded and the next list read fails", async () => {
     mkdirSync(statePath, { recursive: true });
     const routes: Record<string, unknown> = {
-      [`${OLD}/.well-known/former-service.json`]: doc(),
+      [`${OLD}/.well-known/ave-service.json`]: doc(),
       [`${OLD}/announcements/v1.json`]: [announcement(8)],
     };
     const { service } = client(routes);
     await service.announcements();
-    routes[`${OLD}/.well-known/former-service.json`] = doc({ movedTo: NEW });
-    routes[`${NEW}/.well-known/former-service.json`] = doc({ movedFrom: OLD });
+    routes[`${OLD}/.well-known/ave-service.json`] = doc({ movedTo: NEW });
+    routes[`${NEW}/.well-known/ave-service.json`] = doc({ movedFrom: OLD });
     delete routes[`${OLD}/announcements/v1.json`];
     await expect(service.announcements()).resolves.toMatchObject([{ id: 8 }]);
     await expect(service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
@@ -396,14 +396,14 @@ describe("ServiceClient", () => {
   it("refuses a response whose declared length is over the cap before reading it", async () => {
     const response = new Response(JSON.stringify(doc()), { status: 200, headers: { "content-length": String(65 * 1024) } });
     const cancel = vi.spyOn(response.body!, "getReader");
-    const { service } = client({ [`${OLD}/.well-known/former-service.json`]: response });
+    const { service } = client({ [`${OLD}/.well-known/ave-service.json`]: response });
     await expect(service.refresh()).rejects.toThrow(/larger than 65536 bytes/u);
     expect(cancel).not.toHaveBeenCalled();
   });
 
   it("refuses an announcements list over 1 MB", async () => {
     const { service } = client({
-      [`${OLD}/.well-known/former-service.json`]: doc(),
+      [`${OLD}/.well-known/ave-service.json`]: doc(),
       [`${OLD}/announcements/v1.json`]: { announcements: [], padding: "x".repeat(1024 * 1024) },
     });
     await expect(service.announcements()).rejects.toThrow(/larger than 1048576 bytes/u);
@@ -417,29 +417,29 @@ describe("ServiceClient", () => {
   });
 
   it("stays when the move target cannot be read, and ignores a move to itself", async () => {
-    await expect(client({ [`${OLD}/.well-known/former-service.json`]: doc({ movedTo: NEW }) }).service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
-    await expect(client({ [`${OLD}/.well-known/former-service.json`]: doc({ movedTo: OLD }) }).service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
+    await expect(client({ [`${OLD}/.well-known/ave-service.json`]: doc({ movedTo: NEW }) }).service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
+    await expect(client({ [`${OLD}/.well-known/ave-service.json`]: doc({ movedTo: OLD }) }).service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
     expect(existsSync(statePath)).toBe(false);
   });
 
   it("fails when an accepted move's base cannot be read, without falling back", async () => {
     await client({
-      [`${OLD}/.well-known/former-service.json`]: doc({ movedTo: NEW }),
-      [`${NEW}/.well-known/former-service.json`]: doc({ movedFrom: OLD }),
+      [`${OLD}/.well-known/ave-service.json`]: doc({ movedTo: NEW }),
+      [`${NEW}/.well-known/ave-service.json`]: doc({ movedFrom: OLD }),
     }).service.refresh();
-    const { service, fetchImpl } = client({ [`${OLD}/.well-known/former-service.json`]: doc() });
+    const { service, fetchImpl } = client({ [`${OLD}/.well-known/ave-service.json`]: doc() });
     await expect(service.refresh()).rejects.toThrow("HTTP 404");
-    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([`${NEW}/.well-known/former-service.json`]);
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([`${NEW}/.well-known/ave-service.json`]);
   });
 
   it("ignores a move record it cannot read as a file, and keeps the service available", async () => {
     mkdirSync(statePath, { recursive: true });
-    await expect(client({ [`${OLD}/.well-known/former-service.json`]: doc() }).service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
+    await expect(client({ [`${OLD}/.well-known/ave-service.json`]: doc() }).service.refresh()).resolves.toMatchObject({ base: OLD, source: "build" });
     expect(existsSync(statePath)).toBe(true);
   });
 
   it("answers no announcements when the document names none", async () => {
-    const { service } = client({ [`${OLD}/.well-known/former-service.json`]: doc({ announcements: null }) });
+    const { service } = client({ [`${OLD}/.well-known/ave-service.json`]: doc({ announcements: null }) });
     await expect(service.announcements()).resolves.toEqual([]);
   });
 });

@@ -38,7 +38,7 @@ import {
 } from "../../scripts/lib/plugin-host-protocol-client.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
-const CLIENT = join(REPO_ROOT, "schemas/plugin-host-protocol/2/protocol-client.ts");
+const CLIENT = join(REPO_ROOT, "schemas/plugin-host-protocol/3/protocol-client.ts");
 const ASSERTIONS = join(REPO_ROOT, "scripts/lib/plugin-host-protocol-client-assertions.ts");
 const HOST_ERROR_SIDE = "(typeof HOST_API_WIRE_ERROR_CODES)[number]";
 /**
@@ -73,7 +73,7 @@ function standaloneCopy(edit: (client: string) => string, beside: Record<string,
   writeFileSync(join(dir, "protocol-client.ts"), edit(readFileSync(CLIENT, "utf-8")));
   for (const [name, text] of Object.entries(beside)) writeFileSync(join(dir, name), text);
   const options = projectOptions(HOST_PROTOCOL_CLIENT_PROGRAMS.standalone);
-  expect(options.files).toEqual(["../schemas/plugin-host-protocol/2/protocol-client.ts"]);
+  expect(options.files).toEqual(["../schemas/plugin-host-protocol/3/protocol-client.ts"]);
   const project = join(dir, "tsconfig.json");
   writeFileSync(project, JSON.stringify({ ...options, files: ["protocol-client.ts"] }));
   return project;
@@ -181,8 +181,8 @@ const CLI_FILES = [
   "scripts/lib/plugin-host-protocol-client-assertions.ts",
   HOST_PROTOCOL_CLIENT_PROGRAMS.standalone,
   HOST_PROTOCOL_CLIENT_PROGRAMS.hostEquality,
-  "schemas/plugin-host-protocol/2/protocol.schema.json",
-  "schemas/plugin-host-protocol/2/protocol-client.ts",
+  "schemas/plugin-host-protocol/3/protocol.schema.json",
+  "schemas/plugin-host-protocol/3/protocol-client.ts",
 ];
 
 /**
@@ -229,7 +229,7 @@ describe("the command line", () => {
       timeout: 120_000,
     });
   const passed =
-    `${HOST_PROTOCOL_CLIENT_LABEL} schemas/plugin-host-protocol/2/protocol-client.ts matches its schema `
+    `${HOST_PROTOCOL_CLIENT_LABEL} schemas/plugin-host-protocol/3/protocol-client.ts matches its schema `
     + "and compiles standalone and against the host\n";
 
   it("checks the committed client, compiles both programs, and says so in one line", () => {
@@ -250,13 +250,13 @@ describe("the command line", () => {
     // A named type the schema spells as raw TypeScript naming nothing that
     // exists: the generator projects it faithfully, so the bytes match and
     // only the standalone compile can refuse it.
-    const schemaPath = join(root, "schemas/plugin-host-protocol/2/protocol.schema.json");
+    const schemaPath = join(root, "schemas/plugin-host-protocol/3/protocol.schema.json");
     const schema = JSON.parse(readFileSync(schemaPath, "utf-8")) as { $defs: { types: Record<string, unknown> } };
     schema.$defs.types.InjectedTypeError = { tsType: "NoSuchTypeAnywhere" };
     writeFileSync(schemaPath, JSON.stringify(schema));
     const written = runCli(root, []);
     expect(written.status, written.stderr).toBe(0);
-    expect(readFileSync(join(root, "schemas/plugin-host-protocol/2/protocol-client.ts"), "utf-8"))
+    expect(readFileSync(join(root, "schemas/plugin-host-protocol/3/protocol-client.ts"), "utf-8"))
       .toContain("export type InjectedTypeError = NoSuchTypeAnywhere;");
 
     const result = runCli(root, ["--check"]);

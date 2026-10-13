@@ -7,7 +7,7 @@
  * suite (`adversarial-escapes.test.ts`) is where they are asserted. What the
  * CLI does claim, and what this file holds it to:
  *
- *  - the fixture is a well-formed protocol-2 plugin: every standard row passes,
+ *  - the fixture is a well-formed protocol-3 plugin: every standard row passes,
  *    and its declared grant is `not exercised`, never passed;
  *  - Electron's main-process API is unusable in every form — no harness runs a
  *    plugin as the main process — asserted by SHAPE, with how each form
@@ -100,7 +100,7 @@ afterAll(() => {
 });
 
 describe("the adversarial fixture under the validate CLI", () => {
-  it("is a well-formed protocol-2 plugin: every standard row passes and its grant is not exercised", async () => {
+  it("is a well-formed protocol-3 plugin: every standard row passes and its grant is not exercised", async () => {
     const rows = await validatePluginDirectory(FIXTURE, SOURCE_MODE);
     for (const check of STANDARD_ROWS) {
       expect(row(rows, check), check).toMatchObject({ ok: true });

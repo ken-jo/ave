@@ -2,7 +2,7 @@
  * The generated protocol client, held to the schema it projects and to the
  * frames the host really exchanged.
  *
- * `schemas/plugin-host-protocol/2/protocol-client.ts` is generated from the
+ * `schemas/plugin-host-protocol/3/protocol-client.ts` is generated from the
  * committed schema, and `check:plugin-host-protocol-client` holds the file to
  * that output and compiles it. Neither proves a stub sends the right frame.
  * This does:
@@ -12,7 +12,7 @@
  *  - shape: `createHostClient` has exactly one method per `ave/host/*` entry
  *    of `$defs.methods`, read from the schema rather than from a list here;
  *  - frames: for every golden method recording under
- *    `fixtures/host-protocol/2/methods/`, the stub at that method's path, given
+ *    `fixtures/host-protocol/3/methods/`, the stub at that method's path, given
  *    the golden `params`, sends the golden frame's `method` and `params`.
  */
 import { describe, expect, it } from "vitest";
@@ -24,7 +24,7 @@ import {
   createHostClient,
   isHostNotification,
   type HostClientTransport,
-} from "../../../../schemas/plugin-host-protocol/2/protocol-client.js";
+} from "../../../../schemas/plugin-host-protocol/3/protocol-client.js";
 import {
   generateHostProtocolClient,
   renderHostProtocolClient,
@@ -34,14 +34,14 @@ import { goldenFiles } from "./host-protocol-golden-files.js";
 type Frame = Record<string, unknown>;
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
-const SCHEMA_PATH = join(REPO_ROOT, "schemas/plugin-host-protocol/2/protocol.schema.json");
-const CLIENT_PATH = join(REPO_ROOT, "schemas/plugin-host-protocol/2/protocol-client.ts");
+const SCHEMA_PATH = join(REPO_ROOT, "schemas/plugin-host-protocol/3/protocol.schema.json");
+const CLIENT_PATH = join(REPO_ROOT, "schemas/plugin-host-protocol/3/protocol-client.ts");
 const SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, "utf-8")) as {
   $id: string;
   description: string;
   $defs: { methods: Record<string, unknown>; notifications: Record<string, unknown> };
 };
-const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/2/", import.meta.url));
+const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/3/", import.meta.url));
 const HOST_METHODS = Object.keys(SCHEMA.$defs.methods)
   .filter((method) => method.startsWith("ave/host/"))
   .sort();
@@ -87,7 +87,7 @@ function stubFor(client: unknown, method: string): ((params: unknown) => Promise
 describe("the client is the schema's projection, byte for byte", () => {
   it("regenerates to the committed file on this platform", async () => {
     const { path, text } = await generateHostProtocolClient();
-    expect(path).toBe("schemas/plugin-host-protocol/2/protocol-client.ts");
+    expect(path).toBe("schemas/plugin-host-protocol/3/protocol-client.ts");
     expect(text).toBe(readFileSync(CLIENT_PATH, "utf-8"));
   }, 60_000);
 
@@ -103,9 +103,9 @@ describe("the client is the schema's projection, byte for byte", () => {
       $id: SCHEMA.$id.replace(`/v${appVersion}/`, "/v99.98.97/"),
       description: SCHEMA.description.replaceAll(appVersion, "99.98.97"),
     };
-    expect(await renderHostProtocolClient("2", retagged)).toBe(committed);
+    expect(await renderHostProtocolClient("3", retagged)).toBe(committed);
     expect(committed).not.toContain(SCHEMA.$id);
-    expect(HOST_PROTOCOL_VERSION).toBe("2");
+    expect(HOST_PROTOCOL_VERSION).toBe("3");
   }, 60_000);
 });
 

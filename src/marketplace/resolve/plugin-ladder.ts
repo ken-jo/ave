@@ -32,7 +32,7 @@ import { ARTIFACT_RUNGS, FOLDER_RUNG, type PluginRung, type RungOutcome } from "
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
-import type { IndexVersion, PluginArtifactPins, PluginAuthority } from "../catalog/types.js";
+import { MARKETPLACE_DESCRIPTOR_FILE, type IndexVersion, type PluginArtifactPins, type PluginAuthority } from "../catalog/types.js";
 import { MarketplaceError, isMarketplaceError, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
 import type { BareRepo } from "../git/repo.js";
 import type { GitRemote } from "../git/run-git.js";
@@ -40,7 +40,7 @@ import type { CatalogSource, NetworkGate } from "../net/network-gate.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
 import { isFolderRevision, packageInstalls } from "../sources/source-tree.js";
 import type { ArtifactCache } from "./artifact-cache.js";
-import { candidateVersion, DESCRIPTOR_NAME, planPackage, readDescriptorAtVersion, repoPath, type PackagePlan, type RepositoryAccess } from "./descriptor.js";
+import { candidateVersion, planPackage, readDescriptorAtVersion, repoPath, type PackagePlan, type RepositoryAccess } from "./descriptor.js";
 import { downloadBounded } from "./download.js";
 import { treeDigest } from "./tree-digest.js";
 import { assertGitInstallManifest, expectedPluginOf } from "./manifest-rules.js";
@@ -125,7 +125,7 @@ const RELEASE_METADATA_LIMIT = 1024 * 1024;
 /** `owner/name`; neither segment may be `.` or `..`. */
 const RELEASE_REPO = /^(?!\.\.?\/)[A-Za-z0-9_.-]+\/(?!\.\.?$)[A-Za-z0-9_.-]+$/u;
 /** Top-level entries a tree-rung directory may hold (design §5.2); the descriptor is not installed. */
-const TREE_TOP_LEVEL_FILES = new Set(["plugin.json", DESCRIPTOR_NAME]);
+const TREE_TOP_LEVEL_FILES = new Set(["plugin.json", MARKETPLACE_DESCRIPTOR_FILE]);
 const TREE_TOP_LEVEL_DIRS = new Set(["dist", "assets"]);
 
 /** A plan for the row's candidate version (design §6.1). */
@@ -164,7 +164,7 @@ async function assertDescriptorAtVersion(plan: PluginInstallPlan, deps: Reposito
   if (differs.length > 0) {
     throw new MarketplaceError(
       "MANIFEST_MISMATCH",
-      `plugin ${plan.name}@${plan.version} at ${plan.versionCommit}: the index copy differs from ${repoPath(plan.packagePath, DESCRIPTOR_NAME)} in ${differs.join(", ")}`,
+      `plugin ${plan.name}@${plan.version} at ${plan.versionCommit}: the index copy differs from ${repoPath(plan.packagePath, MARKETPLACE_DESCRIPTOR_FILE)} in ${differs.join(", ")}`,
     );
   }
 }
@@ -386,7 +386,7 @@ async function treeRung(plan: PluginInstallPlan, deps: LadderDeps): Promise<Rung
     for (const file of exported) {
       const problem = treeLayoutProblem(file.path);
       if (problem) throw new VerificationFailure("CONTENT_RULE_VIOLATION", problem);
-      if (file.path === DESCRIPTOR_NAME) continue;
+      if (file.path === MARKETPLACE_DESCRIPTOR_FILE) continue;
       files.push({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))), executable: file.executable });
     }
     const zip = new AdmZip();

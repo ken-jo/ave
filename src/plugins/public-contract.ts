@@ -40,7 +40,7 @@ export const AGENT_PLUGINS_SCHEMA_URL =
 
 /**
  * The reverse-domain namespace Ave owns inside the portable `extensions`
- * object (domain `former-site.invalid`). Agent Plugins assigns no semantics to a
+ * object (the kept domain `former-site.invalid`, reversed). Agent Plugins assigns no semantics to a
  * namespace's contents, so everything the host needs in order to load, sandbox
  * and govern a plugin lives under this one key.
  */
@@ -130,11 +130,11 @@ export function flattenAgentPluginsManifest(document: unknown): PluginManifest {
     extensions && typeof extensions === "object" && !Array.isArray(extensions)
       ? (extensions as Record<string, unknown>)[AVE_EXTENSION_NAMESPACE]
       : undefined;
-  const ave =
+  const hostBlock =
     namespaced && typeof namespaced === "object" && !Array.isArray(namespaced)
       ? (namespaced as Record<string, unknown>)
       : {};
-  const { displayName, ...hostFields } = ave;
+  const { displayName, ...hostFields } = hostBlock;
   const flat: Record<string, unknown> = {
     ...hostFields,
     id: top.name,
@@ -668,7 +668,7 @@ export interface PluginManifestFields {
   iconText?: string;
   /** Optional Python runtime co-deployment metadata. */
   python?: {
-    /** `ave` installs the declared lock; `self` leaves runtime ownership to the plugin. */
+    /** `ave` (the host app) installs the declared lock; `self` leaves runtime ownership to the plugin. */
     managedBy?: "ave" | "self";
     /** Lockfile path relative to the verified plugin root. */
     requirementsLock?: string;
@@ -962,7 +962,7 @@ export interface RequiresSpec {
   minAppVersion?: string;
   /**
    * The Ave host protocol version the plugin speaks — an integer written as a
-   * string (`"2"`). A missing declaration or a version the running app does not serve refuses the load with
+   * string (`"3"`). A missing declaration or a version the running app does not serve refuses the load with
    * `incompatible-host-protocol`. An older app whose schema lacks the field
    * rejects the manifest outright, so a plugin that declares it also sets
    * `minAppVersion` to the first release that knows it. @optional

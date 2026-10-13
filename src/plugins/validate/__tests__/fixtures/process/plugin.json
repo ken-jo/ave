@@ -16,7 +16,7 @@
       },
       "requires": {
         "minAppVersion": "0.13.0",
-        "hostProtocol": "2"
+        "hostProtocol": "3"
       },
       "tools": [
         {

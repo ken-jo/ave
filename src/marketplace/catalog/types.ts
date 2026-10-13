@@ -18,6 +18,12 @@ import type { RoutineSchedule } from "../../shared/routines-types.js";
  */
 export const MARKETPLACE_INDEX_FILE = "marketplace.json";
 
+/**
+ * The descriptor file in every package directory (design §4): the package's
+ * kind, name and version, read by the marketplace and never installed.
+ */
+export const MARKETPLACE_DESCRIPTOR_FILE = "ave-package.json";
+
 export const PACKAGE_KINDS = [
   "plugin",
   "agent-plugin",

@@ -1,6 +1,6 @@
 # The app reads these two files (ave design §11). A short cache lets an
 # announcement or a domain move reach clients within minutes.
-/.well-known/former-service.json
+/.well-known/ave-service.json
   Content-Type: application/json; charset=utf-8
   Cache-Control: public, max-age=300
   X-Content-Type-Options: nosniff

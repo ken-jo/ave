@@ -13,7 +13,7 @@ const json = (path: string): unknown => JSON.parse(readFileSync(join(publicDir, 
 
 describe("published service files", () => {
   it("serves a service document naming the announcements file and no telemetry yet", () => {
-    expect(parseServiceDocument(json(".well-known/former-service.json"), AVE_SERVICE_BASE_URL)).toEqual({
+    expect(parseServiceDocument(json(".well-known/ave-service.json"), AVE_SERVICE_BASE_URL)).toEqual({
       announcements: `${AVE_SERVICE_BASE_URL}/announcements/v1.json`,
       telemetry: null,
       movedTo: null,

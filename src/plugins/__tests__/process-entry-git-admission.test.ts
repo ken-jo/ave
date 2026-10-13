@@ -56,7 +56,7 @@ const AT = "2026-10-01T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
 const RELEASE_PATH = "/acme/alpha/releases/download/v1.0.0/alpha-1.0.0.zip";
 
-const authority: PluginAuthority = { capabilities: [], requires: { minAppVersion: "0.13.0", hostProtocol: "2" } };
+const authority: PluginAuthority = { capabilities: [], requires: { minAppVersion: "0.13.0", hostProtocol: "3" } };
 
 /** The released zip: a process manifest and the executable it names. */
 function processZip(): Buffer {
@@ -122,7 +122,7 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
     const zip = processZip();
     server.file(RELEASE_PATH, zip);
     const described = `${JSON.stringify({
-      schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.13.0", hostProtocol: "2",
+      schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.13.0", hostProtocol: "3",
       platforms: ["darwin", "linux"],
       payload: { authority, artifact: { release: { repo: "acme/alpha", sha256: sha(zip) } } },
     })}\n`;

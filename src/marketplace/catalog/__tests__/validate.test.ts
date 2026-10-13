@@ -249,7 +249,7 @@ describe("validateIndexText", () => {
 
   it("accepts only format-2 agent-plugin components and keeps invalid path claimants isolated", () => {
     expect(checkDescriptor(descriptor("agent-plugin")).ok).toBe(true);
-    expect(checkDescriptor(descriptor("agent-plugin", { hostProtocol: "1" })).ok).toBe(false);
+    expect(checkDescriptor(descriptor("agent-plugin", { hostProtocol: "2" })).ok).toBe(false);
     expect(checkDescriptor(descriptor("agent-plugin", { payload: { manifest: "plugin.json", components: { skills: [], mcpServers: {}, prompts: [], agents: [], routineTemplates: [], hooks: [], unexpected: true } } })).ok).toBe(false);
     const components = PAYLOADS["agent-plugin"]!().components;
     const result = validateIndexText(index([

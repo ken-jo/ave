@@ -5,6 +5,7 @@ import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { AGENT_PLUGINS_SCHEMA_URL } from "../plugins/public-contract.js";
 import { parseStrictJson } from "../marketplace/catalog/strict-json.js";
+import { MARKETPLACE_DESCRIPTOR_FILE } from "../marketplace/catalog/types.js";
 import type { StudioDiagnostic } from "../shared/plugin-studio.js";
 import { importLegacyHooks, type ImportedHookEntry } from "../hooks/hook-import-export.js";
 
@@ -398,7 +399,7 @@ export async function importStudioArchive(path: string): Promise<ImportedStudioP
       if (entry.isDirectory) continue;
       const name = safeRelative(entry.entryName);
       if ((entry.attr >>> 16 & 0o170000) === 0o120000) throw new Error(`Archive link is not allowed: ${name}`);
-      if (portable && !(name === "plugin.json" || name === "mcp.json" || name === "ave-package.json"
+      if (portable && !(name === "plugin.json" || name === "mcp.json" || name === MARKETPLACE_DESCRIPTOR_FILE
         || ["LICENSE", "NOTICE", "README.md", "CHANGELOG.md"].includes(name)
         || name.startsWith("skills/") || name.startsWith("ai.agent-connector.ave/") || name.startsWith("server/"))) {
         ignored.push(name);

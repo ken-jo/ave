@@ -42,7 +42,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { canonicalZipEntryPathIdentity, sanitizeZipEntryPath } from "../../plugins/zip-entry-path.js";
-import type { PackageKind } from "../catalog/types.js";
+import { MARKETPLACE_DESCRIPTOR_FILE, type PackageKind } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
 import type { ExportedFile, ExportLimits } from "../git/repo.js";
 import {
@@ -74,8 +74,7 @@ function folded(name: string): string {
 
 /** Top-level files a package's readers open beside what it installs: the descriptor and the files a direct source is detected from. */
 /** The package's descriptor: read by the marketplace, never part of what a plugin installs, and not listed as left out. */
-const DESCRIPTOR_FILE = "ave-package.json";
-const PACKAGE_READ_FILES = [DESCRIPTOR_FILE, "plugin.json", "SKILL.md", "AGENTS.md", "server.json"] as const;
+const PACKAGE_READ_FILES = [MARKETPLACE_DESCRIPTOR_FILE, "plugin.json", "SKILL.md", "AGENTS.md", "server.json"] as const;
 const PACKAGE_READ_LIMIT = 1024 * 1024;
 
 export interface FolderFile {
@@ -515,7 +514,7 @@ export class FolderTree implements SourceTree {
           at = target.segments;
         }
         if (relative.length === 0 && kind !== null && !packageInstalls(kind, name, entry.kind === "directory")) {
-          if (kind === "plugin" && name !== DESCRIPTOR_FILE) notInstalled.push(entry.kind === "directory" ? `${name}/` : name);
+          if (kind === "plugin" && name !== MARKETPLACE_DESCRIPTOR_FILE) notInstalled.push(entry.kind === "directory" ? `${name}/` : name);
           continue;
         }
         if (entry.kind === "directory") {

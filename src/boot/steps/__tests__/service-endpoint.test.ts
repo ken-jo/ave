@@ -41,8 +41,8 @@ describe("createServiceClient", () => {
   it("reads a loopback staging base and records its move in its own file", async () => {
     const service = createServiceClient(
       fetchOver({
-        [`${STAGING}/.well-known/former-service.json`]: doc({ movedTo: MOVED }),
-        [`${MOVED}/.well-known/former-service.json`]: doc({ movedFrom: STAGING }),
+        [`${STAGING}/.well-known/ave-service.json`]: doc({ movedTo: MOVED }),
+        [`${MOVED}/.well-known/ave-service.json`]: doc({ movedFrom: STAGING }),
       }),
       STAGING,
     );
@@ -52,7 +52,7 @@ describe("createServiceClient", () => {
   });
 
   it("uses the build constant without an override, where loopback http is not a base", async () => {
-    const service = createServiceClient(fetchOver({ [`${AVE_SERVICE_BASE_URL}/.well-known/former-service.json`]: doc({ movedTo: STAGING }) }), undefined);
+    const service = createServiceClient(fetchOver({ [`${AVE_SERVICE_BASE_URL}/.well-known/ave-service.json`]: doc({ movedTo: STAGING }) }), undefined);
     // A document naming a loopback move target is invalid outside staging.
     await expect(service.refresh()).rejects.toThrow(/https/u);
   });

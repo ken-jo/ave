@@ -15,11 +15,11 @@
  * disagree about what is valid.
  */
 import { messages } from "../i18n/messages/index.js";
-import { MARKETPLACE_INDEX_FILE as INDEX_PATH, type IndexPackage, type IndexVersion, type PackageDescriptor, type PluginArtifactPins, type PluginAuthority } from "./catalog/types.js";
+import { MARKETPLACE_INDEX_FILE as INDEX_PATH, MARKETPLACE_DESCRIPTOR_FILE, type IndexPackage, type IndexVersion, type PackageDescriptor, type PluginArtifactPins, type PluginAuthority } from "./catalog/types.js";
 import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateRevocationsText } from "./catalog/validate.js";
 import { isDataContentKind, parseContent } from "./content/kinds.js";
 import { checkContentFiles, isContentKind } from "./content/rules.js";
-import { DESCRIPTOR_NAME, descriptorDiffersFromIndex, repoPath } from "./resolve/descriptor.js";
+import { descriptorDiffersFromIndex, repoPath } from "./resolve/descriptor.js";
 import { gitInstallManifestMismatches } from "./resolve/manifest-rules.js";
 import { declaredMcpServer, mcpPayloadReadsServerJson, parseServerJson } from "./resolve/mcp.js";
 import { hasProcessEntry } from "../plugins/process-entry.js";
@@ -70,7 +70,7 @@ function packageFiles(tree: RepositoryTree, dir: string): Array<{ path: string; 
   return tree
     .list(dir)
     .map((path) => path.slice(prefix.length))
-    .filter((path) => path !== DESCRIPTOR_NAME)
+    .filter((path) => path !== MARKETPLACE_DESCRIPTOR_FILE)
     .sort()
     .map((path) => {
       const data = tree.read(repoPath(dir, path));
@@ -145,7 +145,7 @@ function checkReleasedManifests(entry: IndexPackage, released: ReadonlyMap<strin
       artifact: version.artifact,
     };
     const held = version.yanked ? withoutLegacyFields(document) : document;
-    for (const mismatch of gitInstallManifestMismatches(held, expected, repoPath(entry.path, DESCRIPTOR_NAME))) {
+    for (const mismatch of gitInstallManifestMismatches(held, expected, repoPath(entry.path, MARKETPLACE_DESCRIPTOR_FILE))) {
       report(`the released plugin.json of ${version.version}: ${mismatch}`);
     }
     checkRetiredNotificationDeclaration(held, version.minAppVersion, alertsReleaseVersion,
@@ -175,7 +175,7 @@ function checkPlugin(
   const prefix = entry.path === "" ? "" : `${entry.path}/`;
   for (const path of tree.list(entry.path)) {
     const top = path.slice(prefix.length).split("/")[0]!;
-    if (top !== DESCRIPTOR_NAME && !TREE_TOP_LEVEL.has(top)) {
+    if (top !== MARKETPLACE_DESCRIPTOR_FILE && !TREE_TOP_LEVEL.has(top)) {
       report(`${path}: the tree rung installs plugin.json, dist/ and assets/ only`);
     }
   }
@@ -186,7 +186,7 @@ function checkPlugin(
     report(`${manifestPath} does not parse: ${errorMessage(error)}`);
     return;
   }
-  for (const mismatch of manifestMismatches(document, descriptor, repoPath(entry.path, DESCRIPTOR_NAME))) report(`${manifestPath}: ${mismatch}`);
+  for (const mismatch of manifestMismatches(document, descriptor, repoPath(entry.path, MARKETPLACE_DESCRIPTOR_FILE))) report(`${manifestPath}: ${mismatch}`);
   // A plugin.json in the package directory is itself a tree rung (design §6.2),
   // which a process entry never installs from.
   if (hasProcessEntry(document)) {
@@ -200,8 +200,8 @@ function checkMcp(tree: RepositoryTree, entry: IndexPackage, descriptor: Package
   const prefix = entry.path === "" ? "" : `${entry.path}/`;
   for (const path of tree.list(entry.path)) {
     const relative = path.slice(prefix.length);
-    if (relative !== DESCRIPTOR_NAME && relative !== "server.json" && !relative.startsWith("server/")) {
-      report(`${path}: an mcp package holds ave-package.json, server.json and server/ only`);
+    if (relative !== MARKETPLACE_DESCRIPTOR_FILE && relative !== "server.json" && !relative.startsWith("server/")) {
+      report(`${path}: an mcp package holds ${MARKETPLACE_DESCRIPTOR_FILE}, server.json and server/ only`);
     }
   }
   let serverJson: unknown;
@@ -240,7 +240,7 @@ function checkContent(tree: RepositoryTree, entry: IndexPackage, descriptor: Pac
 function checkPackage(tree: RepositoryTree, entry: IndexPackage, options: RepositoryCheckOptions, problems: RepositoryProblem[]): void {
   const subject = `${entry.kind}/${entry.name}`;
   const report = (text: string) => problems.push({ subject, message: text });
-  const path = repoPath(entry.path, DESCRIPTOR_NAME);
+  const path = repoPath(entry.path, MARKETPLACE_DESCRIPTOR_FILE);
   const bytes = tree.read(path);
   if (!bytes) {
     report(`${path} is missing`);
@@ -271,8 +271,8 @@ function checkPackage(tree: RepositoryTree, entry: IndexPackage, options: Reposi
 function unlisted(tree: RepositoryTree, listed: ReadonlySet<string>): string[] {
   return tree
     .list("")
-    .filter((path) => path === DESCRIPTOR_NAME || path.endsWith(`/${DESCRIPTOR_NAME}`))
-    .map((path) => (path === DESCRIPTOR_NAME ? "" : path.slice(0, -(DESCRIPTOR_NAME.length + 1))))
+    .filter((path) => path === MARKETPLACE_DESCRIPTOR_FILE || path.endsWith(`/${MARKETPLACE_DESCRIPTOR_FILE}`))
+    .map((path) => (path === MARKETPLACE_DESCRIPTOR_FILE ? "" : path.slice(0, -(MARKETPLACE_DESCRIPTOR_FILE.length + 1))))
     .filter((dir) => !listed.has(dir))
     .sort();
 }
@@ -302,7 +302,7 @@ export function checkMarketplaceRepository(tree: RepositoryTree, options: Reposi
   }
   const listed = new Set(index.value.index.packages.map((entry) => entry.path));
   for (const dir of unlisted(tree, listed)) {
-    problems.push({ subject: repoPath(dir, DESCRIPTOR_NAME), message: "no index entry points at this package" });
+    problems.push({ subject: repoPath(dir, MARKETPLACE_DESCRIPTOR_FILE), message: "no index entry points at this package" });
   }
   const revocations = tree.read(REVOCATIONS_PATH);
   if (revocations) {

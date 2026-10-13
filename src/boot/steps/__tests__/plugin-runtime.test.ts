@@ -118,7 +118,7 @@ vi.mock("../plugin-runtime/grant-evidence.js", () => ({
 /** An official install of the artifact the official snapshot pins (design §10.3). */
 function officialOrigin(name: string) {
   return {
-    sourceId: "ave",
+    sourceId: "retiredname",
     sourceOrigin: "official" as const,
     commit: "c".repeat(40),
     packagePath: `plugins/${name}`,
