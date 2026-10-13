@@ -111,7 +111,8 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
 
   it("clamps a tiny budget from 'none' to 'low' for models without the capability", async () => {
     // budget 100 → mapReasoningEffort "none". The catalog does not list this
-    // id, so the name rule decides: GPT-5.1 can't take "none" → "low".
+    // id, so the name rule decides. It reads every id before GPT-5.2 as unable
+    // to take "none" → "low". (The catalog's own gpt-5.1 row does list "none".)
     const openai = await captureProviderOptions("gpt-5.1-unlisted-fixture", 100);
     expect(openai?.reasoningEffort).toBe("low");
   });

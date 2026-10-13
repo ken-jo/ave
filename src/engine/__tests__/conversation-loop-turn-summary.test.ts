@@ -527,8 +527,12 @@ describe("ConversationLoop onTurnSummary", () => {
     } as never);
     let summary: TurnSummary | null = null;
 
-    await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { inputOrigin: "user-keyboard" });
-
+    try {
+      await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { inputOrigin: "user-keyboard" });
+    } finally {
+      await auditLogger.close();
+    }
+    expect(auditLogger.getWriterStats().pendingWrites).toBe(0);
     expect(summary!.modelSettings?.pricing).toEqual({ source: "user", rates: { inputPer1M: 0.5, outputPer1M: 3 } });
     expect(summary!.usageByModel).toEqual([
       expect.objectContaining({ pricing: summary!.modelSettings!.pricing, tokenUsage: expect.objectContaining({ outputTokens: 10, reasoningTokens: 4 }) }),
