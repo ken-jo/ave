@@ -497,7 +497,7 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
     vi.doUnmock("@ai-sdk/anthropic");
   });
 
-  it("claude-3.x — no `context-1m-2025-08-07` header (model lacks contextWindow1MBeta)", async () => {
+  it("claude-3.x — no `context-1m-2025-08-07` header (not a 1M-beta model in the request-shape table)", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -530,9 +530,10 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
     );
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
-    // Negative case for the 1M-beta auto-send: claude-3-5-sonnet has no
-    // contextWindow1MBeta in pricing-data, so the adapter must not emit
-    // any anthropic-beta header (no thinking either → no interleaved beta).
+    // Negative case for the 1M-beta auto-send: claude-3-5-sonnet is not a
+    // 1M-beta row of the host's request-shape table (model-host-policy.ts), so
+    // the adapter must not emit any anthropic-beta header (no thinking either →
+    // no interleaved beta).
     expect(callArg.headers).toBeUndefined();
 
     vi.doUnmock("ai");
@@ -628,8 +629,8 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(callArg.providerOptions).toBeUndefined();
-    // 1M beta still applies — thinking off but the model is 1M-tier, so the
-    // adapter opts in unconditionally to match the pricing-data SoT.
+    // 1M beta still applies — thinking off, but the request-shape table says
+    // this model's 1M window needs the header, so the adapter opts in.
     expect(callArg.headers).toEqual({
       "anthropic-beta": "context-1m-2025-08-07",
     });

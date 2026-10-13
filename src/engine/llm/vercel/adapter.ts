@@ -53,7 +53,7 @@ import {
   withProviderErrorClassification,
   type ProviderErrorDiagnostics,
 } from "../provider-error-diagnostics.js";
-import { lookupPricing } from "../../../shared/pricing-data.js";
+import { claudeBetaHeaders, claudeRequestShape } from "../../../shared/model-host-policy.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import {
   normalizeProviderToolAliasText,
@@ -118,21 +118,11 @@ const OPENAI_RESPONSES_TOOL_NAME_ALIAS_REVERSE: Readonly<Record<string, string>>
       from,
     ]),
   );
-/** Detect OpenAI reasoning-model families (Responses API + reasoning_effort support). */
 // Idle ceiling for a streamed response: if no delta arrives within this window
 // the provider stream is treated as stalled and aborted (a hung proxy / dropped
 // upstream would otherwise block the turn forever). Incremental tool arguments
 // count as activity even before they become a caller-facing tool call.
 const STREAM_IDLE_CEILING_MS = TOOL_TIMEOUT_POLICY.modelStreamIdleCeilingMs;
-
-function supportsInterleavedNumericThinking(modelId: string): boolean {
-  // Only these numeric-thinking generations support a budget across tool calls.
-  // Release dates do not change a generation's capabilities.
-  const match = modelId.toLowerCase().match(
-    /^claude-(opus|sonnet)-4(?:-(0|1|5))?(?:-(?:\d{8}|latest))?$/,
-  );
-  return match !== null && (match[1] === "opus" || match[2] !== "1");
-}
 
 interface NativeOutputProjection {
   outputTokenLimit: number;
@@ -241,9 +231,6 @@ function routelessModelCapabilities(params: {
     ...(toolCall !== undefined ? { toolCall } : {}),
   };
 }
-
-const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
-const CONTEXT_1M_BETA = "context-1m-2025-08-07";
 
 export function normalizeAzureFoundryBaseURL(rawBaseUrl: string): string {
   const parsedUrl = new URL(rawBaseUrl);
@@ -399,8 +386,10 @@ export class VercelUnifiedProvider implements LLMProvider {
       // purpose-specific or fallback request carries no source.
       const reportedCeiling = params.outputCeiling !== undefined && params.outputCeiling !== null
         && params.outputCeilingSource === "provider-reported";
+      // Request shape is a host rule (model-host-policy.ts), not a catalog fact.
+      const claudeShape = slot === "claude" ? claudeRequestShape(params.model) : undefined;
       const interleavedNumericThinking = numericThinking && hasTools
-        && supportsInterleavedNumericThinking(params.model);
+        && claudeShape?.interleavedNumericThinking === true;
       const model = this.resolveModel(
         params.model,
         hasTools,
@@ -518,13 +507,10 @@ export class VercelUnifiedProvider implements LLMProvider {
         }
         // Beta header set: comma-joined per Anthropic's API convention. We
         // gather them in an array and emit one `anthropic-beta` value.
-        const betas: string[] = [];
-        if (lookupPricing("claude", params.model).contextWindow1MBeta !== undefined) {
-          betas.push(CONTEXT_1M_BETA);
-        }
-        if (interleavedNumericThinking) {
-          betas.push(INTERLEAVED_THINKING_BETA);
-        }
+        const betas = claudeBetaHeaders({
+          context1MBeta: claudeShape?.context1MBeta === true,
+          interleavedThinking: interleavedNumericThinking,
+        });
         if (betas.length > 0) {
           headers = { "anthropic-beta": betas.join(",") };
         }
