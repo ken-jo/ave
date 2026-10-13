@@ -219,7 +219,6 @@
     "test/e2e/ui/side-chat-tab.spec.ts": 2,
     "test/e2e/ui/starred-toggle.spec.ts": 2,
     "test/e2e/ui/status-bar-emoji.spec.ts": 3,
-    "test/e2e/ui/subagent-waiting.spec.ts": 7,
     "test/e2e/ui/theme-bundles.spec.ts": 3,
     "test/e2e/ui/titlebar.spec.ts": 4,
     "test/e2e/ui/token-surfaces.spec.ts": 2,
