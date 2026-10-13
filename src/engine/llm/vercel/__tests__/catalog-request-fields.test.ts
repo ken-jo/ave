@@ -97,16 +97,26 @@ describe("request fields the catalog decides", () => {
   });
 
   it.each([false, true].flatMap((enableThinking) => [
-    { enableThinking, reported: undefined, expected: 32_000, sent: 4_096 },
-    { enableThinking, reported: 8_192, expected: 8_192, sent: 8_192 },
-  ]))("sends an endpoint-reported ceiling past the SDK's name table and records what it sends: $reported (thinking $enableThinking)", async ({ enableThinking, reported, expected, sent }) => {
+    { enableThinking, reported: undefined, catalog: undefined, expected: 32_000, sent: 4_096 },
+    { enableThinking, reported: 8_192, catalog: undefined, expected: 8_192, sent: 8_192 },
+    { enableThinking, reported: undefined, catalog: 8_192, expected: 8_192, sent: 4_096 },
+  ]))("sends an endpoint-reported ceiling past the SDK's name table and records what it sends: reported $reported, catalog $catalog (thinking $enableThinking)", async ({ enableThinking, reported, catalog, expected, sent }) => {
     // An unknown ceiling lets native serialization narrow to the SDK's model
     // limit (claude-3-haiku: 4,096). The endpoint's own report outranks that
-    // name table, so its ceiling reaches the wire. Either way the request
-    // controls observed after the projection are what the run records.
+    // name table, so its ceiling reaches the wire; a catalog ceiling does not.
+    // Either way the request controls observed after the projection are what
+    // the run records.
+    if (catalog !== undefined) {
+      installModelCatalog({
+        ...bundled,
+        providers: { ...bundled.providers, anthropic: { models: {
+          "fixture-listed": { id: "fixture-listed", limits: { context: 200_000, output: catalog } },
+        } } },
+      } as ModelCatalogDocument);
+    }
     const vendors = freshAllVendorBlocks();
     vendors.claude.model = "claude-3-haiku-20240307";
-    vendors.claude.catalogModel = "anthropic/not-listed";
+    vendors.claude.catalogModel = catalog === undefined ? "anthropic/not-listed" : "anthropic/fixture-listed";
     vendors.claude.enableThinking = enableThinking;
     const modelListCache = reported === undefined ? undefined : {
       [llmModelListCacheKey("claude")]: {
@@ -115,8 +125,9 @@ describe("request fields the catalog decides", () => {
       },
     };
     const route = resolveContextWindowForRoute({ provider: "claude", vendors, modelListCache });
-    if (reported === undefined) expect(route.output).not.toHaveProperty("ceiling");
-    else expect(route.output.ceilingSource).toBe("provider-reported");
+    if (reported !== undefined) expect(route.output.ceilingSource).toBe("provider-reported");
+    else if (catalog !== undefined) expect(route.output.ceilingSource).toBe("model-catalog");
+    else expect(route.output).not.toHaveProperty("ceiling");
     expect(route.output.effective).toBe(expected);
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
     const onRequestControls = vi.fn<NonNullable<StreamTurnParams["onRequestControls"]>>();
