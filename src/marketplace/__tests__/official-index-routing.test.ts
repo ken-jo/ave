@@ -61,8 +61,9 @@ const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "offic
 const index = JSON.parse(readFileSync(FIXTURE, "utf-8")) as { schemaVersion: number; packages: IndexPackage[] };
 
 /**
- * The manifest shape a released version has, as the index records it. A
- * format-1 index names no `process` launch and no `platforms`, so each version
+ * The manifest shape a released version has, as the index records it. The
+ * fixture is a historical capture from before the index carried `process`
+ * launches or `platforms`, so it names neither and each version
  * is an `entry` plugin; the shape check below fails loudly the day a version
  * says otherwise, so a `process` plugin is never routed as an `entry` one here.
  */

@@ -12,6 +12,12 @@ import type { PluginSandboxDeclaration } from "../../plugins/public-contract.js"
 import type { BundledMcpAuth, StaticBundledMcpServer } from "../../mcp/portable-mcp.js";
 import type { RoutineSchedule } from "../../shared/routines-types.js";
 
+/**
+ * The one index file of a marketplace repository or folder (design §4). Its
+ * format version is inside it as `schemaVersion`; there is no second name.
+ */
+export const MARKETPLACE_INDEX_FILE = "marketplace.json";
+
 export const PACKAGE_KINDS = [
   "plugin",
   "agent-plugin",

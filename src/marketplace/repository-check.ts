@@ -15,7 +15,7 @@
  * disagree about what is valid.
  */
 import { messages } from "../i18n/messages/index.js";
-import type { IndexPackage, IndexVersion, PackageDescriptor, PluginArtifactPins, PluginAuthority } from "./catalog/types.js";
+import { MARKETPLACE_INDEX_FILE as INDEX_PATH, type IndexPackage, type IndexVersion, type PackageDescriptor, type PluginArtifactPins, type PluginAuthority } from "./catalog/types.js";
 import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateRevocationsText } from "./catalog/validate.js";
 import { isDataContentKind, parseContent } from "./content/kinds.js";
 import { checkContentFiles, isContentKind } from "./content/rules.js";
@@ -61,7 +61,6 @@ export interface RepositoryProblem {
   message: string;
 }
 
-const INDEX_PATH = "marketplace.json";
 const REVOCATIONS_PATH = "policy/revocations.json";
 /** Files a plugin's tree rung installs (design §6.2), besides the descriptor. */
 const TREE_TOP_LEVEL = new Set(["plugin.json", "dist", "assets"]);

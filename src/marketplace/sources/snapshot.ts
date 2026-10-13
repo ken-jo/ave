@@ -30,7 +30,7 @@ import type {
   PluginAuthority,
   Revocation,
 } from "../catalog/types.js";
-import type { ConditionalRevocation } from "../catalog/types.js";
+import { MARKETPLACE_INDEX_FILE as INDEX_PATH, type ConditionalRevocation } from "../catalog/types.js";
 import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateRevocationsText, type CatalogDiagnostic } from "../catalog/validate.js";
 import { isMarketplaceError, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
 import { descriptorDiffersFromIndex } from "../resolve/descriptor.js";
@@ -82,7 +82,6 @@ const SNAPSHOT_FILE_LIMITS = {
   revocations: 1024 * 1024,
 } as const;
 
-const INDEX_PATH = "marketplace.json";
 const REVOCATIONS_PATH = "policy/revocations.json";
 const DESCRIPTOR_NAME = "ave-package.json";
 

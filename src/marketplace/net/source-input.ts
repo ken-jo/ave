@@ -36,6 +36,7 @@ import { errorMessage } from "../../shared/error-message.js";
 import { ConfirmationRequiredError, MarketplaceError, type MarketplaceErrorDetail } from "../errors.js";
 import type { FolderFs, FolderStat } from "../sources/folder-fs.js";
 import { isFolderPathInput, normalizeSourceUrl, type NormalizedSourceUrl } from "./source-url.js";
+import { MARKETPLACE_INDEX_FILE } from "../catalog/types.js";
 
 export type SourceInput =
   | { kind: "git"; url: NormalizedSourceUrl }
@@ -497,7 +498,6 @@ async function shortNameSpelling(entries: readonly string[], name: string, at: s
   return null;
 }
 
-const INDEX_FILE = "marketplace.json";
 
 /**
  * Stage 4 (§18.4.1): walk `path` (stage 1's output, after stage 3 passed)
@@ -571,7 +571,7 @@ export async function resolveFolderRoot(path: string, platform: NodeJS.Platform,
       chain = [...chain, entry];
       continue;
     }
-    if (entry.kind === "file" && queue.length === 0 && spelled === INDEX_FILE) break;
+    if (entry.kind === "file" && queue.length === 0 && spelled === MARKETPLACE_INDEX_FILE) break;
     throw unreadable("not-a-directory", path, `${candidate} is not a folder`);
   }
   const identity = ({ dev, ino }: FolderIdentity): FolderIdentity => ({ dev, ino });

@@ -28,6 +28,7 @@ import { isRecord } from "../../shared/is-record.js";
 import { compareSemver } from "../../shared/semver-compare.js";
 import { parseStrictJson } from "./strict-json.js";
 import {
+  MARKETPLACE_INDEX_FILE,
   NULL_OBJECT_ID,
   type AgentPluginComponents,
   type IndexPackage,
@@ -363,13 +364,13 @@ export interface ValidatedIndex {
 export function validateIndexText(text: string, context: IndexContext): Validation<ValidatedIndex> {
   const parsed = parse(text);
   if (!parsed.ok) return parsed;
-  const version = unsupportedSchemaVersion(parsed.value, "marketplace.json");
+  const version = unsupportedSchemaVersion(parsed.value, MARKETPLACE_INDEX_FILE);
   if (version) return { ok: false, error: version };
   const { indexRoot, indexPackage } = validators();
-  if (!indexRoot(parsed.value)) return { ok: false, error: `marketplace.json: ${describeErrors(indexRoot.errors)}` };
+  if (!indexRoot(parsed.value)) return { ok: false, error: `${MARKETPLACE_INDEX_FILE}: ${describeErrors(indexRoot.errors)}` };
   const root = parsed.value as Omit<MarketplaceIndex, "packages"> & { packages: unknown[] };
   if (context.official && root.name !== context.sourceId) {
-    return { ok: false, error: `marketplace.json: the official index must be named "${context.sourceId}", not "${root.name}"` };
+    return { ok: false, error: `${MARKETPLACE_INDEX_FILE}: the official index must be named "${context.sourceId}", not "${root.name}"` };
   }
 
   const diagnostics: CatalogDiagnostic[] = [];
