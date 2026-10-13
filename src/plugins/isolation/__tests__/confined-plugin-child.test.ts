@@ -977,7 +977,13 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(chosen).toEqual([]);
   });
 
-  it("folds a case-variant spelling of a directory inside data/ into data/, not into a root of its own", () => {
+  // Case folding follows `caseFoldForMatch`, which keys on the platform and not
+  // on a probe of the volume: macOS and Windows fold, Linux compares exactly.
+  // So on Linux `DATA/` is a sibling of `data/` — still under the bundles
+  // directory — and the host must refuse it rather than fold it.
+  const pathsFoldCase = process.platform === "darwin" || process.platform === "win32";
+
+  it.runIf(pathsFoldCase)("folds a case-variant spelling of a directory inside data/ into data/, not into a root of its own", () => {
     // The spelling the config holds was decided "inside" on the case-folded
     // canonical form and used to reach the envelope verbatim, where a
     // case-sensitive containment check took it for an independent root.
@@ -993,6 +999,24 @@ describe("the host decides how far a plugin child reaches", () => {
     });
     expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
     expect(envelope.read).not.toContain(variant);
+  });
+
+  it.runIf(!pathsFoldCase)("refuses a case-variant sibling of data/ where paths compare exactly, since it sits in the bundles directory", () => {
+    // Without folding, `DATA/work` is not inside `data/`; taking it as its
+    // own root would open a write grant inside the plugin bundles directory.
+    const fx = fixture!;
+    mkdirSync(join(fx.pluginDataDir, "work"), { recursive: true });
+    const variant = join(dirname(fx.pluginDataDir), "DATA", "work");
+    const derive = () =>
+      derivePluginChildEnvelope({
+        pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
+        pluginRoot: fx.pluginRoot,
+        pluginDataDir: fx.pluginDataDir,
+        configValue: (key) => (key === "indexStorageRoot" ? variant : undefined),
+      });
+    expect(derive).toThrow(PluginSandboxGrantError);
+    expect(derive).toThrow(/resolves inside the directory that holds every installed plugin's bundle/);
   });
 
   it.runIf(process.platform === "win32")(
