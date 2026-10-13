@@ -265,7 +265,7 @@ package.json                     # workspaces: plugins/*/source, templates/plugi
 ```ts
 interface MarketplaceIndex {
   $schema?: string;
-  schemaVersion: 1;
+  schemaVersion: 2;                 // the catalog format; any other value is refused (§4.2)
   name: string;                     // must equal the source id for official; informative otherwise
   displayName: string;
   description?: string;
@@ -289,9 +289,11 @@ interface IndexVersion {
   version: string;                  // semver 2.0.0
   commit: string;                   // 40-hex; the commit whose descriptor declares this version
   minAppVersion: string;            // copy of the descriptor's value
+  hostProtocol?: string;            // plugin kind: copy of the descriptor's value
   platforms?: Array<"darwin" | "win32" | "linux">;   // copy of the descriptor's value
   authority?: PluginAuthority;      // plugin kind: copy of the descriptor's authority (§5.2)
   artifact?: PluginArtifactPins;    // plugin kind only (§5.2)
+  components?: AgentPluginComponents; // agent-plugin kind only (§5.2)
   rollout?: { percent: number };    // 1..100; absent = 100
   yanked?: { reason: string; at: string };
   publishedAt: string;
@@ -309,7 +311,11 @@ interface IndexVersion {
   `latest`는 회수(yank)된 버전을 가리키지 않습니다.
 - `versions`가 없으면 클라이언트는 핀 커밋의 `path`에서 `ave-package.json`을
   읽고 그것을 유일한 버전으로 취급합니다.
-- `schemaVersion: 1`에서는 알 수 없는 루트 키를 거부합니다.
+- 알 수 없는 루트 키를 거부합니다.
+- 저장소의 인덱스 파일은 `marketplace.json` 하나이고, 형식 버전은 그 안의
+  `schemaVersion`에 있습니다. 앱은 `schemaVersion: 2`만 읽고, 다른 값은 그 값을
+  밝히는 메시지와 함께 거부합니다(`SOURCE_INDEX_INVALID`). 두 번째 파일도, 버전에
+  따른 분기도 없습니다.
 
 ### 4.3 공식 인덱스 생성
 
@@ -324,11 +330,12 @@ CI가 직전 인덱스와 머지 커밋의 디스크립터로 `marketplace.json`
 ```ts
 interface PackageDescriptor {
   $schema?: string;
-  schemaVersion: 1;
+  schemaVersion: 2;                 // the catalog format, as in marketplace.json
   kind: PackageKind;
   name: string;                     // plugin: equals plugin.json `name`
   version: string;                  // required, semver
   minAppVersion: string;            // required, plain MAJOR.MINOR.PATCH
+  hostProtocol?: string;            // plugin kind: the host protocol it speaks
   displayName?: string;
   description?: string;
   author?: { name: string; url?: string; email?: string };
@@ -1257,7 +1264,7 @@ URL을 가져오게 만들지 못합니다.
 
 ### 7.7 로컬 폴더
 
-폴더는 마켓플레이스(루트에 `marketplace.2.json`이나 §3.3의 관례 레이아웃)이거나
+폴더는 마켓플레이스(루트에 `marketplace.json`이나 §3.3의 관례 레이아웃)이거나
 패키지 하나(직접 소스, §8)입니다. 주소를 넣는 곳 — *마켓플레이스 추가…*와
 *Git 주소나 폴더로 설치…* — 에 그대로 입력하거나 *폴더 선택…*
 (`sources:pick-folder`, main의 폴더 대화상자)으로 고르며, 다른 주소처럼
@@ -3150,7 +3157,7 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
 - Windows 장치 경로(`\\.\…`, `\\?\GLOBALROOT\…`, `\\?\Volume{…}\…`).
 - macOS·Linux의 `file://host/…` URL.
 - `unroutable` 주소.
-- 경로가 `marketplace.json`이나 `marketplace.2.json`으로 끝나는 `http(s)` 주소(결정 11).
+- 경로가 `marketplace.json`으로 끝나는 `http(s)` 주소(결정 11).
 
 ### 18.4 로컬 폴더
 
@@ -3165,7 +3172,7 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
 >   보기*는 셸에 요청하기 전에 저장된 경로를 읽기처럼 다시 판단하고(§7.7), 검토는
 >   계획의 `notInstalled`를 나열합니다.
 
-폴더는 마켓플레이스 소스(루트에 `marketplace.2.json`이나 §3.3의 관례 배치가 있음)이거나
+폴더는 마켓플레이스 소스(루트에 `marketplace.json`이나 §3.3의 관례 배치가 있음)이거나
 단일 패키지(§8)입니다.
 
 #### 18.4.1 입력, 분류, 동의, 그다음 해석
@@ -3232,8 +3239,8 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
    걸어가며 각 구성 요소의 디스크 표기를 부모의 `readdir`에서 기록합니다:
    바이트가 같은 항목이 있으면 그것, 없으면 대소문자만 무시하고 같은 항목이 하나일 때
    그것입니다. 그런 항목이 여럿이면 `SOURCE_LOCAL_UNREADABLE` 사유 `ambiguous-case`로
-   실패합니다. 결과는 디렉터리여야 하고, `marketplace.2.json`이나 `marketplace.json`이라는
-   일반 파일은 그 디렉터리로 바꿉니다. 3단계의 정책을 이 **정식 경로**에 다시 적용하고,
+   실패합니다. 결과는 디렉터리여야 하고, `marketplace.json`이라는
+   일반 파일은 그 디렉터리로 바꾸며 다른 파일은 폴더가 아닙니다. 3단계의 정책을 이 **정식 경로**에 다시 적용하고,
    이제야 드러난 차단이면 추가가 끝납니다. 네트워크 분류도 다시 적용하며,
    `network-folder` 없이 다른 컴퓨터에 있는 정식 경로는 그 아래를 읽기 전에 `confirm`으로
    답합니다. 저장하는 `path`는 정식 경로이고, 입력과 다르면 대화상자가
@@ -4176,7 +4183,7 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 > 구현된 모든 코드, 사유, 메시지 키는 §14에 있습니다. 아래 표의 다음 행은 일부러
 > 구현하지 않았으므로, 사용자는 다른 문장으로 그 경우를 만납니다.
 > - `SOURCE_URL_REJECTED` · `index-file-url`: 마켓플레이스 파일을 가리킨다는 이유로
->   거부하는 주소는 없습니다. `marketplace.2.json`이나 `marketplace.json`으로 끝나는
+>   거부하는 주소는 없습니다. `marketplace.json`으로 끝나는
 >   폴더 경로는 그 파일을 담은 폴더로 풀리고(§7.7), 그 파일을 가리키는 웹 주소는
 >   저장소 주소로 읽히므로 호스트의 답이 표시됩니다. 대개 `SOURCE_UNREACHABLE` ·
 >   `not-found`("<호스트>이(가) 이 주소에 저장소가 없다고 답했습니다…")입니다.
@@ -4294,7 +4301,7 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | · `ambiguous-case` | E | "<경로>에 대소문자만 다른 폴더가 여럿 있습니다." | "정확한 대소문자로 경로를 입력하세요." |
 | · `changed-during-read` | E | "Ave가 읽는 동안 <경로>의 파일이 바뀌었습니다." | "다음 읽기 때 다시 시도합니다." |
 | · `classifier-unavailable` | E | "Ave의 폴더 분류 도구가 없거나 손상되어 <경로>가 다른 컴퓨터에 있는지 알 수 없습니다." | "Ave를 다시 설치하세요." |
-| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "<위치>에서 marketplace.2.json도, 패키지 폴더도, 단일 패키지도 찾지 못했습니다." | 입력 중인 주소: "주소와 브랜치, 저장소 안의 패키지라면 폴더 칸을 확인하세요."; 직접 추가한 소스: 같은 안내를 *소스 제거* 후 다시 추가로; 공식: 나중에 *새로 고침*, 그다음 마켓플레이스 운영자; 조직: "관리자에게 알리세요" |
+| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "<위치>에서 marketplace.json도, 패키지 폴더도, 단일 패키지도 찾지 못했습니다." | 입력 중인 주소: "주소와 브랜치, 저장소 안의 패키지라면 폴더 칸을 확인하세요."; 직접 추가한 소스: 같은 안내를 *소스 제거* 후 다시 추가로; 공식: 나중에 *새로 고침*, 그다음 마켓플레이스 운영자; 조직: "관리자에게 알리세요" |
 | · `other-app-plugin` | E | "다른 앱용 플러그인입니다(`.claude-plugin/`나 `.codex-plugin/`)." | "플러그인 스튜디오의 *플러그인 가져오기*를 쓰세요(`extensions-and-plugins.md` §2.4)." |
 | `SOURCE_INDEX_INVALID` | E | "<소스>의 인덱스가 올바르지 않습니다(<파일>: <문제>). 마지막 정상 버전을 계속 씁니다." | "마켓플레이스 소유자에게 알리세요." *세부 정보 복사* |
 | · `name-reserved-prefix`, `version-reserved-prefix`, `component-reserved-prefix` | E | "“<접두사>”로 시작하거나 “-” 뒤 부분이 그것으로 시작하는 패키지 이름은 <발급자>처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다." / "“<접두사>”로 시작하는 부분이 있는 버전은…" / "이 패키지에 든 스킬, 에이전트, 프롬프트, 루틴 또는 MCP 서버의 이름에 “<접두사>”로 시작하는 부분이 있습니다. 그런 이름은…" | "패키지 작성자에게 다른 이름을 골라 / 버전을 바꿔 달라고 하세요." |

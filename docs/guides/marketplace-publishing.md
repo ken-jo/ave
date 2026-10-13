@@ -34,7 +34,9 @@ policy/revocations.json          optional (schemas/marketplace/revocations.schem
 <kind dir>/<name>/...            the package's files
 ```
 
-`marketplace.json` names the marketplace and lists each package's `kind`,
+`marketplace.json` is the one index file. It carries its format version as
+`schemaVersion: 2`; the app refuses any other value. It names the marketplace
+and lists each package's `kind`,
 `name` and `path`. A package entry may also carry `versions[]` (newest first),
 each pinning a `version` to the `commit` that published it; without
 `versions[]` the app reads the descriptor at the synced commit. The kinds are
@@ -42,7 +44,7 @@ each pinning a `version` to the `commit` that published it; without
 `messaging-connection`. Names are lowercase, hyphenated and unique per kind
 within a marketplace.
 
-`ave-package.json` carries `schemaVersion: 1`, `kind`, `name`, `version`,
+`ave-package.json` carries `schemaVersion: 2`, `kind`, `name`, `version`,
 `minAppVersion` and a kind-specific `payload`:
 
 | Kind | Payload and files |

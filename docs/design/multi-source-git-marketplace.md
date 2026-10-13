@@ -278,7 +278,7 @@ dialog offers the direct-install flow instead.
 ```ts
 interface MarketplaceIndex {
   $schema?: string;
-  schemaVersion: 1;
+  schemaVersion: 2;                 // the catalog format; any other value is refused (§4.2)
   name: string;                     // must equal the source id for official; informative otherwise
   displayName: string;
   description?: string;
@@ -302,9 +302,11 @@ interface IndexVersion {
   version: string;                  // semver 2.0.0
   commit: string;                   // 40-hex; the commit whose descriptor declares this version
   minAppVersion: string;            // copy of the descriptor's value
+  hostProtocol?: string;            // plugin kind: copy of the descriptor's value
   platforms?: Array<"darwin" | "win32" | "linux">;   // copy of the descriptor's value
   authority?: PluginAuthority;      // plugin kind: copy of the descriptor's authority (§5.2)
   artifact?: PluginArtifactPins;    // plugin kind only (§5.2)
+  components?: AgentPluginComponents; // agent-plugin kind only (§5.2)
   rollout?: { percent: number };    // 1..100; absent = 100
   yanked?: { reason: string; at: string };
   publishedAt: string;
@@ -322,7 +324,11 @@ interface IndexVersion {
   every kind). `latest` never names a yanked version.
 - When `versions` is absent, the client reads `ave-package.json` at `path`
   at the pinned commit and treats it as the single available version.
-- Unknown root keys are rejected in `schemaVersion: 1`.
+- Unknown root keys are rejected.
+- A repository has one index file, `marketplace.json`, and its format version
+  lives inside it as `schemaVersion`. The app reads `schemaVersion: 2` only and
+  refuses any other value with a message naming it (`SOURCE_INDEX_INVALID`);
+  there is no second file and no dispatch on the version.
 
 ### 4.3 Official index generation
 
@@ -338,11 +344,12 @@ automation that edits artifact pins.
 ```ts
 interface PackageDescriptor {
   $schema?: string;
-  schemaVersion: 1;
+  schemaVersion: 2;                 // the catalog format, as in marketplace.json
   kind: PackageKind;
   name: string;                     // plugin: equals plugin.json `name`
   version: string;                  // required, semver
   minAppVersion: string;            // required, plain MAJOR.MINOR.PATCH
+  hostProtocol?: string;            // plugin kind: the host protocol it speaks
   displayName?: string;
   description?: string;
   author?: { name: string; url?: string; email?: string };
@@ -1390,7 +1397,7 @@ finish, so no write of the old source lands after its directory is gone.
 
 ### 7.7 Local folders
 
-A folder is a marketplace (its root holds `marketplace.2.json` or the
+A folder is a marketplace (its root holds `marketplace.json` or the
 conventional layout of §3.3) or one package (a direct source, §8). It is
 typed where an address is — *Add marketplace…* and *Install from Git URL or
 folder…* — or chosen with *Choose folder…* (`sources:pick-folder`, main's
@@ -3576,8 +3583,7 @@ instead:
 - A Windows device path (`\\.\…`, `\\?\GLOBALROOT\…`, `\\?\Volume{…}\…`).
 - A `file://host/…` URL on macOS or Linux.
 - An `unroutable` address.
-- An `http(s)` address whose path ends in `marketplace.json` or
-  `marketplace.2.json` (decision 11).
+- An `http(s)` address whose path ends in `marketplace.json` (decision 11).
 
 ### 18.4 Local folders
 
@@ -3593,7 +3599,7 @@ instead:
 >   Finder* re-checks the stored path as a read would before the shell is
 >   asked (§7.7), and the review lists the plan's `notInstalled`.
 
-A folder is a marketplace source (its root holds `marketplace.2.json` or the
+A folder is a marketplace source (its root holds `marketplace.json` or the
 conventional layout of §3.3) or a direct package (§8).
 
 #### 18.4.1 Input, classification, consent, then resolution
@@ -3673,7 +3679,8 @@ UNC server is exactly what consent and policy must come before.
    the entry equal in bytes if one exists, otherwise the single entry equal
    ignoring case. Several such entries fail with `SOURCE_LOCAL_UNREADABLE`
    reason `ambiguous-case`. The result must be a directory; a regular file
-   named `marketplace.2.json` or `marketplace.json` resolves to its directory.
+   named `marketplace.json` resolves to its directory; any other file is not a
+   folder.
    The policy of stage 3 is applied again to this **canonical path**, and a
    block found only now ends the add; so is the network classification, and
    a canonical path on another computer without `network-folder` answers
@@ -4820,8 +4827,8 @@ The default is on (§18.7.2), and consent (§18.7.3) applies unchanged.
 > of the table below were deliberately not built, so the user meets the case
 > through another sentence:
 > - `SOURCE_URL_REJECTED` · `index-file-url`: no address is refused for
->   naming a marketplace file. A folder path ending in `marketplace.2.json`
->   or `marketplace.json` resolves to the folder that holds it (§7.7), and a
+>   naming a marketplace file. A folder path ending in `marketplace.json`
+>   resolves to the folder that holds it (§7.7), and a
 >   web address naming the file is read as a repository address, so the
 >   host's answer shows, usually `SOURCE_UNREACHABLE` · `not-found` ("<host>
 >   reports no repository at this address…").
@@ -4951,7 +4958,7 @@ the slice that adds the code or reason.
 | · `ambiguous-case` | E | "<path> matches several folders that differ only in case." | "Enter the path with its exact case." | "대소문자만 다른 폴더가 여럿입니다. 정확한 대소문자로 입력하세요." |
 | · `changed-during-read` | E | "A file in <path> changed while Ave read it." | "Ave tries again at the next read." | "읽는 중에 파일이 바뀌었습니다." |
 | · `classifier-unavailable` | E | "Ave cannot tell whether <path> is on another computer because its folder classifier is missing or broken." | "Reinstall Ave." | "폴더 분류 도구가 없거나 손상되었습니다. Ave를 다시 설치하세요." |
-| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "No marketplace.2.json, no package folders and no single package at <location>." | an address being typed: "Check the address, the branch and, for a package inside a repository, the folder field."; a source the user added: the same, through *Remove source* and adding it again; official: *Refresh* later, then the marketplace's owner; organization: "Tell your administrator" | today's key, with the location |
+| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "No marketplace.json, no package folders and no single package at <location>." | an address being typed: "Check the address, the branch and, for a package inside a repository, the folder field."; a source the user added: the same, through *Remove source* and adding it again; official: *Refresh* later, then the marketplace's owner; organization: "Tell your administrator" | today's key, with the location |
 | · `other-app-plugin` | E | "This is a plugin written for another app (`.claude-plugin/` or `.codex-plugin/`)." | "Use *Import a plugin* in the plugin studio (`extensions-and-plugins.md` §2.4)." | "다른 앱용 플러그인입니다. 플러그인 스튜디오에서 가져오세요." |
 | `SOURCE_INDEX_INVALID` | E | "<source>'s index is invalid (<file>: <problem>); the last good version stays in use." | "Tell the marketplace's owner." *Copy details* | "마지막 정상 버전을 계속 씁니다." |
 | · `name-reserved-prefix`, `version-reserved-prefix`, `component-reserved-prefix` | E | "Package names starting with “<prefix>”, or with a part after “-” starting with it, are reserved because they look like <issuer>, so Ave does not offer this package." / "Versions with a part starting with “<prefix>” are reserved…" / "A skill, agent, prompt, routine or MCP server in this package has a name with a part starting with “<prefix>”. Such names are reserved…" | "Ask the package's author to choose a different name / change the version." | "“<접두사>”로 시작하거나 “-” 뒤 부분이 그것으로 시작하는 패키지 이름은 <발급자>처럼 보여 예약되어 있으므로…" |

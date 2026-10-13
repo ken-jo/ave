@@ -33,14 +33,15 @@ policy/revocations.json               선택 — 회수 목록
 <kind dir>/<name>/ave-package.json   패키지마다 설명자 하나
 <kind dir>/<name>/...                 패키지 파일`}</pre>
       <p>
-        <code>marketplace.json</code> 은 마켓플레이스 이름과 패키지마다 <code>kind</code> · <code>name</code> · <code>path</code> 를 나열합니다.
+        <code>marketplace.json</code> 은 하나뿐인 인덱스 파일이고 형식 버전을 <code>schemaVersion: 2</code> 로 담습니다. 앱은 다른 값을 거부합니다.
+        이 파일은 마켓플레이스 이름과 패키지마다 <code>kind</code> · <code>name</code> · <code>path</code> 를 나열합니다.
         패키지 항목의 <code>versions[]</code>(최신순)는 각 <code>version</code> 을 그 버전을 게시한 <code>commit</code> 에 고정합니다.
         이름은 소문자와 하이픈이고, 한 마켓플레이스 안에서 종류마다 유일합니다.
       </p>
 
       <h2 id="kinds">종류별 파일</h2>
       <p>
-        <code>ave-package.json</code> 에는 <code>schemaVersion: 1</code> · <code>kind</code> · <code>name</code> · <code>version</code> ·{" "}
+        <code>ave-package.json</code> 에는 <code>schemaVersion: 2</code> · <code>kind</code> · <code>name</code> · <code>version</code> ·{" "}
         <code>minAppVersion</code> 과 종류별 <code>payload</code> 가 들어갑니다. SVG 는 어떤 종류에서도 받지 않습니다.
       </p>
       <ul>
