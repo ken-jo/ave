@@ -13,10 +13,8 @@
  */
 import type { ErrorObject, ValidateFunction } from "ajv";
 import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with { type: "json" };
-import indexSchema from "../../../schemas/marketplace/index.2.schema.json" with { type: "json" };
-import packageSchema from "../../../schemas/marketplace/package.2.schema.json" with { type: "json" };
-import legacyIndexSchema from "../../../schemas/marketplace/index.schema.json" with { type: "json" };
-import legacyPackageSchema from "../../../schemas/marketplace/package.schema.json" with { type: "json" };
+import indexSchema from "../../../schemas/marketplace/index.schema.json" with { type: "json" };
+import packageSchema from "../../../schemas/marketplace/package.schema.json" with { type: "json" };
 import conditionalSchema from "../../../schemas/marketplace/revocations-by-app.schema.json" with { type: "json" };
 import type { SourceSnapshot } from "../sources/snapshot.js";
 import type { ConditionalRevocationsFile } from "./types.js";
@@ -26,6 +24,7 @@ import { resolveAddFormats, resolveAjv } from "../../plugins/config-schema.js";
 import { ALERT_RESERVED_PACKAGE_ID } from "../../shared/alerts-types.js";
 import { CREDENTIAL_ISSUER_NAMES, holdsCredential, reservedPrefixIn } from "../../shared/dlp.js";
 import type { MarketplaceErrorDetail } from "../errors.js";
+import { isRecord } from "../../shared/is-record.js";
 import { compareSemver } from "../../shared/semver-compare.js";
 import { parseStrictJson } from "./strict-json.js";
 import {
@@ -109,8 +108,8 @@ function credentialIn(name: string, versions: readonly string[], components: Rea
   return null;
 }
 
-const INDEX_ID = "https://sdk.former-site.invalid/schemas/marketplace/index.2.schema.json";
-const PACKAGE_ID = "https://sdk.former-site.invalid/schemas/marketplace/package.2.schema.json";
+const INDEX_ID = "https://sdk.former-site.invalid/schemas/marketplace/index.schema.json";
+const PACKAGE_ID = "https://sdk.former-site.invalid/schemas/marketplace/package.schema.json";
 const REVOCATIONS_ID = "https://sdk.former-site.invalid/schemas/marketplace/revocations.schema.json";
 
 interface Validators {
@@ -126,24 +125,24 @@ interface Validators {
 const SNAPSHOT_PIN = { anyOf: [{ $ref: PACKAGE_ID + "#/definitions/commit" }, { type: "string", pattern: "^local-[0-9a-f]{64}$" }] };
 
 let compiled: Validators | null = null;
-let legacyIndexValidator: ValidateFunction | null = null;
 
-/** Check the frozen file with its original closed format, independent of format 2. */
-export function validateLegacyIndexText(text: string): Validation<Record<string, unknown>> {
-  const parsed = parse(text);
-  if (!parsed.ok) return parsed;
-  if (!legacyIndexValidator) {
-    const AjvCtor = resolveAjv();
-    const ajv = new AjvCtor({ strict: true, strictRequired: false, allErrors: true, allowUnionTypes: true });
-    resolveAddFormats()(ajv);
-    ajv.addSchema(manifestSchema);
-    ajv.addSchema(legacyPackageSchema);
-    legacyIndexValidator = ajv.compile(legacyIndexSchema);
-  }
-  if (!legacyIndexValidator(parsed.value)) {
-    return { ok: false, error: `marketplace.json: ${describeErrors(legacyIndexValidator.errors)}` };
-  }
-  return { ok: true, value: parsed.value as Record<string, unknown> };
+/**
+ * The one catalog format this app reads, carried inside `marketplace.json`
+ * and `ave-package.json` as `schemaVersion` (the schemas pin it with
+ * `const`). Strict rather than dispatched: the reader, the snapshot and the
+ * install path have exactly one shape (`types.ts` types the field as this
+ * literal), so a file at another version has nothing to be dispatched to and
+ * would only reach code written for this one. A later format is a new value
+ * here together with its own reader. Any other value is refused before the
+ * schema runs, with a message that names both versions.
+ */
+const CATALOG_SCHEMA_VERSION = 2;
+
+function unsupportedSchemaVersion(document: unknown, file: string): string | null {
+  // A missing field is the schema's to report.
+  if (!isRecord(document) || !Object.hasOwn(document, "schemaVersion")) return null;
+  if (document.schemaVersion === CATALOG_SCHEMA_VERSION) return null;
+  return `${file}: schemaVersion ${JSON.stringify(document.schemaVersion)} is not supported; this app reads schemaVersion ${CATALOG_SCHEMA_VERSION}`;
 }
 
 function validators(): Validators {
@@ -152,7 +151,6 @@ function validators(): Validators {
   const ajv = new AjvCtor({ strict: true, strictRequired: false, allErrors: true, allowUnionTypes: true });
   resolveAddFormats()(ajv);
   ajv.addSchema(manifestSchema);
-  ajv.addSchema(legacyPackageSchema);
   ajv.addSchema(packageSchema);
   ajv.addSchema(indexSchema);
   ajv.addSchema(revocationsSchema);
@@ -365,6 +363,8 @@ export interface ValidatedIndex {
 export function validateIndexText(text: string, context: IndexContext): Validation<ValidatedIndex> {
   const parsed = parse(text);
   if (!parsed.ok) return parsed;
+  const version = unsupportedSchemaVersion(parsed.value, "marketplace.json");
+  if (version) return { ok: false, error: version };
   const { indexRoot, indexPackage } = validators();
   if (!indexRoot(parsed.value)) return { ok: false, error: `marketplace.json: ${describeErrors(indexRoot.errors)}` };
   const root = parsed.value as Omit<MarketplaceIndex, "packages"> & { packages: unknown[] };
@@ -440,6 +440,8 @@ export function validateDescriptorText(text: string, context: DescriptorContext)
 }
 
 function validateDescriptorValue(document: unknown, context: DescriptorContext, file: string): Validation<PackageDescriptor> {
+  const version = unsupportedSchemaVersion(document, file);
+  if (version) return { ok: false, error: version };
   const { descriptor } = validators();
   if (!descriptor(document)) return { ok: false, error: `${file}: ${describeErrors(descriptor.errors)}` };
   const value = document as PackageDescriptor;

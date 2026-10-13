@@ -6,7 +6,7 @@
  * again: the marketplace identity, each package with its versions, the
  * source's own revocations and the per-package diagnostics. What is read,
  * through a {@link SourceTree}:
- *   - marketplace sources: `marketplace.2.json`; a package the index lists
+ *   - marketplace sources: `marketplace.json`; a package the index lists
  *     without `versions` is read from its descriptor;
  *   - direct sources: the one package at the subdir (or root), from its
  *     descriptor or synthesized from its own file (direct-package.ts);
@@ -82,7 +82,7 @@ const SNAPSHOT_FILE_LIMITS = {
   revocations: 1024 * 1024,
 } as const;
 
-const INDEX_PATH = "marketplace.2.json";
+const INDEX_PATH = "marketplace.json";
 const REVOCATIONS_PATH = "policy/revocations.json";
 const DESCRIPTOR_NAME = "ave-package.json";
 

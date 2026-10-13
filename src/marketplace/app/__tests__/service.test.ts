@@ -355,7 +355,7 @@ describe("MarketplaceService", () => {
     const publish = (version: string) =>
       repo.commit(
         {
-          "marketplace.2.json": text({
+          "marketplace.json": text({
             schemaVersion: 2,
             name: indexName,
             displayName: "Acme Tools",
@@ -771,7 +771,7 @@ describe("MarketplaceService", () => {
       const source = market();
       const head = source.repo.commit({ "notes/readme.txt": "fixture\n" }, "a commit a real version can name");
       source.repo.commit({
-        "marketplace.2.json": text({
+        "marketplace.json": text({
           schemaVersion: 2,
           name: "acme-tools",
           displayName: "Acme Tools",

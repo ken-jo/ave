@@ -56,7 +56,7 @@ let harness: FolderServiceHarness;
 async function setUp(managed: "user" | "required"): Promise<void> {
   root = mkdtempSync(join(tmpdir(), "ave-auto-update-"));
   folder = join(mkdtempSync(join(tmpdir(), "ave-auto-update-src-")), "market");
-  writeFolderFiles(folder, { "marketplace.2.json": index, ...pluginFiles(), "plugins/alpha/dist/index.js": ENTRY_JS });
+  writeFolderFiles(folder, { "marketplace.json": index, ...pluginFiles(), "plugins/alpha/dist/index.js": ENTRY_JS });
   if (managed === "required") {
     folder = realpathSync(folder);
     harness = await folderService({ root, folders: nodeFolders(), policy: policySource(requiredPolicy(true)) });
@@ -280,7 +280,7 @@ describe("an install in a requirement's way whose package sheet cannot load (§1
     ]);
     await expect(harness.service.detail(KEY)).resolves.toMatchObject({ entry: { key: KEY } });
     // team no longer lists alpha: no sheet can load for it, and the row offers the uninstall itself.
-    await edit({ "marketplace.2.json": `${JSON.stringify({ schemaVersion: 2, name: "team", displayName: "Team tools", packages: [] })}\n` });
+    await edit({ "marketplace.json": `${JSON.stringify({ schemaVersion: 2, name: "team", displayName: "Team tools", packages: [] })}\n` });
     expect((await unmet())[0]!.installedFrom).toEqual({ sourceId: "team", label: "Team tools", removal: "confirm" });
     await expect(harness.service.detail(KEY)).rejects.toMatchObject({ code: "PACKAGE_INCOMPATIBLE" });
     await expect(harness.service.uninstall(KEY)).resolves.toEqual({ key: KEY, keptDataDir: null });

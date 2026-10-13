@@ -58,7 +58,7 @@ describe("a direct folder package", () => {
 
 describe("allowDirectInstall: false (§12)", () => {
   it("refuses a direct folder at the preview once it is found to be one package, and leaves marketplace folders alone", async () => {
-    const fs = volume().file("/opt/market/marketplace.2.json", `${JSON.stringify({ schemaVersion: 2, name: "team", displayName: "Team", packages: [] })}\n`);
+    const fs = volume().file("/opt/market/marketplace.json", `${JSON.stringify({ schemaVersion: 2, name: "team", displayName: "Team", packages: [] })}\n`);
     const harness = await folderService({ root, folders: { fs, platform: "linux", limits: TEST_FOLDER_LIMITS }, policy: policySource({ allowDirectInstall: false }) });
     await expect(harness.service.previewSource({ input: "/opt/note", auth: "none" })).rejects.toMatchObject({
       code: "SOURCE_POLICY_BLOCKED",
@@ -158,7 +158,7 @@ describe("a read failure inside a direct bundle keeps its own reason (§18.4.5, 
     const index = { schemaVersion: 2, name: "team", displayName: "Team", packages: [{ kind: "skill", name: "inner", path: "skills/inner" }] };
     const descriptor = { schemaVersion: 2, kind: "skill", name: "inner", version: "1.0.0", minAppVersion: "0.12.0", payload: { entry: "SKILL.md" } };
     const fs = new FakeVolume("win32", { drives: { "C:": "\\Device\\HarddiskVolume3" } })
-      .file("C:\\team\\marketplace.2.json", JSON.stringify(index))
+      .file("C:\\team\\marketplace.json", JSON.stringify(index))
       .file("C:\\team\\skills\\inner\\ave-package.json", JSON.stringify(descriptor))
       .file("C:\\team\\skills\\inner\\SKILL.md", INNER);
     const harness = await harnessOf(fs);

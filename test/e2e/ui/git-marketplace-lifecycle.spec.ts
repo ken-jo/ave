@@ -214,7 +214,7 @@ function marketplaceTree(version: string): Entry[] {
   });
   return [
     file('README.md', 'A marketplace the Ave end-to-end test serves.\n'),
-    file('marketplace.2.json', jsonText({
+    file('marketplace.json', jsonText({
       schemaVersion: 2,
       name: SOURCE_ID,
       displayName: 'Harbor Tools',
@@ -571,7 +571,7 @@ test.describe('git marketplace folder source (design §18.4)', () => {
     parent = mkdtempSync(join(tmpdir(), 'ave-e2e-marketplace-folder-'));
     folder = join(parent, 'team-market');
     write({
-      'marketplace.2.json': `${JSON.stringify({ schemaVersion: 2, name: 'team-folder', displayName: 'Team Folder', packages: [{ kind: 'skill', name: 'folder-notes', path: 'skills/folder-notes' }] })}\n`,
+      'marketplace.json': `${JSON.stringify({ schemaVersion: 2, name: 'team-folder', displayName: 'Team Folder', packages: [{ kind: 'skill', name: 'folder-notes', path: 'skills/folder-notes' }] })}\n`,
       'skills/folder-notes/ave-package.json': descriptor('1.0.0'),
       'skills/folder-notes/SKILL.md': 'Write notes.\n',
     });
@@ -647,7 +647,7 @@ test.describe('git marketplace folder source (design §18.4)', () => {
     // A Windows name cannot hold the mask's `:`: there the masked text names no folder, and only the chosen one is read.
     if (process.platform !== 'win32') {
       cpSync(folder, sibling, { recursive: true });
-      writeFileSync(join(sibling, 'marketplace.2.json'), readFileSync(join(sibling, 'marketplace.2.json'), 'utf8').replace('Team Folder', 'Different Folder'));
+      writeFileSync(join(sibling, 'marketplace.json'), readFileSync(join(sibling, 'marketplace.json'), 'utf8').replace('Team Folder', 'Different Folder'));
     }
     try {
       await app.evaluate(({ dialog }, path) => {

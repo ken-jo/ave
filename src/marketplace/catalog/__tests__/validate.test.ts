@@ -313,6 +313,12 @@ describe("validateIndexText", () => {
     expect(validateIndexText(text, context).ok).toBe(false);
   });
 
+  it.each([1, 3, "2", null])("names schemaVersion %j as unsupported in the index and a descriptor", (schemaVersion) => {
+    const expected = `schemaVersion ${JSON.stringify(schemaVersion)} is not supported; this app reads schemaVersion 2`;
+    expect(validateIndexText(index([], { schemaVersion }), context)).toEqual({ ok: false, error: `marketplace.json: ${expected}` });
+    expect(checkDescriptor(descriptor("skill", { schemaVersion }))).toEqual({ ok: false, error: `ave-package.json: ${expected}` });
+  });
+
   it("requires the official index to carry the official id", () => {
     expect(validateIndexText(index([]), { sourceId: "ave", official: true }).ok).toBe(false);
     expect(validateIndexText(index([], { name: "ave" }), { sourceId: "ave", official: true }).ok).toBe(true);

@@ -216,7 +216,7 @@ describe("resolveMcpPackage", () => {
     repos.push(repo);
     repo.commit(
       {
-        "marketplace.2.json": `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "mcp", name: "notes", path: "mcp/notes" }] })}\n`,
+        "marketplace.json": `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "mcp", name: "notes", path: "mcp/notes" }] })}\n`,
         ...files,
       },
       "publish",
@@ -224,7 +224,7 @@ describe("resolveMcpPackage", () => {
     if (executable.length > 0) {
       repo.commitEntries(
         Object.entries(files).map(([path, content]) => ({ path, mode: executable.includes(path) ? "100755" : "100644", content })).concat([
-          { path: "marketplace.2.json", mode: "100644", content: `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "mcp", name: "notes", path: "mcp/notes" }] })}\n` },
+          { path: "marketplace.json", mode: "100644", content: `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "mcp", name: "notes", path: "mcp/notes" }] })}\n` },
         ]),
         "modes",
       );

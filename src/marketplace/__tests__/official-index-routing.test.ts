@@ -7,8 +7,10 @@
  * sha256 `2e31b360da69f2915f45653cdee2f65ccb057ccf13cf0213d5ec1a4302d96221`),
  * reduced to its `plugin` packages — the five this test is about, with every
  * version as published, `sampleassistant` included because it is still
- * indexed; the other kinds carry no code and are not routed. When E2′ merges
- * the format-2 index, the fixture is the format-2 file. Nothing is downloaded.
+ * indexed; the other kinds carry no code and are not routed. It is a
+ * captured record of what was published, read here as raw JSON for the
+ * versions' manifest shapes; the catalog reader, which reads only
+ * `schemaVersion: 2`, never sees it. Nothing is downloaded.
  *
  * Each version's released manifest shape is read off the index and routed
  * through the runtime's routing function with the evidence an install from

@@ -38,7 +38,7 @@ beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "ave-folder-plan-"));
   folder = join(mkdtempSync(join(tmpdir(), "ave-folder-plan-src-")), "market");
   writeFolderFiles(folder, {
-    "marketplace.2.json": index,
+    "marketplace.json": index,
     "plugins/alpha/ave-package.json": pluginDescriptor(RELEASE),
     "plugins/alpha/plugin.json": pluginJson(),
     "plugins/alpha/dist/index.js": ENTRY_JS,

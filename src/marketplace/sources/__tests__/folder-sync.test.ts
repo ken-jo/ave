@@ -38,7 +38,7 @@ async function addMarket() {
 describe("folder source reads", () => {
   it("pins a local- revision that changes when a package's SKILL.md is edited, and runs no git command", async () => {
     writeFolderFiles(folder, {
-      "marketplace.2.json": index([{ kind: "skill", name: "alpha", path: "skills/alpha" }]),
+      "marketplace.json": index([{ kind: "skill", name: "alpha", path: "skills/alpha" }]),
       "skills/alpha/ave-package.json": skill("alpha"),
       "skills/alpha/SKILL.md": "Write alpha.\n",
     });
@@ -69,7 +69,7 @@ describe("folder source reads", () => {
 
   it("serves only the version in the folder, and keeps other listed versions out of the plan", async () => {
     writeFolderFiles(folder, {
-      "marketplace.2.json": index([{
+      "marketplace.json": index([{
         kind: "skill",
         name: "alpha",
         path: "skills/alpha",
@@ -91,7 +91,7 @@ describe("folder source reads", () => {
 
   it("persists a background read's permission failure with its reason, and renders it after a reload", async () => {
     const volume = new FakeVolume("linux")
-      .file("/srv/team/marketplace.2.json", index([{ kind: "skill", name: "alpha", path: "skills/alpha" }]))
+      .file("/srv/team/marketplace.json", index([{ kind: "skill", name: "alpha", path: "skills/alpha" }]))
       .file("/srv/team/skills/alpha/ave-package.json", skill("alpha"))
       .file("/srv/team/skills/alpha/SKILL.md", "Write alpha.\n");
     const folders = { fs: volume, platform: "linux" as const, limits: TEST_FOLDER_LIMITS };
@@ -124,7 +124,7 @@ describe("folder source reads", () => {
 
   it("keeps a sync's broken-classifier failure as classifier-unavailable, read nothing, and renders reinstall advice after a reload", async () => {
     const volume = new FakeVolume("win32", { drives: { "C:": "\\Device\\HarddiskVolume3" } })
-      .file("C:\\team\\marketplace.2.json", index([{ kind: "skill", name: "alpha", path: "skills/alpha" }]))
+      .file("C:\\team\\marketplace.json", index([{ kind: "skill", name: "alpha", path: "skills/alpha" }]))
       .file("C:\\team\\skills\\alpha\\ave-package.json", skill("alpha"))
       .file("C:\\team\\skills\\alpha\\SKILL.md", "Write alpha.\n");
     const folders = { fs: volume, platform: "win32" as const, limits: TEST_FOLDER_LIMITS };

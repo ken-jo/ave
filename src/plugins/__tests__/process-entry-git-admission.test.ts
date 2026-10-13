@@ -127,7 +127,7 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
       payload: { authority, artifact: { release: { repo: "acme/alpha", sha256: sha(zip) } } },
     })}\n`;
     repo.commit(origin === "direct" ? { "ave-package.json": described } : {
-      "marketplace.2.json": `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "plugin", name: "alpha", path: "plugins/alpha" }] })}\n`,
+      "marketplace.json": `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "plugin", name: "alpha", path: "plugins/alpha" }] })}\n`,
       "plugins/alpha/ave-package.json": described,
     }, "publish alpha");
     const policy = policySource({});

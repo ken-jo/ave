@@ -184,7 +184,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
   function market(repo: FixtureRepo, artifact: Record<string, unknown>, extra: Record<string, string> = {}, auth?: PluginAuthority): string {
     return repo.commit(
       {
-        "marketplace.2.json": marketIndex([{ kind: "plugin", name: "alpha", path: "plugins/alpha" }]),
+        "marketplace.json": marketIndex([{ kind: "plugin", name: "alpha", path: "plugins/alpha" }]),
         "plugins/alpha/ave-package.json": descriptor("alpha", "1.0.0", artifact, auth),
         ...extra,
       },
@@ -351,7 +351,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     function processMarket(repo: FixtureRepo, artifact: Record<string, unknown>, platforms: string[], extra: Record<string, string> = {}): void {
       const described = { schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.13.0", hostProtocol: "2", platforms, payload: { authority: processAuthority, artifact } };
       repo.commit({
-        "marketplace.2.json": marketIndex([{ kind: "plugin", name: "alpha", path: "plugins/alpha" }]),
+        "marketplace.json": marketIndex([{ kind: "plugin", name: "alpha", path: "plugins/alpha" }]),
         "plugins/alpha/ave-package.json": `${JSON.stringify(described)}\n`,
         ...extra,
       }, "publish alpha");
@@ -582,7 +582,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     );
     repo.commit(
       {
-        "marketplace.2.json": marketIndex([
+        "marketplace.json": marketIndex([
           {
             kind: "plugin",
             name: "alpha",

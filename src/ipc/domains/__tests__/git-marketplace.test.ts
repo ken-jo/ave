@@ -731,7 +731,7 @@ describe("git marketplace IPC boundary", () => {
         const root = mkdtempSync(join(tmpdir(), "ave-ipc-roundtrip-"));
         const name = "test-marketplace2026";
         const volume = new FakeVolume("linux")
-          .file("/m/marketplace.2.json", JSON.stringify({ schemaVersion: 2, name, displayName: "Test marketplace", packages: [{ kind: "skill", name, path: `skills/${name}` }] }))
+          .file("/m/marketplace.json", JSON.stringify({ schemaVersion: 2, name, displayName: "Test marketplace", packages: [{ kind: "skill", name, path: `skills/${name}` }] }))
           .file(`/m/skills/${name}/ave-package.json`, JSON.stringify({ schemaVersion: 2, kind: "skill", name, version: "1.0.0", minAppVersion: "0.12.0", payload: { entry: "SKILL.md" } }))
           .file(`/m/skills/${name}/SKILL.md`, `---\nname: ${name}\ndescription: d\n---\nBody.\n`);
         const harness = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
@@ -1468,7 +1468,7 @@ describe("folder dialogs (§18.9)", () => {
   describe("a chosen folder is previewed by its pick, not by the text the tab shows (§18.9)", () => {
     const TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
     const marketplace = (displayName: string) => ({
-      "marketplace.2.json": `${JSON.stringify({ schemaVersion: 2, name: "team", displayName, packages: [] })}\n`,
+      "marketplace.json": `${JSON.stringify({ schemaVersion: 2, name: "team", displayName, packages: [] })}\n`,
     });
     // A Windows name cannot hold the mask's `:`, so there the masked text names no folder at all.
     const SIBLING_POSSIBLE = process.platform !== "win32";
