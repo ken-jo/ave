@@ -1363,7 +1363,9 @@ export class PluginMarketplaceService {
         // Not payload-only once the durable commit started: without a recovery
         // backup (a fresh install), the activated candidate's runtime
         // directories are parked here for the swap, and it is still bound to them.
-        await removePluginTreeNowOrAtBoot(stagingDir, this.pluginsRoot, removeTreeNow).catch(() => undefined);
+        await removePluginTreeNowOrAtBoot(stagingDir, this.pluginsRoot, removeTreeNow).catch((cleanupErr) => {
+          log.error(`installLocal staging cleanup failed for ${pluginId}: ${errorMessage(cleanupErr)}`);
+        });
         // A generation callback must never trigger compensating rollback after
         // the durable pointer commit. Post-commit health is journaled by the
         // lifecycle; this branch is only candidate/durable-commit failure.
