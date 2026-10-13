@@ -569,14 +569,17 @@ two-tier); nothing else puts it there, and the host keeps no list of retired nam
   host, can prove this (`listingJudgesRetirement` in `src/shared/context-budget.ts`): the
   provider map (§3.4) maps the vendor, the vendor is not a gateway (`gateway: true` on the
   preset — OpenRouter, Requesty, LiteLLM, Hugging Face, Vercel AI Gateway, AI Hub Mix,
-  Kilo), and `allowsImplicitModelLimits` holds (never Azure, never a custom `baseUrl`).
+  Kilo), and `allowsImplicitModelLimits` holds (never Azure, never a custom `baseUrl`;
+  never Vertex AI, whose SDK answers no standard `/models`).
   Local, self-hosted, custom and gateway endpoints list what they happen to route, so a
   missing id there says nothing. A listing is **complete** (`complete: true` on the cache
   entry) only when the response carried no continuation marker (`has_more: true`,
   `next_page_token`, `nextPageToken`) and every id fit the cache cap; the settings
   normalizer drops the flag when it truncates. A failed, partial or absent listing — and
   every cache entry written before the flag existed — proves nothing: unknown, not
-  retired.
+  retired. Neither does a stale one: a listing taken before the end of the day the
+  catalog says the model was released (or whose time cannot be read) cannot prove that
+  model gone.
 - **Deprecated (`"catalog-deprecated"`) — the catalog.** The active catalog marks the
   model `status: "deprecated"`. Judged only where the route itself establishes the model
   (`catalogModelFor` without a named entry, §4): a user's `catalogModel` declaration

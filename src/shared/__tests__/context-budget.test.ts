@@ -1004,6 +1004,27 @@ describe("resolveModelRetirement — design §6.1", () => {
     expect(listingJudgesRetirement("deepseek")).toBe(true);
   });
 
+  it("proves nothing about a model the catalog dates after the listing was taken", () => {
+    // gpt-5.4 is catalogued as released 2026-03-05: a listing from before then
+    // is stale for it, not evidence that OpenAI stopped serving it.
+    const before = { ...listing(["gpt-4o"]), fetchedAt: "2026-03-04T23:00:00.000Z" };
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-5.4", listing: before })).toBeUndefined();
+    // A listing taken on the release day may predate the launch.
+    const sameDay = { ...listing(["gpt-4o"]), fetchedAt: "2026-03-05T20:00:00.000Z" };
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-5.4", listing: sameDay })).toBeUndefined();
+    // A listing whose time cannot be read is no fresher.
+    const undated = { ...listing(["gpt-4o"]), fetchedAt: "not-a-time" };
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-5.4", listing: undated })).toBeUndefined();
+    // Taken after the release, the same listing does prove it gone.
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-5.4", listing: listing(["gpt-4o"]) })).toBe("unlisted");
+  });
+
+  it("never judges Vertex AI from a listing: its SDK answers no standard /models", () => {
+    expect(listingJudgesRetirement("vertex-ai")).toBe(false);
+    expect(resolveModelRetirement({ vendor: "vertex-ai", model: "gemini-3.5-flash", listing: listing(["other"]) }))
+      .toBeUndefined();
+  });
+
   it("judges the active route from the listing cached at its own address", () => {
     const vendors = freshAllVendorBlocks();
     vendors.openai = { ...vendors.openai, model: "gpt-4o" };

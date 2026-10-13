@@ -194,10 +194,14 @@ export function catalogModelFor(vendor: string, model: string, catalogModel?: st
  * own models, reached on its native host. Local runtimes, self-hosted and
  * custom endpoints (no catalog provider), gateways, Azure deployments and any
  * custom `baseUrl` list what that endpoint happens to route, so a missing id
- * there says nothing about the model.
+ * there says nothing about the model. Vertex AI's SDK selects its endpoint
+ * from project and location and never answers a standard `/models`, so a
+ * listing at its key is a dormant `baseUrl`'s (as `resolveContextWindowForRoute`
+ * already treats it).
  */
 export function listingJudgesRetirement(vendor: string, baseUrl?: string): boolean {
   if (!isLLMVendor(vendor) || CATALOG_PROVIDERS_BY_VENDOR[vendor].length === 0) return false;
+  if (vendor === "vertex-ai") return false;
   if (isOpenAICompatiblePresetVendor(vendor) && OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].gateway) return false;
   return allowsImplicitModelLimits(vendor, baseUrl);
 }
@@ -229,13 +233,30 @@ export function resolveModelRetirement(params: {
   const model = params.model.trim();
   if (!model) return undefined;
   const listing = params.listing;
-  if (listing?.complete === true && listingJudgesRetirement(params.vendor, params.baseUrl)) {
+  const hit = catalogModelFor(params.vendor, model, undefined, params.baseUrl);
+  if (listing?.complete === true && listingJudgesRetirement(params.vendor, params.baseUrl)
+    && !listingPredatesRelease(listing, hit?.model.releaseDate)) {
     const wanted = model.toLowerCase();
     if (!listing.models.some((id) => id.toLowerCase() === wanted)) return "unlisted";
   }
-  return catalogModelFor(params.vendor, model, undefined, params.baseUrl)?.model.status === "deprecated"
-    ? "catalog-deprecated"
-    : undefined;
+  return hit?.model.status === "deprecated" ? "catalog-deprecated" : undefined;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether a listing was taken before the model existed, by the catalog's
+ * release date: a stale answer cannot prove gone a model released after it
+ * (design `model-capability-catalog.md` §6.1). The release day counts as
+ * after, since a listing that day may predate the launch. A listing whose
+ * time cannot be read is as stale as one can be.
+ */
+function listingPredatesRelease(listing: LlmModelListCacheEntry, releaseDate: string | undefined): boolean {
+  if (releaseDate === undefined) return false;
+  const released = Date.parse(releaseDate);
+  if (!Number.isFinite(released)) return false;
+  const fetched = Date.parse(listing.fetchedAt);
+  return !Number.isFinite(fetched) || fetched < released + DAY_MS;
 }
 
 /** {@link resolveModelRetirement} for a model on the active route's address. */
