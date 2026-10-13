@@ -480,7 +480,9 @@ the Responses-vs-Chat wire choice).
 A model that is going away is in one of two tiers (`resolveModelRetirement`,
 `src/shared/context-budget.ts`). **Retired:** a public vendor's own complete `/models`
 listing on its native host no longer names it (never for local, self-hosted, gateway,
-custom-`baseUrl` or Azure routes; a failed or partial listing proves nothing). A saved
+custom-`baseUrl` or Azure routes; a failed or partial listing proves nothing). Only an
+id the active catalog knows exactly under the vendor's mapped provider can be judged;
+a fine-tune, an account-scoped deployment or a model newer than the snapshot never is. A saved
 selection at one sets the `llm.retiredProvider` marker at settings load
 (`{ vendor, model, reason: "unlisted" }` beside the removed-vendor string), which
 withholds API-key chat and credentials until the user picks — the same flow as a removed

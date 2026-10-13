@@ -974,8 +974,28 @@ describe("resolveModelRetirement — design §6.1", () => {
     expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4o", listing: listing(["gpt-5.4"]) })).toBe("unlisted");
     expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4o", listing: listing(["GPT-4O"]) })).toBeUndefined();
     expect(resolveModelRetirement({
-      vendor: "deepseek", model: "deepseek-chat", listing: { ...listing(["deepseek-v4-flash"]), vendor: "deepseek" },
+      vendor: "deepseek", model: "deepseek-v4-pro", listing: { ...listing(["deepseek-flash"]), vendor: "deepseek" },
     })).toBe("unlisted");
+  });
+
+  it("judges only an id the catalog knows exactly: an unknown id may be served without being listed", () => {
+    const complete = listing(["gpt-5.4", "gpt-4o"]);
+    // An OpenAI fine-tune is the account's own model, not a public catalog id.
+    expect(resolveModelRetirement({ vendor: "openai", model: "ft:gpt-4o-mini:fixture-org::abc123", listing: complete }))
+      .toBeUndefined();
+    // A model newer than the snapshot, which the catalog does not know yet.
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-9-fixture", listing: complete })).toBeUndefined();
+    // A Volcengine Ark inference endpoint and a Fireworks account model.
+    expect(listingJudgesRetirement("doubao")).toBe(true);
+    expect(resolveModelRetirement({
+      vendor: "doubao", model: "ep-20260101000000-fixture", listing: { ...listing(["doubao-seed-fixture"]), vendor: "doubao" },
+    })).toBeUndefined();
+    expect(resolveModelRetirement({
+      vendor: "fireworks", model: "accounts/fixture-account/models/fixture-ft",
+      listing: { ...listing(["accounts/fireworks/models/fixture"]), vendor: "fireworks" },
+    })).toBeUndefined();
+    // A catalogued id the same complete listing omits is still retired.
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4.1", listing: complete })).toBe("unlisted");
   });
 
   it("proves nothing from a partial, missing or non-native listing", () => {

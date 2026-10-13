@@ -213,7 +213,11 @@ export function listingJudgesRetirement(vendor: string, baseUrl?: string): boole
  * - `"unlisted"` (retired, blocks the route): the route's last successful
  *   listing was complete, comes from a route that
  *   {@link listingJudgesRetirement}, and names no id equal to `model` ignoring
- *   case. A failed, partial or missing listing proves nothing.
+ *   case. A failed, partial or missing listing proves nothing. Only a model
+ *   the active catalog knows by that exact id, under the vendor's mapped
+ *   provider, can be judged: an id it does not know (a fine-tune, an
+ *   account-scoped deployment or endpoint, a model newer than the snapshot)
+ *   may be served without appearing in the public list.
  * - `"catalog-deprecated"` (deprecated, does not block): the active catalog
  *   marks the model the route serves `deprecated` — judged only where the
  *   route itself establishes that identity; a user's `catalogModel`
@@ -234,8 +238,9 @@ export function resolveModelRetirement(params: {
   if (!model) return undefined;
   const listing = params.listing;
   const hit = catalogModelFor(params.vendor, model, undefined, params.baseUrl);
-  if (listing?.complete === true && listingJudgesRetirement(params.vendor, params.baseUrl)
-    && !listingPredatesRelease(listing, hit?.model.releaseDate)) {
+  if (hit?.match === "exact" && listing?.complete === true
+    && listingJudgesRetirement(params.vendor, params.baseUrl)
+    && !listingPredatesRelease(listing, hit.model.releaseDate)) {
     const wanted = model.toLowerCase();
     if (!listing.models.some((id) => id.toLowerCase() === wanted)) return "unlisted";
   }

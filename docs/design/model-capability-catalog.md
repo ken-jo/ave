@@ -565,7 +565,11 @@ two-tier); nothing else puts it there, and the host keeps no list of retired nam
 
 - **Retired (`"unlisted"`) — the vendor's own listing.** The route's last successful
   `/models` answer is complete and names no id equal to the model, ignoring case (no
-  folding or aliases). Only a public vendor that serves its own models, on its native
+  folding or aliases). Only a model the active catalog knows by that exact id under the
+  vendor's mapped provider can be judged (lead decision 2026-10-13): an id it does not
+  know — an OpenAI `ft:` fine-tune, a Fireworks `accounts/<own>/…` model, a Doubao `ep-…`
+  endpoint, a model newer than the snapshot — may be served without appearing in the
+  public list, so its absence proves nothing. Only a public vendor that serves its own models, on its native
   host, can prove this (`listingJudgesRetirement` in `src/shared/context-budget.ts`): the
   provider map (§3.4) maps the vendor, the vendor is not a gateway (`gateway: true` on the
   preset — OpenRouter, Requesty, LiteLLM, Hugging Face, Vercel AI Gateway, AI Hub Mix,
