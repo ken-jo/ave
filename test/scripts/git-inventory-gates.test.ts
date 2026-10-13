@@ -14,11 +14,7 @@ const documentProbe = "const { packagedDocumentInputs } = await import(process.a
 
 function writeGateInputs(directory: string) {
   mkdirSync(join(directory, "build"), { recursive: true });
-  mkdirSync(join(directory, "web"), { recursive: true });
   writeFileSync(join(directory, "build/generated-assets.json"), '["build/icon.svg"]\n');
-  writeFileSync(join(directory, "web/screenshot-provenance.json"), JSON.stringify({
-    schemaVersion: 1, images: {}, pendingReplacementBaseline: 0, seededAccounts: [],
-  }));
 }
 
 function run(command: string, args: string[], env: NodeJS.ProcessEnv) {
@@ -38,7 +34,6 @@ describe("Git inventory gates", () => {
         ["test typecheck", node, [resolve(root, "scripts/check-test-typecheck-baseline.mjs")], /empty tracked TypeScript source inventory/],
         ["home paths", "bash", [resolve(root, ".github/scripts/home-path-gate.sh"), root], /empty inventory/],
         ["generated assets", node, [resolve(root, "scripts/check-generated-assets.mjs"), "--root", empty], /no tracked generated assets/],
-        ["screenshot provenance", node, [resolve(root, "scripts/check-screenshot-provenance.mjs"), "--root", empty], /no tracked images/],
         ["packaged documents", node, ["--input-type=module", "-e", documentProbe, documentGuard, empty], /source inventory is empty/],
       ] as const;
       for (const [name, command, args, diagnostic] of gates) {
@@ -62,7 +57,7 @@ describe("Git inventory gates", () => {
       expect(run("git", ["-C", empty, "init", "--quiet"], baseEnv).status).toBe(0);
       const env = { ...baseEnv, GIT_DIR: join(empty, ".git"), GIT_CONFIG_COUNT: "1",
         GIT_CONFIG_KEY_0: "core.bare", GIT_CONFIG_VALUE_0: "true" };
-      for (const script of ["check-generated-assets.mjs", "check-screenshot-provenance.mjs"]) {
+      for (const script of ["check-generated-assets.mjs"]) {
         const result = run(node, [resolve(root, "scripts", script), "--root", root], env);
         expect(result.status, script).toBe(0);
       }
@@ -81,7 +76,6 @@ describe("Git inventory gates", () => {
         [node, [resolve(root, "scripts/check-test-typecheck-baseline.mjs")]],
         ["bash", [resolve(root, ".github/scripts/home-path-gate.sh"), root]],
         [node, [resolve(root, "scripts/check-generated-assets.mjs"), "--root", missing]],
-        [node, [resolve(root, "scripts/check-screenshot-provenance.mjs"), "--root", missing]],
         [node, ["--input-type=module", "-e", documentProbe, documentGuard, missing]],
       ] as const;
       for (const [command, args] of gates) {

@@ -155,15 +155,15 @@ jobs:
       # feared: an earlier revision of this change put these three in a
       # `repo-hygiene` job, and on a commit carrying a deliberately stale
       # manifest entry both required contexts reported success. Two checks did
-      # go red on it — `Repository hygiene gates` here and `Screenshot
-      # provenance` in web-ci.yml — and neither name is in the required list,
+      # go red on it — `Repository hygiene gates` here and a web-ci.yml job —
+      # and neither name is in the required list,
       # so neither stood between that manifest and a merge. Two jobs is the
       # better shape and stays available — but the required-contexts list has to
       # gain the new name in the same change, or the split trades a masking bug
       # for a silent hole.
       #
       # Within this trailing group the first failure still skips the rest: a red
-      # Knip gate leaves the screenshot, duplicate and sunset scans reported as
+      # Knip gate leaves the duplicate and sunset scans reported as
       # skipped. That is accepted, not overlooked. Every verification step has
       # already run and reported its own result by then, and the failing step
       # names itself, so the red says one true thing — a ledger is stale, and
@@ -201,24 +201,13 @@ jobs:
       # baseline, the duplicate-helper scan, the sunset ledger, the
       # single-source shape ledger, and the ASRT capability claims. The two callers
       # used to list them separately and had drifted. The gates below it are
-      # CI-only on purpose — the Knip self-test, the screenshot-provenance
-      # gate and its self-test cost more than a pre-push budget allows — and
+      # CI-only on purpose — the Knip self-test costs more than a pre-push
+      # budget allows — and
       # `check:test-coverage` above is CI-only for the same reason.
       - name: Core hygiene gates
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:gate-core && bun run test:knip-gate
-      # The docs-site images are published publicly, and the batch that is there
-      # now was captured by hand from a live session — see
-      # docs/development/screenshot-reshoot.md. This gate cannot read pixels; it
-      # refuses an image that arrives without a written provenance claim, and
-      # ratchets the backlog of images still awaiting replacement. The self-test
-      # runs beside it because a gate nothing exercises reports green after it
-      # has stopped comparing.
-      - name: Screenshot provenance gate
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        run: bun run check:screenshot-provenance:self-test && bun run check:screenshot-provenance
 
   windows-permission-tests:
     name: Windows permission path tests

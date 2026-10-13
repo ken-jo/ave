@@ -4,8 +4,8 @@ import { expect, type CaptureViewport, type ScriptedScript } from './fixtures.js
 import { VIEW_FIXTURE_ID } from '../fixtures/e2e-plugins/view-fixture.js';
 
 /**
- * Data-driven scenario matrix: one entry per docs-site screenshot key
- * (`web/lib/screenshots.ts`).
+ * Data-driven scenario matrix: one entry per docs-site screenshot key. The
+ * docs site currently publishes no captures; these keys are kept for its renewal.
  *
  * Each entry is either:
  *   - capturable: `steps` navigates/injects state, `locator` (optional)
@@ -207,8 +207,7 @@ ${spec.prompt}
 /**
  * Everything in the captures below is invented. It is written here rather than
  * read from anywhere on the capturing machine so a frame cannot pick up a real
- * name, path, or document by accident — which is the whole reason these keys
- * are being re-shot (docs/development/screenshot-reshoot.md).
+ * name, path, or document by accident.
  */
 const SEEDED_NOTE_PATH = 'notes/reading-list.md';
 /**

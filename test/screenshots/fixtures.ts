@@ -25,7 +25,7 @@ const REPO_ROOT = path.resolve(HERE, '../..');
 
 /**
  * Fixed capture viewport. Chosen independently of any single existing
- * screenshot (the current former-site.invalid/public/screenshots/*.png assets have
+ * screenshot (the previously published docs-site captures had
  * inconsistent aspect ratios because each was cropped to its own target
  * element after capture — see README.md "Aspect ratio" section) — 1600x1000
  * gives enough width for the expanded work-mode rail plus a chat column

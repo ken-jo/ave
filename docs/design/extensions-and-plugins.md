@@ -1346,7 +1346,7 @@ repository's `templates/plugin` directory is renamed `templates/extension` at th
 republish wave (§6.4) because it is documentation for authors and the app never reads
 it (marketplace design §3.2: "the client never reads them"); the amendment validates
 and updates it in source at X (amendment §6.4, "Applicability"), and the rename rides
-that update. The portal plugin (company git) and the repository plugin (its own repository) change their
+that update. The portal plugin (another marketplace source) and the repository plugin (its own repository) change their
 README wording under this design; their republish with protocol 2 is the amendment's
 requirement, not this page's, and happens regardless.
 

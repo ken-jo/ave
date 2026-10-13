@@ -2803,7 +2803,7 @@ Retry가 있는 `failed` 상태.
   제거하지 않습니다.
 - 어떤 공식 패키지와도 맞지 않는 항목은 "출처 모름 —
   업데이트 없음"으로 계속 실행되고, grant를 받지 않으며, 더는 잠기지 않습니다.
-  조직이 사내 마켓플레이스를 등록하고(`additional`) `requiredInstalls`에 올릴
+  조직이 자체 마켓플레이스를 등록하고(`additional`) `requiredInstalls`에 올릴
   때까지 그렇게 남고, 그다음 부팅에서 그 소스에 묶입니다. 부팅 알림은 이 항목들을
   한 번 알립니다: "<name> is no longer managed by Ave. Your organization can
   keep it up to date by registering its marketplace."

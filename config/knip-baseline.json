@@ -924,11 +924,6 @@
     },
     {
       "type": "exports",
-      "file": "web/lib/screenshots.ts",
-      "name": "shotCaption"
-    },
-    {
-      "type": "exports",
       "file": "web/lib/search-index.ts",
       "name": "searchEntries"
     },

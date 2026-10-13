@@ -771,8 +771,7 @@ function runAppChecks(dir) {
   // failure would end the push gate without a test having run. The sunset
   // ledger used to be the first command of the `build` script, which is
   // where CI hit exactly that. CI-only on purpose, for the pre-push time
-  // budget: `check:screenshot-provenance` (+ self-test), `check:test-coverage`
-  // and the Knip self-test (`test:knip-gate`).
+  // budget: `check:test-coverage` and the Knip self-test (`test:knip-gate`).
   runPackageScripts(dir, ["check:gate-core"], "ave full checks");
   // Plugin tool names are validated where the names actually enter the host:
   // `validatePluginManifest` rejects any name outside ^[a-zA-Z_][a-zA-Z0-9_]*$

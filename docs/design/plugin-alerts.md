@@ -12,7 +12,7 @@ owns delivery; every alert kind is opt-in; the `assistant` plugin
 dissolves into the plugins that own its signals. Line references are against
 ave `origin/main` at `ccf81ced5` and the official marketplace monorepo at
 `origin/main` `6a4d3b3` (2026-09-25: `plugins/assistant/source` 0.11.3,
-`plugins/mail/source` 0.5.3, `plugins/meeting/source` 0.8.5); the internal
+`plugins/mail/source` 0.5.3, `plugins/meeting/source` 0.8.5); the
 `portal` plugin is 0.21.5.
 
 "The alerts release" below is the ave release that carries all seven
@@ -253,7 +253,7 @@ window.
    carries in its own `inherits[]` entry (`sourceId: "ave"`, the fixed and
    reserved official id, `src/marketplace/sources/official.ts:23`) — the
    package's `sourceId` must equal the hint or be `null` (an old snapshot, a
-   company-source `portal` arriving before the official sync, or a
+   another-source `portal` arriving before the official sync, or a
    never-bound package must all block, not double, while an unrelated
    package that merely shares the name cannot block a user who never syncs
    the official source); once the entry is known, a package matches when its
@@ -748,7 +748,7 @@ pairings safe rather than the order:
 | alerts release | new plugins, assistant gone | Contract path only; kinds resolve from the retired record. |
 | alerts release | new mail, old meeting | Calendar automation vanishes until `meeting` updates; mail and calendar alerts work. |
 | alerts release | new meeting, old mail | `calendar.events.loaded` does not exist yet; preps appear only from `upcoming`; summary alerts work. |
-| alerts release | `portal` 0.22.0 from the company source before the official source synced | The retirement entry is not known yet, so its three kinds are `blocked_by_predecessor` by name while assistant is installed; the reserved-event path works once it is gone. |
+| alerts release | `portal` 0.22.0 from another source before the official source synced | The retirement entry is not known yet, so its three kinds are `blocked_by_predecessor` by name while assistant is installed; the reserved-event path works once it is gone. |
 | alerts release | revocation applied mid-session, uninstall failed (`service.ts:1080-1081`) or the package is `lockedByPolicy` / a required install | Assistant plugin stays installed and revoked, and keeps running until the next restart because `markRevoked` acts only at load; the successors' kinds stay blocked while it is loaded (no doubling), the retired record was already written when the revocation was applied (Migration), and after the restart the load is refused, the block lifts and the kinds resolve from that record. The Settings note reads "silenced at next restart" while it is loaded; a policy-locked predecessor that is not revoked shows "managed by policy" and blocks until policy changes. |
 | alerts release | assistant with `sourceId === null` (never bound) | The per-source feed (`service.ts:1043-1045`) cannot reach it, but the index entry still exists so legacy binding can; a `null` source matches the predecessor rule, so inheriting kinds are blocked, and assistant itself keeps alerting through `triggerConversation` (the acceptance limit does not apply to it). |
 
@@ -1417,7 +1417,7 @@ Official monorepo (one commit, after the alerts release is published):
 - With the follow-on release: delete `plugins/assistant/`, regenerate the
   index, keep the revocation entry; meeting drops the relay subscriptions.
 
-Company git: `portal` 0.22.0 with `minAppVersion` at the alerts release,
+Another marketplace source: `portal` 0.22.0 with `minAppVersion` at the alerts release,
 published the same day as the monorepo commit. Gates: ported suites,
 `validate-events.mjs`, a run on the alerts release with `mail` 0.6.0 and
 `meeting` 0.9.0, and one with assistant still installed (blocked kinds).

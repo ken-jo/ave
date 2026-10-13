@@ -192,7 +192,6 @@ describe("repository identity source of truth", () => {
       ".github/ISSUE_TEMPLATE/config.yml",
       ".github/SECURITY.md",
       ".github/workflows/ci.yml",
-      ".github/workflows/web-ci.yml",
       ".github/workflows/web-deploy.yml",
       "docs/ko/guides/windows-setup.md",
       "package.json",

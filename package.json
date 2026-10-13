@@ -71,8 +71,6 @@
     "check:sandboxed-preloads": "node scripts/check-sandboxed-preloads.mjs",
     "check:env-surface": "node --import tsx scripts/check-env-surface-policy.ts",
     "check:source-text-safe": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/source-text-safe.test.mjs && node scripts/check-source-text-safe.mjs",
-    "check:screenshot-provenance": "node scripts/check-screenshot-provenance.mjs",
-    "check:screenshot-provenance:self-test": "node scripts/check-screenshot-provenance-self-test.mjs",
     "check:knip": "node scripts/check-knip-baseline.mjs",
     "check:knip:engine": "knip --config config/knip.jsonc --reporter json",
     "check:knip:self-test": "node scripts/check-knip-gate-self-test.mjs",

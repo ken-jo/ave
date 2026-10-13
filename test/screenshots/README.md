@@ -1,7 +1,8 @@
 # Screenshot capture harness
 
 Automated Playwright-driven capture of the Electron app screens used by the
-docs site (`former-site.invalid/lib/screenshots.ts`, 71 keys total). Captures the
+docs site. The site currently publishes no captures; the keys are kept for its
+renewal. Captures the
 Electron **host app** screens only — see "Out of scope" below for the rest.
 
 ## Why a separate config
@@ -44,8 +45,7 @@ bunx playwright test --config test/screenshots/playwright.config.ts --grep chat-
 ## How keys map
 
 `test/screenshots/matrix.ts` exports `scenarios: Record<string, ScenarioEntry>`,
-keyed by the exact same string keys as `shots` in
-`former-site.invalid/lib/screenshots.ts`. `test/screenshots/capture.spec.ts` generates
+keyed by docs-site screenshot keys. `test/screenshots/capture.spec.ts` generates
 one Playwright test per entry (`capture: <key>`), so:
 
 - `bunx playwright test --config test/screenshots/playwright.config.ts --grep chat-plugin-panel`
@@ -63,8 +63,8 @@ Each entry is one of:
 ## Window size
 
 Fixed at **1600x1000** (`CAPTURE_VIEWPORT` in `fixtures.ts`). This was *not*
-picked to match any single existing screenshot — inspecting a sample of
-`former-site.invalid/public/screenshots/*.png` showed **inconsistent aspect ratios**
+picked to match any single existing screenshot — inspecting the previously
+published docs-site captures showed **inconsistent aspect ratios**
 per file (e.g. `chat-todo-queue.png` is 1600x830 ≈1.93:1, `chat-plugin-panel.png`
 is 484x889 ≈0.54:1, `ah-dashboard.png` is 1130x325 ≈3.48:1) — each existing
 asset was clearly cropped to its own target element/region after capture, not

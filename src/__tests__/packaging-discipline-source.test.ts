@@ -47,11 +47,6 @@ const HYGIENE_GATES: ReadonlyArray<{ script: string; file: string }> = [
   { script: "check:knip", file: "check-knip-baseline" },
   { script: "check:knip:self-test", file: "check-knip-gate-self-test" },
   { script: "test:knip-gate", file: "knip-baseline.test" },
-  { script: "check:screenshot-provenance", file: "check-screenshot-provenance" },
-  {
-    script: "check:screenshot-provenance:self-test",
-    file: "check-screenshot-provenance-self-test",
-  },
   { script: "check:test-duplicates", file: "check-test-duplicates" },
   { script: "check:sunset-inventory", file: "check-sunset-inventory" },
   { script: "check:sot-shapes", file: "check-sot-shapes" },
@@ -136,13 +131,6 @@ const VERIFIES_THE_CODE = [
   ...VERIFICATION_CHECKS.flatMap(({ script, file }) => [script, file]),
   ...DIRECT_TOOL_INVOCATIONS,
 ].sort();
-
-/** Whether a job declares a `needs:` dependency. A key, not a substring: the
- *  comments that explain why a job has no `needs:` edge contain the word
- *  themselves. */
-function declaresNeeds(jobBody: string): boolean {
-  return jobBody.split("\n").some((line) => /^ +needs:/u.test(line));
-}
 
 function matched(commands: string[], markers: string[]): string[] {
   return markers.filter((marker) =>
@@ -422,7 +410,6 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
-
   it("runs no repository-hygiene gate ahead of a compile or test step", () => {
     const names = workflowFileNames();
     expect(names.length).toBeGreaterThan(0);
@@ -463,10 +450,9 @@ describe("installer smoke and packaging discipline", () => {
         ).toBeGreaterThan(lastVerification);
       }
     }
-    // Two today: ci.yml's build-and-test and web-ci.yml's
-    // screenshot-provenance. A scan that stopped recognising the gates would
-    // otherwise pass by finding nothing to check.
-    expect(jobsCarryingGates).toBeGreaterThanOrEqual(2);
+    // One today: ci.yml's build-and-test. A scan that stopped recognising the
+    // gates would otherwise pass by finding nothing to check.
+    expect(jobsCarryingGates).toBeGreaterThanOrEqual(1);
   });
 
   it("keeps ci.yml's hygiene gates inside the required build-and-test check", () => {
@@ -493,8 +479,6 @@ describe("installer smoke and packaging discipline", () => {
         "required check name, and a gate outside it stops blocking merges",
     ).toEqual([
       "test:knip-gate",
-      "check:screenshot-provenance",
-      "check:screenshot-provenance:self-test",
       "check:gate-core",
     ]);
 
@@ -509,33 +493,6 @@ describe("installer smoke and packaging discipline", () => {
       "check:typecheck-tests",
       "check:typecheck-tests:self-test",
     ]);
-  });
-
-  it("keeps the web screenshot gate out of the static-export build job", () => {
-    const jobs = workflowJobs(readRepoFile(".github/workflows/web-ci.yml"));
-
-    const build = jobs.get("build");
-    const gate = jobs.get("screenshot-provenance");
-    expect(build, "web-ci.yml lost its build job").toBeDefined();
-    expect(gate, "web-ci.yml lost its screenshot-provenance job").toBeDefined();
-
-    // Splitting costs no enforcement here, unlike in ci.yml: the check name
-    // this job's `build` reports under is not in the required list either.
-    expect(matched(jobRunCommands(build as string), REPOSITORY_HYGIENE)).toEqual(
-      [],
-    );
-    expect(matched(jobRunCommands(build as string), VERIFIES_THE_CODE))
-      .toContain("bun run build");
-    expect(matched(jobRunCommands(gate as string), REPOSITORY_HYGIENE)).toEqual([
-      "check-screenshot-provenance",
-      "check-screenshot-provenance-self-test",
-    ]);
-    expect(matched(jobRunCommands(gate as string), VERIFIES_THE_CODE)).toEqual(
-      [],
-    );
-    // A `needs:` edge would restore the skipping the split removed: a failed
-    // gate would take `build` with it and report it as skipped.
-    expect(declaresNeeds(gate as string)).toBe(false);
   });
 
   it("keeps check:gate-core in step with its callers", () => {
@@ -778,7 +735,6 @@ describe("installer smoke and packaging discipline", () => {
     );
     expect(readRepoFile("src/main/ave-protocol-registration.ts"))
       .toContain(".ave-nsis-per-machine-v1");
-
 
     const cleanupScript = smoke.slice(
       smoke.indexOf("const WINDOWS_PROTOCOL_CLEANUP_SCRIPT"),
