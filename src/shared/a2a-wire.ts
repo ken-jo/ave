@@ -7,7 +7,7 @@ export const A2A_JSONRPC_VERSION = "2.0" as const;
 export const A2A_VERSION_HEADER = "a2a-version" as const;
 export const A2A_ERROR_INFO_TYPE = "type.googleapis.com/google.rpc.ErrorInfo" as const;
 export const A2A_ERROR_INFO_DOMAIN = "a2a-protocol.org" as const;
-export const A2A_HOST_ERROR_INFO_DOMAIN = "former-site.invalid" as const;
+export const A2A_HOST_ERROR_INFO_DOMAIN = "agent-connector.ai" as const;
 
 export const A2AJsonRpcMethod = {
   SEND_MESSAGE: "SendMessage",

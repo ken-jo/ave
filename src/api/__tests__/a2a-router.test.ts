@@ -633,7 +633,7 @@ describe("A2A v1 loopback router", () => {
         data: [{
           "@type": "type.googleapis.com/google.rpc.ErrorInfo",
           reason: "OPERATION_REJECTED",
-          domain: "former-site.invalid",
+          domain: "agent-connector.ai",
         }],
       },
     });
