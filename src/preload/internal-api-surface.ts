@@ -40,6 +40,7 @@ import type { DeferredApprovalSource } from "../shared/permission-review-status.
 import type { MarketplaceAnnouncementPayload } from "../shared/marketplace-announcements.js";
 import type { PackageUpdateView } from "../shared/git-marketplace.js";
 import type { AiProviderPingIpcResult } from "../shared/ai-provider-ping.js";
+import type { ModelCatalogIpcResult } from "../shared/model-catalog/types.js";
 import type {
   OpenHtmlPreviewWindowPayload,
   OpenHtmlPreviewWindowResult,
@@ -764,6 +765,10 @@ export function buildInternalApiSurface() {
   // provider itself answered, not only that the marketplace backend is online.
   pingAiProvider: async () =>
     ipcRenderer.invoke(CHANNELS.llm.ping) as Promise<AiProviderPingIpcResult>,
+  // The model catalog main resolves against; the renderer installs it before
+  // it mounts (`src/ui/renderer/model-catalog-bootstrap.ts`).
+  getModelCatalog: async () =>
+    ipcRenderer.invoke(CHANNELS.llm.getModelCatalog) as Promise<ModelCatalogIpcResult>,
 
   // Settings "일반" dashboard — host metadata. SoT for `version` is the
   // Ave project package.json (resolved by the main process via

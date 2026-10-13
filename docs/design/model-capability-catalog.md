@@ -1,10 +1,10 @@
 # Model capability catalog
 
 Status: decided (issue #2501, owner decisions of 2026-10-12); being implemented in the
-seven slices of §9. Slice 1 — the contract, the generator, the bundled snapshot and its
-provenance — is implemented. Nothing reads the catalog yet; until slice 2 lands, every
-behavior described after §4 is the plan, and the code paths named in §8 are still the
-ones in force.
+seven slices of §9. Slice 1 (the contract, the generator, the bundled snapshot and its
+provenance) and slice 2 (context windows resolve through the catalog, §4) are
+implemented. §5–§7 are the plan; until their slices land, output limits, reasoning
+controls, modalities and prices still come from the code paths named in §1 and §8.
 
 Anchors: `src/shared/model-catalog/` (types, provider map, normalizer),
 `src/core/model-catalog/` (document hashing and verification, the bundled snapshot),
@@ -151,14 +151,97 @@ Precedence, per fact:
 4. the bundled snapshot;
 5. a host fallback, recorded as source `host-fallback`.
 
-This extends `resolveModelContextWindow` (`src/shared/context-budget.ts`), whose sources
-today are vendor setting, provider-reported, pricing table and fallback. The catalog key is
-found by one `resolveCatalogKey(vendor, model)`: the provider map, then the exact id, then
-`canonicalId`, then date-suffix normalization, then case-fold, with Ave-owned aliases in
-one data file. A local or custom endpoint stays unknown unless the user names the catalog
-model it serves (`llm.vendors.<v>.catalogModel`). Context-window consumers — engine
-compaction, the renderer's context ring, the developer IPC — switch to the resolver; the
-renderer receives the resolved values over IPC rather than bundling the JSON.
+**Implemented for the context window (slice 2).** `resolveModelContextWindow`
+(`src/shared/context-budget.ts`) now answers, in order: `vendor-setting` (declared
+`llm.vendors.<v>.contextWindow`), `provider-reported` (the route's `/models` row),
+`model-catalog` (with `catalogEntry`, the `<provider>/<id>` that answered),
+`pricing-catalog` (the hand-kept table, for a model the catalog does not know; slice 7
+removes it) and `fallback` (128K). Refreshed metadata joins in slice 6, above the bundled
+snapshot.
+
+**The prompt cap.** Beside the window the resolver reports the model's prompt cap when the
+catalog states one below it (`inputLimit`, `inputLimitSource: "model-catalog"`, from
+`limits.input`). No `/models` endpoint Ave calls reports a prompt cap apart from the
+window (a gateway's `max_input_tokens` is read as the window), so the catalog is the only
+source. `catalogEntry` also identifies a catalog-supplied prompt cap beside an
+endpoint-reported window; preflight traces retain that entry, the cap value and its
+source for both API and subscription budgets. A declared window carries none. The usable budget is
+`min(window − Ave's output reservation, prompt cap)` and the compaction threshold is 80%
+of it (`getUsableContext`, `getPreflightThreshold`), in the engine and in the renderer's
+context ring alike; a threshold the cap lowered is traced as `thresholdSource:
+"input-limit"`. Before, the threshold came from the window alone: GPT-5.2 (400K window,
+272K prompt) compacted at 288,000, past what the endpoint accepts, and about 100 snapshot
+entries had a threshold above their cap. Now none do (a test holds every entry
+to it).
+
+The catalog key is found by one `resolveCatalogKey(catalog, vendor, model)`
+(`src/shared/model-catalog/resolve.ts`), across the vendor's providers in map order: the
+exact id; an Ave alias (`src/shared/model-catalog/aliases.ts`, empty today — every
+vendor id the snapshot can describe is found by the other steps, and an alias may only
+join two ids documented to name one model); an entry whose `canonicalId` is the id;
+the id without a release-date suffix; the id with case and version separators folded
+(`claude-sonnet-4-6` against a listed `claude-sonnet-4.6`); the same ignoring a path prefix
+on either side (`openai/gpt-5.4` → Requesty's `gpt-5.4`). The alias step also drops a
+Vertex version tag (`@default`, `@20250929`) from either side, since Vertex lists Claude as
+`claude-opus-4-6@default` and Ave names it `claude-opus-4-6`. The version-tag, folded,
+prefix and canonical steps answer only when exactly one entry matches.
+
+A self-hosted or local endpoint is never matched by name. The user can name the entry it
+serves as `llm.vendors.<v>.catalogModel` (`<provider>/<id>`, `settings.json` only, like
+`contextWindow`); a named entry that is not in the catalog answers nothing rather than
+falling back to a name match, and it applies to the vendor block's own model, not to a
+marketplace preset reached through the same vendor. The engine logs a named entry the
+catalog does not list once per route and name, so a typo does not pass silently.
+
+An API child with a profile model resolves the same route using that model, preserving
+the endpoint and credential scope. It does not inherit a named entry for the parent's
+model. That identity drives provider construction, preflight and usage accounting.
+
+**A custom `baseUrl` must establish model identity.** A mapped vendor matches by name
+only in its native public-model namespace, including documented regional and
+certificate-authenticated API hosts. A different
+host may serve a different deployment under the same id: a gateway exposing `gpt-5.2` for
+a 64K deployment and listing only that id does not establish the public model's 400K
+window or 272K prompt cap. Name uniqueness within the catalog cannot identify what the
+gateway runs. Both implicit catalog limits and legacy pricing windows are skipped there;
+absent a declaration or endpoint report, the source is explicitly `fallback`, and the
+engine probes the endpoint for metadata. The 128K fallback remains a guess; a deployment
+that reports no limits needs an explicit capacity setting. A product-specific path also must match where
+the same host serves multiple catalog products.
+
+`azure-foundry` addresses deployment aliases, which may reuse any public model id.
+Its resource hostname does not identify the deployed model: use an endpoint report,
+`catalogModel`, or `contextWindow`. `vertex-ai` derives its actual endpoint from the
+SDK's project and location. Its capacity comes from explicit settings or native
+catalog metadata. Standard `/models` cache reports and background probes are excluded
+because they target a generic endpoint rather than the SDK-managed route.
+
+A proxy serving the catalog model can declare `catalogModel` to select that entry,
+including its prompt cap. This setting wins over automatic catalog name matching; an
+endpoint-reported window still outranks the entry's context limit. A declared
+`contextWindow` outranks both and carries no inferred prompt cap. These distinctions
+apply equally to native and custom endpoints.
+
+Each process installs one catalog (`src/shared/model-catalog/active.ts`), and reading
+before install throws. Main and headless install the verified bundled snapshot at the
+start of `bootstrapCoreServices`; the snapshot is a dynamic import, so its data lands in
+an async chunk instead of the main bundle's initial budget. The renderer asks main for
+that copy over `ave:llm:get-model-catalog` and installs it before it mounts
+(`src/ui/renderer/model-catalog-bootstrap.ts`), so the first settings snapshot the
+context ring resolves is resolved against the engine's catalog. If main cannot hand it
+over, main logs why and answers a refusal, and the window shows that the app cannot start
+and offers a reload instead of staying blank. Tests install the bundled snapshot in a
+setup file (`src/__tests__/vitest-model-catalog.ts`); one test empties it and runs boot's
+own install step (`installBundledModelCatalog`), so a boot that resolved a model before
+installing one would fail there.
+
+Windows the snapshot of 2026-10-12 changes against the table (the rest agree): GPT-5.4
+Pro 1.1M → 1,050,000; GPT-4.1, 4.1 mini and nano 1M → 1,047,576; Gemini 2.5 Pro and Flash
+1M → 1,048,576, Gemini 2.5 Flash-Lite 128K → 1,048,576. Copilot routes are not among them:
+the Copilot vendor maps to no catalog provider and is being removed (§3.4). Claude Sonnet
+and Opus 4.6 stay at 1M: the
+catalog lists the window the adapter's beta header already delivers, and the decision to
+send that header stays on the table until slice 7.
 
 ## 5. Output and reasoning (slice 3)
 

@@ -274,6 +274,9 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // refresh the window or restart the app. Keep both keys with distinct
   // wording so the surfaced Korean message preserves that signal.
   "unauthorized-frame": "formatIpcError.unauthorizedFrame",
+  // ave:llm:get-model-catalog asked before main installed a catalog — a
+  // startup-order defect main has logged; a restart is the remedy.
+  "catalog-unavailable": "formatIpcError.catalogUnavailable",
   // ── Legacy snake_case codes (src/ipc/domains/attach.ts) ──
   // These predate the kebab-case convention. New code MUST use kebab-case
   // (#803 IPC convention). The snake_case shape is grandfathered until the

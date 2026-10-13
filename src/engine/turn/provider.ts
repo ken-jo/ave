@@ -13,7 +13,6 @@ import type { SettingsService } from "../../data/settings-store.js";
 import {
   canUseLlmVendorWithoutApiKey,
   getLlmVendorSettings,
-  llmRouteModel,
   activeLlmRouteModel,
   isOpenAICompatibleVendor,
 } from "../../shared/llm-vendor-defaults.js";
@@ -200,9 +199,7 @@ export function buildProvider(deps: ConversationLoopDeps): LLMProvider | null {
     // an empty model as "not configured" so we never send a fabricated/seed id
     // the endpoint does not serve — the user selects a model from the live
     // /models handshake list first.
-    const effectiveModel = (
-      deps.modelOverride ?? llmRouteModel(block, marketplaceProviderPreset?.providerId)
-    ).trim();
+    const effectiveModel = activeLlmRouteModel(llmSettings, deps.modelOverride);
     if (!effectiveModel && isOpenAICompatibleVendor(vendor)) {
       return null;
     }

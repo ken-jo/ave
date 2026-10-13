@@ -48,6 +48,8 @@ export function useContextBudget(params: {
    * the ring and the engine came to disagree.
    */
   contextWindow: number;
+  /** The route's prompt cap below the window, from the same resolution; bounds the usable budget. */
+  inputLimit?: number;
   /** Omit when the active runtime has no verified pricing/context contract. */
   llmVendor?: string;
   /** Omit when the active runtime has no verified pricing/context contract. */
@@ -60,6 +62,7 @@ export function useContextBudget(params: {
   const {
     entries,
     contextWindow,
+    inputLimit,
     llmVendor,
     llmModel,
     draftTokenEstimate,
@@ -68,8 +71,8 @@ export function useContextBudget(params: {
 
   const contextBudget = useMemo(() => {
     if (!enabled) return 0;
-    return getUsableContext(contextWindow);
-  }, [enabled, contextWindow]);
+    return getUsableContext(contextWindow, inputLimit);
+  }, [enabled, contextWindow, inputLimit]);
 
   const baseTokens = useMemo(() => {
     if (!enabled) return 0;

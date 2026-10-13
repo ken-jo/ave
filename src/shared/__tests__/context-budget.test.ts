@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import {
+  catalogModelFor,
   getUsableContext,
   getPreflightThreshold,
   llmRouteCatalogAddress,
@@ -10,6 +11,8 @@ import {
 import { FALLBACK_PRICING } from "../pricing-data.js";
 import { freshAllVendorBlocks } from "../llm-vendor-defaults.js";
 import { llmModelListCacheKey, type LlmModelListCache } from "../llm-model-list.js";
+import { activeModelCatalog, installModelCatalog } from "../model-catalog/active.js";
+import type { CatalogModel, ModelCatalogDocument } from "../model-catalog/types.js";
 
 describe("getUsableContext — Ave tier-fixed reservations", () => {
   it("64K → 37K usable (27K reserved for output-heavy small models)", () => {
@@ -60,6 +63,10 @@ describe("getUsableContext — Ave tier-fixed reservations", () => {
 });
 
 describe("getPreflightThreshold — token preflight trigger", () => {
+  it.each([undefined, 400_000, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])("ignores an absent, oversized or invalid prompt cap: %s", (cap) => {
+    expect(getUsableContext(128_000, cap)).toBe(98_000);
+    expect(getPreflightThreshold(128_000, cap)).toBe(78_400);
+  });
   it("64K → floor(37K × 80%) = 29,600", () => {
     expect(getPreflightThreshold(64_000)).toBe(29_600);
   });
@@ -318,10 +325,320 @@ describe("resolveContextWindowForRoute — one answer for the engine and the rin
     });
   });
 
+  it("uses the catalog entry the vendor block names, below the provider's report", () => {
+    const settings = routeSettings();
+    settings.vendors["openai-compatible"].catalogModel = "openai/gpt-4.1";
+    expect(resolveContextWindowForRoute(settings)).toMatchObject({ source: "model-catalog", catalogEntry: "openai/gpt-4.1" });
+    const reported = routeSettings({ reported: { contextLength: 229_376 } });
+    reported.vendors["openai-compatible"].catalogModel = "openai/gpt-4.1";
+    expect(resolveContextWindowForRoute(reported)).toMatchObject({ contextWindow: 229_376, source: "provider-reported" });
+  });
+
+  it("does not put the block's named entry on a marketplace preset's own model", () => {
+    const settings = routeSettings({ presetId: "provider-alpha", baseUrl: "https://preset.invalid/v1" });
+    settings.vendors["openai-compatible"].catalogModel = "openai/gpt-4.1";
+    expect(
+      resolveContextWindowForRoute(settings, [{ providerId: "provider-alpha", baseUrl: "https://preset.invalid/v1" }]),
+    ).toMatchObject({ source: "fallback" });
+  });
+
   it("moves to the next source when the route has no handshake for the model", () => {
     expect(resolveContextWindowForRoute(routeSettings())).toMatchObject({
       contextWindow: FALLBACK_PRICING.contextWindow,
       source: "fallback",
+    });
+  });
+});
+
+describe("the model catalog's place in the order", () => {
+  const bundled = activeModelCatalog();
+  afterEach(() => installModelCatalog(bundled));
+
+  function useCatalog(providers: Record<string, CatalogModel[]>): void {
+    installModelCatalog({
+      ...bundled,
+      providers: Object.fromEntries(
+        Object.entries(providers).map(([provider, models]) => [provider, { models: Object.fromEntries(models.map((model) => [model.id, model])) }]),
+      ),
+    } as ModelCatalogDocument);
+  }
+
+  it("answers after the declared and the reported window, before the pricing table", () => {
+    useCatalog({ openai: [{ id: "gpt-4.1", limits: { context: 777_000 } }] });
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1" })).toEqual({
+      contextWindow: 777_000,
+      source: "model-catalog",
+      catalogEntry: "openai/gpt-4.1",
+    });
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1", reported: 500_000 }).source).toBe("provider-reported");
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1", configured: 400_000 }).source).toBe("vendor-setting");
+  });
+
+  it("leaves a model the catalog does not know, or knows without a window, to the pricing table", () => {
+    useCatalog({ openai: [{ id: "gpt-4.1", limits: {} }] });
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1" })).toEqual({ contextWindow: 1_000_000, source: "pricing-catalog" });
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1-nano" })).toEqual({ contextWindow: 1_000_000, source: "pricing-catalog" });
+  });
+
+  it("does not believe a catalog window past the credible ceiling", () => {
+    useCatalog({ openai: [{ id: "gpt-4.1", limits: { context: MAX_CREDIBLE_CONTEXT_WINDOW + 1 } }] });
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1" }).source).toBe("pricing-catalog");
+  });
+
+  it("never matches a self-hosted endpoint by name, and uses the entry the user names for it", () => {
+    useCatalog({ openai: [{ id: "a-served-model", limits: { context: 600_000 } }] });
+    expect(resolveModelContextWindow({ vendor: "openai-compatible", model: "a-served-model" }).source).toBe("fallback");
+    expect(resolveModelContextWindow({ vendor: "openai-compatible", model: "a-served-model", catalogModel: "openai/a-served-model" })).toEqual({
+      contextWindow: 600_000,
+      source: "model-catalog",
+      catalogEntry: "openai/a-served-model",
+    });
+  });
+
+  it("does not fall back to a name match when the named entry is not in the catalog", () => {
+    useCatalog({ anthropic: [{ id: "claude-sonnet-4-6", limits: { context: 600_000 } }] });
+    expect(catalogModelFor("claude", "claude-sonnet-4-6", "anthropic/not-listed")).toBeUndefined();
+    expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-6", catalogModel: "anthropic/not-listed" }).source).toBe("pricing-catalog");
+  });
+
+  it("throws when nothing installed a catalog, instead of answering from the table", () => {
+    const slot = (globalThis as Record<symbol, { source?: unknown; resolved?: unknown }>)[Symbol.for("ave.modelCatalog.active")]!;
+    const saved = { ...slot };
+    delete slot.source;
+    delete slot.resolved;
+    try {
+      expect(() => resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1" })).toThrow(/model catalog is not installed/);
+    } finally {
+      Object.assign(slot, saved);
+    }
+  });
+});
+
+/**
+ * What the bundled snapshot of 2026-10-12 changes against the hand-kept
+ * table, row by row. Each assertion failed before the catalog joined the
+ * order (the table's value is in the comment). A snapshot refresh that moves
+ * one of these is a reviewed behavior change: update the row with it.
+ */
+describe("windows the bundled catalog corrects", () => {
+  it.each([
+    ["openai", "gpt-5.4-pro", 1_050_000, "openai/gpt-5.4-pro"], // table: 1,100,000
+    ["openai", "gpt-4.1", 1_047_576, "openai/gpt-4.1"], // table: 1,000,000
+    ["openai", "gpt-4.1-2025-04-14", 1_047_576, "openai/gpt-4.1"], // table: 1,000,000
+    ["gemini", "gemini-2.5-pro", 1_048_576, "google/gemini-2.5-pro"], // table: 1,000,000
+    ["gemini", "gemini-2.5-flash-lite", 1_048_576, "google/gemini-2.5-flash-lite"], // table: 128,000
+  ] as const)("%s %s → %i from %s", (vendor, model, contextWindow, catalogEntry) => {
+    expect(resolveModelContextWindow({ vendor, model })).toMatchObject({ contextWindow, source: "model-catalog", catalogEntry });
+  });
+
+  it("keeps the 1M window the adapter's beta header delivers for Claude 4.6", () => {
+    expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-6" })).toMatchObject({ contextWindow: 1_000_000, source: "model-catalog" });
+  });
+
+  it("leaves dated ids the catalog has no entry for to the table", () => {
+    expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-20250514" })).toEqual({ contextWindow: 200_000, source: "pricing-catalog" });
+  });
+});
+
+/**
+ * A prompt cap below the window bounds the budget. Before, the threshold came
+ * from the window alone: GPT-5.2 (400K window, 272K prompt) compacted at
+ * 288,000 — past the prompt the endpoint accepts — and about 100 snapshot
+ * entries had a threshold above their cap.
+ */
+describe("the prompt cap beside the window", () => {
+  it("retains the named catalog source for a cap beside an endpoint-reported window", () => {
+    expect(resolveModelContextWindow({
+      vendor: "openai-compatible", model: "gateway-alias", reported: 600_000, catalogModel: "openai/gpt-5.2",
+    })).toEqual({
+      contextWindow: 600_000, source: "provider-reported", catalogEntry: "openai/gpt-5.2",
+      inputLimit: 272_000, inputLimitSource: "model-catalog",
+    });
+  });
+  it("has no prompt cap for an unknown model", () => {
+    const resolved = resolveModelContextWindow({ vendor: "openai", model: "unlisted-model" });
+    expect(resolved).toEqual({ contextWindow: 128_000, source: "fallback" });
+    expect(getPreflightThreshold(resolved.contextWindow, resolved.inputLimit)).toBe(78_400);
+  });
+  it.each([
+    // [vendor, model, window, cap, threshold before, threshold now]
+    ["openai", "gpt-5.2", 400_000, 272_000, 288_000, 217_600],
+    ["openai", "gpt-5.4", 1_050_000, 922_000, 808_000, 737_600],
+  ] as const)("%s %s: window %i, prompt cap %i → threshold %i → %i", (vendor, model, window, cap, before, now) => {
+    const resolved = resolveModelContextWindow({ vendor, model });
+    expect(resolved).toMatchObject({ contextWindow: window, inputLimit: cap, inputLimitSource: "model-catalog" });
+    expect(getPreflightThreshold(resolved.contextWindow)).toBe(before);
+    expect(getPreflightThreshold(resolved.contextWindow, resolved.inputLimit)).toBe(now);
+    expect(now).toBeLessThan(cap);
+  });
+
+  it("leaves no snapshot entry with a threshold past its prompt cap", () => {
+    const over: string[] = [];
+    for (const [provider, { models }] of Object.entries(activeModelCatalog().providers)) {
+      for (const [id, entry] of Object.entries(models)) {
+        const { context, input } = entry.limits;
+        if (!context || !input || input >= context) continue;
+        if (getPreflightThreshold(context, input) > input) over.push(`${provider}/${id}`);
+      }
+    }
+    expect(over).toEqual([]);
+  });
+
+  it("keeps only a cap below the window", () => {
+    expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-6" })).not.toHaveProperty("inputLimit");
+    // A reported window at or under the catalog's cap leaves the cap nothing to bound.
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-5.2", reported: 200_000 })).not.toHaveProperty("inputLimit");
+  });
+
+  it("carries no cap under a declared window: the user stated the endpoint's capacity", () => {
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-5.2", configured: 400_000 })).toEqual({
+      contextWindow: 400_000,
+      source: "vendor-setting",
+    });
+  });
+
+  it("finds Vertex's tagged Claude entries by the id Ave uses", () => {
+    expect(resolveModelContextWindow({ vendor: "vertex-ai", model: "claude-opus-4-6" })).toMatchObject({
+      source: "model-catalog",
+      catalogEntry: "google-vertex/claude-opus-4-6@default",
+    });
+  });
+
+  it("names a catalogModel the catalog does not list, so the engine can report it", () => {
+    const vendors = freshAllVendorBlocks();
+    vendors["openai-compatible"].baseUrl = "https://models.invalid/v1";
+    vendors["openai-compatible"].model = "a-served-model";
+    vendors["openai-compatible"].catalogModel = "openai/not-a-listed-model";
+    expect(resolveContextWindowForRoute({ provider: "openai-compatible", vendors })).toMatchObject({
+      unresolvedCatalogModel: "openai/not-a-listed-model",
+    });
+    vendors["openai-compatible"].catalogModel = "openai/gpt-5.2";
+    expect(resolveContextWindowForRoute({ provider: "openai-compatible", vendors })).not.toHaveProperty("unresolvedCatalogModel");
+  });
+});
+
+describe("context limits behind a custom endpoint", () => {
+  it.each([
+    "us.api.openai.com", "eu.api.openai.com", "au.api.openai.com", "ca.api.openai.com",
+    "jp.api.openai.com", "in.api.openai.com", "sg.api.openai.com", "kr.api.openai.com",
+    "gb.api.openai.com", "ae.api.openai.com", "mtls.api.openai.com",
+    "mtls-us.api.openai.com", "mtls-eu.api.openai.com",
+  ])("retains public model limits at a native regional or certificate origin: %s", (host) => {
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-5.2", baseUrl: `https://${host}/v1` }))
+      .toMatchObject({ contextWindow: 400_000, source: "model-catalog", inputLimit: 272_000 });
+  });
+
+  it("does not infer a deployment's model identity from its resource hostname", () => {
+    expect(resolveModelContextWindow({ vendor: "azure-foundry", model: "gpt-5.2", baseUrl: "https://synthetic.openai.azure.com/openai/v1" }))
+      .toEqual({ contextWindow: 128_000, source: "fallback" });
+  });
+
+  it("budgets a location-managed SDK route independently of an unused endpoint field", () => {
+    const vendors = freshAllVendorBlocks();
+    vendors["vertex-ai"].model = "gemini-2.5-flash";
+    vendors["vertex-ai"].baseUrl = "https://unused.invalid/v1";
+    const modelListCache: LlmModelListCache = {
+      [llmModelListCacheKey("vertex-ai", "https://unused.invalid/v1")]: {
+        vendor: "vertex-ai", endpoint: "https://unused.invalid/v1/models", models: ["gemini-2.5-flash"],
+        modelEntries: [{ id: "gemini-2.5-flash", contextLength: 64_000 }], fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    expect(resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache }))
+      .toMatchObject({ contextWindow: 1_048_576, source: "model-catalog" });
+  });
+
+  it("ignores generic endpoint reports under the default cache key for a location-managed SDK route", () => {
+    const vendors = freshAllVendorBlocks();
+    vendors["vertex-ai"].model = "gemini-2.5-flash";
+    vendors["vertex-ai"].baseUrl = "https://unused.invalid/v1";
+    const modelListCache: LlmModelListCache = {
+      [llmModelListCacheKey("vertex-ai")]: {
+        vendor: "vertex-ai", endpoint: "https://unused.invalid/v1/models", models: ["gemini-2.5-flash", "managed-unknown"],
+        modelEntries: [
+          { id: "gemini-2.5-flash", contextLength: 64_000, maxOutputTokens: 1_024 },
+          { id: "managed-unknown", contextLength: 64_000 },
+        ],
+        fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    expect(resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache }))
+      .toMatchObject({ contextWindow: 1_048_576, source: "model-catalog" });
+    vendors["vertex-ai"].model = "managed-unknown";
+    expect(resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache }))
+      .toMatchObject({ contextWindow: 128_000, source: "fallback" });
+    vendors["vertex-ai"].contextWindow = 229_376;
+    expect(resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache }))
+      .toMatchObject({ contextWindow: 229_376, source: "vendor-setting" });
+    delete vendors["vertex-ai"].contextWindow;
+    vendors["vertex-ai"].catalogModel = "google-vertex/gemini-2.5-flash";
+    expect(resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache }))
+      .toMatchObject({ contextWindow: 1_048_576, source: "model-catalog" });
+  });
+
+  function gatewayRoute(reported?: number) {
+    const vendors = freshAllVendorBlocks();
+    vendors.openai.baseUrl = "https://gateway.invalid/v1";
+    // The gateway exposes this id for a 64K deployment; an id-only model
+    // list supplies no capacity. A public model of the same name is unrelated.
+    vendors.openai.model = "gpt-5.2";
+    const modelListCache: LlmModelListCache = {
+      [llmModelListCacheKey("openai", vendors.openai.baseUrl)]: {
+        vendor: "openai", endpoint: "https://gateway.invalid/v1/models", models: ["gpt-5.2"],
+        modelEntries: [{ id: "gpt-5.2", ...(reported !== undefined ? { contextLength: reported } : {}) }],
+        fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    return { provider: "openai" as const, vendors, modelListCache };
+  }
+
+  it("does not infer catalog or pricing limits for an aliased id at another host", () => {
+    expect(resolveContextWindowForRoute(gatewayRoute())).toEqual({
+      model: "gpt-5.2", contextWindow: 128_000, source: "fallback",
+    });
+  });
+
+  it("uses the gateway's own report without a same-name public prompt cap", () => {
+    expect(resolveContextWindowForRoute(gatewayRoute(512_000))).toEqual({
+      model: "gpt-5.2", contextWindow: 512_000, source: "provider-reported",
+    });
+  });
+
+  it("does not recover an unknown named entry from public pricing at a custom host", () => {
+    const route = gatewayRoute();
+    route.vendors.openai.catalogModel = "openai/not-listed";
+    expect(resolveContextWindowForRoute(route)).toMatchObject({
+      contextWindow: 128_000, source: "fallback", unresolvedCatalogModel: "openai/not-listed",
+    });
+  });
+
+  it("honors a declared capacity and an explicitly named model behind a gateway", () => {
+    const route = gatewayRoute();
+    route.vendors.openai.catalogModel = "openai/gpt-5.2";
+    expect(resolveContextWindowForRoute(route)).toMatchObject({
+      contextWindow: 400_000, source: "model-catalog", catalogEntry: "openai/gpt-5.2", inputLimit: 272_000,
+    });
+    route.vendors.openai.contextWindow = 64_000;
+    expect(resolveContextWindowForRoute(route)).toEqual({
+      model: "gpt-5.2", contextWindow: 64_000, source: "vendor-setting",
+    });
+  });
+
+  it("keeps a declared catalog identity over a name match while the endpoint reports the window", () => {
+    const route = gatewayRoute(512_000);
+    route.vendors.openai.catalogModel = "openai/gpt-5.4";
+    const resolved = resolveContextWindowForRoute(route);
+    expect(resolved.contextWindow).toBe(512_000);
+    expect(resolved.source).toBe("provider-reported");
+    // The named entry's 922K input ceiling does not bound this window; the
+    // same-name public entry's 272K ceiling must not replace the declaration.
+    expect(resolved).not.toHaveProperty("inputLimit");
+  });
+
+  it("keeps catalog resolution at the mapped vendor's native host", () => {
+    const route = gatewayRoute();
+    route.vendors.openai.baseUrl = "https://api.openai.com/v1/";
+    expect(resolveContextWindowForRoute(route)).toMatchObject({
+      contextWindow: 400_000, source: "model-catalog", inputLimit: 272_000,
     });
   });
 });

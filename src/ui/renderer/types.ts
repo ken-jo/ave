@@ -61,6 +61,7 @@ import type {
   DynamicNativeMenuPayload,
 } from "../../shared/native-context-menu.js";
 import type { AiProviderPingIpcResult } from "../../shared/ai-provider-ping.js";
+import type { ModelCatalogIpcResult } from "../../shared/model-catalog/types.js";
 import type {
   OpenHtmlPreviewWindowPayload,
   OpenHtmlPreviewWindowResult,
@@ -1228,6 +1229,7 @@ export type AveApi = {
   getRuntimeCounts: () => Promise<{ tools: number; plugins: number; mcps: number }>;
   getRuntimeEnv: () => Promise<{ platform: string; hostname: string; user: string }>;
   pingAiProvider: () => Promise<AiProviderPingIpcResult>;
+  getModelCatalog: () => Promise<ModelCatalogIpcResult>;
 
   getAppInfo: () => Promise<{
     version: string;

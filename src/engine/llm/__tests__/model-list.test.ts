@@ -10,7 +10,8 @@ import {
 } from "../model-list.js";
 import { NetworkGuardError } from "../../../core/network-guard.js";
 import { llmModelListCacheKey } from "../../../shared/llm-model-list.js";
-import { resolveContextWindowForRoute } from "../../../shared/context-budget.js";
+import { llmRouteCatalogAddress, resolveContextWindowForRoute } from "../../../shared/context-budget.js";
+import { freshAllVendorBlocks } from "../../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../../shared/marketplace-package-assets.js";
 import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
 
@@ -1092,6 +1093,29 @@ describe("refreshRouteModelList — the catalogue a headless run can reach", () 
 
   beforeEach(() => {
     resetModelListProbeStateForTesting();
+  });
+
+  it("does not probe a dormant endpoint for a location-managed SDK route", async () => {
+    const vendors = freshAllVendorBlocks();
+    vendors["vertex-ai"].model = "managed-unknown";
+    vendors["vertex-ai"].baseUrl = "https://unused.invalid/v1";
+    const llm = { provider: "vertex-ai" as const, vendors, modelListCache: {} };
+    const service = {
+      get: vi.fn((key: string) => key === "llm" ? llm : {}),
+      getSecret: vi.fn(() => ""),
+      patch: vi.fn(async () => {}),
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ id: "managed-unknown", context_length: 64_000 }],
+    })));
+    const stored = await refreshRouteModelList({
+      settingsService: service as never,
+      fetchOptions: guardedFetchOptions(fetchImpl),
+      address: llmRouteCatalogAddress(llm),
+    });
+    expect(stored).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(service.patch).not.toHaveBeenCalled();
   });
 
   it("asks the endpoint and stores the answer where the reader looks for it", async () => {

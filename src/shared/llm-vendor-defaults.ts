@@ -682,6 +682,17 @@ export interface LLMVendorSettings {
    * nothing, edited in `settings.json`.
    */
   contextWindow?: number;
+  /**
+   * The model catalog entry this route's model is, as `<provider>/<id>`
+   * (`docs/design/model-capability-catalog.md`). Unset by default. A
+   * self-hosted or local endpoint is never matched to a public catalog entry
+   * by its name, since the name says nothing about what the endpoint runs;
+   * setting this says it, and the entry's limits then answer where the
+   * endpoint reports none. Applies to the vendor block's own model, not to a
+   * marketplace preset reached through the same vendor. An escape hatch
+   * edited in `settings.json`, like {@link contextWindow}.
+   */
+  catalogModel?: string;
   baseUrl?: string;
   vertexProject?: string;
   vertexLocation?: string;
@@ -879,6 +890,14 @@ function normalizeLlmPresetModels(
  * as a tiny window: a stored `0` that survived would zero the preflight
  * threshold and silently switch auto-compaction off for that route.
  */
+/** `<provider>/<id>`, both parts non-empty, no whitespace; anything else is treated as unset. */
+function normalizeLlmCatalogModel(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length > 300 || !/^[^/\s]+\/\S+$/u.test(trimmed)) return undefined;
+  return trimmed;
+}
+
 function normalizeLlmContextWindow(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) return undefined;
   return value;
@@ -900,6 +919,7 @@ export function getLlmVendorSettings(
   // "no cap" — the setting would look applied and do nothing.
   const outputTokenLimit = normalizeLlmOutputTokenLimit(stored?.outputTokenLimit);
   const contextWindow = normalizeLlmContextWindow(stored?.contextWindow);
+  const catalogModel = normalizeLlmCatalogModel(stored?.catalogModel);
   const block: LLMVendorSettings = {
     ...defaults,
     ...stored,
@@ -915,6 +935,8 @@ export function getLlmVendorSettings(
   block.outputTokenLimit = outputTokenLimit;
   if (contextWindow !== undefined) block.contextWindow = contextWindow;
   else delete block.contextWindow;
+  if (catalogModel !== undefined) block.catalogModel = catalogModel;
+  else delete block.catalogModel;
   return block;
 }
 
@@ -947,11 +969,11 @@ export function activeLlmRouteModel(llm: {
   provider: LLMVendor;
   vendors: LLMVendorSettingsMap;
   marketplaceProviderPresetId?: string;
-}): string {
-  return llmRouteModel(
+}, modelOverride?: string): string {
+  return (modelOverride ?? llmRouteModel(
     getLlmVendorSettings(llm.vendors, llm.provider),
     llm.provider === "openai-compatible" ? llm.marketplaceProviderPresetId : undefined,
-  );
+  )).trim();
 }
 
 

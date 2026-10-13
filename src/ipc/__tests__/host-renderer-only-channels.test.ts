@@ -225,6 +225,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["preview", CHANNELS.preview.readFile, ["/x"]],
   // Usage and cost history.
   ["usage", CHANNELS.usage.range, [{}]],
+  // The model catalog the renderer resolves against; only the host renderer installs it.
+  ["chat", CHANNELS.llm.getModelCatalog, []],
   // The preflight override is a developer switch over host behaviour.
   ["dev", CHANNELS.dev.getPreflightStatus, []],
   // Window controls act on the host BrowserWindow the shell is embedded in.
@@ -366,5 +368,21 @@ describe("ave:app:info — refusal by returned value, not only by audit row", ()
     expect(result).toMatchObject({ platform: process.platform, arch: process.arch });
     expect(typeof result.version).toBe("string");
     expect(typeof result.userDataPath).toBe("string");
+  });
+});
+
+describe("the model catalog channel", () => {
+  it("answers a refusal, not a rejected invoke, when main has no catalog installed", async () => {
+    type Slot = { source?: unknown; resolved?: unknown };
+    const slot = (globalThis as Record<symbol, Slot | undefined>)[Symbol.for("ave.modelCatalog.active")] as Slot;
+    const saved = { ...slot };
+    delete slot.source;
+    delete slot.resolved;
+    try {
+      expect(await invoke(CHANNELS.llm.getModelCatalog, hostFrameEvent(), [])).toEqual({ ok: false, error: "catalog-unavailable" });
+    } finally {
+      Object.assign(slot, saved);
+    }
+    expect(await invoke(CHANNELS.llm.getModelCatalog, hostFrameEvent(), [])).toMatchObject({ ok: true });
   });
 });

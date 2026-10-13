@@ -10,6 +10,7 @@ import type { BrowserWindow } from "electron";
 import { SettingsService } from "../data/settings-store.js";
 import { initPiiRedactionPolicy } from "../audit/dlp-filter.js";
 import { getIsPackaged } from "./dev-flags.js";
+import { installBundledModelCatalog } from "../core/model-catalog/bundled.js";
 import { DEFAULT_LOCALE, normalizeLocale, setLocale, tryLoadLocaleMessages,
 } from "../i18n/index.js";
 import { MemoryManager } from "../memory/memory-manager.js";
@@ -134,6 +135,12 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
       );
     }
   }
+
+  // Before anything that can resolve a model: compaction budgets, the context
+  // ring and the developer panel all read the catalog synchronously, and read
+  // before install is a startup-order defect that throws. Desktop and headless
+  // boot both come through here.
+  await installBundledModelCatalog();
 
   // Python runtime coordination is app-owned, but runtime assets and plugin
   // dependencies are materialized lazily by plugin-level async prepare.

@@ -79,7 +79,7 @@ describe("PREFLIGHT_GUARD trace step — fired path", () => {
       outcome: "fired",
       threshold,
       thresholdSource: "context-window",
-      contextWindowSource: "pricing-catalog",
+      contextWindowSource: "model-catalog",
       model: "claude/claude-sonnet-4-5",
       estimated: expect.any(Number),
       contextTokensIn: expect.any(Number),
@@ -256,6 +256,36 @@ describe("PREFLIGHT_GUARD trace step — fired path", () => {
 });
 
 describe("PREFLIGHT_GUARD trace step — skipped / not-reached paths", () => {
+  it("traces the cap value and named catalog entry beside a reported window", async () => {
+    const llm = fakeLlmSettings({ provider: "openai-compatible", model: "gateway-alias" });
+    llm.vendors["openai-compatible"].baseUrl = "https://models.invalid/v1";
+    llm.vendors["openai-compatible"].catalogModel = "openai/gpt-5.2";
+    llm.modelListCache = {
+      [llmModelListCacheKey("openai-compatible", "https://models.invalid/v1")]: {
+        vendor: "openai-compatible", endpoint: "https://models.invalid/v1/models", models: ["gateway-alias"],
+        modelEntries: [{ id: "gateway-alias", contextLength: 600_000 }], fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    const settings = makeSettings(true, "gateway-alias", "openai-compatible");
+    const originalGet = settings.get.bind(settings);
+    vi.spyOn(settings, "get").mockImplementation((key) => (key === "llm" ? llm : originalGet(key)) as never);
+    const history: GenericMessage[] = [{ role: "user", content: "short history" }];
+    const sessionId = "de9839dd-0048-4e2e-8b00-000000000001";
+    const loop = new ConversationLoop(makeDeps({ settingsService: settings, memoryManager: makeMemoryManager(history, sessionId) }));
+    await loop.resetAndResume(sessionId);
+    const rec = new RecordingTracer();
+    loop.setTracer(rec);
+    const provider = makeTurnProvider();
+    (loop as unknown as { provider: typeof provider }).provider = provider;
+
+    await loop.runTurn("hello", undefined, undefined, { inputOrigin: "user-keyboard" });
+
+    expect(rec.steps.find((step) => step.name === "PREFLIGHT_GUARD")?.meta).toMatchObject({
+      outcome: "not-reached", threshold: 217_600, thresholdSource: "input-limit", contextWindowSource: "provider-reported",
+      model: "openai-compatible/gateway-alias", inputLimit: 272_000, inputLimitSource: "model-catalog", catalogEntry: "openai/gpt-5.2",
+    });
+  });
+
   it("emits PREFLIGHT_GUARD(not-reached) below threshold and no COMPACTION_RESULT", async () => {
     const settings = makeSettings(true, "claude-sonnet-4-5", "claude");
     const threshold = getModelPreflightThreshold("claude", "claude-sonnet-4-5");
