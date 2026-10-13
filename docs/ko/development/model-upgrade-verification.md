@@ -51,7 +51,7 @@ curl https://api.anthropic.com/v1/messages \
 - `404 not_found_error` ⇒ 모델 id 비공개. PR 보류.
 - `429 / 529` ⇒ rate / overload — 잠시 후 재시도. silent drift 가 아니므로 통과로 카운트하지 않는다 (재시도 후 200 받으면 PASS).
 
-#### OpenAI / Copilot / Azure-Foundry / Vertex-AI
+#### OpenAI / Azure-Foundry / Vertex-AI
 
 벤더별 형태는 다르지만 핵심은 같다: *해당 모델 id 로 minimal request 보내 200 응답을 받는다*. 베타 헤더가 없는 벤더는 헤더 검증 생략.
 

@@ -234,25 +234,20 @@ describe("request fields the catalog decides", () => {
     expect((body.reasoning as { effort?: unknown } | undefined)?.effort).toBe("high");
   });
 
-  it("sends no reasoning effort to a Claude model on Copilot", async () => {
-    // Copilot serves GitHub Models, which the catalog does not describe; the
-    // name rule sends reasoning_effort only to OpenAI reasoning models.
-    const body = await sentBody("copilot", "claude-sonnet-4.6", { thinkingBudgetTokens: 16_000 });
-    expect(body.reasoning_effort).toBeUndefined();
-    expect(body.reasoning).toBeUndefined();
-  });
-
   it("records the reasoning a GPT-5 tool turn on Chat Completions actually sends", async () => {
-    // Copilot talks Chat Completions, which answers 400 to reasoning_effort with tools on GPT-5.x.
+    // An OpenAI model id the name rule does not read as a reasoning model goes
+    // out on Chat Completions. Named as GPT-5.x in the catalog, it still gets an
+    // effort, which Chat Completions answers with a 400 alongside tools.
+    const route = { model: "team-alias", catalogModel: "openai/gpt-5.4" };
     const request = { hasTools: true };
-    const plan = planReasoning({ vendor: "copilot", model: "gpt-5.4", enableThinking: true, budgetTokens: 16_000, request });
+    const plan = planReasoning({ vendor: "openai", ...route, enableThinking: true, budgetTokens: 16_000, request });
     expect(plan).toMatchObject({ kind: "none", requestedEffort: "high", suppressed: "chat-completions-tool-turn" });
-    const withTools = await sentBody("copilot", "gpt-5.4", { thinkingBudgetTokens: 16_000, tools: true });
+    const withTools = await sentBody("openai", route.model, { catalogModel: route.catalogModel, thinkingBudgetTokens: 16_000, tools: true });
     expect(withTools.reasoning_effort).toBeUndefined();
     // Without tools the same route carries the effort, and the plan says so.
-    expect(planReasoning({ vendor: "copilot", model: "gpt-5.4", enableThinking: true, budgetTokens: 16_000, request: { ...request, hasTools: false } }))
+    expect(planReasoning({ vendor: "openai", ...route, enableThinking: true, budgetTokens: 16_000, request: { ...request, hasTools: false } }))
       .toMatchObject({ kind: "openai-effort", effort: "high" });
-    expect((await sentBody("copilot", "gpt-5.4", { thinkingBudgetTokens: 16_000 })).reasoning_effort).toBe("high");
+    expect((await sentBody("openai", route.model, { catalogModel: route.catalogModel, thinkingBudgetTokens: 16_000 })).reasoning_effort).toBe("high");
   });
 
   it("lowers an adaptive Claude effort to the nearest level the model accepts", async () => {
@@ -286,7 +281,6 @@ describe("the output limit a chat round records is the one it sends", () => {
   it.each([
     ["openai", "gpt-4o", undefined, "max_completion_tokens"],
     ["openai", "gpt-5.4-mini", undefined, "max_output_tokens"],
-    ["copilot", "gpt-5.4-mini", undefined, "max_completion_tokens"],
     ["azure-foundry", "deployment-alias", "https://synthetic.openai.azure.com/openai/v1", "max_output_tokens"],
     ["claude", "claude-sonnet-4-6", undefined, "max_tokens"],
     ["gemini", "gemini-2.5-pro", undefined, "generationConfig"],

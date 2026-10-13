@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { buildE2eBaseSettings, buildIsolatedElectronEnv } from "./seeded-electron";
 import type { AgentSpawnEvent } from "../../../src/shared/subagent-events.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
+import { FONT_SIZE_SCALE_VALUES } from "../../../src/shared/appearance-font.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../..");
@@ -109,18 +110,33 @@ test.describe("workspace rail UX redesign", () => {
     await test.info().attach("file-source-segment.png", { contentType: "image/png", body: shot });
   });
 
-  test("file tab: the vertical separator has a ≥20px drag hit zone (R1)", async () => {
+  test("file tab: the vertical separator keeps a 20px drag hit area at every font scale", async () => {
     await page.setViewportSize({ width: 1400, height: 840 });
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
 
     const splitter = page.getByTestId("chat-side-panel-file-splitter");
     await expect(splitter).toBeVisible();
-    // The separator ROW is 1.25rem (20px) tall — the whole row is the pointer
-    // target — so a drag is reliable even though the visible line is 2px.
-    const box = await splitter.boundingBox();
-    expect(box).not.toBeNull();
-    expect(box!.height).toBeGreaterThanOrEqual(20);
+    const originalScale = await page.evaluate(() => document.documentElement.style.getPropertyValue("--ave-font-size-scale"));
+    const rootFontSizes = new Set<number>();
+    try {
+      for (const sizeScale of FONT_SIZE_SCALE_VALUES) {
+        const rootFontSize = await page.evaluate((scale) => {
+          document.documentElement.style.setProperty("--ave-font-size-scale", String(scale));
+          return Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+        }, sizeScale);
+        rootFontSizes.add(rootFontSize);
+        const box = await splitter.boundingBox();
+        expect(box).not.toBeNull();
+        expect(box!.height, `separator hit area at font scale ${sizeScale}`).toBeGreaterThanOrEqual(20);
+      }
+      expect(rootFontSizes.size).toBe(FONT_SIZE_SCALE_VALUES.length);
+    } finally {
+      await page.evaluate((scale) => {
+        if (scale) document.documentElement.style.setProperty("--ave-font-size-scale", scale);
+        else document.documentElement.style.removeProperty("--ave-font-size-scale");
+      }, originalScale);
+    }
 
     const shot = await page.getByTestId(TEST_IDS.chatSidePanel).screenshot();
     await test.info().attach("separator-drag-zone.png", { contentType: "image/png", body: shot });
@@ -158,7 +174,28 @@ test.describe("workspace rail UX redesign", () => {
       .toBe(afterDrag);
   });
 
-  test("browser tab: single address bar + floating search Popover (no duplicate bar)", async () => {
+  test("browser tab: single address bar and searchable visited-page list", async () => {
+    // Two local HTML artifacts supply distinct visited rows without a network request.
+    await app.close();
+    const browserSessionId = "b2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
+    const sessionsDir = resolve(tempHome, ".ave", "sessions");
+    mkdirSync(sessionsDir, { recursive: true });
+    const pages = ["Alpha marker", "Beta notes"];
+    const history = [
+      { role: "user", content: "Show the two local pages." },
+      { role: "assistant", content: "", toolCalls: pages.map((title, index) => ({
+        id: `visited-${index}`, name: "render_html", input: { title },
+      })) },
+      ...pages.map((title, index) => ({
+        role: "tool_result", toolUseId: `visited-${index}`, toolName: "render_html",
+        content: JSON.stringify({ kind: "ave.render_html", title, html: `<p>${title}</p>` }),
+      })),
+    ];
+    writeFileSync(resolve(sessionsDir, `${browserSessionId}.jsonl`), history.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    writeFileSync(resolve(sessionsDir, ".active-session.json"), JSON.stringify({
+      mainActiveMode: "resume", mainActiveSessionId: browserSessionId, updatedAt: new Date().toISOString(),
+    }));
+    await launch();
     await page.setViewportSize({ width: 1400, height: 840 });
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await page.getByTestId(chatSidePanelLauncherTestId("browser")).click();
@@ -166,14 +203,24 @@ test.describe("workspace rail UX redesign", () => {
     const panel = page.getByTestId(TEST_IDS.chatSidePanel);
     // Exactly ONE address bar (the duplicated viewer header is suppressed).
     await expect(panel.getByTestId("chat-side-panel-browser-address")).toHaveCount(1);
-    // The always-on search strip is gone; the search lives behind the 🔍 button.
-    await expect(page.getByTestId("chat-side-panel-browser-search-trigger")).toBeVisible();
-    await expect(page.getByTestId("chat-side-panel-browser-search-popover")).toHaveCount(0);
-    await page.getByTestId("chat-side-panel-browser-search-trigger").click();
-    await expect(page.getByTestId("chat-side-panel-browser-search-popover")).toBeVisible();
+    // The visited-page list occupies the upper pane and owns its search field.
+    await expect(panel.getByTestId("chat-side-panel-browser-split-layout")).toBeVisible();
+    const visited = panel.getByTestId("chat-side-panel-browser-visited");
+    await expect(visited).toBeVisible();
+    const rows = visited.getByTestId("chat-side-panel-browser-row");
+    await expect(rows).toHaveCount(2);
+    const search = visited.getByTestId("chat-preview-search");
+    await expect(search).toBeVisible();
+    await search.fill("marker");
+    await expect(search).toHaveValue("marker");
+    await expect(rows).toHaveCount(1);
+    await expect(rows).toContainText("Alpha marker");
+    await expect(visited).not.toContainText("Beta notes");
+    await search.clear();
+    await expect(rows).toHaveCount(2);
 
     const shot = await panel.screenshot();
-    await test.info().attach("browser-single-address-search-popover.png", { contentType: "image/png", body: shot });
+    await test.info().attach("browser-single-address-visited-search.png", { contentType: "image/png", body: shot });
   });
 
   test("subagent tab: opens from the launcher and shows the empty state", async () => {
@@ -210,8 +257,8 @@ test.describe("workspace rail UX redesign", () => {
     // exactly what the real spawn path stamps.
     const parentSessionId = await page.evaluate(
       async () => (await (window as unknown as {
-        ave: { chatSessions: () => Promise<{ current: string }> };
-      }).ave.chatSessions()).current,
+        aveApi: { chatSessions: () => Promise<{ current: string }> };
+      }).aveApi.chatSessions()).current,
     );
     const sendSpawn = async (event: Omit<AgentSpawnEvent, "parentSessionId">): Promise<void> => {
       await app.evaluate(({ BrowserWindow }, ev) => {

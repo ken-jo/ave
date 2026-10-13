@@ -13,8 +13,25 @@
 // realign it the same way `postinstall` does, then re-probe.
 //
 // Stages: pre-commit | pre-push | manual. Bypass once with AVE_HOOKS_SKIP=1.
+//
+// Pre-push tiers (the log names the tier and why):
+//   docs-only     unconsumed documentation: document safety and policy checks
+//   comment-only  standalone comment edits: typecheck gate
+//   test-only     test code only: typecheck gate, duplicates, targeted Vitest
+//   fast          other branch source changes: typecheck gate, duplicates,
+//                 lock suites, changed tests, `vitest related` (see
+//                 pre-push-source-policy.mjs)
+//   full          non-fast-forward or non-branch updates, the
+//                 default branch, noncanonical paths, global test/build
+//                 inputs, the manual stage, or AVE_PREPUSH_FULL=1: typecheck
+//                 gate, `bun run test`, `bun run build`, `check:gate-core`
+// The full suite and build of a fast push run once at merge time, on the
+// main + PR merged tree, and in CI.
+// Every non-deletion update must name HEAD and the tracked checkout must be
+// clean before and after checks. Deletion-only pushes have no tree to check.
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { parsePrePushUpdates, readPrePushInput } from "./pre-push-ref-updates.mjs";
 import { checkPushedDocumentation } from "./pre-push-document-safety.mjs";
 import { withoutGitContext } from "../lib/git-process-environment.mjs";
@@ -36,6 +53,11 @@ import {
 } from "./pre-push-markdown-policy.mjs";
 import { selectCommentOnlyAveAppFiles } from "./pre-push-comment-policy.mjs";
 import { selectTargetedAveAppVitestFiles } from "./pre-push-test-policy.mjs";
+import {
+  AVE_APP_LOCK_SUITES,
+  getRelatedCoverageFullReason,
+  selectFastSourceChecks,
+} from "./pre-push-source-policy.mjs";
 
 const isWindows = process.platform === "win32";
 
@@ -102,9 +124,10 @@ function isNamedPackage(dir, name) {
 // Command execution
 // ---------------------------------------------------------------------------
 
-function capture(cmd, args, cwd) {
+function capture(cmd, args, cwd, env = process.env) {
   const result = spawnSync(cmd, args, {
     cwd,
+    env,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -287,6 +310,46 @@ function runPushPolicyChecks(repoRoot, parsedUpdates) {
   );
 }
 
+function runPushCheckoutChecks(repoRoot, parsedUpdates) {
+  const updates = parsedUpdates.updates.filter((update) => !isNullObjectId(update.localSha));
+  if (updates.length === 0) return { treeRequired: false };
+  const readCheckout = (args) => capture(commands.git, ["-C", repoRoot, ...args], repoRoot, withoutGitContext());
+  const head = readCheckout(["rev-parse", "--verify", "HEAD"]).toLowerCase();
+  const mismatched = [...new Set(updates.map((update) => update.localSha.toLowerCase()))]
+    .filter((sha) => sha !== head);
+  if (mismatched.length > 0) {
+    const checkoutInstructions = mismatched.flatMap((sha) => {
+      if (readCheckout(["cat-file", "-t", sha]) !== "tag") return [`  git checkout --detach ${sha}`];
+      return [
+        `  ${sha} is an annotated tag object, which cannot equal HEAD.`,
+        `  Check out its commit with git checkout --detach ${sha}^{commit}, then push that HEAD as a branch or lightweight tag.`,
+      ];
+    });
+    throw new Error([
+      `[PRE_PUSH_CHECKOUT_MISMATCH] refusing to check a push against unrelated HEAD ${head}.`,
+      "Check out each pushed commit and push it separately:",
+      ...checkoutInstructions,
+    ].join("\n"));
+  }
+  const hiddenTrackedFiles = readCheckout(["ls-files", "-v", "-z"]).split("\0")
+    .filter((entry) => /^[a-zS] /.test(entry));
+  if (hiddenTrackedFiles.length > 0) {
+    throw new Error([
+      "[PRE_PUSH_HIDDEN_TRACKED_FILES] cannot verify tracked files marked assume-unchanged or skip-worktree.",
+      "Clear those index flags and restore a complete checkout before pushing.",
+      `Check out the pushed commit: git checkout --detach ${head}`,
+    ].join("\n"));
+  }
+  const dirty = readCheckout(["status", "--porcelain=v1", "--untracked-files=no", "--ignore-submodules=none"]);
+  if (dirty) {
+    throw new Error([
+      "[PRE_PUSH_DIRTY_TREE] refusing push validation with tracked working-tree or index changes.",
+      `Commit or restore those changes, then check out the pushed commit: git checkout --detach ${head}`,
+    ].join("\n"));
+  }
+  return { treeRequired: true };
+}
+
 // On deploy hosts (operator-marked via env `AVE_DEPLOY_HOST=1`), refuse
 // `git commit` on a protected branch — a host-local commit on main can change
 // the host's git state before any push. Dev hosts (no env) → no-op. Detached
@@ -450,6 +513,25 @@ function getGitBlob(repoRoot, objectId, relativePath) {
   return decodeUtf8Strict(result.stdout);
 }
 
+function getPushedHistoryFullReason(repoRoot, baseSha, localSha) {
+  const history = captureOptional(commands.git, ["rev-list", "--parents", `${baseSha}..${localSha}`], repoRoot);
+  if (!history) return "pushed history could not be resolved";
+  for (const line of history.split("\n")) {
+    const [commit, ...parents] = line.split(" ");
+    if (parents.length === 0 || ![commit, ...parents].every((sha) => /^[0-9a-f]{40,64}$/.test(sha))) {
+      return "pushed history has no conservative parent";
+    }
+    for (const parent of parents) {
+      const entries = getChangedEntries(repoRoot, parent, commit);
+      if (entries === null) return "pushed history diff failed";
+      if (entries.length === 0 || classifyDocumentationChanges(entries).docsOnly) continue;
+      const selection = selectFastSourceChecks(entries);
+      if (!selection.eligible) return `${selection.reason} in pushed history`;
+    }
+  }
+  return null;
+}
+
 function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocation) {
   if (!parsedUpdates.complete || parsedUpdates.updates.length === 0) {
     return { docsOnly: false, reason: "ref updates could not be classified" };
@@ -460,9 +542,18 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
   let targetedTestsEligible = true;
   let targetedTestsReason = "";
   let commentOnlyEligible = true;
+  const protectedBranchNames = getProtectedBranchNames(repoRoot);
   for (const update of parsedUpdates.updates) {
     if (isNullObjectId(update.localSha)) {
       return { docsOnly: false, reason: `deleted ref ${update.remoteRef} requires full checks` };
+    }
+    // runPushPolicyChecks refuses these pushes first; the classifier does not
+    // rely on that ordering to keep the default branch on the full checks.
+    if (
+      update.remoteRef.startsWith("refs/heads/") &&
+      protectedBranchNames.has(update.remoteRef.slice("refs/heads/".length))
+    ) {
+      return { docsOnly: false, reason: `push to default branch ${update.remoteRef} requires full checks` };
     }
 
     const isNewBranch = isNullObjectId(update.remoteSha);
@@ -477,21 +568,19 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
       !update.localRef.startsWith("refs/heads/") ||
       !update.remoteRef.startsWith("refs/heads/")
     ) {
-      targetedTestsEligible = false;
-      commentOnlyEligible = false;
-      targetedTestsReason ||= "only branch updates can use targeted tests";
+      return { docsOnly: false, reason: "non-branch updates require full checks" };
     } else if (isNewBranch) {
       commentOnlyEligible = false;
     } else if (isFastForwardUpdate(repoRoot, update.remoteSha, update.localSha) !== true) {
-      targetedTestsEligible = false;
-      commentOnlyEligible = false;
-      targetedTestsReason ||= "non-fast-forward updates require full checks";
+      return { docsOnly: false, reason: "non-fast-forward updates require full checks" };
     }
 
     const entries = getChangedEntries(repoRoot, baseSha, update.localSha);
     if (entries === null) {
       return { docsOnly: false, reason: `git diff failed for ${update.localRef}` };
     }
+    const historyReason = getPushedHistoryFullReason(repoRoot, baseSha, update.localSha);
+    if (historyReason) return { docsOnly: false, reason: historyReason };
     for (const entry of entries) {
       changedFiles.add(entry.path);
       changedEntries.push({ ...entry, baseSha, localSha: update.localSha });
@@ -507,6 +596,9 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
   }
   const documentation = classifyDocumentationChanges(changedEntries);
   if (!documentation.docsOnly) {
+    // The safety ceiling applies before the narrower comment and test tiers.
+    const fastSelection = selectFastSourceChecks(changedEntries);
+    if (!fastSelection.eligible) return { docsOnly: false, reason: fastSelection.reason };
     if (commentOnlyEligible) {
       const commentSelection = selectCommentOnlyAveAppFiles(
         changedEntries,
@@ -533,7 +625,17 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
           reason: selection.reason,
         };
       }
-      targetedTestsReason ||= selection.reason;
+      if (fastSelection.eligible) {
+        return {
+          docsOnly: false,
+          fastSource: true,
+          testFiles: fastSelection.testFiles,
+          relatedFiles: fastSelection.relatedFiles,
+          documentationEntries: fastSelection.documentationEntries,
+          reason: fastSelection.reason,
+        };
+      }
+      targetedTestsReason ||= fastSelection.reason;
     }
     return {
       docsOnly: false,
@@ -708,6 +810,64 @@ function runAppTargetedVitestChecks(dir, testFiles, supportTestFiles = []) {
   run(bun, ["run", "test:vitest", "--", "run", ...vitestArgs], dir, withoutGitContext());
 }
 
+function runAppFastSourceChecks(dir, testFiles, relatedFiles) {
+  const bun = available(commands.bun);
+  if (!bun) {
+    throw new Error("bun is required for fast ave source checks");
+  }
+  if (!hasPackageScript(dir, "check:test-duplicates")) {
+    throw new Error("ave fast source checks require the check:test-duplicates script");
+  }
+  for (const relativePath of [...AVE_APP_LOCK_SUITES, ...testFiles, ...relatedFiles]) {
+    if (!hasFile(join(dir, relativePath))) {
+      throw new Error(`fast ave source check input is missing: ${relativePath}`);
+    }
+  }
+
+  runAppTypecheckGate(dir, "fast source checks");
+  run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
+  ensureAppTestRuntimeAbi(dir);
+  const directArgs = [...new Set([...AVE_APP_LOCK_SUITES, ...testFiles])].map((file) => `./${file}`);
+  run(bun, ["run", "test:vitest", "--", "run", ...directArgs], dir, withoutGitContext());
+  if (relatedFiles.length > 0) {
+    const relatedArgs = relatedFiles.map((file) => `./${file}`);
+    const reportDirectory = mkdtempSync(join(tmpdir(), "ave-related-check-"));
+    const reportPath = join(reportDirectory, "report.json");
+    try {
+      run(
+        bun,
+        ["run", "test:vitest", "--", "related", "--run", "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`, ...relatedArgs],
+        dir,
+        withoutGitContext()
+      );
+      const report = readJsonFile(reportPath);
+      if (!Number.isSafeInteger(report.numTotalTests) || report.numTotalTests <= 0 ||
+          !Number.isSafeInteger(report.numPassedTests) || report.numPassedTests <= 0) {
+        throw new Error("related tests ran zero tests; rerun with AVE_PREPUSH_FULL=1");
+      }
+    } finally {
+      rmSync(reportDirectory, { recursive: true, force: true });
+    }
+  }
+}
+
+function getFastSourceCoverageReason(dir, relatedFiles) {
+  if (relatedFiles.length === 0) return null;
+  const result = spawnSync(commands.node, [join(dir, "scripts/hooks/pre-push-related-tests.mjs"), ...relatedFiles], {
+    cwd: dir,
+    env: withoutGitContext(),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) return "related test discovery failed; full checks required";
+  try {
+    return getRelatedCoverageFullReason(relatedFiles, JSON.parse(result.stdout));
+  } catch {
+    return "related test discovery returned an invalid report; full checks required";
+  }
+}
+
 function runAppCommentOnlyChecks(dir) {
   runAppTypecheckGate(dir, "comment-only checks");
 }
@@ -718,6 +878,13 @@ function runAppCommentOnlyChecks(dir) {
 
 const { stage, repo, remote, remoteLocation } = parseArgs(process.argv.slice(2));
 const repoRoot = resolve(repo);
+const prePushUpdates =
+  stage === "pre-push" ? parsePrePushUpdates(readPrePushInput()) : null;
+let pushCheckout;
+if (stage === "pre-push") {
+  runPushPolicyChecks(repoRoot, prePushUpdates);
+  pushCheckout = runPushCheckoutChecks(repoRoot, prePushUpdates);
+}
 
 if (!isNamedPackage(repoRoot, "ave") && basename(repoRoot) !== "ave") {
   // App-scoped runner: fail loudly if a mis-wired hook points it at another
@@ -727,40 +894,45 @@ if (!isNamedPackage(repoRoot, "ave") && basename(repoRoot) !== "ave") {
   );
 }
 
-const prePushUpdates =
-  stage === "pre-push" ? parsePrePushUpdates(readPrePushInput()) : null;
-
 console.log(`[checks] stage=${stage} repo=${basename(repoRoot)}`);
+
+if (stage === "pre-push" && !pushCheckout.treeRequired) {
+  console.log("[checks] deletion-only or empty push: no commit tree requires checks");
+  process.exit(0);
+}
 
 if (stage === "pre-commit") {
   runCommitPolicyChecks(repoRoot);
   runStagedSafetyChecks(repoRoot);
 } else if (stage === "pre-push" || stage === "manual") {
-  if (stage === "pre-push") {
-    runPushPolicyChecks(repoRoot, prePushUpdates);
-  }
   runStagedSafetyChecks(repoRoot);
-  const classification =
-    stage === "pre-push"
-      ? classifyPrePushChanges(repoRoot, prePushUpdates, remote, remoteLocation)
-      : { docsOnly: false };
+  let classification =
+    stage !== "pre-push"
+      ? { docsOnly: false, reason: `${stage} stage runs the full checks` }
+      : process.env.AVE_PREPUSH_FULL === "1"
+        ? { docsOnly: false, reason: "AVE_PREPUSH_FULL=1 requested the full checks" }
+        : classifyPrePushChanges(repoRoot, prePushUpdates, remote, remoteLocation);
+  if (classification.fastSource) {
+    const reason = getFastSourceCoverageReason(repoRoot, classification.relatedFiles);
+    if (reason) classification = { docsOnly: false, reason };
+  }
   if (classification.docsOnly) {
     checkPushedDocumentation(repoRoot, classification.pushedEntries);
     run(commands.node, ["--test", "test/scripts/check-asrt-version-claims.test.mjs"], repoRoot);
     run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot);
     console.log(
-      `[checks] docs-only pre-push: skipping lint/typecheck/test/build (${classification.reason})`
+      `[checks] tier=docs-only pre-push: skipping lint/typecheck/test/build (${classification.reason})`
     );
   } else if (classification.commentOnly) {
     console.log(
-      `[checks] comment-only pre-push: running typecheck; skipping full test/build (${classification.reason})`
+      `[checks] tier=comment-only pre-push: running typecheck; skipping full test/build (${classification.reason})`
     );
     runAppCommentOnlyChecks(repoRoot);
   } else if (classification.testOnly) {
     const testCodeFileCount =
       classification.testFiles.length + classification.testSupportFiles.length;
     console.log(
-      `[checks] test-only pre-push: running typecheck, duplicate-helper policy, and ` +
+      `[checks] tier=test-only pre-push: running typecheck, duplicate-helper policy, and ` +
         `${testCodeFileCount} targeted Vitest code file(s); skipping full test/build ` +
         `(${classification.reason})`
     );
@@ -769,9 +941,31 @@ if (stage === "pre-commit") {
       classification.testFiles,
       classification.supportTestFiles
     );
+  } else if (classification.fastSource) {
+    console.log(
+      `[checks] tier=fast pre-push: running typecheck, duplicate-helper policy, ` +
+        `${AVE_APP_LOCK_SUITES.length} lock suite(s), ${classification.testFiles.length} changed ` +
+        `test file(s), and Vitest related to ${classification.relatedFiles.length} module(s); ` +
+        `skipping full test/build, which the merge gate runs on the merged tree ` +
+        `(${classification.reason}; AVE_PREPUSH_FULL=1 runs the full checks)`
+    );
+    if (classification.documentationEntries.length > 0) {
+      checkPushedDocumentation(repoRoot, classification.documentationEntries);
+    }
+    runAppFastSourceChecks(
+      repoRoot,
+      classification.testFiles,
+      classification.relatedFiles
+    );
   } else {
+    console.log(
+      `[checks] tier=full ${stage}: running typecheck, full test, build, and gate-core ` +
+        `(${classification.reason})`
+    );
     runAppChecks(repoRoot);
   }
 } else {
   throw new Error(`unsupported stage: ${stage}`);
 }
+
+if (stage === "pre-push") runPushCheckoutChecks(repoRoot, prePushUpdates);

@@ -63,7 +63,7 @@ import {
   type MarketplaceInstalledProviderPreset,
   type MarketplaceProviderModelDiscoveryPolicy,
 } from "../../../shared/marketplace-package-assets.js";
-import { isIpcErrorResult, type AveApi } from "../types.js";
+import { isIpcErrorResult, type AppSettings, type AveApi } from "../types.js";
 import { ConnectionRow, type ConnectionRowState } from "../components/ConnectionRow.js";
 import { SettingsHelpPopover, SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { PricingOverridesSection } from "./PricingOverridesSection.js";
@@ -456,6 +456,7 @@ function ProviderSelect({
 }
 
 export interface LlmTabProps {
+  retiredLlmProvider?: AppSettings["llm"]["retiredProvider"] | null;
   api: AveApi;
   /**
    * The provider chat runs on. Read-only here: a card is opened by this tab,
@@ -613,7 +614,6 @@ function providerOptionsForPresets(
  */
 const STANDARD_CATALOGUE_ENDPOINT_VENDORS: ReadonlySet<string> = new Set([
   "openai",
-  "copilot",
 ]);
 
 /**
@@ -1211,6 +1211,7 @@ export function LlmTab(props: LlmTabProps) {
   const {
     api,
     vendor,
+    retiredLlmProvider,
     baseUrl,
     hasKey,
     setHasKey,
@@ -2279,7 +2280,7 @@ export function LlmTab(props: LlmTabProps) {
 
   const selectedUnifiedValue = subscription.activeRuntime.kind === "subscription"
     ? unifiedValue(subscription.activeRuntime.provider, subscription.activeRuntime.model ?? "")
-    : unifiedValue(apiProviderId(activeApiRowId), activeModelValue);
+    : retiredLlmProvider ? "" : unifiedValue(apiProviderId(activeApiRowId), activeModelValue);
 
   /**
    * A pick moves BOTH halves of the decision: which provider answers, and with
@@ -2294,7 +2295,7 @@ export function LlmTab(props: LlmTabProps) {
       const pickedRowId = parsed.providerId.slice(API_PROVIDER_PREFIX.length);
       const pickedPresetId = marketplaceProviderPresetIdFromSecretId(pickedRowId);
       const pickedPreset = pickedPresetId ? installedPresetById.get(pickedPresetId) : undefined;
-      if (pickedRowId === activeApiRowId) {
+      if (pickedRowId === activeApiRowId && !retiredLlmProvider) {
         // Same provider, different model: moving the vendor as well would
         // re-hydrate fields the user may have just changed.
         setModel(parsed.modelId);
@@ -2324,6 +2325,7 @@ export function LlmTab(props: LlmTabProps) {
     );
   }, [
     activeApiRowId, installedPresetById, marketplaceProviderPresetId,
+    retiredLlmProvider,
     onClearMarketplaceProviderPreset, onImmediateChange, onSelectMarketplaceProviderPreset,
     selectApiVendorModel, setModel,
     subscription.activeRuntime.kind, subscription.props.actions,
@@ -2648,11 +2650,12 @@ export function LlmTab(props: LlmTabProps) {
    */
   const activeRouteCanChat = useMemo(() => {
     if (subscription.activeRuntime.kind === "subscription") return true;
+    if (retiredLlmProvider) return false;
     const active = connections.find(
       (row) => row.apiVendorId && rowCredentialId(row) === activeApiRowId,
     );
     return Boolean(active) && rowChatBlocker(active!) === null;
-  }, [activeApiRowId, connections, rowChatBlocker, subscription.activeRuntime.kind]);
+  }, [activeApiRowId, connections, rowChatBlocker, subscription.activeRuntime.kind, retiredLlmProvider]);
 
   const pickModelGuidance = (row: ProviderConnection) => {
     if (credentialSavedRowId !== row.id || activeRouteCanChat) return null;

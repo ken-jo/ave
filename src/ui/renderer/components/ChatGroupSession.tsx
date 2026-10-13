@@ -227,6 +227,7 @@ export function ChatGroupSession({
   const { t } = useTranslation();
 
   const api = useMemo(() => chatGroupApi(windowApi, chatGroupId), [windowApi, chatGroupId]);
+  const approvals = useApprovalSurface();
   // Stable identity: the hook re-hydrates when this changes, and the default
   // (unscoped) project is no project at all. A project handed to this group
   // for New Chat wins over the window's — including the default one.
@@ -265,13 +266,19 @@ export function ChatGroupSession({
   // is when the card arrives, and this predicate must stay referentially
   // stable or the channel resubscribes and loses in-flight events.
   const drawsSession = useCallback(
-    (sessionId: string) => tileDrawsSession({
-      tiles: registry.readTiles(),
-      sessionId,
-      owned: ownsSession(sessionId),
-      focused: focusedRef.current,
-    }),
-    [registry, ownsSession],
+    (sessionId: string) => {
+      const owned = ownsSession(sessionId);
+      // The side view claims its session before its rendered surface reaches
+      // the registry, so a first-turn question must not be adopted here.
+      if (!owned && approvals.claims.ownerOf(sessionId) !== null) return false;
+      return tileDrawsSession({
+        tiles: registry.readTiles(),
+        sessionId,
+        owned,
+        focused: focusedRef.current,
+      });
+    },
+    [approvals.claims, registry, ownsSession],
   );
   const {
     askQuestions, subAgentSpawns, loadedSkills,
@@ -683,7 +690,6 @@ export function ChatGroupSession({
   // sub-agents'), so no other surface draws their cards; the cards render
   // over this conversation's composer while the conversation is drawn, and
   // in the pane frame's settle slot while a view covers it.
-  const approvals = useApprovalSurface();
   useEffect(
     () => {
       // A pane the tree is not drawing claims nothing. Its turn keeps running

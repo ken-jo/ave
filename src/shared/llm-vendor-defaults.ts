@@ -306,7 +306,6 @@ export const LLM_VENDORS = [
   "claude",
   "openai",
   "gemini",
-  "copilot",
   "azure-foundry",
   "vertex-ai",
   "openai-compatible",
@@ -314,6 +313,20 @@ export const LLM_VENDORS = [
 ] as const;
 
 export type LLMVendor = (typeof LLM_VENDORS)[number];
+
+/**
+ * Vendor ids Ave once shipped and has since removed. They are NOT vendors:
+ * `isLLMVendor` rejects them. They are recognized in exactly one place, the
+ * settings load, so a profile that still names one is migrated off it with a
+ * notice instead of being silently pointed at another vendor.
+ */
+export const RETIRED_LLM_VENDOR_IDS = ["copilot"] as const;
+
+export type RetiredLLMVendor = (typeof RETIRED_LLM_VENDOR_IDS)[number];
+
+export function isRetiredLLMVendor(v: unknown): v is RetiredLLMVendor {
+  return typeof v === "string" && (RETIRED_LLM_VENDOR_IDS as readonly string[]).includes(v);
+}
 
 /**
  * Providers shipped as the built-in provider surface. The full `LLM_VENDORS`
@@ -474,9 +487,6 @@ export function getLlmThinkingBudgetRungs(outputTokenLimit?: number): readonly L
   const output = normalizeLlmOutputTokenLimit(outputTokenLimit);
   return THINKING_BUDGET_PRESETS.filter((preset) => preset.budget < output);
 }
-
-/** GitHub Copilot's model inference endpoint — used when the vendor block carries no `baseUrl`. */
-export const COPILOT_BASE_URL = "https://models.github.ai/inference";
 
 /**
  * Runtime type guard — narrows `unknown` to `LLMVendor`. Use at every
@@ -749,7 +759,6 @@ const CORE_DEFAULT_MODEL = {
   claude: "claude-sonnet-4-6",
   openai: "gpt-5.4-mini",
   gemini: "gemini-2.5-flash",
-  copilot: "gpt-5.4-mini",
   "azure-foundry": "gpt-5.4-mini",
   "vertex-ai": "gemini-2.5-flash",
   // Handshake-only: no static default. A fresh openai-compatible block ships
@@ -795,14 +804,6 @@ const CORE_VENDOR_MODEL_OPTIONS = {
       "gemini-2.5-flash-lite",
       "gemini-2.0-flash",
       "gemini-2.0-flash-lite",
-    ],
-    copilot: [
-      "gpt-5.4-mini",
-      "gpt-5.4",
-      "gpt-5.4-nano",
-      "gpt-4.1",
-      "gpt-4.1-mini",
-      "claude-sonnet-4-6",
     ],
     "azure-foundry": [
       "gpt-5.4-mini",

@@ -46,16 +46,22 @@ test('the boot gate outcome reaches settings, and the notice matches it', async 
   const notice = settingsPage.getByTestId('os-sandbox-boot-degraded');
   if (boot.action === 'degrade') {
     await expect(notice).toBeVisible();
-    // The dependency errors carry the install command the user has to run, so
-    // a degrade that renders the heading without them is still a dead end.
+    // Setup failures show localized repair guidance; raw dependency output
+    // belongs in diagnostics rather than in the settings panel.
     if (boot.dependencyErrors.length > 0) {
       await expect(settingsPage.getByTestId('os-sandbox-boot-degraded-detail')).toBeVisible();
+      for (const detail of boot.dependencyErrors) {
+        if (detail) await expect(notice).not.toContainText(detail);
+      }
     }
   } else {
     // `skip` (never turned on) and `activate` (on and working) are both states
     // the user has no problem to fix — warning about either would be noise.
     await expect(notice).toHaveCount(0);
   }
+
+  await settingsPage.getByTestId('os-sandbox-potential-reason').scrollIntoViewIfNeeded();
+  await settingsPage.screenshot({ path: test.info().outputPath('sandbox-settings.png') });
 
   await closeInlineSettings(app, settingsPage);
 });

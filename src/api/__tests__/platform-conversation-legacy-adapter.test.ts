@@ -4,6 +4,7 @@ import { createPlatformConversationTimeline } from "../../engine/conversation-pl
 import {
   createPlatformConversationLegacyStreamAdapter,
   createPlatformTurnId,
+  createLegacyChatStreamEventSink,
 } from "../platform-conversation-legacy-adapter.js";
 
 describe("platform conversation legacy adapter", () => {
@@ -92,6 +93,28 @@ describe("platform conversation legacy adapter", () => {
       type: "redact_notice",
       count: 1,
       byKind: { email: 1 },
+    });
+  });
+
+  it("announces the host's side-chat session on the existing user prelude only", () => {
+    const send = vi.fn();
+    const sink = createLegacyChatStreamEventSink(send, {
+      streamId: 9,
+      sessionId: "side-session",
+      sendRequestId: "side-request",
+      streamChannel: CHANNELS.sidechat.stream,
+      fallbackChannel: CHANNELS.sidechat.fallback,
+    });
+    sink({ kind: "user.message", origin: "user-keyboard", ownerDetail: { text: "hello", messageId: "row-1" } });
+    sink({ kind: "assistant.text.delta", text: "answer" });
+
+    expect(send).toHaveBeenNthCalledWith(1, CHANNELS.sidechat.stream, {
+      streamId: 9, type: "user_message", sessionId: "side-session",
+      sendRequestId: "side-request",
+      origin: "user-keyboard", text: "hello", messageId: "row-1",
+    });
+    expect(send).toHaveBeenNthCalledWith(2, CHANNELS.sidechat.stream, {
+      streamId: 9, type: "text_delta", text: "answer",
     });
   });
 

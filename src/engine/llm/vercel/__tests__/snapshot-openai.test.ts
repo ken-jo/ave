@@ -1,5 +1,5 @@
 /**
- * L1–L3 snapshot parity tests for VercelUnifiedProvider (OpenAI + Copilot paths).
+ * L1–L3 snapshot parity tests for VercelUnifiedProvider (OpenAI paths).
  *
  * Per docs/references/vercel-ai-sdk-migration.md §11:
  *   L1 — Structural: StreamEvent type sequence matches expectation
@@ -8,7 +8,8 @@
  *
  * Also exercises:
  *   - Reasoning-effort mapping (4 cases).
- *   - Copilot tool-turn reasoning_effort drop guard (Chat Completions 400 fix).
+ *   - Responses API tool turns keep reasoning_effort (the Chat Completions
+ *     tool-turn guard is pinned in catalog-request-fields.test.ts).
  *   - OpenAI gpt-5.x → /v1/responses routing (Responses API).
  */
 import { describe, it, expect, vi } from "vitest";
@@ -89,8 +90,8 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
     }));
 
     const { VercelUnifiedProvider } = await import("../adapter.js");
-    // Copilot (Chat Completions, non-tool) passes reasoning_effort through.
-    const provider = new VercelUnifiedProvider("copilot", "test-key");
+    // OpenAI (non-tool) passes reasoning_effort through.
+    const provider = new VercelUnifiedProvider("openai", "test-key");
     await collect(
       provider.streamTurn({
         model,
@@ -109,9 +110,17 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
   };
 
   it("clamps a tiny budget from 'none' to 'low' for models without the capability", async () => {
-    // budget 100 → mapReasoningEffort "none"; gpt-5-mini can't take it → "low"
-    const openai = await captureProviderOptions("gpt-5-mini", 100);
+    // budget 100 → mapReasoningEffort "none". The catalog does not list this
+    // id, so the name rule decides: GPT-5.1 can't take "none" → "low".
+    const openai = await captureProviderOptions("gpt-5.1-unlisted-fixture", 100);
     expect(openai?.reasoningEffort).toBe("low");
+  });
+
+  it("sends the lowest level a listed model accepts when it cannot take 'none'", async () => {
+    // The catalog lists gpt-5-mini's levels without "none"; the nearest
+    // accepted level is its lowest one.
+    const openai = await captureProviderOptions("gpt-5-mini", 100);
+    expect(openai?.reasoningEffort).toBe("minimal");
   });
 
   it("keeps 'none' for GPT-5.2+ which supports it", async () => {
@@ -543,111 +552,7 @@ describe("VercelUnifiedProvider openai — L1/L2/L3 (mocked streamText)", () => 
   });
 });
 
-describe("VercelUnifiedProvider copilot — L1/L2/L3 (mocked streamText)", () => {
-  it("reasoning_effort is dropped on tool turns with gpt-5.x (legacy 400 guard)", async () => {
-    vi.resetModules();
-    const streamTextSpy = vi.fn(() => ({
-      stream: (async function* () {
-        yield {
-          type: "tool-call",
-          toolCallId: "c1",
-          toolName: "t",
-          input: {},
-        };
-        yield {
-          type: "finish",
-          finishReason: "tool-calls",
-          totalUsage: { inputTokens: 1, outputTokens: 1 },
-        };
-      })(),
-    }));
-
-    vi.doMock("ai", async () => {
-      const actual = await vi.importActual<typeof import("ai")>("ai");
-      return { ...actual, streamText: streamTextSpy };
-    });
-    vi.doMock("@ai-sdk/openai", () => ({
-      createOpenAI: () => ({
-        responses: vi.fn(() => ({ __mock: "responses" })),
-        chat: vi.fn(() => ({ __mock: "chat" })),
-      }),
-    }));
-
-    const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("copilot", "test-key");
-
-    await collect(
-      provider.streamTurn({
-        model: "gpt-5-mini",
-        systemPrompt: "sys",
-        messages: [{ role: "user", content: "hi" }],
-        enableThinking: true,
-        thinkingBudgetTokens: 10_000,
-        tools: [
-          {
-            name: "t",
-            description: "t",
-            inputSchema: { type: "object", properties: {} },
-          },
-        ],
-      }),
-    );
-
-    expect(streamTextSpy).toHaveBeenCalledOnce();
-    const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
-    // reasoning_effort MUST be absent on Copilot+tools+gpt-5.x
-    expect(callArg.providerOptions).toBeUndefined();
-
-    vi.doUnmock("ai");
-    vi.doUnmock("@ai-sdk/openai");
-  });
-
-  it("reasoning_effort IS passed on non-tool Copilot turns with gpt-5.x", async () => {
-    vi.resetModules();
-    const streamTextSpy = vi.fn(() => ({
-      stream: (async function* () {
-        yield { type: "text-delta", id: "t1", text: "ok" };
-        yield {
-          type: "finish",
-          finishReason: "stop",
-          totalUsage: { inputTokens: 1, outputTokens: 1 },
-        };
-      })(),
-    }));
-
-    vi.doMock("ai", async () => {
-      const actual = await vi.importActual<typeof import("ai")>("ai");
-      return { ...actual, streamText: streamTextSpy };
-    });
-    vi.doMock("@ai-sdk/openai", () => ({
-      createOpenAI: () => ({
-        responses: vi.fn(() => ({ __mock: "responses" })),
-        chat: vi.fn(() => ({ __mock: "chat" })),
-      }),
-    }));
-
-    const { VercelUnifiedProvider } = await import("../adapter.js");
-    const provider = new VercelUnifiedProvider("copilot", "test-key");
-
-    await collect(
-      provider.streamTurn({
-        model: "gpt-5-mini",
-        systemPrompt: "sys",
-        messages: [{ role: "user", content: "hi" }],
-        enableThinking: true,
-        thinkingBudgetTokens: 10_000,
-      }),
-    );
-
-    const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
-    expect(callArg.providerOptions).toEqual({
-      openai: { reasoningEffort: "high", reasoningSummary: "detailed" },
-    });
-
-    vi.doUnmock("ai");
-    vi.doUnmock("@ai-sdk/openai");
-  });
-
+describe("VercelUnifiedProvider openai — L1/L2/L3 (mocked streamText)", () => {
   it("OpenAI Responses API keeps reasoning_effort on tool turns (no legacy guard)", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
@@ -1353,7 +1258,7 @@ describe("VercelUnifiedProvider — sampling params removed (CTRL simplification
   // A host-owned `outputTokenLimit` is intentionally distinct from those
   // removed user controls and is covered by a dedicated bounded-call case.
   const runAndCaptureStreamTextArgs = async (
-    vendor: "openai" | "copilot",
+    vendor: "openai",
     model: string,
     outputTokenLimit?: number,
   ): Promise<Record<string, unknown>> => {
@@ -1412,15 +1317,6 @@ describe("VercelUnifiedProvider — sampling params removed (CTRL simplification
 
   it("OpenAI + non-reasoning model (gpt-4.1): no temperature/seed in request", async () => {
     const args = await runAndCaptureStreamTextArgs("openai", "gpt-4.1");
-    expect("temperature" in args).toBe(false);
-    expect("seed" in args).toBe(false);
-  });
-
-  it("Copilot + gpt-5 (Chat Completions): no temperature/seed in request", async () => {
-    // Pre-CTRL behaviour forwarded sampling controls on the Copilot Chat
-    // Completions path. Post-CTRL the fields are gone from StreamTurnParams,
-    // so they MUST be absent regardless of route.
-    const args = await runAndCaptureStreamTextArgs("copilot", "gpt-5-mini");
     expect("temperature" in args).toBe(false);
     expect("seed" in args).toBe(false);
   });

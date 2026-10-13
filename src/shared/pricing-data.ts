@@ -45,7 +45,6 @@ export const PRICING_VENDORS = [
   "claude",
   "openai",
   "gemini",
-  "copilot",
   "azure-foundry",
   "vertex-ai",
   "openai-compatible",
@@ -224,37 +223,6 @@ export const DEFAULT_PRICING: Record<PricingVendor, Record<string, ModelPricing>
     "gemini-1.5-pro":              { inputPer1M: 0, outputPer1M: 0, contextWindow: 2_097_152 },
     "gemini-1.5-flash":            { inputPer1M: 0, outputPer1M: 0, contextWindow: 1_048_576 },
     "gemini-1.5-flash-8b":         { inputPer1M: 0, outputPer1M: 0, contextWindow: 1_048_576 },
-  },
-
-  // ── GitHub Copilot ─────────────────────────────────────────────────────────
-  // Billing rolls into Copilot subscription — list prices reported as 0.
-  // Routing: github.ai/inference proxies these models.
-  copilot: {
-
-
-    "gpt-5.4":                     { inputPer1M: 0, outputPer1M: 0, contextWindow: 1_050_000 },
-    "gpt-5.4-mini":                { inputPer1M: 0, outputPer1M: 0, contextWindow:   400_000 },
-
-
-    "gpt-5.4-nano":                { inputPer1M: 0, outputPer1M: 0, contextWindow:   400_000 },
-    "gpt-5.4-pro":                 { inputPer1M: 0, outputPer1M: 0, contextWindow: 1_100_000 },
-    "gpt-5.3":                     { inputPer1M: 0, outputPer1M: 0, contextWindow:   400_000 },
-    "gpt-5.2":                     { inputPer1M: 0, outputPer1M: 0, contextWindow:   400_000 },
-    "gpt-5.1":                     { inputPer1M: 0, outputPer1M: 0, contextWindow:   400_000 },
-    "gpt-5.1-codex":               { inputPer1M: 0, outputPer1M: 0, contextWindow:   400_000 },
-    "gpt-5.1-codex-mini":          { inputPer1M: 0, outputPer1M: 0, contextWindow:   400_000 },
-    "gpt-5.1-codex-max":           { inputPer1M: 0, outputPer1M: 0, contextWindow:   400_000 },
-    "gpt-5":                       { inputPer1M: 0, outputPer1M: 0, contextWindow:   400_000 },
-    "gpt-5-mini":                  { inputPer1M: 0, outputPer1M: 0, contextWindow:   400_000 },
-    "gpt-4.1":                     { inputPer1M: 0, outputPer1M: 0, contextWindow: 1_000_000 },
-    "gpt-4.1-mini":                { inputPer1M: 0, outputPer1M: 0, contextWindow: 1_000_000 },
-    "gpt-4o":                      { inputPer1M: 0, outputPer1M: 0, contextWindow:   128_000 },
-    "gpt-4o-mini":                 { inputPer1M: 0, outputPer1M: 0, contextWindow:   128_000 },
-    "claude-opus-4-6":             { inputPer1M: 0, outputPer1M: 0, contextWindow: 200_000, contextWindow1MBeta: 1_000_000 },
-    "claude-sonnet-4-6":           { inputPer1M: 0, outputPer1M: 0, contextWindow: 200_000, contextWindow1MBeta: 1_000_000 },
-    "claude-opus-4-5":             { inputPer1M: 0, outputPer1M: 0, contextWindow: 200_000 },
-    "claude-sonnet-4-5":           { inputPer1M: 0, outputPer1M: 0, contextWindow: 200_000 },
-    "claude-haiku-4-5":            { inputPer1M: 0, outputPer1M: 0, contextWindow: 200_000 },
   },
 
   // ── Azure AI Foundry / Vertex AI ───────────────────────────────────────────

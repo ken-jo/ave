@@ -1,3 +1,3 @@
-import text from "../../../docs/design/plugin-hostapi-protocol.md?raw";
+import text from "../../../docs/blueprints/plugin-process-isolation.md?raw";
 
 export { text };

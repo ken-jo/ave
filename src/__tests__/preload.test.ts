@@ -142,6 +142,26 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.exportInstalled, "team-kit", true);
   });
 
+  it.each([undefined, "side-request"])("bridges side-chat send correlation %s on the existing channel", async (sendRequestId) => {
+    mockInvoke.mockResolvedValueOnce({ ok: true, result: {} });
+    const api = await loadAveApi();
+    const sideChat = api["sideChat"] as NonNullable<AveApi["sideChat"]>;
+    await sideChat.send("hello", [], "parent-session", sendRequestId);
+    expect(mockInvoke.mock.calls).toEqual([[CHANNELS.sidechat.send, {
+      input: "hello", attachments: [], originSessionId: "parent-session",
+      ...(sendRequestId !== undefined ? { sendRequestId } : {}),
+    }]]);
+  });
+
+  it("bridges side-chat cancellation identity on the existing channel", async () => {
+    const sendRequestId = "side-request";
+    mockInvoke.mockResolvedValueOnce({ ok: true });
+    const api = await loadAveApi();
+    const sideChat = api["sideChat"] as NonNullable<AveApi["sideChat"]>;
+    await sideChat.abort(sendRequestId);
+    expect(mockInvoke.mock.calls).toEqual([[CHANNELS.sidechat.abort, { sendRequestId }]]);
+  });
+
   it("bridges side-chat child transcripts with only the explicit owner request", async () => {
     const request: SubAgentTranscriptRequest = {
       originSessionId: "side-origin",

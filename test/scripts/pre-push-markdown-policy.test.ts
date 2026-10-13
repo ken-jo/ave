@@ -38,7 +38,6 @@ describe("documentation impact policy", () => {
     "docs/architecture/new-design.md",
     "docs/guides/new-guide.md",
     "docs/blueprints/plugin-process-isolation.md",
-    "docs/design/plugin-hostapi-protocol.md",
   ])("skips the heavy checks for unconsumed prose at %s", (path) => {
     expect(classifyDocumentationChanges([modified(path)]).docsOnly).toBe(true);
   });
@@ -46,6 +45,7 @@ describe("documentation impact policy", () => {
   it.each([
     "resources/AGENTS.md",
     "docs/design/permission-review-scenario-board-v2.html",
+    "docs/design/plugin-hostapi-protocol.md",
     "AGENTS.md",
     "CLAUDE.md",
     ".github/workflows/ci.yml",
