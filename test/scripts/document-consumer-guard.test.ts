@@ -50,8 +50,30 @@ function trackedPackageFixture() {
   return directory;
 }
 
+/**
+ * app-builder-lib's file matcher as a packaging run loads it. builder-util
+ * decides when it loads whether to hard-link instead of copy, and it chooses
+ * hard links whenever `VITEST` is set (`_isUseHardLink`, builder-util/out/fs.js).
+ * On Linux link(2) on a symbolic link links the link itself, so a relative
+ * alias would land in the oracle's output dangling; a packaging run copies the
+ * target's bytes. A fresh instance is loaded with `VITEST` unset.
+ */
+function packagingFileMatcher() {
+  const builderModule = /[\\/]node_modules[\\/](?:app-builder-lib|builder-util)[\\/]/;
+  for (const id of Object.keys(require.cache)) {
+    if (builderModule.test(id)) delete require.cache[id];
+  }
+  const vitest = process.env.VITEST;
+  delete process.env.VITEST;
+  try {
+    return require("app-builder-lib/out/fileMatcher.js");
+  } finally {
+    if (vitest !== undefined) process.env.VITEST = vitest;
+  }
+}
+
 async function copiedBuilderDocuments(directory: string, build: Record<string, unknown>, destination: string) {
-  const { getFileMatchers, getMainFileMatchers, copyFiles } = require("app-builder-lib/out/fileMatcher.js");
+  const { getFileMatchers, getMainFileMatchers, copyFiles } = packagingFileMatcher();
   const copied = new Set<string>();
   for (const platform of ["mac", "win", "linux"]) {
     const arch = "x64";
