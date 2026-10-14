@@ -1,9 +1,8 @@
 # Ave Project Documentation
 
-**Ave (Local Versatile Intelligent System)**
-AI 프론티어 생산성 향상 엔터프라이즈 매니지먼트 시스템
+**안녕하세요, Ave 입니다.** Ave 는 종합 에이전트 브라우저입니다. 목표와 현재 상태는 [비전](./vision/README.md) 한 곳에 정리되어 있습니다.
 
-이 디렉터리는 Ave 프로젝트 문서의 **단일 소스**입니다. 기존 standalone `former_org/docs` 저장소는 아카이브용 히스토리 레퍼런스만 유지합니다.
+이 디렉터리는 영문 기본 문서([../README.md](../README.md))의 한국어 미러입니다. 둘이 다르면 영문 문서가 기준입니다.
 
 ---
 
@@ -12,8 +11,8 @@ AI 프론티어 생산성 향상 엔터프라이즈 매니지먼트 시스템
 | 문서 | 설명 |
 |------|------|
 | [한국어 앱 README](./app-readme.md) | ave 저장소 개요, 개발 명령, 플러그인/패키징 흐름 |
-| [구현 철학](./vision/philosophy.md) | 프로젝트의 배경, 문제 인식, 철학 |
-| [비전 & 골](./vision/README.md) | 프로젝트 비전, 목표, 로드맵 |
+| [비전](./vision/README.md) | Ave 가 무엇이고 어디로 가는지 — 목표와 현재 상태의 정식 문서 |
+| [철학](./vision/philosophy.md) | 목표를 추구할 때 따르는 원칙 |
 | [아키텍처](./architecture/README.md) | 아키텍처 개요와 목차 |
 | [아키텍처 본문](./architecture/architecture.md) | 전체 아키텍처 상세 |
 | [도구 거버넌스 보충](./architecture/tool-governance.md) | Builtin / Plugin / MCP 통합 보안 모델 |
@@ -39,8 +38,8 @@ AI 프론티어 생산성 향상 엔터프라이즈 매니지먼트 시스템
 docs/
 ├── README.md                              # 영문 문서 홈
 ├── vision/
-│   ├── README.md                          # 비전, 목표, 로드맵
-│   └── philosophy.md                      # 구현 철학 — 배경·문제 인식·핵심 방향
+│   ├── README.md                          # ★ 비전 — 목표와 현재 상태 (정식 문서)
+│   └── philosophy.md                      # 원칙
 ├── architecture/
 │   ├── README.md                          # 아키텍처 개요·요약·목차
 │   ├── architecture.md                    # ★ 현재 아키텍처
@@ -74,8 +73,8 @@ docs/
 
 ## 문서 읽는 순서
 
-1. **[구현 철학](./vision/philosophy.md)** — 배경·시장 맥락·회사 안에서의 문제 인식·사용 시나리오
-2. **[비전 & 골](./vision/README.md)** — 프로젝트가 추구하는 방향과 로드맵
+1. **[비전](./vision/README.md)** — Ave 의 목표와 현재 상태
+2. **[철학](./vision/philosophy.md)** — 목표를 추구할 때 따르는 원칙
 3. **[아키텍처](./architecture/architecture.md)** — 전체 시스템 설계 (5-Layer, LLM 중심, Electron + Rust)
 4. **[도구 거버넌스 보충](./architecture/tool-governance.md)** — ToolExecutor 단일 choke point와 Builtin / Plugin / MCP 정책
 5. **[시작 가이드](./guides/getting-started.md)** — 설치·실행과 첫 실행 공급자 연결

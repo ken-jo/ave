@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/TurnActionBar.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/TurnActionBar.tsx.
 export const en = {
   "turnActionBar.copyButton": "Copy",
   "turnActionBar.retryButton": "Retry (depth: high)",

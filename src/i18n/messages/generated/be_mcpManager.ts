@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/mcp/mcp-manager.ts. Do not edit by hand.
+// i18n fragment. Source: src/mcp/mcp-manager.ts.
 export const en = {
   "be_mcpManager.serverNotFound": "Server '{serverId}' not found.",
   "be_mcpManager.invalidServerId": "Invalid server id.",

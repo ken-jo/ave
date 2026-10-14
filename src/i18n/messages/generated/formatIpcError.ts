@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/format-ipc-error.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/format-ipc-error.ts.
 export const en = {
   "formatIpcError.invalidPath": "That path is not valid.",
   "formatIpcError.cannotRemoveDefaultRoot": "The default project folder can't be removed.",

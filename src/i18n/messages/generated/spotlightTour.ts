@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/SpotlightTour.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/SpotlightTour.tsx.
 export const en = {
   "spotlightTour.stepUnit": "step",
   "spotlightTour.skip": "Skip",

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/MemorySearchPanel.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/MemorySearchPanel.tsx.
 export const en = {
   "memorySearchPanel.justNow": "Just now",
   "memorySearchPanel.minutesAgo": "{minutes} minutes ago",

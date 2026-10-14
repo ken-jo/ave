@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/GeneralTab.tsx. Do not edit by hand.
+// i18n fragment. Extracted from src/ui/renderer/tabs/GeneralTab.tsx, which no longer exists.
 export const en = {
   "generalTab.workspaceTitle": "Workspace",
   "generalTab.workspaceDescription": "Installed extensions, tools, agents, skills, and roles count, plus marketplace status.",

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/preload.ts. Do not edit by hand.
+// i18n fragment. Source: src/preload.ts.
 export const en = {
   "be_preload.invalidPluginActionResult": "Extension action result is invalid.",
 } as const;

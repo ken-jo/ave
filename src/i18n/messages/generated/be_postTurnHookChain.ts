@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/hooks/post-turn-hook-chain.ts. Do not edit by hand.
+// i18n fragment. Source: src/hooks/post-turn-hook-chain.ts.
 export const en = {
   "be_postTurnHookChain.autoMemoryTitle": "auto-{title}",
   "be_postTurnHookChain.autoMemoryBody": "[User request]\n{input}\n\n[Assistant response]\n{output}",

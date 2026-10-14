@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/command-actions.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/command-actions.ts.
 export const en = {
   "commandActions.goHome": "Go to Home",
   "commandActions.viewWorkBoard": "View Work Board",

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/lib/cost-estimator.ts. Do not edit by hand.
+// i18n fragment. Source: src/lib/cost-estimator.ts.
 export const en = {
   "be_costEstimator.costUnknown": "Cost unknown",
 } as const;
