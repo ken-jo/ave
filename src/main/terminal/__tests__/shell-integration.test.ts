@@ -16,6 +16,8 @@ import { TerminalBlockTracker } from "../terminal-blocks.js";
 
 const NONCE = "0123456789abcdef0123456789abcdef";
 const homes: string[] = [];
+/** The XDG layout createSandboxProcessHome gives a sandbox HOME. */
+const sandboxEnvFor = (home: string) => ({ HOME: home, XDG_CONFIG_HOME: join(home, "config") });
 function makeHome(): string {
   const home = mkdtempSync(join(tmpdir(), "ave-shell-integration-"));
   homes.push(home);
@@ -29,7 +31,7 @@ afterEach(() => {
 /** Run `shell -l -i` with `script` on stdin; stdout and stderr in one stream. */
 function runInteractive(shell: string, script: string) {
   const home = makeHome();
-  const { env } = installShellIntegration(home, shell, { nonce: NONCE });
+  const { env } = installShellIntegration(home, shell, { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) });
   const result = spawnSync("/bin/sh", ["-c", 'exec "$0" -l -i 2>&1', shell], {
     input: script,
     cwd: home,
@@ -53,26 +55,32 @@ describe("installShellIntegration", () => {
   it("writes only inside the given HOME, owner-only, and pins ZDOTDIR for zsh", () => {
     const home = makeHome();
     const nonceEnv = { AVE_TERMINAL_NONCE: NONCE };
-    expect(installShellIntegration(home, "/bin/zsh", { nonce: NONCE })).toEqual({
+    expect(installShellIntegration(home, "/bin/zsh", { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) })).toEqual({
       shell: "zsh",
       env: { ZDOTDIR: home, ...nonceEnv },
     });
     expect(statSync(join(home, ".zshrc")).mode & 0o777).toBe(0o600);
-    expect(installShellIntegration(home, "/bin/bash", { nonce: NONCE })).toEqual({ shell: "bash", env: nonceEnv });
+    expect(installShellIntegration(home, "/bin/bash", { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) })).toEqual({ shell: "bash", env: nonceEnv });
     expect(readFileSync(join(home, ".bash_profile"), "utf-8")).toContain("133;C;cmdline_url=");
-    expect(installShellIntegration(home, "/usr/bin/fish", { nonce: NONCE })).toEqual({ shell: "fish", env: nonceEnv });
+    expect(installShellIntegration(home, "/usr/bin/fish", { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) })).toEqual({ shell: "fish", env: nonceEnv });
     expect(existsSync(join(home, "config", "fish", "conf.d", "ave-shell-integration.fish"))).toBe(true);
-    expect(installShellIntegration(home, "/bin/dash", { nonce: NONCE })).toEqual({ shell: null, env: {} });
+    // fish's file follows XDG_CONFIG_HOME wherever it points, and needs it.
+    const xdg = join(home, "elsewhere");
+    installShellIntegration(home, "/usr/bin/fish", { nonce: NONCE, sandboxEnv: { HOME: home, XDG_CONFIG_HOME: xdg } });
+    expect(existsSync(join(xdg, "fish", "conf.d", "ave-shell-integration.fish"))).toBe(true);
+    expect(() => installShellIntegration(home, "/usr/bin/fish", { nonce: NONCE, sandboxEnv: { HOME: home } }))
+      .toThrow(/XDG_CONFIG_HOME/u);
+    expect(installShellIntegration(home, "/bin/dash", { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) })).toEqual({ shell: null, env: {} });
   });
 
   it("never writes the nonce into a startup file and refuses a weak one", () => {
     const home = makeHome();
-    for (const shell of ["/bin/zsh", "/bin/bash", "/usr/bin/fish"]) installShellIntegration(home, shell, { nonce: NONCE });
+    for (const shell of ["/bin/zsh", "/bin/bash", "/usr/bin/fish"]) installShellIntegration(home, shell, { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) });
     for (const file of [".zshrc", ".bash_profile", join("config", "fish", "conf.d", "ave-shell-integration.fish")]) {
       expect(readFileSync(join(home, file), "utf-8")).not.toContain(NONCE);
     }
-    expect(() => installShellIntegration(home, "/bin/zsh", { nonce: "" })).toThrow(/nonce/u);
-    expect(() => installShellIntegration(home, "/bin/zsh", { nonce: "short" })).toThrow(/nonce/u);
+    expect(() => installShellIntegration(home, "/bin/zsh", { nonce: "", sandboxEnv: sandboxEnvFor(home) })).toThrow(/nonce/u);
+    expect(() => installShellIntegration(home, "/bin/zsh", { nonce: "short", sandboxEnv: sandboxEnvFor(home) })).toThrow(/nonce/u);
   });
 
   for (const shell of ["/bin/zsh", "/bin/bash"]) {

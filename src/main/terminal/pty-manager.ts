@@ -358,7 +358,10 @@ async function spawnNewTerminal(
   const markerNonce = randomBytes(16).toString("hex");
   let integrationEnv: Record<string, string>;
   try {
-    integrationEnv = installShellIntegration(sandboxHome.path, shell, { nonce: markerNonce }).env;
+    integrationEnv = installShellIntegration(sandboxHome.path, shell, {
+      nonce: markerNonce,
+      sandboxEnv: sandboxHome.env,
+    }).env;
   } catch (err) {
     cleanupSandboxHome();
     return {

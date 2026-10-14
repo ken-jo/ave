@@ -174,7 +174,15 @@ const FISH_CONF = [
 export function installShellIntegration(
   homePath: string,
   shellPath: string,
-  options: { nonce: string },
+  options: {
+    nonce: string;
+    /**
+     * The environment the shell will run with (the sandbox HOME's). fish
+     * reads its startup files from `$XDG_CONFIG_HOME/fish`, so that is where
+     * its file goes.
+     */
+    sandboxEnv: Readonly<Record<string, string>>;
+  },
 ): { shell: IntegratedShell | null; env: Record<string, string> } {
   if (!/^[0-9a-f]{16,}$/u.test(options.nonce)) {
     throw new Error("shell integration nonce must be at least 16 lowercase hex characters");
@@ -191,7 +199,11 @@ export function installShellIntegration(
       writeFileSync(join(homePath, ".bash_profile"), BASH_PROFILE, { mode: 0o600 });
       return { shell, env: nonceEnv };
     case "fish": {
-      const dir = join(homePath, "config", "fish", "conf.d");
+      const configHome = options.sandboxEnv.XDG_CONFIG_HOME;
+      // Without it fish would look in ~/.config, a directory the sandbox
+      // refuses writes to — the file would never be read. Fail, not guess.
+      if (!configHome) throw new Error("fish shell integration needs XDG_CONFIG_HOME in the sandbox environment");
+      const dir = join(configHome, "fish", "conf.d");
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       writeFileSync(join(dir, "ave-shell-integration.fish"), FISH_CONF, { mode: 0o600 });
       return { shell, env: nonceEnv };
