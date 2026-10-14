@@ -918,6 +918,13 @@ starts off. A visibility increase disables the kind until the user consents.
 Eligible predecessor choices transfer through retained configuration under the
 migration rules; the generic settings patch cannot author alert choices.
 
+Unrequested cards — alerts, accepted `triggerConversation` suggestions and
+routine cards — land in one dedicated, persistent Suggestions conversation (a
+reserved-id `main` session created on demand and named from the catalog by its
+id), never in the focused conversation. The user runs a card there or continues
+it in a new conversation. Onboarding proposals stay inline. See the overlay
+contract.
+
 `triggerConversation` survives for setup suggestions. Extensions declaring alerts
 must declare their suggestion sources and receive at most one acceptance per
 source per 30 days. The transition exception for extensions without alerts and the

@@ -16,6 +16,7 @@ import type { RoutineExecution, RoutineFiredPayload, RoutineSchedule } from "../
 import { ROUTINES } from "../../shared/ipc-channels.js";
 import { toSessionListRow } from "../../memory/memory-manager.js";
 import type { RoutineRunRow } from "../../shared/session-lookup.js";
+import { ensureSuggestionsSession } from "../../main/suggestions-session.js";
 
 export function registerRoutineHandlers(deps: IpcDeps): void {
   const { routinesStore, routinesScheduler, memoryManager, auditLogger } = deps;
@@ -102,6 +103,9 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       }
       results.push(result);
     }
+    // These cards are addressed to the dedicated Suggestions conversation;
+    // results staged before it existed (or after it was deleted) need it now.
+    if (results.length > 0) ensureSuggestionsSession(memoryManager);
     return results;
   });
 

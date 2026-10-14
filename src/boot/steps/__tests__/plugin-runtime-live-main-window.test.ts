@@ -115,6 +115,7 @@ import type { AlertInput, AlertResult } from "../../../plugins/public-contract.j
 import { HostApiGenerationScope } from "../../../plugins/plugin-host-effect-scope.js";
 import type { PluginRuntimeGenerationAccess } from "../../../plugins/plugin-host-generation.js";
 import type { PluginHostApiIncarnation } from "../../../plugins/runtime/index.js";
+import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 
 const alertsServices: AlertsService[] = [];
 
@@ -123,6 +124,9 @@ interface FakeWindow {
   isDestroyed: () => boolean;
   webContents: { send: ReturnType<typeof vi.fn> };
 }
+
+/** The main store's `touch` of the dedicated Suggestions conversation. */
+const suggestionsTouch = vi.fn();
 
 function makeWindow(destroyed = false): FakeWindow {
   const win: FakeWindow = {
@@ -184,7 +188,7 @@ async function overlayHostApi(input: {
       getPluginConfig: vi.fn(() => ({})),
       setPluginConfig: vi.fn(async () => {}),
     } as never,
-    memoryManager: {} as never,
+    memoryManager: { touchSessionTranscript: suggestionsTouch } as never,
     toolRegistry: {
       unregisterByPlugin: vi.fn(),
       register: vi.fn(),
@@ -292,7 +296,13 @@ describe("hostApi.triggerConversation overlay send targets the live main window"
       source: { kind: "plugin", pluginId: "plugin-a" },
       pluginDisplayName: "Mail tools",
       running: false,
+      // Addressed to the dedicated Suggestions conversation, never the focused one…
+      originSessionId: SUGGESTIONS_SESSION_ID,
     });
+    // …which exists, and rose in the list, before the card was sent.
+    expect(suggestionsTouch).toHaveBeenCalledWith(SUGGESTIONS_SESSION_ID, { bump: true });
+    expect(suggestionsTouch.mock.invocationCallOrder.at(-1)!)
+      .toBeLessThan(reopened.webContents.send.mock.invocationCallOrder.at(-1)!);
   });
 
   it("still sends to the boot capture while it is the live window", async () => {

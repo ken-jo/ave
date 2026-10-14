@@ -65,6 +65,7 @@ import { createLifecycleCallbacks } from "./plugin-runtime/lifecycle.js";
 import { createRegistryEntryCache } from "./plugin-runtime/registry-cache.js";
 import { grantEvidenceReader } from "./plugin-runtime/grant-evidence.js";
 import { PluginRuntimePreStartPhase } from "./plugin-runtime/pre-start-phase.js";
+import { stageInSuggestionsSession } from "../../main/suggestions-session.js";
 const log = createLogger("ave");
 
 // ── Re-exports — preserve this module path's public export contract. ────────
@@ -494,6 +495,7 @@ export async function initPluginRuntime(
     routinesStore,
     getWorkBoardStore,
     getAlertsService,
+    stageInSuggestionsSession: () => stageInSuggestionsSession(input.memoryManager),
   });
   const { preparePluginStart, onDisable, onActiveStateChange, onEnable } =
     createLifecycleCallbacks({

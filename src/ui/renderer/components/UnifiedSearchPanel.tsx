@@ -16,6 +16,7 @@ import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatMediumDateTime } from "../../../shared/format-time.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
+import { sessionDisplayTitle } from "../../../shared/suggestions-session.js";
 
 type ConversationMatch = {
   entryIndex: number;
@@ -165,7 +166,7 @@ export function UnifiedSearchPanel({
   const sessionResultsByTitle = useMemo(
     () =>
       sessions
-        .filter((session) => includesQuery(session.title || t("unifiedSearchPanel.untitledSession"), trimmedQuery, caseSensitive))
+        .filter((session) => includesQuery(sessionDisplayTitle(session.id, session.title, t) || t("unifiedSearchPanel.untitledSession"), trimmedQuery, caseSensitive))
         .slice(0, 8),
     [caseSensitive, sessions, trimmedQuery],
   );
@@ -314,7 +315,7 @@ export function UnifiedSearchPanel({
                   meta={formatMediumDateTime(session.modifiedAt)}
                   onClick={() => handleLoadSession(session.id)}
                 >
-                  {highlightText(session.title || t("unifiedSearchPanel.untitledSession"), trimmedQuery, { caseSensitive }) ?? (session.title || t("unifiedSearchPanel.untitledSession"))}
+                  {highlightText(sessionDisplayTitle(session.id, session.title, t) || t("unifiedSearchPanel.untitledSession"), trimmedQuery, { caseSensitive }) ?? (sessionDisplayTitle(session.id, session.title, t) || t("unifiedSearchPanel.untitledSession"))}
                 </SearchResultButton>
               ))}
             </SearchSection>

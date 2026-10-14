@@ -77,6 +77,8 @@ import {
 import { createDlpSafeUuid } from "../../shared/dlp-safe-id.js";
 import { createConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import { createSessionGoalRevival } from "../../main/session-goal-revival.js";
+import { ensureSuggestionsSession } from "../../main/suggestions-session.js";
+import { isSuggestionsSession } from "../../shared/suggestions-session.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { ConversationCommandPort } from "../../main/conversation-command-port.js";
 import { MAIN_CHAT_GROUP_ID } from "../../contract/app-contract.js";
@@ -1698,6 +1700,13 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const now = new Date().toISOString();
     if (raw.archived !== undefined) {
       if (typeof raw.archived !== "boolean") return { ok: false, error: "invalid-archived" };
+      // The Suggestions conversation is where every unrequested card is
+      // addressed, and the sidebar hides archived rows — archiving it would
+      // hide every suggestion and its count from then on. Its menu offers no
+      // archive; a request that names it anyway is refused, not ignored.
+      if (raw.archived && isSuggestionsSession(raw.sessionId)) {
+        return { ok: false, error: "suggestions-not-archivable" };
+      }
       fields.archivedAt = raw.archived ? now : null;
     }
     if (raw.unread !== undefined) {
@@ -1734,13 +1743,26 @@ export function registerChatHandlers(deps: IpcDeps): void {
     // mutation guard — and any tile may be the one holding it. Holding a
     // delete of some other conversation behind a loop would refuse a safe
     // action for a reason that does not apply to it.
+    //
+    // Deleting the Suggestions conversation clears it rather than removing
+    // it. Every card waiting in the window names it as its origin, and a card
+    // addressed to a conversation the list does not hold is drawn nowhere —
+    // so its row comes straight back, empty, before the renderer re-reads the
+    // list. Main cannot see the renderer's queue (a plugin card lives only
+    // there), so it does not ask whether anything is waiting: recreating the
+    // address is what keeps every such card reachable, including one staged
+    // while this confirm was open.
+    const deleteConversation = async (): Promise<void> => {
+      await memoryManager.deleteSession(sessionId);
+      if (isSuggestionsSession(sessionId)) ensureSuggestionsSession(memoryManager);
+    };
     const holder = groupHolding(sessionId);
     if (!holder) {
-      await memoryManager.deleteSession(sessionId);
+      await deleteConversation();
       return { ok: true, wasLoaded: false };
     }
     const mutation = holder.turns.trackSessionMutation(async () => {
-      await memoryManager.deleteSession(sessionId);
+      await deleteConversation();
       return { ok: true as const, wasLoaded: true };
     });
     return (await mutation) ?? { ok: false, error: STREAMING_ACTIVE };
