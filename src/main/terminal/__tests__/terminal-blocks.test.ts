@@ -133,6 +133,35 @@ describe("TerminalBlockTracker — OSC 133", () => {
     expect(block.output.length).toBeLessThan(70 * 1024);
   });
 
+  it("bounds output that never prints a newline and marks it truncated", () => {
+    const tracker = new TerminalBlockTracker();
+    tracker.recordOutput(osc("133;C;cmdline_url=cat%20bundle.min.js"));
+    const piece = "y".repeat(1024 * 1024);
+    for (let i = 0; i < 20; i++) tracker.recordOutput(i === 19 ? `${piece}END` : piece);
+    const running = tracker.recent(1)[0]!;
+    expect(running.truncated).toBe(true);
+    expect(running.outputChars).toBe(20 * 1024 * 1024 + 3);
+    expect(running.output.length).toBeLessThan(80 * 1024);
+    expect(running.output.startsWith("y".repeat(1024))).toBe(true);
+    expect(running.output.endsWith("END")).toBe(true);
+    tracker.recordOutput(osc("133;D;0"));
+    const done = tracker.get(running.id)!;
+    expect(done.truncated).toBe(true);
+    expect(done.output.length).toBeLessThan(80 * 1024);
+  });
+
+  it("bounds a newline-free prompt and echoed input as well", () => {
+    const tracker = new TerminalBlockTracker();
+    tracker.recordOutput(osc("133;A"));
+    tracker.recordOutput("p".repeat(2 * 1024 * 1024));
+    tracker.recordOutput(osc("133;B"));
+    tracker.recordOutput("e".repeat(2 * 1024 * 1024));
+    tracker.recordOutput(`${osc("133;C")}ok\r\n${osc("133;D;0")}`);
+    const block = tracker.recent(1)[0]!;
+    expect(block.command).toBe("e".repeat(4096));
+    expect(block.output).toBe("ok\n");
+  });
+
   it("keeps only the newest 100 completed blocks", () => {
     const tracker = new TerminalBlockTracker();
     for (let i = 1; i <= 105; i++) tracker.recordOutput(cycle(`echo ${i}`, `${i}\r\n`, 0));

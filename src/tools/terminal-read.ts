@@ -26,7 +26,8 @@ const MAX_LIMIT = 20;
 const SUMMARIES_PER_TAB = 10;
 /**
  * Output characters returned per call across all blocks. A single block keeps
- * at most 64K characters; this keeps a 20-block read from flooding the turn.
+ * about 72K characters at most (64K head and tail plus its open line); this
+ * keeps a 20-block read from flooding the turn.
  */
 const MAX_RESPONSE_OUTPUT_CHARS = 96 * 1024;
 

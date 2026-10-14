@@ -603,6 +603,12 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       provider: attachmentUnavailableProvider,
     }));
   }, [attachmentUnavailableProvider, onAttachmentWarning, t]);
+  const emitPastedTextClipped = useCallback((info: { keptChars: number; totalChars: number }) => {
+    onAttachmentWarning?.(t("app.pastedTextClipped", {
+      keptChars: info.keptChars,
+      totalChars: info.totalChars,
+    }));
+  }, [onAttachmentWarning, t]);
 
   // Attach picker — native file dialog + atomic flushSync commit + 5-cap.
   const { handleAttach, attachPastedText } = useAttachmentPicker({
@@ -615,6 +621,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     imageAttachmentLimits: subscriptionRuntimePolicy?.imageAttachmentLimits,
     onAttachmentUnavailable: emitAttachmentUnavailable,
     onImageAttachmentLimitExceeded: emitImageAttachmentLimitExceeded,
+    onPastedTextClipped: emitPastedTextClipped,
   });
 
   // Token progress ring — square, hover=percent, click=detail. The former

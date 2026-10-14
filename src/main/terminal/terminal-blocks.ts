@@ -38,6 +38,11 @@ const MAX_BLOCKS_PER_TERMINAL = 100;
 const HEAD_CHARS = 8 * 1024;
 /** Output characters kept from the end of a block. */
 const TAIL_CHARS = 56 * 1024;
+/**
+ * Characters the current (uncommitted) line may hold before its start is
+ * committed to the head/tail budget. Keeps a newline-free stream bounded.
+ */
+const MAX_OPEN_LINE_CHARS = 8 * 1024;
 /** An escape sequence longer than this is never completed; it is discarded. */
 const MAX_PENDING_ESCAPE = 4096;
 /** Characters of command text kept per block. */
@@ -77,6 +82,15 @@ class PlainTextBuffer {
           this.line = "";
         }
         this.line += ch;
+        // Output with no newline (a minified bundle, a binary dumped to the
+        // screen) is one endless line. Past the cap its start is committed
+        // like any other text, so the head/tail budget bounds it too; only a
+        // later CR or backspace can no longer reach the committed part.
+        if (this.line.length > MAX_OPEN_LINE_CHARS) {
+          const keep = MAX_OPEN_LINE_CHARS / 2;
+          this.commit(this.line.slice(0, this.line.length - keep));
+          this.line = this.line.slice(-keep);
+        }
       }
     }
   }
@@ -89,7 +103,9 @@ class PlainTextBuffer {
       this.head += rest.slice(0, room);
       rest = rest.slice(room);
     }
-    if (rest.length === 0) return;
+    // A buffer with no tail budget keeps its head only (`slice(-0)` would
+    // keep everything, so the zero case never reaches the trim below).
+    if (rest.length === 0 || this.tailChars === 0) return;
     this.tail += rest;
     // Trim in batches so a stream of short lines does not re-slice per line.
     if (this.tail.length > this.tailChars * 2) this.tail = this.tail.slice(-this.tailChars);
@@ -120,7 +136,9 @@ class PlainTextBuffer {
   }
 
   text(): string {
-    const tail = this.tail.length > this.tailChars ? this.tail.slice(-this.tailChars) : this.tail;
+    const tail = this.tailChars === 0
+      ? ""
+      : this.tail.length > this.tailChars ? this.tail.slice(-this.tailChars) : this.tail;
     const kept = this.head.length + tail.length;
     const omitted = this.total - kept;
     const gap = omitted > 0 ? `\n[… ${omitted} characters omitted …]\n` : "";
