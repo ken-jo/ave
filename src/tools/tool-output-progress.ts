@@ -32,8 +32,12 @@ export function toolOutputProgressFromMetadata(
 export const MASKED_RELAY_HELD_LIMIT_CHARS = 4096;
 /** Tail kept back from an overlong unterminated line; longer than one-line secret shapes. */
 const MASKED_RELAY_TAIL_CHARS = 512;
-/** Quiet time after which held unterminated text (a prompt, a progress bar) is released. */
-export const MASKED_RELAY_IDLE_MS = 500;
+/**
+ * Quiet time after which the held partial line (a prompt waiting for input) is
+ * released. Long enough that a value written after a short pause (`Bearer `,
+ * then the token) still arrives while its line is held whole.
+ */
+export const MASKED_RELAY_IDLE_MS = 2_000;
 const OPEN_PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g;
 const SECRET_START_PREFIXES: readonly string[] = [
   ...new Set([...CREDENTIAL_FORMAT_PREFIXES.flat(), "-----BEGIN"]),
@@ -71,23 +75,50 @@ const PRIVATE_KEY_END = /-----END [A-Z0-9 ]*PRIVATE KEY-----/;
  * The unterminated tail is bounded so output without line breaks still moves:
  * past {@link MASKED_RELAY_HELD_LIMIT_CHARS} all but its last
  * {@link MASKED_RELAY_TAIL_CHARS} characters are released, and after
- * {@link MASKED_RELAY_IDLE_MS} without new data (a prompt waiting) the tail is
- * released, masked, except a trailing non-whitespace run that could be the
- * start of a credential ({@link couldBeginSecret}) or whose masking depends
- * on the text before it (a Bearer value): that run waits for the rest of the
- * secret or the end of the stream. Neither bound releases an open
+ * {@link MASKED_RELAY_IDLE_MS} without new data (a prompt waiting) the partial
+ * line is released, masked, except a trailing non-whitespace run that could
+ * be the start of a credential ({@link couldBeginSecret}) or whose masking
+ * depends on the text before it (a Bearer value): that run waits for the rest
+ * of the secret or the end of the stream. Neither bound releases an open
  * private-key block.
+ *
+ * Text of a line released before its line break stays as context: what
+ * follows on the same line is masked together with it (`Authorization: Bearer `
+ * shown at the bound, the token after it), and only the part not yet shown is
+ * delivered, so the value is masked as the final result masks the whole line.
+ * The masker decides what context matters; the relay keeps no rule list.
  */
 export function createMaskedProgressRelay(
   deliver: (text: string) => void,
   mask: (text: string) => string,
 ): ToolOutputProgressSink {
   let held = "";
+  /** Raw text already delivered since the last line break: the context of what follows on its line. */
+  let lineContext = "";
   let ended = false;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /**
+   * `text` masked as the continuation of the delivered `lineContext`: the
+   * masked line minus what was shown of it. When the masked context is no
+   * longer a prefix (it would have been masked differently), the shown part
+   * cannot be taken back, and `text` is masked on its own.
+   */
+  const maskOnLine = (text: string): string => {
+    if (lineContext.length === 0) return mask(text);
+    const shown = mask(lineContext);
+    const whole = mask(lineContext + text);
+    return whole.startsWith(shown) ? whole.slice(shown.length) : mask(text);
+  };
+
+  const advanceLineContext = (delivered: string): void => {
+    const line = lineContext + delivered;
+    const lineStart = Math.max(line.lastIndexOf("\n"), line.lastIndexOf("\r")) + 1;
+    lineContext = line.slice(Math.max(lineStart, line.length - MASKED_RELAY_HELD_LIMIT_CHARS));
+  };
+
   const cutIsClean = (cut: number): boolean =>
-    mask(held.slice(0, cut)) + mask(held.slice(cut)) === mask(held);
+    maskOnLine(held.slice(0, cut)) + mask(held.slice(cut)) === maskOnLine(held);
 
   const previousBreak = (before: number): number =>
     Math.max(held.lastIndexOf("\n", before - 1), held.lastIndexOf("\r", before - 1)) + 1;
@@ -103,8 +134,10 @@ export function createMaskedProgressRelay(
 
   const emit = (cut: number): void => {
     if (cut <= 0) return;
-    const text = mask(held.slice(0, cut));
+    const raw = held.slice(0, cut);
+    const text = maskOnLine(raw);
     held = held.slice(cut);
+    advanceLineContext(raw);
     deliver(text);
   };
 
@@ -159,7 +192,8 @@ export function createMaskedProgressRelay(
       clearIdle();
       const rest = held;
       held = "";
-      if (rest.length > 0) deliver(mask(rest));
+      if (rest.length > 0) deliver(maskOnLine(rest));
+      lineContext = "";
     },
   };
 }

@@ -189,6 +189,66 @@ describe("masked live output relay", () => {
     expect(delivered).toEqual(["Password: "]);
   });
 
+  const mask = (text: string) => maskSensitiveData(text, { pii: true }).masked;
+
+  it("holds an Authorization header through a pause before its value", () => {
+    vi.useFakeTimers();
+    const { sink, delivered, all } = relay();
+    const value = "abcdef123456XYZ";
+    sink.write("step\nAuthorization: Bearer ");
+    // Longer than the old 500 ms idle release, shorter than the bound.
+    vi.advanceTimersByTime(1_000);
+    // The partial line waits whole; only the finished line is shown.
+    expect(delivered).toEqual(["step\n"]);
+    sink.write(`${value}\n`);
+    sink.end();
+    expect(all()).not.toContain(value);
+    expect(all()).toBe(mask(`step\nAuthorization: Bearer ${value}\n`));
+  });
+
+  it("masks a value that arrives after its Authorization prefix was released", () => {
+    vi.useFakeTimers();
+    const { sink, delivered, all } = relay();
+    const value = "abcdef123456XYZ";
+    sink.write("Authorization: Bearer ");
+    vi.advanceTimersByTime(MASKED_RELAY_IDLE_MS);
+    expect(delivered.length).toBe(1);
+    sink.write(`${value}\nnext\n`);
+    sink.end();
+    expect(all()).not.toContain(value);
+    expect(all()).toBe(mask(`Authorization: Bearer ${value}\nnext\n`));
+  });
+
+  it.each([
+    ["a URL token=", "curl https://api.example.com/v1?token=", "Zq7xK2mVw9Lp4Rt8Yb3N\n"],
+    ["a JSON api_key:", '{"api_key": "', 'Zq7xK2mVw9Lp4Rt8Yb3N"}\n'],
+    ["an x-api-key: header", "x-api-key: ", "Zq7xK2mVw9Lp4Rt8Yb3N\n"],
+    ["a password= line", "password=", "Zq7xK2mVw9Lp4Rt8Yb3N\n"],
+    ["a token= assignment", "token=", "Zq7xK2mVw9Lp4Rt8Yb3N\n"],
+    ["an api_key: field", "api_key: ", "Zq7xK2mVw9Lp4Rt8Yb3N\n"],
+  ])("shows %s value live exactly as the final result masks it", (_name, prefix, rest) => {
+    for (const pause of [1_000, MASKED_RELAY_IDLE_MS * 2]) {
+      vi.useFakeTimers();
+      const { sink, all } = relay();
+      sink.write(prefix);
+      vi.advanceTimersByTime(pause);
+      sink.write(rest);
+      sink.end();
+      expect(all()).toBe(mask(prefix + rest));
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a prompt without a trailing newline within the bound", () => {
+    vi.useFakeTimers();
+    const { sink, delivered } = relay();
+    sink.write("done\nProceed with install (yes/no)? ");
+    vi.advanceTimersByTime(MASKED_RELAY_IDLE_MS - 1);
+    expect(delivered).toEqual(["done\n"]);
+    vi.advanceTimersByTime(1);
+    expect(delivered.join("")).toBe("done\nProceed with install (yes/no)? ");
+  });
+
   it("masks a token inside the released part of a long unterminated line", () => {
     const { sink, all } = relay();
     sink.write(`x ${TOKEN} `);
