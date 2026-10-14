@@ -4,14 +4,11 @@
  * folder package and installed content are all named by it.
  */
 import { createHash } from "node:crypto";
-
-function sha256(bytes: Buffer): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
 
 export function treeDigest(files: ReadonlyArray<{ path: string; data: Buffer; executable: boolean }>): string {
   const lines = files
-    .map((file) => ({ key: Buffer.from(file.path, "utf8"), line: `${file.executable ? "100755" : "100644"} ${sha256(file.data)} ${file.path}\n` }))
+    .map((file) => ({ key: Buffer.from(file.path, "utf8"), line: `${file.executable ? "100755" : "100644"} ${sha256Hex(file.data)} ${file.path}\n` }))
     .sort((a, b) => Buffer.compare(a.key, b.key));
   const hash = createHash("sha256");
   for (const { line } of lines) hash.update(line, "utf8");
