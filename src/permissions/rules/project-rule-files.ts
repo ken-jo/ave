@@ -35,7 +35,7 @@ export interface ProjectRulesLocation {
  * holds a `.git` entry, so sessions started in a subdirectory share the
  * repository's rules; the cwd itself when it is not inside a repository.
  */
-export function projectRootFor(projectCwd: string): string {
+function projectRootFor(projectCwd: string): string {
   const start = captureApprovalWorkingDirectory(projectCwd).path;
   for (let dir = start, guard = 0; guard < 256; guard += 1) {
     if (existsSync(join(dir, ".git"))) return dir;
