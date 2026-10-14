@@ -284,7 +284,7 @@ Shell leaf 의 read/write 판정은 risk classifier 의 verb table (`permissions
 | `write_file` | `write` | `["path"]` | Full-file create/overwrite only |
 | `edit_file` | `write` | `["path"]` | Exact text replace; ambiguous matches fail unless explicit |
 | `multi_edit` | `write` | `["path"]` | Ordered exact replacements in one file; atomic preflight |
-| `apply_patch` | `write` | `[]` | `*** Begin Patch` envelope: add/update/move/delete across files; every section validated before any write. Target paths live in the `patch` text, not an input field |
+| `apply_patch` | `write` | `["patch#patch-envelope"]` | `*** Begin Patch` envelope: add/update/move/delete across files; every section validated before any write. The `#patch-envelope` field selects the paths the patch text names |
 | `move_file` | `write` | `["sourcePath", "destinationPath"]` | Rename/move regular files; overwrite must be explicit |
 | `delete_file` | `write` | `["path"]` | Delete regular files only; directories are refused |
 

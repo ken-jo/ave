@@ -2047,7 +2047,7 @@ export class PermissionManager {
 // ── #1493 path-grant prune helpers ───────────────────
 /**
  * The marker `approvalCacheKeyFor` + the single-path file tools (`write_file`,
- * `edit_file`, `apply_patch`, `delete_file`) use to embed a resolved path in a
+ * `edit_file`, `multi_edit`, `delete_file`) use to embed a resolved path in a
  * persisted grant pattern: `<toolName>:path:<absPath>`. Splitting on the FIRST
  * occurrence is Windows-safe — the tool name never contains `:path:`, and the
  * `<absPath>` tail keeps its own drive-letter colon (`C:\…`) intact.

@@ -31,6 +31,7 @@ import {
   readTextFileWindow,
 } from "./file-read-core.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { PATCH_ENVELOPE_PATH_FIELD_SUFFIX } from "../shared/dotted-field-value.js";
 import { globToRegExp } from "../lib/glob-matcher.js";
 import { writeDiffSidecar, WRITE_DIFF_PREVIEW_LIMIT } from "./write-diff-cache.js";
 import { ensureFileAccess, sensitiveFilePattern } from "./file-access-policy.js";
@@ -390,9 +391,13 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
 
     const window = await readTextFileWindow(target, input.offset, input.limit);
     const whole = await hashAndCountLines(target);
-    const output = renderNumberedRead(target, input.offset, window.lines, whole.lineCount);
-    if (trimOversizedToolResult(output).truncated) {
-      return oversizedReadGuidance(target, input.offset, window.lines, whole.lineCount);
+    const shown = fitReadWindow(target, input.offset, window.lines, whole.lineCount);
+    if (shown === null) {
+      return toolError(
+        `read_file did not return line ${input.offset + 1} of ${target} (${whole.lineCount} lines in total): ` +
+        `that line alone exceeds the size limit (${MAX_TOOL_RESULT_LINES} lines or about ` +
+        `${MAX_TOOL_RESULT_TOKENS} tokens per result). Use grep_files to find the content you need.`,
+      );
     }
     const sessionId = sessionIdOf(ctx);
     if (sessionId !== undefined) {
@@ -403,12 +408,12 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
       });
     }
     return {
-      output,
+      output: shown.output,
       isError: false,
       metadata: {
         path: target,
-        truncated: window.truncated,
-        lineCount: window.lines.length,
+        truncated: window.truncated || shown.lineCount < window.lines.length,
+        lineCount: shown.lineCount,
         totalLines: whole.lineCount,
       },
     };
@@ -422,6 +427,7 @@ function renderNumberedRead(
   offset: number,
   lines: readonly string[],
   totalLines: number,
+  continuation: string | null,
 ): string {
   if (lines.length === 0) {
     return totalLines === 0
@@ -433,40 +439,37 @@ function renderNumberedRead(
   const numbered = lines.map(
     (line, index) => `${String(first + index).padStart(LINE_NUMBER_WIDTH)}\t${line}`,
   );
-  return `${path} (lines ${first}-${last} of ${totalLines})\n${numbered.join("\n")}`;
+  const body = `${path} (lines ${first}-${last} of ${totalLines})\n${numbered.join("\n")}`;
+  return continuation === null ? body : `${body}\n${continuation}`;
 }
 
 /**
- * A window whose rendering would exceed the per-result size limit is not
- * returned in part: the model gets the numbers it needs to ask for a window
- * that fits, measured with the same rule the conversation applies.
+ * The requested window, shortened to the longest prefix whose rendering fits
+ * the per-result size limit (measured with the conversation's own rule), with
+ * a closing line naming the offset to continue from. Null when not even the
+ * first line fits.
  */
-function oversizedReadGuidance(
+function fitReadWindow(
   path: string,
   offset: number,
   lines: readonly string[],
   totalLines: number,
-): ToolErrorResult {
+): { output: string; lineCount: number } | null {
+  const full = renderNumberedRead(path, offset, lines, totalLines, null);
+  if (!trimOversizedToolResult(full).truncated) return { output: full, lineCount: lines.length };
+  const continuation = (count: number): string =>
+    `[Stopped at the result size limit after line ${offset + count}; ` +
+    `continue with offset=${offset + count}.]`;
+  const render = (count: number): string =>
+    renderNumberedRead(path, offset, lines.slice(0, count), totalLines, continuation(count));
   let low = 0;
-  let high = lines.length;
+  let high = lines.length - 1;
   while (low < high) {
     const mid = Math.ceil((low + high) / 2);
-    const fits = !trimOversizedToolResult(
-      renderNumberedRead(path, offset, lines.slice(0, mid), totalLines),
-    ).truncated;
-    if (fits) low = mid;
-    else high = mid - 1;
+    if (trimOversizedToolResult(render(mid)).truncated) high = mid - 1;
+    else low = mid;
   }
-  const requested = `lines ${offset + 1}-${offset + lines.length}`;
-  const limitText = `${MAX_TOOL_RESULT_LINES} lines or about ${MAX_TOOL_RESULT_TOKENS} tokens per result`;
-  const advice = low === 0
-    ? `Line ${offset + 1} alone exceeds that limit; use grep_files to find the content you need.`
-    : `Read a smaller range: offset=${offset} limit=${low} returns lines ${offset + 1}-${offset + low}; ` +
-      `continue with offset=${offset + low}. To find a specific section first, use grep_files.`;
-  return toolError(
-    `read_file did not return ${requested} of ${path} (${totalLines} lines in total): ` +
-    `the result would exceed the size limit (${limitText}). ${advice}`,
-  );
+  return low === 0 ? null : { output: render(low), lineCount: low };
 }
 
 function sessionIdOf(ctx: ToolExecutionContext): string | undefined {
@@ -1156,8 +1159,8 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
     "this session and be unchanged since. Paths are absolute or relative to the session cwd.";
   readonly inputSchema = ApplyPatchInputSchema;
   override readonly category: ToolCategory = "write";
-  /** The target paths live inside the patch text, not in an input field. */
-  override readonly pathFields: readonly string[] = [];
+  /** The target paths are the files the patch text names. */
+  override readonly pathFields: readonly string[] = [`patch${PATCH_ENVELOPE_PATH_FIELD_SUFFIX}`];
 
   approvalCacheKey(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): string {
     const operations = this.parseOrThrow(this.requireStringField(input, "patch"));

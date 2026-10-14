@@ -349,31 +349,35 @@ describe("file native tools", () => {
     expect(past.output).toContain("no lines at offset 10; the file has 3 lines");
   });
 
-  it("read_file returns offset/limit guidance instead of an oversized result", async () => {
+  it("read_file returns the lines that fit and the offset to continue from", async () => {
     const lines = Array.from({ length: 400 }, (_, index) => `line ${index + 1}`);
     writeFileSync(join(workDir, "long.txt"), `${lines.join("\n")}\n`);
     const result = await new ReadFileTool().execute({ path: "long.txt", offset: 10 }, ctx());
 
-    expect(result.isError).toBe(true);
-    expect(result.output).not.toContain("line 11\n");
-    expect(result.output).toContain("400 lines in total");
-    const suggested = /offset=10 limit=(\d+)/.exec(result.output);
-    expect(suggested).not.toBeNull();
-    const limit = Number(suggested![1]);
-    expect(limit).toBeGreaterThan(0);
-    const followUp = await new ReadFileTool().execute({ path: "long.txt", offset: 10, limit }, ctx());
-    expect(followUp.isError, followUp.output).toBe(false);
-    expect(trimOversizedToolResult(followUp.output).truncated).toBeUndefined();
-    const oneMore = await new ReadFileTool().execute({ path: "long.txt", offset: 10, limit: limit + 1 }, ctx());
-    expect(oneMore.isError).toBe(true);
+    expect(result.isError, result.output).toBe(false);
+    expect(trimOversizedToolResult(result.output).truncated).toBeUndefined();
+    const shown = Number(result.metadata?.lineCount);
+    expect(shown).toBeGreaterThan(0);
+    expect(shown).toBeLessThan(390);
+    expect(result.output).toContain(`(lines 11-${10 + shown} of 400)`);
+    expect(result.output).toContain("    11\tline 11");
+    expect(result.output.split("\n").at(-1)).toBe(
+      `[Stopped at the result size limit after line ${10 + shown}; continue with offset=${10 + shown}.]`,
+    );
+    expect(result.metadata).toMatchObject({ truncated: true, totalLines: 400 });
+
+    const next = await new ReadFileTool().execute({ path: "long.txt", offset: 10 + shown }, ctx());
+    expect(next.isError).toBe(false);
+    expect(next.output).toContain(`\tline ${11 + shown}`);
   });
 
-  it("read_file guidance without a read does not admit an edit", async () => {
-    writeFileSync(join(workDir, "long.txt"), `${"x\n".repeat(400)}`);
-    const read = await new ReadFileTool().execute({ path: "long.txt" }, ctx());
+  it("read_file refuses a single line larger than the result limit and records no read", async () => {
+    writeFileSync(join(workDir, "wide.txt"), `${"word ".repeat(20_000)}\n`);
+    const read = await new ReadFileTool().execute({ path: "wide.txt" }, ctx());
     expect(read.isError).toBe(true);
+    expect(read.output).toContain("that line alone exceeds the size limit");
     const edit = await new EditFileTool().execute(
-      { path: "long.txt", oldText: "x", newText: "y", replaceAll: true },
+      { path: "wide.txt", oldText: "word", newText: "w", replaceAll: true },
       ctx(),
     );
     expect(edit.isError).toBe(true);
@@ -843,7 +847,7 @@ describe("file native tools", () => {
       ["write_file", ["path"]],
       ["edit_file", ["path"]],
       ["multi_edit", ["path"]],
-      ["apply_patch", []],
+      ["apply_patch", ["patch#patch-envelope"]],
       ["copy_path", ["sourcePath", "destinationPath"]],
       ["extract_archive", ["archivePath", "destinationPath"]],
       ["move_file", ["sourcePath", "destinationPath"]],

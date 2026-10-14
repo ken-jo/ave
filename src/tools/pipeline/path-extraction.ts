@@ -9,7 +9,7 @@ import type { ShellExecutionFacts } from "../../shared/shell-execution.js";
 import { resolve as pathResolve } from "node:path";
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import type { Tool } from "../base.js";
-import { getDottedFieldValue } from "../../shared/dotted-field-value.js";
+import { selectDeclaredPathValues } from "../../shared/dotted-field-value.js";
 import { extractShellCommands } from "../../shared/shell-command-fields.js";
 import {
   findShellPathPolicyViolation,
@@ -34,8 +34,7 @@ export function extractTargetFilePaths(
   const fields = new Set<string>(tool.pathFields ?? []);
   const paths: string[] = [];
   for (const field of fields) {
-    const candidate = getDottedFieldValue(obj, field);
-    const values = Array.isArray(candidate) ? candidate : [candidate];
+    const values = selectDeclaredPathValues(obj, field);
     for (const value of values) {
       if (typeof value !== "string" || value.length === 0) continue;
       try {
