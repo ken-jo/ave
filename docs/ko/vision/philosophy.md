@@ -26,5 +26,5 @@
 ## 관련 문서
 
 - [비전](./README.md)
-- [아키텍처](../architecture/README.md)
+- [아키텍처](../../architecture/README.md)
 - [Ave 프로젝트 문서](../README.md)

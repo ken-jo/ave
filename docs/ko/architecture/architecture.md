@@ -1164,7 +1164,7 @@ message slice 만 표시하는 readonly view-mode 에 진입하고, "↩ 여기�
 
 **Prompt-injection fence**: rolling summary preamble 을 system prompt 에 주입할 때 `<prior-context-summary>` 블록을 _명령 해석 금지_ fence 로 wrap (system-prompt-builder Section 8). 이전 컨텍스트의 사용자 입력이 요약을 거쳐 다음 턴 / fork 된 자식 세션의 system prompt 로 흘러들어가는 vector 차단.
 
-**세션 로드/복원 기준**: [`session-model-v2.md`](./session-model-v2.md) 가 canonical 이다.
+**세션 로드/복원 기준**: [`session-model-v2.md`](../../architecture/session-model-v2.md) 가 canonical 이다.
 채팅 화면은 현재 세션만 렌더링한다. chronological session 자동 로드, upward-scroll preview,
 latest-today/day-boundary resume 은 구현 기준에서 제외한다.
 
@@ -1184,7 +1184,7 @@ Phase 3 리팩터 기준 `ave/src/` 모듈 경계다. Phase 1~2의 `src/agent/` 
 > `contract/` firewall + thin `api/`·`cli/`·`sdk/` surfaces were added. Each
 > mega-file now stays as a thin orchestrator/composition-root that re-exports or
 > assembles its extracted units. Full rationale + per-file plan:
-> [`docs/blueprints/host-structure-alignment.md`](../blueprints/host-structure-alignment.md).
+> `docs/blueprints/host-structure-alignment.md` (git 기록에 보존).
 
 **메인 프로세스 조립·부팅 불변식:** `src/`의 TypeScript 정적 runtime
 import graph에는 strongly connected component가 없어야 하며,
@@ -3245,7 +3245,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 >
 > 회귀 사례 (issue #92): pre-fix 호스트가 `dependencies[]` 를 recursive auto-install 시도하던 시절, user policy 플러그인이 admin policy 플러그인을 `required: false` 로 선언했음에도 user actor 로 그 dependency install 이 cascade 되어 admin-guard 가 차단 → user 가 컨슈머 플러그인을 설치 못 함. Fix 는 cascade install 자체를 제거하고 hard-required 미설치만 명확한 preflight 로 거부하도록 단순화. Plugin System CI 의 invariant: marketplace install path 는 declared `dependencies[]` 를 **재귀적으로 install 하지 않는다**.
 
-**마켓플레이스 검증:** 플러그인은 git 마켓플레이스로 게시한다([설계서](../design/multi-source-git-marketplace.md)). Host는 스냅숏 커밋이 고정한 아티팩트(release·archive는 sha256, 또는 고정 트리)를 받아, 스테이징한 `plugin.json`이 설명자의 `minAppVersion`·권한 필드와 같은지 확인하고 폐기된 `installPolicy`·`publisher`가 있으면 거부한 뒤 install receipt를 저장한다. 설치된 매니페스트에 남은 두 필드는 로더가 경고 한 번과 함께 무시한다.
+**마켓플레이스 검증:** 플러그인은 git 마켓플레이스로 게시한다([설계서](../../design/multi-source-git-marketplace.md)). Host는 스냅숏 커밋이 고정한 아티팩트(release·archive는 sha256, 또는 고정 트리)를 받아, 스테이징한 `plugin.json`이 설명자의 `minAppVersion`·권한 필드와 같은지 확인하고 폐기된 `installPolicy`·`publisher`가 있으면 거부한 뒤 install receipt를 저장한다. 설치된 매니페스트에 남은 두 필드는 로더가 경고 한 번과 함께 무시한다.
 
 **검증 플로우:** install receipt file-hash verification → JSON.parse → `flattenAgentPluginsManifest` (문서 → flat 투영) → 문서 대상 Host-owned AJV schema → cross-field (Tool name/visibility/auth/operation policy, contribution id/path, `startupTimeoutMs > 0`) → capability enforcement → entry import. 각 단계 실패 시 해당 플러그인 fail-soft drop.
 
@@ -3416,7 +3416,7 @@ stateDiagram-v2
 | `getSecret(key)` | 암호화된 API 키 조회 | 인증/외부 API 플러그인 |
 | `logEvent(level, message, data?)` | **[Phase 2]** 호스트 감사 로그에 플러그인 이벤트 기록. `level`: `"info"\|"warn"\|"error"` | 전체 |
 | `onShutdown(handler)` | **[Phase 2]** Electron `before-quit` 체인에 정리 핸들러 등록. 5s timeout. | 전체 |
-| `triggerConversation(spec)` | 관찰 신호로부터 host overlay 에 plugin-authored prompt 를 staged 하는 surface. 런타임 게이트는 `host:overlay` 단일 capability 이다. 자세한 사양: [`overlay-trigger.md`](../references/overlay-trigger.md). | `host:overlay` 보유 plugin |
+| `triggerConversation(spec)` | 관찰 신호로부터 host overlay 에 plugin-authored prompt 를 staged 하는 surface. 런타임 게이트는 `host:overlay` 단일 capability 이다. 자세한 사양: [`overlay-trigger.md`](../../references/overlay-trigger.md). | `host:overlay` 보유 plugin |
 | `getInstalledPluginIds()` | 현재 로드된 plugin id snapshot (caller 자기 자신 제외, load order). 플러그인 의존성 체크용. 무게이트 — 향후 capability-filtered 변종 (`getProvidersFor(capability)`) 으로 진화 예정. | dependency-aware plugin |
 | `onPluginsChanged(handler)` | 플러그인 install/uninstall 이벤트 구독. handler 는 `PluginLifecycleEvent` 받음 (`{type: "installed", pluginId, source: "marketplace"\|"local-dev"} \| {type: "uninstalled", pluginId} \| { type: "_future"; readonly __exhaustive: never }`). Self-event 자동 필터. P0 는 `installed`/`uninstalled` 만 — `updated` 는 별도 spec. `_future` sentinel 은 type-level only (런타임에 발생 안 함) — exhaustive `switch` 를 강제하기 위한 forward-compat 가드. | lifecycle subscriber plugin |
 
@@ -3461,7 +3461,7 @@ PR 3 에서 메일 플러그인의 Graph 인증이 호스트에서 플러그인�
 
 **Capability 네이밍**: capability 는 kebab-case 네이밍 컨벤션을 따른다 (`mail-source`, `calendar-source`, `meeting-recorder`, `background-watcher`, `knowledge-index`). HostApi overlay gate 는 reserved host namespace 인 `host:overlay` 를 사용한다.
 
-**Overlay Trigger — `host:overlay` capability:** plugin 이 신호 관찰 후 host overlay 에 plugin-authored prompt 를 staged 하도록 요청하는 surface. `hostApi.triggerConversation()` 호출 권한은 `host:overlay` 로만 부여한다. 일반 plugin 에 `host:overlay` 를 부여하지 말 것 — 사용자가 입력하지 않은 prompt 를 사용자에게 보여주고 확인 시 main chat 에 삽입할 수 있는 권한이므로. 안전 계약 / spec / gate 는 [`overlay-trigger.md`](../references/overlay-trigger.md) 참조.
+**Overlay Trigger — `host:overlay` capability:** plugin 이 신호 관찰 후 host overlay 에 plugin-authored prompt 를 staged 하도록 요청하는 surface. `hostApi.triggerConversation()` 호출 권한은 `host:overlay` 로만 부여한다. 일반 plugin 에 `host:overlay` 를 부여하지 말 것 — 사용자가 입력하지 않은 prompt 를 사용자에게 보여주고 확인 시 main chat 에 삽입할 수 있는 권한이므로. 안전 계약 / spec / gate 는 [`overlay-trigger.md`](../../references/overlay-trigger.md) 참조.
 
 **HostApi 확장 원칙 ("3+ 플러그인 규칙"):** 새 메서드는 3개 이상의 플러그인이 동일 기능을 필요로 하거나, 보안·감사 제어가 필요한 경우에만 추가한다. 상세: `docs/references/plugin-tool-schema-design.md` §6
 
@@ -3684,7 +3684,7 @@ sequenceDiagram
 ### 9.6 Plugin Deployment Model — git 마켓플레이스와 필수 설치
 
 플러그인과 다른 모든 패키지 종류는 git 마켓플레이스로 들어온다(`src/marketplace/`,
-[설계서](../design/multi-source-git-marketplace.md)). 앱은 소스마다 저장소를 동기화해
+[설계서](../../design/multi-source-git-marketplace.md)). 앱은 소스마다 저장소를 동기화해
 읽은 커밋을 고정하고, 그 커밋이 가리키는 바이트(sha256으로 고정한 release·archive, 또는
 고정 트리)로만 설치한다. 소스가 지정하는 모든 git 원격과 다운로드는 하나의 네트워크
 게이트를 지난다. 게이트는 기기 정책을 적용한 뒤 각 주소의 분류를 검사한다. 다운로드와

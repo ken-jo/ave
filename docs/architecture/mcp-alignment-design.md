@@ -7,7 +7,8 @@
 
 > **2026-07-09 scope narrowing (maintainer):** the **plugin-contract axis of #885 is NO LONGER driven by
 > this document.** #885 is narrowed to "borrow the MCP `Tool` **object** shape + MCP **isolation parity**"
-> and is owned by [`plugin-contract-v6-design.md`](./plugin-contract-v6-design.md); the full stateless
+> and is owned by the plugin Tool contract, now documented in
+> [plugin tool schema design](../references/plugin-tool-schema-design.md); the full stateless
 > `2026-07-28` JSON-RPC **wire** migration of the plugin contract (`server/discover`/MRTR/per-request `_meta`)
 > is **not** the current direction (comparable agent hosts keep plugin-contract and MCP separate; MCP
 > dropped fixed-version releases in 2026 → wire-migration = spec-drift risk). The **loopback topology**

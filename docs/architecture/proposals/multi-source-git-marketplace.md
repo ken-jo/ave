@@ -5,15 +5,12 @@
 > Status: **Implemented** (owner decisions 2026-09-23; the app switched to
 > the git marketplace on 2026-09-25). Supersedes the single-server marketplace
 > model of the removed `src/plugins/cloud-marketplace-fetcher.ts` and the
-> signing plans in
-> [keyless-marketplace-signing](../../blueprints/keyless-marketplace-signing.md)
-> and [signed-admission-catalog](../../blueprints/signed-admission-catalog.md).
+> keyless-signing and signed-admission-catalog plans (never implemented;
+> removed from the docs, git history keeps them).
 >
 > Companion documents:
 > - Blueprint (staged delivery): [../../blueprints/multi-source-git-marketplace.md](../../blueprints/multi-source-git-marketplace.md)
 > - Design specification (contracts, schemas, UI states): [../../design/multi-source-git-marketplace.md](../../design/multi-source-git-marketplace.md)
-> - Mockup: [../../design/multi-source-git-marketplace.html](../../design/multi-source-git-marketplace.html)
-> - Korean mirror: [../../ko/architecture/proposals/multi-source-git-marketplace.md](../../ko/architecture/proposals/multi-source-git-marketplace.md)
 
 ## 1. Why this changes
 

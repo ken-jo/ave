@@ -6,9 +6,7 @@
 > switch. Where the code differs from the design, design §13.1 and §16.4 say
 > how.
 > Architecture: [../architecture/proposals/multi-source-git-marketplace.md](../architecture/proposals/multi-source-git-marketplace.md) ·
-> Design specification: [../design/multi-source-git-marketplace.md](../design/multi-source-git-marketplace.md) ·
-> Mockup: [../design/multi-source-git-marketplace.html](../design/multi-source-git-marketplace.html) ·
-> Korean mirror: [../ko/blueprints/multi-source-git-marketplace.md](../ko/blueprints/multi-source-git-marketplace.md)
+> Design specification: [../design/multi-source-git-marketplace.md](../design/multi-source-git-marketplace.md)
 
 This plan delivers the architecture in eight phases. Each phase lists its
 pull requests, what it must not break, and the evidence that closes it. The
