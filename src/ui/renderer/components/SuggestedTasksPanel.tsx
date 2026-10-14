@@ -8,6 +8,7 @@
  * Renders every state an async provider can be in: loading (skeleton cards),
  * error (a quiet line with a retry), and empty (nothing at all).
  */
+import { useId } from "react";
 import { File, Globe, Search, Sparkles, Terminal, type LucideIcon } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
@@ -29,19 +30,21 @@ export interface SuggestedTasksPanelProps {
 export function SuggestedTasksPanel({ onChoose }: SuggestedTasksPanelProps) {
   const { t } = useTranslation();
   const { state, reload } = useSuggestedTasks(true);
+  // One panel per empty chat tile; a fixed id would collide across tiles.
+  const headingId = useId();
 
   if (state.status === "ready" && state.tasks.length === 0) return null;
 
   return (
     <section
       className="flex min-h-[55cqh] w-full min-w-0 flex-col justify-end"
-      aria-labelledby="suggested-tasks-heading"
+      aria-labelledby={headingId}
       aria-busy={state.status === "loading"}
       data-testid="suggested-tasks"
       data-state={state.status}
     >
       <h2
-        id="suggested-tasks-heading"
+        id={headingId}
         className="mb-2 px-1 text-xs font-medium text-muted-foreground"
       >
         {t("suggestedTasks.heading")}

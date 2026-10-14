@@ -276,7 +276,7 @@ describe("ChatView", () => {
     });
   });
 
-  it("centers the empty chat composer dock in work mode", async () => {
+  it("keeps the work-mode composer dock in the reading column", async () => {
     const { container } = await renderApp({ hasApiKey: true });
 
     await waitFor(() => {

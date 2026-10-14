@@ -71,7 +71,7 @@ export function MarkdownCodeBlock({ node, children, ...rest }: ComponentPropsWit
           <span>{label}</span>
         </Button>
       </div>
-      <pre {...rest} className={`${rest.className ?? ""} !mt-0 !mb-0 rounded-t-none`}>
+      <pre {...rest} className={`${rest.className ?? ""} mt-0! mb-0! rounded-t-none`}>
         {children}
       </pre>
     </div>

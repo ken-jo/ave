@@ -210,7 +210,10 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     hasApiKey !== null &&
     !suggestedRepliesActive &&
     viewMode === null;
-  const dockColumnClass = emptyConversation || blogLayout
+  // Depends on the layout alone, never on emptiness: a dock that changed
+  // width on the first send would be the very layout jump the bottom-docked
+  // composer exists to avoid.
+  const dockColumnClass = blogLayout
     ? "mx-auto w-full max-w-(--reading-column-max) min-w-0"
     : "w-full max-w-full min-w-0";
   // Empty-state composer project selector — open state is owned here (not
