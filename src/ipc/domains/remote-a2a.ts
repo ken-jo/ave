@@ -5,7 +5,17 @@ import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
 
-const DISABLED = { ok: false, error: "a2a-remote-disabled" as const };
+const DISABLED = { ok: false as const, error: "a2a-remote-disabled" as const };
+/**
+ * A gate the owner turned on whose runtime did not start this run. Distinct from
+ * {@link DISABLED} so the surface does not tell them the switch is off; every
+ * remote request is still refused, because nothing behind it started. `reason`
+ * is the boot step's clamped `a2a-remote-*` code, never a thrown message.
+ */
+function unavailable(deps: IpcDeps): { ok: false; error: "a2a-remote-disabled" } | { ok: false; error: "a2a-remote-start-failed"; reason: string } {
+  const reason = deps.remoteA2AStartFailureReason;
+  return reason === undefined ? DISABLED : { ok: false, error: "a2a-remote-start-failed", reason };
+}
 const OPERATION_REJECTED = { ok: false, error: "a2a-remote-operation-rejected" as const };
 const MAX_REMOTE_A2A_USER_INTENT_LENGTH = 8_192;
 
@@ -23,7 +33,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
-    if (!controller) return DISABLED;
+    if (!controller) return unavailable(deps);
     try {
       return { ok: true, targets: controller.listTargets() };
     } catch {
@@ -37,7 +47,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
-    if (!controller) return DISABLED;
+    if (!controller) return unavailable(deps);
     try {
       return { ok: true, status: controller.status() };
     } catch {
@@ -51,7 +61,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
-    if (!controller) return DISABLED;
+    if (!controller) return unavailable(deps);
     const value = payload && typeof payload === "object" && !Array.isArray(payload)
       ? payload as Record<string, unknown>
       : {};
@@ -78,7 +88,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
-    if (!controller) return DISABLED;
+    if (!controller) return unavailable(deps);
     const value = payload && typeof payload === "object" && !Array.isArray(payload)
       ? payload as Record<string, unknown>
       : {};
@@ -99,7 +109,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
-    if (!controller) return DISABLED;
+    if (!controller) return unavailable(deps);
     const value = payload && typeof payload === "object" && !Array.isArray(payload)
       ? payload as Record<string, unknown>
       : {};

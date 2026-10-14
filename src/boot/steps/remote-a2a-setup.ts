@@ -7,9 +7,14 @@
  * `bootstrap()` and quit the whole app on the next launch. A remote feature
  * that cannot start is this feature's failure, not the desktop's: it is logged
  * and audited with the runtime's own reason code, and the feature stays off for
- * this run — the IPC surface then answers `a2a-remote-disabled`, exactly as it
- * does when the gate is down. The setting itself is left untouched so the
- * owner's choice stays visible.
+ * this run. The setting itself is left untouched so the owner's choice stays
+ * visible.
+ *
+ * "Off for this run" is not the same thing as "off": the owner turned a switch
+ * on, and answering them with the gate-down code told them they had not. The
+ * failure is returned as its own state carrying the clamped reason code, which
+ * the IPC surface answers as `a2a-remote-start-failed` — and still refuses
+ * every remote request, because nothing behind it started.
  */
 import type { A2ARemoteRuntime } from "../../main/a2a-remote-runtime.js";
 import type { RemoteA2AActionController } from "../../main/remote-a2a-action-controller.js";
@@ -29,6 +34,12 @@ export interface RemoteA2ASetupOptions {
 export interface RemoteA2ASetup {
   readonly runtime?: A2ARemoteRuntime;
   readonly controller?: RemoteA2AActionController;
+  /**
+   * Present only when a gate was on and the runtime did not start. Always a
+   * {@link remoteA2AStartFailureReason} code — never the thrown message — so it
+   * is safe to hand the renderer.
+   */
+  readonly startFailureReason?: string;
 }
 
 /** The runtime's own reason code when it threw one, otherwise a fixed code. */
@@ -54,6 +65,6 @@ export async function setupRemoteA2A(options: RemoteA2ASetupOptions): Promise<Re
     }
     options.audit(`start-failed:${reason}`);
     options.logError(err, `remote A2A is unavailable for this run (${reason}); continuing boot`);
-    return Object.freeze({});
+    return Object.freeze({ startFailureReason: reason });
   }
 }

@@ -40,6 +40,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     flushTracing: () => ctx.tracing.forceFlush(),
     a2aRemoteRuntime: ctx.a2aRemoteRuntime,
     remoteA2AActionController: ctx.remoteA2AActionController,
+    remoteA2AStartFailureReason: ctx.remoteA2AStartFailureReason,
     memoryManager: ctx.memoryManager,
     memoryCaptureService: ctx.memoryCaptureService,
     inputClassifier: ctx.inputClassifier,

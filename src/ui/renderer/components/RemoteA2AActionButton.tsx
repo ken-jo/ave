@@ -22,6 +22,7 @@ function outcomeCopy(outcome: string | undefined, t: Translate): string {
     case "cancel-already-settled":
       return t("remoteA2aActionButton.alreadySettled");
     case "a2a-remote-disabled":
+    case "a2a-remote-start-failed":
     case "a2a-remote-input-invalid":
     case "a2a-remote-operation-rejected":
       return formatIpcError(outcome, undefined);

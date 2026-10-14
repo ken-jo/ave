@@ -56,7 +56,7 @@ describe("setupRemoteA2A", () => {
       ...h,
     });
 
-    expect(result).toEqual({});
+    expect(result).toEqual({ startFailureReason: "a2a-remote-outbound-config-incomplete" });
     expect(h.audit).toHaveBeenCalledWith("start-failed:a2a-remote-outbound-config-incomplete");
     expect(h.logError).toHaveBeenCalledTimes(1);
     expect(h.logError.mock.calls[0]?.[1]).toContain("a2a-remote-outbound-config-incomplete");
@@ -70,7 +70,7 @@ describe("setupRemoteA2A", () => {
       createRuntime: () => failing.runtime,
       createController: () => controller,
       ...h,
-    })).resolves.toEqual({});
+    })).resolves.toEqual({ startFailureReason: "a2a-remote-store-unreadable" });
     expect(failing.dispose).toHaveBeenCalledTimes(1);
     expect(h.audit).toHaveBeenCalledWith("start-failed:a2a-remote-store-unreadable");
   });
@@ -83,7 +83,7 @@ describe("setupRemoteA2A", () => {
       createRuntime: () => built.runtime,
       createController: () => { throw new Error("a2a-remote-target-registry-invalid"); },
       ...h,
-    })).resolves.toEqual({});
+    })).resolves.toEqual({ startFailureReason: "a2a-remote-target-registry-invalid" });
     expect(built.dispose).toHaveBeenCalledTimes(1);
     expect(h.audit).toHaveBeenCalledWith("start-failed:a2a-remote-target-registry-invalid");
   });

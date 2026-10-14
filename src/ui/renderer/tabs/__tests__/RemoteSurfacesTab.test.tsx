@@ -24,6 +24,7 @@ vi.mock("../../api-client.js", () => ({
     getSettings: async () => ({ system: {}, features: {} }),
     updateSettings: async () => ({}),
     envForcedSettings: async () => [],
+    remoteA2a: { status: async () => ({ ok: false, error: "a2a-remote-disabled" }) },
   }),
 }));
 
@@ -105,6 +106,9 @@ function makeApi(options: {
     })),
     updateSettings: vi.fn(async () => ({ ok: true })),
     openExternalUrl: vi.fn(async () => undefined),
+    remoteA2a: {
+      status: vi.fn(async () => ({ ok: false as const, error: "a2a-remote-disabled" })),
+    },
     tailnetObserver: {
       snapshot: vi.fn(async () => ({ ok: true as const, snapshot: observerSnapshot() })),
       apply: vi.fn(async () => ({ ok: true as const })),
@@ -356,5 +360,39 @@ describe("RemoteSurfacesTab", () => {
     });
     expect(screen.getByTestId("connection:local-api:endpoint").textContent)
       .toBe("127.0.0.1 · 4개 중 0개 켜짐");
+  });
+
+  describe("the local-API row reads the remote A2A runtime, not only its switch", () => {
+    async function localApiRowFor(status: "start-failed" | "disabled" | "rejected") {
+      const { api } = makeApi();
+      vi.mocked(api.getSettings).mockResolvedValue({
+        marketplace: { installedMessagingConnections: [TELEGRAM] },
+        system: {},
+        features: { a2aRemoteRouting: true },
+      } as never);
+      const read = vi.mocked(api.remoteA2a.status);
+      if (status === "rejected") read.mockRejectedValue(new Error("ipc closed"));
+      else if (status === "start-failed") {
+        read.mockResolvedValue({ ok: false, error: "a2a-remote-start-failed", reason: "a2a-remote-outbound-config-incomplete" });
+      }
+      const view = render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+      let text = "";
+      await waitFor(() => {
+        text = screen.getByTestId("connection:local-api:state").textContent ?? "";
+        expect(text).not.toBe("");
+      });
+      view.unmount();
+      return text;
+    }
+
+    it("reads a switched-on gate whose runtime did not start as needing attention", async () => {
+      expect(await localApiRowFor("start-failed")).toBe("확인 필요");
+    });
+
+    it("keeps reading a switched-on gate as connected when nothing failed to start", async () => {
+      expect(await localApiRowFor("disabled")).toBe("연결됨");
+      // A status read that itself failed claims nothing either way.
+      expect(await localApiRowFor("rejected")).toBe("연결됨");
+    });
   });
 });

@@ -71,6 +71,29 @@ describe("remote A2A IPC rejection boundary", () => {
     });
   });
 
+  it.each([
+    [CHANNELS.remoteA2a.targets, undefined],
+    [CHANNELS.remoteA2a.status, undefined],
+    [CHANNELS.remoteA2a.send, { targetAgentId: 7, userIntent: "send this task", intentToken: USER_INTENT }],
+    [CHANNELS.remoteA2a.task, { taskHandle: "task_handle_123456" }],
+    [CHANNELS.remoteA2a.action, { action: "cancel", taskHandle: "task_handle_123456", intentToken: USER_INTENT }],
+  ])("answers %s with the start failure, not 'off', when a switched-on gate did not start", async (channel, payload) => {
+    handlers.clear();
+    vi.clearAllMocks();
+    const { registerRemoteA2AHandlers } = await import("../remote-a2a.js");
+    registerRemoteA2AHandlers({
+      auditLogger: { log: vi.fn() },
+      remoteA2AStartFailureReason: "a2a-remote-outbound-config-incomplete",
+    } as never);
+
+    // Still a refusal: nothing behind the surface started.
+    await expect(invokeFileIpcHandler(handlers, channel, payload)).resolves.toEqual({
+      ok: false,
+      error: "a2a-remote-start-failed",
+      reason: "a2a-remote-outbound-config-incomplete",
+    });
+  });
+
   it.each([CHANNELS.remoteA2a.targets, CHANNELS.remoteA2a.status])(
     "returns the stable code when read channel %s throws",
     async (channel) => {

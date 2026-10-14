@@ -33,6 +33,11 @@ export const en = {
   "localApiSurfaces.a2aRemoteRoutingHint": "Lets this desktop send agent-to-agent requests to a remote target you have configured. It does not accept anything inbound.",
   "localApiSurfaces.a2aRemoteReceiverLabel": "Inbound agent requests",
   "localApiSurfaces.a2aRemoteReceiverHint": "Lets a remote agent reach this desktop. Leave this off unless you meant to be a target — it is the widest of the four.",
+  "localApiSurfaces.remoteA2aStartFailed": "Agent routing is switched on but did not start this launch: {reason} Remote agent requests are refused until it starts.",
+  "localApiSurfaces.remoteA2aReasonEncryption": "this machine cannot keep the agent secrets encrypted.",
+  "localApiSurfaces.remoteA2aReasonConfigIncomplete": "the remote targets, route-control endpoint, or secrets it needs have not been provisioned.",
+  "localApiSurfaces.remoteA2aReasonReceiverSecretMissing": "the inbound receiver's secret has not been provisioned.",
+  "localApiSurfaces.remoteA2aReasonOther": "it failed while starting ({code}).",
 } as const;
 
 export const ko = {
@@ -66,4 +71,9 @@ export const ko = {
   "localApiSurfaces.a2aRemoteRoutingHint": "이 데스크톱이 설정해 둔 원격 대상에게 에이전트 간 요청을 보낼 수 있게 합니다. 들어오는 요청은 받지 않습니다.",
   "localApiSurfaces.a2aRemoteReceiverLabel": "들어오는 에이전트 요청",
   "localApiSurfaces.a2aRemoteReceiverHint": "원격 에이전트가 이 데스크톱에 접근할 수 있게 합니다. 대상이 되려는 것이 아니라면 꺼 두세요 — 네 가지 중 가장 넓은 설정입니다.",
+  "localApiSurfaces.remoteA2aStartFailed": "에이전트 연결이 켜져 있지만 이번 실행에서 시작하지 못했습니다: {reason} 시작될 때까지 원격 에이전트 요청은 거부됩니다.",
+  "localApiSurfaces.remoteA2aReasonEncryption": "이 컴퓨터에서 에이전트 비밀을 암호화해 보관할 수 없습니다.",
+  "localApiSurfaces.remoteA2aReasonConfigIncomplete": "필요한 원격 대상, 경로 제어 엔드포인트 또는 비밀이 준비되지 않았습니다.",
+  "localApiSurfaces.remoteA2aReasonReceiverSecretMissing": "들어오는 요청을 받는 데 필요한 비밀이 준비되지 않았습니다.",
+  "localApiSurfaces.remoteA2aReasonOther": "시작하는 중에 실패했습니다 ({code}).",
 } as const;

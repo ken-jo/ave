@@ -40,6 +40,9 @@ const LOCAL_API_ROW = "connection:local-api";
  */
 const LOCAL_API_HOST = "127.0.0.1";
 
+/** What main answers when a switched-on remote A2A gate did not start this run. */
+const REMOTE_A2A_START_FAILED = "a2a-remote-start-failed";
+
 /** The four opt-ins the local-API row summarizes and its body switches. */
 const LOCAL_API_GATE_COUNT = 4;
 
@@ -145,9 +148,10 @@ export function RemoteSurfacesTab({ api, chatGroupId, sectionTarget = null }: Re
       // Settled separately: one read failing must not leave the other row
       // unread, and a rejected read is a state to show, not an unhandled
       // rejection that leaves both lines blank.
-      const [observerRead, settingsRead] = await Promise.allSettled([
+      const [observerRead, settingsRead, remoteA2ARead] = await Promise.allSettled([
         api.tailnetObserver.snapshot(),
         api.getSettings(),
+        api.remoteA2a.status(),
       ]);
       if (!alive) return;
       const observer = observerRead.status === "fulfilled" && observerRead.value.ok
@@ -160,13 +164,22 @@ export function RemoteSurfacesTab({ api, chatGroupId, sectionTarget = null }: Re
         settings.features?.a2aRemoteRouting,
         settings.features?.a2aRemoteReceiver,
       ].filter((gate) => gate === true).length;
+      // The switches say what the owner asked for; this says whether the remote
+      // A2A runtime behind two of them actually came up. A switch that is on
+      // over a runtime that failed to start is not "connected". A status read
+      // that itself failed claims nothing either way.
+      const remoteA2AStartFailed = remoteA2ARead.status === "fulfilled"
+        && !remoteA2ARead.value.ok
+        && remoteA2ARead.value.error === REMOTE_A2A_START_FAILED;
       setReadings({
         tailnet: observer === null ? "attention" : tailnetRowState(observer),
         tailnetOrigin: observer?.derivedWebOrigin ?? null,
         // Off rather than "setup needed": these four are the owner's own
         // switches, and all of them down is a resting state, not an unfinished
         // one.
-        localApi: gatesOn === null ? "attention" : gatesOn > 0 ? "connected" : "off",
+        localApi: gatesOn === null || remoteA2AStartFailed
+          ? "attention"
+          : gatesOn > 0 ? "connected" : "off",
         localApiGatesOn: gatesOn,
       });
     })();

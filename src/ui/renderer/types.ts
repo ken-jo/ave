@@ -299,9 +299,15 @@ export type UsageSummaryShape = {
   generatedAt: string;
 };
 
+/**
+ * `reason` accompanies only `a2a-remote-start-failed`: the clamped `a2a-remote-*`
+ * code naming why a switched-on gate did not start this run.
+ */
+type RemoteA2AFailure = { ok: false; error: string; reason?: string };
+
 type RemoteA2AStatusResult =
   | { ok: true; status: RemoteA2AActionStatus }
-  | { ok: false; error: string };
+  | RemoteA2AFailure;
 
 type RemoteA2AActionCall = {
   (action: "resume", taskHandle: string, userIntent: string): Promise<RemoteA2AStatusResult>;
@@ -463,7 +469,7 @@ export type AveApi = {
   remoteA2a: {
     targets: () => Promise<
       | { ok: true; targets: Array<{ targetAgentId: number; label: string }> }
-      | { ok: false; error: string }
+      | RemoteA2AFailure
     >;
     status: () => Promise<RemoteA2AStatusResult>;
     send: (targetAgentId: number, userIntent: string) => Promise<RemoteA2AStatusResult>;

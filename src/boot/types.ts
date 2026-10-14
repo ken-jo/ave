@@ -85,6 +85,11 @@ export interface AppServices {
   a2aRemoteRuntime?: A2ARemoteRuntime;
   /** Main-owned renderer action boundary; renderer supplies only target id and user intent. */
   remoteA2AActionController?: RemoteA2AActionController;
+  /**
+   * Set only when a remote A2A gate was on and the runtime did not start this
+   * run: a clamped `a2a-remote-*` reason code, never a thrown message.
+   */
+  remoteA2AStartFailureReason?: string;
   memoryManager: MemoryManager;
   /** Host-owned LLM review gate for explicit and automatic long-term memory. */
   memoryCaptureService?: MemoryCaptureService;

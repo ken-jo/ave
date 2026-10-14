@@ -420,6 +420,7 @@ export async function bootstrap(
   });
   ctx.a2aRemoteRuntime = remoteA2A.runtime;
   ctx.remoteA2AActionController = remoteA2A.controller;
+  ctx.remoteA2AStartFailureReason = remoteA2A.startFailureReason;
 
   // §4.2 Step 3 + 5: PluginRuntime + per-plugin HostApi factory.
   // Sweep orphan uninstall tombstones from prior session FIRST (before

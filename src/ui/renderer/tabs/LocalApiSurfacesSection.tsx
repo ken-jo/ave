@@ -88,6 +88,27 @@ function patchFor(path: GateRow["path"], value: boolean): DeepPartial<AppSetting
   }
 }
 
+/**
+ * Why a switched-on remote A2A gate did not start, in the owner's words.
+ *
+ * The codes are the boot step's clamped `a2a-remote-*` set. The ones an owner
+ * can act on get their own sentence; anything else is named by its code rather
+ * than guessed at, so a support conversation still has something to quote.
+ */
+export function remoteA2AStartFailureText(reason: string | undefined, t: (key: string, vars?: Record<string, string>) => string): string {
+  switch (reason) {
+    case "a2a-remote-os-encryption-unavailable":
+      return t("localApiSurfaces.remoteA2aReasonEncryption");
+    case "a2a-remote-config-incomplete":
+    case "a2a-remote-outbound-config-incomplete":
+      return t("localApiSurfaces.remoteA2aReasonConfigIncomplete");
+    case "a2a-remote-receiver-secret-missing":
+      return t("localApiSurfaces.remoteA2aReasonReceiverSecretMissing");
+    default:
+      return t("localApiSurfaces.remoteA2aReasonOther", { code: reason ?? "a2a-remote-start-failed" });
+  }
+}
+
 export function LocalApiSurfacesSection() {
   const { t } = useTranslation();
   const [gates, setGates] = useState<GateState>(ALL_OFF);
@@ -95,9 +116,18 @@ export function LocalApiSurfacesSection() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<GateRow["path"] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The reason a switched-on remote A2A gate did not start this run, if it did not. */
+  const [remoteA2AStartFailure, setRemoteA2AStartFailure] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    // Read on its own: the runtime's state must not hide the switches, and a
+    // failed read of it claims nothing.
+    void getApi().remoteA2a.status().then((result) => {
+      setRemoteA2AStartFailure(!result.ok && result.error === "a2a-remote-start-failed"
+        ? remoteA2AStartFailureText(result.reason, t)
+        : null);
+    }).catch(() => setRemoteA2AStartFailure(null));
     try {
       const settings = await getApi().getSettings();
       setGates({
@@ -174,6 +204,12 @@ export function LocalApiSurfacesSection() {
           );
         })}
       </div>
+
+      {remoteA2AStartFailure !== null ? (
+        <p role="alert" className="mt-4 text-xs text-destructive" data-testid="local-api-surfaces-remote-a2a-start-failed">
+          {t("localApiSurfaces.remoteA2aStartFailed", { reason: remoteA2AStartFailure })}
+        </p>
+      ) : null}
 
       <p className="mt-4 text-xs text-muted-foreground" data-testid="local-api-surfaces-restart-note">
         {t("localApiSurfaces.restartRequired")}

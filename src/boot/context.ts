@@ -124,6 +124,7 @@ export class BootContext {
   declare settingsService: SettingsService;
   declare a2aRemoteRuntime: A2ARemoteRuntime | undefined;
   declare remoteA2AActionController: RemoteA2AActionController | undefined;
+  declare remoteA2AStartFailureReason: string | undefined;
   declare memoryManager: MemoryManager;
   declare memoryCaptureService: MemoryCaptureService;
   declare inputClassifier: InputClassifier;
@@ -285,6 +286,7 @@ const BOOT_CONTEXT_FIELDS = [
   "settingsService",
   "a2aRemoteRuntime",
   "remoteA2AActionController",
+  "remoteA2AStartFailureReason",
   "memoryManager",
   "memoryCaptureService",
   "inputClassifier",
