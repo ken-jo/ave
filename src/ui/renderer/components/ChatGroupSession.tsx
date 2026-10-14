@@ -626,7 +626,10 @@ export function ChatGroupSession({
       if (entries.length === 0) draftCarryFromRef.current = currentSessionId;
       clearForNewChat();
       resetForNewSession();
-      await refreshSessionId();
+      const applied = await refreshSessionId();
+      // No move to a new id: the carry must not wait for a later, ordinary
+      // switch away from this conversation and take the text along then.
+      if (applied === null || applied === currentSessionId) draftCarryFromRef.current = null;
       await env.refreshSessions();
       return true;
     },

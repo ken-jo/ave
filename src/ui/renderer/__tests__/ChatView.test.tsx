@@ -1219,6 +1219,34 @@ describe("ChatView", () => {
     expect(textarea().value).toBe("프로젝트 고르기 전에 쓴 질문");
   });
 
+  it("does not carry text into a later switch when the new chat never got its id", async () => {
+    const OTHER = "sess-after-failed-refresh";
+    const { container, api } = await renderApp({
+      hasApiKey: true,
+      sessions: [
+        { id: MOCK_DEFAULT_SESSION_ID, title: "빈 대화", modifiedAt: new Date(2, 0, 2).toISOString() },
+        { id: OTHER, title: "다른 대화", modifiedAt: new Date(2, 0, 1).toISOString() },
+      ],
+      historyBySession: { [OTHER]: { sessionId: OTHER, messages: [{ index: 0, role: "user", content: "다른 대화 내용" }] } },
+    });
+    const textarea = () => container.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea()).not.toBeNull());
+    fireEvent.change(textarea(), { target: { value: "빈 대화용 초안" } });
+
+    vi.mocked(api.chatGetHistory).mockRejectedValueOnce(new Error("history unavailable"));
+    await act(async () => {
+      fireEvent.click(container.querySelector('[data-testid="sidebar-new-chat"]')!);
+    });
+    await waitFor(() => expect(api.chatNew).toHaveBeenCalled());
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(container.querySelector(`[data-testid="sidebar-session-${OTHER}"]`)!);
+    });
+    await waitFor(() => expect(container.textContent).toContain("다른 대화 내용"));
+    expect(textarea().value).toBe("");
+  });
+
   it("parks text typed into a conversation with entries when a new chat starts", async () => {
     const { container, api } = await renderApp({
       hasApiKey: true,
