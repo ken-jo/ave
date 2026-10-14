@@ -8,7 +8,11 @@ import type { Attachment } from "../../types/attachments.js";
 
 const HISTORY = ["first prompt", "second prompt"];
 
-function Harness({ initialText = "", history = HISTORY }: { initialText?: string; history?: readonly string[] }) {
+function Harness({
+  initialText = "",
+  history = HISTORY,
+  onSend = vi.fn(),
+}: { initialText?: string; history?: readonly string[]; onSend?: () => void }) {
   const [text, setText] = useState(initialText);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   return (
@@ -19,7 +23,7 @@ function Harness({ initialText = "", history = HISTORY }: { initialText?: string
       onAttachmentsChange={setAttachments}
       allocateN={() => 1}
       saveClipboardImage={vi.fn(async () => ({ ok: false }))}
-      onSend={vi.fn()}
+      onSend={onSend}
       promptHistory={history}
     />
   );
@@ -58,5 +62,17 @@ describe("Composer prompt-history recall", () => {
     fireEvent.keyDown(ta, { key: "ArrowUp", metaKey: true });
     fireEvent.keyDown(ta, { key: "ArrowUp", altKey: true });
     expect(ta.value).toBe("");
+  });
+});
+
+describe("Composer IME guard", () => {
+  it("does not send on the Chromium composition-commit keydown (keyCode 229)", () => {
+    const onSend = vi.fn();
+    render(<Harness initialText="안녕" onSend={onSend} />);
+    fireEvent.keyDown(textarea(), { key: "Enter", keyCode: 229 });
+    fireEvent.keyDown(textarea(), { key: "Process" });
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.keyDown(textarea(), { key: "Enter" });
+    expect(onSend).toHaveBeenCalledTimes(1);
   });
 });

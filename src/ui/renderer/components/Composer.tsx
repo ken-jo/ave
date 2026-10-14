@@ -24,6 +24,7 @@ import {
 } from "../types/attachments.js";
 import { findMarkerAt, parseMarkers } from "../utils/attachment-markers.js";
 import { handleClipboardPaste } from "../utils/clipboard-paste.js";
+import { isComposingKeyEvent } from "../utils/ime-key-event.js";
 import { IDLE_PROMPT_HISTORY, stepPromptHistory, type PromptHistoryCursor } from "../utils/prompt-history.js";
 import { InlineSlashMenu } from "./InlineSlashMenu.js";
 import { ResourceMentionMenu } from "./ResourceMentionMenu.js";
@@ -574,7 +575,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.nativeEvent.isComposing || isComposingRef.current) return;
+      // The ref covers the window between compositionstart and the first
+      // flagged keydown; the helper covers Chromium's commit keydown (keyCode
+      // 229, isComposing false) that otherwise sends a half-typed syllable.
+      if (isComposingKeyEvent(e) || isComposingRef.current) return;
 
       // Ctrl/⌘ + Shift + V = paste the ORIGINAL text straight into the field.
       // A ClipboardEvent carries no modifier state, so the chord is recorded
