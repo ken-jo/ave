@@ -11,7 +11,7 @@ import type {
   McpServerConfig,
   McpServerConfigDto,
   McpServerState,
-  McpUiPayload,
+  McpToolCallOutput,
   McpUiResourceRead,
   ValidationResult,
 } from "./types.js";
@@ -1210,7 +1210,7 @@ export class McpManager {
   }
 
   /** 특정 서버의 도구 호출 — ToolExecutor에서 사용 */
-  async callTool(serverId: string, toolName: string, args: Record<string, unknown>): Promise<{ text: string; uiPayload?: McpUiPayload }> {
+  async callTool(serverId: string, toolName: string, args: Record<string, unknown>): Promise<McpToolCallOutput> {
     const client = this.clients.get(serverId);
     if (!client) {
       throw new Error(`[mcp-manager] ${t("be_mcpManager.serverDoesNotExist", { serverId })}`);
