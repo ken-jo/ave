@@ -100,7 +100,7 @@
         },
         "requires": {
           "hostProtocol": "3",
-          "minAppVersion": "0.13.0"
+          "minAppVersion": "0.14.0"
         },
         "tools": [
           {
