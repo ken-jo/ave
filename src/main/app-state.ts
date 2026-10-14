@@ -40,10 +40,10 @@ export function setWindowManager(value: WindowManager | null): void {
  *   Point-to-point sends (menu actions, dialogs, notifications) target it.
  * - `getPrimaryMainWindow()` — the window that owns the app's primary
  *   conversation (`MAIN_CHAT_GROUP_ID` as-is). The first window opened claims
- *   it. When the primary window is destroyed while another main window is
- *   open, the role moves to that window (the most recently focused one), which
- *   main then reloads as the primary (`main-window.ts`); with none open the
- *   next window opened claims it.
+ *   it; when it is destroyed the role is free and the next window opened
+ *   claims it. Every other window is `"secondary"` for its whole lifetime —
+ *   closing the primary never reloads or re-roles another window, so open
+ *   windows keep their tiles and running turns.
  */
 export type MainWindowRole = "primary" | "secondary";
 
@@ -92,12 +92,7 @@ export function registerMainWindow(win: BrowserWindow, role: MainWindowRole): vo
   recordFocus(win.id);
 }
 
-/**
- * Forget a closed main window. Returns the window the primary role moved to
- * when `win` was the primary and another main window is still open (its
- * renderer must be reloaded as the primary), else `null`.
- */
-export function unregisterMainWindow(win: BrowserWindow): BrowserWindow | null {
+export function unregisterMainWindow(win: BrowserWindow): void {
   const index = mainWindows.indexOf(win);
   if (index >= 0) mainWindows.splice(index, 1);
   const historyIndex = focusHistory.indexOf(win.id);
@@ -107,12 +102,7 @@ export function unregisterMainWindow(win: BrowserWindow): BrowserWindow | null {
     const liveIds = new Set(liveMainWindows().map((live) => live.id));
     focusedMainWindowId = [...focusHistory].reverse().find((id) => liveIds.has(id)) ?? null;
   }
-  if (primaryMainWindowId !== win.id) return null;
-  // The primary conversation, and every approval or question addressed to
-  // it, needs a window: hand the role to the window the user was last in.
-  const successor = getMainWindow();
-  primaryMainWindowId = successor?.id ?? null;
-  return successor;
+  if (primaryMainWindowId === win.id) primaryMainWindowId = null;
 }
 
 export function markMainWindowFocused(win: BrowserWindow): void {
@@ -145,18 +135,14 @@ export function setSessionContentsLookup(value: SessionContentsLookup | null): v
 }
 
 /**
- * Where a prompt about `sessionId` (an approval, an ask-user question) is
- * drawn, resolved when the prompt is raised: the live main window showing that
- * session, else the primary main window, else the most recently focused live
- * main window. Null when no main window is open.
+ * The live main window renderer whose tile shows `sessionId`, or null when no
+ * open window shows it. Prompts about a session (approvals, ask-user
+ * questions) go here first; boot falls back to the window in use.
  */
-export function resolveSessionMainWindowContents(sessionId: string | undefined): WebContents | null {
-  if (sessionId !== undefined) {
-    const holder = sessionContentsLookup?.(sessionId) ?? null;
-    if (holder && !holder.isDestroyed() && mainWindowForContents(holder)) return holder;
-  }
-  const fallback = getPrimaryMainWindow() ?? getMainWindow();
-  return fallback?.webContents ?? null;
+export function findSessionMainWindowContents(sessionId: string | undefined): WebContents | null {
+  if (sessionId === undefined) return null;
+  const holder = sessionContentsLookup?.(sessionId) ?? null;
+  return holder && !holder.isDestroyed() && mainWindowForContents(holder) ? holder : null;
 }
 
 /** @internal test-only reset for isolated module-state tests. */

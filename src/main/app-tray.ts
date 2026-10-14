@@ -22,15 +22,16 @@ export function showOrCreateMainWindow(reason: string): void {
 }
 
 /**
- * Launching the app again without a deep link (dock, taskbar, launcher): bring
- * the primary window back — restored and focused — as a normal desktop app
- * does, or open one if none exists. It never opens a window beside an
- * existing one; only an explicit "New Window" action does
- * ({@link openNewMainWindow}), so a local process relaunching the app cannot
- * pile up windows.
+ * Bring the primary window — the one showing the app's primary conversation —
+ * back, restored and focused, or open a fresh one when the primary was closed
+ * (secondary windows may still be open; they are left as they are). Used by a
+ * relaunch without a deep link (dock, taskbar, launcher), as a normal desktop
+ * app does: repeated relaunches never pile up windows, since after the first
+ * one a primary exists again. Only an explicit "New Window" action opens a
+ * window beside the primary ({@link openNewMainWindow}).
  */
 export function showOrCreatePrimaryMainWindow(reason: string): void {
-  surfaceOrCreateMainWindow(getPrimaryMainWindow() ?? getMainWindow(), reason);
+  surfaceOrCreateMainWindow(getPrimaryMainWindow(), reason);
 }
 
 function surfaceOrCreateMainWindow(existing: ReturnType<typeof getMainWindow>, reason: string): void {

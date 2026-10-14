@@ -449,15 +449,19 @@ Important rules:
   closed tile releases its loop. See `docs/design/tiled-chat-groups.md`.
 - Several main windows may be open ("New Window", `CmdOrCtrl+Shift+N`, or the
   tray). Launching the app again without an `ave://` link restores and focuses
-  the primary window instead of opening another. `app-state.ts`
+  the primary window — or opens a fresh primary when it was closed — instead of
+  opening another beside it. `app-state.ts`
   owns the set: broadcasts go to every main window (`getAppWindows`), point-to-
   point sends and dialogs go to the window in use or the sender's window, and
-  the first live window is the primary one. When the primary window closes
-  while another is open, the role moves to the most recently focused one,
-  which main reloads as the primary. Approval cards and ask-user questions are
-  routed when raised, not to a window bound at boot: to the window whose tile
-  shows the asking session, else the primary (or most recently focused) main
-  window. A secondary window's chat group ids
+  the first live window is the primary one. Closing the primary while other
+  windows are open never reloads or re-roles them: they keep their tiles and
+  running turns, the primary conversation keeps running in main with no
+  window, and the next window opened (or a relaunch) becomes the primary and
+  resumes it. Approval cards and ask-user questions are routed when raised,
+  not to a window bound at boot: to the window whose tile shows the asking
+  session, else the window in use. A renderer that loads later reads both
+  back (`ave:approval:pending`, `ave:ask-user-question:pending`), so a card
+  whose window closed re-shows where its session is drawn next. A secondary window's chat group ids
   are scoped to that window in main (`window-<webContentsId>:<id>`), so its
   tiles — its first tile included — are conversations of their own; its
   document carries `?aveWindow=secondary` so it does not resume the primary's

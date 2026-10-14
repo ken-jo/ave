@@ -15,11 +15,11 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   getAppWindows(): BrowserWindow[];
   getFocusedWindow(): BrowserWindow | null;
   /**
-   * The renderer that draws a prompt (approval, ask-user question) about
-   * `sessionId`, resolved when the prompt is raised: the main window showing
-   * that session, else the primary or most recently focused main window.
+   * The open main window renderer whose tile shows `sessionId`, or null. A
+   * prompt about a session (approval, ask-user question) is drawn there first;
+   * boot falls back to the window in use (`promptSurfaceResolver`).
    */
-  resolvePromptSurface(sessionId: string | undefined): WebContents | null;
+  findSessionSurface(sessionId: string | undefined): WebContents | null;
   getAuthPartition(partition: string): Session;
   installPluginPartition(pluginId: string, pluginRoot: string | undefined): void;
   revokePluginWebviews(pluginId: string, revokeSession: (sessionId: string) => void): void;
@@ -61,4 +61,23 @@ export interface BootHost {
 export function requireDesktopHost(host: Pick<BootHost, "desktop">): DesktopHostCapabilities {
   if (!host.desktop) throw new Error("desktop-surface-unavailable");
   return host.desktop;
+}
+
+/**
+ * Where an approval card or ask-user question about `sessionId` is drawn,
+ * resolved each time one is raised (never bound at boot — the window open at
+ * boot may be closed while another main window stays open): the open window
+ * whose tile shows the session, else the main window in use. Null when no main
+ * window is open (a headless run, or every window closed).
+ */
+export function promptSurfaceResolver(
+  host: Pick<BootHost, "desktop">,
+  getMainWindow: () => Pick<BrowserWindow, "webContents"> | null,
+): (sessionId: string | undefined) => WebContents | null {
+  return (sessionId) => {
+    const holder = host.desktop?.findSessionSurface(sessionId) ?? null;
+    if (holder) return holder;
+    // `getMainWindow` answers only live windows (`app-state.ts`).
+    return getMainWindow()?.webContents ?? null;
+  };
 }

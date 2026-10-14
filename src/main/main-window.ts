@@ -263,14 +263,7 @@ export function createWindow(
     requestNativeChromeRefresh();
   });
   win.on("closed", () => {
-    const promoted = unregisterMainWindow(win);
-    // The primary role moved to a window loaded as secondary: reload it so its
-    // renderer and main agree on its role (its window-scoped tiles are
-    // released, and the reloaded document resumes the primary conversation
-    // and picks up any approval card still pending).
-    if (promoted && isRendererReloadReady() && !isAppShutdownStarted() && !isAppShutdownCompleted()) {
-      void loadMainInterface(promoted, "primary-promoted");
-    }
+    unregisterMainWindow(win);
     requestNativeChromeRefresh();
   });
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {

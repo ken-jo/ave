@@ -1469,11 +1469,6 @@
     },
     {
       "type": "types",
-      "file": "src/main/ask-user-question-gate.ts",
-      "name": "AskUserQuestionRequest"
-    },
-    {
-      "type": "types",
       "file": "src/main/auth-partition-viewer-service.ts",
       "name": "AuthPartitionViewerAuditEvent"
     },

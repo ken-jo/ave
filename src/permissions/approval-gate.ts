@@ -1582,8 +1582,8 @@ export class ApprovalGate {
    */
   private announceSettledToRenderer(requestId: string, targets: ReadonlyArray<WebContents | null>): void {
     for (const target of new Set(targets)) {
-      if (!target || target.isDestroyed()) continue;
       try {
+        if (!target || target.isDestroyed()) continue;
         target.send(IPC_APPROVAL_SETTLED, { requestId });
       } catch {
         // A renderer that went away between the check above and the send has no

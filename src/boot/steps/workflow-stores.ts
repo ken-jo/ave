@@ -30,6 +30,7 @@ import {
 } from "../tools.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
+import { promptSurfaceResolver } from "../host-runtime.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 
@@ -90,9 +91,8 @@ export async function setupWorkflowStores(
     // Lazy resolver — dev-mode reloads destroy the captured webContents, and
     // several main windows may be open. Looking it up on every send, by the
     // asking session, sends the card to the window showing that conversation
-    // (else the primary or most recently focused one), across reloads and
-    // closed windows. A headless run has no desktop, so every ask is dismissed.
-    (sessionId) => ctx.host.desktop?.resolvePromptSurface(sessionId) ?? null,
+    // (else the window in use), across reloads and closed windows.
+    promptSurfaceResolver(ctx.host, getMainWindow),
     undefined,
     notificationService,
   );

@@ -801,7 +801,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return getMainWindows().length === 0 ? getMainWindow()?.webContents : undefined;
   };
   // Approvals and ask-user questions are drawn by the window whose tile holds
-  // the asking conversation (`resolveSessionMainWindowContents`).
+  // the asking conversation (`findSessionMainWindowContents`).
   setSessionContentsLookup((sessionId) => {
     const holder = groupHolding(sessionId);
     return holder ? groupTargetContents(holder.owner) ?? null : null;
@@ -994,18 +994,11 @@ export function registerChatHandlers(deps: IpcDeps): void {
    * asks for a second tile — that is the first moment there is anything to
    * lose.
    */
-  // Watched per (renderer, scope): a window promoted to primary keeps its
-  // contents but now also hosts primary-scope tiles, which need their own
-  // release listeners alongside the ones for its window-scoped tiles.
-  const watchedRenderers = new WeakMap<object, Set<"owned" | "primary">>();
+  const watchedRenderers = new WeakSet<object>();
   const watchRendererLifetime = (owner: WebContents | null): void => {
     const contents = owner ?? groupTargetContents(null);
-    if (!contents) return;
-    const scope = owner ? "owned" : "primary";
-    const scopes = watchedRenderers.get(contents) ?? new Set<"owned" | "primary">();
-    if (scopes.has(scope)) return;
-    scopes.add(scope);
-    watchedRenderers.set(contents, scopes);
+    if (!contents || watchedRenderers.has(contents)) return;
+    watchedRenderers.add(contents);
     // Only this renderer's groups: another window's tiles stay on screen.
     // The primary scope's `main` loop is never torn down (see groupRelease).
     const releaseAll = (reason: string) => {
@@ -2287,6 +2280,17 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return readDiffSidecar(sessionId, toolUseId);
     },
   );
+
+  // ─── ask_user_question pending snapshot ──────────────────────────────────
+  // Read once by a renderer that (re)loaded after a question went out, so a
+  // question whose window closed re-shows where its session is drawn now.
+  ipcMain.handle(CHANNELS.askUserQuestion.pending, (e) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.askUserQuestion.pending, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    return askUserQuestionGate ? askUserQuestionGate.listPending() : [];
+  });
 
   // ─── ask_user_question response ─────────────────────────────────────────
   ipcMain.handle(CHANNELS.askUserQuestion.respond, (e, response: unknown) => {

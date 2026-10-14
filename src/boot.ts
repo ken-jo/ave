@@ -1,5 +1,5 @@
 import { readPluginRegistry } from "./plugins/registry.js";
-import { requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
+import { promptSurfaceResolver, requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
 import { configureHostResources } from "./main/host-resources.js";
 /**
  * Boot Sequence — §4.2 (thin orchestrator).
@@ -305,7 +305,7 @@ export async function bootstrap(
     // Headless runs have no desktop surface. Otherwise each approval card goes
     // to the window resolved when it is raised — never a window bound at boot,
     // which the user may close while another main window stays open.
-    mainWindow === null ? null : (sessionId) => requireDesktopHost(host).resolvePromptSurface(sessionId),
+    mainWindow === null ? null : promptSurfaceResolver(host, getMainWindow),
     ctx.bootAuditLogger,
     ctx.notificationService,
     // Tier 2 of the sub-agent approval chain, supplied as accessors rather

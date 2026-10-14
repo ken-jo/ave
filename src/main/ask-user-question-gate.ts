@@ -338,9 +338,17 @@ export class AskUserQuestionGate {
       // session by now — that it is stale. Best-effort: a renderer may be
       // tearing down.
       const announceStale = () => {
-        for (const target of new Set([wc, this.resolveWebContents(req.sessionId)])) {
-          if (!target || target.isDestroyed()) continue;
+        // Nothing here may throw: the caller resolves the gate right after,
+        // and a throw would leave the asking turn waiting forever.
+        let targets: Array<WebContents | null> = [wc];
+        try {
+          targets = [...new Set([wc, this.resolveWebContents(req.sessionId)])];
+        } catch {
+          /* resolver failed — the original renderer is still told */
+        }
+        for (const target of targets) {
           try {
+            if (!target || target.isDestroyed()) continue;
             target.send(IPC_ASK_USER_QUESTION_TIMEOUT, { requestId: req.id });
           } catch {
             /* renderer may be tearing down — best-effort */
@@ -399,6 +407,17 @@ export class AskUserQuestionGate {
       entry.resolve({ requestId: id, dismissed: true });
     }
     this.pending.clear();
+  }
+
+  /**
+   * The questions still waiting for an answer, exactly as they were sent. A
+   * renderer that loads after a question went out — the window that drew it
+   * closed, and another window now shows the asking session — reads these
+   * once and draws the ones its tiles own; otherwise the turn would sit out
+   * the full timeout against a card nobody can see.
+   */
+  listPending(): AskUserQuestionRequest[] {
+    return [...this.pending.values()].map((entry) => entry.request);
   }
 
   get pendingCount(): number {
