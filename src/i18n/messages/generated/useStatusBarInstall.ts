@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/hooks/status-bar/use-status-bar-install.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/hooks/status-bar/use-status-bar-install.ts.
 export const en = {
   "useStatusBarInstall.installSuccess": "{target} installed successfully",
   "useStatusBarInstall.installFailure": "{target} installation failed: {error}",

@@ -9,12 +9,14 @@
  * on. This module adds only the fan-out concern: iterate, count, and — when the
  * caller passes an `auditLogger` — emit one audit row for the whole fan-out.
  *
- * It is not the only fan-out in `src/ipc`, and nothing here makes it so. Other
- * domains resolve the same window list and then either call in here or walk it
- * themselves; `grep -rnF 'getAppWindows?.()' src/ipc` lists both kinds.
+ * {@link broadcastToAppWindows} is the domain-level entry: it resolves the app
+ * renderer window set (`getAppWindows`, or the main window when a deps object
+ * has no window list) and fans out through here, so every domain broadcast
+ * shares one target rule and one per-window send contract.
  */
 import type { BrowserWindow } from "electron";
 import { sendToWindow, type SafeSendLogger } from "./safe-send.js";
+import type { IpcDeps } from "./types.js";
 
 /** Minimal audit sink — the subset of `AuditLogger.log` this module needs. */
 export interface BroadcastAuditLogger {
@@ -71,4 +73,21 @@ export function fanOutToAllWindows(
     }
   }
   return delivered;
+}
+
+/** The app renderer windows a domain broadcast targets. */
+function appRendererWindows(
+  deps: Pick<IpcDeps, "getAppWindows" | "getMainWindow">,
+): Array<BrowserWindow | null | undefined> {
+  return deps.getAppWindows?.() ?? [deps.getMainWindow()];
+}
+
+/** Fan `payload` out on `channel` to every app renderer window. */
+export function broadcastToAppWindows(
+  deps: Pick<IpcDeps, "getAppWindows" | "getMainWindow">,
+  channel: string,
+  payload?: unknown,
+  options?: FanOutOptions,
+): number {
+  return fanOutToAllWindows(appRendererWindows(deps), channel, payload, options);
 }

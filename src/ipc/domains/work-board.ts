@@ -40,7 +40,7 @@
  */
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
-import { fanOutToAllWindows } from "../window-fanout.js";
+import { broadcastToAppWindows } from "../window-fanout.js";
 import type { IpcDeps } from "../types.js";
 import type {
   WorkBoardBriefingKind,
@@ -113,7 +113,7 @@ function isAuthorizedStoredWorkItem(item: WorkItemResolved): boolean {
 }
 
 export function registerWorkBoardHandlers(deps: IpcDeps): void {
-  const { workBoardStore, workBoardEngine, workBoardReport, auditLogger, getMainWindow, getAppWindows } = deps;
+  const { workBoardStore, workBoardEngine, workBoardReport, auditLogger } = deps;
 
   /**
    * Fan the `itemChanged` event through the curated app-renderer target set.
@@ -129,10 +129,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       change,
       changedAt: new Date().toISOString(),
     };
-    for (const win of getAppWindows?.() ?? [getMainWindow()]) {
-      if (!win || win.isDestroyed()) continue;
-      win.webContents.send(WORK_BOARD.itemChanged, payload);
-    }
+    broadcastToAppWindows(deps, WORK_BOARD.itemChanged, payload);
   };
 
   const loadAuthorizedItem = async (id: number): Promise<WorkItemGetResult> => {
@@ -263,10 +260,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return { status: "not_found" } satisfies WorkItemRunResult;
 
-    const windows = (): Array<import("electron").BrowserWindow | null | undefined> =>
-      getAppWindows?.() ?? [getMainWindow()];
-
-    fanOutToAllWindows(windows(), WORK_BOARD.runStarted, {
+    broadcastToAppWindows(deps, WORK_BOARD.runStarted, {
       itemId: id,
       at: new Date().toISOString(),
     });
@@ -275,7 +269,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         id,
         opts?.agentName ? { agentName: opts.agentName } : undefined,
       );
-      fanOutToAllWindows(windows(), WORK_BOARD.runFinished, {
+      broadcastToAppWindows(deps, WORK_BOARD.runFinished, {
         itemId: id,
         status: result.status,
         at: new Date().toISOString(),
@@ -283,7 +277,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return result;
     } catch (err) {
       const reason = errorMessage(err);
-      fanOutToAllWindows(windows(), WORK_BOARD.runFailed, {
+      broadcastToAppWindows(deps, WORK_BOARD.runFailed, {
         itemId: id,
         reason,
         at: new Date().toISOString(),
@@ -355,10 +349,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       change,
       changedAt: new Date().toISOString(),
     };
-    for (const win of getAppWindows?.() ?? [getMainWindow()]) {
-      if (!win || win.isDestroyed()) continue;
-      win.webContents.send(WORK_BOARD.proposalChanged, payload);
-    }
+    broadcastToAppWindows(deps, WORK_BOARD.proposalChanged, payload);
   };
 
   ipcMain.handle(WORK_BOARD.listProposals, async (e) => {

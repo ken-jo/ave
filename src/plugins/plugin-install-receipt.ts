@@ -6,6 +6,7 @@ import { createLogger } from "../lib/logger.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isSemver } from "../shared/semver-compare.js";
 import { parseConsentFingerprint, type ConsentFingerprint } from "../marketplace/updates/consent-record.js";
+import { isRecord } from "../shared/is-record.js";
 
 const log = createLogger("plugin-install-receipt");
 
@@ -310,7 +311,7 @@ const FOLDER_SOURCE_ORIGINS = new Set(["managed", "custom", "direct"]);
 
 /** Why a folder install record is malformed, or null when it is well formed. */
 function folderInstallRecordProblem(value: unknown): string | null {
-  if (!isPlainRecord(value)) return "folder record is not an object";
+  if (!isRecord(value)) return "folder record is not an object";
   if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "revision", "packagePath", "treeSha256", "authoritySha256", "consent"])) {
     return "folder record has unknown fields";
   }
@@ -338,17 +339,13 @@ function consentProblem(value: unknown, record: "git" | "folder"): string | null
   return null;
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return Object.keys(value).every((key) => keys.includes(key));
 }
 
 /** Why a git install record is malformed, or null when it is well formed. */
 export function gitInstallRecordProblem(value: unknown): string | null {
-  if (!isPlainRecord(value)) return "git record is not an object";
+  if (!isRecord(value)) return "git record is not an object";
   if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "snapshotCommit", "versionCommit", "packagePath", "rung", "rungs", "authoritySha256", "consent"])) {
     return "git record has unknown fields";
   }
@@ -365,7 +362,7 @@ export function gitInstallRecordProblem(value: unknown): string | null {
   if (!Array.isArray(rungs) || rungs.length === 0 || rungs.length > ARTIFACT_RUNGS.length) return "git record rungs are invalid";
   let used = 0;
   for (const [index, item] of rungs.entries()) {
-    if (!isPlainRecord(item) || item.rung !== ARTIFACT_RUNGS[index]) return "git record rungs are out of ladder order";
+    if (!isRecord(item) || item.rung !== ARTIFACT_RUNGS[index]) return "git record rungs are out of ladder order";
     if (item.outcome === "used") {
       if (!hasOnlyKeys(item, ["rung", "outcome"]) || item.rung !== value.rung || index !== rungs.length - 1) return "git record used rung is invalid";
       used += 1;

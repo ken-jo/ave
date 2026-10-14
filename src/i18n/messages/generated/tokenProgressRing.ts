@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/TokenProgressRing.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/TokenProgressRing.tsx.
 export const en = {
   "tokenProgressRing.projectedInputTitle": "Projected input for next request",
   "tokenProgressRing.projectedInputAriaLabel": "Projected input {pct} percent",

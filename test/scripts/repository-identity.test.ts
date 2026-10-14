@@ -51,7 +51,6 @@ const NOT_CHECKED: ReadonlyArray<readonly [string, string]> = [
   ["docs/architecture/", "historical design records, including consumed ones"],
   ["docs/blueprints/", "historical design records"],
   ["docs/design/", "historical design records"],
-  ["docs/ko/design/", "historical design records"],
   ["src/permissions/__tests__/permission-review-scenario-board.test.ts", "URL-classification input"],
   ["src/permissions/__tests__/verdict-cache.test.ts", "URL-classification input"],
   ["src/tools/__tests__/executor.test.ts", "URL-classification input"],

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/format-ipc-error.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/format-ipc-error.ts.
 export const en = {
   "formatIpcError.invalidPath": "That path is not valid.",
   "formatIpcError.cannotRemoveDefaultRoot": "The default project folder can't be removed.",
@@ -64,6 +64,7 @@ export const en = {
   "formatIpcError.subAgentRunnerUnavailable": "Sub-agents are unavailable right now.",
   "formatIpcError.subAgentTranscriptNotFound": "The sub-agent transcript could not be found.",
   "formatIpcError.sessionNotFound": "The session could not be found.",
+  "formatIpcError.blockNotFound": "That terminal command is no longer recorded. Only the most recent commands of an open terminal are kept.",
   "formatIpcError.sideChatUnavailable": "Side chat is unavailable.",
   "formatIpcError.projectNotAllowed": "This project is not allowed.",
   "formatIpcError.invalidText": "Invalid text input.",
@@ -276,6 +277,7 @@ export const ko: Record<keyof typeof en, string> = {
   "formatIpcError.subAgentRunnerUnavailable": "지금은 서브에이전트를 사용할 수 없습니다.",
   "formatIpcError.subAgentTranscriptNotFound": "서브에이전트 대화 기록을 찾을 수 없습니다.",
   "formatIpcError.sessionNotFound": "세션을 찾을 수 없습니다.",
+  "formatIpcError.blockNotFound": "해당 터미널 명령 기록이 더 이상 없습니다. 열려 있는 터미널의 최근 명령만 보관됩니다.",
   "formatIpcError.sideChatUnavailable": "사이드 채팅을 사용할 수 없습니다.",
   "formatIpcError.projectNotAllowed": "허용되지 않은 프로젝트입니다.",
   "formatIpcError.invalidText": "잘못된 텍스트 입력입니다.",

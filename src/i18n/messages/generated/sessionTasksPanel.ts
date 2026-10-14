@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/SessionTasksPanel.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/SessionTasksPanel.tsx.
 export const en = {
   "sessionTasksPanel.statusPending": "Pending",
   "sessionTasksPanel.statusInProgress": "In Progress",

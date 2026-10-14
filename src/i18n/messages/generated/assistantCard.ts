@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/AssistantCard.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/AssistantCard.tsx.
 export const en = {
   "assistantCard.systemNoticeContextError": "System Notice — Model Limit Exceeded",
   "assistantCard.systemNoticeStreamError": "System Notice — Response Stream Error",

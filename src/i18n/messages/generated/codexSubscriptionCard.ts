@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/CodexSubscriptionCard.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/tabs/CodexSubscriptionCard.tsx.
 export const en = {
   "codexSubscriptionCard.title": "Codex subscription",
   "codexSubscriptionCard.description": "Sign in with your ChatGPT plan through an isolated local Codex runtime.",

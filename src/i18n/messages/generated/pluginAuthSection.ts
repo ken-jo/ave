@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/PluginAuthSection.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/PluginAuthSection.tsx.
 export const en = {
   "pluginAuthSection.loginError": "Login failed. Please try again in a moment.",
   "pluginAuthSection.logoutError": "Logout failed. Please try again in a moment.",

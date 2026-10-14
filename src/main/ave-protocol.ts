@@ -3,6 +3,7 @@ import { isFolderPathInput } from "../marketplace/net/source-url.js";
 import { isSourceId } from "../marketplace/sources/official.js";
 import { holdsCredential } from "../shared/dlp.js";
 import type { GitMarketplaceDeepLink } from "../shared/git-marketplace.js";
+import { isValidPluginId } from "../plugins/public-contract.js";
 
 export function findAveProtocolUri(argv: readonly string[]): string | null {
   // Scheme comparison is case-insensitive per RFC 3986 §3.1, so accept e.g. AVE://...
@@ -78,9 +79,9 @@ export function parseGitMarketplaceUri(url: string): GitMarketplaceDeepLink | nu
  * Validation rules (security-relevant):
  *   - scheme must be `ave:`
  *   - host must be `plugin-auth` (lowercased)
- *   - first path segment is `pluginId` and must match
- *     `^[a-z][a-z0-9_-]{0,63}$` (same charset as plugin slug class — keeps
- *     the host event payload predictable for plugin subscribers)
+ *   - first path segment is `pluginId` and must be a valid plugin id
+ *     (`isValidPluginId`, the manifest contract rule) — keeps the host event
+ *     payload predictable for plugin subscribers
  *   - no path segments past the first
  *   - exactly one `code` query parameter (multi-value drops to null to avoid
  *     parameter-pollution ambiguity)
@@ -92,7 +93,6 @@ export function parseGitMarketplaceUri(url: string): GitMarketplaceDeepLink | nu
  *     because one is present.
  */
 const PLUGIN_AUTH_HOST = "plugin-auth";
-const PLUGIN_ID_RE = /^[a-z][a-z0-9_-]{0,63}$/;
 const MIN_CODE_LENGTH = 16;
 const MAX_CODE_LENGTH = 256;
 const CODE_RE = /^[A-Za-z0-9._~-]+$/;
@@ -117,7 +117,7 @@ export function parsePluginAuthUri(url: string): { pluginId: string; code: strin
   // Reject extra path segments — exact form is `plugin-auth/<pluginId>` only.
   if (trimmed.includes("/")) return null;
   const pluginId = trimmed;
-  if (!PLUGIN_ID_RE.test(pluginId)) return null;
+  if (!isValidPluginId(pluginId)) return null;
 
   const codes = parsed.searchParams.getAll("code");
   // Reject parameter pollution (`?code=a&code=b`) outright. A real callback

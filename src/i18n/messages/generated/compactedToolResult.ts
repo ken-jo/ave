@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/CompactedToolResult.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/CompactedToolResult.tsx.
 export const en = {
   "compactedToolResult.lineCount": "{count} lines",
   "compactedToolResult.collapseButton": "Collapse",

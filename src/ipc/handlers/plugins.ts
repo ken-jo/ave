@@ -7,6 +7,8 @@
  * trusted-renderer + AVE_E2E wrapper.
  */
 import type { IpcDeps } from "../types.js";
+import { isValidToolName } from "../../tools/types.js";
+import { isValidPluginId } from "../../plugins/public-contract.js";
 import { filterRegistryByEventAndTool } from "../../hooks/hook-registry.js";
 
 export type PluginBundleE2eSnapshot =
@@ -63,7 +65,6 @@ export type PluginBundleE2eSnapshot =
       };
     };
 
-const E2E_PLUGIN_ID = /^[a-z][a-z0-9-]{2,127}$/;
 const E2E_LOCAL_ID = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 /**
@@ -81,7 +82,7 @@ export async function handlePluginBundleE2eSnapshot(
   skillLocalId: unknown,
   hookProbeToolName: unknown,
 ): Promise<PluginBundleE2eSnapshot> {
-  if (typeof pluginId !== "string" || !E2E_PLUGIN_ID.test(pluginId)) {
+  if (typeof pluginId !== "string" || !isValidPluginId(pluginId)) {
     return { ok: false, error: "invalid-plugin-id" };
   }
   if (typeof skillLocalId !== "string" || !E2E_LOCAL_ID.test(skillLocalId)) {
@@ -89,7 +90,7 @@ export async function handlePluginBundleE2eSnapshot(
   }
   if (
     typeof hookProbeToolName !== "string" ||
-    !E2E_LOCAL_ID.test(hookProbeToolName)
+    !isValidToolName(hookProbeToolName)
   ) {
     return { ok: false, error: "invalid-hook-probe-tool-name" };
   }

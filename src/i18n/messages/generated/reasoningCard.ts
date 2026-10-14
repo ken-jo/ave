@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/ReasoningCard.tsx. Do not edit by hand.
+// i18n fragment. Extracted from src/ui/renderer/components/ReasoningCard.tsx, which no longer exists.
 export const en = {
   "reasoningCard.thinkingTitle": "Thinking...",
   "reasoningCard.thoughtCompleteTitle": "Thought complete",

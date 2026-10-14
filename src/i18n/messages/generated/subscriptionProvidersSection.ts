@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/SubscriptionProvidersSection.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/tabs/SubscriptionProvidersSection.tsx.
 export const en = {
   "subscriptionProvidersSection.title": "Subscription providers",
   "subscriptionProvidersSection.description": "Use an existing subscription with a provider-specific official runtime while keeping its login and chat selection in one place.",

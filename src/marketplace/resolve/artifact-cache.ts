@@ -13,7 +13,7 @@
  * be read or written is a miss, never an install failure; a file that does
  * not hash to its name is deleted and missed.
  */
-import { createHash } from "node:crypto";
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { mkdir, readdir, readFile, rm, stat, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
@@ -51,10 +51,6 @@ export interface ArtifactCacheOptions {
   maxTotalBytes?: number;
   log: { warn(message: string): void };
   now?: () => Date;
-}
-
-function digestOf(bytes: Buffer): string {
-  return createHash("sha256").update(bytes).digest("hex");
 }
 
 export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCache {
@@ -96,7 +92,7 @@ export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCach
           return null;
         }
         const zip = await readFile(path);
-        if (digestOf(zip) !== sha256.toLowerCase()) {
+        if (sha256Hex(zip) !== sha256.toLowerCase()) {
           options.log.warn(`kept artifact ${sha256} no longer matches its digest; removed`);
           await rm(path, { force: true });
           return null;
@@ -112,7 +108,7 @@ export function createArtifactCache(options: ArtifactCacheOptions): ArtifactCach
     async keep(sha256, zip) {
       if (!options.enabled()) return;
       const path = pathOf(sha256);
-      if (digestOf(zip) !== sha256.toLowerCase()) throw new Error(`artifact ${sha256} kept with bytes of another digest`);
+      if (sha256Hex(zip) !== sha256.toLowerCase()) throw new Error(`artifact ${sha256} kept with bytes of another digest`);
       try {
         await mkdir(options.dir, { recursive: true });
         await writeFileAtomicAtPath(path, zip);
