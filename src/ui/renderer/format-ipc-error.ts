@@ -100,6 +100,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-title": "formatIpcError.invalidTitle",
   "empty-title": "formatIpcError.emptyTitle",
   "invalid-archived": "formatIpcError.invalidArchived",
+  "suggestions-not-archivable": "formatIpcError.suggestionsNotArchivable",
   "invalid-unread": "formatIpcError.invalidUnread",
   "no-fields": "formatIpcError.noFields",
   "invalid-method": "formatIpcError.invalidMethod",
