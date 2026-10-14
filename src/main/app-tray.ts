@@ -8,7 +8,7 @@
 import { Menu, nativeImage, Tray } from "electron";
 import { t } from "../i18n/index.js";
 import { createAveTrayIcon } from "./tray-icon.js";
-import { getMainWindow, getTray, isRendererReloadReady, setTray } from "./app-state.js";
+import { getMainWindow, getMainWindows, getTray, isRendererReloadReady, setTray } from "./app-state.js";
 import {
   createWindow,
   loadMainInterface,
@@ -29,12 +29,18 @@ export function showOrCreateMainWindow(reason: string): void {
 }
 
 /**
- * Open one more main window ("New Window", a second launch of the app). Until
- * bootstrap has registered IPC there is no interface to load into it, so an
- * early request surfaces the window that boot is about to load instead.
+ * Open one more main window ("New Window", a second launch of the app).
+ *
+ * Two cases surface an existing window instead: until bootstrap has registered
+ * IPC there is no interface to load into a new one, and when every main
+ * window is hidden (a hidden auto-launch, or the last window closed to the
+ * tray) the user is asking for the app back, not for a second window beside
+ * an invisible one.
  */
 export function openNewMainWindow(reason: string): void {
-  if (!isRendererReloadReady() && getMainWindow()) {
+  const windows = getMainWindows();
+  const noneVisible = windows.length > 0 && windows.every((win) => !win.isVisible());
+  if ((!isRendererReloadReady() && getMainWindow()) || noneVisible) {
     showOrCreateMainWindow(reason);
     return;
   }

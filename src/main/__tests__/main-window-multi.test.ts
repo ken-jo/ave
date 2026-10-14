@@ -14,8 +14,9 @@ const electronMock = vi.hoisted(() => {
     readonly listeners = new Map<string, Listener[]>();
     readonly contentsListeners = new Map<string, Listener[]>();
     destroyed = false;
-    readonly hide = vi.fn();
-    readonly show = vi.fn();
+    visible = true;
+    readonly hide = vi.fn(() => { this.visible = false; });
+    readonly show = vi.fn(() => { this.visible = true; });
     readonly focus = vi.fn();
     readonly moveTop = vi.fn();
     readonly restore = vi.fn();
@@ -45,6 +46,8 @@ const electronMock = vi.hoisted(() => {
     }
     isDestroyed() { return this.destroyed; }
     isMinimized() { return false; }
+    isVisible() { return this.visible; }
+    isAlwaysOnTop() { return false; }
     /** What Electron does when nothing prevented `close`. */
     close() {
       let prevented = false;
@@ -55,7 +58,7 @@ const electronMock = vi.hoisted(() => {
       return true;
     }
   }
-  return { FakeBrowserWindow, app: { getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
+  return { FakeBrowserWindow, app: { name: "Ave", getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
 });
 
 vi.mock("electron", () => ({
@@ -63,6 +66,9 @@ vi.mock("electron", () => ({
   BrowserWindow: electronMock.FakeBrowserWindow,
   screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) },
   shell: { openExternal: vi.fn(async () => undefined) },
+  Menu: { buildFromTemplate: vi.fn(() => ({})), setApplicationMenu: vi.fn() },
+  nativeImage: {},
+  Tray: class {},
 }));
 vi.mock("node:fs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:fs")>()),
@@ -73,6 +79,7 @@ vi.mock("../native-window-coordinator.js", () => ({ requestNativeChromeRefresh: 
 
 const appState = await import("../app-state.js");
 const { createWindow, getAppWindows, loadMainInterface, rendererIndexUrl } = await import("../main-window.js");
+const { openNewMainWindow } = await import("../app-tray.js");
 type FakeWindow = InstanceType<typeof electronMock.FakeBrowserWindow>;
 
 function open(): FakeWindow {
@@ -82,7 +89,7 @@ function open(): FakeWindow {
 describe("main windows", () => {
   beforeEach(() => {
     appState.resetMainWindowsForTests();
-    appState.setTray({} as never);
+    appState.setTray({ setContextMenu: vi.fn() } as never);
     appState.setServices(null);
     electronMock.app.quit.mockClear();
   });
@@ -128,6 +135,26 @@ describe("main windows", () => {
     expect(electronMock.app.quit).not.toHaveBeenCalled();
     expect(first.close()).toBe(false);
     expect(electronMock.app.quit).toHaveBeenCalledOnce();
+  });
+
+  it("a relaunch opens another window beside a visible one but brings back a hidden-only app", () => {
+    appState.setRendererReloadReady(true);
+    try {
+      const first = open();
+      openNewMainWindow("second-instance");
+      expect(getAppWindows()).toHaveLength(2);
+
+      // Close the second (destroyed) and the first to the tray (hidden).
+      expect((getAppWindows()[1] as unknown as FakeWindow).close()).toBe(true);
+      expect(first.close()).toBe(false);
+      expect(first.isVisible()).toBe(false);
+
+      openNewMainWindow("second-instance");
+      expect(getAppWindows()).toEqual([first]);
+      expect(first.isVisible()).toBe(true);
+    } finally {
+      appState.setRendererReloadReady(false);
+    }
   });
 
   it("loads a secondary window's document with the role query and the primary's bare", async () => {
