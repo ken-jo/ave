@@ -32,6 +32,8 @@ import { configureHostResources } from "./main/host-resources.js";
  *   steps/plugin-tool-executor    plugin-surface ToolExecutor + invoke delegate.
  *   steps/conversation-wiring     routine engine + ConversationLoop + late
  *                                 bindings + SubAgentRunner + work-board engine.
+ *   steps/remote-a2a-setup        remote A2A runtime + action controller;
+ *                                 a start failure disables the feature only.
  *   steps/routines-wiring         RoutinesScheduler v2 branch wiring.
  *   steps/mcp-setup               MCP servers + signed-artifact stores.
  *   steps/sandbox-init            OS tool sandbox gate + ASRT init.
@@ -109,6 +111,7 @@ import {
 } from "./boot/steps/conversation-wiring.js";
 import { detachWorkspaceRootSessions } from "./memory/workspace-root-session-lifecycle.js";
 import { wireRoutinesScheduler } from "./boot/steps/routines-wiring.js";
+import { setupRemoteA2A } from "./boot/steps/remote-a2a-setup.js";
 import { setupMcp } from "./boot/steps/mcp-setup.js";
 import { initSandboxGate } from "./boot/steps/sandbox-init.js";
 import { createA2ARemoteRuntime } from "./main/a2a-remote-runtime.js";
@@ -390,28 +393,33 @@ export async function bootstrap(
   );
   if (!remoteA2AAgentActionApprover)
     throw new Error("a2a-remote-approval-unavailable");
-  ctx.a2aRemoteRuntime =
-    createA2ARemoteRuntime({
-      encryption: host.encryption,
-      settings: settingsService,
-      agentActionApprover: remoteA2AAgentActionApprover,
-      projectRoot,
-      audit: (code) =>
-        ctx.bootAuditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "a2a-remote",
-          type: "warn",
-          input: `a2a-remote:${code}`,
-        }),
-    }) ?? undefined;
-  await ctx.a2aRemoteRuntime?.ready();
-  ctx.remoteA2AActionController = ctx.a2aRemoteRuntime?.gates.outboundRouting
-    ? createRemoteA2AActionController({
-        runtime: ctx.a2aRemoteRuntime,
+  const auditRemoteA2A = (code: string) =>
+    ctx.bootAuditLogger.log({
+      timestamp: new Date().toISOString(),
+      sessionId: "a2a-remote",
+      type: "warn",
+      input: `a2a-remote:${code}`,
+    });
+  const remoteA2A = await setupRemoteA2A({
+    createRuntime: () =>
+      createA2ARemoteRuntime({
+        encryption: host.encryption,
+        settings: settingsService,
+        agentActionApprover: remoteA2AAgentActionApprover,
+        projectRoot,
+        audit: auditRemoteA2A,
+      }),
+    createController: (runtime) =>
+      createRemoteA2AActionController({
+        runtime,
         config: settingsService.get("a2aRemote"),
         projectRoot,
-      })
-    : undefined;
+      }),
+    audit: auditRemoteA2A,
+    logError: (err, message) => log.error({ err }, message),
+  });
+  ctx.a2aRemoteRuntime = remoteA2A.runtime;
+  ctx.remoteA2AActionController = remoteA2A.controller;
 
   // §4.2 Step 3 + 5: PluginRuntime + per-plugin HostApi factory.
   // Sweep orphan uninstall tombstones from prior session FIRST (before

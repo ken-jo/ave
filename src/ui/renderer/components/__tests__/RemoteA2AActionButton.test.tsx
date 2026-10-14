@@ -127,6 +127,27 @@ describe("RemoteA2AActionButton production IPC surface", () => {
     expect(input).toHaveProperty("value", "Keep resume text");
   });
 
+  it("keeps Task actions after a Refresh and after an IPC-level refusal", async () => {
+    const actionable = { state: "sent", taskHandle: "task_handle_123456", taskAvailable: true, taskState: "TASK_STATE_WORKING", targetLabel: "Agent one", outcome: "success", updatedAt: "2026-07-16T00:00:00.000Z" };
+    const api = installApi(actionable);
+    await openPanel();
+    fireEvent.click(screen.getByTestId("remote-a2a-get"));
+    await waitFor(() => expect(api.task).toHaveBeenCalledWith("task_handle_123456"));
+    expect(await screen.findByTestId("remote-a2a-get")).toBeTruthy();
+
+    api.task.mockResolvedValueOnce({ ok: false, error: "a2a-remote-operation-rejected" } as never);
+    fireEvent.click(screen.getByTestId("remote-a2a-get"));
+    await waitFor(() => expect(screen.getByTestId("remote-a2a-status").getAttribute("data-state")).toBe("failed"));
+    expect(screen.getByTestId("remote-a2a-get")).toBeTruthy();
+    expect(screen.getByTestId("remote-a2a-cancel")).toHaveProperty("disabled", false);
+
+    api.action.mockRejectedValueOnce(new Error("ipc channel closed"));
+    fireEvent.click(screen.getByTestId("remote-a2a-cancel"));
+    await waitFor(() => expect(api.action).toHaveBeenCalledWith("cancel", "task_handle_123456"));
+    await waitFor(() => expect(screen.getByTestId("remote-a2a-get")).toHaveProperty("disabled", false));
+    expect(screen.getByTestId("remote-a2a-cancel")).toBeTruthy();
+  });
+
   it("does not surface rejected IPC exception details", async () => {
     installApi();
     window.aveApi.remoteA2a.send = vi.fn(async () => {

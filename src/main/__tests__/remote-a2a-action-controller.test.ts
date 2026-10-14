@@ -86,6 +86,44 @@ describe("production remote A2A action controller", () => {
     expect(value.execute).toHaveBeenCalledWith(expect.objectContaining({ operation: "replay", operationId: "initial-op", intendedCredentialRevisionId: 12, predecessorCredentialRevisionId: 11, messageId: "initial-message" }));
   });
 
+  it("keeps a known Task actionable after Refresh, Resume, Cancel and their refusals", async () => {
+    const value = runtime();
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+    await expect(controller.get({ taskHandle: "task_handle_123456" })).resolves.toMatchObject({ state: "sent", taskAvailable: true, taskState: A2ATaskState.WORKING });
+    await expect(controller.resume({ taskHandle: "task_handle_123456", intent: "continue" })).resolves.toMatchObject({ state: "sent", taskAvailable: true });
+    await expect(controller.cancel({ taskHandle: "task_handle_123456" })).resolves.toMatchObject({ state: "sent", taskAvailable: true });
+
+    const failing = runtime({ execute: vi.fn(async () => ({ ok: false, outcome: "authentication-failed" })) });
+    const failingController = createRemoteA2AActionController({ runtime: failing as never, config, projectRoot: "/project", makeId: ids() });
+    await expect(failingController.get({ taskHandle: "task_handle_123456" })).resolves.toMatchObject({ state: "failed", taskAvailable: true, outcome: "authentication-failed" });
+
+    const blocked = runtime({ taskActionDisposition: vi.fn(async () => ({ kind: "blocked", outcome: "transport-ambiguous" })) });
+    const blockedController = createRemoteA2AActionController({ runtime: blocked as never, config, projectRoot: "/project", makeId: ids() });
+    await expect(blockedController.cancel({ taskHandle: "task_handle_123456" })).resolves.toMatchObject({ state: "failed", taskAvailable: true });
+  });
+
+  it("keeps the Task actionable when a second action arrives while one is in flight", async () => {
+    let release!: () => void;
+    const value = runtime({ execute: vi.fn(() => new Promise((resolve) => { release = () => resolve({ ok: true, result: {}, record: {} }); })) });
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+    const first = controller.get({ taskHandle: "task_handle_123456" });
+    await vi.waitFor(() => expect(value.execute).toHaveBeenCalledOnce());
+    await expect(controller.get({ taskHandle: "task_handle_123456" })).resolves.toMatchObject({ state: "failed", outcome: "a2a-remote-busy", taskAvailable: true });
+    release();
+    await expect(first).resolves.toMatchObject({ state: "sent", taskAvailable: true });
+  });
+
+  it("offers Task actions after a replay only when the replay produced a host-held Task", async () => {
+    const recoveryRoute = { handle: "recovery_handle_123", operationId: "initial-op", targetAgentId: 1, targetLabel: "Agent one", lineage, messageId: "initial-message", credentialRevisionId: 11 };
+    const withTask = runtime({ getOperationRecoveryRoute: vi.fn(async () => recoveryRoute) });
+    await expect(createRemoteA2AActionController({ runtime: withTask as never, config, projectRoot: "/project", makeId: ids() })
+      .replay({ taskHandle: "recovery_handle_123" })).resolves.toMatchObject({ state: "sent", taskAvailable: true, taskState: A2ATaskState.WORKING });
+
+    const withoutTask = runtime({ getOperationRecoveryRoute: vi.fn(async () => recoveryRoute), getTaskProjection: vi.fn(async () => null) });
+    await expect(createRemoteA2AActionController({ runtime: withoutTask as never, config, projectRoot: "/project", makeId: ids() })
+      .replay({ taskHandle: "recovery_handle_123" })).resolves.toMatchObject({ state: "sent", taskAvailable: false });
+  });
+
   it("reuses an authorized active revision when no rotation successor exists and rejects stale revisions", async () => {
     const sameRevisionConfig = { ...config, targets: [{ ...config.targets[0]!, replayCredentialRevisionIds: [] }] };
     const same = runtime({ getOperationRecoveryRoute: vi.fn(async () => ({ handle: "recovery_handle_123", operationId: "initial-op", targetAgentId: 1, targetLabel: "Agent one", lineage, messageId: "initial-message", credentialRevisionId: 11 })) });

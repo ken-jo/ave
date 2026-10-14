@@ -101,6 +101,15 @@ export function RemoteA2AActionButton() {
 
   const runTaskAction = async (action: "get" | "resume" | "cancel" | "replay") => {
     if (!taskHandle || sending || (action === "resume" && !canSend)) return;
+    // A refusal at the IPC boundary says nothing about the Task itself: keep
+    // what the host last reported about it so its actions stay reachable.
+    const known = {
+      taskHandle,
+      ...(status?.taskAvailable !== undefined ? { taskAvailable: status.taskAvailable } : {}),
+      ...(status?.recoveryEligible !== undefined ? { recoveryEligible: status.recoveryEligible } : {}),
+      ...(status?.taskState !== undefined ? { taskState: status.taskState } : {}),
+      ...(status?.targetLabel !== undefined ? { targetLabel: status.targetLabel } : {}),
+    };
     setSending(true);
     try {
       const result = action === "get"
@@ -112,10 +121,10 @@ export function RemoteA2AActionButton() {
         setStatus(result.status);
         if (action === "resume" && result.status.state === "sent") setIntent("");
       } else {
-        setStatus({ state: "failed", taskHandle, outcome: result.error, updatedAt: new Date().toISOString() });
+        setStatus({ state: "failed", ...known, outcome: result.error, updatedAt: new Date().toISOString() });
       }
     } catch {
-      setStatus({ state: "failed", taskHandle, outcome: "a2a-remote-task-action-failed", updatedAt: new Date().toISOString() });
+      setStatus({ state: "failed", ...known, outcome: "a2a-remote-task-action-failed", updatedAt: new Date().toISOString() });
     } finally {
       setSending(false);
     }

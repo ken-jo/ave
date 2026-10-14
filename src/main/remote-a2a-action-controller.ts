@@ -89,7 +89,7 @@ export function createRemoteA2AActionController(
     if (action === "continue") {
       const disposition = await options.runtime.taskActionDisposition(input.taskHandle, action, ownerId);
       if (disposition.kind === "blocked") {
-        return Object.freeze({ state: "failed", taskHandle: input.taskHandle, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: `continue-reconciliation-required:${disposition.outcome}`, updatedAt: now().toISOString() });
+        return Object.freeze({ state: "failed", taskHandle: input.taskHandle, taskAvailable: true, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: `continue-reconciliation-required:${disposition.outcome}`, updatedAt: now().toISOString() });
       }
       if (route.state !== "TASK_STATE_INPUT_REQUIRED") {
         throw new Error("a2a-remote-task-not-input-required");
@@ -105,11 +105,12 @@ export function createRemoteA2AActionController(
           || projection.targetLabel !== route.targetLabel
           || projection.state !== "TASK_STATE_CANCELED"
           || projection.terminal !== true) {
-          return Object.freeze({ state: "failed", taskHandle: input.taskHandle, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: "cancel-reconciliation-required:stored-cancel-projection-invalid", updatedAt: now().toISOString() });
+          return Object.freeze({ state: "failed", taskHandle: input.taskHandle, taskAvailable: true, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: "cancel-reconciliation-required:stored-cancel-projection-invalid", updatedAt: now().toISOString() });
         }
         return Object.freeze({
           state: "sent",
           taskHandle: input.taskHandle,
+          taskAvailable: true,
           targetAgentId: route.targetAgentId,
           targetLabel: route.targetLabel,
           taskState: projection.state,
@@ -118,13 +119,13 @@ export function createRemoteA2AActionController(
         });
       }
       if (disposition.kind === "blocked") {
-        return Object.freeze({ state: "failed", taskHandle: input.taskHandle, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: `cancel-reconciliation-required:${disposition.outcome}`, updatedAt: now().toISOString() });
+        return Object.freeze({ state: "failed", taskHandle: input.taskHandle, taskAvailable: true, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: `cancel-reconciliation-required:${disposition.outcome}`, updatedAt: now().toISOString() });
       }
       if (isA2ATerminalTaskState(route.state)) {
         throw new Error("a2a-remote-task-terminal");
       }
     }
-    if (pending) return Object.freeze({ state: "failed", taskHandle: input.taskHandle, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, outcome: "a2a-remote-busy", updatedAt: now().toISOString() });
+    if (pending) return Object.freeze({ state: "failed", taskHandle: input.taskHandle, taskAvailable: true, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: "a2a-remote-busy", updatedAt: now().toISOString() });
     pending = true;
     const operationId = makeId();
     const attemptId = makeId();
@@ -144,7 +145,7 @@ export function createRemoteA2AActionController(
       const message = maskA2AMessage({ messageId, taskId: route.remoteTaskId, ...(route.remoteContextId ? { contextId: route.remoteContextId } : {}), role: "ROLE_USER", parts: [{ text: input.intent! }] } as never).message;
       request = { id: makeId(), method: A2AJsonRpcMethod.SEND_MESSAGE, params: { message: message as unknown as A2AJsonObject } };
     }
-    latest = Object.freeze({ state: action === "get" ? "idle" : "awaiting-approval", operationId, taskHandle: input.taskHandle, taskState: route.state, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, updatedAt: now().toISOString() });
+    latest = Object.freeze({ state: action === "get" ? "idle" : "awaiting-approval", operationId, taskHandle: input.taskHandle, taskAvailable: true, taskState: route.state, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, updatedAt: now().toISOString() });
     try {
       const result = await options.runtime.execute({
         operationId,
@@ -174,6 +175,7 @@ export function createRemoteA2AActionController(
         state: result.ok ? "sent" : "failed",
         operationId,
         taskHandle: input.taskHandle,
+        taskAvailable: true,
         ...(projection ? { taskState: projection.state } : { taskState: route.state }),
         targetAgentId: route.targetAgentId,
         targetLabel: route.targetLabel,
@@ -181,7 +183,7 @@ export function createRemoteA2AActionController(
         updatedAt: now().toISOString(),
       });
     } catch {
-      latest = Object.freeze({ state: "failed", operationId, taskHandle: input.taskHandle, taskState: route.state, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, outcome: "a2a-remote-task-action-failed", updatedAt: now().toISOString() });
+      latest = Object.freeze({ state: "failed", operationId, taskHandle: input.taskHandle, taskAvailable: true, taskState: route.state, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, outcome: "a2a-remote-task-action-failed", updatedAt: now().toISOString() });
     } finally {
       pending = false;
     }
@@ -222,7 +224,8 @@ export function createRemoteA2AActionController(
         request: { id: makeId(), method: A2AJsonRpcMethod.SEND_MESSAGE, params: { message: { messageId: recovery.messageId, role: "ROLE_USER", parts: [{ text: "[exact replay uses encrypted original bytes]" }] } } },
         messageId: recovery.messageId,
       });
-      latest = Object.freeze({ state: result.ok ? "sent" : "failed", operationId: recovery.operationId, taskHandle: input.taskHandle, targetAgentId: recovery.targetAgentId, targetLabel: recovery.targetLabel, recoveryEligible: !result.ok && (result.outcome === "reconciling" || result.outcome === "unknown-manual-reconciliation-required"), outcome: result.ok ? "success" : result.outcome, updatedAt: now().toISOString() });
+      const projection = await options.runtime.getTaskProjection(input.taskHandle, ownerId);
+      latest = Object.freeze({ state: result.ok ? "sent" : "failed", operationId: recovery.operationId, taskHandle: input.taskHandle, ...(projection ? { taskState: projection.state } : {}), taskAvailable: Boolean(projection), targetAgentId: recovery.targetAgentId, targetLabel: recovery.targetLabel, recoveryEligible: !result.ok && (result.outcome === "reconciling" || result.outcome === "unknown-manual-reconciliation-required"), outcome: result.ok ? "success" : result.outcome, updatedAt: now().toISOString() });
     } catch {
       latest = Object.freeze({ state: "failed", operationId: recovery.operationId, taskHandle: input.taskHandle, targetAgentId: recovery.targetAgentId, targetLabel: recovery.targetLabel, recoveryEligible: true, outcome: "a2a-remote-replay-failed", updatedAt: now().toISOString() });
     } finally {

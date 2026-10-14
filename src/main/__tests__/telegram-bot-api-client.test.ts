@@ -116,6 +116,28 @@ describe("TelegramBotApiClient", () => {
     await expect(withoutHeader.getUpdates()).resolves.toEqual({ ok: false, reason: "rate-limited" });
   });
 
+  it("reads the flood wait Telegram documents in parameters.retry_after", async () => {
+    const fromBody = client(vi.fn(async () => json(
+      { ok: false, error_code: 429, description: "Too Many Requests: retry after 31", parameters: { retry_after: 31 } },
+      { status: 429 },
+    )) as unknown as typeof fetch);
+    await expect(fromBody.getUpdates()).resolves.toEqual({ ok: false, reason: "rate-limited", retryAfterMs: 31_000 });
+
+    const headerWins = client(vi.fn(async () => json(
+      { ok: false, error_code: 429, parameters: { retry_after: 31 } },
+      { status: 429, headers: { "retry-after": "7" } },
+    )) as unknown as typeof fetch);
+    await expect(headerWins.getUpdates()).resolves.toMatchObject({ retryAfterMs: 7_000 });
+
+    for (const retryAfter of [-1, 1.5, "31", 3_601]) {
+      const malformed = client(vi.fn(async () => json(
+        { ok: false, error_code: 429, parameters: { retry_after: retryAfter } },
+        { status: 429 },
+      )) as unknown as typeof fetch);
+      await expect(malformed.getUpdates()).resolves.toEqual({ ok: false, reason: "rate-limited" });
+    }
+  });
+
   it("rejects a wrong token as unauthorized rather than unreachable", async () => {
     const api = client(vi.fn(async () => json({ ok: false, error_code: 401 }, { status: 401 })) as unknown as typeof fetch);
     await expect(api.getMe()).resolves.toEqual({ ok: false, reason: "unauthorized" });

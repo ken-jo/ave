@@ -261,7 +261,15 @@ export function MessagingConnectionsSection({
   useEffect(() => {
     let alive = true;
     void (async () => {
-      const settings = await api.getSettings();
+      let settings: Awaited<ReturnType<AveApi["getSettings"]>>;
+      try {
+        settings = await api.getSettings();
+      } catch {
+        // A failed read lists no marketplace rows rather than escaping as an
+        // unhandled rejection. The built-in Telegram row does not depend on
+        // this read and still reports its own connection state.
+        return;
+      }
       if (!alive) return;
       setConnections(settings.marketplace?.installedMessagingConnections ?? []);
     })();
