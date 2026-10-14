@@ -55,7 +55,7 @@ IPC; they never reach host internals directly. The code entry points are
 ### Proposals
 
 - [Suggested replies](./proposals/suggested-replies-ghost-text.md): ghost-text
-  reply suggestions in the composer.
+  reply suggestions in the composer (implemented).
 - [Evidence-absent HIGH re-adjudication](./proposals/evidence-absent-high-readjudication.md)
   (proposed).
 - [Plugin declared-category legacy removal](./proposals/plugin-declared-category-legacy-removal.md)

@@ -35,6 +35,11 @@ first release that serves protocol 3 declares:
 }
 ```
 
+The validator's floor for protocol 3, `HOST_PROTOCOL_FIRST_APP_VERSION["3"]`,
+is still `"0.13.0"` while protocol 3 is an unreleased candidate; the released
+0.13.0 served protocol 2, and the 0.14.0 release bump raises the floor. Declare
+`0.14.0`, which passes both today's check and the raised one.
+
 The protocol 3 migration note is in [`CHANGELOG.md`](../../CHANGELOG.md); the
 field definitions are in [Manifest Basics](./plugin-development.md#manifest-basics).
 A `process` extension has an extra floor; see
