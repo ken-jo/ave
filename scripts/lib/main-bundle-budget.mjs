@@ -52,11 +52,14 @@ export function isSafeMainBundleManifestPath(path) {
  * instead of against a feeling. The chat-turn progress lifecycle is a main-process
  * feature for sub-agent transcript snapshots. Its latest measurement is entry 313_848,
  * initial 5_253_957, total 9_160_964; the initial ceiling therefore moves to 5_255_000
- * rather than hiding the functionality behind a build-only workaround.
+ * rather than hiding the functionality behind a build-only workaround. The built-in
+ * search, web and memory tools are registered with the tool registry at boot, so their
+ * definitions sit in the initial graph; with them the measurement is entry 416_271,
+ * initial 5_273_794, total 8_909_524, and the initial ceiling moves to 5_275_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_255_000,
+  initialBytes: 5_275_000,
   totalBytes: 11_050_000,
 });
 
