@@ -21,8 +21,11 @@ vi.mock("electron", () => ({
 }));
 
 const {
+  DOWNLOAD_PROMPTS_PER_ORIGIN,
+  DOWNLOAD_RATE_WINDOW_MS,
   attachSideBrowserWebview,
   configureSideBrowserWebviewAttach,
+  createSideBrowserDownloadPolicy,
   installSideBrowserPartitionPolicy,
   isSideBrowserContents,
   isSideBrowserPopupUrlAllowed,
@@ -134,7 +137,7 @@ describe("side browser webview attach policy", () => {
     expect(pending).toEqual(["https://example.com/docs"]);
   });
 
-  it("installs a browser-like UA, a narrow permission allow-list without fullscreen, and leaves downloads to the native save dialog", () => {
+  it("installs a browser-like UA, a narrow permission allow-list without fullscreen, and a download policy", () => {
     installSideBrowserPartitionPolicy();
 
     const ua = electronMock.sideBrowserSession.setUserAgent.mock.calls[0]?.[0] as string;
@@ -142,8 +145,8 @@ describe("side browser webview attach policy", () => {
     expect(ua).not.toContain("Electron");
     expect(electronMock.sideBrowserSession.setPermissionRequestHandler).toHaveBeenCalledOnce();
     expect(electronMock.sideBrowserSession.setPermissionCheckHandler).toHaveBeenCalledWith(expect.any(Function));
-    // No download veto: Electron's default routine prompts a Save dialog.
-    expect(electronMock.sideBrowserSession.on).not.toHaveBeenCalledWith("will-download", expect.any(Function));
+    // Downloads are allowed, behind the Save-dialog policy below.
+    expect(electronMock.sideBrowserSession.on).toHaveBeenCalledWith("will-download", expect.any(Function));
 
     const requestHandler = electronMock.sideBrowserSession.setPermissionRequestHandler.mock.calls[0]?.[0] as
       (webContents: unknown, permission: string, callback: (allowed: boolean) => void) => void;
@@ -262,5 +265,112 @@ describe("side browser webview attach policy", () => {
   it("verifies attached webContents by session before link-owned registration", () => {
     expect(isSideBrowserContents({ session: electronMock.sideBrowserSession } as never)).toBe(true);
     expect(isSideBrowserContents({ session: electronMock.otherSession } as never)).toBe(false);
+  });
+
+  describe("download policy", () => {
+    function fakeItem(url = "https://files.example.com/report.pdf") {
+      const listeners = new Map<string, Array<() => void>>();
+      let savePath = "";
+      return {
+        getURL: () => url,
+        getSavePath: () => savePath,
+        setSavePath: vi.fn(),
+        on: vi.fn((name: string, listener: () => void) => {
+          listeners.set(name, [...(listeners.get(name) ?? []), listener]);
+        }),
+        pickPath: (path: string) => {
+          savePath = path;
+          for (const listener of listeners.get("updated") ?? []) listener();
+        },
+        finish: () => {
+          for (const listener of listeners.get("done") ?? []) listener();
+        },
+      };
+    }
+    function page(id: number, url = "https://files.example.com/list") {
+      return { id, getURL: () => url };
+    }
+    function policy(clock = { at: 0 }) {
+      const warn = vi.fn();
+      const handle = createSideBrowserDownloadPolicy({ now: () => clock.at, warn });
+      return { handle, warn, clock };
+    }
+
+    it("lets a download through to the native Save dialog without presetting a path or opening the file", async () => {
+      const { handle, warn } = policy();
+      const download = event();
+      const item = fakeItem();
+      handle(download, item as never, page(1) as never);
+      expect(download.preventDefault).not.toHaveBeenCalled();
+      expect(item.setSavePath).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+      // Nothing in the module can open a saved file: it never imports shell.
+      const { readFileSync } = await import("node:fs");
+      const source = readFileSync(new URL("../side-browser-webview.ts", import.meta.url), "utf8");
+      expect(source).not.toMatch(/\bshell\b|openPath|setSavePath\(/);
+    });
+
+    it("cancels a second download while that side browser's Save dialog is still open", () => {
+      const { handle, warn, clock } = policy();
+      const first = fakeItem();
+      handle(event(), first as never, page(1) as never);
+
+      const second = event();
+      handle(second, fakeItem() as never, page(1) as never);
+      expect(second.preventDefault).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledOnce();
+
+      // Another side browser has its own dialog slot.
+      const elsewhere = event();
+      handle(elsewhere, fakeItem() as never, page(2, "https://other.example.org/") as never);
+      expect(elsewhere.preventDefault).not.toHaveBeenCalled();
+
+      // Once the user picked a path the dialog is closed and a new prompt may open.
+      first.pickPath("/Users/me/Downloads/report.pdf");
+      clock.at += 1;
+      const afterPick = event();
+      handle(afterPick, fakeItem() as never, page(1) as never);
+      expect(afterPick.preventDefault).not.toHaveBeenCalled();
+    });
+
+    it("frees the dialog slot when the download is cancelled from the dialog", () => {
+      const { handle } = policy();
+      const first = fakeItem();
+      handle(event(), first as never, page(1) as never);
+      first.finish();
+      const next = event();
+      handle(next, fakeItem() as never, page(1) as never);
+      expect(next.preventDefault).not.toHaveBeenCalled();
+    });
+
+    it("cancels and logs download prompts beyond the per-origin rate limit", () => {
+      const { handle, warn, clock } = policy();
+      for (let i = 0; i < DOWNLOAD_PROMPTS_PER_ORIGIN; i += 1) {
+        const item = fakeItem();
+        const allowed = event();
+        handle(allowed, item as never, page(1) as never);
+        expect(allowed.preventDefault).not.toHaveBeenCalled();
+        item.finish();
+        clock.at += 1_000;
+      }
+      const over = event();
+      handle(over, fakeItem() as never, page(1) as never);
+      expect(over.preventDefault).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ origin: "https://files.example.com" }),
+        expect.stringContaining("too many download prompts"),
+      );
+
+      // The limit is per origin: another site is unaffected.
+      const otherOrigin = event();
+      handle(otherOrigin, fakeItem() as never, page(3, "https://other.example.org/") as never);
+      expect(otherOrigin.preventDefault).not.toHaveBeenCalled();
+
+      // After the window passes the origin may prompt again.
+      clock.at += DOWNLOAD_RATE_WINDOW_MS;
+      const later = event();
+      handle(later, fakeItem() as never, page(1) as never);
+      expect(later.preventDefault).not.toHaveBeenCalled();
+    });
   });
 });

@@ -462,8 +462,12 @@ Important rules:
   `src/main/side-browser-webview.ts`) works like a normal browser: http(s)
   navigation and redirects, popups and OAuth windows (native-framed child
   windows of the owning main window, so they close with it, on the same
-  session with no preload, sandboxed, context-isolated, guarded recursively), downloads through the native Save dialog, and a
-  Chromium/Edge user agent so sign-in pages accept it. Other schemes stay
+  session with no preload, sandboxed, context-isolated, guarded recursively),
+  downloads, and a Chromium/Edge user agent so sign-in pages accept it.
+  Downloads always go through the native Save dialog (no save path is ever
+  preset and nothing opens a saved file); one Save dialog may be pending per
+  side browser, and a page origin gets at most 3 download prompts a minute —
+  requests beyond either limit are cancelled and logged. Other schemes stay
   blocked, and only the `clipboard-sanitized-write` permission is granted
   (`fullscreen` is denied: with no exit hint a page could cover the app and
   imitate its approval UI).

@@ -1,8 +1,18 @@
-import { session, type BrowserWindow, type BrowserWindowConstructorOptions, type WebContents } from "electron";
+import {
+  session,
+  type BrowserWindow,
+  type BrowserWindowConstructorOptions,
+  type DownloadItem,
+  type Event as ElectronEvent,
+  type WebContents,
+} from "electron";
 import { AVE_SIDE_BROWSER_PARTITION } from "../shared/side-browser.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import { markAsLinkOwned } from "./link-window-registry.js";
 import { buildPersistentBrowserUserAgent } from "./browser-user-agent.js";
+import { createLogger } from "../lib/logger.js";
+
+const log = createLogger("ave");
 
 export type SideBrowserAttachResult = "ignored" | "accepted" | "blocked";
 
@@ -43,9 +53,75 @@ export function installSideBrowserPartitionPolicy(): void {
   });
   sideBrowserSession.setPermissionCheckHandler((_webContents, permission) =>
     isSideBrowserPermissionAllowed(permission));
-  // Downloads are allowed. No `setSavePath` is called, so Electron shows the
-  // native Save dialog and the user picks (or cancels) the destination — the
-  // page can never write a file the user did not see.
+  sideBrowserSession.on("will-download", createSideBrowserDownloadPolicy());
+}
+
+/** Download prompts one page origin may raise within {@link DOWNLOAD_RATE_WINDOW_MS}. */
+export const DOWNLOAD_PROMPTS_PER_ORIGIN = 3;
+export const DOWNLOAD_RATE_WINDOW_MS = 60_000;
+
+type DownloadPolicyItem = Pick<DownloadItem, "getSavePath" | "getURL" | "on">;
+type DownloadPolicyContents = Pick<WebContents, "id" | "getURL">;
+
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "null";
+  }
+}
+
+/**
+ * The side browser's `will-download` policy. Downloads work as in a normal
+ * browser, through the native Save dialog, with three limits so a page cannot
+ * use them to badger the user or write files unseen:
+ *
+ * - No `setSavePath` is ever called, so Electron always shows the Save dialog
+ *   and the user picks (or cancels) the destination. Nothing opens the file
+ *   once it is saved.
+ * - One pending Save dialog per side browser (per guest or popup
+ *   `WebContents`): a download requested while that browser's dialog is still
+ *   open is cancelled.
+ * - At most {@link DOWNLOAD_PROMPTS_PER_ORIGIN} prompts per page origin within
+ *   {@link DOWNLOAD_RATE_WINDOW_MS}; further requests are cancelled and logged.
+ *
+ * A prompt stops being pending once the user picked a path (the item reports
+ * a save path) or the item finished (saved, cancelled or interrupted).
+ */
+export function createSideBrowserDownloadPolicy(options: {
+  now?: () => number;
+  warn?: (fields: Record<string, unknown>, message: string) => void;
+} = {}): (event: Pick<ElectronEvent, "preventDefault">, item: DownloadPolicyItem, contents: DownloadPolicyContents | null | undefined) => void {
+  const now = options.now ?? Date.now;
+  const warn = options.warn ?? ((fields, message) => log.warn(fields, message));
+  const pendingPrompt = new Set<number>();
+  const promptsByOrigin = new Map<string, number[]>();
+
+  return (event, item, contents) => {
+    const origin = originOf(contents?.getURL() ?? "");
+    const contentsId = contents?.id ?? -1;
+    if (pendingPrompt.has(contentsId)) {
+      event.preventDefault();
+      warn({ origin, url: item.getURL() }, "side browser download cancelled: a Save dialog is already open");
+      return;
+    }
+    const at = now();
+    const recent = (promptsByOrigin.get(origin) ?? []).filter((t) => at - t < DOWNLOAD_RATE_WINDOW_MS);
+    if (recent.length >= DOWNLOAD_PROMPTS_PER_ORIGIN) {
+      promptsByOrigin.set(origin, recent);
+      event.preventDefault();
+      warn({ origin, url: item.getURL() }, "side browser download cancelled: too many download prompts from this origin");
+      return;
+    }
+    recent.push(at);
+    promptsByOrigin.set(origin, recent);
+    pendingPrompt.add(contentsId);
+    const settle = () => pendingPrompt.delete(contentsId);
+    item.on("updated", () => {
+      if (item.getSavePath()) settle();
+    });
+    item.on("done", settle);
+  };
 }
 
 export function isSideBrowserContents(contents: WebContents): boolean {
