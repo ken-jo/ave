@@ -9,6 +9,19 @@ const COMMIT = /^[0-9a-f]{40}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 
 /**
+ * Where a recorded copy is published: the `$id` of every schema the generator
+ * writes and the mirror records. Protocols 1 and 2 were published under the
+ * Ave site's origin and keep that `$id` byte for byte (RETIRED_COPIES); the
+ * Ave site serves those files at the same paths.
+ */
+export const HOST_PROTOCOL_SCHEMA_ORIGIN = "https://ave.agent-connector.ai";
+
+/** The `$id` of one recorded copy, given its path under the mirror root. */
+export function hostProtocolSchemaId(relative) {
+  return `${HOST_PROTOCOL_SCHEMA_ORIGIN}/schemas/plugin-host-protocol/${relative}`;
+}
+
+/**
  * Retired protocols' published schemas. Protocols 1 and 2 named the wire the
  * host no longer serves, so they left mirror.json, but their URLs were
  * published and plugins built against them still cite the `$id`. They stay in
@@ -92,7 +105,7 @@ export function checkProtocolMirror(root) {
     const bytes = readFileSync(join(mirrorRoot, relative));
     if (digest(bytes) !== entry.sha256) fail(`${relative} differs from recorded sha256`);
     const schema = JSON.parse(bytes.toString("utf8"));
-    const expectedId = `https://former-site.invalid/schemas/plugin-host-protocol/${relative}`;
+    const expectedId = hostProtocolSchemaId(relative);
     if (schema.$id !== expectedId) fail(`${relative} has a different $id`);
     if (entry.publishedTag === null && entry.appVersion === version) {
       candidates += 1;
@@ -178,8 +191,7 @@ export function syncProtocolMirror(root, generatedFrom) {
     const canonical = join(canonicalRoot, dir.name, "protocol.schema.json");
     if (!existsSync(canonical)) continue;
     const bytes = readFileSync(canonical);
-    if (JSON.parse(bytes.toString("utf8")).$id !==
-      `https://former-site.invalid/schemas/plugin-host-protocol/${copyPath(dir.name, version)}`) continue;
+    if (JSON.parse(bytes.toString("utf8")).$id !== hostProtocolSchemaId(copyPath(dir.name, version))) continue;
     const relative = copyPath(dir.name, version);
     const prior = manifest.copies.find((entry) =>
       entry.protocol === dir.name && entry.appVersion === version);

@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   checkProtocolMirror,
+  hostProtocolSchemaId,
   publishProtocolMirror,
   syncProtocolMirror,
 } from "../../scripts/lib/plugin-host-protocol-mirror.mjs";
@@ -20,7 +21,7 @@ function put(root: string, relative: string, bytes: string): void {
 
 function schema(version: string, value: string): string {
   return `${JSON.stringify({
-    $id: `https://former-site.invalid/schemas/plugin-host-protocol/2/v${version}/protocol.schema.json`,
+    $id: hostProtocolSchemaId(`2/v${version}/protocol.schema.json`),
     value,
   })}\n`;
 }
@@ -128,7 +129,7 @@ describe("host protocol web mirror", () => {
   it("rejects a contribution added to a retired canonical protocol", () => {
     const { root, base } = fixture();
     const frozen = `${JSON.stringify({
-      $id: "https://former-site.invalid/schemas/plugin-host-protocol/1/v0.11.0/protocol.schema.json",
+      $id: hostProtocolSchemaId("1/v0.11.0/protocol.schema.json"),
     })}\n`;
     put(root, "schemas/plugin-host-protocol/1/protocol.schema.json", frozen);
     put(root, `${base}/1/v0.11.0/protocol.schema.json`, frozen);
@@ -142,7 +143,7 @@ describe("host protocol web mirror", () => {
     writeFileSync(manifestPath, JSON.stringify(manifest));
     expect(checkProtocolMirror(root)).toContain("4 copies, 2 aliases, 1 candidate");
     put(root, "schemas/plugin-host-protocol/1/protocol.schema.json", `${JSON.stringify({
-      $id: "https://former-site.invalid/schemas/plugin-host-protocol/1/v0.11.0/protocol.schema.json",
+      $id: hostProtocolSchemaId("1/v0.11.0/protocol.schema.json"),
       prompts: [],
     })}\n`);
     expect(() => checkProtocolMirror(root)).toThrow(
