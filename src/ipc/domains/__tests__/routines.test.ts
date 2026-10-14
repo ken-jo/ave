@@ -34,6 +34,10 @@ function makeDeps(
         },
       ]),
       listActive: vi.fn(() => []),
+      listForDisplay: vi.fn(() => ({
+        routines: [],
+        invalid: [{ id: "legacy", field: "scope.forcedPluginIds", value: "a_b", reason: "invalid-plugin-id" }],
+      })),
       update: vi.fn(),
       dismiss: vi.fn(),
       remove: vi.fn(),
@@ -75,6 +79,16 @@ async function invoke(channel: string, ...args: unknown[]) {
   if (!fn) throw new Error(`No handler registered for ${channel}`);
   return await fn(hostFrameEvent(), ...args);
 }
+
+describe("routine list", () => {
+  it("returns the active routines with the held-back invalid ones", async () => {
+    await setup([]);
+    await expect(invoke(ROUTINES.list)).resolves.toEqual({
+      routines: [],
+      invalid: [{ id: "legacy", field: "scope.forcedPluginIds", value: "a_b", reason: "invalid-plugin-id" }],
+    });
+  });
+});
 
 describe("routine pending results", () => {
   beforeEach(() => {
