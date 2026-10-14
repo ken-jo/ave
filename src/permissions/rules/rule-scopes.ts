@@ -7,6 +7,8 @@
  * it before calling the manager). A decision for a project whose rules were
  * never loaded is an internal contract violation and throws.
  */
+import { stat } from "node:fs/promises";
+import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { isRuleSpecifier, parseRuleSpecifier } from "./rule-specifier.js";
 import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rule-files.js";
@@ -17,25 +19,41 @@ export type ProjectRuleState =
   | { ok: true; projectRoot: string; rules: readonly PermissionRule[] }
   | { ok: false; projectRoot: string; error: PermissionRulesFileCorruptError };
 
+/** File version a cached state was read from (mtime + size); `null` = absent. */
+type FileStamp = string | null;
+
+async function fileStamp(filePath: string): Promise<FileStamp> {
+  try {
+    const info = await stat(filePath);
+    return `${info.mtimeMs}:${info.size}`;
+  } catch (error) {
+    if (isMissingPathError(error)) return null;
+    throw error;
+  }
+}
+
 export class ProjectRuleScopes {
   private readonly states = new Map<string, ProjectRuleState>();
+  private readonly stamps = new Map<string, FileStamp>();
 
   constructor(private readonly baseDir: string) {}
 
   /**
-   * Load (once) the rule file of the project rooted at `projectCwd`. A corrupt
-   * file is recorded, not thrown: decisions for that project then fail closed
-   * with the file's error as the visible reason.
+   * Load the rule file of the project `projectCwd` belongs to, re-reading it
+   * whenever its mtime changed (a hand edit or another window's write). A
+   * corrupt file is recorded, not thrown: non-read decisions for that project
+   * then fail closed with the file's error as the visible reason.
    */
   async ensureLoaded(projectCwd: string): Promise<ProjectRuleState> {
     const location = projectRulesLocation(this.baseDir, projectCwd);
     const cached = this.states.get(location.identity);
-    if (cached) return cached;
+    if (cached && this.stamps.get(location.identity) === await fileStamp(location.filePath)) return cached;
     return this.reload(projectCwd);
   }
 
   async reload(projectCwd: string): Promise<ProjectRuleState> {
     const location = projectRulesLocation(this.baseDir, projectCwd);
+    const stamp = await fileStamp(location.filePath);
     let state: ProjectRuleState;
     try {
       const file = await readProjectRulesFile(location);
@@ -46,6 +64,7 @@ export class ProjectRuleScopes {
       state = { ok: false, projectRoot: location.projectRoot, error };
     }
     this.states.set(location.identity, state);
+    this.stamps.set(location.identity, stamp);
     return state;
   }
 
@@ -72,6 +91,7 @@ export class ProjectRuleScopes {
       }
     });
     this.states.set(location.identity, { ok: true, projectRoot: location.projectRoot, rules: Object.freeze([...file.rules]) });
+    this.stamps.set(location.identity, await fileStamp(location.filePath));
   }
 
   async removeRule(projectCwd: string, pattern: string, action: PermissionRule["action"]): Promise<void> {
@@ -80,6 +100,7 @@ export class ProjectRuleScopes {
       current.rules = current.rules.filter((r) => !(r.pattern === pattern && r.action === action));
     });
     this.states.set(location.identity, { ok: true, projectRoot: location.projectRoot, rules: Object.freeze([...file.rules]) });
+    this.stamps.set(location.identity, await fileStamp(location.filePath));
   }
 }
 

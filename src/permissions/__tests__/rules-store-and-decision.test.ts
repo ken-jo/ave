@@ -171,6 +171,35 @@ describe("decision path", () => {
     await expect(pm.listProjectRules(project)).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/specifiers only/) });
   });
 
+  it("project rules key to the git root, so subdirectory sessions share them", async () => {
+    const repo = join(dir, "repo");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(join(repo, "packages", "app"), { recursive: true });
+    const pm = new PermissionManager(permissionsFile);
+    await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: join(repo, "packages", "app") });
+    expect(projectRulesLocation(dir, join(repo, "packages", "app")).filePath).toBe(projectRulesLocation(dir, repo).filePath);
+    expect(projectRulesLocation(dir, join(repo, "packages", "app")).projectRoot).toBe(realpathSync(repo));
+    await pm.ensureProjectRulesLoaded(repo);
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: repo })).toMatchObject({ decision: "allow" });
+    // Outside a repository the cwd itself is the project.
+    expect(projectRulesLocation(dir, project).projectRoot).toBe(project);
+  });
+
+  it("re-reads a project rule file when it changes on disk", async () => {
+    const pm = new PermissionManager(permissionsFile);
+    await pm.ensureProjectRulesLoaded(project);
+    const ctx = { ...shell("npm test"), projectRulesCwd: project };
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "ask" });
+    const location = projectRulesLocation(dir, project);
+    mkdirSync(join(dir, "permissions", "project-rules"), { recursive: true });
+    writeFileSync(location.filePath, JSON.stringify({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(npm test *)", action: "allow" }] }));
+    await pm.ensureProjectRulesLoaded(project);
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "allow" });
+    writeFileSync(location.filePath, "{ broken");
+    await pm.ensureProjectRulesLoaded(project);
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "ask", forceModal: true });
+  });
+
   it("a specifier deny never hides the tool from the model", async () => {
     const pm = new PermissionManager(permissionsFile);
     await pm.addRulePersist({ pattern: "Bash(rm *)", action: "deny" }, { kind: "user" });
