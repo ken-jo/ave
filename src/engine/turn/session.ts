@@ -12,6 +12,7 @@ import type { GenericMessage } from "../llm/types.js";
 import type { WorkspaceRootRevocationOptions } from "./types.js";
 import { normalizeToolPairInvariant } from "../conversation-history.js";
 import { backgroundShellManager } from "../../tools/shell-tools.js";
+import { disposeSessionFileReads } from "../../tools/file-read-state.js";
 import { createTracer } from "../../observability/conversation-trace.js";
 import { estimateMessagesTokens } from "../auto-compact.js";
 import { createLogger } from "../../lib/logger.js";
@@ -84,6 +85,7 @@ async function settleOutgoingSession(
 ): Promise<void> {
   self.assertSessionTransitionLease(lease);
   backgroundShellManager.disposeSession(lease.sessionId);
+  disposeSessionFileReads(lease.sessionId);
   const report = await backgroundShellManager.settleSessionCleanup(lease.sessionId);
   self.assertSessionTransitionLease(lease);
   if (report?.state === "cleanup-unproven") {
