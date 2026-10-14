@@ -501,7 +501,7 @@ export function createTelegramConnectionService(
       emitChange();
       return;
     }
-    await resumeWithRetry(attempt + 1);
+    await resumeWithRetry(attempt + 1, "automatic");
   };
 
   /**
@@ -889,8 +889,16 @@ export function createTelegramConnectionService(
     });
   };
 
-  const resume = async (): Promise<TelegramConnectionMutationResult> => {
+  /**
+   * `automatic` resumes (boot, backoff retry, wake) act only while the owner
+   * still wants the connection, checked inside the queue: a pause whose persist
+   * is in flight when a retry fires is ahead of it in the queue, and the retry
+   * must not turn that pause back into a live connection. An `owner` resume is
+   * the owner asking, so it proceeds from any state.
+   */
+  const resume = async (origin: "owner" | "automatic"): Promise<TelegramConnectionMutationResult> => {
     return await runExclusive(async () => {
+      if (origin === "automatic" && (disposed || readDesiredState() !== "connected")) return OK;
       let encrypted: boolean;
       try {
         encrypted = settingsService.isSecretStorageEncrypted();
@@ -946,8 +954,11 @@ export function createTelegramConnectionService(
    * Any other outcome ends the retrying: success needs none, and every other
    * failure is a stop the owner has to see.
    */
-  const resumeWithRetry = async (nextAttempt: number): Promise<TelegramConnectionMutationResult> => {
-    const result = await resume();
+  const resumeWithRetry = async (
+    nextAttempt: number,
+    origin: "owner" | "automatic",
+  ): Promise<TelegramConnectionMutationResult> => {
+    const result = await resume(origin);
     if (!result.ok
       && isTransientTelegramResumeFailure(result.error)
       && !disposed
@@ -975,7 +986,7 @@ export function createTelegramConnectionService(
       return;
     }
     if (desired !== "connected") return;
-    await resumeWithRetry(1);
+    await resumeWithRetry(1, "automatic");
   };
 
   const createPairingCode = async (): Promise<TelegramCreatePairingCodeResult> => {
@@ -1074,7 +1085,7 @@ export function createTelegramConnectionService(
     connect,
     disconnect,
     pause,
-    resume: () => resumeWithRetry(1),
+    resume: () => resumeWithRetry(1, "owner"),
     resumeStoredConnection,
     createPairingCode,
     revokePairing,

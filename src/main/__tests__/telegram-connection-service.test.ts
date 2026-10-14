@@ -967,6 +967,39 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
     expect(vi.mocked(disconnected.h.bot.client.getMe).mock.calls.length).toBe(getMeCalls);
   });
 
+  it("keeps a pause whose save is still in flight when a retry fires", async () => {
+    const { h, retries, online } = await connectedThenOffline();
+    await h.service.resumeStoredConnection();
+    expect(retries.live()).toHaveLength(1);
+    // Telegram is reachable again, so a retry that got past the queue would connect.
+    h.bot.state.getMe = { ok: true, value: { username: BOT_USERNAME } };
+    const startsBefore = h.bridge.start.mock.calls.length;
+    const getMeBefore = vi.mocked(h.bot.client.getMe).mock.calls.length;
+
+    // The pause is queued first; the retry fires before its save lands and
+    // still reads "connected" outside the queue.
+    const pausing = h.service.pause();
+    retries.live()[0]!.run();
+
+    expect(await pausing).toEqual({ ok: true });
+    // The retry's resume is queued behind the pause; let it run to completion
+    // (it persists through the real store) before reading the outcome.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(retries.live()).toHaveLength(0);
+    expect(vi.mocked(h.bot.client.getMe).mock.calls.length).toBe(getMeBefore);
+    expect(snapshotOf(h.service).state).toBe("paused-by-owner");
+    expect(h.bridge.start.mock.calls.length).toBe(startsBefore);
+    expect(online.listeners.size).toBe(0);
+  });
+
+  it("lets the owner resume a paused connection", async () => {
+    const { h } = await connectedThenOffline();
+    h.bot.state.getMe = { ok: true, value: { username: BOT_USERNAME } };
+    expect(await h.service.pause()).toEqual({ ok: true });
+    expect(await h.service.resume()).toEqual({ ok: true });
+    expect(snapshotOf(h.service).state).toBe("connected-unpaired");
+  });
+
   it("reads a running poll loop that Telegram stopped answering as reconnecting, not active", async () => {
     const online = manualSource();
     const resumeEvents = manualSource();
