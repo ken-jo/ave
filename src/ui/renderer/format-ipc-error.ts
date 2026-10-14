@@ -80,6 +80,10 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
 
   // ── Payload / validation ──
   "invalid-payload": "formatIpcError.invalidPayload",
+  "drop-token-invalid": "formatIpcError.dropTokenInvalid",
+  "drop-token-expired": "formatIpcError.dropTokenExpired",
+  "nothing-attachable": "formatIpcError.nothingAttachable",
+  "invalid-query": "formatIpcError.invalidQuery",
   // A dynamic menu whose payload held nothing drawable — same class of fault as
   // an invalid payload, and the user's recourse is the same: try again.
   "invalid-dynamic-menu": "formatIpcError.invalidPayload",
