@@ -25,6 +25,9 @@ export interface ArchAuditResult {
 export function archSpec(arch: string): LinuxArchSpec;
 export function parseElfHeader(bytes: Uint8Array): ElfHeader | null;
 export function describeMachine(header: ElfHeader | null): string;
+export function appImagePayloadOffset(head: Uint8Array): number | null;
+export function nodeGypHeadersDir(workspaceRoot: string): string;
+export function crossNodeGypRebuildArgs(nodeGypScript: string, gypArch: string, workspaceRoot: string): string[];
 export function auditTree(
   root: string,
   arch: LinuxPackageArch,

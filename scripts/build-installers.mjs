@@ -15,7 +15,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import { hostRuntimeAssetSummary } from "./packaged-runtime-assets.mjs";
 import { installerUvTargetFor } from "./uv-targets.mjs";
 import { assertPackagedDocumentInputs } from "./lib/document-consumer-guard.mjs";
-import { archSpec, describeMachine, parseElfHeader } from "./lib/linux-package-arch.mjs";
+import { archSpec, crossNodeGypRebuildArgs, describeMachine, nodeGypHeadersDir, parseElfHeader } from "./lib/linux-package-arch.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
@@ -311,7 +311,11 @@ function retargetLinuxNativeModules(arch) {
   }
 
   const ptyDir = join(nodeModules, "node-pty");
-  run("node", [join(nodeModules, "node-gyp", "bin", "node-gyp.js"), "rebuild", `--arch=${gypArch}`], { cwd: ptyDir, env: crossEnv });
+  run("node", crossNodeGypRebuildArgs(join(nodeModules, "node-gyp", "bin", "node-gyp.js"), gypArch, root), { cwd: ptyDir, env: crossEnv });
+  const headersDir = nodeGypHeadersDir(root);
+  if (!existsSync(headersDir) || readdirSync(headersDir).length === 0) {
+    throw new Error(`cross-build: node-gyp left no headers in the workspace devdir ${headersDir}`);
+  }
   const ptyNode = join(ptyDir, "build", "Release", "pty.node");
   const addon = readFileSync(ptyNode);
   rmSync(join(ptyDir, "build"), { recursive: true, force: true });

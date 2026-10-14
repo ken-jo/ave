@@ -1,12 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  appImagePayloadOffset,
   auditLinuxRelease,
   auditTree,
+  crossNodeGypRebuildArgs,
   parseElfHeader,
 } from "../../scripts/lib/linux-package-arch.mjs";
 
@@ -56,6 +58,41 @@ function unpackedApp(root: string, arch: keyof typeof EM): string {
   write(join(modules, "node-pty/lib/index.js"), "module.exports = {};");
   write(join(app, `resources/uv/linux-${arch}/uv.gz`), gzipSync(elf(EM[arch], 2)));
   return app;
+}
+
+/**
+ * The tree packed in fixtures/linux-appimage-payload.squashfs: an x64 app
+ * whose node-pty addon is arm64. Rebuild it with
+ * `mksquashfs <tree> linux-appimage-payload.squashfs -noappend -no-xattrs -all-root -mkfs-time 0 -all-time 0`.
+ */
+function appImagePayloadTree(root: string): void {
+  write(join(root, "ave"), elf(EM.x64, 2), 0o755);
+  write(join(root, "resources/app.asar"), "asar");
+  write(join(root, "resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node"), elf(EM.arm64));
+  write(join(root, "resources/uv/linux-x64/uv.gz"), gzipSync(elf(EM.x64, 2)));
+}
+
+const APPIMAGE_PAYLOAD = readFileSync(join(__dirname, "fixtures/linux-appimage-payload.squashfs"));
+
+/** A type-2 AppImage: runtime ELF whose section headers end at 128, then the squashfs. */
+function appImage(machine: number, payload: Buffer = APPIMAGE_PAYLOAD): Buffer {
+  const runtime = Buffer.alloc(128);
+  elf(machine, 2).copy(runtime);
+  runtime.writeBigUInt64LE(64n, 0x28); // e_shoff
+  runtime.writeUInt16LE(64, 0x3a); // e_shentsize
+  runtime.writeUInt16LE(1, 0x3c); // e_shnum
+  return Buffer.concat([runtime, payload]);
+}
+
+/** exec stand-in: answers the deb/rpm metadata and "extracts" the AppImage payload tree. */
+function installerExec(calls: string[][], unsquash: (args: string[]) => void = (args) => appImagePayloadTree(args[args.indexOf("-d") + 1])) {
+  return ((command: string, args: string[]) => {
+    calls.push([command, ...args]);
+    if (command === "unsquashfs") { unsquash(args); return ""; }
+    if (command === "dpkg-deb" && args[0] === "-f") return "amd64\n";
+    if (command === "rpm") return "x86_64";
+    return "";
+  }) as unknown as typeof execFileSync;
 }
 
 function tempRoot(): string {
@@ -154,9 +191,60 @@ describe("Linux package architecture audit", () => {
     }) as unknown as typeof execFileSync;
     const text = auditLinuxRelease(root, "x64", { requireInstallers: true, fileCommand: fakeFile, exec }).violations.join("\n");
     expect(text).toContain("AppImage runtime is aarch64");
+    expect(text).toContain("Ave-1.0.0-linux-x86_64.AppImage: no squashfs payload at the end of the runtime ELF (offset 0)");
     expect(text).toContain("expected exactly one deb installer, found 0");
     expect(text).toContain("expected exactly one rpm installer, found 0");
     expect(calls).toEqual([]);
+  });
+
+  it("finds the squashfs payload at the end of the AppImage runtime's section headers", () => {
+    const image = appImage(EM.x64);
+    const offset = appImagePayloadOffset(image.subarray(0, 64));
+    expect(offset).toBe(128);
+    expect(image.subarray(offset!, offset! + 4).toString("latin1")).toBe("hsqs");
+    expect(appImagePayloadOffset(MACHO_ARM64)).toBeNull();
+  });
+
+  it("extracts the AppImage payload under RUNNER_TEMP and fails a foreign-arch ELF inside it", () => {
+    const root = tempRoot();
+    unpackedApp(root, "x64");
+    const name = "Ave-1.0.0-linux-x86_64.AppImage";
+    write(join(root, name), appImage(EM.x64), 0o755);
+    write(join(root, "ave_1.0.0_amd64.deb"), "deb");
+    write(join(root, "ave-1.0.0.x86_64.rpm"), "rpm");
+    const runnerTemp = tempRoot();
+    const previous = process.env.RUNNER_TEMP;
+    process.env.RUNNER_TEMP = runnerTemp;
+    const calls: string[][] = [];
+    let text: string;
+    try {
+      text = auditLinuxRelease(root, "x64", { requireInstallers: true, fileCommand: fakeFile, exec: installerExec(calls) }).violations.join("\n");
+    } finally {
+      if (previous === undefined) delete process.env.RUNNER_TEMP;
+      else process.env.RUNNER_TEMP = previous;
+    }
+    const unsquash = calls.find(([command]) => command === "unsquashfs");
+    expect(unsquash).toBeDefined();
+    const dest = unsquash![unsquash!.indexOf("-d") + 1];
+    expect(unsquash).toEqual(["unsquashfs", "-no-progress", "-no-xattrs", "-o", "128", "-d", dest, join(root, name)]);
+    expect(dest.startsWith(`${runnerTemp}/ave-installer-audit-`)).toBe(true);
+    expect(existsSync(dirname(dest))).toBe(false);
+    expect(text).toContain(`${name}/resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node: ELF is aarch64 (64-bit LE), expected x64`);
+    expect(text).not.toContain("AppImage runtime is");
+  });
+
+  it("fails clearly when unsquashfs is missing instead of skipping the AppImage payload", () => {
+    const root = tempRoot();
+    unpackedApp(root, "x64");
+    write(join(root, "Ave-1.0.0-linux-x86_64.AppImage"), appImage(EM.x64), 0o755);
+    const exec = installerExec([], () => { throw Object.assign(new Error("spawnSync unsquashfs ENOENT"), { code: "ENOENT" }); });
+    expect(() => auditLinuxRelease(root, "x64", { requireInstallers: true, fileCommand: fakeFile, exec }))
+      .toThrow("unsquashfs not found on PATH: auditing the AppImage payload of Ave-1.0.0-linux-x86_64.AppImage needs squashfs-tools");
+  });
+
+  it("keeps the cross node-gyp header cache under the workspace", () => {
+    expect(crossNodeGypRebuildArgs("/ws/node_modules/node-gyp/bin/node-gyp.js", "x64", "/ws"))
+      .toEqual(["/ws/node_modules/node-gyp/bin/node-gyp.js", "rebuild", "--arch=x64", "--devdir=/ws/.cache/node-gyp"]);
   });
 
   it("agrees with the real file(1) on both architectures", () => {

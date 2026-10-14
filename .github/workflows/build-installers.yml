@@ -15,8 +15,10 @@ on:
     tags:
       - "v*.*.*"
 
-# One build per ref at a time on the shared self-hosted runners; a running
-# release is never cancelled by a newer dispatch, which queues behind it.
+# One build per ref at a time on the shared self-hosted runners. GitHub keeps
+# one running and at most one pending run per group: cancel-in-progress: false
+# protects only the running build, and a newer run cancels the pending one
+# rather than queueing behind it.
 concurrency:
   group: build-installers-${{ github.ref }}
   cancel-in-progress: false
@@ -240,7 +242,8 @@ jobs:
           mkdir -p "$ELECTRON_BUILDER_CACHE"
           printf '{ "type": "commonjs" }\n' > "$ELECTRON_BUILDER_CACHE/package.json"
       # Packaging needs fakeroot/rpmbuild; the arch audit needs file, dpkg-deb,
-      # rpm2cpio and cpio; an ARM64 host also needs the x86_64-linux-gnu cross
+      # rpm2cpio, cpio and unsquashfs (AppImage payload); node-gyp needs
+      # python3 and make; an ARM64 host also needs the x86_64-linux-gnu cross
       # compiler for node-pty, and an x64 host the launch gates' X/D-Bus/keyring.
       # A self-hosted runner has no sudo and is provisioned with these (add
       # them to the runner provisioning, never install from here); a hosted
@@ -250,7 +253,7 @@ jobs:
         if: matrix.target == 'linux'
         run: |
           set -euo pipefail
-          tools=(fakeroot:fakeroot rpmbuild:rpm file:file dpkg-deb:dpkg rpm2cpio:rpm2cpio cpio:cpio)
+          tools=(fakeroot:fakeroot rpmbuild:rpm file:file dpkg-deb:dpkg rpm2cpio:rpm2cpio cpio:cpio unsquashfs:squashfs-tools python3:python3 make:make)
           case "$(uname -m)" in
             aarch64) tools+=(x86_64-linux-gnu-gcc:gcc-x86-64-linux-gnu x86_64-linux-gnu-g++:g++-x86-64-linux-gnu x86_64-linux-gnu-ar:binutils-x86-64-linux-gnu) ;;
             x86_64) tools+=(xvfb-run:xvfb dbus-run-session:dbus dbus-launch:dbus-x11 gnome-keyring-daemon:gnome-keyring) ;;

@@ -46,6 +46,18 @@ export function describeMachine(header) {
 }
 
 /**
+ * node-gyp's header cache for the cross node-pty build: under the workspace's
+ * `.cache/` with the job's other caches, not the runner user's ~/.cache/node-gyp.
+ */
+export function nodeGypHeadersDir(workspaceRoot) {
+  return join(workspaceRoot, ".cache", "node-gyp");
+}
+
+export function crossNodeGypRebuildArgs(nodeGypScript, gypArch, workspaceRoot) {
+  return [nodeGypScript, "rebuild", `--arch=${gypArch}`, `--devdir=${nodeGypHeadersDir(workspaceRoot)}`];
+}
+
+/**
  * Under Electron (the unit-test runner) `fs` treats `app.asar` as a directory;
  * this audit walks the real files, so asar redirection is off while it runs.
  */
@@ -63,14 +75,49 @@ function headerMatches(header, spec) {
   return Boolean(header?.valid && header.elfClass === 64 && header.littleEndian && header.machine === spec.machine);
 }
 
-function readHead(path, length = 64) {
+function readHead(path, length = 64, position = 0) {
   const fd = openSync(path, "r");
   try {
     const buffer = Buffer.alloc(length);
-    const read = readSync(fd, buffer, 0, length, 0);
+    const read = readSync(fd, buffer, 0, length, position);
     return buffer.subarray(0, read);
   } finally {
     closeSync(fd);
+  }
+}
+
+/** Scratch space: the job's RUNNER_TEMP on Actions, else the OS temp dir. */
+function scratchDir(prefix) {
+  return mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), prefix));
+}
+
+const SQUASHFS_MAGIC = "hsqs";
+
+/**
+ * Byte offset of the squashfs payload in a type-2 AppImage: the end of the
+ * runtime ELF, taken as e_shoff + e_shentsize * e_shnum (the section header
+ * table is the last thing in the runtime). This is the calculation the
+ * AppImage runtime itself uses for `--appimage-offset` (get_elf_size() in
+ * AppImageKit/type2-runtime runtime.c, appimage_get_elf_size() in
+ * libappimage). Returns null when the runtime is not a 64-bit LE ELF.
+ */
+export function appImagePayloadOffset(head) {
+  const header = parseElfHeader(head);
+  if (!header?.valid || header.elfClass !== 64 || !header.littleEndian || head.length < 64) return null;
+  const view = Buffer.from(head.buffer, head.byteOffset, head.length);
+  const shoff = Number(view.readBigUInt64LE(0x28));
+  return shoff + view.readUInt16LE(0x3a) * view.readUInt16LE(0x3c);
+}
+
+function unsquashfs(exec, appImage, offset, dest) {
+  try {
+    // -o skips the runtime; unsquashfs only reads the image, it never runs it.
+    exec("unsquashfs", ["-no-progress", "-no-xattrs", "-o", String(offset), "-d", dest, appImage], { stdio: ["ignore", "ignore", "inherit"] });
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      throw new Error(`unsquashfs not found on PATH: auditing the AppImage payload of ${basename(appImage)} needs squashfs-tools`);
+    }
+    throw err;
   }
 }
 
@@ -122,7 +169,7 @@ function auditTreeUnchecked(root, arch, { fileCommand = defaultFileCommand, labe
   const spec = archSpec(arch);
   const violations = [];
   const checked = [];
-  const scratch = mkdtempSync(join(tmpdir(), "ave-arch-audit-"));
+  const scratch = scratchDir("ave-arch-audit-");
   try {
     const appRoots = findAppRoots(root);
     if (appRoots.length !== 1) {
@@ -203,7 +250,8 @@ function installerFiles(releaseDir) {
 
 /**
  * Audit the unpacked app and, with `requireInstallers`, exactly one AppImage,
- * deb and rpm: their declared arch, then (deb/rpm) their extracted payload.
+ * deb and rpm: their declared arch (runtime ELF, package metadata), then
+ * every installer's extracted payload.
  */
 export function auditLinuxRelease(releaseDir, arch, options = {}) {
   return withoutAsar(() => auditLinuxReleaseUnchecked(releaseDir, arch, options));
@@ -231,33 +279,48 @@ function auditLinuxReleaseUnchecked(releaseDir, arch, { requireInstallers = fals
     if (paths.length !== 1) violations.push(`expected exactly one ${kind} installer, found ${paths.length}`);
   }
 
-  for (const appImage of installers.appImage) {
-    // The AppImage is its ELF runtime followed by the squashfs of the
-    // unpacked tree audited above; the runtime decides where it can run.
-    const header = parseElfHeader(readHead(appImage));
-    if (!headerMatches(header, spec)) violations.push(`${basename(appImage)}: AppImage runtime is ${describeMachine(header)}, expected ${arch}`);
-    const output = fileCommand(appImage);
-    checked.push({ path: basename(appImage), file: output });
-    if (!spec.filePattern.test(output)) violations.push(`${basename(appImage)}: file(1) does not report ${arch}: ${output}`);
-  }
-
-  const extract = (installer, declaredArch, expected, unpack) => {
-    if (declaredArch !== expected) violations.push(`${basename(installer)}: declares arch '${declaredArch}', expected '${expected}'`);
-    const dir = mkdtempSync(join(tmpdir(), "ave-installer-audit-"));
+  // `unpack(dir)` writes the payload into `dir`, or into `join(dir, tree)`
+  // when the extractor must create its destination itself (unsquashfs -d).
+  const extract = (installer, unpack, tree = ".") => {
+    const dir = scratchDir("ave-installer-audit-");
     try {
       unpack(dir);
-      merge(auditTree(dir, arch, { fileCommand, label: basename(installer) }));
+      merge(auditTree(join(dir, tree), arch, { fileCommand, label: basename(installer) }));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   };
+  const extractDeclared = (installer, declaredArch, expected, unpack) => {
+    if (declaredArch !== expected) violations.push(`${basename(installer)}: declares arch '${declaredArch}', expected '${expected}'`);
+    extract(installer, unpack);
+  };
+
+  for (const appImage of installers.appImage) {
+    // The AppImage is its ELF runtime (which decides where it can run)
+    // followed by a squashfs of the app tree, extracted and audited like the
+    // deb/rpm payloads below.
+    const head = readHead(appImage);
+    const header = parseElfHeader(head);
+    if (!headerMatches(header, spec)) violations.push(`${basename(appImage)}: AppImage runtime is ${describeMachine(header)}, expected ${arch}`);
+    const output = fileCommand(appImage);
+    checked.push({ path: basename(appImage), file: output });
+    if (!spec.filePattern.test(output)) violations.push(`${basename(appImage)}: file(1) does not report ${arch}: ${output}`);
+
+    const offset = appImagePayloadOffset(head);
+    const magic = offset === null ? "" : readHead(appImage, SQUASHFS_MAGIC.length, offset).toString("latin1");
+    if (magic !== SQUASHFS_MAGIC) {
+      violations.push(`${basename(appImage)}: no squashfs payload at the end of the runtime ELF (offset ${offset ?? "unreadable"})`);
+      continue;
+    }
+    extract(appImage, (dir) => unsquashfs(exec, appImage, offset, join(dir, "root")), "root");
+  }
   for (const deb of installers.deb) {
     const declared = String(exec("dpkg-deb", ["-f", deb, "Architecture"], { encoding: "utf8" })).trim();
-    extract(deb, declared, spec.debArch, (dir) => exec("dpkg-deb", ["-x", deb, dir]));
+    extractDeclared(deb, declared, spec.debArch, (dir) => exec("dpkg-deb", ["-x", deb, dir]));
   }
   for (const rpm of installers.rpm) {
     const declared = String(exec("rpm", ["-qp", "--qf", "%{ARCH}", rpm], { encoding: "utf8" })).trim();
-    extract(rpm, declared, spec.rpmArch, (dir) =>
+    extractDeclared(rpm, declared, spec.rpmArch, (dir) =>
       exec("sh", ["-c", 'rpm2cpio "$1" | cpio -idm --quiet', "sh", rpm], { cwd: dir }));
   }
   return { violations, checked };
