@@ -183,7 +183,7 @@ export function freezeBoundary(boundary: CompactBoundary): Readonly<CompactBound
  * text shaped like an instruction. The fence and its guard keep it context:
  * the model uses it to answer, but acts only on messages outside the fence.
  */
-export function renderCompactSummaryMessage(compactNum: number, summary: string): string {
+function renderCompactSummaryMessage(compactNum: number, summary: string): string {
   return [
     t("be_structuredCompact.boundaryStub", { n: String(compactNum) }),
     "",

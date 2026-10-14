@@ -335,7 +335,8 @@ export class VercelUnifiedProvider implements LLMProvider {
       }
       const useOpenAIResponsesAliases = usesOpenAIResponsesWire(slot, params.model);
       // Only this slot's provider caches up to explicit breakpoints; the
-      // OpenAI family caches automatically and is keyed by `promptCacheKey`.
+      // `openai` / `azure-foundry` slots cache automatically, keyed by
+      // `promptCacheKey` below.
       const markCacheBreakpoints = slot === "claude";
       const toModelMessages = (rows: GenericMessage[]): ModelMessage[] => genericToModelMessages(
         useOpenAIResponsesAliases
@@ -437,8 +438,9 @@ export class VercelUnifiedProvider implements LLMProvider {
           : undefined;
 
       // One key per conversation routes its rounds to the machine already
-      // holding their shared prefix. Sent only on the OpenAI family's own
-      // wire: an OpenAI-compatible server would receive an unknown body field.
+      // holding their shared prefix. Sent only on the `openai` /
+      // `azure-foundry` slots: an `openai-compatible` server would receive an
+      // unknown body field.
       if (params.promptCacheKey !== undefined && (slot === "openai" || slot === "azure-foundry")) {
         const key = slot === "azure-foundry" ? "azure" : "openai";
         providerOptions = {
