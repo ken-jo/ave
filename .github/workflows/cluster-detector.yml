@@ -17,7 +17,11 @@ concurrency:
 jobs:
   cluster-detector:
     name: Trusted Cluster Policy Evaluation
-    runs-on: ubuntu-latest
+    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
+    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
+    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
+    # PRs never reach a self-hosted runner.
+    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}
     steps:
       - name: Capture live pull request snapshot
         id: pr-snapshot

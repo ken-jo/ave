@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import lockfile from "proper-lockfile";
@@ -112,6 +113,72 @@ describe("withFileLock", () => {
     expect((error as FileLockReleaseError<string>).releaseError).toEqual(
       new Error("injected release failure"),
     );
+  });
+
+  /**
+   * proper-lockfile refreshes a held lock on a timer: it stats the lock dir and
+   * reports ENOENT as a compromised lock, by default by throwing from inside
+   * the fs callback — an uncaught exception. The stat is issued before release
+   * marks the lock released, so one that returns after release removed the
+   * dir is the teardown race CI hit. Holding that stat's callback makes the
+   * race deterministic.
+   */
+  function holdLockRefreshStat(): { arm: () => void; held: () => ((error: Error) => void) | undefined } {
+    const lockfileFs = createRequire(createRequire(import.meta.url).resolve("proper-lockfile"))("graceful-fs") as {
+      stat: (...args: unknown[]) => void;
+    };
+    const realStat = lockfileFs.stat;
+    let armed = false;
+    let held: ((error: Error) => void) | undefined;
+    vi.spyOn(lockfileFs, "stat").mockImplementation((...args: unknown[]) => {
+      if (armed && String(args[0]).endsWith(".lock")) {
+        held = args.at(-1) as (error: Error) => void;
+        return;
+      }
+      realStat.apply(lockfileFs, args);
+    });
+    return { arm: () => { armed = true; }, held: () => held };
+  }
+
+  const lockGone = (): Error => Object.assign(new Error("ENOENT: lock dir gone"), { code: "ENOENT" });
+
+  it("ignores a lock refresh that reports the lock gone after release", async () => {
+    const refresh = holdLockRefreshStat();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await withFileLock(testFile, async () => {
+        refresh.arm();
+        vi.advanceTimersByTime(5_000);
+        return "done";
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(existsSync(`${testFile}.lock`)).toBe(false);
+    const held = refresh.held();
+    expect(held).toBeDefined();
+    expect(() => held!(lockGone())).not.toThrow();
+  });
+
+  it("hands a lock lost while the callback runs to the caller instead of crashing", async () => {
+    const refresh = holdLockRefreshStat();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let error: unknown;
+    try {
+      error = await withFileLock(testFile, async () => {
+        refresh.arm();
+        vi.advanceTimersByTime(5_000);
+        const held = refresh.held();
+        expect(held).toBeDefined();
+        expect(() => held!(lockGone())).not.toThrow();
+        return "committed-result";
+      }).catch((caught) => caught);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(error).toBeInstanceOf(FileLockReleaseError);
+    expect((error as FileLockReleaseError<string>).result).toBe("committed-result");
+    expect((error as FileLockReleaseError<string>).releaseError).toMatchObject({ code: "ECOMPROMISED" });
   });
 });
 

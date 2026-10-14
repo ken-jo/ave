@@ -112,6 +112,84 @@ export function getVendoredSrtWinExePath(): string {
   return join(root, "vendor", "srt-win", arch, "srt-win.exe");
 }
 
+/** ASRT's vendored seccomp arch directories (`getVendorArchitecture`); ia32 and others have none. */
+const SECCOMP_VENDOR_ARCH: Partial<Record<string, string>> = { x64: "x64", arm64: "arm64" };
+
+/**
+ * The Linux seccomp helper bubblewrap runs, as one canonical file path — the
+ * SINGLE SOURCE OF TRUTH both for what the wrap execs ({@link buildSandboxConfig}
+ * pins it as ASRT's `seccomp.applyPath`) and for the one read a wrap is given
+ * beneath a covering read deny ({@link seccompHelperHiddenBy}).
+ *
+ * WHY: ASRT runs `apply-seccomp` from INSIDE the bwrap namespace and leaves it
+ * to the caller to keep that path visible there. A shell denies all of `$HOME`,
+ * so an app or checkout under HOME hid its own helper and every strict wrap
+ * exited 127 ("apply-seccomp: No such file or directory"). ASRT's own resolver
+ * also asks `fs.existsSync`, which Electron answers true for a path inside
+ * `app.asar`, so a packaged build would hand bwrap a virtual path no process
+ * outside Electron can exec. The helper is unpacked
+ * (`asarUnpack: node_modules/@anthropic-ai/sandbox-runtime/vendor/**`), so the
+ * path is rewritten to `app.asar.unpacked` like {@link getVendoredSrtWinExePath},
+ * then canonicalised so the exec'd spelling and the bound spelling are one.
+ *
+ * `undefined` off Linux, on an arch ASRT vendors no helper for, and — with a
+ * one-time warning — when the vendored helper is missing or not a file; ASRT
+ * then resolves the helper itself exactly as before this pin existed.
+ */
+export function getVendoredApplySeccompPath(): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  const arch = SECCOMP_VENDOR_ARCH[process.arch];
+  if (arch === undefined) return undefined;
+  const packageJson = createRequire(import.meta.url).resolve(
+    "@anthropic-ai/sandbox-runtime/package.json",
+  );
+  const root = rewriteAsarPathToUnpacked(dirname(packageJson));
+  const path = join(root, "vendor", "seccomp", arch, "apply-seccomp");
+  let real: string;
+  try {
+    real = realpathSync(path);
+  } catch (error) {
+    warnSeccompHelperUnavailable(`unreadable (${(error as NodeJS.ErrnoException).code ?? "error"}): ${path}`);
+    return undefined;
+  }
+  if (!lstatSync(real).isFile()) {
+    warnSeccompHelperUnavailable(`not a file: ${real}`);
+    return undefined;
+  }
+  return real;
+}
+
+let seccompHelperWarned = false;
+
+/**
+ * A missing helper must not cost the session its filesystem confinement: a
+ * throw here fails ASRT initialization, which the default mode degrades to
+ * isolation=none. Without a pinned path ASRT resolves the helper itself and,
+ * finding none, runs bwrap without seccomp (Unix sockets unrestricted) — the
+ * behaviour before this pin existed. Logged once per process, not per wrap.
+ */
+function warnSeccompHelperUnavailable(detail: string): void {
+  if (seccompHelperWarned) return;
+  seccompHelperWarned = true;
+  log.warn(
+    `[sandbox-seccomp-unavailable] Vendored apply-seccomp helper is ${detail}; ` +
+      "not pinning seccomp.applyPath or granting its read — ASRT falls back to its own resolution",
+  );
+}
+
+/**
+ * The seccomp helper file when one of a wrap's read denies (a shell's
+ * whole-HOME deny) would hide it, else `undefined` (always off Linux). The
+ * wrap then re-allows exactly that file, which ASRT emits as one `--ro-bind`
+ * of itself inside the deny's tmpfs — never its directory or the package.
+ */
+function seccompHelperHiddenBy(denyRead: readonly string[]): string | undefined {
+  const helper = getVendoredApplySeccompPath();
+  if (helper === undefined) return undefined;
+  const canonical = canonicalizePathForMatch(helper);
+  return denyRead.some((denied) => readDenyCoversPath(denied, canonical)) ? helper : undefined;
+}
+
 /** Resolve the external JVM's agent from the physical packaged payload. */
 export function getVendoredJavaProxyAgentJarPath(): string {
   const packageJson = createRequire(import.meta.url).resolve(
@@ -729,10 +807,13 @@ export function buildPerCommandSandboxCustomConfig(
   const floor = getProtectedReadDenyPaths();
   // A per-command deny REPLACES the shared one, so the trusted custom denies
   // are restated here once for every wrap rather than by each composer.
+  let hiddenSeccompHelper: string | undefined;
   if (filesystem.denyRead !== undefined) {
     const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
+    const denyRead = [...new Set([...filesystem.denyRead, ...pluginRoots, ...(_baseTrustedSettings?.denyRead ?? [])])];
+    hiddenSeccompHelper = seccompHelperHiddenBy(denyRead);
     fs.denyRead = asrtReadDenyPaths(
-      [...new Set([...filesystem.denyRead, ...pluginRoots, ...(_baseTrustedSettings?.denyRead ?? [])])],
+      denyRead,
       // The plugin roots are spelled exactly for the reason the private roots
       // are: a wrap whose reads include an ancestor of one (a worker's or a
       // bundled process's host temp directory, above a test `AVE_HOME`) would
@@ -747,8 +828,18 @@ export function buildPerCommandSandboxCustomConfig(
       ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite ?? []) : []),
     ];
   }
-  if (filesystem.allowRead !== undefined) {
-    fs.allowRead = readGrantsOutsideReadDenies(filesystem.allowRead, floor, filesystem.floorPierces ?? []);
+  if (filesystem.allowRead !== undefined || hiddenSeccompHelper !== undefined) {
+    // A per-command allowRead REPLACES the shared one, so a wrap that only
+    // restates its denies keeps the shared grants alongside the seccomp helper.
+    // The helper joins before the floor filter: a protected deny still wins.
+    const grants = filesystem.allowRead ?? _baseTrustedSettings?.allowRead ?? [];
+    fs.allowRead = readGrantsOutsideReadDenies(
+      hiddenSeccompHelper === undefined || grants.includes(hiddenSeccompHelper) ? grants : [...grants, hiddenSeccompHelper],
+      floor,
+      // Restated shared grants keep the shared config's pierces (none, as in
+      // buildSandboxConfig); a wrap's own pierces cover only its own grants.
+      filesystem.allowRead !== undefined ? (filesystem.floorPierces ?? []) : [],
+    );
   }
   if (Object.keys(fs).length === 0) return undefined;
   return { filesystem: fs as FilesystemConfig };
@@ -1371,11 +1462,16 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
           srtWin: { path: getVendoredSrtWinExePath() },
         }
       : undefined;
+  // Linux-only: pin the helper bwrap execs to the one path each wrap is
+  // granted (see getVendoredApplySeccompPath); ASRT's own search would find an
+  // `app.asar` virtual path in a packaged build.
+  const applySeccompPath = getVendoredApplySeccompPath();
 
   return {
     network,
     filesystem,
     ...(windows !== undefined ? { windows } : {}),
+    ...(applySeccompPath !== undefined ? { seccomp: { applyPath: applySeccompPath } } : {}),
     ...(process.platform === "darwin" || process.platform === "linux"
       ? { javaAgentJarPath: getVendoredJavaProxyAgentJarPath() }
       : {}),

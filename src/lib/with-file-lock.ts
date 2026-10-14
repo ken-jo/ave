@@ -132,6 +132,15 @@ export async function withFileLock<T>(
   const handle = await open(targetPath, "a", 0o600);
   await handle.close();
 
+  // proper-lockfile's default `onCompromised` THROWS from inside an fs
+  // callback — an uncaught exception that takes down the process. Its
+  // periodic refresh can also stat the lock after release has removed it (the
+  // stat is issued before `released` is set and its ENOENT branch never checks
+  // it), reporting a lock already given up as compromised. A compromise after
+  // release starts is therefore ignored; one while `fn` runs means exclusion
+  // was lost, and is handed to this caller instead of crashing.
+  let releasing = false;
+  let compromised: { readonly error: unknown } | undefined;
   const release = await lockfile.lock(targetPath, {
     stale,
     retries: {
@@ -141,14 +150,24 @@ export async function withFileLock<T>(
       factor: 2,
     },
     realpath: false,
+    onCompromised: (error) => {
+      if (!releasing) compromised = { error };
+    },
   });
+  const releaseLock = async (): Promise<void> => {
+    releasing = true;
+    // A compromised lock is already dropped by proper-lockfile; releasing it
+    // again would only report ERELEASED.
+    if (compromised !== undefined) throw compromised.error;
+    await release();
+  };
 
   let result: T;
   try {
     result = await fn();
   } catch (callbackError) {
     try {
-      await release();
+      await releaseLock();
     } catch (releaseError) {
       throw new AggregateError(
         [callbackError, releaseError],
@@ -159,7 +178,7 @@ export async function withFileLock<T>(
   }
 
   try {
-    await release();
+    await releaseLock();
   } catch (releaseError) {
     throw new FileLockReleaseError(result, releaseError);
   }
