@@ -204,6 +204,17 @@ describe("canonical file tool broker transport", () => {
     );
   });
 
+  it("refuses grep_files options the legacy file.grep payload cannot carry", async () => {
+    const tool = new GrepFilesTool();
+    const input = { pattern: "needle", outputMode: "count", context: 2, type: "ts", offset: 5 };
+
+    const result = await tool.execute(input, context(tool, input));
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("type, outputMode, context, offset");
+    expect(broker.execute).not.toHaveBeenCalled();
+  });
+
   it("routes view_image bytes through the bounded controller decoder and preserves image output", async () => {
     const tool = new ViewImageTool();
     const input = { path: "picture.png", maxBytes: 1_024, maxDimension: 64 };
