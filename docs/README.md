@@ -78,8 +78,8 @@ implemented, superseded) at the top.
 - [Blueprints](./blueprints/README.md): staged plans, such as the A2A messaging
   blueprint, the git marketplace phases, and headless relay separation.
 - Proposals, listed in the [architecture index](./architecture/README.md#proposals):
-  suggested replies, the git marketplace architecture, reviewer re-adjudication,
-  declared-category removal, and the Tailnet observer surface.
+  suggested replies, reviewer re-adjudication, declared-category removal, and
+  the Tailnet observer configuration surface.
 - Architecture decisions: [Windows toast lifecycle](./architecture/all-profile-windows-toast-lifecycle-adr.md),
   [hook runtime event parity](./architecture/hook-runtime-common-event-parity.md).
 - Research: [OS sandbox isolation](./research/sandbox-isolation.md) and

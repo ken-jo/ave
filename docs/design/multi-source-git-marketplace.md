@@ -5,7 +5,6 @@
 > page, §13.1 and §16.4 say how. §18 records the design of the change that
 > followed 0.13.0 and ships in 0.14.0: plain http and local folder sources,
 > address warnings instead of refusals, and automatic updates.
-> Architecture: [../architecture/proposals/multi-source-git-marketplace.md](../architecture/proposals/multi-source-git-marketplace.md) ·
 > Blueprint: [../blueprints/multi-source-git-marketplace.md](../blueprints/multi-source-git-marketplace.md)
 >
 > This page owns the contracts: file formats, algorithms, IPC, error codes and

@@ -2,8 +2,14 @@
 
 > Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
 
-> Status: **Proposal** (issue #2112, part 3 of 3). Source files and tests are
-> authoritative when this prose and implementation disagree.
+> Status: **Implemented** (issue #2112, part 3 of 3): the host-owned config file
+> under the environment layer, the Settings section and guided setup ship in
+> `src/ipc/domains/tailnet-observer.ts` and `src/ui/renderer/tabs/Tailnet*.tsx`.
+> Kept as the decision record. The current operating contract, including the
+> `AVE_TAILNET_*` variables, is in
+> [multi-surface conversation runtime](../multisurface-conversation-runtime.md).
+> Source files and tests are authoritative when this prose and implementation
+> disagree.
 
 ## 1. Current state: env-only configuration
 

@@ -5,7 +5,6 @@
 > #2551 (P1), #2552 (P2), #2554 (P3), #2556 (P4), #2553 (P5) and the phase 6
 > switch. Where the code differs from the design, design §13.1 and §16.4 say
 > how.
-> Architecture: [../architecture/proposals/multi-source-git-marketplace.md](../architecture/proposals/multi-source-git-marketplace.md) ·
 > Design specification: [../design/multi-source-git-marketplace.md](../design/multi-source-git-marketplace.md)
 
 This plan delivers the architecture in eight phases. Each phase lists its
