@@ -16,6 +16,7 @@ import {
   prepareElectronLaunchEnv,
 } from "./lib/electron-launch-options.mjs";
 import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs";
+import { cleanupOwnedWindowsProtocolHandler } from "./lib/windows-protocol-cleanup.mjs";
 import {
   launchSucceeded,
   readProductionLogsSince,
@@ -32,54 +33,6 @@ const MODULE_LOAD_FAILURE =
 
 const WINDOWS_NSIS_PER_MACHINE_MARKER_FILENAME =
   ".ave-nsis-per-machine-v1";
-const WINDOWS_PROTOCOL_CLEANUP_SCRIPT = [
-  "$ErrorActionPreference = 'Stop'",
-  "$rootPath = 'Software\\Classes\\ave'",
-  "$commandPath = 'Software\\Classes\\ave\\shell\\open\\command'",
-  "function Remove-RegistryValueIfEquals([string]$path, [string]$name, [string]$expected, [System.StringComparison]$comparison) {",
-  "  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($path, $true)",
-  "  if ($null -eq $key) { return }",
-  "  try {",
-  "    if (-not (@($key.GetValueNames()) -contains $name)) { return }",
-  "    if ($key.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::String) { return }",
-  "    $value = [string]$key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)",
-  "    if ([string]::Equals($value, $expected, $comparison)) { $key.DeleteValue($name, $false) }",
-  "  } finally { $key.Dispose() }",
-  "}",
-  "function Remove-EmptyRegistryKey([string]$path) {",
-  "  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($path, $false)",
-  "  if ($null -eq $key) { return }",
-  "  $empty = $false",
-  "  try {",
-  "    $empty = @($key.GetValueNames()).Count -eq 0 -and @($key.GetSubKeyNames()).Count -eq 0",
-  "  } finally { $key.Dispose() }",
-  "  if ($empty) { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($path, $false) }",
-  "}",
-  "$rootKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($rootPath, $false)",
-  "if ($null -eq $rootKey) { throw 'expected win-unpacked HKCU ave protocol root is missing' }",
-  "$rootKey.Dispose()",
-  "$commandKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($commandPath, $false)",
-  "if ($null -eq $commandKey) { throw 'ave protocol root exists without an owned command' }",
-  "try {",
-  "  $commandKind = $commandKey.GetValueKind('')",
-  "  $command = [string]$commandKey.GetValue('', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)",
-  "} finally { $commandKey.Dispose() }",
-  "if ($commandKind -ne [Microsoft.Win32.RegistryValueKind]::String) { throw 'refusing to remove a non-owned ave protocol command kind' }",
-  "$expectedCommand = '\"' + $env:AVE_PROTOCOL_OWNER_EXE + '\" \"%1\"'",
-  "if (-not [string]::Equals($command, $expectedCommand, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'refusing to remove a non-owned ave protocol command' }",
-  "$expectedIcon = '\"' + $env:AVE_PROTOCOL_OWNER_EXE + '\",0'",
-  "Remove-RegistryValueIfEquals $commandPath '' $expectedCommand ([System.StringComparison]::OrdinalIgnoreCase)",
-  "Remove-RegistryValueIfEquals 'Software\\Classes\\ave\\DefaultIcon' '' $expectedIcon ([System.StringComparison]::OrdinalIgnoreCase)",
-  "Remove-RegistryValueIfEquals $rootPath 'URL Protocol' '' ([System.StringComparison]::Ordinal)",
-  "Remove-RegistryValueIfEquals $rootPath '' 'URL:ave' ([System.StringComparison]::Ordinal)",
-  "foreach ($path in @(",
-  "  $commandPath,",
-  "  'Software\\Classes\\ave\\shell\\open',",
-  "  'Software\\Classes\\ave\\shell',",
-  "  'Software\\Classes\\ave\\DefaultIcon',",
-  "  $rootPath",
-  ")) { Remove-EmptyRegistryKey $path }",
-].join("\n");
 
 const TARGET_PLATFORM = {
   mac: "darwin",
@@ -94,6 +47,10 @@ function usage() {
     "Options:",
     "  --release-dir <path>   electron-builder output directory (default: release)",
     "  --timeout-ms <number>  launch window before treating a still-running app as healthy",
+    "  --skip-windows-installer-smoke",
+    "                         win only: run the launch smoke from win-unpacked without the NSIS",
+    "                         setup smoke, which installs machine-wide and uninstalls; for a",
+    "                         persistent (non-disposable) Windows host",
   ].join("\n");
 }
 
@@ -101,12 +58,17 @@ function parseArgs(argv) {
   let target = null;
   let releaseDir = resolve(root, "release");
   let timeoutMs = DEFAULT_TIMEOUT_MS;
+  let windowsInstallerSmoke = true;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
       process.stdout.write(`${usage()}\n`);
       process.exit(0);
+    }
+    if (arg === "--skip-windows-installer-smoke") {
+      windowsInstallerSmoke = false;
+      continue;
     }
     if (arg === "--target") {
       const value = argv[i + 1];
@@ -152,8 +114,11 @@ function parseArgs(argv) {
   if (!target || !TARGET_PLATFORM[target]) {
     throw new Error(`--target is required and must be one of: ${[...Object.keys(TARGET_PLATFORM), "current"].join(", ")}`);
   }
+  if (!windowsInstallerSmoke && target !== "win") {
+    throw new Error(`--skip-windows-installer-smoke applies only to --target win, not ${target}`);
+  }
 
-  return { target, releaseDir, timeoutMs };
+  return { target, releaseDir, timeoutMs, windowsInstallerSmoke };
 }
 
 function resourcesDirForExecutable(target, executable) {
@@ -381,41 +346,6 @@ function assertWindowsPerMachineMarkerAbsent(executable) {
   }
 }
 
-function cleanupOwnedWindowsProtocolHandler(executable) {
-  if (process.platform !== "win32") return;
-
-  const result = spawnSync(
-    "powershell.exe",
-    [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      WINDOWS_PROTOCOL_CLEANUP_SCRIPT,
-    ],
-    {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        AVE_PROTOCOL_OWNER_EXE: executable,
-      },
-      timeout: 30_000,
-      windowsHide: true,
-    },
-  );
-  if (result.error) {
-    throw new Error(
-      `packaged Windows protocol cleanup failed to start: ${result.error.message}`,
-    );
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      `packaged Windows protocol cleanup failed with status ${result.status}: ${result.stderr.trim()}`,
-    );
-  }
-}
 async function launchSmoke(executable, timeoutMs) {
   assertWindowsPerMachineMarkerAbsent(executable);
   const smokeTempRoot = process.platform === "win32" ? tmpdir() : "/tmp";
@@ -472,7 +402,7 @@ async function runWindowsInstallerSmoke(releaseDir, timeoutMs) {
 }
 
 async function main() {
-  const { target, releaseDir, timeoutMs } = parseArgs(process.argv.slice(2));
+  const { target, releaseDir, timeoutMs, windowsInstallerSmoke } = parseArgs(process.argv.slice(2));
   const expectedPlatform = TARGET_PLATFORM[target];
   if (process.platform !== expectedPlatform) {
     throw new Error(`target ${target} must be smoke-tested on ${expectedPlatform}; current platform is ${process.platform}`);
@@ -484,8 +414,10 @@ async function main() {
   }
 
   assertPackagedFootprint(target, executable);
-  if (target === "win") {
+  if (target === "win" && windowsInstallerSmoke) {
     await runWindowsInstallerSmoke(releaseDir, timeoutMs);
+  } else if (target === "win") {
+    process.stdout.write("[packaged-smoke] Windows NSIS setup smoke skipped (--skip-windows-installer-smoke)\n");
   }
   await launchSmoke(executable, timeoutMs);
 }

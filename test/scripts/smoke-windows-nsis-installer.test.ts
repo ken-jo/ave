@@ -1800,15 +1800,15 @@ describe("Windows NSIS installer smoke contracts", () => {
   it("enables machine and destructive gates only on disposable Windows CI", () => {
     const workflow = readRepoFile(".github/workflows/build-installers.yml");
     // A self-hosted Windows runner is a persistent machine, never disposable:
-    // both gates open only on a hosted runner, and the step itself is skipped
-    // on a self-hosted one rather than failing at the gate.
+    // both gates open only on a hosted runner, and a self-hosted one runs the
+    // launch smoke without the NSIS setup smoke rather than failing at the gate.
     expect(workflow).toContain(
       "AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && runner.environment == 'github-hosted' && '1' || '' }}",
     );
     expect(workflow).toContain(
       "AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE: ${{ matrix.target == 'win' && runner.environment == 'github-hosted' && '1' || '' }}",
     );
-    expect(workflow).toContain("&& (matrix.target != 'win' || runner.environment == 'github-hosted')");
+    expect(workflow).toContain("node scripts/smoke-packaged-app.mjs --target win --skip-windows-installer-smoke");
     expect(workflow.match(/^ {10}AVE_ALLOW_(DISPOSABLE_WINDOWS_INSTALLER|DESTRUCTIVE_UNINSTALL)_SMOKE: .*$/gmu)).toHaveLength(2);
 
     const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");

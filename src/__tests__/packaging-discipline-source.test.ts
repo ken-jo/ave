@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -458,6 +459,51 @@ describe("installer smoke and packaging discipline", () => {
     expect(installers).toContain("key: ${{ runner.os }}-uv-");
   });
 
+  it("never authorizes a destructive or host-mutating release step on a self-hosted runner", () => {
+    const hosted = "runner.environment == 'github-hosted'";
+    const workflows = readdirSync(resolve(root, ".github/workflows")).filter((name) => /\.ya?ml$/u.test(name));
+    // Every place any workflow sets a disposable-host or destructive smoke
+    // authorization requires a hosted runner in the same expression, so a
+    // self-hosted runner's own environment can never turn one on.
+    let authorizations = 0;
+    for (const name of workflows) {
+      for (const line of readRepoFile(`.github/workflows/${name}`).split("\n")) {
+        if (!/AVE_ALLOW_[A-Z_]*(DISPOSABLE|DESTRUCTIVE)[A-Z_]*:/u.test(line)) continue;
+        authorizations += 1;
+        expect(line, `${name}: ${line.trim()}`).toContain(`&& ${hosted} && '1' || ''`);
+      }
+    }
+    expect(authorizations).toBe(2);
+
+    const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
+    if (installers === undefined) throw new Error("build-installers.yml has no installers job");
+    const commands = jobRunCommands(installers);
+
+    // A self-hosted Windows runner runs the launch smoke without the NSIS
+    // setup smoke, which installs machine-wide and uninstalls.
+    const smoke = commands.find((command) => command.includes("scripts/smoke-packaged-app.mjs"));
+    expect(smoke).toContain(
+      'elif [ "${{ matrix.target }}" = "win" ] && [ "${{ runner.environment }}" != "github-hosted" ]; then\n'
+        + "node scripts/smoke-packaged-app.mjs --target win --skip-windows-installer-smoke\n",
+    );
+
+    // Signing imports into and searches a keychain; a self-hosted runner is
+    // the owner's machine, so it always builds unsigned.
+    const build = commands.find((command) => command.includes("node scripts/build-installers.mjs"));
+    const unsignedBranch = build?.slice(build.indexOf("elif "), build.indexOf("else\n")) ?? "";
+    expect(unsignedBranch).toContain('|| [ "${{ runner.environment }}" != "github-hosted" ] \\\n');
+    expect(unsignedBranch).toContain('args+=("--skip-code-sign")');
+
+    // The skip is a Windows-only switch, refused for any other target.
+    const refused = spawnSync(
+      process.execPath,
+      ["scripts/smoke-packaged-app.mjs", "--target", "linux", "--skip-windows-installer-smoke"],
+      { cwd: root, encoding: "utf8" },
+    );
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain("--skip-windows-installer-smoke applies only to --target win, not linux");
+  });
+
   it("provides the AWS CLI from a signature-checked official build before any aws call", () => {
     const install = "bash .github/scripts/install-aws-cli.sh";
     const jobs = [
@@ -907,10 +953,24 @@ describe("installer smoke and packaging discipline", () => {
     expect(readRepoFile("src/main/ave-protocol-registration.ts"))
       .toContain(".ave-nsis-per-machine-v1");
 
-    const cleanupScript = smoke.slice(
-      smoke.indexOf("const WINDOWS_PROTOCOL_CLEANUP_SCRIPT"),
-      smoke.indexOf("const TARGET_PLATFORM"),
+    // The owner-only cleanup is shared: the launch smoke and the packaged
+    // escape gate both launch the full application from win-unpacked, and
+    // each removes exactly the claim that launch wrote.
+    const cleanupImport =
+      'import { cleanupOwnedWindowsProtocolHandler } from "./lib/windows-protocol-cleanup.mjs";';
+    expect(smoke).toContain(cleanupImport);
+    const gate = readRepoFile("scripts/packaged-escape-gate.mjs");
+    expect(gate).toContain(cleanupImport);
+    const control = gate.slice(gate.indexOf("async function measureControl"), gate.indexOf("async function main"));
+    expect(control).toMatch(/\} finally \{\n {4}await app\.close\(\);\n(?: {4}\/\/.*\n)* {4}cleanupOwnedWindowsProtocolHandler\(executable\);\n {2}\}/u);
+
+    const cleanup = readRepoFile("scripts/lib/windows-protocol-cleanup.mjs");
+    expect(cleanup).toContain('if (process.platform !== "win32") return;');
+    const cleanupScript = cleanup.slice(
+      cleanup.indexOf("const WINDOWS_PROTOCOL_CLEANUP_SCRIPT"),
+      cleanup.indexOf("export function cleanupOwnedWindowsProtocolHandler"),
     );
+    expect(cleanupScript.length).toBeGreaterThan(0);
     expect(cleanupScript).toContain("$expectedCommand");
     expect(cleanupScript).toContain(
       "$expectedCommand = '\\\"' + $env:AVE_PROTOCOL_OWNER_EXE + '\\\" \\\"%1\\\"'",

@@ -198,10 +198,15 @@ jobs:
             args+=("--skip-code-sign")
             echo "skip_sign=true" >> "$GITHUB_OUTPUT"
           elif [ "${{ inputs.skip_code_sign }}" = "true" ] \
+            || [ "${{ runner.environment }}" != "github-hosted" ] \
             || { [ "${{ matrix.target }}" = "mac" ] && [ -z "${CSC_LINK:-}" ]; } \
             || { [ "${{ matrix.target }}" = "win" ] && [ -z "${WIN_CSC_LINK:-}" ]; }; then
             # Manual candidates are secret-free; default to unsigned unless a
             # future protected workflow deliberately adds signing evidence.
+            # A self-hosted runner is the owner's own machine: signing there
+            # would import into and search its keychain, and a signing
+            # variable in that machine's environment is not workflow evidence,
+            # so it always builds unsigned.
             args+=("--skip-code-sign")
             echo "skip_sign=true" >> "$GITHUB_OUTPUT"
           else
@@ -223,13 +228,12 @@ jobs:
         # launch gate so their artifacts can upload; Linux/Windows still run
         # smoke. `steps.build.outputs.skip_sign` is the signing SOT.
         #
-        # The Windows smoke installs machine-wide and genuinely uninstalls, so
-        # it runs only on a disposable hosted runner. A self-hosted Windows
-        # machine is a persistent host: the step is skipped there and the
-        # installer ships without that smoke.
-        if: >-
-          (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')
-          && (matrix.target != 'win' || runner.environment == 'github-hosted')
+        # The Windows NSIS setup smoke installs machine-wide and genuinely
+        # uninstalls (sandbox runtime, user data), so it runs only on a
+        # disposable hosted runner. A self-hosted Windows runner is a persistent
+        # machine: it runs only the launch smoke from win-unpacked, with temp
+        # AVE_HOME and user data, and both authorizations stay empty there.
+        if: matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true'
         shell: bash
         env:
           # Explicitly authorize machine-wide mutation only on the disposable
@@ -245,6 +249,8 @@ jobs:
               eval "$(printf %s packaged-smoke | gnome-keyring-daemon --unlock --components=secrets)"
               xvfb-run -a node scripts/smoke-packaged-app.mjs --target linux
             '
+          elif [ "${{ matrix.target }}" = "win" ] && [ "${{ runner.environment }}" != "github-hosted" ]; then
+            node scripts/smoke-packaged-app.mjs --target win --skip-windows-installer-smoke
           else
             node scripts/smoke-packaged-app.mjs --target "${{ matrix.target }}"
           fi
