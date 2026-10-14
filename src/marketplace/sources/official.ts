@@ -5,9 +5,12 @@
  * The official source is a build constant, never a `sources.json` entry, so
  * no file on disk can repoint it. Its repository must be publicly readable: the
  * constant carries `auth: { kind: "none" }`: a fresh profile reads the
- * catalog anonymously, and no stored token is ever offered to it, not even a
- * token stored for the same host by a private source the user added (sync
- * offers a token only to a source whose own auth is `token`).
+ * catalog anonymously, and no token from Ave's own store is ever offered to
+ * it, not even one stored for the same host by a private source the user added
+ * (sync offers a token only to a source whose own auth is `token`). The user's
+ * OS credential helper is still passed through (design §9.3), so while the
+ * repository is private a helper that answers for the host can make a sync
+ * succeed instead of failing with `SOURCE_AUTH_REQUIRED`.
  */
 import { holdsCredential } from "../../shared/dlp.js";
 
