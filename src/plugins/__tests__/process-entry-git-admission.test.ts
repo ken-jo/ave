@@ -4,7 +4,7 @@
  *
  * A real git marketplace served over loopback HTTP publishes `alpha` as a
  * process entry the way admission requires: no Windows, `minAppVersion`
- * 0.13.0 and a release pinned by sha256. The real ladder stages the release,
+ * 0.14.0 (the protocol-3 floor) and a release pinned by sha256. The real ladder stages the release,
  * the install transaction commits it with a receipt recording the release
  * rung, and the runtime's provenance gate then admits it on both activation
  * paths an install reaches: prepared activation during the install, and boot
@@ -56,7 +56,7 @@ const AT = "2026-10-01T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
 const RELEASE_PATH = "/acme/alpha/releases/download/v1.0.0/alpha-1.0.0.zip";
 
-const authority: PluginAuthority = { capabilities: [], requires: { minAppVersion: "0.13.0", hostProtocol: "3" } };
+const authority: PluginAuthority = { capabilities: [], requires: { minAppVersion: "0.14.0", hostProtocol: "3" } };
 
 /** The released zip: a process manifest and the executable it names. */
 function processZip(): Buffer {
@@ -122,7 +122,7 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
     const zip = processZip();
     server.file(RELEASE_PATH, zip);
     const described = `${JSON.stringify({
-      schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.13.0", hostProtocol: "3",
+      schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.14.0", hostProtocol: "3",
       platforms: ["darwin", "linux"],
       payload: { authority, artifact: { release: { repo: "acme/alpha", sha256: sha(zip) } } },
     })}\n`;
@@ -140,7 +140,7 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
     expect(await syncer.sync("acme")).toMatchObject({ status: "ok" });
     const snapshot = (await syncer.readSnapshot("acme"))!;
     const [row] = aggregateCatalog([{ sourceId: "acme", sourceOrigin: origin, snapshot }], {
-      appVersion: "0.13.0",
+      appVersion: "0.14.0",
       platform: "darwin",
       canaryOptIn: false,
       installationId: INSTALLATION,

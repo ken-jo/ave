@@ -60,7 +60,7 @@ import { TOOL_NAME_PATTERN, isValidToolName } from "../../tools/types.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { sandboxDeclarationProblem } from "../sandbox-authority.js";
-import { HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
+import { HOST_PROTOCOL_FIRST_APP_VERSION, HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
 import { isRecord } from "../../shared/is-record.js";
 
 // Re-exported here so manifest/plugin-loading consumers can import the
@@ -727,7 +727,8 @@ function checkProcessEntryShape(
     fail(
       "requires.minAppVersion",
       `a plugin with a 'process' entry must require Ave ${PROCESS_ENTRY_FIRST_APP_VERSION} or newer, the first release that runs one`,
-      `"requires": { "minAppVersion": "${PROCESS_ENTRY_FIRST_APP_VERSION}", "hostProtocol": "3" }`,
+      // The example also declares protocol 3, so it names that protocol's floor.
+      `"requires": { "minAppVersion": "${HOST_PROTOCOL_FIRST_APP_VERSION["3"]}", "hostProtocol": "3" }`,
     );
   }
 }

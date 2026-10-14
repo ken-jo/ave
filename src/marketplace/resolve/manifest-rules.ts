@@ -15,10 +15,12 @@
  * (docs/design/plugin-hostapi-protocol.md §9.7 P4, decision 34): the
  * descriptor must exclude Windows, pin a release or archive by sha256 and
  * declare no tree, so the ladder can never fall to the tree rung for it, and
- * require at least the first app that runs one. The verified half is the rung
+ * require at least the first app that runs one. A declared host protocol
+ * likewise needs at least the first app that serves it. The verified half is the rung
  * the receipt records, which the install transaction and the runtime read.
  */
 import { AVE_EXTENSION_NAMESPACE, flattenAgentPluginsManifest } from "../../plugins/public-contract.js";
+import { HOST_PROTOCOL_FIRST_APP_VERSION, isServedHostProtocolVersion } from "../../plugins/isolation/host-api-wire.js";
 import { hasProcessEntry, PROCESS_ENTRY_FIRST_APP_VERSION } from "../../plugins/process-entry.js";
 import { sandboxDeclarationProblem } from "../../plugins/sandbox-authority.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -157,6 +159,14 @@ export function gitInstallManifestMismatches(document: unknown, expected: Expect
   const hostProtocol = isRecord(requires) ? requires.hostProtocol : undefined;
   if (hostProtocol !== expected.hostProtocol) {
     problems.push(`requires.hostProtocol differs from the descriptor's hostProtocol`);
+  }
+  const protocolFloor = expected.hostProtocol !== undefined && isServedHostProtocolVersion(expected.hostProtocol)
+    ? HOST_PROTOCOL_FIRST_APP_VERSION[expected.hostProtocol]
+    : undefined;
+  if (protocolFloor !== undefined && compareSemver(expected.minAppVersion, protocolFloor) < 0) {
+    problems.push(
+      `minAppVersion in ${descriptor} is "${expected.minAppVersion}"; host protocol ${expected.hostProtocol} needs ${protocolFloor} or newer, the first release that serves it`,
+    );
   }
   for (const field of PLUGIN_AUTHORITY_FIELDS) {
     if (!sameField(ave, expected.authority, field)) problems.push(`${field} differs from the descriptor's authority`);
