@@ -569,6 +569,20 @@ export function shellOptionEffect(argv: readonly (string | undefined)[]): ShellO
     case "ack": case "ag": case "bat": case "batcat": case "delta":
       if (args.some((arg) => arg !== undefined && /^--pager/.test(arg))) effect = exec(`${program} --pager runs a command`);
       break;
+    case "sort": case "gsort":
+      if (args.some((arg) => arg === undefined || /^--compress-prog(?:r(?:a(?:m)?)?)?(?:=|$)/.test(arg))) effect = exec("sort --compress-program runs a program");
+      break;
+    case "xxd": {
+      // `xxd [options] [infile [outfile]]`: a second operand is written; `-r` patches it in place.
+      let operands = 0;
+      for (let index = 0; index < args.length; index += 1) {
+        const arg = args[index];
+        if (arg !== undefined && /^-(?:c|g|l|o|s|n|cols|groupsize|len|offset|seek|name)$/.test(arg)) { index += 1; continue; }
+        if (arg === undefined || !arg.startsWith("-") || arg === "-") operands += 1;
+      }
+      if (operands >= 2) effect = write("xxd writes its second operand");
+      break;
+    }
     default:
       break;
   }
@@ -582,6 +596,75 @@ export function shellOptionEffect(argv: readonly (string | undefined)[]): ShellO
 }
 
 /** Reason the command at `argv[start]` runs code the matcher cannot read, else null. */
+/** A variable name bash takes literally: no subscript, or a constant integer one. */
+const LITERAL_VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*(?:\[\d+\])?$/;
+
+/** Options of `read` whose value is the next word (`-a` names an array, the rest are data). */
+const READ_VALUE_OPTIONS = new Set(["d", "i", "n", "N", "p", "t", "u"]);
+
+/**
+ * The words these builtins take as variable NAMES. Bash evaluates an array
+ * subscript in such a name arithmetically, and that evaluation runs command
+ * substitutions even from a quoted, otherwise static word
+ * (`read 'a[$(rm x)]'`, `printf -v 'a[$(rm x)]' 1`, `[ -v 'a[$(rm x)]' ]`).
+ */
+function variableNameArgs(program: string, args: readonly (string | undefined)[]): (string | undefined)[] {
+  const names: (string | undefined)[] = [];
+  const after = (flag: RegExp): void => {
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index];
+      if (arg === undefined || !flag.test(arg)) continue;
+      const attached = arg.replace(flag, "");
+      names.push(attached.length > 0 ? attached : args[index + 1]);
+    }
+  };
+  switch (program) {
+    case "read": {
+      for (let index = 0; index < args.length; index += 1) {
+        const arg = args[index];
+        if (arg === undefined) { names.push(arg); continue; }
+        if (arg === "--") { names.push(...args.slice(index + 1)); break; }
+        if (!arg.startsWith("-") || arg === "-") { names.push(arg); continue; }
+        const letters = arg.slice(1);
+        for (let at = 0; at < letters.length; at += 1) {
+          const letter = letters[at]!;
+          if (letter === "a" || READ_VALUE_OPTIONS.has(letter)) {
+            const value = at + 1 < letters.length ? letters.slice(at + 1) : args[++index];
+            if (letter === "a") names.push(value);
+            break;
+          }
+        }
+      }
+      return names;
+    }
+    case "printf":
+      after(/^-v/);
+      return names;
+    case "test": case "[": case "[[":
+      after(/^-[vR]$/);
+      return names;
+    case "wait":
+      after(/^-[A-Za-z]*p/);
+      return names;
+    case "getopts":
+      return args.length >= 2 ? [args[1]] : [];
+    case "unset":
+      return args.filter((arg) => arg === undefined || !arg.startsWith("-"));
+    case "mapfile": case "readarray":
+      return args.length > 0 && (args.at(-1) === undefined || !args.at(-1)!.startsWith("-")) ? [args.at(-1)] : [];
+    default:
+      return names;
+  }
+}
+
+function subscriptedNameReason(program: string, args: readonly (string | undefined)[]): string | null {
+  for (const name of variableNameArgs(program, args)) {
+    if (name === undefined) return `${program} takes a variable name the matcher cannot read`;
+    if (!LITERAL_VARIABLE_NAME.test(name)) return `${program} evaluates the variable name ${name} (array subscripts run code)`;
+  }
+  return null;
+}
+
 function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): string | null {
   const head = argv[start];
   if (head === undefined) return null;
@@ -619,7 +702,8 @@ function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): str
     case "bind":
       return args.some((arg) => arg === undefined || /^-[A-Za-z]*x/.test(arg)) ? "bind -x binds a command" : null;
     case "mapfile": case "readarray":
-      return args.some((arg) => arg === undefined || /^-[A-Za-z]*C/.test(arg)) ? `${program} -C runs a callback` : null;
+      if (args.some((arg) => arg === undefined || /^-[A-Za-z]*C/.test(arg))) return `${program} -C runs a callback`;
+      break;
     case "complete": case "compgen":
       return args.some((arg) => arg === undefined || /^-[A-Za-z]*[CF]/.test(arg)) ? `${program} runs a command` : null;
     case "fc":
@@ -637,6 +721,8 @@ function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): str
     default:
       break;
   }
+  const subscript = subscriptedNameReason(program, args);
+  if (subscript) return subscript;
   const effect = shellOptionEffect(argv.slice(start));
   return effect?.kind === "exec" ? effect.reason : null;
 }

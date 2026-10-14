@@ -375,6 +375,17 @@ describe("security review: code the matcher cannot read is hidden from deny and 
     "find . -exec rm {} ;",
     "source ./env.sh",
     "env -S 'rm x'",
+    "read 'a[$(rm x)]' < f",
+    "read -r -a 'a[$(rm x)]' < f",
+    "printf -v 'a[$(rm x)]' 1",
+    "test -v 'a[$(rm x)]'",
+    "[ -v 'a[$(rm x)]' ]",
+    "wait -p 'a[$(rm x)]'",
+    "getopts ab 'a[$(rm x)]'",
+    "unset 'a[$(rm x)]'",
+    "mapfile -t 'a[$(rm x)]' < f",
+    "read \"$name\" < f",
+    "sort --compress-program=rm f",
   ];
 
   it.each(HIDDEN)("deny Bash(rm *) asks for %j", (command) => {
@@ -424,11 +435,22 @@ describe("security review: an allowed program's code-exec or write option asks",
     ["Bash(rsync *)", "rsync -e 'rm x' a b"],
     ["Bash(ssh *)", "ssh -o ProxyCommand='rm x' host"],
     ["Bash(fd *)", "fd -x rm"],
+    ["Bash(xxd *)", "xxd in.bin out.hex"],
+    ["Bash(xxd *)", "xxd -r -c 16 in.hex out.bin"],
   ])("%s does not allow %j", (allow, command) => {
     expect(evaluateShellRules(command, rules({ allow: [allow] })).decision).toBeNull();
   });
 
   it.each([
+    ["Bash(read *)", "read -r line < f"],
+    ["Bash(read *)", "read -r -p 'name? ' -a items < f"],
+    ["Bash(printf *)", "printf -v out '%s' x"],
+    ["Bash(test *)", "test -v HOME"],
+    ["Bash(test *)", "test -v 'a[3]'"],
+    ["Bash(unset *)", "unset a b"],
+    ["Bash(mapfile *)", "mapfile -t lines < f"],
+    ["Bash(sort *)", "sort -u f"],
+    ["Bash(xxd *)", "xxd -c 16 in.bin"],
     ["Bash(git log *)", "git log --oneline"],
     ["Bash(git log *)", "git log -p --no-ext-diff -n 3"],
     ["Bash(git diff *)", "git diff HEAD~1 -- src"],
