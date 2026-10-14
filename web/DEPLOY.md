@@ -32,8 +32,9 @@ printf '{"reviewers":[{"type":"User","id":42824840}],"deployment_branch_policy":
   | gh api repos/ken-jo/ave/environments/web-production -X PUT --input -
 ```
 
-배포에는 repo 시크릿 `CLOUDFLARE_API_TOKEN`(Workers Scripts: Edit, 커스텀 도메인을 붙이는
-`agent-connector.ai` 존의 Workers Routes: Edit)이 필요합니다. 없으면
+배포에는 repo 시크릿 `CLOUDFLARE_API_TOKEN`이 필요합니다. 이 토큰은 Worker를 배포하고
+`agent-connector.ai` 존에 커스텀 도메인을 붙일 수 있어야 합니다(미리보기 `ave-web-dev`를 배포한
+것과 같은 권한). 없으면
 워크플로는 스킵이 아니라 **실패**하므로, 실패한 런은 아래 수동 방식으로 폴백하세요.
 
 ## 수동 배포 (폴백 / 로컬 검증)
