@@ -114,6 +114,39 @@ describe("#811 m2 — lifecycle event dispatch", () => {
     expect(out.results[0].reason).toContain("ta=20000");
   });
 
+  it.skipIf(!HAS_NODE)("PermissionDenied carries the finalized deny reason text", async () => {
+    const m = new ScriptHookManager();
+    m.setTrustedRegistry([], [lifecycleEntry("PermissionDenied", ["node", ECHO])]);
+    const out = await m.runLifecycleEvent("PermissionDenied", "s1", "unknown", {
+      toolName: "bash",
+      denyReason: { layer: 3, source: "tool-executor", reason: "tool-not-found" },
+    });
+    expect(out.results[0].reason).toContain(
+      'deny={"layer":3,"source":"tool-executor","reason":"tool-not-found"}',
+    );
+  });
+
+  it.skipIf(!HAS_NODE)("SubagentStart carries agentId + agentType", async () => {
+    const m = new ScriptHookManager();
+    m.setTrustedRegistry([], [lifecycleEntry("SubagentStart", ["node", ECHO])]);
+    const out = await m.runLifecycleEvent("SubagentStart", "s1", "unknown", {
+      agentId: "spawn-1",
+      agentType: "explore",
+    });
+    expect(out.results[0].reason).toContain("agent=spawn-1");
+    expect(out.results[0].reason).toContain("agentType=explore");
+  });
+
+  it.skipIf(!HAS_NODE)("Notification carries the DLP-redacted message", async () => {
+    const m = new ScriptHookManager();
+    m.setTrustedRegistry([], [lifecycleEntry("Notification", ["node", ECHO])]);
+    const out = await m.runLifecycleEvent("Notification", "s1", "unknown", {
+      message: "done; call 415-555-1234",
+    });
+    expect(out.results[0].reason).toContain("msg=done; call ");
+    expect(out.results[0].reason).not.toContain("415-555-1234");
+  });
+
   it.skipIf(!HAS_NODE)("SessionStart carries sessionMeta", async () => {
     const m = new ScriptHookManager();
     m.setTrustedRegistry([], [lifecycleEntry("SessionStart", ["node", ECHO])]);

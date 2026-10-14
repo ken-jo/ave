@@ -39,17 +39,19 @@ import {
 import {
   isBlockingLifecycleEvent,
   USER_PROMPT_SUBMIT_EVENT,
+  type HookDispatchPayload,
   type HookTrustOrigin,
+  type LifecycleEventPayload,
   type LifecycleHookEvent,
   type LifecycleHookStdin,
   type ScriptHookInvocationResult,
   type ScriptHookStdin,
   type ScriptHookType,
+  type UserPromptSubmitPayload,
 } from "./script-hook-types.js";
 import { redactForLLM } from "../audit/dlp-filter.js";
 import { createLogger } from "../lib/logger.js";
 import { areExternalTurnHooksAllowed } from "../shared/turn-extension-policy.js";
-import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type { PluginHookTrustStore, PreparedPluginHookProjection } from "./plugin-hook-projection.js";
 import type { PluginRuntimeGenerationAccess } from "../plugins/plugin-host-generation.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -64,27 +66,6 @@ function externalHooksSuppressed(): HookDispatchResult {
   };
 }
 
-/**
- * Inputs the manager needs to dispatch a hook. The caller (executor /
- * approval-gate) is responsible for supplying the trustOrigin and
- * sessionId — those flow from upstream context, not from the manager.
- */
-export interface HookDispatchPayload {
-  toolName: string;
-  source: ToolSource;
-  category: ToolCategory;
-  input: Record<string, unknown>;
-  sessionId: string;
-  trustOrigin: HookTrustOrigin;
-  /** Per-request MCP/plugin origin identity (#811 hooks-on-mcp-calls). */
-  mcpServerId?: string;
-  pluginId?: string;
-  /** PostToolUse only. */
-  toolOutput?: string;
-  /** PostToolUse only. */
-  isError?: boolean;
-}
-
 export interface HookDispatchResult {
   decision: "allow" | "deny";
   reason: string;
@@ -96,63 +77,6 @@ export interface PreparedPluginHookGenerationPublication {
   readonly pluginId: string;
   readonly generationId: string;
   publish(): void;
-}
-
-/**
- * Event-specific payload fields for a lifecycle dispatch (#811 milestone-2,
- * design §5). The manager wraps these with the common `{ event, sessionId,
- * trustOrigin }` envelope and DLP-redacts free-text fields before serialization.
- * Every field is optional + event-specific so one shape covers all six
- * non-blocking events.
- */
-export interface LifecycleEventPayload {
-  /** PostToolUseFailure — the failing tool's name. */
-  toolName?: string;
-  /** PostToolUseFailure — tool error message (DLP-redacted before dispatch). */
-  errorMessage?: string;
-  /** PostToolUseFailure / Stop — wall-clock duration in ms. */
-  durationMs?: number;
-  /** PermissionDenied — why + where the deny was finalized (reason restores
-   * forensic granularity beyond the coarse layer/source). */
-  denyReason?: { layer: number | undefined; source: string; reason?: string };
-  /** SessionStart — non-secret session metadata (routine scope / persona). */
-  sessionMeta?: Record<string, unknown>;
-  /** Stop — terminal stop reason for the turn. */
-  stopReason?: string;
-  /** Stop — number of tool calls in the turn. */
-  toolCount?: number;
-  /** PreCompact — `"auto-compact"` (threshold) | `"manual"`. */
-  reason?: string;
-  /** PreCompact — pre-compaction token estimate. */
-  tokenEstimate?: number;
-  /** PostCompact — message counts before/after compaction. */
-  messagesBefore?: number;
-  messagesAfter?: number;
-  /** PostCompact — token estimates before/after compaction. */
-  tokensBefore?: number;
-  tokensAfter?: number;
-  /** SubagentStart / SubagentStop — the child run id (agent_spawn spawnId). */
-  agentId?: string;
-  /** SubagentStart / SubagentStop — the child agent mode/persona. */
-  agentType?: string;
-  /** Notification — the message body shown to the user. */
-  message?: string;
-}
-
-/**
- * Payload for the BLOCKING `UserPromptSubmit` dispatch (#811 milestone-2,
- * design §5). `inputText` is the matcher subject AND is DLP-redacted by the
- * manager before it reaches the hook (§6.6) — callers pass the raw prompt.
- */
-export interface UserPromptSubmitPayload {
-  /** The user's prompt text. Matcher subject + DLP-redacted before dispatch. */
-  inputText: string;
-  /** Chat input origin (e.g. user-keyboard, plugin-emitted). */
-  inputOrigin?: string;
-  /** Resolved route for this turn (`llm` | `skill`). */
-  route?: string;
-  /** Host input classification (`general` | `command`). */
-  classification?: string;
 }
 
 export class ScriptHookManager {
@@ -384,8 +308,8 @@ export class ScriptHookManager {
         sessionId,
         trustOrigin,
         ...(payload.toolName !== undefined ? { toolName: payload.toolName } : {}),
-        // DLP-redact the only free-text field (§6.6): a tool error message can
-        // echo user/secret data. No tool inputs flow through lifecycle events.
+        // DLP-redact free-text fields (§6.6): a tool error message can echo
+        // user/secret data. No tool inputs flow through lifecycle events.
         ...(payload.errorMessage !== undefined
           ? { errorMessage: redactForLLM(payload.errorMessage).redacted }
           : {}),
@@ -400,6 +324,12 @@ export class ScriptHookManager {
         ...(payload.messagesAfter !== undefined ? { messagesAfter: payload.messagesAfter } : {}),
         ...(payload.tokensBefore !== undefined ? { tokensBefore: payload.tokensBefore } : {}),
         ...(payload.tokensAfter !== undefined ? { tokensAfter: payload.tokensAfter } : {}),
+        ...(payload.agentId !== undefined ? { agentId: payload.agentId } : {}),
+        ...(payload.agentType !== undefined ? { agentType: payload.agentType } : {}),
+        // Notification text is assistant output and can echo user/secret data.
+        ...(payload.message !== undefined
+          ? { message: redactForLLM(payload.message).redacted }
+          : {}),
       };
       // runHookChain stops at the first deny — but for a non-blocking event the
       // decision is OBSERVE-ONLY, so the caller ignores it. (Chain-stop just
