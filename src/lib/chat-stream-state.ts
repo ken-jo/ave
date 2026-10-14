@@ -241,7 +241,18 @@ export type ChatEntry =
        */
       awaitingHostId?: true;
     }
-  | { kind: "reasoning"; text: string; streaming?: boolean; createdAt?: number }
+  | {
+      kind: "reasoning";
+      text: string;
+      streaming?: boolean;
+      /** Wall clock of the first live delta (or the persisted creation time). */
+      createdAt?: number;
+      /**
+       * How long the model thought: first live delta to finalization. Live
+       * turns only — a transcript loaded from disk has no reliable end time.
+       */
+      durationMs?: number;
+    }
   | {
       kind: "assistant";
       text: string;
@@ -621,11 +632,12 @@ export function upsertStreamingReasoning(
       entry.kind === "reasoning" && !!entry.streaming,
   );
 
-  const reasoning = { kind: "reasoning" as const, text, streaming: true };
   if (reasoningIdx >= 0) {
-    next[reasoningIdx] = reasoning;
+    // Keep the start time of the first delta; only the text grows.
+    next[reasoningIdx] = { ...(next[reasoningIdx] as ReasoningEntry), text, streaming: true };
     return next;
   }
+  const reasoning = { kind: "reasoning" as const, text, streaming: true, createdAt: Date.now() };
 
   const assistantIdx = findLastIdx(
     next,
@@ -740,6 +752,9 @@ export function finalizeStreamingReasoning(
       ...reasoning,
       text,
       streaming: false,
+      ...(reasoning.createdAt !== undefined
+        ? { durationMs: Math.max(0, Date.now() - reasoning.createdAt) }
+        : {}),
     };
     return next;
   }

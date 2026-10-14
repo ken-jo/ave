@@ -1068,3 +1068,28 @@ describe("transcript frame reducer (shared by the main and the side chat)", () =
     expect(withoutEstimate.slice(-1)).toEqual([{ kind: "checkpoint", removedMessages: 3, freedTokens: 900 }]);
   });
 });
+
+describe("reasoning duration", () => {
+  it("times thinking from the first live delta to finalization and keeps the start across deltas", () => {
+    const now = vi.spyOn(Date, "now");
+    try {
+      now.mockReturnValue(1_000);
+      let entries: ChatEntry[] = upsertStreamingReasoning([{ kind: "user", text: "q" }], "a");
+      now.mockReturnValue(4_000);
+      entries = upsertStreamingReasoning(entries, "a longer thought");
+      now.mockReturnValue(13_500);
+      entries = finalizeStreamingReasoning(entries, "");
+      const reasoning = entries.find((e) => e.kind === "reasoning");
+      expect(reasoning).toMatchObject({ text: "a longer thought", streaming: false, createdAt: 1_000, durationMs: 12_500 });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("does not invent a duration for reasoning that never streamed live", () => {
+    const entries = finalizeStreamingReasoning([{ kind: "user", text: "q" }], "fallback thought");
+    const reasoning = entries.find((e) => e.kind === "reasoning");
+    expect(reasoning).toMatchObject({ text: "fallback thought", streaming: false });
+    expect(reasoning && "durationMs" in reasoning).toBe(false);
+  });
+});

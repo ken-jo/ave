@@ -10,6 +10,7 @@ import type { ChatEntry, CheckpointTrigger } from "../../../lib/chat-stream-stat
 import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 import { debugLog } from "../../../lib/debug-stream.js";
 import { detectFromStream } from "../../../lib/stream-markers.js";
+import { formatDuration, KOREAN_DURATION_UNITS } from "../../../lib/turn-summary-format.js";
 import { knownModelPricing, resolveModelPricing } from "../../../shared/model-pricing.js";
 import { usePricingOverrides } from "../hooks/use-pricing-overrides.js";
 import { highlightText } from "../utils/html-preview.js";
@@ -1021,12 +1022,19 @@ export function ReasoningCard({
 }: {
   entry: Extract<ChatEntry, { kind: "reasoning" }>;
 }) {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const streaming = entry.streaming === true;
   // Always collapsed by default — even while streaming. Expands only on click.
   const [open, setOpen] = useState(false);
 
-  const title = streaming ? t("reasoningCard.thinkingTitle") : t("reasoningCard.thoughtCompleteTitle");
+  const title = streaming
+    ? t("reasoningCard.thinkingTitle")
+    : entry.durationMs !== undefined && entry.durationMs >= 1000
+      // Sub-second thinking says nothing a duration would add.
+      ? t("reasoningCard.thoughtForDuration", {
+          duration: formatDuration(entry.durationMs, locale.startsWith("ko") ? KOREAN_DURATION_UNITS : undefined),
+        })
+      : t("reasoningCard.thoughtCompleteTitle");
   const hasBody = entry.text.trim().length > 0;
   const bodyVisible = open && hasBody;
 
