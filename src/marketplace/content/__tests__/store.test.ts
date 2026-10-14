@@ -100,7 +100,7 @@ describe("content package store", () => {
     const repo = createFixtureRepo(serverRoot, name);
     repos.push(repo);
     const commit = (patch: Record<string, string | Buffer>) =>
-      repo.commit({ "marketplace.2.json": text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages }), ...patch }, "publish");
+      repo.commit({ "marketplace.json": text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages }), ...patch }, "publish");
     return { repo, name, commit, first: commit(files) };
   }
 
@@ -173,7 +173,7 @@ describe("content package store", () => {
     repos.push(repo);
     repo.commit({}, "seed");
     repo.commitEntries([
-      { path: "marketplace.2.json", mode: "100644", content: text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "agent-plugin", name: "hook-plugin", path: packagePath }] }) },
+      { path: "marketplace.json", mode: "100644", content: text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "agent-plugin", name: "hook-plugin", path: packagePath }] }) },
       { path: `${packagePath}/ave-package.json`, mode: "100644", content: descriptor("agent-plugin", "hook-plugin", "1.0.0", { manifest: "plugin.json", components }) },
       { path: `${packagePath}/plugin.json`, mode: "100644", content: pluginJson },
       { path: `${packagePath}/ai.agent-connector.ave/hooks.json`, mode: "100644", content: hooksJson },
@@ -423,7 +423,7 @@ describe("content package store", () => {
       "themes/harbor/theme.json": theme("Harbor"),
     });
     linked.repo.commitEntries([
-      { path: "marketplace.2.json", mode: "100644", content: text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "theme", name: "harbor", path: "themes/harbor" }] }) },
+      { path: "marketplace.json", mode: "100644", content: text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "theme", name: "harbor", path: "themes/harbor" }] }) },
       { path: "themes/harbor/ave-package.json", mode: "100644", content: descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }) },
       { path: "themes/harbor/theme.json", mode: "120000", content: "../../secret.json" },
     ], "link");
@@ -561,7 +561,7 @@ describe("content package store", () => {
       repos.push(repo);
       repo.commit({}, "seed");
       repo.commitEntries([
-        { path: "marketplace.2.json", mode: "100644", content: text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "agent-plugin", name: "review-plugin", path: packagePath }] }) },
+        { path: "marketplace.json", mode: "100644", content: text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "agent-plugin", name: "review-plugin", path: packagePath }] }) },
         { path: `${packagePath}/ave-package.json`, mode: "100644", content: descriptor("agent-plugin", "review-plugin", version, { manifest: "plugin.json", components }) },
         ...files.map((file) => ({ path: `${packagePath}/${file.path}`, mode: "100644", content: file.data.toString("utf8") })),
       ], "publish");

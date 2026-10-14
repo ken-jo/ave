@@ -33,7 +33,7 @@ const HOOK = {
 };
 
 function authority(capabilities: string[]) {
-  return { capabilities, requires: { minAppVersion: "0.12.0", hostProtocol: "2" } };
+  return { capabilities, requires: { minAppVersion: "0.12.0", hostProtocol: "3" } };
 }
 
 function pluginFiles(options: { capabilities?: string[]; hook?: boolean } = {}): Record<string, string> {
@@ -41,7 +41,7 @@ function pluginFiles(options: { capabilities?: string[]; hook?: boolean } = {}):
   const extension = { displayName: "alpha", entry: "dist/index.js", ...auth, ...(options.hook ? { hooks: [{ id: "audit", path: "dist/hooks/audit.json" }] } : {}) };
   return {
     "plugins/alpha/plugin.json": `${JSON.stringify({ name: "alpha", version: "1.0.0", description: "alpha", extensions: { "ai.agent-connector.ave": extension } }, null, 2)}\n`,
-    "plugins/alpha/ave-package.json": `${JSON.stringify({ schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.12.0", hostProtocol: "2", payload: { authority: auth, artifact: RELEASE } })}\n`,
+    "plugins/alpha/ave-package.json": `${JSON.stringify({ schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.12.0", hostProtocol: "3", payload: { authority: auth, artifact: RELEASE } })}\n`,
     ...(options.hook ? HOOK : {}),
   };
 }
@@ -56,7 +56,7 @@ let harness: FolderServiceHarness;
 async function setUp(managed: "user" | "required"): Promise<void> {
   root = mkdtempSync(join(tmpdir(), "ave-auto-update-"));
   folder = join(mkdtempSync(join(tmpdir(), "ave-auto-update-src-")), "market");
-  writeFolderFiles(folder, { "marketplace.2.json": index, ...pluginFiles(), "plugins/alpha/dist/index.js": ENTRY_JS });
+  writeFolderFiles(folder, { "marketplace.json": index, ...pluginFiles(), "plugins/alpha/dist/index.js": ENTRY_JS });
   if (managed === "required") {
     folder = realpathSync(folder);
     harness = await folderService({ root, folders: nodeFolders(), policy: policySource(requiredPolicy(true)) });
@@ -280,7 +280,7 @@ describe("an install in a requirement's way whose package sheet cannot load (§1
     ]);
     await expect(harness.service.detail(KEY)).resolves.toMatchObject({ entry: { key: KEY } });
     // team no longer lists alpha: no sheet can load for it, and the row offers the uninstall itself.
-    await edit({ "marketplace.2.json": `${JSON.stringify({ schemaVersion: 2, name: "team", displayName: "Team tools", packages: [] })}\n` });
+    await edit({ "marketplace.json": `${JSON.stringify({ schemaVersion: 2, name: "team", displayName: "Team tools", packages: [] })}\n` });
     expect((await unmet())[0]!.installedFrom).toEqual({ sourceId: "team", label: "Team tools", removal: "confirm" });
     await expect(harness.service.detail(KEY)).rejects.toMatchObject({ code: "PACKAGE_INCOMPATIBLE" });
     await expect(harness.service.uninstall(KEY)).resolves.toEqual({ key: KEY, keptDataDir: null });

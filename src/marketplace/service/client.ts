@@ -29,7 +29,7 @@ const log = createMarketplaceLogger("service-endpoint");
 /** The build constant: changing it ships with an app update, which drops a move accepted under the old one. */
 export const AVE_SERVICE_BASE_URL = "https://former-site.invalid";
 
-const DOCUMENT_PATH = "/.well-known/former-service.json";
+const DOCUMENT_PATH = "/.well-known/ave-service.json";
 const MAX_DOCUMENT_BYTES = 64 * 1024;
 const MAX_ANNOUNCEMENTS_BYTES = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;

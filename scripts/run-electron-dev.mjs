@@ -97,8 +97,6 @@ function cleanupStaleWindowsDevProcesses(userDataDir) {
     "  taskkill /PID $target.ProcessId /T /F | Out-Null",
     "  $killedPids += \"$($target.Name):$($target.ProcessId)\"",
     "}",
-    "Remove-Item -LiteralPath (Join-Path $userDataDir 'ave-tasks.db-wal') -Force -ErrorAction SilentlyContinue",
-    "Remove-Item -LiteralPath (Join-Path $userDataDir 'ave-tasks.db-shm') -Force -ErrorAction SilentlyContinue",
     "Write-Output (\"killed=\" + $killedPids.Count + \" pids=\" + ($killedPids -join ','))",
   ].join("; ");
 

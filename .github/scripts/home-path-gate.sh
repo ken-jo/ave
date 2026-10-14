@@ -44,7 +44,7 @@ ALLOWED_ACCOUNTS=(
   alice bob carol dave victim attacker
   u x y z foo bar baz
   secret secretuser sensitive-project outside-home
-  ave ave
+  ave
   '...'
   'secret.txt'
 )

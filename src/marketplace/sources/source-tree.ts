@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
-import type { PackageKind } from "../catalog/types.js";
+import { MARKETPLACE_DESCRIPTOR_FILE, type PackageKind } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
 import type { BareRepo, ExportedFile, ExportLimits } from "../git/repo.js";
 import type { GitRemote } from "../git/run-git.js";
@@ -72,7 +72,7 @@ export function packageInstalls(kind: PackageKind, name: string, isDirectory: bo
     case "mcp":
       return isDirectory && name === "server";
     default:
-      return isDirectory || name !== "ave-package.json";
+      return isDirectory || name !== MARKETPLACE_DESCRIPTOR_FILE;
   }
 }
 

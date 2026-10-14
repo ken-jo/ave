@@ -3942,7 +3942,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
         [{
           id: "tu-mcp-headless-hard-ask",
           name: "mcp_network",
-          input: { endpoint: "https://github.com/repos/former_org/ave/issues" },
+          input: { endpoint: "https://github.com/repos/ave-project/ave/issues" },
         }],
         {
           sessionId: "sess-mcp-headless-hard-ask",

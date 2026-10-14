@@ -151,17 +151,19 @@ the mockup, including layout measurements at the narrow width tier.
 
 | PR | Content |
 |---|---|
-| 5.1 | `web/public/.well-known/former-service.json` and `web/public/announcements/v1.json` (initially empty list) |
+| 5.1 | `web/public/.well-known/ave-service.json` and `web/public/announcements/v1.json` (initially empty list) |
 | 5.2 | `service/client.ts`: base resolution (policy → accepted move for this build constant → build constant), `movedTo` accepted only with a matching `movedFrom`, at most one move per build constant; announcement fetch and cache, `en` label fallback, dismissed ids unchanged |
 | 5.3 | Telemetry reads its same-origin endpoint from the service document; inactive when absent; no marketplace API key |
 
-**Exit:** the web deploy publishes both files; the app shows a test
+**Exit:** the web deploy publishes the service document and the announcements
+file; the app shows a test
 announcement from a staging base.
 
 P5 as built (design §11): a dev build with `AVE_SERVICE_BASE_URL` set to a
 local staging base read its service document and showed its test
 announcement banner. The `en` label fallback ships with the open locale
-registry in P3. Publishing the two files happens when the PR merges, since
+registry in P3. Publishing the service document and the announcements file happens when the
+PR merges, since
 the site deploys on every `web/**` merge.
 
 ## 8. Phase 6 — Switch and removal

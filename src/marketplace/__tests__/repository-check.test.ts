@@ -29,7 +29,7 @@ function version(patch: Record<string, unknown> = {}) {
 function validFiles(): Map<string, unknown> {
   return new Map<string, unknown>([
     [
-      "marketplace.2.json",
+      "marketplace.json",
       {
         schemaVersion: 2,
         name: "ave",
@@ -81,27 +81,10 @@ function check(files: Map<string, unknown>) {
 }
 
 function index(files: Map<string, unknown>) {
-  return files.get("marketplace.2.json") as { packages: Array<Record<string, unknown>>; name: string };
+  return files.get("marketplace.json") as { packages: Array<Record<string, unknown>>; name: string };
 }
 
 describe("checkMarketplaceRepository", () => {
-  it("keeps the legacy file closed and limited to pre-cutover versions", () => {
-    const files = validFiles();
-    const current = index(files);
-    const old = version({ version: "0.9.0", minAppVersion: "0.11.0" });
-    const skill = current.packages.find((entry) => entry.name === "review")!;
-    (skill.versions as unknown[]).push(old);
-    files.set("marketplace.json", {
-      schemaVersion: 1, name: "ave", displayName: "Ave Official",
-      packages: [{ kind: "skill", name: "review", path: "skills/review", versions: [old] }],
-    });
-    expect(check(files)).toEqual([]);
-    (old as Record<string, unknown>).hostProtocol = "2";
-    expect(check(files)).toEqual([expect.objectContaining({ subject: "marketplace.json", message: expect.stringContaining("marketplace.json") })]);
-    delete (old as Record<string, unknown>).hostProtocol;
-    (old as Record<string, unknown>).minAppVersion = "0.12.0";
-    expect(check(files)).toEqual([expect.objectContaining({ subject: "marketplace.json", message: expect.stringContaining("belongs only in format 2") })]);
-  });
   it("checks the optional conditional policy and rejects an invalid successor mapping", () => {
     const files = validFiles();
     const entry = { kind: "plugin", name: "alpha", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT,
@@ -122,11 +105,11 @@ describe("checkMarketplaceRepository", () => {
 
   it("refuses a missing or invalid index outright", () => {
     const files = validFiles();
-    files.delete("marketplace.2.json");
-    expect(check(files)).toEqual([{ subject: "marketplace.2.json", message: "is missing" }]);
+    files.delete("marketplace.json");
+    expect(check(files)).toEqual([{ subject: "marketplace.json", message: "is missing" }]);
     const renamed = validFiles();
     index(renamed).name = "other";
-    expect(check(renamed)).toEqual([{ subject: "marketplace.2.json", message: expect.stringContaining('must be named "ave"') }]);
+    expect(check(renamed)).toEqual([{ subject: "marketplace.json", message: expect.stringContaining('must be named "ave"') }]);
   });
 
   it("refuses a plugin named host, the id the host's own alert sources use", () => {
@@ -324,7 +307,7 @@ describe("process-entry rules, per released version (§9.7 P4)", () => {
   const DESCRIPTOR = "plugins/alpha/ave-package.json";
   type Patch = { platforms?: string[]; artifact?: Record<string, unknown>; minAppVersion?: string };
 
-  const processAuthority = (minAppVersion: string) => ({ capabilities: [], requires: { minAppVersion, hostProtocol: "2" } });
+  const processAuthority = (minAppVersion: string) => ({ capabilities: [], requires: { minAppVersion, hostProtocol: "3" } });
   const pinned = () => ({ release: { repo: "acme/market", tag: "alpha-v2.0.0", asset: "alpha-2.0.0.zip", sha256: SHA } });
 
   /** `2.0.0`: a process entry, no Windows, a pinned release, 0.13.0. `1.0.0`: an entry on every platform, from the tree. */
@@ -332,7 +315,7 @@ describe("process-entry rules, per released version (§9.7 P4)", () => {
     const newMin = newer.minAppVersion ?? "0.13.0";
     const oldMin = older.minAppVersion ?? "0.12.0";
     const v2 = {
-      version: "2.0.0", minAppVersion: newMin, hostProtocol: "2",
+      version: "2.0.0", minAppVersion: newMin, hostProtocol: "3",
       platforms: newer.platforms ?? ["darwin", "linux"], artifact: newer.artifact ?? pinned(), authority: processAuthority(newMin),
     };
     const v1 = {
@@ -342,7 +325,7 @@ describe("process-entry rules, per released version (§9.7 P4)", () => {
     const files = validFiles();
     index(files).packages[0] = { kind: "plugin", name: "alpha", path: "plugins/alpha", latest: "2.0.0", versions: [version(v2), version(v1)] };
     files.set(DESCRIPTOR, descriptor("plugin", "alpha", { authority: v2.authority, artifact: v2.artifact }, {
-      version: "2.0.0", minAppVersion: newMin, hostProtocol: "2", platforms: v2.platforms,
+      version: "2.0.0", minAppVersion: newMin, hostProtocol: "3", platforms: v2.platforms,
     }));
     const released = new Map<string, unknown>([
       ["alpha@2.0.0", { name: "alpha", version: "2.0.0", extensions: { "ai.agent-connector.ave": { process: { command: "./bin/plugin" }, tools: [], ...v2.authority } } }],
@@ -385,10 +368,10 @@ describe("process-entry rules, per released version (§9.7 P4)", () => {
     const artifact = pinned();
     index(files).packages[0] = {
       kind: "plugin", name: "alpha", path: "plugins/alpha", latest: "2.0.0",
-      versions: [version({ version: "2.0.0", minAppVersion: "0.13.0", hostProtocol: "2", platforms: ["darwin", "linux"], authority, artifact })],
+      versions: [version({ version: "2.0.0", minAppVersion: "0.13.0", hostProtocol: "3", platforms: ["darwin", "linux"], authority, artifact })],
     };
     files.delete("plugins/alpha/source/package.json");
-    files.set(DESCRIPTOR, descriptor("plugin", "alpha", { authority, artifact }, { version: "2.0.0", minAppVersion: "0.13.0", hostProtocol: "2", platforms: ["darwin", "linux"] }));
+    files.set(DESCRIPTOR, descriptor("plugin", "alpha", { authority, artifact }, { version: "2.0.0", minAppVersion: "0.13.0", hostProtocol: "3", platforms: ["darwin", "linux"] }));
     files.set("plugins/alpha/plugin.json", { name: "alpha", version: "2.0.0", extensions: { "ai.agent-connector.ave": { process: { command: "./dist/plugin" }, tools: [], ...authority } } });
     expect(check(files)).toEqual([{
       subject: "plugin/alpha",

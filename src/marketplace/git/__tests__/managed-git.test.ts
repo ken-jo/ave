@@ -17,7 +17,7 @@ import { findManagedGit, installManagedGit, managedGitLayout, managedRunnerOptio
 import { MANAGED_GIT, type ManagedGitPins } from "../managed-git-pins.js";
 
 const VERSION = "2.53.0";
-const SMOKE_OID = createHash("sha1").update("blob 17\0ave managed git\n").digest("hex");
+const SMOKE_OID = createHash("sha1").update("blob 16\0ave managed git\n").digest("hex");
 const KEY = `${process.platform}-${process.arch}`;
 
 /** A stand-in for the copy: answers --version and hash-object like git would. */

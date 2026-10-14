@@ -225,7 +225,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
       "utf-8");
     const consumerManifest = JSON.parse(await readFile(manifestPath, "utf-8"));
     patchAveFields(consumerManifest, {
-      requires: { hostProtocol: "2", capabilities: ["calendar-source"] },
+      requires: { hostProtocol: "3", capabilities: ["calendar-source"] },
     });
     await writeFile(manifestPath, JSON.stringify(consumerManifest), "utf-8");
     await writeFile(

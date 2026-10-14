@@ -1,5 +1,7 @@
 # Network Restricted Eval
 
+> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+
 Status: Active English default. The Korean archive keeps earlier review history and original discussion, but this page must be usable on its own.
 
 Korean archive: [docs/ko mirror](../ko/research/network-restricted-eval.md).

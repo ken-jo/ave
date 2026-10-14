@@ -806,7 +806,7 @@
                   "not": {
                     "pattern": "[\\r\\n]"
                   },
-                  "description": "The Ave host protocol version the extension speaks, an integer written as a string (\"2\"). A missing declaration or an unserved version refuses activation as incompatible-host-protocol. An app whose schema predates this field rejects the manifest, so an extension that declares it sets minAppVersion to the first release that knows it."
+                  "description": "The Ave host protocol version the extension speaks, an integer written as a string (\"3\"). A missing declaration or an unserved version refuses activation as incompatible-host-protocol. An app whose schema predates this field rejects the manifest, so an extension that declares it sets minAppVersion to the first release that knows it."
                 }
               },
               "additionalProperties": false

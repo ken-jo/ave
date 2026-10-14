@@ -32,14 +32,15 @@ policy/revocations.json          선택 (schemas/marketplace/revocations.schema.
 <kind dir>/<name>/...            패키지 파일
 ```
 
-`marketplace.json`은 마켓플레이스 이름을 정하고 패키지마다 `kind`, `name`, `path`를
+`marketplace.json`은 하나뿐인 인덱스 파일입니다. 형식 버전을 `schemaVersion: 2`로
+담고, 앱은 다른 값을 거부합니다. 이 파일은 마켓플레이스 이름을 정하고 패키지마다 `kind`, `name`, `path`를
 나열합니다. 패키지 항목은 `versions[]`(최신순)를 가질 수 있고, 각 항목은 `version`을
 그 버전을 게시한 `commit`에 고정합니다. `versions[]`가 없으면 앱은 동기화한 커밋의
 설명자를 읽습니다. 종류는 `plugin`, `mcp`, `skill`, `agent`, `theme`, `font`,
 `language`, `provider`, `messaging-connection`입니다. 이름은 소문자·하이픈이고,
 마켓플레이스 안에서 종류마다 유일합니다.
 
-`ave-package.json`에는 `schemaVersion: 1`, `kind`, `name`, `version`,
+`ave-package.json`에는 `schemaVersion: 2`, `kind`, `name`, `version`,
 `minAppVersion`과 종류별 `payload`가 있습니다.
 
 | 종류 | payload와 파일 |

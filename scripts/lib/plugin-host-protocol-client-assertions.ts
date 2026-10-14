@@ -18,7 +18,7 @@ import type {
   HostNotification,
   HostProtocolErrorCode,
   InstanceMethod,
-} from "../../schemas/plugin-host-protocol/2/protocol-client.js";
+} from "../../schemas/plugin-host-protocol/3/protocol-client.js";
 import type {
   HOST_API_WIRE_ERROR_CODES,
   HOST_PROTOCOL_NOTIFICATIONS,

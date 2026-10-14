@@ -1,5 +1,7 @@
 # Ave "plugin" vs the portable Agent Plugins packaging standard — concept + naming proposal
 
+> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+
 > **Superseded (2026-09-27)** by [`docs/design/extensions-and-plugins.md`](../../design/extensions-and-plugins.md): code packages are extensions, the standard bundle is the plugin, and the manifest file is not renamed. Kept as provenance.
 >
 > Status: **Proposal** (owner directive 2026-08-16: the standard is NOT being adopted now;

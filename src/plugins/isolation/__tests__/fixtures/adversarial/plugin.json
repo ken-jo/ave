@@ -9,7 +9,7 @@
       "entry": "entry.mjs",
       "requires": {
         "minAppVersion": "0.14.0",
-        "hostProtocol": "2"
+        "hostProtocol": "3"
       },
       "capabilities": ["external-auth-consumer"],
       "networkAccess": {

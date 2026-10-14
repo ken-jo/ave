@@ -17,7 +17,7 @@ export const MEMORY_WRITE_MAX_CONTENT_CHARS = 8_000;
  * The pattern is whitespace-tolerant + case-insensitive on purpose: it MIRRORS
  * the store's own parser (`/^<!--\s*ave:project-root:…/m`, `stripInternalMarkers`
  * with `\s*`). A fixed single-space substring check (`"<!-- ave:"`) would miss
- * `<!--ave:`, `<!--\tave:`, `<!--  Ave:` — all of which the parser still
+ * `<!--ave:`, `<!--\tave:`, `<!--  AVE:` — all of which the parser still
  * accepts — so the guard must match every spacing/casing variant the reader does.
  */
 export const MEMORY_WRITE_RESERVED_MARKER_PATTERN = /<!--\s*ave:/i;

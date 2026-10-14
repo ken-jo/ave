@@ -278,7 +278,7 @@ dialog offers the direct-install flow instead.
 ```ts
 interface MarketplaceIndex {
   $schema?: string;
-  schemaVersion: 1;
+  schemaVersion: 2;                 // the catalog format; any other value is refused (§4.2)
   name: string;                     // must equal the source id for official; informative otherwise
   displayName: string;
   description?: string;
@@ -302,9 +302,11 @@ interface IndexVersion {
   version: string;                  // semver 2.0.0
   commit: string;                   // 40-hex; the commit whose descriptor declares this version
   minAppVersion: string;            // copy of the descriptor's value
+  hostProtocol?: string;            // plugin kind: copy of the descriptor's value
   platforms?: Array<"darwin" | "win32" | "linux">;   // copy of the descriptor's value
   authority?: PluginAuthority;      // plugin kind: copy of the descriptor's authority (§5.2)
   artifact?: PluginArtifactPins;    // plugin kind only (§5.2)
+  components?: AgentPluginComponents; // agent-plugin kind only (§5.2)
   rollout?: { percent: number };    // 1..100; absent = 100
   yanked?: { reason: string; at: string };
   publishedAt: string;
@@ -322,7 +324,11 @@ interface IndexVersion {
   every kind). `latest` never names a yanked version.
 - When `versions` is absent, the client reads `ave-package.json` at `path`
   at the pinned commit and treats it as the single available version.
-- Unknown root keys are rejected in `schemaVersion: 1`.
+- Unknown root keys are rejected.
+- A repository has one index file, `marketplace.json`, and its format version
+  lives inside it as `schemaVersion`. The app reads `schemaVersion: 2` only and
+  refuses any other value with a message naming it (`SOURCE_INDEX_INVALID`);
+  there is no second file and no dispatch on the version.
 
 ### 4.3 Official index generation
 
@@ -338,11 +344,12 @@ automation that edits artifact pins.
 ```ts
 interface PackageDescriptor {
   $schema?: string;
-  schemaVersion: 1;
+  schemaVersion: 2;                 // the catalog format, as in marketplace.json
   kind: PackageKind;
   name: string;                     // plugin: equals plugin.json `name`
   version: string;                  // required, semver
   minAppVersion: string;            // required, plain MAJOR.MINOR.PATCH
+  hostProtocol?: string;            // plugin kind: the host protocol it speaks
   displayName?: string;
   description?: string;
   author?: { name: string; url?: string; email?: string };
@@ -1390,7 +1397,7 @@ finish, so no write of the old source lands after its directory is gone.
 
 ### 7.7 Local folders
 
-A folder is a marketplace (its root holds `marketplace.2.json` or the
+A folder is a marketplace (its root holds `marketplace.json` or the
 conventional layout of §3.3) or one package (a direct source, §8). It is
 typed where an address is — *Add marketplace…* and *Install from Git URL or
 folder…* — or chosen with *Choose folder…* (`sources:pick-folder`, main's
@@ -1981,7 +1988,7 @@ files is a device-management action).
 ## 11. Service endpoint
 
 ```jsonc
-// GET {serviceBase}/.well-known/former-service.json
+// GET {serviceBase}/.well-known/ave-service.json
 {
   "schemaVersion": 1,
   "announcements": "/announcements/v1.json",   // path on the same origin
@@ -3255,7 +3262,7 @@ Where the sections above and the shipped code differ, the code wins:
 | Local folders (§7.7) | `source-input.test.ts` under `path.posix` and `path.win32` rules: every accepted folder form normalizes and every refused form names its reason, and `a/b` stays the GitHub shorthand. With the recording volume of `fixtures/folder-fs.ts` (every call logged): `folder-consent.test.ts` — a UNC path answers `confirm` with no call at all and a share-mapped drive with only `queryDosDevice`, the same inputs under `allowLocalSources: false` are blocked with none, an acknowledged folder is read with no call outside the reader's own (no `realpath`), `/tmp → private/tmp` and a root that is itself a link resolve, an ancestor link to `\\attacker\share` is `link-to-network` with no call on it, a block found only on the canonical path ends the preview before a file is opened, a Windows 8.3 short name is spelled by its long name, a relative link onto an automount path is `link-to-network` (confirmed or not) with no call under it, another spelling of an automount path, components after a local link that reach one, and a canonical path holding the automount roots each answer `confirm` before it is touched, a drive with no mapping warns and a classifier that cannot run is `classifier-unavailable`; `git-marketplace.test.ts` (IPC) carries `classifier-unavailable` and the `folder-*` reasons of `SOURCE_ID_TAKEN` across the envelope and renders them in English and Korean; `folder-real-fs.test.ts` on the machine's own filesystem (run on macOS and on Windows) — a network path answered before any call, a link inside (a junction on Windows) read and one leaving the folder refused unread, a directory reached twice a loop, the volume's own case rule, a link into `.git` refused with nothing beneath it touched, and a hard link read as a regular file; `folder-tree.test.ts` — an inside link reads as a file, an outside link and a link chain or junction to a share stop at their text with no call on the target, a mapped network drive by its mapping, a loop, an `fstat` mismatch, an ancestor swap kept in place (`changed-during-read`, no outside byte in the package) and the stated residual of one undone before the recheck, the skip list, a link into a skipped entry (also as `.GIT` or an 8.3 alias) as `link-to-skipped` and an index path naming one as absent, an automount path beneath an unconfirmed root stopped before it is touched, a relative link from a confirmed share to another server as `link-to-network`, NFD/NFC and collisions, special files, a plugin's left-out entries; `folder-identity.test.ts` — a case-sensitive volume keeps two spellings as two sources, an `allow` `path:` admits only its spelling and a `block` every spelling, a case-insensitive volume and an aliased directory are one source by on-disk spelling and `dev`/`ino`, nesting is refused, by path and through an alias in both orders; `folder-sync.test.ts` — editing a `SKILL.md` changes the revision, no git command and no download run, only the folder's version is offered, a background `permission` failure keeps its reason through a reload and renders, a stored path now leading elsewhere is `moved` without reading the target, a broken classifier is `classifier-unavailable` with nothing read and renders as reinstall advice after a reload; `folder-plan.test.ts` — a plugin file and a `SKILL.md` edited between plan and execute install the planned bytes, a declared release is never fetched, the executable bit survives, a `process` entry is refused with `process-entry-requires-pinned-artifact`, a folder with no `plugin.json` is `folder-has-no-build`, and the capture is deleted; `plugin-ladder.test.ts` — a git tree with `src/` still fails the tree rung; `policy.test.ts` — `allowLocalSources`, an `allow` list without `path:`, `path:` prefixes and Windows spellings, `path:` and git patterns kept apart, and `additional[].path` with its refusals; `registry.test.ts` — a folder entry and its identity (with its ancestors) round-trip, confirmations bound to the path and dropped for any other spelling of it, the pin paired with the transport, a managed folder holding `network-folder`; `windows-path-kind-launcher.test.ts` (exit 1 is "no mapping"; a missing, unstartable, timed-out or off-protocol helper rejects with its cause and what to do) and, on Windows, `scripts/test-windows-path-kind.mjs` (CI step *Verify Windows folder classification*): `C:` maps to a volume, a `subst` drive (and a `subst` of one) to its target, and an unused or removed drive fails closed |
 | Folder UI (§7.7, §15) | `folder-view.test.ts` with the same volumes — *Local folder* on a folder's preview, row and package cards and *Network folder* on an acknowledged share, the provenance `{ path, readAt, contents }`, `revealFolder` answering a folder's path, `null` for git and `SOURCE_ID_INVALID` for an unknown id, a deleted folder `not-found`, a path relinked elsewhere `moved`, and a drive remapped to a share refused with only `queryDosDevice` called; a classifier that cannot run marking only its row and cards `folder-unclassified` (and asked again once it runs), a share the source never allowed `network-folder-unconfirmed`, a directory recreated at the path `moved` on reveal as on refresh, and a remap during reveal's walk refused by its last classification; `git-marketplace.test.ts` (IPC) — `pick-folder` `null` on cancel and `{ pick, display }` on choose without building the service, a pick previewing and adding the folder main chose and never the sibling its masked display names, a forged, replaced, used or expired pick `folder-pick-unknown`, a package from a quarantined source refused detail but uninstalled by its handle with the source listed and removed, both channels refused to a plugin frame, `reveal` refusing a git source and an unknown id before the shell is asked, and a drive whose classifier cannot run with `classifier-unavailable` and the reinstall sentence, nothing shown; `SourcesAndAdd.test.tsx` — the folder row (path, `folder · rev`, read time, *Show in …* per platform, no *Set token*), the moved and replaced sentences, *Choose folder…* with `resolvedFrom`, a cancelled and a failed picker, the folder hiding ref and sign-in, the `network-folder` question, the relative-path sentence, a folder added while git is missing, `classifier-unavailable` on the preview, the row status and a failed *Show in …*, the three overlap sentences and `repository-already-added` each with *Show <id>* and none for a bare taken id, the marked row brought into view; `GitMarketplaceTab.test.tsx` — a folder package's badge, provenance, versions note, delivery help, `notInstalled` and the folder-bound review, *Show <id>* closing the dialog and marking the row on Sources until the view changes; E2E (`git-marketplace-lifecycle.spec.ts`, folder dialog and shell stubbed in main) — add a folder marketplace through *Choose folder…*, install a skill, edit it, *Refresh*, *Show in Finder* gets the source's path, and the catalog offers the update |
 | Automatic apply | `eligibility.test.ts`: every precondition, the switch order, origin defaults, required installs and the approval invariant; `apply.test.ts` over the real activity coordinator: the idle gate after a session mutation and at boot, the recheck after subscribing and again after an agent plugin's call check, the escalation and *Apply now* (which never polls a call wait), an agent plugin waiting for its calls, the order, `retain`, a replacement or `retain` during an agent plugin's call check (what the check found is not started, nothing else is dropped), shutdown, and the outcome classification; `keyed-mutex.test.ts`: FIFO per key, every key of a request taken as one, no cycle between opposite orders, a cancelled request leaving every queue at once and waking those behind it, an empty request refused, work under a lease only for keys it holds and only while its callback runs, the holder releasing after that work, and 300 seeded random interleavings checked against the model's own owner per requested key (mutual exclusion, no lost wakeup, no reservation left, cancellation at once or later); `auto-update.test.ts` over the real service and a folder source: a folder refresh offered and applied, checkpoint two deferring a new bundled hook, the review staging once and installing the staged bytes with an extension hook's consent, the one-row review, a required update left `approval-pending`, `superseded` after a change, a user uninstall serialized before the update, a switch turned off or a `requiredInstalls` entry removed after queuing that holds the update, and a shutdown during the package-lock wait that starts nothing; `alert-predecessor.test.ts` with the real package and plugin locks: removal and an install in either order both finish, and a package lock asked for under a plugin lock throws; through the service, a waiter cancelled at shutdown leaves its holder's package locked, a nested request without the lease throws, an uninstall under the lease that outlives its holder keeps the packages and the operation (no policy applies meanwhile), one for a package the lease does not hold throws, and two callers naming packages in opposite order both finish; `consent.test.ts`, `approval-digest.test.ts` (a declaration change is code), `plugin-contribution-trust.test.ts`, the runtimes' lease and drain tests and `store.test.ts` (`.installs/`, the sweep, `components:approve` bound to `installId`); `background.test.ts`: records, attempts, the notice and the recent list, the decision read when the turn comes, a settings write that drops a queued update, an escalated wait sent to the toolbar, the switches as they take effect under a policy, a required package's switches on and locked under every policy and switch, a skipped required update shown, stale too, its `approval-pending` or `applied-not-running` outcome still required once its offer is gone, whether its source reads or not, a stale offer's required status and switch recomputed when the policy withdraws the requirement, no view sent before a policy is read, the toolbar list sent again when only required status changes, and the unmet required installs the service reports, sent again once they change; `service.test.ts`: required status from the policy and identity alone, the policy and the source's health varied independently, each unmet required install with its reason (a missing, a never-reached, a not-listing and an incompatible source) and a same-named install from another source, matched by the boot pass's skips, a requirement on a hidden source unmet in both until it is shown again, a revoked package removed only under its package lock, a revocation judged again under that lock (an update landing meanwhile stays unless its source revokes its own version by then, then is removed and reported at that version; an unchanged install whose revocation the source withdrew meanwhile stays; one whose source's revocations cannot be read under the lock stays, logged as unreadable, not withdrawn; an install removed meanwhile is skipped; each skip's reason logged), a plan expiring `package-changed` when its package was removed or updated before it ran (a reviewed update, a source switch), a plan refused `PACKAGE_REVOKED` when its version was revoked after it was made, and a package required from two sources leaving only the official source with both entries named; `run.test.ts`: the boot pass's skip for each reason (a rollout hold, a newer Ave and no offered version told apart, a hidden source), a required source without a state refused, and `requiredByPolicy` throwing on two sources; `auto-update.test.ts`: an install in a requirement's way named for its sheet while its source lists it, and for a direct uninstall once its source stops listing it, is removed, or is quarantined (by its handle), each uninstalled that way, a quarantined source's handle still uninstalling after the source is removed, and a removal whose install changed meanwhile refused with nothing removed; `policy.test.ts`: the conflict naming both entries, another kind of the same name and defaults not bound by it; `labels.test.ts`: the managed-policy sentence naming both entries; `use-marketplace-updates.test.ts` and `PluginUpdatesPill.test.tsx`: a required escalation kept over a stored skip on every mount, no skip recorded for it, no skip offered for required updates alone; `git-marketplace.test.ts`: `components:approve`, `updates:apply-now`, the rollback skip, extension consents, an unmet required install's labels crossing scrubbed; `git-marketplace-result.test.ts`: the status's unmet rows kept, malformed ones and a status without them dropped; `AutoUpdates.test.tsx`: the switches and the http confirmation, the package sheet's select, locked selects showing what takes effect, a required package's select on and locked with its reason in the row and the sheet, the official source's name, the rows and actions, the consent rows and *Approve update*, the component dialog's binding, the notice and the pill, each unmet required install's reason in en/ko with *Refresh source* only where a sync can help and *Show sources* for a hidden source, *Remove from <source>…* opening the install in the way or asking before uninstalling it when no sheet can load (a source no longer listing it, removed or quarantined), a refresh's failure from a failed reply or from the source's failed sync inside a successful one, an open removal bound to the install it named (a status naming another turns it into a notice, a row that goes ends it), each Remove click its own question (statuses received together before a frame each applied, also one naming another install followed by one naming this again, and a row going and returning; a confirmation clicked from an older frame, after Cancel, or twice sends once at most; a Remove clicked from an older frame removing the install it named; a request whose removal is published before its reply drawn as removing until the reply, never as nothing removed, and one that fails after a change saying nothing was removed; a reply answers only its own question, an earlier one's failure shown as its own and dropped with its row or a new question, its success closing nothing; a Close from a replaced question; a reply after the card is gone), and no rows once every requirement is met |
-| Service | `former-service.json` parsing, `movedTo` with and without `movedFrom`, reset on build-constant change, policy override, announcements parity, label fallback |
+| Service | `ave-service.json` parsing, `movedTo` with and without `movedFrom`, reset on build-constant change, policy override, announcements parity, label fallback |
 | E2E | packaged dev build (loopback allowed by the dev flag) adds a local-HTTP git marketplace, installs one package of each kind, updates, removes the source; without the dev flag, the same kind of source asks for `unencrypted` and `this-computer` before the fixture server sees any request, and the preview, cards and Sources row show the badges; `git-marketplace-auto-update.spec.ts` runs the real scheduler (`AVE_E2E_MARKETPLACE_SCHEDULER=1`): turning the http source on accepts `unencrypted-updates`, *Check now* applies a consent-free skill update by itself, holds an extension that asks for a new host as `needs-review`, and its review installs it |
 
 ## 18. Source acceptance, local folders and automatic updates (0.14.0)
@@ -3576,8 +3583,7 @@ instead:
 - A Windows device path (`\\.\…`, `\\?\GLOBALROOT\…`, `\\?\Volume{…}\…`).
 - A `file://host/…` URL on macOS or Linux.
 - An `unroutable` address.
-- An `http(s)` address whose path ends in `marketplace.json` or
-  `marketplace.2.json` (decision 11).
+- An `http(s)` address whose path ends in `marketplace.json` (decision 11).
 
 ### 18.4 Local folders
 
@@ -3593,7 +3599,7 @@ instead:
 >   Finder* re-checks the stored path as a read would before the shell is
 >   asked (§7.7), and the review lists the plan's `notInstalled`.
 
-A folder is a marketplace source (its root holds `marketplace.2.json` or the
+A folder is a marketplace source (its root holds `marketplace.json` or the
 conventional layout of §3.3) or a direct package (§8).
 
 #### 18.4.1 Input, classification, consent, then resolution
@@ -3675,7 +3681,8 @@ UNC server is exactly what consent and policy must come before.
    A spelling the volume does not resolve is `not-found`, so a case-sensitive
    volume never folds `MARKET` into `Market`. Several such entries fail with
    `SOURCE_LOCAL_UNREADABLE` reason `ambiguous-case`. The result must be a directory; a regular file
-   named `marketplace.2.json` or `marketplace.json` resolves to its directory.
+   named `marketplace.json` resolves to its directory; any other file is not a
+   folder.
    The policy of stage 3 is applied again to this **canonical path**, and a
    block found only now ends the add; so is the network classification, and
    a canonical path on another computer without `network-folder` answers
@@ -4822,8 +4829,8 @@ The default is on (§18.7.2), and consent (§18.7.3) applies unchanged.
 > of the table below were deliberately not built, so the user meets the case
 > through another sentence:
 > - `SOURCE_URL_REJECTED` · `index-file-url`: no address is refused for
->   naming a marketplace file. A folder path ending in `marketplace.2.json`
->   or `marketplace.json` resolves to the folder that holds it (§7.7), and a
+>   naming a marketplace file. A folder path ending in `marketplace.json`
+>   resolves to the folder that holds it (§7.7), and a
 >   web address naming the file is read as a repository address, so the
 >   host's answer shows, usually `SOURCE_UNREACHABLE` · `not-found` ("<host>
 >   reports no repository at this address…").
@@ -4953,7 +4960,7 @@ the slice that adds the code or reason.
 | · `ambiguous-case` | E | "<path> matches several folders that differ only in case." | "Enter the path with its exact case." | "대소문자만 다른 폴더가 여럿입니다. 정확한 대소문자로 입력하세요." |
 | · `changed-during-read` | E | "A file in <path> changed while Ave read it." | "Ave tries again at the next read." | "읽는 중에 파일이 바뀌었습니다." |
 | · `classifier-unavailable` | E | "Ave cannot tell whether <path> is on another computer because its folder classifier is missing or broken." | "Reinstall Ave." | "폴더 분류 도구가 없거나 손상되었습니다. Ave를 다시 설치하세요." |
-| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "No marketplace.2.json, no package folders and no single package at <location>." | an address being typed: "Check the address, the branch and, for a package inside a repository, the folder field."; a source the user added: the same, through *Remove source* and adding it again; official: *Refresh* later, then the marketplace's owner; organization: "Tell your administrator" | today's key, with the location |
+| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "No marketplace.json, no package folders and no single package at <location>." | an address being typed: "Check the address, the branch and, for a package inside a repository, the folder field."; a source the user added: the same, through *Remove source* and adding it again; official: *Refresh* later, then the marketplace's owner; organization: "Tell your administrator" | today's key, with the location |
 | · `other-app-plugin` | E | "This is a plugin written for another app (`.claude-plugin/` or `.codex-plugin/`)." | "Use *Import a plugin* in the plugin studio (`extensions-and-plugins.md` §2.4)." | "다른 앱용 플러그인입니다. 플러그인 스튜디오에서 가져오세요." |
 | `SOURCE_INDEX_INVALID` | E | "<source>'s index is invalid (<file>: <problem>); the last good version stays in use." | "Tell the marketplace's owner." *Copy details* | "마지막 정상 버전을 계속 씁니다." |
 | · `name-reserved-prefix`, `version-reserved-prefix`, `component-reserved-prefix` | E | "Package names starting with “<prefix>”, or with a part after “-” starting with it, are reserved because they look like <issuer>, so Ave does not offer this package." / "Versions with a part starting with “<prefix>” are reserved…" / "A skill, agent, prompt, routine or MCP server in this package has a name with a part starting with “<prefix>”. Such names are reserved…" | "Ask the package's author to choose a different name / change the version." | "“<접두사>”로 시작하거나 “-” 뒤 부분이 그것으로 시작하는 패키지 이름은 <발급자>처럼 보여 예약되어 있으므로…" |

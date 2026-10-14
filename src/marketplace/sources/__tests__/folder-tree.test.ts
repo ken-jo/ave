@@ -55,7 +55,7 @@ describe("links inside a folder (§18.4.5)", () => {
 
   it("refuses a junction to a share in an ancestor of a package as link-to-network, with no call on the share", async () => {
     const volume = new FakeVolume("win32", { drives: { "C:": "\\Device\\HarddiskVolume3" } })
-      .file("C:\\m\\marketplace.2.json", "{}")
+      .file("C:\\m\\marketplace.json", "{}")
       .link("C:\\m\\skills", "\\\\attacker\\share\\skills");
     const tree = await treeOf(volume, "C:\\m");
     const error = await failure(tree.packageAt("skills/note", "skill"));
@@ -80,11 +80,11 @@ describe("links inside a folder (§18.4.5)", () => {
 
 describe("swaps during a read (§18.4.5)", () => {
   it("fails an fstat identity mismatch as changed-during-read", async () => {
-    const volume = new FakeVolume("linux").file("/m/marketplace.2.json", "{}");
+    const volume = new FakeVolume("linux").file("/m/marketplace.json", "{}");
     const tree = await treeOf(volume, "/m");
     const original = volume.fstat.bind(volume);
     volume.fstat = async (handle) => ({ ...(await original(handle)), ino: 999_999n });
-    expect(await failure(tree.readFile("marketplace.2.json", 1024))).toMatchObject({ code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "changed-during-read" } });
+    expect(await failure(tree.readFile("marketplace.json", 1024))).toMatchObject({ code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "changed-during-read" } });
   });
 
   it("catches an ancestor swap still in place after the read, and no byte of the outside file reaches the package", async () => {
@@ -211,10 +211,19 @@ describe("a link into a skipped entry (§18.4.5)", () => {
   });
 
   it("finds nothing at a path that names a skipped entry: an index cannot point into .git either", async () => {
-    const volume = new FakeVolume("linux").file("/m/marketplace.2.json", "{}").file("/m/.git/config", "PRIVATE CONFIG\n");
+    const volume = new FakeVolume("linux").file("/m/marketplace.json", "{}").file("/m/.git/config", "PRIVATE CONFIG\n");
     const tree = await treeOf(volume, "/m");
     await expect(tree.readFile(".git/config", 1024)).resolves.toBeNull();
     expect(beneath(volume, "/m/.git")).toEqual([]);
+  });
+});
+
+describe("a path that names a file (§18.4.1 stage 4)", () => {
+  it("resolves marketplace.json to its folder and refuses any other file name as not a folder", async () => {
+    const volume = new FakeVolume("linux").file("/m/marketplace.json", "{}").file("/m/catalog.json", "{}");
+    expect(await resolveFolderRoot("/m/marketplace.json", "linux", volume, false)).toMatchObject({ path: "/m" });
+    expect(await failure(resolveFolderRoot("/m/catalog.json", "linux", volume, false)))
+      .toMatchObject({ code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "not-a-directory", path: "/m/catalog.json" } });
   });
 });
 

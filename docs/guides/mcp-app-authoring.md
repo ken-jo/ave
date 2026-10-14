@@ -1,6 +1,6 @@
-# Authoring an MCP App (`ui://` card) in a Ave plugin
+# Authoring an MCP App (`ui://` card) in an Ave plugin
 
-An **MCP App** is an interactive HTML card the host renders next to a tool result: a meeting summary you can expand, an indexer status you can re-run, a form that calls a tool back. It is not a Ave invention — it is the [MCP Apps extension](https://github.com/modelcontextprotocol/ext-apps) (spec `2026-01-26`), and Ave is one host that implements it.
+An **MCP App** is an interactive HTML card the host renders next to a tool result: a meeting summary you can expand, an indexer status you can re-run, a form that calls a tool back. It is not an Ave invention — it is the [MCP Apps extension](https://github.com/modelcontextprotocol/ext-apps) (spec `2026-01-26`), and Ave is one host that implements it.
 
 **A plugin builds its app against `@modelcontextprotocol/ext-apps` directly.** The MCP library is the UI contract. Anything you learn here transfers to any other MCP Apps host.
 

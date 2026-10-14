@@ -24,7 +24,7 @@ const log = createLogger("crash-reporter");
 export interface CrashReporterDeps {
   /**
    * Base path for crash dumps. We pass this through `app.setPath("crashDumps", …)`
-   * before `crashReporter.start()` so Electron writes minidumps into a Ave-owned
+   * before `crashReporter.start()` so Electron writes minidumps into an Ave-owned
    * directory (consistent across OSes + easy to locate during triage).
    */
   userDataPath: string;

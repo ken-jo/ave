@@ -11,7 +11,7 @@
  * module, and a transcript that changes is the wire that changed
  * (plugin-hostapi-protocol.md §10.1).
  *
- * Four kinds, under `fixtures/host-protocol/2/`:
+ * Four kinds, under `fixtures/host-protocol/3/`:
  *
  *  - `methods/<method>.json`: the request one call puts on the wire and the
  *    reply it gets, for every `ave/host/*` and `ave/instance/*` method, and
@@ -77,13 +77,9 @@ import { settle } from "./stream-turns.js";
 import { installPythonSmoke, reportSmoke } from "./python-smoke-harness.js";
 import { repositoryRoot } from "./child-entry-bundle.js";
 
-const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/2/", import.meta.url));
-/**
- * Where the invoker's code lives. It is the one module still shared with the
- * protocol-1 fixtures; every `2/plugins/<id>` directory holds its own entry.
- */
-const INVOKER_CODE_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/1/", import.meta.url));
-const INVOKER_ENTRY = join(INVOKER_CODE_ROOT, "invoker.mjs");
+const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/3/", import.meta.url));
+/** The golden invoker's entry; every `plugins/<id>` directory holds its own. */
+const INVOKER_ENTRY = join(GOLDEN_ROOT, "invoker.mjs");
 
 type Frame = Record<string, unknown>;
 
@@ -131,7 +127,7 @@ const INVOKER_MANIFEST: PluginManifest = {
   name: "Golden Invoker",
   version: "1.0.0",
   entry: "invoker.mjs",
-  requires: { hostProtocol: "2" },
+  requires: { hostProtocol: "3" },
   description: "calls one hostApi member per tool call, so each method's golden is one pair",
   tools: ["invoke_member", "invoke_cancelled", "write_log", "dispose_all"].map((name) => ({
     name,
@@ -216,7 +212,6 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
  * which the root's replacement alone would leave behind.
  */
 function goldenPath(text: string): string {
-  text = text.replaceAll(INVOKER_CODE_ROOT, GOLDEN_ROOT);
   let out = "";
   let from = 0;
   for (let at = text.indexOf(GOLDEN_ROOT); at !== -1; at = text.indexOf(GOLDEN_ROOT, from)) {
@@ -784,10 +779,13 @@ describe("a golden reads the same on every machine", () => {
 });
 
 describe("one conversation per installed plugin's surface", () => {
-  it.each(["meeting", "local-indexer"])("refuses an old %s bundle before its child connects", async (pluginId) => {
-    const dir = fileURLToPath(new URL(`./fixtures/host-protocol/1/plugins/${pluginId}/`, import.meta.url));
+  it.each([
+    ["meeting", /speaks host protocol 2; this app serves 3/],
+    ["local-indexer", /does not declare a host protocol/],
+  ] as const)("refuses an old %s bundle before its child connects", async (pluginId, refusal) => {
+    const dir = join(GOLDEN_ROOT, "old-bundles", pluginId);
     const manifest = flattenAgentPluginsManifest(JSON.parse(readFileSync(join(dir, "plugin.json"), "utf-8")));
-    // The entry beside the protocol-1 manifest throws when imported, so a
+    // The entry beside the old manifest throws when imported, so a
     // refusal that came after an import would surface as that throw instead.
     // A link whose child must never hear from the host: any write fails the case.
     const written: unknown[] = [];
@@ -813,7 +811,7 @@ describe("one conversation per installed plugin's surface", () => {
       pluginDataDir: `/plugins/${pluginId}/data`,
     });
     await expect(refused).rejects.toBeInstanceOf(IncompatibleHostProtocolError);
-    await expect(refused).rejects.toThrow(/does not declare a host protocol/);
+    await expect(refused).rejects.toThrow(refusal);
     expect(written).toEqual([]);
   });
 

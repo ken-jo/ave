@@ -58,7 +58,7 @@ function marketplaceTree(version: string): Entry[] {
     tools: [{ name: 'harbor_panel_ping', description: 'Answer pong.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }],
   });
   return [
-    file('marketplace.2.json', jsonText({
+    file('marketplace.json', jsonText({
       schemaVersion: 2,
       name: SOURCE_ID,
       displayName: 'Harbor Tools',

@@ -78,7 +78,7 @@ describe("plugin runtime registry-entry cache", () => {
       expect(cache.getRegistryEntry("meeting")?.origin?.sourceId).toBe("ave");
 
       // Same identity (inode, size, mtime): the cache is not read again.
-      await write("lviz");
+      await write("avf");
       await utimes(registryPath, pinned, pinned);
       await cache.refreshRegistryEntryCacheIfChanged();
       expect(cache.getRegistryEntry("meeting")?.origin?.sourceId).toBe("ave");

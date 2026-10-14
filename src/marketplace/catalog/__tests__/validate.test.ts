@@ -249,7 +249,7 @@ describe("validateIndexText", () => {
 
   it("accepts only format-2 agent-plugin components and keeps invalid path claimants isolated", () => {
     expect(checkDescriptor(descriptor("agent-plugin")).ok).toBe(true);
-    expect(checkDescriptor(descriptor("agent-plugin", { hostProtocol: "1" })).ok).toBe(false);
+    expect(checkDescriptor(descriptor("agent-plugin", { hostProtocol: "2" })).ok).toBe(false);
     expect(checkDescriptor(descriptor("agent-plugin", { payload: { manifest: "plugin.json", components: { skills: [], mcpServers: {}, prompts: [], agents: [], routineTemplates: [], hooks: [], unexpected: true } } })).ok).toBe(false);
     const components = PAYLOADS["agent-plugin"]!().components;
     const result = validateIndexText(index([
@@ -311,6 +311,12 @@ describe("validateIndexText", () => {
     ["a packages object", JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: {} })],
   ])("rejects the whole index for %s", (_label, text) => {
     expect(validateIndexText(text, context).ok).toBe(false);
+  });
+
+  it.each([1, 3, "2", null])("names schemaVersion %j as unsupported in the index and a descriptor", (schemaVersion) => {
+    const expected = `schemaVersion ${JSON.stringify(schemaVersion)} is not supported; this app reads schemaVersion 2`;
+    expect(validateIndexText(index([], { schemaVersion }), context)).toEqual({ ok: false, error: `marketplace.json: ${expected}` });
+    expect(checkDescriptor(descriptor("skill", { schemaVersion }))).toEqual({ ok: false, error: `ave-package.json: ${expected}` });
   });
 
   it("requires the official index to carry the official id", () => {

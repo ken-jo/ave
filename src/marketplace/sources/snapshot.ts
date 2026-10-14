@@ -6,7 +6,7 @@
  * again: the marketplace identity, each package with its versions, the
  * source's own revocations and the per-package diagnostics. What is read,
  * through a {@link SourceTree}:
- *   - marketplace sources: `marketplace.2.json`; a package the index lists
+ *   - marketplace sources: `marketplace.json`; a package the index lists
  *     without `versions` is read from its descriptor;
  *   - direct sources: the one package at the subdir (or root), from its
  *     descriptor or synthesized from its own file (direct-package.ts);
@@ -30,7 +30,7 @@ import type {
   PluginAuthority,
   Revocation,
 } from "../catalog/types.js";
-import type { ConditionalRevocation } from "../catalog/types.js";
+import { MARKETPLACE_INDEX_FILE as INDEX_PATH, MARKETPLACE_DESCRIPTOR_FILE, type ConditionalRevocation } from "../catalog/types.js";
 import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateRevocationsText, type CatalogDiagnostic } from "../catalog/validate.js";
 import { isMarketplaceError, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
 import { descriptorDiffersFromIndex } from "../resolve/descriptor.js";
@@ -82,9 +82,7 @@ const SNAPSHOT_FILE_LIMITS = {
   revocations: 1024 * 1024,
 } as const;
 
-const INDEX_PATH = "marketplace.2.json";
 const REVOCATIONS_PATH = "policy/revocations.json";
-const DESCRIPTOR_NAME = "ave-package.json";
 
 class Rejection extends Error {
   constructor(
@@ -111,7 +109,7 @@ export interface SnapshotSubject {
 const FOLDER_REVISION_PENDING = "local-pending";
 
 function descriptorPath(packagePath: string): string {
-  return packagePath ? `${packagePath}/${DESCRIPTOR_NAME}` : DESCRIPTOR_NAME;
+  return packagePath ? `${packagePath}/${MARKETPLACE_DESCRIPTOR_FILE}` : MARKETPLACE_DESCRIPTOR_FILE;
 }
 
 /** One catalog package from a descriptor read at `commit`; the icon becomes repository-relative. */

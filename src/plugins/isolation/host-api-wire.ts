@@ -53,7 +53,7 @@ import { randomBytes } from "node:crypto";
  * the previous version after its announced boundary (§3.2). The same value
  * governs both directions of the connection.
  */
-export const HOST_PROTOCOL_VERSIONS_SERVED = ["2"] as const;
+export const HOST_PROTOCOL_VERSIONS_SERVED = ["3"] as const;
 
 /** One served version, as it travels: an integer written as a string. */
 export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number];
@@ -68,7 +68,10 @@ export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number]
  * the protocol, so it is read off the release history rather than restated.
  */
 export const HOST_PROTOCOL_FIRST_APP_VERSION: Readonly<Record<HostProtocolVersion, string>> = {
-  "2": "0.12.0",
+  // Protocol 3 (the `ave/*` wire) is an unreleased candidate recorded at the
+  // current package version; released 0.13.0 served protocol 2. The 0.14.0
+  // release bump replaces the 3/v0.13.0 mirror candidate and this floor.
+  "3": "0.13.0",
 };
 
 /** Whether `value` names a version this build serves. */

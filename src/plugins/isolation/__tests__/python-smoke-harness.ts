@@ -30,7 +30,7 @@ import { repositoryRoot } from "./child-entry-bundle.js";
 
 /** The committed fixture: manifest, launcher, `plugin.py`, golden. Never written to. */
 const PYTHON_SMOKE_FIXTURE = fileURLToPath(
-  new URL("./fixtures/host-protocol/2/plugins/python-smoke/", import.meta.url),
+  new URL("./fixtures/host-protocol/3/plugins/python-smoke/", import.meta.url),
 );
 
 /** The library the fixture serves its MCP half with (fact 1). */

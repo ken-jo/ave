@@ -49,7 +49,7 @@ const GRANTED_MANIFEST: PluginManifest = {
   name: "Validation Probe",
   version: "1.0.0",
   entry: "plugin.mjs",
-  requires: { hostProtocol: "2" },
+  requires: { hostProtocol: "3" },
   description: "declares a grant the validator must not apply",
   tools: [],
   sandbox: {

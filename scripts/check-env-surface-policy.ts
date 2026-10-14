@@ -44,8 +44,8 @@ const RENDERER = join(SRC, "ui", "renderer");
 
 /**
  * Only meaningful outside a packaged build. The shared policy also contains
- * non-Ave development variables such as VITE_DEBUG_STREAM; this gate scans
- * and classifies the Ave namespace only.
+ * non-AVE development variables such as VITE_DEBUG_STREAM; this gate scans
+ * and classifies the AVE namespace only.
  */
 export const DEVELOPMENT: readonly string[] = ACTIVE_DEVELOPMENT_ENV_VARS.filter(
   (name) => name.startsWith("AVE_"),

@@ -48,7 +48,7 @@ Those controls are distinct contracts: sharing the provider layer does not
 translate a numeric thinking budget into a native effort or change the model.
 
 Registered dynamic tool requests return through the governed Ave tool path.
-AVE executes the tool and supplies the next round through its ordinary engine.
+Ave executes the tool and supplies the next round through its ordinary engine.
 Both account and conversation processes explicitly disable native shell,
 snapshot, connector, browser, computer, subagent, and other optional execution
 features. Hosted web search is separately disabled because the native sandbox's

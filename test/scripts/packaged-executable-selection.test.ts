@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { linuxExecutablePreferenceSuffixes, pickBestByExactSuffix } from "../../scripts/lib/packaged-executable-selection.mjs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  findPackagedExecutable,
+  linuxExecutablePreferenceSuffixes,
+  pickBestByExactSuffix,
+} from "../../scripts/lib/packaged-executable-selection.mjs";
 
 /**
  * The installer smoke (scripts/smoke-packaged-app.mjs, run by
@@ -14,9 +21,7 @@ describe("Linux packaged executable selection", () => {
     expect(preferences).toEqual([
       "/linux-arm64-unpacked/Ave",
       "/linux-arm64-unpacked/ave",
-      "/linux-arm64-unpacked/ave",
       "/linux-unpacked/Ave",
-      "/linux-unpacked/ave",
       "/linux-unpacked/ave",
     ]);
     expect(linuxExecutablePreferenceSuffixes("x64", "\\")[0]).toBe("\\linux-x64-unpacked\\Ave");
@@ -46,5 +51,44 @@ describe("Linux packaged executable selection", () => {
 
   it("returns null when there is no candidate", () => {
     expect(pickBestByExactSuffix([], preferences)).toBeNull();
+  });
+});
+
+/**
+ * scripts/smoke-windows-nsis-installer.mjs and the packaged escape gate launch
+ * the `win-unpacked` executable electron-builder names after `build.productName`.
+ * A filter keyed to any other name finds nothing and the smoke has no binary.
+ */
+describe("Windows packaged executable selection", () => {
+  let releaseDir: string;
+
+  beforeEach(() => {
+    releaseDir = mkdtempSync(join(tmpdir(), "packaged-exe-selection-"));
+  });
+
+  afterEach(() => {
+    rmSync(releaseDir, { recursive: true, force: true });
+  });
+
+  function touch(...segments: string[]): string {
+    const file = join(releaseDir, ...segments);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "");
+    return file;
+  }
+
+  it("selects the executable named after build.productName", () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+    ) as { build: { productName: string } };
+    const productName = packageJson.build.productName;
+    const exe = touch("win-unpacked", `${productName}.exe`);
+    touch("win-unpacked", "resources", "elevate.exe");
+    expect(findPackagedExecutable("win", releaseDir)).toBe(exe);
+  });
+
+  it("returns null when win-unpacked holds no product executable", () => {
+    touch("win-unpacked", "resources", "elevate.exe");
+    expect(findPackagedExecutable("win", releaseDir)).toBeNull();
   });
 });

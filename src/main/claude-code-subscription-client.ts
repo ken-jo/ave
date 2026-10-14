@@ -1,7 +1,7 @@
 /**
  * Main-process connection manager for an explicitly approved Claude Code CLI.
  *
- * Credentials stay in the official CLI home under a Ave-owned CLAUDE_CONFIG_DIR.
+ * Credentials stay in the official CLI home under an Ave-owned CLAUDE_CONFIG_DIR.
  * This module never reads token files. It only runs the approved executable for
  * version probes, auth status, browser login, logout, and isolation verification.
  */

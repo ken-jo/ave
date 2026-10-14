@@ -1,7 +1,7 @@
 /**
  * `PluginMcpHost` integration (mcp-alignment-design.md §3.1, first-party arm).
  *
- * Proves the production first-party path end-to-end: a Ave manifest →
+ * Proves the production first-party path end-to-end: an Ave manifest →
  * PluginMcpServer → loopback transport → PluginMcpHost discovers + registers the
  * plugin's tools into a real ToolRegistry under their NATURAL names with PLUGIN
  * authority (category from _meta), and tools/call round-trips to the delegate.

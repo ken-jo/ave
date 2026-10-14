@@ -1,28 +1,12 @@
 {
   "copies": [
     {
-      "protocol": "1",
-      "appVersion": "0.11.0",
-      "sha256": "aca9dfea7b1dc90a5ae49023c90aebb9d06384524254e80d172b0d19e098555e",
-      "generatedFrom": "7205f87844d4cf667b5f07b1332f76c08e587a88",
-      "publishedTag": "v0.11.0"
-    },
-    {
-      "protocol": "2",
-      "appVersion": "0.12.0",
-      "sha256": "c83bafc4724042725f27484b296c4ac6e42e9954a0e2400e4caf5acecea99ae0",
-      "generatedFrom": "87caad4fc258c85f0940192e7f89a923dd3ca8dd",
-      "publishedTag": null
-    },
-    {
-      "protocol": "2",
+      "protocol": "3",
       "appVersion": "0.13.0",
-      "sha256": "e334f1d9f7aeab3fb5cfc167e4a455d30289c1bc6e01f96aef7fbcd617bbc277",
-      "generatedFrom": "75458b54e23071d22166ebc439df33c280526b61",
+      "sha256": "8e54512111bf6f03570438afb3337e4772b63149e9e4c60e0360115595e2aa7e",
+      "generatedFrom": "332696eef64c292ab80ea310611c73666948609a",
       "publishedTag": null
     }
   ],
-  "aliases": {
-    "1": "v0.11.0"
-  }
+  "aliases": {}
 }

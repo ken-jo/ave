@@ -23,7 +23,7 @@ import { hasProcessEntry, PROCESS_ENTRY_FIRST_APP_VERSION } from "../../plugins/
 import { sandboxDeclarationProblem } from "../../plugins/sandbox-authority.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { compareSemver } from "../../shared/semver-compare.js";
-import type { Platform, PluginArtifactPins, PluginAuthority } from "../catalog/types.js";
+import { MARKETPLACE_DESCRIPTOR_FILE, type Platform, type PluginArtifactPins, type PluginAuthority } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
 
 /** Every field of `PluginAuthority`, in the order mismatches are reported. */
@@ -132,7 +132,7 @@ function processEntryMismatches(expected: ExpectedPlugin, descriptor: string): s
  * `descriptor` is how a problem names the descriptor file: its path in a
  * repository check, its file name on the install path.
  */
-export function gitInstallManifestMismatches(document: unknown, expected: ExpectedPlugin, descriptor = "ave-package.json"): string[] {
+export function gitInstallManifestMismatches(document: unknown, expected: ExpectedPlugin, descriptor = MARKETPLACE_DESCRIPTOR_FILE): string[] {
   if (!isRecord(document)) return ["plugin.json is not a JSON object"];
   const problems: string[] = [];
   if (document.name !== expected.name) problems.push(`name is ${JSON.stringify(document.name)}, the descriptor says "${expected.name}"`);

@@ -1,5 +1,7 @@
 # Host Structure Alignment (#1409 SDK/API/CLI boundary + #1411 mega-file decomposition)
 
+> 기록 문서: 앱 이름이 Ave였을 때 작성되어 당시의 이름과 경로를 그대로 둡니다. 현재 앱은 Ave이며 데이터 폴더는 `~/.ave`, 환경 변수는 `AVE_*`입니다.
+
 > Status: **Landed** (single-PR, atomic commits C0–C19, branch `refactor/host-structure-alignment`).
 > Supersedes the "first refactor target" framing of #1411 with a full, dependency-ordered
 > decomposition, and lands the #1409 contract firewall that makes both safe in one PR.

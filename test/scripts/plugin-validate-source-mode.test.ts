@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const APP_ROOT = fileURLToPath(new URL("../../", import.meta.url));
-const GOLDEN_PLUGINS = join(APP_ROOT, "src/plugins/isolation/__tests__/fixtures/host-protocol/2/plugins");
+const GOLDEN_PLUGINS = join(APP_ROOT, "src/plugins/isolation/__tests__/fixtures/host-protocol/3/plugins");
 const LINKED = ["package.json", "tsconfig.json", "node_modules", "schemas", "scripts", "src"];
 const PLUGIN_LOG_TEXT = "the plugin is speaking through context.log";
 
@@ -52,7 +52,7 @@ beforeAll(() => {
         "ai.agent-connector.ave": {
           displayName: "Descendant Plugin",
           entry: "entry.mjs",
-          requires: { minAppVersion: "0.12.0", hostProtocol: "2" },
+          requires: { minAppVersion: "0.13.0", hostProtocol: "3" },
           tools: [],
         },
       },
@@ -86,7 +86,7 @@ export const createPlugin = async () => {
         "ai.agent-connector.ave": {
           displayName: "Logging Plugin",
           entry: "entry.mjs",
-          requires: { minAppVersion: "0.12.0", hostProtocol: "2" },
+          requires: { minAppVersion: "0.13.0", hostProtocol: "3" },
           tools: [
             {
               name: "speak",

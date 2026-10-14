@@ -1,5 +1,7 @@
 # Signed Admission Catalog — Design And Staged Plan
 
+> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+
 Status: **superseded, not implemented** (2026-09-23). The multi-source git
 marketplace ([architecture](../architecture/proposals/multi-source-git-marketplace.md),
 [blueprint](./multi-source-git-marketplace.md)) binds versions to commits and

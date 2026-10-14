@@ -249,7 +249,6 @@ describe("ipc-bridge.ts — mutating/sensitive channels have a sender guard", ()
 
       // Grab the source from channel declaration to the next ipcMain.handle or end of registerIpcHandlers
       const afterChannel = source.slice(channelIdx);
-      const nextHandleIdx = afterChannel.search(/ipcMain\.handle\((?!.*"ave:)/);
       const nextHandleRealIdx = afterChannel.indexOf("ipcMain.handle(", 10); // skip self
       const snippet = nextHandleRealIdx > 0
         ? afterChannel.slice(0, nextHandleRealIdx)

@@ -5,7 +5,7 @@ import { checkContentFiles } from "../marketplace/content/rules.js";
 import { deriveAgentPluginComponents } from "../marketplace/content/agent-plugin-components.js";
 import { validateDescriptorText } from "../marketplace/catalog/validate.js";
 import { parseStrictJson } from "../marketplace/catalog/strict-json.js";
-import type { PackageDescriptor } from "../marketplace/catalog/types.js";
+import { MARKETPLACE_DESCRIPTOR_FILE, type PackageDescriptor } from "../marketplace/catalog/types.js";
 import { parsePortableMcp } from "../mcp/portable-mcp.js";
 import { treeDigest } from "../marketplace/resolve/plugin-ladder.js";
 import type { AgentPluginFile } from "../marketplace/content/agent-plugin-components.js";
@@ -118,7 +118,7 @@ export function studioExportFiles(files: readonly AgentPluginFile[], legacyProje
   storedCredentials: readonly string[]): AgentPluginFile[] {
   checkContentFiles("agent-plugin", files);
   const descriptor = studioDescriptor(files);
-  const output = [...files, { path: "ave-package.json", data: pretty(descriptor) }];
+  const output = [...files, { path: MARKETPLACE_DESCRIPTOR_FILE, data: pretty(descriptor) }];
   const exported = legacyProjection ? [...output, ...projection(files)] : output;
   assertNoStoredCredentials(exported, storedCredentials);
   return exported;
@@ -177,8 +177,8 @@ export async function readLocalAgentPlugin(path: string): Promise<{ files: Agent
       all.push({ path: entryPath, data, ...(executable ? { executable } : {}) });
     }
   } else throw new Error("Select a package directory or zip file");
-  const descriptorBytes = all.find((file) => file.path === "ave-package.json")?.data;
-  const files = all.filter((file) => file.path !== "ave-package.json" && !/^\.(?:claude|codex)-plugin\//u.test(file.path)
+  const descriptorBytes = all.find((file) => file.path === MARKETPLACE_DESCRIPTOR_FILE)?.data;
+  const files = all.filter((file) => file.path !== MARKETPLACE_DESCRIPTOR_FILE && !/^\.(?:claude|codex)-plugin\//u.test(file.path)
     && file.path !== ".mcp.json" && !/^(?:commands|agents|hooks)\//u.test(file.path));
   checkContentFiles("agent-plugin", files);
   const descriptor = descriptorBytes ? (() => {

@@ -265,7 +265,7 @@ package.json                     # workspaces: plugins/*/source, templates/plugi
 ```ts
 interface MarketplaceIndex {
   $schema?: string;
-  schemaVersion: 1;
+  schemaVersion: 2;                 // the catalog format; any other value is refused (§4.2)
   name: string;                     // must equal the source id for official; informative otherwise
   displayName: string;
   description?: string;
@@ -289,9 +289,11 @@ interface IndexVersion {
   version: string;                  // semver 2.0.0
   commit: string;                   // 40-hex; the commit whose descriptor declares this version
   minAppVersion: string;            // copy of the descriptor's value
+  hostProtocol?: string;            // plugin kind: copy of the descriptor's value
   platforms?: Array<"darwin" | "win32" | "linux">;   // copy of the descriptor's value
   authority?: PluginAuthority;      // plugin kind: copy of the descriptor's authority (§5.2)
   artifact?: PluginArtifactPins;    // plugin kind only (§5.2)
+  components?: AgentPluginComponents; // agent-plugin kind only (§5.2)
   rollout?: { percent: number };    // 1..100; absent = 100
   yanked?: { reason: string; at: string };
   publishedAt: string;
@@ -309,7 +311,11 @@ interface IndexVersion {
   `latest`는 회수(yank)된 버전을 가리키지 않습니다.
 - `versions`가 없으면 클라이언트는 핀 커밋의 `path`에서 `ave-package.json`을
   읽고 그것을 유일한 버전으로 취급합니다.
-- `schemaVersion: 1`에서는 알 수 없는 루트 키를 거부합니다.
+- 알 수 없는 루트 키를 거부합니다.
+- 저장소의 인덱스 파일은 `marketplace.json` 하나이고, 형식 버전은 그 안의
+  `schemaVersion`에 있습니다. 앱은 `schemaVersion: 2`만 읽고, 다른 값은 그 값을
+  밝히는 메시지와 함께 거부합니다(`SOURCE_INDEX_INVALID`). 두 번째 파일도, 버전에
+  따른 분기도 없습니다.
 
 ### 4.3 공식 인덱스 생성
 
@@ -324,11 +330,12 @@ CI가 직전 인덱스와 머지 커밋의 디스크립터로 `marketplace.json`
 ```ts
 interface PackageDescriptor {
   $schema?: string;
-  schemaVersion: 1;
+  schemaVersion: 2;                 // the catalog format, as in marketplace.json
   kind: PackageKind;
   name: string;                     // plugin: equals plugin.json `name`
   version: string;                  // required, semver
   minAppVersion: string;            // required, plain MAJOR.MINOR.PATCH
+  hostProtocol?: string;            // plugin kind: the host protocol it speaks
   displayName?: string;
   description?: string;
   author?: { name: string; url?: string; email?: string };
@@ -1257,7 +1264,7 @@ URL을 가져오게 만들지 못합니다.
 
 ### 7.7 로컬 폴더
 
-폴더는 마켓플레이스(루트에 `marketplace.2.json`이나 §3.3의 관례 레이아웃)이거나
+폴더는 마켓플레이스(루트에 `marketplace.json`이나 §3.3의 관례 레이아웃)이거나
 패키지 하나(직접 소스, §8)입니다. 주소를 넣는 곳 — *마켓플레이스 추가…*와
 *Git 주소나 폴더로 설치…* — 에 그대로 입력하거나 *폴더 선택…*
 (`sources:pick-folder`, main의 폴더 대화상자)으로 고르며, 다른 주소처럼
@@ -1789,7 +1796,7 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 ## 11. 서비스 엔드포인트
 
 ```jsonc
-// GET {serviceBase}/.well-known/former-service.json
+// GET {serviceBase}/.well-known/ave-service.json
 {
   "schemaVersion": 1,
   "announcements": "/announcements/v1.json",   // path on the same origin
@@ -2880,7 +2887,7 @@ Retry가 있는 `failed` 상태.
 | 로컬 폴더(§7.7) | `source-input.test.ts`를 `path.posix`와 `path.win32` 규칙으로: 받아들이는 폴더 형태는 모두 정규화되고 거부하는 형태는 모두 사유를 밝히며, `a/b`는 GitHub 약식으로 남음. 모든 호출을 기록하는 `fixtures/folder-fs.ts`의 볼륨으로: `folder-consent.test.ts` — UNC 경로는 호출 없이, 공유에 매핑된 드라이브는 `queryDosDevice`만으로 `confirm`을 답함, 같은 입력이 `allowLocalSources: false`에서 호출 없이 차단됨, 확인한 폴더는 읽기 도구 자신의 호출로만 읽힘(`realpath` 없음), `/tmp → private/tmp`와 그 자체가 링크인 루트가 해석됨, `\\attacker\share`로 가는 상위 링크는 그곳에 호출 없이 `link-to-network`, 정규 경로에서만 보이는 차단은 파일을 열기 전에 미리보기를 끝냄, Windows 8.3 짧은 이름은 긴 이름으로 표기됨, 자동 마운트 경로로 가는 상대 링크는 확인 여부와 상관없이 그 아래 호출 없이 `link-to-network`, 자동 마운트 경로의 다른 철자·로컬 링크 뒤에 자동 마운트 경로에 닿는 구성 요소·자동 마운트 루트를 담은 정식 경로는 각각 건드리기 전에 `confirm`, 매핑 없는 드라이브는 경고하고 실행할 수 없는 분류 도우미는 `classifier-unavailable`. `git-marketplace.test.ts`(IPC) — `classifier-unavailable`과 `SOURCE_ID_TAKEN`의 `folder-*` 사유가 봉투를 건너 영어·한국어로 표시됨. `folder-real-fs.test.ts` — 이 컴퓨터의 실제 파일 시스템에서(macOS와 Windows에서 실행): 네트워크 경로는 호출 전에 답함, 안쪽 링크(Windows는 정션)는 읽고 폴더를 벗어나는 링크는 읽지 않고 거부, 두 번 닿는 디렉터리는 고리, 볼륨 자신의 대소문자 규칙, `.git`으로 가는 링크는 그 아래를 건드리지 않고 거부, 하드 링크는 일반 파일로 읽힘. `folder-tree.test.ts` — 안쪽 링크는 파일로 읽힘, 바깥 링크와 공유로 가는 링크 사슬·정션은 대상에 호출 없이 텍스트에서 멈춤, 매핑으로 판정한 네트워크 드라이브, 고리, `fstat` 불일치, 그대로 남은 상위 교체(`changed-during-read`, 바깥 바이트는 패키지에 없음)와 재확인 전에 되돌린 교체라는 잔여 위험, 건너뛰는 목록, 건너뛰는 항목으로 가는 링크(`.GIT`이나 8.3 별칭으로도)는 `link-to-skipped`이고 그런 항목을 가리키는 인덱스 경로는 없는 것, 확인 없는 루트 아래의 자동 마운트 경로는 건드리기 전에 멈춤, 확인한 공유에서 다른 서버로 가는 상대 링크는 `link-to-network`, NFD/NFC와 충돌, 특수 파일, 플러그인에서 빠진 항목. `folder-identity.test.ts` — 대소문자 구분 볼륨은 두 철자를 두 소스로 둠, `allow` `path:`는 그 철자만, `block`은 모든 철자, 대소문자 무시 볼륨과 별칭 디렉터리는 디스크 철자와 `dev`/`ino`로 한 소스, 중첩은 경로로, 그리고 별칭을 거쳐 양쪽 순서 모두 거부. `folder-sync.test.ts` — `SKILL.md`를 고치면 리비전이 바뀜, git 명령과 다운로드 없음, 폴더의 버전만 제공, 백그라운드 `permission` 실패가 다시 불러온 뒤에도 이유를 지니고 표시됨, 이제 다른 곳을 가리키는 저장 경로는 대상을 읽지 않고 `moved`, 깨진 분류 도구는 아무것도 읽지 않고 `classifier-unavailable`이며 다시 불러온 뒤 재설치 안내로 표시됨. `folder-plan.test.ts` — 계획과 실행 사이에 고친 플러그인 파일과 `SKILL.md`는 계획한 바이트로 설치됨, 선언한 릴리스를 내려받지 않음, 실행 비트 유지, `process` 진입점은 `process-entry-requires-pinned-artifact`로 거부, `plugin.json` 없는 폴더는 `folder-has-no-build`, 사본은 지워짐. `plugin-ladder.test.ts` — `src/`가 있는 git 트리는 여전히 tree 단계에서 실패. `policy.test.ts` — `allowLocalSources`, `path:` 없는 `allow` 목록, `path:` 접두사와 Windows 철자, `path:`와 git 패턴의 분리, `additional[].path`와 그 거부. `registry.test.ts` — 폴더 항목과 식별자(조상 포함)의 왕복, 경로에 묶이고 그 경로의 다른 철자에는 없는 확인, 전송과 짝지은 핀, `network-folder`를 지닌 관리 폴더. `windows-path-kind-launcher.test.ts`(종료 코드 1은 "매핑 없음", 없거나 시작하지 못하거나 시간을 넘기거나 형식 밖인 도우미는 원인과 할 일로 거부), 그리고 Windows에서 `scripts/test-windows-path-kind.mjs`(CI 단계 *Verify Windows folder classification*): `C:`는 볼륨으로, `subst` 드라이브(그리고 그 `subst`)는 대상으로, 쓰지 않거나 지운 드라이브는 닫힌 쪽으로 실패 |
 | 폴더 UI(§7.7, §15) | 같은 볼륨으로 `folder-view.test.ts` — 폴더의 미리보기, 행, 패키지 카드의 *로컬 폴더*와 확인된 공유의 *네트워크 폴더*, 출처 `{ path, readAt, contents }`, `revealFolder`가 폴더면 경로, git이면 `null`, 모르는 ID면 `SOURCE_ID_INVALID`, 지워진 폴더는 `not-found`, 다른 곳으로 다시 링크된 경로는 `moved`, 공유로 매핑이 바뀐 드라이브는 `queryDosDevice`만 부른 채 거부, 실행할 수 없는 분류기는 그 행과 카드만 `folder-unclassified`로 표시(다시 실행되면 다시 분류), 허용한 적 없는 공유는 `network-folder-unconfirmed`, 같은 경로에 새로 만든 디렉터리는 새로 고침처럼 보기에서도 `moved`, 보기의 걷기 중 바뀐 매핑은 마지막 분류에서 거부; `git-marketplace.test.ts`(IPC) — `pick-folder`가 취소하면 `null`, 고르면 서비스를 만들지 않고 `{ pick, display }`, pick은 main이 고른 폴더를 미리 보고 추가하며 가려진 표시가 가리키는 형제 폴더는 쓰지 않음, 위조·교체·사용·만료된 pick은 `folder-pick-unknown`, 격리된 소스의 패키지는 소스가 있을 때와 제거된 뒤 모두 상세 정보는 거부되지만 핸들로 제거됨, 두 채널 모두 플러그인 프레임은 거부, `reveal`은 셸에 묻기 전에 git 소스와 모르는 ID를 거부하고, 분류기를 실행할 수 없는 드라이브는 아무것도 보여 주지 않고 `classifier-unavailable`과 재설치 문장; `SourcesAndAdd.test.tsx` — 폴더 행(경로, `폴더 · 리비전`, 읽은 시각, 플랫폼별 *… 보기*, *토큰 설정* 없음), 옮겨짐·교체됨 문장, `resolvedFrom`과 함께 *폴더 선택…*, 취소·실패한 선택기, ref와 로그인을 숨기는 폴더, `network-folder` 질문, 상대 경로 문장, git이 없을 때 폴더 추가, 미리보기·행 상태·실패한 *… 보기*의 `classifier-unavailable`, 세 가지 겹침 문장과 `repository-already-added` 각각의 *<id> 보기*(그냥 쓰인 ID에는 없음), 표시된 행을 화면 안으로; `GitMarketplaceTab.test.tsx` — 폴더 패키지의 배지, 출처, 버전 안내, 전달 도움말, `notInstalled`, 폴더에 묶인 검토, *<id> 보기*가 대화상자를 닫고 보기가 바뀔 때까지 소스 보기의 행을 표시; E2E(`git-marketplace-lifecycle.spec.ts`, main의 폴더 대화상자와 셸을 대체) — *폴더 선택…*으로 폴더 마켓플레이스 추가, 스킬 설치, 수정, *새로 고침*, *Finder에서 보기*가 소스 경로를 받음, 카탈로그가 업데이트를 제시 |
 | 자동 적용 | `eligibility.test.ts`: 모든 전제 조건, 스위치 순서, 출처 기본값, 필수 설치, 승인 불변식; 실제 활동 코디네이터 위의 `apply.test.ts`: 세션 변경 뒤와 부팅 때의 유휴 게이트, 구독 뒤와 에이전트 플러그인 호출 확인 뒤의 재확인, 상향과 (호출 기다림을 폴링하지 않는) *지금 적용*, 호출을 기다리는 에이전트 플러그인, 순서, `retain`, 에이전트 플러그인 호출 확인 중의 교체나 `retain`(확인이 찾은 것은 시작하지 않고 다른 것은 빠지지 않음), 종료, 결과 분류; `keyed-mutex.test.ts`: 키마다 FIFO, 한 번에 잡는 요청의 모든 키, 반대 순서 사이에 순환 없음, 모든 큐에서 곧바로 빠지고 뒤의 기다림을 깨우는 취소, 빈 요청 거절, 쥔 키에만 그리고 콜백이 도는 동안만 쓰는 리스, 그 일이 끝난 뒤 놓는 쥔 쪽, 요청한 키마다 모델이 따로 두는 소유자로 판정하는 시드 고정 무작위 인터리빙 300개(상호 배제, 깨움 누락 없음, 남는 예약 없음, 곧바로 또는 나중의 취소); 실제 서비스와 폴더 소스 위의 `auto-update.test.ts`: 폴더 새로 고침의 제안과 적용, 새 번들 훅을 보류하는 검사점 둘, 한 번 스테이징하고 그 바이트를 익스텐션 훅 동의와 함께 설치하는 검토, 한 행 검토, `approval-pending`으로 남는 필수 업데이트, 바뀐 뒤의 `superseded`, 업데이트보다 먼저 직렬화되는 사용자 제거, 큐에 넣은 뒤 꺼진 스위치나 지워진 `requiredInstalls` 항목이 막는 업데이트, 패키지 잠금 기다림 중의 종료는 아무것도 시작하지 않음; 실제 패키지·플러그인 잠금 위의 `alert-predecessor.test.ts`: 제거와 설치는 어느 순서로든 둘 다 끝나고, 플러그인 잠금 아래에서 요청한 패키지 잠금은 예외; 서비스를 통해, 종료로 취소된 기다림은 쥔 쪽의 패키지를 잠근 채 두고, 리스 없는 중첩 요청은 예외, 쥔 쪽보다 오래 사는 리스 아래 제거는 패키지와 작업을 지켜 그 사이 정책이 적용되지 않으며, 리스가 쥐지 않은 패키지의 제거는 예외, 반대 순서로 패키지를 밝힌 두 호출자는 둘 다 끝남; `consent.test.ts`, `approval-digest.test.ts`(선언 변경은 코드), `plugin-contribution-trust.test.ts`, 런타임의 리스와 빼기 테스트, `store.test.ts`(`.installs/`, 정리, `installId`에 묶인 `components:approve`); `background.test.ts`: 기록, 시도, 공지, 최근 목록, 차례가 올 때 읽는 판단, 큐의 업데이트를 빼는 설정 쓰기, 도구 모음으로 가는 상향된 기다림, 정책 아래 실제로 적용되는 스위치, 어떤 정책과 스위치에서도 켜짐으로 잠기는 필수 패키지의 스위치, 오래된 것까지 보이는 건너뛴 필수 업데이트, 제안이 사라진 뒤에도 소스를 읽든 못 읽든 필수로 남는 `approval-pending`·`applied-not-running` 결과, 정책이 필수를 거두면 다시 계산되는 오래된 제안의 필수 여부와 스위치, 정책을 읽기 전에는 보내지 않는 보기, 필수 여부만 바뀌어도 다시 보내는 도구 모음 목록, 서비스가 알린 충족되지 않은 필수 설치와 그것이 바뀌면 다시 보내기; `service.test.ts`: 정책과 식별자만으로 정하는 필수 여부, 정책과 소스 상태를 따로 바꿔 확인, 충족되지 않은 필수 설치마다 사유(없는·닿지 않은·나열하지 않는·호환되지 않는 소스)와 다른 소스에서 온 같은 이름의 설치, 이와 일치하는 부팅 패스의 건너뜀, 다시 표시할 때까지 양쪽 모두에서 미충족인 숨긴 소스의 필수, 패키지 잠금 아래에서만 제거되는 폐기된 패키지, 그 잠금 아래에서 다시 판정하는 폐기(그 사이 들어온 업데이트는 그때까지 소스가 자기 버전을 폐기하지 않으면 남고, 폐기하면 그 버전으로 제거·보고되며, 그 사이 소스가 폐기를 철회한 바뀌지 않은 설치는 남고, 잠금 아래에서 소스의 폐기를 읽을 수 없는 설치도 철회가 아니라 읽을 수 없음으로 로그에 남기고 남으며, 그 사이 제거된 설치는 건너뜀; 건너뛴 이유는 로그에 남음), 실행 전에 패키지가 제거되거나 업데이트된 계획(검토한 업데이트, 소스 전환)의 `PLAN_EXPIRED` `package-changed`, 만든 뒤 버전이 폐기된 계획의 `PACKAGE_REVOKED`, 두 소스에서 요구한 패키지는 공식 소스만 남기고 두 항목을 밝힘; `run.test.ts`: 사유마다 부팅 패스의 건너뜀(단계적 배포 보류·더 새 Ave·제공 버전 없음을 구분, 숨긴 소스), 상태 없는 필수 소스의 거부, 두 소스에서 예외를 던지는 `requiredByPolicy`; `auto-update.test.ts`: 필수를 가로막는 설치를 소스가 나열하는 동안은 시트로, 소스가 더는 나열하지 않거나 제거되었거나 격리되면(핸들로) 바로 제거하도록 밝히고 각각 그렇게 제거, 소스를 제거한 뒤에도 제거되는 격리 소스의 핸들, 그 사이 설치가 바뀐 제거는 아무것도 지우지 않고 거부; `policy.test.ts`: 두 항목을 밝히는 충돌, 이에 묶이지 않는 같은 이름의 다른 종류와 기본 설치; `labels.test.ts`: 두 항목을 밝히는 관리 정책 문장; `use-marketplace-updates.test.ts`와 `PluginUpdatesPill.test.tsx`: 마운트마다 저장된 건너뛰기를 넘어 남는 필수 상향, 그것에 기록하지 않는 건너뛰기, 필수 업데이트만 있으면 보이지 않는 건너뛰기; `git-marketplace.test.ts`: `components:approve`, `updates:apply-now`, 롤백 건너뛰기, 익스텐션 동의, 정리되어 건너가는 충족되지 않은 필수 설치의 레이블; `git-marketplace-result.test.ts`: 남는 상태의 미충족 행, 잘못된 행과 그것이 없는 상태는 버림; `AutoUpdates.test.tsx`: 스위치와 http 확인, 패키지 시트의 선택, 실제 값을 보이는 잠긴 선택, 행과 시트에서 이유와 함께 켜짐으로 잠긴 필수 패키지의 선택, 공식 소스의 이름, 행과 동작, 동의 행과 *업데이트 승인*, 구성 요소 대화상자의 묶기, 공지와 알약, 영어·한국어로 보이는 충족되지 않은 필수 설치마다의 사유와 동기화가 도울 때만의 *소스 새로 고침*, 숨긴 소스의 *소스 보기*, 가로막는 설치를 열거나 시트를 열 수 없을 때(나열하지 않는·제거된·격리된 소스) 확인 뒤 제거하는 *<소스>에서 제거…*, 실패한 응답이나 성공한 응답 안의 실패한 동기화로 끝난 새로 고침, 밝힌 설치에 묶인 열린 제거(다른 설치를 밝히는 상태는 안내로 바꾸고 행이 사라지면 끝남), 제거 클릭마다 별개의 질문(한 프레임 전에 함께 받은 상태를 하나씩 적용: 다른 설치를 밝힌 뒤 이 설치를 다시 밝히는 상태, 사라졌다 돌아오는 행; 이전 프레임·취소 뒤·두 번 누른 확인은 많아야 한 번 보냄; 이전 프레임에서 누른 제거는 그 프레임이 밝힌 설치를 제거; 응답 전에 제거가 게시된 요청은 응답까지 제거 중으로만 그려지고 아무것도 제거하지 않았다고 그려지지 않으며, 바뀐 뒤 실패한 요청은 아무것도 제거하지 않았다고 말함; 응답은 자기 질문에만 답하고, 이전 질문의 실패는 따로 보이다가 행이나 새 질문과 함께 사라지며, 그 성공은 아무것도 닫지 않음; 교체된 질문의 닫기; 카드가 사라진 뒤의 응답), 모든 필수가 충족되면 행 없음 |
-| 서비스 | `former-service.json` 파싱, `movedFrom` 있을 때와 없을 때의 `movedTo`, 빌드 상수 변경 시 초기화, 정책 우선, 공지 동등성, 라벨 대체 |
+| 서비스 | `ave-service.json` 파싱, `movedFrom` 있을 때와 없을 때의 `movedTo`, 빌드 상수 변경 시 초기화, 정책 우선, 공지 동등성, 라벨 대체 |
 | E2E | 패키징된 개발 빌드(개발 플래그로 루프백 허용)에서 로컬 HTTP git 마켓플레이스를 추가하고, 종류별로 하나씩 설치하고, 업데이트하고, 소스를 제거. 개발 플래그 없이는 같은 종류의 소스가 픽스처 서버가 요청을 받기 전에 `unencrypted`와 `this-computer`를 묻고, 미리보기·카드·소스 행이 배지를 보임. `git-marketplace-auto-update.spec.ts`는 실제 스케줄러로(`AVE_E2E_MARKETPLACE_SCHEDULER=1`) http 소스를 켜며 `unencrypted-updates`를 받아들이고, *지금 확인*에서 동의가 필요 없는 스킬 업데이트를 스스로 적용하고, 새 호스트를 요구하는 익스텐션을 `needs-review`로 잡으며, 그 검토가 설치함 |
 
 ## 18. 소스 수용, 로컬 폴더, 자동 업데이트 (0.14.0)
@@ -3150,7 +3157,7 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
 - Windows 장치 경로(`\\.\…`, `\\?\GLOBALROOT\…`, `\\?\Volume{…}\…`).
 - macOS·Linux의 `file://host/…` URL.
 - `unroutable` 주소.
-- 경로가 `marketplace.json`이나 `marketplace.2.json`으로 끝나는 `http(s)` 주소(결정 11).
+- 경로가 `marketplace.json`으로 끝나는 `http(s)` 주소(결정 11).
 
 ### 18.4 로컬 폴더
 
@@ -3165,7 +3172,7 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
 >   보기*는 셸에 요청하기 전에 저장된 경로를 읽기처럼 다시 판단하고(§7.7), 검토는
 >   계획의 `notInstalled`를 나열합니다.
 
-폴더는 마켓플레이스 소스(루트에 `marketplace.2.json`이나 §3.3의 관례 배치가 있음)이거나
+폴더는 마켓플레이스 소스(루트에 `marketplace.json`이나 §3.3의 관례 배치가 있음)이거나
 단일 패키지(§8)입니다.
 
 #### 18.4.1 입력, 분류, 동의, 그다음 해석
@@ -3234,8 +3241,8 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
    대소문자만 무시하고 같은 항목이 하나일 때 그것입니다. 볼륨이 찾지 못하는 표기는
    `not-found`이므로, 대소문자를 구분하는 볼륨은 `MARKET`을 `Market`으로 바꾸지
    않습니다. 그런 항목이 여럿이면 `SOURCE_LOCAL_UNREADABLE` 사유 `ambiguous-case`로
-   실패합니다. 결과는 디렉터리여야 하고, `marketplace.2.json`이나 `marketplace.json`이라는
-   일반 파일은 그 디렉터리로 바꿉니다. 3단계의 정책을 이 **정식 경로**에 다시 적용하고,
+   실패합니다. 결과는 디렉터리여야 하고, `marketplace.json`이라는
+   일반 파일은 그 디렉터리로 바꾸며 다른 파일은 폴더가 아닙니다. 3단계의 정책을 이 **정식 경로**에 다시 적용하고,
    이제야 드러난 차단이면 추가가 끝납니다. 네트워크 분류도 다시 적용하며,
    `network-folder` 없이 다른 컴퓨터에 있는 정식 경로는 그 아래를 읽기 전에 `confirm`으로
    답합니다. 저장하는 `path`는 정식 경로이고, 입력과 다르면 대화상자가
@@ -4178,7 +4185,7 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 > 구현된 모든 코드, 사유, 메시지 키는 §14에 있습니다. 아래 표의 다음 행은 일부러
 > 구현하지 않았으므로, 사용자는 다른 문장으로 그 경우를 만납니다.
 > - `SOURCE_URL_REJECTED` · `index-file-url`: 마켓플레이스 파일을 가리킨다는 이유로
->   거부하는 주소는 없습니다. `marketplace.2.json`이나 `marketplace.json`으로 끝나는
+>   거부하는 주소는 없습니다. `marketplace.json`으로 끝나는
 >   폴더 경로는 그 파일을 담은 폴더로 풀리고(§7.7), 그 파일을 가리키는 웹 주소는
 >   저장소 주소로 읽히므로 호스트의 답이 표시됩니다. 대개 `SOURCE_UNREACHABLE` ·
 >   `not-found`("<호스트>이(가) 이 주소에 저장소가 없다고 답했습니다…")입니다.
@@ -4296,7 +4303,7 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | · `ambiguous-case` | E | "<경로>에 대소문자만 다른 폴더가 여럿 있습니다." | "정확한 대소문자로 경로를 입력하세요." |
 | · `changed-during-read` | E | "Ave가 읽는 동안 <경로>의 파일이 바뀌었습니다." | "다음 읽기 때 다시 시도합니다." |
 | · `classifier-unavailable` | E | "Ave의 폴더 분류 도구가 없거나 손상되어 <경로>가 다른 컴퓨터에 있는지 알 수 없습니다." | "Ave를 다시 설치하세요." |
-| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "<위치>에서 marketplace.2.json도, 패키지 폴더도, 단일 패키지도 찾지 못했습니다." | 입력 중인 주소: "주소와 브랜치, 저장소 안의 패키지라면 폴더 칸을 확인하세요."; 직접 추가한 소스: 같은 안내를 *소스 제거* 후 다시 추가로; 공식: 나중에 *새로 고침*, 그다음 마켓플레이스 운영자; 조직: "관리자에게 알리세요" |
+| `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "<위치>에서 marketplace.json도, 패키지 폴더도, 단일 패키지도 찾지 못했습니다." | 입력 중인 주소: "주소와 브랜치, 저장소 안의 패키지라면 폴더 칸을 확인하세요."; 직접 추가한 소스: 같은 안내를 *소스 제거* 후 다시 추가로; 공식: 나중에 *새로 고침*, 그다음 마켓플레이스 운영자; 조직: "관리자에게 알리세요" |
 | · `other-app-plugin` | E | "다른 앱용 플러그인입니다(`.claude-plugin/`나 `.codex-plugin/`)." | "플러그인 스튜디오의 *플러그인 가져오기*를 쓰세요(`extensions-and-plugins.md` §2.4)." |
 | `SOURCE_INDEX_INVALID` | E | "<소스>의 인덱스가 올바르지 않습니다(<파일>: <문제>). 마지막 정상 버전을 계속 씁니다." | "마켓플레이스 소유자에게 알리세요." *세부 정보 복사* |
 | · `name-reserved-prefix`, `version-reserved-prefix`, `component-reserved-prefix` | E | "“<접두사>”로 시작하거나 “-” 뒤 부분이 그것으로 시작하는 패키지 이름은 <발급자>처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다." / "“<접두사>”로 시작하는 부분이 있는 버전은…" / "이 패키지에 든 스킬, 에이전트, 프롬프트, 루틴 또는 MCP 서버의 이름에 “<접두사>”로 시작하는 부분이 있습니다. 그런 이름은…" | "패키지 작성자에게 다른 이름을 골라 / 버전을 바꿔 달라고 하세요." |

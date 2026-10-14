@@ -76,6 +76,9 @@ const STABLE_SEMVER_RE =
 
 /** `requires.hostProtocol`, mirroring its `pattern` in the manifest schema. */
 const HOST_PROTOCOL_VERSION_RE = /^[1-9][0-9]*$/;
+// The Tool._meta key that carries a signed operation policy. Error paths name
+// the same constant so a namespace rename cannot leave a stale key in messages.
+const OPERATION_POLICY_META_KEY = "ave/operationPolicy" as const;
 
 // #893 — the allow-listed host-secret key shapes a manifest's
 // `hostSecrets.read[]` may name have ONE definition,
@@ -727,7 +730,7 @@ function checkProcessEntryShape(
     fail(
       "requires.minAppVersion",
       `a plugin with a 'process' entry must require Ave ${PROCESS_ENTRY_FIRST_APP_VERSION} or newer, the first release that runs one`,
-      `"requires": { "minAppVersion": "${PROCESS_ENTRY_FIRST_APP_VERSION}", "hostProtocol": "2" }`,
+      `"requires": { "minAppVersion": "${PROCESS_ENTRY_FIRST_APP_VERSION}", "hostProtocol": "3" }`,
     );
   }
 }
@@ -1087,10 +1090,10 @@ export async function parsePluginJson(
   // preserves manifest==wire and prevents a second tool-name keyed action map.
   const operationPolicies = new Map<string, PluginToolOperationPolicy>();
   for (const [toolName, tool] of byName) {
-    const policy = tool._meta?.["ave/operationPolicy"];
+    const policy = tool._meta?.[OPERATION_POLICY_META_KEY];
     if (!policy) continue;
     operationPolicies.set(toolName, policy);
-    const policyPath = `tools.${toolName}._meta.ave/operationPolicy`;
+    const policyPath = `tools.${toolName}._meta.${OPERATION_POLICY_META_KEY}`;
     if (policy.discriminant !== "operation") {
       fail(
         `${policyPath}.discriminant`,
@@ -1150,7 +1153,7 @@ export async function parsePluginJson(
     ) {
       fail(
         `tools.${toolName}.inputSchema.properties.operation`,
-        "enum/const must exactly match ave/operationPolicy operations",
+        `enum/const must exactly match ${OPERATION_POLICY_META_KEY} operations`,
         `use exactly ${JSON.stringify(operationNames.sort())}`,
       );
     }
@@ -1179,11 +1182,11 @@ export async function parsePluginJson(
       const readTool = byName.get(rule.requiresRead.tool);
       const readPolicy =
         operationPolicies.get(rule.requiresRead.tool) ??
-        readTool?._meta?.["ave/operationPolicy"];
+        readTool?._meta?.[OPERATION_POLICY_META_KEY];
       if (!readTool || !readPolicy) {
         fail(
           `${policyPath}.operations.${operation}.requiresRead.tool`,
-          "must reference a declared Tool with ave/operationPolicy",
+          `must reference a declared Tool with ${OPERATION_POLICY_META_KEY}`,
           `reference a governed tool in tools[]`,
         );
       }

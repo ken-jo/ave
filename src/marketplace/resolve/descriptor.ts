@@ -8,7 +8,7 @@
  * the version's commit, which must still name the planned package.
  */
 import type { CatalogRow } from "../catalog/aggregate.js";
-import { hasVersionTree, type AgentPluginComponents, type IndexVersion, type PackageDescriptor, type PackageKind } from "../catalog/types.js";
+import { hasVersionTree, MARKETPLACE_DESCRIPTOR_FILE, type AgentPluginComponents, type IndexVersion, type PackageDescriptor, type PackageKind } from "../catalog/types.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { validateDescriptorText } from "../catalog/validate.js";
 import { readDirectPackage } from "../sources/direct-package.js";
@@ -36,7 +36,6 @@ export interface PackagePlan {
   components?: AgentPluginComponents;
 }
 
-export const DESCRIPTOR_NAME = "ave-package.json";
 const DESCRIPTOR_LIMIT = 256 * 1024;
 
 /**
@@ -99,7 +98,7 @@ export function repoPath(dir: string, file: string): string {
  * descriptor (design §8.2).
  */
 export async function readDescriptorAtVersion(plan: PackagePlan, access: RepositoryAccess): Promise<PackageDescriptor> {
-  const path = repoPath(plan.packagePath, DESCRIPTOR_NAME);
+  const path = repoPath(plan.packagePath, MARKETPLACE_DESCRIPTOR_FILE);
   const fail = (why: string) => new MarketplaceError("MANIFEST_MISMATCH", `${plan.kind} ${plan.name}@${plan.version} at ${plan.versionCommit}: ${why}`);
   let descriptor: PackageDescriptor;
   const tree = access.treeAt(plan.versionCommit);

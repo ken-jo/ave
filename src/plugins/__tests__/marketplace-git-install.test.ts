@@ -202,8 +202,8 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
 
   it("keeps the planned host protocol at the extracted manifest gate", async () => {
     const forPlan = plan("1.0.0", {
-      hostProtocol: "2",
-      authority: authority({ requires: { minAppVersion: "0.12.0", hostProtocol: "2" } }),
+      hostProtocol: "3",
+      authority: authority({ requires: { minAppVersion: "0.12.0", hostProtocol: "3" } }),
     });
     await expect(install(forPlan)).resolves.toMatchObject({ pluginId: "alpha", installed: true });
   });
@@ -241,7 +241,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
   });
 
   describe("a process entry: the zip transaction admits the verified rung (§9.7 P4)", () => {
-    const processAuthority = authority({ requires: { minAppVersion: "0.13.0", hostProtocol: "2" } });
+    const processAuthority = authority({ requires: { minAppVersion: "0.13.0", hostProtocol: "3" } });
 
     function processZip(): Buffer {
       const document = {
@@ -263,7 +263,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
       const digest = createHash("sha256").update(zipBuffer).digest("hex");
       const forPlan = plan("1.0.0", {
         minAppVersion: "0.13.0",
-        hostProtocol: "2",
+        hostProtocol: "3",
         platforms: ["darwin", "linux"],
         authority: processAuthority,
         artifact: { release: { repo: "acme/alpha", sha256: pin ?? digest } },

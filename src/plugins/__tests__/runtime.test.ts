@@ -46,7 +46,7 @@ import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry
 
 function servedPluginDocument(manifest: Record<string, unknown>): Record<string, unknown> {
   const requires = manifest.requires as Record<string, unknown> | undefined;
-  return agentPluginsDocument({ ...manifest, requires: { hostProtocol: "2", ...requires } });
+  return agentPluginsDocument({ ...manifest, requires: { hostProtocol: "3", ...requires } });
 }
 
 function makeGenerationBoundRuntime(
@@ -2434,7 +2434,7 @@ export default async function createPlugin({ hostApi }) {
     const consumerPath = await writePlugin("p-calendar-consumer");
     const consumerManifest = JSON.parse(await readFile(consumerPath, "utf-8"));
     patchAveFields(consumerManifest, {
-      requires: { hostProtocol: "2", capabilities: ["calendar-source"] },
+      requires: { hostProtocol: "3", capabilities: ["calendar-source"] },
     });
     await writeFile(consumerPath, JSON.stringify(consumerManifest), "utf-8");
     await writeFile(
@@ -3915,7 +3915,7 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
     const { runtime, requires, card } = await setup(BROKEN_START);
     await expect(runtime.addPlugin(ID)).rejects.toThrow();
     expect(card()).toMatchObject({ loadStatus: "failed", arm: "child", confinement: "unconfined" });
-    await requires({ hostProtocol: "2", capabilities: ["attempt-owned-missing-capability"] });
+    await requires({ hostProtocol: "3", capabilities: ["attempt-owned-missing-capability"] });
     await expect(runtime.addPlugin(ID)).rejects.toThrow(/Missing capabilities|missing required capabilities/);
     expect(card()?.loadStatus).toBe("failed");
     expect(card()?.arm).toBeUndefined();
@@ -3928,7 +3928,7 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
     const first = settle(runtime.addPlugin(ID));
     try {
       await parked.entered(1);
-      await requires({ hostProtocol: "3" });
+      await requires({ hostProtocol: "2" });
       await expect(runtime.addPlugin(ID)).rejects.toThrow();
       expect(card()?.installFailureKind).toBe("incompatible-host-protocol");
       expect(card()?.arm).toBeUndefined();
@@ -4014,7 +4014,7 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
       await parked.entered(1);
       await runtime.removePlugin(ID);
       expect(card()).toBeUndefined();
-      await requires({ hostProtocol: "3" });
+      await requires({ hostProtocol: "2" });
       await expect(runtime.addPlugin(ID)).rejects.toThrow();
       expect(card()?.installFailureKind).toBe("incompatible-host-protocol");
       expect(card()?.arm).toBeUndefined();

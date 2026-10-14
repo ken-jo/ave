@@ -38,7 +38,7 @@ describe("agent-plugin manifest branches", () => {
       { entry: "dist/index.js" },
       { capabilities: [] },
       { mcpAuth: { editor: { auth: "api-key", apiKeyEnv: "EDITOR_KEY", extra: true } } },
-      { requires: { hostProtocol: "1", minAppVersion: "0.12.0" } },
+      { requires: { hostProtocol: "2", minAppVersion: "0.12.0" } },
     ]) {
       expect(valid(namespace(value)), JSON.stringify(value)).toBe(false);
       expect(() => parseAgentPluginManifest(JSON.stringify(namespace(value)))).toThrow();

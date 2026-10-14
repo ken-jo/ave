@@ -173,7 +173,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     };
     const owned = {
       target: "c:\\PROGRAM FILES\\ave\\Ave.exe",
-      workingDirectory: "c:\\PROGRAM FILES\\Ave",
+      workingDirectory: "c:\\PROGRAM FILES\\ave",
       arguments: "",
       description: "Ave",
       appUserModelId: "ai.agent-connector.ave",

@@ -36,6 +36,7 @@ import { errorMessage } from "../../shared/error-message.js";
 import { ConfirmationRequiredError, MarketplaceError, type MarketplaceErrorDetail } from "../errors.js";
 import type { FolderFs, FolderStat } from "../sources/folder-fs.js";
 import { isFolderPathInput, normalizeSourceUrl, type NormalizedSourceUrl } from "./source-url.js";
+import { MARKETPLACE_INDEX_FILE } from "../catalog/types.js";
 
 export type SourceInput =
   | { kind: "git"; url: NormalizedSourceUrl }
@@ -509,7 +510,6 @@ async function shortNameSpelling(entries: readonly string[], name: string, at: s
   return null;
 }
 
-const INDEX_FILES = new Set(["marketplace.2.json", "marketplace.json"]);
 
 /**
  * Stage 4 (§18.4.1): walk `path` (stage 1's output, after stage 3 passed)
@@ -521,8 +521,8 @@ const INDEX_FILES = new Set(["marketplace.2.json", "marketplace.json"]);
  * it resolves to against the link's directory, are checked for a network
  * location (refused as `link-to-network`, the target never touched), and
  * the walk continues at the target. The result is a directory; a regular
- * `marketplace.2.json` or `marketplace.json` resolves to the directory
- * holding it.
+ * `marketplace.json` resolves to the directory holding it, and any other
+ * file is not a folder.
  */
 export async function resolveFolderRoot(path: string, platform: NodeJS.Platform, unfenced: FolderFs, networkConsented: boolean): Promise<FolderRoot> {
   const fs = fenceFolderFs(unfenced, platform, { consented: networkConsented, address: path });
@@ -583,7 +583,7 @@ export async function resolveFolderRoot(path: string, platform: NodeJS.Platform,
       chain = [...chain, entry];
       continue;
     }
-    if (entry.kind === "file" && queue.length === 0 && INDEX_FILES.has(spelled)) break;
+    if (entry.kind === "file" && queue.length === 0 && spelled === MARKETPLACE_INDEX_FILE) break;
     throw unreadable("not-a-directory", path, `${candidate} is not a folder`);
   }
   const identity = ({ dev, ino }: FolderIdentity): FolderIdentity => ({ dev, ino });

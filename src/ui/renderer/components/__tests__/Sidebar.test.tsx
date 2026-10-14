@@ -60,7 +60,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
   const removeRoot = vi.fn(async (root: string) => ({
     ok: true as const, removed: root, roots: [],
   }));
-  const ADDED_ROOT = "C:\\Users\\example\\workspace\\former_org\\gamma";
+  const ADDED_ROOT = "C:\\Users\\example\\workspace\\ave-project\\gamma";
   const pickRoot = vi.fn(async (_options?: { ackToken?: string }) => ({
     ok: true as const,
     roots: [{ path: ADDED_ROOT, isDefault: false }],
@@ -76,10 +76,10 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
   }));
   const listRoots = vi.fn(async () => ({
     ok: true as const,
-    defaultRoot: "C:\\Users\\example\\workspace\\former_org\\ave",
+    defaultRoot: "C:\\Users\\example\\workspace\\ave-project\\ave",
     roots: [
-      { path: "C:\\Users\\example\\workspace\\former_org\\ave", isDefault: true },
-      { path: "C:\\Users\\example\\workspace\\former_org\\other-app", isDefault: false },
+      { path: "C:\\Users\\example\\workspace\\ave-project\\ave", isDefault: true },
+      { path: "C:\\Users\\example\\workspace\\ave-project\\other-app", isDefault: false },
     ],
   }));
   const sessions: SessionSummary[] = overrides.sessions ?? [
@@ -93,7 +93,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
       id: "sess-other",
       title: "다른 프로젝트 대화",
       modifiedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-      projectRoot: "C:\\Users\\example\\workspace\\former_org\\other-app",
+      projectRoot: "C:\\Users\\example\\workspace\\ave-project\\other-app",
       projectName: "other-app",
     }),
   ];
@@ -119,12 +119,12 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     sessions,
     projects: overrides.projects ?? [
       {
-        projectRoot: "C:\\Users\\example\\workspace\\former_org\\ave",
+        projectRoot: "C:\\Users\\example\\workspace\\ave-project\\ave",
         projectName: "ave",
         isDefault: true,
       },
       {
-        projectRoot: "C:\\Users\\example\\workspace\\former_org\\other-app",
+        projectRoot: "C:\\Users\\example\\workspace\\ave-project\\other-app",
         projectName: "other-app",
       },
     ],
@@ -272,7 +272,7 @@ describe("Sidebar project sessions", () => {
       });
       fireEvent.click(getByTestId("sidebar-project-C-Users-example-workspace-ave-project-other-app"));
       expect(onNewChatForProject).toHaveBeenCalledWith({
-        projectRoot: "C:\\Users\\example\\workspace\\former_org\\other-app",
+        projectRoot: "C:\\Users\\example\\workspace\\ave-project\\other-app",
         projectName: "other-app",
       });
     } finally {
@@ -302,7 +302,7 @@ describe("Sidebar legacy default-root session handling", () => {
     // reports below (isDefault: true) — the exact "legacy default-tagged"
     // shape pre-PR persistence produced (projectRoot=defaultRoot,
     // projectName="workspace").
-    const DEFAULT_ROOT = "C:\\Users\\example\\workspace\\former_org\\ave";
+    const DEFAULT_ROOT = "C:\\Users\\example\\workspace\\ave-project\\ave";
     const legacySession: SessionSummary = sessionRow({
       id: "legacy-session",
       title: "레거시 기본 프로젝트 대화",
@@ -490,8 +490,8 @@ describe("Sidebar conversation pinning", () => {
 
 describe("Sidebar project pinning", () => {
   const projects: ProjectIdentity[] = [
-    { projectRoot: "C:\\Users\\example\\workspace\\former_org\\alpha", projectName: "alpha", isDefault: false },
-    { projectRoot: "C:\\Users\\example\\workspace\\former_org\\beta", projectName: "beta", isDefault: false },
+    { projectRoot: "C:\\Users\\example\\workspace\\ave-project\\alpha", projectName: "alpha", isDefault: false },
+    { projectRoot: "C:\\Users\\example\\workspace\\ave-project\\beta", projectName: "beta", isDefault: false },
   ];
 
   it("shows a pin/unpin context menu item and calls onToggleProjectPin with the project root", async () => {
@@ -521,7 +521,7 @@ describe("Sidebar project pinning", () => {
         ]),
       }));
       emitNativeContextCommand("project.pin");
-      expect(onToggleProjectPin).toHaveBeenCalledWith("C:\\Users\\example\\workspace\\former_org\\alpha");
+      expect(onToggleProjectPin).toHaveBeenCalledWith("C:\\Users\\example\\workspace\\ave-project\\alpha");
     } finally {
       restore();
     }
@@ -549,7 +549,7 @@ describe("Sidebar project pinning", () => {
 
       await waitFor(() => {
         expect(removeRoot).toHaveBeenCalledWith(
-          "C:\\Users\\example\\workspace\\former_org\\alpha",
+          "C:\\Users\\example\\workspace\\ave-project\\alpha",
         );
         expect(onRefreshProjects).toHaveBeenCalledTimes(1);
       });
@@ -602,7 +602,7 @@ describe("Sidebar project pinning", () => {
       sessions: [],
       projects,
       activeSidebarTab: "projects",
-      isProjectPinned: (root) => root === "C:\\Users\\example\\workspace\\former_org\\beta",
+      isProjectPinned: (root) => root === "C:\\Users\\example\\workspace\\ave-project\\beta",
       onToggleProjectPin: vi.fn(),
     });
     try {
@@ -624,7 +624,7 @@ describe("Sidebar project pinning", () => {
 
 describe("Sidebar projects tab add-project context menu", () => {
   const projects: ProjectIdentity[] = [
-    { projectRoot: "C:\\Users\\example\\workspace\\former_org\\alpha", projectName: "alpha", isDefault: false },
+    { projectRoot: "C:\\Users\\example\\workspace\\ave-project\\alpha", projectName: "alpha", isDefault: false },
   ];
 
   it("offers add-project when the Projects tab's empty area is right-clicked, and adds through workspace.pickRoot", async () => {
@@ -722,7 +722,7 @@ describe("Sidebar projects tab add-project context menu", () => {
       // The row's own primary action still resolves against the row's handlers.
       emitNativeContextCommand("project.new-chat");
       expect(onNewChatForProject).toHaveBeenCalledWith({
-        projectRoot: "C:\\Users\\example\\workspace\\former_org\\alpha",
+        projectRoot: "C:\\Users\\example\\workspace\\ave-project\\alpha",
         projectName: "alpha",
       });
     } finally {
@@ -1209,7 +1209,7 @@ describe("Sidebar current-row scoping", () => {
 });
 
 describe("Sidebar conversation reveal on scroll", () => {
-  const OTHER_ROOT = "C:\\Users\\example\\workspace\\former_org\\other-app";
+  const OTHER_ROOT = "C:\\Users\\example\\workspace\\ave-project\\other-app";
 
   /** How many of `conversations` currently have a row in the sidebar. */
   function countRenderedRows(
@@ -1359,7 +1359,7 @@ describe("Sidebar conversation reveal on scroll", () => {
   });
 
   it("gives each project group its own page and a control that opens the rest", async () => {
-    const THIRD_ROOT = "C:\\Users\\example\\workspace\\former_org\\third-app";
+    const THIRD_ROOT = "C:\\Users\\example\\workspace\\ave-project\\third-app";
     const conversations = [
       ...manyConversations(9, "프로젝트", { projectRoot: OTHER_ROOT, projectName: "other-app" }),
       ...manyConversations(9, "이웃", { projectRoot: THIRD_ROOT, projectName: "third-app" }),
@@ -1371,7 +1371,7 @@ describe("Sidebar conversation reveal on scroll", () => {
       currentSessionId: "프로젝트-0",
       projects: [
         {
-          projectRoot: "C:\\Users\\example\\workspace\\former_org\\ave",
+          projectRoot: "C:\\Users\\example\\workspace\\ave-project\\ave",
           projectName: "ave",
           isDefault: true,
         },

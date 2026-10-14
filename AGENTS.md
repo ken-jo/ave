@@ -1,4 +1,4 @@
-# Ave App coding-agent contract
+# Ave coding-agent contract
 
 This file is the canonical repository contract for coding agents. Keep it lean:
 state durable constraints here and put detailed designs in their owning docs.

@@ -1,8 +1,20 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, sep } from "node:path";
 
+/**
+ * electron-builder names the Windows executable `<build.productName>.exe`, so
+ * the selection reads the same field instead of repeating the product name.
+ */
+const PRODUCT_NAME = JSON.parse(
+  readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+).build?.productName;
+if (typeof PRODUCT_NAME !== "string" || PRODUCT_NAME.length === 0) {
+  throw new Error("package.json build.productName is required to locate the packaged executable");
+}
+const WINDOWS_EXECUTABLE_NAME = `${PRODUCT_NAME}.exe`;
+
 export function linuxExecutablePreferenceSuffixes(arch, separator) {
-  const names = ["Ave", "ave", "ave"];
+  const names = ["Ave", "ave"];
   return [
     ...names.map((name) => `${separator}linux-${arch}-unpacked${separator}${name}`),
     ...names.map((name) => `${separator}linux-unpacked${separator}${name}`),
@@ -79,7 +91,7 @@ export function findPackagedExecutable(target, releaseDir) {
   }
 
   if (target === "linux") {
-    const executableNames = new Set(["Ave", "ave", "ave"]);
+    const executableNames = new Set(["Ave", "ave"]);
     const matches = files.filter((file) =>
       file.split(sep).some((part) => part === "linux-unpacked" || /^linux-.+-unpacked$/u.test(part)) &&
       executableNames.has(basename(file)) &&
@@ -93,7 +105,7 @@ export function findPackagedExecutable(target, releaseDir) {
 
   const matches = files.filter((file) =>
     file.includes(`win-unpacked${sep}`) &&
-    basename(file).toLowerCase() === "ave.exe"
+    basename(file).toLowerCase() === WINDOWS_EXECUTABLE_NAME.toLowerCase()
   );
-  return pickBest(matches, [`win-unpacked${sep}Ave.exe`]);
+  return pickBest(matches, [`win-unpacked${sep}${WINDOWS_EXECUTABLE_NAME}`]);
 }

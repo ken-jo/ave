@@ -30,7 +30,7 @@ afterEach(() => {
 
 async function addLocalMarket() {
   writeFolderFiles(folder, {
-    "marketplace.2.json": index,
+    "marketplace.json": index,
     "skills/alpha/ave-package.json": skill("alpha"),
     "skills/alpha/SKILL.md": "Write alpha.\n",
   });

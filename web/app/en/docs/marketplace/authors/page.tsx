@@ -33,14 +33,15 @@ policy/revocations.json               optional — revocations
 <kind dir>/<name>/ave-package.json   one descriptor per package
 <kind dir>/<name>/...                 the package's files`}</pre>
       <p>
-        <code>marketplace.json</code> names the marketplace and lists each package&apos;s <code>kind</code>, <code>name</code> and <code>path</code>.
+        <code>marketplace.json</code> is the one index file and carries its format version as <code>schemaVersion: 2</code>; the app refuses any other value.
+        It names the marketplace and lists each package&apos;s <code>kind</code>, <code>name</code> and <code>path</code>.
         A package entry&apos;s <code>versions[]</code> (newest first) pins each <code>version</code> to the <code>commit</code> that published it.
         Names are lowercase and hyphenated, and unique per kind within a marketplace.
       </p>
 
       <h2 id="kinds">Files Per Kind</h2>
       <p>
-        <code>ave-package.json</code> carries <code>schemaVersion: 1</code>, <code>kind</code>, <code>name</code>, <code>version</code>,{" "}
+        <code>ave-package.json</code> carries <code>schemaVersion: 2</code>, <code>kind</code>, <code>name</code>, <code>version</code>,{" "}
         <code>minAppVersion</code> and a kind-specific <code>payload</code>. SVG is refused in every kind.
       </p>
       <ul>

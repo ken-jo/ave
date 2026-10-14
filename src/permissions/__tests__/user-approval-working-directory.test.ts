@@ -12,7 +12,7 @@ describe("exact decisions scoped to the captured working directory", () => {
   let root: string;
   let previousHome: string | undefined;
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "ave-approval-directory-"));
+    root = mkdtempSync(join(tmpdir(), "averoval-directory-"));
     previousHome = process.env.AVE_HOME;
     process.env.AVE_HOME = join(root, "state");
     mkdirSync(join(root, "first"));

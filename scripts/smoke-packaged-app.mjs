@@ -241,7 +241,7 @@ function assertPackagedFirstLaunchSeed(homeDir) {
     throw new Error(`AVE_HOME seed missing AGENTS.md: ${agents}`);
   }
   const agentsContent = readFileSync(agents, "utf8");
-  if (!agentsContent.includes("Ave")) {
+  if (!agentsContent.includes("# Ave Runtime Assistant Contract")) {
     throw new Error(`AVE_HOME seed AGENTS.md does not look like Ave guidance: ${agents}`);
   }
   assertSeededMarkdownDir(homeDir, "agents");

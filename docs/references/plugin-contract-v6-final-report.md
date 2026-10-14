@@ -1,5 +1,7 @@
 # Plugin Contract v6 — Final Consistency Report (#885 initial design vs achieved)
 
+> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+
 > Historical report of the 0.5.x migration. Its SDK package references describe
 > that period; current authoring uses [the app release tag contract](../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors)
 > and `requires.minAppVersion`.

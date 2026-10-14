@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible Ave App defect.
+description: Report a reproducible Ave defect.
 title: "fix: "
 labels:
   - bug

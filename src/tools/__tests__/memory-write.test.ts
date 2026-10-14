@@ -143,7 +143,7 @@ describe("memory_write — reserved marker injection guard", () => {
     ["zero space", "<!--ave:"],
     ["tab", "<!--\tave:"],
     ["double space", "<!--  ave:"],
-    ["uppercase", "<!-- Ave:"],
+    ["uppercase", "<!-- AVE:"],
     ["newline", "<!--\nave:"],
   ] as const;
 
