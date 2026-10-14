@@ -40,7 +40,8 @@ function deps(
 ): JudgeEngineDeps & Pick<CollectingAudit, "entries" | "chained"> {
   const s = judgeSettings(settings);
   const { entries, chained, logger } = collectingAudit();
-  return { settings: s, judge, breaker: new JudgeCircuitBreaker(s.breaker), audit: logger, entries, chained, ...(hooks ? { hooks } : {}) };
+  const chain = s.chain.map((stage) => ({ settings: stage, judge }));
+  return { settings: s, chain, breaker: new JudgeCircuitBreaker(s.breaker), audit: logger, entries, chained, ...(hooks ? { hooks } : {}) };
 }
 
 const ALLOW: JudgeVerdict = { decision: "allow", rationale: "build script" };
@@ -56,10 +57,10 @@ describe("resolveJudge — placement", () => {
     expect(judgeRecords(d)).toHaveLength(0);
   });
 
-  it("provider off is today's behavior: never runs", async () => {
+  it("an empty chain is today's behavior: never runs", async () => {
     const judge = answering(ALLOW);
-    const out = await resolveJudge(UNDECIDED, judgeRequest(), deps(judge, { provider: "off" }));
-    expect(out).toEqual({ judged: false, skip: "provider-off" });
+    const out = await resolveJudge(UNDECIDED, judgeRequest(), deps(judge, { chain: [] }));
+    expect(out).toEqual({ judged: false, skip: "judge-off" });
     expect(judge.calls).toBe(0);
   });
 
@@ -314,7 +315,9 @@ describe("resolveJudge — audit", () => {
       verdictDecision: "allow",
       fallback: null,
     });
-    expect(String(records[0]!.stderr)).toContain("warn");
+    const stage = (records[0]!.stages as Array<Record<string, unknown>>)[0]!;
+    expect(String(stage.stderr)).toContain("warn");
+    expect(String(stage.stderr)).not.toContain(PLANTED_CREDENTIAL);
     expect(typeof records[0]!.argsHash).toBe("string");
     expect(typeof records[0]!.latencyMs).toBe("number");
   });

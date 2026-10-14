@@ -148,7 +148,7 @@ describe("builtin-llm parity with the shipped reviewer dispatch", () => {
               ? (await dispatchReviewerForHeadless(...(args as Parameters<typeof dispatchReviewerForHeadless>))).permissionResult.decision
               : (await dispatchReviewerForInteractiveAuto(...(args as Parameters<typeof dispatchReviewerForInteractiveAuto>)))?.decision;
 
-          const settings = judgeSettings({ timeoutMs: 10_000 });
+          const settings = judgeSettings({ timeoutMs: 10_000, chain: [{ provider: "builtin-llm", id: "builtin-llm" }] });
           const { logger } = collectingAudit();
           const judged = await resolveJudge(
             { priorDecision: "undecided", strictMode: false, capabilityGrant: false, remoteController: false },
@@ -162,7 +162,10 @@ describe("builtin-llm parity with the shipped reviewer dispatch", () => {
             }),
             {
               settings,
-              judge: new BuiltinLlmJudge(new LlmRiskClassifier(provider, "model-under-test", fallbackOnError, {}, NO_RETRY), () => "medium"),
+              chain: [{
+                settings: settings.chain[0]!,
+                judge: new BuiltinLlmJudge(new LlmRiskClassifier(provider, "model-under-test", fallbackOnError, {}, NO_RETRY), () => "medium"),
+              }],
               breaker: new JudgeCircuitBreaker(settings.breaker),
               audit: logger,
             },

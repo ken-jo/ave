@@ -1,38 +1,48 @@
 /**
- * Boot-time provider construction for `permissions.judge.provider`.
+ * Boot-time construction of the judge chain from `permissions.judge.chain`.
  *
- * Returns null for `off`. For a configured provider whose dependency is not
- * wired (no LLM reviewer for `builtin-llm`) it returns null as well and the
- * engine treats every call as `unavailable` — ask / deny, never allow — rather
- * than silently switching provider.
+ * A stage whose dependency is not available — no LLM reviewer for a default
+ * builtin-llm stage, or a selected model whose provider is not configured —
+ * is kept with `judge: null`. The engine treats it as `unavailable`: the stage
+ * escalates, and if it is the last stage the call asks / denies, never allows.
+ * A stage is never silently swapped for a different provider or model.
  */
 import type { ReviewerInteractiveAutoApprove } from "../permission-settings-store.js";
-import type { PermissionJudge } from "./judge-contract.js";
 import { BuiltinLlmJudge, type TracingRiskClassifier } from "./builtin-llm-judge.js";
+import type { JudgeChainStage } from "./judge-engine.js";
 import { ExternalJudge, type JudgeFetch } from "./external-judge.js";
-import type { JudgeSettings } from "./judge-settings.js";
+import type { JudgeModelRef, JudgeSettings, JudgeStageSettings } from "./judge-settings.js";
 
 export interface CreateJudgeDeps {
-  /** The LLM reviewer, when the reviewer runs in `llm` mode. */
-  llmClassifier: TracingRiskClassifier | null;
+  /** The reviewer's LLM classifier (current reviewer model), when the reviewer runs in `llm` mode. */
+  reviewerClassifier: TracingRiskClassifier | null;
+  /**
+   * A classifier on a user-selected model, built through the same provider
+   * wiring as the chat model picker. Null when that provider is not configured.
+   */
+  classifierForModel: (model: JudgeModelRef) => TracingRiskClassifier | null;
   autoApprove: () => ReviewerInteractiveAutoApprove;
   fetch: JudgeFetch;
 }
 
-export function createPermissionJudge(settings: JudgeSettings, deps: CreateJudgeDeps): PermissionJudge | null {
-  switch (settings.provider) {
-    case "off":
-      return null;
-    case "builtin-llm":
-      return deps.llmClassifier ? new BuiltinLlmJudge(deps.llmClassifier, deps.autoApprove) : null;
+function createStage(stage: JudgeStageSettings, deps: CreateJudgeDeps): JudgeChainStage {
+  switch (stage.provider) {
+    case "builtin-llm": {
+      const classifier = stage.model ? deps.classifierForModel(stage.model) : deps.reviewerClassifier;
+      return { settings: stage, judge: classifier ? new BuiltinLlmJudge(classifier, deps.autoApprove) : null };
+    }
     case "external":
-      if (!settings.external) {
-        throw new Error("permissions.judge provider 'external' reached construction without a validated endpoint");
+      if (!stage.external) {
+        throw new Error(`permissions.judge stage '${stage.id}' reached construction without a validated endpoint`);
       }
-      return new ExternalJudge(settings.external, deps.fetch);
+      return { settings: stage, judge: new ExternalJudge(stage.external, deps.fetch, stage.id) };
     default: {
-      const unknown: never = settings.provider;
+      const unknown: never = stage.provider;
       throw new Error(`unknown judge provider: ${String(unknown)}`);
     }
   }
+}
+
+export function createJudgeChain(settings: JudgeSettings, deps: CreateJudgeDeps): JudgeChainStage[] {
+  return settings.chain.map((stage) => createStage(stage, deps));
 }

@@ -223,12 +223,13 @@ async function readCappedBody(response: Response, signal: AbortSignal): Promise<
 }
 
 export class ExternalJudge implements PermissionJudge {
-  readonly id = "external";
   readonly version: string;
 
   constructor(
     private readonly config: JudgeExternalSettings,
     private readonly fetchImpl?: JudgeFetch,
+    /** Stage id from settings, e.g. `jev`. */
+    readonly id: string = "external",
   ) {
     const hasCommand = config.command !== undefined;
     const hasUrl = config.url !== undefined;
