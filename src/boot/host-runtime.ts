@@ -1,4 +1,4 @@
-import type { BrowserWindow, Session } from "electron";
+import type { BrowserWindow, Session, WebContents } from "electron";
 import type { SecretEncryption } from "../data/secret-document-store.js";
 import type { AudioCaptureSurface } from "../main/audio-capture.js";
 import type { FloatingDockSurface } from "../main/floating-dock.js";
@@ -14,6 +14,12 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   | "clearAuthPartitionService" | "shellOpenExternal"> {
   getAppWindows(): BrowserWindow[];
   getFocusedWindow(): BrowserWindow | null;
+  /**
+   * The renderer that draws a prompt (approval, ask-user question) about
+   * `sessionId`, resolved when the prompt is raised: the main window showing
+   * that session, else the primary or most recently focused main window.
+   */
+  resolvePromptSurface(sessionId: string | undefined): WebContents | null;
   getAuthPartition(partition: string): Session;
   installPluginPartition(pluginId: string, pluginRoot: string | undefined): void;
   revokePluginWebviews(pluginId: string, revokeSession: (sessionId: string) => void): void;

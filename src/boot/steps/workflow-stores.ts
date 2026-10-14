@@ -87,10 +87,12 @@ export async function setupWorkflowStores(
   // open main window receives them.
   const appWindows = () => ctx.host.desktop?.getAppWindows() ?? [getMainWindow()];
   const askUserQuestionGate = new AskUserQuestionGate(
-    // Lazy resolver — dev-mode reloads destroy the captured webContents.
-    // Looking it up on every send keeps the gate working across reloads
-    // and across window recreation.
-    () => getMainWindow()?.webContents ?? null,
+    // Lazy resolver — dev-mode reloads destroy the captured webContents, and
+    // several main windows may be open. Looking it up on every send, by the
+    // asking session, sends the card to the window showing that conversation
+    // (else the primary or most recently focused one), across reloads and
+    // closed windows. A headless run has no desktop, so every ask is dismissed.
+    (sessionId) => ctx.host.desktop?.resolvePromptSurface(sessionId) ?? null,
     undefined,
     notificationService,
   );

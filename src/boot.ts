@@ -302,7 +302,10 @@ export async function bootstrap(
   // live gate — without this ordering, plugins receive a hostApi missing the
   // namespace and §8 main-process approval routing silently no-ops.
   const approvalGate = await createApprovalGate(
-    mainWindow,
+    // Headless runs have no desktop surface. Otherwise each approval card goes
+    // to the window resolved when it is raised — never a window bound at boot,
+    // which the user may close while another main window stays open.
+    mainWindow === null ? null : (sessionId) => requireDesktopHost(host).resolvePromptSurface(sessionId),
     ctx.bootAuditLogger,
     ctx.notificationService,
     // Tier 2 of the sub-agent approval chain, supplied as accessors rather

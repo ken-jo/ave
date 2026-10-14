@@ -114,15 +114,102 @@ describe("main windows", () => {
     expect(first.close()).toBe(true);
     expect(first.hide).not.toHaveBeenCalled();
     expect(getAppWindows()).toEqual([second]);
-    // The primary role is free again: the next window opened claims it.
-    expect(appState.getPrimaryMainWindow()).toBeNull();
+    // The primary role moves to the window still open.
+    expect(appState.getPrimaryMainWindow()).toBe(second);
 
     expect(second.close()).toBe(false);
     expect(second.hide).toHaveBeenCalledOnce();
     expect(getAppWindows()).toEqual([second]);
 
     const third = open();
-    expect(appState.getPrimaryMainWindow()).toBe(third);
+    expect(appState.isSecondaryMainWindowContents(third.webContents)).toBe(true);
+  });
+
+  it("with every main window closed, the next window opened claims the primary role", () => {
+    appState.setTray(null);
+    const first = open();
+    expect(first.close()).toBe(true);
+    expect(appState.getPrimaryMainWindow()).toBeNull();
+    const next = open();
+    expect(appState.getPrimaryMainWindow()).toBe(next);
+  });
+
+  it("hands the primary role to the most recently focused window and reloads it as the primary", async () => {
+    appState.setRendererReloadReady(true);
+    try {
+      const first = open();
+      const second = open();
+      const third = open();
+      second.emit("focus");
+      first.emit("focus");
+      for (const win of [second, third]) win.loadFile.mockClear();
+
+      expect(first.close()).toBe(true);
+      expect(appState.getPrimaryMainWindow()).toBe(second);
+      expect(appState.isSecondaryMainWindowContents(second.webContents)).toBe(false);
+      await Promise.resolve();
+      // Reloaded with the bare document: its renderer now resumes the primary conversation.
+      expect(second.loadFile).toHaveBeenCalledOnce();
+      expect(second.loadFile.mock.calls[0]).toHaveLength(2);
+      expect((second.loadFile.mock.calls[0] as unknown[])[1]).toBeUndefined();
+      expect(third.loadFile).not.toHaveBeenCalled();
+    } finally {
+      appState.setRendererReloadReady(false);
+    }
+  });
+
+  it("still delivers approvals after the first window closes while a second stays open", async () => {
+    const { ApprovalGate } = await import("../../permissions/approval-gate.js");
+    const first = open();
+    const second = open();
+    const gate = new ApprovalGate(appState.resolveSessionMainWindowContents);
+
+    expect(first.close()).toBe(true);
+    const request = {
+      id: "req-after-close",
+      category: "tool" as const,
+      toolName: "agent_spawn",
+      args: { title: "t", instructions: "x" },
+      reason: "state change",
+      source: "builtin" as const,
+      sessionId: "session-a",
+      createdAt: Date.now(),
+    };
+    const decision = gate.requestAndWait(request as never);
+    expect(second.webContents.send).toHaveBeenCalledWith(
+      "ave:approval:request",
+      expect.objectContaining({ id: "req-after-close" }),
+    );
+    expect(first.webContents.send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
+    gate.disposeAll();
+    await decision.catch(() => undefined);
+  });
+
+  it("sends an ask-user question to the window showing the session, not the focused one", async () => {
+    const { AskUserQuestionGate } = await import("../ask-user-question-gate.js");
+    const first = open();
+    const second = open();
+    first.emit("focus");
+    appState.setSessionContentsLookup((sessionId) =>
+      sessionId === "session-b" ? (second.webContents as never) : null);
+    const gate = new AskUserQuestionGate(appState.resolveSessionMainWindowContents, 60_000);
+
+    void gate.ask({ questions: [{ question: "which?", choices: ["a", "b"] }] as never, sessionId: "session-b" });
+    expect(second.webContents.send).toHaveBeenCalledWith(
+      "ave:ask-user-question:request",
+      expect.objectContaining({ sessionId: "session-b" }),
+    );
+    expect(first.webContents.send).not.toHaveBeenCalled();
+
+    // A session no window shows goes to the primary window.
+    second.webContents.send.mockClear();
+    void gate.ask({ questions: [{ question: "other?", choices: ["a", "b"] }] as never, sessionId: "session-z" });
+    expect(first.webContents.send).toHaveBeenCalledWith(
+      "ave:ask-user-question:request",
+      expect.objectContaining({ sessionId: "session-z" }),
+    );
+    expect(second.webContents.send).not.toHaveBeenCalled();
+    gate.disposeAll();
   });
 
   it("quits from the last window only when the close preference says quit", () => {

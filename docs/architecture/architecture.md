@@ -452,7 +452,12 @@ Important rules:
   the primary window instead of opening another. `app-state.ts`
   owns the set: broadcasts go to every main window (`getAppWindows`), point-to-
   point sends and dialogs go to the window in use or the sender's window, and
-  the first live window is the primary one. A secondary window's chat group ids
+  the first live window is the primary one. When the primary window closes
+  while another is open, the role moves to the most recently focused one,
+  which main reloads as the primary. Approval cards and ask-user questions are
+  routed when raised, not to a window bound at boot: to the window whose tile
+  shows the asking session, else the primary (or most recently focused) main
+  window. A secondary window's chat group ids
   are scoped to that window in main (`window-<webContentsId>:<id>`), so its
   tiles — its first tile included — are conversations of their own; its
   document carries `?aveWindow=secondary` so it does not resume the primary's

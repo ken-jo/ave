@@ -37,6 +37,7 @@ import {
   getPrimaryMainWindow,
   isSecondaryMainWindowContents,
   mainWindowForContents,
+  setSessionContentsLookup,
 } from "../../main/app-state.js";
 import {
   createPlatformConversationLegacyStreamAdapter,
@@ -799,6 +800,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (primary) return primary.webContents;
     return getMainWindows().length === 0 ? getMainWindow()?.webContents : undefined;
   };
+  // Approvals and ask-user questions are drawn by the window whose tile holds
+  // the asking conversation (`resolveSessionMainWindowContents`).
+  setSessionContentsLookup((sessionId) => {
+    const holder = groupHolding(sessionId);
+    return holder ? groupTargetContents(holder.owner) ?? null : null;
+  });
   /**
    * Main windows share one set of groups, but each renderer numbers its tiles
    * from the start (`main`, `group-2`, ...). A secondary main window's ids are
@@ -987,11 +994,18 @@ export function registerChatHandlers(deps: IpcDeps): void {
    * asks for a second tile — that is the first moment there is anything to
    * lose.
    */
-  const watchedRenderers = new WeakSet<object>();
+  // Watched per (renderer, scope): a window promoted to primary keeps its
+  // contents but now also hosts primary-scope tiles, which need their own
+  // release listeners alongside the ones for its window-scoped tiles.
+  const watchedRenderers = new WeakMap<object, Set<"owned" | "primary">>();
   const watchRendererLifetime = (owner: WebContents | null): void => {
     const contents = owner ?? groupTargetContents(null);
-    if (!contents || watchedRenderers.has(contents)) return;
-    watchedRenderers.add(contents);
+    if (!contents) return;
+    const scope = owner ? "owned" : "primary";
+    const scopes = watchedRenderers.get(contents) ?? new Set<"owned" | "primary">();
+    if (scopes.has(scope)) return;
+    scopes.add(scope);
+    watchedRenderers.set(contents, scopes);
     // Only this renderer's groups: another window's tiles stay on screen.
     // The primary scope's `main` loop is never torn down (see groupRelease).
     const releaseAll = (reason: string) => {

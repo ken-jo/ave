@@ -634,6 +634,38 @@ describe("ave:chat:* across several main windows", () => {
     expect(releaseChatGroupLoop).not.toHaveBeenCalledWith("group-2");
   });
 
+  it("answers which window shows a session, and releases a promoted window's tiles of both scopes on reload", async () => {
+    const appState = await import("../../../main/app-state.js");
+    const primary = fakeMainWindow(1);
+    const secondary = fakeMainWindow(2);
+    let primaryClosed = false;
+    const primaryWindow = { ...primary.window, isDestroyed: () => primaryClosed };
+    appState.registerMainWindow(primaryWindow as never, "primary");
+    appState.registerMainWindow(secondary.window as never, "secondary");
+    const { groups, releaseChatGroupLoop } = await registerWithGroups(primaryWindow);
+    const fromSecondary = (channel: string, ...args: unknown[]) =>
+      handlers.get(channel)!({ ...RENDERER_EVENT, sender: secondary.window.webContents }, ...args);
+
+    // A prompt about the secondary window's tile goes to that window; one
+    // about a session no tile holds goes to the primary window.
+    fromSecondary(CHANNELS.chat.hasProvider, "group-2");
+    const secondarySession = groups.get("window-20:group-2")!.sessionId;
+    expect(appState.resolveSessionMainWindowContents(secondarySession)).toBe(secondary.window.webContents);
+    expect(appState.resolveSessionMainWindowContents("no-tile-holds-this")).toBe(primary.window.webContents);
+
+    // The primary closes; the secondary takes the role and now also hosts
+    // primary-scope tiles, which its reload must release too.
+    primaryClosed = true;
+    expect(appState.unregisterMainWindow(primaryWindow as never)).toBe(secondary.window);
+    expect(appState.resolveSessionMainWindowContents("no-tile-holds-this")).toBe(secondary.window.webContents);
+    fromSecondary(CHANNELS.chat.hasProvider, "group-3");
+    for (const listener of secondary.events["did-navigate"] ?? []) listener();
+    await vi.waitFor(() => {
+      expect(releaseChatGroupLoop).toHaveBeenCalledWith("window-20:group-2");
+      expect(releaseChatGroupLoop).toHaveBeenCalledWith("group-3");
+    });
+  });
+
   it("keeps auxiliary host surfaces on the global ids", async () => {
     const appState = await import("../../../main/app-state.js");
     const primary = fakeMainWindow(1);
