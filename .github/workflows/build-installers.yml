@@ -15,6 +15,12 @@ on:
     tags:
       - "v*.*.*"
 
+# One build per ref at a time on the shared self-hosted runners; a running
+# release is never cancelled by a newer dispatch, which queues behind it.
+concurrency:
+  group: build-installers-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Public tag semantics are verified from the immutable event SHA. The profile
   # never controls secret injection; public tag secrets are fixed in workflow.
