@@ -142,7 +142,7 @@ describe.skipIf(process.platform === "win32")("ExternalJudge — command transpo
     const { path, dir } = script(
       `cat >/dev/null\nenv > "$(dirname "$0")/env.txt"\nprintf 'warn ${PLANTED_CREDENTIAL} ' >&2\nhead -c 6000 /dev/zero | tr '\\0' x >&2\nprintf '%s' '{"decision":"ask","rationale":"unsure"}'`,
     );
-    process.env.AVE_JUDGE_TEST_SECRET = "must-not-leak";
+    process.env.JUDGE_PARENT_ONLY_SECRET = "must-not-leak";
     try {
       const verdict = await new ExternalJudge({ command: [path] }).judge(judgeRequest(), new AbortController().signal);
       expect(verdict.decision).toBe("ask");
@@ -153,7 +153,7 @@ describe.skipIf(process.platform === "win32")("ExternalJudge — command transpo
       expect(childEnv).not.toContain("must-not-leak");
       expect(childEnv).toContain("PATH=");
     } finally {
-      delete process.env.AVE_JUDGE_TEST_SECRET;
+      delete process.env.JUDGE_PARENT_ONLY_SECRET;
     }
   });
 
