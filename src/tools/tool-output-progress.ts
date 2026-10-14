@@ -26,10 +26,12 @@ export function toolOutputProgressFromMetadata(
     : undefined;
 }
 
-/** Held text past which an unbroken line is released through the fallback window. */
-const MASKED_RELAY_MAX_HELD_CHARS = 64 * 1024;
-/** Tail kept back from an overlong line, longer than any single-line secret shape. */
-const MASKED_RELAY_FALLBACK_WINDOW_CHARS = 4096;
+/** Unterminated text the relay holds before releasing all but a short tail. */
+export const MASKED_RELAY_HELD_LIMIT_CHARS = 4096;
+/** Tail kept back from an overlong unterminated line; longer than one-line secret shapes. */
+const MASKED_RELAY_TAIL_CHARS = 512;
+/** Quiet time after which held unterminated text (a prompt, a progress bar) is released. */
+export const MASKED_RELAY_IDLE_MS = 500;
 const OPEN_PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g;
 const PRIVATE_KEY_END = /-----END [A-Z0-9 ]*PRIVATE KEY-----/;
 
@@ -40,13 +42,17 @@ const PRIVATE_KEY_END = /-----END [A-Z0-9 ]*PRIVATE KEY-----/;
  * Output arrives in arbitrary chunks, so a secret can be split between two of
  * them. Every credential and PII shape the masker knows is confined to one
  * line except a PEM private key block, so the relay carries over the
- * unfinished last line, and everything from an unterminated private-key
- * header onward, until the rest arrives or the stream ends. A cut is used only
- * when masking the two sides separately equals masking them together; when
- * it does not, the relay holds back to an earlier line break. A line that
- * grows past {@link MASKED_RELAY_MAX_HELD_CHARS} without a break is released
- * except for its last {@link MASKED_RELAY_FALLBACK_WINDOW_CHARS} characters,
- * under the same equality check.
+ * unterminated tail after the last `\n` or `\r` (a progress bar's `\r` ends
+ * its line), and everything from an unterminated private-key header onward,
+ * until the rest arrives or the stream ends. A cut is used only when masking
+ * the two sides separately equals masking them together; otherwise the relay
+ * holds back further.
+ *
+ * The unterminated tail is bounded so output without line breaks still moves:
+ * past {@link MASKED_RELAY_HELD_LIMIT_CHARS} all but its last
+ * {@link MASKED_RELAY_TAIL_CHARS} characters are released, and after
+ * {@link MASKED_RELAY_IDLE_MS} without new data (a prompt waiting) the whole
+ * tail is released, masked. Neither bound releases an open private-key block.
  */
 export function createMaskedProgressRelay(
   deliver: (text: string) => void,
@@ -54,6 +60,7 @@ export function createMaskedProgressRelay(
 ): ToolOutputProgressSink {
   let held = "";
   let ended = false;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   const cutIsClean = (cut: number): boolean =>
     mask(held.slice(0, cut)) + mask(held.slice(cut)) === mask(held);
@@ -70,18 +77,37 @@ export function createMaskedProgressRelay(
     return open;
   };
 
-  const release = (): void => {
-    let cut = previousBreak(held.length);
-    const keyStart = openPrivateKeyStart();
-    if (keyStart !== -1) cut = Math.min(cut, keyStart);
-    if (cut === 0 && keyStart === -1 && held.length > MASKED_RELAY_MAX_HELD_CHARS) {
-      cut = held.length - MASKED_RELAY_FALLBACK_WINDOW_CHARS;
-    }
-    while (cut > 0 && !cutIsClean(cut)) cut = previousBreak(cut - 1);
+  const emit = (cut: number): void => {
     if (cut <= 0) return;
     const text = mask(held.slice(0, cut));
     held = held.slice(cut);
     deliver(text);
+  };
+
+  const clearIdle = (): void => {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    idleTimer = undefined;
+  };
+
+  const release = (): void => {
+    const keyStart = openPrivateKeyStart();
+    let cut = previousBreak(held.length);
+    if (keyStart !== -1) cut = Math.min(cut, keyStart);
+    while (cut > 0 && !cutIsClean(cut)) cut = previousBreak(cut - 1);
+    emit(cut);
+    if (keyStart !== -1 || held.length <= MASKED_RELAY_HELD_LIMIT_CHARS) return;
+    // An overlong unterminated line: release all but a short tail, stepping
+    // back while the cut would split something the masker recognizes.
+    cut = held.length - MASKED_RELAY_TAIL_CHARS;
+    while (cut > 0 && !cutIsClean(cut)) cut -= MASKED_RELAY_TAIL_CHARS;
+    emit(cut);
+  };
+
+  const releaseIdle = (): void => {
+    idleTimer = undefined;
+    if (ended) return;
+    const keyStart = openPrivateKeyStart();
+    emit(keyStart === -1 ? held.length : keyStart);
   };
 
   return {
@@ -89,10 +115,16 @@ export function createMaskedProgressRelay(
       if (ended || text.length === 0) return;
       held += text;
       release();
+      clearIdle();
+      if (held.length > 0) {
+        idleTimer = setTimeout(releaseIdle, MASKED_RELAY_IDLE_MS);
+        idleTimer.unref?.();
+      }
     },
     end() {
       if (ended) return;
       ended = true;
+      clearIdle();
       const rest = held;
       held = "";
       if (rest.length > 0) deliver(mask(rest));

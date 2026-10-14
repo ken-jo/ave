@@ -12,6 +12,8 @@ import { BashTool } from "../shell-tools.js";
 import {
   createLiveOutputStream,
   createMaskedProgressRelay,
+  MASKED_RELAY_HELD_LIMIT_CHARS,
+  MASKED_RELAY_IDLE_MS,
   LIVE_OUTPUT_FLUSH_CHARS,
   LIVE_OUTPUT_FLUSH_MS,
   LIVE_OUTPUT_LIMIT_CHARS,
@@ -79,6 +81,10 @@ describe("live output stream", () => {
 });
 
 describe("masked live output relay", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   // A credential the masker always removes, PII redaction on or off.
   const TOKEN = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
   const relay = (pii = true) => {
@@ -128,6 +134,44 @@ describe("masked live output relay", () => {
     sink.end();
     expect(all()).not.toContain(body);
     expect(all()).toContain("done");
+  });
+
+  it("streams a carriage-return progress bar as it updates", () => {
+    const { sink, delivered } = relay();
+    sink.write("\rfetch 10%");
+    sink.write("\rfetch 55%");
+    // Each update's leading \r ends the previous state, which is then shown.
+    expect(delivered.join("")).toBe("\rfetch 10%\r");
+    sink.write("\rfetch 90%\r");
+    expect(delivered.join("")).toBe("\rfetch 10%\rfetch 55%\rfetch 90%\r");
+  });
+
+  it("releases a quiet unterminated prompt after the idle delay", () => {
+    vi.useFakeTimers();
+    const { sink, delivered } = relay();
+    sink.write("Continue? [y/N] ");
+    expect(delivered).toEqual([]);
+    vi.advanceTimersByTime(MASKED_RELAY_IDLE_MS);
+    expect(delivered).toEqual(["Continue? [y/N] "]);
+  });
+
+  it("masks a token inside the released part of a long unterminated line", () => {
+    const { sink, all } = relay();
+    sink.write(`x ${TOKEN} `);
+    sink.write("y".repeat(MASKED_RELAY_HELD_LIMIT_CHARS));
+    // Released before the line ends, and masked.
+    expect(all().length).toBeGreaterThan(0);
+    expect(all()).not.toContain(TOKEN);
+    expect(all().startsWith("x ")).toBe(true);
+  });
+
+  it("never releases an open private key on the idle or size bounds", () => {
+    vi.useFakeTimers();
+    const { sink, all } = relay();
+    const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7".repeat(100);
+    sink.write(`-----BEGIN PRIVATE KEY-----\n${body}`);
+    vi.advanceTimersByTime(MASKED_RELAY_IDLE_MS);
+    expect(all()).not.toContain("MIIE");
   });
 
   it("delivers nothing after end", () => {
