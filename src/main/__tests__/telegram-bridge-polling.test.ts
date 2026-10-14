@@ -431,8 +431,8 @@ describe("startTelegramPollingIngress", () => {
     expect(waits).toEqual([2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000, 2_000]);
     expect(h.onFatal).not.toHaveBeenCalled();
     // One line per outage and one on recovery, not one per retry.
-    expect(logs.filter((line) => line.includes("could not be reached"))).toHaveLength(2);
-    expect(logs).toContain("[telegram-poll] reached Telegram again after 8 failed polls");
+    expect(logs.filter((line) => line.includes("polling Telegram failed"))).toHaveLength(2);
+    expect(logs).toContain("[telegram-poll] polling Telegram again after 8 failed polls");
   });
 
   it("backs off on the streak when the first backlog-skipping poll fails", async () => {

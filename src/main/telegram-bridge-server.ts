@@ -161,7 +161,7 @@ const MAX_BACKOFF_MS = 60_000;
  * otherwise re-polled every 2 s for as long as it stayed down, logging each
  * time; the streak resets on the first poll Telegram answers.
  */
-export function telegramTransientBackoffMs(consecutive: number): number {
+function telegramTransientBackoffMs(consecutive: number): number {
   const exponent = Math.min(Math.max(consecutive, 1) - 1, 16);
   return Math.min(RETRY_BACKOFF_MS * 2 ** exponent, MAX_BACKOFF_MS);
 }
@@ -288,13 +288,13 @@ async function poll(
   const transient = (): number => {
     transientFailures += 1;
     if (transientFailures === 1) {
-      options.log?.("[telegram-poll] Telegram could not be reached; backing off");
+      options.log?.("[telegram-poll] polling Telegram failed; backing off");
     }
     return telegramTransientBackoffMs(transientFailures);
   };
   const reached = (): void => {
     if (transientFailures > 0) {
-      options.log?.(`[telegram-poll] reached Telegram again after ${transientFailures} failed polls`);
+      options.log?.(`[telegram-poll] polling Telegram again after ${transientFailures} failed polls`);
     }
     transientFailures = 0;
   };
