@@ -20,11 +20,16 @@ jobs:
   # never controls secret injection; public tag secrets are fixed in workflow.
   release-profile:
     name: Verify immutable unsigned release profile
-    # Linux jobs here take the runner from repo variable AVE_LINUX_RUNNER
-    # (JSON label array, e.g. ["self-hosted","Linux","ARM64","ave"]); unset =
-    # hosted fallback, as in ci.yml. Private repo only: unset every AVE_*_RUNNER
-    # variable before the repo goes public.
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    # Every job takes its runner from a repo variable: AVE_LINUX_RUNNER,
+    # AVE_MACOS_RUNNER, AVE_WINDOWS_RUNNER (a JSON label array, e.g.
+    # ["self-hosted","Linux","ARM64","ave"], or a hosted label such as
+    # "ubuntu-24.04-arm" to opt into a GitHub-hosted runner explicitly). Every
+    # other job needs this one, so the check below fails the run naming any
+    # unset variable instead of falling back to a billing-blocked hosted label.
+    # Only this job falls back when AVE_LINUX_RUNNER is unset, and to any
+    # self-hosted runner, so the check can still run and say so. Before the
+    # repo goes public, set every AVE_*_RUNNER to its hosted label.
+    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}
     permissions:
       contents: read
     steps:
@@ -32,6 +37,13 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Require the release runner variables
+        shell: bash
+        env:
+          AVE_LINUX_RUNNER: ${{ vars.AVE_LINUX_RUNNER }}
+          AVE_MACOS_RUNNER: ${{ vars.AVE_MACOS_RUNNER }}
+          AVE_WINDOWS_RUNNER: ${{ vars.AVE_WINDOWS_RUNNER }}
+        run: bash .github/scripts/require-runner-vars.sh AVE_LINUX_RUNNER AVE_MACOS_RUNNER AVE_WINDOWS_RUNNER
       - name: Verify exact source head
         shell: bash
         env:
@@ -88,8 +100,8 @@ jobs:
       # macOS and Windows take their runner from repo variables AVE_MACOS_RUNNER
       # and AVE_WINDOWS_RUNNER (JSON label arrays, e.g.
       # ["self-hosted","macOS","ARM64","ave-release"] and
-      # ["self-hosted","Windows","X64","ave-release"]); unset = hosted label.
-      # Private repo only: unset them before the repo goes public.
+      # ["self-hosted","Windows","X64","ave-release"], or a hosted label).
+      # release-profile has already failed the run if either is unset.
       #
       # Linux stays on the hosted x64 label: no target arch is pinned, so the
       # build host's architecture is the shipped architecture, and the
@@ -97,13 +109,13 @@ jobs:
       matrix:
         include:
           - name: macOS installer
-            os: ${{ vars.AVE_MACOS_RUNNER && fromJSON(vars.AVE_MACOS_RUNNER) || 'macos-15' }}
+            os: ${{ fromJSON(vars.AVE_MACOS_RUNNER) }}
             target: mac
           - name: Linux installer
             os: ubuntu-latest
             target: linux
           - name: Windows installer
-            os: ${{ vars.AVE_WINDOWS_RUNNER && fromJSON(vars.AVE_WINDOWS_RUNNER) || 'windows-latest' }}
+            os: ${{ fromJSON(vars.AVE_WINDOWS_RUNNER) }}
             target: win
     runs-on: ${{ matrix.os }}
     # One shell on every OS. On Windows `bash` is the Git for Windows shell,
@@ -363,7 +375,7 @@ jobs:
     name: Publish GitHub Release assets (atomic)
     needs: [release-profile, installers]
     if: github.event_name == 'push'
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
     permissions:
       contents: write
     steps:
@@ -469,7 +481,7 @@ jobs:
     name: Publish to the R2 release channel
     needs: [release-profile, installers]
     if: github.event_name == 'push'
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
     permissions:
       contents: read
     steps:
