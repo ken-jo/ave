@@ -133,7 +133,7 @@ const ko: HomeCopy = {
       { what: "plan.md 고치기", kind: "쓰기", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
       { what: "테스트 실행", code: "bun test", kind: "셸", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
       { what: "웹 페이지 가져오기", kind: "네트워크", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
-      { what: "허용 디렉터리 밖에 저장", code: "~/Desktop/report.md", kind: "쓰기", result: allowed({ default: "ask", strict: "ask", auto: "ask", allow: "ask" }) },
+      { what: "허용 디렉터리 밖에 저장", code: "~/Desktop/report.md", kind: "쓰기", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "ask" }) },
       { what: "SSH 키 읽기", code: "~/.ssh/id_ed25519", kind: "읽기", result: allowed({ default: "block", strict: "block", auto: "block", allow: "block" }) },
     ],
     facts: [
@@ -296,7 +296,7 @@ const en: HomeCopy = {
       { what: "Edit plan.md", kind: "write", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
       { what: "Run the tests", code: "bun test", kind: "shell", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
       { what: "Fetch a web page", kind: "network", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
-      { what: "Save outside the allowed folders", code: "~/Desktop/report.md", kind: "write", result: allowed({ default: "ask", strict: "ask", auto: "ask", allow: "ask" }) },
+      { what: "Save outside the allowed folders", code: "~/Desktop/report.md", kind: "write", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "ask" }) },
       { what: "Read an SSH key", code: "~/.ssh/id_ed25519", kind: "read", result: allowed({ default: "block", strict: "block", auto: "block", allow: "block" }) },
     ],
     facts: [
