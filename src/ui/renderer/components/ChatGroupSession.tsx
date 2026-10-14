@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { parkComposerDraft, takeComposerDraft } from "../state/composer-draft-store.js";
 import type { ResolvedOutputTokenLimit, RouteInputModalities } from "../../../shared/context-budget.js";
 import type { ModelPricingRoute } from "../../../shared/model-pricing.js";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
@@ -402,6 +403,34 @@ export function ChatGroupSession({
     scope.sessionId = currentSessionId;
     setAttachments([]);
   }, [currentSessionId]);
+
+  // The typed text follows the same rule, but is not thrown away: it is parked
+  // under the conversation it was written for and handed back when that
+  // conversation returns to a tile (this one or another). Layout timing so the
+  // previous conversation's text never paints over the next one.
+  const questionRef = useRef(question);
+  questionRef.current = question;
+  const draftSessionIdRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const previous = draftSessionIdRef.current;
+    if (previous === currentSessionId) return;
+    draftSessionIdRef.current = currentSessionId;
+    // No conversation yet (mount, or the tile's session still resolving):
+    // whatever was typed belongs to the conversation that is arriving, so it
+    // stays, and a parked draft only fills an empty composer.
+    if (!previous) {
+      const restored = takeComposerDraft(currentSessionId);
+      if (restored && !questionRef.current) setQuestion(restored);
+      return;
+    }
+    parkComposerDraft(previous, questionRef.current);
+    setQuestion(takeComposerDraft(currentSessionId));
+  }, [currentSessionId]);
+  useEffect(() => () => {
+    const sessionId = draftSessionIdRef.current;
+    if (sessionId !== null) parkComposerDraft(sessionId, questionRef.current);
+    draftSessionIdRef.current = null;
+  }, []);
 
   const composeOutgoing = useCallback(
     (raw: string) => composeOutgoingUtil({ raw, activePreset: env.activePreset, attachments }),

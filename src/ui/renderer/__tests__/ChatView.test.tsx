@@ -1172,6 +1172,36 @@ describe("ChatView", () => {
     await waitFor(() => expect(container.querySelector('[data-testid="chat-side-panel-tab-subagent"]')).toBeNull());
   });
 
+  it("keeps an unsent draft with its conversation across session switches", async () => {
+    const OTHER = "sess-draft-other";
+    const { container } = await renderApp({
+      hasApiKey: true,
+      sessions: [
+        { id: MOCK_DEFAULT_SESSION_ID, title: "초안 대화", modifiedAt: new Date(2, 0, 2).toISOString() },
+        { id: OTHER, title: "다른 대화", modifiedAt: new Date(2, 0, 1).toISOString() },
+      ],
+      history: { sessionId: MOCK_DEFAULT_SESSION_ID, messages: [{ index: 0, role: "user", content: "첫 대화 내용" }] },
+      historyBySession: { [OTHER]: { sessionId: OTHER, messages: [{ index: 0, role: "user", content: "다른 대화 내용" }] } },
+    });
+    await waitFor(() => expect(container.textContent).toContain("첫 대화 내용"));
+    const textarea = () => container.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement;
+    fireEvent.change(textarea(), { target: { value: "아직 보내지 않은 초안" } });
+    expect(textarea().value).toBe("아직 보내지 않은 초안");
+
+    await act(async () => {
+      fireEvent.click(container.querySelector(`[data-testid="sidebar-session-${OTHER}"]`)!);
+    });
+    await waitFor(() => expect(container.textContent).toContain("다른 대화 내용"));
+    // The draft was written for the first conversation: it must not follow the tile.
+    expect(textarea().value).toBe("");
+
+    await act(async () => {
+      fireEvent.click(container.querySelector(`[data-testid="sidebar-session-${MOCK_DEFAULT_SESSION_ID}"]`)!);
+    });
+    await waitFor(() => expect(container.textContent).toContain("첫 대화 내용"));
+    await waitFor(() => expect(textarea().value).toBe("아직 보내지 않은 초안"));
+  });
+
   it("does not reconstruct sub-agent rows from loaded parent history", async () => {
     const now = new Date().toISOString();
     const { container } = await renderApp({
