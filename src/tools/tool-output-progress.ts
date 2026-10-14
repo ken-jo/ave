@@ -27,9 +27,9 @@ export function toolOutputProgressFromMetadata(
 }
 
 /** Held text past which an unbroken line is released through the fallback window. */
-export const MASKED_RELAY_MAX_HELD_CHARS = 64 * 1024;
+const MASKED_RELAY_MAX_HELD_CHARS = 64 * 1024;
 /** Tail kept back from an overlong line, longer than any single-line secret shape. */
-export const MASKED_RELAY_FALLBACK_WINDOW_CHARS = 4096;
+const MASKED_RELAY_FALLBACK_WINDOW_CHARS = 4096;
 const OPEN_PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g;
 const PRIVATE_KEY_END = /-----END [A-Z0-9 ]*PRIVATE KEY-----/;
 
