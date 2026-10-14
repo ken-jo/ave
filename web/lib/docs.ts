@@ -420,7 +420,7 @@ const ko: Record<DocSlug, DocPage> = {
   data: {
     slug: "data",
     title: "데이터와 업데이트",
-    summary: "~/.ave 구성, 앱 업데이트, 서명 없는 빌드.",
+    summary: "~/.ave 구성, 앱 업데이트, 서명 없는 빌드, 앱이 스스로 여는 연결.",
     sections: [
       {
         id: "layout",
@@ -456,6 +456,21 @@ const ko: Record<DocSlug, DocPage> = {
         h: "서명 없는 빌드",
         blocks: [
           { p: "지금 공개 빌드는 코드 서명과 공증을 거치지 않습니다. Windows에서는 ‘알 수 없는 게시자’와 SmartScreen 경고가, macOS에서는 Gatekeeper 차단이 나타납니다. 내려받기는 downloads.agent-connector.ai 에서만 하세요." },
+        ],
+      },
+      {
+        id: "outbound",
+        h: "앱이 스스로 여는 외부 연결",
+        blocks: [
+          { p: "내가 연결한 제공자, 플러그인, 서버 말고도 앱이 스스로 여는 연결이 몇 가지 있습니다. 업데이트 확인, 이 사이트의 서비스 문서, 그리고 기본으로 켜져 있는 모델 카탈로그 갱신입니다. 이 고정된 출처들은 플러그인에게 추가 접근을 주지 않습니다." },
+          { p: "모델 카탈로그 갱신은 컨텍스트 창과 출력 한도 정보를 models.dev 에서 받습니다. 공급자 응답과 사용자 설정도 실제 한도를 정합니다. 사용량의 비용 계산은 기존 단가표와 사용자 단가 설정을 따릅니다." },
+          { dl: [
+            ["접속 대상", "공개 문서 https://models.dev/api.json 만 요청합니다. 일반 앱은 실행할 때와 매시간 확인하되 하루에 많아야 한 번 요청하고, 실패한 시도도 이 간격에 들어갑니다. 헤드리스 실행은 갱신 요청을 보내지 않습니다."],
+            ["보내는 것", "Accept: application/json 을 담은 GET 요청이며, 이전 ETag가 있으면 If-None-Match 에 넣습니다. 계정, API 키, 세션 인증, 쿠키, 프롬프트, 파일, 대화는 보내지 않습니다. 서버는 IP 주소와 사용자 에이전트, 언어 헤더 같은 일반 전송 헤더를 볼 수 있습니다."],
+            ["검사 방식", "호스트의 공개 주소 보호 경로가 내부 주소를 거부하고, 리다이렉트는 거부합니다. 인증서 오류가 나도 평문 HTTP로 다시 시도하지 않습니다. 헤더와 본문을 합쳐 15초 안에 받아야 하고, 압축을 푼 본문은 16 MB(16,777,216바이트)로 제한합니다. 유효하지 않은 다운로드는 쓰던 카탈로그를 그대로 둡니다. 다음 실행에서는 번들보다 오래되지 않은 검증된 캐시를, 없으면 번들을 씁니다. 명시적으로 고정한 카탈로그가 있으면 그것이 먼저입니다."],
+            ["캐시", "검증한 사본은 내 컴퓨터에 둡니다. 현재 사본과 직전 정상 사본을 포함해 카탈로그 파일을 최대 다섯 개 유지합니다. 오래된 해시 사본은 정리될 수 있으니 오래 재현하려면 별도 파일을 보관하고 절대 경로로 고정하세요. 쓸 수 없는 명시적 고정값은 앱 시작을 막습니다."],
+            ["끄는 방법", "설정 → 모델 → 모델 카탈로그에서 ‘카탈로그 매일 갱신’을 끕니다. 관리자는 시스템 정책 파일에 { \"modelCatalog\": { \"refresh\": \"off\" } } 를 두어 끌 수 있고, 정책 파일이 손상되거나 읽히지 않아도 갱신은 꺼집니다. 실행 스크립트에서 AVE_MODEL_CATALOG 를 bundled, 보관 중인 사본의 sha256, 또는 카탈로그 파일의 절대 경로로 고정해도 꺼집니다."],
+          ] },
         ],
       },
       {
@@ -860,7 +875,7 @@ const en: Record<DocSlug, DocPage> = {
   data: {
     slug: "data",
     title: "Data and updates",
-    summary: "The ~/.ave layout, app updates and unsigned builds.",
+    summary: "The ~/.ave layout, app updates, unsigned builds and the connections the app opens itself.",
     sections: [
       {
         id: "layout",
@@ -896,6 +911,21 @@ const en: Record<DocSlug, DocPage> = {
         h: "Unsigned builds",
         blocks: [
           { p: "Public builds are currently not code-signed or notarised. Windows shows “Unknown publisher” and a SmartScreen warning; macOS shows a Gatekeeper block. Download only from downloads.agent-connector.ai." },
+        ],
+      },
+      {
+        id: "outbound",
+        h: "Connections the app opens by itself",
+        blocks: [
+          { p: "Besides the providers, plugins and servers you connect, the app opens a few connections of its own: the update check, this site’s service document, and the model catalog refresh, which is on by default. These fixed sources grant plugins no additional access." },
+          { p: "The model catalog refresh fetches context-window and output-limit metadata from models.dev. Endpoint reports and your settings also determine the effective limits. Usage pricing still uses the app’s existing price table and your overrides." },
+          { dl: [
+            ["Where", "Only https://models.dev/api.json, a public document. The interactive app checks at launch and hourly, but requests at most once a day; failed attempts count too. Headless runs send no refresh request."],
+            ["What is sent", "A GET with Accept: application/json and, when available, the previous ETag in If-None-Match. It carries no account, API key, session authentication, cookie, prompt, file or conversation. The server sees your IP address and ordinary transport headers, including the user agent and language header."],
+            ["How it is checked", "The host’s public-address guard refuses internal addresses, and redirects are refused. Certificate errors do not trigger a cleartext retry. Headers and body together must arrive within 15 seconds; the body is capped at 16 MB (16,777,216 bytes) after decompression. An invalid download leaves the usable catalog in place. At the next launch the app uses a verified cache no older than its bundled catalog, or the bundle. An explicit pin takes precedence."],
+            ["Cache", "Verified copies stay on your computer. At most five catalog files are kept, including the current and the preceding usable copy. An older hash pin may be evicted; for long-term reproducibility keep a separate catalog file and pin its absolute path. An unusable explicit pin prevents startup."],
+            ["Turning it off", "Settings → Model → Model catalog, turn off Refresh the catalog daily. An administrator can turn refresh off with { \"modelCatalog\": { \"refresh\": \"off\" } } in the system policy file; a malformed or unreadable policy also disables it. A launcher can pin AVE_MODEL_CATALOG to bundled, a kept copy’s sha256, or an absolute catalog-file path, which disables refresh too."],
+          ] },
         ],
       },
       {
