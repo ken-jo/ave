@@ -25,8 +25,9 @@ These keep their URLs. The app fetches them from the canonical host.
 
 - `public/.well-known/ave-service.json`: the service descriptor current builds read.
 - `public/announcements/v1.json`: announcements the descriptor names.
-- `public/schemas/**`: the plugin host protocol schema mirror, maintained by
-  `scripts/lib/plugin-host-protocol-mirror.mjs`.
+- `public/schemas/**`: the plugin host protocol schema mirror and the contract
+  schemas (`plugin/`, `skill/`, `marketplace/`) at their `$id` URLs, both
+  maintained by `scripts/lib/plugin-host-protocol-mirror.mjs`.
 
 `test/scripts/web-site-contract.test.ts` checks them, the download links and
 the page map.
