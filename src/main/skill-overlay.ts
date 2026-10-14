@@ -24,8 +24,9 @@
  * What this registry still holds (no body): the identity captured when the skill
  * was approved and read — owner, generation, canonical file, and the bundled
  * resource manifest. `skill_read` authorizes resource reads against it. Entries
- * live for the conversation; `newConversation` and plugin-generation retirement
- * clear them.
+ * live for the conversation. They are cleared by `newConversation` (main loop),
+ * sub-agent teardown (`SubAgentRunner.unregisterActiveChild`), and plugin
+ * generation retirement (`PluginBundleLifecycle.retire`, "skills" phase).
  */
 import { SKILL_MAX_BODY_BYTES, type LoadedSkill } from "./skill-store.js";
 import { escapeHtml } from "../shared/escape-html.js";
@@ -83,6 +84,7 @@ export class SkillOverlay {
     this.bySession.delete(sessionId);
   }
 
+  /** Drop every conversation's reads of one retired plugin generation. */
   clearPluginGeneration(pluginId: string, generationId: string): void {
     for (const [sessionId, entries] of this.bySession) {
       for (const [key, entry] of entries) {

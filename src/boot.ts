@@ -868,6 +868,7 @@ export async function bootstrap(
     pluginRuntime,
     receiptCacheRoot: pluginPaths.cacheRoot,
     skillStore: ctx.skillStore,
+    skillOverlay: ctx.skillOverlay,
     personaPromptStore: ctx.personaPromptStore,
     onContributionsUpdated: () => {
       const win = getMainWindow();
