@@ -15,6 +15,8 @@
 // Stages: pre-commit | pre-push | manual. Bypass once with AVE_HOOKS_SKIP=1.
 //
 // Pre-push tiers (the log names the tier and why):
+//   none          a new branch at a commit the remote's default or
+//                 integration/* branches already contain: no new commit
 //   docs-only     unconsumed documentation: document safety and policy checks
 //   comment-only  standalone comment edits: typecheck gate
 //   test-only     test code only: typecheck gate, duplicates, targeted Vitest
@@ -555,6 +557,7 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
   let targetedTestsEligible = true;
   let targetedTestsReason = "";
   let commentOnlyEligible = true;
+  let updatesAlreadyOnRemote = 0;
   const protectedBranchNames = getProtectedBranchNames(repoRoot);
   for (const update of parsedUpdates.updates) {
     if (isNullObjectId(update.localSha)) {
@@ -592,6 +595,12 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
       return { docsOnly: false, reason: base.reason };
     }
     const baseSha = base.sha;
+    // A new branch at a commit the remote's default or integration branches
+    // already contain (cut and pushed before any commit) adds nothing to check.
+    if (baseSha.toLowerCase() === update.localSha.toLowerCase()) {
+      updatesAlreadyOnRemote += 1;
+      continue;
+    }
 
     const entries = getChangedEntries(repoRoot, baseSha, update.localSha);
     if (entries === null) {
@@ -605,6 +614,13 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
     }
   }
 
+  if (changedFiles.size === 0 && updatesAlreadyOnRemote === parsedUpdates.updates.length) {
+    return {
+      docsOnly: false,
+      alreadyOnRemote: true,
+      reason: "every pushed commit is already on a default or integration branch of the remote",
+    };
+  }
   if (changedFiles.size === 0) {
     return { docsOnly: false, reason: "no changed files were resolved" };
   }
@@ -969,7 +985,9 @@ if (stage === "pre-commit") {
       ? { docsOnly: false, reason: relatedSelection.reason }
       : { ...classification, relatedSelection };
   }
-  if (classification.docsOnly) {
+  if (classification.alreadyOnRemote) {
+    console.log(`[checks] tier=none pre-push: nothing to check (${classification.reason})`);
+  } else if (classification.docsOnly) {
     checkPushedDocumentation(repoRoot, classification.pushedEntries);
     run(commands.node, ["--test", "test/scripts/check-asrt-version-claims.test.mjs"], repoRoot);
     run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot);

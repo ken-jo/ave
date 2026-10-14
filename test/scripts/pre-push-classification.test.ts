@@ -66,6 +66,16 @@ describe("pre-push classification precedence", () => {
     expect(result.reason).toBe("push to integration branch refs/heads/integration/permissions requires full checks");
   });
 
+  it("checks nothing for a new branch whose commit the remote already contains", () => {
+    const result = classify([], {
+      update: { localRef: "refs/heads/feat/start", remoteRef: "refs/heads/feat/start", localSha: baseSha, remoteSha: "0".repeat(40) },
+    });
+    expect(result).toMatchObject({
+      alreadyOnRemote: true,
+      reason: "every pushed commit is already on a default or integration branch of the remote",
+    });
+  });
+
   it("takes a sub-branch pushed beside an integration branch on the fast tier", () => {
     const result = classify([modified("src/ipc/domains/example.ts")], {
       update: { localRef: "refs/heads/feat/judge-slot", remoteRef: "refs/heads/feat/judge-slot", remoteSha: "0".repeat(40) },
