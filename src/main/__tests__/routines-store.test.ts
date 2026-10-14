@@ -13,7 +13,7 @@ import { withTz } from "../../__tests__/test-helpers.js";
 import { readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { platform } from "node:os";
-import { RoutinesStore, MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES, MAX_CRON_EXPR_LENGTH, MAX_ROUTINE_SOURCE_LENGTH } from "../routines-store.js";
+import { RoutinePluginIdError, RoutinesStore, MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES, MAX_CRON_EXPR_LENGTH, MAX_ROUTINE_SOURCE_LENGTH } from "../routines-store.js";
 import { futureIso, tempRoutinesStore } from "./routines-fixture.js";
 
 describe("RoutinesStore v2 — basic persistence", () => {
@@ -127,6 +127,54 @@ describe("RoutinesStore v2 — basic persistence", () => {
       await store.load();
 
       expect(store.list()).toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("fails the load with RoutinePluginIdError for a stored plugin id the contract rejects", async () => {
+    const { store, dir, cleanup } = tempRoutinesStore();
+    try {
+      writeFileSync(
+        join(dir, "routines.json"),
+        JSON.stringify({
+          version: 2,
+          routines: [{
+            id: "legacy-scope",
+            trigger: "schedule",
+            execution: "notification-only",
+            notificationTitle: "legacy",
+            scope: {
+              pluginIds: { mode: "allow", ids: ["sample-plugin", "Legacy.Plugin"] },
+              forcedPluginIds: [],
+              directories: [],
+            },
+          }],
+        }),
+      );
+
+      const failure = await store.load().then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(RoutinePluginIdError);
+      expect(failure).toMatchObject({
+        routineId: "legacy-scope",
+        field: "scope.pluginIds.ids",
+        pluginId: "Legacy.Plugin",
+      });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("refuses to add a routine scoped to a plugin id the contract rejects", async () => {
+    const { store, cleanup } = tempRoutinesStore();
+    try {
+      await expect(store.add({
+        trigger: "schedule",
+        execution: "notification-only",
+        schedule: { at: futureIso() },
+        notificationTitle: "scoped",
+        scope: { pluginIds: { mode: "allow", ids: ["a_b"] }, forcedPluginIds: [], directories: [] },
+      })).rejects.toThrow("must be valid plugin ids");
     } finally {
       await cleanup();
     }
@@ -876,7 +924,6 @@ describe("persisted missing-plugin status validation", () => {
     { needsAttention: true },
     { needsAttention: { missingPluginIds: [] } },
     { needsAttention: { missingPluginIds: [42] } },
-    { needsAttention: { missingPluginIds: ["../private"] } },
   ])("drops malformed status %j while preserving a neighbouring routine", async (patch) => {
     const { store, dir, cleanup } = tempRoutinesStore();
     try {
@@ -885,6 +932,24 @@ describe("persisted missing-plugin status validation", () => {
       await writeFile(join(dir, "routines.json"), JSON.stringify({ version: 2, routines: [good, { ...good, id: "bad", ...patch }] }));
       await store.load();
       expect(store.list().map((routine) => routine.id)).toEqual([good.id]);
+    } finally { await cleanup(); }
+  });
+
+  it("fails the load on a stored missing-plugin id the contract rejects instead of dropping the routine", async () => {
+    const { store, dir, cleanup } = tempRoutinesStore();
+    try {
+      const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(join(dir, "routines.json"), JSON.stringify({
+        version: 2,
+        routines: [good, { ...good, id: "bad", needsAttention: { missingPluginIds: ["../private"] } }],
+      }));
+      await expect(store.load()).rejects.toMatchObject({
+        name: "RoutinePluginIdError",
+        routineId: "bad",
+        field: "needsAttention.missingPluginIds",
+        pluginId: "../private",
+      });
     } finally { await cleanup(); }
   });
 });

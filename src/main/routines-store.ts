@@ -18,6 +18,7 @@ import { readJsonFileOrEmpty, writeFileAtomicAtPath } from "./storage/feature-na
 import { createLogger } from "../lib/logger.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { isStringArray } from "../shared/is-record.js";
+import { isValidPluginId } from "../plugins/public-contract.js";
 const log = createLogger("ave");
 
 // Re-export from shared so callers that import from routines-store continue
@@ -57,8 +58,53 @@ export const MAX_CRON_EXPR_LENGTH = 256;
 /** Minimum interval in ms (1 minute — prevents sub-minute polling spam). */
 export const MIN_INTERVAL_MS = 60_000;
 
-/** Plugin ids a routine scope may name. */
-export const ROUTINE_PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9_.-]*$/i;
+/**
+ * A persisted routine names a plugin id the plugin contract rejects
+ * (`isValidPluginId`). Raised while loading `routines.json` instead of
+ * silently dropping the routine: the id was written by a build that accepted
+ * a looser grammar, and the user must see which routine needs repair.
+ */
+export class RoutinePluginIdError extends Error {
+  constructor(
+    readonly routineId: string,
+    readonly field: string,
+    readonly pluginId: string,
+  ) {
+    super(`routine ${routineId} names invalid plugin id ${JSON.stringify(pluginId)} in ${field}`);
+    this.name = "RoutinePluginIdError";
+  }
+}
+
+/** The plugin-id-bearing fields of one stored routine, by field path. */
+function storedRoutinePluginIds(record: Record<string, unknown>): Array<[string, unknown[]]> {
+  const fields: Array<[string, unknown[]]> = [];
+  const attention = record.needsAttention;
+  if (attention && typeof attention === "object" && Array.isArray((attention as Record<string, unknown>).missingPluginIds)) {
+    fields.push(["needsAttention.missingPluginIds", (attention as Record<string, unknown>).missingPluginIds as unknown[]]);
+  }
+  const scope = record.scope;
+  if (scope && typeof scope === "object") {
+    const { pluginIds, forcedPluginIds } = scope as Record<string, unknown>;
+    if (pluginIds && typeof pluginIds === "object" && Array.isArray((pluginIds as Record<string, unknown>).ids)) {
+      fields.push(["scope.pluginIds.ids", (pluginIds as Record<string, unknown>).ids as unknown[]]);
+    }
+    if (Array.isArray(forcedPluginIds)) fields.push(["scope.forcedPluginIds", forcedPluginIds]);
+  }
+  return fields;
+}
+
+/** Fail the load on a stored plugin id the contract rejects; see {@link RoutinePluginIdError}. */
+function assertStoredRoutinePluginIds(record: unknown): void {
+  if (!record || typeof record !== "object") return;
+  const routine = record as Record<string, unknown>;
+  for (const [field, ids] of storedRoutinePluginIds(routine)) {
+    for (const id of ids) {
+      if (typeof id === "string" && !isValidPluginId(id)) {
+        throw new RoutinePluginIdError(String(routine.id), field, id);
+      }
+    }
+  }
+}
 
 /**
  * Validate a record loaded from disk. Rejects tampered / corrupted entries
@@ -77,7 +123,7 @@ function isValidRecord(r: unknown): r is RoutineRecord {
   if (x.needsAttention !== undefined) {
     if (!x.needsAttention || typeof x.needsAttention !== "object" || Array.isArray(x.needsAttention)) return false;
     const ids = (x.needsAttention as Record<string, unknown>).missingPluginIds;
-    if (!isStringArray(ids) || ids.length === 0 || ids.some((id) => !ROUTINE_PLUGIN_ID_PATTERN.test(id))) return false;
+    if (!isStringArray(ids) || ids.length === 0 || ids.some((id) => !isValidPluginId(id))) return false;
   }
   if (x.lastResultAcknowledgedAt !== undefined && typeof x.lastResultAcknowledgedAt !== "string") return false;
   if (x.lastRoutineSessionId !== undefined && typeof x.lastRoutineSessionId !== "string") return false;
@@ -168,6 +214,7 @@ function readFileOrEmpty(filePath: string): Promise<RoutinesFile> {
   return readJsonFileOrEmpty(filePath, emptyRoutinesFile, (parsed) => {
     const file = parsed as RoutinesFile;
     if (!Array.isArray(file.routines)) return emptyRoutinesFile();
+    for (const record of file.routines) assertStoredRoutinePluginIds(record);
     // Filter out tampered/corrupted or non-canonical records so a single bad
     // entry cannot cause the scheduler tick to throw and stall all routines.
     return { version: 2, routines: file.routines.filter(isCanonicalRecord) };
@@ -323,18 +370,18 @@ export class RoutinesStore {
 
     if (inputScope?.pluginIds.mode === "allow") {
       const trimmed = inputScope.pluginIds.ids.map((p) => p.trim()).filter(Boolean);
-      if (trimmed.some((p) => !ROUTINE_PLUGIN_ID_PATTERN.test(p))) {
+      if (trimmed.some((p) => !isValidPluginId(p))) {
         throw new Error(
-          "RoutinesStore.add: scope.pluginIds.ids entries must be plugin ids using letters, digits, dot, underscore, or hyphen",
+          "RoutinesStore.add: scope.pluginIds.ids entries must be valid plugin ids",
         );
       }
       normalizedPluginIds = { mode: "allow", ids: [...new Set(trimmed)] };
     }
     if (inputScope?.forcedPluginIds) {
       const trimmedForced = inputScope.forcedPluginIds.map((p) => p.trim()).filter(Boolean);
-      if (trimmedForced.some((p) => !ROUTINE_PLUGIN_ID_PATTERN.test(p))) {
+      if (trimmedForced.some((p) => !isValidPluginId(p))) {
         throw new Error(
-          "RoutinesStore.add: scope.forcedPluginIds entries must be plugin ids using letters, digits, dot, underscore, or hyphen",
+          "RoutinesStore.add: scope.forcedPluginIds entries must be valid plugin ids",
         );
       }
       normalizedForcedPluginIds = [...new Set(trimmedForced)];
