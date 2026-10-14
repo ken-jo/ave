@@ -357,9 +357,9 @@ export async function bootstrap(
       // The launch mode is the fact; the window is a proxy for it.
       isDeskAttended: () => {
         if (headless) return false;
-        const win = getMainWindow();
-        if (!win || win.isDestroyed()) return false;
-        return win.isVisible() && !win.isMinimized();
+        // Any open main window on screen counts: several may be open.
+        const windows = host.desktop?.getAppWindows() ?? [getMainWindow()];
+        return windows.some((win) => !!win && !win.isDestroyed() && win.isVisible() && !win.isMinimized());
       },
       // The queue a tier-3 escalation lands in when nobody is watching the
       // run. Reached through the permission manager rather than captured: the
@@ -872,8 +872,9 @@ export async function bootstrap(
     skillStore: ctx.skillStore,
     personaPromptStore: ctx.personaPromptStore,
     onContributionsUpdated: () => {
-      const win = getMainWindow();
-      if (win && !win.isDestroyed()) win.webContents.send(CHANNELS.prompts.updated);
+      for (const win of host.desktop?.getAppWindows() ?? [getMainWindow()]) {
+        if (win && !win.isDestroyed()) win.webContents.send(CHANNELS.prompts.updated);
+      }
     },
     hookManager: ctx.scriptHookManager,
     mcpManager: ctx.mcpManager,

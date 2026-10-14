@@ -25,11 +25,27 @@ export function showOrCreateMainWindow(reason: string): void {
     refreshTrayMenu();
     return;
   }
-  createWindow({ showBootstrapSplash: false });
-  const mainWindow = getMainWindow();
-  if (mainWindow) registerMainWindowPluginEventBridge(mainWindow);
-  if (mainWindow && isRendererReloadReady()) {
-    void loadMainInterface(mainWindow, reason).finally(() => {
+  createAndLoadMainWindow(reason);
+}
+
+/**
+ * Open one more main window ("New Window", a second launch of the app). Until
+ * bootstrap has registered IPC there is no interface to load into it, so an
+ * early request surfaces the window that boot is about to load instead.
+ */
+export function openNewMainWindow(reason: string): void {
+  if (!isRendererReloadReady() && getMainWindow()) {
+    showOrCreateMainWindow(reason);
+    return;
+  }
+  createAndLoadMainWindow(reason);
+}
+
+function createAndLoadMainWindow(reason: string): void {
+  const win = createWindow({ showBootstrapSplash: false });
+  if (win) registerMainWindowPluginEventBridge(win);
+  if (win && isRendererReloadReady()) {
+    void loadMainInterface(win, reason).finally(() => {
       refreshApplicationMenu();
       refreshTrayMenu();
     });
@@ -45,6 +61,10 @@ export function refreshTrayMenu(): void {
     {
       label: t("be_main.menuOpenAve"),
       click: () => showOrCreateMainWindow("tray-open"),
+    },
+    {
+      label: t("be_main.menuNewWindow"),
+      click: () => openNewMainWindow("tray-new-window"),
     },
     { type: "separator" },
     createAlwaysOnTopMenuItem(),

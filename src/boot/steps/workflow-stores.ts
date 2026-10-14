@@ -31,6 +31,7 @@ import {
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
+import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 
 const log = createLogger("ave");
 
@@ -82,6 +83,9 @@ export async function setupWorkflowStores(
       (err as Error).message,
     );
   });
+  // Spawn and skill events are filtered by session in each renderer; every
+  // open main window receives them.
+  const appWindows = () => ctx.host.desktop?.getAppWindows() ?? [getMainWindow()];
   const askUserQuestionGate = new AskUserQuestionGate(
     // Lazy resolver — dev-mode reloads destroy the captured webContents.
     // Looking it up on every send keeps the gate working across reloads
@@ -119,14 +123,14 @@ export async function setupWorkflowStores(
     },
     emitAgentSpawn: (event: AgentSpawnEvent) => {
       try {
-        getMainWindow()?.webContents.send("ave:agent-spawn:event", event);
+        fanOutToAllWindows(appWindows(), "ave:agent-spawn:event", event);
       } catch (err) {
         log.warn("agent_spawn emit failed: %s", (err as Error).message);
       }
     },
     emitSkillLoad: (event: SkillLoadEvent) => {
       try {
-        getMainWindow()?.webContents.send("ave:skill-load:event", event);
+        fanOutToAllWindows(appWindows(), "ave:skill-load:event", event);
       } catch (err) {
         log.warn("skill_load emit failed: %s", (err as Error).message);
       }

@@ -447,6 +447,25 @@ Important rules:
   addressed by `chatGroupId` on every per-conversation `ave:chat:*` channel;
   the loops share the memory manager and the window-wide idle services. A
   closed tile releases its loop. See `docs/design/tiled-chat-groups.md`.
+- Several main windows may be open ("New Window", `CmdOrCtrl+Shift+N`, the
+  tray, or launching the app again without an `ave://` link). `app-state.ts`
+  owns the set: broadcasts go to every main window (`getAppWindows`), point-to-
+  point sends and dialogs go to the window in use or the sender's window, and
+  the first live window is the primary one. A secondary window's chat group ids
+  are scoped to that window in main (`window-<webContentsId>:<id>`), so its
+  tiles — its first tile included — are conversations of their own; its
+  document carries `?aveWindow=secondary` so it does not resume the primary's
+  window-active session. The `MAX_CHAT_GROUPS` ceiling is shared by all
+  windows. Closing a window while another is open closes it; only the last one
+  follows the close-button preference.
+- The chat side panel's browser (`persist:ave-side-browser`,
+  `src/main/side-browser-webview.ts`) works like a normal browser: http(s)
+  navigation and redirects, popups and OAuth windows (native-framed windows on
+  the same session with no preload, sandboxed, context-isolated, guarded
+  recursively), downloads through the native Save dialog, and a
+  Chromium/Edge user agent so sign-in pages accept it. Other schemes stay
+  blocked, and only `fullscreen` and `clipboard-sanitized-write` permissions
+  are granted.
 
 A long turn uses per-call limits and progress guidance. Each API-backed chat call
 is bounded by the route's effective output limit

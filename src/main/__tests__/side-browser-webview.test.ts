@@ -5,6 +5,7 @@ const electronMock = vi.hoisted(() => {
   const sideBrowserSession = {
     setPermissionRequestHandler: vi.fn(),
     setPermissionCheckHandler: vi.fn(),
+    setUserAgent: vi.fn(),
     on: vi.fn(),
   };
   const otherSession = {};
@@ -20,9 +21,11 @@ vi.mock("electron", () => ({
 }));
 
 const {
+  attachSideBrowserWebview,
   configureSideBrowserWebviewAttach,
   installSideBrowserPartitionPolicy,
   isSideBrowserContents,
+  isSideBrowserPopupUrlAllowed,
   takePendingSideBrowserSrc,
 } = await import("../side-browser-webview.js");
 
@@ -131,31 +134,108 @@ describe("side browser webview attach policy", () => {
     expect(pending).toEqual(["https://example.com/docs"]);
   });
 
-  it("installs a deny-by-default permission and download policy for the side-browser partition", () => {
+  it("installs a browser-like UA, a narrow permission allow-list, and leaves downloads to the native save dialog", () => {
     installSideBrowserPartitionPolicy();
 
+    const ua = electronMock.sideBrowserSession.setUserAgent.mock.calls[0]?.[0] as string;
+    expect(ua).toMatch(/Chrome\/\d+/);
+    expect(ua).not.toContain("Electron");
     expect(electronMock.sideBrowserSession.setPermissionRequestHandler).toHaveBeenCalledOnce();
     expect(electronMock.sideBrowserSession.setPermissionCheckHandler).toHaveBeenCalledWith(expect.any(Function));
-    expect(electronMock.sideBrowserSession.on).toHaveBeenCalledWith("will-download", expect.any(Function));
+    // No download veto: Electron's default routine prompts a Save dialog.
+    expect(electronMock.sideBrowserSession.on).not.toHaveBeenCalledWith("will-download", expect.any(Function));
 
-    const permissionCallback = vi.fn();
     const requestHandler = electronMock.sideBrowserSession.setPermissionRequestHandler.mock.calls[0]?.[0] as
-      | ((webContents: unknown, permission: string, callback: (allowed: boolean) => void) => void)
-      | undefined;
-    requestHandler?.({}, "media", permissionCallback);
-    expect(permissionCallback).toHaveBeenCalledWith(false);
-
+      (webContents: unknown, permission: string, callback: (allowed: boolean) => void) => void;
     const checkHandler = electronMock.sideBrowserSession.setPermissionCheckHandler.mock.calls[0]?.[0] as
-      | (() => boolean)
-      | undefined;
-    expect(checkHandler?.()).toBe(false);
+      (webContents: unknown, permission: string) => boolean;
+    for (const denied of ["media", "geolocation", "notifications", "midi", "hid", "openExternal"]) {
+      const callback = vi.fn();
+      requestHandler({}, denied, callback);
+      expect(callback).toHaveBeenCalledWith(false);
+      expect(checkHandler({}, denied)).toBe(false);
+    }
+    for (const allowed of ["fullscreen", "clipboard-sanitized-write"]) {
+      const callback = vi.fn();
+      requestHandler({}, allowed, callback);
+      expect(callback).toHaveBeenCalledWith(true);
+      expect(checkHandler({}, allowed)).toBe(true);
+    }
+  });
 
-    const downloadEvent = { preventDefault: vi.fn() };
-    const downloadHandler = electronMock.sideBrowserSession.on.mock.calls.find((call) => call[0] === "will-download")?.[1] as
-      | ((event: { preventDefault: () => void }) => void)
-      | undefined;
-    downloadHandler?.(downloadEvent);
-    expect(downloadEvent.preventDefault).toHaveBeenCalledOnce();
+  it("allows only http(s) and about:blank popups", () => {
+    expect(isSideBrowserPopupUrlAllowed("https://accounts.google.com/o/oauth2/auth")).toBe(true);
+    expect(isSideBrowserPopupUrlAllowed("http://example.com/")).toBe(true);
+    expect(isSideBrowserPopupUrlAllowed("about:blank")).toBe(true);
+    for (const blocked of [
+      "file:///etc/passwd",
+      "javascript:alert(1)",
+      "data:text/html,x",
+      "ave://settings",
+      "ms-msdt:/id",
+      "about:srcdoc",
+      "https://user:pass@example.com/",
+    ]) {
+      expect(isSideBrowserPopupUrlAllowed(blocked)).toBe(false);
+    }
+  });
+
+  function fakeContents(session: unknown) {
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    let openHandler: ((details: { url: string }) => { action: string; overrideBrowserWindowOptions?: { webPreferences?: Record<string, unknown> } }) | null = null;
+    return {
+      id: Math.floor(Math.random() * 1e9),
+      session,
+      once: vi.fn(),
+      on: vi.fn((name: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(name, listener);
+      }),
+      setWindowOpenHandler: vi.fn((handler: typeof openHandler) => {
+        openHandler = handler;
+      }),
+      emit: (name: string, ...args: unknown[]) => listeners.get(name)?.(...args),
+      open: (url: string) => openHandler!({ url }),
+    };
+  }
+
+  it("lets the guest open hardened popup windows and guards each popup recursively", () => {
+    const guest = fakeContents(electronMock.sideBrowserSession);
+    attachSideBrowserWebview(guest as never);
+
+    expect(guest.open("javascript:alert(1)")).toEqual({ action: "deny" });
+    const allowed = guest.open("https://accounts.google.com/signin");
+    expect(allowed.action).toBe("allow");
+    const prefs = allowed.overrideBrowserWindowOptions?.webPreferences ?? {};
+    expect(prefs).toMatchObject({
+      nodeIntegration: false,
+      nodeIntegrationInSubFrames: false,
+      contextIsolation: true,
+      sandbox: true,
+      webviewTag: false,
+    });
+    expect(prefs.preload).toBeUndefined();
+
+    const popupContents = fakeContents(electronMock.sideBrowserSession);
+    const popup = { webContents: popupContents, destroy: vi.fn() };
+    guest.emit("did-create-window", popup);
+    expect(popup.destroy).not.toHaveBeenCalled();
+    // The popup carries the same guards: its own popups and navigations.
+    expect(popupContents.open("file:///etc/passwd")).toEqual({ action: "deny" });
+    const nav = { url: "ave://x", preventDefault: vi.fn() };
+    popupContents.emit("will-navigate", nav);
+    expect(nav.preventDefault).toHaveBeenCalledOnce();
+    const redirect = { url: "https://accounts.google.com/next", preventDefault: vi.fn() };
+    popupContents.emit("will-redirect", redirect);
+    expect(redirect.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("destroys a popup that did not land on the side-browser session", () => {
+    const guest = fakeContents(electronMock.sideBrowserSession);
+    attachSideBrowserWebview(guest as never);
+    const stray = { webContents: fakeContents(electronMock.otherSession), destroy: vi.fn() };
+    guest.emit("did-create-window", stray);
+    expect(stray.destroy).toHaveBeenCalledOnce();
+    expect(stray.webContents.setWindowOpenHandler).not.toHaveBeenCalled();
   });
 
   it("verifies attached webContents by session before link-owned registration", () => {

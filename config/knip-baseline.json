@@ -354,11 +354,6 @@
     },
     {
       "type": "exports",
-      "file": "src/main/link-window-service.ts",
-      "name": "buildPersistentBrowserUserAgent"
-    },
-    {
-      "type": "exports",
       "file": "src/main/main-window-bounds.ts",
       "name": "WORK_MODE_HEIGHT"
     },

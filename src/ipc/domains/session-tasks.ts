@@ -13,6 +13,7 @@ import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
+import { fanOutToAllWindows } from "../window-fanout.js";
 import { isValidSessionId } from "../../memory/memory-manager.js";
 import { createLogger } from "../../lib/logger.js";
 const log = createLogger("ave");
@@ -64,7 +65,7 @@ export function registerSessionTasksHandlers(deps: IpcDeps): void {
   if (sessionTasksStore) {
     sessionTasksStore.onChange((sessionId, items) => {
       try {
-        getMainWindow()?.webContents.send(CHANNELS.sessionTasks.changed, {
+        fanOutToAllWindows(deps.getAppWindows?.() ?? [getMainWindow()], CHANNELS.sessionTasks.changed, {
           sessionId,
           items,
         });

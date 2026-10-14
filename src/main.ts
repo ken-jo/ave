@@ -41,7 +41,7 @@ import {
   showMainWindow,
 } from "./main/main-window.js";
 import { refreshApplicationMenu } from "./main/app-menu.js";
-import { ensureTray, refreshTrayMenu, showOrCreateMainWindow } from "./main/app-tray.js";
+import { ensureTray, openNewMainWindow, refreshTrayMenu, showOrCreateMainWindow } from "./main/app-tray.js";
 import { configureNativeWindowCoordinator } from "./main/native-window-coordinator.js";
 import { readStartupLaunchState } from "./main/startup-launch.js";
 import { reconcileOsIntegrationOnBoot } from "./main/reconcile-os-integration.js";
@@ -165,6 +165,7 @@ async function main() {
   const startDesktop = async () => {
     configureNativeWindowCoordinator({
       showOrCreateMainWindow,
+      openNewMainWindow,
       refreshNativeChrome: () => {
         refreshApplicationMenu();
         refreshTrayMenu();
@@ -653,11 +654,18 @@ if (!gotSingleInstanceLock) {
     aveDevLog("[ave] second-instance event fired", { argv: safeArgv });
     const url = findAveProtocolUri(argv);
     aveDevLog("[ave] second-instance URL extracted", { url });
-    if (url) void handleAveUri(url);
-    const mainWindow = getMainWindow();
-    if (mainWindow) {
-      showMainWindow(mainWindow);
+    if (url) {
+      // A deep link is addressed to the running app: handle it and surface
+      // the window in use, as before.
+      void handleAveUri(url);
+      const mainWindow = getMainWindow();
+      if (mainWindow) {
+        showMainWindow(mainWindow);
+      }
+      return;
     }
+    // Launching the app again (dock/taskbar/launcher) asks for another window.
+    openNewMainWindow("second-instance");
   });
 
   // whenReady is scoped to the primary-instance branch — second-instance
