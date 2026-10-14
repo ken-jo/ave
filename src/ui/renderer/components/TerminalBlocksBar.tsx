@@ -18,6 +18,7 @@ import type { AveApi } from "../types.js";
 import type { TerminalBlockSummary } from "../../../shared/terminal-blocks.js";
 import { useCopyFlash } from "../hooks/use-copy-flash.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { formatIpcError } from "../format-ipc-error.js";
 import {
   blockDurationSeconds,
   blockStatusLabel,
@@ -84,7 +85,7 @@ export function TerminalBlocksBar({
       try {
         const res = await terminalApi.getBlock(tabId, blockId);
         if (!res.ok) {
-          setNotice(t("terminalBlocks.loadFailed", { error: res.error }));
+          setNotice(t("terminalBlocks.loadFailed", { error: formatIpcError(res.error, undefined) }));
           return;
         }
         use({
