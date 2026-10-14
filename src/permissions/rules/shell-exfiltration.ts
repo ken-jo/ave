@@ -36,13 +36,14 @@ import {
   type ShellWord,
 } from "../../shared/shell-analysis.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../sensitive-paths.js";
-import { SHELL_PREFIX_POLICY, isShellWrapperProgram } from "./shell-prefix-policy.js";
+import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "./shell-prefix-policy.js";
 
 const PATH_READERS = new Set([
   "cat", "tac", "base64", "base32", "tar", "gzip", "bzip2", "xz", "zstd", "zip", "xxd", "od", "hexdump",
   "openssl", "gpg", "head", "tail", "dd", "less", "more", "strings", "cut", "sed", "awk", "jq",
 ]);
 const SOCKET_SENDERS = new Set(["nc", "ncat", "netcat", "socat"]);
+const SCRIPTED_TRANSFER = new Set(["sftp", "ftp", "lftp", "tftp"]);
 const SHELLS = new Set(SHELL_PREFIX_POLICY.shells);
 const CURL_BOOLEAN_SHORT = /^[sSfLkviIlnNqgGjJORZpaBM0-9]*$/;
 const CURL_DATA_LONG = ["--data", "--data-binary", "--data-raw", "--data-urlencode", "--data-ascii", "--json"];
@@ -73,12 +74,15 @@ function isLongOption(flag: string, names: readonly string[]): boolean {
   return names.some((name) => name === flag || (flag.length >= 8 && name.startsWith(flag)));
 }
 
-/** Static text of a word, expanding a leading `~` (lowered to `$HOME`). */
+/**
+ * Static text of a word. `~`, `$HOME` and `${HOME}` expand anywhere in the word
+ * (`@$HOME/.aws/credentials`, `@"$HOME/.ssh/id_rsa"`).
+ */
 function wordText(word: ShellWord): string | undefined {
   let text = "";
-  for (const [index, part] of word.parts.entries()) {
+  for (const part of word.parts) {
     if (part.kind === "literal" || part.kind === "pattern") text += part.value;
-    else if (part.kind === "parameter" && part.name === "HOME" && index === 0) text += homedir();
+    else if (part.kind === "parameter" && part.name === "HOME" && part.index === undefined) text += homedir();
     else return undefined;
   }
   return text;
@@ -106,7 +110,12 @@ function commandsIn(statement: ShellStatement): ShellCommand[] {
   }
 }
 
-interface Context { cwd: string | undefined; depth: number }
+interface Context {
+  cwd: string | undefined;
+  depth: number;
+  /** Variables assigned from a file read earlier in the same command line. */
+  tainted: Set<string>;
+}
 
 function sensitiveArgument(text: string, ctx: Context): string | null {
   let candidate = text;
@@ -120,29 +129,23 @@ function sensitiveArgument(text: string, ctx: Context): string | null {
   return hit ? `sensitive path argument (${hit})` : null;
 }
 
-/** argv with leading wrapper programs (and their options) and `busybox` removed. */
+/**
+ * argv with leading wrapper programs (and their options) removed — the same
+ * wrapper grammar the rule matcher uses (`shell-prefix-policy.ts`), which
+ * includes `busybox`.
+ */
 function unwrap(words: readonly ShellWord[]): readonly ShellWord[] {
-  let rest = words;
-  for (let guard = 0; guard < 8 && rest.length > 0; guard += 1) {
-    const head = program(wordText(rest[0]!));
-    if (head === undefined) return rest;
-    if (head === "busybox") { rest = rest.slice(1); continue; }
-    if (!isShellWrapperProgram(head) || head === "eval" || head === "source" || head === ".") return rest;
-    rest = rest.slice(1);
-    while (rest.length > 0) {
-      const next = wordText(rest[0]!);
-      if (next !== undefined && (next.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(next) || /^\d+(?:\.\d+)?[smhd]?$/.test(next))) {
-        rest = rest.slice(1);
-        continue;
-      }
-      break;
-    }
-  }
-  return rest;
+  return words.slice(wrapperPrefixLength(words.map(wordText)));
 }
 
-/** A command that reads a named path (a pipeline feeder or substitution body). */
+/**
+ * A command that reads a named path (a pipeline feeder or substitution
+ * body). A zero-word `$(<.env)` is bash's file-read shorthand.
+ */
 function readsPath(cmd: ShellCommand): boolean {
+  if (cmd.words.length === 0) {
+    return cmd.redirects.some((redirect) => redirect.effect === "read" && redirect.target !== undefined);
+  }
   const words = unwrap(cmd.words);
   const name = program(words[0] ? wordText(words[0]) : undefined);
   if (!name || !PATH_READERS.has(name)) return false;
@@ -153,8 +156,54 @@ function readsPath(cmd: ShellCommand): boolean {
   });
 }
 
-function bodiesReadPath(words: readonly ShellWord[]): boolean {
-  return words.flatMap(substitutionBodies).flatMap(commandsIn).some((cmd) => cmd.words.length > 0 && readsPath(cmd));
+function usesTainted(word: ShellWord, ctx: Context): boolean {
+  return word.parts.some((part) =>
+    (part.kind === "parameter" && ctx.tainted.has(part.name))
+    || (part.kind === "parameter-choice" && (ctx.tainted.has(part.name) || usesTainted(part.operand, ctx))));
+}
+
+/** True when any word carries file data: a path-reading `$(…)` or a tainted variable. */
+function bodiesReadPath(words: readonly ShellWord[], ctx: Context): boolean {
+  if (words.some((word) => usesTainted(word, ctx))) return true;
+  return words.flatMap(substitutionBodies).flatMap(commandsIn).some(readsPath);
+}
+
+/**
+ * Variables assigned from a file read anywhere in the command line
+ * (`X=$(cat .env); curl -d "$X" …`, `read X < .env`), to a fixed point so a
+ * copy (`Y=$X`) is tainted too.
+ */
+function collectTainted(root: ShellStatement, ctx: Context): void {
+  const all = commandsIn(root);
+  const nested = (statement: ShellStatement): ShellCommand[] => commandsIn(statement).flatMap((cmd) => [
+    cmd,
+    ...[...cmd.words, ...cmd.assignments.map((assignment) => assignment.value)].flatMap(substitutionBodies).flatMap(nested),
+  ]);
+  const commands = all.flatMap((cmd) => nested(cmd));
+  for (let changed = true, guard = 0; changed && guard < 8; guard += 1) {
+    changed = false;
+    for (const cmd of commands) {
+      for (const assignment of cmd.assignments) {
+        if (!ctx.tainted.has(assignment.name) && bodiesReadPath([assignment.value, ...(assignment.elements ?? [])], ctx)) {
+          ctx.tainted.add(assignment.name);
+          changed = true;
+        }
+      }
+      const head = cmd.words[0] ? program(wordText(cmd.words[0])) : undefined;
+      if (head === "read" || head === "mapfile" || head === "readarray") {
+        const fromFile = cmd.redirects.some((redirect) => redirect.effect === "read" && (redirect.target !== undefined || (redirect.data !== undefined && bodiesReadPath([redirect.data], ctx))));
+        if (fromFile) {
+          for (const word of cmd.words.slice(1)) {
+            const name = wordText(word);
+            if (name && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !ctx.tainted.has(name)) {
+              ctx.tainted.add(name);
+              changed = true;
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 function isRemoteTarget(text: string | undefined): boolean {
@@ -164,7 +213,7 @@ function isRemoteTarget(text: string | undefined): boolean {
   return /^(?:[^\s/@:]+@)?[A-Za-z0-9._-]+:/.test(text) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(text);
 }
 
-function curlSignal(args: readonly ShellWord[]): string | null {
+function curlSignal(args: readonly ShellWord[], ctx: Context): string | null {
   for (let index = 0; index < args.length; index += 1) {
     const word = args[index]!;
     const raw = wordText(word) ?? word.source.raw;
@@ -178,7 +227,7 @@ function curlSignal(args: readonly ShellWord[]): string | null {
       else if (args[index + 1]) { valueWord = args[index + 1]; valueText = wordText(valueWord); }
     } else if (/^-[A-Za-z]/.test(raw)) {
       const letters = raw.slice(1);
-      const at = letters.search(/[dFTH]/);
+      const at = letters.search(/[dFTHK]/);
       // Only boolean flags may precede it in a cluster; after a value-taking
       // flag (`-XPOST`, `-ofile`) the rest of the word is that flag's value.
       if (at === -1 || !CURL_BOOLEAN_SHORT.test(letters.slice(0, at))) continue;
@@ -197,7 +246,9 @@ function curlSignal(args: readonly ShellWord[]): string | null {
     const headerFlag = flag === "-H" || isLongOption(flag, CURL_HEADER_LONG);
     const uploadFlag = flag === "-T" || isLongOption(flag, CURL_UPLOAD_LONG);
     if (uploadFlag && (valueWord || valueText)) return "curl upload of a file";
-    const fromSubstitution = valueWord !== undefined && bodiesReadPath([valueWord]);
+    // A config file can carry `data = @file`, `upload-file`, URLs and headers.
+    if ((flag === "-K" || flag === "--config") && (valueWord || valueText)) return "curl config file";
+    const fromSubstitution = valueWord !== undefined && bodiesReadPath([valueWord], ctx);
     // `--data-urlencode name@file` also reads a file.
     const urlencodeFile = flag.startsWith("--data-urlenc") && /^[^=@]*@/.test(valueText ?? "");
     if (dataFlag && (valueText?.startsWith("@") || urlencodeFile || fromSubstitution)) return "curl body from a file";
@@ -207,7 +258,7 @@ function curlSignal(args: readonly ShellWord[]): string | null {
   return null;
 }
 
-function wgetSignal(args: readonly ShellWord[]): string | null {
+function wgetSignal(args: readonly ShellWord[], ctx: Context): string | null {
   for (let index = 0; index < args.length; index += 1) {
     const word = args[index]!;
     const raw = wordText(word) ?? word.source.raw;
@@ -220,7 +271,7 @@ function wgetSignal(args: readonly ShellWord[]): string | null {
     if (isLongOption(flag, WGET_FILE_BODY)) return "wget body from a file";
     if (isLongOption(flag, WGET_DATA_BODY)) {
       const valueWord = raw.includes("=") ? word : args[index + 1];
-      if (valueWord && bodiesReadPath([valueWord])) return "wget body from a file";
+      if (valueWord && bodiesReadPath([valueWord], ctx)) return "wget body from a file";
     }
   }
   return null;
@@ -248,34 +299,47 @@ function senderSignal(cmd: ShellCommand, feeders: readonly ShellCommand[], ctx: 
   if (ctx.depth < RECURSION_LIMIT) {
     const code = inlineShellCode(name, args);
     if (code !== undefined) {
-      const nested = signalFor(code, { ...ctx, depth: ctx.depth + 1 });
+      const nested = signalFor(code, { ...ctx, depth: ctx.depth + 1, tainted: new Set(ctx.tainted) });
       if (nested) return nested;
     }
     if (SHELLS.has(name)) {
       for (const redirect of cmd.redirects) {
         const script = redirect.effect === "read" && redirect.data ? wordText(redirect.data) : undefined;
-        const nested = script === undefined ? null : signalFor(script, { ...ctx, depth: ctx.depth + 1 });
+        const nested = script === undefined ? null : signalFor(script, { ...ctx, depth: ctx.depth + 1, tainted: new Set(ctx.tainted) });
         if (nested) return nested;
       }
     }
   }
 
+  // `xargs -a .env curl -d`, `xargs curl -d < .env`, `cat .env | xargs curl`:
+  // xargs turns file contents into the sender's arguments.
+  const wrapperTexts = cmd.words.slice(0, cmd.words.length - words.length).map(wordText);
+  const xargsFromFile = wrapperTexts.some((text) => text !== undefined && program(text) === "xargs")
+    && (wrapperTexts.some((text) => text !== undefined && /^(?:-a|--arg-file)(?:=|$)|^-a./.test(text))
+      || cmd.redirects.some((redirect) => redirect.effect === "read" && redirect.target !== undefined)
+      || feeders.some(readsPath));
+
   let signal: string | null = null;
   let isSender = false;
-  if (name === "curl") { isSender = true; signal = curlSignal(args); }
-  else if (name === "wget") { isSender = true; signal = wgetSignal(args); }
+  if (name === "curl") { isSender = true; signal = curlSignal(args, ctx); }
+  else if (name === "wget") { isSender = true; signal = wgetSignal(args, ctx); }
   else if (name === "scp" || name === "rsync") {
     isSender = true;
     const positional = args.map(wordText).filter((text) => text === undefined || !text.startsWith("-"));
     if (positional.length >= 2 && isRemoteTarget(positional[positional.length - 1])) signal = `${name} to a remote target`;
-  } else if (name === "sftp") {
+  } else if (SCRIPTED_TRANSFER.has(name)) {
     isSender = true;
-    if (args.map(wordText).some((text) => text !== undefined && !text.startsWith("-") && (isRemoteTarget(text) || /^[^\s/@:]+@[A-Za-z0-9._-]+$/.test(text)))) {
+    // A batch file, here-string or here-document scripts `put` commands.
+    if (cmd.redirects.some((redirect) => redirect.effect === "read" && (redirect.target !== undefined || redirect.data !== undefined))
+      || feeders.length > 0
+      || args.map(wordText).some((text) => text !== undefined && /^-b/.test(text))) {
+      signal = `${name} scripted transfer`;
+    } else if (name === "sftp" && args.map(wordText).some((text) => text !== undefined && !text.startsWith("-") && (isRemoteTarget(text) || /^[^\s/@:]+@[A-Za-z0-9._-]+$/.test(text)))) {
       signal = "sftp to a remote target";
     }
   } else if (SOCKET_SENDERS.has(name)) {
     isSender = true;
-    if (cmd.redirects.some((redirect) => redirect.effect === "read" && (redirect.target || (redirect.data && bodiesReadPath([redirect.data]))))) {
+    if (cmd.redirects.some((redirect) => redirect.effect === "read" && (redirect.target || (redirect.data && bodiesReadPath([redirect.data], ctx))))) {
       signal = `${name} fed from a file`;
     } else if (feeders.some(readsPath)) {
       signal = `${name} fed from a file`;
@@ -285,9 +349,10 @@ function senderSignal(cmd: ShellCommand, feeders: readonly ShellCommand[], ctx: 
   }
   if (!isSender) return null;
   if (signal) return signal;
+  if (xargsFromFile) return `xargs feeds a file into ${name}`;
   // Any argument (the URL included) built from a substitution that reads a
-  // path carries file data off the machine.
-  if ((name === "curl" || name === "wget") && bodiesReadPath(args)) return `${name} argument built from a file`;
+  // path, or from a variable assigned from one, carries file data out.
+  if ((name === "curl" || name === "wget") && bodiesReadPath(args, ctx)) return `${name} argument built from a file`;
   // curl/wget send stdin only with `@-` / `-T -`, which the checks above
   // already match; a feeder alone is not a body.
   for (const word of [...args, ...feeders.flatMap((feeder) => feeder.words.slice(1))]) {
@@ -355,6 +420,7 @@ function signalFor(command: string, ctx: Context): string | null {
     analysis = { ok: false, reason: "shell parser failed" };
   }
   if (!analysis.ok) return UNPARSED_FALLBACK.test(command) ? "curl/wget body from a file (unparsed)" : null;
+  collectTainted(analysis.program, ctx);
   return walk(analysis.program, ctx);
 }
 
@@ -363,5 +429,5 @@ function signalFor(command: string, ctx: Context): string | null {
  * relative path arguments for the sensitive-path check.
  */
 export function shellExfiltrationSignal(command: string, cwd?: string): string | null {
-  return signalFor(command, { cwd, depth: 0 });
+  return signalFor(command, { cwd, depth: 0, tainted: new Set() });
 }

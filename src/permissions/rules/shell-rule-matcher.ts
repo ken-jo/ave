@@ -29,7 +29,12 @@ import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { RuleSpecifier } from "./rule-specifier.js";
 import { shellExfiltrationSignal } from "./shell-exfiltration.js";
-import { SHELL_PREFIX_POLICY, isShellWrapperProgram } from "./shell-prefix-policy.js";
+import {
+  SHELL_PREFIX_POLICY,
+  isShellWrapperProgram,
+  stripGlobalOptions,
+  wrapperPrefixLength,
+} from "./shell-prefix-policy.js";
 
 type BashRuleSpecifier = Extract<RuleSpecifier, { kind: "bash" }>;
 
@@ -62,11 +67,26 @@ function baseProgram(token: string): string {
 }
 
 /** Reason when this argv carries code the matcher cannot see into, else null. */
-function codeStringCarrier(argv: readonly (string | undefined)[]): string | null {
-  const program = baseProgram(argv[0]!);
+function codeStringCarrier(fullArgv: readonly (string | undefined)[]): string | null {
+  // Wrapper-held code (`env -S 'rm x'`, `su -c 'rm x'`) is a string too.
+  for (let index = 0; index < fullArgv.length; index += 1) {
+    const token = fullArgv[index];
+    if (token === undefined) break;
+    const head = baseProgram(fullArgv[0]!);
+    if (index > 0 && ((head === "env" && /^(?:-[A-Za-z]*S|--split-string)/.test(token)) || (head === "su" && /^(?:-c|--command)/.test(token)))) {
+      return `code passed to ${head}`;
+    }
+    if (!token.startsWith("-") && index > 0) break;
+  }
+  const skip = wrapperPrefixLength(fullArgv);
+  const argv = fullArgv.slice(skip);
+  if (argv.length === 0) return null;
+  if (argv[0] === undefined) return "dynamic program name behind a wrapper";
+  const program = baseProgram(argv[0]);
   const args = argv.slice(1);
   if (args.length === 0) return null;
   if (program === "eval") return "code passed to eval";
+  if (program === "source" || program === ".") return `script passed to ${program}`;
   if (AWK_PROGRAMS.has(program)) return `program passed to ${program}`;
   if (SHELL_PROGRAMS.has(program)) {
     // `-c`, and combined short flags such as `-lc` / `-ec`.
@@ -81,6 +101,27 @@ function codeStringCarrier(argv: readonly (string | undefined)[]): string | null
   }
   if (program === "find" && args.some((arg) => arg === undefined || /^-(?:exec|execdir|ok|okdir)$/.test(arg))) {
     return "command passed to find -exec";
+  }
+  return null;
+}
+
+/**
+ * Options that make an otherwise allowed program write to a path of the
+ * model's choosing (`git log --output=~/.zshrc`, `curl -o`, `sort -o`). An
+ * allow rule never covers them; the call asks.
+ */
+const WRITING_LONG_OPTION = /^--(?:output(?:-file|-document|-dir)?|log-file|logfile|outfile|out-file|out|config-env|exec-path|upload-pack|receive-pack|dump-header)(?:=|$)/;
+const SHORT_OUTPUT_PROGRAMS = new Set(["curl", "wget", "sort", "gcc", "g++", "cc", "clang", "clang++", "go", "rustc", "tsc", "esbuild", "pandoc", "uniq", "split", "sqlite3"]);
+const FIND_WRITING_ACTIONS = /^-(?:fprint|fprint0|fprintf|fls|delete)$/;
+
+function writingOption(argv: readonly (string | undefined)[]): string | null {
+  const program = argv[0] === undefined ? "" : baseProgram(argv[0]);
+  for (const token of argv.slice(1)) {
+    if (token === undefined) continue;
+    if (WRITING_LONG_OPTION.test(token)) return `option ${token.split("=")[0]} writes to a path`;
+    if (SHORT_OUTPUT_PROGRAMS.has(program) && /^-[A-Za-z]*[oO]/.test(token)) return `option ${token.slice(0, 2)} writes to a path`;
+    if (program === "find" && FIND_WRITING_ACTIONS.test(token)) return `find ${token} writes or deletes`;
+    if (program === "git" && (token === "-c" || token === "config")) return `git ${token} changes configuration`;
   }
   return null;
 }
@@ -155,6 +196,8 @@ export function analyzeShellForRules(command: string): ShellRuleShape {
           // see inside it.
           const hiddenCode = codeStringCarrier(argv);
           if (hiddenCode) hidden.push(hiddenCode);
+          const writes = writingOption(argv);
+          if (writes) blockers.push(writes);
         }
         commands.push({ argv, raw: statement.source.raw, allowBlockers: blockers });
         return;
@@ -226,19 +269,20 @@ function matchesBashRuleExact(spec: BashRuleSpecifier, argv: readonly (string | 
 }
 
 /**
- * Deny/ask semantics: argv0 compares by program basename (`/bin/rm`), and when
+ * Deny/ask semantics: argv0 compares by program basename (`/bin/rm`); when
  * argv0 is a wrapper program (`sudo -u root rm`, `env A=1 rm`, `timeout 5 rm`,
- * `xargs rm`) the rule may start at ANY later word — wrapper option grammars
- * differ too much to skip them exactly. This only ever widens what a deny/ask
- * rule sees; allow matching never strips wrappers.
+ * `xargs rm`, `busybox rm`) the rule may start at ANY later word — wrapper
+ * option grammars differ too much to skip them exactly; and a multi-verb
+ * tool's global options are also tried stripped (`git -C . push` matches
+ * `Bash(git push *)`). This only ever widens what a deny/ask rule sees; allow
+ * matching never strips wrappers or options.
  */
 function matchesBashRuleForRestriction(spec: BashRuleSpecifier, argv: readonly (string | undefined)[]): boolean {
   const head = argv[0];
   const starts = head !== undefined && isShellWrapperProgram(head)
     ? argv.map((_, index) => index)
     : [0];
-  return starts.some((start) => {
-    const window = argv.slice(start);
+  const matchesWindow = (window: readonly (string | undefined)[]): boolean => {
     if (window.length < spec.tokens.length) return false;
     if (!spec.wildcard && window.length !== spec.tokens.length) return false;
     return spec.tokens.every((token, offset) => {
@@ -246,6 +290,10 @@ function matchesBashRuleForRestriction(spec: BashRuleSpecifier, argv: readonly (
       if (actual === undefined) return false;
       return offset === 0 ? actual === token || baseProgram(actual) === token : actual === token;
     });
+  };
+  return starts.some((start) => {
+    const window = argv.slice(start);
+    return matchesWindow(window) || matchesWindow(stripGlobalOptions(window));
   });
 }
 

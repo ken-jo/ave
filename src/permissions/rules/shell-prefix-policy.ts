@@ -22,6 +22,8 @@ const WRAPPERS = [
   "env", "xargs", "sudo", "doas", "su", "eval", "exec", "source", ".", "command", "builtin", "nohup",
   "timeout", "nice", "ionice", "time", "stdbuf", "chroot", "unshare", "nsenter", "setsid", "watch",
   "parallel", "script", "runuser", "pkexec", "caffeinate", "taskpolicy", "flock", "chrt", "strace", "ltrace",
+  // A multi-call binary runs whichever applet its first argument names.
+  "busybox",
 ];
 /** Package runners that fetch and execute arbitrary packages: a 1-token prefix is refused. */
 const PACKAGE_RUNNERS = ["npx", "bunx", "pnpx", "uvx", "pipx"];
@@ -50,6 +52,7 @@ function programName(token: string): string {
 
 export type RefusedPrefixReason =
   | "empty"
+  | "config-writer"
   | "shell"
   | "interpreter"
   | "wrapper"
@@ -80,7 +83,106 @@ export function refusedShellPrefix(tokens: readonly string[]): RefusedPrefixReas
   if ((program === "npm" || program === "pnpm" || program === "yarn") && (tokens[1] === "exec" || tokens[1] === "dlx" || tokens[1] === "x")) {
     return "package-runner";
   }
+  // `git config` writes settings that run code later (`core.fsmonitor`,
+  // `core.pager`, aliases); `npm config` / `yarn config` likewise.
+  if ((program === "git" || program === "npm" || program === "pnpm" || program === "yarn") && tokens[1] === "config") {
+    return "config-writer";
+  }
   return null;
+}
+
+/**
+ * Value-taking options of wrapper programs, so the wrapped command can be
+ * found (`xargs -I {} sh -c …`, `sudo -u root rm`, `nice -n 5 rm`).
+ */
+const WRAPPER_VALUE_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
+  xargs: new Set(["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "--arg-file", "--delimiter", "--max-args", "--max-procs", "--replace"]),
+  sudo: new Set(["-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U", "-D", "--user", "--group"]),
+  doas: new Set(["-u", "-C"]),
+  su: new Set(["-c", "-s", "-g", "-G", "--command", "--shell"]),
+  env: new Set(["-u", "-C", "--unset", "--chdir"]),
+  timeout: new Set(["-s", "-k", "--signal", "--kill-after"]),
+  nice: new Set(["-n", "--adjustment"]),
+  ionice: new Set(["-c", "-n", "-p", "--class", "--classdata"]),
+  chrt: new Set(["-p"]),
+  flock: new Set(["-w", "-E", "--timeout", "--conflict-exit-code"]),
+  watch: new Set(["-n", "-d", "--interval"]),
+  stdbuf: new Set(["-i", "-o", "-e"]),
+  runuser: new Set(["-u", "-g", "-G", "--user", "--group"]),
+  setsid: new Set(),
+  nohup: new Set(),
+};
+
+/**
+ * Number of leading argv words that are wrapper programs and their options
+ * (`env A=1`, `timeout 5`, `xargs -I {}`, `busybox`). `undefined` entries are
+ * dynamic words and stop the scan. Used by deny/ask matching, the inline-code
+ * detector and the exfiltration floor so all three see the same command.
+ */
+export function wrapperPrefixLength(argv: readonly (string | undefined)[]): number {
+  let index = 0;
+  for (let guard = 0; guard < 16 && index < argv.length; guard += 1) {
+    const head = argv[index];
+    if (head === undefined) return index;
+    const program = programName(head);
+    // `eval` / `source` / `.` run a string or file: they are code carriers,
+    // not transparent wrappers.
+    if (!WRAPPER_SET.has(program) || program === "eval" || program === "source" || program === ".") return index;
+    index += 1;
+    const valueOptions = WRAPPER_VALUE_OPTIONS[program] ?? new Set<string>();
+    if (program === "timeout") {
+      // `timeout [opts] DURATION cmd`
+      while (index < argv.length && argv[index]?.startsWith("-")) {
+        index += valueOptions.has(argv[index]!) ? 2 : 1;
+      }
+      if (index < argv.length && argv[index] !== undefined && /^\d+(?:\.\d+)?[smhd]?$/.test(argv[index]!)) index += 1;
+      continue;
+    }
+    while (index < argv.length) {
+      const token = argv[index];
+      if (token === undefined) return index;
+      if (token === "--") { index += 1; break; }
+      if (token.startsWith("-")) {
+        index += valueOptions.has(token) ? 2 : 1;
+        continue;
+      }
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) { index += 1; continue; }
+      break;
+    }
+  }
+  return index;
+}
+
+/** Value-taking global options of multi-verb tools (before the verb). */
+const GLOBAL_VALUE_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
+  git: new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--exec-path"]),
+  docker: new Set(["-H", "--host", "--context", "-c", "--config", "-l", "--log-level", "--tlscacert", "--tlscert", "--tlskey"]),
+  kubectl: new Set(["-n", "--namespace", "--context", "--cluster", "--user", "-s", "--server", "--kubeconfig", "--token"]),
+  npm: new Set(["--prefix", "-w", "--workspace", "-C"]),
+  pnpm: new Set(["-C", "--dir", "-w", "--filter", "-F"]),
+  yarn: new Set(["--cwd"]),
+  bun: new Set(["--cwd", "--config", "-c"]),
+};
+
+/**
+ * argv with a multi-verb tool's global options removed (`git -C . push` →
+ * `git push`). Deny/ask matching tries this form as well as the original, so
+ * a global option can never step a command around a restriction.
+ */
+export function stripGlobalOptions(argv: readonly (string | undefined)[]): readonly (string | undefined)[] {
+  const head = argv[0];
+  if (head === undefined) return argv;
+  const program = programName(head);
+  const valueOptions = GLOBAL_VALUE_OPTIONS[program];
+  if (!valueOptions) return argv;
+  let index = 1;
+  while (index < argv.length) {
+    const token = argv[index];
+    if (token === undefined || !token.startsWith("-")) break;
+    if (token === "--") { index += 1; break; }
+    index += valueOptions.has(token) ? 2 : 1;
+  }
+  return index === 1 ? argv : [head, ...argv.slice(index)];
 }
 
 /**

