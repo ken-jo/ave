@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   statSync,
+  symlinkSync,
   truncateSync,
   utimesSync,
   writeFileSync,
@@ -26,6 +27,7 @@ vi.mock("../../main/main-paths.js", async (original) => ({
 
 import { ToolRegistry } from "../registry.js";
 import {
+  ApplyPatchInputSchema,
   ApplyPatchTool,
   createFileTools,
   DeleteFileTool,
@@ -371,17 +373,31 @@ describe("file native tools", () => {
     expect(next.output).toContain(`\tline ${11 + shown}`);
   });
 
-  it("read_file refuses a single line larger than the result limit and records no read", async () => {
-    writeFileSync(join(workDir, "wide.txt"), `${"word ".repeat(20_000)}\n`);
+  it("read_file cuts a very long line, says how to read the rest, and admits edits", async () => {
+    const wide = "word ".repeat(20_000);
+    writeFileSync(join(workDir, "wide.txt"), `${wide}\nnext\n`);
     const read = await new ReadFileTool().execute({ path: "wide.txt" }, ctx());
-    expect(read.isError).toBe(true);
-    expect(read.output).toContain("that line alone exceeds the size limit");
+    expect(read.isError, read.output).toBe(false);
+    expect(trimOversizedToolResult(read.output).truncated).toBeUndefined();
+    expect(read.output).toContain(`[line 1 cut: showing 2000 of ${wide.length} characters; read the rest with: ` +
+      `sed -n '1p' '${join(workDir, "wide.txt")}' | cut -c2001-]`);
+    expect(read.output).toContain("     2\tnext");
+    expect(read.metadata).toMatchObject({ lineCount: 2, linesCut: 1, totalLines: 2 });
     const edit = await new EditFileTool().execute(
       { path: "wide.txt", oldText: "word", newText: "w", replaceAll: true },
       ctx(),
     );
-    expect(edit.isError).toBe(true);
-    expect(edit.output).toContain("read it with read_file");
+    expect(edit.isError, edit.output).toBe(false);
+    expect(readFileSync(join(workDir, "wide.txt"), "utf8")).toBe(`${"w ".repeat(20_000)}\nnext\n`);
+  });
+
+  it("read_file cuts a long first line further when the default cut still exceeds the limit", async () => {
+    writeFileSync(join(workDir, "dense.txt"), `${"가".repeat(30_000)}\n`);
+    const read = await new ReadFileTool().execute({ path: "dense.txt" }, ctx());
+    expect(read.isError, read.output).toBe(false);
+    expect(trimOversizedToolResult(read.output).truncated).toBeUndefined();
+    expect(read.output).toContain("[line 1 cut: showing ");
+    expect(read.output).toContain("of 30000 characters");
   });
 
   it("a partial read admits an edit anywhere in the unchanged file", async () => {
@@ -876,6 +892,7 @@ describe("apply_patch tool", () => {
   it("adds, updates, moves and deletes files in one call", async () => {
     await readFirst("src/a.ts");
     await readFirst("src/nested/b.ts");
+    await readFirst("README.md");
     const result = await new ApplyPatchTool().execute(patchOf(
       "*** Add File: docs/new.md",
       "+# New",
@@ -979,10 +996,33 @@ describe("apply_patch tool", () => {
     }
   });
 
-  it("reports a malformed patch", async () => {
-    const result = await new ApplyPatchTool().execute({ patch: "*** Update File: src/a.ts\n-alpha" }, ctx());
+  it("refuses to delete a file this session has not read", async () => {
+    const result = await new ApplyPatchTool().execute(patchOf("*** Delete File: README.md"), ctx());
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("invalid patch");
+    expect(result.output).toContain("read it with read_file in this session first");
+    expect(existsSync(join(workDir, "README.md"))).toBe(true);
+  });
+
+  it("refuses two sections that reach one file through a symlink", async () => {
+    await readFirst("src/a.ts");
+    symlinkSync(join(workDir, "src", "a.ts"), join(workDir, "alias.ts"));
+    const result = await new ApplyPatchTool().execute(patchOf(
+      "*** Update File: src/a.ts",
+      "-alpha",
+      "+ALPHA",
+      "*** Update File: alias.ts",
+      "-omega",
+      "+OMEGA",
+    ), ctx());
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("more than one section");
+    expect(readFileSync(join(workDir, "src", "a.ts"), "utf8")).toBe("alpha\nneedle one\nomega\n");
+  });
+
+  it("reports a malformed patch", async () => {
+    await expect(new ApplyPatchTool().execute({ patch: "*** Update File: src/a.ts\n-alpha" }, ctx()))
+      .rejects.toThrow("invalid patch");
+    expect(ApplyPatchInputSchema.safeParse({ patch: "*** Update File: src/a.ts\n-alpha" }).success).toBe(false);
   });
 });
 

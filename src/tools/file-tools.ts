@@ -57,11 +57,7 @@ import {
 } from "../shared/image-preparation-policy.js";
 import { errorMessage } from "../shared/error-message.js";
 import { RENAME_FILE_LOCK_CODES, transientFsLockDelayMs } from "../lib/transient-fs-lock-retry.js";
-import {
-  MAX_TOOL_RESULT_LINES,
-  MAX_TOOL_RESULT_TOKENS,
-  trimOversizedToolResult,
-} from "../shared/tool-result-trim.js";
+import { trimOversizedToolResult } from "../shared/tool-result-trim.js";
 import {
   applyPatchChunks,
   parsePatchEnvelope,
@@ -75,6 +71,7 @@ import {
   lookupFileRead,
   recordFileRead,
   sha256Hex,
+  workloadFileReadKey,
 } from "./file-read-state.js";
 import type {
   BrokeredWorkloadCapability,
@@ -231,7 +228,10 @@ export const MultiEditInputSchema = FilePathSchema.extend({
 });
 
 export const ApplyPatchInputSchema = z.object({
-  patch: z.string().min(1).describe(
+  patch: z.string().min(1).superRefine((text, refinement) => {
+    const parsed = parsePatchEnvelope(text);
+    if (!parsed.ok) refinement.addIssue({ code: "custom", message: `invalid patch: ${parsed.error}` });
+  }).describe(
     "Patch text from '*** Begin Patch' to '*** End Patch'. Each file section starts with " +
     "'*** Add File: <path>' (every line prefixed '+'), '*** Delete File: <path>', or " +
     "'*** Update File: <path>' (optionally followed by '*** Move to: <path>') with chunks of " +
@@ -350,8 +350,11 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
   readonly description =
     "Read a UTF-8 text file from the workspace. Returns a header line (path, line range, total lines) " +
     "followed by the lines, each prefixed with its 1-based line number and a tab; the prefix is not part " +
-    "of the file. Use the zero-based offset and limit to page through large files. A file must be read " +
-    "in this session before edit_file, multi_edit, apply_patch or write_file may change it.";
+    "of the file. Use the zero-based offset and limit to page through large files; a result that would " +
+    "exceed the size limit stops early and names the offset to continue from, and a very long line is cut " +
+    "with a note on reading the rest. A file must be read in this session before edit_file, multi_edit, " +
+    "apply_patch or write_file may change it, and must be unchanged since. In the disposable workload the " +
+    "read is still required, but a change made there after the read is not detected.";
   readonly inputSchema = ReadFileInputSchema;
   override readonly category: ToolCategory = "read";
 
@@ -369,13 +372,18 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
     if (!resolved.ok) return resolved.error;
     const target = resolved.value;
     if (transport.kind === "broker") {
-      return transport.runtime.executeBrokeredWorkloadRequest(
+      const read = await transport.runtime.executeBrokeredWorkloadRequest(
         transport.capability,
         "file.read",
         brokerFilePayload({ path: target, offset: input.offset, limit: input.limit }),
         transport.correlationAuthority,
         ctx.abortSignal,
       );
+      const sessionId = sessionIdOf(ctx);
+      if (!read.isError && sessionId !== undefined) {
+        recordFileRead(sessionId, workloadFileReadKey(target), { mtimeMs: 0, size: 0, sha256: null });
+      }
+      return read;
     }
     const blocked = this.ensureAllowed(target, ctx, "read");
     if (blocked) return blocked;
@@ -392,13 +400,6 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
     const window = await readTextFileWindow(target, input.offset, input.limit);
     const whole = await hashAndCountLines(target);
     const shown = fitReadWindow(target, input.offset, window.lines, whole.lineCount);
-    if (shown === null) {
-      return toolError(
-        `read_file did not return line ${input.offset + 1} of ${target} (${whole.lineCount} lines in total): ` +
-        `that line alone exceeds the size limit (${MAX_TOOL_RESULT_LINES} lines or about ` +
-        `${MAX_TOOL_RESULT_TOKENS} tokens per result). Use grep_files to find the content you need.`,
-      );
-    }
     const sessionId = sessionIdOf(ctx);
     if (sessionId !== undefined) {
       recordFileRead(sessionId, await fileReadKey(target), {
@@ -415,12 +416,25 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
         truncated: window.truncated || shown.lineCount < window.lines.length,
         lineCount: shown.lineCount,
         totalLines: whole.lineCount,
+        ...(shown.linesCut > 0 ? { linesCut: shown.linesCut } : {}),
       },
     };
   }
 }
 
 const LINE_NUMBER_WIDTH = 6;
+/** Longest line text shown in full; a longer line is cut and says how to read the rest. */
+const MAX_READ_LINE_CHARS = 2_000;
+
+function shellQuote(text: string): string {
+  return `'${text.replaceAll("'", "'\\''")}'`;
+}
+
+function cutLine(path: string, line: string, lineNo: number, maxChars: number): string {
+  if (line.length <= maxChars) return line;
+  return `${line.slice(0, maxChars)} [line ${lineNo} cut: showing ${maxChars} of ${line.length} characters; ` +
+    `read the rest with: sed -n '${lineNo}p' ${shellQuote(path)} | cut -c${maxChars + 1}-]`;
+}
 
 function renderNumberedRead(
   path: string,
@@ -428,6 +442,7 @@ function renderNumberedRead(
   lines: readonly string[],
   totalLines: number,
   continuation: string | null,
+  maxLineChars: number = MAX_READ_LINE_CHARS,
 ): string {
   if (lines.length === 0) {
     return totalLines === 0
@@ -436,8 +451,8 @@ function renderNumberedRead(
   }
   const first = offset + 1;
   const last = offset + lines.length;
-  const numbered = lines.map(
-    (line, index) => `${String(first + index).padStart(LINE_NUMBER_WIDTH)}\t${line}`,
+  const numbered = lines.map((line, index) =>
+    `${String(first + index).padStart(LINE_NUMBER_WIDTH)}\t${cutLine(path, line, first + index, maxLineChars)}`,
   );
   const body = `${path} (lines ${first}-${last} of ${totalLines})\n${numbered.join("\n")}`;
   return continuation === null ? body : `${body}\n${continuation}`;
@@ -446,22 +461,28 @@ function renderNumberedRead(
 /**
  * The requested window, shortened to the longest prefix whose rendering fits
  * the per-result size limit (measured with the conversation's own rule), with
- * a closing line naming the offset to continue from. Null when not even the
- * first line fits.
+ * a closing line naming the offset to continue from. Lines longer than
+ * {@link MAX_READ_LINE_CHARS} are cut with a note on reading the rest; when
+ * even the first cut line does not fit, it is cut shorter until it does.
  */
 function fitReadWindow(
   path: string,
   offset: number,
   lines: readonly string[],
   totalLines: number,
-): { output: string; lineCount: number } | null {
+): { output: string; lineCount: number; linesCut: number } {
+  const linesCutIn = (count: number, maxChars: number): number =>
+    lines.slice(0, count).filter((line) => line.length > maxChars).length;
   const full = renderNumberedRead(path, offset, lines, totalLines, null);
-  if (!trimOversizedToolResult(full).truncated) return { output: full, lineCount: lines.length };
-  const continuation = (count: number): string =>
-    `[Stopped at the result size limit after line ${offset + count}; ` +
-    `continue with offset=${offset + count}.]`;
-  const render = (count: number): string =>
-    renderNumberedRead(path, offset, lines.slice(0, count), totalLines, continuation(count));
+  if (!trimOversizedToolResult(full).truncated) {
+    return { output: full, lineCount: lines.length, linesCut: linesCutIn(lines.length, MAX_READ_LINE_CHARS) };
+  }
+  const continuation = (count: number): string | null =>
+    count === lines.length
+      ? null
+      : `[Stopped at the result size limit after line ${offset + count}; continue with offset=${offset + count}.]`;
+  const render = (count: number, maxChars = MAX_READ_LINE_CHARS): string =>
+    renderNumberedRead(path, offset, lines.slice(0, count), totalLines, continuation(count), maxChars);
   let low = 0;
   let high = lines.length - 1;
   while (low < high) {
@@ -469,7 +490,33 @@ function fitReadWindow(
     if (trimOversizedToolResult(render(mid)).truncated) high = mid - 1;
     else low = mid;
   }
-  return low === 0 ? null : { output: render(low), lineCount: low };
+  if (low > 0) return { output: render(low), lineCount: low, linesCut: linesCutIn(low, MAX_READ_LINE_CHARS) };
+  // Not even the first line fits at the default cut: cut it shorter.
+  let fewest = 0;
+  let most = MAX_READ_LINE_CHARS;
+  while (fewest < most) {
+    const mid = Math.ceil((fewest + most) / 2);
+    if (trimOversizedToolResult(render(1, mid)).truncated) most = mid - 1;
+    else fewest = mid;
+  }
+  return { output: render(1, Math.max(fewest, 1)), lineCount: 1, linesCut: 1 };
+}
+
+/**
+ * The disposable-workload form of the read requirement. The host sees only
+ * the window the workload returned, so it can require that the session read
+ * the file but cannot detect a change made inside the workload since.
+ */
+function requireWorkloadRead(
+  toolName: string,
+  guestPath: string,
+  ctx: ToolExecutionContext,
+): ToolErrorResult | null {
+  const sessionId = sessionIdOf(ctx);
+  if (sessionId !== undefined && lookupFileRead(sessionId, workloadFileReadKey(guestPath)) !== undefined) {
+    return null;
+  }
+  return toolError(`${toolName} refused to change ${guestPath}: read it with read_file in this session first.`);
 }
 
 function sessionIdOf(ctx: ToolExecutionContext): string | undefined {
@@ -506,7 +553,7 @@ async function requireFreshRead(
       ),
     };
   }
-  if (record.sha256 !== current.sha256) {
+  if (record.sha256 === null || record.sha256 !== current.sha256) {
     return {
       ok: false,
       error: toolError(
@@ -861,7 +908,8 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
   readonly name = "write_file";
   readonly description =
     "Create or overwrite a UTF-8 text file. Parent directories are created automatically. " +
-    "Overwriting an existing file requires reading it with read_file in this session first.";
+    "Overwriting an existing file requires reading it with read_file in this session first. In the " +
+    "disposable workload write_file cannot tell whether the file exists, so it does not require a read there.";
   readonly inputSchema = WriteFileInputSchema;
   override readonly category: ToolCategory = "write";
 
@@ -979,8 +1027,9 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
   readonly name = "edit_file";
   readonly description =
     "Replace exact text in an existing UTF-8 file. Fails when the match is missing or ambiguous. " +
-    "The file must have been read with read_file in this session and be unchanged since; do not " +
-    "include read_file's line-number prefixes in oldText or newText.";
+    "The file must have been read with read_file in this session and be unchanged since (in the " +
+    "disposable workload only the read is checked); do not include read_file's line-number prefixes " +
+    "in oldText or newText.";
   readonly inputSchema = EditFileInputSchema;
   override readonly category: ToolCategory = "write";
 
@@ -998,6 +1047,8 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
     if (!resolved.ok) return resolved.error;
     const target = resolved.value;
     if (transport.kind === "broker") {
+      const read = requireWorkloadRead(this.name, target, ctx);
+      if (read) return read;
       return transport.runtime.executeBrokeredWorkloadRequest(
         transport.capability,
         "file.edit",
@@ -1063,7 +1114,8 @@ export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
   readonly description =
     "Apply one or more exact text replacements to an existing UTF-8 file, in order. Fails before writing " +
     "when any replacement is missing or ambiguous. The file must have been read with read_file in this " +
-    "session and be unchanged since; do not include read_file's line-number prefixes in the text.";
+    "session and be unchanged since (in the disposable workload only the read is checked); do not " +
+    "include read_file's line-number prefixes in the text.";
   readonly inputSchema = MultiEditInputSchema;
   override readonly category: ToolCategory = "write";
 
@@ -1081,6 +1133,8 @@ export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
     if (!resolved.ok) return resolved.error;
     const target = resolved.value;
     if (transport.kind === "broker") {
+      const read = requireWorkloadRead(this.name, target, ctx);
+      if (read) return read;
       return transport.runtime.executeBrokeredWorkloadRequest(
         transport.capability,
         "file.patch",
@@ -1155,8 +1209,9 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
   readonly name = "apply_patch";
   readonly description =
     "Add, update, move or delete one or more UTF-8 text files with a single patch. Every section is " +
-    "validated before any file is written. Files being updated must have been read with read_file in " +
-    "this session and be unchanged since. Paths are absolute or relative to the session cwd.";
+    "validated before any file is written. Files being updated or deleted must have been read with " +
+    "read_file in this session and be unchanged since. Paths are absolute or relative to the session cwd. " +
+    "Not available in the disposable workload.";
   readonly inputSchema = ApplyPatchInputSchema;
   override readonly category: ToolCategory = "write";
   /** The target paths are the files the patch text names. */
@@ -1192,18 +1247,21 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
 
     const planned: PlannedPatchChange[] = [];
     const touched = new Set<string>();
-    const claim = (path: string): ToolErrorResult | null => {
-      if (touched.has(path)) {
+    // Compared by resolved file, so two spellings of one file (a symlink, a
+    // case variant) cannot slip past as separate sections.
+    const claim = async (path: string): Promise<ToolErrorResult | null> => {
+      const key = await fileReadKey(path);
+      if (touched.has(key)) {
         return toolError(`apply_patch: ${path} appears in more than one section; combine them into one`);
       }
-      touched.add(path);
+      touched.add(key);
       return null;
     };
     for (const operation of parsed.operations) {
       const target = this.resolvePath(operation.path, ctx);
       const blocked = this.ensureAllowed(target, ctx, "write");
       if (blocked) return blocked;
-      const duplicate = claim(target);
+      const duplicate = await claim(target);
       if (duplicate) return duplicate;
       const existing = await statExistingPath(target);
       if (!existing.ok) return existing.error;
@@ -1219,6 +1277,12 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
         return toolError(`apply_patch: ${target} is not an existing regular file`);
       }
       if (operation.kind === "delete") {
+        const { sha256 } = await hashAndCountLines(target);
+        const fresh = await requireFreshRead(this.name, target, ctx, {
+          sha256,
+          mtimeMs: existing.value.mtimeMs,
+        });
+        if (!fresh.ok) return fresh.error;
         planned.push({ kind: "delete", path: target });
         continue;
       }
@@ -1229,7 +1293,7 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
         const destinationBlocked = this.ensureAllowed(destination, ctx, "write");
         if (destinationBlocked) return destinationBlocked;
         if (destination !== target) {
-          const destinationDuplicate = claim(destination);
+          const destinationDuplicate = await claim(destination);
           if (destinationDuplicate) return destinationDuplicate;
           const destinationStat = await statExistingPath(destination);
           if (!destinationStat.ok) return destinationStat.error;

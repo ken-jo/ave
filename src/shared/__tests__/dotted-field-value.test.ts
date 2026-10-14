@@ -104,8 +104,8 @@ describe("patch-envelope path fields", () => {
     ]);
   });
 
-  it("selects nothing for an unparseable patch", () => {
-    expect(extractTargetFilePaths(toolWith(["patch#patch-envelope"]), { patch: "not a patch" }, "/work"))
-      .toEqual([]);
+  it("fails clearly for an unparseable patch instead of declaring no path", () => {
+    expect(() => extractTargetFilePaths(toolWith(["patch#patch-envelope"]), { patch: "not a patch" }, "/work"))
+      .toThrow("invalid patch");
   });
 });

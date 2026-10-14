@@ -12,11 +12,17 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { realpath } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 export interface FileReadRecord {
   readonly mtimeMs: number;
   readonly size: number;
-  readonly sha256: string;
+  /**
+   * Null for a read inside the disposable workload: the host sees only the
+   * returned window, so it can confirm that a read happened but not that the
+   * file is unchanged since.
+   */
+  readonly sha256: string | null;
 }
 
 const MAX_TRACKED_SESSIONS = 64;
@@ -43,14 +49,23 @@ function touchSession(sessionId: string): Map<string, FileReadRecord> {
 /**
  * Key for a target path. Symlinks and case-insensitive spellings resolve to
  * the same file, so a read through one spelling admits an edit through
- * another. A path that does not exist yet keys by its lexical form.
+ * another. A path that does not exist yet keys by its resolved parent.
  */
 export async function fileReadKey(path: string): Promise<string> {
   try {
     return await realpath(path);
   } catch {
-    return path;
+    try {
+      return join(await realpath(dirname(path)), basename(path));
+    } catch {
+      return path;
+    }
   }
+}
+
+/** Key for a path inside the disposable workload; never equal to a host key. */
+export function workloadFileReadKey(guestPath: string): string {
+  return `workload:${guestPath}`;
 }
 
 export function recordFileRead(sessionId: string, key: string, record: FileReadRecord): void {
