@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { maskSensitiveData } from "../../../audit/dlp-filter.js";
@@ -53,6 +53,9 @@ describe("ExternalJudge — construction", () => {
     [{ url: "ftp://127.0.0.1/" }],
     [{ url: "https://user:pw@judge.example.test/" }],
     [{ command: ["/usr/bin/judge"], url: "https://judge.example.test/" }],
+    [{ command: ["/usr/bin/judge"], env: ["GITHUB_TOKEN"] }],
+    [{ command: ["/usr/bin/judge"], env: ["AVE_HOME"] }],
+    [{ url: "https://judge.example.test/", env: ["JEV_MODEL"] }],
   ])("refuses unsafe config %j", (config) => {
     expect(() => new ExternalJudge(config, async () => new Response("{}"))).toThrow();
   });
@@ -89,6 +92,19 @@ describe("ExternalJudge — url transport", () => {
     expect(sent).not.toContain(PLANTED_CREDENTIAL);
     expect(JSON.parse(sent)).toMatchObject({ version: 1, request: { tool: { name: "bash" } } });
     expect(init?.redirect).toBe("error");
+  });
+
+  it("streams the body and stops at 64 KB without buffering the rest", async () => {
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(new Uint8Array(16 * 1024).fill(120));
+      },
+    });
+    const judge = new ExternalJudge({ url: "https://judge.example.test/" }, async () => new Response(endless));
+    await expect(judge.judge(request, new AbortController().signal)).rejects.toMatchObject({ kind: "unparseable" });
+    expect(pulled).toBeLessThan(10);
   });
 
   it("maps transport failures to typed kinds", async () => {
@@ -163,6 +179,27 @@ describe.skipIf(process.platform === "win32")("ExternalJudge — command transpo
     expect(err).toBeInstanceOf(JudgeFailure);
     expect((err as JudgeFailure).kind).toBe("error");
     expect((err as JudgeFailure).diagnostics?.stderr).toContain("model crashed");
+  });
+
+  it("abort kills the whole process group", async () => {
+    const { path, dir } = script(`cat >/dev/null\nsleep 30 &\necho $! > "$(dirname "$0")/child.pid"\nwait`);
+    const controller = new AbortController();
+    const pending = new ExternalJudge({ command: [path] }).judge(judgeRequest(), controller.signal);
+    const pidFile = join(dir, "child.pid");
+    for (let i = 0; i < 100 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 20));
+    const grandchild = Number(readFileSync(pidFile, "utf8").trim());
+    controller.abort(new Error("stop"));
+    await expect(pending).rejects.toThrow("stop");
+    let alive = true;
+    for (let i = 0; i < 50 && alive; i++) {
+      try {
+        process.kill(grandchild, 0);
+        await new Promise((r) => setTimeout(r, 20));
+      } catch {
+        alive = false;
+      }
+    }
+    expect(alive).toBe(false);
   });
 
   it("abort kills the process", async () => {

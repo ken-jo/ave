@@ -4,14 +4,27 @@ import { join } from "node:path";
 import { PermissionManager } from "../../permission-manager.js";
 import {
   LlmRiskClassifier,
-  RuleBasedRiskClassifier,
+  ReviewerDispatchError,
   type LlmReviewerProvider,
   type LlmRiskClassificationTrace,
   type RiskVerdict,
 } from "../../reviewer/risk-classifier.js";
 import type { ReviewerInteractiveAutoApprove } from "../../permission-settings-store.js";
 import { BuiltinLlmJudge, mapRiskVerdictToJudgeDecision, type TracingRiskClassifier } from "../builtin-llm-judge.js";
-import { judgeInvocation, judgeRequest } from "./judge-request-fixture.js";
+import { collectingAudit, judgeInvocation, judgeRequest, judgeSettings } from "./judge-request-fixture.js";
+import { useTempDirs } from "../../../__tests__/test-helpers.js";
+import { VerdictCache } from "../../reviewer/verdict-cache.js";
+import { DeferredQueue } from "../../reviewer/deferred-queue.js";
+import { buildPermissionEvaluationContext } from "../../evaluation-context.js";
+import { canonicalizePathForMatch } from "../../sensitive-paths.js";
+import { detectSandboxCapability } from "../../sandbox-capability.js";
+import {
+  dispatchReviewerForHeadless,
+  dispatchReviewerForInteractiveAuto,
+} from "../../../tools/pipeline/reviewer-dispatch.js";
+import type { ToolPermissionContext } from "../../../tools/executor.js";
+import { resolveJudge } from "../judge-engine.js";
+import { JudgeCircuitBreaker } from "../judge-breaker.js";
 
 const LEVELS = ["low", "medium", "high"] as const;
 const FLAGS = [undefined, false, true] as const;
@@ -70,44 +83,99 @@ describe("BuiltinLlmJudge", () => {
     ["timeout", "timeout"],
     ["error", "error"],
     ["malformed", "unparseable"],
-  ] as const)("reviewer outcome %s maps the configured fallback verdict and tags %s", async (outcome, kind) => {
+  ] as const)("reviewer outcome %s is a %s judge failure, never a mapped verdict", async (outcome, kind) => {
+    // finalVerdict LOW is what fallbackOnError="rule" leaves behind; it must not allow.
     const judge = new BuiltinLlmJudge(tracing({ outcome, finalVerdict: { level: "low", reason: "rule" } }), () => "medium");
-    expect(await judge.judge(judgeRequest(), new AbortController().signal)).toMatchObject({
-      decision: "allow",
-      providerFallback: kind,
-    });
+    await expect(judge.judge(judgeRequest(), new AbortController().signal)).rejects.toMatchObject({ kind });
   });
 });
 
-describe("builtin-llm parity through a real LlmRiskClassifier on reviewer failure", () => {
+/**
+ * Parity through the SHIPPED dispatch lanes: the same LlmRiskClassifier drives
+ * `dispatchReviewerForHeadless` / `dispatchReviewerForInteractiveAuto` (which
+ * gate on `isReviewerAutoDecisionOutcome`) and the judge engine with the
+ * builtin-llm provider. Any drift in the mapping or the failure handling fails here.
+ */
+describe("builtin-llm parity with the shipped reviewer dispatch", () => {
+  const makeRoot = useTempDirs("ave-judge-parity-");
   const NO_RETRY = { maxAttempts: 1, baseDelayMs: 0, jitterPct: 0 };
-  const providers: Array<[string, LlmReviewerProvider]> = [
-    ["provider error", { complete: async () => Promise.reject(new Error("HTTP 400 bad request")) }],
-    ["malformed output", { complete: async () => ({ text: "not a verdict", tokensIn: 0, tokensOut: 0, costUsd: 0 }) }],
+  const reply = (text: string): LlmReviewerProvider => ({ complete: async () => ({ text, tokensIn: 0, tokensOut: 0, costUsd: 0 }) });
+  const providers: Array<[string, LlmReviewerProvider, boolean]> = [
+    ["llm low", reply('{"level":"low","reason":"fine"}'), false],
+    ["llm medium", reply('{"level":"medium","reason":"check"}'), false],
+    ["llm high", reply('{"level":"high","reason":"danger"}'), false],
+    ["provider error", { complete: async () => Promise.reject(new Error("HTTP 400 bad request")) }, true],
+    ["provider timeout", { complete: async () => Promise.reject(new ReviewerDispatchError("timeout", "reviewer timed out")) }, true],
+    ["malformed output", reply("not a verdict"), true],
   ];
-  const lanes = [
-    ["foreground", "foreground-auto"],
-    ["headless", "headless"],
-  ] as const;
 
+  // Rule verdicts: `ls` is LOW (the case fallbackOnError="rule" would allow), `git status` MEDIUM.
+  for (const command of ["ls", "git status"]) {
   for (const fallbackOnError of ["deny", "rule"] as const) {
-    for (const [label, provider] of providers) {
-      for (const [lane, pmLane] of lanes) {
-        it(`fallbackOnError=${fallbackOnError}, ${label}, ${lane}: same decision as today`, async () => {
+    for (const [label, provider, failure] of providers) {
+      for (const lane of ["foreground", "headless"] as const) {
+        it(`${command}: fallbackOnError=${fallbackOnError}, ${label}, ${lane}`, async () => {
+          const dir = makeRoot();
+          const cwd = canonicalizePathForMatch(dir);
+          const finalInput = { command };
           const classifier = new LlmRiskClassifier(provider, "model-under-test", fallbackOnError, {}, NO_RETRY);
-          const pm = new PermissionManager(join(tmpdir(), "ave-judge-parity", "permissions.json"));
+          const pm = new PermissionManager(join(dir, "permissions.json"));
+          pm.setReviewer({
+            classifier,
+            cache: new VerdictCache(join(dir, "cache.jsonl")),
+            deferredQueue: new DeferredQueue(join(dir, "queue.jsonl")),
+          });
           pm.setInteractiveAutoApprove("medium");
-          const request = judgeRequest({ lane, invocation: judgeInvocation({ toolName: "read_file", category: "read", finalInput: { path: "/workspace/sample/a.txt" }, pathFields: ["path"] }) });
-          const today = pm.resolveReviewerDecision(await classifier.classify(request.invocation), pmLane).decision;
-          const judged = await new BuiltinLlmJudge(classifier, () => "medium").judge(request, new AbortController().signal);
+          const evaluationContext = buildPermissionEvaluationContext({
+            policyMode: "unmanaged",
+            headless: lane === "headless",
+            source: "builtin",
+            category: "shell",
+            trustOrigin: "llm-tool-arg",
+            executionCwd: cwd,
+            allowedDirectories: [cwd],
+            pathFields: [],
+            targetFilePaths: [],
+            sensitivePathsAdjacent: [],
+          });
+          const args: unknown[] = [
+            pm, "bash", "builtin", "shell", [], finalInput, [cwd], [],
+            { trustOrigin: "llm-tool-arg", headless: lane === "headless" } as ToolPermissionContext,
+            evaluationContext, {}, undefined, { groupId: "g1", toolUseId: "tu1", displayOrder: 0 }, undefined,
+          ];
+          const today =
+            lane === "headless"
+              ? (await dispatchReviewerForHeadless(...(args as Parameters<typeof dispatchReviewerForHeadless>))).permissionResult.decision
+              : (await dispatchReviewerForInteractiveAuto(...(args as Parameters<typeof dispatchReviewerForInteractiveAuto>)))?.decision;
+
+          const settings = judgeSettings({ timeoutMs: 10_000 });
+          const { logger } = collectingAudit();
+          const judged = await resolveJudge(
+            { priorDecision: "undecided", strictMode: false, capabilityGrant: false, remoteController: false },
+            judgeRequest({
+              lane,
+              invocation: judgeInvocation({
+                toolName: "bash", source: "builtin", category: "shell", pathFields: [], finalInput,
+                trustOrigin: "llm-tool-arg", executionCwd: cwd, allowedDirectories: [cwd],
+                sandboxCapability: detectSandboxCapability(),
+              }),
+            }),
+            {
+              settings,
+              judge: new BuiltinLlmJudge(new LlmRiskClassifier(provider, "model-under-test", fallbackOnError, {}, NO_RETRY), () => "medium"),
+              breaker: new JudgeCircuitBreaker(settings.breaker),
+              audit: logger,
+            },
+          );
+          if (!judged.judged) throw new Error("expected judged");
           expect(judged.decision).toBe(today);
-          expect(judged.providerFallback).toBeDefined();
-          // Control: the rule verdict is LOW, so "rule" fallback is the case that allows today.
-          expect(new RuleBasedRiskClassifier().classify(request.invocation).level).toBe("low");
-          if (fallbackOnError === "rule") expect(judged.decision).toBe("allow");
-          else expect(judged.decision).not.toBe("allow");
+          if (failure) {
+            expect(judged.decision).not.toBe("allow");
+            expect(judged.source).toBe("fallback");
+          }
         });
       }
     }
+  }
   }
 });

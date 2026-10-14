@@ -93,15 +93,26 @@ function isLoopbackHost(hostname: string): boolean {
 }
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-/** Ave / Electron runtime variables are never handed to an external judge. */
-const REFUSED_ENV_PREFIX = /^(AVE|RETIREDNAME|ELECTRON)_/i;
+/**
+ * Never forwarded to an external judge: Ave / Electron runtime variables and
+ * well-known credential names.
+ */
+const REFUSED_ENV_NAMES: readonly RegExp[] = [
+  /^(AVE|RETIREDNAME|ELECTRON)_/i,
+  /_(API_KEY|TOKEN|SECRET|PASSWORD)$/i,
+  /^AWS_/i,
+  /^GITHUB_TOKEN$/i,
+  /^(ANTHROPIC|OPENAI)_/i,
+];
 
 /** Returns an error message, or null when the env name list is acceptable. */
 export function checkExternalEnv(env: unknown): string | null {
   if (!Array.isArray(env)) return "external.env must be an array of variable names";
   for (const name of env) {
     if (typeof name !== "string" || !ENV_NAME.test(name)) return `external.env name invalid: '${String(name)}'`;
-    if (REFUSED_ENV_PREFIX.test(name)) return `external.env must not forward Ave runtime variable '${name}'`;
+    if (REFUSED_ENV_NAMES.some((re) => re.test(name))) {
+      return `external.env must not forward Ave runtime or credential variable '${name}'`;
+    }
   }
   return null;
 }

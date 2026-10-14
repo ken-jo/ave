@@ -79,13 +79,6 @@ export interface JudgeVerdict {
   confidence?: number;
   /** A rule the dock MAY offer the user. The judge never writes it. */
   suggestedRule?: string;
-  /**
-   * Set by a provider (never parsed from a remote response) when it answered
-   * through its own configured failure policy — `builtin-llm` reproducing the
-   * shipped reviewer's `fallbackOnError`. Audited as a fallback and never
-   * counted toward the breaker.
-   */
-  providerFallback?: JudgeFailureKind;
   /** Provider diagnostics. Recorded (redacted) in the audit row only; never a decision input. */
   diagnostics?: JudgeDiagnostics;
 }

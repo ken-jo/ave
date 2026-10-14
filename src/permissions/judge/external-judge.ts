@@ -23,7 +23,7 @@ import {
   type PermissionJudge,
 } from "./judge-contract.js";
 import { redactJudgeRequest, redactJudgeText } from "./judge-redaction.js";
-import { checkExternalCommand, checkExternalUrl, type JudgeExternalSettings } from "./judge-settings.js";
+import { checkExternalCommand, checkExternalEnv, checkExternalUrl, type JudgeExternalSettings } from "./judge-settings.js";
 
 export const EXTERNAL_JUDGE_PROTOCOL_VERSION = 1;
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -107,7 +107,20 @@ function runCommand(argv: readonly string[], env: Record<string, string>, body: 
       reject(signal.reason);
       return;
     }
-    const child = spawn(argv[0]!, argv.slice(1), { shell: false, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    // POSIX: own process group, so a timeout kills every process the judge started.
+    const detached = process.platform !== "win32";
+    const child = spawn(argv[0]!, argv.slice(1), { shell: false, env, detached, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const killTree = (): void => {
+      if (detached && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+          return;
+        } catch {
+          // Group already gone; fall through to the direct kill.
+        }
+      }
+      child.kill("SIGKILL");
+    };
     const chunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
     let size = 0;
@@ -123,7 +136,7 @@ function runCommand(argv: readonly string[], env: Record<string, string>, body: 
       fn();
     };
     const onAbort = (): void => {
-      child.kill("SIGKILL");
+      killTree();
       finish(() => reject(signal.reason));
     };
     signal.addEventListener("abort", onAbort, { once: true });
@@ -139,7 +152,7 @@ function runCommand(argv: readonly string[], env: Record<string, string>, body: 
     child.stdout.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > MAX_RESPONSE_BYTES) {
-        child.kill("SIGKILL");
+        killTree();
         finish(() => reject(fail("unparseable", "external judge response exceeds size limit")));
         return;
       }
@@ -173,10 +186,40 @@ async function postUrl(fetchImpl: JudgeFetch, url: string, body: string, signal:
     if (signal.aborted) throw signal.reason;
     throw new JudgeFailure("unavailable", `external judge unreachable: ${(err as Error).message}`);
   }
-  if (!response.ok) throw new JudgeFailure("error", `external judge HTTP ${response.status}`);
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) throw unparseable("exceeds size limit");
-  return text;
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new JudgeFailure("error", `external judge HTTP ${response.status}`);
+  }
+  return readCappedBody(response, signal);
+}
+
+/** Stream the body and stop at {@link MAX_RESPONSE_BYTES}; never buffers more. */
+async function readCappedBody(response: Response, signal: AbortSignal): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      let next: ReadableStreamReadResult<Uint8Array>;
+      try {
+        next = await reader.read();
+      } catch (err) {
+        if (signal.aborted) throw signal.reason;
+        throw new JudgeFailure("error", `external judge response stream failed: ${(err as Error).message}`);
+      }
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw unparseable("exceeds size limit");
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 export class ExternalJudge implements PermissionJudge {
@@ -190,7 +233,11 @@ export class ExternalJudge implements PermissionJudge {
     const hasCommand = config.command !== undefined;
     const hasUrl = config.url !== undefined;
     if (hasCommand === hasUrl) throw new Error("ExternalJudge requires exactly one of command or url");
-    const err = hasCommand ? checkExternalCommand(config.command) : checkExternalUrl(config.url);
+    const err = hasCommand
+      ? checkExternalCommand(config.command) ?? (config.env === undefined ? null : checkExternalEnv(config.env))
+      : config.env !== undefined
+        ? "env applies to the command transport only"
+        : checkExternalUrl(config.url);
     if (err) throw new Error(`ExternalJudge: ${err}`);
     if (hasUrl && !fetchImpl) throw new Error("ExternalJudge: url transport requires a fetch implementation");
     this.version = `${EXTERNAL_JUDGE_PROTOCOL_VERSION}:${hasCommand ? "command" : "url"}`;

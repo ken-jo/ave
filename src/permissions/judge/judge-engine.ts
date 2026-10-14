@@ -55,12 +55,24 @@ export interface JudgeGate {
 }
 
 export type BeforeJudgeResult =
-  | { action: "continue"; request?: JudgeRequest }
+  /**
+   * `redactInputKeys`: tool-input keys whose values the JUDGE sees as
+   * {@link POLICY_REDACTED}. Redaction is the only change a hook can make: the
+   * call that executes, its cwd, rule verdict and policy are never altered, and
+   * the audit row (argsHash, redactedRequest) always describes the real call.
+   */
+  | { action: "continue"; redactInputKeys?: readonly string[] }
   | { action: "short-circuit"; decision: "ask" | "deny"; reason: string };
 
+/** What a judge sees in place of a value a beforeJudge hook redacted. */
+export const POLICY_REDACTED = "[redacted by policy]";
+
 export interface JudgeHooks {
-  /** May redact the request (same call identity) or short-circuit to ask/deny. */
-  beforeJudge?(request: JudgeRequest): BeforeJudgeResult | Promise<BeforeJudgeResult>;
+  /**
+   * May hide input values from the judge or short-circuit to ask/deny. It
+   * receives a copy; mutating it has no effect on the call or the judge.
+   */
+  beforeJudge?(request: Readonly<JudgeRequest>): BeforeJudgeResult | Promise<BeforeJudgeResult>;
   /** May only keep or downgrade the verdict (allow → ask → deny). */
   afterJudge?(verdict: JudgeVerdict, request: JudgeRequest): JudgeDecision | Promise<JudgeDecision>;
 }
@@ -115,6 +127,8 @@ export interface JudgeAuditRecord {
   breakerTripped: boolean;
   /** Redacted, truncated provider stderr (external command judges). */
   stderr?: string;
+  /** Input keys a beforeJudge hook hid from the judge. */
+  policyRedactedKeys?: string[];
 }
 
 export type JudgeOutcome =
@@ -150,18 +164,18 @@ function skipReason(gate: JudgeGate, request: JudgeRequest, deps: JudgeEngineDep
   return null;
 }
 
-function assertSameCall(original: JudgeRequest, next: JudgeRequest): void {
-  const a = original.invocation;
-  const b = next.invocation;
-  if (
-    next.sessionId !== original.sessionId ||
-    next.lane !== original.lane ||
-    b.toolName !== a.toolName ||
-    b.source !== a.source ||
-    b.category !== a.category
-  ) {
-    throw new JudgeContractError("beforeJudge may redact the request but must not change the call identity");
+/** The judge's view of the call: the real request with policy-redacted input values. */
+function judgeView(request: JudgeRequest, redactInputKeys: readonly string[] | undefined): JudgeRequest {
+  if (!redactInputKeys || redactInputKeys.length === 0) return request;
+  const input = request.invocation.finalInput;
+  for (const key of redactInputKeys) {
+    if (typeof key !== "string" || !Object.prototype.hasOwnProperty.call(input, key)) {
+      throw new JudgeContractError(`beforeJudge redactInputKeys names an input key the call does not have: ${String(key)}`);
+    }
   }
+  const finalInput: Record<string, unknown> = { ...input };
+  for (const key of redactInputKeys) finalInput[key] = POLICY_REDACTED;
+  return { ...request, invocation: { ...request.invocation, finalInput } };
 }
 
 interface JudgeRun {
@@ -177,6 +191,8 @@ async function runJudge(
   timeoutMs: number,
   callerSignal: AbortSignal | undefined,
 ): Promise<JudgeRun> {
+  // A caller that already cancelled gets its cancel back; the judge is never started.
+  if (callerSignal?.aborted) throw callerSignal.reason;
   if (!judge) return { fallback: "unavailable", failureMessage: "judge provider unavailable" };
   const controller = new AbortController();
   let timedOut = false;
@@ -185,8 +201,7 @@ async function runJudge(
     controller.abort(new JudgeFailure("timeout", `judge timed out after ${timeoutMs}ms`));
   }, timeoutMs);
   const onCallerAbort = (): void => controller.abort(callerSignal?.reason);
-  if (callerSignal?.aborted) onCallerAbort();
-  else callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+  callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
   try {
     const verdict = await Promise.race([
       judge.judge(request, controller.signal),
@@ -250,7 +265,8 @@ export async function resolveJudge(
   const now = deps.now ?? Date.now;
   const started = now();
   const mode = deps.settings.mode;
-  let effective = request;
+  let view = request;
+  let redactedKeys: readonly string[] = [];
   let source: JudgeOutcomeSource;
   let verdict: JudgeVerdict | undefined;
   let fallback: JudgeFailureKind | undefined;
@@ -258,7 +274,9 @@ export async function resolveJudge(
   let decision: JudgeDecision;
   let rationale: string;
 
-  const before = deps.hooks?.beforeJudge ? await deps.hooks.beforeJudge(request) : { action: "continue" as const };
+  const before: BeforeJudgeResult = deps.hooks?.beforeJudge
+    ? await deps.hooks.beforeJudge(structuredClone(request))
+    : { action: "continue" };
   if (before.action === "short-circuit") {
     if (before.decision !== "ask" && before.decision !== "deny") {
       throw new JudgeContractError("beforeJudge may only short-circuit to ask or deny");
@@ -267,20 +285,20 @@ export async function resolveJudge(
     decision = before.decision;
     rationale = before.reason;
   } else {
-    if (before.request) {
-      assertSameCall(request, before.request);
-      effective = before.request;
+    if (before.action !== "continue") {
+      throw new JudgeContractError("beforeJudge must return continue or short-circuit");
     }
-    const run = await runJudge(deps.judge, effective, deps.settings.timeoutMs, signal);
+    redactedKeys = before.redactInputKeys ?? [];
+    view = judgeView(request, redactedKeys);
+    const run = await runJudge(deps.judge, view, deps.settings.timeoutMs, signal);
     diagnostics = run.diagnostics ?? run.verdict?.diagnostics;
     if (run.verdict) {
       verdict = run.verdict;
-      fallback = verdict.providerFallback;
       source = "judge";
       decision = verdict.decision;
       rationale = verdict.rationale;
       if (deps.hooks?.afterJudge) {
-        const after = await deps.hooks.afterJudge(verdict, effective);
+        const after = await deps.hooks.afterJudge(verdict, request);
         if (!isSameOrStricter(verdict.decision, after)) {
           throw new JudgeContractError(`afterJudge may only downgrade (got ${verdict.decision} → ${String(after)})`);
         }
@@ -301,11 +319,12 @@ export async function resolveJudge(
   const defer = applied && headless && decision !== "allow";
 
   let breakerTripped = false;
-  if (applied && source === "judge" && verdict && !verdict.providerFallback) {
+  if (applied && source === "judge" && verdict) {
     breakerTripped = deps.breaker.record(request.sessionId, verdict.decision);
   }
 
-  const redacted = redactJudgeRequest(effective);
+  // The audit always describes the call that executes, not the judge's view.
+  const redacted = redactJudgeRequest(request);
   const safeRationale = redactJudgeText(rationale, 2_000);
   await writeAudit(deps, request, {
     event: "permission-judge",
@@ -326,6 +345,7 @@ export async function resolveJudge(
     latencyMs: Math.max(0, now() - started),
     fallback: fallback ?? null,
     breakerTripped,
+    ...(redactedKeys.length > 0 ? { policyRedactedKeys: [...redactedKeys] } : {}),
     ...(diagnostics?.stderr ? { stderr: redactJudgeText(diagnostics.stderr, 4_096) } : {}),
   });
 
