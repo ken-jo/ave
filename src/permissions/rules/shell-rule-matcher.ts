@@ -24,7 +24,6 @@
  *    evaluate must not be bypassed by the mode. Hidden code is never allowed.
  */
 import {
-  analyzeShell,
   staticShellWord,
   type ShellStatement,
   type ShellWord,
@@ -35,6 +34,10 @@ import type { RuleSpecifier } from "./rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./shell-exfiltration.js";
 import {
   arithmeticEvaluationReason,
+  asParsedShellCommand,
+  shellFact,
+  type ParsedShellCommand,
+  type ShellCommandInput,
   codeCarryingVariable,
   hiddenCodeReason,
   isShellWrapperProgram,
@@ -67,15 +70,16 @@ function baseProgram(token: string): string {
   return (token.split(/[\\/]/).pop() ?? token).replace(/\.exe$/i, "").replace(/^(python[23]?)\.\d+$/, "$1");
 }
 
-export function analyzeShellForRules(command: string): ShellRuleShape {
-  let analysis: ReturnType<typeof analyzeShell>;
-  try {
-    analysis = analyzeShell(command, "bash");
-  } catch (error) {
-    // A broken parser runtime is an internal failure the matcher cannot
-    // reason around; report it as unparseable (asks, never allows).
-    return { ok: false, reason: `shell parser failed: ${errorMessage(error)}` };
-  }
+export function analyzeShellForRules(input: ShellCommandInput): ShellRuleShape {
+  const parsed = asParsedShellCommand(input);
+  return shellFact(parsed, "rule-shape", () => shapeOf(parsed));
+}
+
+function shapeOf(parsed: ParsedShellCommand): ShellRuleShape {
+  // A broken parser runtime is an internal failure the matcher cannot
+  // reason around; report it as unparseable (asks, never allows).
+  if (parsed.parserError !== undefined) return { ok: false, reason: `shell parser failed: ${errorMessage(parsed.parserError)}` };
+  const analysis = parsed.analysis;
   if (!analysis.ok) return { ok: false, reason: analysis.reason };
 
   const commands: ShellRuleCommand[] = [];
@@ -268,10 +272,12 @@ export type ShellRuleEvaluation =
   | { decision: "allow"; patterns: readonly string[]; reason: string }
   | { decision: null; reason: string };
 
-export function evaluateShellRules(command: string, rules: ShellRuleSet, cwd?: string): ShellRuleEvaluation {
+export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet, cwd?: string): ShellRuleEvaluation {
+  const parsed = asParsedShellCommand(input);
+  const command = parsed.command;
   const hasRestrictions = rules.deny.length > 0 || rules.ask.length > 0;
   if (!hasRestrictions && rules.allow.length === 0) return { decision: null, reason: "no shell rules" };
-  const shape = analyzeShellForRules(command);
+  const shape = analyzeShellForRules(parsed);
 
   if (hasRestrictions) {
     // deny > ask: a deny rule that matches a visible command wins even when
@@ -302,9 +308,9 @@ export function evaluateShellRules(command: string, rules: ShellRuleSet, cwd?: s
   if (isDestructiveShellText(command) || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw))) {
     return { decision: null, reason: "destructive command (floor)" };
   }
-  const exfiltration = shellExfiltrationSignal(command, cwd);
+  const exfiltration = shellExfiltrationSignal(parsed, cwd);
   if (exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${exfiltration}` };
-  const sensitive = shellSensitivePathSignal(command, cwd);
+  const sensitive = shellSensitivePathSignal(parsed, cwd);
   if (sensitive) return { decision: null, reason: `sensitive path (floor): ${sensitive}` };
   const patterns: string[] = [];
   for (const cmd of shape.commands) {

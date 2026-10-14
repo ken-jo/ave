@@ -7,7 +7,7 @@
  * restricted — `Bash(sudo *)` as a deny rule is useful.
  */
 
-import { staticShellWord, type ShellCommand, type ShellWord } from "../../shared/shell-analysis.js";
+import { analyzeShell, staticShellWord, type ShellAnalysis, type ShellCommand, type ShellWord } from "../../shared/shell-analysis.js";
 
 /** Programs that run arbitrary code given any argument (prefix of 1 token is refused). */
 const SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "mksh", "yash", "fish", "csh", "tcsh", "pwsh", "powershell", "cmd", "busybox"];
@@ -713,4 +713,41 @@ export function hiddenCodeReason(argv: readonly (string | undefined)[]): string 
 export function isNetworkProgram(argv: readonly (string | undefined)[]): boolean {
   const starts = argv[0] !== undefined && WRAPPER_SET.has(programName(argv[0])) ? argv.map((_, index) => index) : [0];
   return starts.some((start) => argv[start] !== undefined && NETWORK_PROGRAMS.has(programName(argv[start]!)));
+}
+
+// ─── One parse per decision ─────────────────────────────────────────────
+
+/**
+ * A shell command parsed once, with the facts the matcher and the floors
+ * derive from it memoized per cwd, so one `checkDetailed` call parses the
+ * command once instead of once per consumer.
+ */
+export interface ParsedShellCommand {
+  readonly command: string;
+  readonly analysis: ShellAnalysis;
+  /** Set when the parser runtime threw (reported as unparseable). */
+  readonly parserError?: unknown;
+  readonly facts: Map<string, unknown>;
+}
+
+export type ShellCommandInput = string | ParsedShellCommand;
+
+export function parseShellCommand(command: string): ParsedShellCommand {
+  try {
+    return { command, analysis: analyzeShell(command, "bash"), facts: new Map() };
+  } catch (error) {
+    return { command, analysis: { ok: false, reason: "shell parser failed" }, parserError: error, facts: new Map() };
+  }
+}
+
+export function asParsedShellCommand(input: ShellCommandInput): ParsedShellCommand {
+  return typeof input === "string" ? parseShellCommand(input) : input;
+}
+
+/** `compute()` once per parsed command and key. */
+export function shellFact<T>(parsed: ParsedShellCommand, key: string, compute: () => T): T {
+  if (parsed.facts.has(key)) return parsed.facts.get(key) as T;
+  const value = compute();
+  parsed.facts.set(key, value);
+  return value;
 }

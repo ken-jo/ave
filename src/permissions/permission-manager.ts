@@ -11,6 +11,7 @@ import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rules
 import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
 import { isRuleSpecifier } from "./rules/rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
+import { parseShellCommand } from "./rules/shell-prefix-policy.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
@@ -1447,18 +1448,22 @@ export class PermissionManager {
       ? undefined
       : this.projectRuleScopes.stateFor(context.projectRulesCwd);
     const projectRules = projectRuleState?.ok ? projectRuleState.rules : [];
-    const shellRuleEvaluation = context.ruleSubject?.kind === "shell"
-      ? evaluateShellSubject(context.ruleSubject, this.rules, projectRules)
+    // One parse of the shell subject feeds the matcher and both floors.
+    const shellSubject = context.ruleSubject?.kind === "shell"
+      ? { command: parseShellCommand(context.ruleSubject.command), cwd: context.ruleSubject.cwd }
+      : undefined;
+    const shellRuleEvaluation = shellSubject
+      ? evaluateShellSubject(shellSubject, this.rules, projectRules)
       : undefined;
     // Credential-exfiltration floor: never remembered, never auto-allowed, in
     // any mode (rules/shell-exfiltration.ts).
-    const shellExfiltration = context.ruleSubject?.kind === "shell"
-      ? shellExfiltrationSignal(context.ruleSubject.command, context.ruleSubject.cwd)
+    const shellExfiltration = shellSubject
+      ? shellExfiltrationSignal(shellSubject.command, shellSubject.cwd)
       : null;
     // Sensitive-path floor for shell arguments (same normalization as the
     // exfiltration scan): `cat ~/.ssh/id_rsa` is never auto-allowed.
-    const shellSensitivePath = context.ruleSubject?.kind === "shell" && !shellExfiltration
-      ? shellSensitivePathSignal(context.ruleSubject.command, context.ruleSubject.cwd)
+    const shellSensitivePath = shellSubject && !shellExfiltration
+      ? shellSensitivePathSignal(shellSubject.command, shellSubject.cwd)
       : null;
 
     // 1. Deny rules (highest priority, immutable)

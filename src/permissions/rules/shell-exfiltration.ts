@@ -37,7 +37,6 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import {
-  analyzeShell,
   staticShellWord,
   type ShellCommand,
   type ShellStatement,
@@ -53,6 +52,11 @@ import {
 import {
   SHELL_PREFIX_POLICY,
   arithmeticEvaluationReason,
+  asParsedShellCommand,
+  parseShellCommand,
+  shellFact,
+  type ParsedShellCommand,
+  type ShellCommandInput,
   codeCarryingVariable,
   hiddenCodeReason,
   isNetworkProgram,
@@ -760,23 +764,20 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
   }
 }
 
-function scanCommand(command: string, cwd: string | undefined): ScanState {
-  const state: ScanState = { cwd, dotglob: /dotglob|GLOBIGNORE/.test(command), sensitive: null, network: false, hidden: false };
-  let analysis: ReturnType<typeof analyzeShell>;
-  try {
-    analysis = analyzeShell(command, "bash");
-  } catch {
-    analysis = { ok: false, reason: "shell parser failed" };
-  }
-  if (!analysis.ok) {
-    // Unparseable input is unknown code: scan its text.
-    state.hidden = true;
-    state.network = NETWORK_DEVICE.test(command) || NETWORK_WORD.test(command);
-    scanCodeText(command, state);
+function scanCommand(parsed: ParsedShellCommand, cwd: string | undefined): ScanState {
+  return shellFact(parsed, `scan\0${cwd ?? ""}`, () => {
+    const { command, analysis } = parsed;
+    const state: ScanState = { cwd, dotglob: /dotglob|GLOBIGNORE/.test(command), sensitive: null, network: false, hidden: false };
+    if (!analysis.ok) {
+      // Unparseable input is unknown code: scan its text.
+      state.hidden = true;
+      state.network = NETWORK_DEVICE.test(command) || NETWORK_WORD.test(command);
+      scanCodeText(command, state);
+      return state;
+    }
+    scanStatement(analysis.program, state);
     return state;
-  }
-  scanStatement(analysis.program, state);
-  return state;
+  });
 }
 
 /** Static text an `echo`/`printf` feeder writes to the next pipeline stage, or undefined. */
@@ -790,12 +791,11 @@ function staticFeederText(cmd: ShellCommand): string | undefined {
 }
 
 function signalFor(command: string, ctx: Context): string | null {
-  let analysis: ReturnType<typeof analyzeShell>;
-  try {
-    analysis = analyzeShell(command, "bash");
-  } catch {
-    analysis = { ok: false, reason: "shell parser failed" };
-  }
+  return signalForParsed(parseShellCommand(command), ctx);
+}
+
+function signalForParsed(parsed: ParsedShellCommand, ctx: Context): string | null {
+  const { command, analysis } = parsed;
   if (!analysis.ok) return UNPARSED_FALLBACK.test(command) ? "curl/wget body from a file (unparsed)" : null;
   collectTainted(analysis.program, ctx);
   return walk(analysis.program, ctx);
@@ -803,19 +803,23 @@ function signalFor(command: string, ctx: Context): string | null {
 
 /**
  * The exfiltration signal for a shell command, or `null`. `cwd` resolves
- * relative path arguments for the sensitive-path check.
+ * relative path arguments for the sensitive-path check. Pass a
+ * {@link ParsedShellCommand} to share one parse with the other consumers.
  */
-export function shellExfiltrationSignal(command: string, cwd?: string): string | null {
-  const specific = signalFor(command, { cwd, depth: 0, tainted: new Set() });
-  if (specific) return specific;
-  // Reader-independent: a sensitive path anywhere plus any way to send it
-  // (a network-capable program, a `/dev/tcp` redirection) or code the
-  // matcher cannot read.
-  const scan = scanCommand(command, cwd);
-  if (scan.sensitive && (scan.network || scan.hidden)) {
-    return `sensitive path (${scan.sensitive}) with ${scan.network ? "a network transport" : "hidden code"}`;
-  }
-  return null;
+export function shellExfiltrationSignal(input: ShellCommandInput, cwd?: string): string | null {
+  const parsed = asParsedShellCommand(input);
+  return shellFact(parsed, `exfiltration\0${cwd ?? ""}`, () => {
+    const specific = signalForParsed(parsed, { cwd, depth: 0, tainted: new Set() });
+    if (specific) return specific;
+    // Reader-independent: a sensitive path anywhere plus any way to send it
+    // (a network-capable program, a `/dev/tcp` redirection) or code the
+    // matcher cannot read.
+    const scan = scanCommand(parsed, cwd);
+    if (scan.sensitive && (scan.network || scan.hidden)) {
+      return `sensitive path (${scan.sensitive}) with ${scan.network ? "a network transport" : "hidden code"}`;
+    }
+    return null;
+  });
 }
 
 /**
@@ -823,7 +827,7 @@ export function shellExfiltrationSignal(command: string, cwd?: string): string |
  * secret path anywhere in the command line (same normalization as the
  * exfiltration scan). Never allowed by a rule; asks in every mode.
  */
-export function shellSensitivePathSignal(command: string, cwd?: string): string | null {
-  const hit = scanCommand(command, cwd).sensitive;
+export function shellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null {
+  const hit = scanCommand(asParsedShellCommand(input), cwd).sensitive;
   return hit ? `sensitive path argument (${hit})` : null;
 }

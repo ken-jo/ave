@@ -14,6 +14,7 @@ import { isRuleSpecifier, parseRuleSpecifier } from "./rule-specifier.js";
 import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rule-files.js";
 import { projectRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
+import type { ShellCommandInput } from "./shell-prefix-policy.js";
 
 export type ProjectRuleState =
   | { ok: true; projectRoot: string; rules: readonly PermissionRule[] }
@@ -121,7 +122,7 @@ function collectShellRuleSet(...scopes: ReadonlyArray<readonly PermissionRule[]>
 }
 
 export function evaluateShellSubject(
-  subject: { command: string; cwd?: string },
+  subject: { command: ShellCommandInput; cwd?: string },
   ...scopes: ReadonlyArray<readonly PermissionRule[]>
 ): ShellRuleEvaluation {
   return evaluateShellRules(subject.command, collectShellRuleSet(...scopes), subject.cwd);
