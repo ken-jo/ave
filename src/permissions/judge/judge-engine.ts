@@ -21,6 +21,7 @@
  * `shadow` mode runs the judge and audits the result, but `applied` is false:
  * the caller keeps today's path and the user still decides.
  */
+import { randomUUID } from "node:crypto";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { RiskVerdict } from "../reviewer/risk-classifier.js";
 import {
@@ -29,6 +30,7 @@ import {
   JudgeContractError,
   JudgeFailure,
   type JudgeDecision,
+  type JudgeDiagnostics,
   type JudgeFailureKind,
   type JudgeRequest,
   type JudgeVerdict,
@@ -68,7 +70,12 @@ export interface JudgeEngineDeps {
   /** The configured provider; null when it could not be constructed (→ `unavailable`). */
   judge: PermissionJudge | null;
   breaker: JudgeCircuitBreaker;
-  audit: Pick<AuditLogger, "logShadow">;
+  /**
+   * Shadow rows go to the plain shadow channel; active decisions go to the
+   * HMAC-chained permission audit channel and fail the call if it cannot be
+   * written.
+   */
+  audit: Pick<AuditLogger, "logShadow" | "appendPermissionAuditEntry">;
   hooks?: JudgeHooks;
   now?: () => number;
 }
@@ -106,6 +113,8 @@ export interface JudgeAuditRecord {
   latencyMs: number;
   fallback: JudgeFailureKind | null;
   breakerTripped: boolean;
+  /** Redacted, truncated provider stderr (external command judges). */
+  stderr?: string;
 }
 
 export type JudgeOutcome =
@@ -159,6 +168,7 @@ interface JudgeRun {
   verdict?: JudgeVerdict;
   fallback?: JudgeFailureKind;
   failureMessage?: string;
+  diagnostics?: JudgeDiagnostics;
 }
 
 async function runJudge(
@@ -190,7 +200,9 @@ async function runJudge(
     if (callerSignal?.aborted && !timedOut) throw callerSignal.reason;
     if (timedOut) return { fallback: "timeout", failureMessage: `judge timed out after ${timeoutMs}ms` };
     if (err instanceof JudgeContractError) throw err;
-    if (err instanceof JudgeFailure) return { fallback: err.kind, failureMessage: err.message };
+    if (err instanceof JudgeFailure) {
+      return { fallback: err.kind, failureMessage: err.message, ...(err.diagnostics ? { diagnostics: err.diagnostics } : {}) };
+    }
     return { fallback: "error", failureMessage: err instanceof Error ? err.message : String(err) };
   } finally {
     clearTimeout(timer);
@@ -198,13 +210,26 @@ async function runJudge(
   }
 }
 
-function writeAudit(deps: JudgeEngineDeps, record: JudgeAuditRecord): void {
-  deps.audit.logShadow({
-    timestamp: record.ts,
-    sessionId: record.session,
-    type: "info",
-    input: `permission-judge ${record.tool} decision=${record.decision} applied=${record.applied}`,
-    output: JSON.stringify(record),
+async function writeAudit(deps: JudgeEngineDeps, request: JudgeRequest, record: JudgeAuditRecord): Promise<void> {
+  if (!record.applied) {
+    deps.audit.logShadow({
+      timestamp: record.ts,
+      sessionId: record.session,
+      type: "info",
+      input: `permission-judge ${record.tool} decision=${record.decision} applied=false`,
+      output: JSON.stringify(record),
+    });
+    return;
+  }
+  await deps.audit.appendPermissionAuditEntry({
+    decision: "judge",
+    ts: record.ts,
+    auditId: randomUUID(),
+    trustOrigin: request.invocation.trustOrigin,
+    tool: request.invocation.toolName,
+    source: request.invocation.source,
+    category: request.invocation.category,
+    judgeRecord: record,
   });
 }
 
@@ -229,6 +254,7 @@ export async function resolveJudge(
   let source: JudgeOutcomeSource;
   let verdict: JudgeVerdict | undefined;
   let fallback: JudgeFailureKind | undefined;
+  let diagnostics: JudgeDiagnostics | undefined;
   let decision: JudgeDecision;
   let rationale: string;
 
@@ -246,8 +272,10 @@ export async function resolveJudge(
       effective = before.request;
     }
     const run = await runJudge(deps.judge, effective, deps.settings.timeoutMs, signal);
+    diagnostics = run.diagnostics ?? run.verdict?.diagnostics;
     if (run.verdict) {
       verdict = run.verdict;
+      fallback = verdict.providerFallback;
       source = "judge";
       decision = verdict.decision;
       rationale = verdict.rationale;
@@ -273,13 +301,13 @@ export async function resolveJudge(
   const defer = applied && headless && decision !== "allow";
 
   let breakerTripped = false;
-  if (applied && source === "judge" && verdict) {
+  if (applied && source === "judge" && verdict && !verdict.providerFallback) {
     breakerTripped = deps.breaker.record(request.sessionId, verdict.decision);
   }
 
   const redacted = redactJudgeRequest(effective);
   const safeRationale = redactJudgeText(rationale, 2_000);
-  writeAudit(deps, {
+  await writeAudit(deps, request, {
     event: "permission-judge",
     ts: new Date(started).toISOString(),
     session: request.sessionId,
@@ -298,6 +326,7 @@ export async function resolveJudge(
     latencyMs: Math.max(0, now() - started),
     fallback: fallback ?? null,
     breakerTripped,
+    ...(diagnostics?.stderr ? { stderr: redactJudgeText(diagnostics.stderr, 4_096) } : {}),
   });
 
   return {

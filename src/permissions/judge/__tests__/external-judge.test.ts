@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { maskSensitiveData } from "../../../audit/dlp-filter.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { JudgeFailure } from "../judge-contract.js";
-import { ExternalJudge, parseJudgeResponse, type JudgeFetch } from "../external-judge.js";
+import { buildExternalJudgeEnv, ExternalJudge, parseJudgeResponse, type JudgeFetch } from "../external-judge.js";
 import { PLANTED_CREDENTIAL, judgeInvocation, judgeRequest } from "./judge-request-fixture.js";
 
 function unparseableKind(text: string): string | null {
@@ -138,11 +138,54 @@ describe.skipIf(process.platform === "win32")("ExternalJudge — command transpo
     await expect(new ExternalJudge({ command: [garbage.path] }).judge(judgeRequest(), new AbortController().signal)).rejects.toMatchObject({ kind: "unparseable" });
   });
 
+  it("does not inherit the parent environment and keeps redacted, truncated stderr", async () => {
+    const { path, dir } = script(
+      `cat >/dev/null\nenv > "$(dirname "$0")/env.txt"\nprintf 'warn ${PLANTED_CREDENTIAL} ' >&2\nhead -c 6000 /dev/zero | tr '\\0' x >&2\nprintf '%s' '{"decision":"ask","rationale":"unsure"}'`,
+    );
+    process.env.AVE_JUDGE_TEST_SECRET = "must-not-leak";
+    try {
+      const verdict = await new ExternalJudge({ command: [path] }).judge(judgeRequest(), new AbortController().signal);
+      expect(verdict.decision).toBe("ask");
+      expect(verdict.diagnostics?.stderr).toContain("warn");
+      expect(verdict.diagnostics?.stderr).not.toContain(PLANTED_CREDENTIAL);
+      expect((verdict.diagnostics?.stderr ?? "").length).toBeLessThanOrEqual(4_097);
+      const childEnv = readFileSync(join(dir, "env.txt"), "utf8");
+      expect(childEnv).not.toContain("must-not-leak");
+      expect(childEnv).toContain("PATH=");
+    } finally {
+      delete process.env.AVE_JUDGE_TEST_SECRET;
+    }
+  });
+
+  it("stderr rides along on a failure but never becomes a decision", async () => {
+    const { path } = script("cat >/dev/null\necho 'model crashed' >&2\nexit 2");
+    const err = await new ExternalJudge({ command: [path] }).judge(judgeRequest(), new AbortController().signal).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(JudgeFailure);
+    expect((err as JudgeFailure).kind).toBe("error");
+    expect((err as JudgeFailure).diagnostics?.stderr).toContain("model crashed");
+  });
+
   it("abort kills the process", async () => {
     const slow = script("cat >/dev/null\nsleep 30");
     const controller = new AbortController();
     const pending = new ExternalJudge({ command: [slow.path] }).judge(judgeRequest(), controller.signal);
     setTimeout(() => controller.abort(new Error("stop")), 50);
     await expect(pending).rejects.toThrow("stop");
+  });
+});
+
+describe("buildExternalJudgeEnv", () => {
+  it("passes only the base set plus configured names", () => {
+    const env = buildExternalJudgeEnv(["JEV_ENDPOINT"], {
+      PATH: "/usr/bin",
+      HOME: "/home/sample",
+      LANG: "en_US.UTF-8",
+      TMPDIR: "/tmp",
+      JEV_ENDPOINT: "local",
+      AVE_HOME: "/secret",
+      GITHUB_TOKEN: "t",
+      ANTHROPIC_API_KEY: "k",
+    }, "linux");
+    expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/sample", LANG: "en_US.UTF-8", TMPDIR: "/tmp", JEV_ENDPOINT: "local" });
   });
 });

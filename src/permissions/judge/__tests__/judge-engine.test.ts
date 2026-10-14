@@ -8,6 +8,8 @@ import {
   auditPayload,
   collectingAudit,
   judgeInvocation,
+  judgeRecords,
+  type CollectingAudit,
   judgeRequest,
   judgeSettings,
 } from "./judge-request-fixture.js";
@@ -35,10 +37,10 @@ function deps(
   judge: PermissionJudge | null,
   settings: Partial<JudgeSettings> = {},
   hooks?: JudgeHooks,
-): JudgeEngineDeps & { audit: ReturnType<typeof collectingAudit>["logger"]; entries: ReturnType<typeof collectingAudit>["entries"] } {
+): JudgeEngineDeps & Pick<CollectingAudit, "entries" | "chained"> {
   const s = judgeSettings(settings);
-  const { entries, logger } = collectingAudit();
-  return { settings: s, judge, breaker: new JudgeCircuitBreaker(s.breaker), audit: logger, entries, ...(hooks ? { hooks } : {}) };
+  const { entries, chained, logger } = collectingAudit();
+  return { settings: s, judge, breaker: new JudgeCircuitBreaker(s.breaker), audit: logger, entries, chained, ...(hooks ? { hooks } : {}) };
 }
 
 const ALLOW: JudgeVerdict = { decision: "allow", rationale: "build script" };
@@ -51,7 +53,7 @@ describe("resolveJudge — placement", () => {
     const out = await resolveJudge({ ...UNDECIDED, priorDecision: prior }, judgeRequest(), d);
     expect(out).toEqual({ judged: false, skip: "rule-decided" });
     expect(judge.calls).toBe(0);
-    expect(d.entries).toHaveLength(0);
+    expect(judgeRecords(d)).toHaveLength(0);
   });
 
   it("provider off is today's behavior: never runs", async () => {
@@ -129,7 +131,7 @@ describe("resolveJudge — fallbacks never allow", () => {
       const d = deps(make(), { timeoutMs: 30 });
       const out = await resolveJudge(UNDECIDED, judgeRequest(), d);
       expect(out).toMatchObject({ judged: true, decision: "ask", defer: false, source: "fallback", fallback: kind });
-      expect(auditPayload(d.entries[0]!)).toMatchObject({ fallback: kind, decision: "ask" });
+      expect(judgeRecords(d)[0]).toMatchObject({ fallback: kind, decision: "ask" });
     });
     it(`${label}: headless → deny + defer`, async () => {
       const d = deps(make(), { timeoutMs: 30 });
@@ -225,18 +227,37 @@ describe("resolveJudge — circuit breaker", () => {
 });
 
 describe("resolveJudge — audit", () => {
-  it("writes one redacted record per judged call", async () => {
-    const d = deps(answering({ decision: "allow", rationale: `saw ${PLANTED_CREDENTIAL}` }));
+  it("active decisions go to the HMAC chain, shadow rows to the plain channel", async () => {
+    const active = deps(answering(ALLOW));
+    await resolveJudge(UNDECIDED, judgeRequest(), active);
+    expect(active.entries).toHaveLength(0);
+    expect(active.chained).toHaveLength(1);
+    expect(active.chained[0]).toMatchObject({ decision: "judge", tool: "bash", source: "builtin", category: "shell" });
+
+    const shadow = deps(answering(ALLOW), { mode: "shadow" });
+    await resolveJudge(UNDECIDED, judgeRequest(), shadow);
+    expect(shadow.chained).toHaveLength(0);
+    expect(shadow.entries).toHaveLength(1);
+  });
+
+  it("an unwritable integrity channel fails the active call clearly", async () => {
+    const d = deps(answering(ALLOW));
+    d.audit = { ...d.audit, appendPermissionAuditEntry: () => Promise.reject(new Error("permission audit chain not initialized")) };
+    await expect(resolveJudge(UNDECIDED, judgeRequest(), d)).rejects.toThrow("not initialized");
+  });
+
+  it("writes one redacted record per judged call, including provider stderr", async () => {
+    const d = deps(answering({ decision: "allow", rationale: `saw ${PLANTED_CREDENTIAL}`, diagnostics: { stderr: `warn ${PLANTED_CREDENTIAL}` } }));
     const request = judgeRequest({
       invocation: judgeInvocation({ finalInput: { command: `curl -H "Authorization: token ${PLANTED_CREDENTIAL}" x` } }),
       recentUserMessages: [`my token is ${PLANTED_CREDENTIAL}`],
     });
-    await resolveJudge(UNDECIDED, request, d);
-    expect(d.entries).toHaveLength(1);
-    const line = JSON.stringify(d.entries[0]);
-    expect(line).not.toContain(PLANTED_CREDENTIAL);
-    const record = auditPayload(d.entries[0]!);
-    expect(record).toMatchObject({
+    const out = await resolveJudge(UNDECIDED, request, d);
+    expect(out).toMatchObject({ decision: "allow" });
+    const records = judgeRecords(d);
+    expect(records).toHaveLength(1);
+    expect(JSON.stringify(d.chained)).not.toContain(PLANTED_CREDENTIAL);
+    expect(records[0]).toMatchObject({
       event: "permission-judge",
       session: "session-root",
       tool: "bash",
@@ -244,7 +265,15 @@ describe("resolveJudge — audit", () => {
       verdictDecision: "allow",
       fallback: null,
     });
-    expect(typeof record.argsHash).toBe("string");
-    expect(typeof record.latencyMs).toBe("number");
+    expect(String(records[0]!.stderr)).toContain("warn");
+    expect(typeof records[0]!.argsHash).toBe("string");
+    expect(typeof records[0]!.latencyMs).toBe("number");
+  });
+
+  it("a provider-applied fallback is audited as a fallback and never trips the breaker", async () => {
+    const d = deps(answering({ decision: "deny", rationale: "reviewer error", providerFallback: "error" }));
+    for (let i = 0; i < 4; i++) await resolveJudge(UNDECIDED, judgeRequest({ lane: "headless" }), d);
+    expect(d.breaker.snapshot("session-root").total).toBe(0);
+    expect(judgeRecords(d)[0]).toMatchObject({ fallback: "error", source: "judge" });
   });
 });

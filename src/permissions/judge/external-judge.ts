@@ -4,7 +4,9 @@
  *
  *   - command: argv array with an absolute executable, spawned WITHOUT a shell.
  *     The request is one JSON document on stdin; the verdict is one JSON
- *     document on stdout. Non-zero exit is an error.
+ *     document on stdout. Non-zero exit is an error. The environment is a
+ *     minimal allow-list ({@link buildExternalJudgeEnv}) — nothing of Ave's is
+ *     inherited. stderr is kept (first 4 KB, redacted) for the audit only.
  *   - url: HTTPS (or loopback HTTP) POST of the same JSON document; the
  *     response body is the verdict. Redirects are refused.
  *
@@ -13,12 +15,19 @@
  * not exactly the verdict schema is `unparseable`.
  */
 import { spawn } from "node:child_process";
-import { JudgeFailure, type JudgeRequest, type JudgeVerdict, type PermissionJudge } from "./judge-contract.js";
-import { redactJudgeRequest } from "./judge-redaction.js";
+import {
+  JudgeFailure,
+  type JudgeFailureKind,
+  type JudgeRequest,
+  type JudgeVerdict,
+  type PermissionJudge,
+} from "./judge-contract.js";
+import { redactJudgeRequest, redactJudgeText } from "./judge-redaction.js";
 import { checkExternalCommand, checkExternalUrl, type JudgeExternalSettings } from "./judge-settings.js";
 
 export const EXTERNAL_JUDGE_PROTOCOL_VERSION = 1;
 const MAX_RESPONSE_BYTES = 64 * 1024;
+const MAX_STDERR_BYTES = 4 * 1024;
 const MAX_RATIONALE_CHARS = 2_000;
 const MAX_SUGGESTED_RULE_CHARS = 500;
 const VERDICT_KEYS = new Set(["decision", "rationale", "confidence", "suggestedRule"]);
@@ -68,16 +77,45 @@ export function parseJudgeResponse(text: string): JudgeVerdict {
 
 export type JudgeFetch = (url: string, init: RequestInit) => Promise<Response>;
 
-function runCommand(argv: readonly string[], body: string, signal: AbortSignal): Promise<string> {
+/** Base variables every command judge receives; nothing else is inherited. */
+const BASE_ENV_KEYS = ["PATH", "HOME", "LANG", "TMPDIR"] as const;
+/** Windows cannot start most programs without these. */
+const WINDOWS_ENV_KEYS = ["SystemRoot", "TEMP", "TMP", "USERPROFILE"] as const;
+
+export function buildExternalJudgeEnv(
+  configured: readonly string[] | undefined,
+  source: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Record<string, string> {
+  const keys = [...BASE_ENV_KEYS, ...(platform === "win32" ? WINDOWS_ENV_KEYS : []), ...(configured ?? [])];
+  const env: Record<string, string> = {};
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "string") env[key] = value;
+  }
+  return env;
+}
+
+interface CommandResult {
+  stdout: string;
+  stderr: string;
+}
+
+function runCommand(argv: readonly string[], env: Record<string, string>, body: string, signal: AbortSignal): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
       reject(signal.reason);
       return;
     }
-    const child = spawn(argv[0]!, argv.slice(1), { shell: false, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+    const child = spawn(argv[0]!, argv.slice(1), { shell: false, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     const chunks: Buffer[] = [];
+    const errChunks: Buffer[] = [];
     let size = 0;
+    let errSize = 0;
     let settled = false;
+    const stderrText = (): string => redactJudgeText(Buffer.concat(errChunks).toString("utf8"), MAX_STDERR_BYTES);
+    const fail = (kind: JudgeFailureKind, message: string): JudgeFailure =>
+      new JudgeFailure(kind, message, { diagnostics: { stderr: stderrText() } });
     const finish = (fn: () => void): void => {
       if (settled) return;
       settled = true;
@@ -89,22 +127,30 @@ function runCommand(argv: readonly string[], body: string, signal: AbortSignal):
       finish(() => reject(signal.reason));
     };
     signal.addEventListener("abort", onAbort, { once: true });
-    child.on("error", (err) => finish(() => reject(new JudgeFailure("unavailable", `external judge failed to start: ${err.message}`))));
+    child.on("error", (err) => finish(() => reject(fail("unavailable", `external judge failed to start: ${err.message}`))));
+    child.stderr.on("data", (chunk: Buffer) => {
+      // Keep only the first MAX_STDERR_BYTES; stderr is a diagnostic, never a verdict.
+      if (errSize >= MAX_STDERR_BYTES) return;
+      const room = MAX_STDERR_BYTES - errSize;
+      const kept = chunk.length > room ? chunk.subarray(0, room) : chunk;
+      errChunks.push(kept);
+      errSize += kept.length;
+    });
     child.stdout.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > MAX_RESPONSE_BYTES) {
         child.kill("SIGKILL");
-        finish(() => reject(unparseable("exceeds size limit")));
+        finish(() => reject(fail("unparseable", "external judge response exceeds size limit")));
         return;
       }
       chunks.push(chunk);
     });
     child.on("close", (code) => {
       if (code !== 0) {
-        finish(() => reject(new JudgeFailure("error", `external judge exited with code ${String(code)}`)));
+        finish(() => reject(fail("error", `external judge exited with code ${String(code)}`)));
         return;
       }
-      finish(() => resolve(Buffer.concat(chunks).toString("utf8")));
+      finish(() => resolve({ stdout: Buffer.concat(chunks).toString("utf8"), stderr: stderrText() }));
     });
     child.stdin.on("error", () => {
       // EPIPE when the judge exits without reading; the close handler reports it.
@@ -152,9 +198,20 @@ export class ExternalJudge implements PermissionJudge {
 
   async judge(request: JudgeRequest, signal: AbortSignal): Promise<JudgeVerdict> {
     const body = JSON.stringify({ version: EXTERNAL_JUDGE_PROTOCOL_VERSION, request: redactJudgeRequest(request) });
-    const text = this.config.command
-      ? await runCommand(this.config.command, body, signal)
-      : await postUrl(this.fetchImpl!, this.config.url!, body, signal);
-    return parseJudgeResponse(text.trim());
+    if (!this.config.command) {
+      return parseJudgeResponse((await postUrl(this.fetchImpl!, this.config.url!, body, signal)).trim());
+    }
+    const { stdout, stderr } = await runCommand(this.config.command, buildExternalJudgeEnv(this.config.env), body, signal);
+    const diagnostics = stderr.length > 0 ? { stderr } : undefined;
+    let verdict: JudgeVerdict;
+    try {
+      verdict = parseJudgeResponse(stdout.trim());
+    } catch (err) {
+      if (err instanceof JudgeFailure && diagnostics) {
+        throw new JudgeFailure(err.kind, err.message, { diagnostics });
+      }
+      throw err;
+    }
+    return diagnostics ? { ...verdict, diagnostics } : verdict;
   }
 }

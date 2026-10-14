@@ -91,3 +91,14 @@ describe("createPermissionJudge", () => {
     expect(createPermissionJudge(s, { llmClassifier: null, autoApprove: () => "medium", fetch: fetchImpl })?.id).toBe("external");
   });
 });
+
+describe("external.env", () => {
+  it("accepts plain names for the command transport and refuses Ave runtime variables", () => {
+    expect(
+      validateJudgeSettings({ provider: "external", external: { command: ["/opt/jev/bin/jev"], env: ["JEV_MODEL"] } }).external,
+    ).toEqual({ command: ["/opt/jev/bin/jev"], env: ["JEV_MODEL"] });
+    expect(() => validateJudgeSettings({ provider: "external", external: { command: ["/opt/jev/bin/jev"], env: ["AVE_HOME"] } })).toThrow(/Ave runtime/);
+    expect(() => validateJudgeSettings({ provider: "external", external: { command: ["/opt/jev/bin/jev"], env: ["BAD-NAME"] } })).toThrow(JudgeSettingsError);
+    expect(() => validateJudgeSettings({ provider: "external", external: { url: "https://judge.example.test/", env: ["X"] } })).toThrow(/command transport/);
+  });
+});

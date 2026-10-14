@@ -79,6 +79,20 @@ export interface JudgeVerdict {
   confidence?: number;
   /** A rule the dock MAY offer the user. The judge never writes it. */
   suggestedRule?: string;
+  /**
+   * Set by a provider (never parsed from a remote response) when it answered
+   * through its own configured failure policy — `builtin-llm` reproducing the
+   * shipped reviewer's `fallbackOnError`. Audited as a fallback and never
+   * counted toward the breaker.
+   */
+  providerFallback?: JudgeFailureKind;
+  /** Provider diagnostics. Recorded (redacted) in the audit row only; never a decision input. */
+  diagnostics?: JudgeDiagnostics;
+}
+
+export interface JudgeDiagnostics {
+  /** Truncated stderr of an external command judge. */
+  stderr?: string;
 }
 
 export interface PermissionJudge {
@@ -95,13 +109,16 @@ export interface PermissionJudge {
 }
 
 export class JudgeFailure extends Error {
+  readonly diagnostics: JudgeDiagnostics | undefined;
+
   constructor(
     readonly kind: JudgeFailureKind,
     message: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { diagnostics?: JudgeDiagnostics },
   ) {
     super(message, options);
     this.name = "JudgeFailure";
+    this.diagnostics = options?.diagnostics;
   }
 }
 

@@ -27,6 +27,11 @@ export interface JudgeExternalSettings {
   command?: readonly string[];
   /** HTTPS URL, or HTTP on a loopback host only. */
   url?: string;
+  /**
+   * Extra environment variable NAMES forwarded to the command judge on top of
+   * the minimal base set. Ave's own variables are refused.
+   */
+  env?: readonly string[];
 }
 
 export interface JudgeBreakerSettings {
@@ -87,6 +92,20 @@ function isLoopbackHost(hostname: string): boolean {
   return classifyAddress(bare) === "this-computer";
 }
 
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Ave / Electron runtime variables are never handed to an external judge. */
+const REFUSED_ENV_PREFIX = /^(AVE|RETIREDNAME|ELECTRON)_/i;
+
+/** Returns an error message, or null when the env name list is acceptable. */
+export function checkExternalEnv(env: unknown): string | null {
+  if (!Array.isArray(env)) return "external.env must be an array of variable names";
+  for (const name of env) {
+    if (typeof name !== "string" || !ENV_NAME.test(name)) return `external.env name invalid: '${String(name)}'`;
+    if (REFUSED_ENV_PREFIX.test(name)) return `external.env must not forward Ave runtime variable '${name}'`;
+  }
+  return null;
+}
+
 /** Returns an error message, or null when the URL is acceptable. */
 export function checkExternalUrl(raw: unknown): string | null {
   if (typeof raw !== "string" || raw.length === 0) return "external.url must be a non-empty string";
@@ -111,9 +130,16 @@ function checkExternal(external: unknown): { value?: JudgeExternalSettings; erro
   const hasUrl = obj.url !== undefined;
   if (hasCommand === hasUrl) return { error: "external must set exactly one of command or url" };
   if (hasCommand) {
-    const err = checkExternalCommand(obj.command);
-    return err ? { error: err } : { value: { command: [...(obj.command as string[])] } };
+    const err = checkExternalCommand(obj.command) ?? (obj.env === undefined ? null : checkExternalEnv(obj.env));
+    if (err) return { error: err };
+    return {
+      value: {
+        command: [...(obj.command as string[])],
+        ...(obj.env === undefined ? {} : { env: [...(obj.env as string[])] }),
+      },
+    };
   }
+  if (obj.env !== undefined) return { error: "external.env applies to the command transport only" };
   const err = checkExternalUrl(obj.url);
   return err ? { error: err } : { value: { url: obj.url as string } };
 }

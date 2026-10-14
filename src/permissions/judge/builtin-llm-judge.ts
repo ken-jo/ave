@@ -9,17 +9,19 @@
  *   - foreground: LOW → allow; MEDIUM → allow only under `autoApprove: "medium"`
  *                 and without `requiresExplicitApproval`; otherwise ask.
  *
- * Reviewer failures (provider error, timeout, malformed output) surface as a
- * {@link JudgeFailure} so the engine's never-allow fallback applies. With the
- * shipped `fallbackOnError: "deny"` that is today's outcome (HIGH → ask /
- * deny). Only the non-default `fallbackOnError: "rule"` differs: today a LOW
- * rule verdict would allow on reviewer failure; through the judge it asks.
+ * Reviewer failures (provider error, timeout, malformed output) keep today's
+ * outcome exactly: the classifier's configured `fallbackOnError` already shaped
+ * `finalVerdict` (deny → HIGH; rule → the rule verdict, which may allow), and
+ * the provider maps it like any other verdict, tagging `providerFallback` so
+ * the audit records the failure and the breaker ignores it. The judge-level
+ * never-allow fallback still covers this provider's own timeout and errors
+ * raised outside the classifier.
  */
 import type { LlmRiskClassificationTrace, RiskVerdict, ToolInvocationContext } from "../reviewer/risk-classifier.js";
 import type { ReviewerInteractiveAutoApprove } from "../permission-settings-store.js";
 import {
-  JudgeFailure,
   type JudgeDecision,
+  type JudgeFailureKind,
   type JudgeLane,
   type JudgeRequest,
   type JudgeVerdict,
@@ -46,6 +48,14 @@ export function mapRiskVerdictToJudgeDecision(
   return autoApproved ? "allow" : "ask";
 }
 
+const REVIEWER_FAILURE_KIND: Record<LlmRiskClassificationTrace["outcome"], JudgeFailureKind | null> = {
+  fresh: null,
+  "host-determined": null,
+  timeout: "timeout",
+  error: "error",
+  malformed: "unparseable",
+};
+
 export class BuiltinLlmJudge implements PermissionJudge {
   readonly id = "builtin-llm";
   readonly version = "1";
@@ -57,25 +67,16 @@ export class BuiltinLlmJudge implements PermissionJudge {
 
   async judge(request: JudgeRequest, signal: AbortSignal): Promise<JudgeVerdict> {
     const trace = await this.classifier.classifyWithTrace(request.invocation, { abortSignal: signal });
-    switch (trace.outcome) {
-      case "timeout":
-        throw new JudgeFailure("timeout", `reviewer timeout: ${trace.finalVerdict.reason}`);
-      case "error":
-        throw new JudgeFailure("error", `reviewer error: ${trace.finalVerdict.reason}`);
-      case "malformed":
-        throw new JudgeFailure("unparseable", `reviewer output unparseable: ${trace.finalVerdict.reason}`);
-      case "fresh":
-      case "host-determined":
-        break;
-      default: {
-        const unknown: never = trace.outcome;
-        throw new JudgeFailure("error", `unknown reviewer outcome: ${String(unknown)}`);
-      }
-    }
+    const providerFallback = REVIEWER_FAILURE_KIND[trace.outcome];
+    // On reviewer failure the classifier has already applied the shipped
+    // `fallbackOnError` policy to `finalVerdict` (deny → HIGH; rule → the rule
+    // verdict). Mapping that verdict is exactly today's decision in both
+    // configurations, so the provider answers instead of throwing.
     const verdict = trace.finalVerdict;
     return {
       decision: mapRiskVerdictToJudgeDecision(verdict, request.lane, this.autoApprove()),
       rationale: `reviewer ${verdict.level}: ${verdict.reason}`,
+      ...(providerFallback ? { providerFallback } : {}),
     };
   }
 }
