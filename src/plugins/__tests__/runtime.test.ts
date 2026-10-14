@@ -4960,17 +4960,33 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const mcpPrepare = vi.spyOn(mcpManager, "prepareBundledGeneration");
     const incumbent = lifecycle.getActive(ID)!.generationId;
     // The activation returns once its deferred work is done; it is committed
-    // as soon as the pointer moves.
-    const update = f.runtime.activatePreparedArtifact(await f.preparedInput());
-    await vi.waitFor(() => expect(lifecycle.getActive(ID)?.generationId).not.toBe(incumbent));
-    const deadline = new AbortController();
-    const stopping = f.runtime.stopAll({ signal: deadline.signal });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    deadline.abort();
-    await stopping;
-    release();
-    await integration;
-    await update;
+    // as soon as the pointer moves. The loopback publication runs right after
+    // the coordinator pointer names the candidate, so it marks that moment
+    // without assuming how long preparation takes on a loaded host.
+    const loopback = (lifecycle as unknown as { deps: { loopbackManager: { publishGeneration: (value: never) => void } } }).deps.loopbackManager;
+    const publishLoopback = loopback.publishGeneration.bind(loopback);
+    let pointerMoved!: () => void;
+    const committed = new Promise<void>((resolve) => { pointerMoved = resolve; });
+    loopback.publishGeneration = (value) => { publishLoopback(value); pointerMoved(); };
+    const update = f.runtime.activatePreparedArtifact(await f.preparedInput())
+      .then(() => undefined, (error: unknown) => error);
+    try {
+      await Promise.race([
+        committed,
+        update.then((error) => { throw error ?? new Error("activation settled before its commit"); }),
+      ]);
+      expect(lifecycle.getActive(ID)?.generationId).not.toBe(incumbent);
+      const deadline = new AbortController();
+      const stopping = f.runtime.stopAll({ signal: deadline.signal });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      deadline.abort();
+      await stopping;
+    } finally {
+      // A failed step must not leave the incumbent leased for the next test.
+      release();
+      await integration;
+    }
+    expect(await update).toBeUndefined();
     expect(postPublish).not.toHaveBeenCalled();
     expect(mcpPrepare).not.toHaveBeenCalled();
   });

@@ -158,6 +158,18 @@ function workflowFileNames(): string[] {
     .sort();
 }
 
+/**
+ * The workflow file is the single source of each reviewed pin (Dependabot
+ * bumps it there); these guards assert only its shape: the action is used at
+ * a full commit SHA with a version comment, never a floating tag.
+ */
+function expectPinnedAction(source: string, action: string): void {
+  const escaped = action.replace(/[.*+?^${}()|[\]\\/]/gu, "\\$&");
+  expect(source, `${action} must be used at a full commit SHA with a version comment`).toMatch(
+    new RegExp(`uses:\\s+${escaped}@[0-9a-f]{40}\\s+#\\s+v\\d+(?:\\.\\d+)*\\s*$`, "mu"),
+  );
+}
+
 describe("installer smoke and packaging discipline", () => {
   it("requires the audio runtime in Linux installer dependencies", () => {
     const packageJson = JSON.parse(readRepoFile("package.json")) as {
@@ -197,9 +209,7 @@ describe("installer smoke and packaging discipline", () => {
 
     expect(workflow).toContain("skip_code_sign:");
     expect(workflow).toContain("publish-release:");
-    expect(workflow).toContain(
-      "softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3",
-    );
+    expectPinnedAction(workflow, "softprops/action-gh-release");
   });
 
   it("smoke-launches the packaged app before uploading installer artifacts", () => {
@@ -212,9 +222,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(workflow).toContain("sudo apt-get update && sudo apt-get install -y fakeroot rpm xvfb dbus dbus-x11 gnome-keyring");
     expect(workflow).toContain("dbus-run-session -- bash -euo pipefail -c");
     expect(workflow).toContain("gnome-keyring-daemon --unlock --components=secrets");
-    expect(workflow).toContain(
-      "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0",
-    );
+    expectPinnedAction(workflow, "actions/cache");
     expect(workflow).toContain("~/.bun/install/cache");
     expect(workflow).toContain("ELECTRON_BUILDER_CACHE");
     expect(workflow).toContain("--skip-native-rebuild");
@@ -358,7 +366,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(r2).toMatch(/^ {4}if: github\.event_name == 'push'$/mu);
     expect(r2).toMatch(/^ {6}contents: read$/mu);
     expect(r2).not.toContain("continue-on-error");
-    expect(r2).toContain("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8");
+    expectPinnedAction(r2, "actions/download-artifact");
     expect(r2).toContain("pattern: ave-*-installers");
 
     // The plan is printed with no secret in scope, then the upload runs with
@@ -421,9 +429,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(deploy).toContain("environment: web-production");
     expect(deploy).toContain("EXPECTED_BUNDLE_SHA256");
     expect(deploy).toContain("sha256sum -c bundle.sha256");
-    expect(deploy).toContain(
-      "cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0",
-    );
+    expectPinnedAction(deploy, "cloudflare/wrangler-action");
     expect(deploy).toContain('wranglerVersion: "4.114.0"');
     expect(deploy).not.toContain("actions/checkout");
     expect(deploy).not.toContain("setup-bun");
@@ -433,18 +439,35 @@ describe("installer smoke and packaging discipline", () => {
 
   it("pins every external workflow action to a reviewed commit SHA", () => {
     const workflowDirectory = resolve(root, ".github/workflows");
+    const pins = new Map<string, { revision: string; at: string }>();
     for (const name of readdirSync(workflowDirectory).filter((entry) =>
       /\.ya?ml$/u.test(entry)
     )) {
       const source = readRepoFile(`.github/workflows/${name}`);
-      for (const match of source.matchAll(/uses:\s+([^@\s]+)@([^\s#]+)/gu)) {
-        const [, action, revision] = match;
+      for (const match of source.matchAll(/uses:\s+([^@\s]+)@([^\s#]+)([^\n]*)/gu)) {
+        const [, action, revision, rest] = match;
+        if (action.startsWith("./")) continue;
         expect(
           revision,
           `${name}: ${action} must be pinned to an immutable commit`,
         ).toMatch(/^[0-9a-f]{40}$/u);
+        expect(
+          rest,
+          `${name}: ${action}@${revision} must name the version it was reviewed as`,
+        ).toMatch(/^\s+#\s+v\d+(?:\.\d+)*\s*$/u);
+        // One reviewed commit per action across every workflow, so a bump
+        // cannot leave a stale or divergent pin behind.
+        const seen = pins.get(action);
+        if (seen === undefined) pins.set(action, { revision, at: name });
+        else {
+          expect(
+            revision,
+            `${name}: ${action} is pinned differently than in ${seen.at}`,
+          ).toBe(seen.revision);
+        }
       }
     }
+    expect(pins.size).toBeGreaterThan(0);
   });
 
   it("runs no repository-hygiene gate ahead of a compile or test step", () => {

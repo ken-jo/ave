@@ -62,8 +62,9 @@ describe("trusted cluster policy workflow", () => {
     expect(workflow).toContain(
       "if: steps.pr-snapshot.outputs.superseded != 'true'",
     );
-    expect(workflow).toContain(
-      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7",
+    // The workflow owns the reviewed pin; guard its shape, not a copy of it.
+    expect(workflow).toMatch(
+      /uses:\s+actions\/checkout@[0-9a-f]{40}\s+#\s+v\d+(?:\.\d+)*\s*$/mu,
     );
     expect(workflow).not.toContain("actions/checkout@v7");
     expect(workflow).toContain("path: .cluster-policy");
