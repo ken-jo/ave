@@ -130,7 +130,7 @@ function canSelfInstall(): boolean {
  * finishes their work, quits, and follows the guide there since the app can't
  * self-install an unsigned macOS build.
  */
-const UPDATE_GUIDE_URL = "https://former-site.invalid";
+const UPDATE_GUIDE_URL = "https://ave.agent-connector.ai";
 
 export function createAutoUpdater(deps: AutoUpdaterDeps): {
   start: () => void;

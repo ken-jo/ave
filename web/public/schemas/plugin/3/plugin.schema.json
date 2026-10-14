@@ -1,0 +1,2199 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json",
+  "title": "Ave Plugin Manifest (Agent Plugins 1.0.0)",
+  "description": "Manifest shape for extensions and agent plugins. Runtime and marketplace boundaries apply their own required metadata.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "name"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "const": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      "description": "Agent Plugins 1.0.0 manifest schema identifier. Required by the specification and used to detect the manifest format."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$",
+      "not": {
+        "pattern": "[\\r\\n]"
+      },
+      "minLength": 3,
+      "maxLength": 64,
+      "description": "Plugin identity, kebab-case. Agent Plugins 1.0.0 constrains this field; Ave reads it as the plugin id every host consumer sees as `PluginManifest.id`. The human-readable label is extensions[\"ai.agent-connector.ave\"].displayName."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "not": {
+        "pattern": "[\\r\\n]"
+      },
+      "description": "Stable SemVer (MAJOR.MINOR.PATCH, no leading zeros). Pre-release / build-metadata suffixes are not supported on the marketplace publish channel — the per-plugin publish.yml rejects them at tag time. Aligning the schema with that gate so AJV fails earlier."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 280,
+      "description": "Short human-readable summary used in the inactive-plugin catalog LLM sees in the system prompt."
+    },
+    "author": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "email": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 254,
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        }
+      },
+      "description": "Agent Plugins 1.0.0 author object. Distinct from extensions[\"ai.agent-connector.ave\"].publisher, which is the marketplace publishing identity the host verifies."
+    },
+    "homepage": {
+      "type": "string",
+      "description": "Project homepage URL.",
+      "minLength": 1,
+      "maxLength": 2048,
+      "not": {
+        "pattern": "[\\r\\n]"
+      }
+    },
+    "repository": {
+      "type": "string",
+      "description": "Source repository URL.",
+      "minLength": 1,
+      "maxLength": 2048,
+      "not": {
+        "pattern": "[\\r\\n]"
+      }
+    },
+    "license": {
+      "type": "string",
+      "description": "SPDX license identifier.",
+      "minLength": 1,
+      "maxLength": 64,
+      "not": {
+        "pattern": "[\\r\\n]"
+      }
+    },
+    "keywords": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "not": {
+          "pattern": "[\\r\\n]"
+        }
+      },
+      "description": "Free-form discovery keywords.",
+      "maxItems": 32
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Client-specific manifest data keyed by reverse-domain namespace (Agent Plugins 1.0.0). Other clients' namespaces are carried unread.",
+      "properties": {
+        "ai.agent-connector.ave": {
+          "type": "object",
+          "description": "Ave host manifest data. Agent Plugins 1.0.0 assigns no semantics to extension namespace contents; everything the Ave host requires to load, sandbox and govern a plugin lives here.",
+          "additionalProperties": false,
+          "properties": {
+            "displayName": {
+              "type": "string",
+              "description": "Human-readable label shown in the UI. Defaults to the portable `name` when absent (materializeManifest)."
+            },
+            "onboarding": {
+              "$ref": "#/definitions/pluginOnboarding"
+            },
+            "entry": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tools": {
+              "description": "LLM- and app-visible tool surface: an array of pure MCP Tool objects (manifest == wire, #885). Each tool's `_meta.ui.visibility` declares model and/or app reachability. An empty `[]` is valid for template / MCP-server manifests that expose no plugin-authored tools.",
+              "type": "array",
+              "minItems": 0,
+              "items": {
+                "$ref": "#/definitions/tool"
+              }
+            },
+            "config": {
+              "type": "object"
+            },
+            "ui": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "slot",
+                  "kind",
+                  "title"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "slot": {
+                    "enum": [
+                      "sidebar",
+                      "floating"
+                    ]
+                  },
+                  "kind": {
+                    "enum": [
+                      "embedded-module",
+                      "embedded-page",
+                      "info-card"
+                    ]
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "defaults": {
+                    "type": "object"
+                  },
+                  "entry": {
+                    "type": "string"
+                  },
+                  "exportName": {
+                    "type": "string"
+                  },
+                  "page": {
+                    "type": "string"
+                  }
+                }
+              },
+              "description": "UI extensions. Kind-specific required fields (embedded-module: entry+exportName; embedded-page: page) are enforced at runtime with hard-fail — invalid entries fail manifest load, the plugin does NOT register."
+            },
+            "uiResources": {
+              "type": "array",
+              "description": "MCP App ui:// resources this plugin serves (distinct from `ui[]`, which declares host-mounted React sidebar panels). DECLARED POLICY, SERVED CONTENT: each entry declares a `ui://<pluginId>/<path>` uri plus that resource's OWN _meta.ui security policy (csp/permissions); the card HTML itself is served by the plugin at read time (`RuntimePlugin.readUiResource(uri)`), exactly as an external MCP server answers resources/read with bytes — the host never reads a plugin-declared disk path. When a tool result carries `_meta.ui.resourceUri` matching one of these uris, the loopback host asks the plugin for the HTML and renders it through the same sandbox-proxy + main-computed CSP path as an external MCP server's ui:// resource. Security (enforced fail-closed at serve time): the uri authority MUST equal the plugin id (own-namespace-only), the uri MUST be declared here (declared-only — this is what binds served content to a reviewed policy), and main COMPUTES the CSP header AND the frame's Permissions-Policy `allow` attribute from csp/permissions — the plugin never supplies a policy header string or an allow-list. csp/permissions stay in the manifest (not on the hook's return) so they are statically reviewable and covered by manifestSha256. See mcpUiResourcePermissions for the accepted permission set (host-honorable, proven end-to-end).",
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "uri"
+                ],
+                "properties": {
+                  "uri": {
+                    "type": "string",
+                    "description": "ui://<pluginId>/<path>. Authority MUST equal the declaring plugin's id (re-checked fail-closed at serve time).",
+                    "pattern": "^ui://[a-z0-9][a-z0-9.-]*/.+",
+                    "not": {
+                      "pattern": "[\\r\\n]"
+                    },
+                    "maxLength": 512
+                  },
+                  "csp": {
+                    "$ref": "#/definitions/mcpUiResourceCsp"
+                  },
+                  "permissions": {
+                    "$ref": "#/definitions/mcpUiResourcePermissions"
+                  }
+                }
+              }
+            },
+            "skills": {
+              "type": "array",
+              "description": "Plugin-owned Skill directories. Each path is relative to the verified plugin root and must contain SKILL.md.",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/definitions/pluginContributionDeclaration"
+              }
+            },
+            "hooks": {
+              "type": "array",
+              "description": "Plugin-owned declarative Hook configuration files. Declaration does not grant execution trust.",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/definitions/pluginContributionDeclaration"
+              }
+            },
+            "mcpServers": {
+              "type": "array",
+              "description": "Plugin-owned declarative MCP server configuration files. Declaration does not grant connection approval.",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/definitions/pluginContributionDeclaration"
+              }
+            },
+            "prompts": {
+              "type": "array",
+              "description": "Plugin-owned prompt files. Their text retains package-authored provenance.",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/definitions/pluginContributionDeclaration"
+              }
+            },
+            "routineTemplates": {
+              "type": "array",
+              "description": "Plugin-owned routine suggestion files. Installation never creates a routine.",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/definitions/pluginContributionDeclaration"
+              }
+            },
+            "capabilities": {
+              "type": "array",
+              "description": "Free-form capability declarations (format-validated, NOT a closed enum). The host ENFORCES only two at runtime — 'external-auth-consumer' and 'host:overlay' (see src/plugins/capabilities.ts KNOWN_CAPABILITY_IDS). Every other string is a harmless self-declaration (strings on already-installed manifests that the host no longer reads). Kept free-form — rather than an enum — so an installed manifest declaring a removed capability still validates and loads instead of being rejected at schema validation. Emit authorization for event-source namespaces (email/calendar/meeting/index) is inferred from emittedEvents, not from a capability here. The pattern is format hygiene only (blocks uppercase/whitespace/garbage), not a vocabulary.",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9:-]*$",
+                "not": {
+                  "pattern": "[\\r\\n]"
+                }
+              }
+            },
+            "networkAccess": {
+              "type": "object",
+              "description": "Tier A host-mediated egress allow-list. hostApi.hostFetch may only reach hosts matching allowedDomains (dot-boundary suffix match). Deny-by-default: absent or empty = no egress.",
+              "additionalProperties": false,
+              "required": [
+                "allowedDomains"
+              ],
+              "properties": {
+                "allowedDomains": {
+                  "type": "array",
+                  "description": "Hostnames the plugin may reach via hostApi.hostFetch. Dot-boundary suffix-match allow-list ('openai.azure.com' allows 'x.openai.azure.com' but not 'openai.azure.com.attacker.com'). Lowercase ASCII hostnames, >=1 dot, RFC1035 label/length bounds; wildcards / URLs / ports / whitespace / IDN-punycode (xn--*) / bare public suffixes are rejected — mirrors the host's load-time validator and the auth.partitionDomains rules so manifest-publish surfaces them before runtime. The loopback literals 'localhost', '127.0.0.1' and '::1' may also be declared, for an endpoint the user runs on their own machine. Max 16. The host re-validates at every hostFetch call.",
+                  "minItems": 1,
+                  "maxItems": 16,
+                  "uniqueItems": true,
+                  "items": {
+                    "anyOf": [
+                      {
+                        "description": "Loopback literals — the local machine, declared by name so a plugin can reach an endpoint the user runs there (LM Studio / LiteLLM / an internal proxy). Exact literals only: 'foo.localhost' carries a dot and goes through the ordinary rules below. Declaring one is what lets the host permit cleartext http to that host, since those bytes never leave the machine; the host still proves the name resolves to loopback, and the declaration opens neither the LAN (see allowPrivateNetworks) nor any other host.",
+                        "type": "string",
+                        "enum": [
+                          "localhost",
+                          "127.0.0.1",
+                          "::1"
+                        ]
+                      },
+                      {
+                        "allOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$",
+                            "not": {
+                              "pattern": "[\\r\\n]"
+                            },
+                            "minLength": 3,
+                            "maxLength": 253
+                          },
+                          {
+                            "not": {
+                              "enum": [
+                                "com",
+                                "net",
+                                "org",
+                                "kr",
+                                "co.kr",
+                                "or.kr",
+                                "go.kr",
+                                "io",
+                                "ai",
+                                "dev",
+                                "app"
+                              ]
+                            }
+                          },
+                          {
+                            "not": {
+                              "type": "string",
+                              "pattern": "(^|\\.)xn--"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "reasoning": {
+                  "type": "string",
+                  "description": "Human-readable justification surfaced to the user at install for the requested egress."
+                },
+                "allowPrivateNetworks": {
+                  "type": "boolean",
+                  "description": "Governance opt-in for allow-listed intranet/private-network (RFC1918/ULA) egress. Applies to host-mediated hostApi.hostFetch and explicitly documented browser/direct intranet exceptions; link-local and metadata addresses remain denied by host guards. Loopback is a separate axis this flag neither grants nor requires — declare the loopback literal in allowedDomains instead."
+                },
+                "authCookiePartition": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^:]+$",
+                  "not": {
+                    "pattern": "[\\r\\n]"
+                  },
+                  "description": "Opt-in session-cookie vault: names the sub-namespace of this plugin's own auth partition (persist:plugin-auth:<pluginId>:<sub>) whose harvested session cookies the host attaches to every hostApi.hostFetch request, scoped per URL and re-scoped per redirect hop. For portals with no SSO/OAuth — where the session cookie IS the credential — this keeps the value on the host: the plugin never receives it (pair with openAuthWindow({ retainCookies: true })). A plugin that declares this must not send its own Cookie header; the host rejects such a request. Only the <sub> segment is named here, so a plugin cannot address another plugin's partition."
+                }
+              }
+            },
+            "eventSubscriptions": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "type"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "hint": {
+                        "type": "object",
+                        "required": [
+                          "category",
+                          "priority",
+                          "title"
+                        ],
+                        "additionalProperties": false,
+                        "properties": {
+                          "category": {
+                            "type": "string",
+                            "enum": [
+                              "task",
+                              "note",
+                              "session",
+                              "meeting",
+                              "email",
+                              "calendar",
+                              "system"
+                            ]
+                          },
+                          "priority": {
+                            "type": "string",
+                            "enum": [
+                              "high",
+                              "medium",
+                              "low"
+                            ]
+                          },
+                          "title": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "emittedEvents": {
+              "type": "array",
+              "description": "Event types this plugin emits.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "hostSecrets": {
+              "type": "object",
+              "description": "Explicit allowlist of host-managed LLM secrets the plugin reads via hostApi.getSecret. Default deny when unset.",
+              "additionalProperties": false,
+              "properties": {
+                "read": {
+                  "type": "array",
+                  "description": "Secret keys this plugin is permitted to read. Accepted forms: llm.apiKey.<vendor> or llm.marketplaceProvider.<presetId>.apiKey. Marketplace preset ids follow the host provider-preset id contract. Bounded (maxItems=32, per-item maxLength=111) to prevent registry-level DoS via oversized manifests.",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(?:llm\\.apiKey\\.[a-z]+(-[a-z]+)*|llm\\.marketplaceProvider\\.[A-Za-z0-9][A-Za-z0-9._-]{0,79}\\.apiKey)$",
+                    "not": {
+                      "pattern": "[\\r\\n]"
+                    },
+                    "maxLength": 111
+                  },
+                  "maxItems": 32,
+                  "uniqueItems": true,
+                  "default": []
+                }
+              }
+            },
+            "startupTimeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60000,
+              "description": "Hard startup() timeout (ms). Exceeding plugins are fail-soft dropped. Default slow warning threshold is 5000ms."
+            },
+            "auth": {
+              "type": "object",
+              "description": "Optional declarative auth contract. Lets the host render a generic 'authentication required / signed in' badge + login/logout button in Settings → 플러그인 설정 without baking plugin-specific auth code into the host. The plugin still owns its OAuth/cookie flow (see architecture.md §9.4a 'Plugin-Owned OAuth Authentication'); the host only invokes the named tools and listens for the auth-changed event. Each of the tool names referenced here MUST be the `name` of an app-visible tool in `tools[]` (its `_meta.ui.visibility` includes `\"app\"`); the host value-validates this against the normalized Tool[]. On state transitions (login success, logout, token refresh failure) the plugin SHOULD emit an event named `<pluginId>.auth.changed` so the host UI can refresh without polling.",
+              "additionalProperties": false,
+              "required": [
+                "statusTool",
+                "loginTool"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "description": "Human-readable label for the auth surface, shown next to the badge (e.g. 'Microsoft 계정', 'Portal'). Defaults to the plugin's `name` if omitted.",
+                  "maxLength": 64
+                },
+                "statusTool": {
+                  "type": "string",
+                  "description": "Name of an app-visible tool in `tools[]` (its `_meta.ui.visibility` includes `\"app\"`) returning `{ authenticated: boolean, account?: string }`. Host invokes on Settings tab mount and after every `<pluginId>.auth.changed` event.",
+                  "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+                  "not": {
+                    "pattern": "[\\r\\n]"
+                  },
+                  "maxLength": 64
+                },
+                "loginTool": {
+                  "type": "string",
+                  "description": "Name of an app-visible tool in `tools[]` (its `_meta.ui.visibility` includes `\"app\"`) the host invokes when the user clicks the '로그인' button. The plugin owns the actual auth flow (e.g. MSAL interactive, openAuthWindow); the host only triggers it.",
+                  "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+                  "not": {
+                    "pattern": "[\\r\\n]"
+                  },
+                  "maxLength": 64
+                },
+                "logoutTool": {
+                  "type": "string",
+                  "description": "Optional name of an app-visible tool in `tools[]` (its `_meta.ui.visibility` includes `\"app\"`) the host invokes when the user clicks the '로그아웃' button. Omit to render a sign-in-only surface (e.g. plugins that don't support runtime sign-out).",
+                  "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+                  "not": {
+                    "pattern": "[\\r\\n]"
+                  },
+                  "maxLength": 64
+                },
+                "partitionDomains": {
+                  "type": "array",
+                  "description": "Hostnames the plugin may open inside its `persist:plugin-auth:<pluginId>` partition via `hostApi.openAuthPartitionViewer`. Treated as a dot-boundary suffix-match allow-list (e.g. `webmail.example.com` matches `mail.webmail.example.com` but not `webmail.example.com.attacker.com`). Schema rules: lowercase ASCII hostnames only, each entry MUST contain ≥1 dot (single-label hosts like `localhost` are rejected to avoid blanket subdomain matching), per RFC 1035 each label is bounded to 63 chars and the whole hostname to 253. Wildcards / URLs / port suffixes / whitespace / NUL / IDN-punycode labels (`xn--*`) are rejected. The host's load-time validator additionally rejects bare public suffixes (`com`, `co.kr`, `or.kr`, `go.kr`, `kr`, `net`, `org`, `io`, `ai`, `dev`, `app`); those rejections are mirrored here so manifest-publish surfaces them before runtime. Length cap 16 prevents an over-broad consent surface. The host re-validates this list at every viewer-open call.",
+                  "minItems": 1,
+                  "maxItems": 16,
+                  "uniqueItems": true,
+                  "items": {
+                    "allOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$",
+                        "not": {
+                          "pattern": "[\\r\\n]"
+                        },
+                        "minLength": 3,
+                        "maxLength": 253
+                      },
+                      {
+                        "not": {
+                          "enum": [
+                            "com",
+                            "net",
+                            "org",
+                            "kr",
+                            "co.kr",
+                            "or.kr",
+                            "go.kr",
+                            "io",
+                            "ai",
+                            "dev",
+                            "app"
+                          ]
+                        }
+                      },
+                      {
+                        "not": {
+                          "type": "string",
+                          "pattern": "(^|\\.)xn--"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "workProposals": {
+              "type": "object",
+              "description": "Recommended-work channel declaration. Declaration IS authorization (no capability string): a plugin may post a proposal only in a kind declared here, and may hold at most ONE OPEN PROPOSAL PER DECLARED KIND — the declared list doubles as the nag ceiling. Absent or empty = the plugin may post nothing. A malformed block grants nothing rather than the entries that happened to parse.",
+              "additionalProperties": false,
+              "required": [
+                "kinds"
+              ],
+              "properties": {
+                "reasoning": {
+                  "type": "string",
+                  "description": "Human-readable justification surfaced to the user.",
+                  "maxLength": 400
+                },
+                "kinds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "id",
+                      "label"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Slot id, unique within the plugin. Namespaced by the host as <pluginId>:<kind>.",
+                        "pattern": "^[a-z][a-z0-9-]{0,31}$",
+                        "not": {
+                          "pattern": "[\\r\\n]"
+                        }
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "User-facing name of the slot, shown in the install disclosure and on the card.",
+                        "minLength": 1,
+                        "maxLength": 60
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "alerts": {
+              "type": "object",
+              "description": "Alert declaration. Declaration IS authorization: a kind not declared here is not granted, and a block that is malformed in any entry grants nothing. A manifest that carries this block may pass only its declared `suggestions` to triggerConversation, each at most once per 30 days.",
+              "additionalProperties": false,
+              "required": [
+                "reasoning",
+                "kinds"
+              ],
+              "properties": {
+                "reasoning": {
+                  "type": "string",
+                  "description": "Why this plugin alerts at all, shown in Settings.",
+                  "minLength": 1,
+                  "maxLength": 400,
+                  "allOf": [
+                    {
+                      "not": {
+                        "pattern": "^\\s*$"
+                      }
+                    }
+                  ]
+                },
+                "kinds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 12,
+                  "items": {
+                    "$ref": "#/definitions/alertKind"
+                  }
+                },
+                "suggestions": {
+                  "type": "array",
+                  "description": "The overlay sources triggerConversation accepts from this plugin.",
+                  "maxItems": 4,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(?!.*--)overlay:[a-z][a-z0-9-]*$",
+                    "not": {
+                      "pattern": "[\\r\\n]"
+                    },
+                    "maxLength": 128
+                  }
+                }
+              }
+            },
+            "configInherits": {
+              "type": "array",
+              "description": "Config keys this plugin fills, once, from a retired predecessor that names it as a successor. A key the user already set is never overwritten. Two entries with the same `to` refuse the list.",
+              "minItems": 1,
+              "maxItems": 16,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "pluginId",
+                      "to",
+                      "from"
+                    ],
+                    "properties": {
+                      "pluginId": {
+                        "type": "string",
+                        "pattern": "^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$",
+                        "minLength": 3,
+                        "maxLength": 64,
+                        "not": {
+                          "pattern": "[\\r\\n]"
+                        }
+                      },
+                      "to": {
+                        "type": "string",
+                        "description": "A top-level plugin config key.",
+                        "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+                        "not": {
+                          "pattern": "[\\r\\n]"
+                        }
+                      },
+                      "from": {
+                        "type": "string",
+                        "description": "A top-level plugin config key.",
+                        "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+                        "not": {
+                          "pattern": "[\\r\\n]"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "pluginId",
+                      "to",
+                      "value"
+                    ],
+                    "properties": {
+                      "pluginId": {
+                        "type": "string",
+                        "pattern": "^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$",
+                        "minLength": 3,
+                        "maxLength": 64,
+                        "not": {
+                          "pattern": "[\\r\\n]"
+                        }
+                      },
+                      "to": {
+                        "type": "string",
+                        "description": "A top-level plugin config key.",
+                        "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+                        "not": {
+                          "pattern": "[\\r\\n]"
+                        }
+                      },
+                      "value": {
+                        "description": "The constant the key is set to."
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "dependencies": {
+              "type": "array",
+              "description": "Plugin dependencies that should be installed or considered with this plugin. This is not a delivery mode.",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "pluginId"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "pluginId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "versionRange": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "required": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "pluginAccess": {
+              "type": "object",
+              "required": [
+                "plugins"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "plugins": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "pluginId"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "pluginId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "events": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "uniqueItems": true
+                      }
+                    }
+                  }
+                },
+                "agentApprovalScopes": {
+                  "type": "array",
+                  "description": "§8 P0 security — approval action scopes this plugin is permitted to issue and respond to via hostApi.agentApproval. Omitted or empty array means no approval scopes allowed (host enforces empty-list semantics). Known values: 'agent_file_share', 'agent_task_delegate', 'agent_external_api_call'.",
+                  "default": [],
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[a-z][a-z0-9_]*$",
+                    "not": {
+                      "pattern": "[\\r\\n]"
+                    }
+                  },
+                  "uniqueItems": true
+                }
+              }
+            },
+            "requires": {
+              "type": "object",
+              "description": "Runtime prerequisites declared by the plugin",
+              "properties": {
+                "capabilities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "minAppVersion": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+                  "not": {
+                    "pattern": "[\\r\\n]"
+                  },
+                  "description": "Minimum Ave app version (plain SemVer MAJOR.MINOR.PATCH, not a range) required to load this plugin. The host refuses to install (hard block before download) and refuses to activate (skips start(), surfaces a non-dismissable \"needs newer app\" state) when the running app is older. Omit for no minimum (compatible with all app versions)."
+                },
+                "hostProtocol": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$",
+                  "not": {
+                    "pattern": "[\\r\\n]"
+                  },
+                  "description": "The Ave host protocol version the extension speaks, an integer written as a string (\"3\"). A missing declaration or an unserved version refuses activation as incompatible-host-protocol. An app whose schema predates this field rejects the manifest, so an extension that declares it sets minAppVersion to the first release that knows it."
+                }
+              },
+              "additionalProperties": false
+            },
+            "llmKeySource": {
+              "type": "string",
+              "enum": [
+                "host",
+                "plugin",
+                "none"
+              ],
+              "default": "none",
+              "description": "Whether this plugin uses host-managed LLM keys (host), its own keys (plugin), or no LLM at all (none). The 'host' source requires marketplace whitelist authorization at runtime."
+            },
+            "packageName": {
+              "type": "string",
+              "minLength": 1,
+              "description": "npm package name persisted into installed manifests by PluginMarketplaceService for rollback support. Not authored by plugin developers."
+            },
+            "icon": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Optional Lucide icon name (PascalCase, e.g. 'Mic', 'FileText'). Host dynamically looks up the named export from lucide-react and renders it as a monochrome stroke icon in the plugin grid popover. Unknown names fall back to the 'Plug' icon. Full list: https://lucide.dev/icons/"
+            },
+            "iconText": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4,
+              "description": "Optional short text (1-4 chars) rendered inside the plugin grid avatar — e.g. 'AB', 'MTG'. Takes precedence over `icon` when both are declared. Use when no Lucide glyph matches the plugin's domain identity."
+            },
+            "python": {
+              "type": "object",
+              "description": "Optional Python runtime co-deployment metadata. Host installs declared requirements when managedBy is ave.",
+              "additionalProperties": false,
+              "properties": {
+                "managedBy": {
+                  "type": "string",
+                  "enum": [
+                    "ave",
+                    "self"
+                  ]
+                },
+                "requirementsLock": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "interpreter": {
+                  "type": "string"
+                }
+              }
+            },
+            "configSchema": {
+              "type": "object",
+              "description": "§9.2 Track B — declarative settings schema. JSON Schema draft-07 subset rendered as a typed form in PluginConfigTab. format:'secret' routes the value through the encrypted keychain instead of cleartext pluginConfigs.",
+              "required": [
+                "properties"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "$schema": {
+                  "type": "string"
+                },
+                "properties": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "required": [
+                      "type"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "string",
+                          "number",
+                          "integer",
+                          "boolean",
+                          "array"
+                        ]
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "default": {
+                        "description": "Default value for the form field. Outer JSON byte-size cap is enforced server-side (see marketplace publisher.py); the schema bounds object/array primitives so a pathological default can't blow up the catalog.",
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 1024
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "array",
+                            "maxItems": 64
+                          },
+                          {
+                            "type": "object",
+                            "maxProperties": 32
+                          }
+                        ]
+                      },
+                      "enum": {
+                        "type": "array"
+                      },
+                      "minimum": {
+                        "type": "number"
+                      },
+                      "maximum": {
+                        "type": "number"
+                      },
+                      "minLength": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "maxLength": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "pattern": {
+                        "type": "string"
+                      },
+                      "format": {
+                        "type": "string",
+                        "enum": [
+                          "secret",
+                          "uri",
+                          "email",
+                          "date-time"
+                        ]
+                      },
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "type"
+                        ],
+                        "additionalProperties": false,
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "string",
+                              "number",
+                              "integer",
+                              "boolean"
+                            ]
+                          },
+                          "enum": {
+                            "type": "array"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "required": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "uniqueItems": true
+                },
+                "customPanel": {
+                  "type": "object",
+                  "required": [
+                    "entry",
+                    "exportName"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "entry": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "exportName": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            },
+            "uiSlots": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$",
+                "not": {
+                  "pattern": "[\\r\\n]"
+                },
+                "maxLength": 64
+              },
+              "description": "Top-level advertisement of UI slot names this plugin participates in. Marketplace metadata only — actual extension binding lives in `ui[].slot`. Kebab-case identifiers, ≤32 entries."
+            },
+            "sandbox": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "read": {
+                  "type": "array",
+                  "maxItems": 8,
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "segments",
+                          "why"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "hostDirectory"
+                          },
+                          "segments": {
+                            "enum": [
+                              [
+                                "runtime"
+                              ],
+                              [
+                                "certs"
+                              ]
+                            ]
+                          },
+                          "why": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 400,
+                            "not": {
+                              "pattern": "^\\s*$"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "configKey",
+                          "why"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "userChosenDirectory"
+                          },
+                          "configKey": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "why": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 400,
+                            "not": {
+                              "pattern": "^\\s*$"
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "write": {
+                  "type": "array",
+                  "maxItems": 8,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "kind",
+                      "configKey",
+                      "why"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "userChosenDirectory"
+                      },
+                      "configKey": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "why": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 400,
+                        "not": {
+                          "pattern": "^\\s*$"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "process": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "command"
+              ],
+              "properties": {
+                "command": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "pattern": "^(?:\\./|\\$\\{PLUGIN_ROOT\\}/)(?:[^/\\\\=]+/)*[^/\\\\=]+$",
+                  "not": {
+                    "pattern": "[\\r\\n]"
+                  }
+                },
+                "args": {
+                  "type": "array",
+                  "maxItems": 64,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                },
+                "env": {
+                  "type": "object",
+                  "maxProperties": 64,
+                  "propertyNames": {
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$",
+                    "not": {
+                      "pattern": "[\\r\\n]"
+                    }
+                  },
+                  "additionalProperties": {
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                }
+              }
+            },
+            "mcpAuth": {
+              "type": "object",
+              "maxProperties": 64,
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "auth"
+                ],
+                "properties": {
+                  "auth": {
+                    "const": "api-key"
+                  },
+                  "apiKeyEnv": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$",
+                    "not": {
+                      "pattern": "[\\r\\n]"
+                    }
+                  },
+                  "apiKeyHeader": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$",
+                    "not": {
+                      "pattern": "[\\r\\n]"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "entry",
+                "tools"
+              ],
+              "properties": {
+                "process": false,
+                "mcpAuth": false
+              }
+            },
+            {
+              "required": [
+                "process",
+                "tools"
+              ],
+              "properties": {
+                "entry": false,
+                "mcpAuth": false
+              }
+            },
+            {
+              "properties": {
+                "entry": false,
+                "process": false,
+                "tools": false,
+                "onboarding": false,
+                "config": false,
+                "ui": false,
+                "uiResources": false,
+                "skills": false,
+                "hooks": false,
+                "mcpServers": false,
+                "prompts": false,
+                "routineTemplates": false,
+                "capabilities": false,
+                "networkAccess": false,
+                "eventSubscriptions": false,
+                "emittedEvents": false,
+                "hostSecrets": false,
+                "startupTimeoutMs": false,
+                "auth": false,
+                "workProposals": false,
+                "alerts": false,
+                "configInherits": false,
+                "dependencies": false,
+                "pluginAccess": false,
+                "llmKeySource": false,
+                "packageName": false,
+                "python": false,
+                "configSchema": false,
+                "uiSlots": false,
+                "sandbox": false,
+                "requires": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "minAppVersion"
+                  ],
+                  "properties": {
+                    "minAppVersion": {
+                      "type": "string",
+                      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+                      "not": {
+                        "pattern": "[\\r\\n]"
+                      },
+                      "description": "Minimum Ave app version (plain SemVer MAJOR.MINOR.PATCH, not a range) required to load this plugin. The host refuses to install (hard block before download) and refuses to activate (skips start(), surfaces a non-dismissable \"needs newer app\" state) when the running app is older. Omit for no minimum (compatible with all app versions)."
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "additionalProperties": {
+        "type": "object"
+      }
+    }
+  },
+  "definitions": {
+    "pluginOnboarding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "firstTask": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "priority",
+            "locales"
+          ],
+          "properties": {
+            "priority": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000
+            },
+            "locales": {
+              "type": "object",
+              "description": "Complete localized display copy and visible composer prefill. English is required as the deterministic fallback.",
+              "minProperties": 1,
+              "maxProperties": 16,
+              "required": [
+                "en"
+              ],
+              "propertyNames": {
+                "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+                "not": {
+                  "pattern": "[\\r\\n]"
+                },
+                "maxLength": 35
+              },
+              "additionalProperties": {
+                "$ref": "#/definitions/pluginFirstTaskCopy"
+              }
+            }
+          }
+        },
+        "highlights": {
+          "type": "array",
+          "description": "Capability highlights and new-feature promotions. The host proposes each one once and remembers the user's answer, so the ceiling is a nag budget rather than a storage limit.",
+          "maxItems": 5,
+          "items": {
+            "$ref": "#/definitions/pluginOnboardingHighlight"
+          }
+        }
+      }
+    },
+    "pluginOnboardingHighlight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "copy",
+        "action"
+      ],
+      "properties": {
+        "id": {
+          "description": "Stable kebab-case id, unique within the declaring plugin. Half of the key the user's answer is stored under, so renaming it asks the question again.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          },
+          "maxLength": 64
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "copy": {
+          "type": "object",
+          "description": "Complete localized display copy. English is required as the deterministic fallback.",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "required": [
+            "en"
+          ],
+          "propertyNames": {
+            "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "maxLength": 35
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/pluginHighlightCopy"
+          }
+        },
+        "action": {
+          "$ref": "#/definitions/pluginOnboardingAction"
+        }
+      }
+    },
+    "pluginHighlightCopy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "headline",
+        "body",
+        "actionLabel"
+      ],
+      "properties": {
+        "headline": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 320
+        },
+        "actionLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "pluginOnboardingAction": {
+      "description": "What accepting the highlight does. Inert on its own: the host performs the effect, and the two arms that do anything only move the user — text into the visible composer, or the settings view onto a tab.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "prompt"
+          ],
+          "properties": {
+            "kind": {
+              "const": "composer"
+            },
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path"
+          ],
+          "properties": {
+            "kind": {
+              "const": "settings"
+            },
+            "path": {
+              "description": "A settings tab id, optionally followed by '/' and one section within that tab (\"permissions\", \"permissions/permissions-os-sandbox\"). Each segment is lowercase kebab and opens with a letter. The pattern only shapes the string; the host checks both halves against the tabs and sections its build actually ships and rejects the manifest when either is unknown. Grammar SOT: SETTINGS_PATH_PATTERN in src/shared/settings-tabs.ts, which settings-tabs.test.ts pins this pattern to.",
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*(/[a-z][a-z0-9-]*)?$",
+              "not": {
+                "pattern": "[\\r\\n]"
+              },
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "none"
+            }
+          }
+        }
+      ]
+    },
+    "pluginFirstTaskCopy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "headline",
+        "body",
+        "actionLabel",
+        "composerPrompt"
+      ],
+      "properties": {
+        "headline": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 320
+        },
+        "actionLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "composerPrompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "pluginContributionDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          },
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "pluginToolOperationPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "discriminant",
+        "operations"
+      ],
+      "properties": {
+        "discriminant": {
+          "const": "operation"
+        },
+        "operations": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/definitions/pluginToolOperationRule"
+          }
+        }
+      }
+    },
+    "pluginToolOperationRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "minimumRisk"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "minimumRisk": {
+          "enum": [
+            "read",
+            "write",
+            "network",
+            "shell"
+          ]
+        },
+        "appVisible": {
+          "type": "boolean"
+        },
+        "successfulResultStatuses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "requiresRead": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tool",
+            "operations",
+            "maxAgeMs"
+          ],
+          "properties": {
+            "tool": {
+              "type": "string",
+              "minLength": 1
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "maxAgeMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3600000
+            }
+          }
+        }
+      }
+    },
+    "tool": {
+      "$comment": "PURE (v6) MCP Tool object — manifest == wire (#885). additionalProperties:false rejects the removed legacy fields (category/workerId/writesToOwnSandbox/version/deprecatedSince/replacedBy); they are not Tool properties.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "inputSchema"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          },
+          "maxLength": 64
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "minLength": 10
+        },
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "type",
+            "properties"
+          ],
+          "properties": {
+            "$schema": {
+              "type": "string"
+            },
+            "type": {
+              "const": "object"
+            },
+            "properties": {
+              "type": "object"
+            },
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          }
+        },
+        "outputSchema": {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "$schema": {
+              "type": "string"
+            },
+            "type": {
+              "const": "object"
+            },
+            "properties": {
+              "type": "object"
+            },
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          }
+        },
+        "icons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "src"
+            ],
+            "properties": {
+              "src": {
+                "type": "string"
+              },
+              "mimeType": {
+                "type": "string"
+              },
+              "sizes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "_meta": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ui": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "visibility": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "model",
+                      "app"
+                    ]
+                  }
+                }
+              }
+            },
+            "ave/pathFields": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                "not": {
+                  "pattern": "[\\r\\n]"
+                }
+              }
+            },
+            "ave/operationPolicy": {
+              "$ref": "#/definitions/pluginToolOperationPolicy"
+            }
+          }
+        }
+      }
+    },
+    "mcpUiResourceCsp": {
+      "$comment": "MCP Apps spec `McpUiResourceCsp` — DOMAIN BUCKETS (not CSP directive names). Main derives the sandbox-proxy CSP header from these; the plugin never supplies a header string. Mirrors src/mcp/types.ts McpUiResourceCsp.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "connectDomains": {
+          "type": "array",
+          "description": "Origins for network requests (fetch/XHR/WebSocket) -> connect-src.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "resourceDomains": {
+          "type": "array",
+          "description": "Origins for images, scripts, stylesheets, fonts, media.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "frameDomains": {
+          "type": "array",
+          "description": "Origins for nested iframes -> frame-src.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "baseUriDomains": {
+          "type": "array",
+          "description": "Allowed base URIs for the document -> base-uri.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "mcpUiResourcePermissions": {
+      "$comment": "MCP Apps spec `McpUiResourcePermissions`, restricted to what this host can DEMONSTRABLY honor. Main derives the inner iframe's Permissions-Policy `allow` attribute AND the Electron session grant from this; the plugin never supplies either. An ABSENT key is denied. The inner frame carries `allow-same-origin` (spec origin requirement, apps.mdx:474-475), so it inherits the per-server proxy origin and a delegated feature can be honored. SOT for the accepted set: src/shared/mcp-app-permissions.ts MCP_APP_PERMISSION_FEATURES, proven end-to-end in test/e2e/ui/mcp-app-permissions.spec.ts. The spec's `clipboardWrite` is deliberately NOT accepted — measured, a script-initiated clipboard write is denied even when delegated — so declaring it FAILS validation loudly rather than silently doing nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "camera": {
+          "type": "object",
+          "description": "Request the camera (getUserMedia video) for this card's frame. Absent means denied.",
+          "additionalProperties": false
+        },
+        "microphone": {
+          "type": "object",
+          "description": "Request the microphone (getUserMedia audio) for this card's frame. Absent means denied.",
+          "additionalProperties": false
+        },
+        "geolocation": {
+          "type": "object",
+          "description": "Request the Geolocation API for this card's frame. Absent means denied.",
+          "additionalProperties": false
+        }
+      }
+    },
+    "alertKind": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "defaultEnabled",
+        "visibility",
+        "summary",
+        "prompt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Kind id, unique within the plugin. Namespaced by the host as <pluginId>:<kind>; never contains `--`, so the host-minted source overlay:<pluginId>--<kind> splits unambiguously.",
+          "pattern": "^(?!.*--)[a-z][a-z0-9-]{0,30}[a-z0-9]$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "label": {
+          "type": "object",
+          "description": "The kind's name in Settings and on the card; also the OS notification title.",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "required": [
+            "en"
+          ],
+          "propertyNames": {
+            "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "maxLength": 35
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
+          }
+        },
+        "description": {
+          "type": "object",
+          "description": "What the kind is for, shown in Settings.",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "required": [
+            "en"
+          ],
+          "propertyNames": {
+            "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "maxLength": 35
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
+          }
+        },
+        "defaultEnabled": {
+          "type": "boolean",
+          "description": "The kind's toggle on a fresh install. A kind that first arrives in an update resolves off whatever this says."
+        },
+        "visibility": {
+          "enum": [
+            "user-visible",
+            "summary-only",
+            "silent"
+          ]
+        },
+        "osNotification": {
+          "type": "object",
+          "description": "Absent = the kind never notifies the OS.",
+          "additionalProperties": false,
+          "required": [
+            "defaultEnabled",
+            "body"
+          ],
+          "properties": {
+            "defaultEnabled": {
+              "type": "boolean"
+            },
+            "bypassFocusGate": {
+              "type": "boolean"
+            },
+            "body": {
+              "type": "object",
+              "description": "Static notification text. It admits no slot, so no user content reaches the OS.",
+              "minProperties": 1,
+              "maxProperties": 16,
+              "required": [
+                "en"
+              ],
+              "propertyNames": {
+                "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+                "not": {
+                  "pattern": "[\\r\\n]"
+                },
+                "maxLength": 35
+              },
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80,
+                "not": {
+                  "pattern": "[{}\\r\\n]"
+                },
+                "allOf": [
+                  {
+                    "not": {
+                      "pattern": "^\\s*$"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "actionLabel": {
+          "type": "object",
+          "description": "The card's button label.",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "required": [
+            "en"
+          ],
+          "propertyNames": {
+            "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "maxLength": 35
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24,
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
+          }
+        },
+        "slots": {
+          "type": "object",
+          "maxProperties": 8,
+          "propertyNames": {
+            "pattern": "^[a-z][a-zA-Z0-9]{0,31}$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/alertSlot"
+          }
+        },
+        "summary": {
+          "type": "object",
+          "description": "The card text. Its only dynamic parts are {slot} references to declared text or list slots; no < or >.",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "required": [
+            "en"
+          ],
+          "propertyNames": {
+            "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "maxLength": 35
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "not": {
+              "pattern": "[<>\\r\\n]"
+            },
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
+          }
+        },
+        "prompt": {
+          "type": "object",
+          "description": "The prompt the user's accept stages, under the same template rules as summary.",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "required": [
+            "en"
+          ],
+          "propertyNames": {
+            "pattern": "^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$",
+            "not": {
+              "pattern": "[\\r\\n]"
+            },
+            "maxLength": 35
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "not": {
+              "pattern": "[<>]"
+            },
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "^\\s*$"
+                }
+              }
+            ]
+          }
+        },
+        "inherits": {
+          "type": "array",
+          "description": "The retired plugin whose saved choice this kind takes, at most one.",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pluginId",
+              "sourceId",
+              "enabled"
+            ],
+            "properties": {
+              "pluginId": {
+                "type": "string",
+                "pattern": "^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$",
+                "minLength": 3,
+                "maxLength": 64,
+                "not": {
+                  "pattern": "[\\r\\n]"
+                }
+              },
+              "sourceId": {
+                "type": "string",
+                "description": "The marketplace source the predecessor is expected to come from, used only until the host knows the retirement entry.",
+                "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+                "not": {
+                  "pattern": "[\\r\\n]"
+                }
+              },
+              "enabled": {
+                "$ref": "#/definitions/alertInheritRule"
+              },
+              "osNotification": {
+                "$ref": "#/definitions/alertInheritRule"
+              }
+            }
+          }
+        }
+      }
+    },
+    "alertSlot": {
+      "description": "A typed, bounded, untrusted value a raise supplies. `text` and `list` slots are named by `{slot}` in the templates; a `ref` slot is never named by a template — the host appends it to the prompt as a wrapped footer line.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "maxLength"
+          ],
+          "properties": {
+            "kind": {
+              "const": "text"
+            },
+            "maxLength": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "optional": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "maxItems",
+            "maxLength"
+          ],
+          "properties": {
+            "kind": {
+              "const": "list"
+            },
+            "maxItems": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "maxLength": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 120
+            },
+            "optional": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "ref"
+            },
+            "optional": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "alertInheritRule": {
+      "type": "object",
+      "description": "How a successor kind reads one toggle out of a retired plugin's config. `enabled` is true unless one of `values` is in the list at `key` (listed: \"disabled\"), or false unless one is (listed: \"enabled\"); a `masterKey` boolean that is false turns the toggle off.",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "listed",
+        "values"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "A top-level plugin config key.",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "listed": {
+          "enum": [
+            "enabled",
+            "disabled"
+          ]
+        },
+        "values": {
+          "type": "array",
+          "description": "Every spelling, current and legacy, under which the kind appears in the list. An empty list would read as \"on\" for every former user, so it is refused.",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "not": {
+              "pattern": "[\\r\\n]"
+            }
+          }
+        },
+        "masterKey": {
+          "type": "string",
+          "description": "A top-level plugin config key.",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        }
+      }
+    }
+  }
+}

@@ -452,6 +452,12 @@ describe("installer smoke and packaging discipline", () => {
     expect(deploy).toContain("sha256sum -c bundle.sha256");
     expectPinnedAction(deploy, "cloudflare/wrangler-action");
     expect(deploy).toContain('wranglerVersion: "4.114.0"');
+    // Ave's site is the static-assets Worker `ave-web` (ave.agent-connector.ai),
+    // configured by web/wrangler.jsonc, which travels inside the verified bundle.
+    expect(build).toContain("cp web/wrangler.jsonc staged-web/wrangler.jsonc");
+    expect(deploy).toContain("EXPECTED_CONFIG_SHA256");
+    expect(deploy).toContain("command: deploy --config wrangler.jsonc");
+    expect(deploy).not.toContain("pages deploy");
     expect(deploy).not.toContain("actions/checkout");
     expect(deploy).not.toContain("setup-bun");
     expect(deploy).not.toContain("bun install");
