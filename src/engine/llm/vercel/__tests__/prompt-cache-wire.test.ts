@@ -131,6 +131,27 @@ describe("prompt-prefix cache breakpoints", () => {
     expect(first.tools).toEqual(second.tools);
   });
 
+  it("never puts a breakpoint on a trailing assistant row with reasoning", async () => {
+    const body = await sentBody("claude", "claude-sonnet-4-5", {
+      enableThinking: true,
+      thinkingBudgetTokens: 2_000,
+      outputTokenLimit: 8_000,
+      messages: [
+        { role: "user", content: "Continue the analysis." },
+        {
+          role: "assistant",
+          content: "",
+          thinkingBlocks: [{ thinking: "Working through it.", signature: "sig-fixture" }],
+        },
+      ],
+    });
+    const blocks = messageBlocks(body).flat();
+    expect(blocks.filter((b) => b.type === "thinking" || b.type === "redacted_thinking")
+      .some((b) => b.cache_control !== undefined)).toBe(false);
+    const marked = blocks.filter((b) => b.cache_control !== undefined);
+    expect(marked).toEqual([expect.objectContaining({ type: "text", text: "Continue the analysis." })]);
+  });
+
   it("puts no breakpoint on an empty system prompt", async () => {
     const body = await sentBody("claude", "claude-haiku-4-5", { systemPrompt: "", tools: undefined });
     expect(countBreakpoints(body.system ?? [])).toBe(0);
