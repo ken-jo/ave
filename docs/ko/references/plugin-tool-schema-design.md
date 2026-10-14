@@ -610,8 +610,8 @@ CSS `initial` 키워드로 렌더되어 invisible regression 이 된다.
    콜백으로 흡수한다 (별도 `bridge.onEvent("host.theme.changed", …)` 두 번째
    구독 금지 — drift 회귀 케이스). React 측은 `useTheme(bridge, opts?)` 가
    `primeTheme` 위의 얇은 wrapper 라 동일 옵션 surface 를 갖는다. 자세한
-   결정 근거 + 마이그레이션 시퀀스는 `docs/architecture/proposals/2026-05-12-plugin-theme-unification.md`
-   참조. SDK 가 없으므로 `primeTheme` / `useTheme` 는 패키지에서 import 하지 않고
+   호스트 쪽 테마 브로드캐스트
+   계약은 [테마 시스템](../../development/theme-system.md)(영문)을 참조한다. SDK 가 없으므로 `primeTheme` / `useTheme` 는 패키지에서 import 하지 않고
    플러그인 소스에 복사해 둔다. 공식 마켓플레이스 모노레포
    [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 의
    `templates/extension/README.md` 가 현재 예시이고, 공식 플러그인
