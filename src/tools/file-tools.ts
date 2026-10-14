@@ -56,6 +56,25 @@ import {
 } from "../shared/image-preparation-policy.js";
 import { errorMessage } from "../shared/error-message.js";
 import { RENAME_FILE_LOCK_CODES, transientFsLockDelayMs } from "../lib/transient-fs-lock-retry.js";
+import {
+  MAX_TOOL_RESULT_LINES,
+  MAX_TOOL_RESULT_TOKENS,
+  trimOversizedToolResult,
+} from "../shared/tool-result-trim.js";
+import {
+  applyPatchChunks,
+  parsePatchEnvelope,
+  patchOperationPaths,
+  type PatchFileOperation,
+} from "../shared/patch-envelope.js";
+import {
+  fileReadKey,
+  forgetFileRead,
+  hashAndCountLines,
+  lookupFileRead,
+  recordFileRead,
+  sha256Hex,
+} from "./file-read-state.js";
 import type {
   BrokeredWorkloadCapability,
   WorkloadToolCorrelationAuthority,
@@ -202,12 +221,21 @@ export const EditFileInputSchema = FilePathSchema.extend({
   replaceAll: z.boolean().default(false),
 });
 
-export const ApplyPatchInputSchema = FilePathSchema.extend({
+export const MultiEditInputSchema = FilePathSchema.extend({
   replacements: z.array(z.object({
     oldText: z.string().min(1).describe("Exact text to replace."),
     newText: z.string().describe("Replacement text."),
     replaceAll: z.boolean().default(false),
   })).min(1).max(50),
+});
+
+export const ApplyPatchInputSchema = z.object({
+  patch: z.string().min(1).describe(
+    "Patch text from '*** Begin Patch' to '*** End Patch'. Each file section starts with " +
+    "'*** Add File: <path>' (every line prefixed '+'), '*** Delete File: <path>', or " +
+    "'*** Update File: <path>' (optionally followed by '*** Move to: <path>') with chunks of " +
+    "' ' context, '-' removed and '+' added lines, each chunk optionally introduced by '@@ <anchor line>'.",
+  ),
 });
 
 export const MoveFileInputSchema = z.object({
@@ -319,7 +347,10 @@ abstract class FileTool<TSchema extends z.ZodTypeAny> extends ZodTool<TSchema> {
 export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
   readonly name = "read_file";
   readonly description =
-    "Read a UTF-8 text file from the workspace. Supports zero-based line offset and line limit for large files.";
+    "Read a UTF-8 text file from the workspace. Returns a header line (path, line range, total lines) " +
+    "followed by the lines, each prefixed with its 1-based line number and a tab; the prefix is not part " +
+    "of the file. Use the zero-based offset and limit to page through large files. A file must be read " +
+    "in this session before edit_file, multi_edit, apply_patch or write_file may change it.";
   readonly inputSchema = ReadFileInputSchema;
   override readonly category: ToolCategory = "read";
 
@@ -358,22 +389,204 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
     }
 
     const window = await readTextFileWindow(target, input.offset, input.limit);
+    const whole = await hashAndCountLines(target);
+    const output = renderNumberedRead(target, input.offset, window.lines, whole.lineCount);
+    if (trimOversizedToolResult(output).truncated) {
+      return oversizedReadGuidance(target, input.offset, window.lines, whole.lineCount);
+    }
+    const sessionId = sessionIdOf(ctx);
+    if (sessionId !== undefined) {
+      recordFileRead(sessionId, await fileReadKey(target), {
+        mtimeMs: fileStat.value.mtimeMs,
+        size: whole.size,
+        sha256: whole.sha256,
+      });
+    }
     return {
-      output: JSON.stringify({
-        path: target,
-        startLine: input.offset + 1,
-        endLine: input.offset + window.lines.length,
-        truncated: window.truncated,
-        content: window.content,
-      }),
+      output,
       isError: false,
       metadata: {
         path: target,
         truncated: window.truncated,
         lineCount: window.lines.length,
+        totalLines: whole.lineCount,
       },
     };
   }
+}
+
+const LINE_NUMBER_WIDTH = 6;
+
+function renderNumberedRead(
+  path: string,
+  offset: number,
+  lines: readonly string[],
+  totalLines: number,
+): string {
+  if (lines.length === 0) {
+    return totalLines === 0
+      ? `${path} (empty file)`
+      : `${path} (no lines at offset ${offset}; the file has ${totalLines} lines)`;
+  }
+  const first = offset + 1;
+  const last = offset + lines.length;
+  const numbered = lines.map(
+    (line, index) => `${String(first + index).padStart(LINE_NUMBER_WIDTH)}\t${line}`,
+  );
+  return `${path} (lines ${first}-${last} of ${totalLines})\n${numbered.join("\n")}`;
+}
+
+/**
+ * A window whose rendering would exceed the per-result size limit is not
+ * returned in part: the model gets the numbers it needs to ask for a window
+ * that fits, measured with the same rule the conversation applies.
+ */
+function oversizedReadGuidance(
+  path: string,
+  offset: number,
+  lines: readonly string[],
+  totalLines: number,
+): ToolErrorResult {
+  let low = 0;
+  let high = lines.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    const fits = !trimOversizedToolResult(
+      renderNumberedRead(path, offset, lines.slice(0, mid), totalLines),
+    ).truncated;
+    if (fits) low = mid;
+    else high = mid - 1;
+  }
+  const requested = `lines ${offset + 1}-${offset + lines.length}`;
+  const limitText = `${MAX_TOOL_RESULT_LINES} lines or about ${MAX_TOOL_RESULT_TOKENS} tokens per result`;
+  const advice = low === 0
+    ? `Line ${offset + 1} alone exceeds that limit; use grep_files to find the content you need.`
+    : `Read a smaller range: offset=${offset} limit=${low} returns lines ${offset + 1}-${offset + low}; ` +
+      `continue with offset=${offset + low}. To find a specific section first, use grep_files.`;
+  return toolError(
+    `read_file did not return ${requested} of ${path} (${totalLines} lines in total): ` +
+    `the result would exceed the size limit (${limitText}). ${advice}`,
+  );
+}
+
+function sessionIdOf(ctx: ToolExecutionContext): string | undefined {
+  const sessionId = ctx.metadata?.sessionId;
+  return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : undefined;
+}
+
+/**
+ * Admit a change to an existing file only when this session read it and its
+ * bytes still hash to what was read (or last written by an edit tool).
+ */
+async function requireFreshRead(
+  toolName: string,
+  target: string,
+  ctx: ToolExecutionContext,
+  current: { readonly sha256: string; readonly mtimeMs: number },
+): Promise<Result<{ sessionId: string; key: string }>> {
+  const sessionId = sessionIdOf(ctx);
+  if (sessionId === undefined) {
+    return {
+      ok: false,
+      error: toolError(
+        `${toolName} refused to change ${target}: changing an existing file requires a session that records read_file calls.`,
+      ),
+    };
+  }
+  const key = await fileReadKey(target);
+  const record = lookupFileRead(sessionId, key);
+  if (record === undefined) {
+    return {
+      ok: false,
+      error: toolError(
+        `${toolName} refused to change ${target}: read it with read_file in this session first.`,
+      ),
+    };
+  }
+  if (record.sha256 !== current.sha256) {
+    return {
+      ok: false,
+      error: toolError(
+        `${toolName} refused to change ${target}: the file changed after it was read ` +
+        `(read at modification time ${new Date(record.mtimeMs).toISOString()}, now ` +
+        `${new Date(current.mtimeMs).toISOString()}). Read it again with read_file before changing it.`,
+      ),
+    };
+  }
+  return { ok: true, value: { sessionId, key } };
+}
+
+/** After an edit tool's own write, the model has seen the new content. */
+async function recordOwnWrite(sessionId: string, target: string, content: string): Promise<void> {
+  const written = await stat(target);
+  recordFileRead(sessionId, await fileReadKey(target), {
+    mtimeMs: written.mtimeMs,
+    size: written.size,
+    sha256: sha256Hex(Buffer.from(content, "utf8")),
+  });
+}
+
+const READ_LINE_NUMBER_PREFIX = /^ *\d+\t/;
+
+/**
+ * Remove `read_file` line-number prefixes copied into edit text by mistake.
+ * Returns null unless every line carries one, so ordinary text that happens
+ * to start with digits and a tab on some lines is never rewritten.
+ */
+function stripReadLineNumbers(text: string): string | null {
+  const lines = text.split("\n");
+  const trailingEmpty = lines.length > 1 && lines[lines.length - 1] === "";
+  const body = trailingEmpty ? lines.slice(0, -1) : lines;
+  if (body.length === 0 || !body.every((line) => READ_LINE_NUMBER_PREFIX.test(line))) return null;
+  const stripped = body.map((line) => line.replace(READ_LINE_NUMBER_PREFIX, ""));
+  return (trailingEmpty ? [...stripped, ""] : stripped).join("\n");
+}
+
+/**
+ * The file's line separator when every separator in it is the same non-`\n`
+ * one. `read_file` shows lines, not separators, so edit text copied from it
+ * uses `\n` even for such a file.
+ */
+function uniformNonLfSeparator(content: string): "\r\n" | "\r" | null {
+  const crlf = content.includes("\r\n");
+  const loneCr = /\r(?!\n)/.test(content);
+  const loneLf = /(?<!\r)\n/.test(content);
+  if (crlf && !loneCr && !loneLf) return "\r\n";
+  if (loneCr && !crlf && !loneLf) return "\r";
+  return null;
+}
+
+/**
+ * The replacement pair to apply. The text as given wins when it occurs in the
+ * file. Otherwise, in order: the pair with copied `read_file` line-number
+ * prefixes removed, then either pair with `\n` written as the file's own
+ * uniform separator. The first candidate that occurs is used; when none does,
+ * the pair is returned unchanged so the caller reports it as not found.
+ */
+function resolveReplacementText(
+  content: string,
+  oldText: string,
+  newText: string,
+): { oldText: string; newText: string } {
+  const candidates = [{ oldText, newText }];
+  const strippedOld = stripReadLineNumbers(oldText);
+  if (strippedOld !== null && strippedOld.length > 0) {
+    candidates.push({ oldText: strippedOld, newText: stripReadLineNumbers(newText) ?? newText });
+  }
+  const separator = uniformNonLfSeparator(content);
+  if (separator !== null) {
+    for (const candidate of [...candidates]) {
+      if (!candidate.oldText.includes("\n") || candidate.oldText.includes("\r")) continue;
+      candidates.push({
+        oldText: candidate.oldText.replaceAll("\n", separator),
+        newText: candidate.newText.includes("\r")
+          ? candidate.newText
+          : candidate.newText.replaceAll("\n", separator),
+      });
+    }
+  }
+  return candidates.find((candidate) => countOccurrences(content, candidate.oldText) > 0)
+    ?? { oldText, newText };
 }
 
 export const ViewImageInputSchema = FilePathSchema.extend({
@@ -644,7 +857,8 @@ export class GrepFilesTool extends FileTool<typeof GrepFilesInputSchema> {
 export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
   readonly name = "write_file";
   readonly description =
-    "Create or overwrite a UTF-8 text file. Parent directories are created automatically.";
+    "Create or overwrite a UTF-8 text file. Parent directories are created automatically. " +
+    "Overwriting an existing file requires reading it with read_file in this session first.";
   readonly inputSchema = WriteFileInputSchema;
   override readonly category: ToolCategory = "write";
 
@@ -672,6 +886,24 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
     }
     const blocked = this.ensureAllowed(target, ctx, "write");
     if (blocked) return blocked;
+
+    const existing = await statExistingPath(target);
+    if (!existing.ok) return existing.error;
+    let readSession: string | undefined;
+    if (existing.value !== null) {
+      if (!existing.value.isFile()) {
+        return toolError(`write_file requires a regular file target: ${target}`);
+      }
+      const { sha256 } = await hashAndCountLines(target);
+      const fresh = await requireFreshRead(this.name, target, ctx, {
+        sha256,
+        mtimeMs: existing.value.mtimeMs,
+      });
+      if (!fresh.ok) return fresh.error;
+      readSession = fresh.value.sessionId;
+    } else {
+      readSession = sessionIdOf(ctx);
+    }
 
     // Read existing content for diff sidecar (best-effort — missing file = empty before).
     // Guard: skip pre-image read for large or binary files to avoid OOM / mojibake.
@@ -708,6 +940,7 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
 
     await mkdir(dirname(target), { recursive: true });
     await atomicTextWrite(target, after);
+    if (readSession !== undefined) await recordOwnWrite(readSession, target, after);
 
     // Write diff sidecar when either side exceeds the preview limit.
     const sessionId =
@@ -742,7 +975,9 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
 export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
   readonly name = "edit_file";
   readonly description =
-    "Replace exact text in an existing UTF-8 file. Fails when the match is missing or ambiguous.";
+    "Replace exact text in an existing UTF-8 file. Fails when the match is missing or ambiguous. " +
+    "The file must have been read with read_file in this session and be unchanged since; do not " +
+    "include read_file's line-number prefixes in oldText or newText.";
   readonly inputSchema = EditFileInputSchema;
   override readonly category: ToolCategory = "write";
 
@@ -788,8 +1023,15 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
       return toolError(`edit_file refused binary file: ${target}`);
     }
 
-    const current = await readFile(target, "utf8");
-    const occurrences = countOccurrences(current, input.oldText);
+    const bytes = await readFile(target);
+    const fresh = await requireFreshRead(this.name, target, ctx, {
+      sha256: sha256Hex(bytes),
+      mtimeMs: fileStat.value.mtimeMs,
+    });
+    if (!fresh.ok) return fresh.error;
+    const current = bytes.toString("utf8");
+    const { oldText, newText } = resolveReplacementText(current, input.oldText, input.newText);
+    const occurrences = countOccurrences(current, oldText);
     if (occurrences === 0) {
       return toolError(`edit_file oldText not found in ${target}`);
     }
@@ -801,9 +1043,10 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
     }
 
     const next = input.replaceAll
-      ? current.split(input.oldText).join(input.newText)
-      : current.replace(input.oldText, () => input.newText);
+      ? current.split(oldText).join(newText)
+      : current.replace(oldText, () => newText);
     await atomicTextWrite(target, next);
+    await recordOwnWrite(fresh.value.sessionId, target, next);
     return {
       output: JSON.stringify({ path: target, replacements: input.replaceAll ? occurrences : 1 }),
       isError: false,
@@ -812,11 +1055,13 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
   }
 }
 
-export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
-  readonly name = "apply_patch";
+export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
+  readonly name = "multi_edit";
   readonly description =
-    "Apply one or more exact text replacements to an existing UTF-8 file. Fails before writing when any hunk is missing or ambiguous.";
-  readonly inputSchema = ApplyPatchInputSchema;
+    "Apply one or more exact text replacements to an existing UTF-8 file, in order. Fails before writing " +
+    "when any replacement is missing or ambiguous. The file must have been read with read_file in this " +
+    "session and be unchanged since; do not include read_file's line-number prefixes in the text.";
+  readonly inputSchema = MultiEditInputSchema;
   override readonly category: ToolCategory = "write";
 
   approvalCacheKey(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): string {
@@ -824,7 +1069,7 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
   }
 
   protected async executeTyped(
-    input: z.infer<typeof ApplyPatchInputSchema>,
+    input: z.infer<typeof MultiEditInputSchema>,
     ctx: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
     const transport = await this.executionTransport(input, ctx);
@@ -847,38 +1092,195 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
     const fileStat = await statFile(target);
     if (!fileStat.ok) return fileStat.error;
     if (!fileStat.value.isFile()) {
-      return toolError(`apply_patch requires a regular file: ${target}`);
+      return toolError(`multi_edit requires a regular file: ${target}`);
     }
     if (fileStat.value.size > MAX_TEXT_FILE_BYTES) {
-      return toolError(`apply_patch refused large file > ${MAX_TEXT_FILE_BYTES} bytes: ${target}`);
+      return toolError(`multi_edit refused large file > ${MAX_TEXT_FILE_BYTES} bytes: ${target}`);
     }
     if (await isBinaryFile(target)) {
-      return toolError(`apply_patch refused binary file: ${target}`);
+      return toolError(`multi_edit refused binary file: ${target}`);
     }
 
-    let next = await readFile(target, "utf8");
+    const bytes = await readFile(target);
+    const fresh = await requireFreshRead(this.name, target, ctx, {
+      sha256: sha256Hex(bytes),
+      mtimeMs: fileStat.value.mtimeMs,
+    });
+    if (!fresh.ok) return fresh.error;
+    let next = bytes.toString("utf8");
     let totalReplacements = 0;
-    for (const replacement of input.replacements) {
-      const occurrences = countOccurrences(next, replacement.oldText);
+    for (const [index, replacement] of input.replacements.entries()) {
+      const { oldText, newText } = resolveReplacementText(next, replacement.oldText, replacement.newText);
+      const occurrences = countOccurrences(next, oldText);
       if (occurrences === 0) {
-        return toolError(`apply_patch oldText not found in ${target}`);
+        return toolError(`multi_edit replacement ${index + 1} oldText not found in ${target}`);
       }
       if (occurrences > 1 && !replacement.replaceAll) {
         return toolError(
-          `apply_patch oldText matched ${occurrences} times in ${target}; set replaceAll=true for intentional global replacement`,
+          `multi_edit replacement ${index + 1} oldText matched ${occurrences} times in ${target}; set replaceAll=true for intentional global replacement`,
         );
       }
       totalReplacements += replacement.replaceAll ? occurrences : 1;
       next = replacement.replaceAll
-        ? next.split(replacement.oldText).join(replacement.newText)
-        : next.replace(replacement.oldText, () => replacement.newText);
+        ? next.split(oldText).join(newText)
+        : next.replace(oldText, () => newText);
     }
 
     await atomicTextWrite(target, next);
+    await recordOwnWrite(fresh.value.sessionId, target, next);
     return {
       output: JSON.stringify({ path: target, replacements: totalReplacements }),
       isError: false,
       metadata: { path: target, replacements: totalReplacements },
+    };
+  }
+}
+
+type PlannedPatchChange =
+  | { readonly kind: "add"; readonly path: string; readonly content: string }
+  | { readonly kind: "delete"; readonly path: string }
+  | {
+      readonly kind: "update";
+      readonly path: string;
+      readonly destination: string;
+      readonly content: string;
+    };
+
+const PATCH_CHANGE_LETTER = { add: "A", delete: "D", update: "M" } as const;
+
+export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
+  readonly name = "apply_patch";
+  readonly description =
+    "Add, update, move or delete one or more UTF-8 text files with a single patch. Every section is " +
+    "validated before any file is written. Files being updated must have been read with read_file in " +
+    "this session and be unchanged since. Paths are absolute or relative to the session cwd.";
+  readonly inputSchema = ApplyPatchInputSchema;
+  override readonly category: ToolCategory = "write";
+  /** The target paths live inside the patch text, not in an input field. */
+  override readonly pathFields: readonly string[] = [];
+
+  approvalCacheKey(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): string {
+    const operations = this.parseOrThrow(this.requireStringField(input, "patch"));
+    const paths = patchOperationPaths(operations)
+      .map((path) => this.resolveApprovalPath(path, ctx))
+      .sort();
+    return JSON.stringify({ operation: this.name, paths });
+  }
+
+  private parseOrThrow(patch: string): readonly PatchFileOperation[] {
+    const parsed = parsePatchEnvelope(patch);
+    if (!parsed.ok) throw new Error(`apply_patch: invalid patch: ${parsed.error}`);
+    return parsed.operations;
+  }
+
+  protected async executeTyped(
+    input: z.infer<typeof ApplyPatchInputSchema>,
+    ctx: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
+    const transport = await this.executionTransport(input, ctx);
+    if (transport.kind === "failure") return transport.result;
+    if (transport.kind === "broker") {
+      return brokerFailureResult(
+        "apply_patch is not available in the disposable workload; use multi_edit, edit_file or write_file",
+      );
+    }
+    const parsed = parsePatchEnvelope(input.patch);
+    if (!parsed.ok) return toolError(`apply_patch: invalid patch: ${parsed.error}`);
+
+    const planned: PlannedPatchChange[] = [];
+    const touched = new Set<string>();
+    const claim = (path: string): ToolErrorResult | null => {
+      if (touched.has(path)) {
+        return toolError(`apply_patch: ${path} appears in more than one section; combine them into one`);
+      }
+      touched.add(path);
+      return null;
+    };
+    for (const operation of parsed.operations) {
+      const target = this.resolvePath(operation.path, ctx);
+      const blocked = this.ensureAllowed(target, ctx, "write");
+      if (blocked) return blocked;
+      const duplicate = claim(target);
+      if (duplicate) return duplicate;
+      const existing = await statExistingPath(target);
+      if (!existing.ok) return existing.error;
+
+      if (operation.kind === "add") {
+        if (existing.value !== null) {
+          return toolError(`apply_patch: cannot add ${target}: it already exists; use '*** Update File:'`);
+        }
+        planned.push({ kind: "add", path: target, content: operation.content });
+        continue;
+      }
+      if (existing.value === null || !existing.value.isFile()) {
+        return toolError(`apply_patch: ${target} is not an existing regular file`);
+      }
+      if (operation.kind === "delete") {
+        planned.push({ kind: "delete", path: target });
+        continue;
+      }
+
+      let destination = target;
+      if (operation.moveTo !== null) {
+        destination = this.resolvePath(operation.moveTo, ctx);
+        const destinationBlocked = this.ensureAllowed(destination, ctx, "write");
+        if (destinationBlocked) return destinationBlocked;
+        if (destination !== target) {
+          const destinationDuplicate = claim(destination);
+          if (destinationDuplicate) return destinationDuplicate;
+          const destinationStat = await statExistingPath(destination);
+          if (!destinationStat.ok) return destinationStat.error;
+          if (destinationStat.value !== null) {
+            return toolError(`apply_patch: cannot move ${target} to ${destination}: the destination exists`);
+          }
+        }
+      }
+      if (existing.value.size > MAX_TEXT_FILE_BYTES) {
+        return toolError(`apply_patch refused large file > ${MAX_TEXT_FILE_BYTES} bytes: ${target}`);
+      }
+      if (await isBinaryFile(target)) {
+        return toolError(`apply_patch refused binary file: ${target}`);
+      }
+      const bytes = await readFile(target);
+      const fresh = await requireFreshRead(this.name, target, ctx, {
+        sha256: sha256Hex(bytes),
+        mtimeMs: existing.value.mtimeMs,
+      });
+      if (!fresh.ok) return fresh.error;
+      const applied = applyPatchChunks(bytes.toString("utf8"), operation.chunks);
+      if (!applied.ok) return toolError(`apply_patch: ${target}: ${applied.error}`);
+      planned.push({ kind: "update", path: target, destination, content: applied.content });
+    }
+
+    const sessionId = sessionIdOf(ctx);
+    const summary: string[] = [];
+    for (const change of planned) {
+      if (change.kind === "delete") {
+        if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
+        await unlink(change.path);
+        summary.push(`${PATCH_CHANGE_LETTER.delete} ${change.path}`);
+        continue;
+      }
+      const written = change.kind === "add" ? change.path : change.destination;
+      await mkdir(dirname(written), { recursive: true });
+      await atomicTextWrite(written, change.content);
+      if (change.kind === "update" && change.destination !== change.path) {
+        if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
+        await unlink(change.path);
+      }
+      if (sessionId !== undefined) await recordOwnWrite(sessionId, written, change.content);
+      summary.push(
+        change.kind === "update" && change.destination !== change.path
+          ? `${PATCH_CHANGE_LETTER.update} ${change.path} -> ${change.destination}`
+          : `${PATCH_CHANGE_LETTER[change.kind]} ${written}`,
+      );
+    }
+    return {
+      output: `Applied patch:\n${summary.join("\n")}`,
+      isError: false,
+      metadata: {
+        paths: planned.map((change) => change.kind === "update" ? change.destination : change.path),
+      },
     };
   }
 }
@@ -1123,6 +1525,7 @@ const canonicalFileToolConstructors = new Set<Function>([
   GrepFilesTool,
   WriteFileTool,
   EditFileTool,
+  MultiEditTool,
   ApplyPatchTool,
   CopyPathTool,
   ExtractArchiveTool,
@@ -1139,6 +1542,7 @@ export function createFileTools(): Tool[] {
     new GrepFilesTool(),
     new WriteFileTool(),
     new EditFileTool(),
+    new MultiEditTool(),
     new ApplyPatchTool(),
     new CopyPathTool(),
     new ExtractArchiveTool(),
@@ -1155,6 +1559,7 @@ export type CanonicalFileTool =
   | GrepFilesTool
   | WriteFileTool
   | EditFileTool
+  | MultiEditTool
   | ApplyPatchTool
   | CopyPathTool
   | ExtractArchiveTool

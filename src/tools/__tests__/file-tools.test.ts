@@ -5,14 +5,18 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  statSync,
   truncateSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { buildImagePreparationEntry, imageFixturePath } from "../../__tests__/support/image-preparation-runtime.js";
 import { IMAGE_PREPARATION_POLICY } from "../../shared/image-preparation-policy.js";
+import { trimOversizedToolResult } from "../../shared/tool-result-trim.js";
 
 const imageRuntime = vi.hoisted(() => ({ directory: "" }));
 vi.mock("../../main/main-paths.js", async (original) => ({
@@ -30,6 +34,7 @@ import {
   GrepFilesTool,
   ListFilesTool,
   MoveFileTool,
+  MultiEditTool,
   ReadFileTool,
   ViewImageTool,
   WriteFileTool,
@@ -40,11 +45,24 @@ import {
   parsePermissionDirCommand,
 } from "../../permissions/permission-slash.js";
 import { parseJsonRecord as parse } from "../../__tests__/test-helpers.js";
+import { fileReadKey, recordFileRead, sha256Hex } from "../file-read-state.js";
 
 let workDir: string;
+let sessionId: string;
 
 function ctx(): ToolExecutionContext {
-  return { cwd: workDir, extraAllowedDirectories: [], metadata: {} };
+  return { cwd: workDir, extraAllowedDirectories: [], metadata: { sessionId } };
+}
+
+/** Read through read_file so the session may change the file afterwards. */
+async function readFirst(path: string): Promise<void> {
+  const read = await new ReadFileTool().execute({ path, offset: 0, limit: 50 }, ctx());
+  expect(read.isError, read.output).toBe(false);
+}
+
+/** The line texts of a numbered read_file result, prefixes and header removed. */
+function readLines(output: string): string[] {
+  return output.split("\n").slice(1).map((line) => line.replace(/^ *\d+\t/, ""));
 }
 
 function portablePath(path: string): string {
@@ -52,6 +70,7 @@ function portablePath(path: string): string {
 }
 
 beforeEach(() => {
+  sessionId = randomUUID();
   workDir = mkdtempSync(join(tmpdir(), "ave-file-tools-"));
   mkdirSync(join(workDir, "src", "nested"), { recursive: true });
   writeFileSync(join(workDir, "src", "a.ts"), "alpha\nneedle one\nomega\n", "utf8");
@@ -121,7 +140,7 @@ describe("view_image tool", () => {
 describe("file native tools", () => {
   describe.each([
     ["edit_file", EditFileTool],
-    ["apply_patch", ApplyPatchTool],
+    ["multi_edit", MultiEditTool],
   ] as const)("%s literal replacement content", (name, ToolClass) => {
     describe.each([false, true])("replaceAll=%s", (replaceAll) => {
       it.each([
@@ -133,6 +152,7 @@ describe("file native tools", () => {
       ])("stores the %s as supplied", async (_label, newText) => {
         const path = join(workDir, "literal-replacement.txt");
         writeFileSync(path, "before alpha after\n");
+        await readFirst(path);
         const replacement = { oldText: "alpha", newText, replaceAll };
         const result = await new ToolClass().execute(
           name === "edit_file" ? { path, ...replacement } : { path, replacements: [replacement] },
@@ -147,6 +167,7 @@ describe("file native tools", () => {
     it("stores literal replacement tokens at every match", async () => {
       const path = join(workDir, "literal-global.txt");
       writeFileSync(path, "before alpha middle alpha after\n");
+      await readFirst(path);
       const newText = "$& $$ $` $'";
       const replacement = { oldText: "alpha", newText, replaceAll: true };
       const result = await new ToolClass().execute(
@@ -162,6 +183,7 @@ describe("file native tools", () => {
       const path = join(workDir, "literal-rejected.txt");
       const source = "before alpha middle alpha after\n";
       writeFileSync(path, source);
+      await readFirst(path);
       const replacement = { oldText: kind === "missing" ? "absent" : "alpha", newText: "$&" };
       const result = await new ToolClass().execute(
         name === "edit_file" ? { path, ...replacement } : { path, replacements: [replacement] },
@@ -175,48 +197,49 @@ describe("file native tools", () => {
 
   describe.each([
     ["edit_file", EditFileTool],
-    ["apply_patch", ApplyPatchTool],
-  ] as const)("%s exact text round trip", (name, ToolClass) => {
+    ["multi_edit", MultiEditTool],
+  ] as const)("%s text copied from a numbered read", (name, ToolClass) => {
     it.each([
       ["lf", "\n"],
       ["crlf", "\r\n"],
       ["cr", "\r"],
-    ])("edits the returned %s fragment without changing other bytes", async (_label, separator) => {
+    ])("edits a %s file from the read lines and keeps its separator", async (_label, separator) => {
       const path = join(workDir, "round-trip.txt");
       writeFileSync(path, `before${separator}alpha${separator}beta${separator}after${separator}`);
       const read = await new ReadFileTool().execute({ path, offset: 1, limit: 2 }, ctx());
       expect(read.isError).toBe(false);
-      const oldText = parse(read.output).content;
+      const oldText = readLines(read.output).join("\n");
+      expect(oldText).toBe("alpha\nbeta");
       const replacement = { oldText, newText: "updated\nentry" };
       const edit = await new ToolClass().execute(
         name === "edit_file" ? { path, ...replacement } : { path, replacements: [replacement] },
         ctx(),
       );
-      expect(edit.isError).toBe(false);
-      expect(readFileSync(path, "utf8")).toBe(`before${separator}updated\nentry${separator}after${separator}`);
-      expect(oldText).toBe(`alpha${separator}beta`);
+      expect(edit.isError, edit.output).toBe(false);
+      expect(readFileSync(path, "utf8"))
+        .toBe(`before${separator}updated${separator}entry${separator}after${separator}`);
     });
 
-    it("edits the returned mixed-separator fragment with exact matching", async () => {
-      const path = join(workDir, "mixed-round-trip.txt");
-      writeFileSync(path, "before\nalpha\r\nbeta\rgamma\nafter\r\n");
-      const read = await new ReadFileTool().execute({ path, offset: 1, limit: 3 }, ctx());
-      expect(read.isError).toBe(false);
-      const oldText = parse(read.output).content;
-      const replacement = { oldText, newText: "updated" };
+    it("accepts text that still carries the read line-number prefixes", async () => {
+      const path = join(workDir, "prefixed.txt");
+      writeFileSync(path, "one\ntwo\nthree\n");
+      const read = await new ReadFileTool().execute({ path, offset: 0, limit: 10 }, ctx());
+      const copied = read.output.split("\n").slice(2, 4).join("\n");
+      expect(copied).toBe("     2\ttwo\n     3\tthree");
+      const replacement = { oldText: copied, newText: "     2\tTWO\n     3\tTHREE" };
       const edit = await new ToolClass().execute(
         name === "edit_file" ? { path, ...replacement } : { path, replacements: [replacement] },
         ctx(),
       );
-      expect(edit.isError).toBe(false);
-      expect(readFileSync(path, "utf8")).toBe("before\nupdated\nafter\r\n");
-      expect(oldText).toBe("alpha\r\nbeta\rgamma");
+      expect(edit.isError, edit.output).toBe(false);
+      expect(readFileSync(path, "utf8")).toBe("one\nTWO\nTHREE\n");
     });
 
-    it("still rejects old text with different separators", async () => {
-      const path = join(workDir, "exact-only.txt");
-      const source = "alpha\r\nbeta\r\n";
+    it("keeps exact matching for a file with mixed separators", async () => {
+      const path = join(workDir, "mixed.txt");
+      const source = "alpha\r\nbeta\ngamma\n";
       writeFileSync(path, source);
+      await readFirst(path);
       const replacement = { oldText: "alpha\nbeta", newText: "updated" };
       const edit = await new ToolClass().execute(
         name === "edit_file" ? { path, ...replacement } : { path, replacements: [replacement] },
@@ -228,17 +251,144 @@ describe("file native tools", () => {
     });
   });
 
-  it("read_file reads a bounded line window", async () => {
+  describe.each([
+    ["edit_file", EditFileTool, { oldText: "alpha", newText: "beta" }],
+    ["multi_edit", MultiEditTool, { replacements: [{ oldText: "alpha", newText: "beta" }] }],
+    ["write_file", WriteFileTool, { content: "beta\n" }],
+  ] as const)("%s read-before-edit guard", (_name, ToolClass, change) => {
+    it("refuses an existing file this session has not read", async () => {
+      const path = join(workDir, "guarded.txt");
+      writeFileSync(path, "alpha\n");
+      const result = await new ToolClass().execute({ path, ...change }, ctx());
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("read it with read_file in this session first");
+      expect(readFileSync(path, "utf8")).toBe("alpha\n");
+    });
+
+    it("refuses a file read by another session", async () => {
+      const path = join(workDir, "guarded.txt");
+      writeFileSync(path, "alpha\n");
+      await readFirst(path);
+      const other = { ...ctx(), metadata: { sessionId: randomUUID() } };
+      const result = await new ToolClass().execute({ path, ...change }, other);
+      expect(result.isError).toBe(true);
+      expect(readFileSync(path, "utf8")).toBe("alpha\n");
+    });
+
+    it("refuses an existing file when the invocation has no session", async () => {
+      const path = join(workDir, "guarded.txt");
+      writeFileSync(path, "alpha\n");
+      const result = await new ToolClass().execute(
+        { path, ...change },
+        { cwd: workDir, extraAllowedDirectories: [], metadata: {} },
+      );
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("requires a session");
+    });
+
+    it("refuses a file that changed after it was read", async () => {
+      const path = join(workDir, "guarded.txt");
+      writeFileSync(path, "alpha\n");
+      await readFirst(path);
+      writeFileSync(path, "alpha changed elsewhere\n");
+      const result = await new ToolClass().execute({ path, ...change }, ctx());
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("changed after it was read");
+      expect(readFileSync(path, "utf8")).toBe("alpha changed elsewhere\n");
+    });
+
+    it("admits a file whose modification time changed but whose bytes did not", async () => {
+      const path = join(workDir, "guarded.txt");
+      writeFileSync(path, "alpha\n");
+      await readFirst(path);
+      utimesSync(path, new Date(0), new Date(0));
+      const result = await new ToolClass().execute({ path, ...change }, ctx());
+      expect(result.isError, result.output).toBe(false);
+    });
+
+    it("admits a second change after its own write without another read", async () => {
+      const path = join(workDir, "guarded.txt");
+      writeFileSync(path, "alpha\nother\n");
+      await readFirst(path);
+      const first = await new ToolClass().execute({ path, ...change }, ctx());
+      expect(first.isError, first.output).toBe(false);
+      const second = await new EditFileTool().execute({ path, oldText: "beta", newText: "gamma" }, ctx());
+      expect(second.isError, second.output).toBe(false);
+      expect(readFileSync(path, "utf8")).toContain("gamma");
+    });
+  });
+
+  it("write_file creates a new file without a prior read and may then change it", async () => {
+    const created = await new WriteFileTool().execute({ path: "fresh/new.txt", content: "one\n" }, ctx());
+    expect(created.isError, created.output).toBe(false);
+    const edited = await new EditFileTool().execute(
+      { path: "fresh/new.txt", oldText: "one", newText: "two" },
+      ctx(),
+    );
+    expect(edited.isError, edited.output).toBe(false);
+    expect(readFileSync(join(workDir, "fresh", "new.txt"), "utf8")).toBe("two\n");
+  });
+
+  it("read_file returns a header and numbered lines for the window", async () => {
     const result = await new ReadFileTool().execute(
       { path: "src/a.ts", offset: 1, limit: 1 },
       ctx(),
     );
 
     expect(result.isError).toBe(false);
-    const body = parse(result.output);
-    expect(body.content).toBe("needle one");
-    expect(body.startLine).toBe(2);
-    expect(body.endLine).toBe(2);
+    expect(result.output).toBe(`${join(workDir, "src", "a.ts")} (lines 2-2 of 3)\n     2\tneedle one`);
+    expect(result.metadata).toMatchObject({ lineCount: 1, totalLines: 3, truncated: true });
+  });
+
+  it("read_file reports an empty file and an offset past the end", async () => {
+    writeFileSync(join(workDir, "empty.txt"), "");
+    const empty = await new ReadFileTool().execute({ path: "empty.txt" }, ctx());
+    expect(empty.output).toBe(`${join(workDir, "empty.txt")} (empty file)`);
+    const past = await new ReadFileTool().execute({ path: "src/a.ts", offset: 10 }, ctx());
+    expect(past.isError).toBe(false);
+    expect(past.output).toContain("no lines at offset 10; the file has 3 lines");
+  });
+
+  it("read_file returns offset/limit guidance instead of an oversized result", async () => {
+    const lines = Array.from({ length: 400 }, (_, index) => `line ${index + 1}`);
+    writeFileSync(join(workDir, "long.txt"), `${lines.join("\n")}\n`);
+    const result = await new ReadFileTool().execute({ path: "long.txt", offset: 10 }, ctx());
+
+    expect(result.isError).toBe(true);
+    expect(result.output).not.toContain("line 11\n");
+    expect(result.output).toContain("400 lines in total");
+    const suggested = /offset=10 limit=(\d+)/.exec(result.output);
+    expect(suggested).not.toBeNull();
+    const limit = Number(suggested![1]);
+    expect(limit).toBeGreaterThan(0);
+    const followUp = await new ReadFileTool().execute({ path: "long.txt", offset: 10, limit }, ctx());
+    expect(followUp.isError, followUp.output).toBe(false);
+    expect(trimOversizedToolResult(followUp.output).truncated).toBeUndefined();
+    const oneMore = await new ReadFileTool().execute({ path: "long.txt", offset: 10, limit: limit + 1 }, ctx());
+    expect(oneMore.isError).toBe(true);
+  });
+
+  it("read_file guidance without a read does not admit an edit", async () => {
+    writeFileSync(join(workDir, "long.txt"), `${"x\n".repeat(400)}`);
+    const read = await new ReadFileTool().execute({ path: "long.txt" }, ctx());
+    expect(read.isError).toBe(true);
+    const edit = await new EditFileTool().execute(
+      { path: "long.txt", oldText: "x", newText: "y", replaceAll: true },
+      ctx(),
+    );
+    expect(edit.isError).toBe(true);
+    expect(edit.output).toContain("read it with read_file");
+  });
+
+  it("a partial read admits an edit anywhere in the unchanged file", async () => {
+    writeFileSync(join(workDir, "partial.txt"), "first\nsecond\nthird\n");
+    const read = await new ReadFileTool().execute({ path: "partial.txt", offset: 0, limit: 1 }, ctx());
+    expect(read.isError).toBe(false);
+    const edit = await new EditFileTool().execute(
+      { path: "partial.txt", oldText: "third", newText: "3rd" },
+      ctx(),
+    );
+    expect(edit.isError, edit.output).toBe(false);
   });
 
   it("list_files returns depth-limited directory entries", async () => {
@@ -342,9 +492,26 @@ describe("file native tools", () => {
     expect(new EditFileTool().approvalCacheKey({ path: "~/notes.md" }, { cwd: workDir })).toBe(
       `path:${join(homedir(), "notes.md")}`,
     );
-    expect(new ApplyPatchTool().approvalCacheKey({ path: "README.md" }, { cwd: workDir })).toBe(
+    expect(new MultiEditTool().approvalCacheKey({ path: "README.md" }, { cwd: workDir })).toBe(
       `path:${join(workDir, "README.md")}`,
     );
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: src/a.ts",
+      "*** Move to: src/z.ts",
+      "@@",
+      "-alpha",
+      "+ALPHA",
+      "*** Add File: README.md",
+      "+new",
+      "*** End Patch",
+    ].join("\n");
+    expect(JSON.parse(new ApplyPatchTool().approvalCacheKey({ patch }, { cwd: workDir }))).toEqual({
+      operation: "apply_patch",
+      paths: [join(workDir, "README.md"), join(workDir, "src", "a.ts"), join(workDir, "src", "z.ts")].sort(),
+    });
+    expect(() => new ApplyPatchTool().approvalCacheKey({ patch: "not a patch" }, { cwd: workDir }))
+      .toThrow("invalid patch");
     expect(new DeleteFileTool().approvalCacheKey({ path: "README.md" }, { cwd: workDir })).toBe(
       `path:${join(workDir, "README.md")}`,
     );
@@ -417,6 +584,7 @@ describe("file native tools", () => {
 
   it("write_file overwrite emits path and bytes without kind sentinel", async () => {
     writeFileSync(join(workDir, "snap.txt"), "first line\nsecond line\n", "utf8");
+    await readFirst("snap.txt");
     const result = await new WriteFileTool().execute(
       { path: "snap.txt", content: "first line\nupdated line\n" },
       ctx(),
@@ -461,6 +629,7 @@ describe("file native tools", () => {
   });
 
   it("edit_file replaces a single exact match", async () => {
+    await readFirst("README.md");
     const result = await new EditFileTool().execute(
       { path: "README.md", oldText: "needle docs", newText: "updated docs" },
       ctx(),
@@ -472,6 +641,7 @@ describe("file native tools", () => {
 
   it("edit_file fails on ambiguous matches unless replaceAll is explicit", async () => {
     writeFileSync(join(workDir, "dupe.txt"), "x\nx\n", "utf8");
+    await readFirst("dupe.txt");
 
     const result = await new EditFileTool().execute(
       { path: "dupe.txt", oldText: "x", newText: "y" },
@@ -482,8 +652,9 @@ describe("file native tools", () => {
     expect(result.output).toContain("matched 2 times");
   });
 
-  it("apply_patch applies multiple exact replacements atomically", async () => {
-    const result = await new ApplyPatchTool().execute(
+  it("multi_edit applies multiple exact replacements atomically", async () => {
+    await readFirst("README.md");
+    const result = await new MultiEditTool().execute(
       {
         path: "README.md",
         replacements: [
@@ -498,8 +669,9 @@ describe("file native tools", () => {
     expect(readFileSync(join(workDir, "README.md"), "utf8")).toBe("# Ave Project\npatched docs\n");
   });
 
-  it("apply_patch fails before writing when a later hunk is missing", async () => {
-    const result = await new ApplyPatchTool().execute(
+  it("multi_edit fails before writing when a later replacement is missing", async () => {
+    await readFirst("README.md");
+    const result = await new MultiEditTool().execute(
       {
         path: "README.md",
         replacements: [
@@ -625,7 +797,7 @@ describe("file native tools", () => {
       );
 
       expect(result.isError).toBe(false);
-      expect(parse(result.output).content).toBe("outside but authorized");
+      expect(readLines(result.output)).toEqual(["outside but authorized"]);
     } finally {
       await cleanupTmpDir(outside);
     }
@@ -653,7 +825,7 @@ describe("file native tools", () => {
       );
 
       expect(result.isError).toBe(false);
-      expect(parse(result.output).content).toBe("slash authorized");
+      expect(readLines(result.output)).toEqual(["slash authorized"]);
     } finally {
       await cleanupTmpDir(outside);
     }
@@ -670,7 +842,8 @@ describe("file native tools", () => {
       ["grep_files", ["path"]],
       ["write_file", ["path"]],
       ["edit_file", ["path"]],
-      ["apply_patch", ["path"]],
+      ["multi_edit", ["path"]],
+      ["apply_patch", []],
       ["copy_path", ["sourcePath", "destinationPath"]],
       ["extract_archive", ["archivePath", "destinationPath"]],
       ["move_file", ["sourcePath", "destinationPath"]],
@@ -684,14 +857,146 @@ describe("file native tools", () => {
     }
     expect(registry.findByName("read_file")?.category).toBe("read");
     expect(registry.findByName("write_file")?.category).toBe("write");
+    expect(registry.findByName("multi_edit")?.category).toBe("write");
     expect(registry.findByName("apply_patch")?.category).toBe("write");
     expect(registry.findByName("copy_path")?.category).toBe("write");
     expect(registry.findByName("extract_archive")?.category).toBe("write");
   });
 });
 
+describe("apply_patch tool", () => {
+  function patchOf(...body: string[]): { patch: string } {
+    return { patch: ["*** Begin Patch", ...body, "*** End Patch"].join("\n") };
+  }
+
+  it("adds, updates, moves and deletes files in one call", async () => {
+    await readFirst("src/a.ts");
+    await readFirst("src/nested/b.ts");
+    const result = await new ApplyPatchTool().execute(patchOf(
+      "*** Add File: docs/new.md",
+      "+# New",
+      "+body",
+      "*** Update File: src/a.ts",
+      "@@ alpha",
+      "-needle one",
+      "+needle ONE",
+      "*** Update File: src/nested/b.ts",
+      "*** Move to: src/moved/b.ts",
+      "@@",
+      " beta",
+      "-needle two",
+      "+needle TWO",
+      "*** Delete File: README.md",
+    ), ctx());
+
+    expect(result.isError, result.output).toBe(false);
+    expect(result.output).toContain(`A ${join(workDir, "docs", "new.md")}`);
+    expect(result.output).toContain(`D ${join(workDir, "README.md")}`);
+    expect(readFileSync(join(workDir, "docs", "new.md"), "utf8")).toBe("# New\nbody\n");
+    expect(readFileSync(join(workDir, "src", "a.ts"), "utf8")).toBe("alpha\nneedle ONE\nomega\n");
+    expect(existsSync(join(workDir, "src", "nested", "b.ts"))).toBe(false);
+    expect(readFileSync(join(workDir, "src", "moved", "b.ts"), "utf8")).toBe("beta\nneedle TWO\n");
+    expect(existsSync(join(workDir, "README.md"))).toBe(false);
+  });
+
+  it("writes nothing when a later section fails", async () => {
+    await readFirst("src/a.ts");
+    const result = await new ApplyPatchTool().execute(patchOf(
+      "*** Add File: docs/new.md",
+      "+# New",
+      "*** Update File: src/a.ts",
+      "-not in the file",
+      "+replacement",
+    ), ctx());
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("expected lines not found");
+    expect(existsSync(join(workDir, "docs", "new.md"))).toBe(false);
+    expect(readFileSync(join(workDir, "src", "a.ts"), "utf8")).toBe("alpha\nneedle one\nomega\n");
+  });
+
+  it("refuses to update a file this session has not read", async () => {
+    const result = await new ApplyPatchTool().execute(patchOf(
+      "*** Update File: src/a.ts",
+      "-alpha",
+      "+ALPHA",
+    ), ctx());
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("read it with read_file in this session first");
+  });
+
+  it("allows a following edit of a file it updated", async () => {
+    await readFirst("src/a.ts");
+    const patched = await new ApplyPatchTool().execute(patchOf(
+      "*** Update File: src/a.ts",
+      "-alpha",
+      "+ALPHA",
+    ), ctx());
+    expect(patched.isError, patched.output).toBe(false);
+    const edited = await new EditFileTool().execute({ path: "src/a.ts", oldText: "omega", newText: "OMEGA" }, ctx());
+    expect(edited.isError, edited.output).toBe(false);
+    expect(readFileSync(join(workDir, "src", "a.ts"), "utf8")).toBe("ALPHA\nneedle one\nOMEGA\n");
+  });
+
+  it("refuses to add a file that already exists", async () => {
+    const result = await new ApplyPatchTool().execute(patchOf("*** Add File: README.md", "+x"), ctx());
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("already exists");
+    expect(readFileSync(join(workDir, "README.md"), "utf8")).toBe("# Ave\nneedle docs\n");
+  });
+
+  it("refuses a path named by two sections", async () => {
+    await readFirst("src/a.ts");
+    const result = await new ApplyPatchTool().execute(patchOf(
+      "*** Update File: src/a.ts",
+      "-alpha",
+      "+ALPHA",
+      "*** Delete File: src/a.ts",
+    ), ctx());
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("more than one section");
+  });
+
+  it("refuses a write outside the sandbox boundary before touching any file", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "ave-apply-patch-outside-"));
+    try {
+      const result = await new ApplyPatchTool().execute(patchOf(
+        "*** Add File: docs/new.md",
+        "+inside",
+        `*** Add File: ${join(outside, "x.txt")}`,
+        "+outside",
+      ), ctx());
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("Sandbox:");
+      expect(existsSync(join(workDir, "docs", "new.md"))).toBe(false);
+      expect(existsSync(join(outside, "x.txt"))).toBe(false);
+    } finally {
+      await cleanupTmpDir(outside);
+    }
+  });
+
+  it("reports a malformed patch", async () => {
+    const result = await new ApplyPatchTool().execute({ patch: "*** Update File: src/a.ts\n-alpha" }, ctx());
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("invalid patch");
+  });
+});
+
 describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
   let testHome: string;
+
+  /**
+   * Record a file as read without going through read_file, for pre-images
+   * read_file would refuse to show (binary) or show only in windows.
+   */
+  async function markRead(path: string, session: string): Promise<void> {
+    const bytes = readFileSync(path);
+    recordFileRead(session, await fileReadKey(path), {
+      mtimeMs: statSync(path).mtimeMs,
+      size: bytes.length,
+      sha256: sha256Hex(bytes),
+    });
+  }
 
   beforeEach(() => {
     testHome = mkdtempSync(join(tmpdir(), "ave-write-guard-"));
@@ -714,6 +1019,7 @@ describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
     const buf = Buffer.alloc(2_100_000);
     buf.fill(chunk);
     writeFileSync(bigPath, buf);
+    await markRead(bigPath, "s1");
 
     const result = await new WriteFileTool().execute(
       { path: bigPath, content: "new content" },
@@ -732,6 +1038,7 @@ describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
     // Write a file with null bytes (binary signature).
     const binPath = join(workDir, "image.bin");
     writeFileSync(binPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00, 0x00]));
+    await markRead(binPath, "s2");
 
     // Use after content > WRITE_DIFF_PREVIEW_LIMIT (4096) so truncated=true fires.
     // Without the binary guard, hasSidecar would be true. The guard must suppress it.
@@ -755,6 +1062,7 @@ describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
   it("writes sidecar normally for a small text pre-existing file", async () => {
     const txtPath = join(workDir, "small.txt");
     writeFileSync(txtPath, "before content", "utf8");
+    await markRead(txtPath, "s3");
 
     const result = await new WriteFileTool().execute(
       { path: txtPath, content: "after content" },

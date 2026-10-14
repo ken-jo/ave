@@ -2700,7 +2700,7 @@ composer/status 영역에 붙여 사용자가 질문과 선택지를 즉시 확�
 
 - **빈 런처:** 탭이 하나도 없을 때 `ToolActivityBody`(`src/ui/renderer/components/ToolActivity.tsx`)가 여섯 카운터와 카테고리별 최신 5개를 보여 주고, "전체 활동 보기"로 activity 탭을 연다.
 - **탭별 전체 목록(최신순, 개수 제한 없음, 패널 안에서 스크롤):**
-  - 파일 탭 → "변경된 파일" 세그먼트: 생성/수정/삭제/이동/씀 배지. 분류는 `classifyFileChange`(`tool-input-paths.ts`)가 도구 계약으로 정한다 — `edit_file`/`apply_patch`=수정, `delete_file`=삭제, `move_file`=이동(양 끝 모두 나열), `write_file`=씀(생성 여부는 결과에 없으므로 주장하지 않음), 패치 본문 헤더 `Add/Update/Delete File`=생성/수정/삭제.
+  - 파일 탭 → "변경된 파일" 세그먼트: 생성/수정/삭제/이동/씀 배지. 분류는 `classifyFileChange`(`tool-input-paths.ts`)가 도구 계약으로 정한다 — `edit_file`/`multi_edit`/`apply_patch`=수정, `delete_file`=삭제, `move_file`=이동(양 끝 모두 나열), `write_file`=씀(생성 여부는 결과에 없으므로 주장하지 않음), 패치 본문 헤더 `Add/Update/Delete File`=생성/수정/삭제.
   - 브라우저 탭 → "방문한 사이트" 목록(뷰어 위 분할). 인자로 요청한 페이지는 전부, 결과에 언급만 된 링크는 최신 `TOOL_ACTIVITY_MENTIONED_URL_LIMIT`개까지.
   - 서브에이전트 탭 → 세션의 스폰 전부(완료·복원 포함).
   - activity 탭(`WorkspaceTabKind` `"activity"`) → 호출한 플러그인 + 호출한 도구(`toolCalls[]`: 이름·출처·상태·시작 시각(라이브 전용)·소요 시간·첫 경로/URL 인자).

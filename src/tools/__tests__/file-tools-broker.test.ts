@@ -155,15 +155,6 @@ describe("canonical file tool broker transport", () => {
       },
     },
     {
-      tool: new ApplyPatchTool(),
-      input: { path: "patch.txt", replacements: [{ oldText: "old", newText: "new" }] },
-      operation: "file.patch",
-      payload: {
-        path: "/broker/workspace/patch.txt",
-        replacements: [{ oldText: "old", newText: "new", replaceAll: false }],
-      },
-    },
-    {
       tool: new MoveFileTool(),
       input: { sourcePath: "from.txt", destinationPath: "to.txt", overwrite: true },
       operation: "file.move",
@@ -202,6 +193,17 @@ describe("canonical file tool broker transport", () => {
       expect.objectContaining({ operation, toolName: tool.name }),
       undefined,
     );
+  });
+
+  it("refuses the patch envelope without calling the broker", async () => {
+    const tool = new ApplyPatchTool();
+    const input = { patch: "*** Begin Patch\n*** Delete File: old.txt\n*** End Patch" };
+
+    const result = await tool.execute(input, context(tool, input));
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("apply_patch is not available in the disposable workload");
+    expect(broker.execute).not.toHaveBeenCalled();
   });
 
   it("routes view_image bytes through the bounded controller decoder and preserves image output", async () => {
