@@ -115,6 +115,7 @@ import { setupRemoteA2A } from "./boot/steps/remote-a2a-setup.js";
 import { setupMcp } from "./boot/steps/mcp-setup.js";
 import { initSandboxGate } from "./boot/steps/sandbox-init.js";
 import { createA2ARemoteRuntime } from "./main/a2a-remote-runtime.js";
+import { snapshotA2ARemoteGates } from "./main/a2a-remote-gates.js";
 import { createRemoteA2AActionController } from "./main/remote-a2a-action-controller.js";
 import { buildSingleFlightAgentActionApprover } from "./permissions/agent-action-approver.js";
 import { PluginBundleLifecycle } from "./plugins/plugin-bundle-lifecycle.js";
@@ -400,9 +401,13 @@ export async function bootstrap(
       type: "warn",
       input: `a2a-remote:${code}`,
     });
+  // Read once, and handed to the runtime rather than re-read by it, so what
+  // the status channel later compares against is exactly what this run used.
+  const remoteA2ABootGates = snapshotA2ARemoteGates(settingsService);
   const remoteA2A = await setupRemoteA2A({
     createRuntime: () =>
       createA2ARemoteRuntime({
+        gates: remoteA2ABootGates,
         encryption: host.encryption,
         settings: settingsService,
         agentActionApprover: remoteA2AAgentActionApprover,
@@ -420,6 +425,8 @@ export async function bootstrap(
   });
   ctx.a2aRemoteRuntime = remoteA2A.runtime;
   ctx.remoteA2AActionController = remoteA2A.controller;
+  ctx.remoteA2AStartFailureReason = remoteA2A.startFailureReason;
+  ctx.remoteA2ABootGates = remoteA2ABootGates;
 
   // §4.2 Step 3 + 5: PluginRuntime + per-plugin HostApi factory.
   // Sweep orphan uninstall tombstones from prior session FIRST (before

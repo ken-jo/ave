@@ -56,7 +56,7 @@ describe("setupRemoteA2A", () => {
       ...h,
     });
 
-    expect(result).toEqual({});
+    expect(result).toEqual({ startFailureReason: "a2a-remote-outbound-config-incomplete" });
     expect(h.audit).toHaveBeenCalledWith("start-failed:a2a-remote-outbound-config-incomplete");
     expect(h.logError).toHaveBeenCalledTimes(1);
     expect(h.logError.mock.calls[0]?.[1]).toContain("a2a-remote-outbound-config-incomplete");
@@ -70,7 +70,7 @@ describe("setupRemoteA2A", () => {
       createRuntime: () => failing.runtime,
       createController: () => controller,
       ...h,
-    })).resolves.toEqual({});
+    })).resolves.toEqual({ startFailureReason: "a2a-remote-store-unreadable" });
     expect(failing.dispose).toHaveBeenCalledTimes(1);
     expect(h.audit).toHaveBeenCalledWith("start-failed:a2a-remote-store-unreadable");
   });
@@ -83,7 +83,7 @@ describe("setupRemoteA2A", () => {
       createRuntime: () => built.runtime,
       createController: () => { throw new Error("a2a-remote-target-registry-invalid"); },
       ...h,
-    })).resolves.toEqual({});
+    })).resolves.toEqual({ startFailureReason: "a2a-remote-target-registry-invalid" });
     expect(built.dispose).toHaveBeenCalledTimes(1);
     expect(h.audit).toHaveBeenCalledWith("start-failed:a2a-remote-target-registry-invalid");
   });
@@ -93,7 +93,7 @@ describe("remoteA2AStartFailureReason", () => {
   it("keeps only the runtime's own reason codes and never echoes other text", () => {
     expect(remoteA2AStartFailureReason(new Error("a2a-remote-receiver-secret-missing")))
       .toBe("a2a-remote-receiver-secret-missing");
-    expect(remoteA2AStartFailureReason(new Error("ENOENT: /Users/someone/.ave/secret")))
+    expect(remoteA2AStartFailureReason(new Error("ENOENT: /Users/example/.ave/secret")))
       .toBe("a2a-remote-start-failed");
     expect(remoteA2AStartFailureReason("a2a-remote-config-incomplete")).toBe("a2a-remote-start-failed");
   });

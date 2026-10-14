@@ -206,6 +206,16 @@ async function stopForShutdown(): Promise<void> {
   }
 }
 
+/**
+ * The loopback port the receiver is bound to right now, or null when it is not
+ * running. The port is random per launch, and the external HTTPS tunnel that
+ * owns public ingress has to be pointed at it; before this the only place it
+ * appeared was a main-process log line.
+ */
+export function activeRemoteA2AReceiverPort(): number | null {
+  return activeReceiver?.server.port ?? null;
+}
+
 export function stopRemoteA2AReceiverServer(): Promise<void> {
   if (stopPromise) return stopPromise;
   const pending = stopForShutdown();

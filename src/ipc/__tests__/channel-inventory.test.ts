@@ -237,6 +237,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:a2a-remote:status",
         "ave:a2a-remote:targets",
         "ave:a2a-remote:task",
+        "ave:a2a-remote:tasks",
         "ave:agents:list",
         "ave:agents:uninstall",
         "ave:alerts:card-closed",

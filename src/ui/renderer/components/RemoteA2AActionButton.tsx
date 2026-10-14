@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { RadioTower, RefreshCw, RotateCcw, Send, Square } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Label } from "../../../components/ui/label.js";
@@ -13,6 +13,18 @@ import type { RemoteA2AActionStatus } from "../types.js";
 type Target = { targetAgentId: number; label: string };
 type Translate = ReturnType<typeof useTranslation>["t"];
 
+/**
+ * An action that may have reached the remote agent and whose result is not
+ * known here. It is never retried on its own, so the owner is told to check the
+ * remote rather than shown a "not sent" they could act on twice.
+ */
+function isUnknownDelivery(outcome: string | undefined): boolean {
+  return outcome !== undefined
+    && (outcome === "unknown-manual-reconciliation-required"
+      || outcome.startsWith("continue-reconciliation-required:")
+      || outcome.startsWith("cancel-reconciliation-required:"));
+}
+
 function outcomeCopy(outcome: string | undefined, t: Translate): string {
   switch (outcome) {
     case "a2a-remote-busy":
@@ -21,7 +33,11 @@ function outcomeCopy(outcome: string | undefined, t: Translate): string {
       return t("remoteA2aActionButton.retryLater");
     case "cancel-already-settled":
       return t("remoteA2aActionButton.alreadySettled");
+    // Provably never left this desktop: the Task's actions are free again.
+    case "not-sent":
+      return t("remoteA2aActionButton.neverSentRetry");
     case "a2a-remote-disabled":
+    case "a2a-remote-start-failed":
     case "a2a-remote-input-invalid":
     case "a2a-remote-operation-rejected":
       return formatIpcError(outcome, undefined);
@@ -36,12 +52,23 @@ function statusCopy(status: RemoteA2AActionStatus | null, t: Translate): string 
   if (status.taskState === "TASK_STATE_AUTH_REQUIRED") return t("remoteA2aActionButton.authRequired");
   if (status.state === "awaiting-approval") return t("remoteA2aActionButton.awaitingApproval");
   if (status.outcome === "cancel-already-settled") return outcomeCopy(status.outcome, t);
+  if (isUnknownDelivery(status.outcome)) return t("remoteA2aActionButton.deliveryUnknown");
   if (status.state === "sent") {
     return t("remoteA2aActionButton.sentTo", {
       target: status.targetLabel ?? t("remoteA2aActionButton.remoteAgentFallback"),
     });
   }
   return t("remoteA2aActionButton.notSent", { reason: outcomeCopy(status.outcome, t) });
+}
+
+/**
+ * Wait before the next GetTask poll after `step` polls that saw no change:
+ * 2 s doubling to a one-minute cap. A2A v1.0 §3.5.1 names polling GetTask as
+ * the baseline way to follow a Task when streaming is not in use and gives no
+ * interval, so this backs off rather than hammering a slow agent.
+ */
+function remoteA2APollDelayMs(step: number): number {
+  return Math.min(2_000 * 2 ** Math.min(step, 16), 60_000);
 }
 
 export function RemoteA2AActionButton() {
@@ -51,6 +78,14 @@ export function RemoteA2AActionButton() {
   const [intent, setIntent] = useState("");
   const [status, setStatus] = useState<RemoteA2AActionStatus | null>(null);
   const [sending, setSending] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [recent, setRecent] = useState<RemoteA2AActionStatus[]>([]);
+  const pollStep = useRef(0);
+  const pollKey = useRef<string | null>(null);
+  // The Task the popover shows now, and the GetTask poll in flight: a poll
+  // answer for another Task is dropped, and an owner action waits it out.
+  const shownTask = useRef<string | undefined>(undefined);
+  const pollInFlight = useRef<Promise<unknown> | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -73,16 +108,58 @@ export function RemoteA2AActionButton() {
   const canSend = useMemo(() => Number.isSafeInteger(targetId) && targetId > 0
     && intent.trim() === intent && intent.length > 0 && intent.length <= 8_192 && !sending, [intent, sending, targetId]);
   const taskHandle = status?.taskHandle;
+  shownTask.current = taskHandle;
   const terminal = status?.taskState === "TASK_STATE_COMPLETED"
     || status?.taskState === "TASK_STATE_FAILED"
     || status?.taskState === "TASK_STATE_CANCELED"
     || status?.taskState === "TASK_STATE_REJECTED";
+
+  // Follow a live Task while the popover is open: GetTask on a growing backoff,
+  // reset whenever the Task's state moves. Stops on its own at a terminal
+  // state, at a state that waits on the owner (input or out-of-band auth), at
+  // an unknown delivery, and on any refusal or failure (authentication, a
+  // gone endpoint) — repeating it would only fail again; Refresh is still there.
+  const pollable = open && !sending && taskHandle !== undefined && status?.taskAvailable === true && !terminal
+    && status.state !== "failed"
+    && status.taskState !== "TASK_STATE_INPUT_REQUIRED" && status.taskState !== "TASK_STATE_AUTH_REQUIRED"
+    && !isUnknownDelivery(status.outcome);
+  useEffect(() => {
+    if (!pollable || taskHandle === undefined) return;
+    const key = `${taskHandle}:${status?.taskState ?? ""}`;
+    if (pollKey.current !== key) {
+      pollKey.current = key;
+      pollStep.current = 0;
+    }
+    const timer = window.setTimeout(() => {
+      pollStep.current += 1;
+      const poll = window.aveApi.remoteA2a.task(taskHandle).then((result) => {
+        if (result.ok && shownTask.current === taskHandle) setStatus(result.status);
+      }).catch(() => undefined).finally(() => {
+        if (pollInFlight.current === poll) pollInFlight.current = null;
+      });
+      pollInFlight.current = poll;
+    }, remoteA2APollDelayMs(pollStep.current));
+    return () => window.clearTimeout(timer);
+  }, [pollable, taskHandle, status]);
+
+  // Each recent Task keeps its own status in main; read them when the
+  // popover opens so the owner can go back to one.
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    void window.aveApi?.remoteA2a?.tasks?.().then((result) => {
+      if (live && result.ok) setRecent(result.tasks);
+    }).catch(() => undefined);
+    return () => { live = false; };
+  }, [open, status?.taskHandle]);
 
   if (targets === null || targets.length === 0) return null;
 
   const send = async () => {
     if (!canSend) return;
     setSending(true);
+    // Same as the Task actions: a background GetTask holds the single slot.
+    if (pollInFlight.current) await pollInFlight.current;
     setStatus({ state: "awaiting-approval", targetAgentId: targetId, targetLabel: targets.find((target) => target.targetAgentId === targetId)?.label, updatedAt: new Date().toISOString() });
     try {
       const result = await window.aveApi.remoteA2a.send(targetId, intent);
@@ -112,6 +189,9 @@ export function RemoteA2AActionButton() {
     };
     setSending(true);
     try {
+      // A background GetTask holds the controller's single slot; wait for it
+      // instead of reporting the owner's click as busy.
+      if (pollInFlight.current) await pollInFlight.current;
       const result = action === "get"
         ? await window.aveApi.remoteA2a.task(taskHandle)
         : action === "resume"
@@ -131,7 +211,7 @@ export function RemoteA2AActionButton() {
   };
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
@@ -180,6 +260,35 @@ export function RemoteA2AActionButton() {
               {sending ? t("remoteA2aActionButton.waiting") : t("remoteA2aActionButton.send")}
             </Button>
           </div>
+          {status?.reply ? (
+            <div className="space-y-1" data-testid="remote-a2a-reply">
+              <Label className="text-[11px]">{t("remoteA2aActionButton.replyLabel")}</Label>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/(--opacity-subtle) p-2 text-[11px] leading-4 text-foreground" data-testid="remote-a2a-reply-text">{status.reply.text}</pre>
+              {status.reply.truncated ? (
+                <p className="text-[10.5px] text-muted-foreground" data-testid="remote-a2a-reply-truncated">{t("remoteA2aActionButton.replyTruncated")}</p>
+              ) : null}
+            </div>
+          ) : null}
+          {recent.length > 1 ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="remote-a2a-recent" className="text-[11px]">{t("remoteA2aActionButton.recentLabel")}</Label>
+              <NativeSelect
+                id="remote-a2a-recent"
+                value={taskHandle ?? ""}
+                onChange={(event) => {
+                  const next = recent.find((entry) => entry.taskHandle === event.target.value);
+                  if (next) setStatus(next);
+                }}
+                data-testid="remote-a2a-recent"
+              >
+                {recent.map((entry) => (
+                  <option key={entry.taskHandle} value={entry.taskHandle}>
+                    {`${entry.targetLabel ?? t("remoteA2aActionButton.remoteAgentFallback")} · ${new Date(entry.updatedAt).toLocaleTimeString()}`}
+                  </option>
+                ))}
+              </NativeSelect>
+            </div>
+          ) : null}
           {taskHandle && (status?.taskAvailable || status?.recoveryEligible) ? (
             <div className="flex items-center gap-1.5 border-t border-border pt-2" data-testid="remote-a2a-task-actions">
               {status?.taskAvailable ? <>

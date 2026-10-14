@@ -23,6 +23,9 @@ import {
 } from "../telegram-connection-store.js";
 import { telegramConversationDigest } from "../telegram-platform-runtime.js";
 import { namespaceAt } from "./telegram-connection-namespace.js";
+import { OWNER_CHAT_ID, textUpdate } from "./telegram-bridge-fixtures.js";
+import { mintTelegramPairingCode, telegramPairingCodeDigest } from "../telegram-pairing-code.js";
+import { t } from "../../i18n/index.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { forbidAmbientFetch } from "../../__tests__/support/network-fetch-stubs.js";
 
@@ -159,6 +162,49 @@ describe("telegram connection activation", () => {
       // so an owner who was sharing a conversation and sent a slash command
       // was told they had shared nothing.
       expect(notify).toHaveBeenCalledWith("998877", "commands-not-supported");
+    });
+
+    it("confirms a pairing to the phone that redeemed the code", async () => {
+      forbidAmbientFetch();
+      const code = mintTelegramPairingCode();
+      const store = await connectedStore();
+      await store.createPendingCode({ codeDigest: telegramPairingCodeDigest(code)! });
+      const sent: Array<{ chat_id?: unknown; text?: unknown }> = [];
+      let polls = 0;
+      const provider = vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const method = String(url).split("/").pop();
+        if (method === "sendMessage") {
+          sent.push(JSON.parse(String(init?.body)) as { chat_id?: unknown; text?: unknown });
+          return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
+        }
+        polls += 1;
+        // Seed, then the code, then park until the ingress aborts.
+        if (polls === 2) {
+          const update = JSON.parse(new TextDecoder().decode(textUpdate(1, code).rawBody)) as unknown;
+          return new Response(JSON.stringify({ ok: true, result: [update] }), { status: 200 });
+        }
+        if (polls > 2) {
+          await new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          });
+        }
+        return new Response(JSON.stringify({ ok: true, result: [] }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+      await startTelegramConnectionActivation(activationInput(
+        store,
+        () => stopTelegramBridgeServer("user"),
+        provider,
+      ));
+
+      try {
+        await vi.waitFor(() => expect(sent).toHaveLength(1));
+        expect(store.ownerSnapshot().pairing).not.toBeNull();
+        expect(String(sent[0]?.chat_id)).toBe(OWNER_CHAT_ID);
+        expect(sent[0]?.text).toBe(t("be_telegramBridge.paired"));
+      } finally {
+        await stopTelegramBridgeServer("user");
+      }
     });
 
     it("still carries the other notice", async () => {

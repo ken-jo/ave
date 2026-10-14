@@ -47,6 +47,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "durable-mode-denied": "formatIpcError.durableModeDenied",
   "one-shot-not-recordable": "formatIpcError.durableModeDenied",
   "a2a-remote-disabled": "formatIpcError.remoteA2aDisabled",
+  "a2a-remote-start-failed": "formatIpcError.remoteA2aStartFailed",
   "tailnet-sharing-disabled": "formatIpcError.tailnetSharingDisabled",
   "tailnet-sharing-input-invalid": "formatIpcError.tailnetSharingInputInvalid",
   "tailnet-sharing-operation-rejected": "formatIpcError.tailnetSharingOperationRejected",

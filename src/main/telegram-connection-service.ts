@@ -45,6 +45,7 @@ import type {
   TelegramOwnerConnectionSnapshot,
 } from "./telegram-connection-store.js";
 import { mintTelegramPairingCode, telegramPairingCodeDigest } from "./telegram-pairing-code.js";
+import type { TelegramPollHealth } from "./telegram-bridge-server.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 
 
@@ -68,10 +69,80 @@ const APPROVAL_DURATION_MS: Readonly<Record<TelegramApprovalDurationPreset, numb
   "24h": 24 * 60 * 60 * 1_000,
 });
 
+/** What the facade hands an activation so it can report how polling is going. */
+export interface TelegramBridgeStartHooks {
+  readonly onPollHealth: (health: TelegramPollHealth) => void;
+}
+
 /** Lifecycle hooks owned by main composition; this facade only sequences them. */
 interface TelegramConnectionBridgeControl {
-  start(): Promise<void>;
+  start(hooks: TelegramBridgeStartHooks): Promise<void>;
   stop(reason: "shutdown" | "user"): Promise<void>;
+  /** Poll again now if an activation is running; a no-op otherwise. */
+  nudge?(): void;
+}
+
+/**
+ * Wait before the next automatic resume after `attempt` failed ones in a row:
+ * 5 s, 10 s, 20 s ... capped at five minutes. Slower than the poll loop's own
+ * backoff because each attempt is a full bot verification, not one poll; a
+ * wake or a network coming back skips the wait entirely.
+ */
+export function telegramResumeRetryDelayMs(attempt: number): number {
+  const exponent = Math.min(Math.max(attempt, 1) - 1, 16);
+  return Math.min(RESUME_RETRY_BASE_MS * 2 ** exponent, RESUME_RETRY_MAX_MS);
+}
+const RESUME_RETRY_BASE_MS = 5_000;
+const RESUME_RETRY_MAX_MS = 5 * 60 * 1_000;
+
+/**
+ * Whether a failed resume is worth retrying without the owner. Only "Telegram
+ * could not be reached": everything else — a rejected token, a webhook or poll
+ * conflict, an unreadable credential, an unwritable store — is a stop the owner
+ * has to see and act on, and retrying it would either hammer the provider with
+ * a credential it already refused or hide the repair behind a spinner.
+ */
+export function isTransientTelegramResumeFailure(code: TelegramConnectionErrorCode): boolean {
+  return code === "telegram-provider-unreachable";
+}
+
+/** Subscribe to an event; returns the unsubscribe. */
+export type TelegramWakeSource = (listener: () => void) => () => void;
+
+/** How often {@link createNetworkOnlineSource} looks, while it is subscribed. */
+const NETWORK_ONLINE_CHECK_MS = 5_000;
+
+/**
+ * Turn a connectivity probe into an "it came back online" event.
+ *
+ * Electron's main process exposes connectivity only as `net.isOnline()`, with
+ * no change event. Its documented reading is asymmetric — `false` is a strong
+ * signal, `true` is not proof — which is exactly the edge wanted here: an
+ * offline-to-online transition is the moment a retry has a chance. The probe
+ * runs only while someone is subscribed, and the service subscribes only while
+ * reconnecting, so a healthy connection pays nothing for it.
+ */
+export function createNetworkOnlineSource(
+  isOnline: () => boolean,
+  intervalMs: number = NETWORK_ONLINE_CHECK_MS,
+): TelegramWakeSource {
+  return (listener) => {
+    const read = (): boolean => {
+      try {
+        return isOnline();
+      } catch {
+        return false;
+      }
+    };
+    let wasOnline = read();
+    const timer = setInterval(() => {
+      const online = read();
+      if (online && !wasOnline) listener();
+      wasOnline = online;
+    }, intervalMs);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  };
 }
 
 /**
@@ -117,6 +188,19 @@ export interface CreateTelegramConnectionServiceOptions {
    * supplies Chromium's stack.
    */
   readonly networkFetch: typeof fetch;
+  /**
+   * The machine woke from sleep. Subscribed for the service's lifetime: a long
+   * poll in flight across a sleep usually sits on a dead socket, so the wake is
+   * the moment to poll again whether or not anything has failed yet.
+   */
+  readonly onSystemResume?: TelegramWakeSource;
+  /**
+   * The machine came back online. Subscribed only while reconnecting, so a
+   * source that has to watch for it costs nothing while Telegram is answering.
+   */
+  readonly onNetworkOnline?: TelegramWakeSource;
+  /** Test seam for the resume retry timer; production uses an unref'd timeout. */
+  readonly scheduleRetry?: (run: () => void, delayMs: number) => () => void;
   /** Test-only injection; production builds a real Bot API client. */
   readonly createBotApiClient?: (botToken: string) => TelegramBotApiClient;
 }
@@ -136,6 +220,8 @@ export interface TelegramConnectionService {
   ): Promise<TelegramConnectionMutationResult>;
   revokeApproval(id: string): Promise<TelegramConnectionMutationResult>;
   subscribe(listener: () => void): () => void;
+  /** Cancel a pending automatic resume and drop the wake subscriptions. */
+  dispose(): void;
 }
 
 /** Same digest the platform runtime is handed as `botFingerprint`. */
@@ -273,9 +359,16 @@ function projectApproval(
 function deriveState(
   owner: TelegramOwnerConnectionSnapshot,
   bound: BoundConversation,
+  reconnecting: boolean,
 ): TelegramConnectionState {
   if (owner.desiredState === "disconnected") return "disconnected";
   if (owner.desiredState === "paused") return "paused-by-owner";
+  // Ahead of `error`: an automatic resume that is still retrying has recorded
+  // why it failed, and that note is the reason the surface shows next to
+  // "reconnecting" — not a stop the owner has to repair. Ahead of the pairing
+  // and share states too, because none of them can make progress while
+  // Telegram is unreachable, and `active` there was the lie this state ends.
+  if (reconnecting) return "reconnecting";
   if (owner.lastErrorCode !== null) return "error";
   if (owner.pairing === null) {
     // A code already minted is the repair in progress; say so rather than
@@ -331,6 +424,116 @@ export function createTelegramConnectionService(
   };
 
   store.subscribe(emitChange);
+
+  // ── Reconnecting ──────────────────────────────────────────────────────────
+  // Two in-memory facts, neither persisted: a restart re-derives both from the
+  // first poll or resume attempt it makes.
+  /** The running activation's poll loop says Telegram is not answering. */
+  let pollRetrying = false;
+  /** An automatic resume is scheduled after a resume Telegram did not answer. */
+  let resumeRetry: { readonly attempt: number; readonly cancel: () => void } | null = null;
+  let disposed = false;
+  let stopNetworkWatch: (() => void) | null = null;
+  const scheduleRetry = options.scheduleRetry ?? ((run: () => void, delayMs: number) => {
+    const timer = setTimeout(run, delayMs);
+    timer.unref?.();
+    return () => clearTimeout(timer);
+  });
+
+  const reconnecting = (): boolean => pollRetrying || resumeRetry !== null;
+
+  /** Watch for the network only while there is something to reconnect. */
+  const syncNetworkWatch = (): void => {
+    const want = !disposed && reconnecting() && options.onNetworkOnline !== undefined;
+    if (want && stopNetworkWatch === null) {
+      try {
+        stopNetworkWatch = options.onNetworkOnline!(() => wake());
+      } catch {
+        stopNetworkWatch = null;
+      }
+    } else if (!want && stopNetworkWatch !== null) {
+      const stop = stopNetworkWatch;
+      stopNetworkWatch = null;
+      try {
+        stop();
+      } catch {
+        /* nothing to keep */
+      }
+    }
+  };
+
+  const cancelResumeRetry = (): void => {
+    if (resumeRetry === null) return;
+    resumeRetry.cancel();
+    resumeRetry = null;
+    syncNetworkWatch();
+  };
+
+  const notePollHealth = (health: TelegramPollHealth): void => {
+    const next = health === "retrying";
+    if (next === pollRetrying) return;
+    pollRetrying = next;
+    syncNetworkWatch();
+    emitChange();
+  };
+
+  /**
+   * Try again after a resume Telegram did not answer, and keep trying — the
+   * reference remote surfaces reconnect on their own after sleep or a network
+   * loss rather than leaving a dead connection for the owner to notice.
+   */
+  const scheduleResumeRetry = (attempt: number): void => {
+    if (disposed) return;
+    resumeRetry?.cancel();
+    const cancel = scheduleRetry(() => {
+      if (resumeRetry?.cancel !== cancel) return;
+      void runResumeRetry(attempt);
+    }, telegramResumeRetryDelayMs(attempt));
+    resumeRetry = Object.freeze({ attempt, cancel });
+    syncNetworkWatch();
+  };
+
+  const runResumeRetry = async (attempt: number): Promise<void> => {
+    // Keep the slot (and with it the `reconnecting` state) while the attempt
+    // runs; the attempt's own outcome decides whether another is scheduled.
+    if (disposed || readDesiredState() !== "connected") {
+      cancelResumeRetry();
+      emitChange();
+      return;
+    }
+    await resumeWithRetry(attempt + 1, "automatic");
+  };
+
+  /**
+   * The machine woke or came back online: retry a pending resume now, from the
+   * bottom of its backoff, or tell a running activation to poll now.
+   */
+  const wake = (): void => {
+    if (disposed) return;
+    if (resumeRetry !== null) {
+      resumeRetry.cancel();
+      // Same slot, no timer: the attempt below either clears it or reschedules.
+      resumeRetry = Object.freeze({ attempt: 0, cancel: () => undefined });
+      void runResumeRetry(0);
+      return;
+    }
+    try {
+      bridgeControl.nudge?.();
+    } catch {
+      /* the next scheduled poll still runs */
+    }
+  };
+
+  let stopResumeWatch: (() => void) | null = null;
+  if (options.onSystemResume !== undefined) {
+    try {
+      stopResumeWatch = options.onSystemResume(() => wake());
+    } catch {
+      stopResumeWatch = null;
+    }
+  }
+
+  const bridgeHooks: TelegramBridgeStartHooks = Object.freeze({ onPollHealth: notePollHealth });
 
   /**
    * The conversation on screen, named both ways. The store persists the id so
@@ -554,7 +757,7 @@ export function createTelegramConnectionService(
     const reconciled = await reconcileActorKeyFailure();
     if (reconciled !== null) return reconciled;
     try {
-      await bridgeControl.start();
+      await bridgeControl.start(bridgeHooks);
     } catch {
       return UNAVAILABLE;
     }
@@ -569,7 +772,7 @@ export function createTelegramConnectionService(
       const owner = store.ownerSnapshot();
       const approval = projectApproval(owner.approval, currentConversation()?.digest ?? null);
       const projected = parseTelegramConnectionSnapshot({
-        state: deriveState(owner, boundConversation()),
+        state: deriveState(owner, boundConversation(), reconnecting()),
         botUsername,
         pairing: owner.pairing === null
           ? null
@@ -582,7 +785,9 @@ export function createTelegramConnectionService(
               expiresAt: owner.pendingCode.expiresAt,
               attemptsRemaining: owner.pendingCode.attemptsRemaining,
             },
-        lastErrorCode: owner.lastErrorCode,
+        // A poll loop that is retrying records nothing durable, so the reason
+        // shown next to "reconnecting" is projected here, from memory.
+        lastErrorCode: owner.lastErrorCode ?? (pollRetrying ? "telegram-provider-unreachable" : null),
       });
       return projected === null ? UNAVAILABLE : Object.freeze({ ok: true as const, snapshot: projected });
     } catch {
@@ -602,6 +807,8 @@ export function createTelegramConnectionService(
         return ENCRYPTION_UNAVAILABLE;
       }
       if (!encrypted) return ENCRYPTION_UNAVAILABLE;
+      // A new token supersedes any automatic resume of the old one.
+      cancelResumeRetry();
 
       // Both halves of "put it back the way it was", read before the first
       // write so a failed attempt can restore the credential and the state it
@@ -650,6 +857,7 @@ export function createTelegramConnectionService(
         return UNAVAILABLE;
       }
       botUsername = null;
+      cancelResumeRetry();
       try {
         await bridgeControl.stop("user");
       } catch {
@@ -669,6 +877,8 @@ export function createTelegramConnectionService(
         return UNAVAILABLE;
       }
       if (!paused) return REJECTED;
+      // Paused means nothing reaches Telegram, including an automatic retry.
+      cancelResumeRetry();
       try {
         await bridgeControl.stop("user");
       } catch {
@@ -679,8 +889,16 @@ export function createTelegramConnectionService(
     });
   };
 
-  const resume = async (): Promise<TelegramConnectionMutationResult> => {
+  /**
+   * `automatic` resumes (boot, backoff retry, wake) act only while the owner
+   * still wants the connection, checked inside the queue: a pause whose persist
+   * is in flight when a retry fires is ahead of it in the queue, and the retry
+   * must not turn that pause back into a live connection. An `owner` resume is
+   * the owner asking, so it proceeds from any state.
+   */
+  const resume = async (origin: "owner" | "automatic"): Promise<TelegramConnectionMutationResult> => {
     return await runExclusive(async () => {
+      if (origin === "automatic" && (disposed || readDesiredState() !== "connected")) return OK;
       let encrypted: boolean;
       try {
         encrypted = settingsService.isSecretStorageEncrypted();
@@ -715,9 +933,42 @@ export function createTelegramConnectionService(
         return verified;
       }
       const activated = await activate(botToken, verified.username);
-      if (isFailure(activated)) await noteError(activated.error);
+      if (isFailure(activated)) {
+        await noteError(activated.error);
+        return activated;
+      }
+      // An activation that was already running keeps its own poll schedule;
+      // a resume the owner asked for means "try now", so say so to the loop.
+      try {
+        bridgeControl.nudge?.();
+      } catch {
+        /* its next scheduled poll still runs */
+      }
       return activated;
     });
+  };
+
+  /**
+   * Resume, and if Telegram simply could not be reached, keep trying on a
+   * backoff and on every wake — while the owner still wants the connection.
+   * Any other outcome ends the retrying: success needs none, and every other
+   * failure is a stop the owner has to see.
+   */
+  const resumeWithRetry = async (
+    nextAttempt: number,
+    origin: "owner" | "automatic",
+  ): Promise<TelegramConnectionMutationResult> => {
+    const result = await resume(origin);
+    if (!result.ok
+      && isTransientTelegramResumeFailure(result.error)
+      && !disposed
+      && readDesiredState() === "connected") {
+      scheduleResumeRetry(nextAttempt);
+    } else {
+      cancelResumeRetry();
+    }
+    emitChange();
+    return result;
   };
 
   /**
@@ -735,7 +986,7 @@ export function createTelegramConnectionService(
       return;
     }
     if (desired !== "connected") return;
-    await resume();
+    await resumeWithRetry(1, "automatic");
   };
 
   const createPairingCode = async (): Promise<TelegramCreatePairingCodeResult> => {
@@ -834,7 +1085,7 @@ export function createTelegramConnectionService(
     connect,
     disconnect,
     pause,
-    resume,
+    resume: () => resumeWithRetry(1, "owner"),
     resumeStoredConnection,
     createPairingCode,
     revokePairing,
@@ -844,6 +1095,18 @@ export function createTelegramConnectionService(
       if (typeof listener !== "function") throw new Error("telegram-connection-service-invalid");
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    dispose(): void {
+      disposed = true;
+      cancelResumeRetry();
+      syncNetworkWatch();
+      const stop = stopResumeWatch;
+      stopResumeWatch = null;
+      try {
+        stop?.();
+      } catch {
+        /* nothing to keep */
+      }
     },
   });
 }

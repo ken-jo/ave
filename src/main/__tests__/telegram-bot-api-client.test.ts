@@ -129,6 +129,18 @@ describe("TelegramBotApiClient", () => {
     )) as unknown as typeof fetch);
     await expect(headerWins.getUpdates()).resolves.toMatchObject({ retryAfterMs: 7_000 });
 
+    // A stated wait of zero is still flood control; both sources floor at 1 s.
+    const zeroBody = client(vi.fn(async () => json(
+      { ok: false, error_code: 429, parameters: { retry_after: 0 } },
+      { status: 429 },
+    )) as unknown as typeof fetch);
+    await expect(zeroBody.getUpdates()).resolves.toEqual({ ok: false, reason: "rate-limited", retryAfterMs: 1_000 });
+    const zeroHeader = client(vi.fn(async () => json(
+      { ok: false, error_code: 429 },
+      { status: 429, headers: { "retry-after": "0" } },
+    )) as unknown as typeof fetch);
+    await expect(zeroHeader.getUpdates()).resolves.toEqual({ ok: false, reason: "rate-limited", retryAfterMs: 1_000 });
+
     for (const retryAfter of [-1, 1.5, "31", 3_601]) {
       const malformed = client(vi.fn(async () => json(
         { ok: false, error_code: 429, parameters: { retry_after: retryAfter } },
