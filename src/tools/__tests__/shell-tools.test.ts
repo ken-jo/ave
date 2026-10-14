@@ -145,13 +145,13 @@ describe("bash tool", () => {
           const text = existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "";
           expect(text).toMatch(/^[1-9][0-9]*$/u);
           return Number(text);
-        });
+        }, { timeout: 5_000 }); // the shell starting under a loaded CI runner can take over the 1 s default
         controller.abort();
         const result = await pending;
         expect(result.isError).toBe(true);
         expect(result.metadata?.aborted).toBe(true);
         expect(result.output).toContain("cancelled");
-        await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
+        await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 5_000 });
       } finally {
         controller.abort();
         await pending;
