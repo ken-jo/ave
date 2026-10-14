@@ -1379,9 +1379,19 @@ function verifyApprovalIntegrity(
 
 // ─── ApprovalGate ────────────────────────────────────
 
+/**
+ * Finds the renderer that should draw an approval card for `sessionId` — the
+ * main window showing that conversation, else the primary (or most recently
+ * focused) live main window — or `null` when no desktop surface is open.
+ * Resolved at request time, not bound at boot: several main windows may be
+ * open, and the one open at boot may be closed while another stays.
+ */
+export type ApprovalSurfaceResolver = (sessionId: string | undefined) => WebContents | null;
+
 export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
-  private readonly webContents: WebContents | null;
+  /** Null only for a gate built without any desktop surface (headless/tests). */
+  private readonly resolveSurface: ApprovalSurfaceResolver | null;
   /** Timeout in milliseconds. Defaults to five minutes. */
   private readonly timeoutMs: number;
   /** Active policy, replaceable at runtime via setPolicy(). */
@@ -1443,7 +1453,7 @@ export class ApprovalGate {
   private readonly headlessDenied?: (requestId: string, toolName: string) => void;
 
   constructor(
-    webContents: WebContents | null,
+    webContents: WebContents | ApprovalSurfaceResolver | null,
     initialPolicy?: PolicyFile,
     timeoutMs = TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs,
     auditLogger?: AuditLogger,
@@ -1453,7 +1463,14 @@ export class ApprovalGate {
   ) {
     if (headlessExec && webContents !== null) throw new Error("Headless approval mode requires no desktop surface");
     this.headlessDenied = headlessExec?.onDenied;
-    this.webContents = webContents;
+    if (typeof webContents === "function") {
+      this.resolveSurface = webContents;
+    } else if (webContents === null) {
+      this.resolveSurface = null;
+    } else {
+      const fixed = webContents;
+      this.resolveSurface = () => fixed;
+    }
     this.timeoutMs = timeoutMs;
     this.auditLogger = auditLogger;
     this.notificationService = notificationService;
@@ -1563,14 +1580,22 @@ export class ApprovalGate {
    * reconciles rather than obeys — a request whose answer is in flight there
    * is left to the answer.
    */
-  private announceSettledToRenderer(requestId: string): void {
-    if (!this.webContents || this.webContents.isDestroyed()) return;
-    try {
-      this.webContents.send(IPC_APPROVAL_SETTLED, { requestId });
-    } catch {
-      // A renderer that went away between the check above and the send has no
-      // card left to take down. Nothing else depends on this reaching it.
+  private announceSettledToRenderer(requestId: string, targets: ReadonlyArray<WebContents | null>): void {
+    for (const target of new Set(targets)) {
+      try {
+        if (!target || target.isDestroyed()) continue;
+        target.send(IPC_APPROVAL_SETTLED, { requestId });
+      } catch {
+        // A renderer that went away between the check above and the send has no
+        // card left to take down. Nothing else depends on this reaching it.
+      }
     }
+  }
+
+  /** The live renderer that should draw `sessionId`'s card right now, or null. */
+  private liveSurfaceFor(sessionId: string | undefined): WebContents | null {
+    const surface = this.resolveSurface?.(sessionId) ?? null;
+    return surface && !surface.isDestroyed() ? surface : null;
   }
 
   /** Fan one settlement out to observers; a throwing observer is inert. */
@@ -2331,7 +2356,7 @@ export class ApprovalGate {
     const executionPlanAudit = boundExecutionPlan ?? suppliedExecutionPlan;
     if (executionPlanAudit?.executionRequest === "host" &&
       (oneShotPermitBinding === undefined || remoteControllerOrigin !== undefined || remoteControllerAuthority !== undefined ||
-        !this.webContents || this.webContents.isDestroyed())) {
+        this.liveSurfaceFor(req.sessionId) === null)) {
       return markHostApprovalRejectedDecision({
         requestId: req.id,
         choice: "deny-once",
@@ -2489,8 +2514,8 @@ export class ApprovalGate {
       };
     }
 
-    // §A2: webContents destruction check — deny once if the renderer is already closed.
-    if (!this.webContents || this.webContents.isDestroyed()) {
+    // §A2: webContents destruction check — deny once if no main window is open.
+    if (this.liveSurfaceFor(fullReq.sessionId) === null) {
       const headless = this.headlessDenied !== undefined;
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
@@ -2748,6 +2773,9 @@ export class ApprovalGate {
       // signal, and `AbortSignal` is an `EventTarget`, which starts warning
       // about exactly that at eleven.
       let detachAbortListener: (() => void) | undefined;
+      // The renderer the card was sent to; the settle announcement reaches it
+      // and whichever renderer shows the session by then.
+      let sentTo: WebContents | null = null;
       const settle = (decision: ApprovalDecision): void => {
         detachAbortListener?.();
         detachAbortListener = undefined;
@@ -2756,7 +2784,7 @@ export class ApprovalGate {
         // is the one place an observer's card — and the renderer's — can be
         // told the request is no longer answerable.
         this.notifyPendingSettled(fullReq.id, decision);
-        this.announceSettledToRenderer(fullReq.id);
+        this.announceSettledToRenderer(fullReq.id, [sentTo, this.liveSurfaceFor(fullReq.sessionId)]);
         resolve(decision);
       };
       const timer = setTimeout(() => {
@@ -2916,8 +2944,12 @@ export class ApprovalGate {
       if (parked !== undefined) parked.rendererRequest = maskedSignedReq;
       // §F2: on send failure (webContents destruction race), clear pending and deny once.
       try {
-        if (!this.webContents) throw new Error("Approval surface unavailable");
-        this.webContents.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
+        // Resolved now, not at boot: the window showing this session, else the
+        // primary (or most recently focused) live main window.
+        const surface = this.liveSurfaceFor(fullReq.sessionId);
+        if (!surface) throw new Error("Approval surface unavailable");
+        sentTo = surface;
+        surface.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
       } catch (sendErr) {
         clearTimeout(timer);
         this.pending.delete(fullReq.id);

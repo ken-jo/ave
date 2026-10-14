@@ -178,6 +178,9 @@ export const CHANNELS = {
   },
   askUserQuestion: {
     respond: "ave:ask-user-question:respond",
+    // The questions still waiting, read by a renderer that (re)loaded after
+    // they were sent — e.g. a window opened after the one that drew them closed.
+    pending: "ave:ask-user-question:pending",
     // Request + timeout events (main → renderer).
     request: "ave:ask-user-question:request",
     timeout: "ave:ask-user-question:timeout",

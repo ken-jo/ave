@@ -283,8 +283,9 @@ export interface AppServices {
   /** Drops tracked persistent auth partitions after uninstall cleanup completes. */
   forgetPluginAuthPartitionsService?: (pluginId: string) => void | Promise<void>;
   /**
-   * Issue 5: Re-register the generic plugin event bridge for a new window.
-   * Call on macOS `activate` when a new BrowserWindow is created.
+   * Issue 5: Bridge plugin events to a newly created main window. Called for
+   * every main window opened after boot (macOS `activate`, tray, "New Window",
+   * a second launch); other windows keep their own bridges.
    */
   registerPluginEventBridge?: (win: import("electron").BrowserWindow) => void;
   /**

@@ -244,10 +244,12 @@ export const IPC_ASK_USER_QUESTION_TIMEOUT = "ave:ask-user-question:timeout";
 
 /**
  * Resolved lazily on every send so dev-mode reloads (which destroy the old
- * webContents) don't strand the gate on a stale reference. Boot wires this
- * to `() => getMainWindow()?.webContents ?? null`.
+ * webContents) and closed windows don't strand the gate on a stale reference.
+ * Given the asking conversation, boot resolves the main window showing that
+ * session, else the primary (or most recently focused) live main window
+ * (`resolveSessionMainWindowContents` in `src/main/app-state.ts`).
  */
-export type WebContentsResolver = () => WebContents | null;
+export type WebContentsResolver = (sessionId: string) => WebContents | null;
 
 export class AskUserQuestionGate {
   private readonly pending = new Map<string, PendingEntry>();
@@ -304,7 +306,7 @@ export class AskUserQuestionGate {
         dismissed: true,
       });
     }
-    const wc = this.resolveWebContents();
+    const wc = this.resolveWebContents(req.sessionId);
     if (!wc) {
       return Promise.resolve({ requestId: req.id, dismissed: true });
     }
@@ -332,26 +334,38 @@ export class AskUserQuestionGate {
       // notification failure must never block the gate
     }
     return new Promise<AskUserQuestionResponse>((resolve) => {
+      // Tell the renderer the card went to — and whichever renderer shows the
+      // session by now — that it is stale. Best-effort: a renderer may be
+      // tearing down.
+      const announceStale = () => {
+        // Nothing here may throw: the caller resolves the gate right after,
+        // and a throw would leave the asking turn waiting forever.
+        let targets: Array<WebContents | null> = [wc];
+        try {
+          targets = [...new Set([wc, this.resolveWebContents(req.sessionId)])];
+        } catch {
+          /* resolver failed — the original renderer is still told */
+        }
+        for (const target of targets) {
+          try {
+            if (!target || target.isDestroyed()) continue;
+            target.send(IPC_ASK_USER_QUESTION_TIMEOUT, { requestId: req.id });
+          } catch {
+            /* renderer may be tearing down — best-effort */
+          }
+        }
+      };
       const timer = setTimeout(() => {
         cleanup();
         // M2: notify the renderer so it drops the stale card.
-        try {
-          const live = this.resolveWebContents();
-          live?.send(IPC_ASK_USER_QUESTION_TIMEOUT, { requestId: req.id });
-        } catch {
-          // ignore — even if send fails the resolve below clears the gate
-        }
+        // ignore send failures — the resolve below clears the gate either way
+        announceStale();
         resolve({ requestId: req.id, dismissed: true });
       }, this.timeoutMs);
       const abortListener = input.abortSignal
         ? () => {
             cleanup();
-            try {
-              const live = this.resolveWebContents();
-              live?.send(IPC_ASK_USER_QUESTION_TIMEOUT, { requestId: req.id });
-            } catch {
-              /* renderer may be tearing down — best-effort */
-            }
+            announceStale();
             resolve({ requestId: req.id, dismissed: true });
           }
         : null;
@@ -393,6 +407,17 @@ export class AskUserQuestionGate {
       entry.resolve({ requestId: id, dismissed: true });
     }
     this.pending.clear();
+  }
+
+  /**
+   * The questions still waiting for an answer, exactly as they were sent. A
+   * renderer that loads after a question went out — the window that drew it
+   * closed, and another window now shows the asking session — reads these
+   * once and draws the ones its tiles own; otherwise the turn would sit out
+   * the full timeout against a card nobody can see.
+   */
+  listPending(): AskUserQuestionRequest[] {
+    return [...this.pending.values()].map((entry) => entry.request);
   }
 
   get pendingCount(): number {

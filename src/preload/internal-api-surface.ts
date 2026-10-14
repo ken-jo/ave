@@ -1078,6 +1078,8 @@ export function buildInternalApiSurface() {
   },
   respondAskUserQuestion: async (response: AskUserQuestionResponse) =>
     ipcRenderer.invoke(CHANNELS.askUserQuestion.respond, response),
+  // Questions sent before this renderer subscribed (it loaded later).
+  listPendingAskUserQuestions: async () => ipcRenderer.invoke(CHANNELS.askUserQuestion.pending),
   // Timeout side-channel — main process notifies the renderer when an
   // ask_user_question request expired (5 min default) so the card can drop
   // the stale prompt before the user clicks into a no-op.

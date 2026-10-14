@@ -597,6 +597,7 @@ describe("ChatSidePanel", () => {
     expect(webview?.getAttribute("src")).toBe("https://example.com/docs");
     expect(webview?.getAttribute("partition")).toBe(AVE_SIDE_BROWSER_PARTITION);
     expect(webview?.getAttribute("webpreferences")).toContain("javascript=yes");
+    expect(webview?.getAttribute("allowpopups")).toBe("true");
 
     // Open a preview (review) tab via the "+" dropdown.
     addTabViaMenu("preview");

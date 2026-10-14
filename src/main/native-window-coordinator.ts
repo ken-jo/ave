@@ -1,5 +1,6 @@
 export interface NativeWindowCoordinator {
   showOrCreateMainWindow: (reason: string) => void;
+  openNewMainWindow: (reason: string) => void;
   refreshNativeChrome: () => void;
 }
 
@@ -18,6 +19,10 @@ function requireCoordinator(): NativeWindowCoordinator {
 
 export function requestShowOrCreateMainWindow(reason: string): void {
   requireCoordinator().showOrCreateMainWindow(reason);
+}
+
+export function requestOpenNewMainWindow(reason: string): void {
+  requireCoordinator().openNewMainWindow(reason);
 }
 
 export function requestNativeChromeRefresh(): void {

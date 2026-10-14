@@ -542,6 +542,10 @@ export function UrlDocumentViewer({
         src: url,
         partition: AVE_SIDE_BROWSER_PARTITION,
         webpreferences: "contextIsolation=yes, sandbox=yes, nodeIntegration=no, javascript=yes",
+        // Popups (target=_blank, OAuth sign-in windows) reach main's
+        // side-browser window-open handler, which allows http(s) only and
+        // hardens every child window (`side-browser-webview.ts`).
+        allowpopups: "true",
         className: "block min-h-0 w-full flex-1 border-0 bg-background",
         style: {
           display: "flex",

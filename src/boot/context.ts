@@ -240,9 +240,12 @@ export class BootContext {
   declare workBoardReporter: WorkBoardReporter;
 
   // ── Plugin IPC bridges (mutable disposers) ─────────────────────────────────
+  /** Disposes every main window's plugin event bridge. */
   declare disposePluginEventBridge: () => void;
-  declare pluginEventBridgeWindow: BrowserWindow | null;
-  declare replacePluginEventBridge: (win: BrowserWindow | null) => void;
+  /** Bridges plugin events to one more main window (several may be open). */
+  declare addPluginEventBridgeWindow: (win: BrowserWindow | null) => void;
+  /** Re-registers every open window's bridge after the plugin event set changed. */
+  declare refreshPluginEventBridges: () => void;
 
   // ── MCP ────────────────────────────────────────────────────────────────────
   declare mcpGovernance: McpGovernance;
@@ -354,8 +357,8 @@ const BOOT_CONTEXT_FIELDS = [
   "workBoardEngine",
   "workBoardReporter",
   "disposePluginEventBridge",
-  "pluginEventBridgeWindow",
-  "replacePluginEventBridge",
+  "addPluginEventBridgeWindow",
+  "refreshPluginEventBridges",
   "mcpGovernance",
   "mcpManager",
   "pluginLoopbackManager",
