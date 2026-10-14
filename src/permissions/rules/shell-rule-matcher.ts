@@ -34,6 +34,7 @@ import { errorMessage } from "../../shared/error-message.js";
 import type { RuleSpecifier } from "./rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./shell-exfiltration.js";
 import {
+  arithmeticEvaluationReason,
   codeCarryingVariable,
   hiddenCodeReason,
   isShellWrapperProgram,
@@ -117,6 +118,11 @@ export function analyzeShellForRules(command: string): ShellRuleShape {
             const target = redirect.target ? staticShellWord(redirect.target) : undefined;
             if (target !== "/dev/null") blockers.push("write redirection");
           }
+        }
+        const arithmetic = arithmeticEvaluationReason(statement);
+        if (arithmetic) {
+          hidden.push(arithmetic);
+          blockers.push(arithmetic);
         }
         for (const assignment of statement.assignments) {
           // `GIT_SSH_COMMAND='rm x' git fetch`, `PATH=/tmp/x; git status`.

@@ -451,3 +451,37 @@ describe("security review: an allowed program's code-exec or write option asks",
     expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: [allow] })).decision).toBe("allow");
   });
 });
+
+describe("security review: arithmetic evaluation of a variable is hidden code", () => {
+  // Bash arithmetic evaluates a variable's value as an expression; an array
+  // subscript inside it runs command substitutions.
+  it.each([
+    "x='a[$(rm -rf y)]'; echo $((x))",
+    "echo $((x+1))",
+    "echo $((a[$(rm x)]))",
+    "(( x > 1 ))",
+    "let x=y+1",
+    "[[ $x -eq 1 ]]",
+    "[[ 1 -lt x ]]",
+    "[[ \"$(cat n)\" -ge 2 ]]",
+    "declare -i n=$y",
+    "local -i q=$y",
+    "echo ${a[$x]}",
+    "echo ${s:$o:2}",
+  ])("deny Bash(rm *) asks for %j", (command) => {
+    const set = rules({ deny: ["Bash(rm *)"], allow: ["Bash(echo *)", "Bash(test *)", "Bash(let *)", "Bash(declare *)", "Bash(local *)"] });
+    expect(evaluateShellRules(command, set)).toMatchObject({ decision: "ask", pattern: null });
+    expect(evaluateShellRules(command, rules({ allow: ["Bash(echo *)", "Bash(test *)"] })).decision).toBeNull();
+  });
+
+  it.each([
+    "echo $((1+2))",
+    "echo $((10 * 2))",
+    "[[ 1 -eq 1 ]]",
+    "[[ a == b ]]",
+    "echo ${a[1]}",
+  ])("constant arithmetic stays visible: %j", (command) => {
+    expect(analyzeShellForRules(command)).toMatchObject({ ok: true, hidden: [] });
+    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: ["Bash(echo *)", "Bash(test *)"] })).decision).toBe("allow");
+  });
+});

@@ -7,6 +7,8 @@
  * restricted — `Bash(sudo *)` as a deny rule is useful.
  */
 
+import { staticShellWord, type ShellCommand, type ShellWord } from "../../shared/shell-analysis.js";
+
 /** Programs that run arbitrary code given any argument (prefix of 1 token is refused). */
 const SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "mksh", "yash", "fish", "csh", "tcsh", "pwsh", "powershell", "cmd", "busybox"];
 /**
@@ -637,6 +639,54 @@ function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): str
   }
   const effect = shellOptionEffect(argv.slice(start));
   return effect?.kind === "exec" ? effect.reason : null;
+}
+
+const ARITHMETIC_TEST_OPERATORS = new Set(["-eq", "-ne", "-lt", "-le", "-gt", "-ge"]);
+/** An operand bash's arithmetic evaluates without looking anything up (`1`, `-2`, `0x1f`, `8#17`). */
+const ARITHMETIC_CONSTANT = /^\s*[-+]?(?:0[xX][0-9a-fA-F]+|\d+(?:#[0-9A-Za-z@_]+)?)\s*$/;
+
+function arithmeticInWord(word: ShellWord): string | null {
+  for (const part of word.parts) {
+    if (part.kind === "arithmetic-data" && part.variables.length > 0) return `arithmetic evaluation of $${part.variables[0]}`;
+    if (part.kind === "unknown" && /arithmetic|array index|parameter expansion/i.test(part.reason)) return part.reason;
+    if (part.kind === "parameter-choice") {
+      const nested = arithmeticInWord(part.operand);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+/**
+ * Reason this command evaluates a variable arithmetically, else null. Bash
+ * arithmetic evaluates a variable's VALUE as an expression, and an array
+ * subscript inside it runs command substitutions
+ * (`x='a[$(rm -rf y)]'; echo $((x))`), so `$((…))` with a variable operand,
+ * `[[ … -eq … ]]` with a non-constant operand, and opaque arithmetic or
+ * array-index expansions are hidden code. `(( ))`, `let` and `declare -i`
+ * already lower to unsupported syntax. `echo $((1+2))` stays visible.
+ */
+export function arithmeticEvaluationReason(cmd: ShellCommand): string | null {
+  const words = [
+    ...cmd.words,
+    ...cmd.assignments.flatMap((assignment) => [assignment.value, ...(assignment.elements ?? [])]),
+    ...cmd.redirects.flatMap((redirect) => [redirect.target, redirect.data].filter((word): word is ShellWord => word !== undefined)),
+  ];
+  for (const word of words) {
+    const reason = arithmeticInWord(word);
+    if (reason) return reason;
+  }
+  if (cmd.testForm === "double-bracket") {
+    for (let index = 1; index + 1 < cmd.words.length; index += 1) {
+      const operator = staticShellWord(cmd.words[index]!);
+      if (operator === undefined || !ARITHMETIC_TEST_OPERATORS.has(operator)) continue;
+      for (const operand of [cmd.words[index - 1]!, cmd.words[index + 1]!]) {
+        const text = staticShellWord(operand);
+        if (text === undefined || !ARITHMETIC_CONSTANT.test(text)) return `[[ ${operator} ]] evaluates ${operand.source.raw} arithmetically`;
+      }
+    }
+  }
+  return null;
 }
 
 /**

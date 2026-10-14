@@ -52,6 +52,7 @@ import {
 } from "../sensitive-paths.js";
 import {
   SHELL_PREFIX_POLICY,
+  arithmeticEvaluationReason,
   codeCarryingVariable,
   hiddenCodeReason,
   isNetworkProgram,
@@ -675,6 +676,7 @@ function commandArgv(cmd: ShellCommand): (string | undefined)[] {
 
 function isHiddenCommand(cmd: ShellCommand): boolean {
   if (cmd.assignments.some((assignment) => codeCarryingVariable(assignment.name))) return true;
+  if (arithmeticEvaluationReason(cmd)) return true;
   if (cmd.words.length === 0) return false;
   const argv = commandArgv(cmd);
   return argv[0] === undefined || hiddenCodeReason(argv) !== null;
