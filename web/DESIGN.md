@@ -20,7 +20,7 @@ requests first and links to the guide.
 | Intro | Ave is a desktop app on three systems; you stay in control. | One paragraph, its first sentence in ink, and the one line about the permission check. |
 | Workbench | Four conversations run side by side, driven from the keyboard. | A four-tile window beside the composer keys. |
 | Models | You choose the model, key, server or subscription. | The providers on a ring around Ave. |
-| Plugins | Plugins come from git and are checked by hash. | The marketplace scene, the deep links, the four source kinds. |
+| Plugins | Plugins come from git and are checked by hash. | The marketplace scene (five package kinds named, the other five counted), the deep links, three rules; the four source kinds are in the guide. |
 | Alongside | Indexing, meetings, routines and sub-agents run beside you. | Each of them flowing into the chat list. |
 | Download | It runs on three systems; unsigned builds take one step more. | The three installers, and the guide. |
 
@@ -137,7 +137,9 @@ requests first and links to the guide.
     panel. Wordmark left, three
     section links centred, language and one ink "Download" button right.
     Under 760 px the links and the language switch move into a `<details>`
-    menu that opens without script. The footer is light: link columns,
+    menu that opens without script, as a full-width sheet under the bar with a
+    scrim over the page; with script it also closes on a tap outside, on
+    Escape and after a link is chosen. The footer is light: link columns,
     a hairline, then the notice and the language link.
 24. **Links in text** are underlined at 1 px with a 0.2 em offset; hover
     changes only the underline colour. Section labels above heads are links to
@@ -169,8 +171,12 @@ requests first and links to the guide.
 ### Budget
 
 31. **JavaScript per route** (first load, as `next build` reports it): home at
-    most 170 kB, every other route at most 120 kB. Motion loads only on the
-    home page, through `LazyMotion` with the `domAnimation` feature set.
+    most 170 kB, every other route at most 110 kB. Motion and the shadcn
+    button's class utilities load only on the home page. `LazyMotion` loads
+    the `domAnimation` features asynchronously, but the scroll and in-view
+    hooks the scenes use share the same core, so the split saves almost
+    nothing (the async chunk is under 1 kB); replacing those hooks is the next
+    lever if the budget tightens.
 
 ## Libraries
 

@@ -11,12 +11,21 @@ loads the following third-party work.
 | react, react-dom | 18.3.1 | MIT | Rendering |
 | tailwindcss, @tailwindcss/postcss | 4.3.3 | MIT | Utility CSS and theme tokens (build time) |
 | motion | 13.4.6 | MIT | Beam pulses and the scroll-linked model orbit |
+| framer-motion (dependency of motion) | 13.5.1 | MIT | Motion's React layer |
+| motion-dom (dependency of motion) | 13.5.1 | MIT | Motion's DOM renderer |
+| motion-utils (dependency of motion) | 13.5.0 | MIT | Motion's shared helpers |
 | @radix-ui/react-slot | 1.3.3 | MIT | `asChild` on the shadcn/ui button |
+| @radix-ui/react-compose-refs (dependency of react-slot) | 1.1.5 | MIT | Ref merging inside Slot |
 | class-variance-authority | 0.7.1 | Apache-2.0 | Button variants |
 | clsx | 2.1.1 | MIT | Class joining in `cn` |
 | tailwind-merge | 3.7.0 | MIT | Class merging in `cn` |
 
-Each package's full licence text is in its published package.
+The list is the runtime dependency closure of `web/package.json`'s
+dependencies, read from `web/node_modules`. `tslib` (declared by
+framer-motion) is not imported by the ES builds the site bundles, and
+`loose-envify` is a build transform, so neither ships; React's `scheduler`
+(MIT) ships inside the framework. Each package's full licence text is in its
+published package.
 
 ## Fonts (self-hosted through next/font)
 

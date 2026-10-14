@@ -1,63 +1,72 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Button } from "./ui/button";
 
 /**
  * Marks the document as scripted (so entrance styles apply) and reveals each
  * [data-reveal] block once as it enters the viewport. Without script, or with
  * reduced motion, everything is simply visible.
+ *
+ * Also closes the small-screen menu (a <details>) on a tap outside it, on
+ * Escape and after a link in it is chosen. The menu opens and works without
+ * script; this only adds the expected ways to close it (DESIGN.md 23).
  */
 export function Motion() {
   useEffect(() => {
     const root = document.documentElement;
     const blocks = Array.from(document.querySelectorAll<HTMLElement>("[data-reveal]"));
+    let io: IntersectionObserver | null = null;
     if (!("IntersectionObserver" in window)) {
       blocks.forEach((b) => b.classList.add("in"));
-      return;
-    }
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (e.isIntersecting) {
-            e.target.classList.add("in");
-            io.unobserve(e.target);
+    } else {
+      io = new IntersectionObserver(
+        (entries) => {
+          for (const e of entries) {
+            if (e.isIntersecting) {
+              e.target.classList.add("in");
+              io?.unobserve(e.target);
+            }
           }
-        }
-      },
-      { rootMargin: "0px 0px -12% 0px", threshold: 0.05 },
-    );
-    blocks.forEach((b) => io.observe(b));
-    root.classList.add("js-ready");
-    return () => io.disconnect();
+        },
+        { rootMargin: "0px 0px -12% 0px", threshold: 0.05 },
+      );
+      blocks.forEach((b) => io?.observe(b));
+      root.classList.add("js-ready");
+    }
+
+    const openMenus = () => Array.from(document.querySelectorAll<HTMLDetailsElement>("details.menu[open]"));
+    const onPointer = (e: PointerEvent) => {
+      for (const m of openMenus()) {
+        const panel = m.querySelector(".menu-panel");
+        const summary = m.querySelector("summary");
+        const t = e.target as Node;
+        if (!panel?.contains(t) && !summary?.contains(t)) m.open = false;
+      }
+    };
+    // A chosen link closes the menu after the click has navigated or scrolled.
+    const onClick = (e: MouseEvent) => {
+      const link = e.target instanceof Element ? e.target.closest(".menu-panel a") : null;
+      const menu = link?.closest<HTMLDetailsElement>("details.menu");
+      if (menu) menu.open = false;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      for (const m of openMenus()) {
+        m.open = false;
+        m.querySelector("summary")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("click", onClick);
+    return () => {
+      io?.disconnect();
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("click", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
   }, []);
   return null;
-}
-
-type OsKey = "mac" | "windows" | "linux";
-
-function detectOs(): OsKey | null {
-  const ua = navigator.userAgent;
-  if (/Mac OS X|Macintosh/.test(ua) && !/iPhone|iPad/.test(ua)) return "mac";
-  if (/Windows/.test(ua)) return "windows";
-  if (/Linux/.test(ua) && !/Android/.test(ua)) return "linux";
-  return null;
-}
-
-/** The hero's one action: names the visitor's system when it can tell. */
-export function OsCta({ base, labels }: { base: string; labels: { any: string; mac: string; windows: string; linux: string } }) {
-  const [os, setOs] = useState<OsKey | null>(null);
-  useEffect(() => setOs(detectOs()), []);
-  const label = os ? labels[os] : labels.any;
-  return (
-    <Button asChild className="group">
-      <Link href={os ? `${base}#${os}` : base}>
-        {label}
-        <span className="motion-safe:transition-transform motion-safe:duration-150 motion-safe:group-hover:translate-x-0.5" aria-hidden="true">→</span>
-      </Link>
-    </Button>
-  );
 }
 
 export function CopyButton({ text, label, done }: { text: string; label: string; done: string }) {

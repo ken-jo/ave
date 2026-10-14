@@ -41,12 +41,9 @@ export interface HomeCopy {
     sceneLabel: string;
     repo: string;
     check: string;
+    /** Five of the ten package kinds the marketplace accepts, then the rest as a count. */
     kinds: string[];
-    sourcesCaption: string;
-    colSource: string;
-    colWhere: string;
-    colTrust: string;
-    sources: { name: string; where: string; trust: string }[];
+    kindsMore: string;
     facts: { title: string; body: string }[];
   };
   side: {
@@ -124,20 +121,11 @@ const ko: HomeCopy = {
     codeNote: "링크는 확인 화면만 엽니다. 설치는 내가 확인한 뒤에 일어납니다.",
     codeComment1: "# 마켓플레이스 추가",
     codeComment2: "# 패키지 설치",
-    sceneLabel: "git 저장소의 marketplace.json 에서 받은 패키지가 SHA-256 확인을 거쳐 Ave에 플러그인, MCP 서버, 스킬, 에이전트, 테마로 들어오는 그림",
+    sceneLabel: "git 저장소의 marketplace.json 에서 받은 패키지가 SHA-256 확인을 거쳐 Ave에 플러그인, MCP 서버, 스킬, 에이전트, 테마 외 5종으로 들어오는 그림",
     repo: "git 저장소",
     check: "SHA-256 확인",
     kinds: ["플러그인", "MCP 서버", "스킬", "에이전트", "테마"],
-    sourcesCaption: "어디서 받는지",
-    colSource: "소스",
-    colWhere: "추가하는 곳",
-    colTrust: "다른 점",
-    sources: [
-      { name: "공식", where: "Ave에 들어 있습니다.", trust: "호스트 비밀 값 권한을 받을 수 있는 유일한 소스입니다." },
-      { name: "관리", where: "기기 정책 파일의 marketplaces.additional", trust: "조직이 허용·차단 목록과 필수 설치를 정합니다." },
-      { name: "사용자 지정", where: "설정 → 마켓플레이스 → 추가", trust: "내가 고른 git 저장소입니다." },
-      { name: "직접", where: "git 폴더 하나", trust: "저장소 전체가 아니라 패키지 하나만 받습니다." },
-    ],
+    kindsMore: "외 5종",
     facts: [
       { title: "따로 도는 프로세스", body: "플러그인은 앱과 다른 프로세스에서 돕니다. 하나가 시작에 실패해도 나머지는 그대로 일하고, 그 플러그인을 부르면 실제 이유를 알려 줍니다." },
       { title: "적용은 조용할 때", body: "새 버전은 부팅 때와 정해진 간격으로 확인하고, 적용은 대화가 쉬고 있을 때 하나씩 합니다. 권한, MCP 서버, 훅이 바뀌었거나 승인을 다시 확인해야 하면 자동으로 적용하지 않고 내 검토를 기다립니다." },
@@ -244,20 +232,11 @@ const en: HomeCopy = {
     codeNote: "A link only opens a confirmation screen. Nothing installs until you confirm.",
     codeComment1: "# add a marketplace",
     codeComment2: "# install a package",
-    sceneLabel: "Packages from a git repository’s marketplace.json pass a SHA-256 check and arrive in Ave as plugins, MCP servers, skills, agents and themes",
+    sceneLabel: "Packages from a git repository’s marketplace.json pass a SHA-256 check and arrive in Ave as plugins, MCP servers, skills, agents, themes and five more kinds",
     repo: "git repository",
     check: "SHA-256 check",
     kinds: ["Plugins", "MCP servers", "Skills", "Agents", "Themes"],
-    sourcesCaption: "Where packages come from",
-    colSource: "Source",
-    colWhere: "Added from",
-    colTrust: "What differs",
-    sources: [
-      { name: "Official", where: "Built into Ave.", trust: "The only source whose plugins can be granted host secrets." },
-      { name: "Managed", where: "marketplaces.additional in the machine policy file", trust: "An organisation sets allow and block lists and required installs." },
-      { name: "Custom", where: "Settings → Marketplace → Add", trust: "A git repository you chose." },
-      { name: "Direct", where: "One git folder", trust: "A single package, not a whole repository." },
-    ],
+    kindsMore: "+5 more kinds",
     facts: [
       { title: "A process of its own", body: "Plugins run outside the app process. If one fails to start, the rest keep working, and calls to the failed one report the real reason." },
       { title: "Applied when idle", body: "New versions are checked at launch and on a schedule, and applied one at a time while the conversation is idle. If permissions, MCP servers or hooks changed, or an approval needs confirming again, the update waits for your review instead of applying itself." },

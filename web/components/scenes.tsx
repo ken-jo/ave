@@ -9,8 +9,11 @@
  * web/THIRD_PARTY_NOTICES.md), and the model orbit turns with scroll.
  */
 import { useRef, type CSSProperties, type ReactNode } from "react";
-import { LazyMotion, domAnimation, m, useInView, useReducedMotion, useScroll, useTransform } from "motion/react";
+import { LazyMotion, m, useInView, useReducedMotion, useScroll, useTransform } from "motion/react";
 import { cn } from "@/lib/utils";
+
+/** Animation features arrive in their own chunk after first paint. */
+const loadFeatures = () => import("./motion-features").then((mod) => mod.default);
 
 type Pt = [number, number];
 
@@ -120,7 +123,7 @@ export function Scene({ label, wide, narrow, nodes, fallback, start = "view", cl
   const run = !reduced && (start === "mount" || inView);
   const id = label.replace(/[^a-z0-9]/giu, "").slice(0, 12) || "beam";
   return (
-    <LazyMotion features={domAnimation} strict>
+    <LazyMotion features={loadFeatures} strict>
       <div ref={ref} role="img" aria-label={label} className={className}>
         <Frame layout={wide} nodes={nodes} run={run} id={`${id}-w`} className="hidden lg:block" />
         {narrow ? (
@@ -145,7 +148,7 @@ export function Orbit({ label, center, items }: { label: string; center: ReactNo
   const turn = useTransform(scrollYProgress, [0, 1], [-30, 30]);
   const counter = useTransform(turn, (v) => -v);
   return (
-    <LazyMotion features={domAnimation} strict>
+    <LazyMotion features={loadFeatures} strict>
       <div ref={ref} role="img" aria-label={label} className="relative mx-auto aspect-square w-full max-w-[34rem]">
         <svg className="pointer-events-none absolute inset-0 size-full" viewBox="0 0 100 100" aria-hidden="true">
           <circle cx="50" cy="50" r="40" fill="none" stroke="rgba(11,13,12,0.12)" strokeWidth="0.25" />

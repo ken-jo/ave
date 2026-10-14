@@ -4,7 +4,7 @@ import { href, type Locale } from "@/lib/i18n";
 import { homeCopy } from "@/lib/home";
 import { docPages } from "@/lib/docs";
 import { getDownloads } from "@/lib/downloads";
-import { OsCta } from "./client";
+import { OsCta } from "./os-cta";
 import { Mark } from "./chrome";
 import { QuadFragment, SidebarFragment } from "./fragments";
 import { Orbit, Scene, type Layout } from "./scenes";
@@ -42,13 +42,13 @@ function Chips({ items }: { items: string[] }) {
 type P = [number, number];
 
 const heroWide: Layout = {
-  size: [1000, 440],
-  nodes: { you: [160, 220], ave: [500, 215], models: [840, 120], computer: [840, 330] },
+  size: [1000, 360],
+  nodes: { you: [160, 178], ave: [500, 172], models: [840, 76], computer: [840, 278] },
   edges: [
-    { a: [270, 220], b: [456, 216] },
-    { a: [546, 200], b: [732, 125], bend: -18 },
-    { a: [546, 200], b: [732, 125], bend: -18, reverse: true },
-    { a: [546, 232], b: [732, 330], bend: 18 },
+    { a: [270, 178], b: [456, 172] },
+    { a: [546, 156], b: [732, 82], bend: -16 },
+    { a: [546, 156], b: [732, 82], bend: -16, reverse: true },
+    { a: [546, 188], b: [732, 278], bend: 16 },
   ],
 };
 const heroNarrow: Layout = {
@@ -63,17 +63,17 @@ const heroNarrow: Layout = {
 };
 
 const plugWide: Layout = {
-  size: [1000, 340],
-  nodes: { repo: [125, 170], check: [385, 170], ave: [590, 165], k0: [860, 50], k1: [860, 110], k2: [860, 170], k3: [860, 230], k4: [860, 290] },
+  size: [1000, 380],
+  nodes: { repo: [125, 170], check: [385, 170], ave: [590, 165], k0: [860, 40], k1: [860, 100], k2: [860, 160], k3: [860, 220], k4: [860, 280], more: [860, 340] },
   edges: [
     { a: [214, 170], b: [322, 170] },
     { a: [450, 170], b: [545, 170] },
-    ...[50, 110, 170, 230, 290].map((y) => ({ a: [635, 170] as P, b: [818, y] as P, bend: (170 - y) * 0.25 })),
+    ...[40, 100, 160, 220, 280].map((y) => ({ a: [635, 168] as P, b: [818, y] as P, bend: (168 - y) * 0.25 })),
   ],
 };
 const plugNarrow: Layout = {
-  size: [360, 520],
-  nodes: { repo: [180, 55], check: [180, 170], ave: [180, 285], kinds: [180, 450] },
+  size: [360, 540],
+  nodes: { repo: [180, 55], check: [180, 170], ave: [180, 285], kinds: [180, 460] },
   edges: [
     { a: [180, 108], b: [180, 150] },
     { a: [180, 192], b: [180, 232] },
@@ -152,11 +152,15 @@ export function Home({ locale }: { locale: Locale }) {
     kinds: {
       body: (
         <div className="w-[80vw] max-w-[22rem]">
-          <span className="flex flex-wrap justify-center gap-1.5">{p.kinds.map((k) => <span key={k} className={chip}>{k}</span>)}</span>
+          <span className="flex flex-wrap justify-center gap-1.5">
+            {p.kinds.map((k) => <span key={k} className={chip}>{k}</span>)}
+            <span className="inline-block px-1 py-0.5 text-xs text-muted">{p.kindsMore}</span>
+          </span>
         </div>
       ),
     },
     ...Object.fromEntries(p.kinds.map((k, i) => [`k${i}`, { body: <span className={`${chip} whitespace-nowrap text-sm`}>{k}</span> }])),
+    more: { body: <span className="whitespace-nowrap text-sm text-muted">{p.kindsMore}</span> },
   };
 
   const sideNodes: Record<string, { body: ReactNode }> = {
@@ -268,30 +272,11 @@ export function Home({ locale }: { locale: Locale }) {
               <pre className="codeblock codeblock-dark"><code><span className="c">{p.codeComment1}</span>{"\n"}ave://marketplace/add?url=&lt;repository&gt;{"\n\n"}<span className="c">{p.codeComment2}</span>{"\n"}ave://install/plugin/&lt;name&gt;@&lt;source&gt;</code></pre>
               <p className="split-note">{p.codeNote}</p>
             </div>
-            <table className="sources" data-reveal>
-              <caption>{p.sourcesCaption}</caption>
-              <thead>
-                <tr>
-                  <th scope="col">{p.colSource}</th>
-                  <th scope="col">{p.colWhere}</th>
-                  <th scope="col">{p.colTrust}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {p.sources.map((x) => (
-                  <tr key={x.name}>
-                    <th scope="row">{x.name}</th>
-                    <td>{x.where}</td>
-                    <td>{x.trust}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="captions" data-reveal>
-            {p.facts.map((f) => (
-              <p key={f.title}><strong>{f.title}</strong> {f.body}</p>
-            ))}
+            <div className="stack" data-reveal>
+              {p.facts.map((f) => (
+                <p key={f.title}><strong>{f.title}</strong> {f.body}</p>
+              ))}
+            </div>
           </div>
         </div>
       </section>
