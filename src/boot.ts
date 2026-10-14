@@ -791,8 +791,8 @@ export async function bootstrap(
   }
 
   // §4.5.9: SystemPromptBuilder.
-  // Skills use progressive disclosure: lightweight catalog every turn, full
-  // bodies only after skill_load and only for the current user-turn window.
+  // Skills use progressive disclosure: lightweight index every turn; a body
+  // enters the context only as an explicit skill_load tool_result.
   // MCP-app `ui/update-model-context` slots. Constructed HERE because it has exactly two
   // consumers and they must share one instance: the builder below READS it at turn build,
   // and the gated `mcp.uiModelContext` IPC (via AppServices) WRITES it. There is no third
@@ -806,8 +806,6 @@ export async function bootstrap(
     toolRegistry,
     pluginRuntime,
     getAvailableSkills: () => ctx.skillStore.listCatalogSync(),
-    getActiveSkillsSection: (sessionId) =>
-      ctx.skillOverlay.buildSection(sessionId),
     getAppModelContext: (sessionId) =>
       mcpAppModelContext.buildSection(sessionId),
     mcpServerGuidanceProvider: () =>

@@ -2847,9 +2847,9 @@ export class SubAgentRunner {
       pluginRuntime: undefined,
       forcedActivePluginIds,
       ...(forcedActiveToolNames ? { forcedActiveToolNames } : {}),
-      // C2(c): the sub-agent uses the parent's SkillOverlay reference to
-      // load skills if the user grants — but its own session id will be
-      // tracked separately via setActiveSessionId.
+      // The sub-agent shares the parent's read-skill registry; its reads are
+      // keyed by the child's own session id, so `skill_read` authorization
+      // never crosses between parent and child.
       skillOverlay: this.deps.parentDeps.skillOverlay,
       // #1112: per-profile model override. Undefined keeps the active
       // runtime's persisted model selection.

@@ -2,15 +2,15 @@
  * `skill_read` — fetch ONE bundled resource of an already-loaded skill.
  *
  * Agent Skills stage-3: a skill may ship `references/`, `assets/` … beside its
- * SKILL.md. `skill_load` surfaces those files as an inert manifest inside the
- * `<ave-skill>` overlay; this tool returns one file's bytes on demand, so a
- * large skill stays a small prompt footprint.
+ * SKILL.md. `skill_load` lists those files as an inert manifest inside its
+ * `<ave-skill>` result; this tool returns one file's bytes on demand, so a
+ * large skill stays a small context footprint.
  *
  * Security model (bundled files are UNTRUSTED plugin/user content):
- *   - ACCESS: only skills already present in the CURRENT TURN's overlay are
- *     readable. Overlay membership means the skill passed `skill_load`'s
+ *   - ACCESS: only skills already read with `skill_load` in THIS conversation
+ *     are readable. Registry membership means the skill passed `skill_load`'s
  *     body-hash approval gate, so approval is reused rather than re-invented —
- *     and the overlay is cleared at the user-turn boundary, so access expires.
+ *     and the registry is cleared when the conversation is replaced.
  *   - CONTAINMENT: plugin resources resolve against frozen, sha256-verified
  *     in-memory bytes (zero filesystem access); user resources are realpath-
  *     contained inside the skill's own directory. Flat `<name>.md` skills are
@@ -19,8 +19,7 @@
  *   - GENERATION: a plugin read re-acquires the generation lease and refuses
  *     when the live generation no longer matches the approved one.
  *   - DATA ONLY: content is returned as a `tool_result` (the same channel as
- *     any file read) and is NEVER executed, and never enters the trusted
- *     system-prompt overlay.
+ *     any file read) and is NEVER executed, and never enters the system prompt.
  */
 import { t } from "../i18n/index.js";
 import { createDynamicTool, type Tool } from "./base.js";
@@ -34,7 +33,7 @@ const log = createLogger("ave");
 
 export interface SkillReadToolDeps {
   store: SkillStore;
-  /** Current-turn overlay — the ACCESS CONTROL surface (loaded ⇒ approved). */
+  /** Per-conversation read-skill registry — the ACCESS CONTROL surface (read ⇒ approved). */
   overlay: SkillOverlay;
   /** Generation lease for plugin-owned skills; absent ⇒ plugin reads refuse. */
   acquirePluginGeneration?: (
@@ -92,15 +91,15 @@ export function createSkillReadTool(deps: SkillReadToolDeps): Tool {
         return errorResult("skill_read: missing sessionId in tool execution context");
       }
 
-      // ACCESS CONTROL: the skill must be loaded for THIS session's current
-      // turn (⇒ it passed skill_load's approval gate). Nothing else grants read.
+      // ACCESS CONTROL: the skill must have been read in THIS conversation
+      // (⇒ it passed skill_load's approval gate). Nothing else grants read.
       const entry = deps.overlay.list(sessionId).find((candidate) => candidate.name === skillName);
       if (!entry) {
         return errorResult(`skill not loaded: call skill_load({ skillName: "${skillName}" }) first`);
       }
       // The manifest captured at load time is the AUTHORIZED set, so the
       // discovery caps are real access bounds rather than display limits.
-      // (The rendered overlay list is byte-capped separately, so what the model
+      // (The rendered skill_load manifest is byte-capped separately, so what the model
       // is SHOWN can be a subset of this set — never a superset.)
       if (!entry.resources.some((resource) => resource.path === resourcePath)) {
         return errorResult(`resource not listed for ${skillName}: ${resourcePath}`);
@@ -151,7 +150,7 @@ export function createSkillReadTool(deps: SkillReadToolDeps): Tool {
         }
 
         // Read against the identity captured at approval time — NOT a fresh
-        // name lookup: re-resolving `skillName` from disk would let a mid-turn
+        // name lookup: re-resolving `skillName` from disk would let a later
         // file swap (or a newly-created ambiguous sibling) redirect a read the
         // user authorized against a different file, and would re-run the bundle
         // scan on every call.

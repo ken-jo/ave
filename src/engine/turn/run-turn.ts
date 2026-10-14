@@ -48,6 +48,7 @@ import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import { createRequestAnchor } from "../../tools/pipeline/rationale-control.js";
 import { providerMatchesActiveChatRuntime } from "./provider.js";
+import { BUILTIN_SLASH_COMMANDS } from "./commands.js";
 import { aggregateSubscriptionUsage } from "./subscription-usage-telemetry.js";
 import type { MemoryCaptureTaintReason } from "../../memory/memory-capture-service.js";
 
@@ -208,7 +209,6 @@ async function runTurnInSpan(
           rawIntent: options.requestAnchorRawIntent,
         })
       : null;
-    self.deps.skillOverlay?.clear(effectiveSessionId);
 
 
     self.tracer.step("REQUEST_ENTRY", { inputLen: turnInput.length, inputOrigin,
@@ -262,11 +262,6 @@ async function runTurnInSpan(
       turnStateFinalized = true;
       self.currentAbortController = null;
       self.turnAdditionalDirectories = [];
-      try {
-        self.deps.skillOverlay?.clear(effectiveSessionId);
-      } catch {
-        // Overlay cleanup failure must not strand queued guidance.
-      }
       await self.dropPendingGuidance("turn-ended", callbacks);
     };
 
@@ -275,7 +270,18 @@ async function runTurnInSpan(
     const classification = self.deps.inputClassifier.classify(turnInput);
     self.tracer.step("INPUT_CLASSIFY", { type: classification.type });
     // §4.5.2 step 3 — ROUTE_RESOLVE
-    const routeResult = self.deps.routeEngine.route(classification);
+    const resolvedRoute = self.deps.routeEngine.route(classification);
+    // `/<skill-name> …` typed by the user is an explicit request to use that
+    // skill, not a host command: it runs as a normal model turn with the text as
+    // typed, and the skill index guidance makes the model read the skill with
+    // `skill_load` first (a visible tool step). Built-in commands always win.
+    const isSkillInvocation =
+      resolvedRoute.route === "command" &&
+      !BUILTIN_SLASH_COMMANDS.has(resolvedRoute.command) &&
+      self.deps.isSkillName?.(resolvedRoute.command) === true;
+    const routeResult: typeof resolvedRoute = isSkillInvocation
+      ? { route: "llm", input: turnInput }
+      : resolvedRoute;
     self.tracer.step("ROUTE_RESOLVE", { route: routeResult.route });
 
     if (routeResult.route === "command") {

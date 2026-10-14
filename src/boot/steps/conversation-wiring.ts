@@ -229,6 +229,10 @@ export async function wireConversation(
     mainWindow,
     subscriptionProviderFactory,
   } = ctx;
+  // `/<skill-name>` typed by the user routes to the model (which reads the
+  // skill with skill_load) instead of failing as an unknown command.
+  const isSkillName = (name: string): boolean =>
+    ctx.skillStore?.listCatalogSync().some((skill) => skill.name === name) ?? false;
 
   const { sideChatMemoryManager, subAgentMemoryManager } = isolatedMemoryManagers;
 
@@ -351,6 +355,7 @@ export async function wireConversation(
     pluginOperationGrants,
     pluginOperationIdentityProvider,
     skillOverlay,
+    isSkillName,
     notificationService,
     auditLogger: bootAuditLogger,
     rewireReviewerAgent,
@@ -467,6 +472,7 @@ export async function wireConversation(
       pluginOperationGrants,
       pluginOperationIdentityProvider,
       skillOverlay,
+      isSkillName,
       notificationService,
       auditLogger: bootAuditLogger,
       rewireReviewerAgent,
@@ -655,10 +661,10 @@ export async function wireConversation(
     agentMessageBus,
     parentDirectiveMailbox,
   });
-  // skill_load no longer mutates conversation history. The body is registered
-  // into SkillOverlay for the current user-turn window and read by
-  // SystemPromptBuilder via getActiveSkillsSection. See main/skill-overlay.ts
-  // for the registry; src/tools/skill-load.ts for the tool entry point.
+  // skill_load returns the skill body as its tool_result (never a user-role
+  // message, never the system prompt) and records the read in the
+  // per-conversation SkillOverlay registry that authorizes skill_read. See
+  // src/tools/skill-load.ts and main/skill-overlay.ts.
 
   // WorkBoardEngine — plan→approve→execute orchestration for one work item.
   // Wired here, right after the SubAgentRunner exists, because the engine
