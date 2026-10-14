@@ -2,7 +2,7 @@
 
 Hello, I'm Ave. Ave is a comprehensive agent browser: the desktop place where you, your agents, the models you choose, and your computer meet. Its goals and what ships today are stated once, in [docs/vision/README.md](./docs/vision/README.md).
 
-This repository owns the Electron main/renderer/preload layers, extension runtime, managed marketplace install flow, Python runtime bootstrap, local/cloud retrieval bridge, and OS installer packaging.
+This repository owns the Electron main/renderer/preload layers, extension runtime, git marketplace install flow, Python runtime bootstrap, and OS installer packaging.
 
 Korean documentation: [docs/ko/app-readme.md](./docs/ko/app-readme.md)
 
@@ -11,8 +11,7 @@ Korean documentation: [docs/ko/app-readme.md](./docs/ko/app-readme.md)
 - Electron main, renderer, preload, and `plugin-preload` bundles.
 - The Ave chat UI, conversation sessions, branching, export, compaction, and inline user-question cards.
 - Manifest-driven extension runtime with dynamic loading from the local extension registry.
-- Managed marketplace install and refresh for first-party Ave extensions.
-- Host-side retrieval that fuses Local Indexer extension BM25/vector results with cloud adapters.
+- Marketplace boot installs: the app's default installs and the policy file's required installs.
 - Extension UI hosting, IPC bridging, event contracts, OS notifications, and overlay-triggered conversation proposals.
 - macOS Apple Silicon, Linux, and Windows installer build scripts and GitHub Actions workflows.
 - Development, smoke, E2E, packaging, i18n, test-quality, and security guard scripts.
@@ -50,11 +49,11 @@ Current managed extension families include:
 
 Extensions can be installed through marketplace cards or `ave://install/<slug>` deep links. In an unpackaged development build, open **Settings → Extension Settings → Developer tools → Install from local folder** and select the build folder that contains `plugin.json`. The running host owns this installation so durable registry state and live extension state remain synchronized.
 
-On boot, managed marketplace extensions are checked and refreshed by `src/boot/managed-marketplace.ts`. Stale registry entries are repaired when the manifest is missing, the extension runtime restarts after managed changes, and renderer boot progress is emitted through `ave:bootstrap:status`.
+On boot, the marketplace applies the app's default installs once and keeps the policy file's required installs installed (`src/marketplace/boot-installs/run.ts`); updates wait in the apply queue until the conversation pauses. Renderer boot progress is emitted through `ave:bootstrap:status`.
 
-### Local And Cloud Retrieval
+### Document Retrieval
 
-The host-side `HybridRetriever` in `src/main/hybrid-retriever.ts` fuses Local Indexer extension BM25/vector results with cloud adapter results using reciprocal rank fusion. Document indexing and worker lifecycle remain owned by `@ave/plugin-local-indexer`; the app owns orchestration, IPC, and chat integration.
+The host does not fuse retrieval sources behind a tool of its own. Each source is its own user-visible tool, owned by the extension that holds the data: `@ave/plugin-local-indexer` exposes `index_search` (bm25 / vector / hybrid), `index_documents`, and `index_get_document`, and owns document indexing and its worker lifecycle.
 
 ### Overlay Trigger Surface
 
