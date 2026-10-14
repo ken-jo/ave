@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 175
+ * Fragments: 176
  */
 import { en as en_alerts } from "./alerts.js";
 import { en as en_app } from "./app.js";
@@ -158,6 +158,7 @@ import { en as en_subAgentCard } from "./subAgentCard.js";
 import { en as en_subAgentTranscript } from "./subAgentTranscript.js";
 import { en as en_subscriptionProvidersSection } from "./subscriptionProvidersSection.js";
 import { en as en_suggestedRepliesGhost } from "./suggestedRepliesGhost.js";
+import { en as en_suggestedTasks } from "./suggestedTasks.js";
 import { en as en_summaryToast } from "./summaryToast.js";
 import { en as en_tailnetAccessTab } from "./tailnetAccessTab.js";
 import { en as en_telegramConnection } from "./telegramConnection.js";
@@ -335,6 +336,7 @@ export const generatedEn: Record<string, string> = {
   ...en_subAgentTranscript,
   ...en_subscriptionProvidersSection,
   ...en_suggestedRepliesGhost,
+  ...en_suggestedTasks,
   ...en_summaryToast,
   ...en_tailnetAccessTab,
   ...en_telegramConnection,

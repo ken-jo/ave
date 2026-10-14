@@ -24,6 +24,8 @@ import {
 } from "../types/attachments.js";
 import { findMarkerAt, parseMarkers } from "../utils/attachment-markers.js";
 import { handleClipboardPaste } from "../utils/clipboard-paste.js";
+import { isComposingKeyEvent } from "../utils/ime-key-event.js";
+import { IDLE_PROMPT_HISTORY, stepPromptHistory, type PromptHistoryCursor } from "../utils/prompt-history.js";
 import { InlineSlashMenu } from "./InlineSlashMenu.js";
 import { ResourceMentionMenu } from "./ResourceMentionMenu.js";
 import { McpResourceTemplateDialog } from "../dialogs/McpResourceTemplateDialog.js";
@@ -149,6 +151,11 @@ export interface ComposerProps {
   inlinePlugins?: PluginEntry[];
   /** Open a plugin view when its inline-menu item is accepted. */
   onSelectPlugin?: (viewKey: string) => void;
+  /**
+   * Prompts the user typed earlier, oldest first. Up on an empty composer
+   * recalls them; Down walks back to the draft. Omitted → no recall.
+   */
+  promptHistory?: readonly string[];
 }
 
 /**
@@ -170,6 +177,7 @@ export interface ComposerProps {
  * always passes a memoized handler; the component should not depend on that.
  */
 const NOOP_SELECT_PLUGIN = () => {};
+const EMPTY_PROMPT_HISTORY: readonly string[] = [];
 
 function clipboardContainsImage(event: ClipboardEvent): boolean {
   const items = event.clipboardData?.items;
@@ -205,6 +213,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     commandActions = [],
     inlinePlugins = [],
     onSelectPlugin,
+    promptHistory = EMPTY_PROMPT_HISTORY,
   },
   ref,
 ) {
@@ -218,6 +227,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // created in — the asynchronous resource attach is the one that needs it.
   const textRef = useRef(text);
   textRef.current = text;
+  const promptHistoryCursorRef = useRef<PromptHistoryCursor>(IDLE_PROMPT_HISTORY);
 
   // because `e.nativeEvent.isComposing` is only available inside keydown — the
   // ghost render path needs the value at render time, not just on key events.
@@ -565,7 +575,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.nativeEvent.isComposing || isComposingRef.current) return;
+      // The ref covers the window between compositionstart and the first
+      // flagged keydown; the helper covers Chromium's commit keydown (keyCode
+      // 229, isComposing false) that otherwise sends a half-typed syllable.
+      if (isComposingKeyEvent(e) || isComposingRef.current) return;
 
       // Ctrl/⌘ + Shift + V = paste the ORIGINAL text straight into the field.
       // A ClipboardEvent carries no modifier state, so the chord is recorded
@@ -637,6 +650,40 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         if (e.key === "Escape") {
           e.preventDefault();
           mentionClose();
+          return;
+        }
+      }
+
+      // Prompt-history recall. After both menus (they own the arrows while
+      // open) and only without modifiers; `stepPromptHistory` returns null
+      // whenever the arrow should keep moving the caret instead.
+      if (
+        (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+        !e.shiftKey &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !disabled &&
+        promptHistory.length > 0
+      ) {
+        const ta = e.currentTarget;
+        const step = stepPromptHistory(
+          promptHistory,
+          promptHistoryCursorRef.current,
+          e.key === "ArrowUp" ? -1 : 1,
+          text,
+          { start: ta.selectionStart, end: ta.selectionEnd },
+        );
+        if (step) {
+          e.preventDefault();
+          promptHistoryCursorRef.current = step.cursor;
+          onTextChange(step.text);
+          requestAnimationFrame(() => {
+            if (taRef.current) {
+              const pos = step.text.length;
+              taRef.current.setSelectionRange(pos, pos);
+            }
+          });
           return;
         }
       }
@@ -751,6 +798,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       mentionMove,
       mentionAccept,
       mentionClose,
+      promptHistory,
     ],
   );
 

@@ -6,8 +6,8 @@
  * transcript intents are what mark the end of the conversation they describe:
  * every intent that replaces or rewinds the transcript must drop them, or the
  * next (possibly empty) conversation inherits a snapshot that still reads as
- * "suggestions on screen" — which is what suppresses the empty-state centered
- * composer and its project selector.
+ * "suggestions on screen" — which is what suppresses the empty-conversation
+ * affordances (project selector, suggested tasks).
  */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, beforeEach } from "vitest";

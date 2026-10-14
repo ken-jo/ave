@@ -42,6 +42,7 @@ import { useMessageQueue } from "../hooks/use-message-queue.js";
 import { useAttachmentPicker } from "../hooks/use-attachment-picker.js";
 import { computeComposerPlaceholder } from "../utils/composer-placeholder.js";
 import { composeOutgoing } from "../utils/compose.js";
+import { collectPromptHistory } from "../utils/prompt-history.js";
 import { ATTACH_MAX_COUNT, type Attachment } from "../types/attachments.js";
 import type { AveApi } from "../types.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
@@ -298,6 +299,9 @@ function SideChatSession({
   const composerSendDisabled = composerInputDisabled || draftHasUnsupportedAttachment;
   const hasDraft = draft.trim().length > 0 || attachments.length > 0;
 
+  // Up/Down recall in the side composer walks this side conversation's prompts.
+  const promptHistory = useMemo(() => collectPromptHistory(entries), [entries]);
+
   // The main transcript's scroll model: follow the stream only while pinned
   // near the bottom, and offer a jump back once the reader has scrolled away.
   const { scrollViewportRef, showJumpToBottom, scrollChatToBottom } = useChatScroll({
@@ -490,6 +494,7 @@ function SideChatSession({
             surface="side"
             text={draft}
             onTextChange={setDraft}
+            promptHistory={promptHistory}
             attachments={attachments}
             onAttachmentsChange={setAttachments}
             allocateN={allocateN}
