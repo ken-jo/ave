@@ -71,7 +71,7 @@ flowchart LR
   subgraph 패키지 레지스트리
     NPM[[npm / PyPI / OCI]]
   end
-  SVC[[서비스 엔드포인트<br/>former-service.json<br/>공지]]
+  SVC[[서비스 엔드포인트<br/>ave-service.json<br/>공지]]
 
   subgraph Ave 앱 메인 프로세스
     GR[Git 런타임]
@@ -114,7 +114,7 @@ flowchart LR
 | **폐기** | 각 소스 자신의 `policy/revocations.json`. 그 소스에서 설치한 패키지에만 적용합니다. | 서명된 revocation 피드 대체. `revocationRegistry`는 유지 |
 | **부팅 설치** | 앱의 `DEFAULT_INSTALLS`와 정책 파일의 `defaultInstalls`를 한 번 적용하고, 정책 파일의 `requiredInstalls`는 설치·최신·잠금 상태로 유지합니다. | `src/boot/managed-marketplace.ts`와 deployment guard의 admin 분기 대체 |
 | **호스트 시크릿 grant** | 어떤 플러그인이 어떤 호스트 LLM 키를 읽을 수 있는지 정한 앱 소유 표. 공식 출처, 공식 artifact digest, 설치 시점 매니페스트 해시에 묶입니다. | 서명된 whitelist 피드 대체. `secret-gate.ts`와 `canonical-json.ts`는 유지 |
-| **서비스 클라이언트** | 설정된 서비스 기준 주소에서 `/.well-known/former-service.json`을 읽고, 그 문서가 가리키는 공지 문서를 읽습니다. | 마켓플레이스 서버의 `listAnnouncements()` 대체 |
+| **서비스 클라이언트** | 설정된 서비스 기준 주소에서 `/.well-known/ave-service.json`을 읽고, 그 문서가 가리키는 공지 문서를 읽습니다. | 마켓플레이스 서버의 `listAnnouncements()` 대체 |
 
 ## 5. 식별 모델
 
@@ -306,11 +306,11 @@ URL과 호스트 패턴의 허용·차단 목록, 평문 `http`를 허용할 사
 앱은 작은 정적 문서 하나를 읽습니다.
 
 ```
-GET {serviceBase}/.well-known/former-service.json
+GET {serviceBase}/.well-known/ave-service.json
 ```
 
 이 문서는 공지 문서 경로와, 필요하면 다른 정적 리소스를 가리킵니다.
-`serviceBase`의 기본값은 빌드 시점의 `https://former-site.invalid`입니다. 관리 정책이
+`serviceBase`의 기본값은 빌드 시점의 `https://ave.agent-connector.ai`입니다. 관리 정책이
 덮어쓸 수 있고, 도메인을 바꿀 때는 문서에 새 주소(`movedTo`)를 적을 수
 있습니다. 클라이언트는 새 주소가 `movedFrom`으로 확인해 줄 때만, 빌드당 최대 한
 번 따라갑니다. 서비스 엔드포인트는 폐기 목록이나 grant를 싣지 않습니다. 공지는 지금의 계약(`MarketplaceAnnouncement`: 등급, 표시 기간,

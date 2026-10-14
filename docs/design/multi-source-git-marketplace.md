@@ -2000,7 +2000,7 @@ files is a device-management action).
 
 - `serviceBase` resolution: managed policy `service.baseUrl` → the move
   recorded for the current build constant (below) → build constant
-  `AVE_SERVICE_BASE_URL` (default `https://former-site.invalid`). There is no user
+  `AVE_SERVICE_BASE_URL` (default `https://ave.agent-connector.ai`). There is no user
   setting. A base is an https origin. The policy section is read exactly
   (`{ "baseUrl": … }`); an invalid one makes the service unavailable — no
   announcements, no telemetry — rather than falling back to the public base.
@@ -3285,7 +3285,7 @@ Where the sections above and the shipped code differ, the code wins:
 >   the stated residuals, the delivery order and the revert-to-fail targets.
 >   Where it and an earlier section disagree, the earlier section describes
 >   the build.
-> - The user docs are the Marketplace pages of former-site.invalid
+> - The user docs are the Marketplace pages of ave.agent-connector.ai
 >   (`web/app/docs/marketplace/`), and the mockup
 >   ([multi-source-git-marketplace.html](./multi-source-git-marketplace.html))
 >   shows the states of §18.9. Code is cited at `e10c823e2`: the line

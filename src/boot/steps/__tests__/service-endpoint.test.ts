@@ -59,7 +59,7 @@ describe("createServiceClient", () => {
 });
 
 describe("consentedTelemetryEndpoint", () => {
-  const service = () => ({ ensureResolved: vi.fn(), telemetryEndpoint: vi.fn(() => "https://former-site.invalid/telemetry/events") });
+  const service = () => ({ ensureResolved: vi.fn(), telemetryEndpoint: vi.fn(() => "https://ave.agent-connector.ai/telemetry/events") });
 
   it("never touches the service without consent", () => {
     for (const settings of [{ enabled: false }, { enabled: true, telemetryPromptAnswered: false }, { enabled: false, telemetryPromptAnswered: true }] as TelemetrySettings[]) {
@@ -75,7 +75,7 @@ describe("consentedTelemetryEndpoint", () => {
     const client = service();
     const endpoint = consentedTelemetryEndpoint(() => ({ enabled: true, telemetryPromptAnswered: true }), client);
     expect(client.ensureResolved).toHaveBeenCalledTimes(1);
-    expect(endpoint()).toBe("https://former-site.invalid/telemetry/events");
+    expect(endpoint()).toBe("https://ave.agent-connector.ai/telemetry/events");
     expect(client.ensureResolved).toHaveBeenCalledTimes(2);
   });
 
@@ -86,7 +86,7 @@ describe("consentedTelemetryEndpoint", () => {
     expect(client.ensureResolved).not.toHaveBeenCalled();
     settings.enabled = true;
     settings.telemetryPromptAnswered = true;
-    expect(endpoint()).toBe("https://former-site.invalid/telemetry/events");
+    expect(endpoint()).toBe("https://ave.agent-connector.ai/telemetry/events");
     expect(client.ensureResolved).toHaveBeenCalledTimes(1);
   });
 });

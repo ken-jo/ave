@@ -13,7 +13,9 @@ const root = process.cwd();
 const web = resolve(root, "web");
 const pub = resolve(web, "public");
 const read = (path: string) => readFileSync(path, "utf8");
-const SITE = "https://former-site.invalid";
+const SITE = "https://ave.agent-connector.ai";
+/** The Ave site's origin, which protocols 1 and 2 were published under; their `$id` keeps it. */
+const AVE_SITE = "https://former-site.invalid";
 
 // The site's sources are read as text: they belong to the web package, not to
 // the app's TypeScript program.
@@ -52,25 +54,30 @@ function sitePaths(): Set<string> {
 }
 
 describe("machine-readable files the app fetches", () => {
-  it("serves the service descriptor the app requests, under both names", () => {
+  it("serves the service descriptor the app requests", () => {
     const client = read(resolve(root, "src/marketplace/service/client.ts"));
     expect(client).toContain(`AVE_SERVICE_BASE_URL = "${SITE}"`);
     const documentPath = /const DOCUMENT_PATH = "([^"]+)"/u.exec(client)?.[1];
     expect(documentPath).toBe("/.well-known/ave-service.json");
 
     const current = readFileSync(join(pub, documentPath as string));
-    const earlier = readFileSync(join(pub, ".well-known/former-service.json"));
-    expect(earlier.equals(current)).toBe(true);
+    // Ave is a new app: no Ave build reads this host, so the site carries no
+    // pre-rename descriptor and names no move.
+    expect(existsSync(join(pub, ".well-known/former-service.json"))).toBe(false);
 
-    const descriptor = JSON.parse(current.toString("utf8")) as { schemaVersion: number; announcements: string };
+    const descriptor = JSON.parse(current.toString("utf8")) as {
+      schemaVersion: number; announcements: string; movedTo: unknown; movedFrom: unknown;
+    };
     expect(descriptor.schemaVersion).toBe(1);
+    expect(descriptor.movedTo).toBeNull();
+    expect(descriptor.movedFrom).toBeNull();
     expect(existsSync(join(pub, descriptor.announcements))).toBe(true);
     expect(JSON.parse(read(join(pub, descriptor.announcements)))).toHaveProperty("announcements");
   });
 
   it("sends JSON headers with a short cache for every file the app reads", () => {
     const headers = read(join(pub, "_headers"));
-    for (const path of ["/.well-known/ave-service.json", "/.well-known/former-service.json", "/announcements/*"]) {
+    for (const path of ["/.well-known/ave-service.json", "/announcements/*"]) {
       const block = headers.split(/\n\s*\n/u).find((b) => b.split("\n").some((line) => line.trim() === path));
       expect(block, path).toBeDefined();
       expect(block).toContain("Content-Type: application/json; charset=utf-8");
@@ -97,8 +104,23 @@ describe("machine-readable files the app fetches", () => {
     ]) {
       const schema = JSON.parse(read(join(pub, path))) as { $id: string };
       const versioned = path.replace("1/protocol.schema.json", "1/v0.11.0/protocol.schema.json");
-      expect(schema.$id, path).toBe(`${SITE}/${versioned}`);
+      expect(schema.$id, path).toBe(`${AVE_SITE}/${versioned}`);
     }
+  });
+});
+
+describe("hosting", () => {
+  it("serves the static export at the canonical host from the ave-web Worker", () => {
+    const config = JSON.parse(read(resolve(web, "wrangler.jsonc")).replace(/^\s*\/\/.*$/gmu, "")) as {
+      name: string;
+      assets: { directory: string };
+      routes: { pattern: string; custom_domain: boolean }[];
+    };
+    expect(config.name).toBe("ave-web");
+    expect(config.assets.directory).toBe("./out");
+    expect(config.routes).toEqual([{ pattern: new URL(SITE).host, custom_domain: true }]);
+    expect(read(resolve(web, "lib/i18n.ts"))).toContain(`export const SITE_ORIGIN = "${SITE}";`);
+    expect(read(join(pub, "robots.txt"))).toContain(`Sitemap: ${SITE}/sitemap.xml`);
   });
 });
 
@@ -143,7 +165,7 @@ describe("page map", () => {
     expect(read(resolve(web, "components/home.tsx"))).toContain('id="download"');
 
     const issueConfig = read(resolve(root, ".github/ISSUE_TEMPLATE/config.yml"));
-    const linked = [...issueConfig.matchAll(/https:\/\/ave\.xyz(\/[^\s"']*)/gu)].map((m) => m[1] as string);
+    const linked = [...issueConfig.matchAll(/https:\/\/ave\.agent-connector\.ai(\/[^\s"']*)/gu)].map((m) => m[1] as string);
     expect(linked.length).toBeGreaterThan(0);
     for (const path of linked) expect(paths).toContain(path.endsWith("/") ? path : `${path}/`);
   });
@@ -176,10 +198,9 @@ describe("site copy", () => {
     return out;
   });
 
-  it("carries the product name only, apart from the kept host", () => {
+  it("carries the product name only", () => {
     for (const file of sources) {
-      const text = read(file).replace(/ave\.xyz/giu, "");
-      expect(/retiredname/iu.test(text), relative(root, file)).toBe(false);
+      expect(/retiredname/iu.test(read(file)), relative(root, file)).toBe(false);
     }
   });
 

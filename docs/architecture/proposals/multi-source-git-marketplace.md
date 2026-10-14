@@ -70,7 +70,7 @@ flowchart LR
   subgraph Package registries
     NPM[[npm / PyPI / OCI]]
   end
-  SVC[[Service endpoint<br/>former-service.json<br/>announcements]]
+  SVC[[Service endpoint<br/>ave-service.json<br/>announcements]]
 
   subgraph Ave app main process
     GR[Git runtime]
@@ -113,7 +113,7 @@ talks to an Ave-operated API to list, resolve or install a package.
 | **Revocations** | Each source's own `policy/revocations.json`, applied only to packages installed from that source. | Replaces the signed revocation feed; `revocationRegistry` stays. |
 | **Boot installs** | Apply the app's `DEFAULT_INSTALLS` and the policy file's `defaultInstalls` once, and keep the policy file's `requiredInstalls` installed, current and locked. | Replaces `src/boot/managed-marketplace.ts` and the admin branches of the deployment guard. |
 | **Host-secret grants** | An app-owned table of which plugins may read which host LLM keys, bound to official origin, the official artifact digest and the install-time manifest hash. | Replaces the signed whitelist feed; `secret-gate.ts` and `canonical-json.ts` stay. |
-| **Service client** | Read `/.well-known/former-service.json` from the configured service base, then the announcement document it names. | Replaces `listAnnouncements()` on the marketplace server. |
+| **Service client** | Read `/.well-known/ave-service.json` from the configured service base, then the announcement document it names. | Replaces `listAnnouncements()` on the marketplace server. |
 
 ## 5. Identity model
 
@@ -316,11 +316,11 @@ device management.
 The app reads one small static document:
 
 ```
-GET {serviceBase}/.well-known/former-service.json
+GET {serviceBase}/.well-known/ave-service.json
 ```
 
 It names the announcement document path and, optionally, other static
-resources. `serviceBase` defaults to `https://former-site.invalid` at build time; the
+resources. `serviceBase` defaults to `https://ave.agent-connector.ai` at build time; the
 managed policy may override it; the document may carry a `movedTo` base for a
 domain change, which the client follows only when the new base confirms it
 with a matching `movedFrom`, at most once per build. The service endpoint

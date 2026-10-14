@@ -41,7 +41,7 @@ describe("the two consumers agree because they share one extractor", () => {
   const SHAPES: Array<Record<string, unknown>> = [
     { url: "https://api.openai.com/v1/chat" },
     { target: "https://api.openai.com/v1/chat" },
-    { destination: "https://former-site.invalid/x" },
+    { destination: "https://ave.agent-connector.ai/x" },
     { host: "api.openai.com" },
     { endpoint: "api.openai.com" },
     { uri: "https://evil.example/x" },
@@ -67,7 +67,7 @@ describe("the two consumers agree because they share one extractor", () => {
 describe("the trusted-host rule is now reachable from any key — the approved LOOSENING", () => {
   const TRUSTED_UNDER_ARBITRARY_KEY: Array<{ input: Record<string, unknown>; host: string }> = [
     { input: { target: "https://api.openai.com/v1/chat" }, host: "api.openai.com" },
-    { input: { destination: "https://former-site.invalid/x" }, host: "former-site.invalid" },
+    { input: { destination: "https://ave.agent-connector.ai/x" }, host: "ave.agent-connector.ai" },
     { input: { webhook: "https://api.anthropic.com/v1/m" }, host: "api.anthropic.com" },
     { input: { callbackUrl: "https://generativelanguage.googleapis.com/v1/x" }, host: "generativelanguage.googleapis.com" },
   ];
