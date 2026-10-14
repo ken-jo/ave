@@ -183,7 +183,7 @@ describe("side browser webview attach policy", () => {
 
   function fakeContents(session: unknown) {
     const listeners = new Map<string, (...args: unknown[]) => void>();
-    let openHandler: ((details: { url: string }) => { action: string; overrideBrowserWindowOptions?: { webPreferences?: Record<string, unknown> } }) | null = null;
+    let openHandler: ((details: { url: string }) => { action: string; overrideBrowserWindowOptions?: { webPreferences?: Record<string, unknown>; parent?: unknown } }) | null = null;
     return {
       id: Math.floor(Math.random() * 1e9),
       session,
@@ -199,9 +199,15 @@ describe("side browser webview attach policy", () => {
     };
   }
 
+  function fakeOwner() {
+    let destroyed = false;
+    return { isDestroyed: () => destroyed, destroy: () => { destroyed = true; } };
+  }
+
   it("lets the guest open hardened popup windows and guards each popup recursively", () => {
+    const owner = fakeOwner();
     const guest = fakeContents(electronMock.sideBrowserSession);
-    attachSideBrowserWebview(guest as never);
+    attachSideBrowserWebview(guest as never, owner as never);
 
     expect(guest.open("javascript:alert(1)")).toEqual({ action: "deny" });
     const allowed = guest.open("https://accounts.google.com/signin");
@@ -215,6 +221,8 @@ describe("side browser webview attach policy", () => {
       webviewTag: false,
     });
     expect(prefs.preload).toBeUndefined();
+    // Parented to the owning main window, so the popup closes with it.
+    expect(allowed.overrideBrowserWindowOptions?.parent).toBe(owner);
 
     const popupContents = fakeContents(electronMock.sideBrowserSession);
     const popup = { webContents: popupContents, destroy: vi.fn() };
@@ -228,11 +236,23 @@ describe("side browser webview attach policy", () => {
     const redirect = { url: "https://accounts.google.com/next", preventDefault: vi.fn() };
     popupContents.emit("will-redirect", redirect);
     expect(redirect.preventDefault).not.toHaveBeenCalled();
+    // A popup's own popup keeps the same owner as its parent.
+    const nested = popupContents.open("https://accounts.google.com/consent");
+    expect(nested.overrideBrowserWindowOptions?.parent).toBe(owner);
+  });
+
+  it("opens no popup once the owning main window is gone", () => {
+    const owner = fakeOwner();
+    const guest = fakeContents(electronMock.sideBrowserSession);
+    attachSideBrowserWebview(guest as never, owner as never);
+    owner.destroy();
+    expect(guest.open("https://accounts.google.com/signin")).toEqual({ action: "deny" });
   });
 
   it("destroys a popup that did not land on the side-browser session", () => {
+    const owner = fakeOwner();
     const guest = fakeContents(electronMock.sideBrowserSession);
-    attachSideBrowserWebview(guest as never);
+    attachSideBrowserWebview(guest as never, owner as never);
     const stray = { webContents: fakeContents(electronMock.otherSession), destroy: vi.fn() };
     guest.emit("did-create-window", stray);
     expect(stray.destroy).toHaveBeenCalledOnce();

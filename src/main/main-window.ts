@@ -305,7 +305,7 @@ export function createWindow(
   win.webContents.on("did-attach-webview", (_event, contents) => {
     const src = takePendingSideBrowserSrc(pendingSideBrowserWebviews, contents.getURL());
     if (!src || !isSideBrowserContents(contents)) return;
-    attachSideBrowserWebview(contents);
+    attachSideBrowserWebview(contents, win);
     log.debug({ src, webContentsId: contents.id }, "side browser webview attached");
   });
 

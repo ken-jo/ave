@@ -460,9 +460,9 @@ Important rules:
   follows the close-button preference.
 - The chat side panel's browser (`persist:ave-side-browser`,
   `src/main/side-browser-webview.ts`) works like a normal browser: http(s)
-  navigation and redirects, popups and OAuth windows (native-framed windows on
-  the same session with no preload, sandboxed, context-isolated, guarded
-  recursively), downloads through the native Save dialog, and a
+  navigation and redirects, popups and OAuth windows (native-framed child
+  windows of the owning main window, so they close with it, on the same
+  session with no preload, sandboxed, context-isolated, guarded recursively), downloads through the native Save dialog, and a
   Chromium/Edge user agent so sign-in pages accept it. Other schemes stay
   blocked, and only the `clipboard-sanitized-write` permission is granted
   (`fullscreen` is denied: with no exit hint a page could cover the app and

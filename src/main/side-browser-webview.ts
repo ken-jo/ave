@@ -1,4 +1,4 @@
-import { session, type BrowserWindowConstructorOptions, type WebContents } from "electron";
+import { session, type BrowserWindow, type BrowserWindowConstructorOptions, type WebContents } from "electron";
 import { AVE_SIDE_BROWSER_PARTITION } from "../shared/side-browser.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import { markAsLinkOwned } from "./link-window-registry.js";
@@ -108,13 +108,16 @@ export function isSideBrowserPopupUrlAllowed(url: string): boolean {
   return url === "about:blank" || isHttpUrl(url);
 }
 
-function sideBrowserPopupOptions(): BrowserWindowConstructorOptions {
+function sideBrowserPopupOptions(owner: BrowserWindow): BrowserWindowConstructorOptions {
   const webPreferences: Record<string, unknown> = {};
   hardenRemoteWebPreferences(webPreferences);
   return {
     width: 520,
     height: 720,
     autoHideMenuBar: true,
+    // A child of the main window whose side panel opened it, so it closes
+    // with that window instead of outliving it as a stray top-level window.
+    parent: owner,
     // Native frame on purpose: the app's hidden-titlebar chrome relies on an
     // in-page titlebar that a remote page does not have.
     webPreferences: webPreferences as BrowserWindowConstructorOptions["webPreferences"],
@@ -130,19 +133,24 @@ function sideBrowserPopupOptions(): BrowserWindowConstructorOptions {
  * gate. The popup's session is inherited from its opener (that is what keeps
  * `window.opener` working for OAuth `postMessage`); a child that somehow lands
  * on any other session is closed instead of trusted.
+ *
+ * `owner` is the main window whose side panel hosts the guest. Every popup in
+ * the chain is parented to it, so closing that window closes them; once it is
+ * gone, no further popup opens.
  */
-export function attachSideBrowserWebview(contents: WebContents): void {
+export function attachSideBrowserWebview(contents: WebContents, owner: BrowserWindow): void {
   markAsLinkOwned(contents);
   contents.setWindowOpenHandler(({ url }) => {
     if (!isSideBrowserPopupUrlAllowed(url)) return { action: "deny" };
-    return { action: "allow", overrideBrowserWindowOptions: sideBrowserPopupOptions() };
+    if (owner.isDestroyed()) return { action: "deny" };
+    return { action: "allow", overrideBrowserWindowOptions: sideBrowserPopupOptions(owner) };
   });
   contents.on("did-create-window", (child) => {
     if (!isSideBrowserContents(child.webContents)) {
       child.destroy();
       return;
     }
-    attachSideBrowserWebview(child.webContents);
+    attachSideBrowserWebview(child.webContents, owner);
   });
   contents.on("will-navigate", (details) => {
     if (!isHttpUrl(details.url)) details.preventDefault();
