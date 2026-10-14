@@ -52,6 +52,13 @@ import { deriveSandboxWritePaths } from "../../permissions/sandbox-write-jail.js
 import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
 import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { installShellIntegration } from "./shell-integration.js";
+import {
+  TerminalBlockTracker,
+  registerTerminalBlockTracker,
+  unregisterTerminalBlockTracker,
+  __resetTerminalBlocksForTest,
+} from "./terminal-blocks.js";
 
 const log = createLogger("ave");
 
@@ -103,6 +110,8 @@ export function setTerminalEmitter(fn: TerminalEmit): void {
 
 interface TerminalSession {
   pty: IPty;
+  /** Command blocks parsed from this PTY's output (terminal-blocks.ts). */
+  blocks: TerminalBlockTracker;
   /** FIFO scrollback chunks, capped to {@link RING_MAX_BYTES}. */
   ring: string[];
   ringBytes: number;
@@ -181,8 +190,7 @@ function resolveTerminalCwd(
 /** The command string ASRT runs under its `-c` wrapper: exec the interactive
  * login shell so it takes over the PTY node-pty allocated for the sandbox
  * wrapper process (fd 0/1/2 inherit down sandbox-exec/bwrap → shell). */
-function buildShellCommand(tempDir: string): string {
-  const shell = resolveLoginShell();
+function buildShellCommand(shell: string, tempDir: string): string {
   // `exec` replaces the wrapper's `/bin/bash -c` shell so there is no extra
   // process layer; `-l -i` = login + interactive (prompt, job control, rc).
   // The temp directory is set inside the wrap, because ASRT writes its own
@@ -340,6 +348,22 @@ async function spawnNewTerminal(
     };
   }
 
+  // Command-block markers: the integration file goes into this terminal's own
+  // sandbox HOME, never the user's. A HOME that cannot take one small file is
+  // not a HOME the shell can use either, so a write failure fails the spawn.
+  const shell = resolveLoginShell();
+  let integrationEnv: Record<string, string>;
+  try {
+    integrationEnv = installShellIntegration(sandboxHome.path, shell).env;
+  } catch (err) {
+    cleanupSandboxHome();
+    return {
+      ok: false,
+      reason: "spawn-failed",
+      message: `Could not write terminal shell integration: ${errorMessage(err)}`,
+    };
+  }
+
   // Filesystem jail (mirrors worker-spawn): write = cwd ∪ authorized dirs;
   // read = jail ∪ cwd; denyRead = the RESTATED shared sensitive read floor (a
   // per-command denyRead REPLACES ASRT's boot array, so omit-it-and-leak).
@@ -357,7 +381,7 @@ async function spawnNewTerminal(
 
   let wrapped = false;
   try {
-    const cmdline = buildShellCommand(tempDir);
+    const cmdline = buildShellCommand(shell, tempDir);
     const { argv, env } = await wrapWorkerCommand(cmdline, {
       filesystem: { allowWrite, allowRead, denyRead, denyWrite },
     });
@@ -373,7 +397,7 @@ async function spawnNewTerminal(
     // plus the TTY hints the shell/xterm expect. buildSandboxedChildEnv already
     // strips AVE_*/*_API_KEY/GITHUB_TOKEN/AWS_* and overlays the proxy.
     const childEnv: Record<string, string> = {
-      ...buildSandboxedChildEnv(env, { ...sandboxHome.env }),
+      ...buildSandboxedChildEnv(env, { ...sandboxHome.env, ...integrationEnv }),
       TERM: "xterm-256color",
       COLORTERM: "truecolor",
       LANG: process.env.LANG ?? "en_US.UTF-8",
@@ -391,6 +415,7 @@ async function spawnNewTerminal(
 
     const session: TerminalSession = {
       pty,
+      blocks: new TerminalBlockTracker(),
       ring: [],
       ringBytes: 0,
       disposeData: () => {},
@@ -403,12 +428,16 @@ async function spawnNewTerminal(
 
     const dataSub = pty.onData((chunk) => {
       pushRing(session, chunk);
+      session.blocks.recordOutput(chunk);
       _emit("data", { tabId, chunk });
     });
     session.disposeData = () => dataSub.dispose();
 
     const exitSub = pty.onExit(({ exitCode, signal }) => {
       session.exited = true;
+      // The blocks outlive the shell (the tab still shows its output) until
+      // the tab closes or a new shell replaces them.
+      session.blocks.recordExit();
       if (session.forceKillTimer !== null) clearTimeout(session.forceKillTimer);
       _emit("exit", { tabId, exitCode, signal });
       // Per-command ASRT state decrement (mirrors worker-spawn cleanupOnce) +
@@ -422,6 +451,7 @@ async function spawnNewTerminal(
     session.disposeExit = () => exitSub.dispose();
 
     sessions.set(tabId, session);
+    registerTerminalBlockTracker(tabId, session.blocks);
     log.info({ tabId, cwd, cols, rows, pid: pty.pid }, "terminal: spawned sandboxed PTY");
     return { ok: true, tabId, replayed: false };
   } catch (err) {
@@ -452,6 +482,7 @@ export function writeTerminal(tabId: string, data: string): void {
     log.warn({ tabId, bytes, max: MAX_INPUT_BYTES }, "terminal: dropped oversized input write");
     return;
   }
+  session.blocks.recordInput(data);
   session.pty.write(data);
 }
 
@@ -464,6 +495,7 @@ export function resizeTerminal(tabId: string, cols: number, rows: number): void 
 
 /** Kill + tear down one terminal (tab close / teardown). Idempotent. */
 export function killTerminal(tabId: string): void {
+  unregisterTerminalBlockTracker(tabId);
   const inFlight = terminalSpawnsInFlight.get(tabId);
   if (inFlight) {
     inFlight.cancelled = true;
@@ -598,5 +630,6 @@ export function __resetTerminalsForTest(): void {
   for (const owner of terminalSpawnsInFlight.values()) owner.cancelled = true;
   terminalSpawnsInFlight.clear();
   terminalShutdownStarted = false;
+  __resetTerminalBlocksForTest();
   _emit = () => {};
 }

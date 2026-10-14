@@ -31,6 +31,12 @@ export interface UseAttachmentPickerParams {
 
 export interface UseAttachmentPickerResult {
   handleAttach: () => Promise<void>;
+  /**
+   * Attach `text` as a pasted-text chip, as if the user had pasted it — the
+   * path for content another surface hands to the composer (a terminal
+   * block). Returns false when the attachment cap is already reached.
+   */
+  attachPastedText: (text: string) => boolean;
 }
 
 /**
@@ -211,5 +217,33 @@ export function useAttachmentPicker({
     composerRef.current?.focus();
   }, [attachmentNCounter, composerRef, onAttachmentUnavailable, onImageAttachmentLimitExceeded, setAttachments, setQuestion]);
 
-  return { handleAttach };
+  const attachPastedText = useCallback((text: string): boolean => {
+    // Same atomic commit as the picker: the chip and its marker land in one
+    // flushSync, and the cap is checked against the latest committed state.
+    let marker = "";
+    flushSync(() => {
+      setAttachments((prev) => {
+        if (prev.length >= ATTACH_MAX_COUNT) return prev;
+        const n = ++attachmentNCounter.current;
+        const attachment: Attachment = {
+          id: `paste-${Date.now()}-${n}`,
+          n,
+          kind: "paste",
+          text,
+          lines: text.split("\n").length,
+          chars: text.length,
+        };
+        marker = `${buildMarkerText(attachment)} `;
+        return [...prev, attachment];
+      });
+      if (marker) {
+        if (composerRef.current) composerRef.current.insertAtCursor(marker);
+        else setQuestion((prev) => prev + marker);
+      }
+    });
+    if (marker) composerRef.current?.focus();
+    return marker !== "";
+  }, [attachmentNCounter, composerRef, setAttachments, setQuestion]);
+
+  return { handleAttach, attachPastedText };
 }

@@ -32,6 +32,7 @@ import {
   type McpResourceAccessResolver,
 } from "../tools/mcp-resource-tools.js";
 import { createAgentListTool } from "../tools/agent-list.js";
+import { createTerminalReadTool } from "../tools/terminal-read.js";
 import { createAgentGuideTool } from "../tools/agent-guide.js";
 import { createAgentSendTool, type AgentSendRuntime } from "../tools/agent-send.js";
 import type { AskUserQuestionGate } from "../main/ask-user-question-gate.js";
@@ -119,6 +120,11 @@ export interface WorkflowToolDeps {
    */
   singleHopNetworkFetch: typeof fetch;
   emitAgentSpawn?: (event: AgentSpawnEvent) => void;
+  /**
+   * Register `terminal_read`. Only a host with the workspace terminal has
+   * blocks to read; elsewhere the tool would be a schema with nothing behind it.
+   */
+  terminalRead?: boolean;
   emitSkillLoad?: (event: SkillLoadEvent) => void;
   acquirePluginSkillGeneration?: NonNullable<SkillLoadToolDeps["acquirePluginGeneration"]>;
   /**
@@ -198,6 +204,9 @@ export function registerBuiltinTools(
       // conversation's resumable sub-agents next to the profile definitions.
       getRunner: workflowDeps.getSubAgentRunner,
     }));
+  }
+  if (workflowDeps?.terminalRead) {
+    builtins.push(createTerminalReadTool());
   }
   if (workflowDeps?.getAgentSendRuntime) {
     builtins.push(createAgentSendTool({

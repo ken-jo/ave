@@ -640,8 +640,10 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "telemetryAllowedHosts": "function",
           "terminal": [
+            "getBlock",
             "input",
             "kill",
+            "listBlocks",
             "onData",
             "onExit",
             "resize",

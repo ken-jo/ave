@@ -605,7 +605,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   }, [attachmentUnavailableProvider, onAttachmentWarning, t]);
 
   // Attach picker — native file dialog + atomic flushSync commit + 5-cap.
-  const { handleAttach } = useAttachmentPicker({
+  const { handleAttach, attachPastedText } = useAttachmentPicker({
     attachmentNCounter,
     setAttachments,
     setQuestion,
@@ -965,6 +965,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
             onOpenActivityItem={routeActivityItem}
             onOpenActivityItemPinned={routeActivityItemPinned}
             onOpenActivityItemInSystemApp={openActivityItemInSystemApp}
+            onAttachText={attachPastedText}
             className="relative flex shrink-0"
           />
         </div>

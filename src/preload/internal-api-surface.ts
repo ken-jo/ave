@@ -37,6 +37,7 @@ import type {
   UserApprovalVerdict,
 } from "../shared/permissions-events.js";
 import type { DeferredApprovalSource } from "../shared/permission-review-status.js";
+import type { TerminalBlock, TerminalBlockSummary } from "../shared/terminal-blocks.js";
 import type { MarketplaceAnnouncementPayload } from "../shared/marketplace-announcements.js";
 import type { PackageUpdateView } from "../shared/git-marketplace.js";
 import type { AiProviderPingIpcResult } from "../shared/ai-provider-ping.js";
@@ -311,6 +312,16 @@ export function buildInternalApiSurface() {
       ipcRenderer.on(CHANNELS.terminal.exit, listener);
       return () => ipcRenderer.removeListener(CHANNELS.terminal.exit, listener);
     },
+    listBlocks: async (tabId: string) =>
+      ipcRenderer.invoke(CHANNELS.terminal.blocks, { tabId }) as Promise<
+        | { ok: true; integrated: boolean; blocks: TerminalBlockSummary[] }
+        | { ok: false; error: string }
+      >,
+    getBlock: async (tabId: string, blockId: number) =>
+      ipcRenderer.invoke(CHANNELS.terminal.block, { tabId, blockId }) as Promise<
+        | { ok: true; block: TerminalBlock }
+        | { ok: false; error: string }
+      >,
   },
   // ─── Side chat (workspace rail) ──────────────────────
   // A second, independently-streaming chat session. send/new/load/abort are

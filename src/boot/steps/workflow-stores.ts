@@ -138,6 +138,8 @@ export async function setupWorkflowStores(
     },
     networkFetch,
     singleHopNetworkFetch,
+    // The workspace terminal exists only in the desktop host.
+    terminalRead: ctx.host.desktop !== undefined,
     getStudioMcpConfigs: () => ctx.mcpManager ? ctx.mcpManager.getConfigs() : Promise.resolve([]),
     getStudioConnectorSummary: (serverId: string) => {
       if (!ctx.mcpManager) throw new Error("Connector manager is unavailable");
