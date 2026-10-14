@@ -4,6 +4,8 @@
  * cancelled on every exit, which releases the connection of a stalled or
  * oversized body.
  */
+import { raceWithTimeout } from "../../shared/abortable-deadline.js";
+
 export async function* stallGuarded(
   body: ReadableStream<Uint8Array>,
   stallMs: number,
@@ -12,16 +14,7 @@ export async function* stallGuarded(
   const reader = body.getReader();
   try {
     for (;;) {
-      let timer: NodeJS.Timeout | undefined;
-      const stalled = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(stallError()), stallMs);
-      });
-      let next: ReadableStreamReadResult<Uint8Array>;
-      try {
-        next = await Promise.race([reader.read(), stalled]);
-      } finally {
-        clearTimeout(timer);
-      }
+      const next = await raceWithTimeout(reader.read(), stallMs, stallError);
       if (next.done) return;
       yield next.value;
     }
