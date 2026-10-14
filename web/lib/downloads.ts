@@ -1,6 +1,6 @@
 import type { Locale } from "./i18n";
 
-export type OS = "mac" | "windows" | "linux";
+type OS = "mac" | "windows" | "linux";
 
 export interface DownloadStep {
   label: string;
@@ -26,16 +26,7 @@ export interface DownloadTarget {
  * also writes a stable alias per installer under `latest/`
  * (`scripts/lib/release-channel.mjs`): a copy of the newest versioned file
  * that is always revalidated and downloads under its versioned file name.
- *
- * Flip a flag to false to render a "준비 중" state if a platform's installer is
- * temporarily missing from the latest release (manual safety valve —
- * we intentionally do no runtime HEAD probing on a static site).
  */
-export const KNOWN_AVAILABLE: Record<OS, boolean> = {
-  mac: true,
-  windows: true,
-  linux: true,
-};
 
 /**
  * The release channel's public host. It must equal the origin of
@@ -48,7 +39,7 @@ const RELEASE_CHANNEL_ORIGIN = "https://downloads.agent-connector.ai";
 const latest = (file: string) => `${RELEASE_CHANNEL_ORIGIN}/latest/${file}`;
 
 /** Per-OS download targets. `command`, `os`, `osLabel`, `title`, `format`, and
- *  `href` are locale-neutral; only the human-readable notes/step labels vary. */
+ *  `href` are locale-neutral; only the human-readable notes and step labels vary. */
 export function getDownloads(locale: Locale): DownloadTarget[] {
   const en = locale === "en";
   return [
@@ -56,53 +47,46 @@ export function getDownloads(locale: Locale): DownloadTarget[] {
       os: "mac",
       osLabel: "macOS",
       title: "Apple Silicon",
-      format: "DMG · arm64",
+      format: "DMG, arm64",
       href: latest("mac-arm64.dmg"),
       setupNote: en
-        ? "The app isn't signed with an Apple Developer certificate, so Gatekeeper blocks it. Open the DMG, move Ave.app to /Applications, then run the command below in Terminal."
-        : "Apple 개발자 서명이 없어 Gatekeeper가 실행을 차단합니다. DMG를 열어 Ave.app을 /Applications로 옮긴 뒤, 터미널에서 아래를 실행하세요.",
+        ? "The build is not signed with an Apple Developer certificate, so Gatekeeper stops the first launch. Open the DMG, drag Ave into Applications, then run these two commands in Terminal. Intel Macs are not supported."
+        : "Apple 개발자 서명이 없는 빌드라 첫 실행을 Gatekeeper가 막습니다. DMG를 열어 Ave를 응용 프로그램 폴더로 옮긴 뒤 터미널에서 아래 두 명령을 실행하세요. Intel Mac은 지원하지 않습니다.",
       steps: [
         {
-          label: en
-            ? "Remove the quarantine attribute (clears the Gatekeeper block)"
-            : "격리 속성 제거 (Gatekeeper 차단 해제)",
+          label: en ? "Clear the quarantine flag" : "격리 표시 지우기",
           command: 'sudo xattr -dr com.apple.quarantine "/Applications/Ave.app"',
         },
         {
-          label: en ? "Launch" : "실행",
+          label: en ? "Open Ave" : "Ave 열기",
           command: 'open "/Applications/Ave.app"',
         },
       ],
+      extraNote: en
+        ? "An unsigned Mac build cannot replace itself. When Ave offers an update, download the new DMG here and repeat the same two steps."
+        : "서명 없는 Mac 빌드는 스스로 교체되지 않습니다. Ave가 업데이트를 알리면 여기서 새 DMG를 받아 같은 두 단계를 반복하세요.",
     },
     {
       os: "windows",
       osLabel: "Windows",
-      title: "Windows 10+",
-      format: "Installer · x64",
+      title: en ? "Windows 10 or later" : "Windows 10 이상",
+      format: "Installer, x64",
       href: latest("windows-x64-setup.exe"),
       setupNote: en
-        ? "Because the app is unsigned, Microsoft Defender SmartScreen shows a warning on first launch."
-        : "서명되지 않은 앱이라 처음 실행 시 Microsoft Defender SmartScreen 경고가 표시됩니다.",
+        ? "The installer is unsigned, so Microsoft Defender SmartScreen warns on first launch."
+        : "서명되지 않은 설치 파일이라 처음 실행할 때 Microsoft Defender SmartScreen 경고가 뜹니다.",
       steps: [
+        { label: en ? "Run the installer you downloaded." : "내려받은 설치 파일을 실행합니다." },
         {
           label: en
-            ? "Run the installer you downloaded."
-            : "다운로드한 설치 파일을 실행합니다.",
+            ? "When “Windows protected your PC” appears, choose More info."
+            : "“Windows의 PC 보호” 창이 뜨면 추가 정보를 누릅니다.",
         },
-        {
-          label: en
-            ? "When the “Windows protected your PC” dialog appears, click More info."
-            : "“Windows의 PC 보호” 창이 뜨면 추가 정보(More info)를 클릭합니다.",
-        },
-        {
-          label: en
-            ? "Click the Run anyway button that appears."
-            : "나타나는 실행(Run anyway) 버튼을 클릭합니다.",
-        },
+        { label: en ? "Choose Run anyway." : "실행을 누릅니다." },
       ],
       extraNote: en
-        ? "Alternative: right-click the installer → Properties → General tab, check “Unblock,” and the warning won't appear."
-        : "대안: 설치 파일을 마우스 오른쪽 → 속성 → 일반 탭에서 “차단 해제”를 체크하면 경고가 나타나지 않습니다.",
+        ? "Or: right-click the installer, open Properties, tick Unblock on the General tab, and the warning does not appear."
+        : "또는 설치 파일을 마우스 오른쪽 단추로 눌러 속성의 일반 탭에서 차단 해제를 선택하면 경고가 뜨지 않습니다.",
     },
     {
       os: "linux",
@@ -111,27 +95,19 @@ export function getDownloads(locale: Locale): DownloadTarget[] {
       format: "x86_64",
       href: latest("linux-x86_64.AppImage"),
       setupNote: en
-        ? "The AppImage needs no installation — just grant it execute permission."
-        : "AppImage는 설치가 필요 없습니다. 실행 권한만 부여하면 됩니다.",
+        ? "The AppImage needs no installation. Make it executable and run it."
+        : "AppImage는 설치가 필요 없습니다. 실행 권한을 주고 바로 실행하세요.",
       steps: [
+        { label: en ? "Make it executable" : "실행 권한 주기", command: "chmod +x Ave-*-linux-x86_64.AppImage" },
+        { label: en ? "Run it" : "실행", command: "./Ave-*-linux-x86_64.AppImage" },
         {
-          label: en ? "Grant execute permission" : "실행 권한 부여",
-          command: "chmod +x Ave-*-linux-x86_64.AppImage",
-        },
-        {
-          label: en ? "Launch" : "실행",
-          command: "./Ave-*-linux-x86_64.AppImage",
-        },
-        {
-          label: en
-            ? "If you hit an “AppImages require FUSE to run” error, install FUSE 2."
-            : "“AppImages require FUSE to run” 오류가 나면 FUSE 2를 설치합니다.",
+          label: en ? "If it says AppImages require FUSE, install FUSE 2" : "AppImages require FUSE 오류가 나면 FUSE 2 설치",
           command: "sudo apt install libfuse2",
         },
       ],
       extraNote: en
-        ? "On Ubuntu 24.04+ use libfuse2t64; on Fedora use sudo dnf install fuse fuse-libs."
-        : "Ubuntu 24.04+는 libfuse2t64, Fedora는 sudo dnf install fuse fuse-libs를 사용하세요.",
+        ? "On Ubuntu 24.04 and later the package is libfuse2t64. On Fedora: sudo dnf install fuse fuse-libs."
+        : "Ubuntu 24.04 이상은 libfuse2t64, Fedora는 sudo dnf install fuse fuse-libs 를 씁니다.",
     },
   ];
 }

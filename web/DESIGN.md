@@ -1,366 +1,226 @@
-# Ave Docs — Design System
-
-> The visual language for **docs.former-site.invalid**, derived from the Ave Marketplace
-> (`marketplace.former-site.invalid`) as the structural foundation and refined with premium
-> cues from the current generation of premium product marketing surfaces.
->
-> **North star:** _restraint over decoration_. A calm, near‑monochrome, system‑font
-> surface where typography and whitespace — not color — carry the hierarchy.
-
----
-
-## 1. Sources & how they combine
-
-| Reference | Role | What we take |
-|---|---|---|
-| **Marketplace** (`marketplace.former-site.invalid`) | **Foundation** | Neutral off‑white canvas, near‑black ink, system font, subtle hairline borders, white cards, understated hover, tight tracking on bold headings, generous whitespace. |
-| **Premium product surfaces** | **Refinement** | Larger, *lighter‑weight* display type; full‑pill primary buttons; circular monochrome icon chips; a single soft periwinkle gradient glow as the only ambient color; airy, calm spacing; quiet motion. |
-
-The result is **marketplace‑neutral with a premium finish**: the docs read as
-a quiet, professional product surface, with one soft cool‑blue glow reserved for hero
-moments. Brand color (the old teal / citron / coral) is retired from the interface.
-
-### Measured reference tokens
-
-Captured live from the two sites (computed styles), for provenance:
-
-**Marketplace**
-- Page background `#fafafa` · cards `#ffffff`
-- Heading ink `oklch(0.205 0 0)` ≈ `#1c1c1c` · body `#000`
-- Muted text `oklch(0.556 0 0)` ≈ `#737373`
-- Hairline border `oklch(0.922 0 0)` ≈ `#e5e5e5`
-- Font: `system-ui, -apple-system, "Segoe UI", Roboto`
-- `h1` `20px/700` tracking `-0.5px` · hero `h2` `30px/700` tracking `-0.75px`
-- Outline button: white, `1px` border, radius `6px`, `14px/500`, `padding 0 12px`
-- Tabs: underline, active = `2px` solid ink bottom border
-
----
-
-## 2. Principles
-
-1. **Monochrome first.** Color is not a hierarchy tool. Rank things with size, weight,
-   spacing, and border — not hue.
-2. **One accent, used sparingly.** A soft periwinkle glow (`--glow`) appears only as an
-   ambient hero backdrop. It never colors text, borders, or interactive states.
-3. **Ink is the brand.** Primary buttons, active states, and emphasis are near‑black ink.
-4. **Hairlines, not shadows.** Structure comes from `1px` neutral borders; elevation is a
-   whisper (`shadow-sm`), lifting to `shadow-md` only on hover.
-5. **Airy.** Sections breathe. Prefer more vertical rhythm than feels necessary.
-6. **Quiet motion.** 150–320ms ease‑out; a 0.5–2px lift or fade. Nothing bounces.
-
----
-
-## 3. Color
-
-### 3.1 Foundation (cool neutral)
-
-A neutral gray with a faint cool undertone — echoing the near‑black `#121317` ink and
-periwinkle glow, while reading as marketplace‑neutral.
-
-| Token | Hex | Use |
-|---|---|---|
-| `bg` / `--background` | `#fafafa` | Page canvas |
-| `surface` / card | `#ffffff` | Cards, header, popovers |
-| `secondary` | `#f3f4f6` | Subtle fills, hover backgrounds, code chips |
-| `border` | `#e6e7ec` | Hairline dividers, card borders |
-| `border-strong` | `#d6d8df` | Emphasized dividers |
-| `muted-foreground` | `#676b76` | Secondary / body‑dim text |
-| `ink` | `#14161d` | Primary text, primary buttons, active states |
-| `ink-soft` | `#3a3d47` | Eyebrows, labels, hover‑darken |
-
-### 3.2 Accent — the single glow
-
-| Token | Value | Use |
-|---|---|---|
-| `glow` | `#c3ccdf` (periwinkle) | Hero ambient radial glow **only** |
-| `glow-tint` | `rgba(183,191,217,0.09)` | Circular icon‑chip fill |
-
-> There is intentionally **no saturated text/link accent.** Links are ink with an
-> underline affordance. If brand continuity is later required, the Ave teal
-> (`#007c72`) can be re‑introduced as `accent` for links/focus only — but the default
-> system is monochrome by design.
-
-**Semantic status (the one exception).** Warnings and errors keep a functional color so
-they can't be missed: `amber` for `warn` callouts, `destructive` red for danger. This is
-status signal, not decoration — everything else stays monochrome.
-
-### 3.3 Legacy alias remap (implementation)
-
-The old brand tokens are **kept as aliases** so existing class names across the 41 routes
-keep working, but they now resolve to neutral values. Prefer `ink` / `secondary` /
-`muted-foreground` / `glow` in new code.
-
-| Legacy token | Was | Now resolves to |
-|---|---|---|
-| `teal` / `teal-dark` / `teal-600/700` | brand green `#007c72` | ink scale (`#3a3d47` → `#14161d`) |
-| `citron` / `citron-soft` | lime `#d6f36b` | soft periwinkle chip (`#e7eaf2` / `#eef0f6`) |
-| `coral` | orange `#ff7a5c` | muted neutral (`#7a7f8a`) |
-
-Effect: `text-teal` eyebrows become refined dark‑gray, `bg-teal` buttons become ink,
-`bg-citron/30` glows become soft periwinkle, `text-coral` dots become muted gray — the
-whole surface neutralizes without touching page markup.
-
----
-
-## 4. Typography
-
-### 4.1 Family
-
-System‑first, matching the marketplace, with Korean coverage. No web‑font download.
-
-```
---font-sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont,
-             "Segoe UI", Roboto, "Apple SD Gothic Neo", "Noto Sans KR",
-             system-ui, sans-serif;
---font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-```
-
-### 4.2 Scale & weights
-
-The **large but light** display move, softened for a docs surface. Display type is
-**semibold (600)**, not black; body is regular (400). Tracking tightens as size grows.
-
-| Role | Size | Weight | Tracking | Line‑height |
-|---|---|---|---|---|
-| Hero display | `44 → 56px` (`clamp`) | 600 | `-0.022em` | `1.05` |
-| Page `h1` | `30 → 36px` | 600 | `-0.02em` | `1.1` |
-| Section `h2` | `24px` | 600 | `-0.015em` | `1.2` |
-| `h3` | `18px` | 600 | `-0.01em` | `1.35` |
-| Body | `15.5px` | 400 | normal | `1.78` |
-| Small / meta | `12.5–13px` | 500 | normal | `1.5` |
-| Eyebrow / label | `11px` | 700 | `0.16em` uppercase | — |
-
-Eyebrows are `ink-soft` (or `muted-foreground`), **not** colored.
-
----
-
-## 5. Layout & spacing
-
-- **Content column** max `1400px` shell; docs body max `760px`; marketing/landing
-  sections max `1152px` (`max-w-6xl`).
-- **Gutters:** `px-4` mobile → `px-6` desktop.
-- **Section rhythm:** `56–72px` between major sections (`mb-14`/`mb-16`). Hero → first
-  section gets the larger gap.
-- **Grid:** feature/card grids `gap-3`; 2–3 columns responsive.
-
----
-
-## 6. Radius & elevation
-
-| Token | Value | Use |
-|---|---|---|
-| `--radius` | `0.625rem` (10px) | Cards, inputs, popovers (`lg`) |
-| `md` | `8px` | Inner elements |
-| `sm` | `6px` | Small controls, code chips |
-| **pill** | `9999px` | Primary/large buttons, chips |
-
-Elevation: `shadow-sm` at rest, `shadow-md` on hover. No colored shadows.
-
----
-
-## 7. Components
-
-### Buttons
-- **default / primary** → `bg-ink text-white`, **pill** (`rounded-full`), `hover:bg-ink-soft`.
-- **outline** → white, `1px border`, `text-ink`, `hover:bg-secondary`, pill.
-- **ghost** → `text-ink`, `hover:bg-secondary`.
-- **link** → `text-ink`, `underline-offset-4 hover:underline`.
-- Sizes: `sm h-8` (radius `md`), `default h-10`, `lg h-11`. `default`/`lg` are pills;
-  `icon`/`sm` stay `rounded-md`.
-- Weight `500–600`, no letter‑spacing, `gap-2` for trailing icons.
-
-### Badges / chips
-- Pill, `11px`, uppercase, `tracking-wide`, `font-semibold`.
-- `default` → `bg-ink text-white` · `muted` → `bg-secondary text-muted-foreground` ·
-  `outline` → `border text-ink`. Color variants map to neutral fills.
-- **Icon chip**: circle `36–48px`, `bg-glow-tint`, hairline border,
-  monochrome line icon (`lucide`), no shadow.
-
-### Cards
-- `bg-white`, `1px border`, radius `lg`, `shadow-sm`. Hover: `border-strong` +
-  `shadow-md` + `-translate-y-0.5`. Padding `p-5`. Titles `ink` semibold; descriptions
-  `muted-foreground`.
-
-### Header
-- Sticky, `bg-white/82 backdrop-blur-md`, hairline bottom border, `h-14`.
-- Logo: `ink` rounded square mark + wordmark. Nav links `muted-foreground` →
-  `hover:text-ink`. Primary CTA = ink **pill**.
-
-### Sidebar
-- Group labels: `ink` semibold; eyebrows `muted-foreground` uppercase.
-- Item rest: `muted-foreground`; hover `bg-secondary text-ink`.
-- **Active:** `bg-secondary text-ink font-semibold` (neutral, echoing the marketplace's
-  black active tab) — no colored fill.
-
-### Hero
-- White rounded panel, hairline border. Ambient: **one** soft periwinkle radial
-  `glow` blur (top‑right) + a very faint grid. No multi‑color blobs.
-- Display heading in ink (no colored span). CTAs: ink pill + outline pill.
-- Meta dots: neutral (`ink` / `muted-foreground`), not red/green/lime.
-
-### Prose (`.prose-doc`)
-- Body `muted-foreground`; headings `ink`. Links `ink` `hover:underline`.
-- `code` → `bg-secondary` rounded `sm`. Blockquote → `border-l` neutral + `bg-secondary/50`.
-
----
-
-## 8. Motion
-
-- Fades/lifts: `200–320ms ease-out`, ≤2px travel or opacity only.
-- Hover transitions: `150ms`.
-- Respect `prefers-reduced-motion` (disable transforms).
-
----
-
-## 9. Implementation map
-
-| Concern | File |
-|---|---|
-| Color tokens, radius, font, alias remap | `tailwind.config.ts` |
-| CSS vars, prose, selection, glow, grid | `app/globals.css` |
-| Button variants (pill, neutral) | `components/ui/button.tsx` |
-| Badge variants (neutral) | `components/ui/badge.tsx` |
-| Header CTA / nav | `components/docs/header.tsx` |
-| Sidebar active state | `components/docs/sidebar.tsx` |
-| Page hero eyebrow | `components/docs/page-hero.tsx` |
-| Feature tones → neutral | `components/docs/feature-grid.tsx` |
-| Landing hero glow / CTAs | `app/page.tsx` |
-
-All other routes inherit the new look automatically through the token remap.
-
----
-
-# v2 — Layout & Motion (immersive tier)
-
-> v1 fixed the *palette*. v2 rebuilds the *experience*: an immersive, cinematic shell
-> with real motion, treating the old layout as disposable and keeping only the content.
-> Inspiration: the premium-marketing pattern — full‑bleed hero with an animated backdrop, huge
-> light display type, floating monochrome icon chips, soft drifting glows, scroll‑reveal
-> pacing, pill nav. Applied to a docs product without sacrificing findability or reading.
-
-## 10. Two layout modes
-
-The shell decides layout from the route (a client `AppFrame` reads `usePathname`):
-
-- **Immersive** (`/` and future landing routes): **full‑bleed, no sidebar**. Cinematic
-  hero, marketing‑grade sections, own rhythm. The home breaks out of the reading column.
-- **Reading** (all doc routes): a refined 3‑column shell — floating glass header, a
-  quieter sidebar with a **sliding active indicator**, a generous content column
-  (`~820px`), and a right **TOC rail with a scroll‑progress line**.
-
-Global chrome shared by both: a top **scroll‑progress bar**, a fixed **ambient backdrop**
-(whisper‑faint aurora + grid), the glass header, and a spacious footer.
-
-## 11. Motion system
-
-Primitives (all `prefers-reduced-motion`‑aware — reduce to opacity‑only or none):
-
-| Primitive | Behavior | Use |
-|---|---|---|
-| `Reveal` | fade `0→1` + rise `12–16px→0`, `450–650ms` ease‑out, once, via IntersectionObserver | section/blocks entering viewport |
-| `Reveal` `delay` | staggered start (`60–90ms` steps) | lists of cards/chips |
-| `ScrollProgress` | 2px top bar filling `0→100%` of scroll | global reading feedback |
-| `HeroBackdrop` | 2–3 periwinkle/lavender radial glows drifting on `18–26s` loops + slow‑panning grid | immersive hero only |
-| `float` | gentle bob `±6px` on `6–9s` ease‑in‑out loops (varied per index) | floating icon chips |
-| hover lift | `-2 to -3px` + border darken + `shadow-md`, `180ms` | cards, chips |
-
-Timing: entrances `450–650ms`, hovers `150–200ms`, ambient loops `6–26s`. Easing
-`cubic-bezier(.22,.61,.36,1)` (ease‑out‑quint feel). Nothing bounces or spins.
-
-## 12. Immersive hero (home)
-
-- Full‑bleed, `min-h ~88vh`, centered or left‑weighted composition.
-- **Animated backdrop**: drifting periwinkle/lavender/sky glows (desaturated, low‑opacity)
-  over a slow‑panning faint grid. Calm, breathing — not flashy.
-- **Display headline**: `clamp(44px, 7.5vw, 76px)`, weight **600**, tracking `-0.03em`,
-  line‑height `1.02`. One ink color, no rainbow.
-- **Floating icon‑chip row**: circular monochrome chips (`icon-chip`) bobbing on varied
-  loops — the capability motif.
-- CTAs: ink **pill** + ghost. Meta stats as quiet mono dots.
-- Sub‑hero: a marquee/row of "what's inside" chips or a bento peek.
-
-## 13. Sections (home)
-
-- Generous vertical rhythm (`py-24 → py-32`), max content `~1120px`, full‑bleed glows.
-- **Bento grid**: mixed‑size cards (one large + several small), each with an icon chip,
-  hairline border, hover lift, `Reveal` stagger. Replaces the flat feature grid.
-- **Alternating feature rows**: text ↔ mockup, revealing on scroll.
-- **Stepped tour**: numbered, connected, revealing sequentially.
-- Big footer: wordmark, grouped links, subtle top glow.
-
-## 14. Reading shell (doc pages)
-
-- **Header (glass, floating):** wordmark + section nav + prominent `⌘K` search pill +
-  ink pill CTA. Gains a hairline + faint shadow only after scroll.
-- **Sidebar:** group eyebrow (muted) + title (ink); items quiet; **active = filled pill**
-  (`bg-secondary`, ink) with a small leading accent bar; hover = soft fill. `NEW`/tag
-  badges as tiny neutral/periwinkle chips.
-- **Content column:** `max-w-[820px]`, `text-[15.5px]/1.8`; headings gain a hover‑reveal
-  `#` anchor; first block reveals on load, subsequent blocks on scroll.
-- **TOC rail:** right, sticky, a vertical track with a filled progress segment marking the
-  active heading; items muted → ink on active.
-- **Prev/Next:** large pill cards at page end.
-
-## 15. Implementation map (v2)
-
-| Concern | File |
-|---|---|
-| Layout mode switch | `components/docs/app-frame.tsx` (client, `usePathname`) |
-| Reveal / stagger | `components/motion/reveal.tsx` |
-| Scroll progress | `components/motion/scroll-progress.tsx` |
-| Animated hero backdrop | `components/motion/hero-backdrop.tsx` |
-| Global chrome, ambient bg, footer | `app/layout.tsx` |
-| Glass scroll‑aware header | `components/docs/header.tsx` |
-| Sidebar sliding active | `components/docs/sidebar.tsx` |
-| TOC progress rail | `components/docs/toc.tsx` |
-| Keyframes / motion utilities | `app/globals.css`, `tailwind.config.ts` |
-| Immersive home | `app/page.tsx` |
-| Content chrome (reveal, anchors) | `components/docs/page-hero.tsx` + shared blocks |
-
----
-
-# v3 — Quiet unification (single site)
-
-> The landing (former-site.invalid) and the docs are now **one Next.js app**: marketing landing
-> at `/`, the guide under `/docs/*`. With the merge, the whole surface converges harder
-> on the **marketplace's stark minimalism** — v2's decorative flourishes are retired.
-
-## Rules (supersede v2 where they conflict)
-
-1. **One static glow, max.** The hero may keep a single non-animated periwinkle radial
-   (`rgba(183,191,217,≤0.35)` before blur). No drifting/panning/aurora loops.
-2. **No floating elements.** `animate-float` chips and marquee motion are gone; the
-   `icon-chip` motif survives only as a static icon container.
-3. **Heroes are content-height.** No `min-h-[Nvh]` heroes; vertical presence comes from
-   `py-20`–`py-24`, not viewport locking. Display type caps at `clamp(…, 3.5–4rem)`.
-4. **Reveal stays, quieter.** `.reveal` = 10px rise / 400ms, once. Scroll-progress bar
-   and glass header remain (they're wayfinding, not decoration).
-5. **No fixed page ambience.** The `.page-ambient` layer is removed; the canvas is flat
-   `#fafafb`.
-6. **Landing = same system.** The marketing page uses the identical tokens/components as
-   the docs — cards, pills, icon chips, Reveal — with at most the one hero glow.
-
-## Route split
-
-| Route | Mode | Notes |
-|---|---|---|
-| `/` | Immersive (no sidebar) | Marketing landing — 8 ported sections |
-| `/docs/` | Reading shell | Docs index (ex-docs-home, compacted) |
-| `/docs/**` | Reading shell | 46 guide routes |
-
-`docs.former-site.invalid` 301-redirects here (`infra/docs-redirect/`).
-
-### v3.1 — White canvas & one header (feedback round)
-
-- **Canvas is pure white** (`--background: 0 0% 100%`). The gray-ish `#fafafb` read
-  as dull beside a pure-white reference — structure now comes from hairlines + whitespace only.
-  `secondary` remains for small fills (chips, code, step numbers), never page areas.
-- **One header, everywhere.** The same five items (하루 일과 · 다운로드 · 아키텍처 ·
-  로드맵 · 문서) on landing and docs — landing sections via absolute `/#` anchors,
-  문서 gets the active pill under `/docs/*`. Docs-internal nav lives in the sidebar
-  and ⌘K only. No `/ docs` logo suffix, no nav personality switch.
-- **Workday = pinned stage.** Desktop locks the viewport while scroll advances the
-  eight moments (left rail, right crossfading stage, 500ms ease-out). Mobile,
-  reduced-motion, and no-JS get the stacked list (SSR default).
-- **Downloads = OS tabs.** Segmented control auto-selected by platform detection;
-  one platform at a time with a CTA card + full-width vertical setup steps.
+# Site design
+
+The product site at the canonical host. These are the rules a change must keep.
+Each one is written so it can be checked on the built page. The layout rules
+were derived from a study of a reference product site (appendix A) and
+translated into Ave's own material: no text, image, illustration or typeface
+was taken from it.
+
+## Argument
+
+"Ave" is Latin for hello. The page greets, then shows Ave as a **harness**: the
+place where you, your agents, the models you choose and your own computer meet.
+Each section is one claim with its proof. Permissions are not a section; one
+factual line in the intro says the host checks writes, commands and network
+requests first and links to the guide.
+
+| Section | Claim | Proof on the page |
+| --- | --- | --- |
+| Hero | Hello, I'm Ave: the desktop harness where the four meet. | The harness scene: your message, Ave, the providers, your computer's files, shell, plugins and MCP servers. |
+| Intro | Ave is a desktop app on three systems; you stay in control. | One paragraph, its first sentence in ink, and the one line about the permission check. |
+| Workbench | Four conversations run side by side, driven from the keyboard. | A four-tile window beside the composer keys. |
+| Models | You choose the model, key, server or subscription. | The providers on a ring around Ave. |
+| Plugins | Plugins come from git and are checked by hash. | The marketplace scene (five package kinds named, the other five counted), the deep links, three rules; the four source kinds are in the guide. |
+| Alongside | Indexing, meetings, routines and sub-agents run beside you. | Each of them flowing into the chat list. |
+| Download | It runs on three systems; unsigned builds take one step more. | The three installers, and the guide. |
+
+## Principles
+
+### Layout
+
+1. **One frame.** Content sits in a frame of at most 1248 px with a side margin
+   of `clamp(16px, 6.67vw, 96px)`. From 1024 px the frame shows 1 px vertical
+   rules on both edges, except around the hero and the closing call-to-action
+   panels, which stand free; sections are separated by 1 px horizontal rules.
+   Rules are `--line` (ink at 8 %), never darker.
+2. **One idea per section, centred on a 45 rem measure.** Headings and lead
+   text sit in a 45 rem (720 px) column. Wider material (scenes, windows,
+   tables) may use the full frame; running text never exceeds 64 ch.
+3. **Pacing by bands, not colours.** Sections alternate between the white
+   ground and the `--band` ground (#fafaf9). Dark is used once on the home page
+   (the plugin code card). Tinted panels exist only to hold a picture or an
+   action: the hero, the closing call to action, the stages that hold scenes
+   and fragments, and the download system cards. No section field is tinted.
+4. **Section rhythm.** Every section has the same vertical padding,
+   `clamp(4rem, 2.5rem + 5vw, 7.5rem)`. Between blocks inside a section the
+   steps are 0.75 / 1.25 / 2 / 3.5 rem; smaller values only inside a
+   component (a button, a chip, a row).
+5. **Picture, then points.** A section shows one picture (a scene or a
+   fragment) and at most one row of 2–4 captions, or the picture beside a
+   single stack of points. A caption is a bold ink title followed by a muted
+   body in the same paragraph. No icons, no numbering.
+6. **360 px works.** No horizontal page scroll at 360 px; code scrolls inside
+   its own box; every multi-column row collapses to one column below 760 px;
+   scenes switch to a narrow layout or a plain fallback below 1024 px.
+
+### Type
+
+7. **Families.** Geist (variable, OFL) for Latin, Noto Sans KR (variable, OFL)
+   for Hangul through the font stack, Geist Mono (OFL) for code. All
+   self-hosted through `next/font`, exposed to Tailwind as `font-sans` and
+   `font-mono`.
+8. **Scale, five steps.** Display `clamp(2.5rem, 1.9rem + 2.4vw, 3.5rem)`,
+   section head `clamp(2rem, 1.6rem + 1.6vw, 2.75rem)`, lead
+   `clamp(1.0625rem, 1rem + 0.35vw, 1.25rem)`, body 1 rem, small 0.875 rem.
+   Docs add one article head (1.5 rem). Chrome (buttons, chips, table
+   headers, scene labels) may use 0.6875–1.0625 rem; running text uses only the
+   five steps.
+9. **Weights.** 450 for display and heads, 500 for titles inside text and for
+   buttons, 400 for everything else. No 700.
+10. **Tracking and leading.** Display −0.02 em / 1.08; heads −0.015 em / 1.12;
+    body 0 / 1.6. Hangul (`:lang(ko)`) never tighter than −0.01 em and never
+    under 1.25 line height, with `word-break: keep-all`.
+11. **Headlines are one sentence in at most two lines** at 360, 768 and
+    1440 px, set in ink. Supporting text below a head is muted, never ink.
+12. **Lead with the claim.** A paragraph that carries a claim starts with its
+    claim sentence in ink and continues in muted text.
+
+### Colour
+
+13. **Neutral ground, one ink.** White ground, `--ink` #0b0d0c, `--muted`
+    #5f6461 (6.0:1 on white, 5.8:1 on the band). The same values are Tailwind
+    theme colours (`ink`, `muted`, `band`, `line`, `lime`, `accent-ink`).
+14. **Lime is a mark, not text.** `--lime` #c4f04a appears only as the logo
+    stroke, the glow of the tinted panels, the halo around the Ave hub, the
+    beam pulses (lime to teal), text selection and the "responding" chip.
+    Text that needs the accent uses `--accent-ink` #3a6510 (6.9:1 on white).
+15. **AA everywhere.** Every text pair reaches 4.5:1, including text on the
+    tinted panels (measured by pixel, not assumed).
+
+### Shape and depth
+
+16. **Two radii and a pill.** 10 px for controls, small cards and code; 24 px
+    for panels and the code card; 16 px for scene nodes; a full pill for the
+    primary call to action and chips.
+17. **One shadow.** Only an interface fragment's window casts a shadow
+    (`0 1px 2px` plus a long soft drop at 18 % ink). Scene nodes and cards use
+    a 1 px inset ring. The hub's halo is a ring, not a shadow.
+
+### Pictures
+
+18. **Show the app and its parts by name.** Pictures are either Ave's own
+    interface built in HTML at true size (`[data-ui]` fragments) or a harness
+    scene whose nodes carry only names the app uses (providers, files, shell,
+    plugins, MCP servers, marketplace.json, SHA-256). No screenshots, stock
+    imagery, logos of third parties, or illustration of things the app does
+    not do.
+19. **Scenes are composed frames first.** A scene's nodes are HTML at fixed
+    coordinates and its beams are SVG paths rendered on the server, so the
+    picture is complete without script and under reduced motion; motion only
+    adds the pulse.
+
+### Motion
+
+20. **Motion explains flow.** Motion does four jobs: (a) a beam pulse shows
+    which way work moves through the harness, one beam after another; (b) the
+    model ring turns a little with scroll; (c) blocks enter once as they reach
+    the viewport; (d) hover and press show state. Nothing loops faster than
+    one pulse per 1.5 s, nothing bounces, no parallax, no scroll hijacking.
+21. **Numbers.** Beam pulse: 1.5 s, `cubic-bezier(0.22, 1, 0.36, 1)`, next beam
+    1.1 s later, a pause of 1.5 s before the sequence repeats; scenes below the
+    fold start when they enter view. Orbit: ±30° over the section's scroll
+    range. Entrances: opacity and a 12 px rise, 520 ms, the same ease, at most
+    four staggered children 60 ms apart. Colour transitions 150 ms. Press:
+    scale 0.98.
+22. **Off when asked, visible without script.** Under
+    `prefers-reduced-motion: reduce` nothing travels, turns, fades or scales:
+    pulses rest mid-beam, the ring stands still, press scaling and arrow
+    nudges are off (`motion-safe:` utilities). Without script every block and
+    every scene is visible.
+
+### Interaction
+
+23. **Header.** Sticky, 64 px. On the home page it sits over the hero panel,
+    transparent, and turns solid white with a hairline within the first 96 px
+    of scroll through a CSS scroll timeline (no script); browsers without
+    scroll timelines, and reduced-motion settings, get the solid bar above the
+    panel. Wordmark left, three
+    section links centred, language and one ink "Download" button right.
+    Under 760 px the links and the language switch move into a `<details>`
+    menu that opens without script, as a full-width sheet under the bar with a
+    scrim over the page; with script it also closes on a tap outside, on
+    Escape and after a link is chosen. The footer is light: link columns,
+    a hairline, then the notice and the language link.
+24. **Links in text** are underlined at 1 px with a 0.2 em offset; hover
+    changes only the underline colour. Section labels above heads are links to
+    the matching guide page, in `--accent-ink` with a chevron.
+25. **Focus is always visible:** 2 px `--focus` ring at 3 px offset on every
+    interactive element, including the menu summary and buttons.
+
+### Copy
+
+26. **A warm greeting, then facts from the source.** The hero greets ("Hello,
+    I'm Ave"); everything after it is taken from the app's code and UI strings
+    (`web/lib/home.ts`, `web/lib/docs.ts`). A wording change never adds a
+    capability.
+27. **Control is stated, not sold.** Permissions get one factual line and a
+    link to the guide; no section, table or mode picker on the home page, and
+    no "Permissions" item in the header.
+28. **Headings name the thing;** no exclamation marks, no rhetorical
+    questions, no superlatives that the app cannot prove.
+
+### Docs and download
+
+29. **Download:** centred title, three system cards each holding a small
+    install fragment (the installer's file name and its first-launch steps),
+    one button, then one setup section per system at `#mac`, `#windows`,
+    `#linux`, steps numbered, commands with a copy button.
+30. **Docs:** an index of caption cards; an article page with a 14 px sticky
+    page list on the left and the article in the 45 rem measure.
+
+### Budget
+
+31. **JavaScript per route** (first load, as `next build` reports it): home at
+    most 170 kB, every other route at most 110 kB. Motion and the shadcn
+    button's class utilities load only on the home page. `LazyMotion` loads
+    the `domAnimation` features asynchronously, but the scroll and in-view
+    hooks the scenes use share the same core, so the split saves almost
+    nothing (the async chunk is under 1 kB); replacing those hooks is the next
+    lever if the budget tightens.
+
+## Libraries
+
+Adopted (exact versions, all at least two weeks old when added):
+
+| Library | Version | Licence | Why |
+| --- | --- | --- | --- |
+| Tailwind CSS + `@tailwindcss/postcss` | 4.3.3 | MIT | Theme tokens and utilities for the scenes and new components; the hand-written rules live in `@layer components` so utilities override them. `web/postcss.config.mjs` also keeps Next from loading the desktop app's root PostCSS setup. |
+| shadcn/ui Button pattern (copied) with `class-variance-authority` 0.7.1, `@radix-ui/react-slot` 1.3.3, `clsx` 2.1.1, `tailwind-merge` 3.7.0 | — | MIT, Apache-2.0 (cva) | One button with variants; `asChild` renders a Next `Link`. |
+| Motion (`motion/react`) | 13.4.6 | MIT | Beam pulses, in-view start, reduced-motion detection, scroll-linked orbit. Loaded through `LazyMotion` (principle 31). |
+| Magic UI AnimatedBeam and OrbitingCircles (adapted) | — | MIT | The pulse-along-a-path and orbit techniques, rewritten to draw from fixed coordinates so they render on the server (principle 19). |
+| Geist, Geist Mono, Noto Sans KR via `next/font/google` | — | OFL 1.1 | Principle 7. |
+
+Notices: `web/THIRD_PARTY_NOTICES.md`.
+
+Considered and not adopted:
+
+| Library | Why not |
+| --- | --- |
+| Lenis (smooth scroll) | Replaces native scrolling; conflicts with principle 20 and with reduced-motion and keyboard scrolling. |
+| three.js / react-three-fiber | A 3D scene does not earn its weight here; the harness reads clearly in 2D at a fraction of the bytes. |
+| Radix / Base UI primitives beyond Slot | The site has no dialogs, menus or popovers that need them; the mobile menu is a `<details>` so it works without script. |
+| Rive | Needs authored `.riv` files and a WASM runtime; the scenes are HTML and SVG. |
+| Analytics (PostHog, Google Tag Manager) | The site does not track visitors. |
+| The reference's display face | Proprietary; Geist at 450 stands in. |
+
+## Appendix A — evidence from the reference
+
+Captured 2026-10-14 with headless Chromium at 1440 and 390 px.
+
+| Source | What it shows |
+| --- | --- |
+| `https://aside.com/` (HTML, computed styles) | h1 48/52 px, weight 400, −0.48 px tracking; h2 44/48 px, weight 450; h3 30/40 px; lead 20/28 px muted (`neutral-500`); body 16/24 px; nav links 14 px weight 500. Frame 1248 px between vertical rules at x = 96 and 1344; text column 718 px; alternating white and #fafafa sections divided by `border-black/6`. |
+| same page, `:root` custom properties | `--radius: .625rem` (10 px); `--brand: var(--color-sky-500)`; `--border: #e5e5e5`; white `--background`. |
+| `/_next/static/immutable/chunks/17h1bvs2_--1b.css` | `@font-face{font-family:displayFont;src:url(../media/AsideDisplay_Variable-…woff2)…font-weight:100 900}` (proprietary), Geist and Geist Mono faces. |
+| `/_next/static/immutable/chunks/1jxel7-mby27e.css` | Tailwind v4 output (`@layer properties`, `--container-4xl:56rem`, `--tw-ease`); `cubic-bezier(.22,1,.36,1)` as the custom ease; `animation-timeline:scroll(self)` for scroll masks. |
+| `/_next/static/immutable/chunks/0b6izlgii83fg.js` | `ease:[.22,1,.36,1]` in component transitions. |
+| `/_next/static/immutable/chunks/0ru0u1tk1wzhc.js` | `window.MotionIsMounted=!0` and `whileInView`: the Motion library. |
+| `/_next/static/immutable/chunks/2-w-g1enq2j5p.js`, requests `https://unpkg.com/@rive-app/webgl2@2.42.2/rive.wasm` and `/assets/usecases.riv` | Rive runtime and one Rive animation; durations 0.34–0.52 s with the same ease. |
+| `/_next/static/immutable/chunks/3j52grh0a-k37.js` | `data-base-ui` attributes: Base UI components. |
+| `/_next/static/immutable/chunks/turbopack-*.js`, `self.__next_f` | Next.js with Turbopack. |
+| Computed styles on the home page | Colour transitions 150 ms `cubic-bezier(0.4,0,0.2,1)`; the only CSS animations are a spinner and scroll masks. |
+| `https://aside.com/download` | Centred title, three step cards with captions "bold key, muted rest". |
+| `https://aside.com/features/browser-agent` | Same frame, rules and caption rows on a sub page. |
+
+Lenis, GSAP, ScrollTrigger and Three.js were not found in the reference's
+loaded bundles.

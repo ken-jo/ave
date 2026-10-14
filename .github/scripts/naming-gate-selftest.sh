@@ -140,16 +140,16 @@ run_case "rule-doc-bare-label" BLOCK doc_base edit_rule_doc_bare
 # Test doubles: allowed names stay editable, new ones do not
 # ---------------------------------------------------------------------------
 double_base() {
-  mkdir -p src web/components/landing
-  echo "export class MockShell {}" > src/adapter.ts
-  echo "function MockShell() { return null; }" > web/components/landing/workday.tsx
+  mkdir -p src
+  echo "export class Adapter {}" > src/adapter.ts
 }
 
-edit_touch_allowed_use() { echo "const a = new MockShell();" >> src/adapter.ts; }
-run_case "allowed-double-stays-editable" PASS double_base edit_touch_allowed_use
+edit_touch_plain() { echo "const a = new Adapter();" >> src/adapter.ts; }
+run_case "plain-name-stays-editable" PASS double_base edit_touch_plain
 
-edit_touch_allowed_jsx() { echo "const b = <MockShell kicker=\"x\" />;" >> web/components/landing/workday.tsx; }
-run_case "allowed-double-in-web-stays-editable" PASS double_base edit_touch_allowed_jsx
+# The allow-list is empty, so a name it once excused is an ordinary new double.
+edit_former_allowed() { echo "export function MockShell() { return null; }" >> src/adapter.ts; }
+run_case "formerly-allowed-name-blocks" BLOCK double_base edit_former_allowed
 
 edit_new_double() { echo "export class MockPaymentGateway {}" >> src/adapter.ts; }
 run_case "new-double-blocks" BLOCK double_base edit_new_double
@@ -157,11 +157,6 @@ run_case "new-double-blocks" BLOCK double_base edit_new_double
 edit_new_fake() { echo "export class FakeClock {}" >> src/adapter.ts; }
 run_case "new-fake-blocks" BLOCK double_base edit_new_fake
 
-edit_derived_from_allowed() { echo "export function MockShellHeader() {}" >> src/adapter.ts; }
-run_case "name-derived-from-an-allowed-one-blocks" BLOCK double_base edit_derived_from_allowed
-
-edit_allowed_and_new_on_one_line() { echo "const c = new MockShell(); class MockBar {}" >> src/adapter.ts; }
-run_case "allowed-name-does-not-shield-a-new-one" BLOCK double_base edit_allowed_and_new_on_one_line
 
 edit_realpath_vocabulary() { echo "const realRoot = realpathSync(p); const stubText = BOUNDARY_STUB_TEMPLATE;" >> src/adapter.ts; }
 run_case "realpath-and-compaction-vocabulary-pass" PASS double_base edit_realpath_vocabulary
@@ -267,10 +262,14 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "allow-list liveness (names must still exist in $repo_root):"
-allow=$(grep -E "^MOCK_FAKE_ALLOWED=" "$gate" | sed -E "s/^MOCK_FAKE_ALLOWED='(.*)'$/\1/")
-if [ -z "$allow" ]; then
+allow_line=$(grep -E "^MOCK_FAKE_ALLOWED='.*'$" "$gate")
+allow=$(printf '%s' "$allow_line" | sed -E "s/^MOCK_FAKE_ALLOWED='(.*)'$/\1/")
+if [ -z "$allow_line" ]; then
   echo "  FAIL  could not read MOCK_FAKE_ALLOWED from $gate"
   fail=$((fail + 1))
+elif [ -z "$allow" ]; then
+  echo "  ok    the allow-list is empty"
+  pass=$((pass + 1))
 else
   IFS='|' read -r -a allow_names <<< "$allow"
   for name in "${allow_names[@]}"; do

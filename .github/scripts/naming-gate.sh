@@ -154,12 +154,9 @@ patterns=(
 # same list with the reason for each, and the self-test asserts every entry
 # still exists in the tree, so the list cannot outlive the names it excuses.
 #
-#   MockShell               `web/` landing-page mock-UP frame — the same
-#                           mock-UP vocabulary as
-#                           `web/components/docs/mockup-frame.tsx`, which sits
-#                           in a different directory. A different word that
-#                           happens to share four letters.
-MOCK_FAKE_ALLOWED='MockShell'
+# The list is empty today: its last entry named a web component the site
+# renewal removed. Names are joined with `|` when one is added.
+MOCK_FAKE_ALLOWED=''
 
 # The two test-double patterns are built from that list with a PCRE negative
 # lookahead rather than by deleting the words from the line first: a line that
@@ -167,8 +164,15 @@ MOCK_FAKE_ALLOWED='MockShell'
 # is used because `sed -E '\b...'` is a GNU extension that silently matches
 # nothing on BSD/macOS sed, which would make this gate behave differently for
 # a developer running it locally than for CI.
-patterns+=("\\b(?!(?:${MOCK_FAKE_ALLOWED})\\b)[Mm]ock[A-Z][A-Za-z0-9]*\\b")
-patterns+=("\\b(?!(?:${MOCK_FAKE_ALLOWED})\\b)[Ff]ake[A-Z][A-Za-z0-9]*\\b")
+# An empty list must not become an empty alternative: `(?!(?:)\b)` fails at
+# every word start and would silently disable both patterns.
+if [ -n "$MOCK_FAKE_ALLOWED" ]; then
+  allowed_guard="(?!(?:${MOCK_FAKE_ALLOWED})\\b)"
+else
+  allowed_guard=""
+fi
+patterns+=("\\b${allowed_guard}[Mm]ock[A-Z][A-Za-z0-9]*\\b")
+patterns+=("\\b${allowed_guard}[Ff]ake[A-Z][A-Za-z0-9]*\\b")
 
 # Markdown files whose job is to NAME the banned tokens. Only these get inline
 # code spans stripped before matching: the rule documents have to be able to

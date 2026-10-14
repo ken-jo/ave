@@ -90,7 +90,12 @@
       // The nested web workspace owns a separate lockfile/install. Root Knip
       // still analyzes its sources and dependency declarations without
       // requiring web/node_modules to exist in desktop-app workflows.
-      "ignoreBinaries": ["next"]
+      "ignoreBinaries": ["next"],
+      // Next.js renders through react-dom and type-checks against its types
+      // without the site importing either. Knip's Next.js plugin infers that
+      // only when web/node_modules exists, which CI's root install does not
+      // create, so the reference is declared here.
+      "ignoreDependencies": ["react-dom", "@types/react-dom"]
     }
   },
   "vitest": {
