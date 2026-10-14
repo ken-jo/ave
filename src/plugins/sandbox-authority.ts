@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import type { PluginManifest, PluginSandboxDeclaration } from "./public-contract.js";
+import { isRecord } from "../shared/is-record.js";
 
 /** Host-owned subtrees that a reviewed declaration may name. */
 export const HOST_DIRECTORY_CATALOG = {
@@ -26,10 +27,6 @@ export function declaredHostDirectoryFloorPierces(sandbox: PluginSandboxDeclarat
     const row = Object.hasOwn(HOST_DIRECTORY_CATALOG, name) ? HOST_DIRECTORY_CATALOG[name] : undefined;
     return row?.piercesDenyFloor === true ? [join(aveHome(), ...row.segments)] : [];
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isWhy(value: unknown): boolean {

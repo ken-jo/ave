@@ -38,7 +38,7 @@
  * one read, since Node offers no traversal anchored to held directory
  * handles.
  */
-import { createHash } from "node:crypto";
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { canonicalZipEntryPathIdentity, sanitizeZipEntryPath } from "../../plugins/zip-entry-path.js";
@@ -115,10 +115,6 @@ export interface FolderTreeOptions {
   limits: ExportLimits;
   /** The source holds `network-folder`: without it, any path on another computer stops the read (§18.4.1). */
   networkConsented: boolean;
-}
-
-function sha256(bytes: Buffer): string {
-  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function identity(stat: FolderStat): string {
@@ -361,7 +357,7 @@ export class FolderTree implements SourceTree {
   /** One file the snapshot reads (the index, a descriptor, a revocations file); its digest joins the revision. */
   async readFile(path: string, maxBytes: number): Promise<Buffer | null> {
     const bytes = await this.readOnce(path, maxBytes);
-    if (bytes !== null) this.reads.set(path, sha256(bytes));
+    if (bytes !== null) this.reads.set(path, sha256Hex(bytes));
     return bytes;
   }
 
@@ -439,7 +435,7 @@ export class FolderTree implements SourceTree {
       const bytes = await this.readOnce(at, PACKAGE_READ_LIMIT);
       if (bytes === null) continue;
       const seen = this.reads.get(at);
-      if (seen !== undefined && seen !== sha256(bytes)) throw unreadable("changed-during-read", this.abs(at.split("/")), `${at} changed after the folder was read`);
+      if (seen !== undefined && seen !== sha256Hex(bytes)) throw unreadable("changed-during-read", this.abs(at.split("/")), `${at} changed after the folder was read`);
       await write(at, bytes, false);
     }
     return { treeSha256: treeDigest(files), notInstalled, executable };
