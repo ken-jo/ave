@@ -223,6 +223,66 @@ describe("RemoteA2AActionButton production IPC surface", () => {
     }
   });
 
+  it("stops polling once a poll reports a failure", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const working = { state: "sent", taskHandle: "task_handle_123456", taskAvailable: true, taskState: "TASK_STATE_WORKING", updatedAt: "2026-07-16T00:00:00.000Z" };
+      const api = installApi(working);
+      api.task.mockResolvedValueOnce({ ok: true, status: { ...working, state: "failed", outcome: "authentication-failed", updatedAt: "2026-07-16T00:00:02.000Z" } } as never);
+      await openPanel();
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_100); });
+      expect(api.task).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(screen.getByTestId("remote-a2a-status").getAttribute("data-state")).toBe("failed"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+      expect(api.task).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops a poll answer for a Task the owner has switched away from", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const first = { state: "sent", taskHandle: "task_handle_111111", taskAvailable: true, taskState: "TASK_STATE_WORKING", targetLabel: "Agent one", updatedAt: "2026-07-16T00:00:01.000Z" };
+      const second = { state: "sent", taskHandle: "task_handle_222222", taskAvailable: true, taskState: "TASK_STATE_COMPLETED", targetLabel: "Agent one", reply: { text: "second reply", truncated: false, artifactCount: 0, redactions: 0 }, updatedAt: "2026-07-16T00:00:02.000Z" };
+      const api = installApi(first);
+      (window.aveApi.remoteA2a as unknown as Record<string, unknown>).tasks = vi.fn(async () => ({ ok: true, tasks: [second, first] }));
+      let answer!: (value: unknown) => void;
+      api.task.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }) as never);
+      await openPanel();
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_100); });
+      expect(api.task).toHaveBeenCalledTimes(1);
+
+      fireEvent.change(await screen.findByTestId("remote-a2a-recent"), { target: { value: "task_handle_222222" } });
+      await waitFor(() => expect(screen.getByTestId("remote-a2a-reply-text").textContent).toBe("second reply"));
+      await act(async () => { answer({ ok: true, status: { ...first, taskState: "TASK_STATE_COMPLETED", reply: { text: "first reply", truncated: false, artifactCount: 0, redactions: 0 } } }); });
+      expect(screen.getByTestId("remote-a2a-reply-text").textContent).toBe("second reply");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("runs the owner's action after an in-flight poll instead of failing as busy", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const working = { state: "sent", taskHandle: "task_handle_123456", taskAvailable: true, taskState: "TASK_STATE_WORKING", updatedAt: "2026-07-16T00:00:00.000Z" };
+      const api = installApi(working);
+      let answer!: (value: unknown) => void;
+      api.task.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }) as never);
+      await openPanel();
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_100); });
+      expect(api.task).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByTestId("remote-a2a-cancel"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+      expect(api.action).not.toHaveBeenCalled();
+      await act(async () => { answer({ ok: true, status: { ...working, updatedAt: "2026-07-16T00:00:03.000Z" } }); });
+      await waitFor(() => expect(api.action).toHaveBeenCalledWith("cancel", "task_handle_123456"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("lets the owner switch between recent Tasks", async () => {
     const first = { state: "sent", taskHandle: "task_handle_111111", taskAvailable: true, taskState: "TASK_STATE_COMPLETED", targetLabel: "Agent one", reply: { text: "first reply", truncated: false, artifactCount: 0, redactions: 0 }, updatedAt: "2026-07-16T00:00:01.000Z" };
     const second = { ...first, taskHandle: "task_handle_222222", reply: { text: "second reply", truncated: false, artifactCount: 0, redactions: 0 }, updatedAt: "2026-07-16T00:00:02.000Z" };

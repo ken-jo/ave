@@ -255,6 +255,29 @@ describe("production remote A2A action controller", () => {
     expect(controller.taskStatus("task_handle_unknown")).toBeNull();
   });
 
+  it("does not let a busy refusal overwrite what a Task last reported", async () => {
+    const reply = { text: "Here is the answer.", truncated: false, artifactCount: 0, redactions: 0 };
+    let release!: () => void;
+    let calls = 0;
+    const value = runtime({
+      getTaskProjection: vi.fn(async (handle: string) => ({ handle, targetAgentId: 1, targetLabel: "Agent one", state: A2ATaskState.WORKING, updatedAt: "2026-07-16T00:00:00.000Z", terminal: false, reply })),
+      execute: vi.fn(() => {
+        calls += 1;
+        if (calls === 1) return Promise.resolve({ ok: true, result: {}, record: {} });
+        return new Promise((resolve) => { release = () => resolve({ ok: true, result: {}, record: {} }); });
+      }),
+    });
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+    const sent = await controller.send({ targetAgentId: 1, intent: "first" });
+    const handle = sent.taskHandle!;
+    const inFlight = controller.get({ taskHandle: handle });
+    await vi.waitFor(() => expect(calls).toBe(2));
+    await expect(controller.get({ taskHandle: handle })).resolves.toMatchObject({ outcome: "a2a-remote-busy" });
+    expect(controller.taskStatus(handle)).toMatchObject({ state: "sent", reply });
+    release();
+    await inFlight;
+  });
+
   it("projects a direct Message reply, which leaves no Task behind, through the same mask", async () => {
     const value = runtime({
       execute: vi.fn(async () => ({ ok: true, result: { message: { messageId: "m", role: "ROLE_AGENT", parts: [{ text: "Quick answer, token sk-abcdefghijklmnopqrstuvwxyz123456" }] } }, record: {} })),

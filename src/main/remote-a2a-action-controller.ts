@@ -279,7 +279,9 @@ export function createRemoteA2AActionController(
     action: Promise<Readonly<RemoteA2AActionStatus>>,
   ): Promise<Readonly<RemoteA2AActionStatus>> => {
     const status = await action;
-    if (status.taskHandle !== undefined) {
+    // A busy answer says nothing about the Task: keep what it last reported
+    // (a reply included) instead of overwriting it with the refusal.
+    if (status.taskHandle !== undefined && status.outcome !== "a2a-remote-busy") {
       taskStatuses.delete(status.taskHandle);
       taskStatuses.set(status.taskHandle, Object.freeze(structuredClone(status)));
       while (taskStatuses.size > MAX_TRACKED_TASKS) {

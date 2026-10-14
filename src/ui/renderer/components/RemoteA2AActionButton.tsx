@@ -82,6 +82,10 @@ export function RemoteA2AActionButton() {
   const [recent, setRecent] = useState<RemoteA2AActionStatus[]>([]);
   const pollStep = useRef(0);
   const pollKey = useRef<string | null>(null);
+  // The Task the popover shows now, and the GetTask poll in flight: a poll
+  // answer for another Task is dropped, and an owner action waits it out.
+  const shownTask = useRef<string | undefined>(undefined);
+  const pollInFlight = useRef<Promise<unknown> | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -104,6 +108,7 @@ export function RemoteA2AActionButton() {
   const canSend = useMemo(() => Number.isSafeInteger(targetId) && targetId > 0
     && intent.trim() === intent && intent.length > 0 && intent.length <= 8_192 && !sending, [intent, sending, targetId]);
   const taskHandle = status?.taskHandle;
+  shownTask.current = taskHandle;
   const terminal = status?.taskState === "TASK_STATE_COMPLETED"
     || status?.taskState === "TASK_STATE_FAILED"
     || status?.taskState === "TASK_STATE_CANCELED"
@@ -112,8 +117,10 @@ export function RemoteA2AActionButton() {
   // Follow a live Task while the popover is open: GetTask on a growing backoff,
   // reset whenever the Task's state moves. Stops on its own at a terminal
   // state, at a state that waits on the owner (input or out-of-band auth), at
-  // an unknown delivery, and on any refusal — Refresh is still there.
+  // an unknown delivery, and on any refusal or failure (authentication, a
+  // gone endpoint) — repeating it would only fail again; Refresh is still there.
   const pollable = open && !sending && taskHandle !== undefined && status?.taskAvailable === true && !terminal
+    && status.state !== "failed"
     && status.taskState !== "TASK_STATE_INPUT_REQUIRED" && status.taskState !== "TASK_STATE_AUTH_REQUIRED"
     && !isUnknownDelivery(status.outcome);
   useEffect(() => {
@@ -125,9 +132,12 @@ export function RemoteA2AActionButton() {
     }
     const timer = window.setTimeout(() => {
       pollStep.current += 1;
-      void window.aveApi.remoteA2a.task(taskHandle).then((result) => {
-        if (result.ok) setStatus(result.status);
-      }).catch(() => undefined);
+      const poll = window.aveApi.remoteA2a.task(taskHandle).then((result) => {
+        if (result.ok && shownTask.current === taskHandle) setStatus(result.status);
+      }).catch(() => undefined).finally(() => {
+        if (pollInFlight.current === poll) pollInFlight.current = null;
+      });
+      pollInFlight.current = poll;
     }, remoteA2APollDelayMs(pollStep.current));
     return () => window.clearTimeout(timer);
   }, [pollable, taskHandle, status]);
@@ -177,6 +187,9 @@ export function RemoteA2AActionButton() {
     };
     setSending(true);
     try {
+      // A background GetTask holds the controller's single slot; wait for it
+      // instead of reporting the owner's click as busy.
+      if (pollInFlight.current) await pollInFlight.current;
       const result = action === "get"
         ? await window.aveApi.remoteA2a.task(taskHandle)
         : action === "resume"
