@@ -9,12 +9,13 @@
 import { runCommand } from "./hooks/spawn-command.mjs";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { hostRuntimeAssetSummary } from "./packaged-runtime-assets.mjs";
 import { installerUvTargetFor } from "./uv-targets.mjs";
 import { assertPackagedDocumentInputs } from "./lib/document-consumer-guard.mjs";
+import { archSpec, describeMachine, parseElfHeader } from "./lib/linux-package-arch.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
@@ -63,6 +64,12 @@ function usage() {
     "  --skip-native-rebuild",
     "                   Trust already-rebuilt native deps and pass npmRebuild=false",
     "  --dir            Build unpacked app directories instead of installers",
+    "  --arch <x64|arm64>",
+    "                   Linux only: target arch (default: this host's). A target that",
+    "                   differs from the host cross-builds (ARM64 host -> x64 only):",
+    "                   node_modules is reinstalled for the target after `build`,",
+    "                   node-pty is compiled with the x86_64-linux-gnu toolchain,",
+    "                   and --skip-native-rebuild is required.",
     "  --fast           Internal preview build: release-fast/, store compression,",
     "                   and --skip-native-rebuild. Do not use for public release.",
   ].join("\n");
@@ -76,6 +83,7 @@ function parseArgs(argv) {
   let skipNativeRebuild = false;
   let fast = false;
   let dirOnly = false;
+  let arch = null;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -127,6 +135,18 @@ function parseArgs(argv) {
       dirOnly = true;
       continue;
     }
+    if (arg === "--arch" || arg.startsWith("--arch=")) {
+      const value = arg === "--arch" ? argv[i + 1] : arg.slice("--arch=".length);
+      if (!value || value.startsWith("--")) {
+        throw new Error("--arch requires a value");
+      }
+      if (value !== "x64" && value !== "arm64") {
+        throw new Error(`--arch must be x64 or arm64, got ${value}`);
+      }
+      arch = value;
+      if (arg === "--arch") i += 1;
+      continue;
+    }
     throw new Error(`Unknown argument: ${arg}\n\n${usage()}`);
   }
 
@@ -136,8 +156,13 @@ function parseArgs(argv) {
     selected.add(current);
   }
 
+  if (arch !== null && (selected.size !== 1 || !selected.has("linux"))) {
+    throw new Error("--arch applies only to a --linux build on its own");
+  }
+
   return {
     selected: [...selected],
+    arch: arch ?? process.arch,
     publish,
     skipBuild,
     skipCodeSign,
@@ -166,8 +191,8 @@ function cleanUvRuntime() {
   rmSync(uvRuntimeDir, { recursive: true, force: true });
 }
 
-function prepareUvRuntime(target) {
-  const uvTarget = installerUvTargetFor(target);
+function prepareUvRuntime(target, arch) {
+  const uvTarget = installerUvTargetFor(target, process.platform, arch);
   run("node", ["scripts/fetch-uv.mjs", "--target", uvTarget.dir]);
 
   const sourceDir = resolve(uvCacheDir, uvTarget.dir);
@@ -181,12 +206,12 @@ function prepareUvRuntime(target) {
   mkdirSync(targetDir, { recursive: true });
   cpSync(resolve(sourceDir, "uv.meta.json"), resolve(targetDir, "uv.meta.json"));
   writeFileSync(resolve(targetDir, `${uvTarget.bin}.gz`), gzipSync(readFileSync(sourceBin), { level: 9 }));
-  assertUvRuntimePayload(target);
+  assertUvRuntimePayload(target, arch);
   process.stdout.write(`[installer] staged compressed uv runtime: ${uvTarget.dir}\n`);
 }
 
-function assertUvRuntimePayload(target) {
-  const uvTarget = installerUvTargetFor(target);
+function assertUvRuntimePayload(target, arch) {
+  const uvTarget = installerUvTargetFor(target, process.platform, arch);
   const targetDir = resolve(uvRuntimeDir, uvTarget.dir);
   if (!existsSync(targetDir)) {
     throw new Error(`staged uv runtime target missing: ${targetDir}`);
@@ -225,13 +250,87 @@ function assertUvRuntimePayload(target) {
   }
 }
 
+// Cross-builds this script knows how to make: host arch -> target arch, with
+// the GNU triple whose gcc/g++ (Ubuntu gcc-x86-64-linux-gnu/g++-x86-64-linux-gnu)
+// compile the one native module that ships no Linux prebuild.
+const LINUX_CROSS_TOOLCHAINS = {
+  "arm64->x64": { triple: "x86_64-linux-gnu", gypArch: "x64" },
+};
+
+// Runtime packages npm selects by os/cpu (bun.lock `"cpu"` fields): after the
+// retarget each must exist for the target and must not exist for the host.
+const ARCH_SELECTED_RUNTIME_PACKAGES = [
+  (arch) => `@img/sharp-linux-${arch}`,
+  (arch) => `@img/sharp-libvips-linux-${arch}`,
+  (arch) => `@openai/codex-linux-${arch}`,
+];
+
+/**
+ * Make node_modules hold the target arch's runtime natives, after `build` has
+ * used the host's own toolchain (esbuild, tailwind, webpack natives).
+ *
+ * - sharp/@img and @openai/codex select their binary package by cpu: a
+ *   reinstall with bun's `--cpu/--os` installs the target's from the same
+ *   frozen lockfile. `--ignore-scripts` keeps every install script from
+ *   executing a target-arch binary or compiling a host-arch one.
+ * - better-sqlite3 ships `prebuilds/linux-x64.node` and loads it by
+ *   process.arch; afterPack keeps only the packed arch's file.
+ * - node-pty ships no Linux prebuild and loads `build/Release/pty.node`
+ *   first, so it is compiled here with node-gyp `--arch` and the cross
+ *   compiler (N-API: Node headers serve Electron). Only the addon is kept,
+ *   not node-gyp's objects or its `node_gyp_bins/python3` host symlink.
+ */
+function retargetLinuxNativeModules(arch) {
+  const toolchain = LINUX_CROSS_TOOLCHAINS[`${process.arch}->${arch}`];
+  if (!toolchain) {
+    throw new Error(`no Linux cross toolchain for ${process.arch} -> ${arch}; supported: ${Object.keys(LINUX_CROSS_TOOLCHAINS).join(", ")}`);
+  }
+  const { triple, gypArch } = toolchain;
+  const crossEnv = {
+    ...process.env,
+    CC: `${triple}-gcc`,
+    CXX: `${triple}-g++`,
+    LINK: `${triple}-g++`,
+    AR: `${triple}-ar`,
+  };
+  for (const tool of [crossEnv.CC, crossEnv.CXX, crossEnv.AR]) {
+    run(tool, ["--version"], { stdio: ["ignore", "ignore", "inherit"] });
+  }
+
+  const nodeModules = resolve(root, "node_modules");
+  process.stdout.write(`[installer] cross-build ${process.arch} -> ${arch}: reinstalling node_modules for linux-${arch}\n`);
+  rmSync(nodeModules, { recursive: true, force: true });
+  run("bun", ["install", "--frozen-lockfile", "--ignore-scripts", `--cpu=${arch}`, "--os=linux"]);
+  for (const name of ARCH_SELECTED_RUNTIME_PACKAGES) {
+    if (!existsSync(join(nodeModules, name(arch), "package.json"))) {
+      throw new Error(`cross-build: ${name(arch)} missing after the linux-${arch} reinstall`);
+    }
+    if (existsSync(join(nodeModules, name(process.arch)))) {
+      throw new Error(`cross-build: host package ${name(process.arch)} still installed after the linux-${arch} reinstall`);
+    }
+  }
+
+  const ptyDir = join(nodeModules, "node-pty");
+  run("node", [join(nodeModules, "node-gyp", "bin", "node-gyp.js"), "rebuild", `--arch=${gypArch}`], { cwd: ptyDir, env: crossEnv });
+  const ptyNode = join(ptyDir, "build", "Release", "pty.node");
+  const addon = readFileSync(ptyNode);
+  rmSync(join(ptyDir, "build"), { recursive: true, force: true });
+  mkdirSync(dirname(ptyNode), { recursive: true });
+  writeFileSync(ptyNode, addon);
+  const header = parseElfHeader(addon);
+  if (header?.machine !== archSpec(arch).machine) {
+    throw new Error(`cross-build: node-pty compiled as ${describeMachine(header)}, expected ${arch}: ${ptyNode}`);
+  }
+  process.stdout.write(`[installer] cross-build: node-pty ${describeMachine(header)} at ${ptyNode}\n`);
+}
+
 function sha256Hex(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
-function builderArgsFor(target, { publish, dirOnly, skipNativeRebuild, fast }) {
+function builderArgsFor(target, { arch, publish, dirOnly, skipNativeRebuild, fast }) {
   const config = INSTALLER_TARGETS[target];
-  const uvTarget = installerUvTargetFor(target);
+  const uvTarget = installerUvTargetFor(target, process.platform, arch);
   const args = ["electron-builder", config.flag];
   if (dirOnly) {
     args.push("--dir");
@@ -293,9 +392,15 @@ function checkPackageFootprint(target, fast) {
 }
 
 async function main() {
-  const { selected, publish, skipBuild, skipCodeSign, skipNativeRebuild, fast, dirOnly } = parseArgs(
+  const { selected, arch, publish, skipBuild, skipCodeSign, skipNativeRebuild, fast, dirOnly } = parseArgs(
     process.argv.slice(2),
   );
+  const crossBuild = arch !== process.arch;
+  if (crossBuild && !skipNativeRebuild) {
+    // electron-builder's own rebuild would compile every native module with
+    // the host compiler for the target arch.
+    throw new Error(`cross-building linux-${arch} on ${process.arch} requires --skip-native-rebuild`);
+  }
   assertPackagedDocumentInputs(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")), root);
   for (const target of selected) {
     assertNativeTarget(target);
@@ -306,6 +411,9 @@ async function main() {
 
   if (!skipBuild) {
     run("bun", ["run", "build"]);
+  }
+  if (crossBuild) {
+    retargetLinuxNativeModules(arch);
   }
 
   const env = {
@@ -336,9 +444,9 @@ async function main() {
 
   try {
     for (const target of selected) {
-      process.stdout.write(`[installer] required runtime assets for ${target}: ${hostRuntimeAssetSummary(target)}\n`);
-      prepareUvRuntime(target);
-      run("bunx", builderArgsFor(target, { publish, dirOnly, skipNativeRebuild, fast }), { env });
+      process.stdout.write(`[installer] required runtime assets for ${target}: ${hostRuntimeAssetSummary(target, arch)}\n`);
+      prepareUvRuntime(target, arch);
+      run("bunx", builderArgsFor(target, { arch, publish, dirOnly, skipNativeRebuild, fast }), { env });
       checkPackageFootprint(target, fast);
     }
   } finally {
