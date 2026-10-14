@@ -8,7 +8,7 @@
  *   - setSessionTitle("") normalises to null (no injection)
  *   - sanitizeTitle() strips dangerous characters (newline, quote, backslash, angle brackets)
  *   - sanitizeTitle() + setSessionTitle() whitespace-only → normalised to null
- *   - Section 8 (Rolling Summary Preamble) injected when preamble set, omitted otherwise
+ *   - The compaction summary never enters the system prompt
  */
 import { afterEach, describe, it, expect, expectTypeOf, vi } from "vitest";
 
@@ -462,7 +462,7 @@ describe("SystemPromptBuilder — sanitizeTitle via setSessionTitle", () => {
   });
 });
 
-describe("SystemPromptBuilder — Section 8 Rolling Summary Preamble (always-on)", () => {
+describe("SystemPromptBuilder — Conversation Continuity Guard (always-on)", () => {
   it("Section 9.9 is always present (no gate)", () => {
     const builder = makeSystemPromptBuilder();
     const prompt = builder.build();
@@ -471,17 +471,8 @@ describe("SystemPromptBuilder — Section 8 Rolling Summary Preamble (always-on)
     expect(prompt).not.toContain("<title>10-20자 한국어 제목</title>");
   });
 
-  it("Section 8 (Rolling Summary Preamble) appears when preamble set", () => {
-    const builder = makeSystemPromptBuilder();
-    builder.setSummaryPreamble("이전 세션 요약 내용입니다.");
-    const prompt = builder.build();
-    expect(prompt).toContain("<prior-context-summary>");
-    expect(prompt).toContain("이전 세션 요약 내용입니다.");
-  });
-
-  it("Section 8 is absent when preamble is null (first-turn / fresh session)", () => {
-    const builder = makeSystemPromptBuilder();
-    const prompt = builder.build();
+  it("never carries a compaction summary (it lives in the boundary row)", () => {
+    const prompt = makeSystemPromptBuilder().build();
     expect(prompt).not.toContain("<prior-context-summary>");
   });
 });

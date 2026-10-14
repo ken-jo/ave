@@ -14,6 +14,7 @@ import { normalizeToolPairInvariant } from "../conversation-history.js";
 import { backgroundShellManager } from "../../tools/shell-tools.js";
 import { createTracer } from "../../observability/conversation-trace.js";
 import { estimateMessagesTokens } from "../auto-compact.js";
+import { withCompactSummaryInLatestBoundary } from "../structured-compact.js";
 import { createLogger } from "../../lib/logger.js";
 import { projectBasename, projectRootEquals } from "../../shared/project-identity.js";
 import { createWorkspaceRootRevocationFilter } from "../../permissions/workspace-root-lifecycle.js";
@@ -120,7 +121,6 @@ function applyFreshSessionState(
   self.compactNum = 0;
   self.rateLimitRecoveryAttempted = false;
   self.tracer = createTracer(self.sessionId);
-  self.deps.systemPromptBuilder.setSummaryPreamble?.(null);
 }
 
 
@@ -314,7 +314,7 @@ export async function loadSession(
         }
       : self.deps.getDefaultProject?.());
     self.history.clear();
-    self.history.restore(normalized.messages);
+    self.history.restore(withCompactSummaryInLatestBoundary(normalized.messages, sessionMeta?.summaryPreamble));
     self.cumulativeUsage = { inputTokens: 0, outputTokens: 0 };
     self.lastRoundProviderInputTokens = 0;
     self.lastReportedSubscriptionContextWindow = null;
@@ -335,9 +335,6 @@ export async function loadSession(
       0,
     ) ?? 0;
     self.tracer = createTracer(self.sessionId);
-    // Inject rolling summary preamble from loaded session metadata.
-    const preamble = sessionMeta?.summaryPreamble ?? null;
-    self.deps.systemPromptBuilder.setSummaryPreamble?.(preamble);
     return true;
   }
 

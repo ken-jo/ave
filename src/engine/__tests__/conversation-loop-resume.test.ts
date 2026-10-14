@@ -214,12 +214,7 @@ describe("ConversationLoop.resetAndResume", () => {
         return null;
       }),
     } as unknown as ConversationLoopDeps["memoryManager"];
-    const systemPromptBuilder = {
-      build: () => "system",
-      setToolScope: vi.fn(),
-      setSummaryPreamble: vi.fn(),
-    } as unknown as ConversationLoopDeps["systemPromptBuilder"];
-    const loop = new ConversationLoop(resumeDeps({ memoryManager: mem, systemPromptBuilder }),
+    const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }),
     );
 
     const result = await loop.resetAndResume("3e323a73-28d0-4dce-8229-3b0eca68d32a");
@@ -232,8 +227,28 @@ describe("ConversationLoop.resetAndResume", () => {
     // CHILD's rows loaded and the parent's did not.
     expect(loop.getHistory().getMessages()).toMatchObject(childHistory);
     expect(loop.getHistory().getMessages()).toHaveLength(childHistory.length);
-    expect(systemPromptBuilder.setSummaryPreamble).toHaveBeenCalledWith("요약된 부모 맥락",
-    );
+    // No boundary row in the child: the parent's summary is metadata only.
+    expect(JSON.stringify(loop.getHistory().getMessages())).not.toContain("요약된 부모 맥락");
+  });
+
+  it("writes a metadata-only compaction summary into the latest boundary row on load", async () => {
+    const history: GenericMessage[] = [
+      { role: "user", content: "[old marker]", meta: { compactBoundary: true, compactNum: 2 } },
+      { role: "user", content: "next question" },
+    ];
+    const mem = {
+      ...resumeMemory(history),
+      loadSessionMetadata: vi.fn(() => ({ summaryPreamble: "SUMMARY-OF-REMOVED-TURNS" })),
+    } as unknown as ConversationLoopDeps["memoryManager"];
+    const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }));
+
+    const result = await loop.resetAndResume("08001f8f-a6f5-4bb9-820d-df1e8366af93");
+
+    expect(result.ok).toBe(true);
+    const [boundary, next] = loop.getHistory().getMessages();
+    expect(boundary!.content).toContain("<prior-context-summary>\nSUMMARY-OF-REMOVED-TURNS\n</prior-context-summary>");
+    expect(boundary!.meta?.compactBoundary).toBe(true);
+    expect(next!.content).toBe("next question");
   });
 
   it("sets cumulativeUsage estimate on resume for the next token preflight", async () => {

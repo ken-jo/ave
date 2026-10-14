@@ -39,6 +39,7 @@ vi.mock("../structured-compact.js", () => ({
   DEFAULT_PRESERVE_RECENT_TURNS: 5,
   compactWithBoundary: vi.fn(),
   renderBoundaryAsPreamble: vi.fn(() => "## Compact preamble"),
+  withCompactSummaryInLatestBoundary: vi.fn((messages: unknown) => messages),
 }));
 
 // Import the mock *after* vi.mock so we can configure return values per-test.
@@ -191,15 +192,11 @@ describe("runPreflightGuard — estimate-based trigger", () => {
       },
     ];
     const mem = makeMemoryManager(history);
-    let summaryPreamble: string | null = null;
     const loop = new ConversationLoop(makeDeps({
       settingsService: settings,
       memoryManager: mem,
       systemPromptBuilder: {
-        build: () => ["system", summaryPreamble].filter(Boolean).join("\n"),
-        setSummaryPreamble: vi.fn((preamble: string | null) => {
-          summaryPreamble = preamble;
-        }),
+        build: () => "system",
         setToolScope: vi.fn(),
         setOriginSource: vi.fn(),
         setActiveSessionId: vi.fn(),
@@ -222,14 +219,9 @@ describe("runPreflightGuard — estimate-based trigger", () => {
     const messages = loop.getHistory().getMessages();
     const checkpointProjectionMessages = messages.slice(0, -1);
     const contextTokensAfter = messages[0]?.meta?.checkpointMeta?.contextTokensAfter;
+    // The summary rides in the boundary row, so the projection of the system
+    // prompt plus the compacted history is the whole post-compact context.
     expect(contextTokensAfter).toBe(
-      estimateRequestInputProjection({
-        systemPrompt: "system\n## Compact preamble",
-        messages: checkpointProjectionMessages,
-        toolSchemas: [],
-      }).totalTokens,
-    );
-    expect(contextTokensAfter).toBeGreaterThan(
       estimateRequestInputProjection({
         systemPrompt: "system",
         messages: checkpointProjectionMessages,
@@ -938,9 +930,6 @@ describe("round-loop token preflight — a turn that grows its own context", () 
       memoryReviewer: makeMemoryReviewer(),
       toolRegistry: makeProbeRegistry(2_000) as unknown as ReturnType<typeof makeDeps>["toolRegistry"],
     });
-    let summaryPreamble: string | null = null;
-    deps.systemPromptBuilder.build = () => ["system", summaryPreamble].filter(Boolean).join("\n");
-    deps.systemPromptBuilder.setSummaryPreamble = (preamble) => { summaryPreamble = preamble; };
     const loop = new ConversationLoop(deps);
     await loop.resetAndResume(sessionId);
     (loop as unknown as { provider: LLMProvider }).provider = provider;
@@ -959,7 +948,8 @@ describe("round-loop token preflight — a turn that grows its own context", () 
     const instruction = t("be_conversationLoop.reasoningOnlyContinuePrompt");
     const rePromptRequest = provider.requests[3]!;
     const rePromptRound = rePromptRequest.messages;
-    expect(rePromptRequest.systemPrompt).toContain("## Compact preamble");
+    // Compaction rewrote history only; the system prompt is unchanged.
+    expect(rePromptRequest.systemPrompt).toBe(provider.requests[0]!.systemPrompt);
     // The round went out on the compacted history, not the one the gate
     // measured — and it still carries the instruction, exactly once.
     expect(rePromptRound[0]?.meta?.compactBoundary).toBe(true);

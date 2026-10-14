@@ -38,6 +38,7 @@ export type FenceTag =
   | "ave-memory-consolidation-source"
   | "ave-long-term-memory-overview"
   | "ave-parent-directive"
+  | "prior-context-summary"
   | "mcp-resource";
 
 /**

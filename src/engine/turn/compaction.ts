@@ -538,7 +538,6 @@ export async function applyBoundaryToSession(
     let compactedHistory = compactedHistoryWithContextCarrier(result.newHistory, result.estimatedAfter);
     self.history.clear();
     self.history.restore(compactedHistory);
-    self.deps.systemPromptBuilder.setSummaryPreamble?.(preamble);
     const contextTokensAfter = projectionContext.estimateCurrent().totalTokens;
     compactedHistory = compactedHistoryWithContextCarrier(result.newHistory, contextTokensAfter);
     self.history.clear();

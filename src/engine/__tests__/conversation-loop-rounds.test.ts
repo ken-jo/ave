@@ -1187,7 +1187,6 @@ describe("ConversationLoop queryLoop", () => {
         },
         systemPromptBuilder: {
           build: () => "system",
-          setSummaryPreamble: vi.fn(),
         },
         inputClassifier: new InputClassifier(),
         routeEngine: new RouteEngine(),
