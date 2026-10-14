@@ -51,58 +51,70 @@ export function createShellCwdProbe(command: string): ShellCwdProbe | undefined 
 const MAX_REPORTED_PATH_BYTES = 16 * 1024;
 
 /**
- * Removes the probe report from a stderr byte stream before the bytes reach
- * the bounded display buffer, the output artifact, or live progress. Bytes
- * that might begin a report are held until they can be classified; nothing is
- * dropped except the one report.
+ * Removes probe reports from a stderr byte stream before the bytes reach the
+ * bounded display buffer, the output artifact, or live progress. Bytes that
+ * might begin a report are held until they can be classified.
+ *
+ * Every complete report is removed, and the last one is adopted: the EXIT
+ * trap runs after the command, so a report the command printed itself (it can
+ * read the nonce with `trap -p`) comes earlier and is superseded. Whatever is
+ * adopted is still clamped to the allowed scope by the caller.
  */
 export class ShellCwdProbeFilter {
   private readonly start: Buffer;
   private readonly end: Buffer;
   private pending: Buffer = Buffer.alloc(0);
   private reported: string | undefined;
-  private settled = false;
+  private flushed = false;
 
   constructor(probe: Pick<ShellCwdProbe, "start" | "end">) {
     this.start = Buffer.from(probe.start, "utf8");
     this.end = Buffer.from(probe.end, "utf8");
   }
 
-  /** The `$PWD` the shell reported, or undefined when no complete report arrived. */
+  /** The `$PWD` of the last complete report, or undefined when none arrived. */
   get reportedCwd(): string | undefined {
     return this.reported;
   }
 
   push(chunk: Buffer): Buffer {
-    if (this.settled) return chunk;
-    const data = this.pending.length === 0 ? chunk : Buffer.concat([this.pending, chunk]);
+    if (this.flushed) return chunk;
+    let data = this.pending.length === 0 ? chunk : Buffer.concat([this.pending, chunk]);
     this.pending = Buffer.alloc(0);
-    const startIndex = data.indexOf(this.start);
-    if (startIndex === -1) {
-      const held = this.partialStartSuffixLength(data);
-      this.pending = Buffer.from(data.subarray(data.length - held));
-      return data.subarray(0, data.length - held);
-    }
-    const bodyIndex = startIndex + this.start.length;
-    const endIndex = data.indexOf(this.end, bodyIndex);
-    if (endIndex === -1) {
-      if (data.length - bodyIndex > MAX_REPORTED_PATH_BYTES) {
-        this.settled = true;
-        return data;
+    const out: Buffer[] = [];
+    for (;;) {
+      const startIndex = data.indexOf(this.start);
+      if (startIndex === -1) {
+        const held = this.partialStartSuffixLength(data);
+        out.push(data.subarray(0, data.length - held));
+        this.pending = Buffer.from(data.subarray(data.length - held));
+        break;
       }
-      this.pending = Buffer.from(data.subarray(startIndex));
-      return data.subarray(0, startIndex);
+      const bodyIndex = startIndex + this.start.length;
+      const endIndex = data.indexOf(this.end, bodyIndex);
+      if (endIndex === -1) {
+        if (data.length - bodyIndex > MAX_REPORTED_PATH_BYTES) {
+          // Too long to be a report: ordinary output from here on.
+          out.push(data.subarray(0, bodyIndex));
+          data = data.subarray(bodyIndex);
+          continue;
+        }
+        out.push(data.subarray(0, startIndex));
+        this.pending = Buffer.from(data.subarray(startIndex));
+        break;
+      }
+      this.reported = data.subarray(bodyIndex, endIndex).toString("utf8");
+      out.push(data.subarray(0, startIndex));
+      data = data.subarray(endIndex + this.end.length);
     }
-    this.reported = data.subarray(bodyIndex, endIndex).toString("utf8");
-    this.settled = true;
-    return Buffer.concat([data.subarray(0, startIndex), data.subarray(endIndex + this.end.length)]);
+    return out.length === 1 ? out[0]! : Buffer.concat(out);
   }
 
   /** Release held bytes that never became a complete report. */
   flush(): Buffer {
     const held = this.pending;
     this.pending = Buffer.alloc(0);
-    this.settled = true;
+    this.flushed = true;
     return held;
   }
 

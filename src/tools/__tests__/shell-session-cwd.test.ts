@@ -62,6 +62,20 @@ describe("shell cwd probe filter", () => {
     expect(filter.reportedCwd).toBeUndefined();
   });
 
+  it("adopts the trap's final report over a forged earlier one and strips both", () => {
+    const filter = new ShellCwdProbeFilter(probe);
+    // A command that read the nonce with `trap -p` prints its own report first;
+    // the EXIT trap's real one always comes last.
+    const stream = Buffer.concat([
+      Buffer.from("a"), report("/forged"), Buffer.from("b\n"), report("/work/real"),
+    ]);
+    const pieces: Buffer[] = [];
+    for (let at = 0; at < stream.length; at += 7) pieces.push(filter.push(stream.subarray(at, at + 7)));
+    pieces.push(filter.flush());
+    expect(Buffer.concat(pieces).toString("utf8")).toBe("ab\n");
+    expect(filter.reportedCwd).toBe("/work/real");
+  });
+
   it("ignores a report carrying another invocation's nonce", () => {
     const other = createShellCwdProbe("cd .")!;
     const filter = new ShellCwdProbeFilter(probe);
