@@ -8,6 +8,10 @@
  * Chain. The walk starts at the repository root — the nearest ancestor of the
  * project root holding `.git` (a directory, or a file in a worktree), or the
  * project root itself when there is none — and goes down to the project root.
+ * The climb is bounded by the home directory: a `.git` found at `$HOME` or
+ * above it (a dotfiles repository, say) is not the project's repository, so
+ * the walk then starts at the project root and `~/AGENTS.md` never loads as a
+ * committed project file.
  * Each directory contributes at most one file: `AGENTS.md`, or `CLAUDE.md`
  * when `AGENTS.md` is absent or empty. Layers are ordered root-first, so the
  * file closest to the project root comes last and reads as the most specific.
@@ -22,17 +26,28 @@
  * fenced code blocks and inline code spans is not scanned. An import must
  * resolve inside the repository root: committed files are shared content, and
  * a path out of the repository (an absolute path, `~`, or a symlink) would let
- * them pull arbitrary host files into the prompt.
+ * them pull arbitrary host files into the prompt. A path the host's sensitive
+ * path policy denies for reading (`.env`, keys, credentials) is skipped even
+ * inside the repository.
  *
  * Budget. The whole chain shares {@link PROJECT_AGENTS_MD_MAX_TOTAL_BYTES},
  * filled root-first: the layer that crosses the cap is head-clamped and the
  * layers after it are dropped.
  *
- * Pure + dependency-free (node:fs/node:path only) so it stays a memory-layer
- * leaf with no upward dependency on engine/ or prompts/.
+ * First touch. {@link discoverDirectoryInstructions} stops at a nested
+ * repository (a directory holding `.git`, as a submodule or a third-party
+ * clone does) and at `node_modules`, and skips files git ignores: what lies
+ * there is not this project's committed text.
+ *
+ * Dependencies stay at node built-ins plus the sensitive-path policy leaf, so
+ * this remains a memory-layer leaf with no upward dependency on engine/ or
+ * prompts/.
  */
+import { execFileSync } from "node:child_process";
 import { closeSync, fstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../permissions/sensitive-paths.js";
 
 interface ProjectAgentsMdLayer {
   /** Path of the instruction file relative to the repository root. */
@@ -75,7 +90,9 @@ function canonical(path: string): string | null {
 }
 
 function isWithin(canonicalRoot: string, canonicalPath: string): boolean {
-  return canonicalPath === canonicalRoot || canonicalPath.startsWith(`${canonicalRoot}${sep}`);
+  if (canonicalPath === canonicalRoot) return true;
+  // The filesystem root already ends in a separator.
+  return canonicalPath.startsWith(canonicalRoot.endsWith(sep) ? canonicalRoot : `${canonicalRoot}${sep}`);
 }
 
 /** Slice to at most `maxBytes` without splitting a multi-byte UTF-8 sequence. */
@@ -97,6 +114,7 @@ function utf8HeadSlice(text: string, maxBytes: number): string {
 function readConfinedFile(canonicalRoot: string, path: string): { canonicalPath: string; text: string } | null {
   const canonicalPath = canonical(path);
   if (!canonicalPath || !isWithin(canonicalRoot, canonicalPath)) return null;
+  if (isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(canonicalPath)), "read")) return null;
   let fd: number | null = null;
   try {
     fd = openSync(canonicalPath, "r");
@@ -179,16 +197,30 @@ function directoryLayer(
   return null;
 }
 
-/** Nearest ancestor of `start` (inclusive) holding `.git`; `start` when none does. */
-function repositoryRoot(start: string): string {
+function hasGitEntry(dir: string): boolean {
+  try {
+    statSync(join(dir, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The home directory as the filesystem resolves it, when it exists. */
+function canonicalHome(): string | null {
+  return canonical(homedir());
+}
+
+/**
+ * Nearest ancestor of `start` (inclusive) holding `.git`, or `start` when none
+ * does. A repository at `home` or above it is not taken: there the walk would
+ * leave the project for the user's own files, so `start` is the root instead.
+ */
+function repositoryRoot(start: string, home: string | null): string {
   let dir = start;
   for (;;) {
-    try {
-      statSync(join(dir, ".git"));
-      return dir;
-    } catch {
-      // keep walking
-    }
+    if (dir !== start && home !== null && isWithin(dir, home)) return start;
+    if (hasGitEntry(dir)) return dir;
     const parent = dirname(dir);
     if (parent === dir) return start;
     dir = parent;
@@ -215,14 +247,14 @@ function chainDirectories(top: string, bottom: string): string[] {
  */
 export function discoverProjectAgentsMd(
   projectRoot: string,
-  opts: { maxTotalBytes?: number } = {},
+  opts: { maxTotalBytes?: number; homeDir?: string } = {},
 ): ProjectAgentsMd {
   const maxTotalBytes = opts.maxTotalBytes ?? PROJECT_AGENTS_MD_MAX_TOTAL_BYTES;
   const root = resolve(projectRoot);
   const canonicalProject = canonical(root);
   // A root that does not exist yet is watched itself, so its creation is noticed.
   if (!canonicalProject) return { projectRoot: root, layers: [], totalBytes: 0, watchedPaths: [root] };
-  const top = repositoryRoot(canonicalProject);
+  const top = repositoryRoot(canonicalProject, opts.homeDir !== undefined ? canonical(opts.homeDir) : canonicalHome());
   const seen = new Set<string>();
   const watched = new Set<string>();
   const found = chainDirectories(top, canonicalProject)
@@ -249,16 +281,44 @@ export function discoverProjectAgentsMd(
 }
 
 /**
+ * Whether git reports `path` as ignored in the repository at `repoRoot`. A
+ * tracked file is never reported. Any failure to ask (no git, not a
+ * repository) reads as "not ignored": the nested-repository and
+ * `node_modules` stops still hold without git.
+ */
+function gitIgnores(repoRoot: string, path: string): boolean {
+  if (!hasGitEntry(repoRoot)) return false;
+  const env = { ...process.env };
+  // A git hook's GIT_DIR / GIT_WORK_TREE would point the query at another repository.
+  for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+  try {
+    execFileSync("git", ["-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)], {
+      stdio: "ignore",
+      timeout: 2_000,
+      env,
+    });
+    return true; // exit 0: ignored
+  } catch {
+    return false; // exit 1: not ignored; anything else: unknown
+  }
+}
+
+/**
  * Instruction files for directories BELOW `projectRoot` on the way to
  * `targetPath` (a file or directory the agent touched; relative paths resolve
  * against the project root), root-first, skipping any whose `relativePath`
  * is already in `attached`. Each layer is capped at the project budget. A
  * target outside the project root, or the root itself, yields nothing.
+ *
+ * The descent stops at the first directory that is `node_modules` or holds
+ * `.git` (a nested repository or submodule): instruction files from there down
+ * belong to another project. A file git ignores is skipped.
  */
 export function discoverDirectoryInstructions(
   projectRoot: string,
   targetPath: string,
-  attached: ReadonlySet<string>,
+  attached: { has(relativePath: string): boolean },
+  opts: { homeDir?: string } = {},
 ): ProjectAgentsMdLayer[] {
   const canonicalProject = canonical(resolve(projectRoot));
   if (!canonicalProject) return [];
@@ -273,11 +333,13 @@ export function discoverDirectoryInstructions(
   if (!canonicalTarget || canonicalTarget === canonicalProject || !isWithin(canonicalProject, canonicalTarget)) {
     return [];
   }
-  const top = repositoryRoot(canonicalProject);
+  const top = repositoryRoot(canonicalProject, opts.homeDir !== undefined ? canonical(opts.homeDir) : canonicalHome());
   const layers: ProjectAgentsMdLayer[] = [];
   for (const dir of chainDirectories(canonicalProject, canonicalTarget).slice(1)) {
+    if (basename(dir) === "node_modules" || hasGitEntry(dir)) break;
     const layer = directoryLayer(top, dir, new Set(), new Set());
     if (!layer || attached.has(layer.relativePath)) continue;
+    if (gitIgnores(top, join(top, layer.relativePath))) continue;
     const truncated = Buffer.byteLength(layer.content, "utf-8") > PROJECT_AGENTS_MD_MAX_TOTAL_BYTES;
     layers.push({
       relativePath: layer.relativePath,
