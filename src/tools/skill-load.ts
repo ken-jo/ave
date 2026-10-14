@@ -114,6 +114,9 @@ export interface SkillLoadToolDeps {
   }>;
 }
 
+/** One category for the tool and for its body-approval request. */
+const SKILL_LOAD_CATEGORY = "read" as const;
+
 export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
   return createDynamicTool({
     name: "skill_load",
@@ -124,7 +127,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
     // content-bound control is the body-hash approval below — every skill,
     // seeded built-ins included, still goes through the approval dock on its
     // first read and again whenever its body or bundle changes.
-    category: "read",
+    category: SKILL_LOAD_CATEGORY,
     isReadOnly: () => true,
     jsonSchema: {
       type: "object",
@@ -201,7 +204,11 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           id: randomUUID(),
           category: "tool",
           toolName: "skill_load",
-          toolCategory: "meta",
+          // The tool's real category, so the dock describes a read. No
+          // `allowedChoices` is set on purpose: away-authority answers only the
+          // allow-once/deny-once one-shot contract, and an unseen skill body
+          // must never be approved by an away grant on "read".
+          toolCategory: SKILL_LOAD_CATEGORY,
           // Attribute the modal to the conversation loading the skill. The
           // missing-session case is still rejected further down, after the
           // user has decided — do not change that ordering here.

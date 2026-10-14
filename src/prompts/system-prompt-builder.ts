@@ -183,7 +183,7 @@ export class SystemPromptBuilder {
    * Set per-turn by ConversationLoop before `build()` so those sections
    * scope to the right session without leaking across sessions.
    */
-  private overlaySessionId: string | null = null;
+  private appContextSessionId: string | null = null;
   private activeRolePrompt: ActiveRolePrompt | null = null;
   /**
    * Current session title injected as inert continuity context.
@@ -386,7 +386,7 @@ export class SystemPromptBuilder {
    * Context) to the correct ChatSession. Pass `null` to clear.
    */
   setActiveSessionId(sessionId: string | null): void {
-    this.overlaySessionId = sessionId && sessionId.length > 0 ? sessionId : null;
+    this.appContextSessionId = sessionId && sessionId.length > 0 ? sessionId : null;
   }
 
   /**
@@ -726,7 +726,7 @@ export class SystemPromptBuilder {
         name: "MCP App Context",
         refresh: "per-turn",
         build: () => {
-          const sid = this.overlaySessionId;
+          const sid = this.appContextSessionId;
           if (!sid) return "";
           return getAppModelContext(sid);
         },

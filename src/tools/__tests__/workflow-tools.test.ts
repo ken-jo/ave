@@ -2029,6 +2029,32 @@ describe("skill_load tool", () => {
     expect(tool.category).toBe("read");
   });
 
+  it("asks for an unapproved body under the tool's real category, outside the away one-shot contract", async () => {
+    const store = new SkillStore({ userDir: BUILTIN_SKILLS_DIR });
+    const requestAndWait = vi.fn(async (_request: Record<string, unknown>) => ({ choice: "deny-once" }));
+    const tool = createSkillLoadTool({
+      store,
+      overlay: new SkillOverlay(),
+      approvals: { isApproved: async () => false, approve: async () => undefined } as never,
+      approvalGate: { requestAndWait } as never,
+      emit: () => undefined,
+    });
+    const r = await tool.execute({ skillName: "report-writing" }, ctx("sess-ask"));
+    expect(r.isError).toBe(true);
+    expect(requestAndWait).toHaveBeenCalledOnce();
+    const request = requestAndWait.mock.calls[0][0];
+    expect(request).toMatchObject({
+      category: "tool",
+      toolName: "skill_load",
+      toolCategory: tool.category,
+      source: "builtin",
+      sessionId: "sess-ask",
+    });
+    // Away-authority answers only allow-once/deny-once asks; leaving the
+    // choices unset keeps an unseen body out of an away "read" grant.
+    expect(request).not.toHaveProperty("allowedChoices");
+  });
+
   it("returns error for missing skill", async () => {
     const store = new SkillStore({});
     const overlay = new SkillOverlay();
