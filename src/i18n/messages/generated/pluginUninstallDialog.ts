@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/dialogs/PluginUninstallDialog.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/dialogs/PluginUninstallDialog.tsx.
 export const en = {
   "pluginUninstallDialog.title": "Remove Extension",
   "pluginUninstallDialog.description": "Removing the '{name}' extension. Local data, settings, saved secrets, and recorded login sessions will also be deleted.",

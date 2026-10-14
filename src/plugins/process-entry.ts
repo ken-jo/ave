@@ -19,6 +19,7 @@ import { isSafeMcpEnvironmentName } from "../mcp/safe-names.js";
 import type { GitInstallRecord, PluginInstallReceipt, PluginRung } from "./plugin-install-receipt.js";
 import { AVE_EXTENSION_NAMESPACE, type PluginManifest } from "./public-contract.js";
 import { resolveBundledArgv, resolveProcessEntryEnvironmentValue } from "./resolve-bundled-argv.js";
+import { isRecord } from "../shared/is-record.js";
 
 /**
  * The first app release with a `process` runtime (decision 38). Protocol `2`
@@ -57,10 +58,6 @@ export class ProcessEntryRequiresPinnedArtifactError extends Error {
     super(PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_MESSAGE);
     this.name = "ProcessEntryRequiresPinnedArtifactError";
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** A process marker identifies an extension in a document no one has validated yet. */

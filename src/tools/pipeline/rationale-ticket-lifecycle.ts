@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { canonicalStringify } from "../../permissions/user-approval-store.js";
+import { canonicalJsonEqual } from "../../shared/canonical-json.js";
 import { assertValidToolUseId } from "../../shared/tool-use-id.js";
 import {
   RATIONALE_CONTROL_CONTRACT_VERSION,
   assertRationaleCanonicalJson,
-  cloneRationaleCanonicalJson,
   verifyRationaleRequiredControl,
   type RationaleRequiredControl,
+  sealRationaleCanonicalJson,
+  assertExactOwnKeys,
 } from "./rationale-control.js";
 import {
   RATIONALE_GENERATION_FAILURE_CAUSES,
@@ -21,17 +23,6 @@ import {
 import { UUID_PATTERN } from "../../shared/uuid.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 
-function seal<T>(value: T, label: string): T {
-  return cloneRationaleCanonicalJson(value, label) as T;
-}
-
-function exact(value: object, expected: readonly string[], label: string): void {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  if (actual.length !== wanted.length || actual.some((v, i) => v !== wanted[i])) {
-    throw new TypeError(label + " contains unexpected or missing fields");
-  }
-}
 export type RationaleGenerationProviderFailureCause = Extract<
   RationaleGenerationFailureCause,
   "generation-unavailable" | "generation-error" | "generation-timeout"
@@ -118,10 +109,6 @@ export interface HostConsumedAllowOnceReceipt {
   ticket: RationaleTicketStateRecord;
 }
 
-function equal(left: unknown, right: unknown): boolean {
-  return canonicalStringify(left) === canonicalStringify(right);
-}
-
 export type RationaleTicketEventName =
   | "request-rationale" | "rationale-ready" | "rationale-failed" | "prompt-user"
   | "allow-once" | "reviewer-authorize-once" | "deny" | "cancel" | "modal-timeout" | "abort"
@@ -162,7 +149,7 @@ export function createRationaleReviewRequiredRecord(
   if (!verifyRationaleRequiredControl(control, { now })) {
     throw new Error("invalid or expired rationale control");
   }
-  return seal({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
+  return sealRationaleCanonicalJson({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     ticketId: control.ticketId, actionDigest: control.action.actionDigest,
     state: "review_required", rationaleStatus: "not-requested",
     generationOutcome: null, reevaluationOutcome: null, terminalReason: null,
@@ -185,7 +172,7 @@ export function createRationaleTicketEvent(
   if (!EVENT_NAMES.includes(event)) throw new TypeError("invalid rationale ticket event");
   if (outcomes !== null) {
     assertRationaleCanonicalJson(outcomes, "RationaleTicketResolvedOutcomes");
-    exact(outcomes, ["generationOutcome", "reevaluationOutcome"],
+    assertExactOwnKeys(outcomes, ["generationOutcome", "reevaluationOutcome"],
       "RationaleTicketResolvedOutcomes");
   }
   const generationOutcome = outcomes?.generationOutcome ?? null;
@@ -198,7 +185,7 @@ export function createRationaleTicketEvent(
       (status === null && outcomes !== null)) {
     throw new TypeError("rationale ticket event/outcome mismatch");
   }
-  return seal({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
+  return sealRationaleCanonicalJson({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     ticketId: control.ticketId, actionDigest: control.action.actionDigest, event,
     generationOutcome, reevaluationOutcome,
   }, "RationaleTicketEvent");
@@ -249,7 +236,7 @@ export function createRationaleTicketEventFromBatchDecision(
 
 export function validateRationaleTicketRecord(record: RationaleTicketStateRecord): void {
   assertRationaleCanonicalJson(record, "RationaleTicketStateRecord");
-  exact(record, ["contractVersion", "ticketId", "actionDigest", "state",
+  assertExactOwnKeys(record, ["contractVersion", "ticketId", "actionDigest", "state",
     "rationaleStatus", "generationOutcome", "reevaluationOutcome", "terminalReason"],
     "RationaleTicketStateRecord");
   if (record.contractVersion !== RATIONALE_CONTROL_CONTRACT_VERSION ||
@@ -312,7 +299,7 @@ export function validateHostConsumedAllowOnceReceipt(
     throw new Error("invalid or expired rationale control");
   }
   assertRationaleCanonicalJson(receipt, "HostConsumedAllowOnceReceipt");
-  exact(receipt, ["contractVersion", "kind", "receiptId", "ticketId",
+  assertExactOwnKeys(receipt, ["contractVersion", "kind", "receiptId", "ticketId",
     "actionDigest", "invocationDigest", "consumedAt", "ticket"],
     "HostConsumedAllowOnceReceipt");
   validateRationaleTicketRecord(embeddedTicket);
@@ -328,7 +315,7 @@ export function validateHostConsumedAllowOnceReceipt(
       receipt.actionDigest !== embeddedTicket.actionDigest ||
       embeddedTicket.state !== "allowed_once" ||
       embeddedTicket.terminalReason !== "allowed-once" ||
-      !equal(receipt.ticket, embeddedTicket) ||
+      !canonicalJsonEqual(receipt.ticket, embeddedTicket) ||
       !Number.isFinite(receipt.consumedAt) ||
       receipt.consumedAt < control.anchor.createdAt || receipt.consumedAt > now) {
     throw new Error("host consumed allow-once receipt binding mismatch");
@@ -340,7 +327,7 @@ function next(record: RationaleTicketStateRecord, state: RationaleTicketState,
   reevaluationOutcome: ReviewerReevaluationOutcome | null,
   terminalReason: RationaleTerminalReason | null,
 ): RationaleTicketStateRecord {
-  return seal({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
+  return sealRationaleCanonicalJson({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     ticketId: record.ticketId, actionDigest: record.actionDigest,
     state, rationaleStatus, generationOutcome, reevaluationOutcome, terminalReason },
     "RationaleTicketStateRecord");
@@ -351,7 +338,7 @@ export function transitionRationaleTicket(
 ): RationaleTicketStateRecord {
   validateRationaleTicketRecord(record);
   assertRationaleCanonicalJson(event, "RationaleTicketEvent");
-  exact(event, ["contractVersion", "ticketId", "actionDigest", "event",
+  assertExactOwnKeys(event, ["contractVersion", "ticketId", "actionDigest", "event",
     "generationOutcome", "reevaluationOutcome"],
     "RationaleTicketEvent");
   if (event.contractVersion !== RATIONALE_CONTROL_CONTRACT_VERSION ||
@@ -537,7 +524,7 @@ function invocationRecordDigest(record: InvocationAuditRecord): string {
 
 export function validateInvocationAuditRecord(record: InvocationAuditRecord): void {
   assertRationaleCanonicalJson(record, "InvocationAuditRecord");
-  exact(record, ["contractVersion", "ticketId", "actionDigest", "invocationDigest",
+  assertExactOwnKeys(record, ["contractVersion", "ticketId", "actionDigest", "invocationDigest",
     "toolUseId", "authorizationReceiptId", "invocationStartLeaseId", "version",
     "state", "automaticRetry"], "InvocationAuditRecord");
   assertValidToolUseId(record.toolUseId, "invocation audit tool use ID");
@@ -564,7 +551,7 @@ export function validateInvocationAuditRecord(record: InvocationAuditRecord): vo
 
 function validateHostInvocationStartLeaseShape(lease: HostInvocationStartLease): void {
   assertRationaleCanonicalJson(lease, "HostInvocationStartLease");
-  exact(lease, ["contractVersion", "kind", "leaseId", "ticketId", "actionDigest",
+  assertExactOwnKeys(lease, ["contractVersion", "kind", "leaseId", "ticketId", "actionDigest",
     "invocationDigest", "toolUseId", "authorizationReceiptId",
     "authorizedRecordDigest", "expectedInvocationVersion",
     "committedInvocationVersion", "startedAt"], "HostInvocationStartLease");
@@ -612,7 +599,7 @@ export function createHostInvocationStartLease(input: {
       !Number.isFinite(now) || now < 0) {
     throw new Error("invalid invocation-start CAS expectation");
   }
-  return seal({
+  return sealRationaleCanonicalJson({
     contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     kind: "host-invocation-start-cas-lease", leaseId: randomUUID(),
     ticketId: input.authorized.ticketId, actionDigest: input.authorized.actionDigest,
@@ -686,8 +673,8 @@ export class InMemoryHostInvocationStartCasStore implements HostInvocationStartC
       if (typeof input.persistAudit !== "function") return false;
       validateInvocationTerminalForLease(input.terminal, input.lease);
       const current = this.#states.get(input.lease.invocationDigest);
-      if (!current || !equal(current.lease, input.lease)) return false;
-      if (current.terminal && !equal(current.terminal, input.terminal)) return false;
+      if (!current || !canonicalJsonEqual(current.lease, input.lease)) return false;
+      if (current.terminal && !canonicalJsonEqual(current.terminal, input.terminal)) return false;
       current.terminal ??= input.terminal;
       if (current.terminalAuditDelivered) return true;
       try {
@@ -722,7 +709,7 @@ export function createAuthorizedInvocationAudit(input: {
       input.ticket.state !== "allowed_once") {
     throw new Error("authorization CAS binding mismatch");
   }
-  return seal({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
+  return sealRationaleCanonicalJson({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     ticketId: input.control.ticketId, actionDigest: input.control.action.actionDigest,
     invocationDigest: input.control.invocationDigest,
     toolUseId: input.control.sealedAction.toolUseId,
@@ -738,7 +725,7 @@ export function createInvocationStartedAudit(input: {
 }): InvocationAuditRecord {
   const now = input.now ?? Date.now();
   validateHostInvocationStartLease(input.startLease, input.authorized, now);
-  return seal({ ...input.authorized, invocationStartLeaseId: input.startLease.leaseId,
+  return sealRationaleCanonicalJson({ ...input.authorized, invocationStartLeaseId: input.startLease.leaseId,
     version: 1, state: "started" }, "InvocationAuditRecord");
 }
 
@@ -753,7 +740,7 @@ export function createInvocationAuditEvent(
       record.invocationStartLeaseId === null) {
     throw new Error("terminal invocation event requires a started lease");
   }
-  return seal({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
+  return sealRationaleCanonicalJson({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     ticketId: record.ticketId, actionDigest: record.actionDigest,
     invocationDigest: record.invocationDigest,
     authorizationReceiptId: record.authorizationReceiptId,
@@ -766,7 +753,7 @@ export function transitionInvocationAudit(
 ): InvocationAuditRecord {
   validateInvocationAuditRecord(record);
   assertRationaleCanonicalJson(event, "InvocationAuditEvent");
-  exact(event, ["contractVersion", "ticketId", "actionDigest", "invocationDigest",
+  assertExactOwnKeys(event, ["contractVersion", "ticketId", "actionDigest", "invocationDigest",
     "authorizationReceiptId", "invocationStartLeaseId", "expectedInvocationVersion",
     "event"], "InvocationAuditEvent");
   if (event.contractVersion !== RATIONALE_CONTROL_CONTRACT_VERSION ||
@@ -782,6 +769,6 @@ export function transitionInvocationAudit(
   const states: Record<InvocationAuditEventName, InvocationAuditState> = {
     complete: "completed", fail: "failed", "crash-recovery": "unknown-after-crash",
   };
-  return seal({ ...record, version: 2, state: states[event.event] },
+  return sealRationaleCanonicalJson({ ...record, version: 2, state: states[event.event] },
     "InvocationAuditRecord");
 }

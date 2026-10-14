@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/hooks/use-starred.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/hooks/use-starred.ts.
 export const en = {
   "useStarred.sessionFallbackText": "Pinned session · #{sessionId}",
 } as const;

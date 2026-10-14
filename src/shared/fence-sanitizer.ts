@@ -13,6 +13,8 @@
  *     (the host label naming the parent sits OUTSIDE; the parent's words are the body)
  *   · `<web-content trust="untrusted-web-data">` — a page `web_fetch` retrieved (the
  *     body is the converted page; the URL and status sit outside in the tool's JSON)
+ *   · `<terminal-output trust="untrusted-terminal-data">` — `terminal_read`'s result:
+ *     commands and output from the user's terminal, which any program can print into
  *
  * The fence IS the labelling mechanism, so a body that can emit its own closing tag
  * defeats it: everything the author writes after that tag appears, to the model, to sit
@@ -43,7 +45,8 @@ export type FenceTag =
   | "prior-context-summary"
   | "compact-focus"
   | "mcp-resource"
-  | "web-content";
+  | "web-content"
+  | "terminal-output";
 
 /**
  * Neutralize any closing tag for `tag` inside app/plugin-authored `text`, so the body

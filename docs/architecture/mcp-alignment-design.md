@@ -7,7 +7,8 @@
 
 > **2026-07-09 scope narrowing (maintainer):** the **plugin-contract axis of #885 is NO LONGER driven by
 > this document.** #885 is narrowed to "borrow the MCP `Tool` **object** shape + MCP **isolation parity**"
-> and is owned by [`plugin-contract-v6-design.md`](./plugin-contract-v6-design.md); the full stateless
+> and is owned by the plugin Tool contract, now documented in
+> [plugin tool schema design](../references/plugin-tool-schema-design.md); the full stateless
 > `2026-07-28` JSON-RPC **wire** migration of the plugin contract (`server/discover`/MRTR/per-request `_meta`)
 > is **not** the current direction (comparable agent hosts keep plugin-contract and MCP separate; MCP
 > dropped fixed-version releases in 2026 → wire-migration = spec-drift risk). The **loopback topology**
@@ -19,7 +20,7 @@
 > `server/discover`, MRTR, + Apps/Tasks/Skills extensions).
 > Directive: Ave plugins implemented **as MCP apps/servers**; **No Fallback Code** — design for the
 > correct end-state, no degrade/shim layers.
-> Issues: ~~supersedes/absorbs #885~~ (**narrowed 2026-07-09 → `plugin-contract-v6-design.md`**) and frames
+> Issues: ~~supersedes/absorbs #885~~ (**narrowed 2026-07-09 → the final v6 contract, recorded in git history**) and frames
 > #811 (hook runtime expansion) in an MCP-aligned direction.
 
 > **Wire shapes are verified.** The exact RC field shapes were pinned **verbatim** against the
@@ -94,7 +95,7 @@ The **Ave host becomes an MCP _host_** that runs **one MCP client per loaded plu
 ### 3.3 `toolSchemas` → `Tool`
 
 > **Status (removed in #885 Phase R):** this is the earlier alignment sketch. The final v6 contract
-> (`plugin-contract-v6-design.md`) **deleted** the `toolSchemas` map — each tool is a pure MCP `Tool`
+> (recorded in git history) **deleted** the `toolSchemas` map — each tool is a pure MCP `Tool`
 > object — and **removed** per-tool `category` from the manifest entirely (Q3: host-classifies-risk;
 > a plugin grading its own danger is not a control). `pathFields` is the sole surviving Ave key, at
 > `_meta["ave/pathFields"]`. Read the mapping below as historical.

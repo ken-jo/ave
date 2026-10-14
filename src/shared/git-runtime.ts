@@ -5,6 +5,7 @@
  */
 import type { MarketplaceErrorCode, MarketplaceErrorDetail } from "../marketplace/errors.js";
 import type { GitRuntimeMode } from "./git-runtime-mode.js";
+import { isRecord } from "./is-record.js";
 
 export type GitRuntimeProgress =
   | { phase: "checking" }
@@ -49,10 +50,6 @@ export interface GitRuntimeApi {
 }
 
 const PHASES = new Set(["checking", "downloading", "verifying", "extracting", "smoke-testing", "ready", "failed"]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** Shape check for what crosses the bridge; anything else is treated as unavailable. */
 export function parseGitRuntimeResult(value: unknown): GitRuntimeResult | null {

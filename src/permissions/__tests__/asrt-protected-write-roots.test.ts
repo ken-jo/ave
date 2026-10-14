@@ -21,6 +21,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { derivePluginChildEnvelope } from "../../plugins/isolation/out-of-process-plugin.js";
+import { agentPluginDataRoot } from "../../marketplace/content/agent-plugin-data.js";
 import {
   buildPerCommandSandboxCustomConfig,
   buildSandboxConfig,
@@ -244,6 +245,8 @@ describe("the plugins root, refused to plugin-owned wraps", () => {
     // their installed versions.
     const roots = [join(ave, "plugins"), join(ave, "agent-plugin-data"), join(ave, "packages", "agent-plugin")];
     expect(denyFor("linux")).toEqual(roots);
+    // The data root is the one the agent plugin runtimes write and uninstall removes.
+    expect(agentPluginDataRoot()).toBe(roots[1]);
     expect(denyFor("darwin")).toEqual(roots.map((path) => `${path.slice(0, -1)}[${path.slice(-1)}]`));
   });
 

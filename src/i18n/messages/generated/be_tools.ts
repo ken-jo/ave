@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/boot/tools.ts. Do not edit by hand.
+// i18n fragment. Source: src/boot/tools.ts.
 export const en = {
   // registerRequestPluginMetaTool — tool description and schema
   "be_tools.requestPluginDescription": "Request selection of an enabled extension not yet chosen in the current turn, if needed for this task. See the 'Available Extensions' section in the system prompt for the list of requestable extensions. Once selected, that extension's tools can be called within the same turn.",

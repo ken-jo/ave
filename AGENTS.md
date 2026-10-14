@@ -15,7 +15,11 @@ state durable constraints here and put detailed designs in their owning docs.
   and current shipped behavior of comparable CLI and desktop coding-agent
   hosts. IDE/workspace products are secondary references: use them for generic
   editor or filesystem conventions, not as the primary model for agent-host
-  lifecycle or interaction behavior.
+  lifecycle or interaction behavior. For browser and terminal surfaces, the
+  agent browsers and agent terminals named in `docs/vision/README.md` are
+  primary comparisons too.
+- The product goal is stated once, in `docs/vision/README.md`. Link to it
+  instead of restating Ave's positioning elsewhere.
 - Plugin integration is defined by `src/plugins/types.ts`, manifests, schemas,
   and HostApi self-registration. Do not add plugin-specific host branches.
 - Permission behavior follows `docs/architecture/permission-policy-design.md`
@@ -274,11 +278,16 @@ Pre-push picks one tier and logs it with the reason
 - comment-only and test-only: an eligible test-only push uses the hook's
   targeted Vitest path; a standalone-comment edit runs the typecheck gate.
 - fast, the default for a source branch push: the typecheck gate, the
-  duplicate-helper scan, the lock suites, the changed test files, and
-  `vitest related` for the changed modules. No full `bun run test`, no build.
+  duplicate-helper scan, the lock suites whose trigger paths changed, the
+  changed test files, the recorded readers of a changed test-read document,
+  and `vitest related` for the changed modules (narrowed to direct importers
+  when a shared module reaches over 150 test files). No full `bun run test`,
+  no build. A new sub-branch is measured from the closest live tip of the
+  default or an `integration/*` branch, so only its own commits count.
 - full: `bun run typecheck`, full `bun run test`, `bun run build`, and
-  `check:gate-core`, for non-fast-forward updates, the default
-  branch, noncanonical paths, consumed documentation, deletions of modules,
+  `check:gate-core`, for non-fast-forward updates, the default branch and
+  `integration/*` branches, noncanonical paths, consumed documentation
+  without a recorded reader set, deletions of modules,
   non-module assets, mode changes, declaration files, generated catalogs,
   runtime entry files, modules with no related test files, and global inputs
   (`package.json`, `bun.lock`, compiler, Vitest and build configs, Vitest setup

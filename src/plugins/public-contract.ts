@@ -46,6 +46,24 @@ export const AGENT_PLUGINS_SCHEMA_URL =
  */
 export const AVE_EXTENSION_NAMESPACE = "ai.agent-connector.ave";
 
+/**
+ * The plugin id grammar: the manifest `name` rule of
+ * `schemas/plugin-manifest.schema.json` (kebab-case, no `--`, 3–64
+ * characters), which the host reads as `PluginManifest.id`. Every host
+ * surface that accepts a plugin id checks it here, so an id can only be
+ * valid everywhere or nowhere.
+ */
+export const PLUGIN_ID_PATTERN = /^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$/u;
+export const PLUGIN_ID_MIN_LENGTH = 3;
+export const PLUGIN_ID_MAX_LENGTH = 64;
+
+export function isValidPluginId(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length >= PLUGIN_ID_MIN_LENGTH
+    && value.length <= PLUGIN_ID_MAX_LENGTH
+    && PLUGIN_ID_PATTERN.test(value);
+}
+
 /** The non-executable branch of the portable manifest at a marketplace boundary. */
 export interface AgentPluginPackageManifest {
   $schema: typeof AGENT_PLUGINS_SCHEMA_URL;

@@ -481,7 +481,7 @@
  *  No combinatorial overlays — one selector, one outcome.
  *
  *  Built-in bundles are registered in src/shared/theme-bundles.ts, with
- *  Cherry Blossom as the default light shell. CSS block order keeps the
+ *  moonstone (`DEFAULT_BUNDLE_ID`) as the default light shell. CSS block order keeps the
  *  pre-hydration default near the end for easy comparison with its fallback.
  *
  *  Token tiers:

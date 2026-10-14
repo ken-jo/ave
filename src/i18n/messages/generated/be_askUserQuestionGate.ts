@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/main/ask-user-question-gate.ts. Do not edit by hand.
+// i18n fragment. Source: src/main/ask-user-question-gate.ts.
 export const en = {
   "be_askUserQuestionGate.notificationTitle": "A question has arrived",
   "be_askUserQuestionGate.multiQuestionPreview": "{count} questions — {first}",

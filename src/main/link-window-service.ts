@@ -45,6 +45,7 @@ import {
 import { resolveAppIconPath } from "./app-icon.js";
 import { escapeHtml } from "../shared/escape-html.js";
 import { preloadPreferences } from "./preload-bundles.js";
+import { buildPersistentBrowserUserAgent } from "./browser-user-agent.js";
 
 /**
  * JSON for embedding inside a `<script>` block.
@@ -124,37 +125,6 @@ export interface OpenLinkWindowOptions {
   width?: number;
   /** Initial window height. Defaults to 768. */
   height?: number;
-}
-
-/**
- * Build an Edge-flavoured UA string aligned with the current Chromium major.
- *
- * Microsoft AAD's KMSI ("Stay signed in?") gating treats UAs containing
- * `Electron/...` as embedded browsers and refuses to issue the persistent
- * `ESTSAUTHPERSISTENT` cookie — which is why even after a successful login,
- * reopening webmail.example.com asks the user to sign in again. Mimicking Edge
- * (the `Edg/<major>` token) puts us back on the supported-browser path.
- *
- * Exported for unit tests; runtime code calls it indirectly via
- * `applyPersistentBrowserUserAgent`.
- */
-export function buildPersistentBrowserUserAgent(input?: {
-  chromiumVersion?: string;
-  platform?: NodeJS.Platform;
-}): string {
-  const chromium = input?.chromiumVersion ?? process.versions.chrome ?? "136.0.0.0";
-  const major = chromium.split(".")[0] || "136";
-  const platform = input?.platform ?? process.platform;
-  const platformToken =
-    platform === "darwin"
-      ? "Macintosh; Intel Mac OS X 10_15_7"
-      : platform === "win32"
-        ? "Windows NT 10.0; Win64; x64"
-        : "X11; Linux x86_64";
-  return (
-    `Mozilla/5.0 (${platformToken}) AppleWebKit/537.36 (KHTML, like Gecko) ` +
-    `Chrome/${major}.0.0.0 Safari/537.36 Edg/${major}.0.0.0`
-  );
 }
 
 /**

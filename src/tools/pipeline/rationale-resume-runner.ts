@@ -1,4 +1,4 @@
-import { canonicalStringify } from "../../permissions/user-approval-store.js";
+import { canonicalJsonEqual } from "../../shared/canonical-json.js";
 import type { PermissionEvaluationContext } from "../../permissions/evaluation-context.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import type { SandboxCapability } from "../../permissions/sandbox-capability.js";
@@ -89,10 +89,6 @@ export type RationaleResumeResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly reason: string };
 
-function equal(left: unknown, right: unknown): boolean {
-  return canonicalStringify(left) === canonicalStringify(right);
-}
-
 function mismatch(reason: string): RationaleResumeResult<never> {
   return { ok: false, reason };
 }
@@ -129,7 +125,7 @@ function actionMatchesCurrentProbe(
     : [RATIONALE_UNKNOWN_SCOPE_SENTINEL];
   const sealed = probe.request.control.action;
   return verifyActionIdentity(action) &&
-    equal(action, sealed) &&
+    canonicalJsonEqual(action, sealed) &&
     action.anchorId === probe.request.control.anchor.anchorId &&
     action.toolName === probe.toolName &&
     action.toolVersion === probe.toolVersion &&
@@ -140,9 +136,9 @@ function actionMatchesCurrentProbe(
     action.workerId === probe.workerId &&
     action.invocationTrustOrigin === probe.invocationTrustOrigin &&
     action.approvalCacheKey === probe.approvalCacheKey &&
-    equal(action.canonicalTargets, expectedTargets) &&
-    equal(action.sandboxExecutionPlan, probe.sandboxExecutionPlan) &&
-    equal(probe.request.control.sealedAction.finalInput, probe.finalInput);
+    canonicalJsonEqual(action.canonicalTargets, expectedTargets) &&
+    canonicalJsonEqual(action.sandboxExecutionPlan, probe.sandboxExecutionPlan) &&
+    canonicalJsonEqual(probe.request.control.sealedAction.finalInput, probe.finalInput);
 }
 
 export async function prepareRationaleResume(
@@ -166,7 +162,7 @@ export async function prepareRationaleResume(
     })) {
       return mismatch("rationale resume control is expired or eligibility context changed");
     }
-    if (!equal(request.control.sealedAction.finalInput, probe.finalInput)) {
+    if (!canonicalJsonEqual(request.control.sealedAction.finalInput, probe.finalInput)) {
       return mismatch("rationale resume post-hook input changed");
     }
     const eligibility = {
@@ -180,7 +176,7 @@ export async function prepareRationaleResume(
       now,
     };
     if (!isRationaleEligible(eligibility) ||
-        !equal(eligibility.permission.reviewer.verdict, request.control.initialVerdict)) {
+        !canonicalJsonEqual(eligibility.permission.reviewer.verdict, request.control.initialVerdict)) {
       return mismatch("rationale resume permission/reviewer decision is no longer the same eligible ask");
     }
     const identityProbe: RationaleResumeIdentityProbe = { request, ...probe };

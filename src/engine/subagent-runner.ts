@@ -1748,6 +1748,15 @@ export class SubAgentRunner {
 
   private readonly activeChildren = new Map<string, ActiveSubAgentChild>();
 
+  /**
+   * The conversation that spawned a running child, while it runs — the
+   * session whose scope the child inherits (terminal_read reads the parent's
+   * window). Undefined for a session that is not a live child.
+   */
+  liveOriginSessionId(childSessionId: string): string | undefined {
+    return this.activeChildren.get(childSessionId)?.originSessionId;
+  }
+
   isSubAgentOriginActive(originSessionId: string): boolean {
     if (!originSessionId) return false;
     if ([...this.activeChildren.values()].some((child) =>

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/UnifiedSearchPanel.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/UnifiedSearchPanel.tsx.
 export const en = {
   "unifiedSearchPanel.executionLlmSession": "LLM Session",
   "unifiedSearchPanel.executionNotification": "Notification",

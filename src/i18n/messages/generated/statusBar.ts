@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/StatusBar.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/StatusBar.tsx.
 export const en = {
   "statusBar.toastDetailsAction": "Learn more",
   "statusBar.toastDismissAriaLabel": "Dismiss notification",

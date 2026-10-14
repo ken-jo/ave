@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/ChatView.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/ChatView.tsx.
 export const en = {
   "chatView.askAnswerSkippedLabel": "↳ Question skipped",
   "chatView.askAnswerSkippedProceed": "Proceeding with defaults",
