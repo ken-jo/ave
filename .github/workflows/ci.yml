@@ -301,6 +301,7 @@ jobs:
       # under RUNNER_TEMP, which the runner empties around every job, instead
       # of the owner's profile and %LOCALAPPDATA%\Temp.
       - name: Isolate home and temp directories in the runner temp
+        if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
         run: node ave/.github/scripts/isolate-job-home.mjs
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -467,6 +468,7 @@ jobs:
       # runner empties around every job, instead of the owner's home, its
       # ~/.ave and ~/Library, and the per-user /var/folders temp directory.
       - name: Isolate home and temp directories in the runner temp
+        if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
         run: node ave/.github/scripts/isolate-job-home.mjs
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

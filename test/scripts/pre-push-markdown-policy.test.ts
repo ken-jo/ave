@@ -258,10 +258,20 @@ describe("documentation impact policy", () => {
       expect(job).toBeDefined();
       const steps = job!.split(/^      - /m).slice(1);
       expect(steps[0]).toContain("fetch-depth: 0");
-      expect(steps[1]).toContain("id: docs-impact");
-      expect(steps[1]).toContain('node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA"');
-      expect(steps[1]).toContain("echo 'docs_only=false' >> \"$GITHUB_OUTPUT\"");
-      for (const step of steps.slice(2)) {
+      const classify = steps.findIndex((step) => step.includes("id: docs-impact"));
+      expect(classify).toBeGreaterThan(0);
+      // Before the classifier only runner preflight may run: the Node it runs
+      // on (self-hosted runners have no toolcache) and the runner-variable
+      // check. Neither can turn a required check green on its own.
+      for (const step of steps.slice(1, classify)) {
+        expect(
+          step.startsWith("uses: actions/setup-node@") || step.startsWith("name: Require the runner variable"),
+          step.split("\n")[0],
+        ).toBe(true);
+      }
+      expect(steps[classify]).toContain('node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA"');
+      expect(steps[classify]).toContain("echo 'docs_only=false' >> \"$GITHUB_OUTPUT\"");
+      for (const step of steps.slice(classify + 1)) {
         if (step.startsWith("name: Check documentation diff")) {
           expect(step).toContain("if: steps.docs-impact.outputs.docs_only == 'true'");
           expect(step).toContain("git diff --check");
