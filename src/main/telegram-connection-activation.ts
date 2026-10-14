@@ -81,6 +81,26 @@ export function createUnroutableNotifier(
 }
 
 /**
+ * Tell the phone a pairing took.
+ *
+ * The ingress already called `onPaired` after a successful redemption, but
+ * nothing was bound to it: the owner typed the code into Telegram and got
+ * silence, which reads the same as a bot that never received it. The reference
+ * remote surfaces confirm a pairing on the paired device; this sends the one
+ * fixed host notice for it. It runs only after the durable store accepted the
+ * code, so its recipient is the paired owner by construction, and it is a
+ * named function for the same reason {@link createUnroutableNotifier} is.
+ * Delivery is best-effort: the sender swallows a provider failure.
+ */
+export function createPairedNotifier(
+  controlReplies: Pick<TelegramControlReplySender, "notify">,
+): (senderId: string) => Promise<void> {
+  return async (senderId) => {
+    await controlReplies.notify(senderId, "paired");
+  };
+}
+
+/**
  * Name this machine's actor key to the durable store, and let it retire a
  * pairing that key can no longer derive.
  *
@@ -172,6 +192,7 @@ export async function startTelegramConnectionActivation(
       return actorDigest !== null && store.activePairingActorDigest() === actorDigest;
     },
     notifyUnroutable: createUnroutableNotifier(controlReplies),
+    onPaired: createPairedNotifier(controlReplies),
     ...(options.approvalGate ? { approvalGate: options.approvalGate } : {}),
     onFatal: async (code) => {
       // Best-effort, and deliberately not allowed to skip the teardown below.
