@@ -143,7 +143,7 @@ describe("the vendored validator bundles", () => {
   });
 
   it("validates a hello-world plugin under plain node, with only the report on stdout", () => {
-    const result = runBundle(helloWorld("hello-world", "0.13.0"));
+    const result = runBundle(helloWorld("hello-world", "0.14.0"));
     expect(result.status).toBe(0);
     const rows = reportRows(result.stdout);
     expect(rows.find((row) => row.check === "tools.call:hello_world")?.ok).toBe(true);
