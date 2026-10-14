@@ -45,9 +45,9 @@
  */
 import { execFileSync } from "node:child_process";
 import { closeSync, fstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../permissions/sensitive-paths.js";
+import { expandLeadingTilde } from "../shared/home-tilde.js";
 
 interface ProjectAgentsMdLayer {
   /** Path of the instruction file relative to the repository root. */
@@ -206,9 +206,9 @@ function hasGitEntry(dir: string): boolean {
   }
 }
 
-/** The home directory as the filesystem resolves it, when it exists. */
+/** The home directory `~` names, as the filesystem resolves it, when it exists. */
 function canonicalHome(): string | null {
-  return canonical(homedir());
+  return canonical(expandLeadingTilde("~"));
 }
 
 /**
