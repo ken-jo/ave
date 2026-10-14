@@ -138,8 +138,26 @@ export async function setupWorkflowStores(
     },
     networkFetch,
     singleHopNetworkFetch,
-    // The workspace terminal exists only in the desktop host.
-    terminalRead: ctx.host.desktop !== undefined,
+    // The workspace terminal exists only in the desktop host. Every
+    // interactive loop — the primary chat, each chat tile and the side chat —
+    // is shown in the one app window (getAppWindows), so a session one of them
+    // holds is hosted there; routine and work-board loops are not, and get no
+    // terminals. Read at call time: the loops are wired after this step.
+    ...(ctx.host.desktop !== undefined
+      ? {
+        terminalRead: {
+          windowIdForHostedSession: (sessionId: string): number | null => {
+            const hosted = ctx.findLoopBySessionId(sessionId) !== undefined
+              || ctx.sideChatConversationLoop.getSessionId() === sessionId;
+            if (!hosted) return null;
+            const window = getMainWindow();
+            return window && !window.isDestroyed() ? window.id : null;
+          },
+          liveOriginSessionId: (sessionId: string): string | undefined =>
+            subAgentRunnerRef.fn?.liveOriginSessionId(sessionId),
+        },
+      }
+      : {}),
     getStudioMcpConfigs: () => ctx.mcpManager ? ctx.mcpManager.getConfigs() : Promise.resolve([]),
     getStudioConnectorSummary: (serverId: string) => {
       if (!ctx.mcpManager) throw new Error("Connector manager is unavailable");

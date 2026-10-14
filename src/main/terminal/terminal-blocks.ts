@@ -556,11 +556,25 @@ function summarize(block: TerminalBlock): TerminalBlockSummary {
 
 // ─── Registry: one tracker per terminal tab ─────────────────────────────────
 
-const trackers = new Map<string, TerminalBlockTracker>();
+interface RegisteredTracker {
+  tracker: TerminalBlockTracker;
+  /**
+   * The app window whose renderer spawned the terminal (Electron
+   * BrowserWindow id), or null when it could not be told. terminal_read
+   * shows a session only the terminals of the window that hosts it.
+   */
+  ownerWindowId: number | null;
+}
+
+const trackers = new Map<string, RegisteredTracker>();
 
 /** Install the tracker for a newly spawned PTY, replacing any previous one. */
-export function registerTerminalBlockTracker(tabId: string, tracker: TerminalBlockTracker): void {
-  trackers.set(tabId, tracker);
+export function registerTerminalBlockTracker(
+  tabId: string,
+  tracker: TerminalBlockTracker,
+  ownerWindowId: number | null,
+): void {
+  trackers.set(tabId, { tracker, ownerWindowId });
 }
 
 /** Drop a tab's blocks (tab closed). */
@@ -569,12 +583,20 @@ export function unregisterTerminalBlockTracker(tabId: string): void {
 }
 
 export function getTerminalBlockTracker(tabId: string): TerminalBlockTracker | undefined {
-  return trackers.get(tabId);
+  return trackers.get(tabId)?.tracker;
 }
 
-/** Every terminal tab that has a tracker, in creation order. */
-export function listTerminalBlockTabs(): Array<{ tabId: string; tracker: TerminalBlockTracker }> {
-  return [...trackers.entries()].map(([tabId, tracker]) => ({ tabId, tracker }));
+/** One window's tracker for `tabId`, or undefined when the tab is another window's. */
+export function getWindowTerminalBlockTracker(tabId: string, windowId: number): TerminalBlockTracker | undefined {
+  const entry = trackers.get(tabId);
+  return entry && entry.ownerWindowId === windowId ? entry.tracker : undefined;
+}
+
+/** The terminal tabs of one window that have a tracker, in creation order. */
+export function listTerminalBlockTabs(windowId: number): Array<{ tabId: string; tracker: TerminalBlockTracker }> {
+  return [...trackers.entries()]
+    .filter(([, entry]) => entry.ownerWindowId === windowId)
+    .map(([tabId, entry]) => ({ tabId, tracker: entry.tracker }));
 }
 
 /** Test-only: clear the registry. */

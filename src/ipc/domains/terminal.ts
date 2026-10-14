@@ -22,7 +22,7 @@
  *
  * Error contract (project CLAUDE.md): kebab-case English `reason` / `error`.
  */
-import { ipcMain } from "electron";
+import { BrowserWindow, ipcMain } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { fanOutToAllWindows } from "../window-fanout.js";
@@ -74,8 +74,10 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       if (!tabId) {
         return { ok: false, reason: "bad-request", message: "tabId must be a non-empty string" };
       }
+      const owner = BrowserWindow.fromWebContents(e.sender);
       return spawnTerminal({
         tabId,
+        ownerWindowId: owner && !owner.isDestroyed() ? owner.id : null,
         ...(typeof payload?.cwd === "string" ? { cwd: payload.cwd } : {}),
         ...(typeof payload?.cols === "number" ? { cols: payload.cols } : {}),
         ...(typeof payload?.rows === "number" ? { rows: payload.rows } : {}),

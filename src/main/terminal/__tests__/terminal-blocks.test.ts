@@ -7,6 +7,7 @@ import {
   TerminalBlockTracker,
   decodePercentEncoded,
   getTerminalBlockTracker,
+  getWindowTerminalBlockTracker,
   listTerminalBlockTabs,
   registerTerminalBlockTracker,
   unregisterTerminalBlockTracker,
@@ -334,15 +335,29 @@ describe("terminal block registry", () => {
     __resetTerminalBlocksForTest();
     const first = new TerminalBlockTracker({ nonce: NONCE });
     const second = new TerminalBlockTracker({ nonce: NONCE });
-    registerTerminalBlockTracker("terminal:1", first);
-    registerTerminalBlockTracker("terminal:2", second);
-    expect(listTerminalBlockTabs().map((entry) => entry.tabId)).toEqual(["terminal:1", "terminal:2"]);
+    registerTerminalBlockTracker("terminal:1", first, 1);
+    registerTerminalBlockTracker("terminal:2", second, 1);
+    expect(listTerminalBlockTabs(1).map((entry) => entry.tabId)).toEqual(["terminal:1", "terminal:2"]);
     const replacement = new TerminalBlockTracker({ nonce: NONCE });
-    registerTerminalBlockTracker("terminal:1", replacement);
+    registerTerminalBlockTracker("terminal:1", replacement, 1);
     expect(getTerminalBlockTracker("terminal:1")).toBe(replacement);
     unregisterTerminalBlockTracker("terminal:1");
     expect(getTerminalBlockTracker("terminal:1")).toBeUndefined();
     __resetTerminalBlocksForTest();
-    expect(listTerminalBlockTabs()).toEqual([]);
+    expect(listTerminalBlockTabs(1)).toEqual([]);
+  });
+
+  it("scopes listing and lookup to the window that owns the terminal", () => {
+    __resetTerminalBlocksForTest();
+    const mine = new TerminalBlockTracker({ nonce: NONCE });
+    registerTerminalBlockTracker("terminal:1", mine, 1);
+    registerTerminalBlockTracker("terminal:2", new TerminalBlockTracker({ nonce: NONCE }), 2);
+    registerTerminalBlockTracker("terminal:3", new TerminalBlockTracker({ nonce: NONCE }), null);
+    expect(listTerminalBlockTabs(1).map((entry) => entry.tabId)).toEqual(["terminal:1"]);
+    expect(listTerminalBlockTabs(2).map((entry) => entry.tabId)).toEqual(["terminal:2"]);
+    expect(getWindowTerminalBlockTracker("terminal:1", 1)).toBe(mine);
+    expect(getWindowTerminalBlockTracker("terminal:1", 2)).toBeUndefined();
+    expect(getWindowTerminalBlockTracker("terminal:3", 1)).toBeUndefined();
+    __resetTerminalBlocksForTest();
   });
 });

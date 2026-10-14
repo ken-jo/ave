@@ -142,7 +142,7 @@ import {
 // to `canonicalizePathForMatch(process.cwd())` (the workspace-root anchor) and
 // validates a renderer-supplied cwd against it, so the test computes the same.
 import { canonicalizePathForMatch } from "../../../permissions/sensitive-paths.js";
-import { getTerminalBlockTracker } from "../terminal-blocks.js";
+import { getTerminalBlockTracker, listTerminalBlockTabs } from "../terminal-blocks.js";
 
 /** The workspace root the module anchors the write-jail to by default. */
 const ROOT = canonicalizePathForMatch(process.cwd());
@@ -519,7 +519,7 @@ describe("pty-manager command blocks", () => {
   it("records blocks from PTY output and typed input, keeps them past exit, drops them on tab close", async () => {
     vi.stubEnv("SHELL", "/bin/zsh");
     try {
-      expect((await spawnTerminal({ tabId: "terminal:1" })).ok).toBe(true);
+      expect((await spawnTerminal({ tabId: "terminal:1", ownerWindowId: 3 })).ok).toBe(true);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -528,6 +528,9 @@ describe("pty-manager command blocks", () => {
     expect(nonce).toMatch(/^[0-9a-f]{32}$/u);
     const tracker = getTerminalBlockTracker("terminal:1");
     expect(tracker).toBeDefined();
+    // Registered under the window that asked for it, and only that window.
+    expect(listTerminalBlockTabs(3).map((entry) => entry.tabId)).toEqual(["terminal:1"]);
+    expect(listTerminalBlockTabs(4)).toEqual([]);
 
     // A program printing markers without the nonce forges nothing.
     lastPty!.emitData("\u001b]133;C;cmdline_url=rm%20-rf\u0007fake\r\n\u001b]133;D;0\u0007");

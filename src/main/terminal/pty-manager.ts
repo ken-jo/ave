@@ -82,6 +82,11 @@ export interface SpawnTerminalOptions {
   readonly cwd?: string;
   readonly cols?: number;
   readonly rows?: number;
+  /**
+   * The app window whose renderer asked for the terminal. Its blocks are
+   * visible to terminal_read only from sessions that window hosts.
+   */
+  readonly ownerWindowId?: number | null;
 }
 
 export type SpawnTerminalResult =
@@ -462,7 +467,7 @@ async function spawnNewTerminal(
     session.disposeExit = () => exitSub.dispose();
 
     sessions.set(tabId, session);
-    registerTerminalBlockTracker(tabId, session.blocks);
+    registerTerminalBlockTracker(tabId, session.blocks, options.ownerWindowId ?? null);
     log.info({ tabId, cwd, cols, rows, pid: pty.pid }, "terminal: spawned sandboxed PTY");
     return { ok: true, tabId, replayed: false };
   } catch (err) {
