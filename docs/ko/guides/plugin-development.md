@@ -10,8 +10,8 @@
 > `_meta.ui.visibility` (`["model"]`/`["app"]`/`["model","app"]`), filesystem path 판정은
 > `_meta["ave/pathFields"]` 로 선언하며, per-tool category 는 manifest 필드가 아니라
 > host 가 invocation 별로 분류한다. (pre-v6 의 `tools: string[]` + `toolSchemas` map +
-> `uiActions` map triple 은 이 하나로 통합·제거됐다 — legacy.) 설계 배경은
-> [`plugin-contract-v6-design.md`](../../architecture/plugin-contract-v6-design.md).
+> `uiActions` map triple 은 이 하나로 통합·제거됐다 — legacy.) 설계 배경(`plugin-contract-v6-design.md`)은
+> git 기록에 보존되어 있다.
 
 > **상태**: v6 반영 (tool 계약 #885 Phase R)
 > **대상**: Ave 플러그인 개발자
@@ -32,8 +32,8 @@
 7. [app-visibility 보안 경계](#app-visibility-보안-경계)
 8. [capabilities 체계](#capabilities-체계)
 9. [이벤트 구독 및 OS 알림](#이벤트-구독-및-os-알림)
-10. [서명 및 배포 (ed25519)](#서명-및-배포-ed25519)
-11. [레이트 리밋·예산](#레이트-리밋예산)
+10. [마켓플레이스 배포 및 무결성](#마켓플레이스-배포-및-무결성)
+11. [레이트 리밋 · 예산](#레이트-리밋--예산)
 12. [IPC/RPC 경계](#ipcrpc-경계)
 13. [UI 확장](#ui-확장)
 14. [빌드 설정](#빌드-설정)

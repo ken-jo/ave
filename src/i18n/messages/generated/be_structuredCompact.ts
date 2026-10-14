@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/engine/structured-compact.ts. Do not edit by hand.
+// i18n fragment. Source: src/engine/structured-compact.ts.
 export const en = {
   "be_structuredCompact.summaryTemplatePrompt": `You are a conversation state manager. Summarize the conversation below into the following 12 sections.
 

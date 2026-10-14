@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/main/session-goal-revival.ts. Do not edit by hand.
+// i18n fragment. Source: src/main/session-goal-revival.ts.
 export const en = {
   "be_sessionGoalRevival.input": "The session goal is still open, so this session woke itself to keep working on it. " +
     "This is revival round {round} of {ceiling}.\n\nGoal: {goal}\n\n" +

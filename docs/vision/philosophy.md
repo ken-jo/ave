@@ -1,40 +1,36 @@
 # Philosophy
 
-Status: Active English default. The Korean archive keeps earlier review history and original discussion, but this page must be usable on its own.
+Status: Active. The goals themselves are stated once, in [Vision](./README.md).
+This page records the principles Ave follows while pursuing them.
 
-Korean archive: [docs/ko mirror](../ko/vision/philosophy.md).
+Korean mirror: [docs/ko/vision/philosophy.md](../ko/vision/philosophy.md).
 
-## What This Page Owns
+## Principles
 
-This page owns the desktop-agent philosophy: local context, explicit permission, project-aware work, auditability, and interruption. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
+- **Side by side, not behind a wall.** The agent works in surfaces the user can
+  see. It already works in the same files; working in the same browser tabs and
+  the same terminal as the user is a goal, not yet shipped
+  ([where Ave is today](./README.md#where-ave-is-today)). The user can watch,
+  interrupt, and take over at any point, and the agent can pick up where the
+  user left off.
+- **One place, shared context.** Chat, browser, terminal, files, plugins, and
+  remote sessions share one project context, so nothing has to be re-explained
+  when work moves between surfaces.
+- **Your models, your computer.** The user chooses the model provider. State
+  lives on the user's machine under `~/.ave/`, and the user can inspect, back
+  up, or clear it.
+- **Extensible through contracts.** Plugins, MCP servers, and skills plug in
+  through published contracts (`src/plugins/types.ts`, manifests, HostApi). The
+  host has no plugin-specific branches.
+- **Usable first, safe throughout.** Approvals appear where an action matters
+  and stay quiet where it does not. Sandboxing and audit work in the background
+  so daily use stays comfortable
+  ([permission policy](../architecture/permission-policy-design.md)).
+- **Honest status.** The app shows what the agent is doing, what it changed, and
+  why something failed, instead of hiding failures behind defaults.
 
-## Current Operating Contract
+## Related
 
-- English is the default review and contributor language for this app surface.
-- The document must name the behavior that still matters today, the code or test locations that enforce it, and the conditions that make the note stale.
-- Source files and tests are authoritative when this prose and implementation disagree.
-- Korean-only material stays in the mirrored archive unless it is translated or summarized here.
-
-## Implementation Anchors
-
-- `docs/architecture/README.md`
-- `src/engine/`
-- `src/memory/`
-- `src/permissions/`
-
-## Update Checklist
-
-- State whether the document is active, implemented, superseded, or historical before adding new detail.
-- Keep links relative to the current file depth; mirrored files under `docs/ko` need different paths from default docs.
-- Add or update tests when a documented behavior is enforced by code.
-- Remove template language and stale plan wording instead of carrying it forward.
-
-## Related Entry Points
-
-- [Ave Project Documentation](../README.md)
 - [Vision](./README.md)
-- [Getting Started](../guides/getting-started.md)
-
-## Review Notes
-
-This English page should let a reviewer understand scope, risk, and validation without opening the Korean archive. If the archive contains rationale that still matters, translate the relevant part into this page and keep the archive link as provenance.
+- [Architecture](../architecture/README.md)
+- [Ave Project Documentation](../README.md)

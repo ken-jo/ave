@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/tools/mcp-resource-tools.ts. Do not edit by hand.
+// i18n fragment. Source: src/tools/mcp-resource-tools.ts.
 export const en = {
   "be_mcpResourceTools.listDescription":
     "Lists the resources connected MCP servers have declared — documents, schemas, records they expose by URI. " +

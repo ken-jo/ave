@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/AskUserQuestionCard.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/AskUserQuestionCard.tsx.
 export const en = {
   "askUserQuestionCard.noAnswer": "(no answer)",
   "askUserQuestionCard.reviewStep": "Review",

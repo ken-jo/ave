@@ -1,6 +1,6 @@
 # Hook Runtime Expansion — Design
 
-> Status: **milestone-1 + milestone-2 IMPLEMENTED on `dev`** (2026-06-06) · Issue: [#811](https://github.com/former_org/ave/issues/811)
+> Status: **milestone-1 + milestone-2 IMPLEMENTED on `dev`** (2026-06-06) · Issue: #811 (previous tracker)
 > DONE + cluster-reviewed: command hooks (declarative `hooks.json` via TOFU trust),
 > the `mcp_*` tool matcher, per-request MCP identity in hook stdin, and ALL §5
 > lifecycle events — 6 non-blocking observe-only (PostToolUseFailure, PermissionDenied,

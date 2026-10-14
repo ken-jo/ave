@@ -13,15 +13,24 @@
  *
  * i18n: process/diagnostic lines (spawn failure, exit) are written into the
  * xterm BUFFER as terminal content — the same channel a real shell prints
- * "[Process completed]" on — not into localized app chrome, so this component
- * adds no i18n catalog keys.
+ * "[Process completed]" on — not into localized app chrome. The block strip
+ * above the terminal (TerminalBlocksBar) carries its own catalog keys.
+ *
+ * BLOCKS: the main process records each command as a block. This view only
+ * tells the strip when to re-list: xterm's own parser reports every OSC 133
+ * marker (so a marker split across output chunks is still seen once), and an
+ * Enter keystroke covers shells that send no markers.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { AveApi } from "../types.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
+import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
+
+/** Delay before re-listing blocks after an Enter, so the shell has echoed. */
+const ENTER_RELIST_DELAY_MS = 150;
 
 /** Dim-yellow ANSI wrapper for host-emitted diagnostic lines in the buffer. */
 function diagnostic(text: string): string {
@@ -44,8 +53,21 @@ function terminalTheme(host: HTMLElement): ITheme {
   };
 }
 
-export function PtyTerminalView({ api, tabId }: { api: AveApi; tabId: string }) {
+export function PtyTerminalView({
+  api,
+  tabId,
+  tabLabel,
+  onAttachText,
+}: {
+  api: AveApi;
+  tabId: string;
+  /** The tab's visible name ("Terminal 2"), used when a block is attached. */
+  tabLabel: string;
+  /** Hand a block's text to the chat composer; false when it is full. */
+  onAttachText?: (text: string) => boolean;
+}) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const [blockRevision, setBlockRevision] = useState(0);
   const termRef = useRef<Terminal | null>(null);
   // Changes after the applied theme's values were written to :root — another
   // theme or the same one updated in place.
@@ -84,9 +106,28 @@ export function PtyTerminalView({ api, tabId }: { api: AveApi; tabId: string }) 
 
     const { cols, rows } = safeFit();
 
+    const bumpBlocks = (): void => {
+      if (!disposed) setBlockRevision((value) => value + 1);
+    };
+    // OSC 133 A (prompt) and D (command finished) end a block; C starts one.
+    // Returning false leaves the sequence to xterm's default handling.
+    const markerSub = term.parser.registerOscHandler(133, (data) => {
+      const marker = data.charAt(0);
+      if (marker === "A" || marker === "C" || marker === "D") bumpBlocks();
+      return false;
+    });
+    let enterTimer: ReturnType<typeof setTimeout> | null = null;
+
     // Forward keystrokes → PTY stdin.
     const inputSub = term.onData((data) => {
       void terminalApi.input(tabId, data);
+      if (data.includes("\r")) {
+        if (enterTimer !== null) clearTimeout(enterTimer);
+        enterTimer = setTimeout(() => {
+          enterTimer = null;
+          bumpBlocks();
+        }, ENTER_RELIST_DELAY_MS);
+      }
     });
 
     // Main → renderer output / exit.
@@ -97,6 +138,7 @@ export function PtyTerminalView({ api, tabId }: { api: AveApi; tabId: string }) 
     const offExit = terminalApi.onExit((payload) => {
       if (payload.tabId !== tabId) return;
       term.write(diagnostic(`[process exited: code ${payload.exitCode}]`));
+      bumpBlocks();
     });
 
     // Spawn (or replay). Fail-closed reasons surface as a buffer diagnostic.
@@ -122,6 +164,8 @@ export function PtyTerminalView({ api, tabId }: { api: AveApi; tabId: string }) 
     return () => {
       disposed = true;
       resizeObserver.disconnect();
+      if (enterTimer !== null) clearTimeout(enterTimer);
+      markerSub.dispose();
       inputSub.dispose();
       offData();
       offExit();
@@ -146,6 +190,15 @@ export function PtyTerminalView({ api, tabId }: { api: AveApi; tabId: string }) 
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
       data-testid="chat-side-panel-pty-terminal"
     >
+      {api.terminal ? (
+        <TerminalBlocksBar
+          terminalApi={api.terminal}
+          tabId={tabId}
+          tabLabel={tabLabel}
+          revision={blockRevision}
+          {...(onAttachText ? { onAttachText } : {})}
+        />
+      ) : null}
       <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" />
     </div>
   );

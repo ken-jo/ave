@@ -22,6 +22,7 @@ import type { GitRuntimeProgress, GitRuntimeResult } from "../../shared/git-runt
 import { aveHome } from "../../shared/ave-home.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
+import { broadcastToAppWindows } from "../window-fanout.js";
 
 type GitRuntimePort = Pick<GitRuntimeService, "status" | "install">;
 
@@ -32,10 +33,8 @@ type GitRuntimePort = Pick<GitRuntimeService, "status" | "install">;
  */
 export function gitRuntimeProgressSender(deps: IpcDeps, shutdown: AbortSignal): (progress: GitRuntimeProgress) => void {
   return whileRunning(shutdown)((progress: GitRuntimeProgress) => {
-    for (const window of deps.getAppWindows?.() ?? [deps.getMainWindow()]) {
-      // A failed step's message can quote a proxy or a download address: it crosses scrubbed, like every marketplace string (§18.8).
-      if (window && !window.isDestroyed()) window.webContents.send(CHANNELS.gitRuntime.progress, scrubMarketplaceStrings(progress));
-    }
+    // A failed step's message can quote a proxy or a download address: it crosses scrubbed, like every marketplace string (§18.8).
+    broadcastToAppWindows(deps, CHANNELS.gitRuntime.progress, scrubMarketplaceStrings(progress));
   });
 }
 

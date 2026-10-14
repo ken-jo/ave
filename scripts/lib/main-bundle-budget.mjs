@@ -56,10 +56,13 @@ export function isSafeMainBundleManifestPath(path) {
  * search, web and memory tools are registered with the tool registry at boot, so their
  * definitions sit in the initial graph; with them the measurement is entry 416_271,
  * initial 5_273_794, total 8_909_524, and the initial ceiling moves to 5_275_000.
+ * Joined with main's terminal blocks (terminal_read registers at boot too), the
+ * measurement is entry 415_595, initial 5_297_263, total 8_937_183, and the initial
+ * ceiling moves to 5_300_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_275_000,
+  initialBytes: 5_300_000,
   totalBytes: 11_050_000,
 });
 

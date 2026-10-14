@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/ToolApprovalContent.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/ToolApprovalContent.tsx.
 export const en = {
   "approvalAttribution.rowConversation": "Conversation",
   "approvalAttribution.unattributed": "No conversation (host request)",

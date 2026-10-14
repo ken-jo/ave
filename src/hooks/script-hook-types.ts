@@ -125,11 +125,12 @@ export type HookEvent = ScriptHookType | LifecycleHookEvent;
  */
 export type ScriptHookStdin = ToolHookStdin | LifecycleHookStdin;
 
-/** Tool-use stdin (PreToolUse / PostToolUse / PermissionRequest). */
-export interface ToolHookStdin {
-  hookType: ScriptHookType;
-  /** Closed-set event — equals `hookType` for the tool-use surface. */
-  event?: HookEvent;
+/**
+ * Inputs the manager needs to dispatch a hook. The caller (executor /
+ * approval-gate) is responsible for supplying the trustOrigin and
+ * sessionId — those flow from upstream context, not from the manager.
+ */
+export interface HookDispatchPayload {
   toolName: string;
   source: ToolSource;
   category: ToolCategory;
@@ -152,28 +153,30 @@ export interface ToolHookStdin {
   isError?: boolean;
 }
 
+/** Tool-use stdin (PreToolUse / PostToolUse / PermissionRequest): the dispatch payload plus the event envelope. */
+export interface ToolHookStdin extends HookDispatchPayload {
+  hookType: ScriptHookType;
+  /** Closed-set event — equals `hookType` for the tool-use surface. */
+  event?: HookEvent;
+}
+
 /**
- * Lifecycle stdin (#811 milestone-2, design §5). Session-centric: it carries the
- * `sessionId` envelope plus event-specific fields. `hookType` is set to the
- * lifecycle event itself (there is no pre/post/perm projection for lifecycle
- * events — they never run a `.sh` prefix), and `event` repeats it for the
- * closed-set surface. All payload fields are optional and event-specific so one
- * shape covers all six non-blocking events.
+ * Event-specific payload fields for a lifecycle dispatch (#811 milestone-2,
+ * design §5). The manager wraps these with the common `{ event, sessionId,
+ * trustOrigin }` envelope and DLP-redacts free-text fields before serialization.
+ * Every field is optional + event-specific so one shape covers all six
+ * non-blocking events.
  */
-export interface LifecycleHookStdin {
-  hookType: LifecycleHookEvent;
-  /** Closed-set event — equals `hookType` for the lifecycle surface. */
-  event: LifecycleHookEvent;
-  sessionId: string;
-  trustOrigin: HookTrustOrigin;
+export interface LifecycleEventPayload {
   /** PostToolUseFailure — the failing tool's name. */
   toolName?: string;
-  /** PostToolUseFailure — tool error message (DLP-redacted at the caller). */
+  /** PostToolUseFailure — tool error message (DLP-redacted before dispatch). */
   errorMessage?: string;
   /** PostToolUseFailure / Stop — wall-clock duration in ms. */
   durationMs?: number;
-  /** PermissionDenied — why + where the deny was finalized. */
-  denyReason?: { layer: number | undefined; source: string };
+  /** PermissionDenied — why + where the deny was finalized (reason restores
+   * forensic granularity beyond the coarse layer/source). */
+  denyReason?: { layer: number | undefined; source: string; reason?: string };
   /** SessionStart — non-secret session metadata (routine scope / persona). */
   sessionMeta?: Record<string, unknown>;
   /** Stop — terminal stop reason for the turn. */
@@ -190,18 +193,45 @@ export interface LifecycleHookStdin {
   /** PostCompact — token estimates before/after compaction. */
   tokensBefore?: number;
   tokensAfter?: number;
-  /**
-   * UserPromptSubmit (BLOCKING, fail-closed) — the user's prompt text, ALREADY
-   * DLP-redacted at the caller (§6.6) before serialization. A hook reads this to
-   * decide whether to `deny` (refuse the turn) or `allow`.
-   */
-  inputText?: string;
-  /** UserPromptSubmit — the chat input origin (e.g. user-keyboard, plugin-emitted). */
+  /** SubagentStart / SubagentStop — the child run id (agent_spawn spawnId). */
+  agentId?: string;
+  /** SubagentStart / SubagentStop — the child agent mode/persona. */
+  agentType?: string;
+  /** Notification — the message body shown to the user. */
+  message?: string;
+}
+
+/**
+ * Payload for the BLOCKING `UserPromptSubmit` dispatch (#811 milestone-2,
+ * design §5). `inputText` is the matcher subject AND is DLP-redacted by the
+ * manager before it reaches the hook (§6.6) — callers pass the raw prompt.
+ */
+export interface UserPromptSubmitPayload {
+  /** The user's prompt text. Matcher subject + DLP-redacted before dispatch. */
+  inputText: string;
+  /** Chat input origin (e.g. user-keyboard, plugin-emitted). */
   inputOrigin?: string;
-  /** UserPromptSubmit — the resolved route for this turn (`llm` | `skill`). */
+  /** Resolved route for this turn (`llm` | `skill`). */
   route?: string;
-  /** UserPromptSubmit — the Host input classification (`general` | `command`). */
+  /** Host input classification (`general` | `command`). */
   classification?: string;
+}
+
+/**
+ * Lifecycle stdin (#811 milestone-2, design §5). Session-centric: the
+ * `{ hookType, event, sessionId, trustOrigin }` envelope plus the dispatch
+ * payload of the event — {@link LifecycleEventPayload} for the observe-only
+ * events, {@link UserPromptSubmitPayload} for the blocking one. `hookType` is
+ * the lifecycle event itself (lifecycle events never run a `.sh` prefix), and
+ * `event` repeats it for the closed-set surface. Free-text fields arrive
+ * DLP-redacted (§6.6).
+ */
+export interface LifecycleHookStdin extends LifecycleEventPayload, Partial<UserPromptSubmitPayload> {
+  hookType: LifecycleHookEvent;
+  /** Closed-set event — equals `hookType` for the lifecycle surface. */
+  event: LifecycleHookEvent;
+  sessionId: string;
+  trustOrigin: HookTrustOrigin;
 }
 
 /**

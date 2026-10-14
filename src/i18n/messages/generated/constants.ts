@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/constants.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/constants.ts.
 export const en = {
   // SOURCE_BADGE
   "constants.sourceBadgeBuiltin": "Built-in",

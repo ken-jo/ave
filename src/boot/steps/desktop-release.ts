@@ -8,6 +8,7 @@
 import { resolve } from "node:path";
 import { app } from "electron";
 import { createAutoUpdater } from "../../main/auto-updater.js";
+import { getMainWindow, getMainWindows } from "../../main/app-state.js";
 import { startCrashReporter } from "../../main/crash-reporter.js";
 import { TelemetryService } from "../../main/telemetry.js";
 import { PluginTelemetryClient, relocateDeviceUuid } from "../../telemetry/client.js";
@@ -120,7 +121,9 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
     });
 
     const updater = createAutoUpdater({
-      mainWindow,
+      // Live, not the boot window: that one may be closed while others stay open.
+      getWindows: getMainWindows,
+      getDialogParent: getMainWindow,
       auditLogger: bootAuditLogger,
       isEnabled: () => settingsService.get("updates")?.autoCheckEnabled ?? true,
       getSkippedVersion: () => settingsService.get("updates")?.skippedVersion,

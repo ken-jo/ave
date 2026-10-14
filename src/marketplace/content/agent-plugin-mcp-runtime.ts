@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
+import { agentPluginDataDir } from "./agent-plugin-data.js";
 import { resolveRuntimeMcp } from "../../mcp/agent-plugin-mcp.js";
 import type { McpManager } from "../../mcp/mcp-manager.js";
 import { PluginMcpTrustStore, type PreparedPluginMcpProjection } from "../../mcp/plugin-mcp-projection.js";
@@ -133,8 +134,7 @@ export class AgentPluginMcpRuntime {
   }
 
   private async dataDir(name: string): Promise<string> {
-    if (!/^[a-z][a-z0-9-]*$/u.test(name)) throw new Error(`invalid agent plugin package name ${name}`);
-    return this.options.dataDirForPackage?.(name) ?? openFeatureNamespace("agent-plugin-data").childDir(name);
+    return agentPluginDataDir(name, this.options.dataDirForPackage);
   }
 
   private serialize<T>(work: () => Promise<T>): Promise<T> {

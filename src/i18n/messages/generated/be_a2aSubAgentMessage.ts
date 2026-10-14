@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/engine/a2a-subagent-message-codec.ts. Do not edit by hand.
+// i18n fragment. Source: src/engine/a2a-subagent-message-codec.ts.
 export const en = {
   "be_a2aSubAgentMessage.emptyBodyFallback":
     "This sub-agent report arrived with no content. Task state: {taskState}. "
