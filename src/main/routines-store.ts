@@ -35,6 +35,8 @@ export {
 } from "../shared/routines-types.js";
 
 import type {
+  InvalidRoutine,
+  RoutineListResult,
   RoutineRecord,
   RoutineScope,
   AddRoutineInput,
@@ -58,23 +60,6 @@ export const MAX_CRON_EXPR_LENGTH = 256;
 /** Minimum interval in ms (1 minute — prevents sub-minute polling spam). */
 export const MIN_INTERVAL_MS = 60_000;
 
-/**
- * A persisted routine names a plugin id the plugin contract rejects
- * (`isValidPluginId`). Raised while loading `routines.json` instead of
- * silently dropping the routine: the id was written by a build that accepted
- * a looser grammar, and the user must see which routine needs repair.
- */
-export class RoutinePluginIdError extends Error {
-  constructor(
-    readonly routineId: string,
-    readonly field: string,
-    readonly pluginId: string,
-  ) {
-    super(`routine ${routineId} names invalid plugin id ${JSON.stringify(pluginId)} in ${field}`);
-    this.name = "RoutinePluginIdError";
-  }
-}
-
 /** The plugin-id-bearing fields of one stored routine, by field path. */
 function storedRoutinePluginIds(record: Record<string, unknown>): Array<[string, unknown[]]> {
   const fields: Array<[string, unknown[]]> = [];
@@ -93,19 +78,24 @@ function storedRoutinePluginIds(record: Record<string, unknown>): Array<[string,
   return fields;
 }
 
-/** Fail the load on a stored plugin id the contract rejects; see {@link RoutinePluginIdError}. */
-function assertStoredRoutinePluginIds(record: unknown): void {
-  if (!record || typeof record !== "object") return;
+/**
+ * The first stored plugin id of `record` the plugin contract rejects, or
+ * null. Such a routine was written by a build with a looser grammar: it is
+ * held back (never run, never rewritten) and reported, not dropped, so one
+ * legacy record cannot hide the others or vanish from disk.
+ */
+function invalidStoredRoutine(record: unknown): StoredInvalidRoutine | null {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
   const routine = record as Record<string, unknown>;
   for (const [field, ids] of storedRoutinePluginIds(routine)) {
     for (const id of ids) {
       if (typeof id === "string" && !isValidPluginId(id)) {
-        throw new RoutinePluginIdError(String(routine.id), field, id);
+        return { id: String(routine.id), field, value: id, reason: "invalid-plugin-id", raw: record };
       }
     }
   }
+  return null;
 }
-
 /**
  * Validate a record loaded from disk. Rejects tampered / corrupted entries
  * so a single bad record cannot infect the scheduler tick.
@@ -175,9 +165,16 @@ function validateScheduleAt(at: string): { ok: true } | { ok: false; error: stri
   return { ok: true };
 }
 
+/** An invalid routine plus the exact stored value it is carried through writes with. */
+interface StoredInvalidRoutine extends InvalidRoutine {
+  readonly raw: unknown;
+}
+
 export interface RoutinesFile {
   version: 2;
   routines: RoutineRecord[];
+  /** Held-back records, written back unchanged after the valid ones. */
+  invalid: StoredInvalidRoutine[];
 }
 
 // Consolidated under ~/.ave/routine/ namespace (single directory for all
@@ -207,17 +204,23 @@ function isDirectoryAtOrBelow(rootKey: string, directory: string): boolean {
 }
 
 function emptyRoutinesFile(): RoutinesFile {
-  return { version: 2, routines: [] };
+  return { version: 2, routines: [], invalid: [] };
 }
 
 function readFileOrEmpty(filePath: string): Promise<RoutinesFile> {
   return readJsonFileOrEmpty(filePath, emptyRoutinesFile, (parsed) => {
     const file = parsed as RoutinesFile;
     if (!Array.isArray(file.routines)) return emptyRoutinesFile();
-    for (const record of file.routines) assertStoredRoutinePluginIds(record);
-    // Filter out tampered/corrupted or non-canonical records so a single bad
-    // entry cannot cause the scheduler tick to throw and stall all routines.
-    return { version: 2, routines: file.routines.filter(isCanonicalRecord) };
+    const routines: RoutineRecord[] = [];
+    const invalid: StoredInvalidRoutine[] = [];
+    for (const record of file.routines as unknown[]) {
+      const held = invalidStoredRoutine(record);
+      if (held) invalid.push(held);
+      // Filter out tampered/corrupted or non-canonical records so a single bad
+      // entry cannot cause the scheduler tick to throw and stall all routines.
+      else if (isCanonicalRecord(record)) routines.push(record);
+    }
+    return { version: 2, routines, invalid };
   });
 }
 
@@ -226,7 +229,8 @@ async function writeFileAtomic(filePath: string, data: RoutinesFile): Promise<vo
   // feature-namespace SOT helper. The injectable `filePath` (tests pass a
   // temp path) is preserved — the helper enforces the permission boundary on
   // whatever parent directory the path resolves to.
-  await writeFileAtomicAtPath(filePath, `${JSON.stringify(data, null, 2)}\n`);
+  const stored = { version: data.version, routines: [...data.routines, ...data.invalid.map((held) => held.raw)] };
+  await writeFileAtomicAtPath(filePath, `${JSON.stringify(stored, null, 2)}\n`);
 }
 
 /** Deep clone a RoutineRecord to prevent callers from mutating shared cache refs. */
@@ -257,6 +261,7 @@ function cloneRecord(r: RoutineRecord): RoutineRecord {
 
 export class RoutinesStore {
   private cache: RoutineRecord[] = [];
+  private invalidCache: StoredInvalidRoutine[] = [];
   private loaded = false;
   private readonly filePath: string;
 
@@ -267,6 +272,15 @@ export class RoutinesStore {
   async load(): Promise<void> {
     const file = await readFileOrEmpty(this.filePath);
     this.cache = file.routines;
+    this.invalidCache = file.invalid;
+    for (const held of file.invalid) {
+      log.warn(
+        "[routines-store] holding back routine %s: %s %s is not a valid plugin id",
+        held.id,
+        held.field,
+        JSON.stringify(held.value),
+      );
+    }
     this.loaded = true;
   }
 
@@ -278,6 +292,16 @@ export class RoutinesStore {
   /** Active routines = not dismissed. */
   listActive(): RoutineRecord[] {
     return this.cache.filter((r) => !r.dismissedAt).map(cloneRecord);
+  }
+
+  /** Stored routines held back because they name a plugin id the contract rejects. */
+  listInvalid(): InvalidRoutine[] {
+    return this.invalidCache.map(({ id, field, value, reason }) => ({ id, field, value, reason }));
+  }
+
+  /** What the routine list shows: the active routines and the invalid ones to repair. */
+  listForDisplay(): RoutineListResult {
+    return { routines: this.listActive(), invalid: this.listInvalid() };
   }
 
   async add(input: AddRoutineInput): Promise<RoutineRecord> {
@@ -435,6 +459,7 @@ export class RoutinesStore {
       file.routines.push(record);
       await writeFileAtomic(this.filePath, file);
       this.cache = file.routines;
+      this.invalidCache = file.invalid;
       return record;
     });
   }
@@ -446,11 +471,13 @@ export class RoutinesStore {
       const r = file.routines.find((x) => x.id === id);
       if (!r) {
         this.cache = file.routines;
+      this.invalidCache = file.invalid;
         return false;
       }
       r.dismissedAt = new Date().toISOString();
       await writeFileAtomic(this.filePath, file);
       this.cache = file.routines;
+      this.invalidCache = file.invalid;
       return true;
     });
   }
@@ -459,11 +486,13 @@ export class RoutinesStore {
     if (!this.loaded) await this.load();
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
-      const before = file.routines.length;
+      const before = file.routines.length + file.invalid.length;
       file.routines = file.routines.filter((r) => r.id !== id);
-      const removed = file.routines.length !== before;
+      file.invalid = file.invalid.filter((held) => held.id !== id);
+      const removed = file.routines.length + file.invalid.length !== before;
       await writeFileAtomic(this.filePath, file);
       this.cache = file.routines;
+      this.invalidCache = file.invalid;
       return removed;
     });
   }
@@ -514,6 +543,7 @@ export class RoutinesStore {
         await writeFileAtomic(this.filePath, file);
       }
       this.cache = file.routines;
+      this.invalidCache = file.invalid;
       return { routinesUpdated, directoriesRemoved };
     });
   }
@@ -533,6 +563,7 @@ export class RoutinesStore {
       const r = file.routines.find((x) => x.id === id);
       if (!r) {
         this.cache = file.routines;
+      this.invalidCache = file.invalid;
         return null;
       }
       if (patch.lastFiredMinuteUTC !== undefined) r.lastFiredMinuteUTC = patch.lastFiredMinuteUTC;
@@ -542,6 +573,7 @@ export class RoutinesStore {
       if (patch.dismissedAt !== undefined) r.dismissedAt = patch.dismissedAt;
       await writeFileAtomic(this.filePath, file);
       this.cache = file.routines;
+      this.invalidCache = file.invalid;
       return r;
     });
   }
@@ -558,6 +590,7 @@ export class RoutinesStore {
       const r = file.routines.find((x) => x.id === id);
       if (!r) {
         this.cache = file.routines;
+      this.invalidCache = file.invalid;
         return null;
       }
       const firedAt = new Date().toISOString();
@@ -576,6 +609,7 @@ export class RoutinesStore {
       // no need to advance `at` here.
       await writeFileAtomic(this.filePath, file);
       this.cache = file.routines;
+      this.invalidCache = file.invalid;
       return r;
     });
   }
@@ -594,6 +628,7 @@ export class RoutinesStore {
       advanceRepeatingSchedule(r, new Date().toISOString());
       if (JSON.stringify(r) !== previous) await writeFileAtomic(this.filePath, file);
       this.cache = file.routines;
+      this.invalidCache = file.invalid;
     });
   }
 }

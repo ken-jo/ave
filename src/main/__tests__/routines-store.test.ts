@@ -10,10 +10,10 @@
  */
 import { describe, it, expect } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
-import { readdirSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { platform } from "node:os";
-import { RoutinePluginIdError, RoutinesStore, MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES, MAX_CRON_EXPR_LENGTH, MAX_ROUTINE_SOURCE_LENGTH } from "../routines-store.js";
+import { RoutinesStore, MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES, MAX_CRON_EXPR_LENGTH, MAX_ROUTINE_SOURCE_LENGTH } from "../routines-store.js";
 import { futureIso, tempRoutinesStore } from "./routines-fixture.js";
 
 describe("RoutinesStore v2 — basic persistence", () => {
@@ -132,34 +132,52 @@ describe("RoutinesStore v2 — basic persistence", () => {
     }
   });
 
-  it("fails the load with RoutinePluginIdError for a stored plugin id the contract rejects", async () => {
+  it("holds back a stored routine whose plugin id the contract rejects while every valid routine loads", async () => {
     const { store, dir, cleanup } = tempRoutinesStore();
     try {
-      writeFileSync(
-        join(dir, "routines.json"),
-        JSON.stringify({
-          version: 2,
-          routines: [{
-            id: "legacy-scope",
-            trigger: "schedule",
-            execution: "notification-only",
-            notificationTitle: "legacy",
-            scope: {
-              pluginIds: { mode: "allow", ids: ["sample-plugin", "Legacy.Plugin"] },
-              forcedPluginIds: [],
-              directories: [],
-            },
-          }],
-        }),
-      );
+      const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
+      const legacy = {
+        id: "legacy-scope",
+        trigger: "schedule",
+        execution: "notification-only",
+        notificationTitle: "legacy",
+        scope: {
+          pluginIds: { mode: "allow", ids: ["sample-plugin", "Legacy.Plugin"] },
+          forcedPluginIds: [],
+          directories: [join(dir, "workspace", "a")],
+        },
+      };
+      const path = join(dir, "routines.json");
+      writeFileSync(path, `${JSON.stringify({ version: 2, routines: [good, legacy] }, null, 2)}\n`);
+      const legacyText = JSON.stringify({ version: 2, routines: [legacy] }, null, 2).split("\n").slice(3, -2).join("\n");
 
-      const failure = await store.load().then(() => null, (error: unknown) => error);
-      expect(failure).toBeInstanceOf(RoutinePluginIdError);
-      expect(failure).toMatchObject({
-        routineId: "legacy-scope",
+      await store.load();
+      expect(store.listActive().map((routine) => routine.id)).toEqual([good.id]);
+      expect(store.listInvalid()).toEqual([{
+        id: "legacy-scope",
         field: "scope.pluginIds.ids",
-        pluginId: "Legacy.Plugin",
+        value: "Legacy.Plugin",
+        reason: "invalid-plugin-id",
+      }]);
+      expect(store.listForDisplay()).toEqual({ routines: store.listActive(), invalid: store.listInvalid() });
+
+      // A write rewrites the valid records and carries the held-back one through unchanged.
+      await store.dismiss(good.id);
+      const afterWrite = JSON.parse(readFileSync(path, "utf8")) as { routines: unknown[] };
+      expect(afterWrite.routines).toContainEqual(legacy);
+      expect(readFileSync(path, "utf8")).toContain(legacyText);
+
+      // Workspace removal proceeds on valid records and leaves the held-back one untouched.
+      await expect(store.revokeWorkspaceRoot(join(dir, "workspace"))).resolves.toEqual({
+        routinesUpdated: 0,
+        directoriesRemoved: 0,
       });
+      expect((JSON.parse(readFileSync(path, "utf8")) as { routines: unknown[] }).routines).toContainEqual(legacy);
+
+      // The remove action deletes the held-back record.
+      await expect(store.remove("legacy-scope")).resolves.toBe(true);
+      expect(store.listInvalid()).toEqual([]);
+      expect((JSON.parse(readFileSync(path, "utf8")) as { routines: Array<{ id: string }> }).routines.map((r) => r.id)).toEqual([good.id]);
     } finally {
       await cleanup();
     }
@@ -935,7 +953,7 @@ describe("persisted missing-plugin status validation", () => {
     } finally { await cleanup(); }
   });
 
-  it("fails the load on a stored missing-plugin id the contract rejects instead of dropping the routine", async () => {
+  it("holds back a stored missing-plugin id the contract rejects instead of dropping the routine", async () => {
     const { store, dir, cleanup } = tempRoutinesStore();
     try {
       const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
@@ -944,12 +962,14 @@ describe("persisted missing-plugin status validation", () => {
         version: 2,
         routines: [good, { ...good, id: "bad", needsAttention: { missingPluginIds: ["../private"] } }],
       }));
-      await expect(store.load()).rejects.toMatchObject({
-        name: "RoutinePluginIdError",
-        routineId: "bad",
+      await store.load();
+      expect(store.listActive().map((routine) => routine.id)).toEqual([good.id]);
+      expect(store.listInvalid()).toEqual([{
+        id: "bad",
         field: "needsAttention.missingPluginIds",
-        pluginId: "../private",
-      });
+        value: "../private",
+        reason: "invalid-plugin-id",
+      }]);
     } finally { await cleanup(); }
   });
 });
