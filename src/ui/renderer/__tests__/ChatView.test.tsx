@@ -1202,6 +1202,40 @@ describe("ChatView", () => {
     await waitFor(() => expect(textarea().value).toBe("아직 보내지 않은 초안"));
   });
 
+  it("carries text typed into an empty conversation into the new chat that replaces it", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true });
+    const textarea = () => container.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea()).not.toBeNull());
+    fireEvent.change(textarea(), { target: { value: "프로젝트 고르기 전에 쓴 질문" } });
+
+    // A new chat (the composer's project selector starts one) gets a new session id.
+    vi.mocked(api.chatGetHistory).mockResolvedValue({ sessionId: "sess-replacing-empty", messages: [] });
+    await act(async () => {
+      fireEvent.click(container.querySelector('[data-testid="sidebar-new-chat"]')!);
+    });
+    await waitFor(() => expect(api.chatNew).toHaveBeenCalled());
+    await waitFor(() => expect(api.chatGetHistory).toHaveBeenCalled());
+    await act(async () => {});
+    expect(textarea().value).toBe("프로젝트 고르기 전에 쓴 질문");
+  });
+
+  it("parks text typed into a conversation with entries when a new chat starts", async () => {
+    const { container, api } = await renderApp({
+      hasApiKey: true,
+      history: { sessionId: MOCK_DEFAULT_SESSION_ID, messages: [{ index: 0, role: "user", content: "이전 대화" }] },
+    });
+    await waitFor(() => expect(container.textContent).toContain("이전 대화"));
+    const textarea = () => container.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement;
+    fireEvent.change(textarea(), { target: { value: "이전 대화용 초안" } });
+
+    vi.mocked(api.chatGetHistory).mockResolvedValue({ sessionId: "sess-after-nonempty", messages: [] });
+    await act(async () => {
+      fireEvent.click(container.querySelector('[data-testid="sidebar-new-chat"]')!);
+    });
+    await waitFor(() => expect(api.chatNew).toHaveBeenCalled());
+    await waitFor(() => expect(textarea().value).toBe(""));
+  });
+
   it("does not reconstruct sub-agent rows from loaded parent history", async () => {
     const now = new Date().toISOString();
     const { container } = await renderApp({
