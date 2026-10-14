@@ -53,6 +53,12 @@ export function ChatTranscript({
     wasStreamingRef.current = streaming;
   }, [streaming, t]);
   return (
+    <>
+    {/* Outside the log on purpose: a live region nested in another live
+        region is double-read or swallowed depending on the screen reader. */}
+    <div className="sr-only" role="status" data-testid="chat-transcript-status">
+      {completionNotice}
+    </div>
     <ScrollArea type="always" className="ave-chat-scroll h-full min-h-0 min-w-0 max-w-full" viewportRef={scrollViewportRef}><div
       className={`min-w-0 overflow-x-hidden space-y-4 py-5 ${readingColumnClass}`}
       role="log"
@@ -60,9 +66,6 @@ export function ChatTranscript({
       aria-busy={streaming}
       data-testid="chat-transcript-log"
     >
-      <div className="sr-only" role="status" data-testid="chat-transcript-status">
-        {completionNotice}
-      </div>
       {/* Workflow tools (S1+S2): skill badges + ask-user inline.
           SessionTasksPanel is intentionally NOT here — it sits above the input
           cluster (see below the ScrollArea) so it stays visible regardless of
@@ -92,5 +95,6 @@ export function ChatTranscript({
       {transcriptEntries}
       <div ref={chatEndRef} />
     </div></ScrollArea>
+    </>
   );
 }

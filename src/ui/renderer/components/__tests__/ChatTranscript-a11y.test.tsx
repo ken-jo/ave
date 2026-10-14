@@ -28,6 +28,8 @@ describe("ChatTranscript accessibility", () => {
     expect(log).toHaveAttribute("aria-label", t("chatView.transcriptLabel"));
     expect(log).toHaveAttribute("aria-busy", "false");
     expect(screen.getByTestId("chat-transcript-status").textContent).toBe("");
+    // Not nested in the log: nested live regions announce inconsistently.
+    expect(log.contains(screen.getByTestId("chat-transcript-status"))).toBe(false);
 
     rerender(<ChatTranscript {...props(true)} />);
     expect(log).toHaveAttribute("aria-busy", "true");
