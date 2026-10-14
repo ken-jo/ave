@@ -22,7 +22,7 @@ no compatibility shim outlives the switch.
 |---|---|---|
 | Location of the official marketplace repository (and optional mirrors) | Decided 2026-09-23: `ken-jo/agent-marketplace` (renamed from `ave-marketplace-index` on 2026-09-24), a monorepo that also holds the official plugins' source; must be publicly readable; the constant carries `auth: { kind: "none" }` (design §2.1, §3.1) | Phase 1 constant `OFFICIAL_MARKETPLACE`, phase 0 |
 | Working CI on the hosting account that builds plugin release assets | Repository migration plan | Phase 0 release pins |
-| Service domain default (`https://former-site.invalid` unless changed) | Owner | Phase 5 |
+| Service domain default (`https://ave.agent-connector.ai`, owner decision 2026-10-15) | Owner | Phase 5 |
 | Organizations that rely on today's managed installs have an internal marketplace and a policy file with `requiredInstalls` ready | Each organization | Phase 7 step 1 |
 
 ## 1. Phases at a glance

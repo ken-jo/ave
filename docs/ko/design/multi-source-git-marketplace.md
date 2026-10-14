@@ -1808,7 +1808,7 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 
 - `serviceBase` 결정 순서: 관리 정책 `service.baseUrl` → 현재 빌드 상수에 대해
   기록된 이전(아래) → 빌드 상수 `AVE_SERVICE_BASE_URL`(기본
-  `https://former-site.invalid`). 사용자 설정은 없습니다. base는 https 오리진입니다.
+  `https://ave.agent-connector.ai`). 사용자 설정은 없습니다. base는 https 오리진입니다.
   정책 섹션은 정확히(`{ "baseUrl": … }`) 읽고, 잘못되면 공개 base로 물러나지
   않고 서비스를 쓸 수 없는 상태(공지 없음, 텔레메트리 없음)가 됩니다. 패키징되지
   않은 빌드는 개발용 변수 `AVE_SERVICE_BASE_URL`로 스테이징 base를 지정할 수
@@ -2906,7 +2906,7 @@ Retry가 있는 `failed` 상태.
 > - 이 절은 설계 기록입니다. 소유자 결정, 이유, 밝혀 둔 잔여 위험, 전달 순서,
 >   되돌리면 실패해야 하는 테스트를 담습니다. 이 절과 앞 절이 다르면 앞 절이
 >   빌드를 설명합니다.
-> - 사용자 문서는 former-site.invalid의 마켓플레이스 페이지(`web/app/docs/marketplace/`)이고,
+> - 사용자 문서는 ave.agent-connector.ai의 마켓플레이스 페이지(`web/app/docs/marketplace/`)이고,
 >   목업([../../design/multi-source-git-marketplace.html](../../design/multi-source-git-marketplace.html))이
 >   §18.9의 상태를 보여 줍니다. 코드는 `e10c823e2` 기준으로 인용합니다. 이 절의 줄
 >   번호 인용은 그 커밋의 스냅숏이라 현재 코드와 다를 수 있고, 동작을 맡는

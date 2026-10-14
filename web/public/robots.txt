@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://former-site.invalid/sitemap.xml
+Sitemap: https://ave.agent-connector.ai/sitemap.xml

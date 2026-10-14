@@ -359,7 +359,7 @@ describe("auto-updater", () => {
     // Reactive safety net: a throwing quitAndInstall must not leave a dead
     // button — it opens the homepage guide and signals manual install.
     expect(result).toEqual({ ok: false, reason: "manual-install-required" });
-    expect(opened).toEqual(["https://former-site.invalid"]);
+    expect(opened).toEqual(["https://ave.agent-connector.ai"]);
     expect(isAppUpdateInstallRequested()).toBe(false);
   });
 
@@ -381,7 +381,7 @@ describe("auto-updater", () => {
     // is never attempted — open the guide and tell the renderer.
     expect(result).toEqual({ ok: false, reason: "manual-install-required" });
     expect(u.installs).toBe(0);
-    expect(opened).toEqual(["https://former-site.invalid"]);
+    expect(opened).toEqual(["https://ave.agent-connector.ai"]);
     expect(isAppUpdateInstallRequested()).toBe(false);
   });
 

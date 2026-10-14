@@ -14,7 +14,7 @@ const SHA256 = /^[0-9a-f]{64}$/u;
  * Ave site's origin and keep that `$id` byte for byte (RETIRED_COPIES); the
  * Ave site serves those files at the same paths.
  */
-export const HOST_PROTOCOL_SCHEMA_ORIGIN = "https://ave.agent-connector.ai";
+const HOST_PROTOCOL_SCHEMA_ORIGIN = "https://ave.agent-connector.ai";
 
 /** The `$id` of one recorded copy, given its path under the mirror root. */
 export function hostProtocolSchemaId(relative) {
