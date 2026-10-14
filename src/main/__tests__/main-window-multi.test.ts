@@ -79,7 +79,7 @@ vi.mock("../native-window-coordinator.js", () => ({ requestNativeChromeRefresh: 
 
 const appState = await import("../app-state.js");
 const { createWindow, getAppWindows, loadMainInterface, rendererIndexUrl } = await import("../main-window.js");
-const { openNewMainWindow } = await import("../app-tray.js");
+const { openNewMainWindow, showOrCreatePrimaryMainWindow } = await import("../app-tray.js");
 type FakeWindow = InstanceType<typeof electronMock.FakeBrowserWindow>;
 
 function open(): FakeWindow {
@@ -137,11 +137,11 @@ describe("main windows", () => {
     expect(electronMock.app.quit).toHaveBeenCalledOnce();
   });
 
-  it("a relaunch opens another window beside a visible one but brings back a hidden-only app", () => {
+  it("an explicit New Window opens another window beside a visible one but brings back a hidden-only app", () => {
     appState.setRendererReloadReady(true);
     try {
       const first = open();
-      openNewMainWindow("second-instance");
+      openNewMainWindow("tray-new-window");
       expect(getAppWindows()).toHaveLength(2);
 
       // Close the second (destroyed) and the first to the tray (hidden).
@@ -149,7 +149,32 @@ describe("main windows", () => {
       expect(first.close()).toBe(false);
       expect(first.isVisible()).toBe(false);
 
-      openNewMainWindow("second-instance");
+      openNewMainWindow("tray-new-window");
+      expect(getAppWindows()).toEqual([first]);
+      expect(first.isVisible()).toBe(true);
+    } finally {
+      appState.setRendererReloadReady(false);
+    }
+  });
+
+  it("a relaunch brings the primary window back instead of opening another", () => {
+    appState.setRendererReloadReady(true);
+    try {
+      const first = open();
+      const second = open();
+      // The secondary window is the one in use; a relaunch still surfaces the primary.
+      expect(appState.getMainWindow()).toBe(second);
+      for (const win of [first, second]) { win.show.mockClear(); win.focus.mockClear(); }
+      for (let i = 0; i < 5; i += 1) showOrCreatePrimaryMainWindow("second-instance");
+      expect(getAppWindows()).toEqual([first, second]);
+      expect(first.show).toHaveBeenCalled();
+      expect(first.focus).toHaveBeenCalled();
+      expect(second.focus).not.toHaveBeenCalled();
+
+      // Hidden to the tray, the primary is restored rather than replaced.
+      expect(second.close()).toBe(true);
+      expect(first.close()).toBe(false);
+      showOrCreatePrimaryMainWindow("second-instance");
       expect(getAppWindows()).toEqual([first]);
       expect(first.isVisible()).toBe(true);
     } finally {

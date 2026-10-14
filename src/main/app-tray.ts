@@ -8,7 +8,7 @@
 import { Menu, nativeImage, Tray } from "electron";
 import { t } from "../i18n/index.js";
 import { createAveTrayIcon } from "./tray-icon.js";
-import { getMainWindow, getMainWindows, getTray, isRendererReloadReady, setTray } from "./app-state.js";
+import { getMainWindow, getMainWindows, getPrimaryMainWindow, getTray, isRendererReloadReady, setTray } from "./app-state.js";
 import {
   createWindow,
   loadMainInterface,
@@ -18,7 +18,22 @@ import {
 import { createAlwaysOnTopMenuItem, createSettingsMenuItem, refreshApplicationMenu } from "./app-menu.js";
 
 export function showOrCreateMainWindow(reason: string): void {
-  const existing = getMainWindow();
+  surfaceOrCreateMainWindow(getMainWindow(), reason);
+}
+
+/**
+ * Launching the app again without a deep link (dock, taskbar, launcher): bring
+ * the primary window back — restored and focused — as a normal desktop app
+ * does, or open one if none exists. It never opens a window beside an
+ * existing one; only an explicit "New Window" action does
+ * ({@link openNewMainWindow}), so a local process relaunching the app cannot
+ * pile up windows.
+ */
+export function showOrCreatePrimaryMainWindow(reason: string): void {
+  surfaceOrCreateMainWindow(getPrimaryMainWindow() ?? getMainWindow(), reason);
+}
+
+function surfaceOrCreateMainWindow(existing: ReturnType<typeof getMainWindow>, reason: string): void {
   if (existing && !existing.isDestroyed()) {
     showMainWindow(existing);
     refreshApplicationMenu();
@@ -29,7 +44,7 @@ export function showOrCreateMainWindow(reason: string): void {
 }
 
 /**
- * Open one more main window ("New Window", a second launch of the app).
+ * Open one more main window — the explicit "New Window" action (menu, tray).
  *
  * Two cases surface an existing window instead: until bootstrap has registered
  * IPC there is no interface to load into a new one, and when every main

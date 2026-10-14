@@ -41,7 +41,7 @@ import {
   showMainWindow,
 } from "./main/main-window.js";
 import { refreshApplicationMenu } from "./main/app-menu.js";
-import { ensureTray, openNewMainWindow, refreshTrayMenu, showOrCreateMainWindow } from "./main/app-tray.js";
+import { ensureTray, openNewMainWindow, refreshTrayMenu, showOrCreateMainWindow, showOrCreatePrimaryMainWindow } from "./main/app-tray.js";
 import { configureNativeWindowCoordinator } from "./main/native-window-coordinator.js";
 import { readStartupLaunchState } from "./main/startup-launch.js";
 import { reconcileOsIntegrationOnBoot } from "./main/reconcile-os-integration.js";
@@ -664,8 +664,9 @@ if (!gotSingleInstanceLock) {
       }
       return;
     }
-    // Launching the app again (dock/taskbar/launcher) asks for another window.
-    openNewMainWindow("second-instance");
+    // Launching the app again (dock/taskbar/launcher) brings the primary
+    // window back; only an explicit "New Window" action opens another.
+    showOrCreatePrimaryMainWindow("second-instance");
   });
 
   // whenReady is scoped to the primary-instance branch — second-instance

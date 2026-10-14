@@ -447,8 +447,9 @@ Important rules:
   addressed by `chatGroupId` on every per-conversation `ave:chat:*` channel;
   the loops share the memory manager and the window-wide idle services. A
   closed tile releases its loop. See `docs/design/tiled-chat-groups.md`.
-- Several main windows may be open ("New Window", `CmdOrCtrl+Shift+N`, the
-  tray, or launching the app again without an `ave://` link). `app-state.ts`
+- Several main windows may be open ("New Window", `CmdOrCtrl+Shift+N`, or the
+  tray). Launching the app again without an `ave://` link restores and focuses
+  the primary window instead of opening another. `app-state.ts`
   owns the set: broadcasts go to every main window (`getAppWindows`), point-to-
   point sends and dialogs go to the window in use or the sender's window, and
   the first live window is the primary one. A secondary window's chat group ids

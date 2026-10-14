@@ -103,15 +103,17 @@ describe("main.ts — single-instance gate on app.whenReady", () => {
     expect(helper).not.toMatch(/\blog\./);
   });
 
-  it("a second launch without a deep link opens a new window; a deep link keeps handle-and-focus", () => {
+  it("a second launch without a deep link brings the primary window back; a deep link keeps handle-and-focus", () => {
     const start = source.indexOf('app.on("second-instance"');
     expect(start).toBeGreaterThanOrEqual(0);
     const handler = source.slice(start, source.indexOf("app.whenReady()", start));
     const urlBranch = handler.indexOf("if (url) {");
-    const newWindow = handler.indexOf('openNewMainWindow("second-instance")');
+    const surfacePrimary = handler.indexOf('showOrCreatePrimaryMainWindow("second-instance")');
     expect(urlBranch).toBeGreaterThanOrEqual(0);
-    expect(newWindow).toBeGreaterThan(urlBranch);
-    // The deep-link branch returns before the new-window call.
-    expect(handler.slice(urlBranch, newWindow)).toMatch(/handleAveUri\(url\)[\s\S]*showMainWindow\(mainWindow\)[\s\S]*return;/);
+    expect(surfacePrimary).toBeGreaterThan(urlBranch);
+    // The deep-link branch returns before the relaunch path.
+    expect(handler.slice(urlBranch, surfacePrimary)).toMatch(/handleAveUri\(url\)[\s\S]*showMainWindow\(mainWindow\)[\s\S]*return;/);
+    // A relaunch never opens another window: only an explicit "New Window" does.
+    expect(handler).not.toContain("openNewMainWindow(");
   });
 });
