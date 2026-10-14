@@ -10,6 +10,7 @@ import { ToolRegistry } from "../../../tools/registry.js";
 import { ConversationLoop } from "../../conversation-loop.js";
 import type { ProviderConfig, StreamEvent, StreamTurnParams } from "../../llm/types.js";
 import { contextBudgetForCurrentRuntime } from "../compaction.js";
+import type { ActiveChatRuntime } from "../../../shared/subscription-runtime.js";
 
 const state = vi.hoisted(() => ({
   configs: [] as ProviderConfig[],
@@ -31,7 +32,7 @@ vi.mock("../../llm/provider-factory.js", async (importOriginal) => ({
   },
 }));
 
-function makeLoop(llm = fakeLlmSettings({ model: "gpt-5.4" })) {
+function makeLoop(llm: ReturnType<typeof fakeLlmSettings> & { activeChatRuntime?: ActiveChatRuntime } = fakeLlmSettings({ model: "gpt-5.4" })) {
   const loop = new ConversationLoop({
     settingsService: { get: () => llm, getSecret: () => "test-key" },
     systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
@@ -91,8 +92,8 @@ describe("/model", () => {
   });
 
   it("refuses a subscription runtime that owns its model", async () => {
-    const llm = fakeLlmSettings({ model: "gpt-5.4" });
-    llm.activeChatRuntime = { kind: "subscription", provider: "claude-code" } as typeof llm.activeChatRuntime;
+    const runtime: ActiveChatRuntime = { kind: "subscription", provider: "claude-code" };
+    const llm = { ...fakeLlmSettings({ model: "gpt-5.4" }), activeChatRuntime: runtime };
     const { loop } = makeLoop(llm);
     const result = await loop.handleCommand("model", "gpt-5.4-mini", "user-keyboard");
     expect(loop.deps.modelOverride).toBeUndefined();
