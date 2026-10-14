@@ -48,5 +48,40 @@
     "docs/guides/plugin-development.md",
     "docs/references/plugin-tool-schema-design.md",
     "docs/research/sandbox-isolation.md"
-  ]
+  ],
+  "readers": {
+    "docs/design/permission-review-scenario-board-v2.html": [
+      "src/permissions/__tests__/permission-review-scenario-board.test.ts"
+    ],
+    "docs/development/knip-baseline.md": [
+      "test/scripts/repository-identity.test.ts"
+    ],
+    "docs/ko/app-readme.md": [
+      "src/plugins/__tests__/registry-atomicity.test.ts",
+      "test/scripts/repository-identity.test.ts"
+    ],
+    "docs/ko/guides/local-plugin-development.md": [
+      "src/plugins/__tests__/registry-atomicity.test.ts",
+      "test/scripts/repository-identity.test.ts"
+    ],
+    "docs/ko/guides/windows-setup.md": [
+      "src/plugins/__tests__/registry-atomicity.test.ts",
+      "test/scripts/repository-identity.test.ts"
+    ],
+    "web/DEPLOY.md": [
+      "test/scripts/repository-identity.test.ts"
+    ],
+    "web/DESIGN.md": [
+      "test/scripts/repository-identity.test.ts"
+    ],
+    "web/README.md": [
+      "test/scripts/repository-identity.test.ts"
+    ],
+    "web/THIRD_PARTY_NOTICES.md": [
+      "test/scripts/repository-identity.test.ts"
+    ],
+    "web/infra/docs-redirect/index.html": [
+      "test/scripts/repository-identity.test.ts"
+    ]
+  }
 }

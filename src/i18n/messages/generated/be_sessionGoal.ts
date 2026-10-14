@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/tools/session-goal.ts. Do not edit by hand.
+// i18n fragment. Source: src/tools/session-goal.ts.
 export const en = {
   "be_sessionGoal.toolDescription": "The objective this session is working towards. " +
     "One call does both jobs: with no goal registered yet it sets one, and with a goal already registered it updates it. " +

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/RoutinePanel.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/RoutinePanel.tsx.
 export const en = {
   "routinePanel.notificationBadge": "Notify",
   "routinePanel.onShutdown": "On app quit",

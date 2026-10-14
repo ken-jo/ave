@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/ErrorBoundary.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/ErrorBoundary.tsx.
 export const en = {
   "errorBoundary.compactFallback": "An error occurred in this area",
   "errorBoundary.retryButton": "Retry",

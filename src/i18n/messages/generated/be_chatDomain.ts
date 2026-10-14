@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ipc/domains/chat.ts. Do not edit by hand.
+// i18n fragment. Source: src/ipc/domains/chat.ts.
 export const en = {
   "be_chatDomain.exportHeading": "# Ave Conversation Export",
   "be_chatDomain.exportSessionLine": "- Session: {sessionId}",

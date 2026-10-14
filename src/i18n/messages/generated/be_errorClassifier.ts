@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/engine/llm/error-classifier.ts. Do not edit by hand.
+// i18n fragment. Source: src/engine/llm/error-classifier.ts.
 export const en = {
   "be_errorClassifier.invalidApiKey":
     "API key is invalid or expired. Please check your settings.",

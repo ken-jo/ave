@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/utils/composer-placeholder.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/utils/composer-placeholder.ts.
 export const en = {
   "composerPlaceholder.apiKeyMissing": "Please set up your API key first...",
   "composerPlaceholder.streamingHint": "Will be added to the message queue (interrupt immediately with ⌘⏎)",

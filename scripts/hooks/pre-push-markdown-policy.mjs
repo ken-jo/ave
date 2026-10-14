@@ -2,11 +2,21 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // The inventory records every literal reference to a tracked document.
-// Only consumers of document bytes require the full test and build gate.
-const { consumed } = JSON.parse(readFileSync(
+// Only consumers of document bytes require more than the docs-only checks.
+// `readers` maps a document that tests read to every test file or source
+// module that reads it, so a change to it runs those readers on the fast tier
+// instead of the whole suite. A test-read document without an entry keeps
+// the full checks.
+const { consumed, readers } = JSON.parse(readFileSync(
   fileURLToPath(new URL("./documentation-references.json", import.meta.url)), "utf8"
 ));
 const consumedDocuments = new Set(consumed);
+const documentReaders = new Map(Object.entries(readers));
+
+/** The recorded readers of a test-read document, or null when none are recorded. */
+export function getRecordedDocumentReaders(relativePath) {
+  return documentReaders.get(relativePath) ?? null;
+}
 
 export function isCanonicalGitPath(relativePath) {
   if (typeof relativePath !== "string" || relativePath.length === 0) return false;

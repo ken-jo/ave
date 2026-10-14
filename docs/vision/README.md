@@ -1,39 +1,71 @@
 # Vision
 
-Status: Active English default. The Korean archive keeps earlier review history and original discussion, but this page must be usable on its own.
+Status: Active. This page is the single canonical statement of what Ave is and
+where it is going. Other pages (the README, the docs index, the architecture
+intro, `package.json`) describe Ave in one line and link here instead of
+restating it.
 
-Korean archive: [docs/ko mirror](../ko/vision/README.md).
+Korean mirror: [docs/ko/vision/README.md](../ko/vision/README.md).
 
-## What This Page Owns
+## Hello, I'm Ave
 
-This page owns the product vision index and how principles relate to architecture, code, and tests. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
+*Ave* is Latin for a bright "hello". Ave is a comprehensive agent browser: the
+desktop place where you, your agents, the models you choose, and your computer
+meet. You open Ave the way you open a browser, and the agent works beside you on
+the web, in the terminal, in your files, and in your conversations, on one
+platform that is pleasant to use every day.
 
-## Current Operating Contract
+## Goals
 
-- English is the default review and contributor language for this app surface.
-- The document must name the behavior that still matters today, the code or test locations that enforce it, and the conditions that make the note stale.
-- Source files and tests are authoritative when this prose and implementation disagree.
-- Korean-only material stays in the mirrored archive unless it is translated or summarized here.
+These are product goals. [Where Ave is today](#where-ave-is-today) says what
+already ships.
 
-## Implementation Anchors
+1. **Browser use at the level of Aside.** The agent browses with you: it opens
+   and reads pages, follows links, fills forms, and operates sites in a browser
+   you can see and take over at any moment. You and the agent share the same
+   tabs, so handing work back and forth needs no copy and paste.
+2. **Terminal work at the level of Warp.** The terminal is a first-class
+   surface: multiple tabs, commands and their output grouped as blocks you can
+   read, copy, and rerun, searchable history, and an agent that works inside the
+   terminal with you rather than only through one-shot commands.
+3. **One platform for everything around it.** Chat with the model you choose,
+   parallel conversations, files and previews, plugins and the marketplace,
+   skills, memory, routines, and remote access from another device or agent all
+   live in the same window and share the same project context.
+4. **Easy to trust, easy to use.** Ave asks for your say where an action
+   matters and stays out of the way where it does not. Safety controls exist to
+   keep daily use comfortable, not to dominate it.
 
-- `docs/architecture/README.md`
-- `src/engine/`
-- `src/memory/`
-- `src/permissions/`
+## Where Ave is today
 
-## Update Checklist
+Checked against the code; source files and tests win if this page drifts.
 
-- State whether the document is active, implemented, superseded, or historical before adding new detail.
-- Keep links relative to the current file depth; mirrored files under `docs/ko` need different paths from default docs.
-- Add or update tests when a documented behavior is enforced by code.
-- Remove template language and stale plan wording instead of carrying it forward.
+- **Chat and parallel work.** Streaming chat with resume, fork, branch, export,
+  and compaction; up to four conversations side by side as tiles
+  ([tiled chat groups](../design/tiled-chat-groups.md)); bring-your-own model
+  providers.
+- **Work panel.** Files, Preview, Browser, Terminal, Sub-agents, and Side chat
+  in one panel per tile.
+- **Browser.** Browser tabs in the work panel for the user, in an isolated web
+  session (`src/main/side-browser-webview.ts`). The agent reaches the web
+  through `web_fetch` and `web_search` (`src/tools/`). Agent-driven browsing of
+  the shared tabs is a goal, not yet shipped.
+- **Terminal.** Real interactive PTY terminal tabs rendered with xterm.js
+  (`src/main/terminal/pty-manager.ts`,
+  `src/ui/renderer/components/PtyTerminalView.tsx`), running inside the OS
+  sandbox. The agent runs commands through its shell tool
+  (`src/tools/shell-tools.ts`). Command blocks, terminal history search, and an
+  agent inside the terminal are goals, not yet shipped.
+- **Extensions.** Manifest-driven plugins, a managed marketplace, git
+  marketplaces, MCP servers and MCP app cards, and skills
+  ([plugin development](../guides/plugin-development.md)).
+- **Agents and remote.** Sub-agents, agent-to-agent (A2A) remote access, a
+  headless host, and remote approval from a messaging app (`src/main/`).
+- **Local context.** Projects, memory, local indexing through the Local Indexer
+  plugin, routines, and an audit log, all under `~/.ave/`.
 
-## Related Entry Points
+## Related
 
+- [Philosophy](./philosophy.md): the principles behind these goals.
+- [Architecture](../architecture/README.md): the contracts that implement them.
 - [Ave Project Documentation](../README.md)
-- [Getting Started](../guides/getting-started.md)
-
-## Review Notes
-
-This English page should let a reviewer understand scope, risk, and validation without opening the Korean archive. If the archive contains rationale that still matters, translate the relevant part into this page and keep the archive link as provenance.

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/ChatTab.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/tabs/ChatTab.tsx.
 export const en = {
   "chatTab.title": "Chat",
   "chatTab.description": "Configure auto-compact, stream smoothing, and experimental features",

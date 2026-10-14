@@ -1,7 +1,8 @@
 # Ave Architecture Document
 
-Ave is a desktop agent platform for local-first, project-aware AI work. The app
-is built around one invariant: the host owns trust, storage, project identity,
+Ave is a comprehensive agent browser; its goals are stated in
+[docs/vision/README.md](../vision/README.md). The app is built around one
+invariant: the host owns trust, storage, project identity,
 and tool execution; plugins and renderer surfaces request capabilities through
 explicit contracts.
 
@@ -26,7 +27,9 @@ Korean source history is preserved at
 Research for host-agent behavior starts with official documentation and current
 shipped behavior of comparable coding-agent host products — CLI and desktop
 agent hosts whose scope matches Ave's. Those are the primary comparison set for
-agent lifecycle, project handling, interaction, and desktop UX. IDE and
+agent lifecycle, project handling, interaction, and desktop UX. For the browser
+and terminal surfaces, the agent browsers and agent terminals named in
+[docs/vision/README.md](../vision/README.md) are primary comparisons too. IDE and
 workspace products are secondary references: they may inform generic editor,
 filesystem, and multi-root conventions, but they do not override host-agent
 evidence. Record when a conclusion is an inference rather than a documented
@@ -1324,8 +1327,9 @@ text; production paths remain covered.
 ## Documentation Language Policy
 
 English is the canonical default for app docs, generated examples, comments,
-logs, and user-facing fallback copy. Korean source documents are retained under
-the mirrored `docs/ko` path and linked from the default pages. Runtime Korean
+logs, and user-facing fallback copy. Korean pages under `docs/ko` are kept only
+where a reader or a test needs them; the
+[documentation index](../README.md#language-policy) states the rule. Runtime Korean
 support remains in locale catalogs, intent parsing, and keyword matching where
 the app must understand Korean user input.
 

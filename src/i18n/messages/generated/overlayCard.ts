@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/OverlayCard.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/OverlayCard.tsx.
 export const en = {
   "overlayCard.running": "In progress…",
   "overlayCard.appNotice": "MCP app message",

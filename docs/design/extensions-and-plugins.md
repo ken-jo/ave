@@ -17,8 +17,8 @@ Ave's `ai.agent-connector.ave` with no alias. Where §6.3-6.4 below say
 
 Status: design, decided by owner direction of 2026-09-27 and the owner decisions
 recorded in §8; implementation follows the slices of §7. This page supersedes
-[`../architecture/proposals/plugin-concept-vs-portable-standard.md`](../architecture/proposals/plugin-concept-vs-portable-standard.md)
-(2026-08-16), which is kept as provenance and marked superseded.
+the 2026-08-16 plugin-concept comparison proposal, which was removed from the
+docs; git history keeps it.
 
 Anchors: `docs/architecture/architecture.md` (Plugin Runtime, MCP↔plugin execution
 parity, OS Execution Sandbox And Plugin Workers),

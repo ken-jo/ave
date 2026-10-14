@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { collectRelatedTestFiles } from "../../scripts/hooks/pre-push-related-tests.mjs";
-import { getRelatedCoverageFullReason, AVE_APP_LOCK_SUITES } from "../../scripts/hooks/pre-push-source-policy.mjs";
+import { getRelatedCoverageFullReason } from "../../scripts/hooks/pre-push-source-policy.mjs";
 
 describe("pre-push related test coverage", () => {
   it("queries each source independently so a covered module cannot mask an opaque module", async () => {
@@ -31,16 +31,24 @@ describe("pre-push related test coverage", () => {
     expect(getRelatedCoverageFullReason(["src/example.ts"], [{ source: "src/example.ts", tests: ["test/example.test.ts"] }])).toBeNull();
   });
 
-  it("fails closed when the related command exits successfully but reports zero tests", () => {
+  it.each([
+    ["related", { tests: ["test/example.test.ts"], narrowed: [] }, "related tests ran zero tests"],
+    ["bounded", { tests: ["test/example.test.ts"], narrowed: [{ source: "src/example.ts", related: 200, direct: 1 }] },
+      "bounded related tests ran zero tests"],
+  ])("fails closed when the %s run exits successfully but reports zero tests", (_label, selection, message) => {
     const source = readFileSync(resolve("scripts/hooks/run-local-checks.mjs"), "utf8");
-    const start = source.indexOf("function runAppFastSourceChecks(");
-    const end = source.indexOf("function runAppCommentOnlyChecks(", start);
+    const start = source.indexOf("function runVitestWithReport(");
+    const end = source.indexOf("// Per-module related-test discovery", start);
+    const runs: string[][] = [];
     const runFastChecks = runInNewContext(source.slice(start, end) + "; runAppFastSourceChecks", {
       commands: { bun: "bun" }, available: () => "bun", hasPackageScript: () => true, hasFile: () => true,
-      join, tmpdir, mkdtempSync, rmSync, AVE_APP_LOCK_SUITES,
-      runAppTypecheckGate: () => {}, ensureAppTestRuntimeAbi: () => {}, run: () => {}, withoutGitContext: () => ({}),
+      join, tmpdir, mkdtempSync, rmSync,
+      runAppTypecheckGate: () => {}, ensureAppTestRuntimeAbi: () => {},
+      run: (_command: string, args: string[]) => { runs.push(args); }, withoutGitContext: () => ({}),
       readJsonFile: () => ({ numTotalTests: 0 }),
     });
-    expect(() => runFastChecks("/fixture", [], ["src/example.ts"])).toThrow("related tests ran zero tests");
+    expect(() => runFastChecks("/fixture", [], [], ["src/example.ts"], selection)).toThrow(message);
+    // No lock suite was triggered and no test file changed: no unscoped Vitest run.
+    expect(runs.every((args) => args.at(-1) !== "run")).toBe(true);
   });
 });

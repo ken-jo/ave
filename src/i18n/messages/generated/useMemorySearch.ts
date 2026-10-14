@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/hooks/use-memory-search.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/hooks/use-memory-search.ts.
 export const en = {
   "useMemorySearch.memoryIndexTitle": "Memory Index",
 } as const;

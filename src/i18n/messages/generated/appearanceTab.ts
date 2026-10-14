@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/AppearanceTab.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/tabs/AppearanceTab.tsx.
 export const en = {
   "appearanceTab.pageTitle": "Theme",
   "appearanceTab.pageDescription": "Configure screen colors, fonts, and how external URLs are displayed",

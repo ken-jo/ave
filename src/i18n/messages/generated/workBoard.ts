@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/WorkBoardPanel.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/WorkBoardPanel.tsx.
 export const en = {
   "workBoard.panelTitle": "Work Board",
   "workBoard.panelDescription": "Track your personal work across planned, in progress, and done.",

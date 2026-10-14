@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/SlashPicker.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/SlashPicker.tsx.
 export const en = {
   "slashPicker.ariaLabel": "Command palette (Ctrl/Cmd+K)",
   "slashPicker.shortcutHint": "Ctrl/Cmd + K",

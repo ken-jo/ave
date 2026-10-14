@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/App.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/App.tsx.
 export const en = {
   "app.routineFailedTitle": "[Failed] Routine",
   "app.conversationCeilingReached": "The window is already holding {count} conversations and none of the others can be set aside — every one that could be is generating a reply. Stop one or wait for it to finish.",

@@ -1,43 +1,31 @@
 # Blueprints
 
-Status: Active English default. The Korean archive keeps earlier review history and original discussion, but this page must be usable on its own.
+Status: Active. A blueprint is a staged plan that others implement against. Each
+page states its status at the top: proposed, in progress, or implemented. When a
+plan is fully delivered its lasting contract moves into an architecture, design,
+or reference page, and a closed-out or superseded plan is deleted; git history
+keeps it. The full documentation map is in the [documentation index](../README.md).
 
-Korean archive: [docs/ko mirror](../ko/blueprints/README.md).
+## Plans in this directory
 
-## What This Page Owns
-
-This page owns the blueprint index and the status language for active, implemented, superseded, or historical plans. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
-
-## Current Operating Contract
-
-- English is the default review and contributor language for this app surface.
-- The document must name the behavior that still matters today, the code or test locations that enforce it, and the conditions that make the note stale.
-- Source files and tests are authoritative when this prose and implementation disagree.
-- Korean-only material stays in the mirrored archive unless it is translated or summarized here.
-
-## Plans In This Directory
-
-- [Multi-source git marketplace](./multi-source-git-marketplace.md) — phases 0–6 done; phase 7 (release and server retirement) remains. Supersedes [keyless-marketplace-signing](./keyless-marketplace-signing.md) and [signed-admission-catalog](./signed-admission-catalog.md).
-
-## Implementation Anchors
-
-- `docs/architecture/README.md`
-- `src/core/`
-- `src/ui/renderer/`
-- `src/plugins/`
-
-## Update Checklist
-
-- State whether the document is active, implemented, superseded, or historical before adding new detail.
-- Keep links relative to the current file depth; mirrored files under `docs/ko` need different paths from default docs.
-- Add or update tests when a documented behavior is enforced by code.
-- Remove template language and stale plan wording instead of carrying it forward.
-
-## Related Entry Points
-
-- [Ave Project Documentation](../README.md)
-- [Getting Started](../guides/getting-started.md)
-
-## Review Notes
-
-This English page should let a reviewer understand scope, risk, and validation without opening the Korean archive. If the archive contains rationale that still matters, translate the relevant part into this page and keep the archive link as provenance.
+- [A2A inter-subagent messaging](./a2a-subagent-messaging.md): accepted; phases
+  1-3 merged and the phase 4 remote-routing contracts locked. Together with the
+  [A2A exact send replay protocol](../protocols/ave-a2a-exact-send-replay.md) it
+  is checked by `bun run check:a2a-p4-5-contract`; edit both only with that check.
+- [Plugin process isolation](./plugin-process-isolation.md): stages 1-8 shipped
+  (first-party extensions run in a confined child process); third-party
+  admission and removal of the in-process loader remain. Source comments cite
+  its sections.
+- [Multi-source git marketplace](./multi-source-git-marketplace.md): phases 0-6
+  done; phase 7 (public release and server retirement) remains.
+- [Composer message queue](./composer-redesign-message-queue.md): busy-turn
+  queueing, interrupts, and turn-end sending in the composer; implemented.
+- [Headless relay separation](./headless-relay-separation.md): design, not
+  implemented; separates the chat relay server from the desktop window.
+- [Memory governance P1](./memory-governance-p1-consolidation.md): the
+  long-term memory consolidation decision; implemented.
+- [MCP app per-resource capabilities](./mcp-app-per-resource-capabilities.md):
+  design note, not implemented.
+- [Selective borrow record](./openharness-selective-borrow-plan.md): what was
+  ported from an MIT-licensed agent harness and the license obligations;
+  `LICENSE` points here.

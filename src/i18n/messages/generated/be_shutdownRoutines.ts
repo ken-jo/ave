@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/main/shutdown-routines.ts. Do not edit by hand.
+// i18n fragment. Source: src/main/shutdown-routines.ts.
 export const en = {
   "be_shutdownRoutines.shutdownRoutineNotificationTitle": "Shutdown routine notification",
 } as const;

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/tools/skill-list.ts. Do not edit by hand.
+// i18n fragment. Source: src/tools/skill-list.ts.
 export const en = {
   "be_skillList.toolDescription":
     "Returns the list of currently available Ave skills. Use this to see which skills exist before calling skill_load.",
