@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
+import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { globMatch } from "../lib/glob-matcher.js";
@@ -694,7 +695,7 @@ function ensurePluginOwnedReadRoots(): string[] {
 
 function pluginOwnedReadRoots(): string[] {
   const home = aveHome();
-  return [resolvePluginPaths().pluginsRoot, join(home, "agent-plugin-data"), join(home, "packages", "agent-plugin")];
+  return [resolvePluginPaths().pluginsRoot, agentPluginDataRoot(), join(home, "packages", "agent-plugin")];
 }
 
 /**

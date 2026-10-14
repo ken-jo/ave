@@ -9,7 +9,7 @@ import { SETTINGS } from "../../shared/ipc-channels.js";
 import { envForcedSettingsPaths } from "../../shared/env-backed-settings.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
-import { sendToWindow } from "../safe-send.js";
+import { broadcastToAppWindows } from "../window-fanout.js";
 import { normalizeLocale, setLocale, tryLoadLocaleMessages } from "../../i18n/index.js";
 import { reconcileGlobalShortcuts } from "../../main/global-shortcuts.js";
 import { telemetryAllowedHosts } from "../../main/telemetry.js";
@@ -264,9 +264,7 @@ export async function broadcastSettingsSnapshot(
     return;
   }
   if (localeLoaded) setLocale(nextLocale);
-  for (const win of deps.getAppWindows?.() ?? []) {
-    sendToWindow(win, SETTINGS.updated, rendererSettingsSnapshot(snapshot));
-  }
+  broadcastToAppWindows(deps, SETTINGS.updated, rendererSettingsSnapshot(snapshot));
 }
 
 /**
@@ -506,9 +504,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       provider,
       revision: ++subscriptionRuntimeStatusRevision,
     };
-    for (const win of deps.getAppWindows?.() ?? []) {
-      sendToWindow(win, CHANNELS.settings.subscriptionRuntimeStatusUpdated, event);
-    }
+    broadcastToAppWindows(deps, CHANNELS.settings.subscriptionRuntimeStatusUpdated, event);
   };
 
   const auditSubscriptionMutation = (

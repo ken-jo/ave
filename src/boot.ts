@@ -44,7 +44,7 @@ import type { BrowserWindow } from "electron";
 import { CHANNELS } from "./contract/app-contract.js";
 import { resolve } from "node:path";
 import { sweepOrphanUninstallDirs } from "./plugins/orphan-uninstall-sweeper.js";
-import { openFeatureNamespace } from "./main/storage/feature-namespace.js";
+import { agentPluginDataRoot } from "./marketplace/content/agent-plugin-data.js";
 import { migratePluginHostStorage, sweepPluginSocketDiscardDirs } from "./plugins/plugin-storage-layout.js";
 import { preparePluginRegistryForBoot } from "./plugins/plugin-boot-recovery.js";
 import { purgeStaleSessionDiffDirs, clearSessionDiffCache,
@@ -487,7 +487,7 @@ export async function bootstrap(
       });
     });
   // Agent plugins' data directories are tombstoned the same way at runtime.
-  await sweepOrphanUninstallDirs(openFeatureNamespace("agent-plugin-data").dir)
+  await sweepOrphanUninstallDirs(agentPluginDataRoot())
     .catch((err) => log.warn("boot: agent-plugin data tombstone sweep failed (non-fatal): %s", (err as Error).message));
   // Awaited, not fired and forgotten: tombstones are deleted only before any
   // confined process can run, and plugin start (below) begins that phase
