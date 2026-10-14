@@ -115,6 +115,10 @@ jobs:
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      # Bun's package cache defaults to .bun/install/cache in the runner user's
+      # home, which on a self-hosted runner is the owner's own cache. Keep it
+      # in the workspace.
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
     steps:
       # `clean: true` (git clean -ffdx + reset) wipes the previous run's
       # release/, .cache/ and node_modules/ on a persistent self-hosted runner.
@@ -140,12 +144,45 @@ jobs:
             echo "Checkout HEAD does not equal immutable event source SHA" >&2
             exit 1
           fi
+      # setup-bun has no install-directory input: it installs into
+      # os.homedir()/.bun/bin, which on a self-hosted runner would replace the
+      # owner's own bun. os.homedir() reads HOME (POSIX) and USERPROFILE
+      # (Windows), so this step alone sees a home under RUNNER_TEMP, which the
+      # runner empties at the start and end of every job. setup-bun adds that
+      # bin directory to the job PATH. The version comes from .bun-version.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+        env:
+          HOME: ${{ runner.temp }}/bun-home
+          USERPROFILE: ${{ runner.temp }}/bun-home
+      - name: Verify bun is the job-local pinned build
+        shell: bash
+        env:
+          BUN_HOME: ${{ runner.temp }}/bun-home
+        run: |
+          set -euo pipefail
+          expected="$(tr -d '[:space:]' < .bun-version)"
+          actual="$(bun --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "bun $actual on PATH, expected $expected from .bun-version" >&2
+            exit 1
+          fi
+          # Git Bash on Windows reports PATH entries in /c/... form.
+          home="$(cygpath -u "$BUN_HOME" 2>/dev/null || printf '%s' "$BUN_HOME")"
+          bun_path="$(command -v bun)"
+          case "$bun_path" in
+            "$home"/*) ;;
+            *)
+              echo "bun on PATH is $bun_path, not the job-local install under $home" >&2
+              exit 1
+              ;;
+          esac
       - name: Restore package manager and installer caches
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.bun/install/cache
+            .cache/bun
             .cache/electron
             .cache/electron-builder
           key: ${{ runner.os }}-installers-${{ hashFiles('bun.lock') }}-${{ hashFiles('package.json') }}

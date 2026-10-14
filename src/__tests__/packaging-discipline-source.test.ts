@@ -224,7 +224,11 @@ describe("installer smoke and packaging discipline", () => {
     expect(workflow).toContain("dbus-run-session -- bash -euo pipefail -c");
     expect(workflow).toContain("gnome-keyring-daemon --unlock --components=secrets");
     expectPinnedAction(workflow, "actions/cache");
-    expect(workflow).toContain("~/.bun/install/cache");
+    // Bun's package cache lives in the workspace, never the runner user's
+    // ~/.bun (on a self-hosted runner, the owner's own cache).
+    expect(workflow).toContain("BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun");
+    expect(workflow).toContain("            .cache/bun\n");
+    expect(workflow).not.toContain("~/.bun");
     expect(workflow).toContain("ELECTRON_BUILDER_CACHE");
     expect(workflow).toContain("--skip-native-rebuild");
     expect(workflow.indexOf("Smoke launch packaged app")).toBeLessThan(workflow.indexOf("Upload installers"));
@@ -447,6 +451,29 @@ describe("installer smoke and packaging discipline", () => {
     const setupNode = installers.indexOf("uses: actions/setup-node@");
     expect(setupNode).toBeGreaterThan(installers.indexOf("uses: actions/checkout@"));
     expect(setupNode).toBeLessThan(installers.indexOf("node scripts/build-installers.mjs"));
+
+    // setup-bun has no install-directory input and installs into
+    // os.homedir()/.bun/bin; that one step sees a home under RUNNER_TEMP, so it
+    // never replaces the owner's bun. The version is .bun-version, the same
+    // file ci.yml reads, and a step proves the job-local pinned bun is on PATH.
+    expect(installers).toContain(
+      "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0\n"
+        + "        with:\n"
+        + "          bun-version-file: .bun-version\n"
+        + "        env:\n"
+        + "          HOME: ${{ runner.temp }}/bun-home\n"
+        + "          USERPROFILE: ${{ runner.temp }}/bun-home\n"
+        + "      - name: Verify bun is the job-local pinned build\n",
+    );
+    expect(installers.indexOf("Verify bun is the job-local pinned build")).toBeLessThan(
+      installers.indexOf("bun install --frozen-lockfile"),
+    );
+    expect(readRepoFile(".bun-version")).toMatch(/^\d+\.\d+\.\d+\n$/u);
+    const ci = readRepoFile(".github/workflows/ci.yml");
+    const ciSetups = ci.match(/uses: oven-sh\/setup-bun@/gu)?.length ?? 0;
+    expect(ciSetups).toBeGreaterThan(0);
+    expect(ci.match(/bun-version-file: ave\/\.bun-version\n/gu)?.length).toBe(ciSetups);
+
     expect(installers).toContain(
       "      - name: Remove build output from a self-hosted runner\n"
         + "        if: always() && runner.environment == 'self-hosted'\n"
