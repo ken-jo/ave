@@ -18,7 +18,13 @@ jobs:
   # fails when the two disagree instead of letting both jobs skip silently.
   build:
     if: github.repository == 'ken-jo/ave'
-    runs-on: ubuntu-latest
+    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
+    # ["self-hosted","Linux","ARM64","ave"], or a hosted label such as
+    # "ubuntu-latest" to opt into a GitHub-hosted runner explicitly). Unset
+    # falls back to any self-hosted runner only so the check below can fail
+    # naming the variable, never to a billing-blocked hosted label; deploy
+    # needs this job, so it never evaluates an unset variable.
+    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}
     timeout-minutes: 15
     outputs:
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
@@ -26,12 +32,21 @@ jobs:
       source_sha: ${{ steps.verify.outputs.source_sha }}
     env:
       REQUESTED_HEAD: ${{ github.event.client_payload.head_sha || github.sha }}
+      # Bun's package cache defaults to the runner user's home, which on a
+      # self-hosted runner is the owner's own cache. Keep it in the workspace.
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.REQUESTED_HEAD }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Require the runner variable
+        shell: bash
+        env:
+          AVE_LINUX_RUNNER: ${{ vars.AVE_LINUX_RUNNER }}
+        run: bash .github/scripts/require-runner-vars.sh AVE_LINUX_RUNNER
 
       - id: verify
         name: Verify exact default-branch source
@@ -47,7 +62,14 @@ jobs:
             refs/remotes/origin/main
           printf 'source_sha=%s\n' "$REQUESTED_HEAD" >> "$GITHUB_OUTPUT"
 
+      # setup-bun installs into os.homedir()/.bun/bin, which on a self-hosted
+      # runner would replace the owner's own bun; this step alone sees a home
+      # under RUNNER_TEMP (see build-installers.yml). The version stays the
+      # one web-ci.yml verifies the site with.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        env:
+          HOME: ${{ runner.temp }}/bun-home
+          USERPROFILE: ${{ runner.temp }}/bun-home
 
       - name: Install web dependencies
         working-directory: web
@@ -97,12 +119,36 @@ jobs:
   deploy:
     needs: build
     if: github.repository == 'ken-jo/ave'
-    runs-on: ubuntu-latest
+    # The runner build checked for; see the build job.
+    runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
     environment: web-production
     timeout-minutes: 15
     permissions:
       contents: read
+    env:
+      # wrangler-action installs wrangler with npm; keep npm's cache in the
+      # workspace instead of the runner user's ~/.npm.
+      npm_config_cache: ${{ github.workspace }}/.cache/npm
     steps:
+      # This job has no checkout to clean the workspace, so a persistent
+      # self-hosted runner would still hold the previous run's bundle. Start
+      # empty, and give wrangler a home under RUNNER_TEMP for its config and
+      # logs instead of the owner's.
+      - name: Start from an empty workspace and a job-local home
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf staged-web verified-out
+          mkdir -p "$RUNNER_TEMP/job-home"
+          printf 'HOME=%s\n' "$RUNNER_TEMP/job-home" >> "$GITHUB_ENV"
+
+      # wrangler-action runs wrangler with npm; take Node and npm from the
+      # runner's tool cache rather than whatever the machine has installed.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
       - name: Download verified web export
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
