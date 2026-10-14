@@ -1,61 +1,102 @@
-# Extension Version Quickref
+# Extension Version Quick Reference
 
-Status: Active English default. The Korean archive keeps earlier review history and original discussion, but this page must be usable on its own.
+Status: Active. Covers the version and compatibility rules the app enforces
+today.
 
-Korean archive: [docs/ko mirror](../ko/guides/plugin-version-quickref.md).
+## The Rules
 
-## What This Page Owns
+| Rule | Where it is enforced |
+|--|--|
+| `version` in `plugin.json` is plain `MAJOR.MINOR.PATCH`, with no pre-release or build suffix. | `schemas/plugin-manifest.schema.json` |
+| A package's versions strictly increase; the index lists them newest first. | `src/marketplace/catalog/validate.ts` |
+| `requires.minAppVersion` is required for any marketplace install and must equal the descriptor's `minAppVersion`. | `assertGitInstallManifest` in `src/marketplace/resolve/manifest-rules.ts` (`PACKAGE_COMPAT_UNDECLARED`, `MANIFEST_MISMATCH`) |
+| For a marketplace install, `requires.hostProtocol` must equal the descriptor's `hostProtocol`. | same |
+| The app refuses to install a version whose `minAppVersion` is newer than the app. | `src/marketplace/resolve/descriptor.ts` (`PACKAGE_INCOMPATIBLE`) |
+| The app refuses to load an extension whose `minAppVersion` is newer than the app. | `markIncompatibleAppVersion` in `src/plugins/runtime/index.ts` (`incompatible-app-version`) |
+| The app refuses to load an extension whose `requires.hostProtocol` is missing or not served. | `markIncompatibleHostProtocol` in `src/plugins/runtime/index.ts`, served set `HOST_PROTOCOL_VERSIONS_SERVED` in `src/plugins/isolation/host-api-wire.ts` (`incompatible-host-protocol`) |
+| `minAppVersion` must not be lower than the first app release that served the declared protocol. | `HOST_PROTOCOL_FIRST_APP_VERSION` checked by `src/plugins/validate/validate-plugin.ts` |
 
-This page owns extension compatibility rules, manifest version expectations, app release tag contract vendoring, and `requires.minAppVersion`. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
+Both load refusals are not fixed by reinstalling: the same package fails the
+same way. `incompatible-app-version` means update the app;
+`incompatible-host-protocol` means the extension was built for a protocol
+this app does not serve.
 
-## Current Operating Contract
+## What To Declare
 
-- English is the default review and contributor language for this app surface.
-- The document must name the behavior that still matters today, the code or test locations that enforce it, and the conditions that make the note stale.
-- Source files and tests are authoritative when this prose and implementation disagree.
-- Korean-only material stays in the mirrored archive unless it is translated or summarized here.
-- Extension repositories vendor `src/plugins/public-contract.ts`,
-  `schemas/plugin-manifest.schema.json` and
-  `schemas/plugin-host-protocol/3/protocol.schema.json` unchanged into `contract/`
-  at an app release tag. `contract/sources.json` records the source
-  repository, the tag and each file's hash.
-  The official marketplace monorepo `ken-jo/agent-marketplace` shares one root
-  `contract/` as `@ave/plugin-contract`; refresh it with
-  `bun run contract:sync -- contract --ref <app tag> --app <ave checkout>`
-  and verify it with `bun run contract:check`.
-- An extension that uses a new contract member declares a supporting app release in
-  `requires.minAppVersion`; the host enforces that minimum at install and load.
-  The marketplace descriptor's `minAppVersion` must equal it.
-- Official extensions are developed in `ken-jo/agent-marketplace` under
-  `plugins/<name>/source/`. Raise `version` in `plugin.json` and `package.json`
-  together (an extension for app 0.14.0 or later also declares
-  `requires.hostProtocol: "3"` and `requires.minAppVersion: "0.14.0"`; apps
-  0.12–0.13 used protocol `"2"` on the `ave/*` wire, which Ave rejects) and merge; the release workflow builds `<name>-<version>.zip`, tags
-  `<name>-v<version>`, and opens a pull request that pins the zip's sha256 in
-  the descriptor. Merging that pull request publishes the version. Versions
-  strictly increase and a published version never moves to another commit.
-  Per-plugin tag pushes and the central `former_org/.github` workflows are
-  not part of this flow.
+The app serves host protocol `"3"` only (the `ave/*` wire). Extensions built
+for protocol 2 are refused before they start. An extension for the
+first release that serves protocol 3 declares:
 
-## Implementation Anchors
+```jsonc
+"extensions": {
+  "ai.agent-connector.ave": {
+    "requires": { "hostProtocol": "3", "minAppVersion": "0.14.0" }
+  }
+}
+```
 
-- `package.json`
-- `src/plugins/`
-- `src/main/`
-- `src/ui/renderer/`
+The protocol 3 migration note is in [`CHANGELOG.md`](../../CHANGELOG.md); the
+field definitions are in [Manifest Basics](./plugin-development.md#manifest-basics).
+A `process` extension has an extra floor; see
+[`entry` or `process`](./plugin-development.md#entry-or-process).
 
-## Update Checklist
+When you start using a contract member that a later app release added, raise
+`minAppVersion` to that release in both `plugin.json` and the package
+descriptor (`ave-package.json`).
 
-- State whether the document is active, implemented, superseded, or historical before adding new detail.
-- Keep links relative to the current file depth; mirrored files under `docs/ko` need different paths from default docs.
-- Add or update tests when a documented behavior is enforced by code.
-- Remove template language and stale plan wording instead of carrying it forward.
+## Choosing The Number
 
-## Related Entry Points
+| Change | Raise |
+|--|--|
+| Bug fix or internal cleanup | PATCH (`0.2.0` to `0.2.1`) |
+| Compatible new feature | MINOR (`0.2.0` to `0.3.0`) |
+| Breaking change, such as a tool signature change | MAJOR (`0.2.0` to `1.0.0`) |
 
-- [Ave Project Documentation](../README.md)
-- [Getting Started](./getting-started.md)
+A published version is never rebuilt or moved to another commit. To fix
+something, publish a higher version.
 
-## Review Notes
+## Vendoring The Contract
 
-This English page should let a reviewer understand scope, risk, and validation without opening the Korean archive. If the archive contains rationale that still matters, translate the relevant part into this page and keep the archive link as provenance.
+There is no separate SDK package; the contract version is the app version
+([design §5.6](../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors)).
+An extension repository copies these files unchanged from an app release tag
+into `contract/`:
+
+- `src/plugins/public-contract.ts`
+- `schemas/plugin-manifest.schema.json`
+- `schemas/plugin-host-protocol/3/protocol.schema.json`
+
+`contract/sources.json` records the repository, the tag and each file's
+sha256. CI fails when the copy no longer matches those hashes, or when the
+file at the recorded tag differs. Refresh by syncing from a newer tag; never
+edit the copy.
+
+## Releasing In The Official Marketplace
+
+In `ken-jo/agent-marketplace`
+([design §6.3](../design/multi-source-git-marketplace.md#63-official-release-flow)):
+
+1. A pull request changes `plugins/<name>/source/` and raises `version` in
+   `plugin.json` and `package.json` together. Validation fails if they differ
+   or if the new version does not exceed every published one.
+2. After merge, the release workflow builds `<name>-<version>.zip` from the
+   merge commit and creates the `<name>-v<version>` tag and release. An
+   existing tag is never rebuilt. Do not push tags yourself.
+3. The workflow opens a pin pull request that writes the version,
+   `minAppVersion`, `authority` and the release asset's sha256 into
+   `plugins/<name>/ave-package.json`.
+4. Merging the pin pull request publishes the version.
+
+That repository's README owns the exact commands, including recovery when the
+workflow fails after the tag exists. Other marketplaces follow their own
+repository's rules.
+
+During development, test a build from Settings without publishing
+([Local Extension Development](./local-plugin-development.md)).
+
+## Related
+
+- [Extension Development Guide](./plugin-development.md)
+- [Publishing To A Git Marketplace](./marketplace-publishing.md)
+- [Local Extension Development](./local-plugin-development.md)
+- [Multi-source Git Marketplace design](../design/multi-source-git-marketplace.md)

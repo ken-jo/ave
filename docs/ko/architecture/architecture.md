@@ -2401,7 +2401,7 @@ Components ─► Semantic tokens (--background, --primary, --destructive)
   marketplace `chip.tsx` install-policy 변형 — 2026-04-30 audit에서 시멘틱
   토큰으로 교체.)
 
-상세 토큰 표·마이그레이션 가이드는 [`docs/development/theme-system.md`](../development/theme-system.md)
+상세 토큰 표·마이그레이션 가이드는 [`docs/development/theme-system.md`](../../development/theme-system.md)
 참조.
 
 ### 6.7.1 플러그인 webview 테마 전파 (PR #489)

@@ -39,7 +39,7 @@ IPC; they never reach host internals directly. The code entry points are
 ## Extensions, MCP, and hooks
 
 - [Plugin deployment model](./plugin-deployment-model.md): install state,
-  receipts, quarantine, and updates.
+  receipts, required installs, and updates.
 - [MCP alignment](./mcp-alignment-design.md): extensions as MCP servers and the
   loopback topology.
 - [Hook runtime](./hook-runtime-expansion-design.md): command hooks and
