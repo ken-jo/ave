@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/ToolApprovalContent.tsx (path-grant wording). Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/ToolApprovalContent.tsx (path-grant wording).
 export const en = {
   "dockedApprovalCard.headline": "'{toolName}' is trying to read outside the allowed directories",
   "dockedApprovalCard.targetParent": "{path}  (the whole parent folder)",

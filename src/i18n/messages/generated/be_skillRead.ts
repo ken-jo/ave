@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/tools/skill-read.ts. Do not edit by hand.
+// i18n fragment. Source: src/tools/skill-read.ts.
 export const en = {
   "be_skillRead.toolDescription":
     "Reads ONE bundled resource file of a skill that is already loaded in the current user turn. " +

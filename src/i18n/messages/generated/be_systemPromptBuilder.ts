@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/prompts/system-prompt-builder.ts. Do not edit by hand.
+// i18n fragment. Source: src/prompts/system-prompt-builder.ts.
 export const en = {
   // App Message Origin Guidance section
   "be_systemPromptBuilder.appMessageOriginNotDirectInput": "This turn's text was not typed by the user. It came from an MCP App's UI (`ui/message`) — the user only confirmed that it may enter the conversation. (source={source})",

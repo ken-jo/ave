@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/ViewModeBanner.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/ViewModeBanner.tsx.
 export const en = {
   "viewModeBanner.title": "📖 #{compactNum} Checkpoint View Mode",
   "viewModeBanner.messageRange": "First {slicedRangeEnd} messages · Messages after this point are hidden",

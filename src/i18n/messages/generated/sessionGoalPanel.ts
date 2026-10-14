@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/SessionGoalPanel.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/SessionGoalPanel.tsx.
 export const en = {
   "sessionGoalPanel.panelTitle": "Session goal: {goal} ({state})",
   "sessionGoalPanel.stateRunning": "in progress",

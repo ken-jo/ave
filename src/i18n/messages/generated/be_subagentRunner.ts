@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/engine/subagent-runner.ts. Do not edit by hand.
+// i18n fragment. Source: src/engine/subagent-runner.ts.
 export const en = {
   "be_subagentRunner.modeSkillsRecommendation":
     "The following skills may be useful for this task: {skills}.",

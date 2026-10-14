@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/shared/render-html-preview.ts. Do not edit by hand.
+// i18n fragment. Source: src/shared/render-html-preview.ts.
 export const en = {
   "be_renderHtmlPreview.defaultTitle": "HTML Preview",
   "be_renderHtmlPreview.warningsPrefix": "Sanitized: ",
