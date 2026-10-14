@@ -182,3 +182,28 @@ describe("AssistantCard — live vs restored systemNotice (Issue #2113)", () => 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+describe("AssistantCard — fenced code block header", () => {
+  it("labels the fence language and copies the raw block source", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const { getByTestId, findByText } = renderCard(
+      makeEntry({ text: "Run this:\n\n```ts\nconst a = 1;\nconsole.log(a);\n```\n" }),
+    );
+    expect(getByTestId("markdown-code-language").textContent).toBe("ts");
+    getByTestId("markdown-code-copy").click();
+    expect(writeText).toHaveBeenCalledWith("const a = 1;\nconsole.log(a);");
+    // "Copied" confirmation only after the clipboard write resolved.
+    await findByText(/Copied|복사됨/);
+  });
+
+  it("falls back to a plain-text label when the fence names no language", () => {
+    const { getByTestId } = renderCard(makeEntry({ text: "```\nplain\n```" }));
+    expect(getByTestId("markdown-code-language").textContent).toMatch(/^(text|텍스트)$/);
+  });
+
+  it("leaves inline code without a header", () => {
+    const { container } = renderCard(makeEntry({ text: "use `npm test` here" }));
+    expect(container.querySelector("[data-testid='markdown-code-block']")).toBeNull();
+  });
+});
