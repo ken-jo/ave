@@ -283,6 +283,28 @@ describe("RemoteA2AActionButton production IPC surface", () => {
     }
   });
 
+  it("sends a new request after an in-flight poll instead of failing as busy", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const working = { state: "sent", taskHandle: "task_handle_123456", taskAvailable: true, taskState: "TASK_STATE_WORKING", updatedAt: "2026-07-16T00:00:00.000Z" };
+      const api = installApi(working);
+      let answer!: (value: unknown) => void;
+      api.task.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }) as never);
+      await openPanel();
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_100); });
+      expect(api.task).toHaveBeenCalledTimes(1);
+
+      fireEvent.change(screen.getByTestId("remote-a2a-intent"), { target: { value: "Next request" } });
+      fireEvent.click(screen.getByTestId("remote-a2a-send"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+      expect(api.send).not.toHaveBeenCalled();
+      await act(async () => { answer({ ok: true, status: { ...working, updatedAt: "2026-07-16T00:00:03.000Z" } }); });
+      await waitFor(() => expect(api.send).toHaveBeenCalledWith(1, "Next request"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("lets the owner switch between recent Tasks", async () => {
     const first = { state: "sent", taskHandle: "task_handle_111111", taskAvailable: true, taskState: "TASK_STATE_COMPLETED", targetLabel: "Agent one", reply: { text: "first reply", truncated: false, artifactCount: 0, redactions: 0 }, updatedAt: "2026-07-16T00:00:01.000Z" };
     const second = { ...first, taskHandle: "task_handle_222222", reply: { text: "second reply", truncated: false, artifactCount: 0, redactions: 0 }, updatedAt: "2026-07-16T00:00:02.000Z" };

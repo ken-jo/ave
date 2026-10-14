@@ -158,6 +158,8 @@ export function RemoteA2AActionButton() {
   const send = async () => {
     if (!canSend) return;
     setSending(true);
+    // Same as the Task actions: a background GetTask holds the single slot.
+    if (pollInFlight.current) await pollInFlight.current;
     setStatus({ state: "awaiting-approval", targetAgentId: targetId, targetLabel: targets.find((target) => target.targetAgentId === targetId)?.label, updatedAt: new Date().toISOString() });
     try {
       const result = await window.aveApi.remoteA2a.send(targetId, intent);
