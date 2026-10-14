@@ -37,6 +37,8 @@ import { createPortal } from "react-dom";
 import { usePanePanelSlot } from "./components/PaneFrame.js";
 import { computeToolActivity } from "./utils/tool-activity.js";
 import { collectPromptHistory } from "./utils/prompt-history.js";
+import { SuggestedTasksPanel } from "./components/SuggestedTasksPanel.js";
+import type { SuggestedTask } from "./suggested-tasks/provider.js";
 import { sidePanelLayout, useContainerNarrow } from "./hooks/use-container-narrow.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
 import { useChatScroll } from "./hooks/use-chat-scroll.js";
@@ -196,32 +198,29 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     () => viewMode ? entries.slice(0, viewMode.slicedRangeEnd) : entries,
     [entries, viewMode],
   );
-  // Empty-state centered composer applies once the boot key/readiness probe has
-  // resolved, including the no-key state. The no-key recovery affordance lives
-  // in the composer's utility strip and adds no layout height, so the centered
-  // composer keeps the same lift with or without a configured provider.
-  const emptyComposerCentered =
+  // An empty, settled conversation: the boot key/readiness probe has resolved
+  // (including the no-key state), nothing is waiting on the user, and no
+  // suggestion ghost is on screen. The composer stays bottom-docked either way
+  // — this only decides whether the new-chat affordances (project selector,
+  // suggested tasks) are offered.
+  const emptyConversation =
     appMode === "work" &&
     hasAskQuestions === false &&
     visibleEntries.length === 0 &&
     hasApiKey !== null &&
     !suggestedRepliesActive &&
     viewMode === null;
-  const dockColumnClass = emptyComposerCentered
+  const dockColumnClass = emptyConversation || blogLayout
     ? "mx-auto w-full max-w-(--reading-column-max) min-w-0"
-    : blogLayout
-      ? "mx-auto w-full max-w-(--reading-column-max) min-w-0"
-      : "w-full max-w-full min-w-0";
+    : "w-full max-w-full min-w-0";
   // Empty-state composer project selector — open state is owned here (not
-  // inside ComposerProjectSelector) so it can be force-closed the instant the
-  // composer transitions off the centered layout (first message sent). A
-  // dropdown left open while its trigger's surrounding layout animates away
-  // would look broken; closing it here lets the dropdown's own exit
-  // animation run in lockstep with the composer's descent.
+  // inside ComposerProjectSelector) so it is force-closed the instant the
+  // conversation stops being empty (first message sent) and its trigger
+  // unmounts.
   const [projectSelectorOpen, setProjectSelectorOpen] = useState(false);
   useEffect(() => {
-    if (!emptyComposerCentered) setProjectSelectorOpen(false);
-  }, [emptyComposerCentered]);
+    if (!emptyConversation) setProjectSelectorOpen(false);
+  }, [emptyConversation]);
   // Sub-agent rows come only from the current runtime's agent-spawn event stream.
   // Past parent transcripts are not reconstructed in development builds; the
   // addressable child session id on the live spawn is the only transcript SOT.
@@ -357,6 +356,12 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // OS-open channel, so that menu item is hidden for files).
   const toolActivity = useMemo(() => computeToolActivity(entries), [entries]);
   const promptHistory = useMemo(() => collectPromptHistory(entries), [entries]);
+  // A suggested task fills the composer and focuses it; the user reviews
+  // (and replaces any `[placeholder]`) before sending.
+  const handleChooseSuggestedTask = useCallback((task: SuggestedTask) => {
+    setQuestion(task.prompt);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }, [setQuestion]);
 
   // Route a tool-activity item into the workspace rail. Single-click (`ephemeral`)
   // opens it in the one reusable preview slot; double-click (`pinned`) opens and
@@ -748,6 +753,11 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         suggestedRepliesActive={suggestedRepliesActive}
         transcriptEntries={transcriptEntries}
         chatEndRef={chatEndRef}
+        emptyState={
+          emptyConversation && hasApiKey === true ? (
+            <SuggestedTasksPanel onChoose={handleChooseSuggestedTask} />
+          ) : null
+        }
       />
       {showJumpToBottom && (
         <Button
@@ -809,7 +819,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
           distinct surface on its own. */}
       <ChatComposerDock
         dockColumnClass={dockColumnClass}
-        centered={emptyComposerCentered}
+        emptyConversation={emptyConversation}
         onOpenSettings={onOpenSettings}
         workflowApi={workflowApi}
         api={api}

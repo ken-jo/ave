@@ -135,6 +135,7 @@ import { en as en_pluginUninstallDialog } from "./pluginUninstallDialog.js";
 import { en as en_pluginUpdatesPill } from "./pluginUpdatesPill.js";
 import { en as en_privacyTab } from "./privacyTab.js";
 import { en as en_reasoningCard } from "./reasoningCard.js";
+import { en as en_suggestedTasks } from "./suggestedTasks.js";
 import { en as en_remoteA2aActionButton } from "./remoteA2aActionButton.js";
 import { en as en_remoteSurfacesTab } from "./remoteSurfacesTab.js";
 import { en as en_rolesTab } from "./rolesTab.js";
@@ -312,6 +313,7 @@ export const generatedEn: Record<string, string> = {
   ...en_pluginUpdatesPill,
   ...en_privacyTab,
   ...en_reasoningCard,
+  ...en_suggestedTasks,
   ...en_remoteA2aActionButton,
   ...en_remoteSurfacesTab,
   ...en_rolesTab,

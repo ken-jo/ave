@@ -126,6 +126,7 @@ import { ko as ko_pluginUninstallDialog } from "../generated/pluginUninstallDial
 import { ko as ko_pluginUpdatesPill } from "../generated/pluginUpdatesPill.js";
 import { ko as ko_privacyTab } from "../generated/privacyTab.js";
 import { ko as ko_reasoningCard } from "../generated/reasoningCard.js";
+import { ko as ko_suggestedTasks } from "../generated/suggestedTasks.js";
 import { ko as ko_remoteA2aActionButton } from "../generated/remoteA2aActionButton.js";
 import { ko as ko_remoteSurfacesTab } from "../generated/remoteSurfacesTab.js";
 import { ko as ko_rolesTab } from "../generated/rolesTab.js";
@@ -303,6 +304,7 @@ export const koMessages: Record<string, string> = {
   ...ko_pluginUpdatesPill,
   ...ko_privacyTab,
   ...ko_reasoningCard,
+  ...ko_suggestedTasks,
   ...ko_remoteA2aActionButton,
   ...ko_remoteSurfacesTab,
   ...ko_rolesTab,

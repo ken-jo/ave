@@ -15,6 +15,8 @@ export interface ChatTranscriptProps {
   suggestedRepliesActive: boolean;
   transcriptEntries: React.ReactNode;
   chatEndRef: RefObject<HTMLDivElement | null>;
+  /** Shown in place of the transcript on an empty conversation (suggested tasks). */
+  emptyState?: React.ReactNode;
 }
 
 /**
@@ -33,6 +35,7 @@ export function ChatTranscript({
   suggestedRepliesActive,
   transcriptEntries,
   chatEndRef,
+  emptyState,
 }: ChatTranscriptProps) {
   const { t } = useTranslation();
   return (
@@ -58,13 +61,11 @@ export function ChatTranscript({
           {t("chatView.emptyState")}
         </div>
       )}
-      {/* No-key state is NOT surfaced here any more. A card in this column
-          claimed `min-h-[min(12rem,36vh)]`, which forced ChatView to shrink the
-          centered composer's lift to make room — the composer never sat
-          optically centered on an empty conversation. The affordance now lives
-          in the composer's reserved top strip as `ComposerApiKeyChip`, an
-          absolutely-positioned chip + overlay popover that adds zero layout
-          height and keeps both of the card's destinations (settings / marketplace). */}
+      {/* No-key state is NOT surfaced here: the affordance lives in the
+          composer's reserved top strip as `ComposerApiKeyChip`, an
+          absolutely-positioned chip + overlay popover that keeps both of the
+          retired card's destinations (settings / marketplace). */}
+      {visibleEntries.length === 0 ? emptyState : null}
       {transcriptEntries}
       <div ref={chatEndRef} />
     </div></ScrollArea>
