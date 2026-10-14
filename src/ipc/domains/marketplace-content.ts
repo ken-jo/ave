@@ -41,6 +41,7 @@ import type { IpcDeps } from "../types.js";
 import { broadcastSettingsSnapshot, mutateMarketplaceProviderPresets } from "./settings.js";
 import { broadcastPromptsUpdated } from "../prompt-broadcast.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
+import { AGENT_PLUGIN_DATA_NAMESPACE, assertAgentPluginPackageName } from "../../marketplace/content/agent-plugin-data.js";
 import { removePluginTreeNowOrAtBoot } from "../../plugins/installed-entry-fs.js";
 import { bundledCredentialKey } from "../../mcp/bundled-credential.js";
 
@@ -273,14 +274,14 @@ interface AgentPluginComponentApprovals {
 }
 
 export async function removeAgentPluginData(settings: Pick<IpcDeps["settingsService"], "deleteSecret">, name: string, serverNames: readonly string[]): Promise<void> {
-  if (!/^[a-z][a-z0-9-]*$/u.test(name)) throw new Error("invalid agent plugin package name");
+  assertAgentPluginPackageName(name);
   const operations = serverNames.map((server) => settings.deleteSecret(
     bundledCredentialKey({ kind: "agent-plugin", name }, server)));
   // The package's bundled MCP servers and hooks wrote this directory and may
   // not have exited yet, so it is renamed into the namespace's tombstones and
   // deleted at the next boot, before anything confined starts
   // (lib/confined-process-phase.ts).
-  const dataRoot = openFeatureNamespace("agent-plugin-data").dir;
+  const dataRoot = openFeatureNamespace(AGENT_PLUGIN_DATA_NAMESPACE).dir;
   operations.push(removePluginTreeNowOrAtBoot(join(dataRoot, name), dataRoot, (path) => rm(path, { recursive: true, force: true })).then(() => undefined));
   const results = await Promise.allSettled(operations);
   const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
