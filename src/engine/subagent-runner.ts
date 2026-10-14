@@ -2277,6 +2277,12 @@ export class SubAgentRunner {
     const active = this.activeChildren.get(childSessionId);
     if (active?.lease !== lease) return;
     this.activeChildren.delete(childSessionId);
+    // The child shares the parent's SkillOverlay keyed by its own session id,
+    // and no `newConversation` ever fires for a child loop. Drop its entries
+    // here so a finished run does not leave its skill_read authorization (and
+    // the map slot) behind for the rest of the app's life. A later resume
+    // re-establishes it with a fresh `skill_load`.
+    this.deps.parentDeps.skillOverlay?.clear(childSessionId);
     // The run that held this lease is over, spawn and resume alike, so the
     // per-run parent-adjudication state it built up (budget, denial streaks)
     // goes with it. Only the lease holder releases it: a mismatched lease
