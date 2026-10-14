@@ -1225,7 +1225,7 @@ async function listEntries(
   }
 }
 
-async function collectFiles(
+export async function collectFiles(
   root: string,
   limit: number,
 ): Promise<Result<{ files: ListedEntry[]; truncated: boolean }>> {

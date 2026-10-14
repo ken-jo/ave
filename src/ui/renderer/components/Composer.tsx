@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type Dispatch,
+  type DragEvent as ReactDragEvent,
   type SetStateAction,
 } from "react";
 import { flushSync } from "react-dom";
@@ -20,6 +21,7 @@ import {
 import {
   ATTACH_MAX_COUNT,
   type Attachment,
+  type FileAttachment,
   type ResourceAttachment,
 } from "../types/attachments.js";
 import { findMarkerAt, parseMarkers } from "../utils/attachment-markers.js";
@@ -127,6 +129,13 @@ export interface ComposerProps {
   disabled?: boolean;
   /** False when the active runtime cannot accept original local image input. */
   imagesEnabled?: boolean;
+  /** False when the active runtime cannot take file attachments — no `@file` rows then. */
+  filesEnabled?: boolean;
+  /**
+   * Files dropped on the composer. Omitted → the composer is not a drop target
+   * (the window guard still blocks file:// navigation).
+   */
+  onDropFiles?: (files: FileList) => void;
   /** Exact main-verified raw-image budget for the selected subscription runtime. */
   imageAttachmentLimits?: SubscriptionImageAttachmentLimits | null;
   /** Disable Enter-to-send while preserving editable draft text and markers. */
@@ -203,6 +212,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onSend,
     disabled = false,
     imagesEnabled = true,
+    filesEnabled = true,
+    onDropFiles,
     imageAttachmentLimits,
     sendDisabled = false,
     placeholder,
@@ -317,28 +328,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [liveAttachments],
   );
   const chipStripCount = liveAttachments.length - resourceCount;
+  const [dropActive, setDropActive] = useState(false);
 
-  // Inline "@" resource mention. Its accept path is asynchronous (it reads the resource
-  // through the host) and it commits the marker and the attachment TOGETHER here, in one
-  // flushSync, for the same reason the clipboard path does: the marker-sync effect above
-  // treats an attachment whose marker is missing from the body as deleted, and would
-  // clean this one up before the text caught up.
-  const resourceMention = useResourceMention({
-    text,
-    caret,
-    enabled: !disabled,
-    isComposing,
-    // Read the same way the slash-picker runtime reads its tools. On reduced
-    // renderer surfaces without the MCP bridge, the menu simply never opens.
-    mcp: typeof window === "undefined" ? undefined : window.ave?.mcp,
-    resourceCount,
-    allocateN,
-    onAttach: useCallback((
-      attachment: ResourceAttachment,
-      marker: string,
-      range: { start: number; end: number },
-      mentionToken: string,
-    ) => {
+  // Shared by resource and file mentions: replace the `@token` with the marker
+  // and add the attachment in one flushSync.
+  const spliceMention = useCallback((
+    attachment: Attachment,
+    marker: string,
+    range: { start: number; end: number },
+    mentionToken: string,
+  ) => {
       // Read the LIVE text, not the value this callback closed over. The read is
       // asynchronous, so the user can keep typing while it is in flight; splicing into
       // the text as it was when they pressed Enter would silently discard everything
@@ -368,7 +367,40 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           }
         });
       });
-    }, [onAttachmentsChange, onTextChange]),
+  }, [onAttachmentsChange, onTextChange]);
+
+  // Inline "@" resource mention. Its accept path is asynchronous (it reads the resource
+  // through the host) and it commits the marker and the attachment TOGETHER here, in one
+  // flushSync, for the same reason the clipboard path does: the marker-sync effect above
+  // treats an attachment whose marker is missing from the body as deleted, and would
+  // clean this one up before the text caught up.
+  const resourceMention = useResourceMention({
+    text,
+    caret,
+    enabled: !disabled,
+    isComposing,
+    // Read the same way the slash-picker runtime reads its tools. On reduced
+    // renderer surfaces without the MCP bridge, the menu simply never opens.
+    mcp: typeof window === "undefined" ? undefined : window.ave?.mcp,
+    resourceCount,
+    searchFiles: typeof window === "undefined" ? undefined : window.ave?.workspace?.searchFiles,
+    filesEnabled,
+    chipCount: chipStripCount,
+    onAttachFile: useCallback((
+      attachment: FileAttachment,
+      marker: string,
+      range: { start: number; end: number },
+      mentionToken: string,
+    ) => spliceMention(attachment, marker, range, mentionToken), [spliceMention]),
+    allocateN,
+    onAttach: useCallback((
+      attachment: ResourceAttachment,
+      marker: string,
+      range: { start: number; end: number },
+      mentionToken: string,
+    ) => {
+      spliceMention(attachment, marker, range, mentionToken);
+    }, [spliceMention]),
     onError: useCallback((message: string) => onWarning?.(message), [onWarning]),
   });
   const {
@@ -813,12 +845,53 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     !(suggestedReplies?.isDismissed ?? false);
   const fallbackPlaceholder = ghostVisible ? "" : t("composer.defaultPlaceholder");
 
+  // Drop target. Only a FILE drag is claimed (types include "Files"); text and
+  // in-app drags keep their own behaviour. The File objects go to the preload,
+  // which resolves and registers them with main — no path is read here.
+  const isFileDrag = (e: ReactDragEvent) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+  const dropHandlers = onDropFiles && !disabled
+    ? {
+        onDragEnter: (e: ReactDragEvent) => {
+          if (!isFileDrag(e)) return;
+          e.preventDefault();
+          setDropActive(true);
+        },
+        onDragOver: (e: ReactDragEvent) => {
+          if (!isFileDrag(e)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+          if (!dropActive) setDropActive(true);
+        },
+        onDragLeave: (e: ReactDragEvent) => {
+          const next = e.relatedTarget as Node | null;
+          if (next && e.currentTarget.contains(next)) return;
+          setDropActive(false);
+        },
+        onDrop: (e: ReactDragEvent) => {
+          if (!isFileDrag(e) && e.dataTransfer.files.length === 0) return;
+          e.preventDefault();
+          setDropActive(false);
+          if (e.dataTransfer.files.length > 0) onDropFiles(e.dataTransfer.files);
+        },
+      }
+    : {};
+
   return (
-    <div data-testid={TEST_IDS.composer} className="min-w-0">
+    <div data-testid={TEST_IDS.composer} className="min-w-0" {...dropHandlers}>
       <div
         data-testid={TEST_IDS.composerInputBar}
         className="relative flex min-w-0 w-full items-stretch gap-0 overflow-hidden"
       >
+        {dropActive ? (
+          // Inside the bar, never a ring on it: the bar clips with overflow-hidden.
+          <div
+            data-testid="composer-drop-overlay"
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-lg border border-dashed border-input-bar-focus bg-input-bar text-caption text-input-bar-foreground"
+          >
+            {t("composer.dropHint")}
+          </div>
+        ) : null}
         {/* Strip is rendered ONLY when there is at least one attachment so
             the empty state does not reserve horizontal space. Single chip
             inline; 2+ collapse into a stacked card with an overlay. */}

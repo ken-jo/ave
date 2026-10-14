@@ -73,6 +73,8 @@ export interface ChatComposerDockProps {
   onSlashPickerOpenChange: (open: boolean) => void;
   ringSlot: React.ReactNode;
   onAttach: () => Promise<void> | void;
+  /** Files dropped on the composer (resolved and registered through the preload). */
+  onDropFiles?: (files: FileList) => void;
   /** App-owned warning for a verified image-capability refusal only. */
   onImageAttachmentUnavailable?: () => void;
   /** Canonical selected subscription runtime policy; legacy markers are fallback-only. */
@@ -286,6 +288,7 @@ export function ChatComposerDock({
   onImageAttachmentLimitExceeded,
   ringSlot,
   onAttach,
+  onDropFiles,
   subscriptionRuntimePolicy,
   subscriptionImageAttachmentProvider,
   subscriptionFileAttachmentProvider,
@@ -457,6 +460,8 @@ export function ChatComposerDock({
           discardClipboardImage={(filePath) => window.ave.attach.discardClipboardImage(filePath)}
           openExternal={(p) => window.ave.attach.openExternal(p)}
           imagesEnabled={imagesEnabled}
+          filesEnabled={filesEnabled}
+          onDropFiles={onDropFiles}
           imageAttachmentLimits={subscriptionRuntimePolicy?.imageAttachmentLimits}
           onSend={onComposerSend}
           suggestedReplies={suggestedReplies}
