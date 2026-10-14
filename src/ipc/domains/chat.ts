@@ -2289,7 +2289,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, CHANNELS.askUserQuestion.pending, e);
       return UNAUTHORIZED_FRAME;
     }
-    return askUserQuestionGate ? askUserQuestionGate.listPending() : [];
+    return askUserQuestionGate ? askUserQuestionGate.listPending(e.sender) : [];
   });
 
   // ─── ask_user_question response ─────────────────────────────────────────
