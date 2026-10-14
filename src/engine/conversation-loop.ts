@@ -61,7 +61,7 @@ import {
   type WorkspaceRootRevocationResult,
   type SessionProjectContext,
 } from "./turn/session.js";
-import { manualCompact, runPreflightGuard, applyBoundaryToSession } from "./turn/compaction.js";
+import { manualCompact, runPreflightGuard, applyBoundaryToSession, type ManualCompactOptions } from "./turn/compaction.js";
 import { GUIDE_MAX_ENTRIES, GUIDE_MAX_CHARS } from "./turn/guidance-limits.js";
 import { runTurn } from "./turn/run-turn.js";
 import type { A2AAgentCausalContext } from "./a2a-agent-message-envelope.js";
@@ -950,7 +950,7 @@ export class ConversationLoop {
 
 
 
-  async manualCompact(callbacks?: Pick<TurnCallbacks, "onCompactOccurred" | "onCompactStarted">): Promise<{
+  async manualCompact(callbacks?: ManualCompactOptions): Promise<{
     compacted: boolean;
     compactedAt: string | null;
     summary: string;

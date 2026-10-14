@@ -112,7 +112,13 @@ export async function handleCommand(
         // manualCompact uses the LLM compact path (12-section structured summary +
         // freezeBoundary + summaryPreamble persistence + checkpoint append).
         // callbacks 전달 — onCompactOccurred 가 renderer 에 compact_notice 이벤트 전달 가능.
-        const r = await self.manualCompact(callbacks);
+        // `/compact <focus>`: the argument tells the summarizer what to keep.
+        const focus = args.trim();
+        const r = await self.manualCompact({
+          ...(callbacks?.onCompactOccurred ? { onCompactOccurred: callbacks.onCompactOccurred } : {}),
+          ...(callbacks?.onCompactStarted ? { onCompactStarted: callbacks.onCompactStarted } : {}),
+          ...(focus.length > 0 ? { focus } : {}),
+        });
         result = r.summary;
         break;
       }

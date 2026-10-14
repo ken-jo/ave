@@ -223,6 +223,9 @@ export function withCompactSummaryInLatestBoundary(
 
 const MAX_PARSE_RETRY = 1;
 
+/** Bound on a user-supplied `/compact` focus; a focus is a phrase, not a document. */
+const MAX_COMPACT_FOCUS_CHARS = 2_000;
+
 
 const TOOL_BOUNDARY_LEDGER_K = 5;
 
@@ -291,6 +294,12 @@ export interface CompactWithBoundaryArgs {
 
   preflightTokens: number;
   abortSignal?: AbortSignal;
+  /**
+   * What the user asked the summary to keep (`/compact <focus>`). It reaches
+   * the summarizer fenced as data, after the template, and never alters which
+   * messages are compacted.
+   */
+  focus?: string;
 }
 
 export interface CompactWithBoundaryResult {
@@ -494,6 +503,7 @@ export async function compactWithBoundary(
     sessionId,
     preflightTokens,
     abortSignal,
+    focus,
   } = args;
 
   // 0. Per-message truncation pre-pass.
@@ -563,6 +573,7 @@ export async function compactWithBoundary(
       conversationText,
       compactNum,
       abortSignal,
+      ...(focus !== undefined ? { focus } : {}),
     });
     lastRawText = text;
     const parsed = parseSummary(text);
@@ -967,6 +978,7 @@ async function callSummaryLLM(args: {
   conversationText: string;
   compactNum: number;
   abortSignal?: AbortSignal;
+  focus?: string;
 }): Promise<string> {
   const isoTime = new Date().toISOString();
   const templateValues: Record<string, string> = {
@@ -974,10 +986,21 @@ async function callSummaryLLM(args: {
     timestamp: isoTime,
     compactNum: String(args.compactNum),
   };
-  const filledPrompt = SUMMARY_TEMPLATE_PROMPT_V1.replace(
+  const templatePrompt = SUMMARY_TEMPLATE_PROMPT_V1.replace(
     /\{\{(\w+)\}\}/g,
     (_match, key) => templateValues[key] ?? _match,
   );
+  const focus = args.focus?.trim().slice(0, MAX_COMPACT_FOCUS_CHARS);
+  const filledPrompt = focus
+    ? [
+        templatePrompt,
+        "",
+        t("be_structuredCompact.summaryFocusInstruction"),
+        "<compact-focus>",
+        neutralizeFenceClose(focus, "compact-focus"),
+        "</compact-focus>",
+      ].join("\n")
+    : templatePrompt;
 
   return (await args.memoryReviewer.review("recap", filledPrompt, {
     systemPrompt: t("be_structuredCompact.callSummarySystemPrompt"),

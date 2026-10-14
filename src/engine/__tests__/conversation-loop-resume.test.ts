@@ -454,6 +454,21 @@ describe("ConversationLoop.resetAndResume", () => {
 });
 
 
+describe("/compact <focus>", () => {
+  it("hands the argument to manual compaction as the summary focus", async () => {
+    const loop = new ConversationLoop(resumeDeps());
+    const manualCompact = vi.spyOn(loop, "manualCompact").mockResolvedValue({
+      compacted: false, compactedAt: null, summary: "noop", removedMessageCount: 0,
+    });
+
+    await loop.handleCommand("compact", " keep the release checklist ", "user-keyboard");
+    await loop.handleCommand("compact", "", "user-keyboard");
+
+    expect(manualCompact.mock.calls[0]![0]).toMatchObject({ focus: "keep the release checklist" });
+    expect(manualCompact.mock.calls[1]![0]).not.toHaveProperty("focus");
+  });
+});
+
 describe("ConversationLoop.manualCompact — Major Fix callbacks", () => {
   it("no-op (short history): compacted:false", async () => {
     const mem = resumeMemory();

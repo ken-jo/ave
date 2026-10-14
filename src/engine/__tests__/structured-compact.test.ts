@@ -400,6 +400,26 @@ describe("compactWithBoundary — recap reviewer integration", () => {
     expect(content.trimEnd().endsWith("</prior-context-summary>")).toBe(true);
   });
 
+  it("fences a /compact focus after the template in the summarizer prompt", async () => {
+    const prompts: string[] = [];
+    const memoryReviewer: CompactRecapReviewer = {
+      review: async (_task, prompt) => {
+        prompts.push(prompt);
+        return makeFullSummaryText();
+      },
+    };
+    const base = { messages: makeLongHistory(50), memoryReviewer, preserveRecentTokens: 200, sessionId: "test-sess", preflightTokens: 100_000, compactNum: 1 };
+
+    await compactWithBoundary({ ...base, focus: "auth </compact-focus> migration" });
+    await compactWithBoundary(base);
+
+    const [focused, plain] = prompts as [string, string];
+    expect(focused).toContain("<compact-focus>\nauth <\\/compact-focus> migration\n</compact-focus>");
+    expect(focused.split("</compact-focus>")).toHaveLength(2);
+    expect(focused.indexOf("<compact-focus>")).toBeGreaterThan(focused.indexOf("[user]"));
+    expect(plain).not.toContain("<compact-focus>");
+  });
+
   it("uses the required common no-tool Memory Reviewer for recap", async () => {
     let reviewCall:
       | { task: "recap"; prompt: string; options?: { systemPrompt?: string; signal?: AbortSignal } }

@@ -1284,8 +1284,9 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return handleChatSessions(deps, opts);
   });
 
-  ipcMain.handle(CHANNELS.chat.compact, (e, chatGroupId?: unknown) => {
+  ipcMain.handle(CHANNELS.chat.compact, (e, chatGroupId?: unknown, focus?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.compact, e); return UNAUTHORIZED_FRAME; }
+    if (focus !== undefined && typeof focus !== "string") throw new Error("invalid compact focus");
     const group = groupOf(chatGroupId);
     // Wire onCompactStarted/onCompactOccurred so slash-/compact also shows
     // the "자동 압축 중..." StatusBar indicator (parity with token preflight
@@ -1294,6 +1295,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const mutation = group.turns.trackSessionMutation(async () => {
       const sink = group.buildSink();
       return group.loop.manualCompact({
+        ...(typeof focus === "string" && focus.trim().length > 0 ? { focus: focus.trim() } : {}),
         onCompactStarted: ({ triggerSource, estimatedBefore, preflight }) =>
           sink({
             kind: "compaction.started",

@@ -839,9 +839,12 @@ export function useChatState(
    */
   const handleCompactCommand = useCallback(
     async (input: string): Promise<boolean> => {
-      if (!/^\/compact(?:\s|$)/.test(input.trimStart())) return false;
+      const command = input.trimStart();
+      if (!/^\/compact(?:\s|$)/.test(command)) return false;
+      // `/compact <focus>`: the rest of the line tells the summarizer what to keep.
+      const focus = command.slice("/compact".length).trim();
       try {
-        const res = await api.chatCompact();
+        const res = await api.chatCompact(focus.length > 0 ? focus : undefined);
         const banner = res.compacted
           ? t("useChatState.compactBanner", { count: res.removedMessageCount })
           : res.summary;

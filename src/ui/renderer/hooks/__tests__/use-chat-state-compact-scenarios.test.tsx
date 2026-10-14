@@ -387,6 +387,21 @@ describe("useChatState — compact lifecycle scenarios", () => {
     });
   });
 
+  it("S10b: /compact passes the rest of the line as the summary focus", async () => {
+    const { api } = makeCapturedApi();
+    const { result } = renderHook(() => useChatState(api, () => {}));
+
+    await act(async () => {
+      await result.current.handleCompactCommand("/compact   the auth migration  ");
+    });
+    await act(async () => {
+      await result.current.handleCompactCommand("/compact");
+    });
+
+    expect(api.chatCompact).toHaveBeenNthCalledWith(1, "the auth migration");
+    expect(api.chatCompact).toHaveBeenNthCalledWith(2, undefined);
+  });
+
   it("S11: only the exact /compact command is intercepted", async () => {
     const { api } = makeCapturedApi();
     const { result } = renderHook(() => useChatState(api, () => {}));

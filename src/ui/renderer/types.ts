@@ -791,7 +791,8 @@ export type AveApi = {
   chatImport: () => Promise<
     { ok: true; sessionId: string; messageCount: number } | { ok: false; error?: string; canceled?: boolean }
   >;
-  chatCompact: () => Promise<{ compacted: boolean; compactedAt: string | null; summary: string; removedMessageCount: number }>;
+  /** `focus` steers what the summary keeps (`/compact <focus>`). */
+  chatCompact: (focus?: string) => Promise<{ compacted: boolean; compactedAt: string | null; summary: string; removedMessageCount: number }>;
   chatSessionResume: (sessionId: string) => Promise<{
     ok: boolean; compacted: boolean; compactedAt: string | null; removedMessageCount: number;
     error?: string;
