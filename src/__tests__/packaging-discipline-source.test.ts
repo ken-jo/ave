@@ -420,6 +420,44 @@ describe("installer smoke and packaging discipline", () => {
     expect(probe.match(/^ {4}runs-on: .*$/gmu)).toEqual([`    ${linuxRunner}`]);
   });
 
+  it("builds macOS and Windows installers on the runners the repo variables name", () => {
+    const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
+    if (installers === undefined) throw new Error("build-installers.yml has no installers job");
+
+    // `vars` and `fromJSON` are available in `strategy`, so each matrix entry
+    // carries its own runner; the Linux entry keeps the hosted x64 label
+    // because the build host's architecture is the shipped one.
+    expect(installers.match(/^ {12}os: .*$/gmu)).toEqual([
+      "            os: ${{ vars.AVE_MACOS_RUNNER && fromJSON(vars.AVE_MACOS_RUNNER) || 'macos-15' }}",
+      "            os: ubuntu-latest",
+      "            os: ${{ vars.AVE_WINDOWS_RUNNER && fromJSON(vars.AVE_WINDOWS_RUNNER) || 'windows-latest' }}",
+    ]);
+    expect(installers.match(/^ {4}runs-on: .*$/gmu)).toEqual(["    runs-on: ${{ matrix.os }}"]);
+
+    // Every step runs in one shell that exists on all three hosts.
+    expect(installers).toMatch(/^ {4}defaults:\n {6}run:\n {8}shell: bash$/mu);
+
+    // A persistent runner starts from a clean checkout, gets Node from the
+    // runner tool cache rather than a system install, and drops its build
+    // output after the upload.
+    expect(installers).toMatch(/^ {10}persist-credentials: false\n {10}clean: true$/mu);
+    expectPinnedAction(installers, "actions/setup-node");
+    expect(installers).toContain('node-version: "24"');
+    const setupNode = installers.indexOf("uses: actions/setup-node@");
+    expect(setupNode).toBeGreaterThan(installers.indexOf("uses: actions/checkout@"));
+    expect(setupNode).toBeLessThan(installers.indexOf("node scripts/build-installers.mjs"));
+    expect(installers).toContain(
+      "      - name: Remove build output from a self-hosted runner\n"
+        + "        if: always() && runner.environment == 'self-hosted'\n"
+        + "        run: rm -rf release",
+    );
+    expect(installers.indexOf("Remove build output")).toBeGreaterThan(installers.indexOf("Upload installers"));
+
+    // Installer caches stay per OS.
+    expect(installers).toContain("key: ${{ runner.os }}-installers-");
+    expect(installers).toContain("key: ${{ runner.os }}-uv-");
+  });
+
   it("provides the AWS CLI from a signature-checked official build before any aws call", () => {
     const install = "bash .github/scripts/install-aws-cli.sh";
     const jobs = [

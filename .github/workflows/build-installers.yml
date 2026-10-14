@@ -85,26 +85,50 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # macOS and Windows take their runner from repo variables AVE_MACOS_RUNNER
+      # and AVE_WINDOWS_RUNNER (JSON label arrays, e.g.
+      # ["self-hosted","macOS","ARM64","ave-release"] and
+      # ["self-hosted","Windows","X64","ave-release"]); unset = hosted label.
+      # Private repo only: unset them before the repo goes public.
+      #
+      # Linux stays on the hosted x64 label: no target arch is pinned, so the
+      # build host's architecture is the shipped architecture, and the
+      # self-hosted Linux runners are ARM64.
       matrix:
         include:
           - name: macOS installer
-            os: macos-15
+            os: ${{ vars.AVE_MACOS_RUNNER && fromJSON(vars.AVE_MACOS_RUNNER) || 'macos-15' }}
             target: mac
           - name: Linux installer
             os: ubuntu-latest
             target: linux
           - name: Windows installer
-            os: windows-latest
+            os: ${{ vars.AVE_WINDOWS_RUNNER && fromJSON(vars.AVE_WINDOWS_RUNNER) || 'windows-latest' }}
             target: win
     runs-on: ${{ matrix.os }}
+    # One shell on every OS. On Windows `bash` is the Git for Windows shell,
+    # which a self-hosted Windows runner must have on PATH (checkout needs Git
+    # too); an unset shell there would depend on which PowerShell is installed.
+    defaults:
+      run:
+        shell: bash
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
     steps:
+      # `clean: true` (git clean -ffdx + reset) wipes the previous run's
+      # release/, .cache/ and node_modules/ on a persistent self-hosted runner.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          clean: true
+      # Self-hosted machines have no preinstalled toolcache; install Node into
+      # the runner's own tool cache instead of relying on a system Node.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
       - name: Verify exact source head
         shell: bash
         env:
@@ -198,15 +222,22 @@ jobs:
         # and secret-free manual candidates therefore skip only this macOS
         # launch gate so their artifacts can upload; Linux/Windows still run
         # smoke. `steps.build.outputs.skip_sign` is the signing SOT.
-        if: matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true'
+        #
+        # The Windows smoke installs machine-wide and genuinely uninstalls, so
+        # it runs only on a disposable hosted runner. A self-hosted Windows
+        # machine is a persistent host: the step is skipped there and the
+        # installer ships without that smoke.
+        if: >-
+          (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')
+          && (matrix.target != 'win' || runner.environment == 'github-hosted')
         shell: bash
         env:
           # Explicitly authorize machine-wide mutation only on the disposable
           # Windows runner, then verify both preservation and full cleanup.
-          AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}
-          # Windows runners are disposable, so the installer smoke can verify
-          # both /KEEP_APP_DATA preservation and the full uninstall cleanup.
-          AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}
+          AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && runner.environment == 'github-hosted' && '1' || '' }}
+          # Hosted Windows runners are disposable, so the installer smoke can
+          # verify both /KEEP_APP_DATA preservation and the full uninstall cleanup.
+          AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE: ${{ matrix.target == 'win' && runner.environment == 'github-hosted' && '1' || '' }}
         run: |
           set -euo pipefail
           if [ "${{ matrix.target }}" = "linux" ]; then
@@ -258,6 +289,12 @@ jobs:
             release/latest*.yml
           if-no-files-found: error
           retention-days: 14
+      # A persistent runner keeps its workspace between runs; drop the
+      # installers now rather than holding them until the next checkout cleans.
+      # .cache/ stays until then because the cache action saves it after this.
+      - name: Remove build output from a self-hosted runner
+        if: always() && runner.environment == 'self-hosted'
+        run: rm -rf release
 
   # ─────────────────────────────────────────────────────────────────────
   # publish-release — atomic single-job publisher.
