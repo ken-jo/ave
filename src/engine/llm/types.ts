@@ -96,6 +96,13 @@ export interface MessageMeta {
 
 
   compactedAt?: string;
+  /**
+   * The row exists only in the request being sent (per-turn context, a round
+   * nudge): it is never appended to history, so it is not part of the prefix
+   * the next request repeats. Transports that mark a reusable prefix stop the
+   * prefix before these rows.
+   */
+  requestOnly?: true;
   /** Compact boundary marker (idempotency + revert anchor) */
   compactBoundary?: boolean;
 
@@ -558,6 +565,12 @@ export interface StreamTurnParams {
    * vendors ignore it (see vendorSupportsLengthContinuation).
    */
   continuationPrefill?: boolean;
+  /**
+   * Stable key that groups requests sharing one reusable prompt prefix (the
+   * conversation's session id). Transports whose provider routes cached
+   * prefixes by a caller key forward it; the rest ignore it.
+   */
+  promptCacheKey?: string;
   /** Abort signal to cancel the streaming request. Providers forward to the underlying SDK when supported. */
   abortSignal?: AbortSignal;
 }

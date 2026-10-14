@@ -1070,6 +1070,7 @@ export async function queryLoop(
           llmSettings: roundLlmSettings,
           abortSignal,
           continuationPrefill: continuationPrefillText !== undefined,
+          promptCacheKey: effectiveSessionId,
           onReasoningDelta: callbacks?.onReasoningDelta,
           onTextDelta: callbacks?.onTextDelta,
           onRequestStarted: () => { turnModelSettings = requestModelSettings; },
