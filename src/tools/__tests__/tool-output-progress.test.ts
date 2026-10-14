@@ -5,11 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { maskSensitiveData } from "../../shared/dlp.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
 import {
   createLiveOutputStream,
+  createMaskedProgressRelay,
   LIVE_OUTPUT_FLUSH_CHARS,
   LIVE_OUTPUT_FLUSH_MS,
   LIVE_OUTPUT_LIMIT_CHARS,
@@ -25,7 +27,7 @@ describe("live output stream", () => {
   it("coalesces bursts into one delivery after the flush delay", () => {
     vi.useFakeTimers();
     const sink = vi.fn();
-    const stream = createLiveOutputStream(sink);
+    const stream = createLiveOutputStream({ write: sink, end: () => {} });
     stream.write("stdout", Buffer.from("a"));
     stream.write("stderr", Buffer.from("b"));
     stream.write("stdout", Buffer.from("c"));
@@ -37,14 +39,14 @@ describe("live output stream", () => {
   it("delivers at once when the buffered text reaches the flush size", () => {
     vi.useFakeTimers();
     const sink = vi.fn();
-    const stream = createLiveOutputStream(sink);
+    const stream = createLiveOutputStream({ write: sink, end: () => {} });
     stream.write("stdout", Buffer.from("x".repeat(LIVE_OUTPUT_FLUSH_CHARS)));
     expect(sink).toHaveBeenCalledExactlyOnceWith("x".repeat(LIVE_OUTPUT_FLUSH_CHARS));
   });
 
   it("reassembles a code point split across reads of one pipe", () => {
     const sink = vi.fn();
-    const stream = createLiveOutputStream(sink);
+    const stream = createLiveOutputStream({ write: sink, end: () => {} });
     const bytes = Buffer.from("한", "utf8");
     stream.write("stdout", bytes.subarray(0, 1));
     stream.write("stderr", Buffer.from("!"));
@@ -55,7 +57,7 @@ describe("live output stream", () => {
 
   it("stops after the per-call limit with one notice", () => {
     const sink = vi.fn();
-    const stream = createLiveOutputStream(sink);
+    const stream = createLiveOutputStream({ write: sink, end: () => {} });
     const block = Buffer.from("y".repeat(LIVE_OUTPUT_FLUSH_CHARS));
     for (let written = 0; written <= LIVE_OUTPUT_LIMIT_CHARS; written += block.length) {
       stream.write("stdout", block);
@@ -69,10 +71,70 @@ describe("live output stream", () => {
 
   it("delivers nothing after close", () => {
     const sink = vi.fn();
-    const stream = createLiveOutputStream(sink);
+    const stream = createLiveOutputStream({ write: sink, end: () => {} });
     stream.close();
     stream.write("stdout", Buffer.from("late"));
     expect(sink).not.toHaveBeenCalled();
+  });
+});
+
+describe("masked live output relay", () => {
+  // A credential the masker always removes, PII redaction on or off.
+  const TOKEN = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+  const relay = (pii = true) => {
+    const delivered: string[] = [];
+    const sink = createMaskedProgressRelay(
+      (text) => { delivered.push(text); },
+      (text) => maskSensitiveData(text, { pii }).masked,
+    );
+    return { sink, delivered, all: () => delivered.join("") };
+  };
+
+  it("masks a secret split across two chunks before any of it is delivered", () => {
+    const { sink, delivered, all } = relay();
+    sink.write(`step 1\nexport GH_TOKEN=${TOKEN.slice(0, 10)}`);
+    expect(delivered).toEqual(["step 1\n"]);
+    sink.write(`${TOKEN.slice(10)}\nstep 2\n`);
+    sink.end();
+    expect(all()).not.toContain(TOKEN.slice(0, 10));
+    expect(all()).not.toContain(TOKEN.slice(10));
+    expect(all()).toContain("step 2");
+  });
+
+  it("masks a secret at the very end of the stream", () => {
+    const { sink, all } = relay();
+    sink.write("token follows ");
+    sink.write(TOKEN);
+    sink.end();
+    expect(all()).not.toContain(TOKEN);
+    expect(all()).toContain("token follows");
+  });
+
+  it("still masks credentials with PII redaction off", () => {
+    const { sink, all } = relay(false);
+    sink.write(`a@example.com ${TOKEN.slice(0, 20)}`);
+    sink.write(`${TOKEN.slice(20)}\n`);
+    sink.end();
+    expect(all()).not.toContain(TOKEN.slice(4, 20));
+    expect(all()).toContain("a@example.com");
+  });
+
+  it("holds a private key block until it is complete", () => {
+    const { sink, delivered, all } = relay();
+    const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
+    sink.write(`ok\n-----BEGIN PRIVATE KEY-----\n${body}\n`);
+    expect(delivered.join("")).toBe("ok\n");
+    sink.write("-----END PRIVATE KEY-----\ndone\n");
+    sink.end();
+    expect(all()).not.toContain(body);
+    expect(all()).toContain("done");
+  });
+
+  it("delivers nothing after end", () => {
+    const { sink, delivered } = relay();
+    sink.end();
+    sink.write("late\n");
+    expect(delivered).toEqual([]);
   });
 });
 
@@ -91,7 +153,7 @@ describe.skipIf(process.platform === "win32")("bash live output", () => {
       {
         cwd: dir,
         extraAllowedDirectories: [],
-        metadata: { [TOOL_OUTPUT_PROGRESS_METADATA_KEY]: (text: string) => { chunks.push(text); } },
+        metadata: { [TOOL_OUTPUT_PROGRESS_METADATA_KEY]: { write: (text: string) => { chunks.push(text); }, end: () => {} } },
       },
     );
     // The two pipes interleave in arrival order, in the result as in the stream.
@@ -127,5 +189,23 @@ describe.skipIf(process.platform === "win32")("bash live output", () => {
     );
     expect(String(result!.content)).toBe("progress");
     expect(outputs).toEqual([{ name: "bash", text: "progress", toolUseId: "live-1" }]);
+
+    const token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+    outputs.length = 0;
+    const [secret] = await executor.executeAll(
+      [{ id: "live-2", name: "bash", input: { command: `printf 'GH_TOKEN=%s\\n' ${token}` } }],
+      {
+        sessionId: "live-session",
+        executionCwd: dir,
+        permissionContext: { trustOrigin: "user-keyboard" },
+        callbacks: {
+          onToolOutput: (name, text, meta) => { outputs.push({ name, text, toolUseId: meta.toolUseId }); },
+        },
+      },
+    );
+    // The model's result keeps the raw text; the live card never sees it.
+    expect(String(secret!.content)).toContain(token);
+    expect(outputs.length).toBeGreaterThan(0);
+    expect(outputs.map((output) => output.text).join("")).not.toContain(token);
   });
 });
