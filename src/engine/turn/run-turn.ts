@@ -33,7 +33,6 @@ import type * as QueryLoopModule from "./query-loop.js";
 import { initialToolTrustOrigin, summarizePermissionUserIntent,
 } from "./trust-origin.js";
 import { projectNextTurnInputTokens } from "../request-input-projection.js";
-import { markStaleToolResults } from "../auto-compact.js";
 import { normalizeAiSdkUsageForCost } from "../llm/pricing.js";
 import { stripLeadingSlash } from "../../shared/slash-sanitizer.js";
 import { isUserKeyboardOrigin } from "../../shared/chat-origin.js";
@@ -639,10 +638,8 @@ async function runTurnInSpan(
 
     const systemPrompt = self.buildSystemPromptForScope(
       scope,
-      options?.originSource ?? null,
       options?.rolePrompt,
       effectiveSessionId,
-      input,
     );
     // §4.5.2 step 6 — PROMPT_ASSEMBLE
     self.tracer.step("PROMPT_ASSEMBLE", {
@@ -777,13 +774,11 @@ async function runTurnInSpan(
             }
           : {}),
       });
-      // PostTurnHookChain owns the durable transcript projection: mark-stale
-      // compaction plus marker-stripped assistant output. Keep in-memory history
-      // aligned before the turn_summary final save, otherwise that final save can
-      // reintroduce raw <title>/[checkpoint] output over the cleaned transcript.
-      const shouldRestoreHookHistory =
-        hookResult.compactedMessages !== null ||
-        hookResult.detector.cleanedText !== result.text;
+      // PostTurnHookChain owns the durable transcript projection: the
+      // marker-stripped assistant output. Keep in-memory history aligned before
+      // the turn_summary final save, otherwise that final save can reintroduce
+      // raw <title>/[checkpoint] output over the cleaned transcript.
+      const shouldRestoreHookHistory = hookResult.detector.cleanedText !== result.text;
       if (shouldRestoreHookHistory) {
         const beforeCount = self.history.getMessages().length;
         const afterCount = hookResult.messagesForPersistence.length;
@@ -800,28 +795,11 @@ async function runTurnInSpan(
     } else {
       // fallback: PostTurnHookChain 미주입 시 기존 inline 로직 유지.
       // SubAgentRunner 의 child loop 가 이 경로를 사용 (`postTurnHookChain: undefined`)
-      // — isolation contract 보존 (parent session 의 audit/extractMemory/idle-poke 미터치) +
-      // markStaleToolResults 만 child 에도 적용하여 child tool_result 가 parent
-      // 로 surface 되어 history 부풀리는 문제 방지.
-      // cycle 1 MED: extractMemory 중복 제거 — memory-extract hook이
-      // PostTurnHookChain에서 이미 처리하므로 fallback에서도 호출하지 않는다.
-      // PostTurnHookChain을 주입한 경우와 fallback 모두 memory 추출은
-      // hook chain의 memory-extract 단계에서만 일어난다.
-      // Tool-result marking — 항상 실행, 저비용. child loop 에서도 작동.
-      // token preflight (next turn) 가 동등 압축 처리.
-      // child loop 은 fire-and-forget 이라 turn budget 짧음 → markStaleToolResults 만으로 충분.
-      const { messages: afterMark, result: mr } = markStaleToolResults(
-        self.history.getMessages(),
-      );
-      if (mr.marked) {
-        self.history.clear();
-        self.history.restore(afterMark);
-        if (process.env.NODE_ENV !== "production") {
-          log.info(
-            `mark-stale (fallback): marked ${mr.markedCount} tool_results, ~${mr.freedCharsOnSerialize} chars saved on serialize`,
-          );
-        }
-      }
+      // — isolation contract 보존 (parent session 의 audit/extractMemory/idle-poke 미터치).
+      // Memory extraction happens only in the hook chain's memory-extract step,
+      // on both paths. Old tool results are not stubbed after the turn: that
+      // rewrites the prefix the next request repeats. The round loop's
+      // micro-compaction and the token preflight bound a child's history.
       if (!self.deps.disableSessionPersistence) {
         await self.deps.memoryManager.saveSession(
           self.sessionId,

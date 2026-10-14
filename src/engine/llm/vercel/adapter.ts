@@ -43,6 +43,12 @@ import { createLogger } from "../../../lib/logger.js";
 import { normalizeLocalUserContentParts } from "../../../main/subscription-attachment-input.js";
 import { extractSignatureSafely } from "./signature-shim.js";
 import {
+  cachedSystemPrompt,
+  splitRequestOnlyTail,
+  withCachedConversationPrefix,
+  withCachedToolList,
+} from "./prompt-cache.js";
+import {
   classifyProviderError,
   type ClassifiedError,
 } from "../error-classifier.js";
@@ -328,10 +334,14 @@ export class VercelUnifiedProvider implements LLMProvider {
         return;
       }
       const useOpenAIResponsesAliases = usesOpenAIResponsesWire(slot, params.model);
-      const messages: ModelMessage[] = genericToModelMessages(
+      // Only this slot's provider caches up to explicit breakpoints; the
+      // `openai` / `azure-foundry` slots cache automatically, keyed by
+      // `promptCacheKey` below.
+      const markCacheBreakpoints = slot === "claude";
+      const toModelMessages = (rows: GenericMessage[]): ModelMessage[] => genericToModelMessages(
         useOpenAIResponsesAliases
-          ? remapGenericMessagesForOpenAIResponses(params.messages)
-          : params.messages,
+          ? remapGenericMessagesForOpenAIResponses(rows)
+          : rows,
         this.vendor,
         {
           toolResultImageWire:
@@ -340,12 +350,25 @@ export class VercelUnifiedProvider implements LLMProvider {
               : "derived-user",
         },
       );
+      let messages: ModelMessage[];
+      if (markCacheBreakpoints) {
+        const { conversation, requestOnlyTail } = splitRequestOnlyTail(params.messages);
+        const lastRow = conversation[conversation.length - 1];
+        messages = withCachedConversationPrefix(
+          toModelMessages(conversation),
+          toModelMessages(requestOnlyTail),
+          lastRow?.role === "user" ? lastRow.meta?.requestOnlyParts ?? 0 : 0,
+        );
+      } else {
+        messages = toModelMessages(params.messages);
+      }
       const toolSchemas = capabilities.toolCall?.supported === false ? undefined : params.tools;
-      const tools = buildTools(
+      const builtTools = buildTools(
         useOpenAIResponsesAliases
           ? remapToolSchemasForOpenAIResponses(toolSchemas)
           : toolSchemas,
       );
+      const tools = markCacheBreakpoints ? withCachedToolList(builtTools) : builtTools;
       const hasTools = Boolean(tools && Object.keys(tools).length > 0);
 
       // The model's own ceiling bounds every request, whoever asked. A chat
@@ -418,6 +441,18 @@ export class VercelUnifiedProvider implements LLMProvider {
               },
             }
           : undefined;
+
+      // One key per conversation routes its rounds to the machine already
+      // holding their shared prefix. Sent only on the `openai` /
+      // `azure-foundry` slots: an `openai-compatible` server would receive an
+      // unknown body field.
+      if (params.promptCacheKey !== undefined && (slot === "openai" || slot === "azure-foundry")) {
+        const key = slot === "azure-foundry" ? "azure" : "openai";
+        providerOptions = {
+          ...(providerOptions ?? {}),
+          [key]: { ...(providerOptions?.[key] ?? {}), promptCacheKey: params.promptCacheKey },
+        };
+      }
 
       // Self-hosted vLLM/SGLang reasoning toggle. Standard OpenAI Chat
       // Completions has no reasoning switch, but vLLM honors a per-request
@@ -582,7 +617,10 @@ export class VercelUnifiedProvider implements LLMProvider {
           // through this top-level option.
           instructions: useOpenAIResponsesAliases
             ? remapSystemPromptForOpenAIResponses(params.systemPrompt)
-            : params.systemPrompt,
+            // An empty block cannot carry a breakpoint; the provider rejects it.
+            : markCacheBreakpoints && params.systemPrompt.length > 0
+              ? cachedSystemPrompt(params.systemPrompt)
+              : params.systemPrompt,
           messages,
           ...(tools ? { tools } : {}),
           ...(transform ? { experimental_transform: transform } : {}),

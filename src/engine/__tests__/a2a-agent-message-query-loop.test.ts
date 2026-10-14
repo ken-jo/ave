@@ -56,7 +56,6 @@ function createLoop(
       setToolScope: () => undefined,
       setOriginSource: () => undefined,
       setActiveSessionId: () => undefined,
-      setSummaryPreamble: () => undefined,
     },
     inputClassifier,
     routeEngine,

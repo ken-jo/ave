@@ -51,6 +51,8 @@ export interface StreamCollectParams {
    * continue_final_message).
    */
   continuationPrefill?: boolean;
+  /** Forwarded to StreamTurnParams.promptCacheKey — the conversation's session id. */
+  promptCacheKey?: string;
 
   onReasoningDelta?: (text: string) => void;
   onTextDelta?: (text: string) => void;
@@ -152,6 +154,7 @@ export async function collectRoundStream(
         ? {}
         : { thinkingBudgetTokens: llmSettings.thinkingBudgetTokens }),
       ...(continuationPrefill ? { continuationPrefill: true } : {}),
+      ...(params.promptCacheKey === undefined ? {} : { promptCacheKey: params.promptCacheKey }),
       // API settings resolve the default or explicit ceiling before collection.
       // Managed runtimes omit it when their protocol owns output control.
       ...(llmSettings.outputTokenLimit === undefined

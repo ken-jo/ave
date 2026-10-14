@@ -214,12 +214,7 @@ describe("ConversationLoop.resetAndResume", () => {
         return null;
       }),
     } as unknown as ConversationLoopDeps["memoryManager"];
-    const systemPromptBuilder = {
-      build: () => "system",
-      setToolScope: vi.fn(),
-      setSummaryPreamble: vi.fn(),
-    } as unknown as ConversationLoopDeps["systemPromptBuilder"];
-    const loop = new ConversationLoop(resumeDeps({ memoryManager: mem, systemPromptBuilder }),
+    const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }),
     );
 
     const result = await loop.resetAndResume("3e323a73-28d0-4dce-8229-3b0eca68d32a");
@@ -230,10 +225,63 @@ describe("ConversationLoop.resetAndResume", () => {
     expect(mem.loadSession).not.toHaveBeenCalledWith("a1bdc27a-c758-4a74-8955-5e9188412366");
     // The store stamps a row identity on restore; the claim here is that the
     // CHILD's rows loaded and the parent's did not.
-    expect(loop.getHistory().getMessages()).toMatchObject(childHistory);
-    expect(loop.getHistory().getMessages()).toHaveLength(childHistory.length);
-    expect(systemPromptBuilder.setSummaryPreamble).toHaveBeenCalledWith("요약된 부모 맥락",
-    );
+    // The child's own rows load behind one boundary row carrying the copied
+    // summary; nothing of the parent's transcript is merged in.
+    const [boundary, ...rows] = loop.getHistory().getMessages();
+    expect(boundary!.meta?.compactBoundary).toBe(true);
+    expect(String(boundary!.content)).toContain("요약된 부모 맥락");
+    expect(rows).toMatchObject(childHistory);
+    expect(rows).toHaveLength(childHistory.length);
+  });
+
+  it("gives an older fork with a metadata-only summary a boundary row on load, once", async () => {
+    const history: GenericMessage[] = [
+      { role: "user", content: "forked question" },
+      { role: "assistant", content: "forked answer" },
+    ];
+    const mem = {
+      ...resumeMemory(history),
+      loadSessionMetadata: vi.fn(() => ({
+        summaryPreamble: "FORK-SUMMARY",
+        branchedFromCompactNum: 3,
+        branchedAt: "2026-10-01T00:00:00.000Z",
+      })),
+    } as unknown as ConversationLoopDeps["memoryManager"];
+    const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }));
+
+    expect((await loop.resetAndResume("08001f8f-a6f5-4bb9-820d-df1e8366af93")).ok).toBe(true);
+    const loaded = loop.getHistory().getMessages();
+    expect(loaded).toHaveLength(3);
+    expect(loaded[0]!.meta).toMatchObject({ compactBoundary: true, compactNum: 3 });
+    expect(String(loaded[0]!.content)).toContain("<prior-context-summary>\nFORK-SUMMARY\n</prior-context-summary>");
+    expect(loaded.slice(1).map((m) => m.content)).toEqual(["forked question", "forked answer"]);
+
+    // Reloading the upgraded history adds nothing.
+    const again = new ConversationLoop(resumeDeps({
+      memoryManager: { ...mem, loadSession: vi.fn(() => loaded) } as unknown as ConversationLoopDeps["memoryManager"],
+    }));
+    expect((await again.resetAndResume("08001f8f-a6f5-4bb9-820d-df1e8366af93")).ok).toBe(true);
+    expect(again.getHistory().getMessages()).toHaveLength(3);
+  });
+
+  it("writes a metadata-only compaction summary into the latest boundary row on load", async () => {
+    const history: GenericMessage[] = [
+      { role: "user", content: "[old marker]", meta: { compactBoundary: true, compactNum: 2 } },
+      { role: "user", content: "next question" },
+    ];
+    const mem = {
+      ...resumeMemory(history),
+      loadSessionMetadata: vi.fn(() => ({ summaryPreamble: "SUMMARY-OF-REMOVED-TURNS" })),
+    } as unknown as ConversationLoopDeps["memoryManager"];
+    const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }));
+
+    const result = await loop.resetAndResume("08001f8f-a6f5-4bb9-820d-df1e8366af93");
+
+    expect(result.ok).toBe(true);
+    const [boundary, next] = loop.getHistory().getMessages();
+    expect(boundary!.content).toContain("<prior-context-summary>\nSUMMARY-OF-REMOVED-TURNS\n</prior-context-summary>");
+    expect(boundary!.meta?.compactBoundary).toBe(true);
+    expect(next!.content).toBe("next question");
   });
 
   it("sets cumulativeUsage estimate on resume for the next token preflight", async () => {
@@ -438,6 +486,21 @@ describe("ConversationLoop.resetAndResume", () => {
   });
 });
 
+
+describe("/compact <focus>", () => {
+  it("hands the argument to manual compaction as the summary focus", async () => {
+    const loop = new ConversationLoop(resumeDeps());
+    const manualCompact = vi.spyOn(loop, "manualCompact").mockResolvedValue({
+      compacted: false, compactedAt: null, summary: "noop", removedMessageCount: 0,
+    });
+
+    await loop.handleCommand("compact", " keep the release checklist ", "user-keyboard");
+    await loop.handleCommand("compact", "", "user-keyboard");
+
+    expect(manualCompact.mock.calls[0]![0]).toMatchObject({ focus: "keep the release checklist" });
+    expect(manualCompact.mock.calls[1]![0]).not.toHaveProperty("focus");
+  });
+});
 
 describe("ConversationLoop.manualCompact — Major Fix callbacks", () => {
   it("no-op (short history): compacted:false", async () => {

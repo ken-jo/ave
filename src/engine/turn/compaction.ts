@@ -304,7 +304,13 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
 
 const MAX_FORCE_RECOVER_PER_SESSION = 3;
 
-export async function manualCompact(self: ConversationLoop, callbacks?: Pick<TurnCallbacks, "onCompactOccurred" | "onCompactStarted">): Promise<{
+/** Manual `/compact`: progress callbacks plus the user's optional focus. */
+export type ManualCompactOptions = Pick<TurnCallbacks, "onCompactOccurred" | "onCompactStarted"> & {
+  /** What the summary should keep, from `/compact <focus>`. */
+  focus?: string;
+};
+
+export async function manualCompact(self: ConversationLoop, callbacks?: ManualCompactOptions): Promise<{
     compacted: boolean;
     compactedAt: string | null;
     summary: string;
@@ -373,6 +379,7 @@ export async function manualCompact(self: ConversationLoop, callbacks?: Pick<Tur
         compactNum: self.compactNum + 1,
         sessionId: self.sessionId,
         preflightTokens: preflight,
+        ...(callbacks?.focus !== undefined ? { focus: callbacks.focus } : {}),
       });
 
       if (result.status === CompressionStatus.NOOP) {
@@ -538,7 +545,6 @@ export async function applyBoundaryToSession(
     let compactedHistory = compactedHistoryWithContextCarrier(result.newHistory, result.estimatedAfter);
     self.history.clear();
     self.history.restore(compactedHistory);
-    self.deps.systemPromptBuilder.setSummaryPreamble?.(preamble);
     const contextTokensAfter = projectionContext.estimateCurrent().totalTokens;
     compactedHistory = compactedHistoryWithContextCarrier(result.newHistory, contextTokensAfter);
     self.history.clear();

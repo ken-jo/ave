@@ -17,6 +17,7 @@ import {
   TRUNCATION_PRESERVED_LINES,
 } from "../shared/compact-status.js";
 import { t } from "../i18n/index.js";
+import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 
 const log = createLogger("compact");
 
@@ -171,11 +172,98 @@ export function freezeBoundary(boundary: CompactBoundary): Readonly<CompactBound
 // ─── compactWithBoundary (LLM call) ─────────────────────
 
 
-const BOUNDARY_STUB_TEMPLATE = (n: number): string =>
-  t("be_structuredCompact.boundaryStub", { n: String(n) });
+/**
+ * The model-facing text of a compact boundary row: the summary of everything
+ * the compaction removed, carried in the conversation where the removed turns
+ * were. It lives in the message stream rather than the system prompt so a
+ * compaction rewrites only the history it replaced and the system prompt
+ * stays a reusable prefix.
+ *
+ * The summary is generated from earlier conversation content, which may hold
+ * text shaped like an instruction. The fence and its guard keep it context:
+ * the model uses it to answer, but acts only on messages outside the fence.
+ */
+function renderCompactSummaryMessage(compactNum: number, summary: string): string {
+  return [
+    t("be_structuredCompact.boundaryStub", { n: String(compactNum) }),
+    "",
+    t("be_structuredCompact.summaryMessageUseContext"),
+    "",
+    t("be_structuredCompact.summaryMessageSecurityGuard"),
+    "",
+    "<prior-context-summary>",
+    neutralizeFenceClose(summary, "prior-context-summary"),
+    "</prior-context-summary>",
+  ].join("\n");
+}
+
+/**
+ * A session saved while the summary still rode in the system prompt keeps it
+ * only in its metadata, and its latest boundary row holds the bare marker.
+ * Loading such a session writes the summary into that row so the resumed
+ * conversation carries it in the message stream like a new compaction does.
+ * Rows that already carry a summary are returned unchanged.
+ */
+function withCompactSummaryInLatestBoundary(
+  messages: GenericMessage[],
+  summary: string | undefined,
+): GenericMessage[] {
+  if (summary === undefined || summary.length === 0) return messages;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const row = messages[i]!;
+    if (row.role !== "user" || row.meta?.compactBoundary !== true) continue;
+    if (typeof row.content !== "string" || row.content.includes("<prior-context-summary>")) return messages;
+    const out = messages.slice();
+    out[i] = { ...row, content: renderCompactSummaryMessage(row.meta.compactNum ?? 0, summary) };
+    return out;
+  }
+  return messages;
+}
+
+/**
+ * The boundary row is the one place a compaction summary reaches the model.
+ * A history that owns a summary — a fork copying its source checkpoint's, or
+ * a session whose summary predates that rule and sits only in metadata —
+ * must carry it there: an existing boundary row receives it, and a history
+ * with none (a fork slice, or an older fork saved before forks wrote one)
+ * gets a boundary row at its head in the compaction's form. Idempotent: a
+ * boundary row that already holds a summary is left alone.
+ */
+export function withSummaryBoundary(
+  messages: GenericMessage[],
+  source: { compactNum: number; summary: string | undefined; trigger?: "auto-compact" | "manual"; createdAt?: string },
+): GenericMessage[] {
+  const summary = source.summary;
+  if (summary === undefined || summary.length === 0) return messages;
+  if (messages.some((m) => m.role === "user" && m.meta?.compactBoundary === true)) {
+    return withCompactSummaryInLatestBoundary(messages, summary);
+  }
+  const createdAt = source.createdAt === undefined ? Number.NaN : new Date(source.createdAt).getTime();
+  const boundaryRow: GenericMessage = {
+    role: "user",
+    content: renderCompactSummaryMessage(source.compactNum, summary),
+    meta: {
+      compactBoundary: true,
+      compactNum: source.compactNum,
+      ...(Number.isFinite(createdAt) ? { createdAt } : {}),
+      // Nothing was removed from this history; the divider names the checkpoint.
+      checkpointMeta: {
+        removedMessages: 0,
+        freedTokens: 0,
+        compactNum: source.compactNum,
+        ...(source.trigger !== undefined ? { trigger: source.trigger } : {}),
+        summary: summary.slice(0, 200),
+      },
+    },
+  };
+  return [boundaryRow, ...messages];
+}
 
 
 const MAX_PARSE_RETRY = 1;
+
+/** Bound on a user-supplied `/compact` focus; a focus is a phrase, not a document. */
+const MAX_COMPACT_FOCUS_CHARS = 2_000;
 
 
 const TOOL_BOUNDARY_LEDGER_K = 5;
@@ -245,6 +333,12 @@ export interface CompactWithBoundaryArgs {
 
   preflightTokens: number;
   abortSignal?: AbortSignal;
+  /**
+   * What the user asked the summary to keep (`/compact <focus>`). It reaches
+   * the summarizer fenced as data, after the template, and never alters which
+   * messages are compacted.
+   */
+  focus?: string;
 }
 
 export interface CompactWithBoundaryResult {
@@ -432,8 +526,8 @@ async function dropOldestUntilUnderBudget(
  *   6. CompactBoundary assemble + freezeBoundary
  *   7. newHistory = [stub user message + boundary meta, ...toPreserve]
  *
- * 호출자 는 step 7 결과로 `history.restore()` + `setSummaryPreamble(renderBoundaryAsPreamble(boundary))`
- * 를 *동기* 순서로 실행해야 summary slot 정합성 보장.
+ * The boundary row carries the rendered summary itself
+ * (`renderCompactSummaryMessage`), so restoring `newHistory` is the whole apply.
  */
 export async function compactWithBoundary(
   args: CompactWithBoundaryArgs,
@@ -448,6 +542,7 @@ export async function compactWithBoundary(
     sessionId,
     preflightTokens,
     abortSignal,
+    focus,
   } = args;
 
   // 0. Per-message truncation pre-pass.
@@ -517,6 +612,7 @@ export async function compactWithBoundary(
       conversationText,
       compactNum,
       abortSignal,
+      ...(focus !== undefined ? { focus } : {}),
     });
     lastRawText = text;
     const parsed = parseSummary(text);
@@ -554,8 +650,9 @@ export async function compactWithBoundary(
   // stub template text. `freedTokens` here is the pre→post compact delta of
   // the messages that the LLM summarized; the conversation-loop's
   // onCompactOccurred emits the same number for the live UI path.
+  const boundaryContent = renderCompactSummaryMessage(compactNum, renderBoundaryAsPreamble(boundary));
   const stubEstimatedAfter = estimateMessagesTokens([
-    { role: "user" as const, content: BOUNDARY_STUB_TEMPLATE(compactNum) },
+    { role: "user" as const, content: boundaryContent },
   ]);
   const stubFreedTokens = Math.max(
     0,
@@ -568,7 +665,7 @@ export async function compactWithBoundary(
   const boundaryCreatedAtMs = new Date(boundary.createdAt).getTime();
   const stubMessage: GenericMessage = {
     role: "user",
-    content: BOUNDARY_STUB_TEMPLATE(compactNum),
+    content: boundaryContent,
     meta: {
       compactBoundary: true,
       compactNum,
@@ -648,10 +745,9 @@ export async function compactWithBoundary(
 }
 
 /**
- * CompactBoundary → system prompt ⑧ slot preamble 텍스트 변환.
- *
- * Anthropic / Gemini 는 이 텍스트가 system prompt 안 `<prior-context-summary>` fence
- * 안에 들어감 (`system-prompt-builder.ts:447-453`) — prompt-injection vector 차단.
+ * CompactBoundary → summary text. The boundary row wraps it in the
+ * `<prior-context-summary>` fence (`renderCompactSummaryMessage`); session
+ * metadata and the checkpoint record keep it unwrapped for display.
  * raw fallback 경우 raw 그대로 반환.
  */
 export function renderBoundaryAsPreamble(boundary: CompactBoundary): string {
@@ -921,6 +1017,7 @@ async function callSummaryLLM(args: {
   conversationText: string;
   compactNum: number;
   abortSignal?: AbortSignal;
+  focus?: string;
 }): Promise<string> {
   const isoTime = new Date().toISOString();
   const templateValues: Record<string, string> = {
@@ -928,10 +1025,21 @@ async function callSummaryLLM(args: {
     timestamp: isoTime,
     compactNum: String(args.compactNum),
   };
-  const filledPrompt = SUMMARY_TEMPLATE_PROMPT_V1.replace(
+  const templatePrompt = SUMMARY_TEMPLATE_PROMPT_V1.replace(
     /\{\{(\w+)\}\}/g,
     (_match, key) => templateValues[key] ?? _match,
   );
+  const focus = args.focus?.trim().slice(0, MAX_COMPACT_FOCUS_CHARS);
+  const filledPrompt = focus
+    ? [
+        templatePrompt,
+        "",
+        t("be_structuredCompact.summaryFocusInstruction"),
+        "<compact-focus>",
+        neutralizeFenceClose(focus, "compact-focus"),
+        "</compact-focus>",
+      ].join("\n")
+    : templatePrompt;
 
   return (await args.memoryReviewer.review("recap", filledPrompt, {
     systemPrompt: t("be_structuredCompact.callSummarySystemPrompt"),

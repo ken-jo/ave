@@ -192,7 +192,7 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
     ipcRenderer.invoke(CHANNELS.chat.import) as Promise<
       { ok: true; sessionId: string; messageCount: number } | { ok: false; error?: string; canceled?: boolean }
     >,
-  chatCompact: async () => ipcRenderer.invoke(CHANNELS.chat.compact, chatGroupId),
+  chatCompact: async (focus?: string) => ipcRenderer.invoke(CHANNELS.chat.compact, chatGroupId, focus),
   chatSessionResume: async (sessionId: string) => ipcRenderer.invoke(CHANNELS.chat.sessionResume, sessionId, chatGroupId),
   // Checkpoint view and explicit branch actions.
   chatEnterCheckpointView: async (sessionId: string, compactNum: number) =>

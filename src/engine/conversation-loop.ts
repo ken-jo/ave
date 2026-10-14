@@ -3,6 +3,7 @@ import { normalizeToolOutputArtifactInfo } from "../shared/tool-output-artifact.
 
 
 
+import { appendRequestOnlyText } from "./turn/request-only-text.js";
 import { ConversationHistory } from "./conversation-history.js";
 import { ToolExecutor } from "../tools/executor.js";
 import { endShellSession } from "../tools/shell-tools.js";
@@ -62,7 +63,7 @@ import {
   type WorkspaceRootRevocationResult,
   type SessionProjectContext,
 } from "./turn/session.js";
-import { manualCompact, runPreflightGuard, applyBoundaryToSession } from "./turn/compaction.js";
+import { manualCompact, runPreflightGuard, applyBoundaryToSession, type ManualCompactOptions } from "./turn/compaction.js";
 import { GUIDE_MAX_ENTRIES, GUIDE_MAX_CHARS } from "./turn/guidance-limits.js";
 import { runTurn } from "./turn/run-turn.js";
 import type { A2AAgentCausalContext } from "./a2a-agent-message-envelope.js";
@@ -484,19 +485,15 @@ export class ConversationLoop {
 
   buildSystemPromptForScope(
     scope: ToolScope,
-    originSource: string | null,
     rolePrompt?: ActiveRolePrompt,
     overlaySessionId = this.sessionId,
-    memoryQuery = "",
   ): string {
     this.deps.systemPromptBuilder.setToolScope?.(scope);
-    this.deps.systemPromptBuilder.setOriginSource?.(originSource);
     this.deps.systemPromptBuilder.setActiveSessionId?.(overlaySessionId);
     this.deps.systemPromptBuilder.setActiveRolePrompt?.(rolePrompt ?? null);
     try {
-      return this.deps.systemPromptBuilder.build({ memoryQuery });
+      return this.deps.systemPromptBuilder.build();
     } finally {
-      this.deps.systemPromptBuilder.setOriginSource?.(null);
       this.deps.systemPromptBuilder.setActiveSessionId?.(null);
       this.deps.systemPromptBuilder.setActiveRolePrompt?.(null);
     }
@@ -506,13 +503,27 @@ export class ConversationLoop {
     return estimateRequestInputProjection(input, this.provider ?? undefined);
   }
 
+  /**
+   * The per-turn context text (see `SystemPromptBuilder.buildTurnContext`), or
+   * "" when the builder renders none. It is sent only on a round that starts
+   * from a user message, appended inside that message (request-only-text.ts).
+   */
+  buildTurnContext(memoryQuery: string, originSource: string | null): string {
+    return this.deps.systemPromptBuilder.buildTurnContext?.(memoryQuery, originSource) ?? "";
+  }
+
   estimateCurrentRequestProjection(params: {
     systemPrompt: string;
     toolSchemas: ToolSchema[];
+    /** The turn context the request carries inside its trailing user message, if any. */
+    turnContext?: string;
   }): RequestInputProjection {
+    const history = this.history.getMessages();
     return this.projectProviderRequestInput({
       systemPrompt: params.systemPrompt,
-      messages: this.history.getMessages(),
+      messages: params.turnContext && history[history.length - 1]?.role === "user"
+        ? appendRequestOnlyText(history, [params.turnContext])
+        : history,
       toolSchemas: params.toolSchemas,
     });
   }
@@ -527,17 +538,17 @@ export class ConversationLoop {
   ): RequestProjectionContext {
     const buildSystemPrompt = () => this.buildSystemPromptForScope(
       scope,
-      originSource,
       rolePrompt,
       overlaySessionId,
-      memoryQuery,
     );
+    const turnContext = this.buildTurnContext(memoryQuery, originSource);
     return {
       systemPrompt: buildSystemPrompt(),
       toolSchemas,
       estimateCurrent: () => this.estimateCurrentRequestProjection({
         systemPrompt: buildSystemPrompt(),
         toolSchemas,
+        ...(turnContext ? { turnContext } : {}),
       }),
     };
   }
@@ -964,7 +975,7 @@ export class ConversationLoop {
 
 
 
-  async manualCompact(callbacks?: Pick<TurnCallbacks, "onCompactOccurred" | "onCompactStarted">): Promise<{
+  async manualCompact(callbacks?: ManualCompactOptions): Promise<{
     compacted: boolean;
     compactedAt: string | null;
     summary: string;
