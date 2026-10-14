@@ -705,6 +705,8 @@ export type AveApi = {
   >;
   // Provider-auth bridge methods are plugin-owned.
   chatHasProvider: () => Promise<boolean>;
+  /** Custom slash commands visible from this tile's session project. */
+  chatListCustomCommands?: () => Promise<{ commands: import("../../shared/custom-command.js").CustomCommandEntry[] }>;
   captureUserKeyboardIntent: () => import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot;
   chatSend: (
     input: string,

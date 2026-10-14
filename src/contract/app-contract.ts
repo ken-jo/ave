@@ -83,6 +83,7 @@ export const MAX_PANES = 4;
 export const CHANNELS = {
   chat: {
     hasProvider: "ave:chat:has-provider",
+    listCustomCommands: "ave:chat:list-custom-commands",
     send: "ave:chat:send",
     guide: "ave:chat:guide",
     abort: "ave:chat:abort",

@@ -63,6 +63,11 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
   return {
   // ─── Chat (ConversationLoop) ─────────────────────
   chatHasProvider: async () => ipcRenderer.invoke(CHANNELS.chat.hasProvider, chatGroupId) as Promise<boolean>,
+  // The tile's own session decides which project's commands are listed.
+  chatListCustomCommands: async () =>
+    ipcRenderer.invoke(CHANNELS.chat.listCustomCommands, chatGroupId) as Promise<{
+      commands: import("../shared/custom-command.js").CustomCommandEntry[];
+    }>,
   chatGroupRelease: async () =>
     ipcRenderer.invoke(CHANNELS.chat.groupRelease, chatGroupId) as Promise<{ ok: boolean; released?: boolean; error?: string }>,
   captureUserKeyboardIntent,

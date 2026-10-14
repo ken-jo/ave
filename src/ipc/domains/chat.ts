@@ -28,6 +28,7 @@ import {
 import type { ChatUtteranceMode } from "../../shared/chat-utterance.js";
 import { parseStagedEnvelope, isMissingStagedEnvelopeErrorMessage } from "../../shared/staged-origins.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
+import { listCustomCommands } from "../../core/custom-commands.js";
 import { isValidSessionId, MAX_SESSION_FILE_BYTES } from "../../memory/memory-manager.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
@@ -1016,6 +1017,16 @@ export function registerChatHandlers(deps: IpcDeps): void {
   // read-only, sender guard optional
   ipcMain.handle(CHANNELS.chat.hasProvider, (_e, chatGroupId?: unknown) =>
     groupOf(chatGroupId).loop.hasProvider());
+  // Reads command files from disk, so the sender is checked. The project comes
+  // from the tile's own session, never from the renderer.
+  ipcMain.handle(CHANNELS.chat.listCustomCommands, async (e, chatGroupId?: unknown) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.chat.listCustomCommands, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    const { projectRoot } = groupOf(chatGroupId).loop.getSessionProjectContext();
+    return { commands: await listCustomCommands(projectRoot) };
+  });
   ipcMain.handle(CHANNELS.llm.ping, async (e) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.llm.ping, e);

@@ -8,6 +8,9 @@ export const en = {
   "slashPicker.catMcp": "MCP tools",
   "slashPicker.catMcpPrompts": "MCP prompts",
   "slashPicker.catSkills": "Skills",
+  "slashPicker.catCustomCommands": "Custom commands",
+  "slashPicker.customCommandProject": "Project command",
+  "slashPicker.customCommandUser": "Personal command",
   "slashPicker.catPersona": "Persona",
   "slashPicker.inlineHint": "↑↓ navigate · ⏎ select · esc dismiss",
 } as const;
@@ -20,6 +23,9 @@ export const ko: Record<keyof typeof en, string> = {
   "slashPicker.catMcp": "MCP 도구",
   "slashPicker.catMcpPrompts": "MCP 프롬프트",
   "slashPicker.catSkills": "스킬",
+  "slashPicker.catCustomCommands": "사용자 정의 명령",
+  "slashPicker.customCommandProject": "프로젝트 명령",
+  "slashPicker.customCommandUser": "개인 명령",
   "slashPicker.catPersona": "페르소나",
   "slashPicker.inlineHint": "↑↓ 이동 · ⏎ 선택 · esc 닫기",
 };

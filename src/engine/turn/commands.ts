@@ -28,6 +28,16 @@ function toolProvenanceLabel(tool: {
   return "builtin";
 }
 
+/**
+ * The names {@link handleCommand} dispatches, in step with its switch. A
+ * custom command file can only claim a name outside this set: built-ins
+ * always win.
+ */
+export const BUILTIN_SLASH_COMMANDS: ReadonlySet<string> = new Set([
+  "new", "remember", "memory", "sessions", "load", "model", "vendor",
+  "compact", "tools", "permission", "goal", "help",
+]);
+
 /** Keyword that returns `/model` to the session's constructed model. */
 const MODEL_COMMAND_RESET = "default";
 
