@@ -113,6 +113,14 @@ export interface MessageMeta {
 
   systemNotice?: "context-error" | "stream-error" | "interrupted";
   /**
+   * Directory instruction files appended to this tool_result on first touch
+   * (`engine/turn/directory-instructions.ts`): each file's project-relative
+   * path and the bytes its block added. A file counts as attached only while
+   * a row naming it still reaches the provider, so compaction that drops or
+   * stubs the row lets the next touch attach it again.
+   */
+  directoryInstructions?: { source: string; bytes: number }[];
+  /**
    * Tool-result generic size cap marker (Issue #902).
    *
    * Set by `ConversationHistory.append`/`restore` on tool_result messages

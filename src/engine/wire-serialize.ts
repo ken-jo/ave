@@ -44,6 +44,27 @@ function buildToolResultTruncatedStubForWire(
 
 
 
+/**
+ * Whether a tool_result row's metadata replaces its content with a stub on
+ * the wire (compacted, over the size cap, or spilled to an artifact).
+ */
+function toolResultIsMarkedForWireStub(meta: NonNullable<GenericMessage["meta"]>): boolean {
+  return meta.compactedAt !== undefined
+    || meta.truncated !== undefined
+    || meta.outputArtifact !== undefined
+    || meta.outputArtifactUnavailable === true;
+}
+
+/**
+ * Whether a tool_result row's in-memory content is what the provider sees.
+ * False for a row stubbed by {@link prepareMarkedToolResultsForWire} and for
+ * one whose content is already a persisted stub.
+ */
+export function toolResultContentReachesWire(meta: GenericMessage["meta"]): boolean {
+  if (meta === undefined) return true;
+  return !toolResultIsMarkedForWireStub(meta) && meta.serializedStub !== true;
+}
+
 export function prepareMarkedToolResultsForWire(messages: GenericMessage[]): GenericMessage[] {
   let firstEligibleIdx = -1;
   for (let i = 0; i < messages.length; i++) {
@@ -64,7 +85,7 @@ export function prepareMarkedToolResultsForWire(messages: GenericMessage[]): Gen
       continue;
     }
 
-    const marked = msg.meta.compactedAt !== undefined || msg.meta.truncated !== undefined || (msg.meta.outputArtifact !== undefined || msg.meta.outputArtifactUnavailable === true);
+    const marked = toolResultIsMarkedForWireStub(msg.meta);
     if (marked && msg.meta.serializedStub !== true) {
       // Oversized results keep their bounded preview and retrieval path even
       // after later compaction. Other stale results use the shorter stripped form.

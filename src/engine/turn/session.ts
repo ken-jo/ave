@@ -120,7 +120,6 @@ function applyFreshSessionState(
   self.compactNum = 0;
   self.rateLimitRecoveryAttempted = false;
   self.resetSessionModelOverride();
-  self.attachedDirectoryInstructions.clear();
   self.tracer = createTracer(self.sessionId);
   self.deps.systemPromptBuilder.setSummaryPreamble?.(null);
 }
@@ -310,7 +309,6 @@ export async function loadSession(
     self.sessionRoutineTitle = sessionMeta?.routineTitle ?? null;
     self.sessionAdditionalDirectories = [];
     self.resetSessionModelOverride();
-    self.attachedDirectoryInstructions.clear();
     applyProjectContext(self, sessionMeta?.projectRoot
       ? {
           projectRoot: sessionMeta.projectRoot,
