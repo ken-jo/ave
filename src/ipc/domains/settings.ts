@@ -270,28 +270,6 @@ export async function broadcastSettingsSnapshot(
 }
 
 /**
- * Stable signature of every endpoint an LLM route could reach — each vendor
- * block's configured `baseUrl` PLUS the active marketplace provider preset's
- * address, which lives in the preset registry rather than in a vendor block.
- * The ASRT shared network union is built from exactly these, so ANY of them
- * changing — not just the active vendor's or Foundry's — must trigger a
- * sandbox network live-refresh. Used to detect that change across a settings
- * patch and call `refreshSandboxNetworkConfig`.
- */
-function vendorBaseUrlSignature(
-  llm: LLMSettings,
-  installedProviderPresets: MarketplaceSettings["installedProviderPresets"],
-): string {
-  return llmRouteBaseUrlSignature({
-    vendors: llm.vendors,
-    ...(llm.marketplaceProviderPresetId
-      ? { marketplaceProviderPresetId: llm.marketplaceProviderPresetId }
-      : {}),
-    installedProviderPresets,
-  });
-}
-
-/**
  * Stable signature of the shortcut + startup-launch inputs so the
  * `settings.update` handler can detect when a patch actually changed them and
  * only then re-register the global shortcut / re-sync the OS login item. Mirrors
@@ -413,8 +391,8 @@ async function finishProviderPresetMarketplaceMutation(
   refreshChatRuntimeProviders(deps);
   deps.refreshActiveLlmWildcard?.();
   if (
-    vendorBaseUrlSignature(prevLlm, prevInstalledProviderPresets)
-    !== vendorBaseUrlSignature(
+    llmRouteBaseUrlSignature(prevLlm, prevInstalledProviderPresets)
+    !== llmRouteBaseUrlSignature(
       newLlm,
       deps.settingsService.get("marketplace").installedProviderPresets,
     )
@@ -880,7 +858,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     // ASRT dynamic-endpoint union: capture EVERY vendor baseUrl so a change to
     // any user-configured endpoint (e.g. the indexer's Azure OpenAI resource)
     // triggers a sandbox network live-refresh, not just an active/Foundry change.
-    const prevVendorBaseUrlSig = vendorBaseUrlSignature(
+    const prevVendorBaseUrlSig = llmRouteBaseUrlSignature(
       prevLlm,
       settingsService.get("marketplace").installedProviderPresets,
     );
@@ -961,7 +939,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         refreshChatRuntimeProviders(deps);
         deps.refreshActiveLlmWildcard?.();
         if (
-          vendorBaseUrlSignature(
+          llmRouteBaseUrlSignature(
             settingsService.get("llm"),
             settingsService.get("marketplace").installedProviderPresets,
           ) !== prevVendorBaseUrlSig
@@ -991,7 +969,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     // endpoint host is enforced/allowed (and the old one dropped) without a
     // restart. No-op inside the closure when the sandbox gate is OFF.
     if (
-      vendorBaseUrlSignature(
+      llmRouteBaseUrlSignature(
         newLlm,
         settingsService.get("marketplace").installedProviderPresets,
       ) !== prevVendorBaseUrlSig

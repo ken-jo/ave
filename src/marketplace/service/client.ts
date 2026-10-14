@@ -23,6 +23,7 @@ import { isAdminPolicyFileAbsent } from "../../lib/admin-policy-file.js";
 import { createMarketplaceLogger } from "../log.js";
 import { parseStrictJson } from "../../shared/strict-json.js";
 import { parseMarketplaceAnnouncementRows, type MarketplaceAnnouncement } from "../../shared/marketplace-announcements.js";
+import { isRecord } from "../../shared/is-record.js";
 
 const log = createMarketplaceLogger("service-endpoint");
 
@@ -62,10 +63,6 @@ export interface ResolvedService {
 interface OriginOptions {
   /** Plain http to a loopback host: unpackaged builds only (a local staging base). */
   allowLoopbackHttp?: boolean;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
