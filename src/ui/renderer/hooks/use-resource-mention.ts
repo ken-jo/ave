@@ -69,6 +69,7 @@ type ResourceMentionTarget =
 
 /** Debounce between keystrokes and a workspace file query. */
 const FILE_SEARCH_DEBOUNCE_MS = 120;
+const NO_ROWS: ResourceMentionItem[] = [];
 
 /** One offered row, already display-normalized. */
 export interface ResourceMentionItem {
@@ -216,14 +217,18 @@ export function useResourceMention({
   const triggerKey = trigger ? `${trigger.start}:${trigger.end}:${trigger.query}` : null;
   const active = trigger !== null;
   const fileQuery = trigger?.query ?? null;
-  const [fileRows, setFileRows] = useState<ResourceMentionItem[]>([]);
+  // Results carry the query they answer: during the debounce and the search
+  // the previous query's rows must not be on screen, or Enter would attach a
+  // match for text the user already changed.
+  const [fileResults, setFileResults] = useState<{ query: string; rows: ResourceMentionItem[] } | null>(null);
+  const fileRows = fileResults !== null && fileResults.query === fileQuery ? fileResults.rows : NO_ROWS;
 
   // Workspace files are searched in MAIN per query (debounced), not filtered
   // here: main owns the roots, the sensitive filter and the read-scope guard,
   // so the renderer only ever sees paths main already vouched for.
   useEffect(() => {
     if (fileQuery === null || !filesEnabled || !searchFiles) {
-      setFileRows([]);
+      setFileResults(null);
       return;
     }
     let cancelled = false;
@@ -232,10 +237,10 @@ export function useResourceMention({
         .then((result) => {
           if (cancelled) return;
           if (!result.ok) {
-            setFileRows([]);
+            setFileResults({ query: fileQuery, rows: NO_ROWS });
             return;
           }
-          setFileRows(result.matches.map((match) => ({
+          setFileResults({ query: fileQuery, rows: result.matches.map((match) => ({
             key: `file::${match.path}`,
             serverId: "",
             target: {
@@ -246,10 +251,10 @@ export function useResourceMention({
             },
             label: displaySafeLabel(basenameOf(match.relativePath), MCP_RESOURCE_NAME_MAX_CHARS),
             hint: displaySafeLabel(match.relativePath, MCP_RESOURCE_NAME_MAX_CHARS),
-          })));
+          })) });
         })
         .catch(() => {
-          if (!cancelled) setFileRows([]);
+          if (!cancelled) setFileResults({ query: fileQuery, rows: NO_ROWS });
         });
     }, FILE_SEARCH_DEBOUNCE_MS);
     return () => {

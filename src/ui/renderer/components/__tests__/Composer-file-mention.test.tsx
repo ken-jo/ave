@@ -82,6 +82,30 @@ describe("Composer — @file mention", () => {
     expect(document.activeElement).toBe(ta);
   });
 
+  it("drops the previous query's rows while the next search is pending", async () => {
+    let resolveSecond: (value: unknown) => void = () => {};
+    const searchFiles = vi.fn(async (query: string) => {
+      if (query === "app") return { ok: true, matches: MATCHES, truncated: false };
+      return new Promise((resolve) => { resolveSecond = resolve; });
+    });
+    installWorkspace(searchFiles as never);
+    render(<Harness />);
+    const ta = textarea();
+    ta.focus();
+    fireEvent.change(ta, { target: { value: "@app" } });
+    await waitFor(() => expect(screen.getAllByTestId(/^resource-mention-item-/)).toHaveLength(2));
+
+    fireEvent.change(ta, { target: { value: "@zzz" } });
+    // The rows for "app" are gone at once, so Enter cannot attach one of them.
+    expect(screen.queryAllByTestId(/^resource-mention-item-/)).toHaveLength(0);
+    await act(async () => { fireEvent.keyDown(ta, { key: "Enter" }); });
+    expect(lastAttachments).toEqual([]);
+
+    await waitFor(() => expect(searchFiles).toHaveBeenLastCalledWith("zzz"));
+    await act(async () => { resolveSecond({ ok: true, matches: [MATCHES[1]], truncated: false }); });
+    await waitFor(() => expect(screen.getAllByTestId(/^resource-mention-item-/)).toHaveLength(1));
+  });
+
   it("Escape closes the menu without attaching", async () => {
     installWorkspace();
     render(<Harness />);

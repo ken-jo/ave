@@ -232,6 +232,20 @@ describe("AssistantCard — code block syntax highlighting", () => {
     expect(writeText).toHaveBeenCalledWith(SOURCE);
   });
 
+  it("leaves a very large fence as plain text", async () => {
+    // Warm the grammar on a small block, so the large one is not just waiting for it.
+    const small = renderCard(makeEntry({ text: "```ts\n" + SOURCE + "\n```\n" }));
+    await waitFor(() => expect(small.container.querySelector("pre")?.getAttribute("data-highlighted")).toBe("true"), { timeout: 5000 });
+    small.unmount();
+
+    const big = "const x = 1;\n".repeat(9_000); // ~117 KB
+    const { container } = renderCard(makeEntry({ text: "```ts\n" + big + "```\n" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const pre = container.querySelector("[data-testid='markdown-code-block'] pre") as HTMLElement;
+    expect(pre.getAttribute("data-highlighted")).not.toBe("true");
+    expect(pre.querySelector(".hljs-keyword")).toBeNull();
+  });
+
   it("leaves an unknown or missing language as plain text", async () => {
     const { container } = renderCard(makeEntry({ text: "```brainfuck\n+++.\n```\n\n```\nplain\n```" }));
     await new Promise((resolve) => setTimeout(resolve, 50));

@@ -136,6 +136,25 @@ function sensitiveForRead(p: string): boolean {
   return isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(p)), "read") !== null;
 }
 
+/**
+ * The allowlist holds the spelling that was authorized, not what it points to
+ * now: a symlink that passed the checks can be retargeted afterwards. Every use
+ * resolves it again and re-applies the same refusals to the current target.
+ */
+async function resolveAuthorizedTarget(
+  filePath: string,
+): Promise<{ ok: true; real: string } | { ok: false; error: string }> {
+  let real: string;
+  try {
+    real = await fs.realpath(filePath);
+  } catch {
+    return { ok: false, error: "not-found" };
+  }
+  if (sensitiveForRead(real)) return { ok: false, error: "sensitive-path" };
+  if (DENY_EXTENSIONS.has(getExt(real))) return { ok: false, error: "denied_extension" };
+  return { ok: true, real };
+}
+
 /** Validate one dropped path into metadata, or say why it is refused. */
 async function validateDroppedPath(
   p: string,
@@ -388,19 +407,21 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         if (!ATTACH_PATH_ALLOWLIST.has(filePath)) {
           return { ok: false, error: "path_not_authorized" };
         }
+        const target = await resolveAuthorizedTarget(filePath);
+        if (!target.ok) return { ok: false, error: target.error };
         // Stat first so we can refuse to buffer a multi-GB file. Vision
         // APIs reject anything beyond ~20MB, so 25MB cap is generous.
-        const stat = await fs.stat(filePath);
+        const stat = await fs.stat(target.real);
         if (stat.size > MAX_COMPOSER_IMAGE_BYTES) {
           return {
             ok: false,
             error: `image_too_large: ${stat.size} > ${MAX_COMPOSER_IMAGE_BYTES}`,
           };
         }
-        if (!await sniffImageFilePrefix(filePath)) {
+        if (!await sniffImageFilePrefix(target.real)) {
           return { ok: false, error: "not_image" };
         }
-        const buf = await fs.readFile(filePath);
+        const buf = await fs.readFile(target.real);
         if (buf.length > MAX_COMPOSER_IMAGE_BYTES) {
           return {
             ok: false,
@@ -547,7 +568,9 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         if (DENY_EXTENSIONS.has(getExt(filePath))) {
           return { ok: false, error: "denied_extension" };
         }
-        const result = await shell.openPath(filePath);
+        const target = await resolveAuthorizedTarget(filePath);
+        if (!target.ok) return { ok: false, error: target.error };
+        const result = await shell.openPath(target.real);
         if (result) return { ok: false, error: result };
         return { ok: true };
       } catch (err) {

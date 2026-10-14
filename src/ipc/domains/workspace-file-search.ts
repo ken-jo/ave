@@ -34,10 +34,20 @@ interface CachedListing {
 }
 
 const listingCache = new Map<string, CachedListing>();
+/** One walk per root at a time: keystrokes against a cold cache share it. */
+const listingsInFlight = new Map<string, Promise<CachedListing>>();
 
 async function listRoot(root: string, now: number): Promise<CachedListing> {
   const cached = listingCache.get(root);
   if (cached && now - cached.at < LISTING_TTL_MS) return cached;
+  const inFlight = listingsInFlight.get(root);
+  if (inFlight) return inFlight;
+  const walk = walkRoot(root, now).finally(() => listingsInFlight.delete(root));
+  listingsInFlight.set(root, walk);
+  return walk;
+}
+
+async function walkRoot(root: string, now: number): Promise<CachedListing> {
   const listed = await collectFiles(root, MAX_FILES_PER_ROOT);
   const entry: CachedListing = listed.ok
     ? {
@@ -115,4 +125,5 @@ export async function searchWorkspaceFiles(args: {
 /** Test seam: forget cached listings. */
 export function clearWorkspaceFileSearchCache(): void {
   listingCache.clear();
+  listingsInFlight.clear();
 }

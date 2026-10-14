@@ -7,7 +7,8 @@
  * a symlink to one, a deny-listed type, a folder.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { shell } from "electron";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOST_FRAME_URL } from "../../../__tests__/test-helpers.js";
@@ -167,6 +168,28 @@ describe("composer drop token", () => {
       ok: false,
       error: "path_not_authorized",
     });
+  });
+
+  it("re-checks a dropped symlink's current target when it is opened or read", async () => {
+    const link = join(root, "retarget.txt");
+    symlinkSync(notesPath, link);
+    const reg = await register(7, [link]);
+    expect(reg.ok).toBe(true);
+    await call(CHANNELS.attach.redeemDrop, 7, reg.token);
+
+    // Validated while it pointed at notes.txt, then pointed at an executable.
+    rmSync(link);
+    symlinkSync(join(root, "run.exe"), link);
+    vi.mocked(shell.openPath).mockClear();
+    expect(await call(CHANNELS.attach.openExternal, 7, link)).toEqual({ ok: false, error: "denied_extension" });
+    expect(shell.openPath).not.toHaveBeenCalled();
+
+    // ...or at a credential file.
+    rmSync(link);
+    symlinkSync(join(root, ".env"), link);
+    expect(await call(CHANNELS.attach.readImage, 7, link)).toEqual({ ok: false, error: "sensitive-path" });
+    expect(await call(CHANNELS.attach.openExternal, 7, link)).toEqual({ ok: false, error: "sensitive-path" });
+    expect(shell.openPath).not.toHaveBeenCalled();
   });
 
   it("mints no token when nothing is attachable, and rejects malformed payloads", async () => {

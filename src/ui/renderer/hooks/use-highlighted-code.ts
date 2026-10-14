@@ -14,6 +14,9 @@
 import { useEffect, useMemo, useState } from "react";
 import type { LanguageFn, createLowlight } from "lowlight";
 
+/** Fences longer than this render as plain text. */
+const MAX_HIGHLIGHT_CHARS = 100_000;
+
 type Lowlight = ReturnType<typeof createLowlight>;
 type GrammarModule = { default: LanguageFn };
 
@@ -139,6 +142,9 @@ export function useHighlightedCode(language: string | undefined, code: string): 
   // Synchronous once loaded, so streaming text never shows a stale tree.
   return useMemo(() => {
     if (!ready || name === null || lowlight === null) return null;
+    // Each streamed token re-highlights the whole fence; past this size that
+    // is visible jank for little gain, so the block stays plain text.
+    if (code.length > MAX_HIGHLIGHT_CHARS) return null;
     try {
       return lowlight.highlight(name, code);
     } catch {
