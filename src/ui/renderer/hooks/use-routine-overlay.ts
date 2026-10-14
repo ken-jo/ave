@@ -32,6 +32,8 @@ export interface UseRoutineOverlayResult {
   /** In-flight LLM routine sessions; OverlayContextProvider derives running flags. */
   runningRoutines: Set<string>;
   handlePluginPrimaryAction: (overlayItemId: string, chatGroupId: string) => Promise<void>;
+  /** Run an insertion card's prompt as the first turn of a new conversation instead. */
+  handleContinueInNewConversation: (overlayItemId: string, chatGroupId: string) => Promise<void>;
   /** The user closed an alert card without accepting it; main closes its identity. */
   handleAlertDismiss: (overlayItemId: string) => void;
   handleRoutineAcknowledge: (routineId: string, firedAt: string) => void;
@@ -250,59 +252,90 @@ export function useRoutineOverlay({
     [api],
   );
 
+  /**
+   * The insertion card the user acted on, and the tile that showed it.
+   *
+   * The tile is resolved from the card's ORIGIN, not from the surface that
+   * rendered it. The two agree whenever the origin conversation is open — that
+   * is how the card got there — but the tile can close between the paint and
+   * the click, and inserting into the caller's tile then would put a prompt
+   * staged for one conversation into another. A card with no origin has no
+   * conversation to contradict, so the group the caller named (a tile's own, or
+   * the focused one for the window's region) stands.
+   */
+  const resolveInsertion = useCallback((overlayItemId: string, chatGroupId: string) => {
+    const item = overlayItemsRef.current.get(overlayItemId);
+    if (!item) return null;
+    const { source, pendingPrompt } = item;
+    // Only the INSERTION sources reach here. A routine has its own primary
+    // action, and a proposal answers rather than inserts — see
+    // `handleProposalAnswer`. An alert is a plugin's insertion card rendered
+    // by the host: same staged origin, same confirm.
+    if (source.kind !== "plugin" && source.kind !== "app" && source.kind !== "alert") return null;
+    if (!pendingPrompt) return null;
+    const targetGroupId = item.originSessionId === undefined
+      ? chatGroupId
+      : tileHoldingSession(registry.readTiles(), item.originSessionId)?.chatGroupId;
+    const tile = targetGroupId === undefined ? undefined : registry.read(targetGroupId);
+    if (!tile) {
+      console.warn("[ave] overlay confirm dropped: origin conversation is no longer open");
+      return null;
+    }
+    return { item, source, pendingPrompt, tile };
+  }, [registry]);
+
+  /** Insert the staged prompt into `tile` and start its turn; the card is then spent. */
+  const runInsertion = useCallback((
+    overlayItemId: string,
+    { item, source, pendingPrompt, tile }: NonNullable<ReturnType<typeof resolveInsertion>>,
+  ) => {
+    alertSnapshotChangesRef.current?.add(overlayItemId);
+    overlayItemsRef.current.delete(overlayItemId);
+
+    // Insert as imported_trigger entry — staged provenance preserved, NOT a plain
+    // user bubble (architecture §9 plugin provenance contract; same rule for apps).
+    tile.insertImportedTriggerEntry({
+      sessionId: source.kind === "alert" ? source.alertId : source.eventId,
+      source: source.kind === "app" ? `app:${source.serverId}`
+        : source.kind === "alert" && source.pluginId === ALERT_HOST_PLUGIN_ID ? `host:${source.kindId}` : `plugin:${source.pluginId}`,
+      prompt: pendingPrompt,
+      summary: item.summary,
+    });
+
+    // Start THAT tile's turn (user-in-the-loop confirm → auto-process). Both
+    // modes skip the user-bubble append since the imported_trigger marker
+    // already represents the staged prompt.
+    void tile.ask(
+      pendingPrompt,
+      source.kind === "app" ? "app-message" : "trigger-import",
+    );
+    if (source.kind === "alert") reportAlertClosed(source.alertId, "accepted");
+  }, [reportAlertClosed]);
+
   const handlePluginPrimaryAction = useCallback(
     async (overlayItemId: string, chatGroupId: string) => {
-      const item = overlayItemsRef.current.get(overlayItemId);
-      if (!item) return;
+      const target = resolveInsertion(overlayItemId, chatGroupId);
+      if (target) runInsertion(overlayItemId, target);
+    },
+    [resolveInsertion, runInsertion],
+  );
 
-      const { source, pendingPrompt, summary } = item;
-      // Only the INSERTION sources reach this handler. A routine has its own
-      // primary action, and a proposal answers rather than inserts — see
-      // `handleProposalAnswer`. An alert is a plugin's insertion card rendered
-      // by the host: same staged origin, same confirm.
-      if (source.kind !== "plugin" && source.kind !== "app" && source.kind !== "alert") return;
-      if (!pendingPrompt) return;
-
-      // Resolved from the card's ORIGIN, not from the surface that rendered
-      // it. The two agree whenever the origin conversation is open — that is
-      // how the card got there — but the tile can close between the paint and
-      // the click, and inserting into the caller's tile then would put a
-      // prompt staged for one conversation into another. A card with no origin
-      // has no conversation to contradict, so the group the caller named (a
-      // tile's own, or the focused one for the window's region) stands.
-      const targetGroupId = item.originSessionId === undefined
-        ? chatGroupId
-        : tileHoldingSession(registry.readTiles(), item.originSessionId)?.chatGroupId;
-      const tile = targetGroupId === undefined ? undefined : registry.read(targetGroupId);
-      if (!tile) {
-        console.warn("[ave] overlay confirm dropped: origin conversation is no longer open");
+  // The card's other answer: run the suggestion in a FRESH conversation rather
+  // than the one the card belongs to. The tile that showed the card starts it,
+  // and the staged prompt is its first turn, with the same provenance. When no
+  // new conversation starts (that tile is mid-turn, or main refused), nothing
+  // ran, so the card goes back in the queue.
+  const handleContinueInNewConversation = useCallback(
+    async (overlayItemId: string, chatGroupId: string) => {
+      const target = resolveInsertion(overlayItemId, chatGroupId);
+      if (!target) return;
+      if (!(await target.tile.startNewChat())) {
+        addFireRef.current?.(target.item);
         return;
       }
-
-      // Clean up lookup ref
-      alertSnapshotChangesRef.current?.add(overlayItemId);
-      overlayItemsRef.current.delete(overlayItemId);
-
-      // Insert as imported_trigger entry — staged provenance preserved, NOT a plain
-      // user bubble (architecture §9 plugin provenance contract; same rule for apps).
-      tile.insertImportedTriggerEntry({
-        sessionId: source.kind === "alert" ? source.alertId : source.eventId,
-        source: source.kind === "app" ? `app:${source.serverId}`
-          : source.kind === "alert" && source.pluginId === ALERT_HOST_PLUGIN_ID ? `host:${source.kindId}` : `plugin:${source.pluginId}`,
-        prompt: pendingPrompt,
-        summary,
-      });
-
-      // Start THAT tile's turn (user-in-the-loop confirm → auto-process). Both
-      // modes skip the user-bubble append since the imported_trigger marker
-      // already represents the staged prompt.
-      void tile.ask(
-        pendingPrompt,
-        source.kind === "app" ? "app-message" : "trigger-import",
-      );
-      if (source.kind === "alert") reportAlertClosed(source.alertId, "accepted");
+      runInsertion(overlayItemId, target);
     },
-    [registry, reportAlertClosed],
+    [resolveInsertion, runInsertion],
   );
 
   // The user closed an alert card without accepting it. Main keeps the
@@ -378,6 +411,7 @@ export function useRoutineOverlay({
     dismissRef,
     runningRoutines,
     handlePluginPrimaryAction,
+    handleContinueInNewConversation,
     handleAlertDismiss,
     handleRoutineAcknowledge,
     handleProposalAnswer,

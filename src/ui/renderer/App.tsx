@@ -666,6 +666,7 @@ export function App() {
     dismissRef,
     runningRoutines,
     handlePluginPrimaryAction,
+    handleContinueInNewConversation,
     handleAlertDismiss,
     handleRoutineAcknowledge,
     handleProposalAnswer,
@@ -1572,6 +1573,9 @@ export function App() {
         overlayCardTile={overlayCardTileForWindow}
         onPluginPrimaryAction={(id, actionChatGroupId) => {
           void handlePluginPrimaryAction(id, actionChatGroupId);
+        }}
+        onContinueInNewConversation={(id, actionChatGroupId) => {
+          void handleContinueInNewConversation(id, actionChatGroupId);
         }}
         onAlertDismiss={handleAlertDismiss}
         onRoutineAcknowledge={handleRoutineAcknowledge}

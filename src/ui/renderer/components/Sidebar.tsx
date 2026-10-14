@@ -56,7 +56,7 @@ import {
   SIDEBAR_MIN_WIDTH,
 } from "../../../shared/side-panel.js";
 import { formatRelativeSessionTime } from "../../../shared/format-time.js";
-import { isSuggestionsSession } from "../../../shared/suggestions-session.js";
+import { isSuggestionsSession, sessionDisplayTitle } from "../../../shared/suggestions-session.js";
 
 // A nav row draws the same glyph the pane header draws for the view it opens —
 // one map, so a row and the header it produces cannot disagree.
@@ -1490,7 +1490,11 @@ function ProjectSessionList({
         ? {
             [unread ? "conversation.mark-read" : "conversation.mark-unread"]: () =>
               void actions.onSetUnread(session.id, !unread),
-            "conversation.rename": () => setRenamingKey(`session:${session.id}`),
+            // The Suggestions conversation's name comes from the catalog, so a
+            // rename would store a string no surface shows.
+            ...(isSuggestionsSession(session.id)
+              ? {}
+              : { "conversation.rename": () => setRenamingKey(`session:${session.id}`) }),
             "conversation.share": () => void actions.onShare(session.id),
             "conversation.copy": () => void actions.onCopy(session.id),
             [archived ? "conversation.unarchive" : "conversation.archive"]: () =>
@@ -1552,11 +1556,13 @@ function ProjectSessionList({
     );
   };
 
-  const renderSessionRow = (session: SessionSummary) => {
-    if (session.family !== "main") return renderFamilyRow(session, false);
-    // The dedicated Suggestions conversation carries the number of
-    // suggestions waiting in it.
-    const suggestions = isSuggestionsSession(session.id);
+  const renderSessionRow = (listed: SessionSummary) => {
+    if (listed.family !== "main") return renderFamilyRow(listed, false);
+    // The dedicated Suggestions conversation is named from the catalog by its
+    // id, in the language in use now, and carries the number of suggestions
+    // waiting in it.
+    const suggestions = isSuggestionsSession(listed.id);
+    const session = suggestions ? { ...listed, title: sessionDisplayTitle(listed.id, listed.title, t) } : listed;
     const sideChats = sideChatsByParent.get(session.id);
     const row = (
       <SessionRow

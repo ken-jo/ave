@@ -1642,10 +1642,11 @@ describe("Sidebar — every conversation family", () => {
 });
 
 describe("Sidebar — the dedicated Suggestions conversation", () => {
-  it("counts the suggestions waiting on its row", async () => {
+  it("names its row from the catalog, ignoring a stored title, and counts the suggestions waiting there", async () => {
     const { getByTestId, queryByTestId, restore } = renderSidebar({
       sessions: [
-        sessionRow({ id: SUGGESTIONS_SESSION_ID, title: "제안", modifiedAt: new Date().toISOString() }),
+        // A title stored by an earlier build or a rename is ignored for this id.
+        sessionRow({ id: SUGGESTIONS_SESSION_ID, title: "Inbox", modifiedAt: new Date().toISOString() }),
         sessionRow({ id: "sess-2", title: "다른 대화", modifiedAt: new Date(Date.now() - 3600_000).toISOString() }),
       ],
       pendingAnswerSessionIds: new Set([SUGGESTIONS_SESSION_ID]),
@@ -1655,6 +1656,7 @@ describe("Sidebar — the dedicated Suggestions conversation", () => {
       await waitFor(() => getByTestId(`sidebar-session-${SUGGESTIONS_SESSION_ID}`));
       const row = getByTestId(`sidebar-session-${SUGGESTIONS_SESSION_ID}`);
       expect(row.textContent).toContain("제안");
+      expect(row.textContent).not.toContain("Inbox");
       const badge = getByTestId(`sidebar-pending-count-${SUGGESTIONS_SESSION_ID}`);
       expect(row.contains(badge)).toBe(true);
       expect(badge.textContent).toBe("3");

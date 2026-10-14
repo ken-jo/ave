@@ -20,7 +20,6 @@ import { hostFrameEvent, foreignFrameEvent } from "../../../__tests__/test-helpe
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { readOnboardingProposalState } from "../../../main/onboarding-proposal-store.js";
 import type { PluginOnboardingSpec } from "../../../plugins/public-contract.js";
-import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -77,7 +76,6 @@ async function setup(cards?: unknown[]) {
     },
     toolRegistry: { size: 0 },
     getMainWindow: vi.fn(() => null),
-    memoryManager: { touchSessionTranscript: vi.fn() },
   };
   const { registerTourHandlers } = await import("../tour.js");
   registerTourHandlers(deps as never);
@@ -132,8 +130,6 @@ describe("ave:onboarding:proposals:list-pending", () => {
     expect(staged).toHaveLength(1);
     expect(staged[0]).toMatchObject({
       id: "proposal:meeting:first-task",
-      // Addressed to the dedicated Suggestions conversation, not the focused one.
-      originSessionId: SUGGESTIONS_SESSION_ID,
       title: "Record this meeting?",
       pluginDisplayName: "Meeting tools",
       summary: "Recording, transcript and summary, in one step.",
@@ -146,6 +142,9 @@ describe("ave:onboarding:proposals:list-pending", () => {
         action: { kind: "composer", prompt: "Start recording the meeting" },
       },
     });
+    // Onboarding stays inline where the user is: it names no conversation, so
+    // it is not addressed to the Suggestions conversation.
+    expect(staged[0]).not.toHaveProperty("originSessionId");
   });
 
   it("ignores a plugin that is not loaded and active", async () => {

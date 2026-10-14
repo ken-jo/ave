@@ -88,18 +88,23 @@ routine's `suggestion:<pluginId>:<intent>` idempotency marker.
 ## Where cards land
 
 Cards nobody asked for in the conversation at hand — alert cards, accepted
-`triggerConversation` suggestions, routine running/result/failure cards and
-onboarding proposals — are addressed to one dedicated, persistent Suggestions
-conversation, never to the focused one. It is an ordinary conversation in the
+`triggerConversation` suggestions and routine running/result/failure cards —
+are addressed to one dedicated, persistent Suggestions conversation, never to
+the focused one. Onboarding proposals stay inline where the user is: they run
+no turn, and a first-run user has no work for them to intrude on. It is an ordinary conversation in the
 main session store under a reserved id (`src/shared/suggestions-session.ts`),
 created empty on demand by the host just before the first card is staged (and
 again if the user deletes it). A newly staged card moves it to the top of the
-conversation list; a snapshot pull only makes it exist. The sidebar names it
-"Suggestions" in the user's language and shows how many cards wait in it.
+conversation list; a snapshot pull only makes it exist. Every surface names it
+from the catalog by its reserved id in the current language (a stored title is
+ignored for that id, so it cannot be renamed), and its sidebar row shows how
+many cards wait in it.
 
 A card is drawn only in a pane holding the Suggestions conversation; otherwise
 it waits and the row carries the count. Confirming a card runs its staged
-prompt there, with the same staged origin and envelope. Opening a routine
+prompt there; "Continue in a new conversation" instead starts a new
+conversation in that pane and runs the prompt as its first turn. Either way the
+staged origin and envelope are the same, and the user picks where it runs. Opening a routine
 result still opens the routine run's own session. MCP App messages are not
 suggestions: they were raised in a conversation and stay with it. The routing
 rule keys on card kind only, is applied at the renderer's single card

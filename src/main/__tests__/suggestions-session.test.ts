@@ -8,7 +8,7 @@
  * has there, and moved up the recency-ordered list only when something new
  * arrives — not when a window merely pulls cards staged earlier.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +17,6 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { SUGGESTIONS_SESSION_ID } from "../../shared/suggestions-session.js";
 import { ensureSuggestionsSession, stageInSuggestionsSession } from "../suggestions-session.js";
 import { handleChatSessionHistory } from "../../ipc/handlers/chat.js";
-import { t } from "../../i18n/index.js";
 
 let dir: string;
 let mm: MemoryManager;
@@ -34,20 +33,14 @@ afterEach(async () => {
 });
 
 describe("the dedicated Suggestions conversation", () => {
-  it("is created on demand as an empty, listed main conversation, named once", async () => {
+  it("is created on demand as an empty, listed main conversation, with no stored name", () => {
     expect(mm.hasSessionTranscript(SUGGESTIONS_SESSION_ID)).toBe(false);
     stageInSuggestionsSession(mm);
     expect(mm.loadSession(SUGGESTIONS_SESSION_ID)).toEqual([]);
     const row = mm.listSessions().find((session) => session.id === SUGGESTIONS_SESSION_ID);
     expect(row?.sessionKind).toBe("main");
-    await vi.waitFor(() => expect(mm.loadSessionMetadata(SUGGESTIONS_SESSION_ID)?.title).toBe(t("be_suggestionsSession.title")));
-
-    // A rename by the user sticks: later suggestions do not rename it back.
-    await mm.updateSessionRowFields(SUGGESTIONS_SESSION_ID, { title: "Inbox" });
-    stageInSuggestionsSession(mm);
-    ensureSuggestionsSession(mm);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(mm.loadSessionMetadata(SUGGESTIONS_SESSION_ID)?.title).toBe("Inbox");
+    // Its name is rendered from the catalog by its id, never stored.
+    expect(mm.hasSessionMetadataFile(SUGGESTIONS_SESSION_ID)).toBe(false);
   });
 
   it("opens through the real session-history read, with no metadata yet", async () => {

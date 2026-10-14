@@ -56,11 +56,15 @@ export type OverlayItemSource =
  *
  * A card with no origin used to be drawn in the FOCUSED pane, and its confirm
  * started a turn in whatever conversation that pane held — a plugin's
- * suggestion, an alert, a routine's result or a proposal landing inside the
- * user's own work. Every such card now names the Suggestions conversation, so
+ * suggestion, an alert or a routine's result landing inside the user's own
+ * work. Every such card now names the Suggestions conversation, so
  * `overlayCardTile` draws it only where that conversation is open, and the
- * sidebar marks its row otherwise. An `app` card is the exception: it was
- * raised inside a conversation the user is in, and keeps that origin.
+ * sidebar marks its row otherwise.
+ *
+ * Two kinds keep their place. An `app` card was raised inside a conversation
+ * the user is in, and keeps that origin. An onboarding `proposal` stays inline
+ * where the user is: it runs no turn, a first-run user has no work for it to
+ * intrude on, and a sidebar count alone would hide onboarding.
  *
  * Applied at the one renderer ingress for cards, so cards staged by an older
  * build (a stored alert, an unacknowledged routine result) are routed the same
@@ -69,11 +73,11 @@ export type OverlayItemSource =
 export function routeToSuggestionsSession(item: OverlayItem): OverlayItem {
   switch (item.source.kind) {
     case "app":
+    case "proposal":
       return item;
     case "plugin":
     case "alert":
     case "routine":
-    case "proposal":
       return item.originSessionId === undefined
         ? { ...item, originSessionId: SUGGESTIONS_SESSION_ID }
         : item;
@@ -144,7 +148,7 @@ export interface OverlayItem {
    * An MCP app card is raised by a card mounted in a specific conversation, so
    * it belongs to whichever tile is holding that conversation. A routine fires
    * on a schedule and a plugin trigger fires on an event — neither has a
-   * conversation behind it, so they (with alerts and proposals) are addressed
+   * conversation behind it, so they (with alerts) are addressed
    * to the dedicated Suggestions conversation by
    * {@link routeToSuggestionsSession} rather than to the focused tile.
    *

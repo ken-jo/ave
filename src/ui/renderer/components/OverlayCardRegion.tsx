@@ -6,7 +6,7 @@
 // by no region: it waits with its conversation, and the sidebar row carries
 // the attention dot — see `overlayCardTile` and `pendingAnswers`.
 // Never injects entries into chat history; routine sources remain isolated.
-// Plugin, alert, routine and proposal cards are addressed to the dedicated
+// Plugin, alert and routine cards are addressed to the dedicated
 // Suggestions conversation, so they render only in the region of a tile that
 // holds it — never over the conversation the user is working in.
 //
@@ -56,6 +56,12 @@ export interface OverlayCardRegionProps {
    * the turn is started in.
    */
   onPluginPrimaryAction: (overlayItemId: string, chatGroupId: string) => void;
+  /**
+   * The insertion card's second answer: run its prompt in a new conversation
+   * started in the tile that showed the card, rather than in the card's own.
+   * Omitted, the card offers only the primary action.
+   */
+  onContinueInNewConversation?: (overlayItemId: string, chatGroupId: string) => void;
   /** Called when the user closes an alert card without accepting it. */
   onAlertDismiss?: (overlayItemId: string) => void;
   onRoutineAcknowledge?: (routineId: string, firedAt: string) => void;
@@ -72,7 +78,7 @@ export interface OverlayCardRegionProps {
 }
 
 export function OverlayCardRegion({
-  chatGroupId, actionChatGroupId, overlayCardTile, onPluginPrimaryAction, onAlertDismiss, onRoutineAcknowledge,
+  chatGroupId, actionChatGroupId, overlayCardTile, onPluginPrimaryAction, onContinueInNewConversation, onAlertDismiss, onRoutineAcknowledge,
   onProposalAnswer,
 }: OverlayCardRegionProps) {
   const { t } = useTranslation();
@@ -246,6 +252,19 @@ export function OverlayCardRegion({
               onPluginPrimaryAction(active.id, actionChatGroupId);
             }}
             primaryActionLabel={active.primaryActionLabel ?? t("overlayCardRegion.confirm")}
+            {...(onContinueInNewConversation
+              ? {
+                  secondaryAction: {
+                    label: t("overlayCardRegion.continueInNewConversation"),
+                    onClick: () => {
+                      // Same order as the primary action: off the queue, then run.
+                      // The handler puts it back if no conversation started.
+                      dismiss(active.id);
+                      onContinueInNewConversation(active.id, actionChatGroupId);
+                    },
+                  },
+                }
+              : {})}
             kind={kind}
             pluginId={pluginId}
             pluginDisplayName={active.pluginDisplayName}

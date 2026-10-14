@@ -28,8 +28,6 @@ import { DEFAULT_LOCALE } from "../../i18n/locale.js";
 import type { IpcDeps } from "../types.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { resolvePluginDisplayName } from "../../shared/plugin-provenance.js";
-import { SUGGESTIONS_SESSION_ID } from "../../shared/suggestions-session.js";
-import { ensureSuggestionsSession } from "../../main/suggestions-session.js";
 
 const log = createLogger("tour-ipc");
 
@@ -98,16 +96,11 @@ export function registerTourHandlers(deps: IpcDeps): void {
     const pending = pendingOnboardingProposals(sources, state, answeredThisLaunch, locale);
     const head = pending[0];
     if (head) {
-      // A proposal is addressed to the dedicated Suggestions conversation, not
-      // the focused one. It is re-staged on every launch until answered, so it
-      // makes the conversation exist without moving it up the list each time.
-      ensureSuggestionsSession(deps.memoryManager);
       sendToWebContents(
         sender,
         OVERLAY_V1.show,
         {
           id: `proposal:${head.key}`,
-          originSessionId: SUGGESTIONS_SESSION_ID,
           pluginDisplayName: resolvePluginDisplayName(
             head.pluginId,
             pluginCards.find((card) => card.id === head.pluginId)?.name,

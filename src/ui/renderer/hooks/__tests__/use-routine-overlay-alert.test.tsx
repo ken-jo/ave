@@ -70,8 +70,9 @@ function setup(
   };
   const ask = vi.fn();
   const insertImportedTriggerEntry = vi.fn();
+  const startNewChat = vi.fn(async () => true);
   const registry = {
-    read: vi.fn((id: string) => (id === TILE ? { ask, insertImportedTriggerEntry } : undefined)),
+    read: vi.fn((id: string) => (id === TILE ? { ask, insertImportedTriggerEntry, startNewChat } : undefined)),
     readTiles: vi.fn(() => tiles),
   };
   const onSuggestionStaged = vi.fn();
@@ -96,6 +97,7 @@ function setup(
     insertImportedTriggerEntry,
     queueDismiss,
     onSuggestionStaged,
+    startNewChat,
     reconnect: (snapshot: Promise<OverlayItem[]>) => hook.rerender({ activeApi: {
       ...api, alerts: { ...api.alerts, listOpen: vi.fn(async () => snapshot) },
     } }),
@@ -271,5 +273,44 @@ describe("useRoutineOverlay — the dedicated Suggestions conversation", () => {
     expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
     expect(s.ask).not.toHaveBeenCalled();
     expect(s.api.alerts.cardClosed).not.toHaveBeenCalled();
+  });
+});
+
+describe("useRoutineOverlay — continue a suggestion in a new conversation", () => {
+  it("starts a new conversation in the tile that showed the card, then runs the staged prompt there", async () => {
+    const s = setup();
+    s.show(ALERT);
+    await act(async () => {
+      await s.hook.result.current.handleContinueInNewConversation("alert:abc", TILE);
+    });
+    expect(s.startNewChat).toHaveBeenCalledTimes(1);
+    expect(s.startNewChat.mock.invocationCallOrder[0]!)
+      .toBeLessThan(s.insertImportedTriggerEntry.mock.invocationCallOrder[0]!);
+    expect(s.insertImportedTriggerEntry).toHaveBeenCalledWith(expect.objectContaining({
+      source: "plugin:fixturemail",
+      prompt: ALERT.pendingPrompt,
+    }));
+    expect(s.ask).toHaveBeenCalledWith(ALERT.pendingPrompt, "trigger-import");
+    expect(s.api.alerts.cardClosed).toHaveBeenCalledWith("abc", "accepted");
+  });
+
+  it("puts the card back when no new conversation started, and runs nothing", async () => {
+    const s = setup();
+    s.show(ALERT);
+    s.queueAdd.mockClear();
+    s.startNewChat.mockResolvedValueOnce(false);
+    await act(async () => {
+      await s.hook.result.current.handleContinueInNewConversation("alert:abc", TILE);
+    });
+    expect(s.queueAdd).toHaveBeenCalledWith(routed(ALERT));
+    expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
+    expect(s.ask).not.toHaveBeenCalled();
+    expect(s.api.alerts.cardClosed).not.toHaveBeenCalled();
+
+    // The card is still actionable afterwards.
+    await act(async () => {
+      await s.hook.result.current.handlePluginPrimaryAction("alert:abc", TILE);
+    });
+    expect(s.ask).toHaveBeenCalledWith(ALERT.pendingPrompt, "trigger-import");
   });
 });

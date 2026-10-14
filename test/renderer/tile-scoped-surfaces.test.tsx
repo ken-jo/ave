@@ -310,6 +310,43 @@ describe("overlay cards with two tiles", () => {
     expect(api.chatSend).toHaveBeenCalled();
   });
 
+  it("continues a suggestion in a new conversation when the user picks that instead", async () => {
+    const { container, api, emitOverlayShow } = await renderApp({ hasApiKey: true, currentSession: SUGGESTIONS_SESSION_ID });
+    const [primary] = await splitIntoTwoTiles(container);
+
+    await act(async () => {
+      emitOverlayShow({
+        id: "plugin:notes:fresh",
+        source: { kind: "plugin", pluginId: "notes", eventId: "fresh" },
+        title: "notes",
+        summary: "fresh target",
+        running: false,
+        pendingPrompt: "<untrusted-plugin>notes</untrusted-plugin>",
+        createdAt: new Date().toISOString(),
+      });
+    });
+    const secondary = await waitFor(() => {
+      const button = primary!.element.querySelector<HTMLButtonElement>(
+        '[data-testid="overlay-card-secondary-action"]',
+      );
+      expect(button).not.toBeNull();
+      return button!;
+    });
+    expect(secondary.textContent).toBe("새 대화에서 이어가기");
+
+    await act(async () => {
+      fireEvent.click(secondary);
+    });
+
+    // A fresh conversation is started first, and the staged prompt is its
+    // first turn — with the plugin's provenance, not as the user's own words.
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
+    expect(api.chatNew.mock.invocationCallOrder[0]!).toBeLessThan(api.chatSend.mock.invocationCallOrder[0]!);
+    expect(api.chatSend.mock.calls[0]![2]).toBe("plugin-emitted");
+    await waitFor(() => expect(primary!.element.textContent).toContain("fresh target"));
+    expect(container.querySelectorAll('[data-testid="overlay-card-region"]')).toHaveLength(0);
+  });
+
   it("holds a suggestion while its conversation is not open, drawing it over no other conversation", async () => {
     const { container, api, emitOverlayShow } = await renderApp({ hasApiKey: true });
     await splitIntoTwoTiles(container);

@@ -276,7 +276,7 @@ export interface OverlayCardPlacement {
  * drawn pane holds it, the card is orphaned: it waits, and the sidebar row of
  * its conversation carries the attention dot until the row is opened.
  *
- * Unrequested cards — a plugin trigger, an alert, a routine, a proposal — are
+ * Unrequested cards — a plugin trigger, an alert, a routine — are
  * addressed to the dedicated Suggestions conversation at the renderer ingress
  * (`routeToSuggestionsSession`), so they take the branch above: drawn only
  * where that conversation is open, and never confirmed into another one.
