@@ -280,6 +280,72 @@ describe("RemoteSurfacesTab", () => {
       .toBe(`https://${DNS_NAME}`);
   });
 
+  describe("the folded Tailnet line", () => {
+    const LISTENING = {
+      effective: { ...OBSERVER_CONFIG, enabled: true },
+      listeningPort: 46_173,
+    };
+
+    async function rowStateFor(snapshot: Record<string, unknown> | "rejected" | "unavailable") {
+      const { api } = makeApi();
+      const read = vi.mocked(api.tailnetObserver.snapshot);
+      if (snapshot === "rejected") read.mockRejectedValue(new Error("ipc closed"));
+      else if (snapshot === "unavailable") {
+        read.mockResolvedValue({ ok: false, error: "tailnet-observer-unavailable" } as never);
+      } else read.mockResolvedValue({ ok: true, snapshot: { ...observerSnapshot(), ...snapshot } } as never);
+      const view = render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+      let text = "";
+      await waitFor(() => {
+        text = screen.getByTestId("connection:tailnet:state").textContent ?? "";
+        expect(text).not.toBe("");
+      });
+      view.unmount();
+      return text;
+    }
+
+    it("reads connected only once the listener is up and behind Serve", async () => {
+      expect(await rowStateFor({
+        ...LISTENING,
+        environment: { ...observerSnapshot().environment, serveConfigured: true, serveTargetPort: 46_173 },
+      })).toBe("연결됨");
+      // Listening but not fronted by Serve: reachable from this desktop only.
+      expect(await rowStateFor(LISTENING)).toBe("설정 필요");
+      expect(await rowStateFor({
+        ...LISTENING,
+        environment: { ...observerSnapshot().environment, serveConfigured: true, serveTargetPort: 9_999 },
+      })).toBe("설정 필요");
+    });
+
+    it("reads every failure the open section reports as needing attention", async () => {
+      expect(await rowStateFor({ effective: { ...OBSERVER_CONFIG, enabled: true }, lastStartError: "tailnet-observer-port-in-use" }))
+        .toBe("확인 필요");
+      expect(await rowStateFor({ configFileError: "tailnet-observer-config-unreadable" })).toBe("확인 필요");
+      expect(await rowStateFor({ pairedSharingBootstrapFailed: true })).toBe("확인 필요");
+      expect(await rowStateFor({
+        ...LISTENING,
+        environment: { ...observerSnapshot().environment, state: "cli-failed", detail: "tailscaled not running" },
+      })).toBe("확인 필요");
+    });
+
+    it("reads a status read that failed or threw as needing attention", async () => {
+      expect(await rowStateFor("unavailable")).toBe("확인 필요");
+      expect(await rowStateFor("rejected")).toBe("확인 필요");
+    });
+  });
+
+  it("does not claim a local-API count it could not read", async () => {
+    const { api } = makeApi();
+    vi.mocked(api.getSettings).mockRejectedValue(new Error("ipc closed"));
+    render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("connection:local-api:state").textContent).toBe("확인 필요");
+    });
+    expect(screen.queryByTestId("connection:local-api:endpoint")?.textContent ?? "").not.toContain("0");
+    // The Tailnet row is read independently and still answers.
+    expect(screen.getByTestId("connection:tailnet:state").textContent).toBe("설정 필요");
+  });
+
   it("counts the local-API opt-ins on its own line rather than hiding them", async () => {
     const { api } = makeApi();
     render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
