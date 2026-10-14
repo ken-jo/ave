@@ -9,12 +9,39 @@ import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js"
 import { ToolRegistry } from "../../../tools/registry.js";
 import { ConversationLoop } from "../../conversation-loop.js";
 import type { ProviderConfig, StreamEvent, StreamTurnParams } from "../../llm/types.js";
+import { t } from "../../../i18n/index.js";
 import { contextBudgetForCurrentRuntime } from "../compaction.js";
 import type { ActiveChatRuntime } from "../../../shared/subscription-runtime.js";
 
 const state = vi.hoisted(() => ({
   configs: [] as ProviderConfig[],
   requests: [] as StreamTurnParams[],
+  /** What the route's `/models` endpoint answers when the command asks it; undefined = unreachable. */
+  endpointModels: undefined as string[] | undefined,
+  refreshes: 0,
+}));
+
+vi.mock("../../llm/model-list.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../llm/model-list.js")>(),
+  refreshRouteModelList: async (params: {
+    settingsService: { get(key: "llm"): { modelListCache?: Record<string, unknown> } };
+    address: { vendor: string; baseUrl?: string; credentialScope?: string };
+  }) => {
+    state.refreshes += 1;
+    if (!state.endpointModels) return false;
+    const { llmModelListCacheKey } = await import("../../../shared/llm-model-list.js");
+    const llm = params.settingsService.get("llm");
+    llm.modelListCache = {
+      ...llm.modelListCache,
+      [llmModelListCacheKey(params.address.vendor, params.address.baseUrl, params.address.credentialScope)]: {
+        vendor: params.address.vendor,
+        endpoint: "https://llm.example.test/v1/models",
+        models: state.endpointModels,
+        fetchedAt: new Date().toISOString(),
+      },
+    };
+    return true;
+  },
 }));
 
 vi.mock("../../llm/provider-factory.js", async (importOriginal) => ({
@@ -45,7 +72,18 @@ function makeLoop(llm: ReturnType<typeof fakeLlmSettings> & { activeChatRuntime?
   return { llm, loop };
 }
 
-beforeEach(() => { state.configs.length = 0; state.requests.length = 0; });
+beforeEach(() => {
+  state.configs.length = 0;
+  state.requests.length = 0;
+  state.endpointModels = undefined;
+  state.refreshes = 0;
+});
+
+function customEndpointLoop() {
+  const llm = fakeLlmSettings({ provider: "openai-compatible", model: "served-model" });
+  llm.vendors["openai-compatible"].baseUrl = "https://llm.example.test/v1";
+  return makeLoop(llm);
+}
 
 describe("/model", () => {
   it("reports the configured model when called without an argument", async () => {
@@ -98,6 +136,57 @@ describe("/model", () => {
     const result = await loop.handleCommand("model", "gpt-5.4-mini", "user-keyboard");
     expect(loop.deps.modelOverride).toBeUndefined();
     expect(result.text).toContain("/model");
+  });
+
+  it("rejects an id neither the catalog nor the endpoint names, and does not switch", async () => {
+    const { loop } = makeLoop();
+    const before = state.configs.length;
+    const result = await loop.handleCommand("model", "gpt-nonexistent-9", "user-keyboard");
+    expect(result.text).toBe(t("be_conversationLoop.cmdModelUnknown", { model: "gpt-nonexistent-9" }));
+    expect(loop.deps.modelOverride).toBeUndefined();
+    expect(state.configs.length).toBe(before);
+    expect(state.refreshes).toBe(1);
+  });
+
+  it("rejects a spelling the catalog only matches loosely", async () => {
+    const { loop } = makeLoop();
+    const result = await loop.handleCommand("model", "GPT-5-4-MINI", "user-keyboard");
+    expect(result.text).toBe(t("be_conversationLoop.cmdModelUnknown", { model: "GPT-5-4-MINI" }));
+    expect(loop.deps.modelOverride).toBeUndefined();
+  });
+
+  it("accepts a new model the vendor's endpoint reports before the catalog knows it", async () => {
+    state.endpointModels = ["gpt-5.4", "gpt-next-preview"];
+    const { loop } = makeLoop();
+    const result = await loop.handleCommand("model", "gpt-next-preview", "user-keyboard");
+    expect(result.text).toContain("gpt-next-preview");
+    expect(loop.deps.modelOverride).toBe("gpt-next-preview");
+  });
+
+  it("refuses a custom endpoint's model when no model list can be fetched", async () => {
+    const { loop } = customEndpointLoop();
+    const result = await loop.handleCommand("model", "served-model-2", "user-keyboard");
+    expect(result.text).toBe(t("be_conversationLoop.cmdModelUnverifiable", { model: "served-model-2" }));
+    expect(loop.deps.modelOverride).toBeUndefined();
+  });
+
+  it("checks a custom endpoint's model against the list it reports", async () => {
+    state.endpointModels = ["served-model", "served-model-2"];
+    const { loop } = customEndpointLoop();
+    expect((await loop.handleCommand("model", "other-model", "user-keyboard")).text)
+      .toBe(t("be_conversationLoop.cmdModelUnknown", { model: "other-model" }));
+    expect(loop.deps.modelOverride).toBeUndefined();
+    await loop.handleCommand("model", "served-model-2", "user-keyboard");
+    expect(loop.deps.modelOverride).toBe("served-model-2");
+  });
+
+  it("does not claim a Codex subscription model it cannot verify", async () => {
+    const runtime: ActiveChatRuntime = { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" };
+    const llm = { ...fakeLlmSettings({ model: "gpt-5.4" }), activeChatRuntime: runtime };
+    const { loop } = makeLoop(llm);
+    const result = await loop.handleCommand("model", "gpt-5.4-mini", "user-keyboard");
+    expect(result.text).toBe(t("be_conversationLoop.cmdModelUnverifiable", { model: "gpt-5.4-mini" }));
+    expect(loop.deps.modelOverride).toBeUndefined();
   });
 
   it("is refused from a non-keyboard origin", async () => {
