@@ -98,18 +98,18 @@ type SourceWarning = "unencrypted" | "token-unencrypted" | "internal-network" | 
   (`id: "ave"`, primary URL, optional mirror URLs, `auth`). Managed sources
   come from the system policy file (§12). Neither is stored in `sources.json`;
   both keep their state in `state.json`.
-- While the design is built, the official repository is private
-  (`https://github.com/ken-jo/agent-marketplace`, decided 2026-09-23
-  because the `former_org` organization cannot host a new public repository
-  or run CI, and renamed from `ave-marketplace-index` on 2026-09-24 when it
-  became the monorepo that also holds the official plugins' source, §3.1).
-  The constant therefore carries
-  `auth: { kind: "token", host: "github.com" }` and the Sources view offers
-  Set token on the official row; an OS credential helper answers as well
-  (§9.3). Before the first public release built on this design, the
-  repository becomes publicly readable or moves, and that release's constant
-  carries the public URL with `auth: { kind: "none" }`. No released build
-  carries the private URL, so no `movedTo`-style migration is needed.
+- The official repository is `https://github.com/ken-jo/agent-marketplace`
+  (decided 2026-09-23, renamed from `ave-marketplace-index` on 2026-09-24
+  when it became the monorepo that also holds the official plugins' source,
+  §3.1). It must be publicly readable: the constant carries
+  `auth: { kind: "none" }`: a fresh profile with no stored token syncs the
+  official catalog anonymously, and the official row offers no Set token.
+  Sync offers a stored token only to a source whose own auth is `token`, so a
+  token stored for `github.com` by a private source the user added is never
+  sent to the official repository (§9.3). If the repository refuses an
+  anonymous read, the sync fails with `SOURCE_AUTH_REQUIRED`; nothing falls
+  back to a token. No released build carries a private URL, so no
+  `movedTo`-style migration is needed.
 - Tokens live in the existing encrypted secret store under
   `marketplace.gitToken.<normalized host>`; no file above holds a secret.
 - `snapshots/` keeps the current pin, the previous pin, and every commit that

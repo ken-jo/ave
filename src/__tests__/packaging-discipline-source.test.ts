@@ -386,6 +386,27 @@ describe("installer smoke and packaging discipline", () => {
     expect(r2.slice(0, uploadAt)).not.toContain("secrets.");
   });
 
+  it("runs the R2 credential probe only by manual dispatch and only under _ci-probe/", () => {
+    const workflow = readRepoFile(".github/workflows/r2-probe.yml");
+    const trigger = workflow.slice(workflow.indexOf("\non:"), workflow.indexOf("\npermissions:"));
+    // The probe writes to the live release bucket, so no repository event may
+    // start it: only an operator's dispatch.
+    expect(trigger.trim()).toBe("on:\n  workflow_dispatch:");
+    expect(workflow).toMatch(/^ {2}contents: read$/mu);
+    expect(workflow).not.toContain("continue-on-error");
+    expect(workflow).not.toMatch(/set -[a-z]*x/u);
+    for (const name of ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]) {
+      expect(workflow).toContain(`${name}: \${{ secrets.${name} }}`);
+    }
+    expect(workflow.match(/secrets\.[A-Z0-9_]+/gu)?.sort()).toEqual(
+      ["secrets.R2_ACCESS_KEY_ID", "secrets.R2_ACCOUNT_ID", "secrets.R2_BUCKET", "secrets.R2_SECRET_ACCESS_KEY"],
+    );
+    expect(workflow).toContain("PROBE_KEY: _ci-probe/${{ github.run_id }}-${{ github.run_attempt }}.txt");
+    for (const operation of ["put-object", "list-objects-v2", "delete-object"]) {
+      expect(workflow).toContain(`r2 ${operation} `);
+    }
+  });
+
   it("keeps privileged workflows on trusted default-branch events", () => {
     const deploy = readRepoFile(".github/workflows/web-deploy.yml");
     expect(deploy).toContain("repository_dispatch:");

@@ -979,3 +979,93 @@ describe("SourceSyncer", () => {
     }
   });
 });
+
+describe("SourceSyncer and source auth", () => {
+  // Assembled here so no whole credential sits in the source.
+  const TOKEN = ["fixture", "secret", "value"].join("-");
+  let serverRoot: string;
+  let server: GitHttpServer;
+  let git: TestGitRunner;
+  let root: string;
+  let repo: FixtureRepo;
+  let privateRepo: FixtureRepo;
+  let commit: string;
+  let privateCommit: string;
+
+  beforeAll(async () => {
+    serverRoot = mkdtempSync(join(tmpdir(), "ave-sync-auth-served-"));
+    repo = createFixtureRepo(serverRoot, "guarded");
+    commit = repo.commit({ "marketplace.json": index("ave", []) }, "initial");
+    privateRepo = createFixtureRepo(serverRoot, "private-tools");
+    privateCommit = privateRepo.commit({ "marketplace.json": index("acme", []) }, "initial");
+    // The server answers only Basic auth carrying TOKEN; the runner holds TOKEN for its host.
+    server = await startGitHttpServer({ root: serverRoot, token: TOKEN });
+    git = await createTestGitRunner({ tokens: { "127.0.0.1": TOKEN } });
+  });
+
+  afterAll(async () => {
+    await server.close();
+    await git.cleanup();
+    await removeFixtureRepo(repo);
+    await removeFixtureRepo(privateRepo);
+    await cleanupTmpDir(serverRoot);
+  });
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "ave-sync-auth-root-"));
+    server.seen.length = 0;
+  });
+
+  afterEach(async () => {
+    await cleanupTmpDir(root);
+  });
+
+  async function setup(auth: OfficialMarketplace["auth"]) {
+    const policy = policySource(policyWith({}));
+    const official: OfficialMarketplace = { id: "ave", url: server.url("guarded"), mirrors: [], auth };
+    const registry = await SourceRegistry.open({ root, policy, official });
+    // Credentials may cross this loopback http fixture, so only `auth` decides whether the token is offered.
+    await registry.acknowledge("ave", ["token-unencrypted"]);
+    const syncer = new SourceSyncer({
+      folders: nodeFolders(),
+      registry,
+      gate: new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() }),
+      runner: git.runner,
+      root,
+      now: () => new Date(AT),
+      retainedCommits: async () => new Set(),
+      onCatalogChanged: () => undefined,
+    });
+    return { registry, syncer };
+  }
+
+  const authorized = () => server.seen.filter((request) => request.authorization !== undefined);
+
+  it("never offers a stored token to an official source whose auth is none, even when its host asks for one", async () => {
+    const { syncer } = await setup({ kind: "none" });
+    expectFailed(await syncer.sync("ave"), "SOURCE_AUTH_REQUIRED");
+    expect(server.seen.length).toBeGreaterThan(0);
+    expect(authorized()).toEqual([]);
+  });
+
+  it("offers the stored token to a source whose auth is token (the control for the case above)", async () => {
+    const { syncer } = await setup({ kind: "token", host: "127.0.0.1" });
+    expect(await syncer.sync("ave")).toEqual({ status: "ok", pinnedCommit: commit, changed: true });
+    expect(authorized().length).toBeGreaterThan(0);
+  });
+
+  it("keeps token auth for a private source the user added", async () => {
+    const { registry, syncer } = await setup({ kind: "none" });
+    await registry.add({
+      id: "acme",
+      origin: "custom",
+      url: server.url("private-tools"),
+      auth: { kind: "token", host: "127.0.0.1" },
+      acknowledged: ["token-unencrypted"],
+    });
+    server.seen.length = 0;
+    expect(await syncer.sync("acme")).toEqual({ status: "ok", pinnedCommit: privateCommit, changed: true });
+    expect(authorized().length).toBeGreaterThan(0);
+    expect(authorized().every((request) => request.path.startsWith("/private-tools/"))).toBe(true);
+  });
+});

@@ -298,3 +298,9 @@ A retired historical E2E script is no longer the source of truth. Current host-s
 - Production release checklist: [docs/references/production-release-checklist.md](./docs/references/production-release-checklist.md)
 - Windows setup: [docs/guides/windows-setup.md](./docs/guides/windows-setup.md)
 - Extension development: [docs/guides/plugin-development.md](./docs/guides/plugin-development.md)
+
+## License
+
+Proprietary; see [LICENSE](./LICENSE).
+
+© 2026 Ken Jo. All rights reserved.
