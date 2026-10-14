@@ -1390,6 +1390,13 @@ export type ApprovalSurfaceResolver = (sessionId: string | undefined) => WebCont
 
 export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
+  /**
+   * Renderers that read a parked request back through
+   * {@link listPendingRendererRequests}, by request id. A card can be on screen
+   * in several windows (sent to one, re-fetched by another that loaded later);
+   * its settlement is announced to all of them.
+   */
+  private readonly refetchedBy = new Map<string, Set<WebContents>>();
   /** Null only for a gate built without any desktop surface (headless/tests). */
   private readonly resolveSurface: ApprovalSurfaceResolver | null;
   /** Timeout in milliseconds. Defaults to five minutes. */
@@ -2784,7 +2791,9 @@ export class ApprovalGate {
         // is the one place an observer's card — and the renderer's — can be
         // told the request is no longer answerable.
         this.notifyPendingSettled(fullReq.id, decision);
-        this.announceSettledToRenderer(fullReq.id, [sentTo, this.liveSurfaceFor(fullReq.sessionId)]);
+        const refetchers = this.refetchedBy.get(fullReq.id) ?? [];
+        this.refetchedBy.delete(fullReq.id);
+        this.announceSettledToRenderer(fullReq.id, [sentTo, ...refetchers, this.liveSurfaceFor(fullReq.sessionId)]);
         resolve(decision);
       };
       const timer = setTimeout(() => {
@@ -3186,10 +3195,17 @@ export class ApprovalGate {
    * after a request went out subscribed too late to have seen it; this is how
    * it recovers the card instead of leaving the turn to sit out its timeout.
    */
-  listPendingRendererRequests(): ApprovalRequest[] {
+  listPendingRendererRequests(recipient?: WebContents): ApprovalRequest[] {
     const out: ApprovalRequest[] = [];
-    for (const entry of this.pending.values()) {
-      if (entry.rendererRequest !== undefined) out.push(entry.rendererRequest);
+    for (const [id, entry] of this.pending) {
+      if (entry.rendererRequest === undefined) continue;
+      out.push(entry.rendererRequest);
+      // The reader now draws this card too; tell it when the request settles.
+      if (recipient) {
+        const readers = this.refetchedBy.get(id) ?? new Set<WebContents>();
+        readers.add(recipient);
+        this.refetchedBy.set(id, readers);
+      }
     }
     return out;
   }
