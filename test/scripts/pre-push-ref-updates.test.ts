@@ -12,9 +12,10 @@
  * the right commit — a confusing way to learn there was nothing to do.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -200,5 +201,36 @@ describe("new-branch base", () => {
   it("finds no base for unrelated history", () => {
     const run = (args: string[]) => args[0] === "merge-base" ? { status: 1, stdout: "" } : { status: 0, stdout: "" };
     expect(chooseNewBranchBase(A, [{ ref: "refs/heads/main", sha: B }], run)).toBeNull();
+  });
+
+  it("logs each base candidate a failed fetch leaves missing", () => {
+    const hook = readFileSync(resolve("scripts/hooks/run-local-checks.mjs"), "utf8");
+    const start = hook.indexOf("function findNewBranchBase(");
+    const end = hook.indexOf("function isFastForwardUpdate(", start);
+    const logs: string[] = [];
+    const listing = [
+      "ref: refs/heads/main\tHEAD",
+      `${A}\trefs/heads/main`,
+      `${B}\trefs/heads/integration/permissions`,
+      "",
+    ].join("\n");
+    const runner = (args: string[]) => {
+      if (args[0] === "ls-remote") return { status: 0, stdout: listing, stderr: "" };
+      if (args[0] === "fetch") return { status: 128, stdout: "", stderr: "fatal: unable to access remote\nfatal: could not read from remote" };
+      if (args[0] === "cat-file") return { status: args[2]!.startsWith(A) ? 0 : 1, stdout: "", stderr: "" };
+      if (args[0] === "merge-base") return { status: 0, stdout: `${A}\n`, stderr: "" };
+      return { status: 0, stdout: "2\n", stderr: "" };
+    };
+    const findNewBranchBase = runInNewContext(`${hook.slice(start, end)}; findNewBranchBase`, {
+      isUsableRemoteLocation: () => true,
+      gitRunner: () => runner,
+      parseRemoteHeads, selectBaseCandidates, findMissingCandidateTips, chooseNewBranchBase,
+      console: { log: (line: string) => logs.push(line) },
+    });
+    const result = findNewBranchBase("/fixture", { localRef: "refs/heads/feat/x", localSha: C }, "https://example.invalid/ave");
+    expect(result).toEqual({ sha: A });
+    expect(logs).toContain(
+      `[checks] skipping base candidate refs/heads/integration/permissions (${B.slice(0, 12)}): git fetch exited 128: fatal: could not read from remote`,
+    );
   });
 });

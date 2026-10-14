@@ -7,7 +7,7 @@
  * the full checks.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, join, normalize, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -221,16 +221,16 @@ describe("pre-push fast source tier", () => {
         "src/lib/log-file-sink.ts",
         "src/main/ave-protocol-registration.ts",
       ],
-      "src/__tests__/preload-shape.test.ts": ["src/contract/", "src/preload", "src/ui/renderer/types.ts"],
-      "src/__tests__/preload.test.ts": ["src/contract/", "src/preload", "src/ui/renderer/types.ts"],
+      "src/__tests__/preload-shape.test.ts": ["src/contract/", "src/preload", "src/shared/ipc-channels.ts", "src/ui/renderer/types.ts"],
+      "src/__tests__/preload.test.ts": ["src/contract/", "src/preload", "src/shared/ipc-channels.ts", "src/ui/renderer/types.ts"],
       "src/data/__tests__/settings-store.test.ts": [
         "src/data/secret-document-store.ts",
         "src/data/settings-",
         "src/shared/settings",
       ],
-      "src/ipc/__tests__/channel-inventory.test.ts": ["src/contract/", "src/ipc/"],
-      "src/ipc/__tests__/domain-exports.test.ts": ["src/ipc/domains/"],
-      "src/ipc/__tests__/host-renderer-only-channels.test.ts": ["src/contract/", "src/ipc/"],
+      "src/ipc/__tests__/channel-inventory.test.ts": ["src/contract/", "src/ipc/", "src/shared/ipc-channels.ts"],
+      "src/ipc/__tests__/domain-exports.test.ts": ["src/ipc/domains/", "src/shared/ipc-channels.ts"],
+      "src/ipc/__tests__/host-renderer-only-channels.test.ts": ["src/contract/", "src/ipc/", "src/shared/ipc-channels.ts"],
       "src/ui/renderer/__tests__/format-ipc-error-coverage.test.ts": [
         "src/alerts/",
         "src/ipc/domains/",
@@ -277,7 +277,7 @@ describe("pre-push fast source tier", () => {
     const read = (path: string) => texts.get(path) ?? "";
     expect(boundRelatedTests(coverage, read)).toEqual({
       tests: [fanOut[0], fanOut[1], "src/permissions/judge/__tests__/judge-engine.test.ts"].sort(),
-      narrowed: [{ source: "src/audit/audit-schema.ts", related: RELATED_TEST_BOUND + 10, direct: 2 }],
+      narrowed: [{ source: "src/audit/audit-schema.ts", related: RELATED_TEST_BOUND + 10, direct: 2, lockSuites: 0 }],
     });
     // Under the bound nothing is narrowed.
     expect(boundRelatedTests([{ source: "src/a.ts", tests: fanOut.slice(0, 30) }], read)).toEqual({
@@ -293,5 +293,71 @@ describe("pre-push fast source tier", () => {
     expect(hook).toContain("[checks] lock suite ${suite}: triggered by ${path}");
     expect(hook).toContain("[checks] related tests bounded: ${source} reaches ${related} test file(s)");
     expect(hook).toContain("lockSuites: selectTriggeredLockSuites([...changedFiles])");
+  });
+
+  it("keeps the IPC lock suites when src/shared/ipc-channels.ts changes alone", () => {
+    // The PR #43 review case: 255 related tests, 21 direct importers, and the
+    // IPC and preload lock suites reach the module only through
+    // src/contract/app-contract.ts. They must survive both ways.
+    expect(selectTriggeredLockSuites(["src/shared/ipc-channels.ts"]).map(({ suite }) => suite)).toEqual([
+      "src/__tests__/preload-shape.test.ts",
+      "src/__tests__/preload.test.ts",
+      "src/ipc/__tests__/channel-inventory.test.ts",
+      "src/ipc/__tests__/domain-exports.test.ts",
+      "src/ipc/__tests__/host-renderer-only-channels.test.ts",
+    ]);
+    const viaBarrel = [
+      "src/__tests__/preload.test.ts",
+      "src/ipc/__tests__/channel-inventory.test.ts",
+      "src/ipc/__tests__/domain-exports.test.ts",
+    ];
+    const importers = Array.from({ length: 21 }, (_, index) => `src/importer${index}/__tests__/importer.test.ts`);
+    const transitive = Array.from({ length: 255 - 21 - viaBarrel.length }, (_, index) => `src/other${index}/__tests__/other.test.ts`);
+    const texts = new Map(importers.map((path) => [path, 'import { CHANNELS } from "../../shared/ipc-channels.js";\n']));
+    const result = boundRelatedTests(
+      [{ source: "src/shared/ipc-channels.ts", tests: [...importers, ...viaBarrel, ...transitive] }],
+      (path) => texts.get(path) ?? 'import { CHANNELS } from "../../contract/app-contract.js";\n',
+    );
+    expect(result.reason).toBeUndefined();
+    expect(result.tests).toEqual([...importers, ...viaBarrel].sort());
+    expect(result.narrowed).toEqual([
+      { source: "src/shared/ipc-channels.ts", related: 255, direct: 21, lockSuites: 3 },
+    ]);
+  });
+
+  it("triggers every lock suite that reaches the contract barrel on the barrel's own imports", () => {
+    // Derived from the import graphs rather than listed by hand: a suite that
+    // reaches src/contract/app-contract.ts reaches its imports only through it.
+    const barrel = "src/contract/app-contract.ts";
+    const specifier = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|vi\.mock\(\s*)["'](\.[^"']+)["']/g;
+    const resolveModule = (from: string, spec: string) => {
+      const base = normalize(join(dirname(from), spec)).replace(/\.(?:js|mjs)$/, "");
+      return [".ts", ".tsx", ".mts", "/index.ts"].map((ext) => base + ext).find((path) => existsSync(resolve(root, path))) ?? null;
+    };
+    // Comments are stripped first: a JSDoc `{@link import("./x.js")}` is not an import.
+    const imports = (file: string) => [...readFileSync(resolve(root, file), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").matchAll(specifier)]
+      .map((match) => resolveModule(file, match[1]!))
+      .filter((path): path is string => path !== null && path.startsWith("src/"));
+    const reaches = (start: string, target: string) => {
+      const seen = new Set<string>();
+      const stack = [start];
+      while (stack.length > 0) {
+        for (const next of imports(stack.pop()!)) {
+          if (next === target) return true;
+          if (!seen.has(next)) { seen.add(next); stack.push(next); }
+        }
+      }
+      return false;
+    };
+    const barrelImports = imports(barrel);
+    expect(barrelImports).toContain("src/shared/ipc-channels.ts");
+    const reachingSuites = AVE_APP_LOCK_SUITES.filter((suite) => suite.endsWith(".ts") && reaches(suite, barrel));
+    expect(reachingSuites.length).toBeGreaterThanOrEqual(5);
+    for (const suite of reachingSuites) {
+      for (const path of barrelImports) {
+        expect(AVE_APP_LOCK_SUITE_TRIGGERS[suite]!.some((trigger) => path.startsWith(trigger)), `${suite} on ${path}`).toBe(true);
+      }
+    }
   });
 });

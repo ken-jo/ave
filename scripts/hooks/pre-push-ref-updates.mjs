@@ -13,9 +13,10 @@ const INTEGRATION_BRANCH_PREFIX = "refs/heads/integration/";
 
 /**
  * `integration/<category>` branches collect sub-branch PRs and reach the
- * default branch through one category PR whose CI runs everything. They only
- * advance through merged pull requests, so a direct push to one is treated
- * like a push to the default branch: full checks.
+ * default branch through one category PR whose CI runs everything. They are
+ * not branch-protected; they advance through reviewed PR merges and
+ * lead-run merges of main, so a direct push to one is the exceptional case
+ * and is treated like a push to the default branch: full checks.
  */
 export function isIntegrationBranchRef(ref) {
   return typeof ref === "string" &&
@@ -54,11 +55,15 @@ export function parseRemoteHeads(text) {
 
 /**
  * The remote heads a new branch may be measured from: the default branch and
- * every `integration/*` branch. Both only advance through merged pull
- * requests, so every commit reachable from their live tips is already on the
- * remote and already passed CI. Feature branches are not candidates: one can
- * be pushed with the hooks skipped. Default branch first, then by name, so the
- * choice between equally close bases is deterministic.
+ * every `integration/*` branch. The trust basis differs between the two:
+ * the default branch is protected and moves only through PRs with green CI.
+ * Integration branches are unprotected and CI does not run on PRs into
+ * them; their tips advance through reviewed PR merges and lead-run merges of
+ * main, every push behind those ran this hook (AGENTS.md forbids bypassing
+ * it), and the category->main PR's full CI is the backstop before anything
+ * reaches main. Feature branches are not candidates: nothing reviews what
+ * lands on them. Default branch first, then by name, so the choice between
+ * equally close bases is deterministic.
  */
 export function selectBaseCandidates(remoteHeads) {
   const { defaultRef, heads } = remoteHeads;

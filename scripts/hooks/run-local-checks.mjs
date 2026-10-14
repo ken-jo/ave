@@ -40,8 +40,9 @@
 // closest merge-base with a live default or integration/* tip on the remote
 // (findNewBranchBase), not only the default branch. A direct push TO an
 // integration/* branch is treated like the default branch (full checks):
-// those branches advance only through merged PRs, so a direct push is the
-// exceptional case and has to carry the whole proof itself.
+// those branches advance through reviewed PR merges and lead-run merges of
+// main, so a direct push is the exceptional case and has to carry the whole
+// proof itself.
 // Every non-deletion update must name HEAD and the tracked checkout must be
 // clean before and after checks. Deletion-only pushes have no tree to check.
 
@@ -422,7 +423,11 @@ function gitRunner(repoRoot, timeout) {
       stdio: ["ignore", "pipe", "pipe"],
       timeout,
     });
-    return { status: result.error ? null : result.status, stdout: result.stdout || "" };
+    return {
+      status: result.error ? null : result.status,
+      stdout: result.stdout || "",
+      stderr: result.error ? result.error.message : (result.stderr || "").trim(),
+    };
   };
 }
 
@@ -447,10 +452,17 @@ function findNewBranchBase(repoRoot, update, remoteLocation) {
   const missing = findMissingCandidateTips(candidates, git);
   if (missing.length > 0) {
     console.log(`[checks] fetching ${missing.length} remote branch tip(s) missing locally to choose a base`);
-    gitRunner(repoRoot, 120_000)([
+    const fetched = gitRunner(repoRoot, 120_000)([
       "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--", remoteLocation,
       ...missing.map((candidate) => candidate.ref),
     ]);
+    const fetchReason = fetched.status === 0
+      ? "the fetch succeeded but the live tip is still absent (the branch moved after ls-remote)"
+      : `git fetch exited ${fetched.status ?? "abnormally"}: ${fetched.stderr.split(/\r?\n/).at(-1) || "no error output"}`;
+    // A candidate that is still missing is skipped as a base; say which and why.
+    for (const candidate of findMissingCandidateTips(missing, git)) {
+      console.log(`[checks] skipping base candidate ${candidate.ref} (${candidate.sha.slice(0, 12)}): ${fetchReason}`);
+    }
   }
   const chosen = chooseNewBranchBase(update.localSha, candidates, git);
   if (!chosen) {
@@ -571,7 +583,7 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
     ) {
       return { docsOnly: false, reason: `push to default branch ${update.remoteRef} requires full checks` };
     }
-    // Integration branches advance only through merged PRs; see the header.
+    // Integration branches advance through reviewed merges; see the header.
     if (isIntegrationBranchRef(update.remoteRef)) {
       return { docsOnly: false, reason: `push to integration branch ${update.remoteRef} requires full checks` };
     }
@@ -1024,9 +1036,10 @@ if (stage === "pre-commit") {
     for (const { suite, path } of lockSuites) {
       console.log(`[checks] lock suite ${suite}: triggered by ${path}`);
     }
-    for (const { source, related, direct } of relatedSelection.narrowed) {
+    for (const { source, related, direct, lockSuites: keptLockSuites } of relatedSelection.narrowed) {
       console.log(
         `[checks] related tests bounded: ${source} reaches ${related} test file(s); running its ${direct} direct importer(s) ` +
+          `and ${keptLockSuites} lock suite(s) ` +
           `(over ${RELATED_TEST_BOUND} related files in total; the category PR's CI runs the rest)`
       );
     }

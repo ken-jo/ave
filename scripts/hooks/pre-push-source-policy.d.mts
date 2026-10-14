@@ -16,7 +16,7 @@ export function boundRelatedTests(
   coverage: { source: string; tests: string[] }[],
   readText: (path: string) => string | null,
 ):
-  | { tests: string[]; narrowed: { source: string; related: number; direct: number }[]; reason?: undefined }
+  | { tests: string[]; narrowed: { source: string; related: number; direct: number; lockSuites: number }[]; reason?: undefined }
   | { reason: string; tests?: undefined; narrowed?: undefined };
 export function selectFastSourceChecks<T extends PrePushChange>(changes: T[]): {
   eligible: boolean;

@@ -30,7 +30,14 @@ const MAX_FAST_ARGUMENT_CHARS = 16_384;
  * import yet), so `vitest related` cannot see that a change reaches it. The
  * fast tier runs a suite when a changed path starts with one of its triggers:
  * the paths it scans or reads plus the modules it pins. Import-reachable
- * inputs are already covered by `vitest related`.
+ * inputs are already covered by `vitest related`, and boundRelatedTests
+ * never cuts a lock suite out of a related set.
+ *
+ * The IPC and preload suites reach src/shared/ipc-channels.ts only through
+ * the contract barrel src/contract/app-contract.ts, so every suite whose
+ * import graph reaches that barrel also triggers on the barrel's own imports
+ * (pinned by test/scripts/pre-push-source-policy.test.ts, which walks the
+ * graphs).
  *
  * `test/scripts` holds the hook, gate and repository-tooling suites; its
  * triggers (`scripts/`, `package.json`) are also global inputs, so on a
@@ -46,16 +53,30 @@ export const AVE_APP_LOCK_SUITE_TRIGGERS = Object.freeze({
     "src/lib/log-file-sink.ts",
     "src/main/ave-protocol-registration.ts",
   ]),
-  "src/__tests__/preload-shape.test.ts": Object.freeze(["src/contract/", "src/preload", "src/ui/renderer/types.ts"]),
-  "src/__tests__/preload.test.ts": Object.freeze(["src/contract/", "src/preload", "src/ui/renderer/types.ts"]),
+  "src/__tests__/preload-shape.test.ts": Object.freeze([
+    "src/contract/",
+    "src/preload",
+    "src/shared/ipc-channels.ts",
+    "src/ui/renderer/types.ts",
+  ]),
+  "src/__tests__/preload.test.ts": Object.freeze([
+    "src/contract/",
+    "src/preload",
+    "src/shared/ipc-channels.ts",
+    "src/ui/renderer/types.ts",
+  ]),
   "src/data/__tests__/settings-store.test.ts": Object.freeze([
     "src/data/secret-document-store.ts",
     "src/data/settings-",
     "src/shared/settings",
   ]),
-  "src/ipc/__tests__/channel-inventory.test.ts": Object.freeze(["src/contract/", "src/ipc/"]),
-  "src/ipc/__tests__/domain-exports.test.ts": Object.freeze(["src/ipc/domains/"]),
-  "src/ipc/__tests__/host-renderer-only-channels.test.ts": Object.freeze(["src/contract/", "src/ipc/"]),
+  "src/ipc/__tests__/channel-inventory.test.ts": Object.freeze(["src/contract/", "src/ipc/", "src/shared/ipc-channels.ts"]),
+  "src/ipc/__tests__/domain-exports.test.ts": Object.freeze(["src/ipc/domains/", "src/shared/ipc-channels.ts"]),
+  "src/ipc/__tests__/host-renderer-only-channels.test.ts": Object.freeze([
+    "src/contract/",
+    "src/ipc/",
+    "src/shared/ipc-channels.ts",
+  ]),
   "src/ui/renderer/__tests__/format-ipc-error-coverage.test.ts": Object.freeze([
     "src/alerts/",
     "src/ipc/domains/",
@@ -170,12 +191,20 @@ export function getRelatedCoverageFullReason(relatedFiles, coverage) {
  * files, 73 s of a 140 s fast run. Above RELATED_TEST_BOUND test files the
  * fast tier keeps every related test of a narrow module and narrows each
  * module whose fan-out exceeds FAN_OUT_SOURCE_BOUND to the test files that
- * import it directly. The full transitive set runs in the category PR's CI.
+ * import it directly, plus every lock suite in its related set: a lock suite
+ * often reaches a shared contract through a barrel (the IPC suites reach
+ * src/shared/ipc-channels.ts through src/contract/app-contract.ts), and
+ * cutting it would drop exactly the cross-cutting check the change needs.
+ * The full transitive set runs in the category PR's CI.
  */
 export const RELATED_TEST_BOUND = 150;
 const FAN_OUT_SOURCE_BOUND = 25;
 const MODULE_EXTENSION = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 const MODULE_SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\bvi\.(?:mock|doMock|importActual)\s*(?:<[^>]*>)?\(\s*|\brequire\(\s*)["']([^"']+)["']/g;
+
+function isLockSuiteFile(relativePath) {
+  return AVE_APP_LOCK_SUITES.some((suite) => relativePath === suite || relativePath.startsWith(`${suite}/`));
+}
 
 function importsModuleDirectly(text, testPath, source) {
   if (typeof text !== "string") return false;
@@ -192,7 +221,7 @@ function importsModuleDirectly(text, testPath, source) {
  * Resolve the related test files to run from per-module discovery coverage
  * (already validated by getRelatedCoverageFullReason). Returns
  * { tests, narrowed } — `narrowed` lists each module cut down to its direct
- * importers — or { reason } when the bound cannot be met without dropping a
+ * importers and the lock suites among its related tests — or { reason } when the bound cannot be met without dropping a
  * module's coverage, which keeps the full checks.
  *
  * `readText(path)` returns a test file's source, or null.
@@ -214,8 +243,9 @@ export function boundRelatedTests(coverage, readText) {
         reason: `${record.source} reaches ${record.tests.length} related test files and none imports it directly; full checks required`,
       };
     }
-    narrowed.push({ source: record.source, related: record.tests.length, direct: direct.length });
-    records.push({ source: record.source, tests: direct });
+    const lockSuites = record.tests.filter((test) => isLockSuiteFile(test) && !direct.includes(test));
+    narrowed.push({ source: record.source, related: record.tests.length, direct: direct.length, lockSuites: lockSuites.length });
+    records.push({ source: record.source, tests: [...direct, ...lockSuites] });
   }
   const tests = union(records);
   if (tests.length > RELATED_TEST_BOUND) {
