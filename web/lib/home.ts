@@ -133,7 +133,7 @@ const ko: HomeCopy = {
       { what: "plan.md 고치기", kind: "쓰기", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
       { what: "테스트 실행", code: "bun test", kind: "셸", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
       { what: "웹 페이지 가져오기", kind: "네트워크", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
-      { what: "허용 디렉터리 밖에 저장", code: "~/Desktop/report.md", kind: "쓰기", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "ask" }) },
+      { what: "허용 디렉터리 밖에 저장", code: "~/Desktop/report.md", kind: "쓰기", result: allowed({ default: "ask", strict: "ask", auto: "ask", allow: "ask" }) },
       { what: "SSH 키 읽기", code: "~/.ssh/id_ed25519", kind: "읽기", result: allowed({ default: "block", strict: "block", auto: "block", allow: "block" }) },
     ],
     facts: [
@@ -166,8 +166,8 @@ const ko: HomeCopy = {
     title: "모델은 직접 고릅니다",
     body: "API 키, 직접 띄운 서버, 이미 쓰는 구독 가운데 고르세요. 설정의 모델 탭에서 제공자를 추가하고, 실패하면 다음 모델로 넘기는 대체 체인도 만들 수 있습니다.",
     subs: "ChatGPT 요금제는 격리된 로컬 Codex 런타임으로, Claude 구독은 내가 고른 공식 claude CLI로 연결합니다. 구독 자격 증명이 API 키로 바뀌는 일은 없습니다.",
-    providers: ["OpenAI", "Anthropic", "Gemini", "Vertex AI", "Azure AI Foundry", "OpenRouter", "DeepSeek", "Mistral", "Groq", "xAI"],
-    local: ["Ollama", "LM Studio", "LiteLLM", "OpenAI 호환 서버"],
+    providers: ["OpenAI", "Claude", "Gemini", "OpenRouter", "OpenAI 호환 서버"],
+    local: ["그 밖의 제공자는 마켓플레이스 패키지로"],
   },
   plugins: {
     title: "플러그인은 git에서",
@@ -188,7 +188,7 @@ const ko: HomeCopy = {
     facts: [
       { title: "따로 도는 프로세스", body: "플러그인은 앱과 다른 프로세스에서 돕니다. 하나가 시작에 실패해도 나머지는 그대로 일하고, 그 플러그인을 부르면 실제 이유를 알려 줍니다." },
       { title: "네트워크는 호스트를 거쳐", body: "플러그인은 선언한 도메인 최대 16개에만 나갈 수 있고, 요청은 호스트가 한 번에 한 홉씩 보냅니다. 리디렉션도 매번 다시 검사합니다." },
-      { title: "업데이트는 조용할 때", body: "부팅 때와 하루 한 번, 쉬고 있을 때만 확인합니다. 권한, MCP 서버, 훅이 그대로면 자동으로 적용하고, 달라졌으면 내 검토를 기다립니다." },
+      { title: "적용은 조용할 때", body: "새 버전은 부팅 때와 정해진 간격으로 확인하고, 적용은 대화가 쉬고 있을 때 하나씩 합니다. 권한, MCP 서버, 훅이 바뀌었거나 승인을 다시 확인해야 하면 자동으로 적용하지 않고 내 검토를 기다립니다." },
       { title: "회수할 수 있는 버전", body: "소스는 revocations.json 으로 특정 버전을 끄거나 지울 수 있고, 그 소스에서 설치한 것에만 적용됩니다." },
       { title: "담을 수 있는 것", body: "플러그인, MCP 서버, 스킬, 에이전트, 테마, 글꼴, 언어, 모델 제공자, 메시징 연결을 같은 방식으로 배포합니다." },
       { title: "기본으로 들어오는 둘", body: "회의 플러그인과 로컬 인덱서 플러그인은 처음 설치할 때 함께 들어옵니다." },
@@ -296,7 +296,7 @@ const en: HomeCopy = {
       { what: "Edit plan.md", kind: "write", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
       { what: "Run the tests", code: "bun test", kind: "shell", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
       { what: "Fetch a web page", kind: "network", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
-      { what: "Save outside the allowed folders", code: "~/Desktop/report.md", kind: "write", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "ask" }) },
+      { what: "Save outside the allowed folders", code: "~/Desktop/report.md", kind: "write", result: allowed({ default: "ask", strict: "ask", auto: "ask", allow: "ask" }) },
       { what: "Read an SSH key", code: "~/.ssh/id_ed25519", kind: "read", result: allowed({ default: "block", strict: "block", auto: "block", allow: "block" }) },
     ],
     facts: [
@@ -329,8 +329,8 @@ const en: HomeCopy = {
     title: "Bring your own model",
     body: "Use an API key, a server you run yourself, or a subscription you already pay for. Add providers in the Model tab of Settings, and set a fallback chain that hands a failed turn to the next model.",
     subs: "A ChatGPT plan connects through an isolated local Codex runtime; a Claude subscription through the official claude CLI you choose. Subscription credentials never turn into API keys.",
-    providers: ["OpenAI", "Anthropic", "Gemini", "Vertex AI", "Azure AI Foundry", "OpenRouter", "DeepSeek", "Mistral", "Groq", "xAI"],
-    local: ["Ollama", "LM Studio", "LiteLLM", "any OpenAI-compatible server"],
+    providers: ["OpenAI", "Claude", "Gemini", "OpenRouter", "any OpenAI-compatible server"],
+    local: ["more providers as marketplace packages"],
   },
   plugins: {
     title: "Plugins come from git",
@@ -351,7 +351,7 @@ const en: HomeCopy = {
     facts: [
       { title: "A process of its own", body: "Plugins run outside the app process. If one fails to start, the rest keep working, and calls to the failed one report the real reason." },
       { title: "Network through the host", body: "A plugin reaches only the domains it declares, sixteen at most, and the host sends each request one hop at a time, checking every redirect again." },
-      { title: "Updates when idle", body: "Checked at launch and once a day, only while you’re idle. If permissions, MCP servers and hooks are unchanged it applies; if not, it waits for your review." },
+      { title: "Applied when idle", body: "New versions are checked at launch and on a schedule, and applied one at a time while the conversation is idle. If permissions, MCP servers or hooks changed, or an approval needs confirming again, the update waits for your review instead of applying itself." },
       { title: "Versions can be recalled", body: "A source can disable or remove a version through revocations.json, and it applies only to installs from that source." },
       { title: "What it carries", body: "Plugins, MCP servers, skills, agents, themes, fonts, languages, model providers and messaging connections all ship the same way." },
       { title: "Two come with Ave", body: "The meeting plugin and the local indexer are installed on first run." },

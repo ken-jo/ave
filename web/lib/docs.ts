@@ -66,7 +66,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "where",
         h: "데이터가 저장되는 곳",
         blocks: [
-          { p: "Ave의 모든 데이터는 홈 폴더의 ~/.ave 아래에 있습니다. AVE_HOME 환경 변수로 다른 위치를 지정할 수 있습니다. 구성은 ‘데이터와 업데이트’에서 설명합니다." },
+          { p: "Ave가 관리하는 데이터는 대부분 홈 폴더의 ~/.ave 아래에 있습니다(앱 설정 파일만 Electron 사용자 데이터 폴더에 있습니다). AVE_HOME 환경 변수로 다른 위치를 지정할 수 있습니다. 구성은 ‘데이터와 업데이트’에서 설명합니다." },
         ],
       },
     ],
@@ -82,9 +82,8 @@ const ko: Record<DocSlug, DocPage> = {
         blocks: [
           { p: "설정 → 모델에서 제공자 추가를 누르고, 카드마다 값을 넣은 뒤 저장합니다. 모델 선택은 하나이고 제공자별로 묶여 보입니다. 모델 목록은 제공자에게서 받아 캐시에 두고, 실행할 때 한 번 또는 새로고침을 누를 때 갱신합니다." },
           { dl: [
-            ["직접 연결", "OpenAI, Anthropic, Google Gemini, Google Vertex AI, Azure AI Foundry"],
-            ["직접 띄운 서버", "Ollama, LM Studio, LiteLLM, 그리고 OpenAI 호환 엔드포인트"],
-            ["기본값이 준비된 제공자", "OpenRouter, DeepSeek, xAI, Together, Fireworks, Groq, Cerebras, Mistral, Moonshot, Qwen 등"],
+            ["기본 제공", "OpenAI, Claude, Gemini, OpenRouter, 그리고 OpenAI 호환 엔드포인트(직접 띄운 서버 포함)"],
+            ["마켓플레이스 패키지", "그 밖의 제공자는 마켓플레이스의 제공자(provider) 패키지로 추가합니다."],
           ] },
         ],
       },
@@ -92,7 +91,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "openai-login",
         h: "OpenAI 로그인",
         blocks: [
-          { p: "OpenAI는 세 가지로 연결합니다. 브라우저로 로그인, 기기 코드 사용, API 키 사용. 로그인 주소와 토큰은 설정 화면에 나타나지 않습니다." },
+          { p: "OpenAI는 세 가지로 연결합니다. 브라우저에서 로그인, 디바이스 코드 사용, API 키 대화 사용. 로그인 주소와 토큰은 설정 화면에 나타나지 않습니다." },
         ],
       },
       {
@@ -125,8 +124,8 @@ const ko: Record<DocSlug, DocPage> = {
         h: "칸",
         blocks: [
           { p: "작업 모드는 최대 네 칸, 채팅 모드는 한 칸입니다. 칸마다 자기 대화 루프를 갖고, 여러 칸이 동시에 답을 받습니다. 한 대화는 한 칸에만 열립니다. 사이드바에서 이미 열린 대화를 누르면 그 칸으로 초점이 옮겨 갑니다." },
-          { p: "나누기는 ‘나란히’와 ‘위아래’ 중에서 고릅니다. 나눈 칸이 최소 크기보다 작아지는 방향은 고를 수 없게 표시되고, 둘 다 안 되면 이유를 보여 줍니다." },
-          { p: "칸 머리에는 대화 제목과 고정, 내보내기(Markdown 또는 JSON), 가져오기, 그리고 대화 목록 보기, 나누기, 이 채팅만 보기, 닫기가 있습니다." },
+          { p: "나누기는 ‘좌우로 분할’과 ‘위아래로 분할’ 중에서 고릅니다. 나눈 칸이 최소 크기보다 작아지는 방향은 고를 수 없게 표시되고, 둘 다 안 되면 이유를 보여 줍니다." },
+          { p: "칸 머리에는 대화 제목과 고정, 내보내기(Markdown 또는 JSON), 가져오기, 그리고 패널 분할, 이 패널만 보기, 패널 닫기가 있습니다." },
         ],
       },
       {
@@ -263,7 +262,7 @@ const ko: Record<DocSlug, DocPage> = {
         blocks: [
           { p: "마켓플레이스 탭이나 링크로 설치합니다. 링크는 확인 화면만 열고, 설치는 내가 확인한 다음에 일어납니다." },
           { code: "ave://install/<kind>/<name>@<source>\nave://uninstall/<kind>/<name>@<source>\nave://marketplace/add?url=<repository>" },
-          { p: "개발 중인 플러그인은 패키징하지 않은 빌드에서 설정 → 확장 설정 → 개발자 도구 → 로컬 폴더에서 설치로 올립니다." },
+          { p: "개발 중인 플러그인은 패키징하지 않은 빌드를 AVE_DEV=1 로 실행한 뒤 설정 → 확장 설정 → 개발자 도구 → 로컬 폴더에서 설치로 올립니다." },
         ],
       },
       {
@@ -334,8 +333,8 @@ const ko: Record<DocSlug, DocPage> = {
         id: "updates",
         h: "업데이트",
         blocks: [
-          { p: "부팅 때와 하루 한 번, 내가 쉬고 있을 때만 확인합니다. 권한, MCP 서버, 훅이 이전과 같으면 자동으로 적용하고, 달라졌으면 내가 검토할 때까지 기다립니다." },
-          { p: "배포자는 버전을 숨기거나(yank), 일부에게만 먼저 내보내거나, 카나리 채널을 둘 수 있습니다." },
+          { p: "새 버전은 부팅 때와 정해진 간격으로 확인하고, 적용은 대화가 쉬고 있을 때 한 번에 하나씩 합니다. 자동 적용은 모든 조건이 맞을 때만 일어납니다. 예를 들어 패키지가 켜져 있고, 업그레이드이고, 건너뛴 버전이 아니고, 세 번 실패하지 않았고, 권한·MCP 서버·훅이 승인한 그대로이고, 자동 업데이트 스위치가 켜져 있어야 합니다. 하나라도 어긋나면 검토나 수동 업데이트로 남습니다. 조직이 필수로 지정한 설치는 이 스위치와 상관없이 적용됩니다." },
+          { p: "배포자는 버전을 숨기거나(yank), 일부에게만 먼저 내보낼 수 있고, 사용자는 canaryOptIn 설정으로 카나리 버전을 받겠다고 고를 수 있습니다." },
         ],
       },
       {
@@ -403,7 +402,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "hooks",
         h: "훅",
         blocks: [
-          { p: "pre-, post-, perm- 으로 시작하는 셸 스크립트를 이벤트에 끼울 수 있습니다. 새 훅 설정은 신뢰 확인을 거칩니다." },
+          { p: "pre-*.sh 는 PreToolUse, post-*.sh 는 PostToolUse, perm-*.sh 는 PermissionRequest 에 연결되는 셸 스크립트입니다. 그 밖의 이벤트는 신뢰 확인을 거친 hooks.json 설정으로만 연결합니다." },
           { code: "PreToolUse  PostToolUse  PostToolUseFailure\nPermissionRequest  PermissionDenied\nUserPromptSubmit  SessionStart  Stop\nPreCompact  PostCompact" },
         ],
       },
@@ -428,7 +427,7 @@ const ko: Record<DocSlug, DocPage> = {
         blocks: [
           { p: "맨 위에는 여러 기능이 함께 쓰는 것만 있습니다. 나머지는 기능마다 자기 폴더를 가지므로, 한 기능을 폴더 하나로 백업하거나 지울 수 있습니다." },
           { dl: [
-            ["settings.json", "설정"],
+            ["settings.json", "권한 설정(허용 디렉터리 등). 앱 설정은 Electron 사용자 데이터 폴더의 ave-settings.json 에 있습니다."],
             ["audit.log", "HMAC 체인 감사 로그"],
             ["secrets/", "비밀 값"],
             ["plugins/", "설치한 플러그인과 registry.json"],
@@ -443,12 +442,11 @@ const ko: Record<DocSlug, DocPage> = {
         h: "앱 업데이트",
         blocks: [
           { ul: [
-            "새 버전을 확인하는 기능은 설정에서 끄고 켤 수 있습니다.",
             "낮은 버전으로 내려가는 업데이트는 하지 않습니다.",
             "특정 버전은 건너뛸 수 있습니다.",
             "플러그인을 설치하는 중에는 적용하지 않고, 설치 전에 확인을 받습니다.",
           ] },
-          { p: "서명 없는 Mac 빌드는 스스로 교체할 수 없습니다. 업데이트를 적용하려 하면 Ave가 이 사이트의 안내를 엽니다. 새 DMG를 받아 앱을 바꾸고 격리 표시를 다시 지우면 됩니다." },
+          { p: "서명 없는 Mac 빌드는 스스로 교체할 수 없습니다. 업데이트를 적용하려 하면 Ave가 이 사이트의 첫 화면을 엽니다. 그곳의 다운로드에서 새 DMG를 받아 앱을 바꾸고 격리 표시를 다시 지우면 됩니다." },
         ],
       },
       {
@@ -521,7 +519,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "where",
         h: "Where your data lives",
         blocks: [
-          { p: "Everything Ave keeps is under ~/.ave in your home folder. Set the AVE_HOME environment variable to use another location. Data and updates explains the layout." },
+          { p: "Most of what Ave keeps is under ~/.ave in your home folder; only the app settings file sits in Electron’s user-data folder. Set the AVE_HOME environment variable to use another location. Data and updates explains the layout." },
         ],
       },
     ],
@@ -537,9 +535,8 @@ const en: Record<DocSlug, DocPage> = {
         blocks: [
           { p: "In Settings → Model, choose Add provider, fill in each card and save it. There is one model chooser, grouped by provider. The model list is fetched from the provider, cached, and refreshed once per run or when you press refresh." },
           { dl: [
-            ["Native", "OpenAI, Anthropic, Google Gemini, Google Vertex AI, Azure AI Foundry"],
-            ["Self-hosted", "Ollama, LM Studio, LiteLLM, and any OpenAI-compatible endpoint"],
-            ["Presets", "OpenRouter, DeepSeek, xAI, Together, Fireworks, Groq, Cerebras, Mistral, Moonshot, Qwen and more"],
+            ["Built in", "OpenAI, Claude, Gemini, OpenRouter, and any OpenAI-compatible endpoint, including one you run yourself"],
+            ["Marketplace packages", "Other providers are added as provider packages from a marketplace."],
           ] },
         ],
       },
@@ -547,7 +544,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "openai-login",
         h: "Signing in to OpenAI",
         blocks: [
-          { p: "OpenAI offers three ways in: Sign in in browser, Use device code, and Use API key. Sign-in URLs and tokens never appear on the settings page." },
+          { p: "OpenAI offers three ways in: Sign in in browser, Use device code, and Use API-key chat. Sign-in URLs and tokens never appear on the settings page." },
         ],
       },
       {
@@ -581,7 +578,7 @@ const en: Record<DocSlug, DocPage> = {
         blocks: [
           { p: "Work mode holds up to four tiles; chat mode holds one. Each tile runs its own conversation loop, and several can stream at once. A conversation is open in one tile at most; choosing it in the sidebar focuses the tile that already holds it." },
           { p: "Splitting offers Side by side or Top and bottom. A direction that would make a tile too small is shown as unavailable, and if neither fits, Ave says why." },
-          { p: "A tile’s header carries the conversation title, then pin, export (Markdown or JSON) and import, then show conversations, split chat area, show only this chat, and close chat area." },
+          { p: "A tile’s header carries the conversation title, then pin, export (Markdown or JSON) and import, then Split pane, Show only this pane and Close pane." },
         ],
       },
       {
@@ -718,7 +715,7 @@ const en: Record<DocSlug, DocPage> = {
         blocks: [
           { p: "Install from the Marketplace tab or from a link. A link only opens a confirmation screen; nothing installs until you confirm." },
           { code: "ave://install/<kind>/<name>@<source>\nave://uninstall/<kind>/<name>@<source>\nave://marketplace/add?url=<repository>" },
-          { p: "For a plugin you are building, use an unpackaged build and choose Settings → Extension Settings → Developer tools → Install from local folder." },
+          { p: "For a plugin you are building, run an unpackaged build with AVE_DEV=1 and choose Settings → Extension Settings → Developer tools → Install from local folder." },
         ],
       },
       {
@@ -789,8 +786,8 @@ const en: Record<DocSlug, DocPage> = {
         id: "updates",
         h: "Updates",
         blocks: [
-          { p: "Checked at launch and once a day, only while you are idle. If permissions, MCP servers and hooks are unchanged, the update applies on its own; if they changed, it waits for your review." },
-          { p: "Publishers can yank a version, roll out to a share of installs first, or offer a canary channel." },
+          { p: "New versions are checked at launch and on a schedule, and applied one at a time while the conversation is idle. An update applies by itself only when every condition holds; among them: the package is enabled, it is an upgrade, the version is not skipped, it has not failed three times, permissions, MCP servers and hooks match what you approved, and the auto-update switch is on. Otherwise it stays for your review or a manual update. An install the organisation marks as required applies regardless of the switches." },
+          { p: "Publishers can yank a version or roll out to a share of installs first, and you can opt into canary versions with the canaryOptIn setting." },
         ],
       },
       {
@@ -858,7 +855,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "hooks",
         h: "Hooks",
         blocks: [
-          { p: "Shell scripts named pre-, post- or perm- can run on these events. New hook configuration asks for trust first." },
+          { p: "Shell scripts named pre-*.sh, post-*.sh and perm-*.sh run on PreToolUse, PostToolUse and PermissionRequest. The other events are reached only through a hooks.json configuration you have trusted." },
           { code: "PreToolUse  PostToolUse  PostToolUseFailure\nPermissionRequest  PermissionDenied\nUserPromptSubmit  SessionStart  Stop\nPreCompact  PostCompact" },
         ],
       },
@@ -883,7 +880,7 @@ const en: Record<DocSlug, DocPage> = {
         blocks: [
           { p: "Only what several features share sits at the top. Everything else lives in a folder per feature, so one feature can be backed up or cleared as one folder." },
           { dl: [
-            ["settings.json", "Settings"],
+            ["settings.json", "Permission settings, such as allowed folders. App settings live in ave-settings.json in Electron’s user-data folder."],
             ["audit.log", "The HMAC-chained audit log"],
             ["secrets/", "Secret values"],
             ["plugins/", "Installed plugins and registry.json"],
@@ -898,12 +895,11 @@ const en: Record<DocSlug, DocPage> = {
         h: "App updates",
         blocks: [
           { ul: [
-            "Update checks can be turned on or off in Settings.",
             "Ave never offers an older version as an update.",
             "You can skip a specific version.",
             "An update is not applied while a plugin is installing, and Ave asks before installing it.",
           ] },
-          { p: "An unsigned Mac build cannot replace itself. When you apply an update, Ave opens this site’s guide: download the new DMG, replace the app, and clear the quarantine flag again." },
+          { p: "An unsigned Mac build cannot replace itself. When you apply an update, Ave opens this site’s home page: download the new DMG there, replace the app, and clear the quarantine flag again." },
         ],
       },
       {

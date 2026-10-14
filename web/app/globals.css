@@ -256,7 +256,7 @@ kbd {
 }
 .providers li { white-space: nowrap; }
 .providers li:not(:last-child)::after { content: ","; }
-.providers .local { color: var(--muted); }
+.providers .local { color: var(--muted); white-space: normal; }
 @media (max-width: 1000px) {
   .models-head, .models-copy { grid-column: 1 / -1; }
   .models-copy { margin-top: 1.5rem; }
