@@ -112,6 +112,66 @@ export function getVendoredSrtWinExePath(): string {
   return join(root, "vendor", "srt-win", arch, "srt-win.exe");
 }
 
+/** ASRT's vendored seccomp arch directories (`getVendorArchitecture`); ia32 and others have none. */
+const SECCOMP_VENDOR_ARCH: Partial<Record<string, string>> = { x64: "x64", arm64: "arm64" };
+
+/**
+ * The Linux seccomp helper bubblewrap runs, as one canonical file path — the
+ * SINGLE SOURCE OF TRUTH both for what the wrap execs ({@link buildSandboxConfig}
+ * pins it as ASRT's `seccomp.applyPath`) and for the one read a wrap is given
+ * beneath a covering read deny ({@link seccompHelperHiddenBy}).
+ *
+ * WHY: ASRT runs `apply-seccomp` from INSIDE the bwrap namespace and leaves it
+ * to the caller to keep that path visible there. A shell denies all of `$HOME`,
+ * so an app or checkout under HOME hid its own helper and every strict wrap
+ * exited 127 ("apply-seccomp: No such file or directory"). ASRT's own resolver
+ * also asks `fs.existsSync`, which Electron answers true for a path inside
+ * `app.asar`, so a packaged build would hand bwrap a virtual path no process
+ * outside Electron can exec. The helper is unpacked
+ * (`asarUnpack: node_modules/@anthropic-ai/sandbox-runtime/vendor/**`), so the
+ * path is rewritten to `app.asar.unpacked` like {@link getVendoredSrtWinExePath},
+ * then canonicalised so the exec'd spelling and the bound spelling are one.
+ *
+ * `undefined` off Linux and on an arch ASRT vendors no helper for (ASRT then
+ * runs without seccomp, as before). A missing helper on a vendored arch fails
+ * clearly: ASRT would otherwise fall back to its own search and exec a path
+ * the wrap was never granted.
+ */
+export function getVendoredApplySeccompPath(): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  const arch = SECCOMP_VENDOR_ARCH[process.arch];
+  if (arch === undefined) return undefined;
+  const packageJson = createRequire(import.meta.url).resolve(
+    "@anthropic-ai/sandbox-runtime/package.json",
+  );
+  const root = rewriteAsarPathToUnpacked(dirname(packageJson));
+  const path = join(root, "vendor", "seccomp", arch, "apply-seccomp");
+  let real: string;
+  try {
+    real = realpathSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    throw new Error(`[sandbox-seccomp-unavailable] Vendored apply-seccomp helper is missing: ${path}`);
+  }
+  if (!lstatSync(real).isFile()) {
+    throw new Error(`[sandbox-seccomp-unavailable] Vendored apply-seccomp helper is not a file: ${real}`);
+  }
+  return real;
+}
+
+/**
+ * The seccomp helper file when one of a wrap's read denies (a shell's
+ * whole-HOME deny) would hide it, else `undefined` (always off Linux). The
+ * wrap then re-allows exactly that file, which ASRT emits as one `--ro-bind`
+ * of itself inside the deny's tmpfs — never its directory or the package.
+ */
+function seccompHelperHiddenBy(denyRead: readonly string[]): string | undefined {
+  const helper = getVendoredApplySeccompPath();
+  if (helper === undefined) return undefined;
+  const canonical = canonicalizePathForMatch(helper);
+  return denyRead.some((denied) => readDenyCoversPath(denied, canonical)) ? helper : undefined;
+}
+
 /** Resolve the external JVM's agent from the physical packaged payload. */
 export function getVendoredJavaProxyAgentJarPath(): string {
   const packageJson = createRequire(import.meta.url).resolve(
@@ -729,10 +789,13 @@ export function buildPerCommandSandboxCustomConfig(
   const floor = getProtectedReadDenyPaths();
   // A per-command deny REPLACES the shared one, so the trusted custom denies
   // are restated here once for every wrap rather than by each composer.
+  let hiddenSeccompHelper: string | undefined;
   if (filesystem.denyRead !== undefined) {
     const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
+    const denyRead = [...new Set([...filesystem.denyRead, ...pluginRoots, ...(_baseTrustedSettings?.denyRead ?? [])])];
+    hiddenSeccompHelper = seccompHelperHiddenBy(denyRead);
     fs.denyRead = asrtReadDenyPaths(
-      [...new Set([...filesystem.denyRead, ...pluginRoots, ...(_baseTrustedSettings?.denyRead ?? [])])],
+      denyRead,
       // The plugin roots are spelled exactly for the reason the private roots
       // are: a wrap whose reads include an ancestor of one (a worker's or a
       // bundled process's host temp directory, above a test `AVE_HOME`) would
@@ -747,8 +810,16 @@ export function buildPerCommandSandboxCustomConfig(
       ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite ?? []) : []),
     ];
   }
-  if (filesystem.allowRead !== undefined) {
-    fs.allowRead = readGrantsOutsideReadDenies(filesystem.allowRead, floor, filesystem.floorPierces ?? []);
+  if (filesystem.allowRead !== undefined || hiddenSeccompHelper !== undefined) {
+    // A per-command allowRead REPLACES the shared one, so a wrap that only
+    // restates its denies keeps the shared grants alongside the seccomp helper.
+    // The helper joins before the floor filter: a protected deny still wins.
+    const grants = filesystem.allowRead ?? _baseTrustedSettings?.allowRead ?? [];
+    fs.allowRead = readGrantsOutsideReadDenies(
+      hiddenSeccompHelper === undefined || grants.includes(hiddenSeccompHelper) ? grants : [...grants, hiddenSeccompHelper],
+      floor,
+      filesystem.floorPierces ?? [],
+    );
   }
   if (Object.keys(fs).length === 0) return undefined;
   return { filesystem: fs as FilesystemConfig };
@@ -1371,11 +1442,16 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
           srtWin: { path: getVendoredSrtWinExePath() },
         }
       : undefined;
+  // Linux-only: pin the helper bwrap execs to the one path each wrap is
+  // granted (see getVendoredApplySeccompPath); ASRT's own search would find an
+  // `app.asar` virtual path in a packaged build.
+  const applySeccompPath = getVendoredApplySeccompPath();
 
   return {
     network,
     filesystem,
     ...(windows !== undefined ? { windows } : {}),
+    ...(applySeccompPath !== undefined ? { seccomp: { applyPath: applySeccompPath } } : {}),
     ...(process.platform === "darwin" || process.platform === "linux"
       ? { javaAgentJarPath: getVendoredJavaProxyAgentJarPath() }
       : {}),
