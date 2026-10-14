@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolve as resolvePath } from "node:path";
 import type { Tool } from "./base.js";
 import type { ToolCategory, ToolSource, TrustLevel } from "./types.js";
 import {
@@ -408,7 +409,13 @@ export async function authorizeToolInvocation(
     // project's file in Ave home) can match it. The project rules are loaded
     // here because the decision itself is synchronous.
     const shellRuleSubject = isCanonicalBashTool(tool) && typeof finalInput.command === "string"
-      ? { kind: "shell" as const, command: finalInput.command }
+      ? {
+          kind: "shell" as const,
+          command: finalInput.command,
+          cwd: typeof finalInput.cwd === "string" && finalInput.cwd.length > 0
+            ? resolvePath(executionCwd, finalInput.cwd)
+            : executionCwd,
+        }
       : undefined;
     if (services.permissionManager && shellRuleSubject) {
       await services.permissionManager.ensureProjectRulesLoaded(executionCwd);

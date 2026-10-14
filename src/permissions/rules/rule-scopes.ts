@@ -99,6 +99,9 @@ export function collectShellRuleSet(...scopes: ReadonlyArray<readonly Permission
   return { deny, ask, allow };
 }
 
-export function evaluateShellSubject(command: string, ...scopes: ReadonlyArray<readonly PermissionRule[]>): ShellRuleEvaluation {
-  return evaluateShellRules(command, collectShellRuleSet(...scopes));
+export function evaluateShellSubject(
+  subject: { command: string; cwd?: string },
+  ...scopes: ReadonlyArray<readonly PermissionRule[]>
+): ShellRuleEvaluation {
+  return evaluateShellRules(subject.command, collectShellRuleSet(...scopes), subject.cwd);
 }

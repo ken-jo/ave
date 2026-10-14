@@ -64,6 +64,8 @@ import {
 } from "./network-target.js";
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import type { RiskLevel } from "../../shared/permission-review-status.js";
+import { resolve as resolvePath } from "node:path";
+import { SHELL_EXFIL_VERDICT_REASON, shellExfiltrationSignal } from "../rules/shell-exfiltration.js";
 
 /** Verdict shape returned by every classifier. */
 export interface RiskVerdict {
@@ -341,6 +343,15 @@ const DESTRUCTIVE_SHELL_RE = new RegExp([
  */
 export function isDestructiveShellText(command: string): boolean {
   return DESTRUCTIVE_SHELL_RE.test(command);
+}
+
+/** The directory a shell invocation's relative paths resolve against. */
+function shellInvocationCwd(ctx: ToolInvocationContext): string | undefined {
+  const requested = ctx.finalInput.cwd;
+  if (typeof requested === "string" && requested.length > 0) {
+    return ctx.executionCwd ? resolvePath(ctx.executionCwd, requested) : requested;
+  }
+  return ctx.executionCwd || undefined;
 }
 
 /**
@@ -1781,6 +1792,20 @@ function isDeepInsideAllowed(path: string, allowed: readonly string[]): boolean 
 }
 
 const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
+  // ── credential-exfiltration floor (issue #28) ──
+  //
+  // First, ahead of the disposable-guest lane: a guest's egress is not
+  // confined, and a file-sourced upload is the exfiltration shape whatever
+  // substrate runs it. HIGH keeps it once-only at the approval gate.
+  (ctx) => {
+    if (ctx.category !== "shell") return null;
+    const cwd = shellInvocationCwd(ctx);
+    for (const cmd of extractShellCommands(ctx.finalInput)) {
+      const signal = shellExfiltrationSignal(cmd, cwd);
+      if (signal) return { level: "high", reason: `${SHELL_EXFIL_VERDICT_REASON} (${signal})` };
+    }
+    return null;
+  },
   // ── disposable-guest rules (first-match, in this order) ──
   //
   // The executor routed this call to the workload broker's disposable Linux

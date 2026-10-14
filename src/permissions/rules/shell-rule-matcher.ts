@@ -27,6 +27,7 @@ import {
 } from "../../shared/shell-analysis.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
 import type { RuleSpecifier } from "./rule-specifier.js";
+import { shellExfiltrationSignal } from "./shell-exfiltration.js";
 import { SHELL_PREFIX_POLICY, isShellWrapperProgram } from "./shell-prefix-policy.js";
 
 export type BashRuleSpecifier = Extract<RuleSpecifier, { kind: "bash" }>;
@@ -264,7 +265,7 @@ export type ShellRuleEvaluation =
   | { decision: "allow"; patterns: readonly string[]; reason: string }
   | { decision: null; reason: string };
 
-export function evaluateShellRules(command: string, rules: ShellRuleSet): ShellRuleEvaluation {
+export function evaluateShellRules(command: string, rules: ShellRuleSet, cwd?: string): ShellRuleEvaluation {
   const hasRestrictions = rules.deny.length > 0 || rules.ask.length > 0;
   if (!hasRestrictions && rules.allow.length === 0) return { decision: null, reason: "no shell rules" };
   const shape = analyzeShellForRules(command);
@@ -295,6 +296,8 @@ export function evaluateShellRules(command: string, rules: ShellRuleSet): ShellR
   if (isDestructiveShellText(command) || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw))) {
     return { decision: null, reason: "destructive command (floor)" };
   }
+  const exfiltration = shellExfiltrationSignal(command, cwd);
+  if (exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${exfiltration}` };
   const patterns: string[] = [];
   for (const cmd of shape.commands) {
     if (cmd.allowBlockers.length > 0) return { decision: null, reason: cmd.allowBlockers[0]! };

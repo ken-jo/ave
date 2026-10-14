@@ -213,6 +213,19 @@ When any deny or ask `Bash(...)` rule exists and the command contains one of the
 
 Shell floors reuse the rule classifier's destructive regex (`isDestructiveShellText`). Sensitive-path arguments to shell commands remain enforced by `src/tools/shell-path-policy.ts`, independently of rules.
 
+**Credential-exfiltration floor** (`src/permissions/rules/shell-exfiltration.ts`). A command is exfiltration when one subcommand sends data off the machine and that data comes from a file or secret. It covers:
+- `curl`/`wget` with a file-sourced body, header or upload: `@file`, `-F x=@`, `-T`, `--post-file`, or any argument built from a `$(…)` that reads a path;
+- `scp`/`rsync` to a remote destination, and `sftp` to a host;
+- `nc`/`ncat`/`socat` fed from a file, a here-string or a path-reading pipeline stage;
+- sensitive-path arguments to a sender.
+
+Senders are seen through wrappers, `busybox`, and static `sh -c` / `eval` / here-documents. The check applies to the whole compound command. It produces:
+- a HIGH rule-classifier verdict on every substrate, including the disposable guest;
+- no allow-rule match;
+- a forced per-call ask in `checkDetailed`, in every mode.
+
+Plain GETs, form fields without `@`, local `rsync`, `scp` downloads and `git push` are unaffected.
+
 ### Gaps closed by P1b
 
 The Settings IPC still accepts only allow/deny patterns without whitespace. Until P1b, `Bash(...)` rules are added through `PermissionManager.addRulePersist` (and removed through `removeRulePersist`).

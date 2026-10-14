@@ -10,6 +10,7 @@ import { readPermissionsFile, updatePermissionsFile } from "./permissions-store.
 import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rules/rule-files.js";
 import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
 import { isRuleSpecifier } from "./rules/rule-specifier.js";
+import { shellExfiltrationSignal } from "./rules/shell-exfiltration.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
@@ -280,7 +281,7 @@ export interface PermissionCheckContext {
    * tool pipeline for the canonical shell tool only; `Bash(...)` rules never
    * match a call without it.
    */
-  ruleSubject?: { kind: "shell"; command: string };
+  ruleSubject?: { kind: "shell"; command: string; cwd?: string };
   /**
    * Issue #28 — project whose per-project rule file applies. The caller must
    * have awaited {@link PermissionManager.ensureProjectRulesLoaded} for it.
@@ -1441,8 +1442,13 @@ export class PermissionManager {
       : this.projectRuleScopes.stateFor(context.projectRulesCwd);
     const projectRules = projectRuleState?.ok ? projectRuleState.rules : [];
     const shellRuleEvaluation = context.ruleSubject?.kind === "shell"
-      ? evaluateShellSubject(context.ruleSubject.command, this.rules, projectRules)
+      ? evaluateShellSubject(context.ruleSubject, this.rules, projectRules)
       : undefined;
+    // Credential-exfiltration floor: never remembered, never auto-allowed, in
+    // any mode (rules/shell-exfiltration.ts).
+    const shellExfiltration = context.ruleSubject?.kind === "shell"
+      ? shellExfiltrationSignal(context.ruleSubject.command, context.ruleSubject.cwd)
+      : null;
 
     // 1. Deny rules (highest priority, immutable)
     for (const rule of this.rules) {
@@ -1508,6 +1514,14 @@ export class PermissionManager {
     const rulesFileError = this.rulesLoadError ?? (projectRuleState?.ok === false ? projectRuleState.error : undefined);
     if (rulesFileError) {
       return { decision: "ask", reason: rulesFileError.message, layer: 1, forceModal: true };
+    }
+    if (shellExfiltration) {
+      return {
+        decision: "ask",
+        reason: t("be_permissionManager.shellExfiltrationFloorReason", { detail: shellExfiltration }),
+        layer: 2,
+        forceModal: true,
+      };
     }
     // Ask rules (after deny, before every allow lane and mode). A per-call
     // hard ask: never remembered, never auto-reviewed.
