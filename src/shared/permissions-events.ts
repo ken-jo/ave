@@ -29,6 +29,24 @@ export type UserApprovalScope = "session" | "persistent";
 export type UserApprovalDecision = "allow" | "deny";
 
 /**
+ * What a remembered user decision is keyed on, besides tool name, source,
+ * trust origin and working directory.
+ *
+ *  - `"approval-cache-key"`: the tool's own `approvalCacheKey` IS the
+ *    identity and the arguments are not part of it. A tool gets this only
+ *    when it declares a key that is a complete description of what the user
+ *    consented to (web_fetch: the destination host; write tools: the target
+ *    path). Repeat calls with different arguments inside that key reuse the
+ *    decision.
+ *  - `"args"`: the exact canonical arguments are the identity (and an
+ *    `approvalCacheKey`, when present, only narrows it). Tools without a key,
+ *    tools whose key is a policy scope rather than a consent identity
+ *    (`Tool.approvalMemoryIdentity === "args"`), and host-derived partitions
+ *    such as the plan-only shell key stay here.
+ */
+export type ApprovalMemoryIdentity = "approval-cache-key" | "args";
+
+/**
  * Approval-verdict literal. Same rationale as `UserApprovalScope`.
  *
  * NOTE: this is the verdict captured at approval time. Older on-disk

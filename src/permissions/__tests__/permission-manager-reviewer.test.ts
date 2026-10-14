@@ -372,21 +372,25 @@ describe("PermissionManager.dispatchReviewer", () => {
       ...base,
       trustOrigin: "user-keyboard" as const,
       approvalCacheKey: "fs_write:scope-a",
+      approvalMemoryIdentity: "args" as const,
     });
     const same = await pm.dispatchReviewer("fs_write", {
       ...base,
       trustOrigin: "user-keyboard" as const,
       approvalCacheKey: "fs_write:scope-a",
+      approvalMemoryIdentity: "args" as const,
     });
     const originChanged = await pm.dispatchReviewer("fs_write", {
       ...base,
       trustOrigin: "llm-tool-arg" as const,
       approvalCacheKey: "fs_write:scope-a",
+      approvalMemoryIdentity: "args" as const,
     });
     const keyChanged = await pm.dispatchReviewer("fs_write", {
       ...base,
       trustOrigin: "llm-tool-arg" as const,
       approvalCacheKey: "fs_write:scope-b",
+      approvalMemoryIdentity: "args" as const,
     });
 
     expect(first.cacheReason).toBe("miss-not-found");
@@ -538,6 +542,7 @@ describe("PermissionManager.dispatchReviewer", () => {
       sensitivePathsAdjacent: [],
       trustOrigin: "llm-tool-arg",
       approvalCacheKey: `bash:${bash.approvalCacheKey(firstInput)}`,
+      approvalMemoryIdentity: "approval-cache-key",
     });
     const second = await pm.dispatchReviewer("bash", {
       source: "builtin",
@@ -549,6 +554,7 @@ describe("PermissionManager.dispatchReviewer", () => {
       sensitivePathsAdjacent: [],
       trustOrigin: "llm-tool-arg",
       approvalCacheKey: `bash:${bash.approvalCacheKey(destructiveInput)}`,
+      approvalMemoryIdentity: "approval-cache-key",
     });
 
     expect(first.verdict.level).toBe("low");

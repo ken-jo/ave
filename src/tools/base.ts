@@ -174,8 +174,22 @@ export interface Tool {
    * The executor prefixes this with `tool.name:` before handing it to the
    * permission manager. Tools that declare this opt out of bare tool-name
    * "allow always" reuse because their arguments carry permission scope.
+   *
+   * Remembered-decision contract: when the key is returned, it REPLACES the
+   * arguments as the identity of a remembered allow/deny (Store B,
+   * `user-approval-store.ts`). Return a key only if nothing outside it changes
+   * what the user consented to; otherwise also set
+   * {@link approvalMemoryIdentity} to `"args"`.
    */
   approvalCacheKey?(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): string | undefined;
+  /**
+   * `"args"` keeps remembered decisions on exact-argument identity even
+   * though the tool declares {@link approvalCacheKey}. For a key that scopes
+   * policy rules (deny rules, reviewer cache) but does not cover everything
+   * the user approved — e.g. `routine_schedule`, whose key is the plugin scope
+   * while the prompt and schedule sit outside it.
+   */
+  readonly approvalMemoryIdentity?: "args";
 
   /** JSON Schema describing the input shape — sent to LLM providers. */
   toJsonSchema(): unknown;
@@ -294,6 +308,8 @@ export interface DynamicToolSpec {
   version?: string;
   /** Permission policy #634 — per-tool approval cache identity. */
   approvalCacheKey?: (input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">) => string | undefined;
+  /** See {@link Tool.approvalMemoryIdentity}. */
+  approvalMemoryIdentity?: "args";
   /** Raw JSON Schema — used when no Zod schema is available (plugin/MCP). */
   jsonSchema: object;
   execute: (
@@ -333,6 +349,9 @@ export function createDynamicTool(spec: DynamicToolSpec): Tool {
     pathFields: spec.pathFields,
     version: spec.version ?? "1.0.0",
     approvalCacheKey: spec.approvalCacheKey,
+    ...(spec.approvalMemoryIdentity === undefined
+      ? {}
+      : { approvalMemoryIdentity: spec.approvalMemoryIdentity }),
     toJsonSchema: () => spec.jsonSchema,
     isReadOnly: spec.isReadOnly ?? ((): boolean => false),
     execute: spec.execute,

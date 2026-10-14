@@ -12,6 +12,7 @@ import {
   type HostShellExecutionPlanAuditProjection,
 } from "../../permissions/host-shell-execution-plan.js";
 import type { PermissionReviewEvent } from "../../shared/permission-review-status.js";
+import type { ApprovalMemoryIdentity } from "../../shared/permissions-events.js";
 import type { Tool } from "../base.js";
 import type {
   ToolCallMeta,
@@ -51,29 +52,62 @@ export function summarizeInputForDeferred(input: Record<string, unknown>): strin
   }
 }
 
-export function approvalCacheKeyFor(
+/**
+ * The approval cache key of one invocation and the role it plays in a
+ * remembered decision (see {@link ApprovalMemoryIdentity}).
+ */
+export interface InvocationApprovalIdentity {
+  readonly approvalCacheKey: string | undefined;
+  /** Defined exactly when `approvalCacheKey` is. */
+  readonly approvalMemoryIdentity: ApprovalMemoryIdentity | undefined;
+}
+
+/**
+ * Remembered-identity mode for a key the TOOL itself declared. Only a
+ * tool-declared key can stand in for the arguments; anything the host adds
+ * on its own (the plan-only shell partition below) is not a description of
+ * what the user approved.
+ */
+export function approvalMemoryIdentityForDeclaredKey(tool: Tool): ApprovalMemoryIdentity {
+  return tool.approvalMemoryIdentity === "args" ? "args" : "approval-cache-key";
+}
+
+export function approvalIdentityFor(
   tool: Tool,
   input: Record<string, unknown>,
   cwd: string,
   hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
-): string | undefined {
+): InvocationApprovalIdentity {
   const rawKey = tool.approvalCacheKey?.(input, { cwd });
   const key = rawKey?.trim();
   if (rawKey !== undefined && !key) {
     throw new Error(`approvalCacheKey for ${tool.name} returned an empty key`);
   }
   const base = key === undefined ? undefined : `${tool.name}:${key}`;
-  if (hostShellExecutionPlan === undefined) return base;
+  if (hostShellExecutionPlan === undefined) {
+    return base === undefined
+      ? { approvalCacheKey: undefined, approvalMemoryIdentity: undefined }
+      : { approvalCacheKey: base, approvalMemoryIdentity: approvalMemoryIdentityForDeclaredKey(tool) };
+  }
 
   const planIdentity = getHostShellExecutionPlanCacheIdentity(
     hostShellExecutionPlan,
   );
   // A canonical host shell still needs a plan partition when it does not
-  // declare a tool-specific key: lookupApproval also receives canonical args,
-  // so this only adds the sealed execution substrate to that identity.
+  // declare a tool-specific key. That partition names the substrate, not the
+  // command, so it only narrows the exact-args identity and never replaces it.
   return base === undefined
-    ? `${tool.name}:${planIdentity}`
-    : `${base}:${planIdentity}`;
+    ? { approvalCacheKey: `${tool.name}:${planIdentity}`, approvalMemoryIdentity: "args" }
+    : { approvalCacheKey: `${base}:${planIdentity}`, approvalMemoryIdentity: approvalMemoryIdentityForDeclaredKey(tool) };
+}
+
+export function approvalCacheKeyFor(
+  tool: Tool,
+  input: Record<string, unknown>,
+  cwd: string,
+  hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
+): string | undefined {
+  return approvalIdentityFor(tool, input, cwd, hostShellExecutionPlan).approvalCacheKey;
 }
 
 export function emitToolStart(

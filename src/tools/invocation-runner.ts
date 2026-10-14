@@ -94,7 +94,8 @@ import { hasShellCommandArgument } from "../shared/shell-command-fields.js";
 import { buildApprovalPurposeSuggestion } from "./pipeline/approval-purpose.js";
 import { pluginTurnScopeTarget } from "./pipeline/plugin-turn-scope.js";
 import {
-  approvalCacheKeyFor,
+  approvalIdentityFor,
+  approvalMemoryIdentityForDeclaredKey,
   emitToolStart,
   summarizeInputForDeferred,
 } from "./pipeline/display-mask.js";
@@ -111,9 +112,11 @@ import { createInvocationContext, returnUserAbort } from "./pipeline/invocation-
 import type { RationaleHostRuntime } from "./pipeline/rationale-orchestrator.js";
 import type { RationaleExecutorControlOutcome } from "./pipeline/rationale-pr1-contract.js";
 import {
+  approvalCacheKeyIdentity,
   canonicalStringify,
   lookupUserDecision,
 } from "../permissions/user-approval-store.js";
+import type { ApprovalMemoryIdentity } from "../shared/permissions-events.js";
 import type { SealedRationaleResumeRequest } from "./pipeline/rationale-resume-contract.js";
 import {
   type AuthorizedRationaleResume,
@@ -1027,7 +1030,7 @@ export async function runToolInvocation(
     // canonical host shell substrate is sealed, then reuse its exact public
     // projection through reviewer, modal, rationale, result, and audit paths.
     //
-    // Absorption boundary. `approvalCacheKeyFor` runs the tool's OWN key
+    // Absorption boundary. `approvalIdentityFor` runs the tool's OWN key
     // derivation, and several tools parse their input schema to build it
     // (BashTool hashes the zod-parsed `command`/`cwd`). That parse sits on the
     // AUTHORIZATION path, before the per-call execution boundary that turns a
@@ -1040,18 +1043,24 @@ export async function runToolInvocation(
     // round. Deliberately tool-agnostic: any tool whose key derivation rejects
     // its input takes this path, not just bash.
     let approvalCacheKey: string | undefined;
+    let approvalMemoryIdentity: ApprovalMemoryIdentity | undefined;
     try {
-      approvalCacheKey = brokeredFileRouteSelected && brokeredFileCapability !== undefined
-        ? `${tool.name}:workload:${sha256Hex(canonicalStringify({
-            input: normalizedCanonicalFileInput,
-            workload: brokeredFileCapability.workload,
-          }))}`
-        : approvalCacheKeyFor(
+      // The brokered key hashes the whole normalized input plus the workload,
+      // so it is at least as narrow as the args; it is tool-declared identity.
+      ({ approvalCacheKey, approvalMemoryIdentity } = brokeredFileRouteSelected && brokeredFileCapability !== undefined
+        ? {
+            approvalCacheKey: `${tool.name}:workload:${sha256Hex(canonicalStringify({
+              input: normalizedCanonicalFileInput,
+              workload: brokeredFileCapability.workload,
+            }))}`,
+            approvalMemoryIdentity: approvalMemoryIdentityForDeclaredKey(tool),
+          }
+        : approvalIdentityFor(
             tool,
             finalInput,
             executionCwd,
             hostShellExecutionPlanAudit,
-          );
+          ));
       // Let the tool's schema identify malformed fields before checking the
       // internal plan contract. An input error must remain self-correctable.
       if (hostShellToolName !== undefined && hostShellInput === undefined) {
@@ -1118,11 +1127,11 @@ export async function runToolInvocation(
           canonicalStringify(finalInput),
           source,
           permissionContext.trustOrigin,
-          approvalCacheKey,
+          approvalCacheKeyIdentity(approvalCacheKey, approvalMemoryIdentity),
           executionCwd,
         );
         if ((storedDecision?.decision ?? "allow") === "deny") {
-          exactDecisionBlockReason = "exact tool and input denied in permission settings";
+          exactDecisionBlockReason = "tool decision for this input or target denied in permission settings";
         }
       } catch (err) {
         log.warn(
@@ -1187,6 +1196,7 @@ export async function runToolInvocation(
     const invocationPermissionContext: ToolPermissionContext = {
       ...permissionContext,
       ...(approvalCacheKey ? { approvalCacheKey } : {}),
+      ...(approvalMemoryIdentity ? { approvalMemoryIdentity } : {}),
       disposableSubstrate,
     };
     const approvalPurpose = buildApprovalPurposeSuggestion(finalInput, invocationPermissionContext);
@@ -1469,6 +1479,7 @@ export async function runToolInvocation(
           // Propagate approvalCacheKey so renderer record key
           // matches dispatchReviewer lookup key — end-to-end symmetry.
           ...(approvalCacheKey ? { approvalCacheKey } : {}),
+          ...(approvalMemoryIdentity ? { approvalMemoryIdentity } : {}),
         };
 
         let decision;

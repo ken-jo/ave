@@ -25,6 +25,7 @@ import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import {
   __resetSessionStoreForTest,
+  approvalCacheKeyIdentity,
   recordApproval,
 } from "../../permissions/user-approval-store.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -99,7 +100,7 @@ function harness(
         verdictAtApproval: req.reviewerVerdict?.level ?? "low",
         nlJustification: null,
         trustOrigin: req.trustOrigin,
-        approvalCacheKey: req.approvalCacheKey,
+        approvalCacheKey: approvalCacheKeyIdentity(req.approvalCacheKey, req.approvalMemoryIdentity),
         workingDirectoryIdentity: workingDirectory!.identity,
       },
     );

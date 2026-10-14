@@ -43,6 +43,7 @@ import {
 } from "../../permissions/permission-settings-store.js";
 import {
   recordApproval,
+  approvalCacheKeyIdentity,
   revokeApprovalByKey,
   listApprovals,
   canonicalStringify,
@@ -1136,7 +1137,9 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         verdictAtApproval,
         nlJustification: typeof nlJustification === "string" ? nlJustification : null,
         trustOrigin: snapshot.trustOrigin,
-        approvalCacheKey: snapshot.approvalCacheKey,
+        // Throws (→ "managed") when the host request carried a key without
+        // its identity mode: never guess which identity to persist under.
+        approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey, snapshot.approvalMemoryIdentity),
         ...(decision === "allow" ? {
           workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
           riskCeilingAtApproval: snapshot.riskCeilingAtApproval,

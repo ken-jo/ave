@@ -16,8 +16,9 @@
  *     ToolApprovalContent for DURABLE choices only (allow-session /
  *     allow-always — allow-once never records, so "this time" cannot
  *     widen into a remembered grant) via the
- *     `userApprovalRecord` IPC. Keyed on the canonical
- *     (toolName, args, source, trustOrigin?, approvalCacheKey?) tuple.
+ *     `userApprovalRecord` IPC. Keyed on (toolName, source, trustOrigin?,
+ *     working directory) plus EITHER the tool-declared approvalCacheKey (a
+ *     complete consent identity, e.g. web_fetch's host) OR the canonical args.
  *
  * Pre-fix, the foreground ask path never read Store B — only the reviewer
  * lane ({@link PermissionManager.dispatchReviewer}) did. So a "session"
@@ -47,7 +48,11 @@ import type { ToolInvocationContext } from "../../permissions/reviewer/risk-clas
 import { RuleBasedRiskClassifier, maxVerdict } from "../../permissions/reviewer/risk-classifier.js";
 import { resolveReviewerSandboxCapability } from "../../permissions/sandbox-capability.js";
 import type { HostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
-import { lookupApproval, canonicalStringify } from "../../permissions/user-approval-store.js";
+import {
+  approvalCacheKeyIdentity,
+  lookupApproval,
+  canonicalStringify,
+} from "../../permissions/user-approval-store.js";
 import type { UserApprovalHitPayload, UserApprovalVerdict } from "../../shared/permissions-events.js";
 import { buildSandboxAuditEntry } from "../../audit/sandbox-audit.js";
 import { emitSandboxAudit } from "../../audit/sandbox-audit-sink.js";
@@ -85,14 +90,18 @@ export async function tryUserApprovalMemorySkip(
    */
   disclose?: (payload: UserApprovalHitPayload) => void,
 ): Promise<PermissionCheckResult | null> {
-  // Identity = exactly what ToolApprovalContent stored (canonical finalInput).
+  // Identity = exactly what the record IPC stored: the tool-declared cache key
+  // when it is a complete consent identity, otherwise the canonical finalInput.
+  // Built outside the storage catch: a key without its identity mode is an
+  // internal contract violation, not a storage failure.
   const canonicalArgs = canonicalStringify(finalInput);
+  const identity = approvalCacheKeyIdentity(approvalCacheKey, context.approvalMemoryIdentity);
   const approval = await lookupApproval(
     toolName,
     canonicalArgs,
     source,
     context.trustOrigin,
-    approvalCacheKey,
+    identity,
     executionCwd,
   ).catch(() => null); // storage failure must never block tool execution
 

@@ -32,6 +32,7 @@ import { ToolRegistry } from "../registry.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import {
+  approvalCacheKeyIdentity,
   recordApproval,
   __resetSessionStoreForTest,
   captureApprovalWorkingDirectory,
@@ -297,7 +298,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
         verdictAtApproval: "low",
         nlJustification: null,
         trustOrigin: "user-keyboard",
-        approvalCacheKey: "key-A",
+        approvalCacheKey: approvalCacheKeyIdentity("key-A", "args"),
       },
     );
 
@@ -360,7 +361,8 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
           expect(snapshot.verdictAtApproval).toBe("high");
           await recordApproval(snapshot.toolName, canonicalStringify(snapshot.args), snapshot.source, {
             scope: "persistent", verdictAtApproval: snapshot.verdictAtApproval, nlJustification: null,
-            trustOrigin: snapshot.trustOrigin, approvalCacheKey: snapshot.approvalCacheKey,
+            trustOrigin: snapshot.trustOrigin,
+            approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey, snapshot.approvalMemoryIdentity),
             workingDirectoryIdentity: snapshot.workingDirectoryIdentity, riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
           });
           gate.resolveFromDesktopRenderer(request.id, {

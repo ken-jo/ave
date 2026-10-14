@@ -10,7 +10,7 @@ import { readPermissionsFile, updatePermissionsFile } from "./permissions-store.
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
-import type { UserApprovalHitPayload, UserApprovalVerdict } from "../shared/permissions-events.js";
+import type { ApprovalMemoryIdentity, UserApprovalHitPayload, UserApprovalVerdict } from "../shared/permissions-events.js";
 import { getToolCategoryDescriptor } from "./category-registry.js";
 import {
   LlmRiskClassifier,
@@ -35,7 +35,12 @@ import type { DeferredEntry, DeferredQueue } from "./reviewer/deferred-queue.js"
 import { globMatch } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
 import { t } from "../i18n/index.js";
-import { lookupApproval, canonicalStringify, captureApprovalWorkingDirectory } from "./user-approval-store.js";
+import {
+  approvalCacheKeyIdentity,
+  lookupApproval,
+  canonicalStringify,
+  captureApprovalWorkingDirectory,
+} from "./user-approval-store.js";
 import { buildSandboxAuditEntry } from "../audit/sandbox-audit.js";
 import { emitSandboxAudit } from "../audit/sandbox-audit-sink.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
@@ -336,6 +341,8 @@ export interface ReviewerDispatchInput {
   trustOrigin: ToolTrustOrigin;
   /** Tool-declared authority cache identity, when present. */
   approvalCacheKey?: string;
+  /** Role of {@link approvalCacheKey} in a remembered decision; set with it. */
+  approvalMemoryIdentity?: ApprovalMemoryIdentity;
   /** When true, out-of-allowed-dir access also routes to the reviewer. */
   outOfAllowedDir?: boolean;
   /**
@@ -1611,12 +1618,15 @@ export class PermissionManager {
     // applies — sandbox/context quality can only raise, not lower).
     // HIGH-verdict approvals are intentionally included: if the user already
     // justified a HIGH action this session, re-running the LLM is wasteful.
+    // Built outside the storage catch: a key without its identity mode is an
+    // internal contract violation and must surface, not read as a miss.
+    const userApprovalIdentity = approvalCacheKeyIdentity(input.approvalCacheKey, input.approvalMemoryIdentity);
     const userApproval = await lookupApproval(
       toolName,
       canonicalStringify(cacheIdentityInput),
       input.source,
       input.trustOrigin,
-      input.approvalCacheKey,
+      userApprovalIdentity,
       input.executionCwd,
     ).catch(() => null); // storage failure must not block tool execution
 

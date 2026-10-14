@@ -17,6 +17,7 @@ import {
 } from "../../../permissions/sandbox-capability.js";
 import {
   __resetSessionStoreForTest,
+  approvalCacheKeyIdentity,
   canonicalStringify,
   captureApprovalWorkingDirectory,
   recordApproval,
@@ -46,7 +47,7 @@ describe("foreground approval memory — sealed host shell plan", () => {
         verdictAtApproval: "low",
         nlJustification: null,
         trustOrigin: "user-keyboard",
-        approvalCacheKey,
+        approvalCacheKey: approvalCacheKeyIdentity(approvalCacheKey, "approval-cache-key"),
         workingDirectoryIdentity: captureApprovalWorkingDirectory(process.cwd()).identity,
       },
     );
@@ -71,7 +72,7 @@ describe("foreground approval memory — sealed host shell plan", () => {
       process.cwd(),
       [],
       [],
-      { trustOrigin: "user-keyboard" },
+      { trustOrigin: "user-keyboard", approvalMemoryIdentity: "approval-cache-key" },
       approvalCacheKey,
       {},
       undefined,

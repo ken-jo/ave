@@ -151,6 +151,11 @@ export function createRoutineScheduleTool(store: RoutinesStore): Tool {
     source: "builtin",
     category: "write",
     approvalCacheKey: routineScheduleApprovalCacheKey,
+    // The key is the plugin scope a routine may reach — the unit deny rules
+    // and the reviewer cache partition on — but the prompt, execution kind
+    // and schedule sit outside it, and each changes what the user agreed to
+    // run unattended. A remembered decision stays on the exact routine.
+    approvalMemoryIdentity: "args",
     jsonSchema: {
       type: "object",
       required: ["execution", "schedule"],
