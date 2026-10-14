@@ -121,8 +121,10 @@ Plugin webviews do not share the host stylesheet. They receive a flat map of
    preload (`src/plugin-preload.ts`) buffers the latest `host.theme.changed`
    and replays it to any `onEvent` subscriber that attaches afterwards.
 4. Before importing the plugin entry, `src/plugin-ui-shell.js` pulls
-   `avePlugin.getTheme()` and writes the `--ave-*` tokens inline on
-   `documentElement`, so the first plugin paint uses host colors. `getTheme`
+   `avePlugin.getTheme()`, sets `data-theme-bundle`, `data-shell` and
+   `color-scheme` on `documentElement` as the host renderer does on its own
+   root, and writes the `--ave-*` tokens inline, so the first plugin paint uses
+   host colors (`src/__tests__/plugin-ui-shell-theme.test.ts`). `getTheme`
    returns `null` only before the host's first broadcast; plugins keep their
    own static fallback CSS for that window.
 5. Fonts are not broadcast. `src/plugin-ui-shell.html` mirrors the host font
