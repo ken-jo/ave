@@ -131,7 +131,7 @@ describe("system prompt stability across turns", () => {
     for (const request of provider.requests) expectAlternatingUserRows(request.messages);
   });
 
-  it("carries the clock, environment and ranked notes in a trailing request-only row", async () => {
+  it("carries the clock, environment and ranked notes as request-only parts of the user message", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-15T09:30:05Z"));
     const provider = new RecordingProvider();
