@@ -87,6 +87,19 @@ describe("machine-readable files the app fetches", () => {
       expect(existsSync(join(pub, `schemas/plugin-host-protocol/${copy.protocol}/v${copy.appVersion}/protocol.schema.json`))).toBe(true);
     }
   });
+
+  it("keeps the published schema URLs of retired protocols 1 and 2", () => {
+    for (const path of [
+      "schemas/plugin-host-protocol/1/protocol.schema.json",
+      "schemas/plugin-host-protocol/1/v0.11.0/protocol.schema.json",
+      "schemas/plugin-host-protocol/2/v0.12.0/protocol.schema.json",
+      "schemas/plugin-host-protocol/2/v0.13.0/protocol.schema.json",
+    ]) {
+      const schema = JSON.parse(read(join(pub, path))) as { $id: string };
+      const versioned = path.replace("1/protocol.schema.json", "1/v0.11.0/protocol.schema.json");
+      expect(schema.$id, path).toBe(`${SITE}/${versioned}`);
+    }
+  });
 });
 
 describe("download links", () => {
