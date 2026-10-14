@@ -85,9 +85,12 @@ describe("htmlToMarkdown", () => {
   });
 
   it("keeps content that sits in a table outside any row", () => {
-    const markdown = htmlToMarkdown("<table><tr><td>a</td><td>b</td></tr><ul><li>listed</li></ul>loose text</table>").markdown;
+    const markdown = htmlToMarkdown("<table><tr><td>a</td><td>b</td>row text</tr><ul><li>listed</li></ul>loose text</table>").markdown;
     expect(markdown).toContain("| a | b |");
-    expect(markdown).toContain("- listed");
-    expect(markdown).toContain("loose text");
+    // Foster-parented in front of the table, as a browser places it.
+    for (const text of ["row text", "- listed", "loose text"]) {
+      expect(markdown).toContain(text);
+      expect(markdown.indexOf(text)).toBeLessThan(markdown.indexOf("| a | b |"));
+    }
   });
 });
