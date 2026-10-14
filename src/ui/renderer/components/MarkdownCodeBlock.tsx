@@ -23,14 +23,14 @@ interface HastLike {
 }
 
 /** Concatenated text of a hast subtree. */
-export function hastText(node: HastLike | undefined): string {
+function hastText(node: HastLike | undefined): string {
   if (!node) return "";
   if (node.type === "text" && typeof node.value === "string") return node.value;
   return (node.children ?? []).map((child) => hastText(child)).join("");
 }
 
 /** `language-ts` → `ts`; `undefined` when the fence named no language. */
-export function fenceLanguage(pre: HastLike | undefined): string | undefined {
+function fenceLanguage(pre: HastLike | undefined): string | undefined {
   const code = pre?.children?.find((child) => child.type === "element" && child.tagName === "code");
   const raw = code?.properties?.className;
   const classes = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/\s+/) : [];
