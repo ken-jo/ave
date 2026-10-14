@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/Sidebar.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/Sidebar.tsx.
 export const en = {
   "sidebar.ariaLabel": "Primary Navigation",
   "sidebar.collapse": "Collapse Sidebar",

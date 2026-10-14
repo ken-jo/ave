@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/BootstrapStatusPill.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/BootstrapStatusPill.tsx.
 export const en = {
   "bootstrapStatusPill.installing": "Installing managed extensions…",
   "bootstrapStatusPill.pillInstalling": "Installing extensions",

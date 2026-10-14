@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/UserMessageEditor.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/UserMessageEditor.tsx.
 export const en = {
   "userMessageEditor.cancelButton": "Cancel",
   "userMessageEditor.saveAndResendButton": "Save and Resend",

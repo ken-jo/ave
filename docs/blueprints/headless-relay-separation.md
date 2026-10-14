@@ -9,7 +9,7 @@
 > and the architecture SSOT disagree, the SSOT wins; where this document and the
 > source disagree, the source wins.
 >
-> Predecessor: `docs/blueprints/host-structure-alignment.md` landed the
+> Predecessor: the host-structure-alignment blueprint (removed from the tree, recorded in git history) landed the
 > transport-agnostic core, the loopback local API (`api/http-server.ts`,
 > `POST /v1/dispatch` + `GET /v1/events` SSE), the CLI over that contract, and
 > approval-gate-mediated external mutation. Its own "remaining follow-ups"

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/WebTab.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/tabs/WebTab.tsx.
 export const en = {
   "webTab.pageTitle": "Search (Web)",
   "webTab.pageDescription": "Configure web search provider and behavior",

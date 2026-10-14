@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/PluginUpdatesPill.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/PluginUpdatesPill.tsx.
 export const en = {
   "pluginUpdatesPill.summaryOne": "Update available:",
   "pluginUpdatesPill.summaryMany": "{count} updates available:",

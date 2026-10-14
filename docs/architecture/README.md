@@ -1,43 +1,72 @@
 # Architecture
 
-Status: Active English default. The Korean archive keeps earlier review history and original discussion, but this page must be usable on its own.
+Status: Active. This is the index of the host's architecture pages. The product
+goal they serve is in [Vision](../vision/README.md); the whole documentation map
+is in the [documentation index](../README.md).
 
-Korean archive: [docs/ko mirror](../ko/architecture/README.md).
+The host owns trust, storage, project identity, and tool execution. Extensions
+and renderer surfaces ask for capabilities through manifests, the HostApi, and
+IPC; they never reach host internals directly. The code entry points are
+`src/main.ts`, `src/boot/`, `src/ipc/`, `src/preload/`, and
+`src/plugins/runtime/`.
 
-## What This Page Owns
+## Core
 
-This page owns the architecture index for host services, renderer boundaries, plugin runtime, IPC, storage, and permission policy. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
+- [Architecture](./architecture.md): process boundaries, project identity, the
+  conversation loop, providers, memory, the work board, the extension runtime,
+  sub-agent messaging, tool governance, the OS execution sandbox, and security
+  and audit. Start here for any non-trivial change.
+- [Tool governance](./tool-governance.md): the single execution path every
+  builtin, extension, MCP, and delegated-agent tool call takes.
+- [Permission policy](./permission-policy-design.md): approvals, the reviewer,
+  allowed directories, hooks, and the audit chain.
+- [Session model v2](./session-model-v2.md): how sessions are stored, loaded,
+  and restored.
 
-## Current Operating Contract
+## Surfaces and runtime
 
-- English is the default review and contributor language for this app surface.
-- The document must name the behavior that still matters today, the code or test locations that enforce it, and the conditions that make the note stale.
-- Source files and tests are authoritative when this prose and implementation disagree.
-- Korean-only material stays in the mirrored archive unless it is translated or summarized here.
+- [Multi-surface conversation runtime](./multisurface-conversation-runtime.md):
+  one conversation reached from the desktop, the headless host, paired devices,
+  and messaging bridges.
+- [OpenAI provider integration](./openai-provider-integration.md) and the
+  [CLI subscription runtime](./claude-code-subscription-runtime.md): how
+  provider connections plug into one engine.
+- [Image preparation](./image-preparation.md): the `view_image` pipeline.
+- [Native host secret encryption](./headless-secret-encryption.md) and the
+  [Linux workload resource controller](./linux-workload-resource-controller.md):
+  the native host's secret store and resource isolation.
 
-## Implementation Anchors
+## Extensions, MCP, and hooks
 
-- `src/main.ts`
-- `src/boot/`
-- `src/ipc/`
-- `src/preload/`
-- `src/plugins/runtime/`
+- [Plugin deployment model](./plugin-deployment-model.md): install state,
+  receipts, required installs, and updates.
+- [MCP alignment](./mcp-alignment-design.md): extensions as MCP servers and the
+  loopback topology.
+- [Hook runtime](./hook-runtime-expansion-design.md): command hooks and
+  lifecycle events.
 
-## Update Checklist
+## Decisions
 
-- State whether the document is active, implemented, superseded, or historical before adding new detail.
-- Keep links relative to the current file depth; mirrored files under `docs/ko` need different paths from default docs.
-- Add or update tests when a documented behavior is enforced by code.
-- Remove template language and stale plan wording instead of carrying it forward.
+- [Windows toast lifecycle ADR](./all-profile-windows-toast-lifecycle-adr.md)
+  (proposed).
+- [Hook runtime common-event parity](./hook-runtime-common-event-parity.md)
+  (proposed).
 
-## Related Entry Points
+### Proposals
 
-- [Ave Project Documentation](../README.md)
-- [Getting Started](../guides/getting-started.md)
-- [Multi-surface conversation runtime](multisurface-conversation-runtime.md)
-- [OpenAI provider integration](openai-provider-integration.md)
-- [Claude Code subscription runtime](claude-code-subscription-runtime.md)
+- [Suggested replies](./proposals/suggested-replies-ghost-text.md): ghost-text
+  reply suggestions in the composer (implemented).
+- [Evidence-absent HIGH re-adjudication](./proposals/evidence-absent-high-readjudication.md)
+  (proposed).
+- [Plugin declared-category legacy removal](./proposals/plugin-declared-category-legacy-removal.md)
+  (proposed).
+- [Tailnet observer configuration surface](./proposals/tailnet-observer-config-surface.md)
+  (implemented; kept as the decision record).
 
-## Review Notes
+The git marketplace architecture lives in its
+[design specification](../design/multi-source-git-marketplace.md) and
+[blueprint](../blueprints/multi-source-git-marketplace.md).
 
-This English page should let a reviewer understand scope, risk, and validation without opening the Korean archive. If the archive contains rationale that still matters, translate the relevant part into this page and keep the archive link as provenance.
+Older Korean specifications of the architecture, permission policy, and plugin
+tool schema remain under `docs/ko` because source comments cite their section
+numbers; see the [Korean index](../ko/README.md).
