@@ -413,6 +413,23 @@ check(
     && emptyInventoryUpdate.writes.length === 0
     && emptyInventoryUpdate.stderr.join("").includes("inventory was empty"),
 );
+let measuredAfterInventoryError = false;
+const inventoryError = runGateCase({
+  loadExpectedInventory: () => {
+    throw new Error("git returned an empty tracked TypeScript source inventory");
+  },
+  measure: () => {
+    measuredAfterInventoryError = true;
+    return RUNNER_HELD;
+  },
+});
+check(
+  "runner refuses an inventory error before it starts the compiler",
+  inventoryError.exitCode === 1
+    && !measuredAfterInventoryError
+    && inventoryError.writes.length === 0
+    && inventoryError.stderr.join("").includes("empty tracked TypeScript source inventory"),
+);
 const emptyInventoryCompare = runGateCase({
   loadExpectedInventory: () => new Set(),
 });

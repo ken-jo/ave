@@ -2252,7 +2252,7 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 | `SOURCE_DISABLED` | 숨긴 소스에서 설치·업데이트 요청(그 소스에 묶인 패키지를 위해 동기화는 계속함, §7.3) | — | `.sourceDisabled` |
 | `SOURCE_LOCAL_DATA_DAMAGED` | 소스의 다운로드한 사본을 쓸 수 없음(§2.1), 또는 복구가 그것을 옮기거나 유지한 핀을 되쓰지 못함 | 핀 잃음: `state-missing`, `state-invalid`, `state-unreadable`; 핀 유지: `snapshot-invalid`, `snapshot-unreadable`, `repository-damaged`; 복구: `repair-failed`(유지한 핀 있음), `repair-failed-unpinned`(유지할 핀 없음), `repair-write-failed`(sourceId) — 메시지는 파일을 소스 기준 상대 이름으로, fs 오류는 코드로만 밝히며 홈 경로를 쓰지 않음. 문장은 소스를 행과 같은 이름으로 부름(공식 소스는 출처 이름, 그 밖은 라벨, 목록의 소스를 모를 때만 id) | `.localDataDamaged`, `.localDataDamaged.<reason>` |
 | `SOURCE_LIST_UNREADABLE` | 사용자가 추가한 소스 목록 `marketplaces/sources.json`을 읽을 수 없거나 Ave 형식이 아님. 사용자가 고치거나 지울 때까지 모든 소스 변경을 거부(사용자 데이터이므로 복구하지 않음) | `unreadable`(fsCode), `invalid` — 메시지는 파일 이름과 fs 오류 코드만 밝히며 홈 경로를 쓰지 않음 | `.listUnreadable`, `.listUnreadable.<reason>` |
-| `SOURCE_LOCAL_UNREADABLE` | 폴더 소스나 추가 중인 폴더를 읽을 수 없음(§7.7). 마지막으로 성공한 스냅숏은 계속 제공하고 다음 읽기에서 다시 시도 | `not-found`(path), `permission`(path, message), `io`(path, message), `moved`(path, target: 저장된 경로가 이제 다른 곳을 가리키며, 그곳은 읽지 않음), `not-a-directory`(path), `ambiguous-case`(path: 대소문자를 구분하는 볼륨에서 대소문자를 무시하면 입력 이름과 맞는 항목이 둘), `changed-during-read`(path), `classifier-unavailable`(path: Windows 폴더 분류 도구가 없거나 손상되어 폴더가 다른 컴퓨터에 있는지 알 수 없음) — `message`는 시스템의 것을 정리(scrub)한 것 | `.localUnreadable`, `.localUnreadable.<reason>`. `notFound`는 `.entry`(입력 중인 폴더)와 `.managed`, `moved`는 `.managed` 변형 |
+| `SOURCE_LOCAL_UNREADABLE` | 폴더 소스나 추가 중인 폴더를 읽을 수 없음(§7.7). 마지막으로 성공한 스냅숏은 계속 제공하고 다음 읽기에서 다시 시도 | `not-found`(path), `permission`(path, message), `io`(path, message), `moved`(path, target: 저장된 경로가 이제 다른 곳을 가리키며, 그곳은 읽지 않음), `not-a-directory`(path), `ambiguous-case`(path: 볼륨이 입력 이름을 찾아 주는데 대소문자를 무시하면 맞는 항목이 둘), `changed-during-read`(path), `classifier-unavailable`(path: Windows 폴더 분류 도구가 없거나 손상되어 폴더가 다른 컴퓨터에 있는지 알 수 없음) — `message`는 시스템의 것을 정리(scrub)한 것 | `.localUnreadable`, `.localUnreadable.<reason>`. `notFound`는 `.entry`(입력 중인 폴더)와 `.managed`, `moved`는 `.managed` 변형 |
 | `PLAN_EXPIRED` | 만료되었거나 재사용된 계획/미리보기 id, 다른 관리 정책 아래에서 만든 계획(§12), 계획할 때처럼 패키지가 설치되어 있지 않은 계획, 또는 더는 설치되어 있지 않은 세대에 대한 구성 요소 승인(§15.6) | `policy-changed`, `package-changed` | `.planExpired`, `.planExpired.policyChanged`, `.planExpired.packageChanged` |
 | `PACKAGE_INCOMPATIBLE` | 이 설치에 제공되는 버전이 없음: `minAppVersion`이 앱 버전보다 높음, 다른 플랫폼, canary 없이 프리릴리스, 이 설치를 제외하는 롤아웃 | `min_app_version`(name, version), `platform`(name, platform), `host_protocol`(name) — 제외된 버전을 알 때 | `.incompatible`, `.incompatible.minAppVersion`, `.incompatible.platform`, `.incompatible.hostProtocol` |
 | `PACKAGE_COMPAT_UNDECLARED` | `requires.minAppVersion` 없는 git 설치 플러그인 | — | `.compatUndeclared` |
@@ -3230,8 +3230,10 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
 
    패키지 포함 규칙(§18.4.5 규칙 2)은 정식 루트가 정해진 뒤 그 **아래**에만 적용합니다.
    걸어가며 각 구성 요소의 디스크 표기를 부모의 `readdir`에서 기록합니다:
-   바이트가 같은 항목이 있으면 그것, 없으면 대소문자만 무시하고 같은 항목이 하나일 때
-   그것입니다. 그런 항목이 여럿이면 `SOURCE_LOCAL_UNREADABLE` 사유 `ambiguous-case`로
+   바이트가 같은 항목이 있으면 그것, 없으면 볼륨 자체가 입력한 표기를 찾아 줄 때에만
+   대소문자만 무시하고 같은 항목이 하나일 때 그것입니다. 볼륨이 찾지 못하는 표기는
+   `not-found`이므로, 대소문자를 구분하는 볼륨은 `MARKET`을 `Market`으로 바꾸지
+   않습니다. 그런 항목이 여럿이면 `SOURCE_LOCAL_UNREADABLE` 사유 `ambiguous-case`로
    실패합니다. 결과는 디렉터리여야 하고, `marketplace.2.json`이나 `marketplace.json`이라는
    일반 파일은 그 디렉터리로 바꿉니다. 3단계의 정책을 이 **정식 경로**에 다시 적용하고,
    이제야 드러난 차단이면 추가가 끝납니다. 네트워크 분류도 다시 적용하며,

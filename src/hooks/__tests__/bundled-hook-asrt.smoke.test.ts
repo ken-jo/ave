@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, getDefaultSensitiveReadDenyPaths } from "../../permissions/asrt-sandbox.js";
-import { asrtCanInitialize } from "../../permissions/__tests__/test-helpers.js";
+import { sandboxCasesRun } from "../../plugins/isolation/__tests__/sandbox-cases.js";
 import { runOneHookScript } from "../script-hook-runner.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
 
@@ -49,10 +49,13 @@ const LAYOUTS = {
 } as const;
 
 describe("bundled hook process smoke", () => {
-  it.runIf(process.platform === "darwin" || process.platform === "linux").each(Object.keys(LAYOUTS) as (keyof typeof LAYOUTS)[])(
+  it.runIf(process.platform === "darwin" || process.platform === "linux").for(Object.keys(LAYOUTS) as (keyof typeof LAYOUTS)[])(
     "spawns %s's hook from under the plugin roots and denies secret and neighbour reads, outside writes, and unlisted sockets",
-    async (kind) => {
-      expect(await asrtCanInitialize()).toBe(true);
+    async (kind, context) => {
+      // A host without the sandbox backend (the Linux suite runner has no
+      // bubblewrap) cannot measure this: the case is skipped there, visibly,
+      // and fails instead wherever AVE_REQUIRE_SANDBOX_CASES says it must run.
+      if (!(await sandboxCasesRun())) return context.skip("the ASRT sandbox cannot initialize on this host");
       const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-hook-asrt-")));
       const ave = join(root, "ave-home");
       const { generationRoot, dataDir } = LAYOUTS[kind](ave);
