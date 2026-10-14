@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { A2AJsonRpcMethod } from "../../shared/a2a-wire.js";
 import { A2A_EXACT_SEND_REPLAY_URI, type A2ARemotePreparedAttempt, type A2ARemoteResolvedFields } from "../a2a-remote-contracts.js";
-import { A2ARemoteDurableStore, INTENDED_CREDENTIAL_REVISION_CONFLICT, createA2APayloadAad } from "../a2a-remote-store.js";
+import { A2ARemoteDurableStore, A2A_REMOTE_REPLY_MAX_CHARS, INTENDED_CREDENTIAL_REVISION_CONFLICT, createA2APayloadAad, projectA2ARemoteReply } from "../a2a-remote-store.js";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const digest = "a".repeat(64);
@@ -422,5 +422,61 @@ describe("a Task action that provably never left the process releases the Task",
       kind: "blocked",
       outcome: "task-owner-mismatch",
     });
+  });
+});
+
+describe("the remote agent's reply in the Task projection", () => {
+  const agentMessage = (text: string) => ({
+    messageId: "agent-message-1",
+    taskId: "remote-task",
+    contextId: "remote-context",
+    role: "ROLE_AGENT",
+    parts: [{ text }],
+  });
+
+  it("projects the status message and artifacts, masked, instead of state alone", async () => {
+    const f = fixture();
+    const initial = prepared({ operationId: "initial-task-op" });
+    await f.store.prepare(initial);
+    await f.store.resolveCas(initial.attemptId, resolved(initial));
+    await f.store.transition(initial.attemptId, ["resolved"], "in-flight");
+    await f.store.transition(initial.attemptId, ["in-flight"], "settled", {
+      outcomeCode: "success",
+      taskProjection: {
+        handle: "task_handle_123456",
+        ownerId: "owner",
+        targetAgentId: 1,
+        targetLabel: "Agent one",
+        lineage,
+        credentialRevisionId: 11,
+        task: {
+          id: "remote-task",
+          contextId: "remote-context",
+          status: { state: "TASK_STATE_COMPLETED", message: agentMessage("Done. Key was sk-abcdefghijklmnopqrstuvwxyz123456") },
+          artifacts: [{ artifactId: "artifact-1", name: "summary", parts: [{ text: "Three findings." }, { data: { count: 3 } }] }],
+          history: [],
+        } as never,
+      },
+    });
+
+    const projection = await f.store.getTaskProjection("task_handle_123456", "owner");
+    expect(projection).toMatchObject({ state: "TASK_STATE_COMPLETED", terminal: true });
+    expect(projection?.reply?.text).toContain("Done. Key was");
+    expect(projection?.reply?.text).toContain("summary\nThree findings.");
+    expect(projection?.reply?.text).toContain('"count": 3');
+    expect(projection?.reply?.text).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+    expect(projection?.reply).toMatchObject({ artifactCount: 1, truncated: false });
+  });
+
+  it("caps a long reply and keeps user turns and empty Tasks out of it", () => {
+    const long = projectA2ARemoteReply({ message: agentMessage("x".repeat(A2A_REMOTE_REPLY_MAX_CHARS + 50)) as never });
+    expect(long?.text).toHaveLength(A2A_REMOTE_REPLY_MAX_CHARS);
+    expect(long?.truncated).toBe(true);
+
+    expect(projectA2ARemoteReply({ message: { ...agentMessage("my own words"), role: "ROLE_USER" } as never })).toBeNull();
+    expect(projectA2ARemoteReply({ task: { id: "t", status: { state: "TASK_STATE_WORKING" } } as never })).toBeNull();
+    // A file is named, never linked or fetched.
+    expect(projectA2ARemoteReply({ message: { ...agentMessage("x"), parts: [{ url: "https://files.example.test/a.pdf", filename: "a.pdf" }] } as never })?.text)
+      .toBe("[a.pdf]");
   });
 });

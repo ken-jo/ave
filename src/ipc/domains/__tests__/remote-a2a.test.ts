@@ -87,7 +87,7 @@ describe("remote A2A IPC rejection boundary", () => {
       await expect(statusWith({
         settingsService: settingsWith({ a2aRemoteRouting: true }),
         remoteA2ABootGates: { outboundRouting: false, receiverProfile: false },
-      })).resolves.toEqual({ ok: false, error: "a2a-remote-disabled", restartPending: true });
+      })).resolves.toEqual({ ok: false, error: "a2a-remote-disabled", restartPending: true, receiverPort: null });
     });
 
     it("says nothing is pending when the saved switches are the running ones", async () => {
@@ -100,6 +100,7 @@ describe("remote A2A IPC rejection boundary", () => {
         ok: true,
         status: { state: "idle", updatedAt: "2026-07-16T00:00:00.000Z" },
         restartPending: false,
+        receiverPort: null,
       });
     });
 
@@ -113,6 +114,7 @@ describe("remote A2A IPC rejection boundary", () => {
         error: "a2a-remote-start-failed",
         reason: "a2a-remote-outbound-config-incomplete",
         restartPending: true,
+        receiverPort: null,
       });
     });
 
@@ -121,8 +123,33 @@ describe("remote A2A IPC rejection boundary", () => {
         settingsService: { get: vi.fn(() => { throw new Error("settings-unreadable"); }) },
         remoteA2ABootGates: { outboundRouting: false, receiverProfile: false },
       });
-      expect(result).toEqual({ ok: false, error: "a2a-remote-disabled" });
+      expect(result).toEqual({ ok: false, error: "a2a-remote-disabled", receiverPort: null });
     });
+
+    it("names the receiver's port this launch when it is listening", async () => {
+      const receiver = await import("../../../main/a2a-remote-receiver-server.js");
+      const spy = vi.spyOn(receiver, "activeRemoteA2AReceiverPort").mockReturnValue(48_123);
+      try {
+        await expect(statusWith({
+          settingsService: settingsWith({ a2aRemoteReceiver: true }),
+          remoteA2ABootGates: { outboundRouting: false, receiverProfile: true },
+        })).resolves.toEqual({ ok: false, error: "a2a-remote-disabled", restartPending: false, receiverPort: 48_123 });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
+  it("lists each recent Task's own status, and refuses it like the other reads", async () => {
+    handlers.clear();
+    vi.clearAllMocks();
+    const { registerRemoteA2AHandlers } = await import("../remote-a2a.js");
+    const tasks = [{ state: "sent", taskHandle: "task_handle_222222", updatedAt: "2026-07-16T00:00:02.000Z" }];
+    registerRemoteA2AHandlers({ auditLogger: { log: vi.fn() }, remoteA2AActionController: { ...rejectingController(), tasks: vi.fn(() => tasks) } } as never);
+    await expect(invokeFileIpcHandler(handlers, CHANNELS.remoteA2a.tasks)).resolves.toEqual({ ok: true, tasks });
+
+    await setupDisabled();
+    await expect(invokeFileIpcHandler(handlers, CHANNELS.remoteA2a.tasks)).resolves.toEqual({ ok: false, error: "a2a-remote-disabled" });
   });
 
   it.each([
@@ -145,6 +172,8 @@ describe("remote A2A IPC rejection boundary", () => {
       ok: false,
       error: "a2a-remote-start-failed",
       reason: "a2a-remote-outbound-config-incomplete",
+      // Only the status channel reports where the runtime stands.
+      ...(channel === CHANNELS.remoteA2a.status ? { receiverPort: null } : {}),
     });
   });
 
@@ -156,6 +185,7 @@ describe("remote A2A IPC rejection boundary", () => {
       await expect(invokeFileIpcHandler(handlers, channel)).resolves.toEqual({
         ok: false,
         error: "a2a-remote-operation-rejected",
+        ...(channel === CHANNELS.remoteA2a.status ? { receiverPort: null } : {}),
       });
     },
   );

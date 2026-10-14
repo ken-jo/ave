@@ -237,4 +237,33 @@ describe("production remote A2A action controller", () => {
     const ops = execute.mock.calls.map((call) => (call[0] as { operationId: string }).operationId);
     expect(new Set(ops).size).toBe(2);
   });
+
+  it("keeps one status per Task, newest first, each carrying the reply the store projects", async () => {
+    const reply = { text: "Here is the answer.", truncated: false, artifactCount: 0, redactions: 0 };
+    const value = runtime({ getTaskProjection: vi.fn(async (handle: string) => ({ handle, targetAgentId: 1, targetLabel: "Agent one", state: A2ATaskState.WORKING, updatedAt: "2026-07-16T00:00:00.000Z", terminal: false, reply })) });
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+
+    const first = await controller.send({ targetAgentId: 1, intent: "first" });
+    const second = await controller.send({ targetAgentId: 1, intent: "second" });
+    expect(first.reply).toEqual(reply);
+    expect(first.taskHandle).not.toBe(second.taskHandle);
+    expect(controller.tasks().map((status) => status.taskHandle)).toEqual([second.taskHandle, first.taskHandle]);
+    // Following up on the first no longer loses what the second said.
+    await controller.get({ taskHandle: first.taskHandle! });
+    expect(controller.tasks().map((status) => status.taskHandle)).toEqual([first.taskHandle, second.taskHandle]);
+    expect(controller.taskStatus(second.taskHandle!)).toMatchObject({ state: "sent", reply });
+    expect(controller.taskStatus("task_handle_unknown")).toBeNull();
+  });
+
+  it("projects a direct Message reply, which leaves no Task behind, through the same mask", async () => {
+    const value = runtime({
+      execute: vi.fn(async () => ({ ok: true, result: { message: { messageId: "m", role: "ROLE_AGENT", parts: [{ text: "Quick answer, token sk-abcdefghijklmnopqrstuvwxyz123456" }] } }, record: {} })),
+      getTaskProjection: vi.fn(async () => null),
+    });
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+    const status = await controller.send({ targetAgentId: 1, intent: "hello" });
+    expect(status).toMatchObject({ state: "sent", taskAvailable: false });
+    expect(status.reply?.text).toContain("Quick answer");
+    expect(status.reply?.text).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+  });
 });

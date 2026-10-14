@@ -5,6 +5,7 @@ import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
 import { snapshotA2ARemoteGates } from "../../main/a2a-remote-gates.js";
+import { activeRemoteA2AReceiverPort } from "../../main/a2a-remote-receiver-server.js";
 
 const DISABLED = { ok: false as const, error: "a2a-remote-disabled" as const };
 /**
@@ -69,12 +70,30 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
-    const restart = restartPendingField(deps);
-    if (!controller) return { ...unavailable(deps), ...restart };
+    // The receiver's port is random per launch and is what the HTTPS tunnel
+    // has to target; null while the receiver is not running.
+    const runtimeFields = { ...restartPendingField(deps), receiverPort: activeRemoteA2AReceiverPort() };
+    if (!controller) return { ...unavailable(deps), ...runtimeFields };
     try {
-      return { ok: true, status: controller.status(), ...restart };
+      return { ok: true, status: controller.status(), ...runtimeFields };
     } catch {
-      return { ...OPERATION_REJECTED, ...restart };
+      return { ...OPERATION_REJECTED, ...runtimeFields };
+    }
+  });
+
+  // Each recent Task's own latest status (with its reply), newest first. A
+  // read of what this run already holds: no network, no approval.
+  ipcMain.handle(CHANNELS.remoteA2a.tasks, (event) => {
+    if (!validateHostRendererSender(event)) {
+      auditUnauthorized(deps.auditLogger, CHANNELS.remoteA2a.tasks, event);
+      return UNAUTHORIZED_FRAME;
+    }
+    const controller = deps.remoteA2AActionController;
+    if (!controller) return unavailable(deps);
+    try {
+      return { ok: true, tasks: controller.tasks() };
+    } catch {
+      return OPERATION_REJECTED;
     }
   });
 

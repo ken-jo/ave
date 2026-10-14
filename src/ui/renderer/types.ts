@@ -310,7 +310,11 @@ type RemoteA2AFailure = { ok: false; error: string; reason?: string };
  * from the ones this run booted with (a change waiting for a restart). Absent
  * on the other channels, and when main could not read the saved switches.
  */
-type RemoteA2ARuntimeFields = { restartPending?: boolean };
+type RemoteA2ARuntimeFields = {
+  restartPending?: boolean;
+  /** The inbound receiver's loopback port this launch; null while it is not running. */
+  receiverPort?: number | null;
+};
 
 type RemoteA2AStatusResult =
   | ({ ok: true; status: RemoteA2AActionStatus } & RemoteA2ARuntimeFields)
@@ -481,6 +485,7 @@ export type AveApi = {
     status: () => Promise<RemoteA2AStatusResult>;
     send: (targetAgentId: number, userIntent: string) => Promise<RemoteA2AStatusResult>;
     task: (taskHandle: string) => Promise<RemoteA2AStatusResult>;
+    tasks: () => Promise<{ ok: true; tasks: RemoteA2AActionStatus[] } | RemoteA2AFailure>;
     action: RemoteA2AActionCall;
   };
   tailnetSharing: TailnetSharingOwnerApi;

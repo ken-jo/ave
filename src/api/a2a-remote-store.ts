@@ -8,9 +8,12 @@ import type { FeatureNamespaceHandle } from "../main/storage/feature-namespace.j
 import {
   canTransitionA2ATaskState,
   isA2ATerminalTaskState,
+  type A2AMessage,
+  type A2APart,
   type A2ATask,
   type A2ATaskState,
 } from "../shared/a2a.js";
+import { maskSensitiveData } from "../shared/dlp.js";
 import {
   A2A_EXACT_SEND_REPLAY_URI,
   A2A_EXACT_SEND_REPLAY_RETENTION_MS,
@@ -81,6 +84,69 @@ export interface A2ARemoteTaskProjection {
   state: A2ATaskState;
   updatedAt: string;
   terminal: boolean;
+  /** What the remote agent said, when it said anything readable. */
+  reply?: A2ARemoteReply;
+}
+
+/**
+ * The remote agent's reply, reduced to text a person can read on the task card.
+ *
+ * Built from the agent's status message, its artifacts and the agent turns in
+ * history (A2A v1.0 Task, §4.1.1; GetTask is issued with `historyLength: 0`, so
+ * artifacts and the status message carry the reply there). Text parts are kept,
+ * structured data is shown as JSON, and a file is named, never fetched or
+ * linked. Every reply passes the canonical DLP mask before it is projected, and
+ * is capped so one chatty agent cannot fill the renderer.
+ */
+export interface A2ARemoteReply {
+  text: string;
+  truncated: boolean;
+  artifactCount: number;
+  redactions: number;
+}
+
+export const A2A_REMOTE_REPLY_MAX_CHARS = 16_384;
+
+function partText(part: A2APart): string {
+  if (typeof part.text === "string") return part.text;
+  if (part.data !== undefined) return JSON.stringify(part.data, null, 2);
+  const label = part.filename ?? part.mediaType ?? "file";
+  return `[${label}]`;
+}
+
+function agentText(message: A2AMessage | undefined): string | null {
+  if (!message || message.role !== "ROLE_AGENT") return null;
+  const text = message.parts.map(partText).filter((value) => value.length > 0).join("\n");
+  return text.length > 0 ? text : null;
+}
+
+/** Project a Task's (or a direct Message reply's) readable content; null when there is none. */
+export function projectA2ARemoteReply(source: { task?: A2ATask; message?: A2AMessage }): A2ARemoteReply | null {
+  const sections: string[] = [];
+  const task = source.task;
+  for (const message of task?.history ?? []) {
+    const text = agentText(message);
+    if (text !== null) sections.push(text);
+  }
+  const statusText = agentText(task?.status.message);
+  if (statusText !== null && !sections.includes(statusText)) sections.push(statusText);
+  const direct = agentText(source.message);
+  if (direct !== null) sections.push(direct);
+  const artifacts = task?.artifacts ?? [];
+  for (const artifact of artifacts) {
+    const body = artifact.parts.map(partText).filter((value) => value.length > 0).join("\n");
+    if (body.length === 0) continue;
+    sections.push(artifact.name ? `${artifact.name}\n${body}` : body);
+  }
+  if (sections.length === 0) return null;
+  const masked = maskSensitiveData(sections.join("\n\n"));
+  const truncated = masked.masked.length > A2A_REMOTE_REPLY_MAX_CHARS;
+  return {
+    text: truncated ? masked.masked.slice(0, A2A_REMOTE_REPLY_MAX_CHARS) : masked.masked,
+    truncated,
+    artifactCount: artifacts.length,
+    redactions: masked.detections.length,
+  };
 }
 
 export interface A2ARemoteTaskRoute {
@@ -1224,14 +1290,21 @@ export class A2ARemoteDurableStore {
   async getTaskProjection(handle: string, ownerId: string): Promise<A2ARemoteTaskProjection | null> {
     return await this.withLock((state) => {
       const value = state.tasks.find((item) => item.handle === handle && item.ownerDigestSha256 === sha256Hex(ownerId));
-      return value ? structuredClone({
+      if (!value) return null;
+      // The full Task is already stored, encrypted; only state used to come
+      // out, so everything the agent replied was invisible. A Task that no
+      // longer decrypts still projects its state, just without a reply.
+      const task = this.decryptTask(state, value);
+      const reply = task ? projectA2ARemoteReply({ task }) : null;
+      return structuredClone({
         handle: value.handle,
         targetAgentId: value.targetAgentId,
         targetLabel: value.targetLabel,
         state: value.taskState,
         updatedAt: value.updatedAt,
         terminal: isA2ATerminalTaskState(value.taskState),
-      }) : null;
+        ...(reply ? { reply } : {}),
+      });
     });
   }
 

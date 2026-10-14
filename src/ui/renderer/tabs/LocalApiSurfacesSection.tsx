@@ -120,6 +120,8 @@ export function LocalApiSurfacesSection() {
   const [remoteA2AStartFailure, setRemoteA2AStartFailure] = useState<string | null>(null);
   /** The saved agent-routing switches differ from the ones this run started with. */
   const [remoteA2ARestartPending, setRemoteA2ARestartPending] = useState(false);
+  /** Where the inbound receiver is listening this launch, when it is. */
+  const [receiverPort, setReceiverPort] = useState<number | null>(null);
 
   // Read on its own: the runtime's state must not hide the switches, and a
   // failed read of it claims nothing.
@@ -129,9 +131,11 @@ export function LocalApiSurfacesSection() {
         ? remoteA2AStartFailureText(result.reason, t)
         : null);
       setRemoteA2ARestartPending(result.restartPending === true);
+      setReceiverPort(typeof result.receiverPort === "number" ? result.receiverPort : null);
     }).catch(() => {
       setRemoteA2AStartFailure(null);
       setRemoteA2ARestartPending(false);
+      setReceiverPort(null);
     });
   }, [t]);
 
@@ -216,6 +220,12 @@ export function LocalApiSurfacesSection() {
           );
         })}
       </div>
+
+      {receiverPort !== null ? (
+        <p className="mt-4 text-xs text-muted-foreground" data-testid="local-api-surfaces-remote-a2a-receiver-port">
+          {t("localApiSurfaces.remoteA2aReceiverPort", { port: String(receiverPort) })}
+        </p>
+      ) : null}
 
       {remoteA2ARestartPending ? (
         <p className="mt-4 text-xs text-foreground" data-testid="local-api-surfaces-remote-a2a-restart-pending">

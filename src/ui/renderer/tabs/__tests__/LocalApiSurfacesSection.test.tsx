@@ -135,6 +135,13 @@ describe("LocalApiSurfacesSection", () => {
     expect(screen.queryByTestId("local-api-surfaces-remote-a2a-start-failed")).toBeNull();
   });
 
+  it("names the inbound receiver's port this launch so the tunnel can be pointed at it", async () => {
+    remoteA2aStatus.mockResolvedValue({ ok: false, error: "a2a-remote-disabled", restartPending: false, receiverPort: 48_123 });
+    render(<LocalApiSurfacesSection />);
+    const port = await screen.findByTestId("local-api-surfaces-remote-a2a-receiver-port");
+    expect(port.textContent).toContain("127.0.0.1:48123");
+  });
+
   it("shows no start-failure notice when the runtime is merely off or unreadable", async () => {
     render(<LocalApiSurfacesSection />);
     await screen.findByTestId("local-api-surfaces-local-api");
