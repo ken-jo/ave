@@ -126,7 +126,6 @@ import { ko as ko_pluginUninstallDialog } from "../generated/pluginUninstallDial
 import { ko as ko_pluginUpdatesPill } from "../generated/pluginUpdatesPill.js";
 import { ko as ko_privacyTab } from "../generated/privacyTab.js";
 import { ko as ko_reasoningCard } from "../generated/reasoningCard.js";
-import { ko as ko_suggestedTasks } from "../generated/suggestedTasks.js";
 import { ko as ko_remoteA2aActionButton } from "../generated/remoteA2aActionButton.js";
 import { ko as ko_remoteSurfacesTab } from "../generated/remoteSurfacesTab.js";
 import { ko as ko_rolesTab } from "../generated/rolesTab.js";
@@ -150,6 +149,7 @@ import { ko as ko_subAgentCard } from "../generated/subAgentCard.js";
 import { ko as ko_subAgentTranscript } from "../generated/subAgentTranscript.js";
 import { ko as ko_subscriptionProvidersSection } from "../generated/subscriptionProvidersSection.js";
 import { ko as ko_suggestedRepliesGhost } from "../generated/suggestedRepliesGhost.js";
+import { ko as ko_suggestedTasks } from "../generated/suggestedTasks.js";
 import { ko as ko_summaryToast } from "../generated/summaryToast.js";
 import { ko as ko_tailnetAccessTab } from "../generated/tailnetAccessTab.js";
 import { ko as ko_telegramConnection } from "../generated/telegramConnection.js";
@@ -304,7 +304,6 @@ export const koMessages: Record<string, string> = {
   ...ko_pluginUpdatesPill,
   ...ko_privacyTab,
   ...ko_reasoningCard,
-  ...ko_suggestedTasks,
   ...ko_remoteA2aActionButton,
   ...ko_remoteSurfacesTab,
   ...ko_rolesTab,
@@ -328,6 +327,7 @@ export const koMessages: Record<string, string> = {
   ...ko_subAgentTranscript,
   ...ko_subscriptionProvidersSection,
   ...ko_suggestedRepliesGhost,
+  ...ko_suggestedTasks,
   ...ko_summaryToast,
   ...ko_tailnetAccessTab,
   ...ko_telegramConnection,

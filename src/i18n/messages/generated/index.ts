@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 175
+ * Fragments: 176
  */
 import { en as en_alerts } from "./alerts.js";
 import { en as en_app } from "./app.js";
@@ -135,7 +135,6 @@ import { en as en_pluginUninstallDialog } from "./pluginUninstallDialog.js";
 import { en as en_pluginUpdatesPill } from "./pluginUpdatesPill.js";
 import { en as en_privacyTab } from "./privacyTab.js";
 import { en as en_reasoningCard } from "./reasoningCard.js";
-import { en as en_suggestedTasks } from "./suggestedTasks.js";
 import { en as en_remoteA2aActionButton } from "./remoteA2aActionButton.js";
 import { en as en_remoteSurfacesTab } from "./remoteSurfacesTab.js";
 import { en as en_rolesTab } from "./rolesTab.js";
@@ -159,6 +158,7 @@ import { en as en_subAgentCard } from "./subAgentCard.js";
 import { en as en_subAgentTranscript } from "./subAgentTranscript.js";
 import { en as en_subscriptionProvidersSection } from "./subscriptionProvidersSection.js";
 import { en as en_suggestedRepliesGhost } from "./suggestedRepliesGhost.js";
+import { en as en_suggestedTasks } from "./suggestedTasks.js";
 import { en as en_summaryToast } from "./summaryToast.js";
 import { en as en_tailnetAccessTab } from "./tailnetAccessTab.js";
 import { en as en_telegramConnection } from "./telegramConnection.js";
@@ -313,7 +313,6 @@ export const generatedEn: Record<string, string> = {
   ...en_pluginUpdatesPill,
   ...en_privacyTab,
   ...en_reasoningCard,
-  ...en_suggestedTasks,
   ...en_remoteA2aActionButton,
   ...en_remoteSurfacesTab,
   ...en_rolesTab,
@@ -337,6 +336,7 @@ export const generatedEn: Record<string, string> = {
   ...en_subAgentTranscript,
   ...en_subscriptionProvidersSection,
   ...en_suggestedRepliesGhost,
+  ...en_suggestedTasks,
   ...en_summaryToast,
   ...en_tailnetAccessTab,
   ...en_telegramConnection,
