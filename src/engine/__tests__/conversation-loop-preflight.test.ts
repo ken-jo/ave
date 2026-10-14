@@ -39,7 +39,7 @@ vi.mock("../structured-compact.js", () => ({
   DEFAULT_PRESERVE_RECENT_TURNS: 5,
   compactWithBoundary: vi.fn(),
   renderBoundaryAsPreamble: vi.fn(() => "## Compact preamble"),
-  withCompactSummaryInLatestBoundary: vi.fn((messages: unknown) => messages),
+  withSummaryBoundary: vi.fn((messages: unknown) => messages),
 }));
 
 // Import the mock *after* vi.mock so we can configure return values per-test.

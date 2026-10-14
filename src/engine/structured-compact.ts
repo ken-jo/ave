@@ -204,7 +204,7 @@ function renderCompactSummaryMessage(compactNum: number, summary: string): strin
  * conversation carries it in the message stream like a new compaction does.
  * Rows that already carry a summary are returned unchanged.
  */
-export function withCompactSummaryInLatestBoundary(
+function withCompactSummaryInLatestBoundary(
   messages: GenericMessage[],
   summary: string | undefined,
 ): GenericMessage[] {
@@ -221,32 +221,38 @@ export function withCompactSummaryInLatestBoundary(
 }
 
 /**
- * A fork copies its source checkpoint's summary. The boundary row is the one
- * place a summary reaches the model, so the fork's history must carry it
- * there: an existing boundary row receives it as on load, and a fork whose
- * slice holds no boundary row gets one at its head, in the compaction's form.
+ * The boundary row is the one place a compaction summary reaches the model.
+ * A history that owns a summary — a fork copying its source checkpoint's, or
+ * a session whose summary predates that rule and sits only in metadata —
+ * must carry it there: an existing boundary row receives it, and a history
+ * with none (a fork slice, or an older fork saved before forks wrote one)
+ * gets a boundary row at its head in the compaction's form. Idempotent: a
+ * boundary row that already holds a summary is left alone.
  */
-export function withForkedCompactSummary(
+export function withSummaryBoundary(
   messages: GenericMessage[],
-  checkpoint: { compactNum: number; summary: string; trigger: "auto-compact" | "manual"; triggeredAt: string },
+  source: { compactNum: number; summary: string | undefined; trigger?: "auto-compact" | "manual"; createdAt?: string },
 ): GenericMessage[] {
+  const summary = source.summary;
+  if (summary === undefined || summary.length === 0) return messages;
   if (messages.some((m) => m.role === "user" && m.meta?.compactBoundary === true)) {
-    return withCompactSummaryInLatestBoundary(messages, checkpoint.summary);
+    return withCompactSummaryInLatestBoundary(messages, summary);
   }
+  const createdAt = source.createdAt === undefined ? Number.NaN : new Date(source.createdAt).getTime();
   const boundaryRow: GenericMessage = {
     role: "user",
-    content: renderCompactSummaryMessage(checkpoint.compactNum, checkpoint.summary),
+    content: renderCompactSummaryMessage(source.compactNum, summary),
     meta: {
       compactBoundary: true,
-      compactNum: checkpoint.compactNum,
-      createdAt: new Date(checkpoint.triggeredAt).getTime(),
-      // The fork removed nothing; the divider names the checkpoint it came from.
+      compactNum: source.compactNum,
+      ...(Number.isFinite(createdAt) ? { createdAt } : {}),
+      // Nothing was removed from this history; the divider names the checkpoint.
       checkpointMeta: {
         removedMessages: 0,
         freedTokens: 0,
-        compactNum: checkpoint.compactNum,
-        trigger: checkpoint.trigger,
-        summary: checkpoint.summary.slice(0, 200),
+        compactNum: source.compactNum,
+        ...(source.trigger !== undefined ? { trigger: source.trigger } : {}),
+        summary: summary.slice(0, 200),
       },
     },
   };

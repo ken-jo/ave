@@ -14,7 +14,7 @@ import { normalizeToolPairInvariant } from "../conversation-history.js";
 import { backgroundShellManager } from "../../tools/shell-tools.js";
 import { createTracer } from "../../observability/conversation-trace.js";
 import { estimateMessagesTokens } from "../auto-compact.js";
-import { withCompactSummaryInLatestBoundary, withForkedCompactSummary } from "../structured-compact.js";
+import { withSummaryBoundary } from "../structured-compact.js";
 import { createLogger } from "../../lib/logger.js";
 import { projectBasename, projectRootEquals } from "../../shared/project-identity.js";
 import { createWorkspaceRootRevocationFilter } from "../../permissions/workspace-root-lifecycle.js";
@@ -314,7 +314,11 @@ export async function loadSession(
         }
       : self.deps.getDefaultProject?.());
     self.history.clear();
-    self.history.restore(withCompactSummaryInLatestBoundary(normalized.messages, sessionMeta?.summaryPreamble));
+    self.history.restore(withSummaryBoundary(normalized.messages, {
+      compactNum: sessionMeta?.branchedFromCompactNum ?? 0,
+      summary: sessionMeta?.summaryPreamble,
+      ...(sessionMeta?.branchedAt !== undefined ? { createdAt: sessionMeta.branchedAt } : {}),
+    }));
     self.cumulativeUsage = { inputTokens: 0, outputTokens: 0 };
     self.lastRoundProviderInputTokens = 0;
     self.lastReportedSubscriptionContextWindow = null;
@@ -436,11 +440,11 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
 
     const rehydrated = self.deps.memoryManager.rehydrateToolResultArtifacts(self.sessionId, repaired) as GenericMessage[];
     const forkMessages = target.summary
-      ? withForkedCompactSummary(rehydrated, {
+      ? withSummaryBoundary(rehydrated, {
           compactNum,
           summary: target.summary,
           trigger: target.trigger,
-          triggeredAt: target.triggeredAt,
+          createdAt: target.triggeredAt,
         })
       : rehydrated;
     await self.deps.memoryManager.saveSession(newSessionId, forkMessages);
