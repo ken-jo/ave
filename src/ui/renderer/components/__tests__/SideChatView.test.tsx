@@ -180,6 +180,16 @@ describe("SideChatView — processing detail parity", () => {
 });
 
 describe("SideChatView — the main composer's input system", () => {
+  it("recalls the side conversation's earlier prompt with ArrowUp", async () => {
+    const { api } = makeApi();
+    renderView(api);
+    await startTurn("side prompt one");
+    const { textarea } = sideComposer();
+    expect(textarea.value).toBe("");
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("side prompt one");
+  });
+
   it("renders the shared composer at the side surface, inside the shared frame", () => {
     const { api } = makeApi();
     renderView(api);
