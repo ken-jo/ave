@@ -58,5 +58,5 @@ Ave 가 무엇이고 어디로 가는지에 대한 정식 문장은 영문 문�
 ## 관련 문서
 
 - [철학](./philosophy.md): 이 목표 뒤의 원칙
-- [아키텍처](../architecture/README.md)
+- [아키텍처](../../architecture/README.md)
 - [Ave 프로젝트 문서](../README.md)

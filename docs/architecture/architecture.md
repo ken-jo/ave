@@ -1327,8 +1327,9 @@ text; production paths remain covered.
 ## Documentation Language Policy
 
 English is the canonical default for app docs, generated examples, comments,
-logs, and user-facing fallback copy. Korean source documents are retained under
-the mirrored `docs/ko` path and linked from the default pages. Runtime Korean
+logs, and user-facing fallback copy. Korean pages under `docs/ko` are kept only
+where a reader or a test needs them; the
+[documentation index](../README.md#language-policy) states the rule. Runtime Korean
 support remains in locale catalogs, intent parsing, and keyword matching where
 the app must understand Korean user input.
 
