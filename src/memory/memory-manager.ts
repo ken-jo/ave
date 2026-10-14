@@ -1527,24 +1527,30 @@ export class MemoryManager implements PromptMemorySource {
     return this.agentsCustomMd;
   }
 
-  /** Single-entry, stat-revalidated cache for the active project's AGENTS.md. */
-  private projectAgentsMdCache: { root: string; sig: number; value: ProjectAgentsMd } | null = null;
+  /** Single-entry, stat-revalidated cache for the active project's instruction chain. */
+  private projectAgentsMdCache: { root: string; sig: string; value: ProjectAgentsMd } | null = null;
 
   /**
-   * Committed project AGENTS.md discovered at `projectRoot`. Re-discovered when
-   * the file's mtime changes (single-entry cache; a project switch changes the
-   * root and re-discovers), so an edit is visible on the next turn build with no
-   * fs.watch lifecycle to manage across project switches — unlike the global
-   * file's watcher. Returns empty layers when the file is absent.
+   * Committed project instructions discovered for `projectRoot` (see
+   * `project-agents-md.ts`). Re-discovered when any watched path's mtime
+   * changes — every candidate file on the chain, present or not, and every
+   * imported file — so a new, edited or deleted file is visible on the next
+   * turn build with no fs.watch lifecycle to manage across project switches.
+   * Returns empty layers when the chain has no file.
    */
   getProjectAgentsMd(projectRoot: string): ProjectAgentsMd {
     const root = resolve(projectRoot);
-    const sig = this.getFileMtimeMs(join(root, "AGENTS.md"));
     const cached = this.projectAgentsMdCache;
-    if (cached && cached.root === root && cached.sig === sig) return cached.value;
+    if (cached && cached.root === root && cached.sig === this.projectAgentsMdSignature(cached.value)) {
+      return cached.value;
+    }
     const value = discoverProjectAgentsMd(root);
-    this.projectAgentsMdCache = { root, sig, value };
+    this.projectAgentsMdCache = { root, sig: this.projectAgentsMdSignature(value), value };
     return value;
+  }
+
+  private projectAgentsMdSignature(value: ProjectAgentsMd): string {
+    return value.watchedPaths.map((path) => this.getFileMtimeMs(path)).join(",");
   }
 
   getMemoryIndex(options: ProjectScopedMemoryOptions = {}): string {

@@ -120,6 +120,11 @@ type GuidanceDisposition = Pick<
 
 export class ConversationLoop {
   readonly deps: ConversationLoopDeps;
+  /**
+   * Subdirectory instruction files already attached to a tool result in this
+   * session, by repository-relative path. Cleared on a session switch.
+   */
+  readonly attachedDirectoryInstructions = new Set<string>();
   /** The model override this loop was constructed with; a session switch restores it. */
   private readonly constructedModelOverride: string | undefined;
   readonly history: ConversationHistory;

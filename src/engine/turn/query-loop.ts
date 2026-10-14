@@ -70,6 +70,7 @@ import {
 } from "../a2a-agent-message-envelope.js";
 import { createSubscriptionUsageCollector, recordSubscriptionRoundTelemetry } from "./subscription-usage-telemetry.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { directoryInstructionsForToolResult } from "./directory-instructions.js";
 import {
   authorizationRequiredStateOf,
   issueAuthorizationRequiredControl,
@@ -2201,11 +2202,19 @@ export async function queryLoop(
           toolMetaByUseId.get(tr.tool_use_id),
           permissionReviewByUseId.get(tr.tool_use_id),
         );
+        const toolUse = toolUsesForExecutor.find((tu) => tu.id === tr.tool_use_id);
+        const directoryInstructions = directoryInstructionsForToolResult({
+          projectRoot: self.getSessionProjectContext().projectRoot,
+          source: toolMetaByUseId.get(tr.tool_use_id)?.source,
+          toolInput: toolUse?.input,
+          isError: tr.is_error === true,
+          attached: self.attachedDirectoryInstructions,
+        });
         self.history.append({
           role: "tool_result",
           toolUseId: tr.tool_use_id,
-          toolName: toolUsesForExecutor.find((tu) => tu.id === tr.tool_use_id)?.name,
-          content: tr.content,
+          toolName: toolUse?.name,
+          content: directoryInstructions ? `${tr.content}\n\n${directoryInstructions}` : tr.content,
           ...(tr.is_error && { isError: true }),
           ...("image" in tr && tr.image ? { image: tr.image } : {}),
           ...(meta ? { meta } : {}),
