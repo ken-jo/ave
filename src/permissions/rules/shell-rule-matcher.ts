@@ -13,11 +13,14 @@
  *    inputs it cannot reason about: parse failure, unsupported syntax, opaque
  *    word expansions, substitutions, command-scoped assignments, write
  *    redirections, function definitions, assignment-only statements, and
- *    anything the rule classifier grades destructive (floor).
- *  - When the tree hides commands from deny/ask (unparseable, unsupported,
- *    dynamic program name, or code passed as a string to a shell/interpreter/
- *    eval) and the user has any deny/ask Bash rule, the result is `ask`: a
- *    deny rule the matcher could not evaluate must not be bypassed by the mode.
+ *    anything a floor catches (destructive, credential exfiltration).
+ *  - When the tree hides code from deny/ask (unparseable, unsupported,
+ *    dynamic program name, a shell/interpreter fed code by any route — `-c`,
+ *    stdin pipe, here-string, here-document, `-s`, `-`, a script file — or a
+ *    code carrier / code-executing option from `shell-prefix-policy.ts`) and
+ *    the user has any deny/ask Bash rule, the result is `ask` unless a deny
+ *    rule already matched a visible command: a deny rule the matcher could not
+ *    evaluate must not be bypassed by the mode. Hidden code is never allowed.
  */
 import {
   analyzeShell,
@@ -30,10 +33,11 @@ import { errorMessage } from "../../shared/error-message.js";
 import type { RuleSpecifier } from "./rule-specifier.js";
 import { shellExfiltrationSignal } from "./shell-exfiltration.js";
 import {
-  SHELL_PREFIX_POLICY,
+  codeCarryingVariable,
+  hiddenCodeReason,
   isShellWrapperProgram,
+  shellOptionEffect,
   stripGlobalOptions,
-  wrapperPrefixLength,
 } from "./shell-prefix-policy.js";
 
 type BashRuleSpecifier = Extract<RuleSpecifier, { kind: "bash" }>;
@@ -57,73 +61,8 @@ export type ShellRuleShape =
     }
   | { ok: false; reason: string };
 
-const SHELL_PROGRAMS = new Set(SHELL_PREFIX_POLICY.shells);
-const INTERPRETER_PROGRAMS = new Set(SHELL_PREFIX_POLICY.interpreters);
-const AWK_PROGRAMS = new Set(["awk", "gawk", "mawk", "nawk"]);
-const INLINE_CODE_FLAGS = new Set(["-c", "-e", "-E", "-p", "-r", "--eval", "--print", "--command", "eval"]);
-
 function baseProgram(token: string): string {
   return (token.split(/[\\/]/).pop() ?? token).replace(/\.exe$/i, "").replace(/^(python[23]?)\.\d+$/, "$1");
-}
-
-/** Reason when this argv carries code the matcher cannot see into, else null. */
-function codeStringCarrier(fullArgv: readonly (string | undefined)[]): string | null {
-  // Wrapper-held code (`env -S 'rm x'`, `su -c 'rm x'`) is a string too.
-  for (let index = 0; index < fullArgv.length; index += 1) {
-    const token = fullArgv[index];
-    if (token === undefined) break;
-    const head = baseProgram(fullArgv[0]!);
-    if (index > 0 && ((head === "env" && /^(?:-[A-Za-z]*S|--split-string)/.test(token)) || (head === "su" && /^(?:-c|--command)/.test(token)))) {
-      return `code passed to ${head}`;
-    }
-    if (!token.startsWith("-") && index > 0) break;
-  }
-  const skip = wrapperPrefixLength(fullArgv);
-  const argv = fullArgv.slice(skip);
-  if (argv.length === 0) return null;
-  if (argv[0] === undefined) return "dynamic program name behind a wrapper";
-  const program = baseProgram(argv[0]);
-  const args = argv.slice(1);
-  if (args.length === 0) return null;
-  if (program === "eval") return "code passed to eval";
-  if (program === "source" || program === ".") return `script passed to ${program}`;
-  if (AWK_PROGRAMS.has(program)) return `program passed to ${program}`;
-  if (SHELL_PROGRAMS.has(program)) {
-    // `-c`, and combined short flags such as `-lc` / `-ec`.
-    if (args.some((arg) => arg === undefined || /^-[A-Za-z]*c[A-Za-z]*$/.test(arg) || arg === "-Command" || arg === "/c")) {
-      return `code passed to ${program}`;
-    }
-    return null;
-  }
-  if (INTERPRETER_PROGRAMS.has(program)) {
-    if (args.some((arg) => arg === undefined || INLINE_CODE_FLAGS.has(arg))) return `code passed to ${program}`;
-    return null;
-  }
-  if (program === "find" && args.some((arg) => arg === undefined || /^-(?:exec|execdir|ok|okdir)$/.test(arg))) {
-    return "command passed to find -exec";
-  }
-  return null;
-}
-
-/**
- * Options that make an otherwise allowed program write to a path of the
- * model's choosing (`git log --output=~/.zshrc`, `curl -o`, `sort -o`). An
- * allow rule never covers them; the call asks.
- */
-const WRITING_LONG_OPTION = /^--(?:output(?:-file|-document|-dir)?|log-file|logfile|outfile|out-file|out|config-env|exec-path|upload-pack|receive-pack|dump-header)(?:=|$)/;
-const SHORT_OUTPUT_PROGRAMS = new Set(["curl", "wget", "sort", "gcc", "g++", "cc", "clang", "clang++", "go", "rustc", "tsc", "esbuild", "pandoc", "uniq", "split", "sqlite3"]);
-const FIND_WRITING_ACTIONS = /^-(?:fprint|fprint0|fprintf|fls|delete)$/;
-
-function writingOption(argv: readonly (string | undefined)[]): string | null {
-  const program = argv[0] === undefined ? "" : baseProgram(argv[0]);
-  for (const token of argv.slice(1)) {
-    if (token === undefined) continue;
-    if (WRITING_LONG_OPTION.test(token)) return `option ${token.split("=")[0]} writes to a path`;
-    if (SHORT_OUTPUT_PROGRAMS.has(program) && /^-[A-Za-z]*[oO]/.test(token)) return `option ${token.slice(0, 2)} writes to a path`;
-    if (program === "find" && FIND_WRITING_ACTIONS.test(token)) return `find ${token} writes or deletes`;
-    if (program === "git" && (token === "-c" || token === "config")) return `git ${token} changes configuration`;
-  }
-  return null;
 }
 
 export function analyzeShellForRules(command: string): ShellRuleShape {
@@ -178,6 +117,10 @@ export function analyzeShellForRules(command: string): ShellRuleShape {
             if (target !== "/dev/null") blockers.push("write redirection");
           }
         }
+        for (const assignment of statement.assignments) {
+          // `GIT_SSH_COMMAND='rm x' git fetch`, `PATH=/tmp/x; git status`.
+          if (codeCarryingVariable(assignment.name)) hidden.push(`code-carrying variable ${assignment.name}`);
+        }
         if (statement.words.length === 0) {
           // Assignment-only statements change the environment of every later
           // command (`PATH=/tmp/x; git status`). They are not a command a rule
@@ -191,13 +134,17 @@ export function analyzeShellForRules(command: string): ShellRuleShape {
           hidden.push("dynamic program name");
           blockers.push("dynamic program name");
         } else {
-          // `bash -c "rm …"` / `eval "…"` / `find -exec rm`: the code is a
-          // string or argv the matcher does not re-parse, so deny/ask cannot
-          // see inside it.
-          const hiddenCode = codeStringCarrier(argv);
-          if (hiddenCode) hidden.push(hiddenCode);
-          const writes = writingOption(argv);
-          if (writes) blockers.push(writes);
+          // `bash -c "rm …"`, `echo … | bash`, `bash <<<…`, `node x.js`,
+          // `eval "…"`, `find -exec rm`, `sed 'e …'`: the code is a string,
+          // a file or stdin the matcher does not read, so deny/ask cannot
+          // see inside it and no allow rule covers it.
+          const hiddenCode = hiddenCodeReason(argv);
+          if (hiddenCode) {
+            hidden.push(hiddenCode);
+            blockers.push(hiddenCode);
+          }
+          const effect = shellOptionEffect(argv);
+          if (effect) blockers.push(effect.reason);
         }
         commands.push({ argv, raw: statement.source.raw, allowBlockers: blockers });
         return;
@@ -320,6 +267,14 @@ export function evaluateShellRules(command: string, rules: ShellRuleSet, cwd?: s
   const shape = analyzeShellForRules(command);
 
   if (hasRestrictions) {
+    // deny > ask: a deny rule that matches a visible command wins even when
+    // another part of the input is hidden; hidden code then asks, because a
+    // deny rule the matcher could not evaluate must not be bypassed.
+    const visible = shape.ok ? shape.commands : [];
+    const matching = (list: readonly ShellRuleInput[]): ShellRuleInput | undefined =>
+      list.find((rule) => visible.some((cmd) => matchesBashRuleForRestriction(rule.spec, cmd.argv)));
+    const deny = matching(rules.deny);
+    if (deny) return { decision: "deny", pattern: deny.pattern, reason: `deny rule ${deny.pattern}` };
     if (!shape.ok || shape.hidden.length > 0) {
       return {
         decision: "ask",
@@ -327,13 +282,8 @@ export function evaluateShellRules(command: string, rules: ShellRuleSet, cwd?: s
         reason: `shell rules could not inspect every command (${shape.ok ? shape.hidden[0] : shape.reason})`,
       };
     }
-    for (const [decision, list] of [["deny", rules.deny], ["ask", rules.ask]] as const) {
-      for (const rule of list) {
-        if (shape.commands.some((cmd) => matchesBashRuleForRestriction(rule.spec, cmd.argv))) {
-          return { decision, pattern: rule.pattern, reason: `${decision} rule ${rule.pattern}` };
-        }
-      }
-    }
+    const ask = matching(rules.ask);
+    if (ask) return { decision: "ask", pattern: ask.pattern, reason: `ask rule ${ask.pattern}` };
   }
 
   if (rules.allow.length === 0) return { decision: null, reason: "no allow rule" };

