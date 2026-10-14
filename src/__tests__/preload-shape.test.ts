@@ -406,6 +406,7 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "listAgentProfiles": "function",
           "listLlmModels": "function",
+          "listPendingAskUserQuestions": "function",
           "listPendingRoutineResults": "function",
           "listPersonaPromptSummaries": "function",
           "listPersonaPrompts": "function",

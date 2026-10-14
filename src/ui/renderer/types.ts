@@ -1267,6 +1267,8 @@ export type AveApi = {
   // Workflow tools — routines
   onAskUserQuestion: (h: (req: AskUserQuestionRequest) => void) => () => void;
   respondAskUserQuestion: (response: AskUserQuestionResponse) => Promise<{ ok: boolean; error?: string }>;
+  /** Questions still waiting that were sent before this renderer subscribed. */
+  listPendingAskUserQuestions?: () => Promise<AskUserQuestionRequest[]>;
   /** Renderer is notified when the gate's 5-minute timeout fires. */
   onAskUserQuestionTimeout?: (
     h: (payload: { requestId: string }) => void,

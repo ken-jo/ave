@@ -248,6 +248,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:app:info",
         "ave:approval:pending",
         "ave:approval:respond",
+        "ave:ask-user-question:pending",
         "ave:ask-user-question:respond",
         "ave:attach:discardClipboardImage",
         "ave:attach:openExternal",

@@ -17,6 +17,7 @@ import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
+import { fanOutToAllWindows } from "../window-fanout.js";
 import { isValidSessionId } from "../../memory/memory-manager.js";
 import {
   SessionGoalMissingError,
@@ -76,7 +77,7 @@ export function registerSessionGoalHandlers(deps: IpcDeps): void {
   if (sessionGoalStore) {
     sessionGoalStore.onChange((sessionId, goal) => {
       try {
-        getMainWindow()?.webContents.send(CHANNELS.sessionGoal.changed, { sessionId, goal });
+        fanOutToAllWindows(deps.getAppWindows?.() ?? [getMainWindow()], CHANNELS.sessionGoal.changed, { sessionId, goal });
       } catch (err) {
         log.warn("session-goal emit failed: %s", (err as Error).message);
       }

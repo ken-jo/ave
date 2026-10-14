@@ -436,7 +436,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // masked, signed payload is the same one `ave:approval:request` carried.
   ipcMain.handle(PERMISSIONS.approvalPending, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalPending, e); return UNAUTHORIZED_FRAME; }
-    return approvalGate ? approvalGate.listPendingRendererRequests() : [];
+    return approvalGate ? approvalGate.listPendingRendererRequests(e.sender) : [];
   });
 
   /**

@@ -789,6 +789,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     }),
     onAskUserQuestionTimeout: vi.fn(() => () => {}),
     respondAskUserQuestion: vi.fn(async () => ({ ok: true })),
+    listPendingAskUserQuestions: vi.fn(async () => []),
 
     submitFeedback: vi.fn(async () => ({ ok: true })),
 
