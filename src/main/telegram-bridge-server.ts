@@ -154,6 +154,17 @@ function preEnvelopeGatewayReason(
 
 const RETRY_BACKOFF_MS = 2_000;
 const MAX_BACKOFF_MS = 60_000;
+
+/**
+ * Wait before the next poll after `consecutive` transient failures in a row:
+ * 2 s, 4 s, 8 s ... capped at a minute. A laptop that is offline or asleep
+ * otherwise re-polled every 2 s for as long as it stayed down, logging each
+ * time; the streak resets on the first poll Telegram answers.
+ */
+export function telegramTransientBackoffMs(consecutive: number): number {
+  const exponent = Math.min(Math.max(consecutive, 1) - 1, 16);
+  return Math.min(RETRY_BACKOFF_MS * 2 ** exponent, MAX_BACKOFF_MS);
+}
 const DEFAULT_RATE_LIMIT_BACKOFF_MS = 5_000;
 
 type TelegramPollingFatalCode =
@@ -273,6 +284,20 @@ async function poll(
 ): Promise<void> {
   let offset = options.pollOffset();
   let backoffMs = 0;
+  let transientFailures = 0;
+  const transient = (): number => {
+    transientFailures += 1;
+    if (transientFailures === 1) {
+      options.log?.("[telegram-poll] Telegram could not be reached; backing off");
+    }
+    return telegramTransientBackoffMs(transientFailures);
+  };
+  const reached = (): void => {
+    if (transientFailures > 0) {
+      options.log?.(`[telegram-poll] reached Telegram again after ${transientFailures} failed polls`);
+    }
+    transientFailures = 0;
+  };
 
   while (!signal.aborted) {
     if (backoffMs > 0) {
@@ -287,11 +312,12 @@ async function poll(
 
     if (offset === null) {
       const seeded = await seedOffset(options, signal);
-      if (seeded === "fatal") return;
-      if (seeded === "retry") {
-        backoffMs = RETRY_BACKOFF_MS;
+      if (typeof seeded !== "number") {
+        if (seeded.kind === "stop") return;
+        backoffMs = seeded.kind === "transient" ? transient() : seeded.ms;
         continue;
       }
+      reached();
       offset = seeded;
       if (!await confirmOffset(options, offset)) return;
       continue;
@@ -301,10 +327,11 @@ async function poll(
     if (signal.aborted) return;
     if (!result.ok) {
       const next = await handleFailure(options, result.reason, result.retryAfterMs, signal);
-      if (next === "stop") return;
-      backoffMs = next;
+      if (next.kind === "stop") return;
+      backoffMs = next.kind === "transient" ? transient() : next.ms;
       continue;
     }
+    reached();
 
     // Strictly sequential. The shared core holds no mutex and the turn lease is
     // single-holder, so a concurrent fan-out would silently drop all but one
@@ -354,7 +381,7 @@ async function confirmOffset(
 async function seedOffset(
   options: TelegramPollingIngressOptions,
   signal: AbortSignal,
-): Promise<number | "retry" | "fatal"> {
+): Promise<number | FailureDisposition> {
   const result = await options.client.getUpdates({
     offset: -1,
     limit: 1,
@@ -362,8 +389,7 @@ async function seedOffset(
     signal,
   });
   if (!result.ok) {
-    const next = await handleFailure(options, result.reason, result.retryAfterMs, signal);
-    return next === "stop" ? "fatal" : "retry";
+    return await handleFailure(options, result.reason, result.retryAfterMs, signal);
   }
   const last = result.value[result.value.length - 1];
   return last === undefined ? 0 : last.updateId + 1;
@@ -562,31 +588,46 @@ async function redeemPairing(
   }
 }
 
+/**
+ * What the loop does after a failed poll: end the activation, wait the
+ * interval Telegram named, or back off on the transient-failure streak.
+ */
+type FailureDisposition =
+  | { readonly kind: "stop" }
+  | { readonly kind: "wait"; readonly ms: number }
+  | { readonly kind: "transient" };
+
 async function handleFailure(
   options: TelegramPollingIngressOptions,
   reason: "unauthorized" | "conflict" | "rate-limited" | "unreachable" | "invalid-response",
   retryAfterMs: number | undefined,
   signal: AbortSignal,
-): Promise<number | "stop"> {
+): Promise<FailureDisposition> {
   if (reason === "unauthorized") {
     await safeFatal(options, "telegram-bot-token-rejected");
-    return "stop";
+    return { kind: "stop" };
   }
   if (reason === "conflict") {
     // Classify by asking Telegram what it thinks is configured, never by
     // parsing the 409 description: its contents are explicitly not stable.
     const info = await options.client.getWebhookInfo(signal);
-    const code: TelegramPollingFatalCode = info.ok && info.value.hasWebhook
-      ? "telegram-webhook-conflict"
-      : "telegram-poll-conflict";
-    await safeFatal(options, code);
-    return "stop";
+    if (!info.ok) {
+      // Unclassified is not "another poller": ending the connection with a
+      // reason nobody verified sends the owner after the wrong fix. Back off
+      // and let the next poll's 409, if it recurs, be classified then.
+      options.log?.("[telegram-poll] a poll conflict could not be classified; retrying");
+      return { kind: "transient" };
+    }
+    await safeFatal(
+      options,
+      info.value.hasWebhook ? "telegram-webhook-conflict" : "telegram-poll-conflict",
+    );
+    return { kind: "stop" };
   }
   if (reason === "rate-limited") {
-    return Math.min(retryAfterMs ?? DEFAULT_RATE_LIMIT_BACKOFF_MS, MAX_BACKOFF_MS);
+    return { kind: "wait", ms: Math.min(retryAfterMs ?? DEFAULT_RATE_LIMIT_BACKOFF_MS, MAX_BACKOFF_MS) };
   }
-  options.log?.("[telegram-poll] provider response was unusable; backing off");
-  return RETRY_BACKOFF_MS;
+  return { kind: "transient" };
 }
 
 async function safeFatal(
