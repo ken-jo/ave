@@ -8,7 +8,7 @@ import { RouteEngine } from "../../../core/route-engine.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { ConversationLoop } from "../../conversation-loop.js";
-import type { ProviderConfig, StreamEvent, StreamTurnParams } from "../../llm/types.js";
+import type { LLMProvider, ProviderConfig, StreamEvent, StreamTurnParams } from "../../llm/types.js";
 import { t } from "../../../i18n/index.js";
 import { llmModelListCacheKey } from "../../../shared/llm-model-list.js";
 import { contextBudgetForCurrentRuntime } from "../compaction.js";
@@ -197,13 +197,46 @@ describe("/model", () => {
     expect(loop.deps.modelOverride).toBe("served-model-2");
   });
 
-  it("does not claim a Codex subscription model it cannot verify", async () => {
+  function codexLoop(catalog: () => Promise<readonly string[]>) {
     const runtime: ActiveChatRuntime = { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" };
     const llm = { ...fakeLlmSettings({ model: "gpt-5.4" }), activeChatRuntime: runtime };
     const { loop } = makeLoop(llm);
-    const result = await loop.handleCommand("model", "gpt-5.4-mini", "user-keyboard");
-    expect(result.text).toBe(t("be_conversationLoop.cmdModelUnverifiable", { model: "gpt-5.4-mini" }));
+    (loop as { provider: LLMProvider | null }).provider = {
+      vendor: "openai",
+      subscriptionRuntime: runtime,
+      listSubscriptionModels: catalog,
+      async *streamTurn(): AsyncIterable<StreamEvent> {},
+    };
+    return loop;
+  }
+
+  it("switches a Codex subscription to a model its live catalog offers", async () => {
+    const loop = codexLoop(async () => ["gpt-5.5-codex", "gpt-5.5-codex-mini"]);
+    const result = await loop.handleCommand("model", "gpt-5.5-codex-mini", "user-keyboard");
+    expect(result.text).toBe(t("be_conversationLoop.cmdModelSet", { model: "gpt-5.5-codex-mini" }));
+    expect(loop.deps.modelOverride).toBe("gpt-5.5-codex-mini");
+  });
+
+  it("rejects a model the Codex catalog does not offer, and refuses when the catalog is unreachable", async () => {
+    const loop = codexLoop(async () => ["gpt-5.5-codex"]);
+    expect((await loop.handleCommand("model", "gpt-5.4-mini", "user-keyboard")).text)
+      .toBe(t("be_conversationLoop.cmdModelUnknown", { model: "gpt-5.4-mini" }));
+    const offline = codexLoop(async () => { throw new Error("subscription-chat-unavailable"); });
+    expect((await offline.handleCommand("model", "gpt-5.5-codex-mini", "user-keyboard")).text)
+      .toBe(t("be_conversationLoop.cmdModelUnverifiable", { model: "gpt-5.5-codex-mini" }));
     expect(loop.deps.modelOverride).toBeUndefined();
+    expect(offline.deps.modelOverride).toBeUndefined();
+  });
+
+  it("switches an Azure deployment but says the name is unverified", async () => {
+    const llm = fakeLlmSettings({ provider: "azure-foundry", model: "my-gpt-deployment" });
+    llm.vendors["azure-foundry"].baseUrl = "https://example-resource.openai.azure.com/openai/v1";
+    const { loop } = makeLoop(llm);
+    const result = await loop.handleCommand("model", "team-deployment-2", "user-keyboard");
+    expect(result.text).toBe(t("be_conversationLoop.cmdModelSetUnverifiedDeployment", { model: "team-deployment-2" }));
+    expect(result.text).not.toBe(t("be_conversationLoop.cmdModelSet", { model: "team-deployment-2" }));
+    expect(loop.deps.modelOverride).toBe("team-deployment-2");
+    expect(state.refreshes).toBe(0);
   });
 
   it("is refused from a non-keyboard origin", async () => {

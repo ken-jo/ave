@@ -604,6 +604,12 @@ export interface LLMProvider {
    */
   readonly subscriptionRuntime?: SubscriptionChatRuntimeSelection;
   /**
+   * The model ids the subscription runtime's live catalog offers right now —
+   * the list its own session start re-checks a model against. Present only on
+   * a runtime with a selectable model; rejects when the catalog is unreachable.
+   */
+  listSubscriptionModels?(): Promise<readonly string[]>;
+  /**
    * Optional transport-native input projection. Returning undefined preserves
    * the engine's generic estimator instead of widening provider failures into
    * preflight/compaction control flow.

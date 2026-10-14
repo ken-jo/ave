@@ -61,7 +61,36 @@ const VERIFYING_CATALOG_MATCHES: ReadonlySet<string> = new Set([
   "exact", "alias", "version-tag", "canonical", "date-suffix",
 ]);
 
-type ModelVerification = "verified" | "unknown" | "retired" | "unverifiable";
+/**
+ * `deployment`: the route names a user-defined deployment, which no list can
+ * enumerate; the switch is made but reported as unverified.
+ */
+type ModelVerification = "verified" | "unknown" | "retired" | "unverifiable" | "deployment";
+
+/**
+ * Vendors whose model field is a deployment name the user created, not a
+ * model id: no catalog or `/models` answer can enumerate them, so only the
+ * next request can confirm one.
+ */
+const DEPLOYMENT_NAMED_VENDORS: ReadonlySet<string> = new Set(["azure-foundry"]);
+
+/**
+ * Whether the subscription runtime's live catalog offers `model` — the same
+ * list its session start re-checks a selected model against. An unreachable
+ * or empty catalog leaves the model unverifiable.
+ */
+async function verifySubscriptionModel(self: ConversationLoop, model: string): Promise<ModelVerification> {
+  const list = self.provider?.listSubscriptionModels;
+  if (!list) return "unverifiable";
+  let models: readonly string[];
+  try {
+    models = await list.call(self.provider);
+  } catch {
+    return "unverifiable";
+  }
+  if (models.length === 0) return "unverifiable";
+  return models.includes(model) ? "verified" : "unknown";
+}
 
 /**
  * Whether `model` is one the active API route serves, judged from the same
@@ -89,6 +118,9 @@ async function verifyRouteModel(self: ConversationLoop, model: string): Promise<
 
   const hit = catalogModelFor(address.vendor, model, undefined, address.baseUrl);
   const inCatalog = hit !== undefined && VERIFYING_CATALOG_MATCHES.has(hit.match);
+  // A deployment name is the user's own; asking an endpoint for a list would
+  // answer a different question.
+  if (DEPLOYMENT_NAMED_VENDORS.has(address.vendor) && !listing()?.models.includes(model)) return "deployment";
   if (!listing()?.models.includes(model) && !inCatalog) {
     const policy = address.credentialScope
       ? presets?.find((preset) => preset.providerId === address.credentialScope)?.modelDiscoveryPolicy
@@ -150,14 +182,16 @@ async function handleModelCommand(self: ConversationLoop, args: string): Promise
   }
   const model = cleanModelOverride(requested);
   if (!model || /\s/.test(model)) return t("be_conversationLoop.cmdModelInvalid");
-  // The subscription runtime's model list lives in the main process; this
-  // command cannot consult it, so it does not claim a model it cannot check.
-  const verification = subscription ? "unverifiable" : await verifyRouteModel(self, model);
+  const verification = subscription
+    ? await verifySubscriptionModel(self, model)
+    : await verifyRouteModel(self, model);
   if (verification === "unknown") return t("be_conversationLoop.cmdModelUnknown", { model });
   if (verification === "retired") return t("be_conversationLoop.cmdModelRetired", { model });
   if (verification === "unverifiable") return t("be_conversationLoop.cmdModelUnverifiable", { model });
   self.setSessionModelOverride(model);
-  return t("be_conversationLoop.cmdModelSet", { model });
+  return verification === "deployment"
+    ? t("be_conversationLoop.cmdModelSetUnverifiedDeployment", { model })
+    : t("be_conversationLoop.cmdModelSet", { model });
 }
 
 export async function handleCommand(
