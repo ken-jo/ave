@@ -18,6 +18,7 @@ import {
   recordShellSessionCwd,
   withShellSessionCwd,
 } from "../shell-session-cwd.js";
+import { HookRunner } from "../../hooks/hook-runner.js";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ToolExecutor } from "../executor.js";
@@ -227,8 +228,10 @@ describe.skipIf(process.platform === "win32")("executor session working director
     registry.register(new BashTool());
     const permissions = new PermissionManager(join(root, "permissions.json"));
     permissions.setMode("allow");
+    const hooks = new HookRunner();
+    const preHookInputs = vi.spyOn(hooks, "runPreHooks");
     const executor = new ToolExecutor(
-      registry, undefined, permissions, new BashAstValidator({ mode: "deny" }),
+      registry, hooks, permissions, new BashAstValidator({ mode: "deny" }),
       undefined, undefined, undefined, () => true,
     );
     const started: Record<string, unknown>[] = [];
@@ -250,6 +253,11 @@ describe.skipIf(process.platform === "win32")("executor session working director
     expect(String(followUp.content)).toBe(join(root, "sub"));
     // The tool card and approval surfaces see the directory the call runs in.
     expect(started[1]).toMatchObject({ command: "pwd", cwd: join(root, "sub") });
+    // PreToolUse hooks see the same directory as permissions and execution.
+    expect(preHookInputs.mock.calls[1]?.[0]).toMatchObject({
+      toolName: "bash",
+      toolInput: { command: "pwd", cwd: join(root, "sub") },
+    });
     const otherSession = await bash("exec-b", "pwd-2", "pwd");
     expect(String(otherSession.content)).toBe(root);
   });

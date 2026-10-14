@@ -688,6 +688,23 @@ export async function runToolInvocation(
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
     }
 
+    // A `cd` in an earlier bash call of this session becomes this call's
+    // explicit directory here, before PreToolUse hooks and every permission,
+    // approval, route, and preparation binding, so all of them see the
+    // directory the command runs in. A hook's rewrite is final.
+    const sessionInput = toolUse.name === tool.name && isCanonicalBashTool(tool)
+      ? withShellSessionCwd(toolUse.input, {
+          sessionId,
+          root: executionCwd,
+          allowedDirectories: buildRuntimeAllowedDirectories(
+            permissionContext?.getAdditionalDirectories?.()
+              ?? permissionContext?.additionalDirectories
+              ?? [],
+            executionCwd,
+          ),
+        })
+      : toolUse.input;
+
     // ── Step 2: PreToolUse Hook ─────────────────────
     // Governed plugin operations never dispatch effect-capable extension
     // hooks. Their provider state is protected by a Host-owned serialized
@@ -701,7 +718,7 @@ export async function runToolInvocation(
         ? { action: "allow" }
         : await services.hookRunner.runPreHooks({
             toolName: toolUse.name,
-            toolInput: toolUse.input,
+            toolInput: sessionInput,
           });
 
     if (preResult.action === "deny") {
@@ -720,24 +737,9 @@ export async function runToolInvocation(
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
     }
 
-    const hookFinalInput = preResult.action === "modify" && preResult.updatedInput
+    const finalInput = preResult.action === "modify" && preResult.updatedInput
       ? preResult.updatedInput
-      : toolUse.input;
-    // A `cd` in an earlier bash call of this session becomes this call's
-    // explicit directory here, ahead of every permission, approval, route, and
-    // preparation binding, so all of them see the directory the command runs in.
-    const finalInput = toolUse.name === tool.name && isCanonicalBashTool(tool)
-      ? withShellSessionCwd(hookFinalInput, {
-          sessionId,
-          root: executionCwd,
-          allowedDirectories: buildRuntimeAllowedDirectories(
-            permissionContext?.getAdditionalDirectories?.()
-              ?? permissionContext?.additionalDirectories
-              ?? [],
-            executionCwd,
-          ),
-        })
-      : hookFinalInput;
+      : sessionInput;
     let resolvedPluginOperation: ResolvedPluginOperation | undefined;
     let pluginOperationPrincipal: PluginOperationPrincipal | undefined;
     if (tool.operationPolicy) {
