@@ -28,6 +28,7 @@ import {
   __resetSessionStoreForTest,
   approvalCacheKeyIdentity,
   canonicalStringify,
+  captureApprovalWorkingDirectory,
   recordApproval,
 } from "../../permissions/user-approval-store.js";
 import type { ToolTrustOrigin } from "../types.js";
@@ -205,6 +206,50 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     } finally {
       warn.mockRestore();
     }
+  });
+
+  describe("without a configured reviewer", () => {
+    it("reuses a rules-only origin approval for a benign new path after the rule check", async () => {
+      const { tool, execute } = webFetch();
+      const { cards, run } = harness([tool], undefined, { reviewer: false });
+      await run("web_fetch", { url: "https://a.example/x" });
+      expect(cards).toHaveLength(1);
+      // Unassessed (no reviewer): the gate records the rule verdict as the
+      // row's ceiling, which is what makes a rules-only reuse eligible.
+      expect(cards[0].reviewerVerdict?.reason).toMatch(/reviewer not wired/);
+      await run("web_fetch", { url: "https://a.example/docs/y" });
+      expect(cards).toHaveLength(1);
+      expect(execute).toHaveBeenCalledTimes(2);
+    });
+
+    it("asks again when the new query escalates under the rules", async () => {
+      const { tool } = webFetch();
+      const { cards, run } = harness([tool], undefined, { reviewer: false });
+      await run("web_fetch", { url: "https://a.example/x" });
+      await run("web_fetch", { url: "https://a.example/x?token=sk-live-0123456789abcdefghijklmnop" });
+      expect(cards).toHaveLength(2);
+    });
+
+    it("asks for a row approved under a reviewer, which the rules alone cannot re-check", async () => {
+      const { tool } = webFetch();
+      const approved = { url: "https://a.example/x" };
+      const identity = approvalIdentityFor(tool, approved, dir);
+      // A reviewer-assessed row: a verdict, no rules-only ceiling.
+      await recordApproval("web_fetch", canonicalStringify(approved), "builtin", {
+        scope: "session",
+        verdictAtApproval: "low",
+        nlJustification: null,
+        trustOrigin: "user-keyboard",
+        approvalCacheKey: approvalCacheKeyIdentity(identity.approvalCacheKey, identity.approvalMemory),
+        workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity,
+      });
+      const { cards, run } = harness([tool], undefined, { reviewer: false });
+      await run("web_fetch", { url: "https://a.example/y" });
+      expect(cards).toHaveLength(1);
+      // The exact approved request is still its own decision.
+      await run("web_fetch", approved);
+      expect(cards).toHaveLength(1);
+    });
   });
 
   it("a private-network fetch is remembered by exact URL only", async () => {

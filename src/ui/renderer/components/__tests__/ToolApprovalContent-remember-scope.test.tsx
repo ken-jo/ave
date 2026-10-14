@@ -49,14 +49,17 @@ describe("ToolApprovalContent remember scope", () => {
     const line = scopeLine(request("web_fetch", {
       kind: "key", key: "k", scope: { kind: "origin", origin: "https://a.example:443" },
     }));
-    expect(line).toContain("https://a.example:443에 대한 모든 web_fetch 요청");
+    expect(line).toContain("https://a.example:443에 대한 web_fetch 요청을");
+    // The card promises reuse only after a risk check — true with a reviewer
+    // (fresh review) and without one (rules-only reuse of a rules-only row).
+    expect(line).toContain("새 경로나 쿼리는 먼저 위험도를 확인하고, 더 위험해 보이면 다시 묻습니다");
     expect(line).not.toContain("동일한 인자만");
   });
 
   it("names the tool and path for a path scope", () => {
     expect(scopeLine(request("write_file", {
       kind: "key", key: "k", scope: { kind: "path", path: "/workspace/project/notes.md" },
-    }))).toContain("/workspace/project/notes.md에 대한 write_file을(를) 내용과 관계없이");
+    }))).toContain("/workspace/project/notes.md에 대한 write_file을(를) 다음 작업 경로에서 기억합니다: /workspace/project. 내용이 다르면 먼저 위험도를 확인하고");
   });
 
   it("distinguishes a transfer with and without overwrite", () => {

@@ -213,14 +213,24 @@ export async function tryUserApprovalMemorySkip(
     const assessed = reviewed !== null &&
       (reviewed.outcome === "fresh" || reviewed.outcome === "cache" || reviewed.outcome === "host-determined") &&
       reviewed.verdict.requiresExplicitApproval !== true;
-    if (!assessed || maxVerdict(reviewed.verdict, storedVerdict).level !== storedLevel) {
+    // No reviewer configured: the deterministic rules (egress screen
+    // included) are the whole assessment, now and at approval time. Reuse
+    // only a row that was itself approved on rules alone — the gate records
+    // `riskCeilingAtApproval` exactly then — and only when the fresh rule
+    // verdict, already checked against that ceiling above, did not rise. A
+    // row approved under a reviewer cannot be re-checked to the same standard
+    // without one, so it asks.
+    const rulesOnlyReuse = reviewed?.outcome === "unavailable" &&
+      approval.riskCeilingAtApproval !== undefined &&
+      maxVerdict(ruleVerdict, storedVerdict).level === storedLevel;
+    if (!rulesOnlyReuse && (!assessed || maxVerdict(reviewed.verdict, storedVerdict).level !== storedLevel)) {
       console.warn(
         `[permission] foreground memory skip — target-wide hit on new arguments did not pass fresh review (${reviewed?.outcome ?? "failed"}:${reviewed?.verdict.level ?? "none"} vs stored ${storedLevel}), forcing fresh approval (tool=${toolName})`,
         { event: "memory-skip-target-review-escalation", toolName, outcome: reviewed?.outcome ?? null, freshLevel: reviewed?.verdict.level ?? null, storedLevel },
       );
       return null;
     }
-    freshReviewLevel = reviewed.verdict.level;
+    freshReviewLevel = rulesOnlyReuse ? null : reviewed!.verdict.level;
   }
 
   // Memory hit — skip the approval dock. Emit an audit entry recording the skip so
