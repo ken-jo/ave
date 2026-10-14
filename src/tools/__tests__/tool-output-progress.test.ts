@@ -155,6 +155,40 @@ describe("masked live output relay", () => {
     expect(delivered).toEqual(["Continue? [y/N] "]);
   });
 
+  it("keeps a token that pauses mid-way hidden until it completes", () => {
+    vi.useFakeTimers();
+    const { sink, delivered, all } = relay();
+    sink.write(`export GH_TOKEN ${TOKEN.slice(0, 12)}`);
+    vi.advanceTimersByTime(MASKED_RELAY_IDLE_MS * 4);
+    // The text before the token shows; no byte of the token does.
+    expect(all()).toBe("export GH_TOKEN ");
+    sink.write(`${TOKEN.slice(12)} done`);
+    vi.advanceTimersByTime(MASKED_RELAY_IDLE_MS);
+    expect(all()).not.toContain(TOKEN.slice(4, 12));
+    expect(all()).not.toContain(TOKEN.slice(12));
+    expect(all()).toContain(" done");
+    expect(delivered.length).toBeGreaterThan(1);
+  });
+
+  it("masks a paused token when the stream ends before it completes", () => {
+    vi.useFakeTimers();
+    const { sink, all } = relay();
+    sink.write(`token ${TOKEN.slice(0, 20)}`);
+    vi.advanceTimersByTime(MASKED_RELAY_IDLE_MS);
+    sink.write(TOKEN.slice(20));
+    sink.end();
+    expect(all()).not.toContain(TOKEN.slice(4));
+    expect(all()).toContain("token ");
+  });
+
+  it("still shows a plain password prompt after the idle delay", () => {
+    vi.useFakeTimers();
+    const { sink, delivered } = relay();
+    sink.write("Password: ");
+    vi.advanceTimersByTime(MASKED_RELAY_IDLE_MS);
+    expect(delivered).toEqual(["Password: "]);
+  });
+
   it("masks a token inside the released part of a long unterminated line", () => {
     const { sink, all } = relay();
     sink.write(`x ${TOKEN} `);

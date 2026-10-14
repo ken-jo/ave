@@ -1,5 +1,7 @@
 import { StringDecoder } from "node:string_decoder";
 
+import { CREDENTIAL_FORMAT_PREFIXES } from "../shared/dlp.js";
+
 /**
  * Live output of a running host shell tool, for display only.
  *
@@ -33,6 +35,24 @@ const MASKED_RELAY_TAIL_CHARS = 512;
 /** Quiet time after which held unterminated text (a prompt, a progress bar) is released. */
 export const MASKED_RELAY_IDLE_MS = 500;
 const OPEN_PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g;
+const SECRET_START_PREFIXES: readonly string[] = [
+  ...new Set([...CREDENTIAL_FORMAT_PREFIXES.flat(), "-----BEGIN"]),
+];
+
+/**
+ * Whether a trailing run of non-whitespace could be, or begin, a credential
+ * the masker recognizes: it holds a known issuer prefix (or the start of one)
+ * at a token boundary, or a key/value separator whose value may continue.
+ */
+function couldBeginSecret(run: string): boolean {
+  if (/[=:]/.test(run)) return true;
+  for (let at = 0; at < run.length; at++) {
+    if (at > 0 && /[A-Za-z0-9]/.test(run[at - 1]!)) continue;
+    const rest = run.slice(at);
+    if (SECRET_START_PREFIXES.some((prefix) => rest.startsWith(prefix) || prefix.startsWith(rest))) return true;
+  }
+  return false;
+}
 const PRIVATE_KEY_END = /-----END [A-Z0-9 ]*PRIVATE KEY-----/;
 
 /**
@@ -51,8 +71,12 @@ const PRIVATE_KEY_END = /-----END [A-Z0-9 ]*PRIVATE KEY-----/;
  * The unterminated tail is bounded so output without line breaks still moves:
  * past {@link MASKED_RELAY_HELD_LIMIT_CHARS} all but its last
  * {@link MASKED_RELAY_TAIL_CHARS} characters are released, and after
- * {@link MASKED_RELAY_IDLE_MS} without new data (a prompt waiting) the whole
- * tail is released, masked. Neither bound releases an open private-key block.
+ * {@link MASKED_RELAY_IDLE_MS} without new data (a prompt waiting) the tail is
+ * released, masked, except a trailing non-whitespace run that could be the
+ * start of a credential ({@link couldBeginSecret}) or whose masking depends
+ * on the text before it (a Bearer value): that run waits for the rest of the
+ * secret or the end of the stream. Neither bound releases an open
+ * private-key block.
  */
 export function createMaskedProgressRelay(
   deliver: (text: string) => void,
@@ -107,7 +131,15 @@ export function createMaskedProgressRelay(
     idleTimer = undefined;
     if (ended) return;
     const keyStart = openPrivateKeyStart();
-    emit(keyStart === -1 ? held.length : keyStart);
+    if (keyStart !== -1) {
+      emit(keyStart);
+      return;
+    }
+    const runStart = held.search(/\S*$/);
+    const run = held.slice(runStart);
+    const holdRun = run.length > 0
+      && (couldBeginSecret(run) || mask(run) !== run || !cutIsClean(runStart));
+    emit(holdRun ? runStart : held.length);
   };
 
   return {
