@@ -305,9 +305,16 @@ export type UsageSummaryShape = {
  */
 type RemoteA2AFailure = { ok: false; error: string; reason?: string };
 
+/**
+ * The status channel also says whether the saved remote A2A switches differ
+ * from the ones this run booted with (a change waiting for a restart). Absent
+ * on the other channels, and when main could not read the saved switches.
+ */
+type RemoteA2ARuntimeFields = { restartPending?: boolean };
+
 type RemoteA2AStatusResult =
-  | { ok: true; status: RemoteA2AActionStatus }
-  | RemoteA2AFailure;
+  | ({ ok: true; status: RemoteA2AActionStatus } & RemoteA2ARuntimeFields)
+  | (RemoteA2AFailure & RemoteA2ARuntimeFields);
 
 type RemoteA2AActionCall = {
   (action: "resume", taskHandle: string, userIntent: string): Promise<RemoteA2AStatusResult>;

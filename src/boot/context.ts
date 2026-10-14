@@ -76,6 +76,7 @@ import type { ApprovalSentenceSelector } from "../permissions/reviewer/approval-
 import type { ParentAdjudicator } from "../permissions/parent-adjudicator.js";
 import type { RationaleHostService } from "../tools/pipeline/rationale-host-service.js";
 import type { A2ARemoteRuntime } from "../main/a2a-remote-runtime.js";
+import type { A2ARemoteGateSnapshot } from "../main/a2a-remote-gates.js";
 import type { RemoteA2AActionController } from "../main/remote-a2a-action-controller.js";
 import type { PluginBundleLifecycle } from "../plugins/plugin-bundle-lifecycle.js";
 import type { PluginOperationGrantCoordinator } from "../permissions/plugin-operation-grant.js";
@@ -125,6 +126,7 @@ export class BootContext {
   declare a2aRemoteRuntime: A2ARemoteRuntime | undefined;
   declare remoteA2AActionController: RemoteA2AActionController | undefined;
   declare remoteA2AStartFailureReason: string | undefined;
+  declare remoteA2ABootGates: Readonly<A2ARemoteGateSnapshot>;
   declare memoryManager: MemoryManager;
   declare memoryCaptureService: MemoryCaptureService;
   declare inputClassifier: InputClassifier;
@@ -287,6 +289,7 @@ const BOOT_CONTEXT_FIELDS = [
   "a2aRemoteRuntime",
   "remoteA2AActionController",
   "remoteA2AStartFailureReason",
+  "remoteA2ABootGates",
   "memoryManager",
   "memoryCaptureService",
   "inputClassifier",

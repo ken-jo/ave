@@ -118,16 +118,26 @@ export function LocalApiSurfacesSection() {
   const [error, setError] = useState<string | null>(null);
   /** The reason a switched-on remote A2A gate did not start this run, if it did not. */
   const [remoteA2AStartFailure, setRemoteA2AStartFailure] = useState<string | null>(null);
+  /** The saved agent-routing switches differ from the ones this run started with. */
+  const [remoteA2ARestartPending, setRemoteA2ARestartPending] = useState(false);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    // Read on its own: the runtime's state must not hide the switches, and a
-    // failed read of it claims nothing.
+  // Read on its own: the runtime's state must not hide the switches, and a
+  // failed read of it claims nothing.
+  const readRemoteA2ARuntime = useCallback(() => {
     void getApi().remoteA2a.status().then((result) => {
       setRemoteA2AStartFailure(!result.ok && result.error === "a2a-remote-start-failed"
         ? remoteA2AStartFailureText(result.reason, t)
         : null);
-    }).catch(() => setRemoteA2AStartFailure(null));
+      setRemoteA2ARestartPending(result.restartPending === true);
+    }).catch(() => {
+      setRemoteA2AStartFailure(null);
+      setRemoteA2ARestartPending(false);
+    });
+  }, [t]);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    readRemoteA2ARuntime();
     try {
       const settings = await getApi().getSettings();
       setGates({
@@ -141,7 +151,7 @@ export function LocalApiSurfacesSection() {
       setError(t("localApiSurfaces.loadFailed"));
     }
     setLoading(false);
-  }, [t]);
+  }, [readRemoteA2ARuntime, t]);
 
   useEffect(() => {
     void refresh();
@@ -159,9 +169,11 @@ export function LocalApiSurfacesSection() {
       setError(result.message ?? t("localApiSurfaces.saveFailed"));
     } else {
       setError(null);
+      // A gate switch may now differ from what this run started with.
+      readRemoteA2ARuntime();
     }
     setBusy(null);
-  }, [busy, t]);
+  }, [busy, readRemoteA2ARuntime, t]);
 
   if (loading) {
     return (
@@ -204,6 +216,12 @@ export function LocalApiSurfacesSection() {
           );
         })}
       </div>
+
+      {remoteA2ARestartPending ? (
+        <p className="mt-4 text-xs text-foreground" data-testid="local-api-surfaces-remote-a2a-restart-pending">
+          {t("localApiSurfaces.remoteA2aRestartPending")}
+        </p>
+      ) : null}
 
       {remoteA2AStartFailure !== null ? (
         <p role="alert" className="mt-4 text-xs text-destructive" data-testid="local-api-surfaces-remote-a2a-start-failed">

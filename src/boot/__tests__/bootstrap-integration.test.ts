@@ -816,6 +816,7 @@ describe("bootstrap() integration lock", () => {
         "registerPluginEventBridge",
         "releaseChatGroupLoop",
         "remoteA2AActionController",
+        "remoteA2ABootGates",
         "remoteA2AStartFailureReason",
         "requestPluginOperationGrant",
         "resolveChatGroupLoop",

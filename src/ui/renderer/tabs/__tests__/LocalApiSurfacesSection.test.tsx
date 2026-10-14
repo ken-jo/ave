@@ -122,6 +122,19 @@ describe("LocalApiSurfacesSection", () => {
     expect(notice.textContent).toContain("(a2a-remote-store-unreadable)");
   });
 
+  it("says a switch changed since launch waits for a restart, and re-reads after a toggle", async () => {
+    render(<LocalApiSurfacesSection />);
+    await screen.findByTestId("local-api-surfaces-local-api");
+    expect(screen.queryByTestId("local-api-surfaces-remote-a2a-restart-pending")).toBeNull();
+
+    remoteA2aStatus.mockResolvedValue({ ok: false, error: "a2a-remote-disabled", restartPending: true });
+    fireEvent.click(screen.getByTestId("local-api-surfaces-a2a-remote-routing"));
+
+    const notice = await screen.findByTestId("local-api-surfaces-remote-a2a-restart-pending");
+    expect(notice.textContent).toContain("Restart Ave");
+    expect(screen.queryByTestId("local-api-surfaces-remote-a2a-start-failed")).toBeNull();
+  });
+
   it("shows no start-failure notice when the runtime is merely off or unreadable", async () => {
     render(<LocalApiSurfacesSection />);
     await screen.findByTestId("local-api-surfaces-local-api");

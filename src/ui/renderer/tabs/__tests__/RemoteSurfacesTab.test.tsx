@@ -363,7 +363,7 @@ describe("RemoteSurfacesTab", () => {
   });
 
   describe("the local-API row reads the remote A2A runtime, not only its switch", () => {
-    async function localApiRowFor(status: "start-failed" | "disabled" | "rejected") {
+    async function localApiRowFor(status: "start-failed" | "disabled" | "rejected" | "restart-pending") {
       const { api } = makeApi();
       vi.mocked(api.getSettings).mockResolvedValue({
         marketplace: { installedMessagingConnections: [TELEGRAM] },
@@ -372,6 +372,9 @@ describe("RemoteSurfacesTab", () => {
       } as never);
       const read = vi.mocked(api.remoteA2a.status);
       if (status === "rejected") read.mockRejectedValue(new Error("ipc closed"));
+      else if (status === "restart-pending") {
+        read.mockResolvedValue({ ok: false, error: "a2a-remote-disabled", restartPending: true });
+      }
       else if (status === "start-failed") {
         read.mockResolvedValue({ ok: false, error: "a2a-remote-start-failed", reason: "a2a-remote-outbound-config-incomplete" });
       }
@@ -387,6 +390,10 @@ describe("RemoteSurfacesTab", () => {
 
     it("reads a switched-on gate whose runtime did not start as needing attention", async () => {
       expect(await localApiRowFor("start-failed")).toBe("확인 필요");
+    });
+
+    it("reads a switch flipped since launch as pending a restart, not connected", async () => {
+      expect(await localApiRowFor("restart-pending")).toBe("대기 중");
     });
 
     it("keeps reading a switched-on gate as connected when nothing failed to start", async () => {

@@ -38,6 +38,7 @@ import type { PreferenceRefreshService } from "../memory/preference-refresh-serv
 import type { AgentsDocMergeService } from "../memory/agents-doc-merge-service.js";
 import type { MemoryConsolidationService, MemoryMaintenanceCoordinator } from "../memory/memory-consolidation-service.js";
 import type { A2ARemoteRuntime } from "../main/a2a-remote-runtime.js";
+import type { A2ARemoteGateSnapshot } from "../main/a2a-remote-gates.js";
 import type { RemoteA2AActionController } from "../main/remote-a2a-action-controller.js";
 import { createLogger } from "../lib/logger.js";
 const log = createLogger("ave");
@@ -90,6 +91,11 @@ export interface AppServices {
    * run: a clamped `a2a-remote-*` reason code, never a thrown message.
    */
   remoteA2AStartFailureReason?: string;
+  /**
+   * The remote A2A gates this run booted with. The status channel compares the
+   * saved switches against it to tell the owner a change waits for a restart.
+   */
+  remoteA2ABootGates: Readonly<A2ARemoteGateSnapshot>;
   memoryManager: MemoryManager;
   /** Host-owned LLM review gate for explicit and automatic long-term memory. */
   memoryCaptureService?: MemoryCaptureService;

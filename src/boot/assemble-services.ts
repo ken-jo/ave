@@ -41,6 +41,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     a2aRemoteRuntime: ctx.a2aRemoteRuntime,
     remoteA2AActionController: ctx.remoteA2AActionController,
     remoteA2AStartFailureReason: ctx.remoteA2AStartFailureReason,
+    remoteA2ABootGates: ctx.remoteA2ABootGates,
     memoryManager: ctx.memoryManager,
     memoryCaptureService: ctx.memoryCaptureService,
     inputClassifier: ctx.inputClassifier,

@@ -38,6 +38,7 @@ export const en = {
   "localApiSurfaces.remoteA2aReasonConfigIncomplete": "the remote targets, route-control endpoint, or secrets it needs have not been provisioned.",
   "localApiSurfaces.remoteA2aReasonReceiverSecretMissing": "the inbound receiver's secret has not been provisioned.",
   "localApiSurfaces.remoteA2aReasonOther": "it failed while starting ({code}).",
+  "localApiSurfaces.remoteA2aRestartPending": "The agent routing switches have changed since Ave started. Restart Ave to apply them; until then the remote agent connections keep running as they started.",
 } as const;
 
 export const ko = {
@@ -76,4 +77,5 @@ export const ko = {
   "localApiSurfaces.remoteA2aReasonConfigIncomplete": "필요한 원격 대상, 경로 제어 엔드포인트 또는 비밀이 준비되지 않았습니다.",
   "localApiSurfaces.remoteA2aReasonReceiverSecretMissing": "들어오는 요청을 받는 데 필요한 비밀이 준비되지 않았습니다.",
   "localApiSurfaces.remoteA2aReasonOther": "시작하는 중에 실패했습니다 ({code}).",
+  "localApiSurfaces.remoteA2aRestartPending": "Ave 를 시작한 뒤 에이전트 연결 스위치가 바뀌었습니다. Ave 를 다시 시작해야 적용되며, 그 전까지 원격 에이전트 연결은 시작할 때의 상태로 동작합니다.",
 } as const;

@@ -171,6 +171,10 @@ export function RemoteSurfacesTab({ api, chatGroupId, sectionTarget = null }: Re
       const remoteA2AStartFailed = remoteA2ARead.status === "fulfilled"
         && !remoteA2ARead.value.ok
         && remoteA2ARead.value.error === REMOTE_A2A_START_FAILED;
+      // A switch moved since launch is configured but not running: the owner's
+      // next move is a restart, which is what "pending" means on this row.
+      const remoteA2ARestartPending = remoteA2ARead.status === "fulfilled"
+        && remoteA2ARead.value.restartPending === true;
       setReadings({
         tailnet: observer === null ? "attention" : tailnetRowState(observer),
         tailnetOrigin: observer?.derivedWebOrigin ?? null,
@@ -179,7 +183,9 @@ export function RemoteSurfacesTab({ api, chatGroupId, sectionTarget = null }: Re
         // one.
         localApi: gatesOn === null || remoteA2AStartFailed
           ? "attention"
-          : gatesOn > 0 ? "connected" : "off",
+          : remoteA2ARestartPending
+            ? "pending"
+            : gatesOn > 0 ? "connected" : "off",
         localApiGatesOn: gatesOn,
       });
     })();

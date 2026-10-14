@@ -71,6 +71,60 @@ describe("remote A2A IPC rejection boundary", () => {
     });
   });
 
+  describe("restart pending: the saved switches against the ones this run booted with", () => {
+    function settingsWith(features: Record<string, boolean>) {
+      return { get: vi.fn((key: string) => (key === "features" ? features : undefined)) };
+    }
+    async function statusWith(deps: Record<string, unknown>) {
+      handlers.clear();
+      vi.clearAllMocks();
+      const { registerRemoteA2AHandlers } = await import("../remote-a2a.js");
+      registerRemoteA2AHandlers({ auditLogger: { log: vi.fn() }, ...deps } as never);
+      return await invokeFileIpcHandler(handlers, CHANNELS.remoteA2a.status);
+    }
+
+    it("says a switch turned on since launch is configured but not running", async () => {
+      await expect(statusWith({
+        settingsService: settingsWith({ a2aRemoteRouting: true }),
+        remoteA2ABootGates: { outboundRouting: false, receiverProfile: false },
+      })).resolves.toEqual({ ok: false, error: "a2a-remote-disabled", restartPending: true });
+    });
+
+    it("says nothing is pending when the saved switches are the running ones", async () => {
+      const controller = rejectingController();
+      await expect(statusWith({
+        remoteA2AActionController: controller,
+        settingsService: settingsWith({ a2aRemoteRouting: true }),
+        remoteA2ABootGates: { outboundRouting: true, receiverProfile: false },
+      })).resolves.toEqual({
+        ok: true,
+        status: { state: "idle", updatedAt: "2026-07-16T00:00:00.000Z" },
+        restartPending: false,
+      });
+    });
+
+    it("reports a switch turned off since launch, next to a start failure", async () => {
+      await expect(statusWith({
+        settingsService: settingsWith({}),
+        remoteA2ABootGates: { outboundRouting: true, receiverProfile: false },
+        remoteA2AStartFailureReason: "a2a-remote-outbound-config-incomplete",
+      })).resolves.toEqual({
+        ok: false,
+        error: "a2a-remote-start-failed",
+        reason: "a2a-remote-outbound-config-incomplete",
+        restartPending: true,
+      });
+    });
+
+    it("claims nothing when the saved switches cannot be read", async () => {
+      const result = await statusWith({
+        settingsService: { get: vi.fn(() => { throw new Error("settings-unreadable"); }) },
+        remoteA2ABootGates: { outboundRouting: false, receiverProfile: false },
+      });
+      expect(result).toEqual({ ok: false, error: "a2a-remote-disabled" });
+    });
+  });
+
   it.each([
     [CHANNELS.remoteA2a.targets, undefined],
     [CHANNELS.remoteA2a.status, undefined],
