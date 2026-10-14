@@ -225,7 +225,11 @@ describe("installer smoke and packaging discipline", () => {
     expect(workflow).toContain("dbus-run-session -- bash -euo pipefail -c");
     expect(workflow).toContain("gnome-keyring-daemon --unlock --components=secrets");
     expectPinnedAction(workflow, "actions/cache");
-    expect(workflow).toContain("~/.bun/install/cache");
+    // Bun's package cache lives in the workspace, never the runner user's
+    // ~/.bun (on a self-hosted runner, the owner's own cache).
+    expect(workflow).toContain("BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun");
+    expect(workflow).toContain("            .cache/bun\n");
+    expect(workflow).not.toContain("~/.bun");
     expect(workflow).toContain("ELECTRON_BUILDER_CACHE");
     expect(workflow).toContain("--skip-native-rebuild");
     expect(workflow.indexOf("Smoke launch packaged app")).toBeLessThan(workflow.indexOf("Upload installers"));
@@ -410,16 +414,74 @@ describe("installer smoke and packaging discipline", () => {
   });
 
   it("runs every release Linux job on the runner the repo variable names", () => {
-    const linuxRunner = "runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}";
+    // Only a job with nothing before it falls back, and only to a self-hosted
+    // runner so its check step can name the unset variable; never to a
+    // billing-blocked hosted label.
+    const entryRunner = "runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}";
+    const linuxRunner = "runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}";
     const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
-    for (const id of ["release-profile", "publish-release", "publish-r2"]) {
+    for (const [id, runner] of [
+      ["release-profile", entryRunner],
+      ["publish-release", linuxRunner],
+      ["publish-r2", linuxRunner],
+    ] as const) {
       const body = installers.get(id);
       if (body === undefined) throw new Error(`build-installers.yml has no ${id} job`);
-      expect(body.match(/^ {4}runs-on: .*$/gmu), id).toEqual([`    ${linuxRunner}`]);
+      expect(body.match(/^ {4}runs-on: .*$/gmu), id).toEqual([`    ${runner}`]);
+    }
+    for (const id of ["installers", "publish-release", "publish-r2"]) {
+      expect(installers.get(id), id).toMatch(/^ {4}needs: (?:release-profile|\[release-profile, installers\])$/mu);
     }
     const probe = workflowJobs(readRepoFile(".github/workflows/r2-probe.yml")).get("probe");
     if (probe === undefined) throw new Error("r2-probe.yml has no probe job");
-    expect(probe.match(/^ {4}runs-on: .*$/gmu)).toEqual([`    ${linuxRunner}`]);
+    expect(probe.match(/^ {4}runs-on: .*$/gmu)).toEqual([`    ${entryRunner}`]);
+  });
+
+  it("fails a release run naming any unset runner variable before a job needs it", () => {
+    const check = "bash .github/scripts/require-runner-vars.sh";
+    const profile = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("release-profile");
+    const probe = workflowJobs(readRepoFile(".github/workflows/r2-probe.yml")).get("probe");
+    if (profile === undefined || probe === undefined) throw new Error("missing release-profile or probe job");
+    const names = ["AVE_LINUX_RUNNER", "AVE_MACOS_RUNNER", "AVE_WINDOWS_RUNNER"];
+    expect(jobRunCommands(profile)).toContain(`${check} ${names.join(" ")}`);
+    expect(jobRunCommands(probe)).toContain(`${check} AVE_LINUX_RUNNER`);
+    for (const name of names) expect(profile).toContain(`${name}: \${{ vars.${name} }}`);
+    expect(probe).toContain("AVE_LINUX_RUNNER: ${{ vars.AVE_LINUX_RUNNER }}");
+    // The check precedes every other step that could depend on the runner.
+    expect(profile.indexOf(check)).toBeLessThan(profile.indexOf("Verify exact source head"));
+    expect(probe.indexOf(check)).toBeLessThan(probe.indexOf("install-aws-cli"));
+    // No workflow job that a runner variable chooses falls back to a hosted label.
+    for (const name of ["build-installers.yml", "r2-probe.yml"]) {
+      expect(readRepoFile(`.github/workflows/${name}`), name).not.toMatch(/fromJSON\(vars\.AVE_[A-Z]+_RUNNER\) \|\| '(?!self-hosted')/u);
+    }
+
+    const run = (env: Record<string, string>, ...args: string[]) => {
+      const clean = Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !/^AVE_[A-Z]+_RUNNER$/u.test(key)),
+      );
+      return spawnSync("bash", [".github/scripts/require-runner-vars.sh", ...args], {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...clean, ...env },
+      });
+    };
+    const selfHosted = '["self-hosted","Linux","ARM64","ave"]';
+    const ok = run({ AVE_LINUX_RUNNER: selfHosted, AVE_MACOS_RUNNER: '"macos-15"', AVE_WINDOWS_RUNNER: '["windows-latest"]' }, ...names);
+    expect(ok.status, ok.stdout + ok.stderr).toBe(0);
+    expect(ok.stdout).toContain(`AVE_LINUX_RUNNER = ${selfHosted}`);
+
+    const unset = run({ AVE_LINUX_RUNNER: selfHosted, AVE_WINDOWS_RUNNER: "" }, ...names);
+    expect(unset.status).toBe(1);
+    expect(unset.stdout).toContain("::error::Repository variable AVE_MACOS_RUNNER is not set.");
+    expect(unset.stdout).toContain("::error::Repository variable AVE_WINDOWS_RUNNER is not set.");
+    expect(unset.stdout).not.toContain("AVE_LINUX_RUNNER is not set");
+
+    for (const bad of ["ubuntu-latest", "[]", '[""]', "[1]", "{}", "null"]) {
+      const malformed = run({ AVE_LINUX_RUNNER: bad }, "AVE_LINUX_RUNNER");
+      expect(malformed.status, bad).toBe(1);
+      expect(malformed.stdout, bad).toContain("::error::Repository variable AVE_LINUX_RUNNER must be a JSON label string");
+    }
+    expect(run({}).status).toBe(2);
   });
 
   it("ships x64 Linux installers from any runner arch and refuses a foreign-arch binary", () => {
@@ -448,7 +510,7 @@ describe("installer smoke and packaging discipline", () => {
     for (const step of ["Smoke launch packaged app", "Packaged escape gate"]) {
       const at = installers.indexOf(`- name: ${step}`);
       expect(installers.slice(at, installers.indexOf("\n      - ", at + 1)), step).toContain(
-        "if: steps.launch.outputs.run == 'true' && (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')",
+        "if: >-\n          steps.launch.outputs.run == 'true'\n          && (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')\n",
       );
     }
 
@@ -469,12 +531,12 @@ describe("installer smoke and packaging discipline", () => {
     if (installers === undefined) throw new Error("build-installers.yml has no installers job");
 
     // `vars` and `fromJSON` are available in `strategy`, so each matrix entry
-    // carries its own runner; the Linux entry falls back to the hosted x64
-    // label, and on the ARM64 self-hosted runners it cross-builds x64.
+    // carries its own runner, with no hosted fallback; the Linux entry
+    // cross-builds x64 on the ARM64 self-hosted runners.
     expect(installers.match(/^ {12}os: .*$/gmu)).toEqual([
-      "            os: ${{ vars.AVE_MACOS_RUNNER && fromJSON(vars.AVE_MACOS_RUNNER) || 'macos-15' }}",
-      "            os: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}",
-      "            os: ${{ vars.AVE_WINDOWS_RUNNER && fromJSON(vars.AVE_WINDOWS_RUNNER) || 'windows-latest' }}",
+      "            os: ${{ fromJSON(vars.AVE_MACOS_RUNNER) }}",
+      "            os: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}",
+      "            os: ${{ fromJSON(vars.AVE_WINDOWS_RUNNER) }}",
     ]);
     expect(installers.match(/^ {4}runs-on: .*$/gmu)).toEqual(["    runs-on: ${{ matrix.os }}"]);
 
@@ -490,6 +552,29 @@ describe("installer smoke and packaging discipline", () => {
     const setupNode = installers.indexOf("uses: actions/setup-node@");
     expect(setupNode).toBeGreaterThan(installers.indexOf("uses: actions/checkout@"));
     expect(setupNode).toBeLessThan(installers.indexOf("node scripts/build-installers.mjs"));
+
+    // setup-bun has no install-directory input and installs into
+    // os.homedir()/.bun/bin; that one step sees a home under RUNNER_TEMP, so it
+    // never replaces the owner's bun. The version is .bun-version, the same
+    // file ci.yml reads, and a step proves the job-local pinned bun is on PATH.
+    expect(installers).toContain(
+      "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0\n"
+        + "        with:\n"
+        + "          bun-version-file: .bun-version\n"
+        + "        env:\n"
+        + "          HOME: ${{ runner.temp }}/bun-home\n"
+        + "          USERPROFILE: ${{ runner.temp }}/bun-home\n"
+        + "      - name: Verify bun is the job-local pinned build\n",
+    );
+    expect(installers.indexOf("Verify bun is the job-local pinned build")).toBeLessThan(
+      installers.indexOf("bun install --frozen-lockfile"),
+    );
+    expect(readRepoFile(".bun-version")).toMatch(/^\d+\.\d+\.\d+\n$/u);
+    const ci = readRepoFile(".github/workflows/ci.yml");
+    const ciSetups = ci.match(/uses: oven-sh\/setup-bun@/gu)?.length ?? 0;
+    expect(ciSetups).toBeGreaterThan(0);
+    expect(ci.match(/bun-version-file: ave\/\.bun-version\n/gu)?.length).toBe(ciSetups);
+
     expect(installers).toContain(
       "      - name: Remove build output from a self-hosted runner\n"
         + "        if: always() && runner.environment == 'self-hosted'\n"
@@ -522,13 +607,20 @@ describe("installer smoke and packaging discipline", () => {
     if (installers === undefined) throw new Error("build-installers.yml has no installers job");
     const commands = jobRunCommands(installers);
 
-    // A self-hosted Windows runner runs the launch smoke without the NSIS
-    // setup smoke, which installs machine-wide and uninstalls.
-    const smoke = commands.find((command) => command.includes("scripts/smoke-packaged-app.mjs"));
-    expect(smoke).toContain(
-      'elif [ "${{ matrix.target }}" = "win" ] && [ "${{ runner.environment }}" != "github-hosted" ]; then\n'
-        + "node scripts/smoke-packaged-app.mjs --target win --skip-windows-installer-smoke\n",
-    );
+    // The packaged application claims HKCU ave:// for its executable when it
+    // launches, so no step launches it on a self-hosted (owner) Windows PC:
+    // every step that runs a packaged-app launcher is gated to hosted Windows.
+    const launchers = ["scripts/smoke-packaged-app.mjs", "scripts/packaged-escape-gate.mjs"];
+    const windowsHostedOnly = "&& (matrix.target != 'win' || runner.environment == 'github-hosted')";
+    let launchSteps = 0;
+    for (const step of installers.split(/\n(?= {6}- )/u)) {
+      if (!launchers.some((launcher) => step.includes(launcher))) continue;
+      launchSteps += 1;
+      const condition = step.match(/^ {8}if: >-\n((?: {10}.*\n)+)/mu)?.[1] ?? "";
+      expect(condition, step.split("\n")[0]).toContain(windowsHostedOnly);
+    }
+    expect(launchSteps).toBe(launchers.length);
+    expect(installers).not.toContain("--skip-windows-installer-smoke");
 
     // Signing imports into and searches a keychain; a self-hosted runner is
     // the owner's machine, so it always builds unsigned.
@@ -536,15 +628,6 @@ describe("installer smoke and packaging discipline", () => {
     const unsignedBranch = build?.slice(build.indexOf("elif "), build.indexOf("else\n")) ?? "";
     expect(unsignedBranch).toContain('|| [ "${{ runner.environment }}" != "github-hosted" ] \\\n');
     expect(unsignedBranch).toContain('args+=("--skip-code-sign")');
-
-    // The skip is a Windows-only switch, refused for any other target.
-    const refused = spawnSync(
-      process.execPath,
-      ["scripts/smoke-packaged-app.mjs", "--target", "linux", "--skip-windows-installer-smoke"],
-      { cwd: root, encoding: "utf8" },
-    );
-    expect(refused.status).not.toBe(0);
-    expect(refused.stderr).toContain("--skip-windows-installer-smoke applies only to --target win, not linux");
   });
 
   it("provides the AWS CLI from a signature-checked official build before any aws call", () => {
