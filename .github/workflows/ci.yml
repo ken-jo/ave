@@ -20,10 +20,10 @@ jobs:
     # clone private sibling repositories; cross-repository integration belongs
     # to trusted default-branch repository_dispatch workflows.
     # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
-    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
-    # PRs never reach a self-hosted runner.
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback, and a
+    # fork pull request always gets the hosted label. Private repo only: unset
+    # AVE_LINUX_RUNNER before the repo goes public.
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04-arm' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -218,12 +218,45 @@ jobs:
 
   windows-permission-tests:
     name: Windows permission path tests
-    runs-on: windows-latest
+    # Runner from repo variable AVE_WINDOWS_RUNNER (JSON label array, e.g.
+    # ["self-hosted","Windows","X64","ave-release"], or a hosted label such as
+    # "\"windows-latest\"" — a quoted JSON string — to opt into a GitHub-hosted
+    # runner explicitly), the variable build-installers.yml reads. Unset falls
+    # back to any self-hosted runner only so the check below can fail naming
+    # the variable, never to a billing-blocked hosted label. A pull request
+    # from a fork always gets the hosted label: a fork run may not see repo
+    # variables at all, and the self-hosted fallback would then hand it the
+    # owner's machine. That guard lives in this file, which a fork PR can
+    # edit, so the repo setting that holds fork workflows for approval stays
+    # the real boundary; keep it on, and before going public also set the
+    # variable to its hosted label.
+    # The runner needs Git for Windows (bash) and the C++ build tools that
+    # scripts/build-windows-job.ps1 finds through vswhere.
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'windows-latest' || vars.AVE_WINDOWS_RUNNER && fromJSON(vars.AVE_WINDOWS_RUNNER) || 'self-hosted' }}
+    env:
+      # A self-hosted runner's home is the owner's own: keep bun's package
+      # cache and Electron's download cache in the workspace.
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
           fetch-depth: 0
+          persist-credentials: false
+      # Self-hosted machines have no preinstalled toolcache; install Node into
+      # the runner's own tool cache instead of relying on a system Node. The
+      # runner check and the docs classifier below both run on it.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Require the runner variable
+        shell: bash
+        working-directory: ave
+        env:
+          AVE_WINDOWS_RUNNER: ${{ vars.AVE_WINDOWS_RUNNER }}
+        run: bash .github/scripts/require-runner-vars.sh AVE_WINDOWS_RUNNER
       - name: Classify documentation impact
         id: docs-impact
         shell: bash
@@ -235,14 +268,51 @@ jobs:
           if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
+      # setup-bun installs into os.homedir()/.bun/bin, which on a self-hosted
+      # runner would replace the owner's own bun; this step alone sees a home
+      # under RUNNER_TEMP (see build-installers.yml).
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
+        env:
+          HOME: ${{ runner.temp }}/bun-home
+          USERPROFILE: ${{ runner.temp }}/bun-home
+      - name: Verify bun is the job-local pinned build
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        shell: bash
+        env:
+          BUN_HOME: ${{ runner.temp }}/bun-home
+        run: |
+          set -euo pipefail
+          expected="$(tr -d '[:space:]' < ave/.bun-version)"
+          actual="$(bun --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "bun $actual on PATH, expected $expected from .bun-version" >&2
+            exit 1
+          fi
+          # Git Bash on Windows reports PATH entries in /c/... form.
+          home="$(cygpath -u "$BUN_HOME" 2>/dev/null || printf '%s' "$BUN_HOME")"
+          bun_path="$(command -v bun)"
+          case "$bun_path" in
+            "$home"/*) ;;
+            *)
+              echo "bun on PATH is $bun_path, not the job-local install under $home" >&2
+              exit 1
+              ;;
+          esac
+      # Every later step (install scripts, the Windows helper checks, the
+      # tests and the post-job cache saves) sees a home and a temp directory
+      # under RUNNER_TEMP, which the runner empties around every job, instead
+      # of the owner's profile and %LOCALAPPDATA%\Temp.
+      - name: Isolate home and temp directories in the runner temp
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        shell: bash
+        run: node ave/.github/scripts/isolate-job-home.mjs
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
-          path: ~/.bun/install/cache
+          path: .cache/bun
           key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -256,6 +326,9 @@ jobs:
       - name: Verify native background process ownership
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+        # Windows PowerShell ships with every Windows install; a self-hosted
+        # runner's default shell depends on whether PowerShell 7 is present.
+        shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -267,6 +340,9 @@ jobs:
       - name: Verify Windows folder classification
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+        # Windows PowerShell ships with every Windows install; a self-hosted
+        # runner's default shell depends on whether PowerShell 7 is present.
+        shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -311,20 +387,47 @@ jobs:
           src/plugins/__tests__/registry-migration.test.ts
           src/plugins/__tests__/installed-entry-fs.test.ts
           src/plugins/__tests__/plugin-artifact-store-windows-lock.test.ts
-          src/plugins/__tests__/marketplace-managed-bootstrap.test.ts
           src/plugins/__tests__/marketplace-update-recovery.test.ts
-          src/plugins/__tests__/marketplace-dispatcher.test.ts
           src/plugins/__tests__/install-local.test.ts
           src/plugins/__tests__/trust-boundary.test.ts
 
   macos-permission-tests:
     name: macOS permission path tests
-    runs-on: macos-latest
+    # Runner from repo variable AVE_MACOS_RUNNER (JSON label array, e.g.
+    # ["self-hosted","macOS","ARM64","ave-release"], or a hosted label such as
+    # "\"macos-15\"" — a quoted JSON string — to opt into a GitHub-hosted runner
+    # explicitly), the variable build-installers.yml reads. Unset falls back
+    # to any self-hosted runner only so the check below can fail naming the
+    # variable, never to a billing-blocked hosted label. Fork pull requests
+    # always get the hosted label; see the Windows job for why that guard is
+    # not the boundary on its own.
+    # The adversarial suite's Electron control runs the dev Electron binary
+    # (never the packaged app), so the runner needs a logged-in GUI session.
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || vars.AVE_MACOS_RUNNER && fromJSON(vars.AVE_MACOS_RUNNER) || 'self-hosted' }}
+    env:
+      # A self-hosted runner's home is the owner's own: keep bun's package
+      # cache and Electron's download cache in the workspace.
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
           fetch-depth: 0
+          persist-credentials: false
+      # Self-hosted machines have no preinstalled toolcache; install Node into
+      # the runner's own tool cache instead of relying on a system Node. The
+      # runner check and the docs classifier below both run on it.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Require the runner variable
+        shell: bash
+        working-directory: ave
+        env:
+          AVE_MACOS_RUNNER: ${{ vars.AVE_MACOS_RUNNER }}
+        run: bash .github/scripts/require-runner-vars.sh AVE_MACOS_RUNNER
       - name: Classify documentation impact
         id: docs-impact
         working-directory: ave
@@ -335,14 +438,49 @@ jobs:
           if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
+      # setup-bun installs into os.homedir()/.bun/bin, which on a self-hosted
+      # runner would replace the owner's own bun; this step alone sees a home
+      # under RUNNER_TEMP (see build-installers.yml).
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
+        env:
+          HOME: ${{ runner.temp }}/bun-home
+          USERPROFILE: ${{ runner.temp }}/bun-home
+      - name: Verify bun is the job-local pinned build
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        shell: bash
+        env:
+          BUN_HOME: ${{ runner.temp }}/bun-home
+        run: |
+          set -euo pipefail
+          expected="$(tr -d '[:space:]' < ave/.bun-version)"
+          actual="$(bun --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "bun $actual on PATH, expected $expected from .bun-version" >&2
+            exit 1
+          fi
+          bun_path="$(command -v bun)"
+          case "$bun_path" in
+            "$BUN_HOME"/*) ;;
+            *)
+              echo "bun on PATH is $bun_path, not the job-local install under $BUN_HOME" >&2
+              exit 1
+              ;;
+          esac
+      # Every later step (install scripts, the tests and the post-job cache
+      # saves) sees a home and a temp directory under RUNNER_TEMP, which the
+      # runner empties around every job, instead of the owner's home, its
+      # ~/.ave and ~/Library, and the per-user /var/folders temp directory.
+      - name: Isolate home and temp directories in the runner temp
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        shell: bash
+        run: node ave/.github/scripts/isolate-job-home.mjs
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
-          path: ~/.bun/install/cache
+          path: .cache/bun
           key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -359,14 +497,12 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
-      # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
-      # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
-      # no step relies on the runner image's own python3.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        id: python
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        with:
-          python-version: "3.12"
+      # The Python smoke's interpreter (§9.7 P5) here is not actions/setup-python:
+      # on macOS that action runs `sudo installer -pkg … -target /` into
+      # /Library/Frameworks, outside the workspace of the owner's machine. With
+      # AVE_SMOKE_PYTHON unset the harness has the uv above install a managed
+      # 3.12 under node_modules/.cache/ave-python-smoke and discovers it with
+      # `--managed-python`, so no step relies on the machine's own python3.
       # The plugin-confinement cases need a LIVE sandbox, and the Linux job that
       # runs the whole suite has no bubblewrap — so there they return early and
       # pass without measuring anything. macOS needs no backend install; Linux
@@ -379,7 +515,6 @@ jobs:
         working-directory: ave
         env:
           AVE_REQUIRE_SANDBOX_CASES: "1"
-          AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: >
           bun run test --
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
@@ -403,10 +538,10 @@ jobs:
     # The architecture of `build-and-test`, so the native-module cache key below
     # and ASRT's `arm64` seccomp filter both apply.
     # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
-    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
-    # PRs never reach a self-hosted runner.
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback, and a
+    # fork pull request always gets the hosted label. Private repo only: unset
+    # AVE_LINUX_RUNNER before the repo goes public.
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04-arm' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
