@@ -150,8 +150,7 @@ by production code. Name helpers for what they provide. Test-only production
 seams use a leading underscore and the `ForTest` suffix.
 
 Do not name production files or identifiers for being test doubles. Domain words
-such as realpath results, compaction stubs, or the marketing `MockShell` mock-up
-are distinct. The naming gate owns its exact allowlist and the documented
+such as realpath results or compaction stubs are distinct. The naming gate owns its exact allowlist and the documented
 `Why <prefix>:` header exception for deliberately shipped simulations; do not
 expand an exception to avoid fixing a misleading name.
 
