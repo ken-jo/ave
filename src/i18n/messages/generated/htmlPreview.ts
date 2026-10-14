@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/HtmlPreview.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/HtmlPreview.tsx.
 export const en = {
   "htmlPreview.apiNotReady": "Window open API is not ready.",
   "htmlPreview.defaultTitle": "HTML Render",

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/TokenCostBadge.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/TokenCostBadge.tsx.
 export const en = {
   "tokenCostBadge.ariaLabelNoPricing": "fresh + output tokens (cost display disabled — no pricing info)",
   "tokenCostBadge.ariaLabelCostMode": "estimated cost (click: show tokens)",

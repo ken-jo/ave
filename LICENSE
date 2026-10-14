@@ -15,8 +15,8 @@ Portions of this software are adapted from third-party projects under
 compatible permissive licenses:
 
 - **HKUDS/OpenHarness** (MIT License) — selective TypeScript port of agent
-  harness patterns (5 Tier-S + 4 Tier-A). See
-  `docs/blueprints/openharness-selective-borrow-plan.md` for the borrow
+  harness patterns (5 source files and 1 test block carry the attribution).
+  See `docs/blueprints/openharness-selective-borrow-plan.md` for the borrow
   inventory and file-level attribution comments in `src/tools/`,
   `src/core/`, `src/permissions/`, and `src/sandbox/`.
   Source: https://github.com/HKUDS/OpenHarness

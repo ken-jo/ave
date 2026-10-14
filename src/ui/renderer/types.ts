@@ -121,6 +121,7 @@ export type { AppSettings, MemoryCaptureMode };
 import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../../permissions/approval-gate.js";
 import type { PermissionRule } from "../../permissions/permission-manager.js";
 import type { ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource } from "../../permissions/permission-settings-store.js";
+import type { TerminalBlock, TerminalBlockSummary } from "../../shared/terminal-blocks.js";
 export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule, ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource };
 
 export type PluginUiExtension = PluginUiExtensionView;
@@ -577,6 +578,16 @@ export type AveApi = {
     onExit: (
       handler: (payload: { tabId: string; exitCode: number; signal?: number }) => void,
     ) => () => void;
+    /** Command-block summaries of one tab, newest first (no output). */
+    listBlocks: (tabId: string) => Promise<
+      | { ok: true; integrated: boolean; blocks: TerminalBlockSummary[] }
+      | { ok: false; error: string }
+    >;
+    /** One command block with its plain-text output. */
+    getBlock: (tabId: string, blockId: number) => Promise<
+      | { ok: true; block: TerminalBlock }
+      | { ok: false; error: string }
+    >;
   };
   /**
    * Side chat (workspace rail) — a second, independently-streaming chat session
@@ -1256,6 +1267,8 @@ export type AveApi = {
   // Workflow tools — routines
   onAskUserQuestion: (h: (req: AskUserQuestionRequest) => void) => () => void;
   respondAskUserQuestion: (response: AskUserQuestionResponse) => Promise<{ ok: boolean; error?: string }>;
+  /** Questions still waiting that were sent before this renderer subscribed. */
+  listPendingAskUserQuestions?: () => Promise<AskUserQuestionRequest[]>;
   /** Renderer is notified when the gate's 5-minute timeout fires. */
   onAskUserQuestionTimeout?: (
     h: (payload: { requestId: string }) => void,

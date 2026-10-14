@@ -13,17 +13,20 @@ import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import { stageInSuggestionsSession } from "../../main/suggestions-session.js";
+import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 
 const log = createLogger("ave");
 
 export function wireRoutinesScheduler(ctx: BootContext): void {
   const { routinesScheduler, routineEngine, routinesStore, getMainWindow, notificationService, memoryManager } = ctx;
+  // Routine state is app-wide: every open main window shows it.
+  const appWindows = () => ctx.host.desktop?.getAppWindows() ?? [getMainWindow()];
   // Every routine card (running, failed, result) is addressed to the dedicated
   // Suggestions conversation, not the focused one, so that conversation is
   // made to exist — and rise in the list — in the same tick as the send.
   const announce = (channel: string, payload: unknown): void => {
     stageInSuggestionsSession(memoryManager);
-    getMainWindow()?.webContents.send(channel, payload);
+    fanOutToAllWindows(appWindows(), channel, payload);
   };
 
   // RoutinesScheduler v2 — fires per due routine, branching on execution mode.
@@ -83,7 +86,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       } finally {
       // Always clear running state regardless of success/failure.
         try {
-          getMainWindow()?.webContents.send(ROUTINES.runningFinished, routine.id);
+          fanOutToAllWindows(appWindows(), ROUTINES.runningFinished, routine.id);
         } catch {
           // non-fatal
         }

@@ -406,6 +406,7 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "listAgentProfiles": "function",
           "listLlmModels": "function",
+          "listPendingAskUserQuestions": "function",
           "listPendingRoutineResults": "function",
           "listPersonaPromptSummaries": "function",
           "listPersonaPrompts": "function",
@@ -640,8 +641,10 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "telemetryAllowedHosts": "function",
           "terminal": [
+            "getBlock",
             "input",
             "kill",
+            "listBlocks",
             "onData",
             "onExit",
             "resize",

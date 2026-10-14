@@ -1,7 +1,8 @@
 # Ave Architecture Document
 
-Ave is a desktop agent platform for local-first, project-aware AI work. The app
-is built around one invariant: the host owns trust, storage, project identity,
+Ave is a comprehensive agent browser; its goals are stated in
+[docs/vision/README.md](../vision/README.md). The app is built around one
+invariant: the host owns trust, storage, project identity,
 and tool execution; plugins and renderer surfaces request capabilities through
 explicit contracts.
 
@@ -26,7 +27,9 @@ Korean source history is preserved at
 Research for host-agent behavior starts with official documentation and current
 shipped behavior of comparable coding-agent host products — CLI and desktop
 agent hosts whose scope matches Ave's. Those are the primary comparison set for
-agent lifecycle, project handling, interaction, and desktop UX. IDE and
+agent lifecycle, project handling, interaction, and desktop UX. For the browser
+and terminal surfaces, the agent browsers and agent terminals named in
+[docs/vision/README.md](../vision/README.md) are primary comparisons too. IDE and
 workspace products are secondary references: they may inform generic editor,
 filesystem, and multi-root conventions, but they do not override host-agent
 evidence. Record when a conclusion is an inference rather than a documented
@@ -447,6 +450,40 @@ Important rules:
   addressed by `chatGroupId` on every per-conversation `ave:chat:*` channel;
   the loops share the memory manager and the window-wide idle services. A
   closed tile releases its loop. See `docs/design/tiled-chat-groups.md`.
+- Several main windows may be open ("New Window", `CmdOrCtrl+Shift+N`, or the
+  tray). Launching the app again without an `ave://` link restores and focuses
+  the primary window — or opens a fresh primary when it was closed — instead of
+  opening another beside it. `app-state.ts`
+  owns the set: broadcasts go to every main window (`getAppWindows`), point-to-
+  point sends and dialogs go to the window in use or the sender's window, and
+  the first live window is the primary one. Closing the primary while other
+  windows are open never reloads or re-roles them: they keep their tiles and
+  running turns, the primary conversation keeps running in main with no
+  window, and the next window opened (or a relaunch) becomes the primary and
+  resumes it. Approval cards and ask-user questions are routed when raised,
+  not to a window bound at boot: to the window whose tile shows the asking
+  session, else the window in use. A renderer that loads later reads both
+  back (`ave:approval:pending`, `ave:ask-user-question:pending`), so a card
+  whose window closed re-shows where its session is drawn next. A secondary window's chat group ids
+  are scoped to that window in main (`window-<webContentsId>:<id>`), so its
+  tiles — its first tile included — are conversations of their own; its
+  document carries `?aveWindow=secondary` so it does not resume the primary's
+  window-active session. The `MAX_CHAT_GROUPS` ceiling is shared by all
+  windows. Closing a window while another is open closes it; only the last one
+  follows the close-button preference.
+- The chat side panel's browser (`persist:ave-side-browser`,
+  `src/main/side-browser-webview.ts`) works like a normal browser: http(s)
+  navigation and redirects, popups and OAuth windows (native-framed child
+  windows of the owning main window, so they close with it, on the same
+  session with no preload, sandboxed, context-isolated, guarded recursively),
+  downloads, and a Chromium/Edge user agent so sign-in pages accept it.
+  Downloads always go through the native Save dialog (no save path is ever
+  preset and nothing opens a saved file); one Save dialog may be pending per
+  side browser, and a page origin gets at most 3 download prompts a minute —
+  requests beyond either limit are cancelled and logged. Other schemes stay
+  blocked, and only the `clipboard-sanitized-write` permission is granted
+  (`fullscreen` is denied: with no exit hint a page could cover the app and
+  imitate its approval UI).
 
 A long turn uses per-call limits and progress guidance. Each API-backed chat call
 is bounded by the route's effective output limit
@@ -1331,8 +1368,9 @@ text; production paths remain covered.
 ## Documentation Language Policy
 
 English is the canonical default for app docs, generated examples, comments,
-logs, and user-facing fallback copy. Korean source documents are retained under
-the mirrored `docs/ko` path and linked from the default pages. Runtime Korean
+logs, and user-facing fallback copy. Korean pages under `docs/ko` are kept only
+where a reader or a test needs them; the
+[documentation index](../README.md#language-policy) states the rule. Runtime Korean
 support remains in locale catalogs, intent parsing, and keyword matching where
 the app must understand Korean user input.
 

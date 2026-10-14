@@ -6,15 +6,19 @@
  * the tests `vitest related` finds. Inputs the import graph cannot show keep
  * the full checks.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join, normalize, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  AVE_APP_LOCK_SUITE_TRIGGERS,
+  boundRelatedTests,
   FULL_CHECK_GLOBAL_INPUT_FILES,
   isFullCheckGlobalInput,
   AVE_APP_LOCK_SUITES,
+  RELATED_TEST_BOUND,
   selectFastSourceChecks,
+  selectTriggeredLockSuites,
 } from "../../scripts/hooks/pre-push-source-policy.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -97,7 +101,7 @@ describe("pre-push fast source tier", () => {
     });
     expect(selectFastSourceChecks([modified("AGENTS.md")])).toMatchObject({
       eligible: false,
-      reason: "AGENTS.md is documentation that tests or the build read",
+      reason: "AGENTS.md is documentation that tests or the build read, with no recorded reader set",
     });
     expect(selectFastSourceChecks([modified("src/ui/styles/app.css")]).eligible).toBe(false);
     expect(selectFastSourceChecks([modified("src/i18n/messages/ko.json")]).eligible).toBe(false);
@@ -176,11 +180,184 @@ describe("pre-push fast source tier", () => {
     expect(hook).toContain("[checks] tier=full ${stage}");
     expect(hook).not.toContain('"--passWithNoTests"');
     expect(hook).toContain('"--reporter=json"');
-    expect(hook.indexOf("getFastSourceCoverageReason(repoRoot,")).toBeGreaterThanOrEqual(0);
-    expect(hook.indexOf("getFastSourceCoverageReason(repoRoot,")).toBeLessThan(hook.indexOf("[checks] tier=fast pre-push"));
+    expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeGreaterThanOrEqual(0);
+    expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeLessThan(hook.indexOf("[checks] tier=fast pre-push"));
     expect(hook).toContain('"run", ...directArgs], dir, withoutGitContext()');
     // The skip switch is the shell hook's and keeps its meaning.
     const shellHook = readFileSync(resolve(root, "scripts/hooks/pre-push"), "utf8");
     expect(shellHook).toContain('if [ "${AVE_HOOKS_SKIP:-}" = "1" ] || [ "${SKIP_AVE_HOOKS:-}" = "1" ]; then');
+  });
+
+  it("runs the recorded readers of a test-read document instead of the whole suite", () => {
+    const result = selectFastSourceChecks([modified("web/DEPLOY.md")]);
+    expect(result).toMatchObject({
+      eligible: true,
+      testFiles: ["test/scripts/repository-identity.test.ts"],
+      relatedFiles: [],
+    });
+    expect(result.documentationEntries.map(({ path }) => path)).toEqual(["web/DEPLOY.md"]);
+    expect(result.reason).toContain("readers of 1 test-read document(s)");
+    expect(selectFastSourceChecks([modified("docs/ko/app-readme.md")]).testFiles).toEqual([
+      "src/plugins/__tests__/registry-atomicity.test.ts",
+      "test/scripts/repository-identity.test.ts",
+    ]);
+    // Without a recorded reader set the change keeps the full checks.
+    expect(selectFastSourceChecks([modified("web/NOT-RECORDED.md")])).toMatchObject({
+      eligible: false,
+      reason: "web/NOT-RECORDED.md is documentation that tests or the build read, with no recorded reader set",
+    });
+    expect(selectFastSourceChecks([deleted("web/DEPLOY.md")]).eligible).toBe(false);
+  });
+
+  it("pins the lock-suite trigger table", () => {
+    // A change to this table changes which cross-cutting suites a fast push
+    // skips. Each trigger is a path the suite scans or reads, or a module it pins.
+    expect(AVE_APP_LOCK_SUITE_TRIGGERS).toEqual({
+      "src/__tests__/packaging-discipline-source.test.ts": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "docs/references/production-release-checklist.md",
+        "resources/",
+        "src/lib/log-file-sink.ts",
+        "src/main/ave-protocol-registration.ts",
+      ],
+      "src/__tests__/preload-shape.test.ts": ["src/contract/", "src/preload", "src/shared/ipc-channels.ts", "src/ui/renderer/types.ts"],
+      "src/__tests__/preload.test.ts": ["src/contract/", "src/preload", "src/shared/ipc-channels.ts", "src/ui/renderer/types.ts"],
+      "src/data/__tests__/settings-store.test.ts": [
+        "src/data/secret-document-store.ts",
+        "src/data/settings-",
+        "src/shared/settings",
+      ],
+      "src/ipc/__tests__/channel-inventory.test.ts": ["src/contract/", "src/ipc/", "src/shared/ipc-channels.ts"],
+      "src/ipc/__tests__/domain-exports.test.ts": ["src/ipc/domains/", "src/shared/ipc-channels.ts"],
+      "src/ipc/__tests__/host-renderer-only-channels.test.ts": ["src/contract/", "src/ipc/", "src/shared/ipc-channels.ts"],
+      "src/ui/renderer/__tests__/format-ipc-error-coverage.test.ts": [
+        "src/alerts/",
+        "src/ipc/domains/",
+        "src/shared/alerts-types.ts",
+        "src/ui/renderer/format-ipc-error.ts",
+      ],
+      "src/ui/renderer/__tests__/settings-section-anchors.test.ts": ["src/shared/settings-tabs.ts", "src/ui/renderer/"],
+      "test/scripts": ["package.json", "scripts/"],
+    });
+    expect(AVE_APP_LOCK_SUITES).toEqual(Object.keys(AVE_APP_LOCK_SUITE_TRIGGERS));
+    // Every trigger names something that exists.
+    for (const trigger of Object.values(AVE_APP_LOCK_SUITE_TRIGGERS).flat()) {
+      const directory = trigger.slice(0, trigger.lastIndexOf("/") + 1);
+      const matched = existsSync(resolve(root, trigger)) ||
+        readdirSync(resolve(root, directory || ".")).some((name) => `${directory}${name}`.startsWith(trigger));
+      expect(matched, trigger).toBe(true);
+    }
+  });
+
+  it("selects only the lock suites whose triggers changed", () => {
+    expect(selectTriggeredLockSuites(["src/permissions/judge/judge-engine.ts", "src/audit/audit-schema.ts"])).toEqual([]);
+    expect(selectTriggeredLockSuites(["src/ui/renderer/format-ipc-error.ts"])).toEqual([
+      { suite: "src/ui/renderer/__tests__/format-ipc-error-coverage.test.ts", path: "src/ui/renderer/format-ipc-error.ts" },
+      { suite: "src/ui/renderer/__tests__/settings-section-anchors.test.ts", path: "src/ui/renderer/format-ipc-error.ts" },
+    ]);
+    expect(selectTriggeredLockSuites(["src/preload/plugin-bridge.ts"]).map(({ suite }) => suite)).toEqual([
+      "src/__tests__/preload-shape.test.ts",
+      "src/__tests__/preload.test.ts",
+    ]);
+    expect(selectTriggeredLockSuites(["scripts/hooks/run-local-checks.mjs"]).map(({ suite }) => suite)).toEqual(["test/scripts"]);
+  });
+
+  it("bounds a shared module's related-test fan-out to its direct importers", () => {
+    const fanOut = Array.from({ length: RELATED_TEST_BOUND + 10 }, (_, index) => `src/feature${index}/__tests__/feature.test.ts`);
+    const texts = new Map<string, string>([
+      [fanOut[0]!, 'import { schema } from "../../audit/audit-schema.js";\n'],
+      [fanOut[1]!, 'vi.mock("../../audit/audit-schema", () => ({}));\n'],
+      [fanOut[2]!, 'import { other } from "../../audit/audit-schema-helpers.js";\n'],
+    ]);
+    const coverage = [
+      { source: "src/audit/audit-schema.ts", tests: fanOut },
+      { source: "src/permissions/judge/judge-engine.ts", tests: ["src/permissions/judge/__tests__/judge-engine.test.ts"] },
+    ];
+    const read = (path: string) => texts.get(path) ?? "";
+    expect(boundRelatedTests(coverage, read)).toEqual({
+      tests: [fanOut[0], fanOut[1], "src/permissions/judge/__tests__/judge-engine.test.ts"].sort(),
+      narrowed: [{ source: "src/audit/audit-schema.ts", related: RELATED_TEST_BOUND + 10, direct: 2, lockSuites: 0 }],
+    });
+    // Under the bound nothing is narrowed.
+    expect(boundRelatedTests([{ source: "src/a.ts", tests: fanOut.slice(0, 30) }], read)).toEqual({
+      tests: [...fanOut.slice(0, 30)].sort(), narrowed: [],
+    });
+    // A fan-out module with no direct importer is not silently dropped.
+    expect(boundRelatedTests([{ source: "src/lonely.ts", tests: fanOut }], read).reason)
+      .toBe(`src/lonely.ts reaches ${RELATED_TEST_BOUND + 10} related test files and none imports it directly; full checks required`);
+  });
+
+  it("prints the triggered lock suites and the bounded related set", () => {
+    const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
+    expect(hook).toContain("[checks] lock suite ${suite}: triggered by ${path}");
+    expect(hook).toContain("[checks] related tests bounded: ${source} reaches ${related} test file(s)");
+    expect(hook).toContain("lockSuites: selectTriggeredLockSuites([...changedFiles])");
+  });
+
+  it("keeps the IPC lock suites when src/shared/ipc-channels.ts changes alone", () => {
+    // The PR #43 review case: 255 related tests, 21 direct importers, and the
+    // IPC and preload lock suites reach the module only through
+    // src/contract/app-contract.ts. They must survive both ways.
+    expect(selectTriggeredLockSuites(["src/shared/ipc-channels.ts"]).map(({ suite }) => suite)).toEqual([
+      "src/__tests__/preload-shape.test.ts",
+      "src/__tests__/preload.test.ts",
+      "src/ipc/__tests__/channel-inventory.test.ts",
+      "src/ipc/__tests__/domain-exports.test.ts",
+      "src/ipc/__tests__/host-renderer-only-channels.test.ts",
+    ]);
+    const viaBarrel = [
+      "src/__tests__/preload.test.ts",
+      "src/ipc/__tests__/channel-inventory.test.ts",
+      "src/ipc/__tests__/domain-exports.test.ts",
+    ];
+    const importers = Array.from({ length: 21 }, (_, index) => `src/importer${index}/__tests__/importer.test.ts`);
+    const transitive = Array.from({ length: 255 - 21 - viaBarrel.length }, (_, index) => `src/other${index}/__tests__/other.test.ts`);
+    const texts = new Map(importers.map((path) => [path, 'import { CHANNELS } from "../../shared/ipc-channels.js";\n']));
+    const result = boundRelatedTests(
+      [{ source: "src/shared/ipc-channels.ts", tests: [...importers, ...viaBarrel, ...transitive] }],
+      (path) => texts.get(path) ?? 'import { CHANNELS } from "../../contract/app-contract.js";\n',
+    );
+    expect(result.reason).toBeUndefined();
+    expect(result.tests).toEqual([...importers, ...viaBarrel].sort());
+    expect(result.narrowed).toEqual([
+      { source: "src/shared/ipc-channels.ts", related: 255, direct: 21, lockSuites: 3 },
+    ]);
+  });
+
+  it("triggers every lock suite that reaches the contract barrel on the barrel's own imports", () => {
+    // Derived from the import graphs rather than listed by hand: a suite that
+    // reaches src/contract/app-contract.ts reaches its imports only through it.
+    const barrel = "src/contract/app-contract.ts";
+    const specifier = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|vi\.mock\(\s*)["'](\.[^"']+)["']/g;
+    const resolveModule = (from: string, spec: string) => {
+      const base = normalize(join(dirname(from), spec)).replace(/\.(?:js|mjs)$/, "");
+      return [".ts", ".tsx", ".mts", "/index.ts"].map((ext) => base + ext).find((path) => existsSync(resolve(root, path))) ?? null;
+    };
+    // Comments are stripped first: a JSDoc `{@link import("./x.js")}` is not an import.
+    const imports = (file: string) => [...readFileSync(resolve(root, file), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").matchAll(specifier)]
+      .map((match) => resolveModule(file, match[1]!))
+      .filter((path): path is string => path !== null && path.startsWith("src/"));
+    const reaches = (start: string, target: string) => {
+      const seen = new Set<string>();
+      const stack = [start];
+      while (stack.length > 0) {
+        for (const next of imports(stack.pop()!)) {
+          if (next === target) return true;
+          if (!seen.has(next)) { seen.add(next); stack.push(next); }
+        }
+      }
+      return false;
+    };
+    const barrelImports = imports(barrel);
+    expect(barrelImports).toContain("src/shared/ipc-channels.ts");
+    const reachingSuites = AVE_APP_LOCK_SUITES.filter((suite) => suite.endsWith(".ts") && reaches(suite, barrel));
+    expect(reachingSuites.length).toBeGreaterThanOrEqual(5);
+    for (const suite of reachingSuites) {
+      for (const path of barrelImports) {
+        expect(AVE_APP_LOCK_SUITE_TRIGGERS[suite]!.some((trigger) => path.startsWith(trigger)), `${suite} on ${path}`).toBe(true);
+      }
+    }
   });
 });

@@ -9,6 +9,8 @@
  *   `ave:terminal:kill`   invoke  tab close / teardown
  *   `ave:terminal:data`   event   main→renderer  pty output chunk
  *   `ave:terminal:exit`   event   main→renderer  pty exited
+ *   `ave:terminal:blocks` invoke  command-block summaries of one tab
+ *   `ave:terminal:block`  invoke  one command block with its output
  *
  * TRUST BOUNDARY: a terminal spawns arbitrary user commands, so every invoke
  * gates on {@link validateHostRendererSender} — the HOST renderer frame only.
@@ -20,7 +22,7 @@
  *
  * Error contract (project CLAUDE.md): kebab-case English `reason` / `error`.
  */
-import { ipcMain } from "electron";
+import { BrowserWindow, ipcMain } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { fanOutToAllWindows } from "../window-fanout.js";
@@ -33,6 +35,8 @@ import {
   killTerminal,
   type SpawnTerminalResult,
 } from "../../main/terminal/pty-manager.js";
+import { getTerminalBlockTracker } from "../../main/terminal/terminal-blocks.js";
+import type { TerminalBlock, TerminalBlockSummary } from "../../shared/terminal-blocks.js";
 import type { IpcDeps } from "../types.js";
 
 const log = createLogger("terminal-ipc");
@@ -70,8 +74,10 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       if (!tabId) {
         return { ok: false, reason: "bad-request", message: "tabId must be a non-empty string" };
       }
+      const owner = BrowserWindow.fromWebContents(e.sender);
       return spawnTerminal({
         tabId,
+        ownerWindowId: owner && !owner.isDestroyed() ? owner.id : null,
         ...(typeof payload?.cwd === "string" ? { cwd: payload.cwd } : {}),
         ...(typeof payload?.cols === "number" ? { cols: payload.cols } : {}),
         ...(typeof payload?.rows === "number" ? { rows: payload.rows } : {}),
@@ -128,6 +134,50 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       if (!tabId) return { ok: false, error: "invalid-params" };
       killTerminal(tabId);
       return { ok: true };
+    },
+  );
+
+  // Command blocks (terminal-blocks.ts). Reads only: the renderer lists a tab's
+  // blocks and fetches one block's output to copy it or attach it to chat. A
+  // tab with no live shell record answers an empty list, not an error — the
+  // tab may simply not have spawned yet.
+  ipcMain.handle(
+    CHANNELS.terminal.blocks,
+    async (
+      e,
+      payload: { tabId?: unknown },
+    ): Promise<
+      | { ok: true; integrated: boolean; blocks: TerminalBlockSummary[] }
+      | { ok: false; error: string }
+    > => {
+      if (!validateHostRendererSender(e)) {
+        auditUnauthorized(auditLogger, CHANNELS.terminal.blocks, e);
+        return { ok: false, error: UNAUTHORIZED_FRAME.error };
+      }
+      const tabId = asString(payload?.tabId);
+      if (!tabId) return { ok: false, error: "invalid-params" };
+      const tracker = getTerminalBlockTracker(tabId);
+      if (!tracker) return { ok: true, integrated: false, blocks: [] };
+      return { ok: true, integrated: tracker.isIntegrated(), blocks: tracker.list() };
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.terminal.block,
+    async (
+      e,
+      payload: { tabId?: unknown; blockId?: unknown },
+    ): Promise<{ ok: true; block: TerminalBlock } | { ok: false; error: string }> => {
+      if (!validateHostRendererSender(e)) {
+        auditUnauthorized(auditLogger, CHANNELS.terminal.block, e);
+        return { ok: false, error: UNAUTHORIZED_FRAME.error };
+      }
+      const tabId = asString(payload?.tabId);
+      const blockId = asNumber(payload?.blockId);
+      if (!tabId || !Number.isInteger(blockId)) return { ok: false, error: "invalid-params" };
+      const block = getTerminalBlockTracker(tabId)?.get(blockId) ?? null;
+      if (!block) return { ok: false, error: "block-not-found" };
+      return { ok: true, block };
     },
   );
 }

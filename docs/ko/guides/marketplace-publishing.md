@@ -1,6 +1,6 @@
 # Git 마켓플레이스에 게시하기
 
-> **상태**: 현행 (2026-09-25). [멀티 소스 git 마켓플레이스](../blueprints/multi-source-git-marketplace.md)
+> **상태**: 현행 (2026-09-25). [멀티 소스 git 마켓플레이스](../../blueprints/multi-source-git-marketplace.md)
 > 전환 때 제거된 서버 마켓플레이스의 퍼블리셔 흐름을 대신합니다. 영어 원문
 > [../../guides/marketplace-publishing.md](../../guides/marketplace-publishing.md)이
 > 기준이고, 이 문서는 그 한국어 미러입니다. 내용이 다르면 영어 원문을 따릅니다.
@@ -8,7 +8,7 @@
 마켓플레이스는 git 저장소입니다. 앱은 git으로 저장소를 읽고, 읽은 내용을 커밋에
 고정하며, 그 커밋이 가리키는 바이트로만 패키지를 설치합니다. 업로드·승인 대기열·퍼블리셔
 키는 없습니다. 게시는 머지이고, 저장소의 브랜치 보호가 검토입니다. 아래 형식은 모두
-[설계서](../design/multi-source-git-marketplace.md)가 소유하며, 이 문서는 작성자를
+[설계서](../../design/multi-source-git-marketplace.md)가 소유하며, 이 문서는 작성자를
 위한 안내입니다.
 
 ## 어떤 마켓플레이스인가

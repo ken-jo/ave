@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/WorkGroup.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/WorkGroup.tsx.
 export const en = {
   "workGroup.working": "Thinking...",
   "workGroup.work": "Work",

@@ -1,6 +1,8 @@
 # ave
 
-Ave은 채팅, 워크 모드, 도구 호출, 익스텐션, 로컬 상태, 권한 흐름을 하나의 데스크톱 환경에 통합하는 Electron 기반 에이전트 워크스페이스입니다. Manifest 기반 익스텐션 런타임, 관리형 마켓플레이스 설치, 로컬/클라우드 검색, 회의·업무 보조 플로우, OS별 installer 빌드 파이프라인을 이 저장소에서 관리합니다.
+안녕하세요, Ave 입니다. Ave 는 나와 에이전트, 내가 고른 모델, 내 컴퓨터가 한자리에서 만나는 종합 에이전트 브라우저입니다. 목표와 현재 상태는 [비전](./vision/README.md) 한 곳에 정리되어 있습니다.
+
+이 저장소는 Electron 앱, Manifest 기반 익스텐션 런타임, git 마켓플레이스 설치, OS별 installer 빌드 파이프라인을 관리합니다.
 
 영문 README: [../../README.md](../../README.md)
 
@@ -9,8 +11,7 @@ Ave은 채팅, 워크 모드, 도구 호출, 익스텐션, 로컬 상태, 권한
 - Electron main/renderer/preload/plugin-preload 번들.
 - 실제 채팅 UI, 세션 resume/fork/branch/export/compact, inline `ask_user_question` 카드.
 - `~/.ave/plugins/registry.json` 기반 Manifest 동적 익스텐션 로딩.
-- 관리형 마켓플레이스 익스텐션 자동 install/refresh.
-- Local Indexer BM25/vector 결과와 cloud adapter 결과를 RRF로 융합하는 host-side retrieval.
+- 마켓플레이스 부팅 설치: 앱의 기본 설치와 정책 파일의 필수 설치.
 - 익스텐션 UI 호스팅, IPC 브리지, 이벤트 계약, OS 알림, overlay trigger surface.
 - macOS Apple Silicon, Linux, Windows installer 빌드 스크립트와 GitHub Actions workflow.
 

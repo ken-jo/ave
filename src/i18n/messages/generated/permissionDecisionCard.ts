@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/permissions/PermissionDecisionCard.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/permissions/PermissionDecisionCard.tsx.
 export const en = {
   "permissionDecisionCard.riskHigh": "High risk",
   "permissionDecisionCard.riskMedium": "Medium risk",

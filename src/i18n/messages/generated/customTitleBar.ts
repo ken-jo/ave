@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/CustomTitleBar.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/CustomTitleBar.tsx.
 export const en = {
   "customTitleBar.minimize": "Minimize",
   "customTitleBar.restore": "Restore",

@@ -5,10 +5,7 @@
 > #2551 (P1), #2552 (P2), #2554 (P3), #2556 (P4), #2553 (P5) and the phase 6
 > switch. Where the code differs from the design, design §13.1 and §16.4 say
 > how.
-> Architecture: [../architecture/proposals/multi-source-git-marketplace.md](../architecture/proposals/multi-source-git-marketplace.md) ·
-> Design specification: [../design/multi-source-git-marketplace.md](../design/multi-source-git-marketplace.md) ·
-> Mockup: [../design/multi-source-git-marketplace.html](../design/multi-source-git-marketplace.html) ·
-> Korean mirror: [../ko/blueprints/multi-source-git-marketplace.md](../ko/blueprints/multi-source-git-marketplace.md)
+> Design specification: [../design/multi-source-git-marketplace.md](../design/multi-source-git-marketplace.md)
 
 This plan delivers the architecture in eight phases. Each phase lists its
 pull requests, what it must not break, and the evidence that closes it. The
@@ -20,7 +17,7 @@ no compatibility shim outlives the switch.
 
 | Input | Owner | Needed by |
 |---|---|---|
-| Location of the official marketplace repository (and optional mirrors) | Decided 2026-09-23: `ken-jo/agent-marketplace` (renamed from `ave-marketplace-index` on 2026-09-24), a monorepo that also holds the official plugins' source; private while the design is built, public (or moved) before phase 7 (design §2.1, §3.1) | Phase 1 constant `OFFICIAL_MARKETPLACE`, phase 0 |
+| Location of the official marketplace repository (and optional mirrors) | Decided 2026-09-23: `ken-jo/agent-marketplace` (renamed from `ave-marketplace-index` on 2026-09-24), a monorepo that also holds the official plugins' source; must be publicly readable; the constant carries `auth: { kind: "none" }` (design §2.1, §3.1) | Phase 1 constant `OFFICIAL_MARKETPLACE`, phase 0 |
 | Working CI on the hosting account that builds plugin release assets | Repository migration plan | Phase 0 release pins |
 | Service domain default (`https://former-site.invalid` unless changed) | Owner | Phase 5 |
 | Organizations that rely on today's managed installs have an internal marketplace and a policy file with `requiredInstalls` ready | Each organization | Phase 7 step 1 |
