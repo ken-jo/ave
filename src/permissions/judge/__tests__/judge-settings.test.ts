@@ -124,8 +124,8 @@ describe("judge settings", () => {
     const live = judgeModelCatalogFrom({
       vendors: { "openai-compatible": { baseUrl: "http://10.0.0.5:8000/v1" } },
       modelListCache: {
-        k1: { vendor: "openai-compatible", baseUrl: "http://10.0.0.5:8000/v1", endpoint: "e", models: ["team/llama-70b"], fetchedAt: "t" },
-        k2: { vendor: "openai-compatible", baseUrl: "http://other:8000/v1", endpoint: "e", models: ["other-model"], fetchedAt: "t" },
+        k1: { vendor: "openai-compatible", baseUrl: "http://10.0.0.5:8000/v1", endpoint: "http://10.0.0.5:8000/v1/models", models: ["team/llama-70b"], fetchedAt: "t" },
+        k2: { vendor: "openai-compatible", baseUrl: "http://other:8000/v1", endpoint: "http://other:8000/v1/models", models: ["other-model"], fetchedAt: "t" },
       },
     });
     expect(validateJudgeSettings(chain, live).chain[0]!.model).toEqual({ vendor: "openai-compatible", model: "team/llama-70b" });
@@ -156,6 +156,12 @@ describe("judge settings", () => {
     // A preset vendor's default endpoint is its preset address.
     expect(validateJudgeSettings(pick("openrouter/vendor/router-live"), live).chain).toHaveLength(1);
     expect(() => validateJudgeSettings(pick("openrouter/vendor/elsewhere"), live)).toThrow(/not offered/);
+    // A whitespace-only saved baseUrl resolves as the fetch resolves it: the preset default no longer applies.
+    const blank = judgeModelCatalogFrom({
+      vendors: { openrouter: { baseUrl: "   " } },
+      modelListCache: { router: entry("openrouter", "https://openrouter.ai/api/v1/models", ["vendor/router-live"]) },
+    });
+    expect(() => validateJudgeSettings(pick("openrouter/vendor/router-live"), blank)).toThrow(/not offered/);
     // A vendor with no default endpoint and no configured one takes no listing at all.
     expect(() => validateJudgeSettings(pick("openai-compatible/team/llama-70b"), live)).toThrow(/not offered/);
   });

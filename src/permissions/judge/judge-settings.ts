@@ -230,15 +230,11 @@ export function judgeModelCatalogFrom(source: JudgeModelCatalogSource): JudgeMod
     optionsFor(vendor) {
       const options = new Set<string>(LLM_VENDOR_MODEL_OPTIONS[vendor] ?? []);
       const block = source.vendors?.[vendor];
-      const configuredBaseUrl = block?.baseUrl?.trim();
       for (const entry of Object.values(source.modelListCache ?? {})) {
         if (entry.vendor !== vendor) continue;
-        // Only the listing for the endpoint the vendor actually reaches: its
-        // configured baseUrl, else the vendor's default endpoint.
-        const sameEndpoint = configuredBaseUrl
-          ? (entry.baseUrl ?? "").trim() === configuredBaseUrl
-          : isDefaultModelListEndpoint(vendor, entry.endpoint);
-        if (!sameEndpoint) continue;
+        // Only the listing for the endpoint the vendor's route actually
+        // reaches, resolved exactly as the model-list fetch resolves it.
+        if (!isDefaultModelListEndpoint(source.vendors, vendor, entry.endpoint)) continue;
         for (const model of entry.models) options.add(model);
       }
       const saved = block?.model?.trim();

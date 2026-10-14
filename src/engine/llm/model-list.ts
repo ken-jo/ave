@@ -98,9 +98,14 @@ function configuredModelListBaseUrl(
   return vendorModelListBaseUrl(settingsService.get("llm").vendors, vendor);
 }
 
+/** The saved vendor blocks, as far as the model-list address is concerned. */
+type ModelListVendorBlocks = Readonly<Partial<Record<LLMVendor, { readonly baseUrl?: string }>>>;
+
 /** A vendor block's endpoint (stored, else the vendor default), else the standard catalogue address. */
-function vendorModelListBaseUrl(vendors: LLMVendorSettingsMap | undefined, vendor: LLMVendor): string | null {
-  return getLlmVendorSettings(vendors, vendor).baseUrl?.trim() || STANDARD_MODEL_LIST_BASE_URLS[vendor] || null;
+function vendorModelListBaseUrl(vendors: ModelListVendorBlocks | undefined, vendor: LLMVendor): string | null {
+  // getLlmVendorSettings reads only what each block carries; the model it would add is not consulted here.
+  const block = getLlmVendorSettings(vendors as LLMVendorSettingsMap | undefined, vendor);
+  return block.baseUrl?.trim() || STANDARD_MODEL_LIST_BASE_URLS[vendor] || null;
 }
 
 function sameModelListEndpoint(a: string, b: string): boolean {
@@ -112,12 +117,17 @@ function sameModelListEndpoint(a: string, b: string): boolean {
 }
 
 /**
- * Whether `endpoint` is the `/models` endpoint a vendor reaches when its block
- * sets no baseUrl: the vendor default's address, else the standard catalogue
- * address. False when the vendor has no default endpoint at all.
+ * Whether `endpoint` is the `/models` endpoint the vendor's route resolves to
+ * for these saved blocks — the same resolver the fetch uses: the block's
+ * baseUrl (a blank one counts as none), else the vendor default's address,
+ * else the standard catalogue address. False when nothing resolves.
  */
-export function isDefaultModelListEndpoint(vendor: LLMVendor, endpoint: string): boolean {
-  const base = vendorModelListBaseUrl(undefined, vendor);
+export function isDefaultModelListEndpoint(
+  vendors: ModelListVendorBlocks | undefined,
+  vendor: LLMVendor,
+  endpoint: string,
+): boolean {
+  const base = vendorModelListBaseUrl(vendors, vendor);
   return base ? sameModelListEndpoint(endpoint, base) : false;
 }
 
