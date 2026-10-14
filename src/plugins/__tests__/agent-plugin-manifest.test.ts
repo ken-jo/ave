@@ -53,4 +53,15 @@ describe("agent-plugin manifest branches", () => {
     expect(() => parseAgentPluginManifest(JSON.stringify({ ...MARKET, extensions: { "ai.agent-connector.ave": { entry: "dist/index.js", tools: [] } } }))).toThrow("extension process");
     expect(() => parseAgentPluginManifest(JSON.stringify(namespace({ process: { command: "./bin/plugin" }, tools: [] })))).toThrow("extension process");
   });
+
+  it("refuses the renamed extension key by name on its own and beside the current one, never reading it as an alias", () => {
+    const renamed = "plugin.json extensions.ai.agent-connector.ave was renamed to extensions.ai.agent-connector.ave; update the manifest";
+    const legacyOnly = JSON.stringify({ ...MARKET, extensions: { "xyz.retiredname-namespace": { displayName: "Writer" } } });
+    const both = JSON.stringify({ ...MARKET, extensions: { "ai.agent-connector.ave": { displayName: "Writer" }, "xyz.retiredname-namespace": { displayName: "Writer" } } });
+    for (const bytes of [legacyOnly, both]) {
+      expect(() => validatePluginManifestShape(bytes)).toThrow(renamed);
+      expect(() => parseAgentPluginManifest(bytes)).toThrow(renamed);
+    }
+    expect(parseAgentPluginManifest(JSON.stringify({ ...MARKET, extensions: { "com.example.other": { displayName: "Writer" } } }))).toMatchObject(MARKET);
+  });
 });
