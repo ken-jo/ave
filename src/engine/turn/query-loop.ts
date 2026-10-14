@@ -1901,6 +1901,9 @@ export async function queryLoop(
               permissionReviewByUseId.set(event.toolUseId, event);
               callbacks?.onPermissionReview?.(event);
             },
+            ...(callbacks?.onToolOutput
+              ? { onToolOutput: callbacks.onToolOutput }
+              : {}),
             onToolEnd: (name, result, isError, meta, uiPayload, durationMs) => {
               toolMetaByUseId.set(meta.toolUseId, meta);
               callbacks?.onToolEnd?.(name, result, isError, meta, uiPayload, durationMs);

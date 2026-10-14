@@ -6,6 +6,7 @@ import type { HostShellExecutionPlan } from "../permissions/host-shell-execution
 import type { ShellExecutionFacts } from "../shared/shell-execution.js";
 import { buildHostShellChildEnv, buildSafeChildEnv, captureSandboxEnvironmentBaseline, FORWARD_ENV_KEYS, overlaySandboxChildEnv } from "./safe-env.js";
 import { collectShellExecutableReadPaths } from "./shell-executable-read-paths.js";
+import { createShellCwdProbe, type ShellCwdProbe } from "./shell-cwd-probe.js";
 
 export interface ShellInvocationIdentity {
   readonly command: string;
@@ -23,6 +24,9 @@ interface PreparedState {
   readonly identity: Readonly<ShellInvocationIdentity>;
   readonly shell: Readonly<ResolvedShellCommand>;
   readonly argv: readonly string[];
+  /** Foreground argv: the same command behind the host's fixed cwd probe. */
+  readonly probedArgv: readonly string[];
+  readonly cwdProbe?: ShellCwdProbe;
   readonly environment: Readonly<Record<string, string>>;
   readonly wrapperBaseline: Readonly<NodeJS.ProcessEnv>;
   readonly facts: Readonly<ShellExecutionFacts>;
@@ -54,10 +58,12 @@ export function prepareShellInvocation(identity: ShellInvocationIdentity, signal
     const environment = Object.freeze(safe);
     const capabilities = getBashCapabilities(selected, environment, identity.resolvedCwd);
     const argv = Object.freeze([...shell.shellArgs(identity.command)]);
+    const cwdProbe = createShellCwdProbe(identity.command);
+    const probedArgv = cwdProbe === undefined ? argv : Object.freeze([...shell.shellArgs(cwdProbe.script)]);
     signal?.throwIfAborted();
     const handle = Object.freeze({}) as PreparedShellInvocation;
     issued.set(handle, {
-      identity: Object.freeze({ ...identity }), shell, argv, environment, wrapperBaseline,
+      identity: Object.freeze({ ...identity }), shell, argv, probedArgv, cwdProbe, environment, wrapperBaseline,
       facts: Object.freeze({ dialect: "bash", environment, ...capabilities }),
       home, hostHome, phase: "prepared",
     });
@@ -106,8 +112,23 @@ export function preparedShellCommand(handle: PreparedShellInvocation): Readonly<
   return Object.freeze({ shell: state.shell, argv: state.argv, environment: state.environment, homePath: state.home?.path, hostHome: state.hostHome });
 }
 
-/** The wrapper runs only this launcher; original text is one exact inner -c argument. */
-export function preparedSandboxBootstrap(handle: PreparedShellInvocation): string {
+/**
+ * Foreground argv carrying the host's cwd probe, with the delimiters the
+ * caller strips from stderr; the plain argv and no probe when the command
+ * cannot change directory. Background shells use {@link preparedShellCommand}.
+ */
+export function preparedShellCwdProbe(handle: PreparedShellInvocation): Readonly<{
+  argv: readonly string[]; probe?: ShellCwdProbe;
+}> {
+  const state = stateOf(handle);
+  return Object.freeze({ argv: state.probedArgv, probe: state.cwdProbe });
+}
+
+/**
+ * The wrapper runs only this launcher; the command is one exact inner -c
+ * argument, behind the fixed cwd probe when `cwdProbe` is set.
+ */
+export function preparedSandboxBootstrap(handle: PreparedShellInvocation, options: { cwdProbe?: boolean } = {}): string {
   const state = stateOf(handle);
   if (!state.home) throw new Error("Sandbox shell preparation has no owned HOME");
   const unset = FORWARD_ENV_KEYS.filter((key) => state.environment[key] === undefined);
@@ -115,7 +136,7 @@ export function preparedSandboxBootstrap(handle: PreparedShellInvocation): strin
   return [
     ...(unset.length ? [`unset ${unset.join(" ")}`] : []),
     `export ${exported.join(" ")}`,
-    `exec ${[shellPathForHostPath(state.shell, state.shell.cmd), ...state.argv].map(shellQuote).join(" ")}`,
+    `exec ${[shellPathForHostPath(state.shell, state.shell.cmd), ...(options.cwdProbe === true ? state.probedArgv : state.argv)].map(shellQuote).join(" ")}`,
   ].join("; ");
 }
 

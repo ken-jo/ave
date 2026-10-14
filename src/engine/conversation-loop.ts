@@ -5,7 +5,7 @@ import { normalizeToolOutputArtifactInfo } from "../shared/tool-output-artifact.
 
 import { ConversationHistory } from "./conversation-history.js";
 import { ToolExecutor } from "../tools/executor.js";
-import { backgroundShellManager } from "../tools/shell-tools.js";
+import { endShellSession } from "../tools/shell-tools.js";
 import { disposeSessionFileReads } from "../tools/file-read-state.js";
 import { isActiveSandboxFilesystemContainedForPluginEffects } from "../permissions/sandbox-capability.js";
 import { baseAllowedDirectories } from "../permissions/base-allowed-directories.js";
@@ -690,9 +690,8 @@ export class ConversationLoop {
   cleanupSession(lease?: SessionTransitionLease): Promise<void> {
     const cleanup = async (ownedLease: SessionTransitionLease): Promise<void> => {
       this.assertSessionTransitionLease(ownedLease);
-      backgroundShellManager.disposeSession(ownedLease.sessionId);
       disposeSessionFileReads(ownedLease.sessionId);
-      const report = await backgroundShellManager.settleSessionCleanup(ownedLease.sessionId);
+      const report = await endShellSession(ownedLease.sessionId);
       this.assertSessionTransitionLease(ownedLease);
       if (report?.state === "cleanup-unproven") {
         throw new Error("workload-broker:session-cleanup-unproven");
