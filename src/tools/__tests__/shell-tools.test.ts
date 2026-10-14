@@ -138,8 +138,14 @@ describe("bash tool", () => {
         { ...ctx(dir), abortSignal: controller.signal },
       );
       try {
-        await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
-        const pid = Number(readFileSync(pidFile, "utf8"));
+        // `> child.pid` creates the file before printf writes it, so existence
+        // alone can expose an empty file and a pid of 0 — and process.kill(0, 0)
+        // probes our own process group, which never throws. Wait for the pid.
+        const pid = await vi.waitFor(() => {
+          const text = existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "";
+          expect(text).toMatch(/^[1-9][0-9]*$/u);
+          return Number(text);
+        });
         controller.abort();
         const result = await pending;
         expect(result.isError).toBe(true);
