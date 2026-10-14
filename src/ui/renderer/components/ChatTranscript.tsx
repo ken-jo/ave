@@ -1,5 +1,5 @@
 import type React from "react";
-import type { RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { ScrollArea } from "../../../components/ui/scroll-area.js";
 import { SkillBadge, type SkillBadgeProps } from "./SkillBadge.js";
@@ -15,6 +15,8 @@ export interface ChatTranscriptProps {
   suggestedRepliesActive: boolean;
   transcriptEntries: React.ReactNode;
   chatEndRef: RefObject<HTMLDivElement | null>;
+  /** A turn is streaming into this transcript. */
+  streaming?: boolean;
   /** Shown in place of the transcript on an empty conversation (suggested tasks). */
   emptyState?: React.ReactNode;
 }
@@ -36,10 +38,31 @@ export function ChatTranscript({
   transcriptEntries,
   chatEndRef,
   emptyState,
+  streaming = false,
 }: ChatTranscriptProps) {
   const { t } = useTranslation();
+  // Screen readers: the transcript is an ARIA log (implicitly polite-live), and
+  // `aria-busy` holds announcements while tokens stream so a reply is not read
+  // out fragment by fragment. The end of a turn is announced once, from a
+  // separate status node, on the streaming → idle edge.
+  const wasStreamingRef = useRef(streaming);
+  const [completionNotice, setCompletionNotice] = useState("");
+  useEffect(() => {
+    if (wasStreamingRef.current && !streaming) setCompletionNotice(t("chatView.responseComplete"));
+    else if (streaming) setCompletionNotice("");
+    wasStreamingRef.current = streaming;
+  }, [streaming, t]);
   return (
-    <ScrollArea type="always" className="ave-chat-scroll h-full min-h-0 min-w-0 max-w-full" viewportRef={scrollViewportRef}><div className={`min-w-0 overflow-x-hidden space-y-4 py-5 ${readingColumnClass}`}>
+    <ScrollArea type="always" className="ave-chat-scroll h-full min-h-0 min-w-0 max-w-full" viewportRef={scrollViewportRef}><div
+      className={`min-w-0 overflow-x-hidden space-y-4 py-5 ${readingColumnClass}`}
+      role="log"
+      aria-label={t("chatView.transcriptLabel")}
+      aria-busy={streaming}
+      data-testid="chat-transcript-log"
+    >
+      <div className="sr-only" role="status" data-testid="chat-transcript-status">
+        {completionNotice}
+      </div>
       {/* Workflow tools (S1+S2): skill badges + ask-user inline.
           SessionTasksPanel is intentionally NOT here — it sits above the input
           cluster (see below the ScrollArea) so it stays visible regardless of

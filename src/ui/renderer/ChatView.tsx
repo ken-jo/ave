@@ -756,6 +756,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         suggestedRepliesActive={suggestedRepliesActive}
         transcriptEntries={transcriptEntries}
         chatEndRef={chatEndRef}
+        streaming={streaming}
         emptyState={
           emptyConversation && hasApiKey === true ? (
             <SuggestedTasksPanel onChoose={handleChooseSuggestedTask} />
