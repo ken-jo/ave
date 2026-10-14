@@ -239,6 +239,18 @@ export function TranscriptRenderer({
   const { lastTurnStartIdx, entryClassMap, finalTurnStartMap, entryTurnStartMap } =
     classifyTurnEntries(activeEntries, streaming);
 
+  // One backward pass instead of a scan from the top per work group: this
+  // memo re-runs on every streamed token, and a per-group `findIndex` made a
+  // long session quadratic in its length on each token.
+  const nextTurnStartAfter = new Int32Array(activeEntries.length + 1);
+  nextTurnStartAfter[activeEntries.length] = -1;
+  for (let k = activeEntries.length - 1; k >= 0; k--) {
+    const following = activeEntries[k + 1];
+    nextTurnStartAfter[k] = following !== undefined && isTurnStartEntry(following)
+      ? k + 1
+      : nextTurnStartAfter[k + 1] ?? -1;
+  }
+
   const rendered: React.ReactNode[] = [];
   // Reasoning, permission-review and tool-group rows draw the same whether
   // the entry is the live tail of a turn or an unclassified straggler.
@@ -448,16 +460,20 @@ export function TranscriptRenderer({
           </div>
         );
       }
-      const hasCurrentTurnOutput = activeEntries
-        .slice(idx + 1)
-        .some(
-          (nextEntry) =>
-            nextEntry.kind === "assistant" ||
-            nextEntry.kind === "reasoning" ||
-            nextEntry.kind === "tool_group" ||
-            nextEntry.kind === "permission_review",
+      // Only the active turn's start can need the placeholder, so only it pays
+      // for the scan (a scan per user message made long sessions quadratic).
+      const needsActiveStart =
+        streaming &&
+        idx === lastTurnStartIdx &&
+        !activeEntries.some(
+          (nextEntry, nextIdx) =>
+            nextIdx > idx &&
+            (nextEntry.kind === "assistant" ||
+              nextEntry.kind === "reasoning" ||
+              nextEntry.kind === "tool_group" ||
+              nextEntry.kind === "permission_review"),
         );
-      if (streaming && idx === lastTurnStartIdx && !hasCurrentTurnOutput) {
+      if (needsActiveStart) {
         rendered.push(
           <WorkGroup
             key={`wg-${currentSessionId}:${idx}:active-start`}
@@ -692,10 +708,7 @@ export function TranscriptRenderer({
         // this group renders. In particular, a permission review attached to a
         // tool row must not be counted once here and again inside that tool.
         const fallbackStepCount = groupEntries.length;
-        const nextTurnStartIdx = activeEntries.findIndex(
-          (candidate, candidateIdx) =>
-            candidateIdx > groupTurnStart && isTurnStartEntry(candidate),
-        );
+        const nextTurnStartIdx = nextTurnStartAfter[groupTurnStart] ?? -1;
         const turnEntries = activeEntries.slice(
           groupTurnStart + 1,
           nextTurnStartIdx === -1 ? activeEntries.length : nextTurnStartIdx,
