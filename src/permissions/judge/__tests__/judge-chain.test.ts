@@ -163,6 +163,8 @@ describe("judge chain — audit model and deadline", () => {
     const d = chainDeps([[scriptedStage("jev"), slow], [builtinStage(), llm]], { timeoutMs: 5_000, chainDeadlineMs: 40 });
     const out = await resolveJudge(UNDECIDED, judgeRequest({ lane: "headless" }), d);
     expect(out).toMatchObject({ judged: true, decision: "deny", defer: true, source: "fallback", fallback: "timeout" });
+    // The engine's own timer fired on the deadline-capped budget: the audit blames the deadline.
+    expect(out.judged && out.rationale).toMatch(/deadline/);
     expect(llm.calls).toBe(0);
     const stages = judgeRecords(d)[0]!.stages as Array<Record<string, unknown>>;
     expect(stages.map((s) => s.outcome)).toEqual(["failed", "skipped"]);
@@ -175,6 +177,23 @@ describe("judge chain — audit model and deadline", () => {
     const d = chainDeps([[scriptedStage("jev", 0.8), jev], [builtinStage(), slow]], { timeoutMs: 5_000, chainDeadlineMs: 40 });
     const out = await resolveJudge(UNDECIDED, judgeRequest(), d);
     expect(out).toMatchObject({ decision: "ask", source: "fallback", fallback: "timeout" });
+  });
+
+  it("a provider-reported timeout under a deadline-capped stage budget is a stage failure, not the deadline: the next stage runs", async () => {
+    // chainDeadlineMs < timeoutMs, so the first stage's budget is capped by the deadline.
+    const jev = scripted("jev", new JudgeFailure("timeout", "jev backend timed out"));
+    const llm = scripted("llm", v("deny"));
+    const d = chainDeps([[scriptedStage("jev", 0.8), jev], [builtinStage(), llm]], { timeoutMs: 5_000, chainDeadlineMs: 2_000 });
+    const out = await resolveJudge(UNDECIDED, judgeRequest(), d);
+    expect(out).toMatchObject({ judged: true, decision: "deny", decidedBy: "llm", source: "judge" });
+    expect(out.judged && out.fallback).toBeFalsy();
+    expect(llm.calls).toBe(1);
+    const record = judgeRecords(d)[0]!;
+    expect(record.rationale).not.toMatch(/deadline/);
+    expect((record.stages as Array<Record<string, unknown>>).map((s) => [s.id, s.outcome, s.fallback])).toEqual([
+      ["jev", "failed", "timeout"],
+      ["llm", "decided", null],
+    ]);
   });
 });
 
