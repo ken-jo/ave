@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/main/window-titlebar-shell.ts. Do not edit by hand.
+// i18n fragment. Source: src/main/window-titlebar-shell.ts.
 export const en = {
   "be_windowTitlebarShell.minimize": "Minimize",
   "be_windowTitlebarShell.maximize": "Maximize",

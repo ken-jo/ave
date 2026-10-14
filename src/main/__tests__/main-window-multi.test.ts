@@ -1,0 +1,332 @@
+/**
+ * Several main windows: registration roles, the close policy (only the last
+ * window follows hide-to-tray), the secondary role reaching the renderer, and
+ * the app document staying the only thing a main window may navigate to.
+ */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+type Listener = (...args: unknown[]) => void;
+
+const electronMock = vi.hoisted(() => {
+  let nextId = 1;
+  class FakeBrowserWindow {
+    readonly id = nextId++;
+    readonly listeners = new Map<string, Listener[]>();
+    readonly contentsListeners = new Map<string, Listener[]>();
+    destroyed = false;
+    visible = true;
+    readonly hide = vi.fn(() => { this.visible = false; });
+    readonly show = vi.fn(() => { this.visible = true; });
+    readonly focus = vi.fn();
+    readonly moveTop = vi.fn();
+    readonly restore = vi.fn();
+    readonly loadFile = vi.fn(async () => undefined);
+    readonly loadURL = vi.fn(async () => undefined);
+    readonly webContents = {
+      id: this.id * 100,
+      isDestroyed: () => this.destroyed,
+      setWindowOpenHandler: vi.fn(),
+      on: (name: string, fn: Listener) => this.pushContents(name, fn),
+      once: (name: string, fn: Listener) => this.pushContents(name, fn),
+      send: vi.fn(),
+    };
+    constructor(readonly options: unknown) {}
+    private pushContents(name: string, fn: Listener) {
+      this.contentsListeners.set(name, [...(this.contentsListeners.get(name) ?? []), fn]);
+    }
+    on(name: string, fn: Listener) {
+      this.listeners.set(name, [...(this.listeners.get(name) ?? []), fn]);
+      return this;
+    }
+    once(name: string, fn: Listener) {
+      return this.on(name, fn);
+    }
+    emit(name: string, ...args: unknown[]) {
+      for (const fn of this.listeners.get(name) ?? []) fn(...args);
+    }
+    isDestroyed() { return this.destroyed; }
+    isMinimized() { return false; }
+    isVisible() { return this.visible; }
+    isAlwaysOnTop() { return false; }
+    /** What Electron does when nothing prevented `close`. */
+    close() {
+      let prevented = false;
+      this.emit("close", { preventDefault: () => { prevented = true; } });
+      if (prevented) return false;
+      this.destroyed = true;
+      this.emit("closed");
+      return true;
+    }
+  }
+  return { FakeBrowserWindow, app: { name: "Ave", getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
+});
+
+vi.mock("electron", () => ({
+  app: electronMock.app,
+  BrowserWindow: electronMock.FakeBrowserWindow,
+  screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) },
+  shell: { openExternal: vi.fn(async () => undefined) },
+  Menu: { buildFromTemplate: vi.fn(() => ({})), setApplicationMenu: vi.fn() },
+  nativeImage: {},
+  Tray: class {},
+}));
+vi.mock("node:fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs")>()),
+  existsSync: () => true,
+}));
+vi.mock("../persisted-app-mode.js", () => ({ readPersistedAppModeSync: () => "work" }));
+vi.mock("../native-window-coordinator.js", () => ({ requestNativeChromeRefresh: vi.fn() }));
+
+const appState = await import("../app-state.js");
+const { createWindow, getAppWindows, loadMainInterface, rendererIndexUrl } = await import("../main-window.js");
+const { openNewMainWindow, showOrCreatePrimaryMainWindow } = await import("../app-tray.js");
+const { promptSurfaceResolver } = await import("../../boot/host-runtime.js");
+type FakeWindow = InstanceType<typeof electronMock.FakeBrowserWindow>;
+
+function open(): FakeWindow {
+  return createWindow({ showBootstrapSplash: false }) as unknown as FakeWindow;
+}
+
+describe("main windows", () => {
+  beforeEach(() => {
+    appState.resetMainWindowsForTests();
+    appState.setTray({ setContextMenu: vi.fn() } as never);
+    appState.setServices(null);
+    electronMock.app.quit.mockClear();
+  });
+
+  it("gives the first window the primary role and every later one the secondary role", () => {
+    const first = open();
+    const second = open();
+    expect(appState.getPrimaryMainWindow()).toBe(first);
+    expect(appState.isSecondaryMainWindowContents(second.webContents)).toBe(true);
+    expect(appState.isSecondaryMainWindowContents(first.webContents)).toBe(false);
+    // Broadcasts reach both; point-to-point sends follow focus.
+    expect(getAppWindows()).toEqual([first, second]);
+    expect(appState.getMainWindow()).toBe(second);
+    first.emit("focus");
+    expect(appState.getMainWindow()).toBe(first);
+  });
+
+  it("closes a window for real while another is open, and hides only the last one to the tray", () => {
+    const first = open();
+    const second = open();
+
+    expect(first.close()).toBe(true);
+    expect(first.hide).not.toHaveBeenCalled();
+    expect(getAppWindows()).toEqual([second]);
+    // The primary role is free; the window still open keeps its own role.
+    expect(appState.getPrimaryMainWindow()).toBeNull();
+    expect(appState.isSecondaryMainWindowContents(second.webContents)).toBe(true);
+
+    expect(second.close()).toBe(false);
+    expect(second.hide).toHaveBeenCalledOnce();
+    expect(getAppWindows()).toEqual([second]);
+
+    const third = open();
+    expect(appState.getPrimaryMainWindow()).toBe(third);
+  });
+
+  it("never reloads or re-roles the other windows when the primary closes", async () => {
+    appState.setRendererReloadReady(true);
+    try {
+      const first = open();
+      const second = open();
+      const third = open();
+      second.emit("focus");
+      for (const win of [second, third]) { win.loadFile.mockClear(); win.loadURL.mockClear(); }
+
+      expect(first.close()).toBe(true);
+      await Promise.resolve();
+      for (const win of [second, third]) {
+        expect(win.loadFile).not.toHaveBeenCalled();
+        expect(win.loadURL).not.toHaveBeenCalled();
+        expect(appState.isSecondaryMainWindowContents(win.webContents)).toBe(true);
+      }
+      // Focus falls back to the window the user was in before.
+      expect(appState.getMainWindow()).toBe(second);
+    } finally {
+      appState.setRendererReloadReady(false);
+    }
+  });
+
+  it("with every main window closed, the next window opened claims the primary role", () => {
+    appState.setTray(null);
+    const first = open();
+    expect(first.close()).toBe(true);
+    expect(appState.getPrimaryMainWindow()).toBeNull();
+    const next = open();
+    expect(appState.getPrimaryMainWindow()).toBe(next);
+  });
+
+  function promptSurface() {
+    return promptSurfaceResolver(
+      { desktop: { findSessionSurface: appState.findSessionMainWindowContents } as never },
+      appState.getMainWindow,
+    );
+  }
+
+  it("still delivers approvals after the first window closes while a second stays open", async () => {
+    const { ApprovalGate } = await import("../../permissions/approval-gate.js");
+    const first = open();
+    const second = open();
+    // Bound to nothing at construction: the first window closing must not strand it.
+    const gate = new ApprovalGate(promptSurface());
+
+    expect(first.close()).toBe(true);
+    const request = {
+      id: "req-after-close",
+      category: "tool" as const,
+      toolName: "agent_spawn",
+      args: { title: "t", instructions: "x" },
+      reason: "state change",
+      source: "builtin" as const,
+      sessionId: "session-a",
+      createdAt: Date.now(),
+    };
+    const decision = gate.requestAndWait(request as never);
+    expect(second.webContents.send).toHaveBeenCalledWith(
+      "ave:approval:request",
+      expect.objectContaining({ id: "req-after-close" }),
+    );
+    expect(first.webContents.send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
+    gate.disposeAll();
+    await decision.catch(() => undefined);
+  });
+
+  it("sends an ask-user question to the window showing the session, not the focused one", async () => {
+    const { AskUserQuestionGate } = await import("../ask-user-question-gate.js");
+    const first = open();
+    const second = open();
+    first.emit("focus");
+    appState.setSessionContentsLookup((sessionId) =>
+      sessionId === "session-b" ? (second.webContents as never) : null);
+    const gate = new AskUserQuestionGate(promptSurface(), 60_000);
+
+    void gate.ask({ questions: [{ question: "which?", choices: ["a", "b"] }] as never, sessionId: "session-b" });
+    expect(second.webContents.send).toHaveBeenCalledWith(
+      "ave:ask-user-question:request",
+      expect.objectContaining({ sessionId: "session-b" }),
+    );
+    expect(first.webContents.send).not.toHaveBeenCalled();
+
+    // A session no window shows goes to the window in use.
+    second.webContents.send.mockClear();
+    void gate.ask({ questions: [{ question: "other?", choices: ["a", "b"] }] as never, sessionId: "session-z" });
+    expect(first.webContents.send).toHaveBeenCalledWith(
+      "ave:ask-user-question:request",
+      expect.objectContaining({ sessionId: "session-z" }),
+    );
+    expect(second.webContents.send).not.toHaveBeenCalled();
+
+    // Both stay listed for a renderer that loads later (a window opened after
+    // the one that drew them closed).
+    expect(gate.listPending().map((req) => req.sessionId)).toEqual(["session-b", "session-z"]);
+    gate.disposeAll();
+    expect(gate.listPending()).toEqual([]);
+  });
+
+  it("quits from the last window only when the close preference says quit", () => {
+    appState.setServices({
+      settingsService: { getAll: () => ({ system: { closeBehavior: "quit" } }) },
+    } as never);
+    const first = open();
+    const second = open();
+    expect(second.close()).toBe(true);
+    expect(electronMock.app.quit).not.toHaveBeenCalled();
+    expect(first.close()).toBe(false);
+    expect(electronMock.app.quit).toHaveBeenCalledOnce();
+  });
+
+  it("an explicit New Window opens another window beside a visible one but brings back a hidden-only app", () => {
+    appState.setRendererReloadReady(true);
+    try {
+      const first = open();
+      openNewMainWindow("tray-new-window");
+      expect(getAppWindows()).toHaveLength(2);
+
+      // Close the second (destroyed) and the first to the tray (hidden).
+      expect((getAppWindows()[1] as unknown as FakeWindow).close()).toBe(true);
+      expect(first.close()).toBe(false);
+      expect(first.isVisible()).toBe(false);
+
+      openNewMainWindow("tray-new-window");
+      expect(getAppWindows()).toEqual([first]);
+      expect(first.isVisible()).toBe(true);
+    } finally {
+      appState.setRendererReloadReady(false);
+    }
+  });
+
+  it("a relaunch brings the primary window back instead of opening another", () => {
+    appState.setRendererReloadReady(true);
+    try {
+      const first = open();
+      const second = open();
+      // The secondary window is the one in use; a relaunch still surfaces the primary.
+      expect(appState.getMainWindow()).toBe(second);
+      for (const win of [first, second]) { win.show.mockClear(); win.focus.mockClear(); }
+      for (let i = 0; i < 5; i += 1) showOrCreatePrimaryMainWindow("second-instance");
+      expect(getAppWindows()).toEqual([first, second]);
+      expect(first.show).toHaveBeenCalled();
+      expect(first.focus).toHaveBeenCalled();
+      expect(second.focus).not.toHaveBeenCalled();
+
+      // Hidden to the tray, the primary is restored rather than replaced.
+      expect(second.close()).toBe(true);
+      expect(first.close()).toBe(false);
+      showOrCreatePrimaryMainWindow("second-instance");
+      expect(getAppWindows()).toEqual([first]);
+      expect(first.isVisible()).toBe(true);
+    } finally {
+      appState.setRendererReloadReady(false);
+    }
+  });
+
+  it("a relaunch after the primary closed opens one fresh primary beside the secondary, once", () => {
+    appState.setRendererReloadReady(true);
+    try {
+      const first = open();
+      const second = open();
+      expect(first.close()).toBe(true);
+      for (let i = 0; i < 3; i += 1) showOrCreatePrimaryMainWindow("second-instance");
+      const windows = getAppWindows();
+      expect(windows).toHaveLength(2);
+      expect(windows[0]).toBe(second);
+      expect(appState.getPrimaryMainWindow()).toBe(windows[1]);
+      // The fresh primary loads the bare document: it resumes the primary conversation.
+      expect((windows[1] as unknown as FakeWindow).loadFile).toHaveBeenCalled();
+      expect(((windows[1] as unknown as FakeWindow).loadFile.mock.calls.at(-1) as unknown[] | undefined)?.[1]).toBeUndefined();
+    } finally {
+      appState.setRendererReloadReady(false);
+    }
+  });
+
+  it("loads a secondary window's document with the role query and the primary's bare", async () => {
+    const first = open();
+    const second = open();
+    await loadMainInterface(first as never, "test");
+    await loadMainInterface(second as never, "test");
+    expect(first.loadFile).toHaveBeenCalledWith(expect.stringMatching(/index\.html$/), undefined);
+    expect(second.loadFile).toHaveBeenCalledWith(
+      expect.stringMatching(/index\.html$/),
+      { query: { aveWindow: "secondary" } },
+    );
+  });
+
+  it("lets a main window navigate only to the app document", () => {
+    const win = open();
+    const willNavigate = win.contentsListeners.get("will-navigate")![0]!;
+    const navigate = (url: string) => {
+      const event = { url, preventDefault: vi.fn() };
+      willNavigate(event);
+      return event.preventDefault.mock.calls.length === 0;
+    };
+    expect(navigate(rendererIndexUrl())).toBe(true);
+    expect(navigate(`${rendererIndexUrl()}?aveWindow=secondary`)).toBe(true);
+    expect(navigate(`${rendererIndexUrl()}?aveWindow=primary`)).toBe(false);
+    expect(navigate(`${rendererIndexUrl()}?aveWindow=secondary#x`)).toBe(false);
+    expect(navigate("file:///tmp/evil.html")).toBe(false);
+    expect(navigate("https://example.com/")).toBe(false);
+  });
+});

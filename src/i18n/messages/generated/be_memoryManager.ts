@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/memory/memory-manager.ts. Do not edit by hand.
+// i18n fragment. Source: src/memory/memory-manager.ts.
 export const en = {
   "be_memoryManager.defaultAgentsMd": `# Ave Agent Context
 

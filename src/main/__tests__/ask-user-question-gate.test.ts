@@ -437,3 +437,38 @@ describe("AskUserQuestionGate — multi-question contract", () => {
     });
   });
 });
+
+describe("AskUserQuestionGate — copies in several windows", () => {
+  it("an answer in window A dismisses the copy window B re-fetched", async () => {
+    const windowA = makeMockWebContents();
+    const windowB = makeMockWebContents();
+    const gate = new AskUserQuestionGate(() => windowA as never, 60_000);
+    const slot = gate.ask(single("which?"));
+    // Window B loaded later and read the question back.
+    const [parked] = gate.listPending(windowB as never);
+    expect(parked).toBeDefined();
+    expect(windowB.send).not.toHaveBeenCalled();
+
+    expect(gate.resolve({ requestId: parked!.id, answers: [{ choice: "Continue" }] })).toBe(true);
+    await slot;
+    for (const wc of [windowA, windowB]) {
+      expect(wc.send).toHaveBeenCalledWith(IPC_ASK_USER_QUESTION_TIMEOUT, { requestId: parked!.id });
+    }
+  });
+
+  it("a cancelled question is taken down in every window it reached, once each", async () => {
+    const windowA = makeMockWebContents();
+    const windowB = makeMockWebContents();
+    const gate = new AskUserQuestionGate(() => windowA as never, 60_000);
+    const ac = new AbortController();
+    const slot = gate.ask({ ...single("still?"), abortSignal: ac.signal });
+    gate.listPending(windowB as never);
+    gate.listPending(windowB as never);
+    ac.abort();
+    await slot;
+    const staleNotices = (wc: ReturnType<typeof makeMockWebContents>) =>
+      wc.send.mock.calls.filter((call) => call[0] === IPC_ASK_USER_QUESTION_TIMEOUT).length;
+    expect(staleNotices(windowA)).toBe(1);
+    expect(staleNotices(windowB)).toBe(1);
+  });
+});

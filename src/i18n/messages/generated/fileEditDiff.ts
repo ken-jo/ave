@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/FileEditDiff.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/FileEditDiff.tsx.
 export const en = {
   "fileEditDiff.verbEdit": "Edit",
   "fileEditDiff.verbPatch": "Patch",

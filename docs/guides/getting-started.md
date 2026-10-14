@@ -1,19 +1,10 @@
 # Getting Started
 
-Status: Active English default. A Korean mirror of this page is kept in step with it, but this page must be usable on its own.
-
-Korean mirror: [docs/ko/guides/getting-started.md](../ko/guides/getting-started.md).
-
-## What This Page Owns
-
-This page owns the clean-checkout setup path for running, testing, and understanding the desktop app. Use it as the first review surface when changing this area, and update the Korean mirror in the same commit.
-
-## Current Operating Contract
-
-- English is the default review and contributor language for this app surface.
-- The document must name the behavior that still matters today, the code or test locations that enforce it, and the conditions that make the note stale.
-- Source files and tests are authoritative when this prose and implementation disagree.
-- The Korean mirror states the same things as this page; when the two disagree, this page and the source are authoritative.
+Status: Active. This page is the clean-checkout path for running and testing
+the desktop app and for the first run. A Korean mirror,
+[docs/ko/guides/getting-started.md](../ko/guides/getting-started.md), changes in
+the same commit; when the two disagree, this page and the source are
+authoritative. What Ave is for is stated in [Vision](../vision/README.md).
 
 ## Clean-Checkout Setup
 
@@ -41,24 +32,12 @@ With a provider connected you can open a conversation and split the main area in
 
 ## Implementation Anchors
 
-- `package.json`
-- `src/plugins/`
-- `src/main/`
-- `src/ui/renderer/`
-- `src/ui/renderer/tabs/LlmTab.tsx`
-- `src/ui/renderer/tabs/SubscriptionProvidersSection.tsx`
+- `package.json`: the build, start, and test scripts
+- `src/ui/renderer/tabs/LlmTab.tsx`: Settings → Model, provider cards and the model chooser
+- `src/ui/renderer/tabs/SubscriptionProvidersSection.tsx`: subscription sign-in rows
 
-## Update Checklist
-
-- State whether the document is active, implemented, superseded, or historical before adding new detail.
-- Keep links relative to the current file depth; mirrored files under `docs/ko` need different paths from default docs.
-- Add or update tests when a documented behavior is enforced by code.
-- Remove template language and stale plan wording instead of carrying it forward.
-
-## Related Entry Points
+## Related
 
 - [Ave Project Documentation](../README.md)
-
-## Review Notes
-
-This English page should let a reviewer understand scope, risk, and validation on its own. When it changes, the Korean mirror changes with it.
+- [Windows setup](./windows-setup.md)
+- [Extension development](./plugin-development.md)

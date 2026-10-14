@@ -354,11 +354,6 @@
     },
     {
       "type": "exports",
-      "file": "src/main/link-window-service.ts",
-      "name": "buildPersistentBrowserUserAgent"
-    },
-    {
-      "type": "exports",
       "file": "src/main/main-window-bounds.ts",
       "name": "WORK_MODE_HEIGHT"
     },
@@ -1471,11 +1466,6 @@
       "type": "types",
       "file": "src/main/ask-user-question-gate.ts",
       "name": "AskUserQuestionAnswer"
-    },
-    {
-      "type": "types",
-      "file": "src/main/ask-user-question-gate.ts",
-      "name": "AskUserQuestionRequest"
     },
     {
       "type": "types",

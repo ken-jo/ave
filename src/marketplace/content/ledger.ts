@@ -23,6 +23,7 @@ import type { OriginReader } from "../sources/retained.js";
 import { isSourcePin } from "../sources/source-tree.js";
 import { CONTENT_KINDS, type ContentKind } from "./rules.js";
 import { parseConsentFingerprint, type ConsentFingerprint } from "../updates/consent-record.js";
+import { isRecord } from "../../shared/is-record.js";
 
 interface ContentOrigin {
   sourceId: string | null;
@@ -66,10 +67,6 @@ export function installPayloadDir(kind: ContentKind, name: string, installId: st
 
 function ledgerKey(kind: ContentKind, name: string): string {
   return `${kind}:${name}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parse(text: string, path: string): LedgerEntry[] {

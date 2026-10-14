@@ -86,6 +86,11 @@ export function canonicalStringify(value: unknown): string {
   return canonicalStringifyInner(value, new WeakSet(), 0);
 }
 
+/** Whether two values serialize to the same canonical JSON (key order ignored). */
+export function canonicalJsonEqual(left: unknown, right: unknown): boolean {
+  return canonicalStringify(left) === canonicalStringify(right);
+}
+
 function canonicalStringifyInner(
   value: unknown,
   seen: WeakSet<object>,

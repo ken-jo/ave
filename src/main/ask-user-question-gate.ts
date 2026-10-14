@@ -102,6 +102,13 @@ export const IPC_ASK_USER_QUESTION_RESPOND = "ave:ask-user-question:respond";
 
 interface PendingEntry {
   request: AskUserQuestionRequest;
+  /**
+   * Every renderer the card reached: the one it was sent to, plus each one
+   * that read it back through {@link AskUserQuestionGate.listPending}. When
+   * the question ends — answered in any of them, cancelled or timed out — all
+   * of them are told, so no copy is left on screen as a dead card.
+   */
+  deliveredTo: Set<WebContents>;
   resolve: (response: AskUserQuestionResponse) => void;
   /**
    * Centralized teardown — clears the timer, removes the abort listener,
@@ -237,17 +244,21 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
  */
 const MAX_CONCURRENT_PENDING = 5;
 /**
- * M2: extra event the renderer listens for so it can drop stale cards
- * when the gate's 5-minute timeout fires before the user clicked.
+ * M2: the event a renderer listens for to drop a card that can no longer be
+ * answered. Sent to every renderer the card reached whenever the question
+ * ends — answered (in this window or another), cancelled, or timed out — so a
+ * copy re-fetched into a second window never stays on screen as a dead card.
  */
 export const IPC_ASK_USER_QUESTION_TIMEOUT = "ave:ask-user-question:timeout";
 
 /**
  * Resolved lazily on every send so dev-mode reloads (which destroy the old
- * webContents) don't strand the gate on a stale reference. Boot wires this
- * to `() => getMainWindow()?.webContents ?? null`.
+ * webContents) and closed windows don't strand the gate on a stale reference.
+ * Given the asking conversation, boot resolves the main window showing that
+ * session, else the primary (or most recently focused) live main window
+ * (`resolveSessionMainWindowContents` in `src/main/app-state.ts`).
  */
-export type WebContentsResolver = () => WebContents | null;
+export type WebContentsResolver = (sessionId: string) => WebContents | null;
 
 export class AskUserQuestionGate {
   private readonly pending = new Map<string, PendingEntry>();
@@ -304,7 +315,7 @@ export class AskUserQuestionGate {
         dismissed: true,
       });
     }
-    const wc = this.resolveWebContents();
+    const wc = this.resolveWebContents(req.sessionId);
     if (!wc) {
       return Promise.resolve({ requestId: req.id, dismissed: true });
     }
@@ -332,38 +343,55 @@ export class AskUserQuestionGate {
       // notification failure must never block the gate
     }
     return new Promise<AskUserQuestionResponse>((resolve) => {
+      const deliveredTo = new Set<WebContents>([wc]);
+      // Tell every renderer the card reached — and whichever renderer shows
+      // the session by now — that it is no longer answerable, so each drops
+      // its copy. Best-effort: a renderer may be tearing down.
+      const announceStale = () => {
+        // Nothing here may throw: the caller resolves the gate right after,
+        // and a throw would leave the asking turn waiting forever.
+        const targets = new Set<WebContents | null>(deliveredTo);
+        try {
+          targets.add(this.resolveWebContents(req.sessionId));
+        } catch {
+          /* resolver failed — the renderers it reached are still told */
+        }
+        for (const target of targets) {
+          try {
+            if (!target || target.isDestroyed()) continue;
+            target.send(IPC_ASK_USER_QUESTION_TIMEOUT, { requestId: req.id });
+          } catch {
+            /* renderer may be tearing down — best-effort */
+          }
+        }
+      };
       const timer = setTimeout(() => {
         cleanup();
-        // M2: notify the renderer so it drops the stale card.
-        try {
-          const live = this.resolveWebContents();
-          live?.send(IPC_ASK_USER_QUESTION_TIMEOUT, { requestId: req.id });
-        } catch {
-          // ignore — even if send fails the resolve below clears the gate
-        }
+        // ignore send failures — the resolve below clears the gate either way
         resolve({ requestId: req.id, dismissed: true });
       }, this.timeoutMs);
       const abortListener = input.abortSignal
         ? () => {
             cleanup();
-            try {
-              const live = this.resolveWebContents();
-              live?.send(IPC_ASK_USER_QUESTION_TIMEOUT, { requestId: req.id });
-            } catch {
-              /* renderer may be tearing down — best-effort */
-            }
             resolve({ requestId: req.id, dismissed: true });
           }
         : null;
+      // Every terminal path (answer, timeout, abort, send failure, dispose)
+      // runs this once, so every copy of the card is taken down whichever
+      // way the question ended.
+      let settled = false;
       const cleanup = () => {
         this.pending.delete(req.id);
         clearTimeout(timer);
         if (abortListener) input.abortSignal?.removeEventListener("abort", abortListener);
+        if (settled) return;
+        settled = true;
+        announceStale();
       };
       if (abortListener) {
         input.abortSignal?.addEventListener("abort", abortListener, { once: true });
       }
-      this.pending.set(req.id, { request: req, resolve, cleanup });
+      this.pending.set(req.id, { request: req, deliveredTo, resolve, cleanup });
       try {
         wc.send(IPC_ASK_USER_QUESTION_REQUEST, req);
       } catch (err) {
@@ -393,6 +421,20 @@ export class AskUserQuestionGate {
       entry.resolve({ requestId: id, dismissed: true });
     }
     this.pending.clear();
+  }
+
+  /**
+   * The questions still waiting for an answer, exactly as they were sent. A
+   * renderer that loads after a question went out — the window that drew it
+   * closed, and another window now shows the asking session — reads these
+   * once and draws the ones its tiles own; otherwise the turn would sit out
+   * the full timeout against a card nobody can see.
+   */
+  listPending(recipient?: WebContents): AskUserQuestionRequest[] {
+    const entries = [...this.pending.values()];
+    // The reader now holds a copy of each card; it is told when they end.
+    if (recipient) for (const entry of entries) entry.deliveredTo.add(recipient);
+    return entries.map((entry) => entry.request);
   }
 
   get pendingCount(): number {

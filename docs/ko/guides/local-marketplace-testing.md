@@ -1,6 +1,6 @@
 # 마켓플레이스를 로컬에서 테스트하기
 
-> **상태**: 현행 (2026-09-25). [멀티 소스 git 마켓플레이스](../blueprints/multi-source-git-marketplace.md)
+> **상태**: 현행 (2026-09-25). [멀티 소스 git 마켓플레이스](../../blueprints/multi-source-git-marketplace.md)
 > 전환 때 서버 스택과 함께 제거된 로컬 서버 마켓플레이스 루프를 대신합니다. 영어 원문
 > [../../guides/local-marketplace-testing.md](../../guides/local-marketplace-testing.md)이
 > 기준이고, 이 문서는 그 한국어 미러입니다. 내용이 다르면 영어 원문을 따릅니다.

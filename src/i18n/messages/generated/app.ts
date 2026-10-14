@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/App.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/App.tsx.
 export const en = {
   "app.routineFailedTitle": "[Failed] Routine",
   "app.conversationCeilingReached": "The window is already holding {count} conversations and none of the others can be set aside — every one that could be is generating a reply. Stop one or wait for it to finish.",
@@ -37,6 +37,7 @@ export const en = {
   "app.subscriptionAttachmentUnsupported": "The {provider} subscription runtime cannot send this attachment type yet. Your draft and attachments are still available.",
   "app.subscriptionImageAttachmentLimitExceeded": "This image exceeds the attachment limit supported by the {provider} subscription runtime.",
   "app.dropRejected": "{count} dropped item(s) were not attached — folders, blocked file types and protected paths are skipped.",
+  "app.pastedTextClipped": "The attached text was too long, so {keptChars} of its {totalChars} characters were kept, from its start and its end.",
   "app.visionNotSupported": "The current model ({llmModel}) does not accept images. Remove the attached images, or switch to a model that reads them, and send again.",
   "app.thinkingStatus": "Thinking...",
   "app.errorGeneric": "Error: {message}",
@@ -100,6 +101,7 @@ export const ko: Record<keyof typeof en, string> = {
   "app.subscriptionAttachmentUnsupported": "{provider} 구독 런타임은 이 첨부 유형을 아직 전송할 수 없습니다. 초안과 첨부 파일은 그대로 유지됩니다.",
   "app.subscriptionImageAttachmentLimitExceeded": "이 이미지는 {provider} 구독 런타임이 지원하는 첨부 한도를 초과합니다.",
   "app.dropRejected": "놓은 항목 {count}개를 첨부하지 않았습니다 — 폴더, 차단된 파일 형식, 보호된 경로는 제외됩니다.",
+  "app.pastedTextClipped": "첨부한 텍스트가 너무 길어 전체 {totalChars}자 중 앞뒤 {keptChars}자만 남겼습니다.",
   "app.visionNotSupported": "현재 모델({llmModel})은 이미지를 받지 않습니다. 첨부한 이미지를 제거하거나, 이미지를 읽는 모델로 바꾼 뒤 다시 보내 주세요.",
   "app.thinkingStatus": "생각 중...",
   "app.errorGeneric": "오류: {message}",

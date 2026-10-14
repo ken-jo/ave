@@ -35,6 +35,7 @@ import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized, vali
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { sendToWindow } from "../safe-send.js";
+import { broadcastToAppWindows } from "../window-fanout.js";
 import { createLogger } from "../../lib/logger.js";
 import { logPluginLifecycle, PluginPhase } from "../../plugins/lifecycle-log.js";
 import { redactFsPath, redactAuditPayload } from "../../audit/dlp-filter.js";
@@ -398,12 +399,9 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     auditLogger,
     refreshPluginEventBridge,
     getMainWindow,
-    getAppWindows,
   } = deps;
   const broadcastPluginLifecycleEvent = (channel: string, payload: unknown) => {
-    for (const win of getAppWindows?.() ?? [getMainWindow()]) {
-      sendToWindow(win, channel, payload, log);
-    }
+    broadcastToAppWindows(deps, channel, payload, { logger: log });
   };
   const { ensureInstallStateReady, uninstall: uninstallPlugin } = pluginLifecycleServices(deps);
   // Late-mount sync for the bootstrap status event. On a cold boot the whole

@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import {
   ATTACH_MAX_COUNT,
   DENY_EXTENSIONS,
+  PASTE_TEXT_MAX_CHARS,
   type Attachment,
 } from "../types/attachments.js";
 import { buildMarkerText } from "../utils/attachment-markers.js";
@@ -29,6 +30,29 @@ export interface UseAttachmentPickerParams {
   onImageAttachmentLimitExceeded?: () => void;
   /** Notify the user that `count` dropped items were refused (folder, blocked type, protected path, expired drop). */
   onDropRejected?: (count: number) => void;
+  /** Notify the user that `attachPastedText` kept only part of a long text. */
+  onPastedTextClipped?: (info: { keptChars: number; totalChars: number }) => void;
+}
+
+/** Share of {@link PASTE_TEXT_MAX_CHARS} kept from the start of a clipped text. */
+const PASTE_CLIP_HEAD_SHARE = 0.25;
+
+/**
+ * Bound a text bound for a pasted-text chip to {@link PASTE_TEXT_MAX_CHARS}:
+ * its start and its end survive, joined by a line that says how much was cut.
+ */
+export function clipPastedText(text: string): { text: string; clipped: boolean } {
+  if (text.length <= PASTE_TEXT_MAX_CHARS) return { text, clipped: false };
+  // Reserve room for the gap line so the result itself stays within the cap.
+  const gapFor = (omitted: number) => `\n[… ${omitted} characters omitted …]\n`;
+  const budget = PASTE_TEXT_MAX_CHARS - gapFor(text.length).length;
+  const headChars = Math.floor(budget * PASTE_CLIP_HEAD_SHARE);
+  const tailChars = budget - headChars;
+  const omitted = text.length - headChars - tailChars;
+  return {
+    text: `${text.slice(0, headChars)}${gapFor(omitted)}${text.slice(text.length - tailChars)}`,
+    clipped: true,
+  };
 }
 
 /** One authorized file, as the picker and a redeemed drop both describe it. */
@@ -49,6 +73,38 @@ export interface UseAttachmentPickerResult {
    * one-shot token, and commits through the SAME path as the picker.
    */
   handleDropFiles: (files: FileList | readonly File[]) => Promise<void>;
+  /**
+   * Attach `text` as a pasted-text chip, as if the user had pasted it — the
+   * path for content another surface hands to the composer (a terminal
+   * block). Returns false when the attachment cap is already reached.
+   */
+  attachPastedText: (text: string) => boolean;
+}
+
+/**
+ * The latest committed attachment list, read synchronously.
+ *
+ * An updater passed to setAttachments does not run when it is called — only
+ * when React renders, which inside flushSync is AFTER the callback returns.
+ * (React's eager path runs it at once, but only while the component has no
+ * update pending: it holds for a first attach and not reliably for the next.)
+ * Deciding the cap inside the commit updater and reading the result in the
+ * same callback therefore left the second attach's marker unwritten and its
+ * chip orphaned. Reading here first, in its own flush, and committing after
+ * is safe: nothing can run between two synchronous flushes, and an updater
+ * that returns its input unchanged commits nothing.
+ */
+function readCommittedAttachments(
+  setAttachments: React.Dispatch<React.SetStateAction<Attachment[]>>,
+): Attachment[] {
+  let committed: Attachment[] = [];
+  flushSync(() => {
+    setAttachments((prev) => {
+      committed = prev;
+      return prev;
+    });
+  });
+  return committed;
 }
 
 /**
@@ -65,6 +121,7 @@ export function useAttachmentPicker({
   onAttachmentUnavailable,
   onImageAttachmentLimitExceeded,
   onDropRejected,
+  onPastedTextClipped,
   composerRef,
   imagesEnabled = true,
   filesEnabled = true,
@@ -167,58 +224,57 @@ export function useAttachmentPicker({
       if (unavailableAttachmentSkipped) onAttachmentUnavailable?.();
       return;
     }
+    // The cap and the image budget are checked against the latest committed
+    // list, read just before the commit (see readCommittedAttachments).
+    const prev = readCommittedAttachments(setAttachments);
+    const currentCandidates = candidates.filter((attachment) =>
+      attachment.kind === "image"
+        ? capabilityRef.current.imagesEnabled
+        : attachment.kind === "file"
+          ? capabilityRef.current.filesEnabled
+          : true,
+    );
+    const capabilityChangedBeforeCommit = currentCandidates.length !== candidates.length;
+    const remaining = Math.max(0, ATTACH_MAX_COUNT - prev.length);
+    const accepted: Attachment[] = [];
+    for (const candidate of currentCandidates) {
+      if (accepted.length >= remaining) continue;
+      if (candidate.kind === "image") {
+        const images = [...prev, ...accepted]
+          .filter((attachment) => attachment.kind === "image")
+          .map((attachment) => ({ bytes: attachment.bytes }));
+        if (
+          subscriptionImageAttachmentLimitViolation(
+            capabilityRef.current.imageAttachmentLimits,
+            [...images, { bytes: candidate.bytes }],
+          )
+        ) {
+          imageAttachmentLimitExceeded = true;
+          continue;
+        }
+      }
+      accepted.push(candidate);
+    }
+    if (accepted.length < currentCandidates.length) {
+      console.warn(
+        `${currentCandidates.length - accepted.length} attachment(s) dropped — ${ATTACH_MAX_COUNT}-cap reached during async open/read`,
+      );
+    }
     // Atomic commit: setAttachments AND text-insert MUST land in the same
     // render commit, otherwise Composer's marker-sync useEffect runs between
     // the two and clears `attachments`. Putting both inside one flushSync
     // batches them so the next render sees attachments + marker text consistent.
-    let acceptedMarkers = "";
-    let capabilityChangedBeforeCommit = false;
-    flushSync(() => {
-      setAttachments((prev) => {
-        const currentCandidates = candidates.filter((attachment) =>
-          attachment.kind === "image"
-            ? capabilityRef.current.imagesEnabled
-            : attachment.kind === "file"
-              ? capabilityRef.current.filesEnabled
-              : true,
-        );
-        capabilityChangedBeforeCommit = currentCandidates.length !== candidates.length;
-        const remaining = Math.max(0, ATTACH_MAX_COUNT - prev.length);
-        const accepted: Attachment[] = [];
-        for (const candidate of currentCandidates) {
-          if (accepted.length >= remaining) continue;
-          if (candidate.kind === "image") {
-            const images = [...prev, ...accepted]
-              .filter((attachment) => attachment.kind === "image")
-              .map((attachment) => ({ bytes: attachment.bytes }));
-            if (
-              subscriptionImageAttachmentLimitViolation(
-                capabilityRef.current.imageAttachmentLimits,
-                [...images, { bytes: candidate.bytes }],
-              )
-            ) {
-              imageAttachmentLimitExceeded = true;
-              continue;
-            }
-          }
-          accepted.push(candidate);
-        }
-        if (accepted.length < currentCandidates.length) {
-          console.warn(
-            `${currentCandidates.length - accepted.length} attachment(s) dropped — ${ATTACH_MAX_COUNT}-cap reached during async open/read`,
-          );
-        }
-        acceptedMarkers = accepted.map((a) => `${buildMarkerText(a)} `).join("");
-        return [...prev, ...accepted];
-      });
-      if (acceptedMarkers) {
+    const acceptedMarkers = accepted.map((a) => `${buildMarkerText(a)} `).join("");
+    if (acceptedMarkers) {
+      flushSync(() => {
+        setAttachments((latest) => [...latest, ...accepted]);
         if (composerRef.current) {
           composerRef.current.insertAtCursor(acceptedMarkers);
         } else {
-          setQuestion((prev) => prev + acceptedMarkers);
+          setQuestion((text) => text + acceptedMarkers);
         }
-      }
-    });
+      });
+    }
     if (imageAttachmentLimitExceeded) {
       if (onImageAttachmentLimitExceeded) onImageAttachmentLimitExceeded();
       else onAttachmentUnavailable?.();
@@ -262,5 +318,35 @@ export function useAttachmentPicker({
     await commitFiles(redeemed.files);
   }, [commitFiles, composerRef, onDropRejected]);
 
-  return { handleAttach, handleDropFiles };
+  const attachPastedText = useCallback((rawText: string): boolean => {
+    const { text, clipped } = clipPastedText(rawText);
+    // Allocated outside the updater, as handleAttach does: React may run an
+    // updater twice (StrictMode), and a counter bumped inside it would skip
+    // numbers. A number spent on a refused attach is harmless — `n` is only
+    // ever required to be unique, never dense.
+    const n = ++attachmentNCounter.current;
+    const attachment: Attachment = {
+      id: `paste-${Date.now()}-${n}`,
+      n,
+      kind: "paste",
+      text,
+      lines: text.split("\n").length,
+      chars: text.length,
+    };
+    if (readCommittedAttachments(setAttachments).length >= ATTACH_MAX_COUNT) return false;
+    // Same atomic commit as the picker: the chip and its marker land in one
+    // flushSync, so Composer's marker-sync effect never sees one without the
+    // other. Nothing can run between the two synchronous flushes.
+    const marker = `${buildMarkerText(attachment)} `;
+    flushSync(() => {
+      setAttachments((prev) => [...prev, attachment]);
+      if (composerRef.current) composerRef.current.insertAtCursor(marker);
+      else setQuestion((prev) => prev + marker);
+    });
+    composerRef.current?.focus();
+    if (clipped) onPastedTextClipped?.({ keptChars: text.length, totalChars: rawText.length });
+    return true;
+  }, [attachmentNCounter, composerRef, onPastedTextClipped, setAttachments, setQuestion]);
+
+  return { handleAttach, handleDropFiles, attachPastedText };
 }

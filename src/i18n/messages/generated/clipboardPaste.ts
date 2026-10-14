@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/utils/clipboard-paste.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/utils/clipboard-paste.ts.
 export const en = {
   "clipboardPaste.attachmentLimitReached": "Attachment limit of {max} reached — remove a [...#N] marker in the textarea to add more",
   "clipboardPaste.imageSaveFailed": "Clipboard image save failed",

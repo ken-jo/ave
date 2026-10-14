@@ -4,11 +4,8 @@
  * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 6.
  */
 import { describe, expect, it } from "vitest";
-import {
-  ScriptHookManager,
-  dlpRedactInput,
-  type HookDispatchPayload,
-} from "../script-hook-manager.js";
+import { ScriptHookManager, dlpRedactInput } from "../script-hook-manager.js";
+import type { HookDispatchPayload } from "../script-hook-types.js";
 import { repoFixtureHook as hookFixture } from "./test-helpers.js";
 
 const WINDOWS_SHELL_TIMEOUT_MS = 20_000;

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/permissions/DeferredQueuePanel.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/permissions/DeferredQueuePanel.tsx.
 export const en = {
   "deferredQueuePanel.noQueue": "No queue",
   "deferredQueuePanel.noPendingTitle": "No pending approval requests",
