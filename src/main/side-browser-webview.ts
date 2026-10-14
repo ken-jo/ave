@@ -19,10 +19,12 @@ function isHttpUrl(value: string): boolean {
  * work like a normal one for reading, signing in and downloading, but there is
  * no per-site prompt UI yet, so anything that reaches a device or the user's
  * attention (camera, microphone, location, notifications, MIDI, HID...) stays
- * denied. Request and check handlers read the same set so they always agree.
+ * denied. `fullscreen` is denied too: the app shows no exit hint for an
+ * element going fullscreen, so a page could cover the whole app window and
+ * draw a convincing copy of the approval UI. Request and check handlers read
+ * the same set so they always agree.
  */
 const SIDE_BROWSER_ALLOWED_PERMISSIONS: ReadonlySet<string> = new Set([
-  "fullscreen",
   "clipboard-sanitized-write",
 ]);
 

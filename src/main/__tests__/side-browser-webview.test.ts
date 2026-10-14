@@ -134,7 +134,7 @@ describe("side browser webview attach policy", () => {
     expect(pending).toEqual(["https://example.com/docs"]);
   });
 
-  it("installs a browser-like UA, a narrow permission allow-list, and leaves downloads to the native save dialog", () => {
+  it("installs a browser-like UA, a narrow permission allow-list without fullscreen, and leaves downloads to the native save dialog", () => {
     installSideBrowserPartitionPolicy();
 
     const ua = electronMock.sideBrowserSession.setUserAgent.mock.calls[0]?.[0] as string;
@@ -149,13 +149,14 @@ describe("side browser webview attach policy", () => {
       (webContents: unknown, permission: string, callback: (allowed: boolean) => void) => void;
     const checkHandler = electronMock.sideBrowserSession.setPermissionCheckHandler.mock.calls[0]?.[0] as
       (webContents: unknown, permission: string) => boolean;
-    for (const denied of ["media", "geolocation", "notifications", "midi", "hid", "openExternal"]) {
+    // `fullscreen` is denied: a fullscreen page could cover the app and spoof its approval UI.
+    for (const denied of ["fullscreen", "media", "geolocation", "notifications", "midi", "hid", "openExternal"]) {
       const callback = vi.fn();
       requestHandler({}, denied, callback);
       expect(callback).toHaveBeenCalledWith(false);
       expect(checkHandler({}, denied)).toBe(false);
     }
-    for (const allowed of ["fullscreen", "clipboard-sanitized-write"]) {
+    for (const allowed of ["clipboard-sanitized-write"]) {
       const callback = vi.fn();
       requestHandler({}, allowed, callback);
       expect(callback).toHaveBeenCalledWith(true);

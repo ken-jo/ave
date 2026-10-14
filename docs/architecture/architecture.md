@@ -464,8 +464,9 @@ Important rules:
   the same session with no preload, sandboxed, context-isolated, guarded
   recursively), downloads through the native Save dialog, and a
   Chromium/Edge user agent so sign-in pages accept it. Other schemes stay
-  blocked, and only `fullscreen` and `clipboard-sanitized-write` permissions
-  are granted.
+  blocked, and only the `clipboard-sanitized-write` permission is granted
+  (`fullscreen` is denied: with no exit hint a page could cover the app and
+  imitate its approval UI).
 
 A long turn uses per-call limits and progress guidance. Each API-backed chat call
 is bounded by the route's effective output limit
