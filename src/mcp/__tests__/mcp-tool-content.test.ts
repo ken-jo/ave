@@ -59,12 +59,35 @@ describe("renderMcpContent", () => {
     ];
     const rendered = renderMcpContent(blocks);
     expect(rendered.images).toEqual([]);
-    expect(rendered.text).toBe(blocks.map((block) => JSON.stringify(block)).join("\n"));
+    expect(rendered.text).toBe([
+      "[image/png, 0 bytes omitted]",
+      "[text/html, 9 bytes omitted]",
+      JSON.stringify(blocks[2]),
+    ].join("\n"));
   });
 
-  it("keeps the JSON rendering for block types it does not lift", () => {
-    const audio = { type: "audio", data: "AAAA", mimeType: "audio/wav" };
-    expect(renderMcpContent([audio])).toEqual({ text: JSON.stringify(audio), images: [] });
+  it("replaces audio and embedded resource blobs with a size note and keeps the text parts", () => {
+    const audioBase64 = Buffer.alloc(123 * 1024).toString("base64");
+    const blobBase64 = Buffer.alloc(2048).toString("base64");
+    const textResource = { type: "resource", resource: { uri: "file:///notes.md", mimeType: "text/markdown", text: "notes body" } };
+    const link = { type: "resource_link", uri: "file:///big.bin", name: "big" };
+    const rendered = renderMcpContent([
+      { type: "text", text: "transcript follows" },
+      { type: "audio", data: audioBase64, mimeType: "audio/ogg" },
+      { type: "resource", resource: { uri: "file:///clip.wav", mimeType: "audio/wav", blob: blobBase64 } },
+      textResource,
+      link,
+    ]);
+    expect(rendered.images).toEqual([]);
+    expect(rendered.text).toBe([
+      "transcript follows",
+      "[audio/ogg, 123 KB omitted]",
+      "[resource file:///clip.wav: audio/wav, 2 KB omitted]",
+      JSON.stringify(textResource),
+      JSON.stringify(link),
+    ].join("\n"));
+    expect(rendered.text).not.toContain(audioBase64.slice(0, 64));
+    expect(rendered.text).not.toContain(blobBase64.slice(0, 64));
   });
 });
 

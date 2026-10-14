@@ -11,8 +11,11 @@
  * bounds its size. Only one image travels per tool result because that field
  * is singular; later images are named in the text.
  *
- * Other block types (audio, embedded resources, resource links) keep their
- * JSON rendering.
+ * Any other block carrying base64 bytes — audio, an image block whose MIME
+ * type is not an image, an embedded resource's `blob` — is replaced by a short
+ * note naming its type and size (`[audio/ogg, 123 KB omitted]`): the model
+ * cannot use the encoding, and the tool-result budget would spend itself on
+ * it. Text blocks, embedded text resources and resource links keep their text.
  */
 import { IMAGE_PREPARATION_POLICY } from "../shared/image-preparation-policy.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -43,16 +46,45 @@ function base64DecodedBytes(data: string): number {
   return Math.floor((data.length * 3) / 4) - padding;
 }
 
+function formatBytes(bytes: number): string {
+  return bytes < 1024 ? `${bytes} bytes` : `${Math.round(bytes / 1024)} KB`;
+}
+
+function mimeTypeOf(value: unknown): string {
+  return typeof value === "string" && value.length > 0 ? value : "application/octet-stream";
+}
+
+/**
+ * The note that stands in for a block's base64 payload, or `undefined` when
+ * the block carries none: `data` on the block itself (audio, a non-image
+ * image block), or `blob` on an embedded resource.
+ */
+function omittedBinaryNote(block: McpContentBlock): string | undefined {
+  if (typeof block.data === "string") {
+    return `[${mimeTypeOf(block.mimeType)}, ${formatBytes(base64DecodedBytes(block.data))} omitted]`;
+  }
+  const resource = block.resource;
+  if (block.type === "resource" && resource && typeof resource === "object") {
+    const { blob, mimeType, uri } = resource as Record<string, unknown>;
+    if (typeof blob === "string") {
+      const where = typeof uri === "string" && uri.length > 0 ? ` ${uri}` : "";
+      return `[resource${where}: ${mimeTypeOf(mimeType)}, ${formatBytes(base64DecodedBytes(blob))} omitted]`;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Render content blocks to text, lifting image blocks out. A malformed image
- * block (no data, or a non-image MIME type) is not an image and keeps the
- * JSON rendering every other block gets.
+ * block (no data, or a non-image MIME type) is not an image; like any other
+ * block with a base64 payload it becomes an omission note, and a block with
+ * none keeps its JSON rendering.
  */
 export function renderMcpContent(content: readonly McpContentBlock[]): RenderedMcpContent {
   const images: McpContentImage[] = [];
   const parts = content.map((block) => {
     const image = contentImage(block);
-    if (!image) return block.text ?? JSON.stringify(block);
+    if (!image) return block.text ?? omittedBinaryNote(block) ?? JSON.stringify(block);
     images.push(image);
     return `[image ${images.length}: ${image.mimeType}, ${base64DecodedBytes(image.data)} bytes]`;
   });
