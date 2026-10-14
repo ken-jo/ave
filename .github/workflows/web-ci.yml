@@ -26,7 +26,11 @@ defaults:
 jobs:
   build:
     name: Build (static export)
-    runs-on: ubuntu-latest
+    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
+    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
+    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
+    # PRs never reach a self-hosted runner.
+    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

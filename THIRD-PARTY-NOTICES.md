@@ -1,6 +1,7 @@
 # Third-Party Notices
 
-Ave is licensed under the MIT License (see [LICENSE](./LICENSE)).
+Ave is proprietary software, Copyright (c) 2026 Ken Jo. All rights reserved
+(see [LICENSE](./LICENSE)).
 This file attributes third-party software that ships with, or is bundled into,
 Ave distributions but is licensed separately from Ave itself. Listing a
 component here does not change its license, nor relicense Ave.

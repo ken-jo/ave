@@ -41,7 +41,11 @@ permissions:
 
 jobs:
   naming-gate:
-    runs-on: ubuntu-latest
+    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
+    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
+    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
+    # PRs never reach a self-hosted runner.
+    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -56,7 +60,11 @@ jobs:
           .github/scripts/naming-gate.sh "$base_sha" HEAD
 
   home-path-gate:
-    runs-on: ubuntu-latest
+    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
+    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
+    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
+    # PRs never reach a self-hosted runner.
+    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

@@ -9,7 +9,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build-and-test:
-    # All runs use ephemeral GitHub-hosted ARM64 runners. Ephemeral VMs
+    # By default runs use ephemeral GitHub-hosted ARM64 runners (the
+    # AVE_LINUX_RUNNER note below is the opt-in self-hosted path). Ephemeral VMs
     # cannot persist state or exfiltrate secrets across runs, which closes
     # the "pwn-request" supply-chain RCE vector that made the prior
     # self-hosted Oracle runner risky for fork PRs (a fork controls
@@ -18,7 +19,11 @@ jobs:
     # with the dev fleet. Core CI is deliberately secret-free and does not
     # clone private sibling repositories; cross-repository integration belongs
     # to trusted default-branch repository_dispatch workflows.
-    runs-on: ubuntu-24.04-arm
+    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
+    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
+    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
+    # PRs never reach a self-hosted runner.
+    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -391,7 +396,11 @@ jobs:
     name: Linux confinement path tests
     # The architecture of `build-and-test`, so the native-module cache key below
     # and ASRT's `arm64` seccomp filter both apply.
-    runs-on: ubuntu-24.04-arm
+    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
+    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
+    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
+    # PRs never reach a self-hosted runner.
+    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -414,7 +423,18 @@ jobs:
       # CI host ("Testing on Headless CI Systems").
       - name: Install the Linux sandbox backend
         if: steps.docs-impact.outputs.docs_only != 'true'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep xvfb
+        # A self-hosted runner has no sudo and is provisioned with these
+        # already; install only what is missing so both runner kinds pass.
+        run: |
+          missing=0
+          for tool in bwrap socat rg xvfb-run; do
+            command -v "$tool" >/dev/null 2>&1 || { echo "missing: $tool"; missing=1; }
+          done
+          if [ "$missing" = 1 ]; then
+            sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep xvfb
+          else
+            echo "bubblewrap, socat, ripgrep and xvfb already installed"
+          fi
       # Ubuntu 24.04 restricts unprivileged user namespaces by default, which
       # strips what bubblewrap needs (ASRT README, "Platform-Specific
       # Dependencies"). A runner setting, not a product change: the app never
@@ -422,7 +442,16 @@ jobs:
       # initialise and a `process` entry is refused `process-entry-unconfined`.
       - name: Allow unprivileged user namespaces
         if: steps.docs-impact.outputs.docs_only != 'true'
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        # Only when the knob exists and is not already 0 (a self-hosted runner
+        # has it set at provisioning and has no sudo). The next step proves
+        # the namespace either way.
+        run: |
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -r "$knob" ] && [ "$(cat "$knob")" != "0" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          else
+            echo "unprivileged user namespaces already allowed"
+          fi
       # Fails here, with its own message, on a runner that cannot create the
       # namespace — rather than inside a test.
       - name: Prove the sandbox backend

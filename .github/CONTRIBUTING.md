@@ -134,5 +134,6 @@ By participating, you agree to abide by the
 
 ## License
 
-By contributing, you agree your contributions will be licensed under the
-project's [MIT License](../LICENSE).
+Ave is proprietary software (Copyright (c) 2026 Ken Jo, all rights reserved).
+See [LICENSE](../LICENSE); no license is granted without the copyright
+holder's written permission.

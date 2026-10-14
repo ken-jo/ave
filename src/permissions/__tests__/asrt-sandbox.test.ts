@@ -29,7 +29,7 @@ import {
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 
@@ -63,7 +63,12 @@ import {
   appOwnedSandboxPrivateRoots,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
+  buildPerCommandSandboxCustomConfig,
+  getVendoredApplySeccompPath,
+  getVendoredJavaProxyAgentJarPath,
 } from "../asrt-sandbox.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 import { _resetConfinedProcessPhaseForTests, confinedProcessesMayBeRunning } from "../../lib/confined-process-phase.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -302,7 +307,101 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
       }
     },
   );
+
+  it.runIf(process.platform === "linux")(
+    "binds back only the seccomp helper file when a read deny hides the package",
+    async () => {
+      if (!(await asrtCanInitialize())) return;
+
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const helper = getVendoredApplySeccompPath()!;
+      const checkout = checkoutRootAbove(helper);
+      const { argv } = await wrapToolCommand("true", { filesystem: { denyRead: [checkout], allowRead: [] } });
+      try {
+        const rendered = argv[2] ?? "";
+        expect(rendered).toContain(`--tmpfs ${checkout} `);
+        const reboundUnderDeny = [...rendered.matchAll(/--ro-bind (\S+) (\S+)/g)]
+          .filter(([, , target]) => target!.startsWith(`${checkout}/`))
+          .map(([, source, target]) => [source, target]);
+        // The helper is the one file this wrap re-allows; ASRT itself re-allows
+        // its JVM proxy agent jar. No directory of the package comes back.
+        const jar = getVendoredJavaProxyAgentJarPath();
+        expect(reboundUnderDeny.sort()).toEqual([[helper, helper], [jar, jar]].sort());
+        expect(rendered).toContain(`${helper} `);
+      } finally {
+        await cleanupAsrtSandboxAfterCommand();
+      }
+    },
+  );
 });
+
+/** The directory holding `node_modules` above `path` — the checkout a HOME deny would hide. */
+function checkoutRootAbove(path: string): string {
+  let dir = dirname(path);
+  while (basename(dir) !== "node_modules") {
+    const parent = dirname(dir);
+    if (parent === dir) throw new Error(`no node_modules above ${path}`);
+    dir = parent;
+  }
+  return dirname(dir);
+}
+
+/**
+ * ASRT runs `apply-seccomp` from inside the bwrap namespace. A shell denies all
+ * of `$HOME`, so an app or checkout there hid its own helper and every strict
+ * wrap exited 127. Each wrap re-allows exactly that one file, and the shared
+ * config pins it as the path ASRT execs.
+ */
+describe("asrt-sandbox — Linux seccomp helper beneath a read deny", () => {
+  const hostPlatform = process.platform;
+  afterEach(() => setProcessPlatform(hostPlatform));
+
+  it("resolves the helper ASRT itself would run, canonicalised", () => {
+    setProcessPlatform("linux");
+    const asrtPath = getApplySeccompBinaryPath();
+    expect(asrtPath).not.toBeNull();
+    expect(getVendoredApplySeccompPath()).toBe(realpathSync(asrtPath!));
+  });
+
+  it("re-allows exactly the helper file under a covering deny, nothing broader", () => {
+    setProcessPlatform("linux");
+    // Derived from ASRT's own resolver, independently of the host's.
+    const helper = realpathSync(getApplySeccompBinaryPath()!);
+    const checkout = checkoutRootAbove(helper);
+    for (const filesystem of [{ denyRead: [checkout], allowRead: [] }, { denyRead: [checkout] }]) {
+      const allowRead = buildPerCommandSandboxCustomConfig(filesystem)?.filesystem?.allowRead;
+      expect(allowRead).toEqual([helper]);
+    }
+    const withWorkspace = buildPerCommandSandboxCustomConfig({ denyRead: [checkout], allowRead: [tmpdir()] });
+    expect(withWorkspace?.filesystem?.allowRead).toEqual([tmpdir(), helper]);
+  });
+
+  it("leaves a wrap whose denies do not cover the helper unchanged", async () => {
+    setProcessPlatform("linux");
+    // A fresh directory is never an ancestor of the helper, wherever the checkout lives.
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "asrt-seccomp-elsewhere-")));
+    try {
+      expect(buildPerCommandSandboxCustomConfig({ denyRead: [elsewhere], allowRead: [] })?.filesystem?.allowRead).toEqual([]);
+      expect(buildPerCommandSandboxCustomConfig({ denyRead: [elsewhere] })?.filesystem?.allowRead).toBeUndefined();
+    } finally {
+      await cleanupTmpDir(elsewhere);
+    }
+  });
+
+  it("pins seccomp.applyPath to the same file in the shared config", () => {
+    setProcessPlatform("linux");
+    expect(buildSandboxConfig({ allowedDomains: [] }).seccomp).toEqual({ applyPath: getVendoredApplySeccompPath() });
+  });
+
+  it("adds nothing off Linux", () => {
+    setProcessPlatform("darwin");
+    expect(getVendoredApplySeccompPath()).toBeUndefined();
+    expect(buildPerCommandSandboxCustomConfig({ denyRead: [tmpdir()], allowRead: [] })?.filesystem?.allowRead).toEqual([]);
+    expect(buildPerCommandSandboxCustomConfig({ denyRead: [tmpdir()] })?.filesystem?.allowRead).toBeUndefined();
+    expect(buildSandboxConfig({ allowedDomains: [] }).seccomp).toBeUndefined();
+  });
+});
+
 describe("asrt-sandbox — per-command trust boundary (security MINOR)", () => {
   it("a per-command filesystem wrap cannot carry a weakening flag (no such field)", async () => {
     if (!(await asrtCanInitialize())) return;
