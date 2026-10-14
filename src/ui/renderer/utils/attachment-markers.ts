@@ -42,6 +42,16 @@ export function parseMarkers(text: string): number[] {
 }
 
 /**
+ * Remove every attachment marker from `text`. A marker only means something
+ * while its attachment is in the composer's list; text reused outside that
+ * lifetime (prompt-history recall) must not carry markers that resolve to
+ * nothing — or, worse, to a different attachment that reuses the number.
+ */
+export function stripMarkers(text: string): string {
+  return text.replace(MARKER_RE, "").replace(/[ \t]{2,}/g, " ").trim();
+}
+
+/**
  * Collapse a long path for display: when the stem (the substring before the
  * last `.`, including any parent directory segments) is ≥
  * PATH_COLLAPSE_THRESHOLD chars, return `first5 + "…" + last5 + .ext`.

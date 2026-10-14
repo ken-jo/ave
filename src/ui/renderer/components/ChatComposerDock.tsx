@@ -45,6 +45,8 @@ export interface ChatComposerDockProps {
   messageQueueStore: MessageQueueStore;
   onMessageQueueSendNow: (item: MessageQueueItem) => void;
   question: string;
+  /** Prompts typed earlier in this session, oldest first (Up-arrow recall). */
+  promptHistory?: readonly string[];
   statusBar?: StatusBarProps;
   composerRef: RefObject<ComposerHandle | null>;
   setQuestion: React.Dispatch<React.SetStateAction<string>>;
@@ -256,6 +258,7 @@ export function ChatComposerDock({
   messageQueueStore,
   onMessageQueueSendNow,
   question,
+  promptHistory,
   statusBar,
   composerRef,
   setQuestion,
@@ -484,6 +487,7 @@ export function ChatComposerDock({
           surface="main"
           text={question}
           onTextChange={setQuestion}
+          promptHistory={promptHistory}
           attachments={attachments}
           onAttachmentsChange={setAttachments}
           allocateN={allocateN}

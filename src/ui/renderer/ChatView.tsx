@@ -36,6 +36,7 @@ import { normalizeBrowserNavigationUrl } from "./preview/url-safety.js";
 import { createPortal } from "react-dom";
 import { usePanePanelSlot } from "./components/PaneFrame.js";
 import { computeToolActivity } from "./utils/tool-activity.js";
+import { collectPromptHistory } from "./utils/prompt-history.js";
 import { sidePanelLayout, useContainerNarrow } from "./hooks/use-container-narrow.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
 import { useChatScroll } from "./hooks/use-chat-scroll.js";
@@ -355,6 +356,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // in system app" (web only — tool-derived local paths have no authorized
   // OS-open channel, so that menu item is hidden for files).
   const toolActivity = useMemo(() => computeToolActivity(entries), [entries]);
+  const promptHistory = useMemo(() => collectPromptHistory(entries), [entries]);
 
   // Route a tool-activity item into the workspace rail. Single-click (`ephemeral`)
   // opens it in the one reusable preview slot; double-click (`pinned`) opens and
@@ -815,6 +817,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         messageQueueStore={messageQueueStore}
         onMessageQueueSendNow={handleMessageQueueSendNow}
         question={question}
+        promptHistory={promptHistory}
         statusBar={statusBar}
         composerRef={composerRef}
         setQuestion={setQuestion}
