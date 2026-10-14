@@ -27,6 +27,7 @@ import { useContextBudget } from "../hooks/use-context-budget.js";
 import { useCostEstimate } from "../hooks/use-cost-estimate.js";
 import { useCurrentSession } from "../hooks/use-sessions.js";
 import { MAIN_CHAT_GROUP_ID } from "../../../contract/app-contract.js";
+import { isSecondaryMainWindow } from "../utils/main-window-role.js";
 import { useSendMessage, type HandleAskRefFn } from "../hooks/use-send-message.js";
 import { useStatusNotices } from "../hooks/use-status-bar.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
@@ -371,7 +372,9 @@ export function ChatGroupSession({
     onLoadedSession: resetForNewSession,
     restoreSubAgents: restoreSubAgentSpawns,
     onSessionsChanged: env.refreshSessions,
-    resumeWindowActiveSession: chatGroupId === MAIN_CHAT_GROUP_ID,
+    // Only the primary window's primary tile resumes the window-active
+    // conversation; a secondary window's first tile is a conversation of its own.
+    resumeWindowActiveSession: chatGroupId === MAIN_CHAT_GROUP_ID && !isSecondaryMainWindow(),
     freshProject: freshTileProject,
     onChatNewRefused: reportChatNewRefused,
     focusSessionHolder: env.focusChatGroup,

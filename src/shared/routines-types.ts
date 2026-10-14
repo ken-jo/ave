@@ -185,3 +185,23 @@ export interface RoutineFiredPayload {
   /** Present for llm-session routines so the overlay can open the routine conversation. */
   routineSessionId?: string;
 }
+
+/**
+ * A stored routine the host will not run because it names a plugin id the
+ * plugin contract rejects (written by a build with a looser grammar). It
+ * stays on disk unchanged until the user removes it.
+ */
+export interface InvalidRoutine {
+  id: string;
+  /** Field path of the offending value, e.g. `scope.pluginIds.ids`. */
+  field: string;
+  /** The rejected value as stored. */
+  value: string;
+  reason: "invalid-plugin-id";
+}
+
+/** `ave:routines:list` result: the active routines plus the ones held back as invalid. */
+export interface RoutineListResult {
+  routines: RoutineRecord[];
+  invalid: InvalidRoutine[];
+}

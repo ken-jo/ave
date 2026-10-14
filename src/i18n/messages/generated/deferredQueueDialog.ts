@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/dialogs/DeferredQueueDialog.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/dialogs/DeferredQueueDialog.tsx.
 export const en = {
   "deferredQueueDialog.title": "Review deferred permission requests",
   "deferredQueueDialog.description": "This is the list of pending approvals opened directly from the permission queue button by the user.",

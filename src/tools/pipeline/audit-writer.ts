@@ -22,9 +22,8 @@ import { isPiiRedactionEnabled, maskSensitiveData } from "../../audit/dlp-filter
 import type {
   ScriptHookManager,
   HookDispatchResult,
-  LifecycleEventPayload,
 } from "../../hooks/script-hook-manager.js";
-import type { HookTrustOrigin } from "../../hooks/script-hook-types.js";
+import type { HookTrustOrigin, LifecycleEventPayload } from "../../hooks/script-hook-types.js";
 import { createLogger } from "../../lib/logger.js";
 import type { ToolPermissionContext } from "../executor.js";
 import {

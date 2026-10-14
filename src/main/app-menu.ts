@@ -12,6 +12,7 @@ import { normalizeSettingsTab } from "../shared/settings-tabs.js";
 import { getMainWindow, getServices } from "./app-state.js";
 import {
   requestNativeChromeRefresh,
+  requestOpenNewMainWindow,
   requestShowOrCreateMainWindow,
 } from "./native-window-coordinator.js";
 
@@ -119,6 +120,16 @@ function createHelpMenu(): MenuItemConstructorOptions {
   };
 }
 
+function createNewWindowMenuItem(): MenuItemConstructorOptions {
+  return {
+    label: t("be_main.menuNewWindow"),
+    accelerator: "CommandOrControl+Shift+N",
+    click: () => {
+      requestOpenNewMainWindow("menu-new-window");
+    },
+  };
+}
+
 function createEditMenu(): MenuItemConstructorOptions {
   return {
     label: t("be_main.menuEdit"),
@@ -150,6 +161,7 @@ export function refreshApplicationMenu() {
             submenu: [
               { role: "about" },
               { type: "separator" },
+              createNewWindowMenuItem(),
               createAlwaysOnTopMenuItem(),
               settingsMenuItem,
               { type: "separator" },
@@ -162,7 +174,7 @@ export function refreshApplicationMenu() {
           helpMenu,
         ]
       : [
-          { label: t("be_main.menuApp"), submenu: [createAlwaysOnTopMenuItem(), settingsMenuItem, { type: "separator" }, { role: "quit" }] },
+          { label: t("be_main.menuApp"), submenu: [createNewWindowMenuItem(), createAlwaysOnTopMenuItem(), settingsMenuItem, { type: "separator" }, { role: "quit" }] },
           editMenu,
           createViewMenu(),
           displayMenu,

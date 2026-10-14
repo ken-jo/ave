@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/boot.ts. Do not edit by hand.
+// i18n fragment. Source: src/boot.ts.
 export const en = {
   "be_boot.upgradeMarkersPlural": "~/.ave reference {count} files",
   "be_boot.upgradeNotificationTitle": "Ave reference update available",

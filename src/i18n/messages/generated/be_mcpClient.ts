@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/mcp/mcp-client.ts. Do not edit by hand.
+// i18n fragment. Source: src/mcp/mcp-client.ts.
 export const en = {
   "be_mcpClient.governanceValidationFailed": "Governance validation failed (Layer {layer}): {reason}",
   "be_mcpClient.unsupportedTransport": "Supported transports: stdio, http. Configured: {transport}",

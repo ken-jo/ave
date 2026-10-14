@@ -23,12 +23,15 @@ jobs:
     # "ubuntu-latest" to opt into a GitHub-hosted runner explicitly). Unset
     # falls back to any self-hosted runner only so the check below can fail
     # naming the variable, never to a billing-blocked hosted label; deploy
-    # needs this job, so it never evaluates an unset variable.
+    # needs this job, so it never evaluates an unset variable. Only
+    # default-branch pushes and repository_dispatch reach this workflow,
+    # never a fork PR.
     runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}
     timeout-minutes: 15
     outputs:
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
       bundle_sha256: ${{ steps.bundle.outputs.bundle_sha256 }}
+      config_sha256: ${{ steps.bundle.outputs.config_sha256 }}
       source_sha: ${{ steps.verify.outputs.source_sha }}
     env:
       REQUESTED_HEAD: ${{ github.event.client_payload.head_sha || github.sha }}
@@ -115,10 +118,15 @@ jobs:
             --numeric-owner \
             -czf staged-web/web-out.tar.gz \
             -C web/out .
+          # The Worker config travels with the export, so the deploy job
+          # needs no checkout and deploys exactly what this commit names.
+          cp web/wrangler.jsonc staged-web/wrangler.jsonc
           bundle_sha256="$(sha256sum staged-web/web-out.tar.gz | cut -d ' ' -f 1)"
-          printf '%s  web-out.tar.gz\n' "$bundle_sha256" > staged-web/bundle.sha256
+          config_sha256="$(sha256sum staged-web/wrangler.jsonc | cut -d ' ' -f 1)"
+          printf '%s  web-out.tar.gz\n%s  wrangler.jsonc\n' "$bundle_sha256" "$config_sha256" > staged-web/bundle.sha256
           printf '%s\n' "$REQUESTED_HEAD" > staged-web/source.sha
           printf 'bundle_sha256=%s\n' "$bundle_sha256" >> "$GITHUB_OUTPUT"
+          printf 'config_sha256=%s\n' "$config_sha256" >> "$GITHUB_OUTPUT"
 
       - id: upload
         name: Upload digest-bound web export
@@ -173,29 +181,36 @@ jobs:
         env:
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.build.outputs.artifact_digest }}
           EXPECTED_BUNDLE_SHA256: ${{ needs.build.outputs.bundle_sha256 }}
+          EXPECTED_CONFIG_SHA256: ${{ needs.build.outputs.config_sha256 }}
           EXPECTED_SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
         run: |
           set -euo pipefail
           [[ "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           [[ "$EXPECTED_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_CONFIG_SHA256" =~ ^[0-9a-f]{64}$ ]]
           [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [ "$(cat staged-web/source.sha)" = "$EXPECTED_SOURCE_SHA" ]
           (cd staged-web && sha256sum -c bundle.sha256)
           [ "$(sha256sum staged-web/web-out.tar.gz | cut -d ' ' -f 1)" = "$EXPECTED_BUNDLE_SHA256" ]
+          [ "$(sha256sum staged-web/wrangler.jsonc | cut -d ' ' -f 1)" = "$EXPECTED_CONFIG_SHA256" ]
           while IFS= read -r entry; do
             case "$entry" in
               /*|../*|*/../*|*/..) echo "::error::unsafe web archive path: $entry"; exit 1 ;;
             esac
           done < <(tar -tzf staged-web/web-out.tar.gz)
-          mkdir verified-out
-          tar -xzf staged-web/web-out.tar.gz -C verified-out
-          (cd verified-out && sha256sum -c ../staged-web/files.sha256)
+          mkdir -p site/out
+          tar -xzf staged-web/web-out.tar.gz -C site/out
+          (cd site/out && sha256sum -c ../../staged-web/files.sha256)
+          cp staged-web/wrangler.jsonc site/wrangler.jsonc
 
-      - name: Deploy verified static files to Cloudflare Pages
+      # Worker `ave-web` serves ave.agent-connector.ai from static assets; the
+      # preview Worker `ave-web-dev` (dev.agent-connector.ai) has the same shape.
+      - name: Deploy verified static files to the ave-web Worker
         uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 77a8f0e860cd23f37141248fd4e6935f
           wranglerVersion: "4.114.0"
           packageManager: npm
-          command: pages deploy verified-out --project-name=former-site --branch=main --commit-dirty=true
+          workingDirectory: site
+          command: deploy --config wrangler.jsonc

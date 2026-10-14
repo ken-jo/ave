@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/RolesTab.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/tabs/RolesTab.tsx.
 export const en = {
   // Section tab labels
   "rolesTab.sectionAgents": "AGENTS.md",

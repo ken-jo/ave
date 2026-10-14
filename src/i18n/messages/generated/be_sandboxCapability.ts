@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/permissions/sandbox-capability.ts. Do not edit by hand.
+// i18n fragment. Source: src/permissions/sandbox-capability.ts.
 export const en = {
   "be_sandboxCapability.partialLabel": "partial [⚠ OS isolation partial]",
   "be_sandboxCapability.fsOnlyLabel": "fs-only [ℹ filesystem-only isolation (landlock)]",

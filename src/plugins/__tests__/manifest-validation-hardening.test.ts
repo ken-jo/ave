@@ -409,11 +409,26 @@ describe("runtime manifest validation of a process entry", () => {
   });
 
   it.each([
+    ["on its own", (ave: unknown) => ({ "xyz.retiredname-namespace": ave })],
+    ["beside the current key", (ave: unknown) => ({ "ai.agent-connector.ave": ave, "xyz.retiredname-namespace": {} })],
+  ])("refuses the renamed extension key %s, naming both keys", async (_name, extensions) => {
+    const document = agentPluginsDocument({
+      id: "process-kit", name: "Process Kit", version: "1.0.0", description: "A process entry fixture.",
+      tools: [pureTool("process_kit_ping")], process: PROCESS, requires: { minAppVersion: "0.13.0", hostProtocol: "3" },
+    }) as Record<string, unknown> & { extensions: Record<string, unknown> };
+    const path = join(dir, "plugin.json");
+    await writeFile(path, JSON.stringify({ ...document, extensions: extensions(document.extensions["ai.agent-connector.ave"]) }), "utf-8");
+    await expect(parsePluginJson(path, await buildManifestValidator())).rejects.toThrow(
+      `Invalid plugin manifest 'process-kit' at 'extensions["xyz.retiredname-namespace"]' (${path}): extensions.ai.agent-connector.ave was renamed to extensions.ai.agent-connector.ave; update the manifest.`,
+    );
+  });
+
+  it.each([
     ["a bare command", { ...PROCESS, command: "plugin" }],
     ["an absolute command", { ...PROCESS, command: "/usr/bin/python3" }],
     ["a command segment containing '='", { ...PROCESS, command: "./bin/a=b" }],
   ])("refuses %s at the schema, naming the command", async (_name, process) => {
-    await expect(parse({ process })).rejects.toThrow(/\/extensions\/xyz\.ave\/process\/command must match pattern/u);
+    await expect(parse({ process })).rejects.toThrow(/\/extensions\/ai\.agent-connector\.ave\/process\/command must match pattern/u);
   });
 
   it.each([
@@ -428,7 +443,7 @@ describe("runtime manifest validation of a process entry", () => {
     "refuses %s as an environment name, naming it",
     async (name) => {
       await expect(parse({ process: { ...PROCESS, env: { [name]: "x" } } })).rejects.toThrow(
-        new RegExp(`extensions\\["xyz\\.ave"\\]\\.process\\.env\\.${name}'.*reserves`, "u"),
+        new RegExp(`extensions\\["ai\\.agent-connector\\.ave"\\]\\.process\\.env\\.${name}'.*reserves`, "u"),
       );
     },
   );

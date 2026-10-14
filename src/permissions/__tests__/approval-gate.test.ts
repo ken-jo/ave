@@ -186,6 +186,21 @@ describe("ApprovalGate", () => {
     expect(result.requestId).toBe("req-1");
   });
 
+  it("an approval answered in one window dismisses the copy another window re-fetched", async () => {
+    const windowA = makeMockWebContents();
+    const windowB = makeMockWebContents();
+    const gate = new ApprovalGate(windowA as never);
+    const promise = gate.requestAndWait(makeRequest({ id: "req-two-windows" }));
+    // Window B loaded later and drew the parked card too.
+    expect(gate.listPendingRendererRequests(windowB as never).map((req) => req.id)).toEqual(["req-two-windows"]);
+
+    const { nonce, hmac } = lastSentNonceHmac(windowA);
+    gate.resolve("req-two-windows", { requestId: "req-two-windows", choice: "allow-once", nonce, hmac });
+    await promise;
+    expect(announcedSettledIds(windowA)).toEqual(["req-two-windows"]);
+    expect(announcedSettledIds(windowB)).toEqual(["req-two-windows"]);
+  });
+
   it("listPendingRendererRequests hands back the parked request exactly as it was sent, and nothing once it is answered", async () => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);

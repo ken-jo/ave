@@ -6,6 +6,7 @@ import { resolveBundledArgv } from "../../plugins/resolve-bundled-argv.js";
 import { agentPluginComponentDigests } from "../../plugins/contribution-approval-digest.js";
 import { assertCarriedApprovalsHold, carryApprovals } from "../../plugins/plugin-contribution-trust.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
+import { agentPluginDataDir } from "./agent-plugin-data.js";
 import type { HookComponentConsent } from "../../shared/git-marketplace.js";
 import type { InstalledAgentPluginRuntime } from "./service.js";
 
@@ -60,8 +61,7 @@ export class AgentPluginHookRuntime {
   }
 
   private async dataDir(name: string): Promise<string> {
-    if (!/^[a-z][a-z0-9-]*$/u.test(name)) throw new Error(`invalid agent plugin package name ${name}`);
-    return this.options.dataDirForPackage?.(name) ?? openFeatureNamespace("agent-plugin-data").childDir(name);
+    return agentPluginDataDir(name, this.options.dataDirForPackage);
   }
 
   private serialize<T>(work: () => Promise<T>): Promise<T> {

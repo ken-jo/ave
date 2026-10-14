@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ave.agent-connector.ai/schemas/marketplace/2/revocations.schema.json",
+  "title": "Ave source revocations (policy/revocations.json)",
+  "description": "Revocations a source publishes for its own packages (design §10.4). They apply only to installs from the same source.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "revocations"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "revocations": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "name", "versions", "reason", "at", "action"],
+        "properties": {
+          "kind": { "$ref": "package.schema.json#/definitions/kind" },
+          "name": { "$ref": "package.schema.json#/definitions/packageName" },
+          "versions": {
+            "description": "A version range: comparators (>=, >, <=, <, =, or a bare version) joined by spaces, alternatives joined by ||, or * for every version.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "at": { "type": "string", "format": "date-time" },
+          "action": { "enum": ["disable", "uninstall"] }
+        }
+      }
+    }
+  }
+}

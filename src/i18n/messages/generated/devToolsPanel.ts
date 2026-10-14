@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/DevToolsPanel.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/DevToolsPanel.tsx.
 export const en = {
   "devToolsPanel.title": "Ave Dev Tools",
   "devToolsPanel.devApiUnavailable": "dev API unavailable",

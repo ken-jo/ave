@@ -7,18 +7,13 @@
  * downloads of unchanged data (a new `fetchedAt`, a CDN's new ETag) are the
  * same catalog in a run record and in the cache, not two.
  */
-import { createHash } from "node:crypto";
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import {
   MODEL_CATALOG_SCHEMA_VERSION,
   type ModelCatalogDocument,
   type ModelCatalogProvenance,
 } from "../../shared/model-catalog/types.js";
-
-/** Hash the same canonical bytes for readers and producers. */
-export function sha256Hex(text: string): string {
-  return createHash("sha256").update(text, "utf-8").digest("hex");
-}
 
 /** The catalog's name: sha256 over the canonical JSON of its schema version, license and providers. */
 export function modelCatalogSha256(document: Pick<ModelCatalogDocument, "schemaVersion" | "license" | "providers">): string {

@@ -1,13 +1,6 @@
 # The app reads its service descriptor and the announcements it names. A short
 # cache lets an announcement or a domain move reach clients within minutes.
-# ave-service.json is what current builds read; former-service.json is the same
-# document at the path that builds from before the rename still request.
 /.well-known/ave-service.json
-  Content-Type: application/json; charset=utf-8
-  Cache-Control: public, max-age=300
-  X-Content-Type-Options: nosniff
-
-/.well-known/former-service.json
   Content-Type: application/json; charset=utf-8
   Cache-Control: public, max-age=300
   X-Content-Type-Options: nosniff

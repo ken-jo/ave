@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/permissions/approval-gate.ts. Do not edit by hand.
+// i18n fragment. Source: src/permissions/approval-gate.ts.
 export const en = {
   "be_approvalGate.notificationTitle": "Approval required",
   "be_approvalGate.deferredEscalationBody":

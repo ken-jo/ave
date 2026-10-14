@@ -16,6 +16,7 @@ const root = resolve(import.meta.dirname, "../..");
 const inventory = JSON.parse(readFileSync(resolve(root, "scripts/hooks/documentation-references.json"), "utf8")) as {
   consumed: string[];
   referencedOnly: string[];
+  readers: Record<string, string[]>;
 };
 const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], {
   encoding: "utf8", env: gitFixtureEnv(root),
@@ -110,6 +111,40 @@ describe("documentation impact policy", () => {
       expect(tracked.has(path)).toBe(true);
       expect(existsSync(join(root, path))).toBe(true);
       expect(isDocumentationPath(path)).toBe(inventory.referencedOnly.includes(path));
+    }
+  });
+
+  it("records every reader of each test-read document with a reader set", () => {
+    // A change to a document in `readers` runs only those files on the fast
+    // tier, so the set has to be complete: every test file or source module
+    // naming the document, plus the whole-tree scan of repository-identity
+    // unless that suite excludes the path. Packaged documents and documents a
+    // script reads are build or gate inputs and stay on the full checks.
+    const tracked = git("ls-files", "-z").split("\0").filter(Boolean);
+    const trackedSet = new Set(tracked);
+    const packaged = new Set(packagedDocumentInputs(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")), root));
+    // The hook's own policy suites name documents as fixtures, not reads.
+    const codeFiles = tracked.filter((file) => /^(?:src|test|scripts|config)\//.test(file) && /\.(?:[cm]?[jt]sx?|json)$/.test(file) &&
+      file !== "scripts/hooks/documentation-references.json" && !/^test\/scripts\/pre-push-[^/]+\.test\.ts$/.test(file));
+    const identitySuite = "test/scripts/repository-identity.test.ts";
+    const identitySource = readFileSync(resolve(root, identitySuite), "utf8");
+    const notCheckedBlock = identitySource.slice(identitySource.indexOf("const NOT_CHECKED"), identitySource.indexOf("function matchesEntry"));
+    const notChecked = [...notCheckedBlock.matchAll(/\["([^"]+)", "/g)].map((match) => match[1]!);
+    expect(notChecked.length).toBeGreaterThan(3);
+    const keys = Object.keys(inventory.readers);
+    expect(keys).toEqual([...keys].sort());
+    for (const [document, readers] of Object.entries(inventory.readers)) {
+      expect(trackedSet.has(document), document).toBe(true);
+      expect(isDocumentationPath(document), `${document} is test-read`).toBe(false);
+      expect(packaged.has(document), `${document} is packaged`).toBe(false);
+      expect(readers).toEqual([...new Set(readers)].sort());
+      const naming = codeFiles.filter((file) => readFileSync(resolve(root, file), "utf8").includes(document));
+      expect(naming.filter((file) => !/^(?:src|test)\//.test(file)), `${document} has a script or config reader`).toEqual([]);
+      const expected = new Set(naming);
+      if (!notChecked.some((entry) => entry.endsWith("/") ? document.startsWith(entry) : document === entry)) {
+        expected.add(identitySuite);
+      }
+      expect(readers, document).toEqual([...expected].sort());
     }
   });
 
@@ -338,7 +373,7 @@ describe("documentation impact policy", () => {
     expect(hook).toContain('run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot)');
     const dispatch = hook.slice(hook.indexOf('if (stage === "pre-commit")'));
     expect(dispatch.indexOf("runStagedSafetyChecks(repoRoot)")).toBeLessThan(
-      dispatch.indexOf("classifyPrePushChanges(repoRoot, prePushUpdates, remote, remoteLocation)"),
+      dispatch.indexOf("classifyPrePushChanges(repoRoot, prePushUpdates, remoteLocation)"),
     );
     expect(hook).toContain('run(commands.git, ["diff", "--cached", "--check"], repoRoot)');
     expect(hook).toContain("mergeMarkers.test(stagedContent)");

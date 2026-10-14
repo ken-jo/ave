@@ -39,7 +39,7 @@ function makeDeps(overrides: {
   };
   return {
     settings: () => settings,
-    endpoint: () => ("endpoint" in overrides ? overrides.endpoint : "https://former-site.invalid/telemetry/events"),
+    endpoint: () => ("endpoint" in overrides ? overrides.endpoint : "https://ave.agent-connector.ai/telemetry/events"),
     deviceUuidPath: join(telemetryTmpDir, "device-uuid"),
     fetchImpl: overrides.fetchImpl,
     flushIntervalMs: overrides.flushIntervalMs ?? 99_999
@@ -140,7 +140,7 @@ describe("PluginTelemetryClient", () => {
     client.track("plugin_install", { slug: "com.example.foo", version: "1.0.0" });
     await client.flush();
     const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("https://former-site.invalid/telemetry/events");
+    expect(url).toBe("https://ave.agent-connector.ai/telemetry/events");
     const body = JSON.parse(init.body as string) as { events: Array<Record<string, unknown>> };
     const ev = body.events[0];
     expect(ev.v).toBe(1);
@@ -170,7 +170,7 @@ describe("PluginTelemetryClient", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(client.queueLength).toBe(1);
 
-    endpoint = "https://former-site.invalid/telemetry/events";
+    endpoint = "https://ave.agent-connector.ai/telemetry/events";
     await client.flush();
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(client.queueLength).toBe(0);
@@ -190,7 +190,7 @@ describe("PluginTelemetryClient", () => {
   });
 
   it("never asks for the endpoint without consent", () => {
-    const endpoint = vi.fn(() => "https://former-site.invalid/telemetry/events");
+    const endpoint = vi.fn(() => "https://ave.agent-connector.ai/telemetry/events");
     const client = new PluginTelemetryClient({ ...makeDeps({ fetchImpl: okFetch(), enabled: false }), endpoint });
     client.track("plugin_install", { slug: "com.example.foo", version: "1.0.0" });
     expect(client.isActive()).toBe(false);

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/plugin-ui-host.tsx. Do not edit by hand.
+// i18n fragment. Source: src/plugin-ui-host.tsx.
 export const en = {
   "be_pluginUiHost.webviewLoadFailed": "Extension webview failed to load.",
   "be_pluginUiHost.webviewRegisterFailed": "Extension webview registration failed: {error}",

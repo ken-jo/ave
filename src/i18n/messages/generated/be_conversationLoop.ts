@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/engine/conversation-loop.ts. Do not edit by hand.
+// i18n fragment. Source: src/engine/conversation-loop.ts.
 export const en = {
   "be_conversationLoop.generateTextSystemPrompt": "You are Ave, the user's AI assistant.",
   "be_conversationLoop.notificationTurnEndTitle": "Response complete",
