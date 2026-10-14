@@ -93,12 +93,15 @@ are addressed to one dedicated, persistent Suggestions conversation, never to
 the focused one. Onboarding proposals stay inline where the user is: they run
 no turn, and a first-run user has no work for them to intrude on. It is an ordinary conversation in the
 main session store under a reserved id (`src/shared/suggestions-session.ts`),
-created empty on demand by the host just before the first card is staged (and
-again if the user deletes it). A newly staged card moves it to the top of the
-conversation list; a snapshot pull only makes it exist. Every surface names it
-from the catalog by its reserved id in the current language (a stored title is
-ignored for that id, so it cannot be renamed), and its sidebar row shows how
-many cards wait in it.
+created empty on demand by the host just before the first card is staged. A
+newly staged card moves it to the top of the conversation list; a snapshot pull
+only makes it exist. Every surface names it from the catalog by its reserved id
+in the current language (a stored title is ignored for that id, so it cannot be
+renamed), and its sidebar row shows how many cards wait in it. It cannot be
+archived — archived rows leave the list, which would hide every suggestion and
+its count — and deleting it clears it: the host recreates it empty at once,
+because cards still waiting in the window (a plugin card lives only there) name
+it as their origin.
 
 A card is drawn only in a pane holding the Suggestions conversation; otherwise
 it waits and the row carries the count. Confirming a card runs its staged

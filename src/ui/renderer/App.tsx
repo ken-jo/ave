@@ -62,7 +62,7 @@ import { useActiveView } from "./hooks/use-active-view.js";
 import { useSettingsTab } from "./hooks/use-settings-tab.js";
 import { useProjectPreferences } from "./hooks/use-project-preferences.js";
 import { useRoutineOverlay } from "./hooks/use-routine-overlay.js";
-import { isSuggestionsSession } from "../../shared/suggestions-session.js";
+import { isSuggestionsSession, sessionDisplayTitle } from "../../shared/suggestions-session.js";
 import { usePluginViewRouting } from "./hooks/use-plugin-view-routing.js";
 import { useOnboardingTourController } from "./hooks/use-onboarding-tour-controller.js";
 import { usePluginLifecycleRefresh } from "./hooks/use-plugin-lifecycle-refresh.js";
@@ -2262,7 +2262,11 @@ export function App() {
                                       <div className={paneView === "home" ? "contents" : "hidden"}>
                                       <PaneFrame
                                         title={
-                                          sessions.find((session: SessionSummary) => session.id === tileSessionId)?.title
+                                          sessionDisplayTitle(
+                                            tileSessionId,
+                                            sessions.find((session: SessionSummary) => session.id === tileSessionId)?.title,
+                                            t,
+                                          )
                                           ?? t("mainToolbar.newChat")
                                         }
                                         focused={chatGroups.focusedId === group.id}

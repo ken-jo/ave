@@ -2,11 +2,14 @@
  * The dedicated Suggestions conversation.
  *
  * Content the user did not ask for — a plugin's `triggerConversation`
- * suggestion, an alert card, a routine's result, an onboarding proposal — is
- * addressed to this one conversation instead of whichever conversation happens
- * to be focused. It is an ordinary `main` session in the main store, so its
- * history, search, rename, archive and delete go through the existing code;
- * only its id is reserved.
+ * suggestion, an alert card, a routine's result — is addressed to this one
+ * conversation instead of whichever conversation happens to be focused. An
+ * onboarding proposal and an in-conversation `app` card keep their place (see
+ * `routeToSuggestionsSession` in the renderer's OverlayContext). It is an ordinary `main` session in the main store, so its
+ * history and search go through the existing code; only its id is reserved.
+ * It is not renamed (its name comes from the catalog) or archived (that would
+ * hide every suggestion), and deleting it clears it: main recreates it empty
+ * at once, because waiting cards still name it.
  *
  * The id is fixed rather than minted per install so main (which creates the
  * transcript on demand) and the renderer (which routes cards to it and draws

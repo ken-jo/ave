@@ -944,6 +944,38 @@ describe("Sidebar conversation row actions", () => {
     restore();
   });
 
+  it("offers no archive or rename on the Suggestions conversation, but keeps delete", async () => {
+    // Archived rows leave the list, so archiving the conversation every
+    // unrequested card is addressed to would hide each suggestion and its
+    // count. Delete stays: main clears it and recreates the row.
+    const state = rowState();
+    const { getByTestId, showNativeContextMenu, restore } = renderSidebar({
+      sessions: [
+        sessionRow({ id: SUGGESTIONS_SESSION_ID, title: "Inbox", modifiedAt: new Date().toISOString() }),
+        sessionRow({ id: "sess-2", title: "다른 대화", modifiedAt: new Date(Date.now() - 3600_000).toISOString() }),
+      ],
+      conversationActions: asActions(state),
+    });
+    try {
+      await waitFor(() => getByTestId(`sidebar-session-menu-${SUGGESTIONS_SESSION_ID}`));
+      fireEvent.click(getByTestId(`sidebar-session-menu-${SUGGESTIONS_SESSION_ID}`));
+      const suggestions = showNativeContextMenu.mock.calls.at(-1)?.[0];
+      expect(suggestions?.commands).not.toContain("conversation.archive");
+      expect(suggestions?.commands).not.toContain("conversation.unarchive");
+      expect(suggestions?.commands).not.toContain("conversation.rename");
+      expect(suggestions?.commands).toContain("conversation.delete");
+
+      // An ordinary row next to it still offers both.
+      fireEvent.click(getByTestId("sidebar-session-menu-sess-2"));
+      const ordinary = showNativeContextMenu.mock.calls.at(-1)?.[0];
+      expect(ordinary?.commands).toEqual(
+        expect.arrayContaining(["conversation.archive", "conversation.rename", "conversation.delete"]),
+      );
+    } finally {
+      restore();
+    }
+  });
+
   it("hides archived conversations until the archive toggle is used", () => {
     const state = rowState();
     state.archived.add("sess-1");

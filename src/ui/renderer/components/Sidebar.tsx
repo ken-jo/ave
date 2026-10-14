@@ -1497,8 +1497,15 @@ function ProjectSessionList({
               : { "conversation.rename": () => setRenamingKey(`session:${session.id}`) }),
             "conversation.share": () => void actions.onShare(session.id),
             "conversation.copy": () => void actions.onCopy(session.id),
-            [archived ? "conversation.unarchive" : "conversation.archive"]: () =>
-              void actions.onSetArchived(session.id, !archived),
+            // Archived rows leave the list, and every unrequested card is
+            // addressed to the Suggestions conversation — archiving it would
+            // hide every suggestion and its count. Main refuses it too.
+            ...(isSuggestionsSession(session.id) && !archived
+              ? {}
+              : {
+                  [archived ? "conversation.unarchive" : "conversation.archive"]: () =>
+                    void actions.onSetArchived(session.id, !archived),
+                }),
             "conversation.delete": () => void actions.onDelete(session.id),
           }
         : {}),
