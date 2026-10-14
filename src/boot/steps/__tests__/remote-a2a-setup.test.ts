@@ -93,7 +93,7 @@ describe("remoteA2AStartFailureReason", () => {
   it("keeps only the runtime's own reason codes and never echoes other text", () => {
     expect(remoteA2AStartFailureReason(new Error("a2a-remote-receiver-secret-missing")))
       .toBe("a2a-remote-receiver-secret-missing");
-    expect(remoteA2AStartFailureReason(new Error("ENOENT: /Users/someone/.ave/secret")))
+    expect(remoteA2AStartFailureReason(new Error("ENOENT: /Users/example/.ave/secret")))
       .toBe("a2a-remote-start-failed");
     expect(remoteA2AStartFailureReason("a2a-remote-config-incomplete")).toBe("a2a-remote-start-failed");
   });

@@ -95,7 +95,7 @@ function patchFor(path: GateRow["path"], value: boolean): DeepPartial<AppSetting
  * can act on get their own sentence; anything else is named by its code rather
  * than guessed at, so a support conversation still has something to quote.
  */
-export function remoteA2AStartFailureText(reason: string | undefined, t: (key: string, vars?: Record<string, string>) => string): string {
+function remoteA2AStartFailureText(reason: string | undefined, t: (key: string, vars?: Record<string, string>) => string): string {
   switch (reason) {
     case "a2a-remote-os-encryption-unavailable":
       return t("localApiSurfaces.remoteA2aReasonEncryption");

@@ -98,7 +98,7 @@ export function createUnroutableNotifier(
  * named function for the same reason {@link createUnroutableNotifier} is.
  * Delivery is best-effort: the sender swallows a provider failure.
  */
-export function createPairedNotifier(
+function createPairedNotifier(
   controlReplies: Pick<TelegramControlReplySender, "notify">,
 ): (senderId: string) => Promise<void> {
   return async (senderId) => {
