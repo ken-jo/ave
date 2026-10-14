@@ -118,6 +118,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "sub-agent-runner-unavailable": "formatIpcError.subAgentRunnerUnavailable",
   "sub-agent-transcript-not-found": "formatIpcError.subAgentTranscriptNotFound",
   "session-not-found": "formatIpcError.sessionNotFound",
+  "block-not-found": "formatIpcError.blockNotFound",
   "side-chat-unavailable": "formatIpcError.sideChatUnavailable",
   "project-not-allowed": "formatIpcError.projectNotAllowed",
   "invalid-text": "formatIpcError.invalidText",
