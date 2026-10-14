@@ -9,7 +9,7 @@ describe("system prompt shell environment", () => {
     const prompt = new SystemPromptBuilder({
       memoryManager: makePromptMemorySource(),
       toolRegistry: new ToolRegistry(),
-    }).buildTurnContext("");
+    }).build();
     expect(prompt).toContain("Application paths (JSON):");
     expect(prompt).toContain("<shell-execution-environment>");
     expect(prompt).toContain(t("shellExecution.currentUser"));

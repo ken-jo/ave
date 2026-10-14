@@ -353,7 +353,12 @@ export class VercelUnifiedProvider implements LLMProvider {
       let messages: ModelMessage[];
       if (markCacheBreakpoints) {
         const { conversation, requestOnlyTail } = splitRequestOnlyTail(params.messages);
-        messages = withCachedConversationPrefix(toModelMessages(conversation), toModelMessages(requestOnlyTail));
+        const lastRow = conversation[conversation.length - 1];
+        messages = withCachedConversationPrefix(
+          toModelMessages(conversation),
+          toModelMessages(requestOnlyTail),
+          lastRow?.role === "user" ? lastRow.meta?.requestOnlyParts ?? 0 : 0,
+        );
       } else {
         messages = toModelMessages(params.messages);
       }

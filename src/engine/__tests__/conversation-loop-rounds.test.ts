@@ -121,8 +121,8 @@ describe("ConversationLoop queryLoop", () => {
     }),
     ).rejects.toThrow("prompt assembly failed");
 
-    expect(setOriginSource).toHaveBeenNthCalledWith(1, "overlay:test");
-    expect(setOriginSource).toHaveBeenLastCalledWith(null);
+    // The staged origin reaches the turn context, not the system prompt.
+    expect(setOriginSource).not.toHaveBeenCalled();
     expect(setActiveSessionId).toHaveBeenNthCalledWith(1, expect.any(String));
     expect(setActiveSessionId).toHaveBeenLastCalledWith(null);
     expect(setActiveRolePrompt).toHaveBeenNthCalledWith(1, {

@@ -1004,7 +1004,7 @@ flowchart LR
     end
 
     subgraph "Contextual Sources (상황별)"
-        S9["⑨ Turn Context (request-only row)<br/>OS·경로·시각(분 단위)·질의별 메모"]
+        S9["⑨ OS / Environment (stable) + Turn Context<br/>환경은 system prompt, 시각·제목·staged 경고·질의별 메모는 turn context"]
         S10["⑩ Active Session Context<br/>현재 열린 파일·위치"]
         S11["⑪ Overlay Trigger Context<br/>브리핑·알림·대기 승인 건"]
         S12["⑫ Feature Flags<br/>활성 실험 기능 (§14.4)"]
@@ -1036,7 +1036,7 @@ flowchart LR
 | ⑥ | Plugin/Tool Catalog | 매 턴 (조건부) | 0.5~2K | 현재 턴에 아직 선택되지 않은 enabled 플러그인 카탈로그 + 대형 도구 표면용 지연 도구 카탈로그 (`tool_search`, `EAGER_TOOL_EXPOSURE_CEILING`). 사용자 비활성 플러그인은 카탈로그에서 제외된다. 활성 플러그인 도구 스키마는 200개 미만에서는 ⑤에 eager 포함, 200개 이상에서는 선택 로드 |
 | ⑦ | MEMORY.md | 파일 변경 시 | 1~3K | 사용자 축적 기억 인덱스 — 선호, 루틴, 프로젝트 정보 |
 | ⑧ | (제거) Compact summary | — | — | system prompt 가 아니라 compact boundary row (`<prior-context-summary>`) 에 실린다. |
-| ⑨ | Turn Context | 매 턴 | 0.4~1K | system prompt 밖. `buildTurnContext()` 가 OS·경로·셸·시각(분 단위)·로캘·질의별 메모를 `<turn-context>` 로 만들고, 매 라운드 대화 뒤에 `meta.requestOnly` row 로 붙인다 (history 에 저장 안 함). |
+| ⑨ | OS / Environment + Turn Context | 환경: 세션 고정 / turn context: 매 턴 | 0.3~1K | OS·경로·셸·로캘은 세션 내내 같아 system prompt 에 남는다. `buildTurnContext()` 는 시각(분 단위)·세션 제목·staged-origin 경고·질의별 메모를 `<turn-context>` 로 만들어, 사용자 메시지로 시작하는 라운드에서만 그 메시지 안 마지막 content part 로 붙인다 (`meta.requestOnlyParts`, history 저장 안 함). tool round 에는 붙지 않는다. |
 | ⑩ | Session Context | 매 턴 | 0.5~1K | 현재 열린 파일, 작업 디렉터리 등 |
 | ⑪ | Overlay Trigger Context | 매 턴 (조건부) | 0.5~2K | 대기 중인 승인 건수, 임박 일정, 브리핑 요약 |
 | ⑫ | Feature Flags | 부팅 시 | 0.2~0.5K | 활성 실험 기능 목록 (§14.4 Feature Flag 참조) |
@@ -1165,7 +1165,7 @@ message slice 만 표시하는 readonly view-mode 에 진입하고, "↩ 여기�
 
 **Prompt-injection fence**: boundary row 의 summary 는 `<prior-context-summary>` 블록으로 _명령 해석 금지_ fence 로 wrap 되고, summary 안의 close tag 는 `neutralizeFenceClose` 로 무력화된다. 이전 컨텍스트의 사용자 입력이 요약을 거쳐 행동 지시로 흘러들어가는 vector 차단.
 
-**Prompt cache**: `claude` slot 요청은 마지막 tool 정의, system prompt (단일 블록), 마지막 대화 row 에 cache breakpoint 3개를 둔다 (상한 4). `meta.requestOnly` row (turn context, nudge) 는 breakpoint 뒤에 붙는다. `openai` / `azure-foundry` slot 은 session id 를 `promptCacheKey` 로 보낸다 (`src/engine/llm/vercel/prompt-cache.ts`).
+**Prompt cache**: `claude` slot 요청은 마지막 tool 정의, system prompt (단일 블록), 마지막 대화 row 에 cache breakpoint 3개를 둔다 (상한 4). turn context 는 사용자 메시지 안 breakpoint 뒤 part 로, nudge 는 그 메시지 안 또는 (assistant/tool 뒤에서는) `meta.requestOnly` row 로 붙어 연속 user 메시지가 생기지 않는다. 한 라운드가 lookback(20 블록) 이상을 추가하면 이전 라운드 위치에 4번째 breakpoint 를 둔다. `openai` / `azure-foundry` slot 은 session id 를 `promptCacheKey` 로 보낸다 (`src/engine/llm/vercel/prompt-cache.ts`).
 
 **세션 로드/복원 기준**: [`session-model-v2.md`](./session-model-v2.md) 가 canonical 이다.
 채팅 화면은 현재 세션만 렌더링한다. chronological session 자동 로드, upward-scroll preview,

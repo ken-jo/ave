@@ -65,23 +65,77 @@ export function splitRequestOnlyTail(messages: GenericMessage[]): {
 }
 
 /**
- * Marks the last user or tool message of the conversation; the request-only
- * tail follows it unmarked. An assistant row is never marked: its last block
- * can be a reasoning block, which the provider refuses to carry a breakpoint,
- * and a request ends on an assistant row only on continuation paths, where the
- * user or tool row before it is the stable prefix anyway.
+ * How many blocks the provider walks back from a breakpoint looking for an
+ * earlier cache entry, the breakpoint's own block included.
+ */
+const CACHE_LOOKBACK_BLOCKS = 20;
+
+function blockCount(message: ModelMessage): number {
+  return typeof message.content === "string" ? 1 : message.content.length;
+}
+
+function withMessageBreakpoint(message: ModelMessage): ModelMessage {
+  return {
+    ...message,
+    providerOptions: { ...(message.providerOptions ?? {}), ...EPHEMERAL_BREAKPOINT },
+  } as ModelMessage;
+}
+
+/**
+ * Marks the conversation's reusable prefix and appends the request-only tail
+ * unmarked.
+ *
+ * The breakpoint sits on the last user or tool message. An assistant row is
+ * never marked: its last block can be a reasoning block, which the provider
+ * refuses to carry a breakpoint, and a request ends on an assistant row only
+ * on continuation paths, where the row before it is the stable prefix anyway.
+ *
+ * `requestOnlyParts` counts content parts at the end of the last message that
+ * this request alone carries (the turn context); the breakpoint goes on the
+ * message's last part before them, so next request's identical message, sent
+ * without them, still matches the cached prefix.
+ *
+ * When one round adds more blocks than the provider looks back over (a round
+ * with many parallel tool calls), the previous round's breakpoint position is
+ * marked as well, so the new breakpoint still finds that entry. At most two
+ * message breakpoints, so a request carries at most four.
  */
 export function withCachedConversationPrefix(
   conversation: ModelMessage[],
   requestOnlyTail: ModelMessage[],
+  requestOnlyParts = 0,
 ): ModelMessage[] {
-  let index = conversation.length - 1;
-  while (index >= 0 && conversation[index]!.role !== "user" && conversation[index]!.role !== "tool") index -= 1;
-  if (index < 0) return [...conversation, ...requestOnlyTail];
-  const target = conversation[index]!;
-  const marked = {
-    ...target,
-    providerOptions: { ...(target.providerOptions ?? {}), ...EPHEMERAL_BREAKPOINT },
-  } as ModelMessage;
-  return [...conversation.slice(0, index), marked, ...conversation.slice(index + 1), ...requestOnlyTail];
+  const isPrefixEnd = (m: ModelMessage) => m.role === "user" || m.role === "tool";
+  let target = conversation.length - 1;
+  while (target >= 0 && !isPrefixEnd(conversation[target]!)) target -= 1;
+  if (target < 0) return [...conversation, ...requestOnlyTail];
+
+  const out = conversation.slice();
+  const targetMessage = conversation[target]!;
+  const tailParts = target === conversation.length - 1 ? requestOnlyParts : 0;
+  let targetBlocks = blockCount(targetMessage);
+  if (tailParts > 0 && Array.isArray(targetMessage.content) && targetMessage.content.length > tailParts) {
+    const content = targetMessage.content.slice();
+    const at = content.length - 1 - tailParts;
+    const part = content[at]!;
+    const partOptions = (part as { providerOptions?: Record<string, unknown> }).providerOptions;
+    content[at] = { ...part, providerOptions: { ...(partOptions ?? {}), ...EPHEMERAL_BREAKPOINT } } as typeof part;
+    out[target] = { ...targetMessage, content } as ModelMessage;
+    targetBlocks -= tailParts;
+  } else {
+    out[target] = withMessageBreakpoint(targetMessage);
+  }
+
+  // The previous round's breakpoint: the last user/tool message before the
+  // assistant turn that precedes the target.
+  let assistant = target - 1;
+  while (assistant >= 0 && conversation[assistant]!.role !== "assistant") assistant -= 1;
+  let previous = assistant - 1;
+  while (previous >= 0 && !isPrefixEnd(conversation[previous]!)) previous -= 1;
+  if (previous >= 0) {
+    let distance = targetBlocks;
+    for (let i = previous + 1; i < target; i++) distance += blockCount(conversation[i]!);
+    if (distance >= CACHE_LOOKBACK_BLOCKS) out[previous] = withMessageBreakpoint(conversation[previous]!);
+  }
+  return [...out, ...requestOnlyTail];
 }

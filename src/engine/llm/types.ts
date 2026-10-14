@@ -103,6 +103,13 @@ export interface MessageMeta {
    * prefix before these rows.
    */
   requestOnly?: true;
+  /**
+   * The last N content parts of this user row exist only in the request being
+   * sent (the turn context, a round nudge). The row's own content precedes
+   * them, so a transport marking a reusable prefix ends it before these parts
+   * and the row repeats byte-identical without them next request.
+   */
+  requestOnlyParts?: number;
   /** Compact boundary marker (idempotency + revert anchor) */
   compactBoundary?: boolean;
 

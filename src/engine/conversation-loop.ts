@@ -3,6 +3,7 @@ import { normalizeToolOutputArtifactInfo } from "../shared/tool-output-artifact.
 
 
 
+import { appendRequestOnlyText } from "./turn/request-only-text.js";
 import { ConversationHistory } from "./conversation-history.js";
 import { ToolExecutor } from "../tools/executor.js";
 import { backgroundShellManager } from "../tools/shell-tools.js";
@@ -458,18 +459,15 @@ export class ConversationLoop {
 
   buildSystemPromptForScope(
     scope: ToolScope,
-    originSource: string | null,
     rolePrompt?: ActiveRolePrompt,
     overlaySessionId = this.sessionId,
   ): string {
     this.deps.systemPromptBuilder.setToolScope?.(scope);
-    this.deps.systemPromptBuilder.setOriginSource?.(originSource);
     this.deps.systemPromptBuilder.setActiveSessionId?.(overlaySessionId);
     this.deps.systemPromptBuilder.setActiveRolePrompt?.(rolePrompt ?? null);
     try {
       return this.deps.systemPromptBuilder.build();
     } finally {
-      this.deps.systemPromptBuilder.setOriginSource?.(null);
       this.deps.systemPromptBuilder.setActiveSessionId?.(null);
       this.deps.systemPromptBuilder.setActiveRolePrompt?.(null);
     }
@@ -480,24 +478,26 @@ export class ConversationLoop {
   }
 
   /**
-   * The per-turn context as a request-only row (see
-   * `SystemPromptBuilder.buildTurnContext`), or null when the builder renders
-   * none. Built once per turn so every round of the turn sends the same row.
+   * The per-turn context text (see `SystemPromptBuilder.buildTurnContext`), or
+   * "" when the builder renders none. It is sent only on a round that starts
+   * from a user message, appended inside that message (request-only-text.ts).
    */
-  buildTurnContextRow(memoryQuery: string): GenericMessage | null {
-    const content = this.deps.systemPromptBuilder.buildTurnContext?.(memoryQuery) ?? "";
-    return content.length > 0 ? { role: "user", content, meta: { requestOnly: true } } : null;
+  buildTurnContext(memoryQuery: string, originSource: string | null): string {
+    return this.deps.systemPromptBuilder.buildTurnContext?.(memoryQuery, originSource) ?? "";
   }
 
   estimateCurrentRequestProjection(params: {
     systemPrompt: string;
     toolSchemas: ToolSchema[];
-    /** Request-only rows that trail the history in the request being measured. */
-    requestOnlyRows?: GenericMessage[];
+    /** The turn context the request carries inside its trailing user message, if any. */
+    turnContext?: string;
   }): RequestInputProjection {
+    const history = this.history.getMessages();
     return this.projectProviderRequestInput({
       systemPrompt: params.systemPrompt,
-      messages: [...this.history.getMessages(), ...(params.requestOnlyRows ?? [])],
+      messages: params.turnContext && history[history.length - 1]?.role === "user"
+        ? appendRequestOnlyText(history, [params.turnContext])
+        : history,
       toolSchemas: params.toolSchemas,
     });
   }
@@ -512,18 +512,17 @@ export class ConversationLoop {
   ): RequestProjectionContext {
     const buildSystemPrompt = () => this.buildSystemPromptForScope(
       scope,
-      originSource,
       rolePrompt,
       overlaySessionId,
     );
-    const turnContextRow = this.buildTurnContextRow(memoryQuery);
+    const turnContext = this.buildTurnContext(memoryQuery, originSource);
     return {
       systemPrompt: buildSystemPrompt(),
       toolSchemas,
       estimateCurrent: () => this.estimateCurrentRequestProjection({
         systemPrompt: buildSystemPrompt(),
         toolSchemas,
-        ...(turnContextRow ? { requestOnlyRows: [turnContextRow] } : {}),
+        ...(turnContext ? { turnContext } : {}),
       }),
     };
   }

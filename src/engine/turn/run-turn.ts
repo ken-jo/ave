@@ -621,7 +621,6 @@ async function runTurnInSpan(
 
     const systemPrompt = self.buildSystemPromptForScope(
       scope,
-      options?.originSource ?? null,
       options?.rolePrompt,
       effectiveSessionId,
     );
