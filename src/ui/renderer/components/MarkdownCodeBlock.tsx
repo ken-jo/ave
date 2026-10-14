@@ -7,12 +7,13 @@
  * from the rendered DOM — so what lands on the clipboard is exactly what the
  * model wrote between the fences, without UI chrome or a trailing newline.
  */
-import type { ComponentPropsWithoutRef } from "react";
+import type { ComponentPropsWithoutRef, ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
 import type { ExtraProps } from "react-markdown";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 import { useCopyFlash } from "../hooks/use-copy-flash.js";
+import { useHighlightedCode } from "../hooks/use-highlighted-code.js";
 
 interface HastLike {
   type?: string;
@@ -27,6 +28,38 @@ function hastText(node: HastLike | undefined): string {
   if (!node) return "";
   if (node.type === "text" && typeof node.value === "string") return node.value;
   return (node.children ?? []).map((child) => hastText(child)).join("");
+}
+
+/** The `<code>` child's class list, kept on the highlighted `<code>` too. */
+function codeClassName(pre: HastLike | undefined): string | undefined {
+  const code = pre?.children?.find((child) => child.type === "element" && child.tagName === "code");
+  const raw = code?.properties?.className;
+  if (Array.isArray(raw)) return raw.filter((c) => typeof c === "string").join(" ");
+  return typeof raw === "string" ? raw : undefined;
+}
+
+/**
+ * Highlighter hast → React. lowlight emits only `span` elements carrying
+ * `hljs-*` classes and text nodes; anything else is rendered as its text, so
+ * no tag or attribute from the tree can reach the DOM beyond a class name.
+ */
+function renderHighlighted(nodes: readonly HastLike[] | undefined, keyPrefix = "h"): ReactNode[] {
+  return (nodes ?? []).map((node, index) => {
+    const key = `${keyPrefix}-${index}`;
+    if (node.type === "text") return typeof node.value === "string" ? node.value : "";
+    if (node.type === "element") {
+      const raw = node.properties?.className;
+      const className = Array.isArray(raw)
+        ? raw.filter((c): c is string => typeof c === "string" && c.startsWith("hljs-")).join(" ")
+        : undefined;
+      return (
+        <span key={key} className={className || undefined}>
+          {renderHighlighted(node.children, key)}
+        </span>
+      );
+    }
+    return hastText(node);
+  });
 }
 
 /** `language-ts` → `ts`; `undefined` when the fence named no language. */
@@ -50,6 +83,7 @@ export function MarkdownCodeBlock({ node, children, ...rest }: ComponentPropsWit
   const language = fenceLanguage(hast);
   const source = hastText(hast).replace(/\n$/, "");
   const label = copied ? t("assistantCard.codeCopied") : t("assistantCard.codeCopy");
+  const highlighted = useHighlightedCode(language, source);
 
   return (
     <div className="group/code relative my-3 min-w-0 max-w-full" data-testid="markdown-code-block">
@@ -71,8 +105,19 @@ export function MarkdownCodeBlock({ node, children, ...rest }: ComponentPropsWit
           <span>{label}</span>
         </Button>
       </div>
-      <pre {...rest} className={`${rest.className ?? ""} mt-0! mb-0! rounded-t-none`}>
-        {children}
+      {/* Same <pre>/<code> box before and after highlighting: the spans only
+          recolour, so the block does not shift when a grammar arrives. */}
+      <pre
+        {...rest}
+        className={`${rest.className ?? ""} mt-0! mb-0! rounded-t-none`}
+        data-highlighted={highlighted ? "true" : undefined}
+      >
+        {highlighted ? (
+          <code className={codeClassName(hast)}>
+            {renderHighlighted(highlighted.children as readonly HastLike[])}
+            {"\n"}
+          </code>
+        ) : children}
       </pre>
     </div>
   );

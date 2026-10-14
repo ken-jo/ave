@@ -295,6 +295,11 @@ if (unexpectedMainRootScripts.length > 0) {
 // match by regex rather than exact string.
 const LAZY_RENDERER_CHUNKS = [
   { name: "mermaid", pattern: /^\/dist\/src\/renderer\/chunks\/mermaid\.[0-9a-f]{8}\.js$/ },
+  // Code-block syntax highlighting (use-highlighted-code.ts): the core chunk
+  // and one representative grammar. A missing chunk degrades to plain text
+  // silently, so membership is asserted here.
+  { name: "highlight", pattern: /^\/dist\/src\/renderer\/chunks\/highlight\.[0-9a-f]{8}\.js$/ },
+  { name: "hljs-typescript", pattern: /^\/dist\/src\/renderer\/chunks\/hljs-typescript\.[0-9a-f]{8}\.js$/ },
 ];
 const missingLazyChunks = LAZY_RENDERER_CHUNKS.filter(
   (chunk) => !entries.some((entry) => chunk.pattern.test(entry)),
@@ -345,7 +350,7 @@ if (buildOnlyEntries.length > 0) {
 }
 
 const rendererOnlyPackagePattern =
-  /^\/node_modules\/(?:@radix-ui|@azure\/msal-(?:node|common)|react|react-dom|react-day-picker|react-markdown|remark-gfm|cmdk|lucide-react|class-variance-authority|clsx|tailwind-merge|date-fns|eruda)(?:\/|$)/;
+  /^\/node_modules\/(?:@radix-ui|@azure\/msal-(?:node|common)|react|react-dom|react-day-picker|react-markdown|remark-gfm|lowlight|highlight\.js|cmdk|lucide-react|class-variance-authority|clsx|tailwind-merge|date-fns|eruda)(?:\/|$)/;
 const rendererOnlyEntries = entries.filter((entry) => rendererOnlyPackagePattern.test(entry));
 if (rendererOnlyEntries.length > 0) {
   fail("renderer-only packages leaked into app.asar", rendererOnlyEntries);
