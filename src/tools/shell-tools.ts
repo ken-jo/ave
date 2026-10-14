@@ -87,6 +87,7 @@ import type {
   WorkloadToolCorrelationAuthority,
 } from "../workload/runtime.js";
 import { isWorkloadBrokerActive } from "../workload/runtime.js";
+import type { ApprovalMemoryScope } from "../shared/permissions-events.js";
 import {
   WORKLOAD_BROKER_LIMITS,
   type WorkloadBrokerSuccessResults,
@@ -1211,6 +1212,19 @@ const hostShellExecutionFields = {
   justification: z.string().optional().describe("Required nonblank reason for explicit host execution"),
 };
 
+/**
+ * Opt-in memory scope shared by bash and powershell: the command and its cwd
+ * override. `run_in_background` keeps exact-args identity — a background
+ * process outlives the turn — and `executionMode: "host"` is one-shot and
+ * never recorded, so both fall back to the exact input.
+ */
+function shellApprovalMemoryScope(input: unknown): ApprovalMemoryScope | undefined {
+  const args = input && typeof input === "object" ? input as Record<string, unknown> : {};
+  if (typeof args.command !== "string" || args.command.length === 0) return undefined;
+  if (args.run_in_background === true || args.executionMode === "host") return undefined;
+  return { kind: "command", commandSha256: sha256Hex(args.command), cwd: typeof args.cwd === "string" ? args.cwd : null };
+}
+
 function validateHostShellExecutionRequest(
   input: { executionMode?: "default" | "host"; justification?: string; run_in_background?: boolean },
   ctx: z.RefinementCtx,
@@ -1297,6 +1311,12 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
   approvalCacheKey(input: unknown): string {
     const parsed = BashToolInputSchema.parse(input);
     return sha256Hex(JSON.stringify({ command: parsed.command, cwd: parsed.cwd ?? null }));
+  }
+
+  // The executor appends the sealed execution plan (host vs sandboxed) to the
+  // memory key, so a sandboxed approval never answers for another substrate.
+  approvalMemoryScope(input: unknown): ApprovalMemoryScope | undefined {
+    return shellApprovalMemoryScope(input);
   }
 
   protected async executeTyped(
@@ -2441,6 +2461,12 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
   approvalCacheKey(input: unknown): string {
     const parsed = PowerShellToolInputSchema.parse(input);
     return sha256Hex(JSON.stringify({ command: parsed.command, cwd: parsed.cwd ?? null }));
+  }
+
+  // The executor appends the sealed execution plan (host vs sandboxed) to the
+  // memory key, so a sandboxed approval never answers for another substrate.
+  approvalMemoryScope(input: unknown): ApprovalMemoryScope | undefined {
+    return shellApprovalMemoryScope(input);
   }
 
   protected async executeTyped(

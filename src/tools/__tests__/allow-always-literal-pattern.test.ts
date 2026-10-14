@@ -100,7 +100,7 @@ function harness(
         verdictAtApproval: req.reviewerVerdict?.level ?? "low",
         nlJustification: null,
         trustOrigin: req.trustOrigin,
-        approvalCacheKey: approvalCacheKeyIdentity(req.approvalCacheKey, req.approvalMemoryIdentity),
+        approvalCacheKey: approvalCacheKeyIdentity(req.approvalCacheKey, req.approvalMemory),
         workingDirectoryIdentity: workingDirectory!.identity,
       },
     );

@@ -9,8 +9,8 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { approvalCacheKeyIdentity, captureApprovalWorkingDirectory, recordApproval, lookupApproval, lookupUserDecision, __resetSessionStoreForTest } from "../user-approval-store.js";
 
 // Args-identity keys: they narrow the exact-input identity, never replace it.
-const existingPolicyKey = approvalCacheKeyIdentity("existing-policy-key", "args")!;
-const differentPolicyKey = approvalCacheKeyIdentity("different-policy-key", "args")!;
+const existingPolicyKey = approvalCacheKeyIdentity("existing-policy-key", { kind: "args" })!;
+const differentPolicyKey = approvalCacheKeyIdentity("different-policy-key", { kind: "args" })!;
 
 describe("exact decisions scoped to the captured working directory", () => {
   let root: string;

@@ -16,6 +16,8 @@ process.env.AVE_HOME = TEST_HOME;
 
 import {
   approvalCacheKeyIdentity,
+  captureApprovalWorkingDirectory,
+  isExactArgsDecision,
   recordApproval,
   lookupApproval,
   lookupUserDecision,
@@ -28,7 +30,7 @@ import {
 } from "../user-approval-store.js";
 
 /** An args-identity key: narrows the exact-input identity, never replaces it. */
-const argsKey = (key: string) => approvalCacheKeyIdentity(key, "args")!;
+const argsKey = (key: string) => approvalCacheKeyIdentity(key, { kind: "args" })!;
 
 beforeEach(async () => {
   await mkdir(TEST_HOME, { recursive: true });
@@ -394,57 +396,81 @@ describe("HIGH-2: canonicalStringify produces key-order-invariant output", () =>
   });
 });
 
-// ─── Cache-key identity (v2) and the rule for rows written before it ─────────
+// ─── Target-wide memory identity (v2) and rows written before it ───────────
 
-describe("approval cache key as the remembered identity", () => {
-  const hostKey = (host: string) => approvalCacheKeyIdentity(`web_fetch:web_fetch:host:${host}`, "approval-cache-key")!;
+describe("target-wide memory key as the remembered identity", () => {
+  const policyKey = "web_fetch:web_fetch:host:a.example";
+  const originMemory = (origin: string) => ({
+    kind: "key" as const,
+    key: `web_fetch:${origin}`,
+    scope: { kind: "origin" as const, origin },
+  });
+  const atOrigin = (origin: string) => approvalCacheKeyIdentity(policyKey, originMemory(origin))!;
   const urlArgs = (url: string) => canonicalStringify({ url });
   const allow = { scope: "persistent" as const, verdictAtApproval: "low" as const, nlJustification: null, trustOrigin: "user-keyboard" };
+  const A = "https://a.example:443";
 
-  it("replaces the args: any input under the same key matches, another key does not", async () => {
-    await recordApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", { ...allow, approvalCacheKey: hostKey("a.example") });
+  it("replaces the args, and records an args hash to tell exact hits from target-wide ones", async () => {
+    await recordApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", { ...allow, approvalCacheKey: atOrigin(A) });
     __resetSessionStoreForTest();
-    expect(await lookupApproval("web_fetch", urlArgs("https://a.example/y"), "builtin", "user-keyboard", hostKey("a.example"))).not.toBeNull();
-    expect(await lookupApproval("web_fetch", urlArgs("https://b.example/"), "builtin", "user-keyboard", hostKey("b.example"))).toBeNull();
-    expect(await lookupApproval("web_fetch", urlArgs("https://a.example/y"), "builtin", "llm-tool-arg", hostKey("a.example"))).toBeNull();
-    expect(await lookupApproval("web_fetch", urlArgs("https://a.example/y"), "plugin", "user-keyboard", hostKey("a.example"))).toBeNull();
-    expect((await readApprovals()).approvals).toSatisfy((rows: Record<string, { rememberBy?: string }>) =>
-      Object.values(rows).every((row) => row.rememberBy === "approval-cache-key"));
+    const same = await lookupApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", "user-keyboard", atOrigin(A));
+    const other = await lookupApproval("web_fetch", urlArgs("https://a.example/y"), "builtin", "user-keyboard", atOrigin(A));
+    expect(same && isExactArgsDecision(same, urlArgs("https://a.example/x"))).toBe(true);
+    expect(other && isExactArgsDecision(other, urlArgs("https://a.example/y"))).toBe(false);
+    expect(await lookupApproval("web_fetch", urlArgs("http://a.example/x"), "builtin", "user-keyboard", atOrigin("http://a.example:80"))).toBeNull();
+    expect(await lookupApproval("web_fetch", urlArgs("https://a.example:8443/x"), "builtin", "user-keyboard", atOrigin("https://a.example:8443"))).toBeNull();
+    const rows = Object.values((await readApprovals()).approvals);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ rememberBy: "key", argsIdentity: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(JSON.stringify(rows)).not.toContain("a.example/x");
   });
 
-  it("the same key string under args identity still requires identical input", async () => {
-    const argsMode = approvalCacheKeyIdentity("routine_schedule:scope:deny-all", "args")!;
-    await recordApproval("routine_schedule", '{"prompt":"a"}', "builtin", { ...allow, approvalCacheKey: argsMode });
-    expect(await lookupApproval("routine_schedule", '{"prompt":"a"}', "builtin", "user-keyboard", argsMode)).not.toBeNull();
-    expect(await lookupApproval("routine_schedule", '{"prompt":"b"}', "builtin", "user-keyboard", argsMode)).toBeNull();
+  it("keeps trust origin, source and working directory separate under the memory key", async () => {
+    const first = await mkdir(join(TEST_HOME, "wd-first"), { recursive: true }).then(() => join(TEST_HOME, "wd-first"));
+    const second = await mkdir(join(TEST_HOME, "wd-second"), { recursive: true }).then(() => join(TEST_HOME, "wd-second"));
+    await recordApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", {
+      ...allow, approvalCacheKey: atOrigin(A),
+      workingDirectoryIdentity: captureApprovalWorkingDirectory(first).identity,
+    });
+    __resetSessionStoreForTest();
+    const args = urlArgs("https://a.example/y");
+    expect(await lookupApproval("web_fetch", args, "builtin", "user-keyboard", atOrigin(A), first)).not.toBeNull();
+    expect(await lookupApproval("web_fetch", args, "builtin", "user-keyboard", atOrigin(A), second)).toBeNull();
+    expect(await lookupApproval("web_fetch", args, "builtin", "llm-tool-arg", atOrigin(A), first)).toBeNull();
+    expect(await lookupApproval("web_fetch", args, "plugin", "user-keyboard", atOrigin(A), first)).toBeNull();
+  });
+
+  it("a policy key without opted-in memory still requires identical input", async () => {
+    const argsOnly = approvalCacheKeyIdentity("routine_schedule:scope:deny-all", { kind: "args" })!;
+    await recordApproval("routine_schedule", '{"prompt":"a"}', "builtin", { ...allow, approvalCacheKey: argsOnly });
+    expect(await lookupApproval("routine_schedule", '{"prompt":"a"}', "builtin", "user-keyboard", argsOnly)).not.toBeNull();
+    expect(await lookupApproval("routine_schedule", '{"prompt":"b"}', "builtin", "user-keyboard", argsOnly)).toBeNull();
   });
 
   it("does not honour an allow written under the pre-v2 args+key formula", async () => {
-    // A pre-change row: same tool, input, trust and key, args identity.
-    const legacy = approvalCacheKeyIdentity("web_fetch:web_fetch:host:a.example", "args")!;
+    const legacy = approvalCacheKeyIdentity(policyKey, { kind: "args" })!;
     await recordApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", { ...allow, approvalCacheKey: legacy });
     __resetSessionStoreForTest();
-    expect(await lookupApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", "user-keyboard", hostKey("a.example"))).toBeNull();
+    expect(await lookupApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", "user-keyboard", atOrigin(A))).toBeNull();
   });
 
   it("keeps honouring an exact deny written under the pre-v2 args+key formula", async () => {
-    const legacy = approvalCacheKeyIdentity("web_fetch:web_fetch:host:a.example", "args")!;
+    const legacy = approvalCacheKeyIdentity(policyKey, { kind: "args" })!;
     await recordApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", { ...allow, decision: "deny", approvalCacheKey: legacy });
-    // A newer key-wide allow must not override the user's saved deny.
-    await recordApproval("web_fetch", urlArgs("https://a.example/other"), "builtin", { ...allow, approvalCacheKey: hostKey("a.example") });
+    await recordApproval("web_fetch", urlArgs("https://a.example/other"), "builtin", { ...allow, approvalCacheKey: atOrigin(A) });
     __resetSessionStoreForTest();
-    expect(await lookupUserDecision("web_fetch", urlArgs("https://a.example/x"), "builtin", "user-keyboard", hostKey("a.example")))
+    expect(await lookupUserDecision("web_fetch", urlArgs("https://a.example/x"), "builtin", "user-keyboard", atOrigin(A)))
       .toMatchObject({ decision: "deny" });
-    // The legacy deny covered only its exact input; it is not widened to the key.
-    expect(await lookupUserDecision("web_fetch", urlArgs("https://a.example/y"), "builtin", "user-keyboard", hostKey("a.example")))
+    expect(await lookupUserDecision("web_fetch", urlArgs("https://a.example/y"), "builtin", "user-keyboard", atOrigin(A)))
       .toMatchObject({ decision: "allow" });
   });
 
-  it("refuses a key without its identity mode, and a key mode without a key", () => {
-    expect(() => approvalCacheKeyIdentity("web_fetch:host:a.example", undefined)).toThrow(/remembered-identity mode/);
-    expect(() => approvalCacheKeyIdentity(undefined, "approval-cache-key")).toThrow(/no key was derived/);
-    expect(() => approvalCacheKeyIdentity("", "args")).toThrow(/non-empty/);
-    expect(approvalCacheKeyIdentity(undefined, "args")).toBeUndefined();
+  it("refuses a policy key without a memory mode and an empty memory key", () => {
+    expect(() => approvalCacheKeyIdentity(policyKey, undefined)).toThrow(/remembered-identity mode/);
+    expect(() => approvalCacheKeyIdentity(policyKey, { kind: "key", key: "", scope: { kind: "origin", origin: A } })).toThrow(/non-empty/);
+    expect(() => approvalCacheKeyIdentity("", { kind: "args" })).toThrow(/non-empty/);
+    expect(approvalCacheKeyIdentity(undefined, { kind: "args" })).toBeUndefined();
     expect(approvalCacheKeyIdentity(undefined, undefined)).toBeUndefined();
+    expect(approvalCacheKeyIdentity(undefined, originMemory(A))).toEqual({ memoryKey: `web_fetch:${A}` });
   });
 });

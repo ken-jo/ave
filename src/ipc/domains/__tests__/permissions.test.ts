@@ -97,7 +97,7 @@ function makeDeps(options: {
   snapshotArgs?: unknown;
   snapshotVerdict?: "low" | "medium" | "high";
   snapshotApprovalCacheKey?: string;
-  snapshotApprovalMemoryIdentity?: "approval-cache-key" | "args";
+  snapshotApprovalMemory?: import("../../../shared/permissions-events.js").ApprovalMemory;
   /** Index into the card's own choice list the simulated user picks. */
   answerChoiceIndex?: number;
 } = {}) {
@@ -175,7 +175,7 @@ function makeDeps(options: {
         source: "user-keyboard" as const,
         trustOrigin: "user-keyboard",
         approvalCacheKey: options.snapshotApprovalCacheKey,
-        approvalMemoryIdentity: options.snapshotApprovalMemoryIdentity,
+        approvalMemory: options.snapshotApprovalMemory,
         durableApprovalRecordAllowed: options.durableApprovalRecordAllowed ?? true,
         persistentAllowAllowed: options.persistentAllowAllowed ?? options.snapshotVerdict !== "high",
         workingDirectoryIdentity: options.workingDirectoryIdentity ?? "a".repeat(64),
@@ -1329,7 +1329,11 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
   it("records under the host-captured cache-key identity, never a renderer-supplied one", async () => {
     await setup({
       snapshotApprovalCacheKey: "web_fetch:web_fetch:host:a.example",
-      snapshotApprovalMemoryIdentity: "approval-cache-key",
+      snapshotApprovalMemory: {
+        kind: "key",
+        key: "web_fetch:origin-a",
+        scope: { kind: "origin", origin: "https://a.example:443" },
+      },
     });
     const result = await invoke(PERMISSIONS.userApprovalRecord, {
       requestId: "req-host-key",
@@ -1342,7 +1346,7 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
     expect(result).toMatchObject({ ok: true });
     expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", '{"command":"ls"}', "user-keyboard",
       expect.objectContaining({
-        approvalCacheKey: { key: "web_fetch:web_fetch:host:a.example", rememberBy: "approval-cache-key" },
+        approvalCacheKey: { key: "web_fetch:web_fetch:host:a.example", memoryKey: "web_fetch:origin-a" },
       }));
   });
 

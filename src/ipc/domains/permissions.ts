@@ -1139,7 +1139,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         trustOrigin: snapshot.trustOrigin,
         // Throws (→ "managed") when the host request carried a key without
         // its identity mode: never guess which identity to persist under.
-        approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey, snapshot.approvalMemoryIdentity),
+        approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey, snapshot.approvalMemory),
         ...(decision === "allow" ? {
           workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
           riskCeilingAtApproval: snapshot.riskCeilingAtApproval,

@@ -1,16 +1,17 @@
 /**
- * Remembered decisions follow the tool's approval cache key, not its args.
+ * Remembered decisions follow a tool's opted-in memory scope, not its args.
  *
- * When a tool declares `approvalCacheKey` and the key is a complete consent
- * identity, Store B records and looks up a decision under that key INSTEAD of
- * the canonical input: "allow for this session" on web_fetch covers the
- * destination host, a write approval covers its target path. Tools without a
- * key, and tools whose key is only a policy scope, stay on exact-args
- * identity. Trust origin, source and working directory stay in every key.
+ * A tool that returns an `approvalMemoryScope` gets target-wide memory:
+ * "allow for this session" on a public web_fetch covers that exact origin
+ * (`scheme://host:port`), a write approval covers its target path. A hit on
+ * arguments the user never saw is reviewed like a fresh request (risk screen +
+ * reviewer) and only reuses the grant when that verdict is no riskier than the
+ * stored one. Tools without a scope — including private-network fetches and
+ * tools that only declare a policy `approvalCacheKey` — stay on exact args.
  *
- * Drives the real ToolExecutor + PermissionManager + ApprovalGate + store,
- * recording each decision the way the `userApprovalRecord` IPC does: from the
- * gate's host-owned request snapshot.
+ * Drives the real ToolExecutor + PermissionManager (rule-based reviewer) +
+ * ApprovalGate + store, recording each decision the way the
+ * `userApprovalRecord` IPC does: from the gate's host-owned request snapshot.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -20,6 +21,9 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { RuleBasedRiskClassifier, type ToolInvocationContext } from "../../permissions/reviewer/risk-classifier.js";
+import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import {
   __resetSessionStoreForTest,
   approvalCacheKeyIdentity,
@@ -30,7 +34,7 @@ import type { ToolTrustOrigin } from "../types.js";
 import type { Tool } from "../base.js";
 import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
-import { ReadFileTool, WriteFileTool } from "../file-tools.js";
+import { DeleteFileTool, MoveFileTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { ToolRegistry } from "../registry.js";
 import { createRoutineScheduleTool } from "../routine-schedule.js";
@@ -39,15 +43,16 @@ import { userPermissionContext } from "./tool-context-fixture.js";
 
 type CardAnswer = "allow-session" | "deny-exact";
 
-describe("remembered decisions keyed on the tool's approval cache key", () => {
+describe("remembered decisions keyed on the tool's opted-in memory scope", () => {
   let dir: string;
   let aveHomeDir: string;
   let prevAveHome: string | undefined;
   let auditLogger: AuditLogger;
+  let reviewerCache: VerdictCache | undefined;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "ave-cache-key-identity-"));
-    aveHomeDir = mkdtempSync(join(tmpdir(), "ave-home-cache-key-identity-"));
+    dir = mkdtempSync(join(tmpdir(), "ave-memory-scope-"));
+    aveHomeDir = mkdtempSync(join(tmpdir(), "ave-home-memory-scope-"));
     prevAveHome = process.env.AVE_HOME;
     process.env.AVE_HOME = aveHomeDir;
     __resetSessionStoreForTest();
@@ -56,6 +61,8 @@ describe("remembered decisions keyed on the tool's approval cache key", () => {
 
   afterEach(async () => {
     await auditLogger.close();
+    await reviewerCache?.flush();
+    reviewerCache = undefined;
     if (prevAveHome === undefined) delete process.env.AVE_HOME;
     else process.env.AVE_HOME = prevAveHome;
     __resetSessionStoreForTest();
@@ -64,16 +71,35 @@ describe("remembered decisions keyed on the tool's approval cache key", () => {
   });
 
   /**
-   * One executor whose approval cards are answered like the desktop card:
-   * the decision is persisted from the gate snapshot (as the record IPC
-   * does), then the card resolves.
+   * One executor with a rule-based reviewer whose approval cards are answered
+   * like the desktop card: persisted from the gate snapshot under the same
+   * eligibility gate as the record IPC, then resolved.
    */
-  function harness(tools: Tool[], answer: () => CardAnswer = () => "allow-session") {
+  function harness(
+    tools: Tool[],
+    answer: () => CardAnswer = () => "allow-session",
+    options: { reviewer?: boolean } = {},
+  ) {
     const registry = new ToolRegistry();
     for (const tool of tools) registry.register(tool);
     const manager = new PermissionManager(join(dir, "permissions.json"));
     manager.setMode("auto");
-    manager.setInteractiveAutoApprove("low");
+    const rules = new RuleBasedRiskClassifier();
+    const classify = vi.fn((ctx: ToolInvocationContext) => rules.classify(ctx));
+    if (options.reviewer === false) {
+      // No reviewer: every card is an unassessed ask, which may be remembered
+      // exactly — the lane a tool without a memory scope always uses.
+      manager.setInteractiveAutoApprove("low");
+    } else {
+      // Every call reaches the card; nothing is auto-approved by threshold.
+      manager.setInteractiveAutoApprove("off");
+      reviewerCache = new VerdictCache(join(aveHomeDir, "reviewer-cache.jsonl"));
+      manager.setReviewer({
+        classifier: { classify },
+        cache: reviewerCache,
+        deferredQueue: new DeferredQueue(join(aveHomeDir, "deferred.jsonl")),
+      });
+    }
     const cards: ApprovalRequest[] = [];
     const recordings: Promise<void>[] = [];
     const gate = new ApprovalGate({
@@ -84,9 +110,6 @@ describe("remembered decisions keyed on the tool's approval cache key", () => {
         recordings.push((async () => {
           const snapshot = gate.getRequestSnapshot(request.id)!;
           const choice = answer();
-          // Same eligibility gate as the record IPC: it refuses to remember
-          // an allow the host request does not permit (the card still runs
-          // once).
           const remember = choice === "deny-exact" || snapshot.persistentAllowAllowed;
           if (remember) await recordApproval(snapshot.toolName, canonicalStringify(snapshot.args), snapshot.source, {
             decision: choice === "deny-exact" ? "deny" : "allow",
@@ -94,9 +117,7 @@ describe("remembered decisions keyed on the tool's approval cache key", () => {
             verdictAtApproval: snapshot.verdictAtApproval,
             nlJustification: null,
             trustOrigin: snapshot.trustOrigin,
-            approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey, snapshot.approvalMemoryIdentity),
-            // The IPC scopes allows to the frozen working directory and keeps
-            // exact denies unscoped.
+            approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey, snapshot.approvalMemory),
             ...(choice === "deny-exact" ? {} : {
               workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
               riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
@@ -121,7 +142,7 @@ describe("remembered decisions keyed on the tool's approval cache key", () => {
       const [result] = await executor.executeAll(
         [{ id: `call-${seq += 1}`, name, input }],
         {
-          sessionId: "cache-key-identity",
+          sessionId: "memory-scope",
           executionCwd: dir,
           permissionContext: userPermissionContext({ trustOrigin, additionalDirectories: [dir] }),
         },
@@ -129,125 +150,154 @@ describe("remembered decisions keyed on the tool's approval cache key", () => {
       await Promise.all(recordings);
       return result;
     };
-    return { cards, run };
+    const reviewedUrls = () => classify.mock.calls.map(([ctx]) => (ctx.finalInput as { url?: string }).url);
+    return { cards, run, reviewedUrls };
   }
 
-  /** The real web_fetch identity (key + schema), with the network stubbed out. */
+  /** The real web_fetch identity (keys + schema), with the network stubbed out. */
   function webFetch(execute = vi.fn(async () => ({ output: "ok", isError: false }))) {
     const real = createWebFetchTool(vi.fn() as unknown as typeof fetch);
     return { tool: { ...real, execute } as Tool, execute };
   }
 
-  it("allow-session on one URL covers another URL on the same host, not another host", async () => {
+  it("allow-session on one URL covers the same origin after a fresh review, not another host", async () => {
     const { tool, execute } = webFetch();
-    const { cards, run } = harness([tool]);
+    const { cards, run, reviewedUrls } = harness([tool]);
 
     await run("web_fetch", { url: "https://a.example/x" });
     expect(cards).toHaveLength(1);
-    expect(cards[0].approvalMemoryIdentity).toBe("approval-cache-key");
+    expect(cards[0].approvalMemory).toMatchObject({ kind: "key", scope: { kind: "origin", origin: "https://a.example:443" } });
 
-    await run("web_fetch", { url: "https://a.example/y?page=2" });
+    await run("web_fetch", { url: "https://a.example:443/y?page=2" });
     expect(cards).toHaveLength(1);
+    // The new arguments went through the reviewer before the grant was reused.
+    expect(reviewedUrls()).toContain("https://a.example:443/y?page=2");
 
     await run("web_fetch", { url: "https://b.example/" });
     expect(cards).toHaveLength(2);
     expect(execute).toHaveBeenCalledTimes(3);
   });
 
-  it("a public-host approval does not cover a private-network fetch of that host", async () => {
+  it.each([
+    ["another scheme", "http://a.example/x"],
+    ["another port", "https://a.example:8443/x"],
+  ])("an origin approval does not cover %s", async (_label, url) => {
     const { tool } = webFetch();
     const { cards, run } = harness([tool]);
-
     await run("web_fetch", { url: "https://a.example/x" });
-    await run("web_fetch", { url: "https://a.example/x", allowPrivateNetwork: true });
+    await run("web_fetch", { url });
     expect(cards).toHaveLength(2);
-    expect(cards[1].approvalCacheKey).toBe("web_fetch:web_fetch:host:private-network:a.example");
+  });
+
+  it("a new exfil-looking query on an approved host is screened and asks again", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { tool } = webFetch();
+      const { cards, run } = harness([tool]);
+      await run("web_fetch", { url: "https://a.example/x" });
+      await run("web_fetch", { url: "https://a.example/x?token=sk-live-0123456789abcdefghijklmnop" });
+      expect(cards).toHaveLength(2);
+      // The egress screen graded the credential-bearing request above the
+      // remembered verdict, so the grant did not stand in for the card.
+      expect(warn.mock.calls.some(([, marker]) =>
+        (marker as { event?: string; ruleVerdict?: string } | undefined)?.event === "memory-skip-escalation" &&
+        (marker as { ruleVerdict?: string }).ruleVerdict === "high")).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("a private-network fetch is remembered by exact URL only", async () => {
+    const { tool } = webFetch();
+    const privateInput = { url: "http://localhost:3000/a", allowPrivateNetwork: true };
+    expect(approvalIdentityFor(tool, privateInput, dir).approvalMemory).toEqual({ kind: "args" });
+    const { cards, run } = harness([tool]);
+    await run("web_fetch", privateInput);
+    await run("web_fetch", { url: "http://localhost:3000/b", allowPrivateNetwork: true });
+    await run("web_fetch", { url: "http://localhost:3001/a", allowPrivateNetwork: true });
+    expect(cards).toHaveLength(3);
+    expect(cards.every((card) => card.approvalMemory?.kind === "args")).toBe(true);
   });
 
   it("an approval from one trust origin is never inherited by another", async () => {
     const { tool } = webFetch();
     const { cards, run } = harness([tool]);
-
     await run("web_fetch", { url: "https://a.example/x" }, "user-keyboard");
     await run("web_fetch", { url: "https://a.example/y" }, "llm-tool-arg");
     expect(cards).toHaveLength(2);
-    expect(cards[1].trustOrigin).toBe("llm-tool-arg");
   });
 
-  it("an exact deny applies across the whole key and nowhere else", async () => {
+  it("an exact deny applies across the whole origin and nowhere else", async () => {
     const { tool, execute } = webFetch();
     const { cards, run } = harness([tool], () => "deny-exact");
-
-    const first = await run("web_fetch", { url: "https://a.example/x" });
-    expect(first.is_error).toBe(true);
+    expect((await run("web_fetch", { url: "https://a.example/x" })).is_error).toBe(true);
+    expect((await run("web_fetch", { url: "https://a.example/other" })).is_error).toBe(true);
     expect(cards).toHaveLength(1);
-
-    const sameHost = await run("web_fetch", { url: "https://a.example/other" });
-    expect(sameHost.is_error).toBe(true);
-    expect(cards).toHaveLength(1);
-
     await run("web_fetch", { url: "https://b.example/" });
     expect(cards).toHaveLength(2);
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it("a path approval covers repeat writes of that path, not another path", async () => {
-    const { cards, run } = harness([new WriteFileTool()]);
+  it("a path approval covers repeat writes of that path, not another path or a delete", async () => {
+    const { cards, run } = harness([new WriteFileTool(), new DeleteFileTool()]);
     const target = join(dir, "notes.md");
-
     expect((await run("write_file", { path: target, content: "one" })).is_error).toBeUndefined();
-    expect(cards).toHaveLength(1);
     expect((await run("write_file", { path: target, content: "two" })).is_error).toBeUndefined();
     expect(cards).toHaveLength(1);
+    expect(cards[0].approvalMemory).toMatchObject({ kind: "key", scope: { kind: "path", path: target } });
     await run("write_file", { path: join(dir, "other.md"), content: "one" });
     expect(cards).toHaveLength(2);
+    await run("delete_file", { path: target });
+    expect(cards).toHaveLength(3);
+    expect(cards[2].toolName).toBe("delete_file");
+  });
+
+  it("a move approval without overwrite never covers a move that overwrites", async () => {
+    writeFileSync(join(dir, "a.txt"), "a");
+    const { cards, run } = harness([new MoveFileTool()]);
+    const move = { sourcePath: join(dir, "a.txt"), destinationPath: join(dir, "b.txt") };
+    await run("move_file", move);
+    expect(cards[0].approvalMemory).toMatchObject({ scope: { kind: "transfer", overwrite: false } });
+    await run("move_file", { ...move, overwrite: true });
+    expect(cards).toHaveLength(2);
+    expect(cards[1].approvalMemory).toMatchObject({ scope: { kind: "transfer", overwrite: true } });
   });
 
   it("a read approval of a path never answers for a write to it", async () => {
     const target = join(dir, "notes.md");
     writeFileSync(target, "content");
     const read = new ReadFileTool();
-    const readInput = { path: target };
-    // read_file declares no key, so its decision is exact-args identity —
-    // derived here exactly as the executor derives it.
-    const readIdentity = approvalIdentityFor(read, readInput, dir);
-    expect(readIdentity).toEqual({ approvalCacheKey: undefined, approvalMemoryIdentity: undefined });
-    await recordApproval("read_file", canonicalStringify(readInput), "builtin", {
-      scope: "session",
-      verdictAtApproval: "low",
-      nlJustification: null,
-      trustOrigin: "user-keyboard",
+    expect(approvalIdentityFor(read, { path: target }, dir).approvalMemory).toEqual({ kind: "args" });
+    await recordApproval("read_file", canonicalStringify({ path: target }), "builtin", {
+      scope: "session", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard",
     });
-
     const { cards, run } = harness([read, new WriteFileTool()]);
     await run("write_file", { path: target, content: "changed" });
     expect(cards).toHaveLength(1);
     expect(cards[0].toolName).toBe("write_file");
   });
 
-  it("a tool without a key keeps exact-args matching", async () => {
+  it("a tool without a memory scope keeps exact-args matching", async () => {
     const execute = vi.fn(async () => ({ output: "ok", isError: false }));
     const probe = createDynamicTool({
       name: "shell_probe", description: "probe", source: "builtin", category: "shell",
       jsonSchema: { type: "object", properties: { target: { type: "string" } }, required: ["target"] },
       execute,
     });
-    const { cards, run } = harness([probe]);
-
+    const { cards, run } = harness([probe], undefined, { reviewer: false });
     await run("shell_probe", { target: "a" });
     await run("shell_probe", { target: "a" });
     expect(cards).toHaveLength(1);
     await run("shell_probe", { target: "b" });
     expect(cards).toHaveLength(2);
-    expect(cards[0].approvalMemoryIdentity).toBeUndefined();
+    expect(cards[0].approvalMemory).toEqual({ kind: "args" });
   });
 
-  it("routine_schedule keeps exact-args identity because its scope key is not a consent identity", () => {
+  it("declaring only a policy approvalCacheKey never widens memory", () => {
     const tool = createRoutineScheduleTool({} as never);
-    const identity = approvalIdentityFor(tool, { execution: "notification-only", schedule: {} }, dir);
-    expect(identity).toEqual({
+    expect(approvalIdentityFor(tool, { execution: "notification-only", schedule: {} }, dir)).toEqual({
       approvalCacheKey: "routine_schedule:scope:deny-all",
-      approvalMemoryIdentity: "args",
+      approvalMemory: { kind: "args" },
     });
   });
 });

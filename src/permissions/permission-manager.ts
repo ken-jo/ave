@@ -10,7 +10,7 @@ import { readPermissionsFile, updatePermissionsFile } from "./permissions-store.
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
-import type { ApprovalMemoryIdentity, UserApprovalHitPayload, UserApprovalVerdict } from "../shared/permissions-events.js";
+import type { ApprovalMemory, UserApprovalHitPayload, UserApprovalVerdict } from "../shared/permissions-events.js";
 import { getToolCategoryDescriptor } from "./category-registry.js";
 import {
   LlmRiskClassifier,
@@ -37,6 +37,7 @@ import { aveHome } from "../shared/ave-home.js";
 import { t } from "../i18n/index.js";
 import {
   approvalCacheKeyIdentity,
+  isExactArgsDecision,
   lookupApproval,
   canonicalStringify,
   captureApprovalWorkingDirectory,
@@ -341,8 +342,8 @@ export interface ReviewerDispatchInput {
   trustOrigin: ToolTrustOrigin;
   /** Tool-declared authority cache identity, when present. */
   approvalCacheKey?: string;
-  /** Role of {@link approvalCacheKey} in a remembered decision; set with it. */
-  approvalMemoryIdentity?: ApprovalMemoryIdentity;
+  /** What a remembered decision is keyed on; host-derived with approvalCacheKey. */
+  approvalMemory?: ApprovalMemory;
   /** When true, out-of-allowed-dir access also routes to the reviewer. */
   outOfAllowedDir?: boolean;
   /**
@@ -1620,15 +1621,22 @@ export class PermissionManager {
     // justified a HIGH action this session, re-running the LLM is wasteful.
     // Built outside the storage catch: a key without its identity mode is an
     // internal contract violation and must surface, not read as a miss.
-    const userApprovalIdentity = approvalCacheKeyIdentity(input.approvalCacheKey, input.approvalMemoryIdentity);
-    const userApproval = await lookupApproval(
+    const userApprovalIdentity = approvalCacheKeyIdentity(input.approvalCacheKey, input.approvalMemory);
+    const userApprovalArgs = canonicalStringify(cacheIdentityInput);
+    const rememberedDecision = await lookupApproval(
       toolName,
-      canonicalStringify(cacheIdentityInput),
+      userApprovalArgs,
       input.source,
       input.trustOrigin,
       userApprovalIdentity,
       input.executionCwd,
     ).catch(() => null); // storage failure must not block tool execution
+    // Only a decision made on exactly these arguments short-circuits review
+    // here. A target-wide hit on other arguments is classified as a fresh
+    // request; the foreground memory skip may reuse it only after that review.
+    const userApproval = rememberedDecision && isExactArgsDecision(rememberedDecision, userApprovalArgs)
+      ? rememberedDecision
+      : null;
 
     const buildCacheContext = (sandboxCacheState: ReviewerSandboxCacheState) => {
       const sandboxScope = sandboxCacheState.capability;

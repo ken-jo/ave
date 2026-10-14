@@ -125,7 +125,7 @@ export async function dispatchReviewerForHeadless(
       evaluationContext,
       ...(context.userIntent ? { conversationContext: { recentUserMessage: context.userIntent } } : {}),
       ...(context.approvalCacheKey ? { approvalCacheKey: context.approvalCacheKey } : {}),
-      ...(context.approvalMemoryIdentity ? { approvalMemoryIdentity: context.approvalMemoryIdentity } : {}),
+      ...(context.approvalMemory ? { approvalMemory: context.approvalMemory } : {}),
       ...(sandboxAttestation.ownerPluginSandboxRoot !== undefined
         ? { ownerPluginSandboxRoot: sandboxAttestation.ownerPluginSandboxRoot }
         : {}),
@@ -249,7 +249,7 @@ export async function dispatchReviewerForInteractiveAuto(
         evaluationContext,
         ...(context.userIntent ? { conversationContext: { recentUserMessage: context.userIntent } } : {}),
         ...(context.approvalCacheKey ? { approvalCacheKey: context.approvalCacheKey } : {}),
-        ...(context.approvalMemoryIdentity ? { approvalMemoryIdentity: context.approvalMemoryIdentity } : {}),
+        ...(context.approvalMemory ? { approvalMemory: context.approvalMemory } : {}),
         ...(sandboxAttestation.ownerPluginSandboxRoot !== undefined
           ? { ownerPluginSandboxRoot: sandboxAttestation.ownerPluginSandboxRoot }
           : {}),

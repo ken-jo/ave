@@ -95,7 +95,7 @@ import { buildApprovalPurposeSuggestion } from "./pipeline/approval-purpose.js";
 import { pluginTurnScopeTarget } from "./pipeline/plugin-turn-scope.js";
 import {
   approvalIdentityFor,
-  approvalMemoryIdentityForDeclaredKey,
+  ARGS_APPROVAL_MEMORY,
   emitToolStart,
   summarizeInputForDeferred,
 } from "./pipeline/display-mask.js";
@@ -116,7 +116,7 @@ import {
   canonicalStringify,
   lookupUserDecision,
 } from "../permissions/user-approval-store.js";
-import type { ApprovalMemoryIdentity } from "../shared/permissions-events.js";
+import type { ApprovalMemory } from "../shared/permissions-events.js";
 import type { SealedRationaleResumeRequest } from "./pipeline/rationale-resume-contract.js";
 import {
   type AuthorizedRationaleResume,
@@ -1043,17 +1043,18 @@ export async function runToolInvocation(
     // round. Deliberately tool-agnostic: any tool whose key derivation rejects
     // its input takes this path, not just bash.
     let approvalCacheKey: string | undefined;
-    let approvalMemoryIdentity: ApprovalMemoryIdentity | undefined;
+    let approvalMemory: ApprovalMemory = ARGS_APPROVAL_MEMORY;
     try {
-      // The brokered key hashes the whole normalized input plus the workload,
-      // so it is at least as narrow as the args; it is tool-declared identity.
-      ({ approvalCacheKey, approvalMemoryIdentity } = brokeredFileRouteSelected && brokeredFileCapability !== undefined
+      // The brokered route keys on the guest-normalized input plus the
+      // workload, never host paths, so the host-resolved memory scopes do not
+      // apply: its remembered decisions stay on exact-args identity.
+      ({ approvalCacheKey, approvalMemory } = brokeredFileRouteSelected && brokeredFileCapability !== undefined
         ? {
             approvalCacheKey: `${tool.name}:workload:${sha256Hex(canonicalStringify({
               input: normalizedCanonicalFileInput,
               workload: brokeredFileCapability.workload,
             }))}`,
-            approvalMemoryIdentity: approvalMemoryIdentityForDeclaredKey(tool),
+            approvalMemory: ARGS_APPROVAL_MEMORY,
           }
         : approvalIdentityFor(
             tool,
@@ -1127,7 +1128,7 @@ export async function runToolInvocation(
           canonicalStringify(finalInput),
           source,
           permissionContext.trustOrigin,
-          approvalCacheKeyIdentity(approvalCacheKey, approvalMemoryIdentity),
+          approvalCacheKeyIdentity(approvalCacheKey, approvalMemory),
           executionCwd,
         );
         if ((storedDecision?.decision ?? "allow") === "deny") {
@@ -1196,7 +1197,7 @@ export async function runToolInvocation(
     const invocationPermissionContext: ToolPermissionContext = {
       ...permissionContext,
       ...(approvalCacheKey ? { approvalCacheKey } : {}),
-      ...(approvalMemoryIdentity ? { approvalMemoryIdentity } : {}),
+      approvalMemory,
       disposableSubstrate,
     };
     const approvalPurpose = buildApprovalPurposeSuggestion(finalInput, invocationPermissionContext);
@@ -1479,7 +1480,7 @@ export async function runToolInvocation(
           // Propagate approvalCacheKey so renderer record key
           // matches dispatchReviewer lookup key — end-to-end symmetry.
           ...(approvalCacheKey ? { approvalCacheKey } : {}),
-          ...(approvalMemoryIdentity ? { approvalMemoryIdentity } : {}),
+          approvalMemory,
         };
 
         let decision;

@@ -526,6 +526,37 @@ function ReviewerSuggestionBand({ suggestion }: { suggestion: ReviewerSuggestion
   );
 }
 
+
+/**
+ * What "remember" on this card will actually cover. Read only from the
+ * host-derived `approvalMemory` on the request — never inferred from args —
+ * so the copy cannot promise a narrower scope than the store will apply.
+ */
+function rememberScopeText(
+  t: (key: string, params?: Record<string, string>) => string,
+  request: Pick<ApprovalRequest, "toolName" | "approvalMemory">,
+  path: string,
+): string {
+  const memory = request.approvalMemory;
+  if (memory?.kind !== "key") return t("toolApprovalDialog.exactPersistentScope", { path });
+  const toolName = request.toolName;
+  switch (memory.scope.kind) {
+    case "origin":
+      return t("toolApprovalDialog.rememberScopeOrigin", { toolName, origin: memory.scope.origin, path });
+    case "path":
+      return t("toolApprovalDialog.rememberScopePath", { toolName, target: memory.scope.path, path });
+    case "transfer":
+      return t(
+        memory.scope.overwrite
+          ? "toolApprovalDialog.rememberScopeTransferOverwrite"
+          : "toolApprovalDialog.rememberScopeTransfer",
+        { toolName, source: memory.scope.sourcePath, destination: memory.scope.destinationPath, path },
+      );
+    case "command":
+      return t("toolApprovalDialog.rememberScopeCommand", { path });
+  }
+}
+
 export function ToolApprovalContent({
   open,
   request,
@@ -1499,7 +1530,7 @@ export function ToolApprovalContent({
             ) : null}
             {!alwaysAllowUnavailable && !isOutOfDir && request.persistentApprovalCwd ? (
               <p className="text-[10px] text-muted-foreground" data-testid="allow-always-exact-scope">
-                {tHook("toolApprovalDialog.exactPersistentScope", { path: request.persistentApprovalCwd })}
+                {rememberScopeText(tHook, request, request.persistentApprovalCwd)}
               </p>
             ) : null}
             {interactionLocked ? (

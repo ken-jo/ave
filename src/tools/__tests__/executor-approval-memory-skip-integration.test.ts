@@ -298,7 +298,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
         verdictAtApproval: "low",
         nlJustification: null,
         trustOrigin: "user-keyboard",
-        approvalCacheKey: approvalCacheKeyIdentity("key-A", "args"),
+        approvalCacheKey: approvalCacheKeyIdentity("key-A", { kind: "args" }),
       },
     );
 
@@ -362,7 +362,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
           await recordApproval(snapshot.toolName, canonicalStringify(snapshot.args), snapshot.source, {
             scope: "persistent", verdictAtApproval: snapshot.verdictAtApproval, nlJustification: null,
             trustOrigin: snapshot.trustOrigin,
-            approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey, snapshot.approvalMemoryIdentity),
+            approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey, snapshot.approvalMemory),
             workingDirectoryIdentity: snapshot.workingDirectoryIdentity, riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
           });
           gate.resolveFromDesktopRenderer(request.id, {

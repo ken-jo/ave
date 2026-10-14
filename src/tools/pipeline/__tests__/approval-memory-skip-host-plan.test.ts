@@ -47,7 +47,7 @@ describe("foreground approval memory — sealed host shell plan", () => {
         verdictAtApproval: "low",
         nlJustification: null,
         trustOrigin: "user-keyboard",
-        approvalCacheKey: approvalCacheKeyIdentity(approvalCacheKey, "approval-cache-key"),
+        approvalCacheKey: approvalCacheKeyIdentity(approvalCacheKey, { kind: "args" }),
         workingDirectoryIdentity: captureApprovalWorkingDirectory(process.cwd()).identity,
       },
     );
@@ -72,7 +72,7 @@ describe("foreground approval memory — sealed host shell plan", () => {
       process.cwd(),
       [],
       [],
-      { trustOrigin: "user-keyboard", approvalMemoryIdentity: "approval-cache-key" },
+      { trustOrigin: "user-keyboard", approvalMemory: { kind: "args" } as const },
       approvalCacheKey,
       {},
       undefined,

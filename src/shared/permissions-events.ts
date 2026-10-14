@@ -29,22 +29,41 @@ export type UserApprovalScope = "session" | "persistent";
 export type UserApprovalDecision = "allow" | "deny";
 
 /**
+ * The target a remembered decision covers when a tool opts into target-wide
+ * memory (`Tool.approvalMemoryScope`). Host-derived from the final input, and
+ * the only source the approval card uses to say what "remember" will cover.
+ *  - `origin`: every web_fetch to `scheme://host:port` (public network only).
+ *  - `path`: this tool on this resolved path, any content.
+ *  - `transfer`: this tool from source to destination, with its overwrite flag.
+ *  - `command`: this exact shell command (by digest) in this working directory
+ *    and sandbox plan; timeout and justification may vary.
+ */
+export type ApprovalMemoryScope =
+  | { readonly kind: "origin"; readonly origin: string }
+  | { readonly kind: "path"; readonly path: string }
+  | {
+      readonly kind: "transfer";
+      readonly sourcePath: string;
+      readonly destinationPath: string;
+      readonly overwrite: boolean;
+    }
+  // A digest, not the command text: this scope reaches the renderer, where
+  // command text is only ever shown DLP-masked.
+  | { readonly kind: "command"; readonly commandSha256: string; readonly cwd: string | null };
+
+/**
  * What a remembered user decision is keyed on, besides tool name, source,
  * trust origin and working directory.
- *
- *  - `"approval-cache-key"`: the tool's own `approvalCacheKey` IS the
- *    identity and the arguments are not part of it. A tool gets this only
- *    when it declares a key that is a complete description of what the user
- *    consented to (web_fetch: the destination host; write tools: the target
- *    path). Repeat calls with different arguments inside that key reuse the
- *    decision.
- *  - `"args"`: the exact canonical arguments are the identity (and an
- *    `approvalCacheKey`, when present, only narrows it). Tools without a key,
- *    tools whose key is a policy scope rather than a consent identity
- *    (`Tool.approvalMemoryIdentity === "args"`), and host-derived partitions
- *    such as the plan-only shell key stay here.
+ *  - `args`: the exact canonical input (the default for every tool; an
+ *    `approvalCacheKey` only narrows it).
+ *  - `key`: the tool opted in with a scope; `key` is the host-derived
+ *    identity of that scope (including any sealed shell plan), and repeat
+ *    calls with other arguments inside it may reuse the decision — after a
+ *    fresh review (see approval-memory-skip.ts).
  */
-export type ApprovalMemoryIdentity = "approval-cache-key" | "args";
+export type ApprovalMemory =
+  | { readonly kind: "args" }
+  | { readonly kind: "key"; readonly key: string; readonly scope: ApprovalMemoryScope };
 
 /**
  * Approval-verdict literal. Same rationale as `UserApprovalScope`.
