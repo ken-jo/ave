@@ -1338,7 +1338,20 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
   }
 
   readonly name = "bash";
-  readonly description = "Run a shell command in the local repository under permission and path checks. Recursive copying and archive creation/extraction remain blocked in this shell. Use copy_path for ordinary binary/text files or complete directory trees, and extract_archive for tar or gzip-compressed tar extraction, subject to existing write approvals. Both require an absent exact destination with an existing parent; no overwrite or merge. ZIP extraction and archive creation have no built-in equivalent. Single-file shell copying and archive listing remain subject to the same checks.";
+  readonly description =
+    "Run a non-interactive shell command in the local repository under permission and path checks. " +
+    "Prefer the dedicated tools when one fits: grep_files instead of grep/rg, glob_files or list_files instead of " +
+    "find/ls, read_file instead of cat/head/tail, edit_file or apply_patch instead of sed -i, write_file instead of " +
+    "echo/heredoc redirects. Quote paths that contain spaces. " +
+    "A command runs until it exits or `timeoutSeconds` (default 120) elapses; for a slow build or test, pass a " +
+    "larger timeoutSeconds rather than retrying the same one. For a long-running process you will check on, set " +
+    "run_in_background, then read its output with bash_output (waitFor/waitMs) and stop it with bash_kill. " +
+    "Output is previewed up to 12,000 characters; when a result says it was truncated, page the rest with " +
+    "read_tool_result_chunk instead of rerunning the command. " +
+    "Recursive copying and archive creation/extraction remain blocked in this shell: use copy_path for files or " +
+    "directory trees and extract_archive for tar or gzip-compressed tar extraction. Both require an absent exact " +
+    "destination with an existing parent; no overwrite or merge. ZIP extraction and archive creation have no " +
+    "built-in equivalent.";
   readonly inputSchema = BashToolInputSchema;
   override readonly category: ToolCategory = "shell";
 

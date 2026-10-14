@@ -210,6 +210,17 @@ describe("canonical file tool broker transport", () => {
     );
   });
 
+  it("refuses grep_files options the legacy file.grep payload cannot carry", async () => {
+    const tool = new GrepFilesTool();
+    const input = { pattern: "needle", outputMode: "count", context: 2, type: "ts", offset: 5 };
+
+    const result = await tool.execute(input, context(tool, input));
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("type, outputMode, context, offset");
+    expect(broker.execute).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["edit_file", () => new EditFileTool(), { path: "edit.txt", oldText: "old", newText: "new" }],
     ["multi_edit", () => new MultiEditTool(), { path: "edit.txt", replacements: [{ oldText: "old", newText: "new" }] }],

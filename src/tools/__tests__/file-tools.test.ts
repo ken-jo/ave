@@ -449,11 +449,11 @@ describe("file native tools", () => {
       ctx(),
     );
 
-    expect(result.isError).toBe(false);
-    const body = parse(result.output);
-    const matches = body.matches as Array<{ path: string; line: number; text: string }>;
-    expect(matches).toHaveLength(2);
-    expect(matches.map((m) => m.text)).toEqual(["needle one", "needle two"]);
+    expect(result.isError, result.output).toBe(false);
+    expect(result.output).toContain("2 lines in 2 files");
+    expect(result.output).toContain(`${join(workDir, "src", "a.ts")}\n  2: needle one`);
+    expect(result.output).toContain(`${join(workDir, "src", "nested", "b.ts")}\n  2: needle two`);
+    expect(result.output).not.toContain("README.md");
   });
 
   it("list/glob/grep skip sensitive descendants under an allowed root", async () => {
@@ -474,10 +474,12 @@ describe("file native tools", () => {
     expect(globbed.isError).toBe(false);
     expect(parse(globbed.output).matches).toEqual([]);
 
-    const grepped = await new GrepFilesTool().execute({ path: ".", pattern: "needle", limit: 50 }, ctx());
-    expect(grepped.isError).toBe(false);
-    const matches = parse(grepped.output).matches as Array<{ path: string; text: string }>;
-    expect(matches.some((match) => match.text.includes("secret") || match.text.includes("key") || match.text.includes("token"))).toBe(false);
+    for (const outputMode of ["content", "files_with_matches", "count"] as const) {
+      const grepped = await new GrepFilesTool().execute({ path: ".", pattern: "needle", limit: 50, outputMode }, ctx());
+      expect(grepped.isError, grepped.output).toBe(false);
+      expect(grepped.output).toContain("README.md");
+      for (const hidden of ["secret", "id_rsa", ".env", "token"]) expect(grepped.output).not.toContain(hidden);
+    }
   });
 
   it.each([".ave", "custom-profile"])("refuses subscription runtime file access in %s", async (profileName) => {
@@ -498,8 +500,9 @@ describe("file native tools", () => {
       expect(write.output).toContain("Sensitive path:");
       expect(readFileSync(target, "utf8")).toBe(inert);
       const scanned = await new GrepFilesTool().execute({ path: ".", pattern: "inert-test-value", limit: 50 }, ctx());
-      expect(scanned.isError).toBe(false);
-      expect(parse(scanned.output).matches).toEqual([]);
+      expect(scanned.isError, scanned.output).toBe(false);
+      expect(scanned.output).toContain("No matches found.");
+      expect(scanned.output).not.toContain("inert-test-value");
     } finally {
       vi.unstubAllEnvs();
     }
@@ -572,11 +575,8 @@ describe("file native tools", () => {
       ctx(),
     );
 
-    expect(result.isError).toBe(false);
-    const body = parse(result.output);
-    const matches = body.matches as Array<{ path: string; line: number; text: string }>;
-    expect(matches).toHaveLength(1);
-    expect(matches[0].path).toContain("zzz-target.txt");
+    expect(result.isError, result.output).toBe(false);
+    expect(result.output).toContain("zzz-target.txt\n  1: needle late");
   });
 
   it("write_file creates parent directories and writes full content", async () => {

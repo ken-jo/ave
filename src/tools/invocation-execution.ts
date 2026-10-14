@@ -161,6 +161,7 @@ export interface ExecutionStageContext {
   invocationRuntimeAllowedDirectories: string[];
   supportsA2AParentDelivery: boolean | undefined;
   spawnDepth: number | undefined;
+  memoryIncludeUnscoped: boolean | undefined;
   a2aCausalContext: A2AAgentCausalContext | undefined;
   toolResultChunkReader: ExecuteOptions["toolResultChunkReader"];
   toolOutputCaptureFactory?: ExecuteOptions["toolOutputCaptureFactory"];
@@ -209,6 +210,7 @@ export async function executeAuthorizedToolInvocation(
     invocationRuntimeAllowedDirectories,
     supportsA2AParentDelivery,
     spawnDepth,
+    memoryIncludeUnscoped,
     a2aCausalContext,
     toolResultChunkReader,
     toolOutputCaptureFactory,
@@ -711,6 +713,7 @@ export async function executeAuthorizedToolInvocation(
       // C3(b): spawn depth visible to tools — `agent_spawn` reads this
       // and refuses when >= 1 (a sub-agent cannot itself spawn).
       spawnDepth: spawnDepth ?? 0,
+      ...(memoryIncludeUnscoped === true ? { memoryIncludeUnscoped: true } : {}),
       supportsA2AParentDelivery: supportsA2AParentDelivery === true,
       ...(invocationPermissionContext.approvalSurface
         ? { approvalSurface: invocationPermissionContext.approvalSurface }

@@ -1927,6 +1927,7 @@ export async function queryLoop(
           // The executor uses this to refuse `agent_spawn` calls inside an
           // already-spawned sub-agent (depth >= 1).
           spawnDepth: bounds?.spawnDepth,
+          memoryIncludeUnscoped: self.getSessionMemoryProjectContext?.()?.includeUnscoped === true,
           supportsA2AParentDelivery: self.deps.supportsA2AParentDelivery === true,
           approvalReasonPrefix: activeApprovalReasonPrefix,
           // Threading the turn's abort signal lets long-blocking tools

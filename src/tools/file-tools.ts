@@ -1,4 +1,4 @@
-import { constants, createReadStream, type Stats } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import {
   copyFile,
@@ -19,8 +19,6 @@ import {
   resolve as pathResolve,
   sep,
 } from "node:path";
-import { createInterface } from "node:readline";
-import { finished } from "node:stream/promises";
 import { z } from "zod";
 
 import type { PathEffect } from "../permissions/allowed-directories.js";
@@ -35,6 +33,12 @@ import { PATCH_ENVELOPE_PATH_FIELD_SUFFIX } from "../shared/dotted-field-value.j
 import { globToRegExp } from "../lib/glob-matcher.js";
 import { writeDiffSidecar, WRITE_DIFF_PREVIEW_LIMIT } from "./write-diff-cache.js";
 import { ensureFileAccess, sensitiveFilePattern } from "./file-access-policy.js";
+import {
+  GREP_FILES_DESCRIPTION,
+  GrepFilesInputSchema,
+  grepOptionsUnsupportedByBroker,
+  searchWithRipgrep,
+} from "./grep-search.js";
 import { copyPath, runOwnedTransfer } from "./guarded-file-transfer.js";
 import { consumeTarArchive } from "./archive-entry-reader.js";
 import type { ArchiveFormat, TransferResult } from "./file-transfer-types.js";
@@ -94,7 +98,6 @@ type FileExecutionTransport =
 
 const DEFAULT_LINE_LIMIT = 2_000;
 const MAX_LINE_LIMIT = 5_000;
-const MAX_SEARCH_FILE_BYTES = 1_000_000;
 const DEFAULT_RESULT_LIMIT = 200;
 const MAX_RESULT_LIMIT = 1_000;
 const MAX_SCAN_FILES = 50_000;
@@ -198,14 +201,6 @@ export const ListFilesInputSchema = FilePathSchema.extend({
 export const GlobFilesInputSchema = z.object({
   pattern: z.string().min(1).describe("Glob pattern relative to path/cwd, e.g. src/**/*.ts."),
   path: z.string().min(1).optional().describe("Search root. Defaults to session cwd."),
-  limit: z.number().int().min(1).max(MAX_RESULT_LIMIT).default(DEFAULT_RESULT_LIMIT),
-});
-
-export const GrepFilesInputSchema = z.object({
-  pattern: z.string().min(1).describe("JavaScript regular expression."),
-  path: z.string().min(1).optional().describe("Search root. Defaults to session cwd."),
-  include: z.string().min(1).optional().describe("Optional glob include filter, e.g. **/*.ts."),
-  caseSensitive: z.boolean().default(true),
   limit: z.number().int().min(1).max(MAX_RESULT_LIMIT).default(DEFAULT_RESULT_LIMIT),
 });
 
@@ -834,8 +829,7 @@ export class GlobFilesTool extends FileTool<typeof GlobFilesInputSchema> {
 
 export class GrepFilesTool extends FileTool<typeof GrepFilesInputSchema> {
   readonly name = "grep_files";
-  readonly description =
-    "Search UTF-8 text files by JavaScript regular expression. Returns bounded file/line matches.";
+  readonly description = GREP_FILES_DESCRIPTION;
   readonly inputSchema = GrepFilesInputSchema;
   override readonly category: ToolCategory = "read";
 
@@ -853,6 +847,13 @@ export class GrepFilesTool extends FileTool<typeof GrepFilesInputSchema> {
     if (!resolved.ok) return resolved.error;
     const root = resolved.value;
     if (transport.kind === "broker") {
+      const unsupported = grepOptionsUnsupportedByBroker(input);
+      if (unsupported.length > 0) {
+        return toolError(
+          `grep_files options not available under the workload broker: ${unsupported.join(", ")}. `
+            + "Retry with pattern, path, include, caseSensitive and limit only.",
+        );
+      }
       return transport.runtime.executeBrokeredWorkloadRequest(
         transport.capability,
         "file.grep",
@@ -869,38 +870,7 @@ export class GrepFilesTool extends FileTool<typeof GrepFilesInputSchema> {
     }
     const blocked = this.ensureAllowed(root, ctx, "read");
     if (blocked) return blocked;
-
-    let regex: RegExp;
-    try {
-      regex = new RegExp(input.pattern, input.caseSensitive ? "" : "i");
-    } catch (err) {
-      return { output: `Invalid regex: ${(err as Error).message}`, isError: true };
-    }
-
-    const include = input.include ? globToRegExp(input.include) : null;
-    const listed = await collectFiles(root, MAX_SCAN_FILES);
-    if (!listed.ok) return listed.error;
-
-    const matches: Array<{ path: string; line: number; text: string }> = [];
-    for (const file of listed.value.files) {
-      if (include && !include.test(file.relativePath)) continue;
-      if (matches.length >= input.limit) break;
-      const maybeMatches = await grepFile(file.path, regex, input.limit - matches.length);
-      if (!maybeMatches.ok) continue;
-      matches.push(...maybeMatches.value);
-    }
-
-    return {
-      output: JSON.stringify({
-        path: root,
-        pattern: input.pattern,
-        include: input.include,
-        matches,
-        truncated: matches.length >= input.limit || listed.value.truncated,
-      }),
-      isError: false,
-      metadata: { path: root, matchCount: matches.length },
-    };
+    return searchWithRipgrep(root, input, ctx.abortSignal);
   }
 }
 
@@ -1785,39 +1755,6 @@ async function noClobberMoveFile(source: string, destination: string): Promise<R
     }
     return { ok: false, error: toolError(`move_file failed: ${(err as Error).message}`) };
   }
-}
-
-async function grepFile(
-  path: string,
-  regex: RegExp,
-  limit: number,
-): Promise<Result<Array<{ path: string; line: number; text: string }>>> {
-  const fileStat = await stat(path);
-  if (!fileStat.isFile() || fileStat.size > MAX_SEARCH_FILE_BYTES) {
-    return { ok: true, value: [] };
-  }
-  if (await isBinaryFile(path)) {
-    return { ok: true, value: [] };
-  }
-  const matches: Array<{ path: string; line: number; text: string }> = [];
-  const input = createReadStream(path, { encoding: "utf8" });
-  const rl = createInterface({ input, crlfDelay: Infinity });
-  let lineNo = 1;
-  try {
-    for await (const line of rl) {
-      regex.lastIndex = 0;
-      if (regex.test(line)) {
-        matches.push({ path, line: lineNo, text: line });
-        if (matches.length >= limit) break;
-      }
-      lineNo += 1;
-    }
-  } finally {
-    rl.close();
-    input.destroy();
-    await finished(input, { cleanup: true }).catch(() => undefined);
-  }
-  return { ok: true, value: matches };
 }
 
 function normalizeRelativePath(path: string): string {
