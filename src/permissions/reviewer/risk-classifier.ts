@@ -335,6 +335,15 @@ const DESTRUCTIVE_SHELL_RE = new RegExp([
 ].join("|"), "i");
 
 /**
+ * Shared floor test for the permission rules matcher (issue #28): a command
+ * text the rule classifier grades destructive can never be covered by an
+ * allow rule. One regex, one owner — the matcher must not keep a second list.
+ */
+export function isDestructiveShellText(command: string): boolean {
+  return DESTRUCTIVE_SHELL_RE.test(command);
+}
+
+/**
  * Reversible shell verbs (LOW). Read-only or trivially undoable.
  */
 const REVERSIBLE_SHELL_RE =

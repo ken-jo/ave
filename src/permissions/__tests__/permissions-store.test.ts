@@ -40,10 +40,17 @@ describe("readPermissionsFile", () => {
     await expect(readPermissionsFile("/tmp/permissions.json")).resolves.toBeNull();
   });
 
-  it("returns null for malformed JSON", async () => {
+  it("fails clearly on malformed JSON instead of reading as empty (issue #28)", async () => {
     readFileMock.mockResolvedValue("{ invalid-json");
 
-    await expect(readPermissionsFile("/tmp/permissions.json")).resolves.toBeNull();
+    await expect(readPermissionsFile("/tmp/permissions.json")).rejects.toThrow(/is corrupt: invalid JSON/);
+  });
+
+  it("refuses to overwrite a corrupt file", async () => {
+    readFileMock.mockResolvedValue("{ invalid-json");
+
+    await expect(updatePermissionsFile("/tmp/permissions.json", () => undefined)).rejects.toThrow(/is corrupt/);
+    expect(atomicWriteMock).not.toHaveBeenCalled();
   });
 
   it("returns null for ENOENT", async () => {

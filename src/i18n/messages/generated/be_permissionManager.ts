@@ -1,6 +1,8 @@
 // AUTO-GENERATED — i18n migration. Source: src/permissions/permission-manager.ts. Do not edit by hand.
 export const en = {
   "be_permissionManager.denyRuleReason": "deny rule: {pattern}",
+  "be_permissionManager.askRuleReason": "ask rule: {pattern}",
+  "be_permissionManager.shellRulesUninspectableReason": "shell rules could not inspect every command — confirm this call ({detail})",
   "be_permissionManager.mcpServerStrictMode": "MCP server strict mode",
   "be_permissionManager.overlayTriggerMutatingReason": "overlay trigger origin ({origin}) — write tools require user confirmation",
   "be_permissionManager.strictModeReason": "strict mode (trust: {trust}, category: {category})",
@@ -17,6 +19,8 @@ export const en = {
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "be_permissionManager.denyRuleReason": "deny 규칙: {pattern}",
+  "be_permissionManager.askRuleReason": "ask 규칙: {pattern}",
+  "be_permissionManager.shellRulesUninspectableReason": "셸 규칙이 모든 명령을 검사하지 못했습니다 — 이 호출을 확인하세요 ({detail})",
   "be_permissionManager.mcpServerStrictMode": "MCP 서버 strict 모드",
   "be_permissionManager.overlayTriggerMutatingReason": "overlay trigger 출처 ({origin}) — 쓰기 도구는 사용자 컨펌 필수",
   "be_permissionManager.strictModeReason": "strict 모드 (trust: {trust}, category: {category})",

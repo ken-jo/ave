@@ -862,7 +862,7 @@ export function PermissionsTab({
     }
   };
 
-  const handleRemoveRule = async (pattern: string, action: "allow" | "deny") => {
+  const handleRemoveRule = async (pattern: string, action: "allow" | "deny" | "ask") => {
     setRulesBusy(true);
     try {
       const res = await window.ave.permission.removeRule(pattern, action);

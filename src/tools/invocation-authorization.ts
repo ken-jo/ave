@@ -22,6 +22,8 @@ import {
   resolveReviewerSandboxCapability,
 } from "../permissions/sandbox-capability.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
+import { isCanonicalBashTool } from "./shell-tools.js";
+import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import {
   isRemoteControllerAuthorityCurrent,
   remoteControllerOriginOf,
@@ -400,13 +402,28 @@ export async function authorizeToolInvocation(
     // rewrites the verdict or re-consults getMode(). The allow-all invariant
     // (mode==="allow" → no prompt, meta included) remains single-sourced in
     // PermissionManager.
+    //
+    // Issue #28 — the canonical shell tool carries its command as the rule
+    // subject so `Bash(...)` deny/ask/allow rules (user-global and this
+    // project's file in Ave home) can match it. The project rules are loaded
+    // here because the decision itself is synchronous.
+    const shellRuleSubject = isCanonicalBashTool(tool) && typeof finalInput.command === "string"
+      ? { kind: "shell" as const, command: finalInput.command }
+      : undefined;
+    if (services.permissionManager && shellRuleSubject) {
+      await services.permissionManager.ensureProjectRulesLoaded(executionCwd);
+    }
     permissionResult = services.permissionManager
       ? services.permissionManager.checkDetailed(
           toolUse.name,
           source,
           invocationCategory,
           overlayTriggerOrigin,
-          { ...invocationPermissionContext, decisionOverride: metaOverride },
+          {
+            ...invocationPermissionContext,
+            decisionOverride: metaOverride,
+            ...(shellRuleSubject ? { ruleSubject: shellRuleSubject, projectRulesCwd: executionCwd } : {}),
+          },
         )
       : {
           decision: "ask",
@@ -1472,6 +1489,29 @@ export async function authorizeToolInvocation(
                 scopeTargetFilePaths: targetFilePaths,
               }),
           reviewerVerdict: permissionResult.reviewer?.verdict,
+          // Issue #28 — an unreviewed shell ask is graded by the rule
+          // classifier, not a blanket HIGH. Destructive verbs stay HIGH, so
+          // they remain once-only at the gate.
+          ...(permissionResult.reviewer?.verdict === undefined && invocationCategory === "shell"
+            ? {
+                ruleVerdict: classifyApprovalRuleVerdict({
+                  toolName: toolUse.name,
+                  source,
+                  category: invocationCategory,
+                  pathFields: tool.pathFields ?? [],
+                  finalInput,
+                  executionCwd,
+                  allowedDirectories: invocationAllowedScope.directories,
+                  sensitivePathsAdjacent: sensitivePathPattern ? [sensitivePathPattern] : [],
+                  context: invocationPermissionContext,
+                  sandboxAttestation,
+                  mcpServerId: tool.mcpServerId,
+                  workerId: tool.workerId,
+                  pluginId: tool.pluginId,
+                  hostShellExecutionPlan,
+                }).verdict,
+              }
+            : {}),
           reviewerOutcome: permissionResult.reviewer?.outcome,
           reviewerApprovalBasis: permissionResult.reviewer?.approvalBasis,
           // Hard policy/A2A asks are per invocation. A reviewer failure alone
