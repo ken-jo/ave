@@ -81,6 +81,37 @@ function parseAttributes(source: string): Map<string, string> {
   return attrs;
 }
 
+/** Longest tag the parser accepts; past it the `<` is text. */
+const MAX_TAG_CHARS = 16_384;
+/** Deepest element nesting the tree keeps (the render walks recurse). */
+const MAX_NESTING_DEPTH = 512;
+
+/**
+ * Index of the `>` that ends the tag starting at `lt`, or -1. Quotes are
+ * honoured, and an unquoted `<` ends the attempt: browsers would read it as
+ * part of an attribute name, but stopping there is what keeps the whole parse
+ * linear. Without it every `<` of an input like `<a <a <a …` (no `>`) scanned
+ * its full window again, which held the main process for tens of seconds on
+ * a 2 MB page.
+ */
+function scanTagEnd(html: string, lt: number): number {
+  const limit = Math.min(html.length, lt + MAX_TAG_CHARS);
+  let quote = "";
+  for (let i = lt + 1; i < limit; i += 1) {
+    const ch = html[i];
+    if (quote) {
+      if (ch === quote) quote = "";
+    } else if (ch === ">") {
+      return i;
+    } else if (ch === "<") {
+      return -1;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    }
+  }
+  return -1;
+}
+
 function parseHtml(html: string): ElementNode {
   const root: ElementNode = { kind: "element", name: "#root", attrs: new Map(), children: [] };
   const stack: ElementNode[] = [root];
@@ -124,7 +155,10 @@ function parseHtml(html: string): ElementNode {
       index = end === -1 ? html.length : end + 1;
       continue;
     }
-    const tag = /^<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/.exec(html.slice(lt, lt + 16_384));
+    const tagEnd = scanTagEnd(html, lt);
+    const tag = tagEnd === -1
+      ? null
+      : /^<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>$/.exec(html.slice(lt, tagEnd + 1));
     if (!tag) {
       pushText("<");
       index = lt + 1;
@@ -169,6 +203,10 @@ function parseHtml(html: string): ElementNode {
       continue;
     }
     if (VOID.has(name) || tag[3].trimEnd().endsWith("/")) continue;
+    // Deeper elements stay in the tree as leaves and their content lands one
+    // level up: every walk over the tree recurses, and 100k nested <div>s
+    // would otherwise overflow the stack and make the page unreadable.
+    if (stack.length >= MAX_NESTING_DEPTH) continue;
     stack.push(element);
   }
   return root;

@@ -7,6 +7,12 @@ import { htmlToMarkdown } from "./html-to-markdown.js";
 import { neutralizeFenceClose, neutralizeFenceOpen } from "../shared/fence-sanitizer.js";
 
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+/**
+ * The network guard's hop timer ends when the headers arrive, so the body
+ * read needs its own bound: a server trickling a body under the byte cap
+ * would otherwise hold the call until the tool-level timeout.
+ */
+export const WEB_FETCH_BODY_TIMEOUT_MS = 30_000;
 /** Enough of an error page to show what the server said, not the whole page. */
 const HTTP_ERROR_EXCERPT_CHARS = 2_000;
 /** Prefer Markdown and HTML; anything else is still accepted and routed by type. */
@@ -29,6 +35,22 @@ class WebFetchContentError extends Error {
   constructor(message: string, readonly excerpt?: string) {
     super(message);
     this.name = "WebFetchContentError";
+  }
+}
+
+/** {@link readResponseBytes} with the body deadline added to the caller's signal. */
+async function readResponseBytesWithDeadline(response: Response, signal?: AbortSignal): Promise<Buffer> {
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), WEB_FETCH_BODY_TIMEOUT_MS);
+  try {
+    return await readResponseBytes(response, signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal);
+  } catch (error) {
+    if (deadline.signal.aborted && !signal?.aborted) {
+      throw new Error(`Response body did not finish within ${WEB_FETCH_BODY_TIMEOUT_MS / 1000} s.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -256,7 +278,7 @@ export function createWebFetchTool(singleHopFetch: typeof fetch): Tool {
           discardBody(response);
           throw new WebFetchContentError(unsupportedBodyMessage(declaredKind, mime));
         }
-        const body = await readResponseBytes(response, context.abortSignal);
+        const body = await readResponseBytesWithDeadline(response, context.abortSignal);
         const kind = declaredKind ?? classifyBody(mime, () => body);
         if (kind === "pdf" || kind === "binary") {
           throw new WebFetchContentError(unsupportedBodyMessage(kind, mime));
@@ -265,7 +287,9 @@ export function createWebFetchTool(singleHopFetch: typeof fetch): Tool {
         const converted = kind === "html" ? htmlToMarkdown(decoded, finalUrl) : { markdown: decoded };
         if (!response.ok) {
           throw new WebFetchContentError(
-            `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
+            // The status code only: the reason phrase is server text and this
+            // message sits outside the untrusted-content fence.
+            `HTTP ${response.status}`,
             fenceWebContent(converted.markdown.slice(0, HTTP_ERROR_EXCERPT_CHARS)),
           );
         }

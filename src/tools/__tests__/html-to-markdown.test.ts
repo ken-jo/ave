@@ -47,4 +47,27 @@ describe("htmlToMarkdown", () => {
   it("strips layout marker characters that appear in page text", () => {
     expect(md("<p>a\u0001b\u0003c</p>")).toBe("abc");
   });
+
+  it("stays linear on tags that never close", () => {
+    for (const unit of ["<a ", "<a \"", "<a '\"<b ", "<a\t"]) {
+      const html = unit.repeat(Math.ceil(600_000 / unit.length));
+      const started = performance.now();
+      const result = htmlToMarkdown(html);
+      expect(performance.now() - started).toBeLessThan(1_500);
+      expect(result.markdown.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps parsing quoted attributes that contain > and <", () => {
+    expect(htmlToMarkdown('<p><a href="https://e.com/?q=a>b" title="x<y">link</a></p>').markdown)
+      .toBe('[link](https://e.com/?q=a%3Eb "x<y")');
+  });
+
+  it("reads a page nested far deeper than the tree keeps", () => {
+    const depth = 100_000;
+    const html = `<title>Deep</title>${"<div>".repeat(depth)}bottom${"</div>".repeat(depth)}`;
+    const result = htmlToMarkdown(html);
+    expect(result.title).toBe("Deep");
+    expect(result.markdown).toContain("bottom");
+  });
 });

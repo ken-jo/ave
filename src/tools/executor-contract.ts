@@ -160,6 +160,12 @@ export interface ExecuteOptions {
   sessionId?: string;
   overlayTriggerOrigin?: string | null;
   spawnDepth?: number;
+  /**
+   * The conversation runs in the default project, where prompt memory
+   * selection also includes memories saved before project scoping existed.
+   * Carried to the memory tools so they see the same set.
+   */
+  memoryIncludeUnscoped?: boolean;
   supportsA2AParentDelivery?: boolean;
   approvalReasonPrefix?: string;
   a2aCausalContext?: A2AAgentCausalContext;
