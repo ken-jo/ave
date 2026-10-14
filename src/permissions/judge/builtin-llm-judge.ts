@@ -67,6 +67,8 @@ export class BuiltinLlmJudge implements PermissionJudge {
   constructor(
     private readonly classifier: TracingRiskClassifier,
     private readonly autoApprove: () => ReviewerInteractiveAutoApprove,
+    /** Resolved `<provider>/<model>` the classifier runs on. */
+    readonly model?: string,
   ) {}
 
   async judge(request: JudgeRequest, signal: AbortSignal): Promise<JudgeVerdict> {

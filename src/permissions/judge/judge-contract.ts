@@ -16,7 +16,7 @@ import type { RiskVerdict, ToolInvocationContext } from "../reviewer/risk-classi
 export type JudgeDecision = "allow" | "ask" | "deny";
 
 /** Tool categories a judge may be enabled for. `read` / `meta` are never judged. */
-export const JUDGE_CATEGORIES = ["shell", "write", "network"] as const;
+const JUDGE_CATEGORIES = ["shell", "write", "network"] as const;
 export type JudgeCategory = (typeof JUDGE_CATEGORIES)[number];
 
 /** `foreground` = a person can be asked now; `headless` = nobody is watching. */
@@ -25,7 +25,7 @@ export type JudgeLane = "foreground" | "headless";
 /** Why a judge produced no usable verdict. A timeout is recorded apart from denials. */
 export type JudgeFailureKind = "timeout" | "error" | "unparseable" | "unavailable";
 
-export interface JudgePolicySnapshot {
+interface JudgePolicySnapshot {
   /** Active permission exec mode, e.g. `auto`, `ask`. */
   mode: string;
   /** Project/user policy text the judge should weigh; absent when none. */
@@ -93,6 +93,8 @@ export interface PermissionJudge {
   readonly id: string;
   /** Provider version recorded with every audit row. */
   readonly version: string;
+  /** Resolved model name (`<provider>/<model>`) for model-backed providers; recorded in the audit. */
+  readonly model?: string;
   /**
    * Answer one request or throw. Throwing a {@link JudgeFailure} names the
    * failure kind; any other throw is treated as `error`. Implementations must

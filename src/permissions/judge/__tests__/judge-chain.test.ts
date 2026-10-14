@@ -147,6 +147,37 @@ describe("judge chain — failures", () => {
   });
 });
 
+describe("judge chain — audit model and deadline", () => {
+  it("a stage without a model records the resolved reviewer model, not a placeholder", async () => {
+    const reviewer = Object.assign(scripted("llm", v("allow")), { model: `claude/${PICKER_MODEL}` });
+    const d = chainDeps([[{ provider: "builtin-llm", id: "llm" }, reviewer]]);
+    await resolveJudge(UNDECIDED, judgeRequest(), d);
+    const stage = (judgeRecords(d)[0]!.stages as Array<Record<string, unknown>>)[0]!;
+    expect(stage.model).toBe(`claude/${PICKER_MODEL}`);
+  });
+
+  it("exceeding the chain deadline mid-chain is a failure: fallback applies and later stages never run", async () => {
+    const slow = scripted("jev", v("ask"));
+    slow.judge = () => new Promise<JudgeVerdict>(() => {});
+    const llm = scripted("llm", v("allow"));
+    const d = chainDeps([[scriptedStage("jev"), slow], [builtinStage(), llm]], { timeoutMs: 5_000, chainDeadlineMs: 40 });
+    const out = await resolveJudge(UNDECIDED, judgeRequest({ lane: "headless" }), d);
+    expect(out).toMatchObject({ judged: true, decision: "deny", defer: true, source: "fallback", fallback: "timeout" });
+    expect(llm.calls).toBe(0);
+    const stages = judgeRecords(d)[0]!.stages as Array<Record<string, unknown>>;
+    expect(stages.map((s) => s.outcome)).toEqual(["failed", "skipped"]);
+  });
+
+  it("an ambiguous stage followed by a deadline overrun still falls back (never the earlier ask/allow)", async () => {
+    const jev = scripted("jev", v("allow", 0.1));
+    const slow = scripted("llm", v("allow"));
+    slow.judge = () => new Promise<JudgeVerdict>(() => {});
+    const d = chainDeps([[scriptedStage("jev", 0.8), jev], [builtinStage(), slow]], { timeoutMs: 5_000, chainDeadlineMs: 40 });
+    const out = await resolveJudge(UNDECIDED, judgeRequest(), d);
+    expect(out).toMatchObject({ decision: "ask", source: "fallback", fallback: "timeout" });
+  });
+});
+
 describe("judge chain — breaker and shadow", () => {
   it("denials from different stages share one per-session counter", async () => {
     const jev = scripted("jev", v("deny", 0.95), v("ask"), v("deny", 0.9));

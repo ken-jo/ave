@@ -335,7 +335,7 @@ export interface AuditManifestViolation extends AuditCommon {
  * user saw is recorded here, on the HMAC chain. `judgeRecord` carries the
  * redacted request, never raw tool arguments.
  */
-export interface AuditJudge extends AuditCommon {
+interface AuditJudge extends AuditCommon {
   decision: "judge";
   tool: string;
   source: ToolSource;

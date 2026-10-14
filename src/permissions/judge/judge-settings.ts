@@ -18,22 +18,23 @@
 import { isAbsolute } from "node:path";
 import { isIP } from "node:net";
 import { classifyAddress } from "../../core/network-guard.js";
-import { isLLMVendor, isModelAvailableForVendor, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
+import { isLLMVendor, LLM_VENDOR_MODEL_OPTIONS, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
+import type { LlmModelListCache } from "../../shared/llm-model-list.js";
 import type { JudgeCategory } from "./judge-contract.js";
 
 /** Settings path of the subtree. Enforcement as a write floor lives with the P1 floors list. */
-export const JUDGE_SETTINGS_KEY = "permissions.judge";
+const JUDGE_SETTINGS_KEY = "permissions.judge";
 
-export const JUDGE_STAGE_PROVIDERS = ["builtin-llm", "external"] as const;
-export type JudgeStageProvider = (typeof JUDGE_STAGE_PROVIDERS)[number];
+const JUDGE_STAGE_PROVIDERS = ["builtin-llm", "external"] as const;
+type JudgeStageProvider = (typeof JUDGE_STAGE_PROVIDERS)[number];
 
 /** Legacy single-provider values, accepted only for migration. */
 const LEGACY_PROVIDERS = ["off", ...JUDGE_STAGE_PROVIDERS] as const;
 
-export const JUDGE_MODES = ["shadow", "active"] as const;
+const JUDGE_MODES = ["shadow", "active"] as const;
 export type JudgeMode = (typeof JUDGE_MODES)[number];
 
-export const MAX_JUDGE_STAGES = 4;
+const MAX_JUDGE_STAGES = 4;
 
 export interface JudgeExternalSettings {
   /** argv array; argv[0] must be an absolute path. Run without a shell. */
@@ -82,6 +83,8 @@ export interface JudgeSettings {
   categories: Record<JudgeCategory, boolean>;
   /** Per-stage timeout. */
   timeoutMs: number;
+  /** Whole-chain deadline; exceeding it is a failure and the fallback applies. */
+  chainDeadlineMs: number;
   breaker: JudgeBreakerSettings;
 }
 
@@ -90,11 +93,14 @@ export const DEFAULT_JUDGE_SETTINGS: Readonly<JudgeSettings> = Object.freeze({
   mode: "shadow",
   categories: Object.freeze({ shell: true, write: true, network: false }),
   timeoutMs: 15_000,
+  chainDeadlineMs: 60_000,
   breaker: Object.freeze({ consecutive: 3, total: 20 }),
 }) as Readonly<JudgeSettings>;
 
 const TIMEOUT_MIN_MS = 500;
 const TIMEOUT_MAX_MS = 120_000;
+const CHAIN_DEADLINE_MIN_MS = 1_000;
+const CHAIN_DEADLINE_MAX_MS = 600_000;
 const BREAKER_MAX = 1_000;
 const STAGE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 
@@ -199,18 +205,60 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/** The models the chat model picker offers, per provider. */
+export interface JudgeModelCatalog {
+  optionsFor(vendor: LLMVendor): readonly string[];
+}
+
+/** The subset of `llm` settings the picker's option list is derived from. */
+export interface JudgeModelCatalogSource {
+  /** Saved per-vendor blocks: the user's selected model and configured endpoint. */
+  vendors?: Partial<Record<LLMVendor, { model?: string; baseUrl?: string }>>;
+  /** `/models` handshake results, as the picker reads them. */
+  modelListCache?: LlmModelListCache;
+}
+
+/**
+ * The same option set the chat model picker offers (`LlmTab` `modelOptionsFor`):
+ * the static catalog, the vendor's `/models` handshake listing for its
+ * configured endpoint (how self-hosted `openai-compatible` models appear), and
+ * the user's saved selection.
+ */
+export function judgeModelCatalogFrom(source: JudgeModelCatalogSource): JudgeModelCatalog {
+  return {
+    optionsFor(vendor) {
+      const options = new Set<string>(LLM_VENDOR_MODEL_OPTIONS[vendor] ?? []);
+      const block = source.vendors?.[vendor];
+      for (const entry of Object.values(source.modelListCache ?? {})) {
+        if (entry.vendor !== vendor) continue;
+        if (block?.baseUrl !== undefined && (entry.baseUrl ?? "") !== block.baseUrl) continue;
+        for (const model of entry.models) options.add(model);
+      }
+      const saved = block?.model?.trim();
+      if (saved) options.add(saved);
+      return [...options];
+    },
+  };
+}
+
+/** Static-only catalog, for callers that have no live `llm` settings (tests, schema checks). */
+const STATIC_JUDGE_MODEL_CATALOG: JudgeModelCatalog = judgeModelCatalogFrom({});
+
 /**
  * Parse `<vendor>/<model>` (split on the FIRST slash; model ids may contain
  * slashes) and check it against the chat model picker's option list.
  */
-export function parseJudgeModel(raw: unknown): { value?: JudgeModelRef; error?: string } {
+function parseJudgeModel(
+  raw: unknown,
+  catalog: JudgeModelCatalog = STATIC_JUDGE_MODEL_CATALOG,
+): { value?: JudgeModelRef; error?: string } {
   if (typeof raw !== "string" || raw.length === 0) return { error: "model must be a '<provider>/<model>' string" };
   const slash = raw.indexOf("/");
   if (slash <= 0 || slash === raw.length - 1) return { error: `model '${raw}' must be '<provider>/<model>'` };
   const vendor = raw.slice(0, slash);
   const model = raw.slice(slash + 1);
   if (!isLLMVendor(vendor)) return { error: `model provider '${vendor}' is not a configured LLM provider` };
-  if (!isModelAvailableForVendor(vendor, model)) {
+  if (!catalog.optionsFor(vendor).includes(model)) {
     return { error: `model '${model}' is not offered for provider '${vendor}' by the model picker` };
   }
   return { value: { vendor, model } };
@@ -222,7 +270,7 @@ export function formatJudgeModel(ref: JudgeModelRef): string {
 
 const STAGE_KEYS = new Set(["provider", "id", "escalateBelow", "model", "external"]);
 
-function parseStage(raw: unknown, index: number): { value?: JudgeStageSettings; error?: string } {
+function parseStage(raw: unknown, index: number, catalog: JudgeModelCatalog): { value?: JudgeStageSettings; error?: string } {
   const at = `chain[${index}]`;
   if (!isPlainObject(raw)) return { error: `${at} must be an object` };
   const extra = Object.keys(raw).filter((k) => !STAGE_KEYS.has(k));
@@ -243,8 +291,10 @@ function parseStage(raw: unknown, index: number): { value?: JudgeStageSettings; 
   }
   if (provider === "builtin-llm") {
     if (raw.external !== undefined) return { error: `${at}.external applies to provider 'external' only` };
+    // The builtin reviewer reports a risk level, never a confidence, so a threshold could never be met.
+    if (raw.escalateBelow !== undefined) return { error: `${at}.escalateBelow is not supported by builtin-llm (it reports no confidence)` };
     if (raw.model !== undefined) {
-      const { value, error } = parseJudgeModel(raw.model);
+      const { value, error } = parseJudgeModel(raw.model, catalog);
       if (error) return { error: `${at}.${error}` };
       stage.model = value;
     }
@@ -258,13 +308,13 @@ function parseStage(raw: unknown, index: number): { value?: JudgeStageSettings; 
 }
 
 /** Parse a chain array; any invalid stage invalidates the whole chain. */
-function parseChain(raw: unknown): { value?: JudgeStageSettings[]; error?: string } {
+function parseChain(raw: unknown, catalog: JudgeModelCatalog): { value?: JudgeStageSettings[]; error?: string } {
   if (!Array.isArray(raw)) return { error: "chain must be an array of stages" };
   if (raw.length > MAX_JUDGE_STAGES) return { error: `chain allows at most ${MAX_JUDGE_STAGES} stages` };
   const stages: JudgeStageSettings[] = [];
   const ids = new Set<string>();
   for (let i = 0; i < raw.length; i++) {
-    const { value, error } = parseStage(raw[i], i);
+    const { value, error } = parseStage(raw[i], i, catalog);
     if (error || !value) return { error };
     if (ids.has(value.id)) return { error: `chain stage id '${value.id}' is duplicated` };
     ids.add(value.id);
@@ -274,14 +324,14 @@ function parseChain(raw: unknown): { value?: JudgeStageSettings[]; error?: strin
 }
 
 /** Legacy `{ provider, external? }` → chain. */
-function migrateLegacyProvider(obj: Record<string, unknown>): { value?: JudgeStageSettings[]; error?: string } {
+function migrateLegacyProvider(obj: Record<string, unknown>, catalog: JudgeModelCatalog): { value?: JudgeStageSettings[]; error?: string } {
   if (!(LEGACY_PROVIDERS as readonly unknown[]).includes(obj.provider)) {
     return { error: `provider invalid: '${String(obj.provider)}'` };
   }
   if (obj.provider === "off") {
     return obj.external === undefined ? { value: [] } : { error: "external is set but provider is 'off'" };
   }
-  return parseChain([{ provider: obj.provider, ...(obj.external !== undefined ? { external: obj.external } : {}) }]);
+  return parseChain([{ provider: obj.provider, ...(obj.external !== undefined ? { external: obj.external } : {}) }], catalog);
 }
 
 function defaults(): JudgeSettings {
@@ -290,6 +340,7 @@ function defaults(): JudgeSettings {
     mode: DEFAULT_JUDGE_SETTINGS.mode,
     categories: { ...DEFAULT_JUDGE_SETTINGS.categories },
     timeoutMs: DEFAULT_JUDGE_SETTINGS.timeoutMs,
+    chainDeadlineMs: DEFAULT_JUDGE_SETTINGS.chainDeadlineMs,
     breaker: { ...DEFAULT_JUDGE_SETTINGS.breaker },
   };
 }
@@ -307,7 +358,10 @@ export interface NormalizedJudgeSettings {
  * invalid chain resolves to an EMPTY chain (no automation) — never to a
  * partial chain or a different provider.
  */
-export function normalizeJudgeSettings(parsed: unknown): NormalizedJudgeSettings {
+export function normalizeJudgeSettings(
+  parsed: unknown,
+  catalog: JudgeModelCatalog = STATIC_JUDGE_MODEL_CATALOG,
+): NormalizedJudgeSettings {
   const settings = defaults();
   const issues: string[] = [];
   let migrated = false;
@@ -323,7 +377,7 @@ export function normalizeJudgeSettings(parsed: unknown): NormalizedJudgeSettings
   if (hasChain && hasLegacy) {
     issues.push("set either chain or the legacy provider/external fields, not both; judge disabled");
   } else if (hasChain || hasLegacy) {
-    const { value, error } = hasChain ? parseChain(obj.chain) : migrateLegacyProvider(obj);
+    const { value, error } = hasChain ? parseChain(obj.chain, catalog) : migrateLegacyProvider(obj, catalog);
     if (error || !value) issues.push(`${error ?? "chain invalid"}; judge disabled`);
     else {
       settings.chain = value;
@@ -351,6 +405,11 @@ export function normalizeJudgeSettings(parsed: unknown): NormalizedJudgeSettings
     if (v !== null) settings.timeoutMs = v;
     else issues.push(`timeoutMs must be an integer in [${TIMEOUT_MIN_MS}, ${TIMEOUT_MAX_MS}]`);
   }
+  if (obj.chainDeadlineMs !== undefined) {
+    const v = intInRange(obj.chainDeadlineMs, CHAIN_DEADLINE_MIN_MS, CHAIN_DEADLINE_MAX_MS);
+    if (v !== null) settings.chainDeadlineMs = v;
+    else issues.push(`chainDeadlineMs must be an integer in [${CHAIN_DEADLINE_MIN_MS}, ${CHAIN_DEADLINE_MAX_MS}]`);
+  }
   if (obj.breaker !== undefined) {
     const b = isPlainObject(obj.breaker) ? obj.breaker : {};
     const consecutive = b.consecutive === undefined ? settings.breaker.consecutive : intInRange(b.consecutive, 1, BREAKER_MAX);
@@ -368,8 +427,11 @@ export function normalizeJudgeSettings(parsed: unknown): NormalizedJudgeSettings
  * Write path (Settings UI patch): any invalid field is a clear error, nothing
  * is coerced. Returns the validated settings to persist (always the chain form).
  */
-export function validateJudgeSettings(patch: unknown): JudgeSettings {
-  const { settings, issues } = normalizeJudgeSettings(patch);
+export function validateJudgeSettings(
+  patch: unknown,
+  catalog: JudgeModelCatalog = STATIC_JUDGE_MODEL_CATALOG,
+): JudgeSettings {
+  const { settings, issues } = normalizeJudgeSettings(patch, catalog);
   if (issues.length > 0) {
     throw new JudgeSettingsError(`${JUDGE_SETTINGS_KEY} invalid: ${issues.join("; ")}`);
   }
@@ -389,6 +451,7 @@ export function serializeJudgeSettings(settings: JudgeSettings): Record<string, 
     mode: settings.mode,
     categories: { ...settings.categories },
     timeoutMs: settings.timeoutMs,
+    chainDeadlineMs: settings.chainDeadlineMs,
     breaker: { ...settings.breaker },
   };
 }

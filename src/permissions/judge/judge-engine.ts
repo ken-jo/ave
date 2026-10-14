@@ -31,6 +31,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { AuditLogger } from "../../audit/audit-logger.js";
+import { errorMessage } from "../../shared/error-message.js";
 import type { RiskVerdict } from "../reviewer/risk-classifier.js";
 import {
   isJudgeCategory,
@@ -49,7 +50,7 @@ import type { JudgeCircuitBreaker } from "./judge-breaker.js";
 import { judgeArgsHash, redactJudgeRequest, redactJudgeText } from "./judge-redaction.js";
 import { formatJudgeModel, type JudgeMode, type JudgeSettings, type JudgeStageSettings } from "./judge-settings.js";
 
-export type PriorRuleDecision = "allow" | "ask" | "deny" | "undecided";
+type PriorRuleDecision = "allow" | "ask" | "deny" | "undecided";
 
 /** What the layers before the judge concluded about this call. */
 export interface JudgeGate {
@@ -62,7 +63,7 @@ export interface JudgeGate {
   remoteController: boolean;
 }
 
-export type BeforeJudgeResult =
+type BeforeJudgeResult =
   /**
    * `redactInputKeys`: tool-input keys whose values the JUDGE sees as
    * {@link POLICY_REDACTED}. Redaction is the only change a hook can make: the
@@ -106,7 +107,7 @@ export interface JudgeEngineDeps {
   now?: () => number;
 }
 
-export type JudgeSkipReason =
+type JudgeSkipReason =
   | "judge-off"
   | "rule-decided"
   | "strict-mode"
@@ -116,7 +117,7 @@ export type JudgeSkipReason =
   | "category-disabled"
   | "breaker-open";
 
-export type JudgeOutcomeSource = "judge" | "hook" | "fallback";
+type JudgeOutcomeSource = "judge" | "hook" | "fallback";
 
 export interface JudgeAuditRecord {
   event: "permission-judge";
@@ -146,18 +147,18 @@ export interface JudgeAuditRecord {
   policyRedactedKeys?: string[];
 }
 
-export interface JudgeStageRecord {
+interface JudgeStageRecord {
   id: string;
   provider: JudgeStageSettings["provider"];
   version: string | null;
-  /** `<provider>/<model>` for builtin-llm; `reviewer-default` when unset; null for external. */
+  /** `<provider>/<model>` for builtin-llm (configured, else the resolved reviewer model); null for external or unresolved. */
   model: string | null;
   decision: JudgeDecision | null;
   confidence: number | null;
   escalateBelow: number | null;
   latencyMs: number;
-  /** decided = ended the chain; escalated = ambiguous; failed = no verdict. */
-  outcome: "decided" | "escalated" | "failed";
+  /** decided = ended the chain; escalated = ambiguous; failed = no verdict; skipped = chain deadline already spent. */
+  outcome: "decided" | "escalated" | "failed" | "skipped";
   fallback: JudgeFailureKind | null;
   /** Redacted, truncated provider stderr (external command judges). */
   stderr?: string;
@@ -252,20 +253,29 @@ async function runJudge(
     if (err instanceof JudgeFailure) {
       return { fallback: err.kind, failureMessage: err.message, ...(err.diagnostics ? { diagnostics: err.diagnostics } : {}) };
     }
-    return { fallback: "error", failureMessage: err instanceof Error ? err.message : String(err) };
+    return { fallback: "error", failureMessage: errorMessage(err) };
   } finally {
     clearTimeout(timer);
     callerSignal?.removeEventListener("abort", onCallerAbort);
   }
 }
 
+function chainDeadlineFallback(deps: JudgeEngineDeps): ChainResult {
+  return {
+    kind: "fallback",
+    fallback: "timeout",
+    failureMessage: `judge chain exceeded its ${deps.settings.chainDeadlineMs}ms deadline`,
+  };
+}
+
 type ChainResult =
   | { kind: "verdict"; stage: JudgeChainStage; verdict: JudgeVerdict }
   | { kind: "fallback"; fallback: JudgeFailureKind; failureMessage: string };
 
-function stageModel(stage: JudgeStageSettings): string | null {
-  if (stage.provider !== "builtin-llm") return null;
-  return stage.model ? formatJudgeModel(stage.model) : "reviewer-default";
+/** The model a stage actually ran: the configured one, else the provider's resolved model. */
+function stageModel(stage: JudgeChainStage): string | null {
+  if (stage.settings.provider !== "builtin-llm") return null;
+  return stage.settings.model ? formatJudgeModel(stage.settings.model) : stage.judge?.model ?? null;
 }
 
 /** True when the verdict is final for its stage: allow/deny meeting the stage threshold. */
@@ -284,24 +294,48 @@ async function runChain(
 ): Promise<ChainResult> {
   let lastFailure: JudgeRun | undefined;
   let ambiguous: { stage: JudgeChainStage; verdict: JudgeVerdict } | undefined;
+  const deadline = now() + deps.settings.chainDeadlineMs;
   for (let i = 0; i < deps.chain.length; i++) {
     const stage = deps.chain[i]!;
     const isLast = i === deps.chain.length - 1;
     const t0 = now();
-    const run = await runJudge(stage.judge, view, deps.settings.timeoutMs, signal);
+    const remaining = deadline - t0;
+    if (remaining <= 0) {
+      for (const rest of deps.chain.slice(i)) {
+        records.push({
+          id: rest.settings.id, provider: rest.settings.provider, version: rest.judge?.version ?? null,
+          model: stageModel(rest), escalateBelow: rest.settings.escalateBelow ?? null, latencyMs: 0,
+          decision: null, confidence: null, outcome: "skipped", fallback: "timeout",
+        });
+      }
+      return chainDeadlineFallback(deps);
+    }
+    const stageTimeout = Math.min(deps.settings.timeoutMs, remaining);
+    const run = await runJudge(stage.judge, view, stageTimeout, signal);
     const latencyMs = Math.max(0, now() - t0);
     const stderr = run.diagnostics?.stderr ?? run.verdict?.diagnostics?.stderr;
     const base = {
       id: stage.settings.id,
       provider: stage.settings.provider,
       version: stage.judge?.version ?? null,
-      model: stageModel(stage.settings),
+      model: stageModel(stage),
       escalateBelow: stage.settings.escalateBelow ?? null,
       latencyMs,
       ...(stderr ? { stderr: redactJudgeText(stderr, 4_096) } : {}),
     };
     if (!run.verdict) {
       records.push({ ...base, decision: null, confidence: null, outcome: "failed", fallback: run.fallback ?? "error" });
+      // The stage ran into the chain deadline: no later stage gets to run.
+      if (run.fallback === "timeout" && stageTimeout < deps.settings.timeoutMs) {
+        for (const rest of deps.chain.slice(i + 1)) {
+          records.push({
+            id: rest.settings.id, provider: rest.settings.provider, version: rest.judge?.version ?? null,
+            model: stageModel(rest), escalateBelow: rest.settings.escalateBelow ?? null, latencyMs: 0,
+            decision: null, confidence: null, outcome: "skipped", fallback: "timeout",
+          });
+        }
+        return chainDeadlineFallback(deps);
+      }
       lastFailure = run;
       ambiguous = undefined;
       continue;

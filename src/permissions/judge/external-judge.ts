@@ -15,6 +15,7 @@
  * not exactly the verdict schema is `unparseable`.
  */
 import { spawn } from "node:child_process";
+import { errorMessage } from "../../shared/error-message.js";
 import {
   JudgeFailure,
   type JudgeFailureKind,
@@ -25,7 +26,7 @@ import {
 import { redactJudgeRequest, redactJudgeText } from "./judge-redaction.js";
 import { checkExternalCommand, checkExternalEnv, checkExternalUrl, type JudgeExternalSettings } from "./judge-settings.js";
 
-export const EXTERNAL_JUDGE_PROTOCOL_VERSION = 1;
+const EXTERNAL_JUDGE_PROTOCOL_VERSION = 1;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_STDERR_BYTES = 4 * 1024;
 const MAX_RATIONALE_CHARS = 2_000;
@@ -184,7 +185,7 @@ async function postUrl(fetchImpl: JudgeFetch, url: string, body: string, signal:
     });
   } catch (err) {
     if (signal.aborted) throw signal.reason;
-    throw new JudgeFailure("unavailable", `external judge unreachable: ${(err as Error).message}`);
+    throw new JudgeFailure("unavailable", `external judge unreachable: ${errorMessage(err)}`);
   }
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined);
@@ -206,7 +207,7 @@ async function readCappedBody(response: Response, signal: AbortSignal): Promise<
         next = await reader.read();
       } catch (err) {
         if (signal.aborted) throw signal.reason;
-        throw new JudgeFailure("error", `external judge response stream failed: ${(err as Error).message}`);
+        throw new JudgeFailure("error", `external judge response stream failed: ${errorMessage(err)}`);
       }
       if (next.done) break;
       size += next.value.byteLength;

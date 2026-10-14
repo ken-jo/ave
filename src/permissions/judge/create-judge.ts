@@ -11,11 +11,13 @@ import type { ReviewerInteractiveAutoApprove } from "../permission-settings-stor
 import { BuiltinLlmJudge, type TracingRiskClassifier } from "./builtin-llm-judge.js";
 import type { JudgeChainStage } from "./judge-engine.js";
 import { ExternalJudge, type JudgeFetch } from "./external-judge.js";
-import type { JudgeModelRef, JudgeSettings, JudgeStageSettings } from "./judge-settings.js";
+import { formatJudgeModel, type JudgeModelRef, type JudgeSettings, type JudgeStageSettings } from "./judge-settings.js";
 
 export interface CreateJudgeDeps {
   /** The reviewer's LLM classifier (current reviewer model), when the reviewer runs in `llm` mode. */
   reviewerClassifier: TracingRiskClassifier | null;
+  /** The model the reviewer classifier resolved to (the active chat model); recorded in the audit. */
+  reviewerModel: JudgeModelRef | null;
   /**
    * A classifier on a user-selected model, built through the same provider
    * wiring as the chat model picker. Null when that provider is not configured.
@@ -29,7 +31,11 @@ function createStage(stage: JudgeStageSettings, deps: CreateJudgeDeps): JudgeCha
   switch (stage.provider) {
     case "builtin-llm": {
       const classifier = stage.model ? deps.classifierForModel(stage.model) : deps.reviewerClassifier;
-      return { settings: stage, judge: classifier ? new BuiltinLlmJudge(classifier, deps.autoApprove) : null };
+      const model = stage.model ?? deps.reviewerModel;
+      return {
+        settings: stage,
+        judge: classifier ? new BuiltinLlmJudge(classifier, deps.autoApprove, model ? formatJudgeModel(model) : undefined) : null,
+      };
     }
     case "external":
       if (!stage.external) {

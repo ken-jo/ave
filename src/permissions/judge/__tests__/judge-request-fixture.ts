@@ -52,6 +52,7 @@ export function judgeSettings(overrides: Partial<JudgeSettings> = {}): JudgeSett
     mode: "active",
     categories: { ...DEFAULT_JUDGE_SETTINGS.categories },
     timeoutMs: 1_000,
+    chainDeadlineMs: DEFAULT_JUDGE_SETTINGS.chainDeadlineMs,
     breaker: { ...DEFAULT_JUDGE_SETTINGS.breaker },
     ...overrides,
   };

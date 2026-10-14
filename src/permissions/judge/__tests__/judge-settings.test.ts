@@ -5,6 +5,7 @@ import { createJudgeChain, type CreateJudgeDeps } from "../create-judge.js";
 import {
   DEFAULT_JUDGE_SETTINGS,
   JudgeSettingsError,
+  judgeModelCatalogFrom,
   normalizeJudgeSettings,
   serializeJudgeSettings,
   validateJudgeSettings,
@@ -24,6 +25,7 @@ describe("judge settings", () => {
       mode: "shadow",
       categories: { shell: true, write: true, network: false },
       timeoutMs: DEFAULT_JUDGE_SETTINGS.timeoutMs,
+      chainDeadlineMs: 60_000,
       breaker: { consecutive: 3, total: 20 },
     });
   });
@@ -84,6 +86,7 @@ describe("judge settings", () => {
     [{ chain: [{ provider: "builtin-llm", external: { url: "https://judge.example.test/" } }] }, /external.*only/],
     [{ chain: [{ ...JEV, model: `${PICKER_VENDOR}/${PICKER_MODEL}` }] }, /builtin-llm.*only/],
     [{ chain: [{ ...JEV, escalateBelow: 1.2 }] }, /escalateBelow/],
+    [{ chain: [{ provider: "builtin-llm", escalateBelow: 0.5 }] }, /builtin-llm \(it reports no confidence\)/],
     [{ chain: [{ ...JEV, extra: true }] }, /unknown keys/],
     [{ chain: [JEV, JEV] }, /duplicated/],
     [{ chain: [{ provider: "builtin-llm", id: "bad id" }] }, /id invalid/],
@@ -104,8 +107,33 @@ describe("judge settings", () => {
     [{ timeoutMs: 10 }],
     [{ breaker: { consecutive: 5, total: 2 } }],
     [{ breaker: { consecutive: 0 } }],
+    [{ chainDeadlineMs: 500 }],
+    [{ chainDeadlineMs: 600_001 }],
   ])("write path rejects %j", (patch) => {
     expect(() => validateJudgeSettings(patch)).toThrow(JudgeSettingsError);
+  });
+
+  it("the chain deadline is configurable", () => {
+    expect(validateJudgeSettings({ chainDeadlineMs: 30_000 }).chainDeadlineMs).toBe(30_000);
+  });
+
+  it("validates the model against the picker's live set, including self-hosted openai-compatible models", () => {
+    const chain = { chain: [{ provider: "builtin-llm", model: "openai-compatible/team/llama-70b" }] };
+    // Static list alone has no openai-compatible models (handshake-only in the picker).
+    expect(() => validateJudgeSettings(chain)).toThrow(/not offered/);
+    const live = judgeModelCatalogFrom({
+      vendors: { "openai-compatible": { baseUrl: "http://10.0.0.5:8000/v1" } },
+      modelListCache: {
+        k1: { vendor: "openai-compatible", baseUrl: "http://10.0.0.5:8000/v1", endpoint: "e", models: ["team/llama-70b"], fetchedAt: "t" },
+        k2: { vendor: "openai-compatible", baseUrl: "http://other:8000/v1", endpoint: "e", models: ["other-model"], fetchedAt: "t" },
+      },
+    });
+    expect(validateJudgeSettings(chain, live).chain[0]!.model).toEqual({ vendor: "openai-compatible", model: "team/llama-70b" });
+    // A listing for a different endpoint than the configured one is not on offer.
+    expect(() => validateJudgeSettings({ chain: [{ provider: "builtin-llm", model: "openai-compatible/other-model" }] }, live)).toThrow(/not offered/);
+    // The user's saved selection is on offer even before a handshake.
+    const saved = judgeModelCatalogFrom({ vendors: { "openai-compatible": { model: "my-local" } } });
+    expect(validateJudgeSettings({ chain: [{ provider: "builtin-llm", model: "openai-compatible/my-local" }] }, saved).chain).toHaveLength(1);
   });
 
   it("breaker thresholds are configurable", () => {
@@ -159,6 +187,7 @@ describe("createJudgeChain", () => {
   const classifier = { classifyWithTrace: async () => Promise.reject(new Error("unused")) };
   const base: CreateJudgeDeps = {
     reviewerClassifier: null,
+    reviewerModel: null,
     classifierForModel: () => null,
     autoApprove: () => "medium",
     fetch: async () => new Response("{}"),
@@ -190,9 +219,11 @@ describe("createJudgeChain", () => {
     expect(requested).toEqual([{ vendor: PICKER_VENDOR, model: PICKER_MODEL }]);
   });
 
-  it("builtin-llm without a model uses the reviewer classifier (current reviewer model)", () => {
+  it("builtin-llm without a model uses the reviewer classifier and names the resolved reviewer model", () => {
     const s = validateJudgeSettings({ chain: [{ provider: "builtin-llm" }] });
-    expect(createJudgeChain(s, { ...base, reviewerClassifier: classifier })[0]!.judge?.id).toBe("builtin-llm");
+    const built = createJudgeChain(s, { ...base, reviewerClassifier: classifier, reviewerModel: { vendor: PICKER_VENDOR, model: PICKER_MODEL } })[0]!;
+    expect(built.judge?.id).toBe("builtin-llm");
+    expect(built.judge?.model).toBe(`${PICKER_VENDOR}/${PICKER_MODEL}`);
     expect(createJudgeChain(s, base)[0]!.judge).toBeNull();
   });
 });
