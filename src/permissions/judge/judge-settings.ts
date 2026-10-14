@@ -20,6 +20,7 @@ import { isIP } from "node:net";
 import { classifyAddress } from "../../core/network-guard.js";
 import { isLLMVendor, LLM_VENDOR_MODEL_OPTIONS, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { LlmModelListCache } from "../../shared/llm-model-list.js";
+import { isDefaultModelListEndpoint } from "../../engine/llm/model-list.js";
 import type { JudgeCategory } from "./judge-contract.js";
 
 /** Settings path of the subtree. Enforcement as a write floor lives with the P1 floors list. */
@@ -229,9 +230,15 @@ export function judgeModelCatalogFrom(source: JudgeModelCatalogSource): JudgeMod
     optionsFor(vendor) {
       const options = new Set<string>(LLM_VENDOR_MODEL_OPTIONS[vendor] ?? []);
       const block = source.vendors?.[vendor];
+      const configuredBaseUrl = block?.baseUrl?.trim();
       for (const entry of Object.values(source.modelListCache ?? {})) {
         if (entry.vendor !== vendor) continue;
-        if (block?.baseUrl !== undefined && (entry.baseUrl ?? "") !== block.baseUrl) continue;
+        // Only the listing for the endpoint the vendor actually reaches: its
+        // configured baseUrl, else the vendor's default endpoint.
+        const sameEndpoint = configuredBaseUrl
+          ? (entry.baseUrl ?? "").trim() === configuredBaseUrl
+          : isDefaultModelListEndpoint(vendor, entry.endpoint);
+        if (!sameEndpoint) continue;
         for (const model of entry.models) options.add(model);
       }
       const saved = block?.model?.trim();
@@ -292,7 +299,9 @@ function parseStage(raw: unknown, index: number, catalog: JudgeModelCatalog): { 
   if (provider === "builtin-llm") {
     if (raw.external !== undefined) return { error: `${at}.external applies to provider 'external' only` };
     // The builtin reviewer reports a risk level, never a confidence, so a threshold could never be met.
-    if (raw.escalateBelow !== undefined) return { error: `${at}.escalateBelow is not supported by builtin-llm (it reports no confidence)` };
+    if (raw.escalateBelow !== undefined) {
+      return { error: `${at} (stage '${id}').escalateBelow is not supported by builtin-llm (it reports no confidence)` };
+    }
     if (raw.model !== undefined) {
       const { value, error } = parseJudgeModel(raw.model, catalog);
       if (error) return { error: `${at}.${error}` };

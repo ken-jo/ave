@@ -136,6 +136,42 @@ describe("judge settings", () => {
     expect(validateJudgeSettings({ chain: [{ provider: "builtin-llm", model: "openai-compatible/my-local" }] }, saved).chain).toHaveLength(1);
   });
 
+  it("without a configured baseUrl, only the listing for the vendor's default endpoint is on offer", () => {
+    const entry = (vendor: string, endpoint: string, models: string[], baseUrl?: string) => ({
+      vendor, endpoint, models, fetchedAt: "t", ...(baseUrl ? { baseUrl } : {}),
+    });
+    const live = judgeModelCatalogFrom({
+      vendors: { openai: { model: LLM_VENDOR_MODEL_OPTIONS.openai[0]! } },
+      modelListCache: {
+        std: entry("openai", "https://api.openai.com/v1/models", ["gpt-live-default"]),
+        proxy: entry("openai", "https://proxy.example.test/v1/models", ["gpt-via-proxy"], "https://proxy.example.test/v1"),
+        router: entry("openrouter", "https://openrouter.ai/api/v1/models", ["vendor/router-live"]),
+        routerOther: entry("openrouter", "https://elsewhere.example.test/v1/models", ["vendor/elsewhere"], "https://elsewhere.example.test/v1"),
+        compat: entry("openai-compatible", "http://10.0.0.5:8000/v1/models", ["team/llama-70b"], "http://10.0.0.5:8000/v1"),
+      },
+    });
+    const pick = (model: string) => ({ chain: [{ provider: "builtin-llm", model }] });
+    expect(validateJudgeSettings(pick("openai/gpt-live-default"), live).chain).toHaveLength(1);
+    expect(() => validateJudgeSettings(pick("openai/gpt-via-proxy"), live)).toThrow(/not offered/);
+    // A preset vendor's default endpoint is its preset address.
+    expect(validateJudgeSettings(pick("openrouter/vendor/router-live"), live).chain).toHaveLength(1);
+    expect(() => validateJudgeSettings(pick("openrouter/vendor/elsewhere"), live)).toThrow(/not offered/);
+    // A vendor with no default endpoint and no configured one takes no listing at all.
+    expect(() => validateJudgeSettings(pick("openai-compatible/team/llama-70b"), live)).toThrow(/not offered/);
+  });
+
+  it("a persisted builtin-llm stage with escalateBelow is a named issue on read, not a silent drop", () => {
+    const persisted = { chain: [JEV, { provider: "builtin-llm", id: "llm", escalateBelow: 0.5 }], mode: "active" };
+    const { settings, issues } = normalizeJudgeSettings(persisted);
+    expect(settings.chain).toEqual([]);
+    expect(settings.mode).toBe("active");
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain("chain[1] (stage 'llm').escalateBelow");
+    expect(issues[0]).toContain("builtin-llm");
+    expect(issues[0]).toContain("judge disabled");
+    expect(() => validateJudgeSettings(persisted)).toThrow(/chain\[1\] \(stage 'llm'\)\.escalateBelow/);
+  });
+
   it("breaker thresholds are configurable", () => {
     expect(validateJudgeSettings({ breaker: { consecutive: 2, total: 5 } }).breaker).toEqual({ consecutive: 2, total: 5 });
   });

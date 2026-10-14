@@ -10,6 +10,7 @@ import {
   isLLMVendor,
   isSelfHostedTrustedNetworkVendor,
   type LLMVendor,
+  type LLMVendorSettingsMap,
 } from "../../shared/llm-vendor-defaults.js";
 import {
   isMarketplaceProviderPresetId,
@@ -94,10 +95,12 @@ function configuredModelListBaseUrl(
     const preset = installedProviderPresetForScope(settingsService, credentialScope);
     return preset?.baseUrl.trim() || null;
   }
-  const llm = settingsService.get("llm");
-  const block = getLlmVendorSettings(llm.vendors, vendor);
-  if (block.baseUrl?.trim()) return block.baseUrl.trim();
-  return STANDARD_MODEL_LIST_BASE_URLS[vendor] ?? null;
+  return vendorModelListBaseUrl(settingsService.get("llm").vendors, vendor);
+}
+
+/** A vendor block's endpoint (stored, else the vendor default), else the standard catalogue address. */
+function vendorModelListBaseUrl(vendors: LLMVendorSettingsMap | undefined, vendor: LLMVendor): string | null {
+  return getLlmVendorSettings(vendors, vendor).baseUrl?.trim() || STANDARD_MODEL_LIST_BASE_URLS[vendor] || null;
 }
 
 function sameModelListEndpoint(a: string, b: string): boolean {
@@ -106,6 +109,16 @@ function sameModelListEndpoint(a: string, b: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether `endpoint` is the `/models` endpoint a vendor reaches when its block
+ * sets no baseUrl: the vendor default's address, else the standard catalogue
+ * address. False when the vendor has no default endpoint at all.
+ */
+export function isDefaultModelListEndpoint(vendor: LLMVendor, endpoint: string): boolean {
+  const base = vendorModelListBaseUrl(undefined, vendor);
+  return base ? sameModelListEndpoint(endpoint, base) : false;
 }
 
 function resolveModelListBaseUrl(
