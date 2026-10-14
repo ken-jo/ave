@@ -888,6 +888,8 @@ const SUB_AGENT_TOOL_BLOCKLIST = new Set<string>([
   // tool the child can see and try.
   "agent_guide",
   "memory_write",
+  // Withdrawing a parent's memory candidate is not a child's job; reads stay available.
+  "memory_delete",
 ]);
 
 /**
