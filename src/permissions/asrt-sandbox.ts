@@ -132,10 +132,9 @@ const SECCOMP_VENDOR_ARCH: Partial<Record<string, string>> = { x64: "x64", arm64
  * path is rewritten to `app.asar.unpacked` like {@link getVendoredSrtWinExePath},
  * then canonicalised so the exec'd spelling and the bound spelling are one.
  *
- * `undefined` off Linux and on an arch ASRT vendors no helper for (ASRT then
- * runs without seccomp, as before). A missing helper on a vendored arch fails
- * clearly: ASRT would otherwise fall back to its own search and exec a path
- * the wrap was never granted.
+ * `undefined` off Linux, on an arch ASRT vendors no helper for, and — with a
+ * one-time warning — when the vendored helper is missing or not a file; ASRT
+ * then resolves the helper itself exactly as before this pin existed.
  */
 export function getVendoredApplySeccompPath(): string | undefined {
   if (process.platform !== "linux") return undefined;
@@ -150,13 +149,32 @@ export function getVendoredApplySeccompPath(): string | undefined {
   try {
     real = realpathSync(path);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    throw new Error(`[sandbox-seccomp-unavailable] Vendored apply-seccomp helper is missing: ${path}`);
+    warnSeccompHelperUnavailable(`unreadable (${(error as NodeJS.ErrnoException).code ?? "error"}): ${path}`);
+    return undefined;
   }
   if (!lstatSync(real).isFile()) {
-    throw new Error(`[sandbox-seccomp-unavailable] Vendored apply-seccomp helper is not a file: ${real}`);
+    warnSeccompHelperUnavailable(`not a file: ${real}`);
+    return undefined;
   }
   return real;
+}
+
+let seccompHelperWarned = false;
+
+/**
+ * A missing helper must not cost the session its filesystem confinement: a
+ * throw here fails ASRT initialization, which the default mode degrades to
+ * isolation=none. Without a pinned path ASRT resolves the helper itself and,
+ * finding none, runs bwrap without seccomp (Unix sockets unrestricted) — the
+ * behaviour before this pin existed. Logged once per process, not per wrap.
+ */
+function warnSeccompHelperUnavailable(detail: string): void {
+  if (seccompHelperWarned) return;
+  seccompHelperWarned = true;
+  log.warn(
+    `[sandbox-seccomp-unavailable] Vendored apply-seccomp helper is ${detail}; ` +
+      "not pinning seccomp.applyPath or granting its read — ASRT falls back to its own resolution",
+  );
 }
 
 /**
@@ -818,7 +836,9 @@ export function buildPerCommandSandboxCustomConfig(
     fs.allowRead = readGrantsOutsideReadDenies(
       hiddenSeccompHelper === undefined || grants.includes(hiddenSeccompHelper) ? grants : [...grants, hiddenSeccompHelper],
       floor,
-      filesystem.floorPierces ?? [],
+      // Restated shared grants keep the shared config's pierces (none, as in
+      // buildSandboxConfig); a wrap's own pierces cover only its own grants.
+      filesystem.allowRead !== undefined ? (filesystem.floorPierces ?? []) : [],
     );
   }
   if (Object.keys(fs).length === 0) return undefined;
