@@ -6,7 +6,8 @@ import { TextDecoder } from "node:util";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { classifyDocumentationChanges, isCanonicalGitPath } from "../../scripts/hooks/pre-push-markdown-policy.mjs";
-import { selectFastSourceChecks } from "../../scripts/hooks/pre-push-source-policy.mjs";
+import { isIntegrationBranchRef } from "../../scripts/hooks/pre-push-ref-updates.mjs";
+import { selectFastSourceChecks, selectTriggeredLockSuites } from "../../scripts/hooks/pre-push-source-policy.mjs";
 import { selectTargetedAveAppVitestFiles } from "../../scripts/hooks/pre-push-test-policy.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 
@@ -30,7 +31,9 @@ function classify(entries: ReturnType<typeof modified>[], options: Classificatio
   const classifyChanges = runInNewContext(`${source.slice(start, end)}; classifyPrePushChanges`, {
     isNullObjectId: (sha: string) => /^0+$/.test(sha),
     getProtectedBranchNames: () => new Set(["main", "master"]),
-    findNewBranchBase: () => baseSha,
+    findNewBranchBase: () => ({ sha: baseSha }),
+    isIntegrationBranchRef,
+    selectTriggeredLockSuites,
     isFastForwardUpdate: () => options.fastForward !== false,
     getChangedEntries: () => entries,
     getPushedHistoryFullReason: () => options.historyReason ?? null,
@@ -50,6 +53,40 @@ describe("pre-push classification precedence", () => {
     { fastForward: false },
   ])("keeps full checks ahead of unconsumed documentation for %j", (options) => {
     expect(classify([modified("docs/notes/example.md")], options).docsOnly).toBe(false);
+  });
+
+  it.each([
+    { remoteSha: baseSha },
+    { remoteSha: "0".repeat(40) },
+  ])("keeps a direct push to an integration branch on the full checks (%j)", (options) => {
+    const result = classify([modified("src/lib/example.ts")], {
+      update: { remoteRef: "refs/heads/integration/permissions", ...options },
+    });
+    expect(result.fastSource).not.toBe(true);
+    expect(result.reason).toBe("push to integration branch refs/heads/integration/permissions requires full checks");
+  });
+
+  it("checks nothing for a new branch whose commit the remote already contains", () => {
+    const result = classify([], {
+      update: { localRef: "refs/heads/feat/start", remoteRef: "refs/heads/feat/start", localSha: baseSha, remoteSha: "0".repeat(40) },
+    });
+    expect(result).toMatchObject({
+      alreadyOnRemote: true,
+      reason: "every pushed commit is already on a default or integration branch of the remote",
+    });
+  });
+
+  it("takes a sub-branch pushed beside an integration branch on the fast tier", () => {
+    const result = classify([modified("src/ipc/domains/example.ts")], {
+      update: { localRef: "refs/heads/feat/judge-slot", remoteRef: "refs/heads/feat/judge-slot", remoteSha: "0".repeat(40) },
+    });
+    expect(result).toMatchObject({ fastSource: true, relatedFiles: ["src/ipc/domains/example.ts"] });
+    expect(result.lockSuites.map(({ suite }: { suite: string }) => suite)).toEqual([
+      "src/ipc/__tests__/channel-inventory.test.ts",
+      "src/ipc/__tests__/domain-exports.test.ts",
+      "src/ipc/__tests__/host-renderer-only-channels.test.ts",
+      "src/ui/renderer/__tests__/format-ipc-error-coverage.test.ts",
+    ]);
   });
 
   it("does not let a global source input take the comment-only tier", () => {

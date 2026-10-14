@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/shared/agent-mode-map.ts. Do not edit by hand.
+// i18n fragment. Source: src/shared/agent-mode-map.ts.
 export const en = {
   "be_agentModeMap.executeReasoningHint":
     "Execute the assigned task precisely and produce the deliverable. Do not expand scope; clarify ambiguities with one brief question then state your assumption.",

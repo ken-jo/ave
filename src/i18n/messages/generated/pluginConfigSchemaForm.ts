@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/PluginConfigSchemaForm.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/tabs/PluginConfigSchemaForm.tsx.
 export const en = {
   "pluginConfigSchemaForm.errorMinLength": "Must be at least {minLength} characters.",
   "pluginConfigSchemaForm.errorMaxLength": "Must be at most {maxLength} characters.",

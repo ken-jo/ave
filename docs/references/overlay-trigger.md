@@ -4,8 +4,7 @@ This page owns the host delivery and trust contract for actions that begin
 outside direct chat input. The alerts contract describes the complete alerts
 release; a build containing only part of the
 [rollout](../design/plugin-alerts.md#pull-request-plan) does not enable the whole
-surface. Historical discussion remains in the
-[Korean archive](../ko/references/overlay-trigger.md).
+surface.
 
 ## Recurring alerts
 

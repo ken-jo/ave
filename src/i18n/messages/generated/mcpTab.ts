@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/McpTab.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/tabs/McpTab.tsx.
 export const en = {
   "mcpTab.statusConnected": "Connected",
   "mcpTab.statusConnecting": "Connecting",

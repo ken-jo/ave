@@ -19,6 +19,7 @@ function wire(runRoutine: () => Promise<{ summary: string; sessionId?: string }>
   const handlers: { llm?: Handler; notification?: Handler } = {};
   const send = vi.fn();
   const touchSessionTranscript = vi.fn();
+  const window = { isDestroyed: () => false, webContents: { send, isDestroyed: () => false } };
   const ctx = {
     routinesScheduler: {
       onLlmSession: (handler: Handler) => { handlers.llm = handler; return () => {}; },
@@ -26,7 +27,8 @@ function wire(runRoutine: () => Promise<{ summary: string; sessionId?: string }>
     },
     routineEngine: { runRoutine: vi.fn(runRoutine) },
     routinesStore: { update: vi.fn(async () => ({})) },
-    getMainWindow: () => ({ webContents: { send } }),
+    getMainWindow: () => window,
+    host: { desktop: { getAppWindows: () => [window] } },
     notificationService: { fire: vi.fn() },
     memoryManager: { touchSessionTranscript },
   } as unknown as BootContext;

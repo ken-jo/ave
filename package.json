@@ -1,6 +1,6 @@
 {
   "name": "ave",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
   "aveRelease": {
@@ -13,7 +13,7 @@
     "#hooks/*": "./src/hooks/*.ts",
     "#lib/*": "./src/lib/*.ts"
   },
-  "description": "Extensible Electron desktop agent workspace for Ave chat, plugin workflows, local indexing, meetings, and managed marketplace extensions.",
+  "description": "Ave, a comprehensive agent browser: you, your agents, your models and your computer in one desktop app with browser, terminal, chat, plugins and skills.",
   "keywords": [
     "ave",
     "electron",
@@ -38,7 +38,7 @@
   },
   "main": "dist/src/main/main.js",
   "scripts": {
-    "postinstall": "node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
+    "postinstall": "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
     "build:main": "node scripts/build-main-esbuild.mjs",
     "build:webpack": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs",
     "build:renderer": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs --config-name renderer",

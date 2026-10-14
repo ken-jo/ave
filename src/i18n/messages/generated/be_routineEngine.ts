@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/routines/routine-engine.ts. Do not edit by hand.
+// i18n fragment. Source: src/routines/routine-engine.ts.
 export const en = {
   "be_routineEngine.summaryTagMissing": "[summary format missing]",
   "be_routineEngine.runRoutineError": "Routine error: {message}",

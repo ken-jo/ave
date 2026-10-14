@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/data/role-presets.ts. Do not edit by hand.
+// i18n fragment. Source: src/data/role-presets.ts.
 export const en = {
   "be_rolePresets.defaultName": "Default",
 } as const;

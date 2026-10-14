@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/PluginPerfTab.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/tabs/PluginPerfTab.tsx.
 export const en = {
   "pluginPerfTab.pageTitle": "Extension Performance",
   "pluginPerfTab.pageDescription": "View extension metrics and resource usage",
