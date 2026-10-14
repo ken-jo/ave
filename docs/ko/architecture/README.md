@@ -3,7 +3,7 @@
 Ave 프로젝트의 **시스템 구조 및 기술 설계** 문서입니다.
 Ave 의 목표는 [비전](../vision/README.md), 원칙은 [철학](../vision/philosophy.md)을 참고하세요.
 
-이 디렉터리는 Ave 아키텍처 문서의 canonical 홈입니다. standalone `former_org/docs` 저장소는 아카이브용 reference만 유지합니다.
+이 디렉터리는 Ave 아키텍처 문서의 canonical 홈입니다.
 
 ---
 
