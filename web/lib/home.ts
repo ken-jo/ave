@@ -6,8 +6,8 @@ import type { Locale } from "./i18n";
  * marketplace source kinds), so the site names what a user will see.
  */
 
-export type Verdict = "run" | "ask" | "review" | "block";
-export type ModeId = "default" | "strict" | "auto" | "allow";
+type Verdict = "run" | "ask" | "review" | "block";
+type ModeId = "default" | "strict" | "auto" | "allow";
 
 export interface HomeCopy {
   meta: { title: string; description: string };

@@ -13,9 +13,3 @@ export function href(locale: Locale, canonical: string): string {
   if (locale === "ko") return canonical;
   return canonical === "/" ? "/en/" : `/en${canonical}`;
 }
-
-/** Pick the string for the locale from a {ko, en} pair. */
-export type Pair<T = string> = { ko: T; en: T };
-export function t<T>(locale: Locale, pair: Pair<T>): T {
-  return pair[locale];
-}

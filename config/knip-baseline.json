@@ -864,78 +864,8 @@
     },
     {
       "type": "exports",
-      "file": "web/components/docs/command-palette.tsx",
-      "name": "useCommandPalette"
-    },
-    {
-      "type": "exports",
-      "file": "web/components/ui/badge.tsx",
-      "name": "badgeVariants"
-    },
-    {
-      "type": "exports",
-      "file": "web/components/ui/button.tsx",
-      "name": "buttonVariants"
-    },
-    {
-      "type": "exports",
-      "file": "web/components/ui/dialog.tsx",
-      "name": "DialogClose"
-    },
-    {
-      "type": "exports",
-      "file": "web/components/ui/dialog.tsx",
-      "name": "DialogOverlay"
-    },
-    {
-      "type": "exports",
-      "file": "web/components/ui/dialog.tsx",
-      "name": "DialogPortal"
-    },
-    {
-      "type": "exports",
-      "file": "web/components/ui/sheet.tsx",
-      "name": "SheetClose"
-    },
-    {
-      "type": "exports",
-      "file": "web/lib/i18n.ts",
-      "name": "defaultLocale"
-    },
-    {
-      "type": "exports",
       "file": "web/lib/i18n.ts",
       "name": "locales"
-    },
-    {
-      "type": "exports",
-      "file": "web/lib/i18n.ts",
-      "name": "stripLocale"
-    },
-    {
-      "type": "exports",
-      "file": "web/lib/navigation.ts",
-      "name": "flattenNav"
-    },
-    {
-      "type": "exports",
-      "file": "web/lib/navigation.ts",
-      "name": "navigation"
-    },
-    {
-      "type": "exports",
-      "file": "web/lib/search-index.ts",
-      "name": "searchEntries"
-    },
-    {
-      "type": "exports",
-      "file": "web/lib/search-index.ts",
-      "name": "searchIndex"
-    },
-    {
-      "type": "exports",
-      "file": "web/lib/ui-strings.ts",
-      "name": "ui"
     },
     {
       "type": "files",
@@ -2604,28 +2534,8 @@
     },
     {
       "type": "types",
-      "file": "web/components/ui/badge.tsx",
-      "name": "BadgeProps"
-    },
-    {
-      "type": "types",
-      "file": "web/components/ui/button.tsx",
-      "name": "ButtonProps"
-    },
-    {
-      "type": "types",
       "file": "web/lib/downloads.ts",
       "name": "DownloadStep"
-    },
-    {
-      "type": "types",
-      "file": "web/lib/navigation.ts",
-      "name": "NavLink"
-    },
-    {
-      "type": "types",
-      "file": "web/lib/roadmap.ts",
-      "name": "Milestone"
     }
   ]
 }

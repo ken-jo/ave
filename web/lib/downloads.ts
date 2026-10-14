@@ -1,6 +1,6 @@
 import type { Locale } from "./i18n";
 
-export type OS = "mac" | "windows" | "linux";
+type OS = "mac" | "windows" | "linux";
 
 export interface DownloadStep {
   label: string;

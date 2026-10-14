@@ -13,7 +13,7 @@ export type Block =
   | { ul: string[] }
   | { code: string };
 
-export interface DocSection {
+interface DocSection {
   id: string;
   h: string;
   blocks: Block[];
@@ -27,7 +27,7 @@ export interface DocPage {
 }
 
 export const DOC_SLUGS = ["start", "models", "workbench", "permissions", "plugins", "marketplace", "automation", "data"] as const;
-export type DocSlug = (typeof DOC_SLUGS)[number];
+type DocSlug = (typeof DOC_SLUGS)[number];
 
 const ko: Record<DocSlug, DocPage> = {
   start: {

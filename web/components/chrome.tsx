@@ -2,7 +2,7 @@ import Link from "next/link";
 import { href, type Locale } from "@/lib/i18n";
 import { homeCopy } from "@/lib/home";
 
-export function Mark({ className }: { className?: string }) {
+function Mark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" aria-hidden="true" className={className}>
       <rect width="64" height="64" rx="16" fill="currentColor" />
