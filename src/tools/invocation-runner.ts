@@ -59,6 +59,7 @@ import type { HookResult, ToolExecutionAuditMetadata } from "../audit/audit-sche
 import type { RiskVerdict } from "../permissions/reviewer/risk-classifier.js";
 import type { EffectLedger } from "../permissions/effect-ledger.js";
 import { currentToolExecutionCwd } from "./execution-context.js";
+import { withShellSessionCwd } from "./shell-session-cwd.js";
 import {
   getHostShellExecutionPlan,
   resolveReviewerSandboxCapability,
@@ -719,9 +720,24 @@ export async function runToolInvocation(
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
     }
 
-    const finalInput = preResult.action === "modify" && preResult.updatedInput
+    const hookFinalInput = preResult.action === "modify" && preResult.updatedInput
       ? preResult.updatedInput
       : toolUse.input;
+    // A `cd` in an earlier bash call of this session becomes this call's
+    // explicit directory here, ahead of every permission, approval, route, and
+    // preparation binding, so all of them see the directory the command runs in.
+    const finalInput = toolUse.name === tool.name && isCanonicalBashTool(tool)
+      ? withShellSessionCwd(hookFinalInput, {
+          sessionId,
+          root: executionCwd,
+          allowedDirectories: buildRuntimeAllowedDirectories(
+            permissionContext?.getAdditionalDirectories?.()
+              ?? permissionContext?.additionalDirectories
+              ?? [],
+            executionCwd,
+          ),
+        })
+      : hookFinalInput;
     let resolvedPluginOperation: ResolvedPluginOperation | undefined;
     let pluginOperationPrincipal: PluginOperationPrincipal | undefined;
     if (tool.operationPolicy) {

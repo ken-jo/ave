@@ -6,6 +6,7 @@ import { normalizeToolOutputArtifactInfo } from "../shared/tool-output-artifact.
 import { ConversationHistory } from "./conversation-history.js";
 import { ToolExecutor } from "../tools/executor.js";
 import { backgroundShellManager } from "../tools/shell-tools.js";
+import { clearShellSessionCwd } from "../tools/shell-session-cwd.js";
 import { isActiveSandboxFilesystemContainedForPluginEffects } from "../permissions/sandbox-capability.js";
 import { baseAllowedDirectories } from "../permissions/base-allowed-directories.js";
 import { getWorkspaceRootLifecycle } from "../permissions/workspace-root-lifecycle.js";
@@ -665,6 +666,7 @@ export class ConversationLoop {
     const cleanup = async (ownedLease: SessionTransitionLease): Promise<void> => {
       this.assertSessionTransitionLease(ownedLease);
       backgroundShellManager.disposeSession(ownedLease.sessionId);
+      clearShellSessionCwd(ownedLease.sessionId);
       const report = await backgroundShellManager.settleSessionCleanup(ownedLease.sessionId);
       this.assertSessionTransitionLease(ownedLease);
       if (report?.state === "cleanup-unproven") {
