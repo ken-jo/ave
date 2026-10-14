@@ -281,7 +281,7 @@ describe("published contract schemas", () => {
   it("rejects a canonical schema whose $id is not its served URL", () => {
     const root = contractFixture();
     const [{ source }] = PUBLISHED_SCHEMAS;
-    put(root, source, `${JSON.stringify({ $id: "https://sdk.former-site.invalid/schemas/plugin.schema.json" })}\n`);
+    put(root, source, `${JSON.stringify({ $id: "https://example.invalid/plugin.schema.json" })}\n`);
     expect(() => checkPublishedSchemas(root)).toThrow(`${source} must have $id`);
   });
 
