@@ -806,7 +806,7 @@ Ave 는 라이선스와 출처가 확인된 공개 OSS/공식 문서에서 관�
 
 **사용자 contract**: compact 는 어떤 input shape (단일 200K 메시지 / 다수 중간 메시지 누적 / 깊은 tool chain) 에서도 reduce 보장. 수동 메시지 삭제 없이 항상 성공해야 함.
 
-**Tool-Result Stubbing (preventive, marker-only)**: 매 post-turn 마다 실행. `markStaleToolResults()` 가 오래된 `tool_result` 메시지에 `meta.compactedAt` 단일 마커만 set — 메모리상의 content 는 _verbatim 보존_ 된다. 마커가 있는 메시지는 `wire-serialize.ts:stubMarkedToolResults` 가 provider 호출 직전 + `saveSession` 직전에 stub 으로 변환. 최근 N개 (기본 8) raw 유지, 200자 미만 제외 (Ave noise-floor policy), `toolUseId` 참조 무결성 보존 (`src/engine/auto-compact.ts:114-124`).
+**Tool-Result Stubbing (pressure-gated, marker-only)**: post-turn 에서는 실행하지 않는다 — 턴이 끝날 때마다 이전 row 를 고쳐 쓰면 다음 요청이 반복하는 prefix 가 바뀌어 prompt cache 를 재사용할 수 없다. 라운드 루프의 micro-compaction (projection 이 floor 이상일 때) 과 compaction 에서만 실행된다. `markStaleToolResults()` 가 오래된 `tool_result` 메시지에 `meta.compactedAt` 단일 마커만 set — 메모리상의 content 는 _verbatim 보존_ 된다. 마커가 있는 메시지는 `wire-serialize.ts:stubMarkedToolResults` 가 provider 호출 직전 + `saveSession` 직전에 stub 으로 변환. 최근 N개 (기본 8) raw 유지, 200자 미만 제외 (Ave noise-floor policy), `toolUseId` 참조 무결성 보존 (`src/engine/auto-compact.ts:114-124`).
 
 **LLM Compact with Boundary (threshold-gated, 4-status pipeline)**: token preflight 가 `estimateMessagesTokens(history) ≥ getModelPreflightThreshold(vendor, model)` 을 hit 하면 LLM 호출 차단 + `compactWithBoundary()` (`src/engine/structured-compact.ts`) 동기 실행. 결과는 4 상태 중 하나 (`src/shared/compact-status.ts:CompressionStatus`):
 
@@ -853,8 +853,9 @@ flowchart LR
     Forced["FORCED: oldest non-protected preserve drop<br/>+ archive"]
     Continue["Same sessionId 계속<br/>(status 별 banner)"]
 
-    PostTurn --> MarkStale --> Continue
+    PostTurn --> Continue
     UserInput --> Preflight
+    Preflight -->|"micro floor 이상 (라운드 루프)"| MarkStale --> Continue
     Preflight -->|"No"| Continue
     Preflight -->|"Yes"| PerMessageTrunc --> ReverseBudget --> BoundarySplit --> SummaryCall --> ForcedCheck
     ForcedCheck -->|"No → SUMMARIZED"| Continue
@@ -865,11 +866,11 @@ flowchart LR
 
 | 항목 | Tool-result stubbing | LLM compact (4-status) |
 | ----------- | ---------------------------- | ------------------------------------------------------------------------------------------------ |
-| 트리거 | 매 post-turn (항상) | token preflight hit |
+| 트리거 | 라운드 루프 micro-compaction floor 이상 | token preflight hit |
 | 함수 | `markStaleToolResults()` | `compactWithBoundary()` |
 | 결과 | wire/disk 토큰 절감 | 4 status (NOOP / CONTENT_TRUNCATED / SUMMARIZED / REDUCED_INSUFFICIENT_FORCED) |
 | 보존 규칙 | 최근 8 raw + 200자 미만 제외 | 최근 5 user turn verbatim + adaptive `preserveRecentTokens`: 0.4/0.2/0 × preflight (usagePct 별) |
-| 수동 트리거 | (자동만) | `/compact` 슬래시 명령어 |
+| 수동 트리거 | (자동만) | `/compact [focus]` 슬래시 명령어 — focus 는 요약기에 `<compact-focus>` fence 로 전달 |
 | 원본 보존 | content verbatim (in-memory) | `~/.ave/sessions/<id>/truncated/` archive (CONTENT_TRUNCATED, FORCED 경로) |
 
 #### 4.5.5 Post-Turn Hooks
@@ -1000,11 +1001,10 @@ flowchart LR
         S5["⑤ Tool Schemas<br/>L1 Filter 통과한 도구 스키마"]
         S6["⑥ Plugin/Tool Catalog<br/>미선택 플러그인·지연 도구 발견 (request_plugin·tool_search)"]
         S7["⑦ Memory / MEMORY.md<br/>사용자 축적 기억 인덱스"]
-        S8["⑧ Rolling Summary Preamble<br/>id=2.5 (체크포인트 prior context 요약, 있을 경우)"]
     end
 
     subgraph "Contextual Sources (상황별)"
-        S9["⑨ OS / Environment<br/>OS 종류·경로·시간대"]
+        S9["⑨ OS / Environment (stable) + Turn Context<br/>환경은 system prompt, 시각·제목·staged 경고·질의별 메모는 turn context"]
         S10["⑩ Active Session Context<br/>현재 열린 파일·위치"]
         S11["⑪ Overlay Trigger Context<br/>브리핑·알림·대기 승인 건"]
         S12["⑫ Feature Flags<br/>활성 실험 기능 (§14.4)"]
@@ -1035,8 +1035,8 @@ flowchart LR
 | ⑤ | Tool Schemas | 매 턴 | 3~8K | L1 Filter 통과 후 the LLM backend에 노출할 도구 JSON 스키마 |
 | ⑥ | Plugin/Tool Catalog | 매 턴 (조건부) | 0.5~2K | 현재 턴에 아직 선택되지 않은 enabled 플러그인 카탈로그 + 대형 도구 표면용 지연 도구 카탈로그 (`tool_search`, `EAGER_TOOL_EXPOSURE_CEILING`). 사용자 비활성 플러그인은 카탈로그에서 제외된다. 활성 플러그인 도구 스키마는 200개 미만에서는 ⑤에 eager 포함, 200개 이상에서는 선택 로드 |
 | ⑦ | MEMORY.md | 파일 변경 시 | 1~3K | 사용자 축적 기억 인덱스 — 선호, 루틴, 프로젝트 정보 |
-| ⑧ | Rolling Summary Preamble (id=2.5) | on-change | 2~5K | 체크포인트에서 이어받은 prior context summary. `summaryPreamble` 가 set 된 모든 턴에서 주입. |
-| ⑨ | OS / Environment | 부팅 시 | 0.3~0.5K | OS 종류, 홈 디렉터리, 시간대, 현재 시각 |
+| ⑧ | (제거) Compact summary | — | — | system prompt 가 아니라 compact boundary row (`<prior-context-summary>`) 에 실린다. |
+| ⑨ | OS / Environment + Turn Context | 환경: 세션 고정 / turn context: 매 턴 | 0.3~1K | OS·경로·셸·로캘은 세션 내내 같아 system prompt 에 남는다. `buildTurnContext()` 는 시각(분 단위)·세션 제목·staged-origin 경고·질의별 메모를 `<turn-context>` 로 만들어, 사용자 메시지로 시작하는 라운드에서만 그 메시지 안 마지막 content part 로 붙인다 (`meta.requestOnlyParts`, history 저장 안 함). tool round 에는 붙지 않는다. |
 | ⑩ | Session Context | 매 턴 | 0.5~1K | 현재 열린 파일, 작업 디렉터리 등 |
 | ⑪ | Overlay Trigger Context | 매 턴 (조건부) | 0.5~2K | 대기 중인 승인 건수, 임박 일정, 브리핑 요약 |
 | ⑫ | Feature Flags | 부팅 시 | 0.2~0.5K | 활성 실험 기능 목록 (§14.4 Feature Flag 참조) |
@@ -1150,7 +1150,8 @@ user turn 단위를 유지한다.
     `contextWindowSource` 에 기록된다.
 
 **LLM Compact (boundary-marked)**: `compactWithBoundary` 는 rolling summary 를 생성해
-다음 턴의 system prompt 에 preamble 로 prepend 한다. 같은 sessionId 안에서
+compact boundary row 의 content 에 싣는다 (`renderCompactSummaryMessage`). system prompt 는
+바뀌지 않으므로 compaction 뒤에도 tools + system prompt prefix 가 cache 에 남는다. 같은 sessionId 안에서
 `kind: "checkpoint"` ChatEntry 가 history 에 append 되어 checkpoint anchor 역할을 한다.
 `compactNum` 은 sessionId 안에서 monotonically increasing 하며 후속 view/branch action 의
 anchor 가 된다.
@@ -1162,7 +1163,9 @@ message slice 만 표시하는 readonly view-mode 에 진입하고, "↩ 여기�
 
 **Renderer 표면**: LLM compact 가 완료되면 `compact_notice` IPC event 가 `trigger` + `summary` + `compactNum` 을 carry 한다. `kind: "checkpoint"` 구조화 ChatEntry 가 chat stream 에 삽입되고, `CheckpointDivider` 컴포넌트가 trigger 별 라벨/아이콘/색상 (`auto-compact` → 📌 자동 정리 / `--action-compact` blue, `manual` → ✋ 수동 정리 / `--muted-foreground` slate) 으로 horizontal divider 를 렌더링. `compactNum` 이 있을 때 두 액션 버튼 — "📖 이 시점 보기" (view-mode 진입, `--action-view` violet) + "↩ 여기부터 다시 시작" (해당 시점에서 새 세션 fork, `--action-branch` orange) — 을 함께 노출. `kind: "session_resume"` 은 fork 된 child session 의 첫 진입 시 prepend 되어 "이전 대화 이어서 시작 (요약 N자 적용)" 마커로 표시.
 
-**Prompt-injection fence**: rolling summary preamble 을 system prompt 에 주입할 때 `<prior-context-summary>` 블록을 _명령 해석 금지_ fence 로 wrap (system-prompt-builder Section 8). 이전 컨텍스트의 사용자 입력이 요약을 거쳐 다음 턴 / fork 된 자식 세션의 system prompt 로 흘러들어가는 vector 차단.
+**Prompt-injection fence**: boundary row 의 summary 는 `<prior-context-summary>` 블록으로 _명령 해석 금지_ fence 로 wrap 되고, summary 안의 close tag 는 `neutralizeFenceClose` 로 무력화된다. 이전 컨텍스트의 사용자 입력이 요약을 거쳐 행동 지시로 흘러들어가는 vector 차단.
+
+**Prompt cache**: `claude` slot 요청은 마지막 tool 정의, system prompt (단일 블록), 마지막 대화 row 에 cache breakpoint 3개를 둔다 (상한 4). turn context 는 사용자 메시지 안 breakpoint 뒤 part 로, nudge 는 그 메시지 안 또는 (assistant/tool 뒤에서는) `meta.requestOnly` row 로 붙어 연속 user 메시지가 생기지 않는다. 한 라운드가 lookback(20 블록) 이상을 추가하면 이전 라운드 위치에 4번째 breakpoint 를 둔다. `openai` / `azure-foundry` slot 은 session id 를 `promptCacheKey` 로 보낸다 (`src/engine/llm/vercel/prompt-cache.ts`).
 
 **세션 로드/복원 기준**: [`session-model-v2.md`](./session-model-v2.md) 가 canonical 이다.
 채팅 화면은 현재 세션만 렌더링한다. chronological session 자동 로드, upward-scroll preview,
@@ -2700,7 +2703,7 @@ composer/status 영역에 붙여 사용자가 질문과 선택지를 즉시 확�
 
 - **빈 런처:** 탭이 하나도 없을 때 `ToolActivityBody`(`src/ui/renderer/components/ToolActivity.tsx`)가 여섯 카운터와 카테고리별 최신 5개를 보여 주고, "전체 활동 보기"로 activity 탭을 연다.
 - **탭별 전체 목록(최신순, 개수 제한 없음, 패널 안에서 스크롤):**
-  - 파일 탭 → "변경된 파일" 세그먼트: 생성/수정/삭제/이동/씀 배지. 분류는 `classifyFileChange`(`tool-input-paths.ts`)가 도구 계약으로 정한다 — `edit_file`/`apply_patch`=수정, `delete_file`=삭제, `move_file`=이동(양 끝 모두 나열), `write_file`=씀(생성 여부는 결과에 없으므로 주장하지 않음), 패치 본문 헤더 `Add/Update/Delete File`=생성/수정/삭제.
+  - 파일 탭 → "변경된 파일" 세그먼트: 생성/수정/삭제/이동/씀 배지. 분류는 `classifyFileChange`(`tool-input-paths.ts`)가 도구 계약으로 정한다 — `edit_file`/`multi_edit`/`apply_patch`=수정, `delete_file`=삭제, `move_file`=이동(양 끝 모두 나열), `write_file`=씀(생성 여부는 결과에 없으므로 주장하지 않음), 패치 본문 헤더 `Add/Update/Delete File`=생성/수정/삭제.
   - 브라우저 탭 → "방문한 사이트" 목록(뷰어 위 분할). 인자로 요청한 페이지는 전부, 결과에 언급만 된 링크는 최신 `TOOL_ACTIVITY_MENTIONED_URL_LIMIT`개까지.
   - 서브에이전트 탭 → 세션의 스폰 전부(완료·복원 포함).
   - activity 탭(`WorkspaceTabKind` `"activity"`) → 호출한 플러그인 + 호출한 도구(`toolCalls[]`: 이름·출처·상태·시작 시각(라이브 전용)·소요 시간·첫 경로/URL 인자).

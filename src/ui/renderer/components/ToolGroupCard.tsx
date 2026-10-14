@@ -42,6 +42,40 @@ function AttachedPermissionReview({
   );
 }
 
+/** Lines of a running tool's live output kept visible under its row. */
+const LIVE_OUTPUT_VISIBLE_LINES = 6;
+// CSI and OSC terminal control sequences; the row is not a terminal.
+const TERMINAL_CONTROL = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
+
+/** The last lines a terminal would show: carriage returns overwrite their line. */
+function liveOutputTail(text: string, lines = LIVE_OUTPUT_VISIBLE_LINES): string {
+  const visible = text
+    .replace(TERMINAL_CONTROL, "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.slice(line.lastIndexOf("\r") + 1));
+  while (visible.length > 0 && visible[visible.length - 1] === "") visible.pop();
+  return visible.slice(-lines).join("\n");
+}
+
+/**
+ * Live output of a running shell tool, shown under its row without expanding
+ * it, so a long build visibly progresses. The completed result replaces it.
+ */
+function LiveToolOutput({ tool }: { tool: Extract<ChatEntry, { kind: "tool_group" }>["tools"][number] }) {
+  const tail = useMemo(() => liveOutputTail(tool.liveOutput ?? ""), [tool.liveOutput]);
+  if (tool.status !== "running" || tail.length === 0) return null;
+  return (
+    <pre
+      className="mx-3 mb-1.5 max-w-full overflow-hidden whitespace-pre-wrap break-words rounded bg-muted/(--opacity-stronger) px-2 py-1 font-mono text-[10px] leading-[1.35] text-muted-foreground [overflow-wrap:anywhere]"
+      data-testid="tool-live-output"
+      aria-live="off"
+    >
+      {tail}
+    </pre>
+  );
+}
+
 /**
  * Per-tool execution duration badge — `⏱ 1.4s`. Rendered next to the
  * tool name on every ToolGroupCard row (single-tool inline and grouped
@@ -282,6 +316,7 @@ function SingleToolInline({
           : <ToolDurationBadge durationMs={tool.durationMs} />}
         {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
       </div>
+      <LiveToolOutput tool={tool} />
       {open && (
         <div className="min-w-0 space-y-1 border-t px-3 py-1.5 font-mono text-[10px] ave-anim-fade-in">
           {tool.input && (
@@ -435,6 +470,8 @@ export function ToolGroupCard({
         )}
         {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
       </button>
+      {/* A collapsed group still shows what its running tools print. */}
+      {!open && tools.map((tool) => <LiveToolOutput key={tool.toolUseId} tool={tool} />)}
       {open && (
         <div className="min-w-0 space-y-1 border-t px-3 py-1.5 ave-anim-fade-in">
           {tools.map((tool) => {
@@ -467,6 +504,7 @@ export function ToolGroupCard({
                     ? <RunningDurationBadge startedAt={tool.startedAt} />
                     : <ToolDurationBadge durationMs={tool.durationMs} />}
                 </div>
+                <LiveToolOutput tool={tool} />
                 {isExpanded && (
                   <div className="min-w-0 space-y-1 border-t px-2 py-1 font-mono text-[10px] ave-anim-fade-in">
                     {tool.input && (

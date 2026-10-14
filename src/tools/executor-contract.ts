@@ -73,6 +73,11 @@ export interface ToolResult {
 
 export interface ToolExecutorCallbacks {
   onToolStart?: (name: string, input: Record<string, unknown>, meta: ToolCallMeta) => void;
+  /**
+   * Display-only live output of a running host shell tool, coalesced and
+   * capped. The tool's final result is still delivered by `onToolEnd`.
+   */
+  onToolOutput?: (name: string, text: string, meta: ToolCallMeta) => void;
   onPermissionReview?: (event: PermissionReviewEvent) => void;
   onToolEnd?: (
     name: string,

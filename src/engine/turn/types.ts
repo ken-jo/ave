@@ -129,6 +129,8 @@ export interface TurnCallbacks {
   onTextDelta?: (text: string) => void;
   onToolStart?: (name: string, input: Record<string, unknown>, meta: ToolCallMeta,
   ) => void;
+  /** Display-only live output of a running host shell tool. */
+  onToolOutput?: (name: string, text: string, meta: ToolCallMeta) => void;
   onPermissionReview?: (event: PermissionReviewEvent) => void;
   onToolEnd?: (
     name: string,
@@ -493,7 +495,9 @@ export interface ConversationLoopDeps {
    */
   forcedActiveToolNames?: ReadonlySet<string>;
   /**
-   * Sub-agent model override. API-key providers use it in place of the active
+   * Model override: a sub-agent profile's model, or the session's `/model`
+   * choice (see `ConversationLoop.setSessionModelOverride`, which restores the
+   * constructed value on a session switch). API-key providers use it in place of the active
    * vendor block's model after profile resolution. For Codex subscription
    * runtimes it is only forwarded when it is a bounded, clean string; the
    * main-owned runtime revalidates it against the live subscription catalog.

@@ -35,6 +35,7 @@ import {
   SUBAGENT_MAX_ROUNDS_MIN,
 } from "../shared/subagent-policy.js";
 import { ConversationLoop, type ConversationLoopDeps } from "./conversation-loop.js";
+import { endShellSession } from "../tools/shell-tools.js";
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
 import type {
   TurnInputRequired,
@@ -1035,7 +1036,7 @@ function isSuccessfulSubAgentStopReason(
  * A failed or interrupted segment does NOT report it consumed: there the turn
  * may never have reached the LLM at all. That is only an acknowledgement
  * decision — what the mailbox then holds is decided separately by
- * `cleanupTerminalRecipientMailbox`, which discards every pending directive
+ * `cleanupTerminalChildSession`, which discards every pending directive
  * once the child's projection is terminal.
  */
 function resumeSegmentConsumedGuidance(result: SubAgentSpawnResult): boolean {
@@ -2222,11 +2223,22 @@ export class SubAgentRunner {
         );
   }
 
-  private async cleanupTerminalRecipientMailbox(
+  private async cleanupTerminalChildSession(
     childSessionId: string,
     taskState: A2AProjectedTaskState,
   ): Promise<void> {
     if (!isA2ATerminalTaskState(taskState)) return;
+    // The child's tool calls ran under its own session id, so its background
+    // shells and saved shell directory end with it, through the same teardown
+    // a parent session uses.
+    try {
+      const report = await endShellSession(childSessionId);
+      if (report?.state === "cleanup-unproven") {
+        log.warn("sub-agent terminal shell cleanup unproven for %s", childSessionId);
+      }
+    } catch {
+      log.warn("sub-agent terminal shell cleanup failed for %s", childSessionId);
+    }
     // A finished child reads nothing more, so an undelivered parent directive
     // addressed to it is now garbage that would otherwise hold a slot against
     // the per-child cap forever.
@@ -3265,7 +3277,7 @@ export class SubAgentRunner {
       }
 
       if (durableTaskState) {
-        await this.cleanupTerminalRecipientMailbox(childSessionId, durableTaskState);
+        await this.cleanupTerminalChildSession(childSessionId, durableTaskState);
       }
       this.finalizeRun(trackedRun, stableResult);
       if (!stableResult.ok && stableResult.error?.includes("question delivery")) {
@@ -3747,7 +3759,7 @@ export class SubAgentRunner {
         };
       }
       trackedRun.cancellationPersistencePending = false;
-      await this.cleanupTerminalRecipientMailbox(
+      await this.cleanupTerminalChildSession(
         childSessionId,
         A2ATaskState.CANCELED,
       );
@@ -3791,7 +3803,7 @@ export class SubAgentRunner {
         };
       }
       trackedRun.cancellationPersistencePending = false;
-      await this.cleanupTerminalRecipientMailbox(
+      await this.cleanupTerminalChildSession(
         childSessionId,
         A2ATaskState.CANCELED,
       );
@@ -3827,7 +3839,7 @@ export class SubAgentRunner {
         suspension: undefined,
       });
     }
-    await this.cleanupTerminalRecipientMailbox(
+    await this.cleanupTerminalChildSession(
       childSessionId,
       A2ATaskState.CANCELED,
     );
@@ -4149,7 +4161,7 @@ export class SubAgentRunner {
         // The in-memory terminal latch prevents a same-process retry.
       }
       if (persisted) {
-        await this.cleanupTerminalRecipientMailbox(resumeId, taskState);
+        await this.cleanupTerminalChildSession(resumeId, taskState);
       }
       this.finalizeRun(trackedRun, result);
       if (result.stopReason !== "interrupted") callbacks?.onError?.(maskSubAgentText(message));
@@ -4605,7 +4617,7 @@ export class SubAgentRunner {
         // WORKING remains durable and therefore non-resumable.
       }
       if (durableTaskState) {
-        await this.cleanupTerminalRecipientMailbox(resumeId, durableTaskState);
+        await this.cleanupTerminalChildSession(resumeId, durableTaskState);
       }
       this.finalizeRun(trackedRun, result);
       if (result.stopReason !== "interrupted") callbacks?.onError?.(maskSubAgentText(message));
@@ -4696,7 +4708,7 @@ export class SubAgentRunner {
       }
     }
     if (durableTaskState) {
-      await this.cleanupTerminalRecipientMailbox(resumeId, durableTaskState);
+      await this.cleanupTerminalChildSession(resumeId, durableTaskState);
     }
     this.finalizeRun(trackedRun, result);
     return result;

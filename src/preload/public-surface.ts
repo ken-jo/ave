@@ -63,6 +63,11 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
   return {
   // ─── Chat (ConversationLoop) ─────────────────────
   chatHasProvider: async () => ipcRenderer.invoke(CHANNELS.chat.hasProvider, chatGroupId) as Promise<boolean>,
+  // The tile's own session decides which project's commands are listed.
+  chatListCustomCommands: async () =>
+    ipcRenderer.invoke(CHANNELS.chat.listCustomCommands, chatGroupId) as Promise<{
+      commands: import("../shared/custom-command.js").CustomCommandEntry[];
+    }>,
   chatGroupRelease: async () =>
     ipcRenderer.invoke(CHANNELS.chat.groupRelease, chatGroupId) as Promise<{ ok: boolean; released?: boolean; error?: string }>,
   captureUserKeyboardIntent,
@@ -187,7 +192,7 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
     ipcRenderer.invoke(CHANNELS.chat.import) as Promise<
       { ok: true; sessionId: string; messageCount: number } | { ok: false; error?: string; canceled?: boolean }
     >,
-  chatCompact: async () => ipcRenderer.invoke(CHANNELS.chat.compact, chatGroupId),
+  chatCompact: async (focus?: string) => ipcRenderer.invoke(CHANNELS.chat.compact, chatGroupId, focus),
   chatSessionResume: async (sessionId: string) => ipcRenderer.invoke(CHANNELS.chat.sessionResume, sessionId, chatGroupId),
   // Checkpoint view and explicit branch actions.
   chatEnterCheckpointView: async (sessionId: string, compactNum: number) =>

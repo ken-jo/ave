@@ -5,6 +5,7 @@ import type { ToolOutputCapture } from "../../shared/tool-output-artifact.js";
  * turn state (history, provider, usage, lastRound/lastContext token fields,
  * guidance queue) stays on the ConversationLoop instance, accessed via `self`.
  */
+import { appendRequestOnlyText } from "./request-only-text.js";
 import { randomUUID } from "node:crypto";
 /**
  * LoopContext — the turn-local mutable carrier that the run-turn
@@ -70,6 +71,8 @@ import {
 } from "../a2a-agent-message-envelope.js";
 import { createSubscriptionUsageCollector, recordSubscriptionRoundTelemetry } from "./subscription-usage-telemetry.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { directoryInstructionsForToolResult, liveDirectoryInstructions } from "./directory-instructions.js";
+import { toolResultContentReachesWire } from "../wire-serialize.js";
 import {
   authorizationRequiredStateOf,
   issueAuthorizationRequiredControl,
@@ -701,12 +704,11 @@ export async function queryLoop(
               systemPrompt,
               toolSchemas,
               estimateCurrent: () => self.estimateCurrentRequestProjection({
+                turnContext: self.buildTurnContext(bounds.memoryQuery ?? "", stagedOrigin),
                 systemPrompt: self.buildSystemPromptForScope(
                   scope,
-                  stagedOrigin,
                   bounds.rolePrompt,
                   bounds.sessionIdOverride ?? self.sessionId,
-                  bounds.memoryQuery,
                 ),
                 toolSchemas,
               }),
@@ -717,10 +719,8 @@ export async function queryLoop(
           if (compacted) {
             systemPrompt = self.buildSystemPromptForScope(
               scope,
-              stagedOrigin,
               bounds.rolePrompt,
               bounds.sessionIdOverride ?? self.sessionId,
-              bounds.memoryQuery,
             );
           }
         }
@@ -806,10 +806,10 @@ export async function queryLoop(
       // holds what the conversation said, and a host row committed there would
       // replay on every later turn as if the user had typed it.
       //
-      // The appended USER text is assembled into ONE row. A second consecutive
-      // user row is what a chat template that asserts role alternation rejects,
-      // so every host instruction for a round shares the single row rather than
-      // adding its own.
+      // The appended USER text never adds a second consecutive user row, which
+      // a chat template that asserts role alternation rejects: it extends the
+      // round's user message when there is one, and otherwise shares a single
+      // row (request-only-text.ts).
       //
       // Both host instructions for the round are spent HERE, once, rather than
       // inside the assembly below: the round-loop preflight re-assembles the
@@ -847,11 +847,20 @@ export async function queryLoop(
         toolErrorsAtLastProgressNudge = toolErrorsRun;
         roundIndexAtLastProgressNudge = roundIndex;
       }
+      // Built at most once per round, so the measured assembly and the sent one
+      // carry the same text; it reads the staged origin current for this round.
+      let roundTurnContext: string | undefined;
+      const turnContextForRound = (): string =>
+        (roundTurnContext ??= self.buildTurnContext(bounds.memoryQuery ?? "", stagedOrigin));
       // Pure over the history handed in, so the gate below can rebuild the same
       // round from the compacted history without re-deciding anything.
       const assembleRoundMessages = (
         base: GenericMessage[],
       ): GenericMessage[] => {
+        // A continuation round carries no turn context: it resumes the same
+        // turn's answer, whose opening round already carried it, and its last
+        // row must stay the partial assistant turn.
+        //
         // finish_reason=length CONTINUATION: a WIRE-ONLY partial assistant turn
         // as the final message. The openai-compatible adapter pairs this with
         // continue_final_message so vLLM resumes it verbatim. For mid-<think>
@@ -891,15 +900,16 @@ export async function queryLoop(
           break;
         }
         const appendedUserText: string[] = [];
+        // The turn context rides only on a round that starts from a user
+        // message (the turn's input, or a guide delivered mid-turn), inside
+        // that message. A tool round carries none: extending the tool-result
+        // message would put host text where only results belong.
+        if (rows[rows.length - 1]?.role === "user") appendedUserText.push(turnContextForRound());
         if (nudgeTextForRound !== undefined) appendedUserText.push(nudgeTextForRound);
         // After the re-prompt: that one says what to do with THIS round, the
         // notification says what the turn has spent so far.
         if (progressNudgeText !== undefined) appendedUserText.push(progressNudgeText);
-        if (appendedUserText.length === 0) return rows;
-        return [
-          ...rows,
-          { role: "user" as const, content: appendedUserText.join("\n\n") },
-        ];
+        return appendRequestOnlyText(rows, appendedUserText);
       };
       const projectRound = (
         messages: GenericMessage[],
@@ -959,10 +969,8 @@ export async function queryLoop(
                   assembleRoundMessages(self.history.getMessages()),
                   self.buildSystemPromptForScope(
                     scope,
-                    stagedOrigin,
                     bounds.rolePrompt,
                     bounds.sessionIdOverride ?? self.sessionId,
-                    bounds.memoryQuery,
                   ),
                 ),
               },
@@ -981,10 +989,8 @@ export async function queryLoop(
             if (compacted) {
               systemPrompt = self.buildSystemPromptForScope(
                 scope,
-                stagedOrigin,
                 bounds.rolePrompt,
                 bounds.sessionIdOverride ?? self.sessionId,
-                bounds.memoryQuery,
               );
               // The round already repaired the history above; compaction has
               // since rewritten it, and a boundary that cut between a tool_use
@@ -1070,6 +1076,7 @@ export async function queryLoop(
           llmSettings: roundLlmSettings,
           abortSignal,
           continuationPrefill: continuationPrefillText !== undefined,
+          promptCacheKey: effectiveSessionId,
           onReasoningDelta: callbacks?.onReasoningDelta,
           onTextDelta: callbacks?.onTextDelta,
           onRequestStarted: () => { turnModelSettings = requestModelSettings; },
@@ -1231,6 +1238,7 @@ export async function queryLoop(
               systemPrompt,
               toolSchemas,
               estimateCurrent: () => self.estimateCurrentRequestProjection({
+                turnContext: self.buildTurnContext(bounds.memoryQuery ?? "", stagedOrigin),
                 systemPrompt,
                 toolSchemas,
               }),
@@ -1899,6 +1907,9 @@ export async function queryLoop(
               permissionReviewByUseId.set(event.toolUseId, event);
               callbacks?.onPermissionReview?.(event);
             },
+            ...(callbacks?.onToolOutput
+              ? { onToolOutput: callbacks.onToolOutput }
+              : {}),
             onToolEnd: (name, result, isError, meta, uiPayload, durationMs) => {
               toolMetaByUseId.set(meta.toolUseId, meta);
               callbacks?.onToolEnd?.(name, result, isError, meta, uiPayload, durationMs);
@@ -2195,17 +2206,34 @@ export async function queryLoop(
       toolErrorsRun += toolResults.filter((tr) => tr.is_error === true).length;
 
       // tool_result 히스토리 append → loop back
+      // Derived from history, so a file whose carrying row compaction dropped
+      // or stubbed is no longer attached and rides the next touch again.
+      const attachedDirectoryInstructions = liveDirectoryInstructions(self.history.getMessages());
       for (const tr of toolResults) {
-        const meta = toolResultMeta(
+        const resultMeta = toolResultMeta(
           tr,
           toolMetaByUseId.get(tr.tool_use_id),
           permissionReviewByUseId.get(tr.tool_use_id),
         );
+        const toolUse = toolUsesForExecutor.find((tu) => tu.id === tr.tool_use_id);
+        const directoryInstructions = directoryInstructionsForToolResult({
+          projectRoot: self.getSessionProjectContext().projectRoot,
+          source: toolMetaByUseId.get(tr.tool_use_id)?.source,
+          toolInput: toolUse?.input,
+          isError: tr.is_error === true,
+          toolResultContent: tr.content,
+          stubbedOnWire: !toolResultContentReachesWire(resultMeta),
+          attached: attachedDirectoryInstructions,
+          gitIgnoreVerdicts: self.gitIgnoreVerdicts,
+        });
+        const meta = directoryInstructions
+          ? { ...resultMeta, directoryInstructions: directoryInstructions.attached }
+          : resultMeta;
         self.history.append({
           role: "tool_result",
           toolUseId: tr.tool_use_id,
-          toolName: toolUsesForExecutor.find((tu) => tu.id === tr.tool_use_id)?.name,
-          content: tr.content,
+          toolName: toolUse?.name,
+          content: directoryInstructions ? `${tr.content}\n\n${directoryInstructions.text}` : tr.content,
           ...(tr.is_error && { isError: true }),
           ...("image" in tr && tr.image ? { image: tr.image } : {}),
           ...(meta ? { meta } : {}),
@@ -2342,10 +2370,8 @@ export async function queryLoop(
       if (toolUsesForExecutor.some((tu) => tu.name === "skill_load")) {
         systemPrompt = self.buildSystemPromptForScope(
           scope,
-          stagedOrigin,
           bounds.rolePrompt,
           bounds.sessionIdOverride ?? self.sessionId,
-          bounds.memoryQuery,
         );
       }
     }

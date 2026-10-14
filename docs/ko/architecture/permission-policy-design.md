@@ -283,9 +283,12 @@ Shell leaf 의 read/write 판정은 risk classifier 의 verb table (`permissions
 | `grep_files` | `read` | `["path"]` | ripgrep content search (bundled Codex `codex-path/rg`): include glob / type, content·files_with_matches·count modes, context lines, multiline, limit/offset paging; sensitive result paths dropped |
 | `write_file` | `write` | `["path"]` | Full-file create/overwrite only |
 | `edit_file` | `write` | `["path"]` | Exact text replace; ambiguous matches fail unless explicit |
-| `apply_patch` | `write` | `["path"]` | Ordered exact replacements in one file; atomic preflight |
+| `multi_edit` | `write` | `["path"]` | Ordered exact replacements in one file; atomic preflight |
+| `apply_patch` | `write` | `["patch#patch-envelope"]` | `*** Begin Patch` envelope: add/update/move/delete across files; every section validated before any write. The `#patch-envelope` field selects the paths the patch text names |
 | `move_file` | `write` | `["sourcePath", "destinationPath"]` | Rename/move regular files; overwrite must be explicit |
 | `delete_file` | `write` | `["path"]` | Delete regular files only; directories are refused |
+
+`edit_file`, `multi_edit`, `apply_patch` updates and `write_file` overwrites of an existing file require that the session read the file with `read_file` and that its bytes still match that read (or the tool's own last write); creating a new file does not.
 
 `write_file` intentionally does not absorb `edit` or `apply` semantics. Full-file write, exact edit, and patch application are distinct intent/permission surfaces, so each ships as a separate `write` category tool with its own schema and validation.
 

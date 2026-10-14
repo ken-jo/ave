@@ -84,3 +84,28 @@ describe("the pipeline extractor selects through the shared helper", () => {
     ).toEqual([]);
   });
 });
+
+describe("patch-envelope path fields", () => {
+  const patch = [
+    "*** Begin Patch",
+    "*** Update File: src/a.ts",
+    "*** Move to: src/b.ts",
+    "-x",
+    "+y",
+    "*** Delete File: .env",
+    "*** End Patch",
+  ].join("\n");
+
+  it("selects the files the patch names for the pipeline's target paths", () => {
+    expect(extractTargetFilePaths(toolWith(["patch#patch-envelope"]), { patch }, "/work")).toEqual([
+      "/work/src/a.ts",
+      "/work/src/b.ts",
+      "/work/.env",
+    ]);
+  });
+
+  it("fails clearly for an unparseable patch instead of declaring no path", () => {
+    expect(() => extractTargetFilePaths(toolWith(["patch#patch-envelope"]), { patch: "not a patch" }, "/work"))
+      .toThrow("invalid patch");
+  });
+});

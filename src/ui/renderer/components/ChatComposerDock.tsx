@@ -516,6 +516,7 @@ export function ChatComposerDock({
           onInsertSlashCommand={onInsertSlashCommand}
           onRunMcpPrompt={onRunMcpPrompt}
           onRunPluginPrompt={onRunPluginPrompt}
+          loadCustomCommands={api.chatListCustomCommands}
           slashPickerOpen={slashPickerOpen}
           onSlashPickerOpenChange={onSlashPickerOpenChange}
           attachDisabled={
