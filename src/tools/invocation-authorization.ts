@@ -1574,6 +1574,9 @@ export async function authorizeToolInvocation(
           // Propagate approvalCacheKey so renderer record key
           // matches dispatchReviewer lookup key — end-to-end symmetry.
           ...(approvalCacheKey ? { approvalCacheKey } : {}),
+          ...(invocationPermissionContext.approvalMemory
+            ? { approvalMemory: invocationPermissionContext.approvalMemory }
+            : {}),
           // Canonical host shells expose only their sealed safe projection;
           // non-host-shell routes retain their existing capability display.
           ...(hostShellExecutionPlanAudit === undefined

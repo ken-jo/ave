@@ -38,6 +38,7 @@ import {
 } from "../../permissions/approval-gate.js";
 import {
   __resetSessionStoreForTest,
+  approvalCacheKeyIdentity,
   recordApproval,
 } from "../../permissions/user-approval-store.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -1212,7 +1213,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
             verdictAtApproval: req.reviewerVerdict?.level ?? "low",
             nlJustification: null,
             trustOrigin: req.trustOrigin,
-            approvalCacheKey: req.approvalCacheKey,
+            approvalCacheKey: approvalCacheKeyIdentity(req.approvalCacheKey, req.approvalMemory),
             workingDirectoryIdentity: workingDirectory!.identity,
           },
         );

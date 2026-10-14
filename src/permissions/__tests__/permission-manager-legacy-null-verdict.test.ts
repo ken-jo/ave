@@ -53,6 +53,7 @@ import {
 import { PermissionTestResources } from "./test-resources.js";
 import {
   __resetSessionStoreForTest,
+  approvalCacheKeyIdentity,
   captureApprovalWorkingDirectory,
   canonicalStringify,
   recordApproval,
@@ -103,7 +104,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
         riskCeilingAtApproval: ceiling,
         nlJustification: null,
         trustOrigin: "user-keyboard",
-        approvalCacheKey,
+        approvalCacheKey: approvalCacheKeyIdentity(approvalCacheKey, { kind: "args" })!,
         workingDirectoryIdentity: captureApprovalWorkingDirectory(cwd).identity,
       });
       // Force the reviewer to read the persisted record rather than its cache.
@@ -117,7 +118,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
         allowedDirectories: [caseFoldForMatch(canonicalizePathForMatch(cwd))],
         sensitivePathsAdjacent: [],
         trustOrigin: "user-keyboard" as const,
-        approvalCacheKey,
+        approvalCacheKey, approvalMemory: { kind: "args" } as const,
       };
 
       const remembered = await pm.dispatchReviewer("write_file", input, undefined, { defer: "none" });
@@ -183,7 +184,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       riskCeilingAtApproval: "low",
       nlJustification: null,
       trustOrigin: "user-keyboard",
-      approvalCacheKey,
+      approvalCacheKey: approvalCacheKeyIdentity(approvalCacheKey, { kind: "args" })!,
       workingDirectoryIdentity: captureApprovalWorkingDirectory(cwd).identity,
     });
     const storePath = join(process.env.AVE_HOME!, "permissions", "user-approvals.json");
@@ -203,7 +204,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       allowedDirectories: [caseFoldForMatch(canonicalizePathForMatch(cwd))],
       sensitivePathsAdjacent: [],
       trustOrigin: "user-keyboard",
-      approvalCacheKey,
+      approvalCacheKey, approvalMemory: { kind: "args" } as const,
     }, undefined, { defer: "none" });
 
     expect(result.outcome).not.toBe("approval-memory");
@@ -227,7 +228,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       allowedDirectories: [caseFoldForMatch(canonicalizePathForMatch(cwd))],
       sensitivePathsAdjacent: [],
       trustOrigin: "plugin-emitted" as const,
-      approvalCacheKey,
+      approvalCacheKey, approvalMemory: { kind: "args" } as const,
       ownerPluginSandboxRoot: cwd,
       pluginId: "plugin_probe",
     };
@@ -242,7 +243,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       riskCeilingAtApproval: "medium",
       nlJustification: null,
       trustOrigin: "plugin-emitted",
-      approvalCacheKey,
+      approvalCacheKey: approvalCacheKeyIdentity(approvalCacheKey, { kind: "args" })!,
       workingDirectoryIdentity: captureApprovalWorkingDirectory(cwd).identity,
     });
     __resetSessionStoreForTest();
@@ -467,7 +468,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
       executionCwd: process.cwd(),
       sensitivePathsAdjacent: [],
       trustOrigin: "plugin-emitted" as const,
-      approvalCacheKey: "plugin_send:scope-a",
+      approvalCacheKey: "plugin_send:scope-a", approvalMemory: { kind: "args" } as const,
     });
 
     const auditEntry = emitSandboxAuditMock.mock.calls.at(-1)?.[0] as

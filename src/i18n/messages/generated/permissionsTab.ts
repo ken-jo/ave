@@ -266,9 +266,9 @@ export const en = {
   "permissionsTab.cancelButton": "Cancel",
 
   "permissionsTab.exactDenyDraftTitle": "Review exact permanent rejection",
-  "permissionsTab.exactDenyDraftDescription": "This draft applies only to the reviewed tool, canonical input, source, and trust origin. It does not deny the whole tool.",
+  "permissionsTab.exactDenyDraftDescription": "This draft applies only to the reviewed tool, source, and trust origin, and to the reviewed input — or, for a tool that remembers by target such as a public web_fetch origin or a file path, to every request for that target. It does not deny the whole tool.",
   "permissionsTab.exactDenyReviewInput": "Review the exact input",
-  "permissionsTab.exactDenyScopeNotice": "Saving rejects the pending request and future exact matches. Edit broad tool or glob rules separately below.",
+  "permissionsTab.exactDenyScopeNotice": "Saving rejects the pending request and future matching requests. Edit broad tool or glob rules separately below.",
   "permissionsTab.saveExactDeny": "Save exact rejection",
   "permissionsTab.exactDenySaved": "Saved an exact rejection for {toolName}.",
   "permissionsTab.exactDenySaveFailed": "Could not save the exact rejection.",
@@ -532,9 +532,9 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.cancelButton": "취소",
 
   "permissionsTab.exactDenyDraftTitle": "정확 일치 영구 거절 검토",
-  "permissionsTab.exactDenyDraftDescription": "검토한 도구·정규화 입력·출처·신뢰 발원에만 적용됩니다. 도구 전체를 거절하지 않습니다.",
+  "permissionsTab.exactDenyDraftDescription": "검토한 도구·출처·신뢰 발원과 검토한 입력에만 적용됩니다. 공개 web_fetch 출처(origin)나 파일 경로처럼 대상 단위로 기억하는 도구는 그 대상에 대한 모든 요청에 적용됩니다. 도구 전체를 거절하지 않습니다.",
   "permissionsTab.exactDenyReviewInput": "정확한 입력 검토",
-  "permissionsTab.exactDenyScopeNotice": "저장하면 현재 요청과 이후의 정확한 일치 요청을 거절합니다. 광범위한 도구·glob 규칙은 아래에서 별도로 편집하세요.",
+  "permissionsTab.exactDenyScopeNotice": "저장하면 현재 요청과 이후의 일치하는 요청을 거절합니다. 광범위한 도구·glob 규칙은 아래에서 별도로 편집하세요.",
   "permissionsTab.saveExactDeny": "정확 일치 거절 저장",
   "permissionsTab.exactDenySaved": "{toolName}의 정확 일치 거절을 저장했습니다.",
   "permissionsTab.exactDenySaveFailed": "정확 일치 거절을 저장하지 못했습니다.",

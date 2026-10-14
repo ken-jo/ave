@@ -37,7 +37,7 @@ import type {
   ParentEscalationNotice,
 } from "../shared/parent-escalation-notice.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
-import { resolveUserApprovalVerdict } from "../shared/permissions-events.js";
+import { resolveUserApprovalVerdict, type ApprovalMemory } from "../shared/permissions-events.js";
 import { captureApprovalWorkingDirectory } from "./user-approval-store.js";
 import type {
   RemoteControllerAuthority,
@@ -357,6 +357,13 @@ export interface ApprovalRequest {
    * cache hit rate 0% for tools like routine_schedule / bash / fs_write.
    */
   approvalCacheKey?: string;
+  /**
+   * What a remembered decision for this request is keyed on: the exact args,
+   * or the tool's opted-in target scope. Host-derived; the record IPC refuses
+   * a request carrying a policy key without it, and the card states this
+   * scope as what "remember" will cover.
+   */
+  approvalMemory?: ApprovalMemory;
   /**
    * Host-owned attribution: the conversation (session) whose turn raised this
    * approval. Side chats and sub-agents block on approval docks while the
@@ -1013,6 +1020,8 @@ interface PendingEntry {
    * agent-action) do not propagate a cache key.
    */
   approvalCacheKey?: string;
+  /** Captured with {@link approvalCacheKey}; see ApprovalRequest. */
+  approvalMemory?: ApprovalMemory;
   /** Host-owned permission to create a user-approval-store record. */
   durableApprovalRecordAllowed: boolean;
   persistentAllowAllowed: boolean;
@@ -2826,6 +2835,7 @@ export class ApprovalGate {
               },
             }),
         approvalCacheKey: fullReq.approvalCacheKey,
+        approvalMemory: fullReq.approvalMemory,
         durableApprovalRecordAllowed,
         persistentAllowAllowed,
         workingDirectoryIdentity: workingDirectory?.identity,
@@ -3128,6 +3138,7 @@ export class ApprovalGate {
     source: ToolSource;
     trustOrigin: string;
     approvalCacheKey: string | undefined;
+    approvalMemory: ApprovalMemory | undefined;
     durableApprovalRecordAllowed: boolean;
     persistentAllowAllowed: boolean;
     workingDirectoryIdentity: string | undefined;
@@ -3146,6 +3157,7 @@ export class ApprovalGate {
       source: entry.source ?? "builtin",
       trustOrigin: entry.trustOrigin,
       approvalCacheKey: entry.approvalCacheKey,
+      approvalMemory: entry.approvalMemory,
       durableApprovalRecordAllowed: entry.durableApprovalRecordAllowed,
       persistentAllowAllowed: entry.persistentAllowAllowed,
       workingDirectoryIdentity: entry.workingDirectoryIdentity,

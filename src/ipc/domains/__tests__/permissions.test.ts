@@ -96,6 +96,8 @@ function makeDeps(options: {
   workingDirectoryIdentity?: string;
   snapshotArgs?: unknown;
   snapshotVerdict?: "low" | "medium" | "high";
+  snapshotApprovalCacheKey?: string;
+  snapshotApprovalMemory?: import("../../../shared/permissions-events.js").ApprovalMemory;
   /** Index into the card's own choice list the simulated user picks. */
   answerChoiceIndex?: number;
 } = {}) {
@@ -172,7 +174,8 @@ function makeDeps(options: {
         args: options.snapshotArgs ?? { command: "ls" },
         source: "user-keyboard" as const,
         trustOrigin: "user-keyboard",
-        approvalCacheKey: undefined,
+        approvalCacheKey: options.snapshotApprovalCacheKey,
+        approvalMemory: options.snapshotApprovalMemory,
         durableApprovalRecordAllowed: options.durableApprovalRecordAllowed ?? true,
         persistentAllowAllowed: options.persistentAllowAllowed ?? options.snapshotVerdict !== "high",
         workingDirectoryIdentity: options.workingDirectoryIdentity ?? "a".repeat(64),
@@ -1321,6 +1324,43 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
     expect(result).toMatchObject({ ok: true });
     expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", '{"command":"ls"}', "user-keyboard",
       expect.objectContaining({ scope: "persistent", verdictAtApproval: "high" }));
+  });
+
+  it("records under the host-captured cache-key identity, never a renderer-supplied one", async () => {
+    await setup({
+      snapshotApprovalCacheKey: "web_fetch:web_fetch:host:a.example",
+      snapshotApprovalMemory: {
+        kind: "key",
+        key: "web_fetch:origin-a",
+        scope: { kind: "origin", origin: "https://a.example:443" },
+      },
+    });
+    const result = await invoke(PERMISSIONS.userApprovalRecord, {
+      requestId: "req-host-key",
+      args: '{"command":"ls"}',
+      scope: "session",
+      verdictAtApproval: "medium",
+      nlJustification: null,
+      approvalCacheKey: "web_fetch:web_fetch:host:attacker.example",
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", '{"command":"ls"}', "user-keyboard",
+      expect.objectContaining({
+        approvalCacheKey: { key: "web_fetch:web_fetch:host:a.example", memoryKey: "web_fetch:origin-a" },
+      }));
+  });
+
+  it("refuses to record a host key that carries no remembered-identity mode", async () => {
+    await setup({ snapshotApprovalCacheKey: "web_fetch:web_fetch:host:a.example" });
+    const result = await invoke(PERMISSIONS.userApprovalRecord, {
+      requestId: "req-key-without-mode",
+      args: '{"command":"ls"}',
+      scope: "session",
+      verdictAtApproval: "medium",
+      nlJustification: null,
+    });
+    expect(result).toMatchObject({ ok: false, error: "managed", message: expect.stringMatching(/remembered-identity mode/) });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
   });
 
   it("does not accept a renderer claim that a non-recordable request can be remembered", async () => {

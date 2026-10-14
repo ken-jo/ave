@@ -16,8 +16,9 @@
  *     ToolApprovalContent for DURABLE choices only (allow-session /
  *     allow-always — allow-once never records, so "this time" cannot
  *     widen into a remembered grant) via the
- *     `userApprovalRecord` IPC. Keyed on the canonical
- *     (toolName, args, source, trustOrigin?, approvalCacheKey?) tuple.
+ *     `userApprovalRecord` IPC. Keyed on (toolName, source, trustOrigin?,
+ *     working directory) plus EITHER the tool-declared approvalCacheKey (a
+ *     complete consent identity, e.g. web_fetch's host) OR the canonical args.
  *
  * Pre-fix, the foreground ask path never read Store B — only the reviewer
  * lane ({@link PermissionManager.dispatchReviewer}) did. So a "session"
@@ -42,12 +43,17 @@
  *   skipped, or `null` to fall through to the approval dock.
  */
 import type { ToolSource, ToolCategory } from "../types.js";
-import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
+import type { PermissionCheckResult, PermissionManager } from "../../permissions/permission-manager.js";
 import type { ToolInvocationContext } from "../../permissions/reviewer/risk-classifier.js";
 import { RuleBasedRiskClassifier, maxVerdict } from "../../permissions/reviewer/risk-classifier.js";
 import { resolveReviewerSandboxCapability } from "../../permissions/sandbox-capability.js";
 import type { HostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
-import { lookupApproval, canonicalStringify } from "../../permissions/user-approval-store.js";
+import {
+  approvalCacheKeyIdentity,
+  isExactArgsDecision,
+  lookupApproval,
+  canonicalStringify,
+} from "../../permissions/user-approval-store.js";
 import type { UserApprovalHitPayload, UserApprovalVerdict } from "../../shared/permissions-events.js";
 import { buildSandboxAuditEntry } from "../../audit/sandbox-audit.js";
 import { emitSandboxAudit } from "../../audit/sandbox-audit-sink.js";
@@ -140,15 +146,25 @@ export async function tryUserApprovalMemorySkip(
    * reviewer lane's.
    */
   disclose?: (payload: UserApprovalHitPayload) => void,
+  /**
+   * Full reviewer (rule + LLM lane) for a target-wide hit on arguments the
+   * user never saw — `PermissionManager.dispatchReviewer`, bound by
+   * `ToolExecutor`. Without it such a hit cannot be reviewed and re-prompts.
+   */
+  dispatchFreshReview?: PermissionManager["dispatchReviewer"],
 ): Promise<PermissionCheckResult | null> {
-  // Identity = exactly what ToolApprovalContent stored (canonical finalInput).
+  // Identity = exactly what the record IPC stored: the tool's opted-in
+  // target-wide memory key, otherwise the canonical finalInput.
+  // Built outside the storage catch: a policy key without its memory mode is
+  // an internal contract violation, not a storage failure.
   const canonicalArgs = canonicalStringify(finalInput);
+  const identity = approvalCacheKeyIdentity(approvalCacheKey, context.approvalMemory);
   const approval = await lookupApproval(
     toolName,
     canonicalArgs,
     source,
     context.trustOrigin,
-    approvalCacheKey,
+    identity,
     executionCwd,
   ).catch(() => null); // storage failure must never block tool execution
 
@@ -179,10 +195,8 @@ export async function tryUserApprovalMemorySkip(
     sensitivePathsAdjacent, context, sandboxAttestation, mcpServerId, workerId, pluginId, hostShellExecutionPlan,
   });
   const storedLevel: UserApprovalVerdict = approval.riskCeilingAtApproval ?? approval.verdictAtApproval;
-  const composed = maxVerdict(ruleVerdict, {
-    level: storedLevel,
-    reason: "stored approval verdict at approval time",
-  });
+  const storedVerdict = { level: storedLevel, reason: "stored approval verdict at approval time" };
+  const composed = maxVerdict(ruleVerdict, storedVerdict);
   if (composed.level !== storedLevel) {
     // Fresh rule verdict exceeded the stored one → escalation, re-prompt.
     console.warn(
@@ -190,6 +204,67 @@ export async function tryUserApprovalMemorySkip(
       { event: "memory-skip-escalation", toolName, ruleVerdict: ruleVerdict.level, storedLevel },
     );
     return null;
+  }
+
+  // A target-wide hit on arguments other than the ones the user approved is
+  // reviewed exactly like a fresh request — risk screen and LLM reviewer lane.
+  // The remembered grant then only stands in for the prompt when that fresh,
+  // actually-assessed verdict is no riskier than the stored one. An exact-args
+  // hit keeps the rule-only guard above.
+  let freshReviewLevel: UserApprovalVerdict | null = null;
+  if (!isExactArgsDecision(approval, canonicalArgs)) {
+    if (!dispatchFreshReview) return null;
+    const reviewed = await dispatchFreshReview(
+      toolName,
+      {
+        source,
+        category,
+        pathFields,
+        finalInput,
+        executionCwd,
+        ...(auditInput === undefined ? {} : { auditInput }),
+        allowedDirectories,
+        sensitivePathsAdjacent,
+        trustOrigin: context.trustOrigin,
+        ...(context.userIntent ? { conversationContext: { recentUserMessage: context.userIntent } } : {}),
+        ...(approvalCacheKey ? { approvalCacheKey } : {}),
+        ...(context.approvalMemory ? { approvalMemory: context.approvalMemory } : {}),
+        ...(sandboxAttestation.ownerPluginSandboxRoot !== undefined
+          ? { ownerPluginSandboxRoot: sandboxAttestation.ownerPluginSandboxRoot }
+          : {}),
+        ...(mcpServerId !== undefined ? { mcpServerId } : {}),
+        ...(pluginId !== undefined ? { pluginId } : {}),
+        ...(workerId !== undefined ? { workerId } : {}),
+        ...(hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan }),
+        ...(context.disposableSubstrate === undefined ? {} : { disposableSubstrate: context.disposableSubstrate }),
+      },
+      {
+        allowedPluginIds: context.allowedPluginIds ? [...context.allowedPluginIds] : undefined,
+        additionalDirectories: context.additionalDirectories ?? [],
+      },
+      { defer: "none" },
+    ).catch(() => null);
+    const assessed = reviewed !== null &&
+      (reviewed.outcome === "fresh" || reviewed.outcome === "cache" || reviewed.outcome === "host-determined") &&
+      reviewed.verdict.requiresExplicitApproval !== true;
+    // No reviewer configured: the deterministic rules (egress screen
+    // included) are the whole assessment, now and at approval time. Reuse
+    // only a row that was itself approved on rules alone — the gate records
+    // `riskCeilingAtApproval` exactly then — and only when the fresh rule
+    // verdict, already checked against that ceiling above, did not rise. A
+    // row approved under a reviewer cannot be re-checked to the same standard
+    // without one, so it asks.
+    const rulesOnlyReuse = reviewed?.outcome === "unavailable" &&
+      approval.riskCeilingAtApproval !== undefined &&
+      maxVerdict(ruleVerdict, storedVerdict).level === storedLevel;
+    if (!rulesOnlyReuse && (!assessed || maxVerdict(reviewed.verdict, storedVerdict).level !== storedLevel)) {
+      console.warn(
+        `[permission] foreground memory skip — target-wide hit on new arguments did not pass fresh review (${reviewed?.outcome ?? "failed"}:${reviewed?.verdict.level ?? "none"} vs stored ${storedLevel}), forcing fresh approval (tool=${toolName})`,
+        { event: "memory-skip-target-review-escalation", toolName, outcome: reviewed?.outcome ?? null, freshLevel: reviewed?.verdict.level ?? null, storedLevel },
+      );
+      return null;
+    }
+    freshReviewLevel = rulesOnlyReuse ? null : reviewed!.verdict.level;
   }
 
   // Memory hit — skip the approval dock. Emit an audit entry recording the skip so
@@ -221,9 +296,10 @@ export async function tryUserApprovalMemorySkip(
         // ruleVerdict is the fresh deterministic classification of the
         // current args; finalVerdict is the composed max(rule, stored).
         ruleVerdict: ruleVerdict.level,
-        // No LLM call on the memory-skip path — record null rather than a
-        // composed level so the audit does not imply the classifier ran.
-        llmVerdict: null,
+        // Exact hits make no LLM call — record null rather than a composed
+        // level so the audit does not imply the classifier ran. A
+        // target-wide hit records the fresh review it passed.
+        llmVerdict: freshReviewLevel,
         finalVerdict: composed.level,
         compositionRulesTriggered: [],
         userApprovalUsed: {
