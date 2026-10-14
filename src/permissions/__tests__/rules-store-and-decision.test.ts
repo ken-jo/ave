@@ -78,10 +78,11 @@ describe("Store A (user-global permissions.json)", () => {
     pm.setRules([{ pattern: "skill_list", action: "allow" }]);
     await pm.loadRulesFromFile();
     expect(pm.getRulesLoadError()).toMatch(/is corrupt/);
-    for (const [tool, category] of [["skill_list", "meta"], ["read_file", "read"], ["bash", "shell"]] as const) {
-      if (category === "meta") continue;
+    for (const [tool, category] of [["write_file", "write"], ["web_fetch", "network"], ["bash", "shell"]] as const) {
       expect(pm.checkDetailed(tool, "builtin", category)).toMatchObject({ decision: "ask", forceModal: true, reason: expect.stringMatching(/is corrupt/) });
     }
+    // Reads keep the normal matrix so the app stays usable during repair.
+    expect(pm.checkDetailed("read_file", "builtin", "read")).toMatchObject({ decision: "allow" });
     pm.setMode("allow");
     expect(pm.checkDetailed("bash", "builtin", "shell", null, shell("ls"))).toMatchObject({ decision: "ask", forceModal: true });
   });
@@ -145,6 +146,15 @@ describe("decision path", () => {
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project })).toMatchObject({ decision: "allow" });
     await pm.removeRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: project });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project })).toMatchObject({ decision: "ask" });
+  });
+
+  it("a Store B corruption reported by the pipeline asks for non-read calls only", () => {
+    const pm = new PermissionManager(permissionsFile);
+    pm.setMode("allow");
+    const error = "Saved approvals file /x/user-approvals.json is corrupt: invalid JSON";
+    expect(pm.checkDetailed("write_file", "builtin", "write", null, { permissionStoreError: error }))
+      .toMatchObject({ decision: "ask", forceModal: true, reason: error });
+    expect(pm.checkDetailed("read_file", "builtin", "read", null, { permissionStoreError: error })).toMatchObject({ decision: "allow" });
   });
 
   it("a corrupt project file fails that project closed; a decision for an unloaded project throws", async () => {

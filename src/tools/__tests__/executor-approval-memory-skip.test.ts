@@ -206,6 +206,47 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     expect(lookupApprovalMock).not.toHaveBeenCalled();
   });
 
+  it("a corrupt exact-decision store asks for non-read calls and leaves reads to the matrix (issue #28)", async () => {
+    const { UserApprovalStoreCorruptError } = await import("../../permissions/user-approval-store.js");
+    const { PermissionManager } = await import("../../permissions/permission-manager.js");
+    const { createDynamicTool } = await import("../base.js");
+    const writeSpy = vi.fn(async () => "wrote");
+    const readSpy = vi.fn(async () => "read");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(writeSpy));
+    registry.register(createDynamicTool({
+      name: "read_probe", description: "read probe", source: "builtin", category: "read",
+      jsonSchema: { type: "object", properties: {} },
+      execute: async () => ({ output: String(await readSpy()), isError: false }),
+    }));
+    const permMgr = new PermissionManager(join(dir, "permissions.json"));
+    permMgr.setMode("allow");
+    const corrupt = new UserApprovalStoreCorruptError("/state/permissions/user-approvals.json", "invalid JSON");
+    lookupUserDecisionMock.mockRejectedValue(corrupt);
+    const requestAndWait = vi.fn(async (req: { id: string; reason?: string }) => ({ requestId: req.id, choice: "deny-once" as const }));
+    const executor = new ToolExecutor(registry, undefined, permMgr, undefined, { requestAndWait } as never);
+    try {
+      const [write, read] = await executor.executeAll(
+        [
+          { id: "tu-corrupt-write", name: "write_probe", input: { path: join(dir, "file.txt") } },
+          { id: "tu-corrupt-read", name: "read_probe", input: {} },
+        ],
+        { sessionId: "sess-corrupt-store", permissionContext: userPermissionContext({ additionalDirectories: [dir] }) },
+      );
+      // Write: asked (even in allow mode) with the file named; the user denied.
+      expect(requestAndWait).toHaveBeenCalledTimes(1);
+      expect(requestAndWait.mock.calls[0]![0].reason).toContain("user-approvals.json");
+      expect(writeSpy).not.toHaveBeenCalled();
+      expect(write!.is_error).toBe(true);
+      // Read: not blocked by the corrupt store.
+      expect(readSpy).toHaveBeenCalledTimes(1);
+      expect(read!.is_error).toBeUndefined();
+    } finally {
+      lookupUserDecisionMock.mockReset();
+      lookupUserDecisionMock.mockImplementation(async () => state.decisionResult);
+    }
+  });
+
   it("approval-memory audit persists the Host-owned governed projection", async () => {
     state.lookupResult = {
       scope: "session",

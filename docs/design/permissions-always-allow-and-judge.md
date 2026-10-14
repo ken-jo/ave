@@ -179,7 +179,7 @@ All work lands on the category branch `integration/permissions`.
 
 Checks run in this order:
 1. Deny decides at layer 1.
-2. A corrupt rule file returns a forced ask that names the file.
+2. A corrupt Store A, project file or Store B returns a forced ask that names the file for every non-read call. Reads keep the normal matrix so the app stays usable while the file is repaired (the repair UI is P1b). A corrupt Store B no longer blocks every tool call; the error is logged with the file name.
 3. Ask decides at layer 2 as a forced, never-remembered prompt. Ask also wins over `allow` mode.
 4. Allow decides at layer 3.
 

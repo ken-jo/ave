@@ -287,6 +287,12 @@ export interface PermissionCheckContext {
    * have awaited {@link PermissionManager.ensureProjectRulesLoaded} for it.
    */
   projectRulesCwd?: string;
+  /**
+   * Host-detected corruption of the exact-approval store (Store B) for this
+   * invocation, naming the file. Treated like a corrupt rule file: non-read
+   * calls ask with this reason; reads keep the normal matrix.
+   */
+  permissionStoreError?: string;
 }
 
 /**
@@ -469,7 +475,7 @@ function sameReviewerSandboxCacheState(
 
 export class PermissionManager {
   private rules: PermissionRule[] = [];
-  /** Set when permissions.json is corrupt: every decision fails closed to a visible ask. */
+  /** Set when permissions.json is corrupt: non-read decisions fail closed to a visible ask. */
   private rulesLoadError: PermissionRulesFileCorruptError | undefined;
   private readonly projectRuleScopes: ProjectRuleScopes;
   private mode: ExecutionMode = "default";
@@ -1509,11 +1515,16 @@ export class PermissionManager {
       };
     }
 
-    // Issue #28 — a corrupt rule file fails closed: its denies are unknown,
-    // so nothing may be decided without the user, and the reason names it.
-    const rulesFileError = this.rulesLoadError ?? (projectRuleState?.ok === false ? projectRuleState.error : undefined);
-    if (rulesFileError) {
-      return { decision: "ask", reason: rulesFileError.message, layer: 1, forceModal: true };
+    // Issue #28 — a corrupt permission store (Store A, a project rule file,
+    // or Store B) fails closed for anything that can change state: its denies
+    // are unknown, so no write/shell/network/meta call is decided without the
+    // user, and the reason names the file. Reads keep the normal matrix so the
+    // app stays usable while the file is repaired.
+    const rulesFileError = this.rulesLoadError?.message
+      ?? (projectRuleState?.ok === false ? projectRuleState.error.message : undefined)
+      ?? context.permissionStoreError;
+    if (rulesFileError && resolvedCategory !== "read") {
+      return { decision: "ask", reason: rulesFileError, layer: 1, forceModal: true };
     }
     if (shellExfiltration) {
       return {
