@@ -10,6 +10,7 @@ import { ToolRegistry } from "../../../tools/registry.js";
 import { ConversationLoop } from "../../conversation-loop.js";
 import type { ProviderConfig, StreamEvent, StreamTurnParams } from "../../llm/types.js";
 import { t } from "../../../i18n/index.js";
+import { llmModelListCacheKey } from "../../../shared/llm-model-list.js";
 import { contextBudgetForCurrentRuntime } from "../compaction.js";
 import type { ActiveChatRuntime } from "../../../shared/subscription-runtime.js";
 
@@ -161,6 +162,22 @@ describe("/model", () => {
     const result = await loop.handleCommand("model", "gpt-next-preview", "user-keyboard");
     expect(result.text).toContain("gpt-next-preview");
     expect(loop.deps.modelOverride).toBe("gpt-next-preview");
+  });
+
+  it("refuses a catalog model the route's complete listing no longer serves", async () => {
+    const { llm, loop } = makeLoop();
+    llm.modelListCache = {
+      [llmModelListCacheKey("openai")]: {
+        vendor: "openai",
+        endpoint: "https://api.openai.com/v1/models",
+        models: ["gpt-5.4"],
+        complete: true,
+        fetchedAt: new Date().toISOString(),
+      },
+    };
+    const result = await loop.handleCommand("model", "gpt-5.4-mini", "user-keyboard");
+    expect(result.text).toBe(t("be_conversationLoop.cmdModelRetired", { model: "gpt-5.4-mini" }));
+    expect(loop.deps.modelOverride).toBeUndefined();
   });
 
   it("refuses a custom endpoint's model when no model list can be fetched", async () => {
