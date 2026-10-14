@@ -43,8 +43,13 @@ const TAIL_CHARS = 56 * 1024;
  * committed to the head/tail budget. Keeps a newline-free stream bounded.
  */
 const MAX_OPEN_LINE_CHARS = 8 * 1024;
-/** An escape sequence longer than this is never completed; it is discarded. */
-const MAX_PENDING_ESCAPE = 4096;
+/**
+ * OSC payload characters kept while a sequence is incomplete. The longest
+ * marker the shell integration emits is a C carrying a command of at most
+ * {@link MAX_COMMAND_CHARS} characters, percent-encoded (a Korean syllable is
+ * nine characters encoded): well under this. A longer OSC is discarded whole.
+ */
+const MAX_OSC_PAYLOAD_CHARS = 64 * 1024;
 /** Characters of command text kept per block. */
 const MAX_COMMAND_CHARS = 4096;
 
@@ -160,6 +165,25 @@ interface OpenBlock {
 
 type Phase = "idle" | "prompt" | "input" | "output";
 
+/** An OSC / DCS / APC / PM / SOS string in progress. */
+interface StringEscape {
+  state: "string";
+  /** Only an OSC payload is kept; the others are skipped. */
+  osc: boolean;
+  payload: string;
+  /** Past {@link MAX_OSC_PAYLOAD_CHARS}: discarded at its terminator. */
+  overflow: boolean;
+  /** The previous character was ESC (a possible ST). */
+  sawEsc: boolean;
+}
+
+type EscapeState =
+  | { state: "text" }
+  | { state: "esc" }
+  | { state: "csi" }
+  | { state: "charset" }
+  | StringEscape;
+
 /**
  * Decode a percent-encoded string whose literal characters may themselves be
  * non-ASCII. Every `%XX` is a byte; every other character contributes its UTF-8
@@ -199,7 +223,8 @@ function parseOsc7(payload: string): string | null {
  * blocks. One tracker per PTY session.
  */
 export class TerminalBlockTracker {
-  private pending = "";
+  /** Where the escape-sequence parser stands between chunks. */
+  private esc: EscapeState = { state: "text" };
   private phase: Phase = "idle";
   private integrated = false;
   private cwd: string | null = null;
@@ -223,33 +248,89 @@ export class TerminalBlockTracker {
     return this.exited;
   }
 
-  /** Feed one PTY output chunk. */
+  /**
+   * Feed one PTY output chunk.
+   *
+   * A small state machine, so an escape sequence split across chunks resumes
+   * where it stopped instead of being re-scanned from its start (a long OSC
+   * arriving a byte at a time would otherwise cost quadratic time). Only OSC
+   * payloads are kept, up to {@link MAX_OSC_PAYLOAD_CHARS}; every other
+   * sequence is skipped as it streams past.
+   */
   recordOutput(chunk: string): void {
-    const data = this.pending + chunk;
-    this.pending = "";
     let text = "";
-    let i = 0;
-    while (i < data.length) {
-      const ch = data[i];
-      if (ch !== "\u001b") {
-        text += ch;
-        i += 1;
-        continue;
+    const flush = (): void => {
+      this.appendText(text);
+      text = "";
+    };
+    for (let i = 0; i < chunk.length; i++) {
+      const ch = chunk[i] ?? "";
+      const esc = this.esc;
+      switch (esc.state) {
+        case "text":
+          if (ch === "\u001b") this.esc = { state: "esc" };
+          else text += ch;
+          break;
+        case "esc":
+          if (ch === "]" || ch === "P" || ch === "_" || ch === "^" || ch === "X") {
+            this.esc = { state: "string", osc: ch === "]", payload: "", overflow: false, sawEsc: false };
+          } else if (ch === "[") {
+            this.esc = { state: "csi" };
+          } else if (ch === "(" || ch === ")" || ch === "*" || ch === "+" || ch === "#" || ch === "%") {
+            this.esc = { state: "charset" };
+          } else {
+            this.esc = { state: "text" };
+          }
+          break;
+        case "csi": {
+          const code = ch.charCodeAt(0);
+          if (code >= 0x40 && code <= 0x7e) this.esc = { state: "text" };
+          break;
+        }
+        case "charset":
+          this.esc = { state: "text" };
+          break;
+        case "string": {
+          // Terminated by BEL or ST (ESC \). An ESC not followed by `\` is
+          // payload, as before.
+          if (esc.sawEsc) {
+            esc.sawEsc = false;
+            if (ch === "\\") {
+              this.finishString(esc, flush);
+              break;
+            }
+            this.addToString(esc, "\u001b");
+          }
+          if (ch === "\u0007") {
+            this.finishString(esc, flush);
+          } else if (ch === "\u001b") {
+            esc.sawEsc = true;
+          } else {
+            this.addToString(esc, ch);
+          }
+          break;
+        }
       }
-      const consumed = this.consumeEscape(data, i, () => {
-        this.appendText(text);
-        text = "";
-      });
-      if (consumed === 0) {
-        // Incomplete escape at the end of the chunk: hold it for the next one,
-        // unless it has already grown past any plausible sequence.
-        const rest = data.slice(i);
-        if (rest.length <= MAX_PENDING_ESCAPE) this.pending = rest;
-        break;
-      }
-      i += consumed;
     }
-    this.appendText(text);
+    flush();
+  }
+
+  /** Keep an OSC payload character, or stop keeping once it is over the bound. */
+  private addToString(esc: StringEscape, ch: string): void {
+    if (!esc.osc || esc.overflow) return;
+    if (esc.payload.length >= MAX_OSC_PAYLOAD_CHARS) {
+      // No marker is this long: the sequence is discarded whole when its
+      // terminator arrives, and the text around it is unaffected.
+      esc.overflow = true;
+      esc.payload = "";
+      return;
+    }
+    esc.payload += ch;
+  }
+
+  private finishString(esc: StringEscape, flush: () => void): void {
+    this.esc = { state: "text" };
+    if (esc.osc && !esc.overflow) this.handleOsc(esc.payload, flush);
   }
 
   /**
@@ -297,46 +378,6 @@ export class TerminalBlockTracker {
     const all: TerminalBlock[] = [...this.done];
     if (this.open) all.push(this.snapshotOpen(this.open));
     return all.slice(-Math.max(0, limit)).reverse();
-  }
-
-  /**
-   * Consume the escape sequence starting at `data[start]`. Returns the number
-   * of characters consumed, or 0 when the sequence is not complete yet.
-   * `flush` is called before a marker takes effect so text preceding the
-   * marker lands in the phase it was printed in.
-   */
-  private consumeEscape(data: string, start: number, flush: () => void): number {
-    const kind = data[start + 1];
-    if (kind === undefined) return 0;
-    if (kind === "]" || kind === "P" || kind === "_" || kind === "^" || kind === "X") {
-      // String sequence: OSC / DCS / APC / PM / SOS, ended by BEL or ST.
-      for (let j = start + 2; j < data.length; j++) {
-        const c = data[j];
-        if (c === "\u0007") {
-          if (kind === "]") this.handleOsc(data.slice(start + 2, j), flush);
-          return j + 1 - start;
-        }
-        if (c === "\u001b") {
-          if (j + 1 >= data.length) return 0;
-          if (data[j + 1] === "\\") {
-            if (kind === "]") this.handleOsc(data.slice(start + 2, j), flush);
-            return j + 2 - start;
-          }
-        }
-      }
-      return 0;
-    }
-    if (kind === "[") {
-      for (let j = start + 2; j < data.length; j++) {
-        const code = data.charCodeAt(j);
-        if (code >= 0x40 && code <= 0x7e) return j + 1 - start;
-      }
-      return 0;
-    }
-    if (kind === "(" || kind === ")" || kind === "*" || kind === "+" || kind === "#" || kind === "%") {
-      return start + 2 < data.length ? 3 : 0;
-    }
-    return 2;
   }
 
   private handleOsc(body: string, flush: () => void): void {

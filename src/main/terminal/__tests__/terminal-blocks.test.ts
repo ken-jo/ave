@@ -90,6 +90,42 @@ describe("TerminalBlockTracker — OSC 133", () => {
     }
   });
 
+  it("parses a long URL-escaped Korean command split across many chunks", () => {
+    const command = `echo ${"한글".repeat(1_500)}`;
+    const encoded = encodeURIComponent(command);
+    expect(encoded.length).toBeGreaterThan(20_000);
+    const stream = `${osc(`133;C;cmdline_url=${encoded}`)}done\r\n${osc("133;D;3")}`;
+    for (const size of [997, 4096, 7]) {
+      const tracker = new TerminalBlockTracker();
+      for (let i = 0; i < stream.length; i += size) tracker.recordOutput(stream.slice(i, i + size));
+      expect(tracker.recent(1)[0], `chunk size ${size}`).toMatchObject({
+        command,
+        exitCode: 3,
+        output: "done\n",
+      });
+    }
+  });
+
+  it("discards an OSC past the payload bound without losing the block around it", () => {
+    const stream = [
+      osc("133;C;cmdline_url=make"),
+      "before\r\n",
+      osc(`8;;${"u".repeat(70 * 1024)}`),
+      `${ESC}P${"d".repeat(70 * 1024)}${ESC}\\`,
+      "after\r\n",
+      osc("133;D;0"),
+    ].join("");
+    for (const size of [stream.length, 1_000, 3]) {
+      const tracker = new TerminalBlockTracker();
+      for (let i = 0; i < stream.length; i += size) tracker.recordOutput(stream.slice(i, i + size));
+      expect(tracker.recent(1)[0], `chunk size ${size}`).toMatchObject({
+        command: "make",
+        exitCode: 0,
+        output: "before\nafter\n",
+      });
+    }
+  });
+
   it("falls back to the echoed input when C carries no command text", () => {
     const tracker = new TerminalBlockTracker();
     tracker.recordOutput(`${osc("133;A")}$ ${osc("133;B")}make test\r\n${osc("133;C")}ok\r\n${osc("133;D;0")}`);
