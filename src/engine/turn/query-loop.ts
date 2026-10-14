@@ -70,6 +70,8 @@ import {
 } from "../a2a-agent-message-envelope.js";
 import { createSubscriptionUsageCollector, recordSubscriptionRoundTelemetry } from "./subscription-usage-telemetry.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { directoryInstructionsForToolResult, liveDirectoryInstructions } from "./directory-instructions.js";
+import { toolResultContentReachesWire } from "../wire-serialize.js";
 import {
   authorizationRequiredStateOf,
   issueAuthorizationRequiredControl,
@@ -2195,17 +2197,34 @@ export async function queryLoop(
       toolErrorsRun += toolResults.filter((tr) => tr.is_error === true).length;
 
       // tool_result 히스토리 append → loop back
+      // Derived from history, so a file whose carrying row compaction dropped
+      // or stubbed is no longer attached and rides the next touch again.
+      const attachedDirectoryInstructions = liveDirectoryInstructions(self.history.getMessages());
       for (const tr of toolResults) {
-        const meta = toolResultMeta(
+        const resultMeta = toolResultMeta(
           tr,
           toolMetaByUseId.get(tr.tool_use_id),
           permissionReviewByUseId.get(tr.tool_use_id),
         );
+        const toolUse = toolUsesForExecutor.find((tu) => tu.id === tr.tool_use_id);
+        const directoryInstructions = directoryInstructionsForToolResult({
+          projectRoot: self.getSessionProjectContext().projectRoot,
+          source: toolMetaByUseId.get(tr.tool_use_id)?.source,
+          toolInput: toolUse?.input,
+          isError: tr.is_error === true,
+          toolResultContent: tr.content,
+          stubbedOnWire: !toolResultContentReachesWire(resultMeta),
+          attached: attachedDirectoryInstructions,
+          gitIgnoreVerdicts: self.gitIgnoreVerdicts,
+        });
+        const meta = directoryInstructions
+          ? { ...resultMeta, directoryInstructions: directoryInstructions.attached }
+          : resultMeta;
         self.history.append({
           role: "tool_result",
           toolUseId: tr.tool_use_id,
-          toolName: toolUsesForExecutor.find((tu) => tu.id === tr.tool_use_id)?.name,
-          content: tr.content,
+          toolName: toolUse?.name,
+          content: directoryInstructions ? `${tr.content}\n\n${directoryInstructions.text}` : tr.content,
           ...(tr.is_error && { isError: true }),
           ...("image" in tr && tr.image ? { image: tr.image } : {}),
           ...(meta ? { meta } : {}),

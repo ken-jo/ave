@@ -56,6 +56,7 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
   it("CATEGORY_ORDER lists every category in order", () => {
     expect(CATEGORY_ORDER).toEqual([
       "command",
+      "custom-commands",
       "shortcut",
       "plugin",
       "mcp",
@@ -79,6 +80,25 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
     // would return undefined here.
     expect(catLabel("mcp-prompts").length).toBeGreaterThan(0);
     expect(catLabel("plugin-prompts").length).toBeGreaterThan(0);
+    expect(catLabel("custom-commands").length).toBeGreaterThan(0);
+  });
+
+  it("inserts a custom command with its hint and labels it by description or scope", () => {
+    const inserted: string[] = [];
+    const sections = buildComposerMenuSections({
+      ...bare,
+      customCommands: [
+        { name: "review", scope: "project", description: "Review a PR", argumentHint: "<pr>" },
+        { name: "standup", scope: "user", description: "" },
+      ],
+      onInsert: (cmd) => inserted.push(cmd),
+    });
+    const rows = sections[0]!.items.find((item) => item.id === "category:custom-commands")!.submenu!;
+    expect(rows.map((row) => row.label)).toEqual(["/review <pr>", "/standup"]);
+    expect(rows[0]!.sublabel).toBe("Review a PR");
+    expect(rows[1]!.sublabel?.length).toBeGreaterThan(0);
+    for (const row of rows) void row.onSelect?.();
+    expect(inserted).toEqual(["/review ", "/standup "]);
   });
 
   it("filters MCP tools by name or server id", () => {

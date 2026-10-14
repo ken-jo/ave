@@ -513,6 +513,21 @@ export interface McpUiToolMeta {
   title?: string;
 }
 
+/** An image content block lifted out of a tool result, still undecoded (base64). */
+export interface McpContentImage {
+  data: string;
+  mimeType: string;
+}
+
+/** One `tools/call` result as the host's adapters consume it. */
+export interface McpToolCallOutput {
+  /** Text blocks joined, with a placeholder where each image block was. */
+  text: string;
+  uiPayload?: McpUiPayload;
+  /** Image blocks in order; the adapter decides which reach the model. */
+  images?: McpContentImage[];
+}
+
 /**
  * Payload produced by an MCP tool that declares a UI extension.
  *

@@ -99,7 +99,8 @@ export interface SubscriptionLlmProviderOptions {
   /** Main-owned opener used only if the singleton has not already been created. */
   readonly openExternal?: SubscriptionOpenExternal;
   /** Main-test seam; production resolves the process singleton. */
-  readonly service?: Pick<SubscriptionRuntimeService, "openTextSession">;
+  readonly service?: Pick<SubscriptionRuntimeService, "openTextSession">
+    & Partial<Pick<SubscriptionRuntimeService, "listModels">>;
   /** Optional redacted audit hook forwarded only at singleton creation. */
   readonly runtimeServiceOptions?: GetSubscriptionRuntimeServiceOptions;
 }
@@ -653,7 +654,21 @@ export class SubscriptionLlmProvider implements LLMProvider {
     }
   }
 
-  private async runtimeService(): Promise<Pick<SubscriptionRuntimeService, "openTextSession">> {
+  /** The live Codex catalog `openTextSession` re-checks a selected model against. */
+  async listSubscriptionModels(): Promise<readonly string[]> {
+    if (this.subscriptionRuntime.provider !== "codex") {
+      throw new Error("subscription-runtime-has-no-model-catalog");
+    }
+    const service = await this.runtimeService();
+    if (!service.listModels) throw new Error("subscription-runtime-has-no-model-catalog");
+    const catalog = await service.listModels("codex");
+    if (!catalog.status.capabilities.chat) throw new Error("subscription-chat-unavailable");
+    return catalog.models.map((model) => model.id);
+  }
+
+  private async runtimeService(): Promise<
+    Pick<SubscriptionRuntimeService, "openTextSession"> & Partial<Pick<SubscriptionRuntimeService, "listModels">>
+  > {
     if (this.options.service) return this.options.service;
     if (!this.options.openExternal) throw new Error("subscription-runtime-opener-missing");
     return getSubscriptionRuntimeService(

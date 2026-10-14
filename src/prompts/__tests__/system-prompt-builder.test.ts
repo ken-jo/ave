@@ -294,7 +294,8 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
     return new SystemPromptBuilder({
       memoryManager: makePromptMemorySource({
         getAgentsMd: () => "GLOBAL personal agents",
-        getProjectAgentsMd,
+        // The builder never reads `watchedPaths`; it exists for the memory cache.
+        getProjectAgentsMd: () => ({ ...getProjectAgentsMd(), watchedPaths: [] }),
       }),
       toolRegistry: new ToolRegistry(),
     });

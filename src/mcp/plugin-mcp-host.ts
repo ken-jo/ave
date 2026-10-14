@@ -34,7 +34,8 @@ import { createLogger } from "../lib/logger.js";
 import type { Tool } from "../tools/base.js";
 import type { PluginManifest } from "../plugins/types.js";
 import type { PluginToolOperationPolicy } from "../tools/plugin-operation-governance.js";
-import type { McpUiPayload, McpUiResourceMeta, McpUiResourceRead } from "./types.js";
+import type { McpToolCallOutput, McpUiPayload, McpUiResourceMeta, McpUiResourceRead } from "./types.js";
+import { renderMcpContent } from "./mcp-tool-content.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 
 const log = createLogger("plugin-mcp-host");
@@ -70,9 +71,6 @@ interface RcToolCallResult {
   };
 }
 
-function renderContent(content: RcToolCallResult["content"]): string {
-  return content.map((c) => c.text ?? JSON.stringify(c)).join("\n");
-}
 
 export class PluginMcpHost {
   private nextId = 1;
@@ -219,7 +217,7 @@ export class PluginMcpHost {
   private async invoke(
     name: string,
     args: Record<string, unknown>,
-  ): Promise<{ text: string; uiPayload?: McpUiPayload; rawResult?: { value: unknown } }> {
+  ): Promise<McpToolCallOutput & { rawResult?: { value: unknown } }> {
     const result = (await this.request("tools/call", { name, arguments: args })) as RcToolCallResult;
 
     // RC result discriminator (§8). MRTR / Tasks are later milestones — surface a
@@ -235,10 +233,10 @@ export class PluginMcpHost {
       );
     }
     if (result.isError) {
-      throw new Error(renderContent(result.content));
+      throw new Error(renderMcpContent(result.content).text);
     }
 
-    const text = renderContent(result.content);
+    const { text, images } = renderMcpContent(result.content);
     const uiMeta = result._meta?.ui;
     const uiPayload: McpUiPayload | undefined = uiMeta?.resourceUri
       ? {
@@ -263,7 +261,7 @@ export class PluginMcpHost {
     } else {
       rawResult = undefined;
     }
-    return { text, uiPayload, rawResult };
+    return { text, uiPayload, rawResult, ...(images.length > 0 ? { images } : {}) };
   }
 
   /**
