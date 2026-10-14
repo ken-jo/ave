@@ -72,6 +72,7 @@ import {
   type PluginOperationPrincipal,
 } from "../permissions/plugin-operation-grant.js";
 import { errorMessage } from "../shared/error-message.js";
+import { TOOL_OUTPUT_PROGRESS_METADATA_KEY, type ToolOutputProgressSink } from "./tool-output-progress.js";
 import {
   authorizationRequiredStateOf,
   issueAuthorizationRequiredControl,
@@ -708,6 +709,13 @@ export async function executeAuthorizedToolInvocation(
       // 라이프사이클 이벤트에 함께 실어 보냄.
       toolUseId: toolUse.id,
       ...(captureOutput ? { toolOutputCaptureFactory: captureOutput } : {}),
+      ...(source === "builtin" && hostShellExecutionPlan && callbacks?.onToolOutput
+        ? {
+            [TOOL_OUTPUT_PROGRESS_METADATA_KEY]: ((text: string) => {
+              callbacks.onToolOutput?.(toolUse.name, text, meta);
+            }) satisfies ToolOutputProgressSink,
+          }
+        : {}),
       trustOrigin: invocationPermissionContext.trustOrigin,
       ...(toolResultChunkReader
         ? { [TOOL_RESULT_CHUNK_READER_METADATA_KEY]: toolResultChunkReader }

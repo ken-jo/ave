@@ -129,6 +129,8 @@ export interface TurnCallbacks {
   onTextDelta?: (text: string) => void;
   onToolStart?: (name: string, input: Record<string, unknown>, meta: ToolCallMeta,
   ) => void;
+  /** Display-only live output of a running host shell tool. */
+  onToolOutput?: (name: string, text: string, meta: ToolCallMeta) => void;
   onPermissionReview?: (event: PermissionReviewEvent) => void;
   onToolEnd?: (
     name: string,

@@ -10,6 +10,7 @@ import {
   applyToolEnd,
   applyToolStart,
   dropPendingLlmStatusAssistant,
+  LIVE_TOOL_OUTPUT_TAIL_CHARS,
   isTranscriptFrame,
   parseTurnSummaryEvent,
   clearTurnAssistantInterrupted,
@@ -24,6 +25,49 @@ import {
   type ChatEntry,
   type ChatStreamEvent,
 } from "../chat-stream-state.js";
+
+describe("live tool output", () => {
+  const started = (): ChatEntry[] => applyToolStart([], {
+    groupId: "group-1",
+    toolUseId: "tool-1",
+    name: "bash",
+    input: { command: "make" },
+  });
+  const frame = (text: string, toolUseId = "tool-1"): ChatStreamEvent => ({
+    type: "tool_output",
+    name: "bash",
+    groupId: "group-1",
+    toolUseId,
+    text,
+  });
+  const liveOutputOf = (entries: ChatEntry[]): string | undefined => {
+    const group = entries.find((entry) => entry.kind === "tool_group");
+    return group?.kind === "tool_group" ? group.tools[0]?.liveOutput : undefined;
+  };
+
+  it("appends output to the running tool and clears it on completion", () => {
+    expect(isTranscriptFrame(frame("a"))).toBe(true);
+    let entries = applyTranscriptFrame(started(), frame("step 1\n"));
+    entries = applyTranscriptFrame(entries, frame("step 2\n"));
+    expect(liveOutputOf(entries)).toBe("step 1\nstep 2\n");
+    entries = applyToolEnd(entries, { groupId: "group-1", toolUseId: "tool-1", result: "done" });
+    expect(liveOutputOf(entries)).toBeUndefined();
+  });
+
+  it("keeps only the bounded tail", () => {
+    const entries = applyTranscriptFrame(started(), frame("x".repeat(LIVE_TOOL_OUTPUT_TAIL_CHARS + 10) + "end"));
+    const live = liveOutputOf(entries)!;
+    expect(live.length).toBe(LIVE_TOOL_OUTPUT_TAIL_CHARS);
+    expect(live.endsWith("end")).toBe(true);
+  });
+
+  it("ignores output for an unknown or finished tool", () => {
+    const initial = started();
+    expect(applyTranscriptFrame(initial, frame("x", "tool-other"))).toBe(initial);
+    const finished = applyToolEnd(initial, { groupId: "group-1", toolUseId: "tool-1", result: "ok" });
+    expect(applyTranscriptFrame(finished, frame("late"))).toBe(finished);
+  });
+});
 
 describe("chat-stream-state", () => {
   it("marks provider status explicitly and clears the marker when answer text starts", () => {

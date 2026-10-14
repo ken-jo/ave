@@ -39,6 +39,7 @@ import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { hostPathForShellPath } from "../lib/shell-resolver.js";
 import { ShellCwdProbeFilter, type ShellCwdProbe } from "./shell-cwd-probe.js";
 import { recordShellSessionCwd } from "./shell-session-cwd.js";
+import { createLiveOutputStream, toolOutputProgressFromMetadata, type ToolOutputProgressSink } from "./tool-output-progress.js";
 import {
   findResolvedShellPathViolation,
   findShellPathPolicyViolation,
@@ -209,11 +210,16 @@ function captureFactoryFromContext(ctx: ToolExecutionContext): BoundOutputCaptur
   return typeof factory === "function" ? factory as BoundOutputCaptureFactory : undefined;
 }
 
-function createOutputCollector(
-  child: PipedChild,
-  factory?: BoundOutputCaptureFactory,
-  cwdProbe?: Pick<ShellCwdProbe, "start" | "end">,
-) {
+interface OutputCollectorOptions {
+  readonly captureFactory?: BoundOutputCaptureFactory;
+  readonly cwdProbe?: Pick<ShellCwdProbe, "start" | "end">;
+  /** Display-only live output; the formatted result stays bounded. */
+  readonly progress?: ToolOutputProgressSink;
+}
+
+function createOutputCollector(child: PipedChild, options: OutputCollectorOptions = {}) {
+  const factory = options.captureFactory;
+  const cwdProbe = options.cwdProbe;
   // Four bytes cover any UTF-8 code point. The display cap remains in UTF-16
   // characters; raw whitespace also counts against this capture budget.
   const buffer = Buffer.alloc(OUTPUT_CAP * 4);
@@ -225,6 +231,7 @@ function createOutputCollector(
   // The probe reports on stderr; its bytes never reach the display buffer,
   // the output artifact, or live progress.
   const probeFilter = cwdProbe === undefined ? undefined : new ShellCwdProbeFilter(cwdProbe);
+  const live = options.progress === undefined ? undefined : createLiveOutputStream(options.progress);
   const append = (chunk: Buffer): void => {
     if (!capture || capture.append(chunk) || paused) return;
     paused = true;
@@ -252,14 +259,23 @@ function createOutputCollector(
     size += retained;
     if (retained < chunk.length) truncated = true;
   };
+  const collectStderrBytes = (chunk: Buffer): void => {
+    collect(chunk);
+    if (chunk.length > 0) live?.write("stderr", chunk);
+  };
   return {
-    collect,
+    collect(chunk: Buffer): void {
+      if (finalized) return;
+      collect(chunk);
+      live?.write("stdout", chunk);
+    },
     collectStderr(chunk: Buffer): void {
       if (finalized) return;
-      collect(probeFilter === undefined ? chunk : probeFilter.push(chunk));
+      collectStderrBytes(probeFilter === undefined ? chunk : probeFilter.push(chunk));
     },
     async finish(interrupted: boolean): Promise<Record<string, unknown>> {
-      if (probeFilter !== undefined && !finalized) collect(probeFilter.flush());
+      if (probeFilter !== undefined && !finalized) collectStderrBytes(probeFilter.flush());
+      live?.close();
       finalized = true;
       return capture ? { outputArtifact: await capture.finish(interrupted) } : {};
     },
@@ -1497,6 +1513,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         resolvedCwd,
         writePaths,
         input.timeoutSeconds, prepared, ctx.abortSignal, captureFactoryFromContext(ctx),
+        toolOutputProgressFromMetadata(ctx.metadata),
       );
       return withBackgroundUnavailable(
         trackSessionCwd(sandboxResult, resolvedCwd, ctx),
@@ -1519,7 +1536,10 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       return disposableExecution ? withDisposableExecutionMetadata(result) : result;
     }
 
-    const spawnedResult = await spawnWithTimeout(input.command, resolvedCwd, input.timeoutSeconds, prepared, ctx.abortSignal, captureFactoryFromContext(ctx));
+    const spawnedResult = await spawnWithTimeout(
+      input.command, resolvedCwd, input.timeoutSeconds, prepared, ctx.abortSignal,
+      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata),
+    );
     // A disposable route's directory belongs to its own lifecycle, not the
     // host session's.
     const plainResult = disposableExecution
@@ -1910,6 +1930,7 @@ export async function spawnWithSandbox(
   prepared: PreparedShellInvocation,
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
+  progress?: ToolOutputProgressSink,
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
@@ -1995,7 +2016,11 @@ export async function spawnWithSandbox(
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash:asrt" });
 
-    const outputCollector = createOutputCollector(child, outputCaptureFactory, preparedShellCwdProbe(prepared).probe);
+    const outputCollector = createOutputCollector(child, {
+      captureFactory: outputCaptureFactory,
+      cwdProbe: preparedShellCwdProbe(prepared).probe,
+      progress,
+    });
     child.stdout.on("data", outputCollector.collect);
     child.stderr.on("data", outputCollector.collectStderr);
 
@@ -2064,6 +2089,7 @@ async function spawnWithTimeout(
   prepared: PreparedShellInvocation,
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
+  progress?: ToolOutputProgressSink,
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
@@ -2085,7 +2111,7 @@ async function spawnWithTimeout(
     child.once("close", cleanupPreparedAfterTermination);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash" });
 
-    const outputCollector = createOutputCollector(child, outputCaptureFactory, probe);
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, cwdProbe: probe, progress });
     child.stdout.on("data", outputCollector.collect);
     child.stderr.on("data", outputCollector.collectStderr);
 
@@ -2668,10 +2694,14 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         resolvedCwd,
         writePaths,
         input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
+        toolOutputProgressFromMetadata(ctx.metadata),
       );
     }
 
-    const plainResult = await spawnPowerShell(input.command, resolvedCwd, input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx));
+    const plainResult = await spawnPowerShell(
+      input.command, resolvedCwd, input.timeoutSeconds, ctx.abortSignal,
+      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata),
+    );
     if (disposableExecution) return withDisposableExecutionMetadata(plainResult);
     if (!hostShellPlan.requiresExplicitUserApproval) return plainResult;
     return {
@@ -2952,6 +2982,7 @@ async function spawnPowerShellWithSandbox(
   timeoutSeconds: number,
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
+  progress?: ToolOutputProgressSink,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   // Resolve before allocating the temporary profile so a missing PowerShell
@@ -3070,9 +3101,9 @@ async function spawnPowerShellWithSandbox(
     }
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell:asrt" });
 
-    const outputCollector = createOutputCollector(child, outputCaptureFactory);
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
     child.stdout.on("data", outputCollector.collect);
-    child.stderr.on("data", outputCollector.collect);
+    child.stderr.on("data", outputCollector.collectStderr);
 
     let settled = false;
 
@@ -3131,6 +3162,7 @@ async function spawnPowerShell(
   timeoutSeconds: number,
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
+  progress?: ToolOutputProgressSink,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   return new Promise((resolve) => {
@@ -3149,9 +3181,9 @@ async function spawnPowerShell(
     );
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell" });
 
-    const outputCollector = createOutputCollector(child, outputCaptureFactory);
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
     child.stdout.on("data", outputCollector.collect);
-    child.stderr.on("data", outputCollector.collect);
+    child.stderr.on("data", outputCollector.collectStderr);
 
     let settled = false;
 
