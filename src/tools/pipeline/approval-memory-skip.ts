@@ -54,6 +54,62 @@ import { emitSandboxAudit } from "../../audit/sandbox-audit-sink.js";
 import { maskSensitiveData } from "../../audit/dlp-filter.js";
 import type { ToolPermissionContext } from "../executor.js";
 
+/**
+ * The deterministic rule-classifier verdict for one invocation, built exactly
+ * as the memory-skip escalation guard builds it. Issue #28 also attaches it to
+ * every foreground approval request that has no reviewer verdict, so the dock
+ * grades an unreviewed shell call by what it is (read-only → LOW, ordinary →
+ * MEDIUM, destructive → HIGH) instead of a blanket HIGH.
+ */
+export function classifyApprovalRuleVerdict(input: {
+  toolName: string;
+  source: ToolSource;
+  category: ToolCategory;
+  pathFields: readonly string[];
+  finalInput: Record<string, unknown>;
+  executionCwd: string;
+  allowedDirectories: string[];
+  sensitivePathsAdjacent: string[];
+  context: ToolPermissionContext;
+  sandboxAttestation: { ownerPluginSandboxRoot?: string };
+  mcpServerId?: string;
+  workerId?: string;
+  pluginId?: string;
+  hostShellExecutionPlan?: HostShellExecutionPlan;
+}): { ctx: ToolInvocationContext; verdict: ReturnType<RuleBasedRiskClassifier["classify"]> } {
+  // Substrate-aware (NOT process-global): a plugin/MCP or in-process builtin
+  // call resolves to a "none" capability so the audit + any sandbox-sensitive
+  // rule reflect that this call's effects are NOT ASRT-isolated — except a
+  // genuinely ASRT-wrapped external MCP worker (keyed on id)
+  // or host-spawned plugin worker (keyed on pluginId + workerId).
+  const sandboxCapability = resolveReviewerSandboxCapability(
+    input.source,
+    input.toolName,
+    input.mcpServerId,
+    input.workerId,
+    input.pluginId,
+    input.hostShellExecutionPlan,
+    input.context.disposableSubstrate,
+  );
+  const ctx: ToolInvocationContext = {
+    toolName: input.toolName,
+    source: input.source,
+    category: input.category,
+    pathFields: input.pathFields,
+    trustOrigin: input.context.trustOrigin,
+    finalInput: input.finalInput,
+    executionCwd: input.executionCwd,
+    allowedDirectories: input.allowedDirectories,
+    sensitivePathsAdjacent: input.sensitivePathsAdjacent,
+    sandboxCapability,
+    ...(input.context.userIntent ? { conversationContext: { recentUserMessage: input.context.userIntent } } : {}),
+    ...(input.sandboxAttestation.ownerPluginSandboxRoot !== undefined
+      ? { ownerPluginSandboxRoot: input.sandboxAttestation.ownerPluginSandboxRoot }
+      : {}),
+  };
+  return { ctx, verdict: new RuleBasedRiskClassifier().classify(ctx) };
+}
+
 export async function tryUserApprovalMemorySkip(
   toolName: string,
   source: ToolSource,
@@ -118,32 +174,10 @@ export async function tryUserApprovalMemorySkip(
   // rule reflect that this call's effects are NOT ASRT-isolated — except a
   // genuinely ASRT-wrapped external MCP worker (keyed on id)
   // or host-spawned plugin worker (keyed on pluginId + workerId).
-  const sandboxCapability = resolveReviewerSandboxCapability(
-    source,
-    toolName,
-    mcpServerId,
-    workerId,
-    pluginId,
-    hostShellExecutionPlan,
-    context.disposableSubstrate,
-  );
-  const ctx: ToolInvocationContext = {
-    toolName,
-    source,
-    category,
-    pathFields,
-    trustOrigin: context.trustOrigin,
-    finalInput,
-    executionCwd,
-    allowedDirectories,
-    sensitivePathsAdjacent,
-    sandboxCapability,
-    ...(context.userIntent ? { conversationContext: { recentUserMessage: context.userIntent } } : {}),
-    ...(sandboxAttestation.ownerPluginSandboxRoot !== undefined
-      ? { ownerPluginSandboxRoot: sandboxAttestation.ownerPluginSandboxRoot }
-      : {}),
-  };
-  const ruleVerdict = new RuleBasedRiskClassifier().classify(ctx);
+  const { ctx, verdict: ruleVerdict } = classifyApprovalRuleVerdict({
+    toolName, source, category, pathFields, finalInput, executionCwd, allowedDirectories,
+    sensitivePathsAdjacent, context, sandboxAttestation, mcpServerId, workerId, pluginId, hostShellExecutionPlan,
+  });
   const storedLevel: UserApprovalVerdict = approval.riskCeilingAtApproval ?? approval.verdictAtApproval;
   const composed = maxVerdict(ruleVerdict, {
     level: storedLevel,
@@ -175,8 +209,8 @@ export async function tryUserApprovalMemorySkip(
         ...(approvalCacheKey ? { approvalCacheKey } : {}),
       },
       sandbox: {
-        kind: sandboxCapability.kind,
-        confidence: sandboxCapability.confidence,
+        kind: ctx.sandboxCapability.kind,
+        confidence: ctx.sandboxCapability.confidence,
         // No sandbox run — this is a memory skip (the tool has not executed
         // yet). The zero telemetry below reflects "not measured", not "0ms".
         events: [],

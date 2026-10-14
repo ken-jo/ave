@@ -46,16 +46,25 @@ export type UserApprovalVerdict = RiskLevel;
  *
  * Approval surfaces use this same function when they hand a live request to
  * Settings. Keeping the fallback here prevents renderer wording or a missing
- * reviewer verdict from drifting away from the host snapshot (`shell=high`,
- * `read=low`, everything else=medium).
+ * reviewer verdict from drifting away from the host snapshot.
+ *
+ * Order: reviewer verdict, then the host-computed rule-classifier verdict
+ * (issue #28: attached to unreviewed shell asks, so `ls` is LOW and `npm test`
+ * MEDIUM rather than a blanket HIGH), then the category fallback (`shell=high`
+ * — fail closed when no verdict was computed — `read=low`, else medium).
  */
 export function resolveUserApprovalVerdict(input: {
   reviewerVerdict?: { level?: unknown };
+  ruleVerdict?: { level?: unknown };
   toolCategory?: string;
 }): UserApprovalVerdict {
   const reviewed = input.reviewerVerdict?.level;
   if (reviewed === "low" || reviewed === "medium" || reviewed === "high") {
     return reviewed;
+  }
+  const ruled = input.ruleVerdict?.level;
+  if (ruled === "low" || ruled === "medium" || ruled === "high") {
+    return ruled;
   }
   if (input.toolCategory === "shell") return "high";
   if (input.toolCategory === "read") return "low";

@@ -2,11 +2,16 @@
 
 
 
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { DenyRule, ToolCategory, ToolSource, ToolTrustOrigin, TrustLevel } from "../tools/types.js";
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import { trustFromSource } from "../tools/types.js";
 import { readPermissionsFile, updatePermissionsFile } from "./permissions-store.js";
+import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rules/rule-files.js";
+import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
+import { isRuleSpecifier } from "./rules/rule-specifier.js";
+import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
+import { parseShellCommand } from "./rules/shell-prefix-policy.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
@@ -115,9 +120,15 @@ export interface PrunedGrant {
 
 export interface PermissionRule {
 
+  /**
+   * Either a legacy glob over the tool name / approval cache key
+   * (`web_fetch`, `write_file:path:/abs`) or a rules-language specifier
+   * (`Bash(git status *)`, see `rules/rule-specifier.ts`). Classified by shape.
+   */
   pattern: string;
 
-  action: "allow" | "deny";
+  /** Precedence is deny > ask > allow regardless of order or specificity. */
+  action: "allow" | "deny" | "ask";
 
   source?: ToolSource;
   /**
@@ -266,6 +277,23 @@ export interface PermissionCheckContext {
    * `undefined`.
    */
   decisionOverride?: "ask" | "always-allow-with-audit";
+  /**
+   * Issue #28 — host-built subject for rules-language specifiers. Set by the
+   * tool pipeline for the canonical shell tool only; `Bash(...)` rules never
+   * match a call without it.
+   */
+  ruleSubject?: { kind: "shell"; command: string; cwd?: string };
+  /**
+   * Issue #28 — project whose per-project rule file applies. The caller must
+   * have awaited {@link PermissionManager.ensureProjectRulesLoaded} for it.
+   */
+  projectRulesCwd?: string;
+  /**
+   * Host-detected corruption of the exact-approval store (Store B) for this
+   * invocation, naming the file. Treated like a corrupt rule file: non-read
+   * calls ask with this reason; reads keep the normal matrix.
+   */
+  permissionStoreError?: string;
 }
 
 /**
@@ -448,6 +476,9 @@ function sameReviewerSandboxCacheState(
 
 export class PermissionManager {
   private rules: PermissionRule[] = [];
+  /** Set when permissions.json is corrupt: non-read decisions fail closed to a visible ask. */
+  private rulesLoadError: PermissionRulesFileCorruptError | undefined;
+  private readonly projectRuleScopes: ProjectRuleScopes;
   private mode: ExecutionMode = "default";
   /**
    * "Allow always" grants keyed by pattern → highest granted {@link
@@ -529,6 +560,7 @@ export class PermissionManager {
   constructor(permissionsFilePath?: string) {
     this.permissionsFilePath =
       permissionsFilePath ?? resolve(aveHome(), "permissions.json");
+    this.projectRuleScopes = new ProjectRuleScopes(dirname(this.permissionsFilePath));
   }
 
   /**
@@ -943,7 +975,9 @@ export class PermissionManager {
 
   getVisibilityDenyRules(): DenyRule[] {
     return this.rules
-      .filter((rule) => rule.action === "deny" && !rule.source)
+      // A specifier deny (`Bash(rm *)`) restricts some calls of a tool; it must
+      // never hide the whole tool from the model.
+      .filter((rule) => rule.action === "deny" && !rule.source && !isRuleSpecifier(rule.pattern))
       .map((rule) => ({ pattern: rule.pattern }));
   }
 
@@ -961,6 +995,10 @@ export class PermissionManager {
    * write), never downgraded — a downgrade must go through {@link removeRule}.
    */
   async addAlwaysAllowedPersist(pattern: string, tier: GrantTier = "write"): Promise<void> {
+    if (isRuleSpecifier(pattern)) {
+      await this.addRulePersist({ pattern, action: "allow" }, { kind: "user" });
+      return;
+    }
     // Persisted rule list: add or upgrade allow rules while preserving monotone tiers.
     await updatePermissionsFile(this.permissionsFilePath, (file) => {
       const existing = file.rules.find(
@@ -992,6 +1030,10 @@ export class PermissionManager {
    * Update the in-memory rules array and permissions.json together.
    */
   async addAlwaysDeniedPersist(pattern: string): Promise<void> {
+    if (isRuleSpecifier(pattern)) {
+      await this.addRulePersist({ pattern, action: "deny" }, { kind: "user" });
+      return;
+    }
     // In-memory: insert at the front of the rules array so deny has priority.
     const exists = this.rules.some(
       (r) => r.action === "deny" && r.pattern === pattern && !r.source,
@@ -1019,7 +1061,78 @@ export class PermissionManager {
   /**
    * Remove a persistent rule by pattern and action.
    */
-  async removeRule(pattern: string, action: "allow" | "deny"): Promise<void> {
+  /**
+   * Issue #28 — add a rules-language rule (`Bash(git status *)`, deny/ask/allow)
+   * to the user-global scope (permissions.json) or a project's rule file in
+   * Ave home. Validation (canonical spelling, enforced kind, refused allow
+   * prefixes) runs before anything is written; the live state changes only
+   * after the durable write succeeds.
+   */
+  async addRulePersist(
+    rule: { pattern: string; action: PermissionRule["action"] },
+    scope: { kind: "user" } | { kind: "project"; projectCwd: string },
+  ): Promise<void> {
+    const validated = validatePermissionRule({ pattern: rule.pattern, action: rule.action });
+    if (!isRuleSpecifier(validated.pattern)) {
+      throw new Error(`addRulePersist takes rules-language specifiers; got legacy pattern ${validated.pattern}`);
+    }
+    if (scope.kind === "project") {
+      await this.projectRuleScopes.addRule(scope.projectCwd, validated);
+    } else {
+      await updatePermissionsFile(this.permissionsFilePath, (file) => {
+        if (!file.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && !r.source)) {
+          if (validated.action === "allow") file.rules.push(validated);
+          else file.rules.unshift(validated);
+        }
+      });
+      if (!this.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && !r.source)) {
+        if (validated.action === "allow") this.rules.push(validated);
+        else this.rules.unshift(validated);
+      }
+    }
+    this.policyGeneration += 1;
+    this.broadcastConfigChanged?.();
+    this.revokeAllPluginAccess(`rule-added:${validated.action}:${validated.pattern}`);
+  }
+
+  /** Issue #28 — remove a rules-language rule from the user-global or a project scope. */
+  async removeRulePersist(
+    rule: { pattern: string; action: PermissionRule["action"] },
+    scope: { kind: "user" } | { kind: "project"; projectCwd: string },
+  ): Promise<void> {
+    if (scope.kind === "project") {
+      await this.projectRuleScopes.removeRule(scope.projectCwd, rule.pattern, rule.action);
+      this.policyGeneration += 1;
+      this.broadcastConfigChanged?.();
+      this.revokeAllPluginAccess(`rule-removed:${rule.action}:${rule.pattern}`);
+      return;
+    }
+    await this.removeRule(rule.pattern, rule.action);
+  }
+
+  /**
+   * Issue #28 — load a project's rule file before a synchronous decision
+   * names it in `context.projectRulesCwd`. Idempotent; a corrupt file is
+   * recorded and every decision for that project fails closed to an ask.
+   */
+  async ensureProjectRulesLoaded(projectCwd: string): Promise<void> {
+    await this.projectRuleScopes.ensureLoaded(projectCwd);
+  }
+
+  /** Issue #28 — the project scope's persisted rules (Settings list), or its load error. */
+  async listProjectRules(projectCwd: string): Promise<
+    { ok: true; projectRoot: string; rules: readonly PermissionRule[] } | { ok: false; projectRoot: string; error: string }
+  > {
+    const state = await this.projectRuleScopes.reload(projectCwd);
+    return state.ok ? state : { ok: false, projectRoot: state.projectRoot, error: state.error.message };
+  }
+
+  /** Issue #28 — the user-global Store A load error, if permissions.json is corrupt. */
+  getRulesLoadError(): string | undefined {
+    return this.rulesLoadError?.message;
+  }
+
+  async removeRule(pattern: string, action: PermissionRule["action"]): Promise<void> {
     // In-memory.
     this.rules = this.rules.filter(
       (r) => !(r.pattern === pattern && r.action === action && !r.source),
@@ -1171,7 +1284,20 @@ export class PermissionManager {
    * Missing file is a normal no-op.
    */
   async loadRulesFromFile(): Promise<void> {
-    const file = await readPermissionsFile(this.permissionsFilePath);
+    let file: Awaited<ReturnType<typeof readPermissionsFile>>;
+    try {
+      file = await readPermissionsFile(this.permissionsFilePath);
+    } catch (error) {
+      if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
+      // Boot continues so the user can see and fix the problem, but nothing
+      // the file may have denied can be assumed allowed: checkDetailed fails
+      // closed to a forced ask that names the file.
+      console.error(`[permission] ${error.message}`);
+      this.rulesLoadError = error;
+      this.policyGeneration += 1;
+      return;
+    }
+    this.rulesLoadError = undefined;
     if (!file) return;
 
     // Sync mode.
@@ -1190,14 +1316,15 @@ export class PermissionManager {
           // Reflect allow rules in the alwaysAllowed Map as well, preserving tier.
           // normalizeTier grandfathers a legacy/absent tier to write; maxTier
           // keeps the highest tier if the pattern is hydrated more than once.
-          if (!rule.source) {
+          // Specifier rules match a subject, never a tool name or cache key.
+          if (!rule.source && rule.action === "allow" && !isRuleSpecifier(rule.pattern)) {
             this.alwaysAllowed.set(
               rule.pattern,
               maxTier(this.alwaysAllowed.get(rule.pattern), normalizeTier(rule.tier)),
             );
           }
         }
-      } else if (rule.action === "allow" && !rule.source) {
+      } else if (rule.action === "allow" && !rule.source && !isRuleSpecifier(rule.pattern)) {
         // Dup-hit tier reconciliation. The surviving rule
         // may be a boot default with no explicit tier (e.g. conversation.ts
         // setRules pre-seeds web_search/web_fetch). setRules does NOT populate
@@ -1315,13 +1442,41 @@ export class PermissionManager {
     const denyTargets = approvalCacheKey ? [toolName, approvalCacheKey] : [toolName];
     const allowTarget = approvalCacheKey ?? toolName;
 
+    // Issue #28 — project scope and the shell subject are resolved once.
+    // Precedence across both scopes is deny > ask > allow.
+    const projectRuleState = context.projectRulesCwd === undefined
+      ? undefined
+      : this.projectRuleScopes.stateFor(context.projectRulesCwd);
+    const projectRules = projectRuleState?.ok ? projectRuleState.rules : [];
+    // One parse of the shell subject feeds the matcher and both floors.
+    const shellSubject = context.ruleSubject?.kind === "shell"
+      ? { command: parseShellCommand(context.ruleSubject.command), cwd: context.ruleSubject.cwd }
+      : undefined;
+    const shellRuleEvaluation = shellSubject
+      ? evaluateShellSubject(shellSubject, this.rules, projectRules)
+      : undefined;
+    // Credential-exfiltration floor: never remembered, never auto-allowed, in
+    // any mode (rules/shell-exfiltration.ts).
+    const shellExfiltration = shellSubject
+      ? shellExfiltrationSignal(shellSubject.command, shellSubject.cwd)
+      : null;
+    // Sensitive-path floor for shell arguments (same normalization as the
+    // exfiltration scan): `cat ~/.ssh/id_rsa` is never auto-allowed.
+    const shellSensitivePath = shellSubject && !shellExfiltration
+      ? shellSensitivePathSignal(shellSubject.command, shellSubject.cwd)
+      : null;
+
     // 1. Deny rules (highest priority, immutable)
     for (const rule of this.rules) {
       if (rule.action !== "deny") continue;
       if (rule.source && rule.source !== source) continue;
+      if (isRuleSpecifier(rule.pattern)) continue;
       if (denyTargets.some((target) => globMatch(target, rule.pattern))) {
         return { decision: "deny", reason: t("be_permissionManager.denyRuleReason", { pattern: rule.pattern }), layer: 1 };
       }
+    }
+    if (shellRuleEvaluation?.decision === "deny") {
+      return { decision: "deny", reason: t("be_permissionManager.denyRuleReason", { pattern: shellRuleEvaluation.pattern }), layer: 1 };
     }
 
 
@@ -1365,6 +1520,53 @@ export class PermissionManager {
       return {
         decision: "ask",
         reason: "Remote controller request requires local allow-once approval",
+        layer: 2,
+        forceModal: true,
+      };
+    }
+
+    // Issue #28 — a corrupt permission store (Store A, a project rule file,
+    // or Store B) fails closed for anything that can change state: its denies
+    // are unknown, so no write/shell/network/meta call is decided without the
+    // user, and the reason names the file. Reads keep the normal matrix so the
+    // app stays usable while the file is repaired.
+    const rulesFileError = this.rulesLoadError?.message
+      ?? (projectRuleState?.ok === false ? projectRuleState.error.message : undefined)
+      ?? context.permissionStoreError;
+    if (rulesFileError && resolvedCategory !== "read") {
+      return { decision: "ask", reason: rulesFileError, layer: 1, forceModal: true };
+    }
+    if (shellExfiltration) {
+      return {
+        decision: "ask",
+        reason: t("be_permissionManager.shellExfiltrationFloorReason", { detail: shellExfiltration }),
+        layer: 2,
+        forceModal: true,
+      };
+    }
+    if (shellSensitivePath) {
+      return {
+        decision: "ask",
+        reason: t("be_permissionManager.shellSensitivePathFloorReason", { detail: shellSensitivePath }),
+        layer: 2,
+        forceModal: true,
+      };
+    }
+    // Ask rules (after deny, before every allow lane and mode). A per-call
+    // hard ask: never remembered, never auto-reviewed.
+    for (const rule of [...this.rules, ...projectRules]) {
+      if (rule.action !== "ask" || isRuleSpecifier(rule.pattern)) continue;
+      if (rule.source && rule.source !== source) continue;
+      if (denyTargets.some((target) => globMatch(target, rule.pattern))) {
+        return { decision: "ask", reason: t("be_permissionManager.askRuleReason", { pattern: rule.pattern }), layer: 2, forceModal: true };
+      }
+    }
+    if (shellRuleEvaluation?.decision === "ask") {
+      return {
+        decision: "ask",
+        reason: shellRuleEvaluation.pattern === null
+          ? t("be_permissionManager.shellRulesUninspectableReason", { detail: shellRuleEvaluation.reason })
+          : t("be_permissionManager.askRuleReason", { pattern: shellRuleEvaluation.pattern }),
         layer: 2,
         forceModal: true,
       };
@@ -1421,9 +1623,19 @@ export class PermissionManager {
 
     // 3. Allow rules
     let result: PermissionCheckResult | undefined;
-    for (const rule of this.rules) {
+    if (shellRuleEvaluation?.decision === "allow") {
+      // Every subcommand is covered by a Bash(...) allow rule and none hits a
+      // floor (see rules/shell-rule-matcher.ts).
+      result = {
+        decision: "allow",
+        reason: t("be_permissionManager.allowRuleReason", { pattern: shellRuleEvaluation.patterns.join(", ") }),
+        layer: 3,
+      };
+    }
+    for (const rule of result === undefined ? this.rules : []) {
       if (rule.action !== "allow") continue;
       if (rule.source && rule.source !== source) continue;
+      if (isRuleSpecifier(rule.pattern)) continue;
       if (globMatch(allowTarget, rule.pattern)) {
         // P2 tier gate — a read-tier grant must not cover a
         // write/shell/network/meta invocation. Untiered/legacy rules default to

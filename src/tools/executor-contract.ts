@@ -120,6 +120,11 @@ export interface ToolPermissionContext {
   expectedMcpServerId?: string;
   /** Recent user-authored intent for reviewer context only. */
   userIntent?: string;
+  /**
+   * Host-detected corruption of a permission store for this invocation, naming
+   * the file (issue #28). Never a tool or wire field.
+   */
+  permissionStoreError?: string;
   onTurnDirectoryGrant?: (approvedDirectory: string) => void;
   onSessionDirectoryGrant?: (approvedDirectory: string) => void;
 }

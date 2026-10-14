@@ -113,6 +113,7 @@ import type { RationaleExecutorControlOutcome } from "./pipeline/rationale-pr1-c
 import {
   canonicalStringify,
   lookupUserDecision,
+  UserApprovalStoreCorruptError,
 } from "../permissions/user-approval-store.js";
 import type { SealedRationaleResumeRequest } from "./pipeline/rationale-resume-contract.js";
 import {
@@ -1110,6 +1111,13 @@ export async function runToolInvocation(
     // and allowed-directory prompts: a persistent exact deny must block the
     // matching invocation without asking the user to grant a prerequisite
     // directory scope first.
+    //
+    // A corrupt exact-decision store (Store B) is not a reason to block every
+    // tool call: the store's denies are unknown, so non-read calls must ask
+    // (PermissionManager fails them closed with the file named as the
+    // reason), while reads keep the normal permission matrix. Any other
+    // lookup failure still blocks this invocation.
+    let permissionStoreError: string | undefined;
     if (!rationaleResumeContext) {
       let exactDecisionBlockReason: string | null = null;
       try {
@@ -1125,11 +1133,16 @@ export async function runToolInvocation(
           exactDecisionBlockReason = "exact tool and input denied in permission settings";
         }
       } catch (err) {
-        log.warn(
-          "exact permission decision lookup failed; blocking invocation: %s",
-          errorMessage(err),
-        );
-        exactDecisionBlockReason = "exact permission decision store unavailable";
+        if (err instanceof UserApprovalStoreCorruptError) {
+          log.error("%s", err.message);
+          permissionStoreError = err.message;
+        } else {
+          log.warn(
+            "exact permission decision lookup failed; blocking invocation: %s",
+            errorMessage(err),
+          );
+          exactDecisionBlockReason = "exact permission decision store unavailable";
+        }
       }
 
       if (exactDecisionBlockReason) {
@@ -1188,6 +1201,7 @@ export async function runToolInvocation(
       ...permissionContext,
       ...(approvalCacheKey ? { approvalCacheKey } : {}),
       disposableSubstrate,
+      ...(permissionStoreError === undefined ? {} : { permissionStoreError }),
     };
     const approvalPurpose = buildApprovalPurposeSuggestion(finalInput, invocationPermissionContext);
     const auditInput = auditSafeToolInput(

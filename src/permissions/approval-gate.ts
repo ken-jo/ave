@@ -228,6 +228,12 @@ export interface ApprovalRequest {
   toolCategory?: ToolCategory;
   /** Layer 5 reviewer verdict when the ask came from auto-review. */
   reviewerVerdict?: RiskVerdict;
+  /**
+   * Issue #28 — host-computed rule-classifier verdict for an unreviewed shell
+   * ask. Grades the dock's remember options in place of the blanket
+   * `shell → high`; destructive commands still grade HIGH (once-only).
+   */
+  ruleVerdict?: RiskVerdict;
   /** Single captured tool-call evaluation context shown to the user. */
   evaluationContext?: PermissionEvaluationContext;
   /** Suggested natural-language purpose shown in the approval dock. */

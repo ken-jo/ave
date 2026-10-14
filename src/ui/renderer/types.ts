@@ -1481,7 +1481,7 @@ export type AvePermissionApi = {
   onConfigChanged: (cb: () => void) => () => void;
   listRules: () => Promise<PermissionRule[]>;
   addRule: (pattern: string, action: "allow" | "deny") => Promise<AddRuleResult>;
-  removeRule: (pattern: string, action: "allow" | "deny") => Promise<RemoveRuleResult>;
+  removeRule: (pattern: string, action: "allow" | "deny" | "ask") => Promise<RemoveRuleResult>;
   /** Permission policy — list pending HIGH-risk deferred entries from reviewer. */
   deferredList: () => Promise<
     | { ok: true; pending: DeferredQueueEntry[]; total: number }

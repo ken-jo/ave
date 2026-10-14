@@ -188,19 +188,42 @@ function hasValidRiskProvenance(entry: UserApprovalEntry): boolean {
     (entry.riskCeilingAtApproval === undefined || isApprovalVerdict(entry.riskCeilingAtApproval));
 }
 
+/**
+ * Store B corruption is reported, never tolerated (issue #28). A malformed
+ * file used to read as empty, and the next record then overwrote it — every
+ * saved approval silently lost. Readers fail closed (the dock asks); writers
+ * refuse to replace the file.
+ */
+export class UserApprovalStoreCorruptError extends Error {
+  constructor(readonly filePath: string, detail: string) {
+    super(`Saved approvals file ${filePath} is corrupt: ${detail}. Fix or remove the file; its approvals are not in force.`);
+    this.name = "UserApprovalStoreCorruptError";
+  }
+}
+
 async function readApprovalsFile(): Promise<ApprovalsFile> {
+  const path = filePath();
+  let raw: string;
   try {
-    const raw = await readFile(filePath(), "utf8");
-    const parsed = JSON.parse(raw) as ApprovalsFile;
-    // Tolerate missing approvals key in malformed file.
-    if (!parsed || typeof parsed.approvals !== "object") {
-      return { approvals: {} };
-    }
-    return parsed;
+    raw = await readFile(path, "utf8");
   } catch (err) {
     if (isMissingPathError(err)) return { approvals: {} };
     throw err;
   }
+  // An empty file holds no data (e.g. a lock placeholder); nothing is lost.
+  if (!raw.trim()) return { approvals: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new UserApprovalStoreCorruptError(path, "invalid JSON");
+  }
+  const approvals = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as { approvals?: unknown }).approvals : undefined;
+  if (!approvals || typeof approvals !== "object" || Array.isArray(approvals)) {
+    throw new UserApprovalStoreCorruptError(path, "missing approvals object");
+  }
+  return parsed as ApprovalsFile;
 }
 
 async function atomicWrite(data: ApprovalsFile): Promise<void> {
