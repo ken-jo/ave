@@ -310,23 +310,31 @@ function renderList(element: ElementNode, ctx: RenderContext): string {
 function renderTable(element: ElementNode, ctx: RenderContext): string {
   const rows: string[][] = [];
   let caption = "";
+  // Content that is not a row (malformed markup, or a list the parser left
+  // inside an unclosed table) is still page text: it follows the table.
+  const stray: string[] = [];
   const visit = (node: ElementNode): void => {
     for (const child of node.children) {
-      if (child.kind !== "element") continue;
+      if (child.kind !== "element") {
+        if (child.text.trim()) stray.push(renderNode(child, ctx));
+        continue;
+      }
       if (child.name === "caption") caption = inlineText(renderChildren(child.children, ctx));
       else if (child.name === "tr") {
         rows.push(child.children
           .filter((cell): cell is ElementNode => cell.kind === "element" && (cell.name === "td" || cell.name === "th"))
           .map((cell) => inlineText(normalizeMarkdown(renderChildren(cell.children, ctx)).replace(/\n+/g, " ")).replace(/\|/g, "\\|")));
       } else if (child.name === "thead" || child.name === "tbody" || child.name === "tfoot") visit(child);
+      else if (child.name !== "colgroup" && child.name !== "col") stray.push(renderNode(child, ctx));
     }
   };
   visit(element);
+  const after = stray.join("");
   const width = Math.max(0, ...rows.map((row) => row.length));
-  if (width === 0) return "";
+  if (width === 0) return after;
   const pad = (row: string[]): string => `| ${Array.from({ length: width }, (_, i) => row[i] ?? "").join(" | ")} |`;
   const lines = [pad(rows[0]), `| ${Array.from({ length: width }, () => "---").join(" | ")} |`, ...rows.slice(1).map(pad)];
-  return block([caption, lines.join("\n")].filter(Boolean).join("\n\n"));
+  return block([caption, lines.join("\n")].filter(Boolean).join("\n\n")) + after;
 }
 
 function renderNode(node: HtmlNode, ctx: RenderContext): string {
