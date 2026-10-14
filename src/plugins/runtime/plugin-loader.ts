@@ -135,7 +135,7 @@ export async function runPluginImportWithTimeout<T>(
  * routing reversal is a reviewed code change rather than a rewrite — never a
  * runtime fallback.
  *
- * Deprecation owner: the organization owner role of `former_org`
+ * Deprecation owner: the owner role of `ken-jo`
  * (decision 5). Removal condition (§9.8, "Loader removal, restated after
  * Admission"): the registry-fed `allPluginsAreOutOfProcess` true on every
  * Doctor report since Admission; the routing matrix, the official-index test

@@ -12,8 +12,10 @@ import {
 import { workflowJobs } from "../../src/__tests__/support/workflow-source.js";
 
 /**
- * `package.json` `build.publish` names this repository once; it is what
- * installed apps update from. What this file holds to that entry, exactly:
+ * `package.json` `repository` names this repository once (installed apps
+ * update from the R2 feed in `build.publish`, which
+ * `test/scripts/release-channel.test.ts` owns). What this file holds to the
+ * `repository` entry, exactly:
  *
  * - every `<owner>/<repo>` reference to this repository, in the URL, API-path,
  *   `gh -R`/`--repo`, `repository:` and quoted-string forms, in every tracked
@@ -22,7 +24,7 @@ import { workflowJobs } from "../../src/__tests__/support/workflow-source.js";
  *   except the paths in {@link NOT_CHECKED};
  * - every `github.repository`-style comparison in `.github/workflows/`, and the
  *   guard on both `web-deploy.yml` jobs;
- * - the deprecation-owner text ("organization owner role of `<owner>`");
+ * - the deprecation-owner text ("owner role of `<owner>`", optionally "organization owner role");
  * - the `gh -R <owner>/` owner in the packaged `resources/AGENTS.md`;
  * - the replaceable-hash list for the seeded `resources/AGENTS.md`, which must
  *   carry every release tag's copy (editing that file for a move needs it).
@@ -124,46 +126,50 @@ const REPOSITORY_REFERENCE = new RegExp(
   "gu",
 );
 
-const DEPRECATION_OWNER = /organization\s+owner[\s*/#]+role\s+of\s+`([^`]+)`/gu;
+const DEPRECATION_OWNER = /(?:organization\s+)?owner[\s*/#]+role\s+of\s+`([^`]+)`/gu;
 
 function lineOf(source: string, index: number): number {
   return source.slice(0, index).split("\n").length;
 }
 
-function githubPublish(owner: unknown, repo: unknown) {
-  return { build: { publish: [{ provider: "github", owner, repo }] } };
+function gitRepository(url: unknown, type: unknown = "git") {
+  return { repository: { type, url } };
 }
 
 describe("repository identity source of truth", () => {
-  it("reads owner/repo from the one github publish entry", () => {
-    expect(repositoryIdentity(githubPublish("some-owner", "ave"))).toEqual({
+  it("reads owner/repo from the package.json repository field", () => {
+    expect(repositoryIdentity(gitRepository("git+https://github.com/some-owner/some-repo.git"))).toEqual({
       owner: "some-owner",
-      repo: "ave",
-      slug: "some-owner/ave",
+      repo: "some-repo",
+      slug: "some-owner/some-repo",
     });
   });
 
+  it("does not read the update feed", () => {
+    // The identity is the repository even when build.publish names no GitHub
+    // entry at all, as the R2 channel does.
+    expect(
+      repositoryIdentity({
+        ...gitRepository("git+https://github.com/some-owner/some-repo.git"),
+        build: { publish: [{ provider: "generic", url: "https://downloads.example.invalid/releases" }] },
+      }).slug,
+    ).toBe("some-owner/some-repo");
+  });
+
   it.each([
-    ["no build", {}],
-    ["publish as an object", { build: { publish: { provider: "github", owner: "o", repo: "r" } } }],
-    ["no publish entry", { build: { publish: [] } }],
-    [
-      "a second feed",
-      {
-        build: {
-          publish: [
-            { provider: "github", owner: "o", repo: "r" },
-            { provider: "github", owner: "p", repo: "r" },
-          ],
-        },
-      },
-    ],
-    ["a non-github provider", { build: { publish: [{ provider: "generic", url: "https://example.invalid" }] } }],
-    ["a missing owner", githubPublish(undefined, "ave")],
-    ["an owner with a slash", githubPublish("a/b", "ave")],
-    ["an owner with a trailing hyphen", githubPublish("owner-", "ave")],
-    ["an empty repo", githubPublish("owner", "")],
-    ["a dot-dot repo", githubPublish("owner", "..")],
+    ["no repository", {}],
+    ["only a github publish entry", { build: { publish: [{ provider: "github", owner: "o", repo: "r" }] } }],
+    ["the shorthand string form", { repository: "owner/some-repo" }],
+    ["the github: shorthand form", { repository: "github:owner/some-repo" }],
+    ["an array", { repository: [] }],
+    ["a non-git type", gitRepository("git+https://github.com/owner/some-repo.git", "svn")],
+    ["a missing url", gitRepository(undefined)],
+    ["a url without git+", gitRepository("https://github.com/owner/some-repo.git")],
+    ["a url without .git", gitRepository("git+https://github.com/owner/some-repo")],
+    ["another host", gitRepository("git+https://gitlab.com/owner/some-repo.git")],
+    ["an extra path segment", gitRepository("git+https://github.com/owner/group/some-repo.git")],
+    ["an owner with a trailing hyphen", gitRepository("git+https://github.com/owner-/some-repo.git")],
+    ["a dot-dot repo", gitRepository("git+https://github.com/owner/...git")],
   ])("fails closed for %s", (_label, packageJson) => {
     expect(() => repositoryIdentity(packageJson)).toThrow("[repository-identity]");
   });
@@ -189,16 +195,12 @@ describe("repository identity source of truth", () => {
     // The live sites a move must change are among the references read.
     const missed = [
       ".github/CONTRIBUTING.md",
-      ".github/ISSUE_TEMPLATE/config.yml",
-      ".github/SECURITY.md",
       ".github/workflows/ci.yml",
       ".github/workflows/web-deploy.yml",
       "docs/ko/guides/windows-setup.md",
       "package.json",
       "src/__tests__/packaging-discipline-source.test.ts",
       "web/DEPLOY.md",
-      "web/README.md",
-      "web/lib/downloads.ts",
     ].filter((path) => !covered.has(path));
     expect(missed).toEqual([]);
   });
@@ -266,10 +268,6 @@ describe("repository identity source of truth", () => {
     expect([...sites]).toEqual(
       expect.arrayContaining(["src/plugins/runtime/plugin-loader.ts", "docs/development/knip-baseline.md"]),
     );
-  });
-
-  it("links the website's downloads to this repository's releases", () => {
-    expect(read("web/lib/downloads.ts")).toContain(`"https://github.com/${identity.slug}/releases"`);
   });
 
   it("points the packaged agent contract's gh commands at this repository's owner", () => {

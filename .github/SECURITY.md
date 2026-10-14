@@ -2,8 +2,9 @@
 
 ## Supported versions
 
-Only the latest released version on the [GitHub Releases page](https://github.com/former_org/ave/releases)
-receives security fixes. There is no LTS branch.
+Only the latest released version, the one offered at
+[downloads.agent-connector.ai](https://downloads.agent-connector.ai/releases/latest.yml)
+and installed by auto-update, receives security fixes. There is no LTS branch.
 
 ## Reporting a vulnerability
 

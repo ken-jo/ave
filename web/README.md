@@ -28,16 +28,18 @@ infra/          docs-redirect shim for the legacy docs domain
 
 ## Desktop packages
 
-Every download button opens the latest GitHub Release, and the visitor picks
-the asset for their platform there:
+Every download button links to a stable alias on the R2 release channel, the
+same host installed apps update from (`package.json` `build.publish`):
 
 ```
-https://github.com/former_org/ave/releases/latest
+https://downloads.agent-connector.ai/latest/mac-arm64.dmg
+https://downloads.agent-connector.ai/latest/windows-x64-setup.exe
+https://downloads.agent-connector.ai/latest/linux-x86_64.AppImage
 ```
 
-The buttons do not deep-link to an asset file. Assets are published under their
-version (`Ave-0.10.0-mac-arm64.dmg`), so a static href can only name a file
-that stops existing at the next release, and the `Ave-latest-*` aliases that
-once gave those files a stable name are no longer published.
+The release workflow refreshes these aliases on every tag
+(`scripts/upload-release-r2.mjs`) as server-side copies of the versioned files
+under `releases/`, and each one downloads under its versioned file name
+(`Content-Disposition`). See `docs/guides/release-r2.md`.
 
 The landing page auto-detects the visitor's OS and highlights the matching card.

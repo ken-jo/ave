@@ -11,7 +11,7 @@ import {
 
 const SCRIPT = resolve(process.cwd(), "scripts/check-release-repository.mjs");
 const identity = repositoryIdentity({
-  build: { publish: [{ provider: "github", owner: "old-owner", repo: "ave" }] },
+  repository: { type: "git", url: "git+https://github.com/old-owner/ave.git" },
 });
 const temporary: string[] = [];
 
@@ -27,7 +27,7 @@ function runGate(repository: string | undefined, script = SCRIPT, cwd = process.
 }
 
 describe("release repository gate", () => {
-  it("passes when the build runs in the repository package.json publishes to", () => {
+  it("passes when the build runs in the repository package.json names", () => {
     expect(assertReleaseRepository({ identity, repository: "old-owner/ave" })).toBe(
       "old-owner/ave",
     );
@@ -77,6 +77,6 @@ describe("release repository gate", () => {
     const result = runGate(slug);
     expect(result.stderr).not.toContain("[release-repository]");
     expect(result.status).toBe(0);
-    expect(result.stdout).toBe(`[release-repository] package.json build.publish matches ${slug}\n`);
+    expect(result.stdout).toBe(`[release-repository] package.json repository matches ${slug}\n`);
   });
 });

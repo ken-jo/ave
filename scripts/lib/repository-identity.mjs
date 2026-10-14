@@ -5,40 +5,48 @@ import { fileURLToPath } from "node:url";
 /**
  * This repository's GitHub identity.
  *
- * `package.json` `build.publish` is the one place that names it.
- * electron-builder writes that entry into the packaged `app-update.yml`, so it
- * is the feed every installed app updates from. Anything else that must name
- * this repository reads it here or is held to it by
- * `test/scripts/repository-identity.test.ts`.
+ * The standard `package.json` `repository` field is the one place that names
+ * it. It does not depend on the update feed: installed apps update from the
+ * `generic` feed in `build.publish` (see lib/release-channel.mjs), and the
+ * GitHub Release that the tag workflow drafts is a secondary record kept in
+ * this repository. Anything else that must name this repository reads it here
+ * or is held to it by `test/scripts/repository-identity.test.ts`.
  *
- * The rule is strict: exactly one `github` publish entry. A second entry would
- * be a second feed that nothing here checks, so it is refused rather than
- * ignored.
+ * The rule is strict: exactly the object form
+ * `{ "type": "git", "url": "git+https://github.com/<owner>/<repo>.git" }`.
+ * The npm shorthand forms (`"owner/repo"`, `"github:owner/repo"`) and other
+ * hosts are refused rather than interpreted, so there is one spelling to check.
  */
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/u;
 const REPO = /^(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/u;
+const GITHUB_GIT_URL = /^git\+https:\/\/github\.com\/([^/]+)\/([^/]+)\.git$/u;
 
 function fail(message) {
   throw new Error(`[repository-identity] ${message}`);
 }
 
 export function repositoryIdentity(packageJson) {
-  const publish = packageJson?.build?.publish;
-  if (!Array.isArray(publish) || publish.length !== 1) {
-    fail("package.json build.publish must be an array with exactly one entry");
+  const repository = packageJson?.repository;
+  if (repository === null || typeof repository !== "object" || Array.isArray(repository)) {
+    fail('package.json repository must be an object { "type": "git", "url": "git+https://github.com/<owner>/<repo>.git" }');
   }
-  const [entry] = publish;
-  if (entry?.provider !== "github") {
-    fail(`package.json build.publish[0].provider must be "github" (got ${JSON.stringify(entry?.provider)})`);
+  if (repository.type !== "git") {
+    fail(`package.json repository.type must be "git" (got ${JSON.stringify(repository.type)})`);
   }
-  const { owner, repo } = entry;
-  if (typeof owner !== "string" || !OWNER.test(owner)) {
-    fail(`package.json build.publish[0].owner is not a GitHub owner name (got ${JSON.stringify(owner)})`);
+  const match = typeof repository.url === "string" ? GITHUB_GIT_URL.exec(repository.url) : null;
+  if (match === null) {
+    fail(
+      `package.json repository.url must be git+https://github.com/<owner>/<repo>.git (got ${JSON.stringify(repository.url)})`,
+    );
   }
-  if (typeof repo !== "string" || !REPO.test(repo)) {
-    fail(`package.json build.publish[0].repo is not a GitHub repository name (got ${JSON.stringify(repo)})`);
+  const [, owner, repo] = match;
+  if (!OWNER.test(owner)) {
+    fail(`package.json repository.url does not name a GitHub owner (got ${JSON.stringify(owner)})`);
+  }
+  if (!REPO.test(repo)) {
+    fail(`package.json repository.url does not name a GitHub repository (got ${JSON.stringify(repo)})`);
   }
   return Object.freeze({ owner, repo, slug: `${owner}/${repo}` });
 }
@@ -49,8 +57,9 @@ export function readRepositoryIdentity(root = ROOT) {
 
 /**
  * Release gate (scripts/check-release-repository.mjs): the repository a tag
- * build publishes from must be the one `build.publish` names, exactly. An
- * unset `GITHUB_REPOSITORY` and a difference in letter case both fail.
+ * build releases from must be the one `package.json` `repository` names,
+ * exactly. An unset `GITHUB_REPOSITORY` and a difference in letter case both
+ * fail.
  */
 export function assertReleaseRepository({ identity, repository }) {
   if (typeof repository !== "string" || repository.length === 0) {
@@ -58,8 +67,8 @@ export function assertReleaseRepository({ identity, repository }) {
   }
   if (repository !== identity.slug) {
     throw new Error(
-      `[release-repository] package.json build.publish names ${identity.slug}, but this build runs in ${repository}; ` +
-        "its installers would update from the wrong repository",
+      `[release-repository] package.json repository names ${identity.slug}, but this build runs in ${repository}; ` +
+        "its release would be recorded and uploaded from a repository the package does not name",
     );
   }
   return identity.slug;

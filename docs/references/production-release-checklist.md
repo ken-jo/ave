@@ -88,8 +88,9 @@ on the target OS instead of relying on cross-platform packaging. A tag release
 carries 13 assets: ten installers and blockmaps published under their version
 (`Ave-X.Y.Z-*`) and the three electron-updater `latest*.yml` metadata files
 (see [Release asset set](../development/release-process.md#release-asset-set)).
-There are no `Ave-latest-*` alias assets, and the website links to the release
-page rather than to any asset file, so no stable asset filename has to exist.
+The `publish-r2` job uploads the same files to the R2 release channel that
+installed apps update from and the website links to
+(see [R2 Release Channel](../guides/release-r2.md)).
 
 ## Explicit Unsigned Public Release Exception
 
@@ -115,7 +116,8 @@ the following:
 - the draft has all versioned assets and update metadata; and
 - the public release body prominently states that it is unsigned/not notarized,
   calls out Windows SmartScreen/Unknown publisher and macOS Gatekeeper, directs
-  users to the official GitHub Release, and gives Linux checksum guidance.
+  users to the official download host (`https://downloads.agent-connector.ai`),
+  and gives Linux checksum guidance against the R2 feed `latest-linux.yml`.
 
 A future signed release must add its own reviewed workflow and positive
 platform signature/notarization evidence before it can make signed claims.
@@ -206,7 +208,7 @@ Perform on each platform artifact before uploading:
 ## Rollback Procedure
 
 1. If a blocker is found in the new version, immediately move the GitHub Release back to `draft`
-2. Restore `latest.yml` (electron-updater metadata) to the previous version so auto-update does not receive the just-published build
+2. Restore the three `latest*.yml` feed files on R2 to the previous version so auto-update does not receive the just-published build ([R2 Release Channel — Rollback](../guides/release-r2.md#rollback))
 3. Announce in Slack `#ave-release` and triage Sentry issues
 4. Fix from `hotfix/v<version>`, bump patch, and re-release
 

@@ -59,7 +59,7 @@ once the evidence answers the core request.
 |---|---|---|
 | Private/on-machine state: installed extensions, MCP, settings, sessions | The owning store under `~/.ave/`, or HostApi | Inferring existence or state from WebSearch |
 | Latest version of a marketplace package | The installed sources' synced snapshots under `~/.ave/marketplaces/` | Public search engines |
-| Ave internal issues and PRs | `gh -R former_org/<repo> ...` | WebSearch |
+| Ave internal issues and PRs | `gh -R ken-jo/<repo> ...` | WebSearch |
 | Public library and API information | Official documentation and WebSearch | Inferring currency from internal files alone |
 
 Supplement an empty or narrow result from another valid source only while a core

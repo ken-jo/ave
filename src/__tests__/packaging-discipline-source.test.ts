@@ -339,6 +339,43 @@ describe("installer smoke and packaging discipline", () => {
     const publish = jobs.get("publish-release") as string;
     expect(publish.indexOf(gate)).toBeLessThan(publish.indexOf("uses: actions/download-artifact@"));
     expect(publish.indexOf(gate)).toBeLessThan(publish.indexOf("uses: softprops/action-gh-release@"));
+
+    const r2Step = gateStep("publish-r2");
+    expect(r2Step).not.toMatch(/^\s+if:/mu);
+    const r2 = jobs.get("publish-r2") as string;
+    expect(r2.indexOf(gate)).toBeLessThan(r2.indexOf("uses: actions/download-artifact@"));
+    expect(r2.indexOf(gate)).toBeLessThan(r2.indexOf("node scripts/upload-release-r2.mjs"));
+  });
+
+  it("publishes tag builds to the R2 release channel with every secret required", () => {
+    const jobs = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
+    const r2 = jobs.get("publish-r2");
+    if (r2 === undefined) throw new Error("build-installers.yml has no publish-r2 job");
+
+    // Tag builds only, after the profile and every installer, like
+    // publish-release, and never behind the GitHub Release draft.
+    expect(r2).toMatch(/^ {4}needs: \[release-profile, installers\]$/mu);
+    expect(r2).toMatch(/^ {4}if: github\.event_name == 'push'$/mu);
+    expect(r2).toMatch(/^ {6}contents: read$/mu);
+    expect(r2).not.toContain("continue-on-error");
+    expect(r2).toContain("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8");
+    expect(r2).toContain("pattern: ave-*-installers");
+
+    // The plan is printed with no secret in scope, then the upload runs with
+    // all four; the script refuses a missing one rather than skipping.
+    const commands = jobRunCommands(r2)
+      .filter((command) => command.includes("scripts/upload-release-r2.mjs"))
+      .map((command) => command.trimEnd());
+    expect(commands).toEqual([
+      'set -euo pipefail\nnode scripts/upload-release-r2.mjs --dir release-staging --tag "$RELEASE_TAG" --dry-run',
+      'set -euo pipefail\naws --version\nnode scripts/upload-release-r2.mjs --dir release-staging --tag "$RELEASE_TAG"',
+    ]);
+    const uploadAt = r2.indexOf("- name: Upload to R2");
+    expect(uploadAt).toBeGreaterThan(r2.indexOf("- name: Plan the R2 upload"));
+    for (const name of ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]) {
+      expect(r2.slice(uploadAt)).toContain(`${name}: \${{ secrets.${name} }}`);
+    }
+    expect(r2.slice(0, uploadAt)).not.toContain("secrets.");
   });
 
   it("keeps privileged workflows on trusted default-branch events", () => {
@@ -463,7 +500,7 @@ describe("installer smoke and packaging discipline", () => {
 
     // `build-and-test` is one of the two required status checks on `main`; the
     // other is `naming-gate`. Read the current list with
-    //   gh api repos/former_org/ave/branches/main/protection \
+    //   gh api repos/ken-jo/ave/branches/main/protection \
     //     --jq .required_status_checks.contexts
     // A gate moved into a job of its own reports under a check name that list
     // does not contain, and an unlisted check cannot block a merge. That was

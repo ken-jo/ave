@@ -187,12 +187,11 @@ Perform on each platform artifact before uploading:
 
 ## Publish (Later — NOT part of scaffolding)
 
-When users have completed cert/DSN setup, publish with:
-
-```bash
-npx electron-builder --publish=always
-```
-
-This pushes artifacts + `latest.yml` to GitHub Releases, where electron-updater
-will discover them via the default GitHub provider declared in
-`package.json → build.publish`.
+게시는 보호된 `v*` 태그 push 로만 합니다. 로컬 `npx electron-builder --publish=always` 는 쓰지 않습니다. `package.json → build.publish` 는
+`generic` provider 하나(`https://downloads.agent-connector.ai/releases`)이고,
+electron-builder 의 generic provider 는 업로드를 하지 않습니다. 태그 push 시
+`build-installers.yml` 의 `publish-r2` job 이 installer·blockmap·`latest*.yml`
+을 Cloudflare R2 에 올리고(피드는 마지막), electron-updater 는 그 generic
+피드를 읽습니다. 저장소는 private 이라 설치된 앱은 GitHub Release 를 읽지
+않으며, draft GitHub Release 는 기록용입니다. 절차와 검증:
+[R2 Release Channel](../../guides/release-r2.md).

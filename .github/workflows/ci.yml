@@ -148,7 +148,7 @@ jobs:
       # Last *in this job* rather than in a job of their own, because the check
       # name `build-and-test` is one of the two required status checks on
       # `main`; the other is `naming-gate`. Read the current list with
-      #   gh api repos/former_org/ave/branches/main/protection \
+      #   gh api repos/ken-jo/ave/branches/main/protection \
       #     --jq .required_status_checks.contexts
       # A separate job reports under a separate check name, and a name branch
       # protection does not list cannot block a merge. That is measured, not

@@ -88,8 +88,8 @@ their reason lives: each is owned here and in its own doc comment.
   (`docs/design/plugin-hostapi-protocol.md` §9.8 A1, decision 50), when every
   `entry` manifest started routing to a plugin child.
   `src/plugins/isolation/__tests__/host-api-boundary-contract.test.ts` fails if
-  a production module imports it. Deprecation owner: the organization owner
-  role of `former_org` (decision 5). Removal condition (§9.8, "Loader
+  a production module imports it. Deprecation owner: the owner role of
+  `ken-jo` (decision 5). Removal condition (§9.8, "Loader
   removal, restated after Admission"): `allPluginsAreOutOfProcess`, fed by the
   runtime's registry of loaded arms, true on every Doctor report since
   Admission; the routing matrix, the official-index routing test and the §10.1
