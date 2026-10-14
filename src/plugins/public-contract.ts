@@ -40,8 +40,7 @@ export const AGENT_PLUGINS_SCHEMA_URL =
 
 /**
  * The reverse-domain namespace Ave owns inside the portable `extensions`
- * object (the Ave domain `former-site.invalid`, reversed). It is a contract name and stays
- * although Ave's web home is ave.agent-connector.ai. Agent Plugins assigns no semantics to a
+ * object: Ave's web home `ave.agent-connector.ai`, reversed. Agent Plugins assigns no semantics to a
  * namespace's contents, so everything the host needs in order to load, sandbox
  * and govern a plugin lives under this one key.
  */

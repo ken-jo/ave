@@ -16,6 +16,14 @@
   이 버전의 프로토콜 스키마는 `schemas/plugin-host-protocol/3/v0.14.0/protocol.schema.json`으로
   게시됩니다.
 
+- **플러그인 계약 식별자가 Ave 도메인으로 옮겨졌습니다.** `plugin.json`의 Ave 전용 필드는
+  `extensions["ai.agent-connector.ave"]` 아래에, 패키지의 프롬프트·에이전트·훅·루틴 파일은
+  `ai.agent-connector.ave/` 폴더 아래에 둡니다. 스킬 패키지의 `$schema`는
+  `https://ave.agent-connector.ai/schemas/skill/1/skill.schema.json`이고, 매니페스트와
+  마켓플레이스 스키마는 `https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json`,
+  `https://ave.agent-connector.ai/schemas/marketplace/2/…`로 게시됩니다. 이전 이름
+  (`ai.agent-connector.ave`, `sdk.former-site.invalid`)은 인식하지 않습니다.
+
 - **모든 익스텐션이 각자의 프로세스에서 실행됩니다.** 마켓플레이스, 사용자 지정 소스, 폴더,
   직접 설치 등 설치 경로와 관계없이 같습니다. `hostFetch`를 거치지 않고 네트워크에 접근하던
   익스텐션은 운영체제 샌드박스가 켜져 있으면 차단되고, 홈 폴더 기준 경로나 앱 내부 API를 직접
@@ -845,7 +853,7 @@ v0.6.3 에서 플러그인 하나였던 격리 대상이 이번 릴리즈에서 
 ### 플러그인 매니페스트 — Agent Plugins 1.0.0
 
 - **`plugin.json` 이 표준 문서 형식이 되었습니다** (#2273). 최상위에는 표준이
-  정한 필드만 남고, Ave 고유 필드는 `extensions["ai.agent-connector.ave"]` 아래로
+  정한 필드만 남고, Ave 고유 필드는 `extensions["xyz.retiredname-namespace"]` 아래로
   이동했습니다. 호스트는 디스크의 문서를 검증한 뒤 내부 형태로 투영하므로
   매니페스트를 읽는 기존 코드는 그대로입니다.
 - **표준 메타데이터 문자열에 상한을 둡니다** (#2274). `author`/`homepage`/

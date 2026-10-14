@@ -413,7 +413,7 @@ describe("runtime manifest validation of a process entry", () => {
     ["an absolute command", { ...PROCESS, command: "/usr/bin/python3" }],
     ["a command segment containing '='", { ...PROCESS, command: "./bin/a=b" }],
   ])("refuses %s at the schema, naming the command", async (_name, process) => {
-    await expect(parse({ process })).rejects.toThrow(/\/extensions\/xyz\.ave\/process\/command must match pattern/u);
+    await expect(parse({ process })).rejects.toThrow(/\/extensions\/ai\.agent-connector\.ave\/process\/command must match pattern/u);
   });
 
   it.each([
@@ -428,7 +428,7 @@ describe("runtime manifest validation of a process entry", () => {
     "refuses %s as an environment name, naming it",
     async (name) => {
       await expect(parse({ process: { ...PROCESS, env: { [name]: "x" } } })).rejects.toThrow(
-        new RegExp(`extensions\\["xyz\\.ave"\\]\\.process\\.env\\.${name}'.*reserves`, "u"),
+        new RegExp(`extensions\\["ai\\.agent-connector\\.ave"\\]\\.process\\.env\\.${name}'.*reserves`, "u"),
       );
     },
   );

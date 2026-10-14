@@ -251,7 +251,9 @@ export async function importStudioPackage(root: string): Promise<ImportedStudioP
     const ignored = [];
     for (const path of LEGACY_SIDE_PATHS) if (await lstat(join(root, path)).then(() => true, () => false)) ignored.push(path);
     if (ignored.length) diagnostics.push(diagnostic("rewritten", "plugin.json", `Ignored legacy projection: ${ignored.join(", ")}`));
-    return { files: [...files].map(([path, data]) => ({ path, data })), diagnostics, pendingHooks,
+    // Path order, as the store lists a draft's files, so a reimport compares
+    // equal whatever the namespace directory's name sorts against.
+    return { files: [...files].sort(([a], [b]) => a.localeCompare(b)).map(([path, data]) => ({ path, data })), diagnostics, pendingHooks,
       name: String(manifest.name), version: typeof manifest.version === "string" ? manifest.version : undefined,
       description: typeof manifest.description === "string" ? manifest.description : undefined };
   }
