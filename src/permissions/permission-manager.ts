@@ -10,7 +10,7 @@ import { readPermissionsFile, updatePermissionsFile } from "./permissions-store.
 import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rules/rule-files.js";
 import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
 import { isRuleSpecifier } from "./rules/rule-specifier.js";
-import { shellExfiltrationSignal } from "./rules/shell-exfiltration.js";
+import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
@@ -1455,6 +1455,11 @@ export class PermissionManager {
     const shellExfiltration = context.ruleSubject?.kind === "shell"
       ? shellExfiltrationSignal(context.ruleSubject.command, context.ruleSubject.cwd)
       : null;
+    // Sensitive-path floor for shell arguments (same normalization as the
+    // exfiltration scan): `cat ~/.ssh/id_rsa` is never auto-allowed.
+    const shellSensitivePath = context.ruleSubject?.kind === "shell" && !shellExfiltration
+      ? shellSensitivePathSignal(context.ruleSubject.command, context.ruleSubject.cwd)
+      : null;
 
     // 1. Deny rules (highest priority, immutable)
     for (const rule of this.rules) {
@@ -1530,6 +1535,14 @@ export class PermissionManager {
       return {
         decision: "ask",
         reason: t("be_permissionManager.shellExfiltrationFloorReason", { detail: shellExfiltration }),
+        layer: 2,
+        forceModal: true,
+      };
+    }
+    if (shellSensitivePath) {
+      return {
+        decision: "ask",
+        reason: t("be_permissionManager.shellSensitivePathFloorReason", { detail: shellSensitivePath }),
         layer: 2,
         forceModal: true,
       };

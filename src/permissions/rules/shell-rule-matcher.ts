@@ -13,7 +13,8 @@
  *    inputs it cannot reason about: parse failure, unsupported syntax, opaque
  *    word expansions, substitutions, command-scoped assignments, write
  *    redirections, function definitions, assignment-only statements, and
- *    anything a floor catches (destructive, credential exfiltration).
+ *    anything a floor catches (destructive, credential exfiltration, a
+ *    sensitive path anywhere in the command).
  *  - When the tree hides code from deny/ask (unparseable, unsupported,
  *    dynamic program name, a shell/interpreter fed code by any route — `-c`,
  *    stdin pipe, here-string, here-document, `-s`, `-`, a script file — or a
@@ -31,7 +32,7 @@ import {
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { RuleSpecifier } from "./rule-specifier.js";
-import { shellExfiltrationSignal } from "./shell-exfiltration.js";
+import { shellExfiltrationSignal, shellSensitivePathSignal } from "./shell-exfiltration.js";
 import {
   codeCarryingVariable,
   hiddenCodeReason,
@@ -297,6 +298,8 @@ export function evaluateShellRules(command: string, rules: ShellRuleSet, cwd?: s
   }
   const exfiltration = shellExfiltrationSignal(command, cwd);
   if (exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${exfiltration}` };
+  const sensitive = shellSensitivePathSignal(command, cwd);
+  if (sensitive) return { decision: null, reason: `sensitive path (floor): ${sensitive}` };
   const patterns: string[] = [];
   for (const cmd of shape.commands) {
     if (cmd.allowBlockers.length > 0) return { decision: null, reason: cmd.allowBlockers[0]! };
