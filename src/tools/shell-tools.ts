@@ -38,7 +38,7 @@ import { POWER_SHELL_AST_PARSER, normalizePowerShellAstSummary, type PowerShellA
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { hostPathForShellPath } from "../lib/shell-resolver.js";
 import { ShellCwdProbeFilter, type ShellCwdProbe } from "./shell-cwd-probe.js";
-import { recordShellSessionCwd } from "./shell-session-cwd.js";
+import { clearShellSessionCwd, recordShellSessionCwd } from "./shell-session-cwd.js";
 import { createLiveOutputStream, toolOutputProgressFromMetadata, type ToolOutputProgressSink } from "./tool-output-progress.js";
 import {
   findResolvedShellPathViolation,
@@ -1226,6 +1226,17 @@ function createManager(): BackgroundShellManager {
 
 /** Process-wide singleton, mirroring managed-child-processes.ts. */
 export const backgroundShellManager: BackgroundShellManager = createManager();
+
+/**
+ * The one shell teardown for an ending session, parent or sub-agent: stop its
+ * background shells, forget its saved working directory, and settle any
+ * brokered cleanup. The caller decides what an unproven cleanup means.
+ */
+export async function endShellSession(sessionId: string): Promise<BrokerSessionCleanupReport | undefined> {
+  backgroundShellManager.disposeSession(sessionId);
+  clearShellSessionCwd(sessionId);
+  return await backgroundShellManager.settleSessionCleanup(sessionId);
+}
 
 /**
  * SafeBashExecutor (Tier A1) — non-interactive shell execution with

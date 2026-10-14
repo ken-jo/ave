@@ -1,7 +1,9 @@
+import { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InputClassifier } from "../../core/input-classifier.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
@@ -12,6 +14,8 @@ import { MemoryManager, type SessionMetadata,
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { ToolRegistry } from "../../tools/registry.js";
+import { readShellSessionCwd, recordShellSessionCwd } from "../../tools/shell-session-cwd.js";
+import { backgroundShellManager } from "../../tools/shell-tools.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import {
   SubAgentRunner,
@@ -1197,6 +1201,49 @@ describe("SubAgentRunner A2A wire security contract", () => {
         handlerId: binding.handlerId,
       }),
     ).toMatchObject({ taskState: "TASK_STATE_CANCELED" });
+  });
+
+  it("ends a finished child's background shells and saved shell directory", async () => {
+    const workspace = realpathSync(mkdtempSync(join(tmpdir(), "ave-child-shell-")));
+    mkdirSync(join(workspace, "sub"));
+    let childSessionId = "";
+    const shell = new ChildProcess();
+    shell.stdout = new PassThrough();
+    shell.stderr = new PassThrough();
+    // No process is spawned: only the child's signal boundary is replaced.
+    const kill = vi.spyOn(shell, "kill").mockReturnValue(true);
+    let shellId = "";
+    vi.spyOn(ConversationLoop.prototype, "runTurn").mockImplementation(async () => {
+      // What the child's own bash calls would leave behind under its session id.
+      shellId = backgroundShellManager.register({
+        sessionId: childSessionId,
+        command: "child watcher",
+        child: shell,
+        startedAt: new Date().toISOString(),
+      });
+      recordShellSessionCwd(childSessionId, workspace, join(workspace, "sub"));
+      return COMPLETED_TURN;
+    });
+    const runner = new SubAgentRunner({
+      parentDeps: buildLoopDeps(toolRegistry),
+      toolRegistry,
+      subAgentMemoryManager: store,
+    });
+    try {
+      await expect(runner.spawnFromA2AWire(
+        { messageText: "Start the work." },
+        makeBinding(),
+        { onDurablyLinked: async (link) => { childSessionId = link.childSessionId; } },
+      )).resolves.toMatchObject({ ok: true });
+      expect(childSessionId).not.toBe("");
+      expect(kill).toHaveBeenCalledWith("SIGKILL");
+      expect(backgroundShellManager.read(childSessionId, shellId)?.status).not.toBe("running");
+      expect(readShellSessionCwd(childSessionId, workspace)).toBeUndefined();
+    } finally {
+      shell.stdout.destroy();
+      shell.stderr.destroy();
+      await cleanupTmpDir(workspace);
+    }
   });
 
   it("keeps a durably waiting run cancelable and cleans its terminal mailbox", async () => {
