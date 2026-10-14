@@ -2215,6 +2215,7 @@ export async function queryLoop(
           toolResultContent: tr.content,
           stubbedOnWire: !toolResultContentReachesWire(resultMeta),
           attached: attachedDirectoryInstructions,
+          gitIgnoreVerdicts: self.gitIgnoreVerdicts,
         });
         const meta = directoryInstructions
           ? { ...resultMeta, directoryInstructions: directoryInstructions.attached }

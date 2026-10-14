@@ -135,7 +135,7 @@ describe("directory instructions in the query loop", () => {
       inputClassifier: new InputClassifier(),
       routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      memoryManager: { saveSession: async () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
     (loop as { provider: LLMProvider | null }).provider = provider;
@@ -157,6 +157,10 @@ describe("directory instructions in the query loop", () => {
     loop.history.restore(compacted);
     await loop.runTurn("and again", undefined, undefined, { inputOrigin: "user-keyboard" });
     expect(toolRows().at(-1)?.content).toContain("src rule");
+
+    loop.gitIgnoreVerdicts.set("repo\0path", true);
+    await loop.newConversation();
+    expect(loop.gitIgnoreVerdicts.size).toBe(0);
   });
 });
 

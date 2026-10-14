@@ -1,8 +1,20 @@
 /**
  * Project AGENTS.md discovery leaf — unit tests.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
+
+const gitCalls = vi.hoisted(() => ({ checkIgnore: 0 }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFileSync: ((file: string, args: readonly string[], options: object) => {
+      if (file === "git" && args.includes("check-ignore")) gitCalls.checkIgnore += 1;
+      return actual.execFileSync(file, args, options);
+    }) as typeof actual.execFileSync,
+  };
+});
 import { mkdtempSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -356,5 +368,22 @@ describe("discoverDirectoryInstructions", () => {
     expect(discoverDirectoryInstructions(project, join("build", "out", "x.js"), new Set())).toEqual([]);
     const layers = discoverDirectoryInstructions(project, join("src", "api", "handler.ts"), new Set());
     expect(layers.map((layer) => layer.content)).toEqual(["src rule"]);
+  });
+  it("asks git once per path for the session's repeated touches", () => {
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+    execFileSync("git", ["init", "-q", project], { stdio: "ignore", env });
+    writeFileSync(join(project, ".gitignore"), "build/\n");
+    mkdirSync(join(project, "build"), { recursive: true });
+    writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
+    const verdicts = new Map<string, boolean>();
+    const before = gitCalls.checkIgnore;
+    for (let touch = 0; touch < 3; touch++) {
+      expect(discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts })).toEqual([]);
+    }
+    expect(gitCalls.checkIgnore - before).toBe(1);
+    // A new session starts with an empty memo and asks again.
+    verdicts.clear();
+    discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts });
+    expect(gitCalls.checkIgnore - before).toBe(2);
   });
 });

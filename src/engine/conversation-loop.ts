@@ -120,6 +120,11 @@ type GuidanceDisposition = Pick<
 
 export class ConversationLoop {
   readonly deps: ConversationLoopDeps;
+  /**
+   * Git ignore verdicts for first-touch instruction files, memoized for the
+   * session so a repeated touch does not spawn git again. Cleared on a session switch.
+   */
+  readonly gitIgnoreVerdicts = new Map<string, boolean>();
   /** The model override this loop was constructed with; a session switch restores it. */
   private readonly constructedModelOverride: string | undefined;
   readonly history: ConversationHistory;

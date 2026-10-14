@@ -281,12 +281,33 @@ export function discoverProjectAgentsMd(
 }
 
 /**
+ * Session-scoped memo of git's ignore verdicts, keyed by repository root and
+ * path. The owner (the conversation loop) clears it on a session switch.
+ */
+export type GitIgnoreVerdicts = Map<string, boolean>;
+
+/**
+ * Whether git reports `path` as ignored in the repository at `repoRoot`, asked
+ * once per `verdicts` lifetime. The query is synchronous because its caller
+ * appends to a tool result in the same pass; the memo keeps repeated touches
+ * of an ignored directory from spawning git each time.
+ */
+function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts | undefined): boolean {
+  const key = `${repoRoot}\0${path}`;
+  const known = verdicts?.get(key);
+  if (known !== undefined) return known;
+  const verdict = askGitIgnores(repoRoot, path);
+  verdicts?.set(key, verdict);
+  return verdict;
+}
+
+/**
  * Whether git reports `path` as ignored in the repository at `repoRoot`. A
  * tracked file is never reported. Any failure to ask (no git, not a
  * repository) reads as "not ignored": the nested-repository and
  * `node_modules` stops still hold without git.
  */
-function gitIgnores(repoRoot: string, path: string): boolean {
+function askGitIgnores(repoRoot: string, path: string): boolean {
   if (!hasGitEntry(repoRoot)) return false;
   const env = { ...process.env };
   // A git hook's GIT_DIR / GIT_WORK_TREE would point the query at another repository.
@@ -318,7 +339,7 @@ export function discoverDirectoryInstructions(
   projectRoot: string,
   targetPath: string,
   attached: { has(relativePath: string): boolean },
-  opts: { homeDir?: string } = {},
+  opts: { homeDir?: string; gitIgnoreVerdicts?: GitIgnoreVerdicts } = {},
 ): ProjectAgentsMdLayer[] {
   const canonicalProject = canonical(resolve(projectRoot));
   if (!canonicalProject) return [];
@@ -339,7 +360,7 @@ export function discoverDirectoryInstructions(
     if (basename(dir) === "node_modules" || hasGitEntry(dir)) break;
     const layer = directoryLayer(top, dir, new Set(), new Set());
     if (!layer || attached.has(layer.relativePath)) continue;
-    if (gitIgnores(top, join(top, layer.relativePath))) continue;
+    if (gitIgnores(top, join(top, layer.relativePath), opts.gitIgnoreVerdicts)) continue;
     const truncated = Buffer.byteLength(layer.content, "utf-8") > PROJECT_AGENTS_MD_MAX_TOTAL_BYTES;
     layers.push({
       relativePath: layer.relativePath,

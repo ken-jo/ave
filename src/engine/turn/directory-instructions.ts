@@ -23,7 +23,7 @@
  * context share {@link DIRECTORY_INSTRUCTIONS_SESSION_MAX_BYTES}.
  */
 import { t } from "../../i18n/index.js";
-import { discoverDirectoryInstructions } from "../../memory/project-agents-md.js";
+import { discoverDirectoryInstructions, type GitIgnoreVerdicts } from "../../memory/project-agents-md.js";
 import { escapeHtml } from "../../shared/escape-html.js";
 import { trimOversizedToolResult } from "../../shared/tool-result-trim.js";
 import type { ToolSource } from "../../tools/types.js";
@@ -113,14 +113,16 @@ export function directoryInstructionsForToolResult(input: {
   stubbedOnWire: boolean;
   /** Files attached by rows still in context, with their block sizes (see {@link liveDirectoryInstructions}). */
   attached: Map<string, number>;
+  /** The session's memo of git ignore verdicts (see `discoverDirectoryInstructions`). */
+  gitIgnoreVerdicts?: GitIgnoreVerdicts;
 }): { text: string; attached: AttachedDirectoryInstruction[] } | undefined {
-  const { projectRoot, source, toolInput, isError, toolResultContent, stubbedOnWire, attached } = input;
+  const { projectRoot, source, toolInput, isError, toolResultContent, stubbedOnWire, attached, gitIgnoreVerdicts } = input;
   if (!projectRoot || source !== "builtin" || isError || stubbedOnWire) return undefined;
   const path = toolInput && typeof toolInput === "object"
     ? (toolInput as Record<string, unknown>).path
     : undefined;
   if (typeof path !== "string" || path.length === 0) return undefined;
-  const layers = discoverDirectoryInstructions(projectRoot, path, attached);
+  const layers = discoverDirectoryInstructions(projectRoot, path, attached, gitIgnoreVerdicts ? { gitIgnoreVerdicts } : {});
   if (layers.length === 0) return undefined;
   let sessionBytes = [...attached.values()].reduce((sum, bytes) => sum + bytes, 0);
   let combined = toolResultContent;
