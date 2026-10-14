@@ -5,10 +5,7 @@
 > page, §13.1 and §16.4 say how. §18 records the design of the change that
 > followed 0.13.0 and ships in 0.14.0: plain http and local folder sources,
 > address warnings instead of refusals, and automatic updates.
-> Architecture: [../architecture/proposals/multi-source-git-marketplace.md](../architecture/proposals/multi-source-git-marketplace.md) ·
-> Blueprint: [../blueprints/multi-source-git-marketplace.md](../blueprints/multi-source-git-marketplace.md) ·
-> Mockup: [multi-source-git-marketplace.html](./multi-source-git-marketplace.html) ·
-> Korean mirror: [../ko/design/multi-source-git-marketplace.md](../ko/design/multi-source-git-marketplace.md)
+> Blueprint: [../blueprints/multi-source-git-marketplace.md](../blueprints/multi-source-git-marketplace.md)
 >
 > This page owns the contracts: file formats, algorithms, IPC, error codes and
 > UI states. When code lands, the code and its tests become authoritative and
@@ -3285,10 +3282,9 @@ Where the sections above and the shipped code differ, the code wins:
 >   the stated residuals, the delivery order and the revert-to-fail targets.
 >   Where it and an earlier section disagree, the earlier section describes
 >   the build.
-> - The user docs are the Marketplace pages of ave.agent-connector.ai
->   (`web/app/docs/marketplace/`), and the mockup
->   ([multi-source-git-marketplace.html](./multi-source-git-marketplace.html))
->   shows the states of §18.9. Code is cited at `e10c823e2`: the line
+> - The user docs are the website's Marketplace pages
+>   (`web/app/docs/marketplace/`). The mockup of the §18.9 states was removed
+>   once they shipped; git history keeps it. Code is cited at `e10c823e2`: the line
 >   citations in this section are a snapshot of that commit and may differ
 >   from the current code, while §7–§17, which own the behaviour, cite the
 >   current code.

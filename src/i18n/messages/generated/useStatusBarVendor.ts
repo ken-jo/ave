@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/hooks/status-bar/use-status-bar-vendor.ts. Do not edit by hand.
+// i18n fragment. Extracted from src/ui/renderer/hooks/status-bar/use-status-bar-vendor.ts, which no longer exists.
 export const en = {
   "useStatusBarVendor.activeVendorA11y": "Active LLM vendor and model",
   "useStatusBarVendor.notConfigured": "(not configured)",

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/state/message-queue-store.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/state/message-queue-store.ts.
 export const en = {
   "messageQueueStore.queueInjectHeader": "The user requested the following additional items:\n",
 } as const;

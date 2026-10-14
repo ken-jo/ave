@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/ChatPreviewRail.tsx. Do not edit by hand.
+// i18n fragment. Extracted from src/ui/renderer/components/ChatPreviewRail.tsx, which no longer exists.
 export const en = {
   "chatPreviewRail.collapseAll": "Collapse all",
   "chatPreviewRail.dirTruncated": "Showing first 1000 entries",

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/MainToolbar.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/MainToolbar.tsx.
 export const en = {
   "mainToolbar.devToolsTitle": "Dev Tools (Cmd/Ctrl+Shift+D)",
   "mainToolbar.devToolsTooltip": "Dev Tools — Preflight threshold adjustment (Cmd/Ctrl+Shift+D)",

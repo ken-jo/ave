@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/mcp/mcp-governance.ts. Do not edit by hand.
+// i18n fragment. Source: src/mcp/mcp-governance.ts.
 export const en = {
   "be_mcpGovernance.policyNotLoaded": "Governance policy is not loaded.",
   "be_mcpGovernance.unapprovedServer": "Unapproved server: '{id}' is not registered in the governance policy.",

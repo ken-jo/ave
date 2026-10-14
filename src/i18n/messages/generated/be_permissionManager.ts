@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/permissions/permission-manager.ts. Do not edit by hand.
+// i18n fragment. Source: src/permissions/permission-manager.ts.
 export const en = {
   "be_permissionManager.denyRuleReason": "deny rule: {pattern}",
   "be_permissionManager.mcpServerStrictMode": "MCP server strict mode",

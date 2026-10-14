@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/permissions/permission-mode-apply.ts. Do not edit by hand.
+// i18n fragment. Source: src/permissions/permission-mode-apply.ts.
 export const en = {
   "be_permissionModeApply.approvalGateUnavailable":
     "Permanent permission mode change requires an explicit user approval prompt.",
