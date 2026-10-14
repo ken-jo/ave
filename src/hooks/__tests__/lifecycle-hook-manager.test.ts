@@ -126,6 +126,17 @@ describe("#811 m2 — lifecycle event dispatch", () => {
     );
   });
 
+  it.skipIf(!HAS_NODE)("PermissionDenied DLP-redacts a secret-shaped deny reason", async () => {
+    const m = new ScriptHookManager();
+    m.setTrustedRegistry([], [lifecycleEntry("PermissionDenied", ["node", ECHO])]);
+    const out = await m.runLifecycleEvent("PermissionDenied", "s1", "unknown", {
+      toolName: "bash",
+      denyReason: { layer: 3, source: "tool-executor", reason: "blocked write for 415-555-1234" },
+    });
+    expect(out.results[0].reason).toContain('"layer":3,"source":"tool-executor","reason":"blocked write for ');
+    expect(out.results[0].reason).not.toContain("415-555-1234");
+  });
+
   it.skipIf(!HAS_NODE)("SubagentStart carries agentId + agentType", async () => {
     const m = new ScriptHookManager();
     m.setTrustedRegistry([], [lifecycleEntry("SubagentStart", ["node", ECHO])]);

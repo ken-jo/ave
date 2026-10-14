@@ -314,7 +314,18 @@ export class ScriptHookManager {
           ? { errorMessage: redactForLLM(payload.errorMessage).redacted }
           : {}),
         ...(payload.durationMs !== undefined ? { durationMs: payload.durationMs } : {}),
-        ...(payload.denyReason !== undefined ? { denyReason: payload.denyReason } : {}),
+        // The finalized deny reason is free text (it can quote a path or an
+        // argument), so it is redacted like the other free-text fields.
+        ...(payload.denyReason !== undefined
+          ? {
+            denyReason: {
+              ...payload.denyReason,
+              ...(payload.denyReason.reason !== undefined
+                ? { reason: redactForLLM(payload.denyReason.reason).redacted }
+                : {}),
+            },
+          }
+          : {}),
         ...(payload.sessionMeta !== undefined ? { sessionMeta: payload.sessionMeta } : {}),
         ...(payload.stopReason !== undefined ? { stopReason: payload.stopReason } : {}),
         ...(payload.toolCount !== undefined ? { toolCount: payload.toolCount } : {}),
