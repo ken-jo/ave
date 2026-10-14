@@ -10,7 +10,7 @@
         "command": "./bin/plugin"
       },
       "requires": {
-        "minAppVersion": "0.13.0",
+        "minAppVersion": "0.14.0",
         "hostProtocol": "3"
       },
       "eventSubscriptions": [],

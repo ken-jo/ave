@@ -102,7 +102,7 @@ describe("git-install manifest rules (design §5.3)", () => {
 
 describe("process-entry admission, declared half (§9.7 P4, decision 34)", () => {
   const SHA = "c".repeat(64);
-  const processAuthority = (minAppVersion = "0.13.0"): PluginAuthority => ({
+  const processAuthority = (minAppVersion = "0.14.0"): PluginAuthority => ({
     ...authority(),
     requires: { capabilities: ["llm.chat"], minAppVersion, hostProtocol: "3" },
   });
@@ -110,14 +110,14 @@ describe("process-entry admission, declared half (§9.7 P4, decision 34)", () =>
   const admitted = (patch: Partial<ExpectedPlugin> = {}): ExpectedPlugin => ({
     name: "alpha",
     version: "1.2.0",
-    minAppVersion: "0.13.0",
+    minAppVersion: "0.14.0",
     hostProtocol: "3",
     authority: processAuthority(),
     platforms: ["darwin", "linux"],
     artifact: { release: { repo: "acme/alpha", sha256: SHA } },
     ...patch,
   });
-  function processManifest(minAppVersion = "0.13.0"): Record<string, unknown> {
+  function processManifest(minAppVersion = "0.14.0"): Record<string, unknown> {
     const document = manifest({ ...processAuthority(minAppVersion), process: { command: "./bin/plugin" }, tools: [] });
     delete (document.extensions as { "ai.agent-connector.ave": Record<string, unknown> })["ai.agent-connector.ave"].entry;
     return document;
@@ -128,7 +128,7 @@ describe("process-entry admission, declared half (§9.7 P4, decision 34)", () =>
   const UNPINNED = "artifact in ave-package.json pins no release or archive by sha256, which a process entry is installed from";
   const TREE = "artifact.tree is declared in ave-package.json; a process entry is never installed from the tree rung";
 
-  it("passes darwin and linux with a pinned release or archive and 0.13.0", () => {
+  it("passes darwin and linux with a pinned release or archive and 0.14.0", () => {
     expect(gitInstallManifestMismatches(processManifest(), admitted())).toEqual([]);
     expect(() => assertGitInstallManifest(processManifest(), admitted())).not.toThrow();
     const archive = admitted({ artifact: { archive: { url: "https://example.com/alpha-1.2.0.zip", sha256: SHA } } });
@@ -149,10 +149,20 @@ describe("process-entry admission, declared half (§9.7 P4, decision 34)", () =>
     );
   });
 
-  it("is MANIFEST_MISMATCH with minAppVersion below the first release that runs a process entry", () => {
-    // Manifest and descriptor agree on 0.12.0, so the floor is the only rule broken.
+  it("is MANIFEST_MISMATCH with minAppVersion below the first release that serves host protocol 3", () => {
+    // Manifest and descriptor agree on 0.13.0, which runs a process entry, so the protocol floor is the only rule broken.
+    const below = admitted({ minAppVersion: "0.13.0", authority: processAuthority("0.13.0") });
+    expect(gitInstallManifestMismatches(processManifest("0.13.0"), below)).toEqual([
+      'minAppVersion in ave-package.json is "0.13.0"; host protocol 3 needs 0.14.0 or newer, the first release that serves it',
+    ]);
+    expect(() => assertGitInstallManifest(processManifest("0.13.0"), below)).toThrow(expect.objectContaining({ code: "MANIFEST_MISMATCH" }));
+  });
+
+  it("is MANIFEST_MISMATCH naming both floors with minAppVersion below the first release that runs a process entry", () => {
+    // Manifest and descriptor agree on 0.12.0, below both the protocol-3 floor and the process-entry floor.
     const below = admitted({ minAppVersion: "0.12.0", authority: processAuthority("0.12.0") });
     expect(gitInstallManifestMismatches(processManifest("0.12.0"), below)).toEqual([
+      'minAppVersion in ave-package.json is "0.12.0"; host protocol 3 needs 0.14.0 or newer, the first release that serves it',
       'minAppVersion in ave-package.json is "0.12.0"; a process entry needs 0.13.0 or newer, the first release that runs one',
     ]);
     expect(() => assertGitInstallManifest(processManifest("0.12.0"), below)).toThrow(expect.objectContaining({ code: "MANIFEST_MISMATCH" }));
@@ -164,9 +174,9 @@ describe("process-entry admission, declared half (§9.7 P4, decision 34)", () =>
   });
 
   it("takes platforms and artifact from the plan, so every plan-based producer checks them", () => {
-    const plan = { name: "alpha", version: "1.2.0", minAppVersion: "0.13.0", hostProtocol: "3", platforms: ["darwin" as const], authority: processAuthority(), artifact: { tree: "x" } };
+    const plan = { name: "alpha", version: "1.2.0", minAppVersion: "0.14.0", hostProtocol: "3", platforms: ["darwin" as const], authority: processAuthority(), artifact: { tree: "x" } };
     expect(expectedPluginOf(plan)).toEqual({
-      name: "alpha", version: "1.2.0", minAppVersion: "0.13.0", hostProtocol: "3", authority: processAuthority(), platforms: ["darwin"], artifact: { tree: "x" },
+      name: "alpha", version: "1.2.0", minAppVersion: "0.14.0", hostProtocol: "3", authority: processAuthority(), platforms: ["darwin"], artifact: { tree: "x" },
     });
   });
 });
