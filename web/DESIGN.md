@@ -28,15 +28,17 @@ not what it says.
 
 1. **One frame.** Content sits in a frame of at most 1248 px with a side margin
    of `clamp(16px, 6.67vw, 96px)`. From 1024 px the frame shows 1 px vertical
-   rules on both edges; sections are separated by 1 px horizontal rules. Rules
-   are `--line` (ink at 8 %), never darker.
+   rules on both edges, except around the hero and the closing call-to-action
+   panels, which stand free; sections are separated by 1 px horizontal rules.
+   Rules are `--line` (ink at 8 %), never darker.
 2. **One idea per section, centred on a 45 rem measure.** Headings and lead
    text sit in a 45 rem (720 px) column. Wider material (windows, tables, card
    rows) may use the full frame; running text never exceeds 64 ch.
 3. **Pacing by bands, not colours.** Sections alternate between the white
    ground and the `--band` ground (#fafaf9). There is one dark surface on the
-   home page (the plugin code panel) and two tinted panels (hero, closing call
-   to action). No other section fields.
+   home page (the plugin code panel). Tinted panels exist only to hold a
+   picture or an action: the hero, the closing call to action, the fragment
+   stages and the download system cards. No section field is tinted.
 4. **Section rhythm.** Every section has the same vertical padding,
    `clamp(4rem, 2.5rem + 5vw, 7.5rem)`. Between blocks inside a section the
    steps are 0.75 / 1.25 / 2 / 3.5 rem; smaller values only inside a
@@ -55,7 +57,9 @@ not what it says.
 8. **Scale, five steps.** Display `clamp(2.5rem, 1.9rem + 2.4vw, 3.5rem)`,
    section head `clamp(2rem, 1.6rem + 1.6vw, 2.75rem)`, lead
    `clamp(1.0625rem, 1rem + 0.35vw, 1.25rem)`, body 1 rem, small 0.875 rem.
-   Nothing else on marketing pages; docs add one article head (1.5 rem).
+   Docs add one article head (1.5 rem). Chrome (buttons, the mode picker,
+   table headers, chips, captions' list titles) may use 0.8125, 0.9375 and
+   1.0625 rem; running text uses only the five steps.
 9. **Weights.** 450 for display and heads, 500 for titles inside text and for
    buttons, 400 for everything else. No 700.
 10. **Tracking and leading.** Display −0.02 em / 1.08; heads −0.015 em / 1.12;
@@ -71,8 +75,9 @@ not what it says.
 13. **Neutral ground, one ink.** White ground, `--ink` #0b0d0c, `--muted`
     #5f6461 (6.0:1 on white, 5.8:1 on the band).
 14. **Lime is a mark, not text.** `--lime` #c4f04a appears only as the logo
-    stroke, the hero and closing glow, text selection and the "allow" state in
-    the fragment. Text that needs the accent uses `--accent-ink` #3a6510
+    stroke, the glow of the tinted panels (principle 3), text selection, and
+    in the fragments as the ring around the waiting approval and the
+    "responding" chip. Text that needs the accent uses `--accent-ink` #3a6510
     (6.9:1 on white).
 15. **Verdicts are text first.** Each permission result is a word with a dot:
     run #2e6a12, ask #8a5300, review #1d5d96, block #b42318, each at least
@@ -87,6 +92,7 @@ not what it says.
     picker.
 18. **One shadow.** Only the interface fragment's window casts a shadow
     (`0 1px 2px` plus a long soft drop at 18 % ink). Nothing else floats.
+    Inset outlines and the approval ring are lines, not shadows.
 
 ### Product as picture
 
@@ -105,7 +111,10 @@ not what it says.
     smooth-scroll library.
 22. **Numbers.** Entrances: opacity and a 12 px rise, 520 ms,
     `cubic-bezier(0.22, 1, 0.36, 1)`, at most four staggered children 60 ms
-    apart. Colour transitions 150 ms. Press: scale 0.98 for 120 ms.
+    apart; the hero window follows 240 ms after the hero text with the same
+    numbers. Colour transitions 150 ms. Press: scale 0.98 for 120 ms. The
+    fragment's own behaviour (principle 21c) keeps its timing: text streams
+    over 1.6 s and the approval dock arrives at 2.5 s.
 23. **Off when asked, visible without script.** Under
     `prefers-reduced-motion: reduce` nothing travels or fades. Without script
     every block is visible: hidden starting states are only applied once a

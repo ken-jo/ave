@@ -225,7 +225,7 @@ code, pre, kbd { font-family: var(--font-code); }
 }
 .mode label:hover { color: var(--ink); }
 .mode input:checked + label { background: #fff; color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
-.mode input:focus-visible + label { outline: 2px solid var(--focus); outline-offset: 2px; }
+.mode input:focus-visible + label { outline: 2px solid var(--focus); outline-offset: 3px; }
 @media (max-width: 560px) {
   .modes-track { display: grid; grid-template-columns: 1fr 1fr; border-radius: 16px; width: 100%; }
   .mode label { border-radius: 12px; text-align: center; padding-inline: 0.5rem; }
@@ -453,7 +453,7 @@ kbd {
 /* ── Motion (21–23) ───────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: no-preference) {
   .js [data-rise] { opacity: 0; transform: translateY(12px); animation: enter var(--t-enter) var(--ease) forwards; animation-delay: calc(var(--i, 0) * 60ms + 80ms); }
-  .js .hero-window { opacity: 0; transform: translateY(24px); animation: enter 700ms var(--ease) 260ms forwards; }
+  .js .hero-window { opacity: 0; transform: translateY(12px); animation: enter var(--t-enter) var(--ease) 240ms forwards; }
   .js-ready [data-reveal] { opacity: 0; transform: translateY(12px); transition: opacity var(--t-enter) var(--ease), transform var(--t-enter) var(--ease); }
   .js-ready [data-reveal].in { opacity: 1; transform: none; }
   .js-ready [data-reveal].in + [data-reveal].in { transition-delay: 60ms; }
