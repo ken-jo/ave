@@ -615,11 +615,15 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   }, [attachmentUnavailableProvider, onAttachmentWarning, t]);
 
   // Attach picker — native file dialog + atomic flushSync commit + 5-cap.
-  const { handleAttach } = useAttachmentPicker({
+  const emitDropRejected = useCallback((count: number) => {
+    onAttachmentWarning?.(t("app.dropRejected", { count }));
+  }, [onAttachmentWarning, t]);
+  const { handleAttach, handleDropFiles } = useAttachmentPicker({
     attachmentNCounter,
     setAttachments,
     setQuestion,
     composerRef,
+    onDropRejected: emitDropRejected,
     imagesEnabled: subscriptionRuntimePolicy ? subscriptionRuntimePolicy.imagesEnabled : settingsLoaded !== false && runtimeImageAttachmentProvider === undefined,
     filesEnabled: subscriptionRuntimePolicy ? subscriptionRuntimePolicy.filesEnabled : settingsLoaded !== false && runtimeFileAttachmentProvider === undefined,
     imageAttachmentLimits: subscriptionRuntimePolicy?.imageAttachmentLimits,
@@ -855,6 +859,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         onImageAttachmentUnavailable={emitAttachmentUnavailable}
         onImageAttachmentLimitExceeded={emitImageAttachmentLimitExceeded}
         onAttach={handleAttach}
+        onDropFiles={handleDropFiles}
         subscriptionRuntimePolicy={subscriptionRuntimePolicy}
         subscriptionImageAttachmentProvider={runtimeImageAttachmentProvider}
         subscriptionFileAttachmentProvider={runtimeFileAttachmentProvider}

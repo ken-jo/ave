@@ -1897,6 +1897,36 @@ export interface AveAttachApi {
     error?: string;
   }>;
   openExternal: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Composer drop, step 2. Redeem the one-shot token from
+   * `aveDrop.prepareFileDrop`; main authorizes exactly the files bound to it.
+   * A reused, unknown, other-window or expired token is refused.
+   */
+  redeemDrop: (token: string) => Promise<
+    | {
+        ok: true;
+        files: Array<{
+          path: string;
+          name: string;
+          ext: string;
+          bytes: number;
+          isImage: boolean;
+          mimeType?: string;
+        }>;
+      }
+    | { ok: false; error: "unauthorized" | "drop-token-invalid" | "drop-token-expired" }
+  >;
+}
+
+/** One `@file` autocomplete row: a main-verified readable path in a workspace root. */
+interface WorkspaceFileMatch {
+  path: string;
+  /** Path relative to its root, `/`-separated — the row label. */
+  relativePath: string;
+  /** The workspace root the file belongs to. */
+  root: string;
+  /** Size at listing time, for the attachment chip. */
+  bytes: number;
 }
 
 /**
@@ -1995,6 +2025,14 @@ export interface AveWorkspaceApi {
     /** One-time token bound to the path — confirm by echoing it via `pickRoot`. */
     ackToken?: string;
   }>;
+  /**
+   * Composer `@file` autocomplete. Only the query crosses; main walks the
+   * current roots, applies the Layer-0 sensitive filter and the read-scope guard.
+   */
+  searchFiles: (query: string) => Promise<
+    | { ok: true; matches: WorkspaceFileMatch[]; truncated: boolean }
+    | { ok: false; error: "unauthorized" | "invalid-query" | "settings-unreadable" }
+  >;
 }
 
 /**
@@ -2006,6 +2044,16 @@ export interface AveWorkspaceApi {
  */
 export interface AveDropApi {
   resolveDroppedPaths: (files: FileList | readonly File[]) => string[];
+  /**
+   * Composer drop, step 1. Takes dropped `File`s (never paths): the preload
+   * resolves them and registers them with main in one step, returning a
+   * one-shot token to redeem via `ave.attach.redeemDrop`. `rejected` names the
+   * items main refused, by stable reason code.
+   */
+  prepareFileDrop: (files: FileList | readonly File[]) => Promise<
+    | { ok: true; token: string; rejected: Array<{ name: string; reason: string }> }
+    | { ok: false; error: string; rejected?: Array<{ name: string; reason: string }> }
+  >;
 }
 
 export interface AveUiApi {

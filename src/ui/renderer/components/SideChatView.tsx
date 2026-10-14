@@ -388,11 +388,13 @@ function SideChatSession({
     handleComposerSend({ inputOrigin: "user-keyboard", token: "" });
   }, [handleComposerSend]);
 
-  const { handleAttach } = useAttachmentPicker({
+  const { handleAttach, handleDropFiles } = useAttachmentPicker({
     attachmentNCounter,
     setAttachments,
     setQuestion: setDraft,
     composerRef,
+    // Same channel as this surface's other composer warnings.
+    onDropRejected: (count) => console.warn(`${count} dropped item(s) were not attached`),
     imagesEnabled,
     filesEnabled,
     imageAttachmentLimits: subscriptionRuntimePolicy?.imageAttachmentLimits,
@@ -502,6 +504,8 @@ function SideChatSession({
             discardClipboardImage={(filePath) => window.ave.attach.discardClipboardImage(filePath)}
             openExternal={(p) => window.ave.attach.openExternal(p)}
             imagesEnabled={imagesEnabled}
+            filesEnabled={filesEnabled}
+            onDropFiles={handleDropFiles}
             imageAttachmentLimits={subscriptionRuntimePolicy?.imageAttachmentLimits}
             onSend={handleComposerSend}
             commandActions={NO_COMMAND_ACTIONS}

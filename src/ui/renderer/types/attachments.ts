@@ -55,6 +55,12 @@ export interface FileAttachment {
   name: string;
   ext: string;
   bytes: number;
+  /**
+   * True for an `@file` mention: a path reference the model reads through
+   * read_file. Not in main's attach allowlist, so the chip offers no
+   * open-in-OS action for it.
+   */
+  reference?: true;
 }
 
 export interface PasteAttachment {
