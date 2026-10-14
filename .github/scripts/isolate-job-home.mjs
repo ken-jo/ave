@@ -4,8 +4,8 @@
 // On a self-hosted runner the inherited HOME/USERPROFILE and TMPDIR/TEMP/TMP
 // are the owner's own profile and temp directory: anything a test, an install
 // script or a tool resolves through os.homedir() or os.tmpdir() would land
-// there (and through HOME, in the owner's real ~/.ave). Ave derives its home
-// from HOME, so this also moves the default ~/.ave out of the owner's profile.
+// there (and through HOME, in the owner's real ~/.ave). AVE_HOME is set too,
+// so an inherited value cannot point the tests at the owner's real Ave home.
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -33,6 +33,9 @@ mkdirSync(temp, { recursive: true });
 const assignments = {
   HOME: home,
   USERPROFILE: home,
+  // Set explicitly: a runner service started from the owner's login session
+  // could otherwise inherit an AVE_HOME pointing at the owner's real Ave home.
+  AVE_HOME: join(home, ".ave"),
   TMPDIR: temp,
   TEMP: temp,
   TMP: temp,
