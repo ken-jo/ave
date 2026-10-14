@@ -17,6 +17,7 @@ import {
   estimateUserMessageTokens,
 } from "../shared/multimodal-token-estimate.js";
 import { estimateTokens } from "../shared/token-estimate.js";
+import { skillNameFromReadResult } from "../main/skill-overlay.js";
 
 // Token-count primitives now live in shared/token-estimate.ts (architecture
 // §4.6.2 — leaf primitive below both prompts/ and engine/). Re-exported here so
@@ -293,6 +294,8 @@ const DEFAULT_MARK_STALE_CONFIG: MarkStaleConfig = {
  * - 최근 `preserveRecentToolResults` 개는 mark 면제 (assistant 가 직접 참조 가능)
  * - content 길이가 `minStubThreshold` 미만이면 mark 면제 (직렬화 시 절약 ≈ 0)
  * - 이미 marked (`meta.compactedAt` 존재) 메시지는 skip (idempotent)
+ * - 각 skill 의 가장 최근 성공한 `skill_load` 결과는 mark 면제 — 진행 중인 skill 지시가
+ *   이후 tool call 8개 뒤에 stub 으로 사라지지 않게 한다. 같은 skill 의 이전 중복 읽기는 대상.
  * - `toolUseId`, `content`, `toolName`, `isError` 모두 *verbatim* — meta 만 추가
  * - 입력 array 는 mutate 하지 않고 새 배열 반환. mark 된 메시지만 새 객체.
  */
@@ -316,10 +319,14 @@ export function markStaleToolResults(
   }
 
   const markCandidates = toolResultIndices.slice(0, toolResultIndices.length - preserveCount);
+  const activeSkillReads = latestSkillReadIndices(messages, toolResultIndices);
   const eligibleCandidates = markCandidates.filter((i) => {
     const m = messages[i];
     if (m.role !== "tool_result") return false;
     if (m.meta?.compactedAt !== undefined) return false; // idempotent
+    // The skill instructions in use: a skill body lives only in its skill_load
+    // result, so stubbing it would silently drop the skill mid-task.
+    if (activeSkillReads.has(i)) return false;
     // An aged view_image tool_result carries a large base64 image on its sibling
     // field but only a tiny text placeholder in `content`, so the char threshold
     // never fires. Make it eligible on the image alone: once marked, the rebuild
@@ -373,6 +380,22 @@ export function markStaleToolResults(
       freedCharsOnSerialize,
     },
   };
+}
+
+/**
+ * Indices of the most recent successful, un-marked `skill_load` result for
+ * each skill. Older reads of the same skill are duplicates and stay eligible.
+ */
+function latestSkillReadIndices(messages: GenericMessage[], toolResultIndices: number[]): Set<number> {
+  const latestBySkill = new Map<string, number>();
+  for (const i of toolResultIndices) {
+    const m = messages[i];
+    if (m.role !== "tool_result" || m.toolName !== "skill_load" || m.isError) continue;
+    if (m.meta?.compactedAt !== undefined) continue;
+    const skillName = skillNameFromReadResult(m.content);
+    if (skillName) latestBySkill.set(skillName, i);
+  }
+  return new Set(latestBySkill.values());
 }
 
 export interface EvictImagesResult {

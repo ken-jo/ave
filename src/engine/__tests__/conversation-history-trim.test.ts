@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import { ConversationHistory } from "../conversation-history.js";
 import { MAX_TOOL_RESULT_LINES } from "../../shared/tool-result-trim.js";
+import { MAX_SKILL_READ_RESULT_CHARS } from "../../main/skill-overlay.js";
 import type { GenericMessage } from "../llm/types.js";
 
 const SMALL_CONTENT = "ok\nfine";
@@ -29,6 +30,25 @@ describe("ConversationHistory — Issue #902 tool_result cap", () => {
     // Content stays raw in-memory — wire-serialize swaps to stub only on
     // send/save, not on append. This keeps UI / inspection paths intact.
     expect(msg.content).toBe(OVERSIZE_CONTENT);
+  });
+
+  it("keeps a bounded skill read whole even past the line cap", () => {
+    const h = new ConversationHistory();
+    const skillRead = `<ave-skill name="long-skill">\n${OVERSIZE_CONTENT}\n</ave-skill>`;
+    expect(skillRead.length).toBeLessThanOrEqual(MAX_SKILL_READ_RESULT_CHARS);
+    h.append({ role: "tool_result", toolUseId: "t1", toolName: "skill_load", content: skillRead });
+    const msg = h.getMessages()[0] as Extract<GenericMessage, { role: "tool_result" }>;
+    expect(msg.meta?.truncated).toBeUndefined();
+  });
+
+  it("still caps a skill_load row that is not a bounded skill read", () => {
+    const h = new ConversationHistory();
+    const forged = `<ave-skill name="x">\n${"y\n".repeat(MAX_SKILL_READ_RESULT_CHARS)}</ave-skill>`;
+    h.append({ role: "tool_result", toolUseId: "t1", toolName: "skill_load", content: forged });
+    h.append({ role: "tool_result", toolUseId: "t2", toolName: "skill_load", content: OVERSIZE_CONTENT });
+    const [first, second] = h.getMessages() as Extract<GenericMessage, { role: "tool_result" }>[];
+    expect(first.meta?.truncated).toBeDefined();
+    expect(second.meta?.truncated).toBeDefined();
   });
 
   it("does not mark sub-cap tool_result", () => {

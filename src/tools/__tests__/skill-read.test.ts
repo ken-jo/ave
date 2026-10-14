@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 
 import { createSkillReadTool } from "../skill-read.js";
 import { SkillStore } from "../../main/skill-store.js";
-import { SkillOverlay } from "../../main/skill-overlay.js";
+import { renderSkillReadResult, SkillOverlay } from "../../main/skill-overlay.js";
 import type { ToolExecutionContext } from "../base.js";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 
@@ -91,7 +91,7 @@ describe("skill_read — access control", () => {
       const tool = createSkillReadTool({ store, overlay: new SkillOverlay() });
       const r = await tool.execute({ skillName: "guide", resourcePath: "references/api.md" }, ctx());
       expect(r.isError).toBe(true);
-      expect(r.output).toContain("skill not loaded");
+      expect(r.output).toContain("skill not read in this conversation session");
     } finally {
       await cleanupTmpDir(dir);
     }
@@ -279,7 +279,7 @@ describe("skill_load — approval covers the bundled manifest", () => {
 });
 
 describe("skill_read — manifest fidelity", () => {
-  it("serves a filename containing '&' exactly as the overlay renders it", async () => {
+  it("serves a filename containing '&' exactly as the skill_load result renders it", async () => {
     // Regression: escaping the manifest line rewrote `Q&A.md` to `Q&amp;A.md`,
     // so the model echoed a name the authorized set never contained.
     const dir = mkdtempSync(join(tmpdir(), "ave-skills-"));
@@ -288,8 +288,9 @@ describe("skill_read — manifest fidelity", () => {
       writeFileSync(join(skillDir, "references", "Q&A.md"), "QA DOC");
       const store = new SkillStore({ userDir: dir });
       const overlay = new SkillOverlay();
-      overlay.register("session-x", (await store.load("guide"))!);
-      const rendered = overlay.buildSection("session-x");
+      const loaded = (await store.load("guide"))!;
+      overlay.register("session-x", loaded);
+      const rendered = renderSkillReadResult(loaded);
       expect(rendered).toContain("references/Q&A.md");
       expect(rendered).not.toContain("Q&amp;A.md");
       const tool = createSkillReadTool({ store, overlay });

@@ -214,6 +214,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
         retireGeneration: vi.fn(async () => undefined),
       } as never,
       revokeOperationGeneration: vi.fn(),
+      skillOverlay: { clearPluginGeneration: vi.fn() },
     });
     runtime.setGenerationAccess(lifecycle);
     return lifecycle;

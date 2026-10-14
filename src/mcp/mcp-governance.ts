@@ -310,6 +310,7 @@ export class McpGovernance {
         "routine_schedule",
         "skill_list",
         "skill_load",
+        "skill_read",
         "session_tasks",
         "web_fetch",
         "web_search",
