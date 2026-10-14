@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -506,13 +505,20 @@ describe("installer smoke and packaging discipline", () => {
     if (installers === undefined) throw new Error("build-installers.yml has no installers job");
     const commands = jobRunCommands(installers);
 
-    // A self-hosted Windows runner runs the launch smoke without the NSIS
-    // setup smoke, which installs machine-wide and uninstalls.
-    const smoke = commands.find((command) => command.includes("scripts/smoke-packaged-app.mjs"));
-    expect(smoke).toContain(
-      'elif [ "${{ matrix.target }}" = "win" ] && [ "${{ runner.environment }}" != "github-hosted" ]; then\n'
-        + "node scripts/smoke-packaged-app.mjs --target win --skip-windows-installer-smoke\n",
-    );
+    // The packaged application claims HKCU ave:// for its executable when it
+    // launches, so no step launches it on a self-hosted (owner) Windows PC:
+    // every step that runs a packaged-app launcher is gated to hosted Windows.
+    const launchers = ["scripts/smoke-packaged-app.mjs", "scripts/packaged-escape-gate.mjs"];
+    const windowsHostedOnly = "&& (matrix.target != 'win' || runner.environment == 'github-hosted')";
+    let launchSteps = 0;
+    for (const step of installers.split(/\n(?= {6}- )/u)) {
+      if (!launchers.some((launcher) => step.includes(launcher))) continue;
+      launchSteps += 1;
+      const condition = step.match(/^ {8}if: >-\n((?: {10}.*\n)+)/mu)?.[1] ?? "";
+      expect(condition, step.split("\n")[0]).toContain(windowsHostedOnly);
+    }
+    expect(launchSteps).toBe(launchers.length);
+    expect(installers).not.toContain("--skip-windows-installer-smoke");
 
     // Signing imports into and searches a keychain; a self-hosted runner is
     // the owner's machine, so it always builds unsigned.
@@ -520,15 +526,6 @@ describe("installer smoke and packaging discipline", () => {
     const unsignedBranch = build?.slice(build.indexOf("elif "), build.indexOf("else\n")) ?? "";
     expect(unsignedBranch).toContain('|| [ "${{ runner.environment }}" != "github-hosted" ] \\\n');
     expect(unsignedBranch).toContain('args+=("--skip-code-sign")');
-
-    // The skip is a Windows-only switch, refused for any other target.
-    const refused = spawnSync(
-      process.execPath,
-      ["scripts/smoke-packaged-app.mjs", "--target", "linux", "--skip-windows-installer-smoke"],
-      { cwd: root, encoding: "utf8" },
-    );
-    expect(refused.status).not.toBe(0);
-    expect(refused.stderr).toContain("--skip-windows-installer-smoke applies only to --target win, not linux");
   });
 
   it("provides the AWS CLI from a signature-checked official build before any aws call", () => {

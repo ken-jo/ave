@@ -265,12 +265,17 @@ jobs:
         # launch gate so their artifacts can upload; Linux/Windows still run
         # smoke. `steps.build.outputs.skip_sign` is the signing SOT.
         #
-        # The Windows NSIS setup smoke installs machine-wide and genuinely
-        # uninstalls (sandbox runtime, user data), so it runs only on a
-        # disposable hosted runner. A self-hosted Windows runner is a persistent
-        # machine: it runs only the launch smoke from win-unpacked, with temp
-        # AVE_HOME and user data, and both authorizations stay empty there.
-        if: matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true'
+        # A self-hosted Windows runner is the owner's own PC, so it never
+        # launches the packaged app: the full application claims HKCU ave://
+        # for its executable (setAsDefaultProtocolClient), replacing the
+        # owner's registration, and a cancelled job would leave it pointing at
+        # a deleted release/. The NSIS setup smoke also installs machine-wide
+        # and genuinely uninstalls. Both therefore run only on a disposable
+        # hosted Windows runner; a self-hosted Windows build ships without a
+        # launch smoke, as an unsigned macOS build does.
+        if: >-
+          (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')
+          && (matrix.target != 'win' || runner.environment == 'github-hosted')
         shell: bash
         env:
           # Explicitly authorize machine-wide mutation only on the disposable
@@ -286,8 +291,6 @@ jobs:
               eval "$(printf %s packaged-smoke | gnome-keyring-daemon --unlock --components=secrets)"
               xvfb-run -a node scripts/smoke-packaged-app.mjs --target linux
             '
-          elif [ "${{ matrix.target }}" = "win" ] && [ "${{ runner.environment }}" != "github-hosted" ]; then
-            node scripts/smoke-packaged-app.mjs --target win --skip-windows-installer-smoke
           else
             node scripts/smoke-packaged-app.mjs --target "${{ matrix.target }}"
           fi
@@ -295,9 +298,12 @@ jobs:
       # A2, Gates (ii)): the plugin child's Electron view measured under the
       # packaged runtime, beside the packaged application's own main process as
       # the control. Same launch condition and Linux session as the smoke above:
-      # the control is a full application.
+      # the control is a full application, so it never runs on the owner's
+      # self-hosted Windows PC either.
       - name: Packaged escape gate
-        if: matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true'
+        if: >-
+          (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')
+          && (matrix.target != 'win' || runner.environment == 'github-hosted')
         shell: bash
         run: |
           set -euo pipefail

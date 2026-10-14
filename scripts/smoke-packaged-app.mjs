@@ -47,10 +47,6 @@ function usage() {
     "Options:",
     "  --release-dir <path>   electron-builder output directory (default: release)",
     "  --timeout-ms <number>  launch window before treating a still-running app as healthy",
-    "  --skip-windows-installer-smoke",
-    "                         win only: run the launch smoke from win-unpacked without the NSIS",
-    "                         setup smoke, which installs machine-wide and uninstalls; for a",
-    "                         persistent (non-disposable) Windows host",
   ].join("\n");
 }
 
@@ -58,17 +54,12 @@ function parseArgs(argv) {
   let target = null;
   let releaseDir = resolve(root, "release");
   let timeoutMs = DEFAULT_TIMEOUT_MS;
-  let windowsInstallerSmoke = true;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
       process.stdout.write(`${usage()}\n`);
       process.exit(0);
-    }
-    if (arg === "--skip-windows-installer-smoke") {
-      windowsInstallerSmoke = false;
-      continue;
     }
     if (arg === "--target") {
       const value = argv[i + 1];
@@ -114,11 +105,8 @@ function parseArgs(argv) {
   if (!target || !TARGET_PLATFORM[target]) {
     throw new Error(`--target is required and must be one of: ${[...Object.keys(TARGET_PLATFORM), "current"].join(", ")}`);
   }
-  if (!windowsInstallerSmoke && target !== "win") {
-    throw new Error(`--skip-windows-installer-smoke applies only to --target win, not ${target}`);
-  }
 
-  return { target, releaseDir, timeoutMs, windowsInstallerSmoke };
+  return { target, releaseDir, timeoutMs };
 }
 
 function resourcesDirForExecutable(target, executable) {
@@ -402,7 +390,7 @@ async function runWindowsInstallerSmoke(releaseDir, timeoutMs) {
 }
 
 async function main() {
-  const { target, releaseDir, timeoutMs, windowsInstallerSmoke } = parseArgs(process.argv.slice(2));
+  const { target, releaseDir, timeoutMs } = parseArgs(process.argv.slice(2));
   const expectedPlatform = TARGET_PLATFORM[target];
   if (process.platform !== expectedPlatform) {
     throw new Error(`target ${target} must be smoke-tested on ${expectedPlatform}; current platform is ${process.platform}`);
@@ -414,10 +402,8 @@ async function main() {
   }
 
   assertPackagedFootprint(target, executable);
-  if (target === "win" && windowsInstallerSmoke) {
+  if (target === "win") {
     await runWindowsInstallerSmoke(releaseDir, timeoutMs);
-  } else if (target === "win") {
-    process.stdout.write("[packaged-smoke] Windows NSIS setup smoke skipped (--skip-windows-installer-smoke)\n");
   }
   await launchSmoke(executable, timeoutMs);
 }
