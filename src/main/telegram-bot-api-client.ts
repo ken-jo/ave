@@ -36,6 +36,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 /** Hard ceiling applied to a response body BEFORE it is parsed. */
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_RETRY_AFTER_SECONDS = 3_600;
+const MIN_RETRY_AFTER_SECONDS = 1;
 /** Canonical positive decimal id; never a group or channel id. */
 const CANONICAL_CHAT_ID = /^[1-9][0-9]{0,15}$/;
 /** A control notice is a sentence, not a transcript. */
@@ -448,11 +449,17 @@ function bodyRetryAfterMs(payload: unknown): number | undefined {
   return typeof seconds === "number" ? retryAfterSecondsToMs(seconds) : undefined;
 }
 
+/**
+ * The one conversion both the header and the body hint go through, so the
+ * floor below cannot apply to one source and not the other. A stated wait of
+ * zero is still flood control: re-polling on it immediately is the tight loop
+ * the hint exists to prevent, so the shortest wait honoured is one second.
+ */
 function retryAfterSecondsToMs(seconds: number): number | undefined {
   if (!Number.isSafeInteger(seconds) || seconds < 0 || seconds > MAX_RETRY_AFTER_SECONDS) {
     return undefined;
   }
-  return seconds * 1_000;
+  return Math.max(seconds, MIN_RETRY_AFTER_SECONDS) * 1_000;
 }
 
 /**
