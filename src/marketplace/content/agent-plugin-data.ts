@@ -10,7 +10,12 @@ import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 const AGENT_PLUGIN_PACKAGE_NAME = /^[a-z][a-z0-9-]*$/u;
 
 /** Feature namespace holding one data directory per agent plugin package. */
-export const AGENT_PLUGIN_DATA_NAMESPACE = "agent-plugin-data";
+const AGENT_PLUGIN_DATA_NAMESPACE = "agent-plugin-data";
+
+/** `<AVE_HOME>/agent-plugin-data`: the root every package data directory lives under. Not created. */
+export function agentPluginDataRoot(): string {
+  return openFeatureNamespace(AGENT_PLUGIN_DATA_NAMESPACE).dir;
+}
 
 /** Refuse a package name that could escape or alias the data directory. */
 export function assertAgentPluginPackageName(name: string): void {
