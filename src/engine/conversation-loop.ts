@@ -120,6 +120,8 @@ type GuidanceDisposition = Pick<
 
 export class ConversationLoop {
   readonly deps: ConversationLoopDeps;
+  /** The model override this loop was constructed with; a session switch restores it. */
+  private readonly constructedModelOverride: string | undefined;
   readonly history: ConversationHistory;
   readonly toolExecutor: ToolExecutor;
   readonly auditLogger: AuditLogger;
@@ -258,6 +260,7 @@ export class ConversationLoop {
 
   constructor(deps: ConversationLoopDeps) {
     this.deps = deps;
+    this.constructedModelOverride = deps.modelOverride;
     this.history = new ConversationHistory();
     this.toolExecutor = new ToolExecutor(
       deps.toolRegistry,
@@ -428,6 +431,23 @@ export class ConversationLoop {
 
   hasProvider(): boolean {
     return this.provider !== null;
+  }
+
+  /**
+   * Run the current session on `model`, or on the constructed default when
+   * `undefined`. The override is the same `modelOverride` the provider and the
+   * context-window resolver already read, so the provider is rebuilt here and
+   * the next round uses the new model.
+   */
+  setSessionModelOverride(model: string | undefined): void {
+    this.deps.modelOverride = model ?? this.constructedModelOverride;
+    this.refreshProvider();
+  }
+
+  /** Drop a `/model` choice when the loop moves to another session. */
+  resetSessionModelOverride(): void {
+    if (this.deps.modelOverride === this.constructedModelOverride) return;
+    this.setSessionModelOverride(undefined);
   }
 
 

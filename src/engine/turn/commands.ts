@@ -15,6 +15,8 @@ import { t } from "../../i18n/index.js";
 import { getWorkspaceRootLifecycle } from "../../permissions/workspace-root-lifecycle.js";
 import { findSessionByIdPrefix } from "../../shared/session-lookup.js";
 import { formatMediumDateTime } from "../../shared/format-time.js";
+import { activeLlmRouteModel } from "../../shared/llm-vendor-defaults.js";
+import { cleanModelOverride, subscriptionAcceptsModelOverride } from "./provider.js";
 
 function toolProvenanceLabel(tool: {
   source: ToolSource;
@@ -24,6 +26,38 @@ function toolProvenanceLabel(tool: {
   if (tool.source === "plugin") return `plugin:${tool.pluginId ?? "unknown"}`;
   if (tool.source === "mcp") return `mcp:${tool.mcpServerId ?? "unknown"}`;
   return "builtin";
+}
+
+/** Keyword that returns `/model` to the session's constructed model. */
+const MODEL_COMMAND_RESET = "default";
+
+/**
+ * `/model` — show the session's model, or switch it. The switch goes through
+ * the loop's model override, which the provider and the context-window
+ * resolver already honour, and lasts until the session changes.
+ */
+function handleModelCommand(self: ConversationLoop, args: string): string {
+  const requested = args.trim();
+  const llm = self.deps.settingsService.get("llm");
+  const runtime = llm.activeChatRuntime;
+  const subscription = runtime?.kind === "subscription" ? runtime : undefined;
+  const currentModel = (): string => subscription
+    ? self.provider?.subscriptionRuntime?.model ?? subscription.model ?? MODEL_COMMAND_RESET
+    : activeLlmRouteModel(llm, self.deps.modelOverride);
+  if (!requested) {
+    return t("be_conversationLoop.cmdModelCurrent", { model: currentModel() || "-" });
+  }
+  if (subscription && !subscriptionAcceptsModelOverride(subscription)) {
+    return t("be_conversationLoop.cmdModelUnsupported");
+  }
+  if (requested === MODEL_COMMAND_RESET) {
+    self.setSessionModelOverride(undefined);
+    return t("be_conversationLoop.cmdModelReset", { model: currentModel() || "-" });
+  }
+  const model = cleanModelOverride(requested);
+  if (!model || /\s/.test(model)) return t("be_conversationLoop.cmdModelInvalid");
+  self.setSessionModelOverride(model);
+  return t("be_conversationLoop.cmdModelSet", { model });
 }
 
 export async function handleCommand(
@@ -105,6 +139,9 @@ export async function handleCommand(
           : t("be_conversationLoop.cmdLoadFailed", { id: match.id });
         break;
       }
+      case "model":
+        result = handleModelCommand(self, args);
+        break;
       case "vendor":
         result = t("be_conversationLoop.cmdVendorInfo", { vendor: self.getVendor(), session: self.sessionId.slice(0, 8), input: self.cumulativeUsage.inputTokens, output: self.cumulativeUsage.outputTokens });
         break;
