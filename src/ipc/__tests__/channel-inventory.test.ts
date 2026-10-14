@@ -533,6 +533,8 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:telegram-connection:snapshot",
         "ave:telemetry:allowed-hosts",
         "ave:telemetry:consent-answer",
+        "ave:terminal:block",
+        "ave:terminal:blocks",
         "ave:terminal:input",
         "ave:terminal:kill",
         "ave:terminal:resize",

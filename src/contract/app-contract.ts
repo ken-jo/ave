@@ -741,6 +741,8 @@ export const CHANNELS = {
     kill: "ave:terminal:kill", // invoke  (tab close / teardown)
     data: "ave:terminal:data", // event   main→renderer (pty output chunk)
     exit: "ave:terminal:exit", // event   main→renderer (pty exited)
+    blocks: "ave:terminal:blocks", // invoke  command-block summaries of one tab (no output)
+    block: "ave:terminal:block", // invoke  one command block with its output
   },
   // ── Side chat (workspace rail) — 2nd, independently-streaming chat session ──
   // ALL INTERNAL: deliberately absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /
