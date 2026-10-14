@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  isDefaultModelListEndpoint,
   listLlmModelsFromSettings,
   modelListEndpointFromBaseUrl,
   modelListPayloadIsComplete,
@@ -1067,6 +1068,28 @@ describe("LLM model list sync", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("isDefaultModelListEndpoint — the endpoint a vendor's route resolves to", () => {
+  it("no block: the vendor default, else the standard catalogue address, else nothing", () => {
+    expect(isDefaultModelListEndpoint(undefined, "openrouter", "https://openrouter.ai/api/v1/models")).toBe(true);
+    expect(isDefaultModelListEndpoint(undefined, "openrouter", "https://elsewhere.example.test/v1/models")).toBe(false);
+    expect(isDefaultModelListEndpoint(undefined, "openai", "https://api.openai.com/v1/models")).toBe(true);
+    expect(isDefaultModelListEndpoint(undefined, "openai-compatible", "http://10.0.0.5:8000/v1/models")).toBe(false);
+  });
+
+  it("a configured baseUrl replaces the default", () => {
+    const vendors = { openrouter: { baseUrl: " https://proxy.example.test/v1/ " } };
+    expect(isDefaultModelListEndpoint(vendors, "openrouter", "https://proxy.example.test/v1/models")).toBe(true);
+    expect(isDefaultModelListEndpoint(vendors, "openrouter", "https://openrouter.ai/api/v1/models")).toBe(false);
+  });
+
+  it("a whitespace-only baseUrl resolves as the fetch resolves it: no endpoint unless a standard one exists", () => {
+    // The blank block value overrides the preset default, so a preset vendor reaches nothing...
+    expect(isDefaultModelListEndpoint({ openrouter: { baseUrl: "   " } }, "openrouter", "https://openrouter.ai/api/v1/models")).toBe(false);
+    // ...while a vendor with a standard catalogue address still reaches it.
+    expect(isDefaultModelListEndpoint({ openai: { baseUrl: "   " } }, "openai", "https://api.openai.com/v1/models")).toBe(true);
   });
 });
 

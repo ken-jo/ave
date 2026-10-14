@@ -10,6 +10,7 @@ import {
   isLLMVendor,
   isSelfHostedTrustedNetworkVendor,
   type LLMVendor,
+  type LLMVendorSettingsMap,
 } from "../../shared/llm-vendor-defaults.js";
 import {
   isMarketplaceProviderPresetId,
@@ -94,10 +95,20 @@ function configuredModelListBaseUrl(
     const preset = installedProviderPresetForScope(settingsService, credentialScope);
     return preset?.baseUrl.trim() || null;
   }
-  const llm = settingsService.get("llm");
-  const block = getLlmVendorSettings(llm.vendors, vendor);
-  if (block.baseUrl?.trim()) return block.baseUrl.trim();
-  return STANDARD_MODEL_LIST_BASE_URLS[vendor] ?? null;
+  return vendorModelListBaseUrl(settingsService.get("llm").vendors, vendor);
+}
+
+/** The saved vendor blocks, as far as the model-list address is concerned. */
+type ModelListVendorBlocks = Readonly<Partial<Record<LLMVendor, { readonly baseUrl?: string }>>>;
+
+/**
+ * A vendor block's endpoint (stored, else the vendor default), else the standard catalogue address.
+ * A stored blank baseUrl still overrides the vendor default, so it falls straight to the standard address.
+ */
+function vendorModelListBaseUrl(vendors: ModelListVendorBlocks | undefined, vendor: LLMVendor): string | null {
+  // getLlmVendorSettings reads only what each block carries; the model it would add is not consulted here.
+  const block = getLlmVendorSettings(vendors as LLMVendorSettingsMap | undefined, vendor);
+  return block.baseUrl?.trim() || STANDARD_MODEL_LIST_BASE_URLS[vendor] || null;
 }
 
 function sameModelListEndpoint(a: string, b: string): boolean {
@@ -106,6 +117,22 @@ function sameModelListEndpoint(a: string, b: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether `endpoint` is the `/models` endpoint the vendor's route resolves to
+ * for these saved blocks — the same resolver the fetch uses: the block's
+ * baseUrl, else the vendor default's address, else the standard catalogue
+ * address. A stored blank baseUrl overrides the vendor default and skips to
+ * the standard address. False when nothing resolves.
+ */
+export function isDefaultModelListEndpoint(
+  vendors: ModelListVendorBlocks | undefined,
+  vendor: LLMVendor,
+  endpoint: string,
+): boolean {
+  const base = vendorModelListBaseUrl(vendors, vendor);
+  return base ? sameModelListEndpoint(endpoint, base) : false;
 }
 
 function resolveModelListBaseUrl(

@@ -218,6 +218,11 @@ interface JudgeRun {
   fallback?: JudgeFailureKind;
   failureMessage?: string;
   diagnostics?: JudgeDiagnostics;
+  /**
+   * The engine's own timer fired (the stage budget it was given ran out), as
+   * opposed to a provider that reported a `timeout` failure on its own.
+   */
+  engineTimedOut?: true;
 }
 
 async function runJudge(
@@ -248,7 +253,7 @@ async function runJudge(
   } catch (err) {
     // A user cancel is not a judge failure: propagate it to the caller.
     if (callerSignal?.aborted && !timedOut) throw callerSignal.reason;
-    if (timedOut) return { fallback: "timeout", failureMessage: `judge timed out after ${timeoutMs}ms` };
+    if (timedOut) return { fallback: "timeout", failureMessage: `judge timed out after ${timeoutMs}ms`, engineTimedOut: true };
     if (err instanceof JudgeContractError) throw err;
     if (err instanceof JudgeFailure) {
       return { fallback: err.kind, failureMessage: err.message, ...(err.diagnostics ? { diagnostics: err.diagnostics } : {}) };
@@ -325,8 +330,10 @@ async function runChain(
     };
     if (!run.verdict) {
       records.push({ ...base, decision: null, confidence: null, outcome: "failed", fallback: run.fallback ?? "error" });
-      // The stage ran into the chain deadline: no later stage gets to run.
-      if (run.fallback === "timeout" && stageTimeout < deps.settings.timeoutMs) {
+      // The engine's timer fired on a budget the chain deadline capped: the
+      // deadline is spent and no later stage gets to run. A provider that
+      // reports its own timeout is an ordinary stage failure and escalates.
+      if (run.engineTimedOut && stageTimeout < deps.settings.timeoutMs) {
         for (const rest of deps.chain.slice(i + 1)) {
           records.push({
             id: rest.settings.id, provider: rest.settings.provider, version: rest.judge?.version ?? null,
