@@ -25,6 +25,7 @@ import { canonicalStringify } from "../../shared/canonical-json.js";
 import { compareSemver } from "../../shared/semver-compare.js";
 import { MARKETPLACE_DESCRIPTOR_FILE, type Platform, type PluginArtifactPins, type PluginAuthority } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
+import { isRecord } from "../../shared/is-record.js";
 
 /** Every field of `PluginAuthority`, in the order mismatches are reported. */
 export const PLUGIN_AUTHORITY_FIELDS = [
@@ -75,10 +76,6 @@ export function expectedPluginOf(plan: ExpectedPluginSource): ExpectedPlugin {
     platforms: plan.platforms,
     artifact: plan.artifact,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
