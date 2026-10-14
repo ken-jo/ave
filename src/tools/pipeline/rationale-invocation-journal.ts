@@ -9,7 +9,7 @@ import { platform } from "node:process";
 import { computeLineHmac, readStableRegularFileUtf8, type SecretStore } from "../../audit/hmac-chain.js";
 import { writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 import { withFileLock } from "../../lib/with-file-lock.js";
-import { canonicalStringify } from "../../shared/canonical-json.js";
+import { canonicalJsonEqual, canonicalStringify } from "../../shared/canonical-json.js";
 import {
   createHostInvocationStartLease,
   createInvocationAuditEvent,
@@ -158,10 +158,6 @@ function assertExactKeys(
   }
 }
 
-function equal(left: unknown, right: unknown): boolean {
-  return canonicalStringify(left) === canonicalStringify(right);
-}
-
 function readStableUtf8(filePath: string, maxBytes: number): string | null {
   const text = readStableRegularFileUtf8(filePath, maxBytes, "invocation journal");
   if (text === "") throw new Error("invocation journal size is invalid");
@@ -232,7 +228,7 @@ function validateEntry(
     now: Number.MAX_SAFE_INTEGER,
   });
   validateInvocationAuditRecord(entry.started);
-  if (!equal(expectedStarted, entry.started)) {
+  if (!canonicalJsonEqual(expectedStarted, entry.started)) {
     throw new Error("journal started record binding mismatch");
   }
 
@@ -242,7 +238,7 @@ function validateEntry(
       entry.started,
       createInvocationAuditEvent(entry.started, terminalEvent(entry.terminal)),
     );
-    if (!equal(expectedTerminal, entry.terminal)) {
+    if (!canonicalJsonEqual(expectedTerminal, entry.terminal)) {
       throw new Error("journal terminal record is not a monotonic transition");
     }
   }
@@ -710,9 +706,9 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
       const snapshot = state.envelope.snapshot;
       const digest = input.lease.invocationDigest;
       const entry = snapshot.entries[digest];
-      if (!entry || !equal(entry.lease, input.lease)) return false;
+      if (!entry || !canonicalJsonEqual(entry.lease, input.lease)) return false;
       if (entry.terminal !== null) {
-        return equal(entry.terminal, input.terminal);
+        return canonicalJsonEqual(entry.terminal, input.terminal);
       }
       const now = this.#now();
       if (!Number.isFinite(now) || now < 0) {
@@ -987,7 +983,7 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
         } catch {
           throw error;
         }
-        if (persisted !== null && equal(persisted, envelope)) {
+        if (persisted !== null && canonicalJsonEqual(persisted, envelope)) {
           // A second complete atomic replace is the durability barrier. Its
           // failure must escape; mere visibility after the first rename is
           // not sufficient authority to advance the checkpoint.
