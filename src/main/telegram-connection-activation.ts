@@ -11,7 +11,7 @@ import type { SecretStore } from "../audit/hmac-chain.js";
 import type { ConversationSurfaceRuntime } from "../engine/conversation-surface-runtime.js";
 import type { ConversationCommandPort } from "./conversation-command-port.js";
 import { createTelegramBotApiClient } from "./telegram-bot-api-client.js";
-import { maybeStartTelegramConnectionBridge } from "./telegram-bridge-server.js";
+import { maybeStartTelegramConnectionBridge, type TelegramPollHealth } from "./telegram-bridge-server.js";
 import {
   createTelegramControlReplySender,
   type TelegramControlNotice,
@@ -51,6 +51,12 @@ export interface StartTelegramConnectionActivationOptions {
    * and in any boot without a gate — keeps approvals desk-only.
    */
   readonly approvalGate?: TelegramRemoteApprovalGatePort;
+  /**
+   * Whether Telegram is answering this activation's poll loop. The owner
+   * service reads it so a share does not keep reading `active` while every poll
+   * is failing.
+   */
+  readonly onPollHealth?: (health: TelegramPollHealth) => void;
   /** Test-only injection; production reads Electron's OS-encrypted store. */
   readonly secretStore?: SecretStore;
   readonly log?: (message: string) => void;
@@ -193,6 +199,7 @@ export async function startTelegramConnectionActivation(
     },
     notifyUnroutable: createUnroutableNotifier(controlReplies),
     onPaired: createPairedNotifier(controlReplies),
+    ...(options.onPollHealth ? { onPollHealth: options.onPollHealth } : {}),
     ...(options.approvalGate ? { approvalGate: options.approvalGate } : {}),
     onFatal: async (code) => {
       // Best-effort, and deliberately not allowed to skip the teardown below.

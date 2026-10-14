@@ -2,7 +2,7 @@
 
 
 
-import { app } from "electron";
+import { app, net, powerMonitor } from "electron";
 import { desktopSecretEncryption } from "./main/desktop-secret-encryption.js";
 import { writeSync } from "node:fs";
 import { t } from "./i18n/index.js";
@@ -33,7 +33,7 @@ import { ensureCorporateCaInjected } from "./main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "./main/persisted-corp-ca.js";
 import { loadMainStartupDependencies } from "./main/startup-dependencies.js";
 import { updateSplashStatus, waitForMinimumBootstrapSplash } from "./main/bootstrap-splash.js";
-import { runAppShutdownCleanup, runShutdownHooks } from "./main/app-shutdown.js";
+import { registerShutdownHook, runAppShutdownCleanup, runShutdownHooks } from "./main/app-shutdown.js";
 import {
   createWindow,
   getAppWindows,
@@ -56,9 +56,9 @@ import {
 } from "./main/tailnet-surface-server.js";
 import { createTailnetObserverConfigService } from "./main/tailnet-observer-config-service.js";
 import { createTailnetPairedSharingRuntime } from "./main/tailnet-paired-sharing-runtime.js";
-import { stopTelegramBridgeServer } from "./main/telegram-bridge-server.js";
+import { nudgeTelegramBridgeServer, stopTelegramBridgeServer } from "./main/telegram-bridge-server.js";
 import { createTelegramConnectionStore } from "./main/telegram-connection-store.js";
-import { createTelegramConnectionService } from "./main/telegram-connection-service.js";
+import { createNetworkOnlineSource, createTelegramConnectionService } from "./main/telegram-connection-service.js";
 import { createTelegramShareChangeWatcher } from "./main/telegram-share-identity.js";
 import {
   reconcileTelegramActorKey,
@@ -320,7 +320,7 @@ async function main() {
       // reached over the route the machine is configured for.
       networkFetch: services.singleHopNetworkFetch,
       bridgeControl: {
-        start: () => startTelegramConnectionActivation({
+        start: (hooks) => startTelegramConnectionActivation({
           encryption: desktopSecretEncryption,
           store: telegramStore,
           settingsService: services.settingsService,
@@ -335,10 +335,21 @@ async function main() {
           // the main window, after this service but before any owner-driven
           // activation can run. Absent keeps approvals desk-only.
           ...(services.approvalGate ? { approvalGate: services.approvalGate } : {}),
+          onPollHealth: hooks.onPollHealth,
           log: (message: string) => log.info(message),
         }),
         stop: (reason: "shutdown" | "user") => stopTelegramBridgeServer(reason),
+        nudge: () => {
+          nudgeTelegramBridgeServer();
+        },
       },
+      // Reconnect on wake and when the network returns, as the reference remote
+      // surfaces do, instead of waiting out a backoff sized for an outage.
+      onSystemResume: (listener) => {
+        powerMonitor.on("resume", listener);
+        return () => powerMonitor.removeListener("resume", listener);
+      },
+      onNetworkOnline: createNetworkOnlineSource(() => net.isOnline()),
       // Sequenced by the service ahead of its own credential read: one keychain
       // reset takes the bot token and the actor key together, and only the
       // service can put the reconcile before the read that would abandon it.
@@ -356,6 +367,8 @@ async function main() {
       conversationExists: (conversationId: string) =>
         services.memoryManager.hasSessionTranscript(conversationId),
     });
+    const disposeTelegramConnection = telegramConnectionService.dispose;
+    registerShutdownHook("telegram-connection-reconnect", () => disposeTelegramConnection());
     // Any change to the paired share retires an armed Away Authority grant.
     //
     // The grant is a desk gesture about the share that existed when it was

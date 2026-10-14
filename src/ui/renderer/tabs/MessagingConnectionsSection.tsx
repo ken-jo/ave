@@ -90,6 +90,9 @@ function telegramConnectionState(
     case "pairing-unrecognized":
     case "shared-conversation-missing":
     case "error":
+    // On, and not receiving: the folded line must not read "connected" while
+    // every poll fails, even though main is retrying on its own.
+    case "reconnecting":
       return "attention";
   }
 }

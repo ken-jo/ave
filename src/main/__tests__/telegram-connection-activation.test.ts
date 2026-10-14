@@ -180,7 +180,7 @@ describe("telegram connection activation", () => {
         polls += 1;
         // Seed, then the code, then park until the ingress aborts.
         if (polls === 2) {
-          const update = JSON.parse(textUpdate(1, code).rawBody.toString("utf8")) as unknown;
+          const update = JSON.parse(new TextDecoder().decode(textUpdate(1, code).rawBody)) as unknown;
           return new Response(JSON.stringify({ ok: true, result: [update] }), { status: 200 });
         }
         if (polls > 2) {

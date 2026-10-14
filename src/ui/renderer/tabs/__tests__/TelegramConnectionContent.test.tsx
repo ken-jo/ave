@@ -318,6 +318,23 @@ describe("TelegramConnectionContent", () => {
     expect(pause).not.toHaveBeenCalled();
   });
 
+  it("says it is reconnecting, with the reason, and offers both retry-now and pause", async () => {
+    const { api, resume } = makeApi(snapshotOf({
+      state: "reconnecting",
+      botUsername: "my_assistant_bot",
+      pairing: { id: PAIRING_ID, accountFingerprint: "abc123def456" },
+      lastErrorCode: "telegram-provider-unreachable",
+    }));
+    render(<TelegramConnectionContent api={api} chatGroupId="main" />);
+
+    expect(await screen.findByTestId("telegram-connection-state")).toHaveTextContent("Reconnecting");
+    expect(screen.getByTestId("telegram-connection-last-error")).not.toHaveTextContent("telegram-provider-unreachable");
+    // Main retries on its own; the owner can still say "now" or stop it.
+    expect(screen.getByTestId("telegram-connection-pause")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("telegram-connection-retry"));
+    await waitFor(() => expect(resume).toHaveBeenCalledTimes(1));
+  });
+
   it("offers the pause control while the connection is healthy", async () => {
     // The control for the case above: same block, same buttons, and only the
     // state differs.
