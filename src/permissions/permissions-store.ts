@@ -8,7 +8,7 @@ import type { PermissionRule } from "./permission-manager.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, isMissingPathError } from "../lib/atomic-file.js";
-import { PermissionRulesFileCorruptError, validateRuleList } from "./rules/rule-files.js";
+import { PermissionRulesFileCorruptError, invalidJsonDetail, validateRuleList } from "./rules/rule-files.js";
 
 
 
@@ -58,15 +58,15 @@ export async function readPermissionsFile(filePath: string): Promise<Permissions
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
-    throw new PermissionRulesFileCorruptError(filePath, "invalid JSON");
+  } catch (error) {
+    throw new PermissionRulesFileCorruptError(filePath, invalidJsonDetail(error, raw));
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new PermissionRulesFileCorruptError(filePath, "not an object");
   }
   const file = parsed as PermissionsFile;
   if (file.version !== 1) throw new PermissionRulesFileCorruptError(filePath, `unsupported version ${String(file.version)}`);
-  validateRuleList(filePath, file.rules);
+  validateRuleList(filePath, file.rules, { sourceText: raw });
   return file;
 }
 

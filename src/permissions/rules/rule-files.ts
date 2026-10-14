@@ -65,10 +65,61 @@ function assertStorableSpecifier(pattern: string, spec: RuleSpecifier, action: P
   }
 }
 
+/**
+ * 1-based line where element `index` of the top-level `"rules"` array starts
+ * in `text`, or undefined when it cannot be located. A small JSON scanner:
+ * strings are skipped, depth is tracked, so a `"rules"` key nested elsewhere
+ * or a comma inside a string is not miscounted.
+ */
+function ruleLine(text: string, index: number): number | undefined {
+  let depth = 0;
+  let inRules = false;
+  let element = -1;
+  let expectElement = false;
+  let lastKey: string | undefined;
+  for (let cursor = 0; cursor < text.length; cursor += 1) {
+    const char = text[cursor]!;
+    if (/\s/.test(char)) continue;
+    if (inRules && depth === 2 && expectElement) {
+      element += 1;
+      if (element === index) return text.slice(0, cursor).split("\n").length;
+      expectElement = false;
+    }
+    if (char === "\"") {
+      let end = cursor + 1;
+      while (end < text.length && text[end] !== "\"") end += text[end] === "\\" ? 2 : 1;
+      if (depth === 1 && !inRules) lastKey = text.slice(cursor + 1, end);
+      cursor = end;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      depth += 1;
+      if (char === "[" && depth === 2 && lastKey === "rules" && !inRules) {
+        inRules = true;
+        expectElement = true;
+      }
+    } else if (char === "}" || char === "]") {
+      depth -= 1;
+      if (inRules && depth === 1) return undefined;
+    } else if (char === "," && inRules && depth === 2) {
+      expectElement = true;
+    } else if (char === "," && depth === 1) {
+      lastKey = undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Validate a file's rule list. A bad rule fails the whole file (nothing is
+ * silently dropped); the error names the rule's position, its line in
+ * `sourceText` when the caller read one, and the rule's pattern, so the user
+ * can fix that one rule.
+ */
 export function validateRuleList(
   filePath: string,
   rules: unknown,
-  options: { specifiersOnly?: boolean } = {},
+  options: { specifiersOnly?: boolean; sourceText?: string } = {},
 ): PermissionRule[] {
   if (!Array.isArray(rules)) throw new PermissionRulesFileCorruptError(filePath, "rules is not an array");
   return rules.map((rule, index) => {
@@ -80,9 +131,21 @@ export function validateRuleList(
       return validated;
     } catch (error) {
       if (error instanceof RuleSpecifierError) {
-        throw new PermissionRulesFileCorruptError(filePath, `rule ${index}: ${error.message}`);
+        const line = options.sourceText === undefined ? undefined : ruleLine(options.sourceText, index);
+        throw new PermissionRulesFileCorruptError(filePath, `rule ${index + 1}${line === undefined ? "" : ` at line ${line}`}: ${error.message}`);
       }
       throw error;
     }
   });
+}
+
+/** "invalid JSON", with the line and column when the parser reports a location. */
+export function invalidJsonDetail(error: unknown, text: string): string {
+  const message = error instanceof Error ? error.message : "";
+  const lineColumn = /line (\d+) column (\d+)/.exec(message);
+  if (lineColumn) return `invalid JSON at line ${lineColumn[1]} column ${lineColumn[2]}`;
+  const position = /position (\d+)/.exec(message);
+  if (!position) return "invalid JSON";
+  const before = text.slice(0, Number(position[1])).split("\n");
+  return `invalid JSON at line ${before.length} column ${before[before.length - 1]!.length + 1}`;
 }

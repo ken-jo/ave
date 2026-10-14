@@ -13,7 +13,7 @@ import { withFileLock } from "../../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, isMissingPathError, PRIVATE_DIR_MODE } from "../../lib/atomic-file.js";
 import { captureApprovalWorkingDirectory } from "../user-approval-store.js";
 import type { PermissionRule } from "../permission-manager.js";
-import { PermissionRulesFileCorruptError, validateRuleList } from "./rule-files.js";
+import { PermissionRulesFileCorruptError, invalidJsonDetail, validateRuleList } from "./rule-files.js";
 
 
 export interface ProjectRulesFile {
@@ -68,8 +68,8 @@ export async function readProjectRulesFile(location: ProjectRulesLocation): Prom
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
-    throw new PermissionRulesFileCorruptError(location.filePath, "invalid JSON");
+  } catch (error) {
+    throw new PermissionRulesFileCorruptError(location.filePath, invalidJsonDetail(error, raw));
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new PermissionRulesFileCorruptError(location.filePath, "not an object");
@@ -79,7 +79,7 @@ export async function readProjectRulesFile(location: ProjectRulesLocation): Prom
   if (file.projectRoot !== location.projectRoot) {
     throw new PermissionRulesFileCorruptError(location.filePath, "projectRoot does not match the file identity");
   }
-  const rules = validateRuleList(location.filePath, file.rules, { specifiersOnly: true });
+  const rules = validateRuleList(location.filePath, file.rules, { specifiersOnly: true, sourceText: raw });
   return {
     version: 1,
     projectRoot: location.projectRoot,

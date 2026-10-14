@@ -56,6 +56,37 @@ describe("Store A (user-global permissions.json)", () => {
     expect(readFileSync(permissionsFile, "utf8")).toBe("{ not json");
   });
 
+  it("names the one bad rule and its line so the user can fix it", async () => {
+    const text = [
+      "{",
+      "  \"version\": 1,",
+      "  \"note\": \"rules: [a, b]\",",
+      "  \"rules\": [",
+      "    { \"pattern\": \"Bash(git status)\", \"action\": \"allow\" },",
+      "    {",
+      "      \"pattern\": \"Bash(node scripts/build.mjs)\",",
+      "      \"action\": \"allow\"",
+      "    }",
+      "  ]",
+      "}",
+    ].join("\n");
+    writeFileSync(permissionsFile, text);
+    await expect(readPermissionsFile(permissionsFile)).rejects.toThrow(
+      /rule 2 at line 6: Invalid permission rule "Bash\(node scripts\/build\.mjs\)": .*refused allow prefix/,
+    );
+    // A missing comma: the parser reports a position, surfaced as line/column.
+    writeFileSync(permissionsFile, "{\n  \"version\": 1\n  \"rules\": []\n}");
+    await expect(readPermissionsFile(permissionsFile)).rejects.toThrow(/invalid JSON at line 3 column \d+/);
+    // A project file names the rule the same way.
+    const location = projectRulesLocation(dir, project);
+    mkdirSync(join(dir, "permissions", "project-rules"), { recursive: true });
+    writeFileSync(location.filePath, JSON.stringify({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(ls *)", action: "allow" }, { pattern: "Bash(*)", action: "allow" }] }, null, 2));
+    const pm = new PermissionManager(permissionsFile.replace("permissions.json", "other.json"));
+    await pm.ensureProjectRulesLoaded(project);
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("ls"), projectRulesCwd: project }))
+      .toMatchObject({ decision: "ask", reason: expect.stringMatching(/rule 2 at line 9: Invalid permission rule "Bash\(\*\)"/) });
+  });
+
   it.each([
     [{ pattern: "Bash(bash *)", action: "allow" }, /refused allow prefix/],
     [{ pattern: "Bash(*)", action: "allow" }, /bare \*/],
