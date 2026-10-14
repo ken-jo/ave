@@ -6,6 +6,7 @@ import { normalizeToolOutputArtifactInfo } from "../shared/tool-output-artifact.
 import { ConversationHistory } from "./conversation-history.js";
 import { ToolExecutor } from "../tools/executor.js";
 import { endShellSession } from "../tools/shell-tools.js";
+import { disposeSessionFileReads } from "../tools/file-read-state.js";
 import { isActiveSandboxFilesystemContainedForPluginEffects } from "../permissions/sandbox-capability.js";
 import { baseAllowedDirectories } from "../permissions/base-allowed-directories.js";
 import { getWorkspaceRootLifecycle } from "../permissions/workspace-root-lifecycle.js";
@@ -120,6 +121,13 @@ type GuidanceDisposition = Pick<
 
 export class ConversationLoop {
   readonly deps: ConversationLoopDeps;
+  /**
+   * Git ignore verdicts for first-touch instruction files, memoized for the
+   * session so a repeated touch does not spawn git again. Cleared on a session switch.
+   */
+  readonly gitIgnoreVerdicts = new Map<string, boolean>();
+  /** The model override this loop was constructed with; a session switch restores it. */
+  private readonly constructedModelOverride: string | undefined;
   readonly history: ConversationHistory;
   readonly toolExecutor: ToolExecutor;
   readonly auditLogger: AuditLogger;
@@ -258,6 +266,7 @@ export class ConversationLoop {
 
   constructor(deps: ConversationLoopDeps) {
     this.deps = deps;
+    this.constructedModelOverride = deps.modelOverride;
     this.history = new ConversationHistory();
     this.toolExecutor = new ToolExecutor(
       deps.toolRegistry,
@@ -428,6 +437,23 @@ export class ConversationLoop {
 
   hasProvider(): boolean {
     return this.provider !== null;
+  }
+
+  /**
+   * Run the current session on `model`, or on the constructed default when
+   * `undefined`. The override is the same `modelOverride` the provider and the
+   * context-window resolver already read, so the provider is rebuilt here and
+   * the next round uses the new model.
+   */
+  setSessionModelOverride(model: string | undefined): void {
+    this.deps.modelOverride = model ?? this.constructedModelOverride;
+    this.refreshProvider();
+  }
+
+  /** Drop a `/model` choice when the loop moves to another session. */
+  resetSessionModelOverride(): void {
+    if (this.deps.modelOverride === this.constructedModelOverride) return;
+    this.setSessionModelOverride(undefined);
   }
 
 
@@ -664,6 +690,7 @@ export class ConversationLoop {
   cleanupSession(lease?: SessionTransitionLease): Promise<void> {
     const cleanup = async (ownedLease: SessionTransitionLease): Promise<void> => {
       this.assertSessionTransitionLease(ownedLease);
+      disposeSessionFileReads(ownedLease.sessionId);
       const report = await endShellSession(ownedLease.sessionId);
       this.assertSessionTransitionLease(ownedLease);
       if (report?.state === "cleanup-unproven") {

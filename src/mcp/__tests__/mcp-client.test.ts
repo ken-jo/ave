@@ -1532,6 +1532,35 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     await client.disconnect();
   }, 10000);
 
+  it("lifts image blocks out of a tool result instead of rendering their base64 as text", async () => {
+    const pixels = Buffer.from("not really a png").toString("base64");
+    const { client } = rcHttpClient("img", (method, id) => {
+      if (method === "server/discover") return jsonRpcResponse(id, RC_DISCOVER_RESULT);
+      if (method === "tools/list") {
+        return jsonRpcResponse(id, {
+          tools: [{ name: "shot", description: "shot", inputSchema: { type: "object", properties: {} } }],
+        });
+      }
+      if (method === "tools/call") {
+        return jsonRpcResponse(id, {
+          resultType: "complete",
+          content: [
+            { type: "text", text: "captured" },
+            { type: "image", data: pixels, mimeType: "image/png" },
+          ],
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+
+    await client.connect();
+    const result = await client.callTool("shot", {});
+    expect(result.images).toEqual([{ data: pixels, mimeType: "image/png" }]);
+    expect(result.text).toBe("captured\n[image 1: image/png, 16 bytes]");
+    expect(result.text).not.toContain(pixels);
+    await client.disconnect();
+  });
+
   it("retries ONCE after HeaderMismatch by refreshing tools/list and rebuilding the mirrors", async () => {
     // The server rotates its x-mcp-header name between discovery and the call.
     const toolWithHeader = (headerName: string) => ({

@@ -113,6 +113,14 @@ export interface MessageMeta {
 
   systemNotice?: "context-error" | "stream-error" | "interrupted";
   /**
+   * Directory instruction files appended to this tool_result on first touch
+   * (`engine/turn/directory-instructions.ts`): each file's project-relative
+   * path and the bytes its block added. A file counts as attached only while
+   * a row naming it still reaches the provider, so compaction that drops or
+   * stubs the row lets the next touch attach it again.
+   */
+  directoryInstructions?: { source: string; bytes: number }[];
+  /**
    * Tool-result generic size cap marker (Issue #902).
    *
    * Set by `ConversationHistory.append`/`restore` on tool_result messages
@@ -595,6 +603,12 @@ export interface LLMProvider {
    * Subscription usage is intentionally kept out of API-key pricing.
    */
   readonly subscriptionRuntime?: SubscriptionChatRuntimeSelection;
+  /**
+   * The model ids the subscription runtime's live catalog offers right now —
+   * the list its own session start re-checks a model against. Present only on
+   * a runtime with a selectable model; rejects when the catalog is unreachable.
+   */
+  listSubscriptionModels?(): Promise<readonly string[]>;
   /**
    * Optional transport-native input projection. Returning undefined preserves
    * the engine's generic estimator instead of widening provider failures into

@@ -20,6 +20,8 @@
  * Kept in `shared/` because neither consumer's layer may depend on the other's.
  */
 
+import { parsePatchEnvelope, patchOperationPaths } from "./patch-envelope.js";
+
 /**
  * Read `field` (a dot-separated path) out of `input`.
  *
@@ -40,4 +42,34 @@ export function getDottedFieldValue(
     current = (current as Record<string, unknown>)[segment];
   }
   return current;
+}
+
+/**
+ * Declaration suffix for a field holding patch-envelope text (`apply_patch`'s
+ * `patch`): the paths are the files the patch names, not the field value.
+ */
+export const PATCH_ENVELOPE_PATH_FIELD_SUFFIX = "#patch-envelope";
+
+/**
+ * The candidate path values one `pathFields` entry selects from `input`: an
+ * array value is a list of candidates, and a `#patch-envelope` entry yields
+ * the paths its patch text names. Patch text that does not parse throws: the
+ * tool's input schema refuses it first, so reaching here with one is a
+ * contract violation, never a call that declares no path.
+ */
+export function selectDeclaredPathValues(
+  input: Record<string, unknown>,
+  field: string,
+): unknown[] {
+  if (field.endsWith(PATCH_ENVELOPE_PATH_FIELD_SUFFIX)) {
+    const text = getDottedFieldValue(input, field.slice(0, -PATCH_ENVELOPE_PATH_FIELD_SUFFIX.length));
+    if (typeof text !== "string") {
+      throw new Error(`path field '${field}' requires patch text`);
+    }
+    const parsed = parsePatchEnvelope(text);
+    if (!parsed.ok) throw new Error(`path field '${field}': invalid patch: ${parsed.error}`);
+    return patchOperationPaths(parsed.operations);
+  }
+  const candidate = getDottedFieldValue(input, field);
+  return Array.isArray(candidate) ? candidate : [candidate];
 }

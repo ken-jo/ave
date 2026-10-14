@@ -48,6 +48,8 @@ import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import { createRequestAnchor } from "../../tools/pipeline/rationale-control.js";
 import { providerMatchesActiveChatRuntime } from "./provider.js";
+import { BUILTIN_SLASH_COMMANDS } from "./commands.js";
+import { expandCustomCommand, loadCustomCommand } from "../../core/custom-commands.js";
 import { aggregateSubscriptionUsage } from "./subscription-usage-telemetry.js";
 import type { MemoryCaptureTaintReason } from "../../memory/memory-capture-service.js";
 
@@ -186,7 +188,9 @@ async function runTurnInSpan(
     ) {
       throw new Error("ConversationLoop.runTurn received an unattended authority this host did not issue for this turn");
     }
-    const turnInput = isUserKeyboardOrigin(inputOrigin) ? input : stripLeadingSlash(input);
+    // Reassigned at most once: a custom slash command expands to its file body.
+    let turnInput = isUserKeyboardOrigin(inputOrigin) ? input : stripLeadingSlash(input);
+    let customCommandDisplayText: string | undefined;
     const attachmentParts = options.attachments ?? [];
     const memoryCaptureTaint = new Set<MemoryCaptureTaintReason>();
     if (!isUserKeyboardOrigin(inputOrigin)) memoryCaptureTaint.add("non-keyboard-origin");
@@ -275,13 +279,24 @@ async function runTurnInSpan(
     const classification = self.deps.inputClassifier.classify(turnInput);
     self.tracer.step("INPUT_CLASSIFY", { type: classification.type });
     // §4.5.2 step 3 — ROUTE_RESOLVE
-    const routeResult = self.deps.routeEngine.route(classification);
+    let routeResult = self.deps.routeEngine.route(classification);
     self.tracer.step("ROUTE_RESOLVE", { route: routeResult.route });
 
     if (routeResult.route === "command") {
-      self.currentAbortController = null;
-      return self.handleCommand(routeResult.command, routeResult.args, inputOrigin, callbacks,
-      );
+      // Built-ins first; then a custom command file, which only the keyboard can
+      // invoke. Its body becomes this turn's input, while the trust origin and
+      // permission intent above stay derived from what the person typed.
+      const customCommand = isUserKeyboardOrigin(inputOrigin) && !BUILTIN_SLASH_COMMANDS.has(routeResult.command)
+        ? await loadCustomCommand(routeResult.command, self.getSessionProjectContext().projectRoot)
+        : null;
+      if (!customCommand) {
+        self.currentAbortController = null;
+        return self.handleCommand(routeResult.command, routeResult.args, inputOrigin, callbacks,
+        );
+      }
+      customCommandDisplayText = turnInput;
+      turnInput = expandCustomCommand(customCommand.body, routeResult.args);
+      routeResult = { route: "llm", input: turnInput };
     }
 
     // §4.5.2 step 4 — TURN_ORCHESTRATE
@@ -534,7 +549,9 @@ async function runTurnInSpan(
       ...(personaPromptMeta ? { activePersonaPrompt: personaPromptMeta } : {}),
       ...(options.displayText !== undefined
         ? { displayText: options.displayText }
-        : carriesResourceAttachment
+        : customCommandDisplayText !== undefined
+          ? { displayText: customCommandDisplayText }
+          : carriesResourceAttachment
           ? { displayText: turnInput }
           : {}),
       ...(importedTrigger

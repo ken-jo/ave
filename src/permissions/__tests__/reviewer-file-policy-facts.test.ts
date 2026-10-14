@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { ApplyPatchTool, EditFileTool, WriteFileTool } from "../../tools/file-tools.js";
+import { ApplyPatchTool, MultiEditTool, EditFileTool, WriteFileTool } from "../../tools/file-tools.js";
+import { extractTargetFilePaths } from "../../tools/pipeline/path-extraction.js";
 import type { Tool } from "../../tools/base.js";
 import type { ToolExecutionContext } from "../../tools/types.js";
 import {
@@ -21,7 +22,7 @@ let executionContext: ToolExecutionContext;
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "ave-file-review-"));
   mkdirSync(join(workDir, "project", "src"), { recursive: true });
-  executionContext = { cwd: workDir, extraAllowedDirectories: [], metadata: {} };
+  executionContext = { cwd: workDir, extraAllowedDirectories: [], metadata: { sessionId: "file-policy-facts" } };
 });
 
 afterEach(async () => { await cleanupTmpDir(workDir); });
@@ -71,7 +72,7 @@ describe("reviewer host file-policy facts", () => {
       { tool: new WriteFileTool(), input: { path, content: "first" } },
       { tool: new WriteFileTool(), input: { path, content: "second" } },
       { tool: new EditFileTool(), input: { path, oldText: "second", newText: "third" } },
-      { tool: new ApplyPatchTool(), input: { path, replacements: [{ oldText: "third", newText: "last" }] } },
+      { tool: new MultiEditTool(), input: { path, replacements: [{ oldText: "third", newText: "last" }] } },
     ];
     const { complete, classifier } = providerReturning("low");
     for (const operation of operations) {
@@ -95,7 +96,7 @@ describe("reviewer host file-policy facts", () => {
 
   it.each(["edit", "patch"] as const)("does not create a missing file through %s", async (kind) => {
     const path = "project/src/missing.txt";
-    const tool = kind === "edit" ? new EditFileTool() : new ApplyPatchTool();
+    const tool = kind === "edit" ? new EditFileTool() : new MultiEditTool();
     const replacement = { oldText: "before", newText: "after" };
     const input = kind === "edit" ? { path, ...replacement } : { path, replacements: [replacement] };
     expect((await tool.execute(input, executionContext)).isError).toBe(true);
@@ -119,7 +120,7 @@ describe("reviewer host file-policy facts", () => {
   it("retains the sensitive-write gate even for a path inside the project", async () => {
     const path = join(workDir, "project", "src", ".env");
     writeFileSync(path, "unchanged");
-    for (const tool of [new WriteFileTool(), new EditFileTool(), new ApplyPatchTool()]) {
+    for (const tool of [new WriteFileTool(), new EditFileTool(), new MultiEditTool()]) {
       const replacement = { oldText: "unchanged", newText: "changed" };
       const input = { path, content: "changed", ...replacement, replacements: [replacement] };
       const facts = hostFacts(_internal.buildUserPrompt(reviewContext(tool, input)));
@@ -128,6 +129,47 @@ describe("reviewer host file-policy facts", () => {
       expect((await tool.execute(input, executionContext)).isError).toBe(true);
     }
     expect(readFileSync(path, "utf8")).toBe("unchanged");
+  });
+
+  it("declares apply_patch targets so a sensitive file in the patch keeps the sensitive-write floor", async () => {
+    const sensitive = join(workDir, "project", "src", ".env");
+    writeFileSync(sensitive, "unchanged\n");
+    const tool = new ApplyPatchTool();
+    const input = {
+      patch: [
+        "*** Begin Patch",
+        "*** Add File: project/src/note.txt",
+        "+hello",
+        "*** Update File: project/src/.env",
+        "-unchanged",
+        "+changed",
+        "*** End Patch",
+      ].join("\n"),
+    };
+    expect(extractTargetFilePaths(tool, input, workDir)).toContain(sensitive);
+    const facts = hostFacts(_internal.buildUserPrompt(reviewContext(tool, input)));
+    expect(facts).toMatchObject({
+      declaredPathCount: 2,
+      allDeclaredPathsInsideAllowedDirectories: true,
+      anyDeclaredPathSensitiveWrite: true,
+    });
+    expect(facts.ruleVerdict.level).not.toBe("low");
+    expect((await tool.execute(input, executionContext)).isError).toBe(true);
+    expect(readFileSync(sensitive, "utf8")).toBe("unchanged\n");
+    expect(existsSync(join(workDir, "project", "src", "note.txt"))).toBe(false);
+  });
+
+  it("rates a patch inside the project like the other file writes, not as an undeclared write", async () => {
+    const tool = new ApplyPatchTool();
+    const input = { patch: "*** Begin Patch\n*** Add File: project/src/new.txt\n+hello\n*** End Patch" };
+    const { complete, classifier } = providerReturning("low");
+    expect((await classifier.classify(reviewContext(tool, input))).level).toBe("medium");
+    expect(hostFacts(complete.mock.lastCall![0].userPrompt)).toMatchObject({
+      ruleVerdict: { level: "medium" },
+      declaredPathCount: 1,
+      allDeclaredPathsInsideAllowedDirectories: true,
+      anyDeclaredPathSensitiveWrite: false,
+    });
   });
 
   it.each(["plugin", "mcp"] as const)("does not exempt a %s tool named like a builtin from model review", async (source) => {

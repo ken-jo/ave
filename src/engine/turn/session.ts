@@ -12,6 +12,7 @@ import type { GenericMessage } from "../llm/types.js";
 import type { WorkspaceRootRevocationOptions } from "./types.js";
 import { normalizeToolPairInvariant } from "../conversation-history.js";
 import { endShellSession } from "../../tools/shell-tools.js";
+import { disposeSessionFileReads } from "../../tools/file-read-state.js";
 import { createTracer } from "../../observability/conversation-trace.js";
 import { estimateMessagesTokens } from "../auto-compact.js";
 import { createLogger } from "../../lib/logger.js";
@@ -83,6 +84,7 @@ async function settleOutgoingSession(
   lease: SessionTransitionLease,
 ): Promise<void> {
   self.assertSessionTransitionLease(lease);
+  disposeSessionFileReads(lease.sessionId);
   const report = await endShellSession(lease.sessionId);
   self.assertSessionTransitionLease(lease);
   if (report?.state === "cleanup-unproven") {
@@ -118,6 +120,8 @@ function applyFreshSessionState(
   self.lastTurnToolNames = null;
   self.compactNum = 0;
   self.rateLimitRecoveryAttempted = false;
+  self.resetSessionModelOverride();
+  self.gitIgnoreVerdicts.clear();
   self.tracer = createTracer(self.sessionId);
   self.deps.systemPromptBuilder.setSummaryPreamble?.(null);
 }
@@ -306,6 +310,8 @@ export async function loadSession(
     self.sessionRoutineId = sessionMeta?.routineId ?? null;
     self.sessionRoutineTitle = sessionMeta?.routineTitle ?? null;
     self.sessionAdditionalDirectories = [];
+    self.resetSessionModelOverride();
+    self.gitIgnoreVerdicts.clear();
     applyProjectContext(self, sessionMeta?.projectRoot
       ? {
           projectRoot: sessionMeta.projectRoot,

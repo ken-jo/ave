@@ -222,6 +222,7 @@ export type ProviderFactory = (config: ProviderConfig) => LLMProvider;
 export class FallbackProvider implements LLMProvider {
   readonly vendor: LLMVendor;
   readonly subscriptionRuntime?: SubscriptionChatRuntimeSelection;
+  readonly listSubscriptionModels?: () => Promise<readonly string[]>;
   constructor(
     private readonly primary: LLMProvider,
     private readonly chain: FallbackChainEntry[],
@@ -230,12 +231,16 @@ export class FallbackProvider implements LLMProvider {
   ) {
     this.vendor = primary.vendor;
     this.subscriptionRuntime = primary.subscriptionRuntime;
+    if (primary.listSubscriptionModels) {
+      this.listSubscriptionModels = () => primary.listSubscriptionModels!();
+    }
   }
 
   withCallbacks(callbacks: FallbackCallbacks): LLMProvider {
     return {
       vendor: this.vendor,
       ...(this.subscriptionRuntime ? { subscriptionRuntime: this.subscriptionRuntime } : {}),
+      ...(this.listSubscriptionModels ? { listSubscriptionModels: this.listSubscriptionModels } : {}),
       projectRequestInput: (input) => this.projectRequestInput(input),
       streamTurn: (params) => this.streamTurnWithCallbacks(params, callbacks),
     };

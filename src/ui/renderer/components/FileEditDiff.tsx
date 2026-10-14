@@ -11,11 +11,11 @@ import { getApi } from "../api-client.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
-// ─── Main inline diff component (edit_file / apply_patch / write_file inline) ─
+// ─── Main inline diff component (edit_file / multi_edit / write_file inline) ─
 
 const VERB_KEY_BY_TOOL: Record<FileEditDiffData["tool"], string> = {
   edit_file: "fileEditDiff.verbEdit",
-  apply_patch: "fileEditDiff.verbPatch",
+  multi_edit: "fileEditDiff.verbPatch",
   write_file: "fileEditDiff.verbWrite",
 };
 

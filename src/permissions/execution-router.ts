@@ -817,6 +817,7 @@ function brokerOperationForBuiltinTool(toolName: string): WorkloadToolOperation 
     grep_files: "file.grep",
     write_file: "file.write",
     edit_file: "file.edit",
+    multi_edit: "file.patch",
     apply_patch: "file.patch",
     move_file: "file.move",
     copy_path: "file.copy",
