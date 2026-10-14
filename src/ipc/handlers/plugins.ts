@@ -7,6 +7,7 @@
  * trusted-renderer + AVE_E2E wrapper.
  */
 import type { IpcDeps } from "../types.js";
+import { isValidToolName } from "../../tools/types.js";
 import { filterRegistryByEventAndTool } from "../../hooks/hook-registry.js";
 
 export type PluginBundleE2eSnapshot =
@@ -89,7 +90,7 @@ export async function handlePluginBundleE2eSnapshot(
   }
   if (
     typeof hookProbeToolName !== "string" ||
-    !E2E_LOCAL_ID.test(hookProbeToolName)
+    !isValidToolName(hookProbeToolName)
   ) {
     return { ok: false, error: "invalid-hook-probe-tool-name" };
   }
