@@ -202,7 +202,7 @@ function SingleToolInline({
       <>
         <CompactedToolResult
           toolUseId={tool.toolUseId}
-          toolName={getToolDisplayName(tool.name)}
+          toolName={getToolCallLabel(tool.name, tool.input)}
           input={tool.input}
           compactedResultText={tool.result as string}
           sessionId={sessionId}
@@ -484,7 +484,7 @@ export function ToolGroupCard({
                         {isToolResultStub(tool.result) && sessionId ? (
                           <CompactedToolResult
                             toolUseId={tool.toolUseId}
-                            toolName={getToolDisplayName(tool.name)}
+                            toolName={getToolCallLabel(tool.name, tool.input)}
                             input={tool.input}
                             compactedResultText={tool.result}
                             sessionId={sessionId}

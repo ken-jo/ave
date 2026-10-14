@@ -64,6 +64,11 @@ never changes because a skill was read.
   stale normally. Summary compaction drops reads like any history, and the
   catalog guidance tells the model to read the skill again when its result is no
   longer visible. Re-reads do not re-prompt (the approval is hash-bound).
+- **Preview cap.** The generic tool-result cap (head/tail preview over 100 lines
+  or 2k tokens) skips a well-formed `skill_load` result within
+  `MAX_SKILL_READ_RESULT_CHARS` (body cap + manifest cap + header), so the model
+  never gets a partial skill behind an extra chunk-read step; larger or
+  malformed rows stay capped (`src/engine/conversation-history.ts`).
 - **Typed `/<skill-name>`.** A non-built-in slash naming an indexed skill runs as
   a normal model turn with the text as typed (`src/engine/turn/run-turn.ts`); the
   catalog guidance makes the model read that skill first. Built-in commands win.

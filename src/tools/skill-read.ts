@@ -95,7 +95,12 @@ export function createSkillReadTool(deps: SkillReadToolDeps): Tool {
       // (⇒ it passed skill_load's approval gate). Nothing else grants read.
       const entry = deps.overlay.list(sessionId).find((candidate) => candidate.name === skillName);
       if (!entry) {
-        return errorResult(`skill not loaded: call skill_load({ skillName: "${skillName}" }) first`);
+        // Also reached after a restored session or restart: the body may still be
+        // in history, but this conversation's read registry is empty. Re-reading
+        // does not re-prompt (the approval is hash-bound to the content).
+        return errorResult(
+          `skill not read in this conversation session: call skill_load({ skillName: "${skillName}" }) first`,
+        );
       }
       // The manifest captured at load time is the AUTHORIZED set, so the
       // discovery caps are real access bounds rather than display limits.

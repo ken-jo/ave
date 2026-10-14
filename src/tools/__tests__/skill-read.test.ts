@@ -91,7 +91,7 @@ describe("skill_read — access control", () => {
       const tool = createSkillReadTool({ store, overlay: new SkillOverlay() });
       const r = await tool.execute({ skillName: "guide", resourcePath: "references/api.md" }, ctx());
       expect(r.isError).toBe(true);
-      expect(r.output).toContain("skill not loaded");
+      expect(r.output).toContain("skill not read in this conversation session");
     } finally {
       await cleanupTmpDir(dir);
     }

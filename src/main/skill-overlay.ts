@@ -27,7 +27,7 @@
  * live for the conversation; `newConversation` and plugin-generation retirement
  * clear them.
  */
-import type { LoadedSkill } from "./skill-store.js";
+import { SKILL_MAX_BODY_BYTES, type LoadedSkill } from "./skill-store.js";
 import { escapeHtml } from "../shared/escape-html.js";
 
 export interface SkillOverlayEntry {
@@ -164,6 +164,32 @@ export function skillNameFromReadResult(content: string): string | null {
 
 /** Total characters the bundled-resource manifest may add inside one fence. */
 const MAX_MANIFEST_CHARS = 2048;
+
+/**
+ * Upper bound on a rendered `skill_load` result: the body is capped at
+ * {@link SKILL_MAX_BODY_BYTES} (so at most that many UTF-16 units), the manifest
+ * at {@link MAX_MANIFEST_CHARS}, plus the fence header (name + base path).
+ */
+export const MAX_SKILL_READ_RESULT_CHARS = SKILL_MAX_BODY_BYTES + MAX_MANIFEST_CHARS + 1024;
+
+/**
+ * Whether a tool_result is a complete skill read that the generic tool-result
+ * preview cap must leave whole. A skill's instructions are only useful intact,
+ * and the result is already host-bounded by {@link MAX_SKILL_READ_RESULT_CHARS};
+ * anything larger (e.g. a tampered restored row) stays under the generic cap.
+ */
+export function isBoundedSkillReadResult(message: {
+  toolName?: string;
+  isError?: boolean;
+  content: string;
+}): boolean {
+  return (
+    message.toolName === "skill_load" &&
+    message.isError !== true &&
+    message.content.length <= MAX_SKILL_READ_RESULT_CHARS &&
+    skillNameFromReadResult(message.content) !== null
+  );
+}
 
 const SKILL_FENCE_PATTERN = /<(\s*\/?\s*ave-skill[^>]*)>/gi;
 const ZWSP = "​";
