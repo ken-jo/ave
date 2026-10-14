@@ -26,13 +26,14 @@ import {
   type ShellWord,
 } from "../../shared/shell-analysis.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
+import { errorMessage } from "../../shared/error-message.js";
 import type { RuleSpecifier } from "./rule-specifier.js";
 import { shellExfiltrationSignal } from "./shell-exfiltration.js";
 import { SHELL_PREFIX_POLICY, isShellWrapperProgram } from "./shell-prefix-policy.js";
 
-export type BashRuleSpecifier = Extract<RuleSpecifier, { kind: "bash" }>;
+type BashRuleSpecifier = Extract<RuleSpecifier, { kind: "bash" }>;
 
-export interface ShellRuleCommand {
+interface ShellRuleCommand {
   /** One entry per word; `undefined` where the word is not a static literal. */
   argv: readonly (string | undefined)[];
   raw: string;
@@ -91,7 +92,7 @@ export function analyzeShellForRules(command: string): ShellRuleShape {
   } catch (error) {
     // A broken parser runtime is an internal failure the matcher cannot
     // reason around; report it as unparseable (asks, never allows).
-    return { ok: false, reason: `shell parser failed: ${error instanceof Error ? error.message : String(error)}` };
+    return { ok: false, reason: `shell parser failed: ${errorMessage(error)}` };
   }
   if (!analysis.ok) return { ok: false, reason: analysis.reason };
 
@@ -218,7 +219,7 @@ export function analyzeShellForRules(command: string): ShellRuleShape {
 }
 
 /** Exact/prefix match on static argv (allow semantics: no wrapper stripping, no basename folding). */
-export function matchesBashRuleExact(spec: BashRuleSpecifier, argv: readonly (string | undefined)[]): boolean {
+function matchesBashRuleExact(spec: BashRuleSpecifier, argv: readonly (string | undefined)[]): boolean {
   if (argv.length < spec.tokens.length) return false;
   if (!spec.wildcard && argv.length !== spec.tokens.length) return false;
   return spec.tokens.every((token, index) => argv[index] === token);
@@ -231,7 +232,7 @@ export function matchesBashRuleExact(spec: BashRuleSpecifier, argv: readonly (st
  * differ too much to skip them exactly. This only ever widens what a deny/ask
  * rule sees; allow matching never strips wrappers.
  */
-export function matchesBashRuleForRestriction(spec: BashRuleSpecifier, argv: readonly (string | undefined)[]): boolean {
+function matchesBashRuleForRestriction(spec: BashRuleSpecifier, argv: readonly (string | undefined)[]): boolean {
   const head = argv[0];
   const starts = head !== undefined && isShellWrapperProgram(head)
     ? argv.map((_, index) => index)

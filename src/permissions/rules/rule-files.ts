@@ -27,7 +27,7 @@ export class PermissionRulesFileCorruptError extends Error {
   }
 }
 
-export type PermissionRuleAction = PermissionRule["action"];
+type PermissionRuleAction = PermissionRule["action"];
 const ACTIONS: ReadonlySet<string> = new Set(["allow", "deny", "ask"]);
 
 /**
@@ -52,7 +52,7 @@ export function validatePermissionRule(rule: unknown): PermissionRule {
   return candidate as unknown as PermissionRule;
 }
 
-export function assertStorableSpecifier(pattern: string, spec: RuleSpecifier, action: PermissionRuleAction): void {
+function assertStorableSpecifier(pattern: string, spec: RuleSpecifier, action: PermissionRuleAction): void {
   if (formatRuleSpecifier(spec) !== pattern) {
     throw new RuleSpecifierError(pattern, `not in canonical form (expected ${formatRuleSpecifier(spec)})`);
   }

@@ -84,7 +84,7 @@ export class ProjectRuleScopes {
 }
 
 /** Bash specifier rules from any number of scopes, grouped by class. */
-export function collectShellRuleSet(...scopes: ReadonlyArray<readonly PermissionRule[]>): ShellRuleSet {
+function collectShellRuleSet(...scopes: ReadonlyArray<readonly PermissionRule[]>): ShellRuleSet {
   const deny: ShellRuleInput[] = [];
   const ask: ShellRuleInput[] = [];
   const allow: ShellRuleInput[] = [];
