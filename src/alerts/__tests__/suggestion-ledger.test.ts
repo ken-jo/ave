@@ -20,13 +20,21 @@ beforeEach(async () => {
   dir = join(home, "alerts");
 });
 
+/** Every ledger a case made: `record` queues its write, and a case may end before it lands. */
+const made: SuggestionLedger[] = [];
+
 afterEach(async () => {
+  // Settle the queued writes before removing their directory: a write still
+  // landing in alerts/ while `rm` empties it fails the removal with ENOTEMPTY.
+  await Promise.all(made.splice(0).map((l) => l.flush()));
   vi.restoreAllMocks();
   await rm(home, { recursive: true, force: true });
 });
 
 function ledger(): SuggestionLedger {
-  return new SuggestionLedger(() => dir);
+  const l = new SuggestionLedger(() => dir);
+  made.push(l);
+  return l;
 }
 
 describe("SuggestionLedger", () => {

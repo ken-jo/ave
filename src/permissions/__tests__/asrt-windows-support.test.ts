@@ -615,6 +615,10 @@ describe("asrt-windows-support adapter", () => {
   it("reads user + WFP from the single checkWindowsSandboxStatusAsync spawn (ASRT 0.0.76)", async () => {
     const ORIGINAL_PLATFORM = process.platform;
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    // On a real Windows host the install cases above already reach
+    // `readAsrtWindowsStatus` through this mock, and nothing clears it between
+    // cases, so the call count below would include their calls.
+    checkWindowsSandboxStatusAsyncMock.mockReset();
     checkWindowsSandboxStatusAsyncMock.mockResolvedValue({
       user: {
         provisioned: true,

@@ -452,12 +452,24 @@ function folded(name: string): string {
 }
 
 /**
- * The entry of `entries` that `name` names: the one equal in bytes, else the
- * single one equal after NFC and case folding. Several such entries are
- * `ambiguous-case`; none is `not-found`.
+ * The entry of `entries` that `name` names: the one equal in bytes, else —
+ * when the volume itself resolves the typed spelling — the single one equal
+ * after NFC and case folding. Several such entries are `ambiguous-case`; none
+ * is `not-found`. A spelling the volume does not resolve is `not-found` on
+ * its own: on a case-sensitive volume `MARKET` is not `Market`, and folding
+ * it would read a directory other than the one typed.
  */
 async function onDiskSpelling(entries: readonly string[], name: string, at: string, folder: string, platform: NodeJS.Platform, fs: FolderFs): Promise<string> {
   if (entries.includes(name)) return name;
+  try {
+    await fs.lstat(at);
+  } catch (error) {
+    // A refusal (the network fence) is the caller's.
+    if (error instanceof MarketplaceError) throw error;
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") throw unreadable("not-found", folder, `${at} does not exist`);
+    throw folderUnreadable(folder, error);
+  }
   const wanted = folded(name);
   const matches = entries.filter((entry) => folded(entry) === wanted);
   if (matches.length === 1) return matches[0]!;
