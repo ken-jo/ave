@@ -60,8 +60,8 @@ export const PLUGIN_MANAGED_RUNTIME_ASSETS = Object.freeze([
   }),
 ]);
 
-export function hostRuntimeAssetsForInstallerTarget(installerTarget) {
-  const uvTarget = installerUvTargetFor(installerTarget);
+export function hostRuntimeAssetsForInstallerTarget(installerTarget, arch = process.arch) {
+  const uvTarget = installerUvTargetFor(installerTarget, process.platform, arch);
   return HOST_PACKAGED_RUNTIME_ASSETS.map((asset) => {
     if (asset.id !== "uv") return asset;
     return Object.freeze({
@@ -72,8 +72,8 @@ export function hostRuntimeAssetsForInstallerTarget(installerTarget) {
   });
 }
 
-export function hostRuntimeAssetSummary(installerTarget) {
-  return hostRuntimeAssetsForInstallerTarget(installerTarget)
+export function hostRuntimeAssetSummary(installerTarget, arch = process.arch) {
+  return hostRuntimeAssetsForInstallerTarget(installerTarget, arch)
     .map((asset) => {
       const targetSuffix = asset.selectedTarget ? `:${asset.selectedTarget}` : "";
       return `${asset.id}${targetSuffix}`;

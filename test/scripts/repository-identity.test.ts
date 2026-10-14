@@ -56,6 +56,7 @@ const NOT_CHECKED: ReadonlyArray<readonly [string, string]> = [
   ["src/permissions/__tests__/verdict-cache.test.ts", "URL-classification input"],
   ["src/tools/__tests__/executor.test.ts", "URL-classification input"],
   ["test/scripts/check-release-repository.test.ts", "the release gate's mismatch fixtures"],
+  ["test/scripts/linux-package-arch.test.ts", "packaged-file paths (linux-unpacked/ave), not repository references"],
   ["test/scripts/repository-identity.test.ts", "this file's own fixtures"],
 ];
 

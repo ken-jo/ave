@@ -15,6 +15,14 @@ on:
     tags:
       - "v*.*.*"
 
+# One build per ref at a time on the shared self-hosted runners. GitHub keeps
+# one running and at most one pending run per group: cancel-in-progress: false
+# protects only the running build, and a newer run cancels the pending one
+# rather than queueing behind it.
+concurrency:
+  group: build-installers-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Public tag semantics are verified from the immutable event SHA. The profile
   # never controls secret injection; public tag secrets are fixed in workflow.
@@ -103,16 +111,19 @@ jobs:
       # ["self-hosted","Windows","X64","ave-release"], or a hosted label).
       # release-profile has already failed the run if either is unset.
       #
-      # Linux stays on the hosted x64 label: no target arch is pinned, so the
-      # build host's architecture is the shipped architecture, and the
-      # self-hosted Linux runners are ARM64.
+      # Linux takes AVE_LINUX_RUNNER (the ARM64 self-hosted runners) like the
+      # other release Linux jobs, and always ships x64: `--arch x64` pins the
+      # target, so on an ARM64 host build-installers cross-builds (target-arch
+      # node_modules, node-pty compiled with x86_64-linux-gnu-gcc) and the arch
+      # audit below refuses any non-x64 binary. On an x64 runner the same
+      # command is a native build.
       matrix:
         include:
           - name: macOS installer
             os: ${{ fromJSON(vars.AVE_MACOS_RUNNER) }}
             target: mac
           - name: Linux installer
-            os: ubuntu-latest
+            os: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
             target: linux
           - name: Windows installer
             os: ${{ fromJSON(vars.AVE_WINDOWS_RUNNER) }}
@@ -230,9 +241,40 @@ jobs:
         run: |
           mkdir -p "$ELECTRON_BUILDER_CACHE"
           printf '{ "type": "commonjs" }\n' > "$ELECTRON_BUILDER_CACHE/package.json"
+      # Packaging needs fakeroot/rpmbuild; the arch audit needs file, dpkg-deb,
+      # rpm2cpio, cpio and unsquashfs (AppImage payload); node-gyp needs
+      # python3 and make; an ARM64 host also needs the x86_64-linux-gnu cross
+      # compiler for node-pty, and an x64 host the launch gates' X/D-Bus/keyring.
+      # A self-hosted runner has no sudo and is provisioned with these (add
+      # them to the runner provisioning, never install from here); a hosted
+      # runner installs exactly the named packages it lacks: no upgrade, no
+      # recommends, no meta-package.
       - name: Install Linux packaging tools
         if: matrix.target == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm xvfb dbus dbus-x11 gnome-keyring
+        run: |
+          set -euo pipefail
+          tools=(fakeroot:fakeroot rpmbuild:rpm file:file dpkg-deb:dpkg rpm2cpio:rpm2cpio cpio:cpio unsquashfs:squashfs-tools python3:python3 make:make)
+          case "$(uname -m)" in
+            aarch64) tools+=(x86_64-linux-gnu-gcc:gcc-x86-64-linux-gnu x86_64-linux-gnu-g++:g++-x86-64-linux-gnu x86_64-linux-gnu-ar:binutils-x86-64-linux-gnu) ;;
+            x86_64) tools+=(xvfb-run:xvfb dbus-run-session:dbus dbus-launch:dbus-x11 gnome-keyring-daemon:gnome-keyring) ;;
+            *) echo "unsupported Linux installer host: $(uname -m)" >&2; exit 1 ;;
+          esac
+          missing=()
+          for entry in "${tools[@]}"; do
+            command -v "${entry%%:*}" >/dev/null 2>&1 || missing+=("${entry#*:}")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            if [ "${{ runner.environment }}" != "github-hosted" ]; then
+              echo "::error::self-hosted Linux runner lacks packages: ${missing[*]} (provision them; the runner user has no sudo)"
+              exit 1
+            fi
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends --no-upgrade "${missing[@]}"
+          fi
+          if [ "$(uname -m)" = aarch64 ]; then
+            test "$(x86_64-linux-gnu-gcc -dumpmachine)" = x86_64-linux-gnu
+          fi
+          dpkg-query -W -f='${Package} ${Version} ${Architecture}\n' "${tools[@]#*:}" 2>/dev/null | sort -u || true
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Build installer
@@ -262,6 +304,10 @@ jobs:
             echo "skip_sign=false" >> "$GITHUB_OUTPUT"
           fi
           args+=("--skip-native-rebuild")
+          if [ "${{ matrix.target }}" = "linux" ]; then
+            # Linux installers ship x64 whatever the runner's arch.
+            args+=("--arch" "x64")
+          fi
           # NO `--publish` here. The matrix runs three jobs in parallel and
           # if each told electron-builder to publish directly to the same
           # GitHub Release draft, the GitHub API contention produced partial
@@ -271,6 +317,30 @@ jobs:
           # `needs: installers`) assembles every platform's artifacts and
           # uploads them atomically.
           node scripts/build-installers.mjs "${args[@]}"
+      # Hard gate: every ELF and every .node in linux-unpacked, the AppImage
+      # runtime, and the extracted deb and rpm payloads (plus their declared
+      # arch) must be x86-64 by both the ELF header and file(1).
+      - name: Verify Linux installers are x64
+        if: matrix.target == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-linux-package-arch.mjs --release-dir release --arch x64 --require-installers
+      # The launch gates execute the packaged app, which an ARM64 host cannot
+      # run as x64 without registering qemu in the host kernel's binfmt_misc —
+      # a host-wide change to a machine other containers share. A cross-built
+      # Linux package is therefore not launched here; the arch audit above is
+      # its gate.
+      - name: Decide packaged launch gates
+        id: launch
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "linux" ] && [ "$(uname -m)" != "x86_64" ]; then
+            echo "::warning::Linux x64 installer cross-built on $(uname -m): packaged smoke and escape gate cannot launch it here"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Smoke launch packaged app
         # macOS Gatekeeper blocks launch of unsigned .app bundles. Public tags
         # and secret-free manual candidates therefore skip only this macOS
@@ -286,7 +356,8 @@ jobs:
         # hosted Windows runner; a self-hosted Windows build ships without a
         # launch smoke, as an unsigned macOS build does.
         if: >-
-          (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')
+          steps.launch.outputs.run == 'true'
+          && (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')
           && (matrix.target != 'win' || runner.environment == 'github-hosted')
         shell: bash
         env:
@@ -314,7 +385,8 @@ jobs:
       # self-hosted Windows PC either.
       - name: Packaged escape gate
         if: >-
-          (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')
+          steps.launch.outputs.run == 'true'
+          && (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')
           && (matrix.target != 'win' || runner.environment == 'github-hosted')
         shell: bash
         run: |

@@ -220,7 +220,8 @@ describe("installer smoke and packaging discipline", () => {
     expect(workflow).toContain("Smoke launch packaged app");
     expect(workflow).toContain("scripts/smoke-packaged-app.mjs --target");
     expect(workflow).toContain("xvfb-run -a");
-    expect(workflow).toContain("sudo apt-get update && sudo apt-get install -y fakeroot rpm xvfb dbus dbus-x11 gnome-keyring");
+    expect(workflow).toContain("x86_64) tools+=(xvfb-run:xvfb dbus-run-session:dbus dbus-launch:dbus-x11 gnome-keyring-daemon:gnome-keyring) ;;");
+    expect(workflow).toContain('sudo apt-get install -y --no-install-recommends --no-upgrade "${missing[@]}"');
     expect(workflow).toContain("dbus-run-session -- bash -euo pipefail -c");
     expect(workflow).toContain("gnome-keyring-daemon --unlock --components=secrets");
     expectPinnedAction(workflow, "actions/cache");
@@ -483,16 +484,58 @@ describe("installer smoke and packaging discipline", () => {
     expect(run({}).status).toBe(2);
   });
 
+  it("ships x64 Linux installers from any runner arch and refuses a foreign-arch binary", () => {
+    const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
+    if (installers === undefined) throw new Error("build-installers.yml has no installers job");
+    const buildInstallers = readRepoFile("scripts/build-installers.mjs");
+    const afterPack = readRepoFile("scripts/electron-after-pack.cjs");
+
+    // The target arch is pinned, never inferred from the runner.
+    const build = jobRunCommands(installers).find((command) => command.includes("node scripts/build-installers.mjs"));
+    expect(build).toContain('if [ "${{ matrix.target }}" = "linux" ]; then\n# Linux installers ship x64 whatever the runner\'s arch.\nargs+=("--arch" "x64")\nfi\n');
+
+    // The arch audit is a plain, unconditional-on-success Linux step between
+    // the build and anything that launches or uploads the package.
+    const audit = "node scripts/verify-linux-package-arch.mjs --release-dir release --arch x64 --require-installers";
+    expect(jobRunCommands(installers).filter((command) => command.includes(audit))).toEqual([`set -euo pipefail\n${audit}`]);
+    const auditAt = installers.indexOf(audit);
+    expect(auditAt).toBeGreaterThan(installers.indexOf("node scripts/build-installers.mjs"));
+    expect(auditAt).toBeLessThan(installers.indexOf("Smoke launch packaged app"));
+    expect(auditAt).toBeLessThan(installers.indexOf("Upload installers"));
+    expect(installers).not.toContain("continue-on-error");
+
+    // An ARM64 host cannot launch the x64 app without host-wide binfmt; the
+    // launch gates skip only there, by the host's own arch.
+    expect(installers).toContain('if [ "${{ matrix.target }}" = "linux" ] && [ "$(uname -m)" != "x86_64" ]; then');
+    for (const step of ["Smoke launch packaged app", "Packaged escape gate"]) {
+      const at = installers.indexOf(`- name: ${step}`);
+      expect(installers.slice(at, installers.indexOf("\n      - ", at + 1)), step).toContain(
+        "if: >-\n          steps.launch.outputs.run == 'true'\n          && (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')\n",
+      );
+    }
+
+    // Cross mode: target-arch node_modules from the frozen lockfile with no
+    // install script, node-pty compiled by the cross toolchain, and no
+    // electron-builder rebuild with the host compiler.
+    expect(buildInstallers).toContain('"--frozen-lockfile", "--ignore-scripts", `--cpu=${arch}`, "--os=linux"');
+    expect(buildInstallers).toContain('"arm64->x64": { triple: "x86_64-linux-gnu", gypArch: "x64" }');
+    expect(buildInstallers).toContain("requires --skip-native-rebuild");
+    expect(buildInstallers).toContain("cross-build: node-pty compiled as");
+    // Only the packed arch's node-pty prebuild and sandbox helper ship.
+    expect(afterPack).toContain("pruneForeignNodePtyPrebuilds(context);");
+    expect(afterPack).toContain("if (archDir !== arch) rmSync(join(keepRoot, archDir), { recursive: true, force: true });");
+  });
+
   it("builds macOS and Windows installers on the runners the repo variables name", () => {
     const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
     if (installers === undefined) throw new Error("build-installers.yml has no installers job");
 
     // `vars` and `fromJSON` are available in `strategy`, so each matrix entry
-    // carries its own runner; the Linux entry keeps the hosted x64 label
-    // because the build host's architecture is the shipped one.
+    // carries its own runner, with no hosted fallback; the Linux entry
+    // cross-builds x64 on the ARM64 self-hosted runners.
     expect(installers.match(/^ {12}os: .*$/gmu)).toEqual([
       "            os: ${{ fromJSON(vars.AVE_MACOS_RUNNER) }}",
-      "            os: ubuntu-latest",
+      "            os: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}",
       "            os: ${{ fromJSON(vars.AVE_WINDOWS_RUNNER) }}",
     ]);
     expect(installers.match(/^ {4}runs-on: .*$/gmu)).toEqual(["    runs-on: ${{ matrix.os }}"]);
@@ -1285,11 +1328,11 @@ describe("installer smoke and packaging discipline", () => {
     expect(runtimeAssets).toContain("resources/licenses/uv");
     expect(runtimeAssets).toContain("better-sqlite3-native-binding");
     expect(runtimeAssets).toContain("python-wheelhouse");
-    expect(buildInstallers).toContain("hostRuntimeAssetSummary(target)");
+    expect(buildInstallers).toContain("hostRuntimeAssetSummary(target, arch)");
     expect(buildInstallers).toContain("required runtime assets");
     expect(buildInstallers).toContain("checkPackageFootprint(target, fast)");
     expect(buildInstallers).toContain("expected exactly one packaged app.asar");
-    expect(buildInstallers).toContain("assertUvRuntimePayload(target)");
+    expect(buildInstallers).toContain("assertUvRuntimePayload(target, arch)");
     expect(buildInstallers).toContain("staged uv runtime must contain only");
     expect(buildInstallers).toContain("compressed uv archive missing from staged runtime");
     expect(buildInstallers).toContain("staged uv binary SHA mismatch");
