@@ -244,6 +244,11 @@ export async function queryLoop(
     const supportsLengthContinuation = subscriptionRuntime === undefined
       && vendorSupportsLengthContinuation(llmSettings.provider);
     let systemPrompt = initialSystemPrompt;
+    // The clock, environment and query-ranked memory for this turn. Every
+    // round sends the same row after the conversation, outside the reusable
+    // prefix, so the system prompt and history stay byte-stable across turns.
+    const turnContextRow = self.buildTurnContextRow(bounds.memoryQuery ?? "");
+    const turnContextRows = turnContextRow ? [turnContextRow] : [];
     let activeApprovalReasonPrefix = bounds.approvalReasonPrefix;
     let servingVendorProvider: LLMVendor | undefined = subscriptionUsageIsOpaque
       ? undefined
@@ -701,12 +706,12 @@ export async function queryLoop(
               systemPrompt,
               toolSchemas,
               estimateCurrent: () => self.estimateCurrentRequestProjection({
+                requestOnlyRows: turnContextRows,
                 systemPrompt: self.buildSystemPromptForScope(
                   scope,
                   stagedOrigin,
                   bounds.rolePrompt,
                   bounds.sessionIdOverride ?? self.sessionId,
-                  bounds.memoryQuery,
                 ),
                 toolSchemas,
               }),
@@ -720,7 +725,6 @@ export async function queryLoop(
               stagedOrigin,
               bounds.rolePrompt,
               bounds.sessionIdOverride ?? self.sessionId,
-              bounds.memoryQuery,
             );
           }
         }
@@ -890,6 +894,7 @@ export async function queryLoop(
           }
           break;
         }
+        rows.push(...turnContextRows);
         const appendedUserText: string[] = [];
         if (nudgeTextForRound !== undefined) appendedUserText.push(nudgeTextForRound);
         // After the re-prompt: that one says what to do with THIS round, the
@@ -898,7 +903,8 @@ export async function queryLoop(
         if (appendedUserText.length === 0) return rows;
         return [
           ...rows,
-          { role: "user" as const, content: appendedUserText.join("\n\n") },
+          // Wire-only, like the turn context: never part of the reusable prefix.
+          { role: "user" as const, content: appendedUserText.join("\n\n"), meta: { requestOnly: true as const } },
         ];
       };
       const projectRound = (
@@ -962,7 +968,6 @@ export async function queryLoop(
                     stagedOrigin,
                     bounds.rolePrompt,
                     bounds.sessionIdOverride ?? self.sessionId,
-                    bounds.memoryQuery,
                   ),
                 ),
               },
@@ -984,7 +989,6 @@ export async function queryLoop(
                 stagedOrigin,
                 bounds.rolePrompt,
                 bounds.sessionIdOverride ?? self.sessionId,
-                bounds.memoryQuery,
               );
               // The round already repaired the history above; compaction has
               // since rewritten it, and a boundary that cut between a tool_use
@@ -1232,6 +1236,7 @@ export async function queryLoop(
               systemPrompt,
               toolSchemas,
               estimateCurrent: () => self.estimateCurrentRequestProjection({
+                requestOnlyRows: turnContextRows,
                 systemPrompt,
                 toolSchemas,
               }),
@@ -2346,7 +2351,6 @@ export async function queryLoop(
           stagedOrigin,
           bounds.rolePrompt,
           bounds.sessionIdOverride ?? self.sessionId,
-          bounds.memoryQuery,
         );
       }
     }

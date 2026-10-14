@@ -625,7 +625,6 @@ async function runTurnInSpan(
       options?.originSource ?? null,
       options?.rolePrompt,
       effectiveSessionId,
-      input,
     );
     // §4.5.2 step 6 — PROMPT_ASSEMBLE
     self.tracer.step("PROMPT_ASSEMBLE", {

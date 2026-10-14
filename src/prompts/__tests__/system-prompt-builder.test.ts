@@ -61,7 +61,7 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
     expect(prompt).toContain("outside");
   });
 
-  it("passes the immutable current query to selected-memory lookup", () => {
+  it("ranks memory notes against the turn's query in the turn context, not the system prompt", () => {
     const selectRelevantMemories = vi.fn((query: string) => ({
       entries: [],
       context: `selected:${query}`,
@@ -72,10 +72,12 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
       toolRegistry: new ToolRegistry(),
     });
 
-    const prompt = builder.build({ memoryQuery: "release budget" });
+    const turnContext = builder.buildTurnContext("release budget");
 
     expect(selectRelevantMemories).toHaveBeenCalledWith("release budget", undefined);
-    expect(prompt).toContain("selected:release budget");
+    expect(turnContext).toContain("<ave-user-memory>");
+    expect(turnContext).toContain("selected:release budget");
+    expect(builder.build()).not.toContain("selected:");
   });
 
 
@@ -111,10 +113,17 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
     expect(getPromptLongTermMemoryOverview).toHaveBeenLastCalledWith(undefined);
     expect(defaultPrompt).toContain("<ave-long-term-memory-overview>");
     expect(defaultPrompt).toContain("GLOBAL-OVERVIEW<\\/ave-long-term-memory-overview>");
-    expect(defaultPrompt).toContain("<ave-user-memory>");
-    expect(defaultPrompt.indexOf("<ave-long-term-memory-overview>"))
-      .toBeLessThan(defaultPrompt.indexOf("<ave-user-memory>"));
     expect(defaultPrompt.split("</ave-long-term-memory-overview>").length - 1).toBe(1);
+    // Raw notes are ranked per turn and fenced separately in the turn context.
+    expect(defaultPrompt).not.toContain("RAW-MEMORY-NOTES");
+    const turnContext = builder.buildTurnContext("");
+    expect(turnContext).toContain("<ave-user-memory>");
+    expect(turnContext).toContain("RAW-MEMORY-NOTES");
+    expect(selectRelevantMemories).toHaveBeenLastCalledWith("", {
+      projectRoot: "C:\\workspace\\default",
+      projectName: "default",
+      includeUnscoped: true,
+    });
 
     builder.setProjectContext({
       projectRoot: "C:\\workspace\\alpha",
@@ -652,7 +661,7 @@ describe("SystemPromptBuilder — response language", () => {
 
   it("names the host locale for an interactive launch", () => {
     process.argv = ["electron", "."];
-    const prompt = makeSystemPromptBuilder().build();
+    const prompt = makeSystemPromptBuilder().buildTurnContext("");
     expect(prompt).toContain(
       `Locale: ${Intl.DateTimeFormat().resolvedOptions().locale}`,
     );
@@ -661,16 +670,16 @@ describe("SystemPromptBuilder — response language", () => {
 
   it("tells an interactive run to answer in the user's language, not the prompt's", () => {
     // Naming the locale is not the same as saying what to do with it. The
-    // packaged documents in this prompt are written in one fixed language, and
+    // packaged documents in the system prompt are written in one fixed language, and
     // without this rule the model answers in the language it is READING.
     process.argv = ["electron", "."];
-    const prompt = makeSystemPromptBuilder().build();
+    const prompt = makeSystemPromptBuilder().buildTurnContext("");
     expect(prompt).toContain(t("be_systemPromptBuilder.interactiveResponseLanguage"));
   });
 
   it("keeps the interactive language rule out of a headless run", () => {
     process.argv = ["electron", ".", "--exec", "do the task"];
-    const prompt = makeSystemPromptBuilder().build();
+    const prompt = makeSystemPromptBuilder().buildTurnContext("");
     expect(prompt).not.toContain(t("be_systemPromptBuilder.interactiveResponseLanguage"));
   });
 
@@ -678,7 +687,7 @@ describe("SystemPromptBuilder — response language", () => {
     // A one-shot run has no interactive user, so the machine's locale says
     // nothing about who is reading the answer.
     process.argv = ["electron", ".", "--exec", "do the task"];
-    const prompt = makeSystemPromptBuilder().build();
+    const prompt = makeSystemPromptBuilder().buildTurnContext("");
     expect(prompt).toContain(t("be_systemPromptBuilder.headlessResponseLanguage"));
     expect(prompt).not.toContain(
       `Locale: ${Intl.DateTimeFormat().resolvedOptions().locale}`,

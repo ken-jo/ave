@@ -461,14 +461,13 @@ export class ConversationLoop {
     originSource: string | null,
     rolePrompt?: ActiveRolePrompt,
     overlaySessionId = this.sessionId,
-    memoryQuery = "",
   ): string {
     this.deps.systemPromptBuilder.setToolScope?.(scope);
     this.deps.systemPromptBuilder.setOriginSource?.(originSource);
     this.deps.systemPromptBuilder.setActiveSessionId?.(overlaySessionId);
     this.deps.systemPromptBuilder.setActiveRolePrompt?.(rolePrompt ?? null);
     try {
-      return this.deps.systemPromptBuilder.build({ memoryQuery });
+      return this.deps.systemPromptBuilder.build();
     } finally {
       this.deps.systemPromptBuilder.setOriginSource?.(null);
       this.deps.systemPromptBuilder.setActiveSessionId?.(null);
@@ -480,13 +479,25 @@ export class ConversationLoop {
     return estimateRequestInputProjection(input, this.provider ?? undefined);
   }
 
+  /**
+   * The per-turn context as a request-only row (see
+   * `SystemPromptBuilder.buildTurnContext`), or null when the builder renders
+   * none. Built once per turn so every round of the turn sends the same row.
+   */
+  buildTurnContextRow(memoryQuery: string): GenericMessage | null {
+    const content = this.deps.systemPromptBuilder.buildTurnContext?.(memoryQuery) ?? "";
+    return content.length > 0 ? { role: "user", content, meta: { requestOnly: true } } : null;
+  }
+
   estimateCurrentRequestProjection(params: {
     systemPrompt: string;
     toolSchemas: ToolSchema[];
+    /** Request-only rows that trail the history in the request being measured. */
+    requestOnlyRows?: GenericMessage[];
   }): RequestInputProjection {
     return this.projectProviderRequestInput({
       systemPrompt: params.systemPrompt,
-      messages: this.history.getMessages(),
+      messages: [...this.history.getMessages(), ...(params.requestOnlyRows ?? [])],
       toolSchemas: params.toolSchemas,
     });
   }
@@ -504,14 +515,15 @@ export class ConversationLoop {
       originSource,
       rolePrompt,
       overlaySessionId,
-      memoryQuery,
     );
+    const turnContextRow = this.buildTurnContextRow(memoryQuery);
     return {
       systemPrompt: buildSystemPrompt(),
       toolSchemas,
       estimateCurrent: () => this.estimateCurrentRequestProjection({
         systemPrompt: buildSystemPrompt(),
         toolSchemas,
+        ...(turnContextRow ? { requestOnlyRows: [turnContextRow] } : {}),
       }),
     };
   }
