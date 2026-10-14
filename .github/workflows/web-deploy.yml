@@ -42,6 +42,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The runner check and the home isolation below run on Node; a
+      # self-hosted runner has no toolcache to rely on.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
       - name: Require the runner variable
         shell: bash
         env:
@@ -70,6 +77,12 @@ jobs:
         env:
           HOME: ${{ runner.temp }}/bun-home
           USERPROFILE: ${{ runner.temp }}/bun-home
+
+      # The install scripts and the Next build resolve os.homedir() and
+      # os.tmpdir(): on the owner's machine those are the owner's own.
+      - name: Isolate home and temp directories in the runner temp
+        shell: bash
+        run: node .github/scripts/isolate-job-home.mjs
 
       - name: Install web dependencies
         working-directory: web

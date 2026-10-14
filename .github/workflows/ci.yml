@@ -20,10 +20,10 @@ jobs:
     # clone private sibling repositories; cross-repository integration belongs
     # to trusted default-branch repository_dispatch workflows.
     # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
-    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
-    # PRs never reach a self-hosted runner.
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback, and a
+    # fork pull request always gets the hosted label. Private repo only: unset
+    # AVE_LINUX_RUNNER before the repo goes public.
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04-arm' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -220,14 +220,19 @@ jobs:
     name: Windows permission path tests
     # Runner from repo variable AVE_WINDOWS_RUNNER (JSON label array, e.g.
     # ["self-hosted","Windows","X64","ave-release"], or a hosted label such as
-    # "windows-latest" to opt into a GitHub-hosted runner explicitly), the
-    # variable build-installers.yml reads. Unset falls back to any self-hosted
-    # runner only so the check below can fail naming the variable, never to a
-    # billing-blocked hosted label. Before the repo goes public, set it to its
-    # hosted label so fork pull requests never reach the owner's machine.
+    # "\"windows-latest\"" — a quoted JSON string — to opt into a GitHub-hosted
+    # runner explicitly), the variable build-installers.yml reads. Unset falls
+    # back to any self-hosted runner only so the check below can fail naming
+    # the variable, never to a billing-blocked hosted label. A pull request
+    # from a fork always gets the hosted label: a fork run may not see repo
+    # variables at all, and the self-hosted fallback would then hand it the
+    # owner's machine. That guard lives in this file, which a fork PR can
+    # edit, so the repo setting that holds fork workflows for approval stays
+    # the real boundary; keep it on, and before going public also set the
+    # variable to its hosted label.
     # The runner needs Git for Windows (bash) and the C++ build tools that
     # scripts/build-windows-job.ps1 finds through vswhere.
-    runs-on: ${{ vars.AVE_WINDOWS_RUNNER && fromJSON(vars.AVE_WINDOWS_RUNNER) || 'self-hosted' }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'windows-latest' || vars.AVE_WINDOWS_RUNNER && fromJSON(vars.AVE_WINDOWS_RUNNER) || 'self-hosted' }}
     env:
       # A self-hosted runner's home is the owner's own: keep bun's package
       # cache and Electron's download cache in the workspace.
@@ -390,14 +395,15 @@ jobs:
     name: macOS permission path tests
     # Runner from repo variable AVE_MACOS_RUNNER (JSON label array, e.g.
     # ["self-hosted","macOS","ARM64","ave-release"], or a hosted label such as
-    # "macos-15" to opt into a GitHub-hosted runner explicitly), the variable
-    # build-installers.yml reads. Unset falls back to any self-hosted runner
-    # only so the check below can fail naming the variable, never to a
-    # billing-blocked hosted label. Before the repo goes public, set it to its
-    # hosted label so fork pull requests never reach the owner's machine.
+    # "\"macos-15\"" — a quoted JSON string — to opt into a GitHub-hosted runner
+    # explicitly), the variable build-installers.yml reads. Unset falls back
+    # to any self-hosted runner only so the check below can fail naming the
+    # variable, never to a billing-blocked hosted label. Fork pull requests
+    # always get the hosted label; see the Windows job for why that guard is
+    # not the boundary on its own.
     # The adversarial suite's Electron control runs the dev Electron binary
     # (never the packaged app), so the runner needs a logged-in GUI session.
-    runs-on: ${{ vars.AVE_MACOS_RUNNER && fromJSON(vars.AVE_MACOS_RUNNER) || 'self-hosted' }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || vars.AVE_MACOS_RUNNER && fromJSON(vars.AVE_MACOS_RUNNER) || 'self-hosted' }}
     env:
       # A self-hosted runner's home is the owner's own: keep bun's package
       # cache and Electron's download cache in the workspace.
@@ -532,10 +538,10 @@ jobs:
     # The architecture of `build-and-test`, so the native-module cache key below
     # and ASRT's `arm64` seccomp filter both apply.
     # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback. Private
-    # repo only: unset AVE_LINUX_RUNNER before the repo goes public, so fork
-    # PRs never reach a self-hosted runner.
-    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback, and a
+    # fork pull request always gets the hosted label. Private repo only: unset
+    # AVE_LINUX_RUNNER before the repo goes public.
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04-arm' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
