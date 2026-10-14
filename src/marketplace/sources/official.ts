@@ -3,12 +3,11 @@
  * (design §2.1, §5.1).
  *
  * The official source is a build constant, never a `sources.json` entry, so
- * no file on disk can repoint it. While this design is being built the
- * repository is private (decided 2026-09-23: the `ave-project` organization
- * cannot host a new public repository or run CI), so the constant carries
- * token auth for github.com. Before the first public release built on this
- * design the repository becomes publicly readable or moves, and that
- * release's constant carries the public URL with `auth: { kind: "none" }`.
+ * no file on disk can repoint it. Its repository must be publicly readable: the
+ * constant carries `auth: { kind: "none" }`: a fresh profile reads the
+ * catalog anonymously, and no stored token is ever offered to it, not even a
+ * token stored for the same host by a private source the user added (sync
+ * offers a token only to a source whose own auth is `token`).
  */
 import { holdsCredential } from "../../shared/dlp.js";
 
@@ -28,7 +27,7 @@ export const OFFICIAL_MARKETPLACE: OfficialMarketplace = Object.freeze({
   id: OFFICIAL_SOURCE_ID,
   url: "https://github.com/ken-jo/agent-marketplace",
   mirrors: Object.freeze([]),
-  auth: Object.freeze({ kind: "token", host: "github.com" }),
+  auth: Object.freeze({ kind: "none" }),
 });
 
 export const SOURCE_ID_RE = /^[a-z0-9][a-z0-9-]{1,62}$/u;
