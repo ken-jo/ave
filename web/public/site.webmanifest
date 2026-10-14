@@ -3,7 +3,7 @@
   "short_name": "Ave",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f1f2ed",
-  "theme_color": "#f1f2ed",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
   "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
 }
