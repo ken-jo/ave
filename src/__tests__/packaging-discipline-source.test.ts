@@ -1104,8 +1104,10 @@ describe("installer smoke and packaging discipline", () => {
     // rebuild` deletes the working binding before it fails, and the `&&` chain
     // then skips uv fetch + protocol registration + hook install).
     expect(packageJson.scripts?.postinstall).not.toContain("electron-rebuild");
+    // The prebuilt spawn-helper ships mode 0644; the installed copy the dev
+    // app loads gets its execute bit back before anything else runs.
     expect(packageJson.scripts?.postinstall).toBe(
-      "node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
+      "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
     );
     // afterPack follows node-pty's loader order instead of hardcoding the
     // per-ABI gyp output directory.
