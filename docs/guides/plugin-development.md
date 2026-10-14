@@ -115,8 +115,9 @@ whose `entryPath` is the resolved absolute path of `command`. Its rules:
   variable from your own launcher inside the process instead. The program
   starts from the host's minimal environment, not the user's.
 - `requires.hostProtocol` must be `"3"`, so declare `requires.minAppVersion`
-  `0.14.0`, the first release that serves protocol 3. The validator's own
-  floor for a `process` extension is `0.13.0`, the first release that runs one.
+  `0.14.0`, the first release that serves protocol 3; the extension validator
+  (`src/plugins/validate/`) and a marketplace install both refuse a lower one. The separate `process` floor,
+  `0.13.0` (the first release that runs one), is below it.
 
 Three refusals apply to a `process` extension, each with what to do:
 
@@ -130,7 +131,8 @@ Three refusals apply to a `process` extension, each with what to do:
   `ave-package.json` does not publish the extension the way a `process` entry
   requires. Its `platforms` must be listed without `win32`, its `artifact` must
   pin a `release` or an `archive` by `sha256` and declare no `tree`, and its
-  `minAppVersion` must be `0.13.0` or newer. The message names the field; the
+  `minAppVersion` must be `0.14.0` or newer (the protocol 3 floor, above the
+  `process` floor of `0.13.0`). The message names the field; the
   marketplace's owner fixes it.
 - `process-entry-unconfined`: the program runs only inside the OS Tool Sandbox
   on macOS or Linux. With the sandbox off it is refused, and it cannot run on

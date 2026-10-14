@@ -14,7 +14,7 @@ today.
 | The app refuses to install a version whose `minAppVersion` is newer than the app. | `src/marketplace/resolve/descriptor.ts` (`PACKAGE_INCOMPATIBLE`) |
 | The app refuses to load an extension whose `minAppVersion` is newer than the app. | `markIncompatibleAppVersion` in `src/plugins/runtime/index.ts` (`incompatible-app-version`) |
 | The app refuses to load an extension whose `requires.hostProtocol` is missing or not served. | `markIncompatibleHostProtocol` in `src/plugins/runtime/index.ts`, served set `HOST_PROTOCOL_VERSIONS_SERVED` in `src/plugins/isolation/host-api-wire.ts` (`incompatible-host-protocol`) |
-| `minAppVersion` must not be lower than the first app release that served the declared protocol. | `HOST_PROTOCOL_FIRST_APP_VERSION` checked by `src/plugins/validate/validate-plugin.ts` |
+| `minAppVersion` must not be lower than the first app release that served the declared protocol. | `HOST_PROTOCOL_FIRST_APP_VERSION`, checked by `src/plugins/validate/validate-plugin.ts` and at marketplace install by `gitInstallManifestMismatches` in `src/marketplace/resolve/manifest-rules.ts` |
 
 Both load refusals are not fixed by reinstalling: the same package fails the
 same way. `incompatible-app-version` means update the app;
