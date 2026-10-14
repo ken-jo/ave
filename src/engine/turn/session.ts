@@ -14,7 +14,7 @@ import { normalizeToolPairInvariant } from "../conversation-history.js";
 import { backgroundShellManager } from "../../tools/shell-tools.js";
 import { createTracer } from "../../observability/conversation-trace.js";
 import { estimateMessagesTokens } from "../auto-compact.js";
-import { withCompactSummaryInLatestBoundary } from "../structured-compact.js";
+import { withCompactSummaryInLatestBoundary, withForkedCompactSummary } from "../structured-compact.js";
 import { createLogger } from "../../lib/logger.js";
 import { projectBasename, projectRootEquals } from "../../shared/project-identity.js";
 import { createWorkspaceRootRevocationFilter } from "../../permissions/workspace-root-lifecycle.js";
@@ -434,7 +434,15 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
       );
     }
 
-    const forkMessages = self.deps.memoryManager.rehydrateToolResultArtifacts(self.sessionId, repaired) as GenericMessage[];
+    const rehydrated = self.deps.memoryManager.rehydrateToolResultArtifacts(self.sessionId, repaired) as GenericMessage[];
+    const forkMessages = target.summary
+      ? withForkedCompactSummary(rehydrated, {
+          compactNum,
+          summary: target.summary,
+          trigger: target.trigger,
+          triggeredAt: target.triggeredAt,
+        })
+      : rehydrated;
     await self.deps.memoryManager.saveSession(newSessionId, forkMessages);
 
     // 브랜치 세션 metadata — checkpoint/fork provenance + prior summary.
@@ -449,7 +457,8 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
       branchedAt: new Date().toISOString(),
     });
 
-    const lastMessageRole = forkMessages[forkMessages.length - 1]?.role ?? null;
+    // The transcript decides whether the fork resumes; a prepended summary row does not.
+    const lastMessageRole = rehydrated[rehydrated.length - 1]?.role ?? null;
     const shouldAutoContinue = lastMessageRole === "user";
 
     log.info(`branchFromCheckpoint: new session ${newSessionId} from ${self.sessionId} @ compact #${compactNum}`);

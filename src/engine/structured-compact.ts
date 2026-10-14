@@ -220,6 +220,39 @@ export function withCompactSummaryInLatestBoundary(
   return messages;
 }
 
+/**
+ * A fork copies its source checkpoint's summary. The boundary row is the one
+ * place a summary reaches the model, so the fork's history must carry it
+ * there: an existing boundary row receives it as on load, and a fork whose
+ * slice holds no boundary row gets one at its head, in the compaction's form.
+ */
+export function withForkedCompactSummary(
+  messages: GenericMessage[],
+  checkpoint: { compactNum: number; summary: string; trigger: "auto-compact" | "manual"; triggeredAt: string },
+): GenericMessage[] {
+  if (messages.some((m) => m.role === "user" && m.meta?.compactBoundary === true)) {
+    return withCompactSummaryInLatestBoundary(messages, checkpoint.summary);
+  }
+  const boundaryRow: GenericMessage = {
+    role: "user",
+    content: renderCompactSummaryMessage(checkpoint.compactNum, checkpoint.summary),
+    meta: {
+      compactBoundary: true,
+      compactNum: checkpoint.compactNum,
+      createdAt: new Date(checkpoint.triggeredAt).getTime(),
+      // The fork removed nothing; the divider names the checkpoint it came from.
+      checkpointMeta: {
+        removedMessages: 0,
+        freedTokens: 0,
+        compactNum: checkpoint.compactNum,
+        trigger: checkpoint.trigger,
+        summary: checkpoint.summary.slice(0, 200),
+      },
+    },
+  };
+  return [boundaryRow, ...messages];
+}
+
 
 const MAX_PARSE_RETRY = 1;
 
