@@ -3,8 +3,8 @@
  * home), corrupt-data handling, Store B coexistence, and the decision path:
  * floors > deny > ask > allow across scopes.
  */
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,6 +26,11 @@ import { resolveUserApprovalVerdict } from "../../shared/permissions-events.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 import { classifyApprovalRuleVerdict } from "../../tools/pipeline/approval-memory-skip.js";
+import { runWithToolExecutionCwd } from "../../tools/execution-context.js";
+import { ToolExecutor } from "../../tools/executor.js";
+import { ToolRegistry } from "../../tools/registry.js";
+import { BashTool } from "../../tools/shell-tools.js";
+import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
 
 let dir: string;
 let permissionsFile: string;
@@ -183,6 +188,40 @@ describe("decision path", () => {
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: repo })).toMatchObject({ decision: "allow" });
     // Outside a repository the cwd itself is the project.
     expect(projectRulesLocation(dir, project).projectRoot).toBe(project);
+  });
+
+  it("project rules follow the shell call's own cwd, resolved with realpath", async () => {
+    // The session runs in repo A; the call runs in a nested repo B, reached
+    // through a symlink (inside A, so no out-of-directory grant is involved).
+    const repoA = join(dir, "a");
+    const repoB = join(repoA, "vendor", "b");
+    mkdirSync(join(repoA, ".git"), { recursive: true });
+    mkdirSync(join(repoB, ".git"), { recursive: true });
+    symlinkSync(repoB, join(repoA, "b-link"));
+    const pm = new PermissionManager(permissionsFile);
+    pm.setMode("allow");
+    await pm.addRulePersist({ pattern: "Bash(printf *)", action: "deny" }, { kind: "project", projectCwd: repoB });
+    const check = vi.spyOn(pm, "checkDetailed");
+    const registry = new ToolRegistry();
+    const bash = new BashTool();
+    const execute = vi.spyOn(bash, "execute");
+    registry.register(bash);
+    const executor = new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait: vi.fn() } as never);
+
+    const [result] = await runWithToolExecutionCwd(repoA, () => executor.executeAll(
+      [{ id: "project-cwd", name: "bash", input: { command: "printf hi", cwd: "b-link" } }],
+      { sessionId: "project-cwd", permissionContext: userPermissionContext() },
+    ));
+
+    const context = check.mock.calls[0]![4]!;
+    expect(projectRulesLocation(dir, context.projectRulesCwd!).projectRoot).toBe(realpathSync(repoB));
+    expect(context.ruleSubject).toMatchObject({ kind: "shell", cwd: join(repoA, "b-link") });
+    expect(check.mock.results[0]!.value).toMatchObject({ decision: "deny" });
+    expect(execute).not.toHaveBeenCalled();
+    expect(result!.is_error).toBe(true);
+    // The session cwd's (empty) project file is not what decided the call.
+    await pm.ensureProjectRulesLoaded(repoA);
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("printf hi"), projectRulesCwd: repoA })).toMatchObject({ decision: "allow" });
   });
 
   it("re-reads a project rule file when it changes on disk", async () => {

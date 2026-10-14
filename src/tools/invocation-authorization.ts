@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { resolve as resolvePath } from "node:path";
 import type { Tool } from "./base.js";
 import type { ToolCategory, ToolSource, TrustLevel } from "./types.js";
 import {
@@ -18,6 +17,7 @@ import type {
   HostShellExecutionPlanAuditProjection,
 } from "../permissions/host-shell-execution-plan.js";
 import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-execution-permit.js";
+import { resolveHostShellWorkingDirectory } from "../permissions/host-shell-execution-permit.js";
 import {
   disposableContainerCapability,
   resolveReviewerSandboxCapability,
@@ -408,17 +408,21 @@ export async function authorizeToolInvocation(
     // subject so `Bash(...)` deny/ask/allow rules (user-global and this
     // project's file in Ave home) can match it. The project rules are loaded
     // here because the decision itself is synchronous.
+    // Project rules follow the directory the command will actually run in
+    // (the tool's own cwd resolution); `projectRulesLocation` realpaths it
+    // and walks up to the repository root.
     const shellRuleSubject = isCanonicalBashTool(tool) && typeof finalInput.command === "string"
       ? {
           kind: "shell" as const,
           command: finalInput.command,
-          cwd: typeof finalInput.cwd === "string" && finalInput.cwd.length > 0
-            ? resolvePath(executionCwd, finalInput.cwd)
-            : executionCwd,
+          cwd: resolveHostShellWorkingDirectory(
+            executionCwd,
+            typeof finalInput.cwd === "string" && finalInput.cwd.length > 0 ? finalInput.cwd : undefined,
+          ),
         }
       : undefined;
     if (services.permissionManager && shellRuleSubject) {
-      await services.permissionManager.ensureProjectRulesLoaded(executionCwd);
+      await services.permissionManager.ensureProjectRulesLoaded(shellRuleSubject.cwd);
     }
     permissionResult = services.permissionManager
       ? services.permissionManager.checkDetailed(
@@ -429,7 +433,7 @@ export async function authorizeToolInvocation(
           {
             ...invocationPermissionContext,
             decisionOverride: metaOverride,
-            ...(shellRuleSubject ? { ruleSubject: shellRuleSubject, projectRulesCwd: executionCwd } : {}),
+            ...(shellRuleSubject ? { ruleSubject: shellRuleSubject, projectRulesCwd: shellRuleSubject.cwd } : {}),
           },
         )
       : {
