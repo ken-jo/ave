@@ -1052,7 +1052,9 @@ describe("ConversationLoop queryLoop", () => {
     const url = "https://93.184.216.34/document";
     const input = toolName === "web_fetch" ? { url } : {};
     const offset = toolName === "web_fetch" ? 6_000 : 0;
-    const longContent = toolName === "web_fetch" ? JSON.stringify({ url, content: body, truncated: false }) : body;
+    const longContent = toolName === "web_fetch"
+      ? JSON.stringify({ url, status: 200, contentType: "text/plain", format: "text", content: body })
+      : body;
     toolRegistry.register(
       toolName === "web_fetch" ? createWebFetchTool(vi.fn(async () => new Response(body)) as unknown as typeof fetch) : createDynamicTool({
         name: "long_tool",

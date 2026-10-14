@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createWebFetchTool } from "../web-fetch.js";
+import { t } from "../../i18n/index.js";
 import type { ToolExecutionContext } from "../types.js";
 
 const url = "https://93.184.216.34/document";
@@ -21,19 +22,104 @@ describe("web response content", () => {
     expect(JSON.parse(result.output).content).toBe(content);
   });
 
-  it("extracts readable text only for an HTML document", async () => {
+  it("converts only an HTML document to Markdown", async () => {
     const result = await fetchTool(new Response("<style>hidden</style><p>Hello &lt;world&gt;</p><script>hidden</script>", {
       headers: { "content-type": "Text/HTML; charset=utf-8" },
     })).execute({ url }, context);
     expect(result.isError).toBe(false);
-    expect(JSON.parse(result.output).content).toBe("Hello <world>");
+    expect(JSON.parse(result.output)).toMatchObject({ content: "Hello <world>", format: "markdown", contentType: "text/html" });
+  });
+
+  it("keeps structure and resolves links against the final URL", async () => {
+    const html = [
+      "<html><head><title>Guide &amp; Notes</title></head><body>",
+      "<nav><a href='/'>Home</a></nav>",
+      "<h1>Install</h1><p>Run <code>npm i</code> then read <a href='docs/api.html'>the API</a>.</p>",
+      "<ul><li>one</li><li>two<ul><li>nested</li></ul></li></ul>",
+      "<pre><code class='language-ts'>const a = 1;\nconst b = 2;</code></pre>",
+      "<table><tr><th>Name</th><th>Value</th></tr><tr><td>a|b</td><td>1</td></tr></table>",
+      "<a href='javascript:alert(1)'>bad</a>",
+      "</body></html>",
+    ].join("");
+    const response = new Response(html, { headers: { "content-type": "text/html" } });
+    Object.defineProperty(response, "url", { value: "https://93.184.216.34/guide/index.html" });
+    const result = await fetchTool(response).execute({ url }, context);
+    expect(result.isError, result.output).toBe(false);
+    const body = JSON.parse(result.output);
+    expect(body).toMatchObject({ finalUrl: "https://93.184.216.34/guide/index.html", title: "Guide & Notes", status: 200 });
+    expect(body.content).toBe([
+      "# Install",
+      "",
+      "Run `npm i` then read [the API](https://93.184.216.34/guide/docs/api.html).",
+      "",
+      "- one",
+      "- two",
+      "",
+      "  - nested",
+      "",
+      "```ts",
+      "const a = 1;",
+      "const b = 2;",
+      "```",
+      "",
+      "| Name | Value |",
+      "| --- | --- |",
+      "| a\\|b | 1 |",
+      "",
+      "bad",
+    ].join("\n"));
+  });
+
+  it("decodes the declared charset", async () => {
+    const bytes = new Uint8Array([0x63, 0x61, 0x66, 0xe9]);
+    const result = await fetchTool(new Response(bytes, { headers: { "content-type": "text/plain; charset=ISO-8859-1" } }))
+      .execute({ url }, context);
+    expect(JSON.parse(result.output).content).toBe("café");
+  });
+
+  it.each([
+    ["application/pdf", () => t("be_tools.webFetchPdfUnsupported")],
+    ["image/png", () => t("be_tools.webFetchBinaryUnsupported", { contentType: "image/png" })],
+    ["application/zip", () => t("be_tools.webFetchBinaryUnsupported", { contentType: "application/zip" })],
+  ])("refuses %s without reading the body", async (contentType, message) => {
+    const pull = vi.fn();
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 });
+    const result = await fetchTool(new Response(body, { headers: { "content-type": contentType } })).execute({ url }, context);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.output).details).toBe(message());
+    expect(pull).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("sniffs an undeclared PDF or binary body", async () => {
+    const pdf = await fetchTool(new Response(new TextEncoder().encode("%PDF-1.7\n..."), {
+      headers: { "content-type": "application/octet-stream" },
+    })).execute({ url }, context);
+    expect(JSON.parse(pdf.output).details).toBe(t("be_tools.webFetchPdfUnsupported"));
+    const binary = await fetchTool(new Response(new Uint8Array([1, 0, 2, 3]), {
+      headers: { "content-type": "application/octet-stream" },
+    })).execute({ url }, context);
+    expect(JSON.parse(binary.output).details).toBe(
+      t("be_tools.webFetchBinaryUnsupported", { contentType: "application/octet-stream" }),
+    );
+  });
+
+  it("reports an HTTP error status with an excerpt of the page", async () => {
+    const result = await fetchTool(new Response("<h1>Not here</h1>", {
+      status: 404,
+      statusText: "Not Found",
+      headers: { "content-type": "text/html" },
+    })).execute({ url }, context);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.output)).toMatchObject({ details: "HTTP 404 Not Found", excerpt: "# Not here" });
   });
 
   it("retains a long response tail for the shared result reader", async () => {
     const content = "start\n" + "line\n".repeat(2_000) + "TAIL-RECORD\n";
     const result = await fetchTool(new Response(content)).execute({ url }, context);
     expect(result.isError).toBe(false);
-    expect(JSON.parse(result.output)).toMatchObject({ content, truncated: false });
+    expect(JSON.parse(result.output)).toMatchObject({ content, format: "text" });
   });
 
   it("preserves a multibyte character split across transport chunks", async () => {

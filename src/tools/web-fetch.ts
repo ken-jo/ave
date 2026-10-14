@@ -3,14 +3,28 @@ import { fetchPublicHttpResponse } from "../core/network-guard.js";
 import { t } from "../i18n/index.js";
 import { MAX_TOOL_RESULT_ARTIFACT_BYTES } from "../shared/tool-output-artifact.js";
 import { errorMessage } from "../shared/error-message.js";
+import { htmlToMarkdown } from "./html-to-markdown.js";
 
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+/** Enough of an error page to show what the server said, not the whole page. */
+const HTTP_ERROR_EXCERPT_CHARS = 2_000;
+/** Prefer Markdown and HTML; anything else is still accepted and routed by type. */
+const WEB_FETCH_ACCEPT =
+  "text/markdown;q=1.0, text/html;q=0.9, application/xhtml+xml;q=0.9, text/plain;q=0.8, application/json;q=0.7, */*;q=0.1";
 
-/** Bound decoded transport bytes before retaining text or extracting HTML. */
-async function readResponseText(response: Response, signal?: AbortSignal): Promise<string> {
+/** A response the tool deliberately refuses or reports, as opposed to a transport failure. */
+class WebFetchContentError extends Error {
+  constructor(message: string, readonly excerpt?: string) {
+    super(message);
+    this.name = "WebFetchContentError";
+  }
+}
+
+/** Bound transport bytes before retaining text or extracting HTML. */
+async function readResponseBytes(response: Response, signal?: AbortSignal): Promise<Buffer> {
   if (!response.body) {
     signal?.throwIfAborted();
-    return "";
+    return Buffer.alloc(0);
   }
   const reader = response.body.getReader();
   const cancel = () => { void reader.cancel(signal?.reason).catch(() => {}); };
@@ -30,7 +44,7 @@ async function readResponseText(response: Response, signal?: AbortSignal): Promi
       signal?.throwIfAborted();
       if (done) {
         finished = true;
-        return new TextDecoder().decode(buffer.subarray(0, bytes));
+        return Buffer.from(buffer.subarray(0, bytes));
       }
       if (value.byteLength > MAX_RESPONSE_BYTES - bytes) {
         throw new Error(`Response exceeds the ${MAX_RESPONSE_BYTES}-byte body limit.`);
@@ -43,6 +57,55 @@ async function readResponseText(response: Response, signal?: AbortSignal): Promi
     if (!finished) cancel();
     reader.releaseLock();
   }
+}
+
+/** Discard a body the tool will not read, without waiting for it. */
+function discardBody(response: Response): void {
+  void response.body?.cancel().catch(() => {});
+}
+
+type WebFetchBodyKind = "html" | "text" | "pdf" | "binary";
+
+/** Route by declared media type; an undeclared one is sniffed from the bytes. */
+function classifyBody(mime: string, sniff: () => Buffer): WebFetchBodyKind {
+  if (mime === "text/html" || mime === "application/xhtml+xml") return "html";
+  if (mime === "application/pdf") return "pdf";
+  if (
+    mime.startsWith("text/")
+    || mime === "application/json" || mime.endsWith("+json")
+    || mime === "application/xml" || mime.endsWith("+xml")
+    || mime === "application/javascript" || mime === "application/x-javascript"
+    || mime === "application/ecmascript"
+  ) {
+    return "text";
+  }
+  if (mime !== "" && mime !== "application/octet-stream") return "binary";
+  const head = sniff().subarray(0, 1024);
+  if (head.subarray(0, 5).toString("latin1") === "%PDF-") return "pdf";
+  if (head.includes(0)) return "binary";
+  return /^\s*(?:<!doctype\s+html|<html[\s>])/i.test(head.toString("latin1")) ? "html" : "text";
+}
+
+/**
+ * Decode with the declared charset. An unknown label is an external-boundary
+ * condition with one deterministic answer: decode as UTF-8, as the previous
+ * implementation always did.
+ */
+function decodeBody(bytes: Buffer, contentType: string | null): string {
+  const label = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(contentType ?? "")?.[1];
+  let decoder: TextDecoder;
+  try {
+    decoder = new TextDecoder(label ?? "utf-8");
+  } catch {
+    decoder = new TextDecoder("utf-8");
+  }
+  return decoder.decode(bytes);
+}
+
+function unsupportedBodyMessage(kind: "pdf" | "binary", mime: string): string {
+  return kind === "pdf"
+    ? t("be_tools.webFetchPdfUnsupported")
+    : t("be_tools.webFetchBinaryUnsupported", { contentType: mime || "unknown" });
 }
 
 // ─── web_fetch private-network policy helpers ───────────────────────
@@ -117,58 +180,10 @@ function webFetchCategoryForInput(input: unknown): "network" {
   return "network";
 }
 
-function htmlToPlainTextForWebFetch(html: string): string {
-  let output = "";
-  let skippedTag: "script" | "style" | null = null;
-
-  for (let i = 0; i < html.length;) {
-    if (skippedTag) {
-      const lower = html.slice(i, i + skippedTag.length + 4).toLowerCase();
-      if (lower.startsWith(`</${skippedTag}`)) {
-        const close = html.indexOf(">", i);
-        if (close === -1) break;
-        i = close + 1;
-        skippedTag = null;
-        output += " ";
-        continue;
-      }
-      i += 1;
-      continue;
-    }
-
-    if (html[i] === "<") {
-      const close = html.indexOf(">", i + 1);
-      if (close === -1) break;
-      const tag = html.slice(i + 1, close).trim().toLowerCase();
-      const tagName = tag.match(/^\/?\s*([a-z0-9:-]+)/)?.[1];
-      if (!tag.startsWith("/") && (tagName === "script" || tagName === "style")) {
-        skippedTag = tagName;
-      }
-      output += " ";
-      i = close + 1;
-      continue;
-    }
-
-    output += html[i];
-    i += 1;
-  }
-
-  return decodeCommonHtmlEntities(output)
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function decodeCommonHtmlEntities(value: string): string {
-  return value
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, "\"")
-    .replace(/&#39;/g, "'");
-}
-
 /**
- * Builtin `web_fetch` tool. Fetches a public URL and returns readable text.
+ * Builtin `web_fetch` tool. Fetches a public URL and returns HTML as readable
+ * Markdown (links kept, resolved against the final URL) and text/JSON/XML
+ * as-is; PDF and other binary bodies are refused with an explicit reason.
  *
  * `networkFetch` (the Electron network-stack fetch, injected by the boot
  * assembler) is threaded straight into the SSRF guard so the definition holds
@@ -214,16 +229,45 @@ export function createWebFetchTool(singleHopFetch: typeof fetch): Tool {
           allowPrivateNetworks: allowPrivateNetwork,
           fetchImpl: singleHopFetch,
           signal: context.abortSignal,
-          headers: { "User-Agent": "Ave-Assistant/0.1.0" },
+          headers: {
+            "User-Agent": "Ave-Assistant/0.1.0",
+            Accept: WEB_FETCH_ACCEPT,
+          },
         });
-        const body = await readResponseText(response, context.abortSignal);
-        const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
-        const text = contentType === "text/html" || contentType === "application/xhtml+xml"
-          ? htmlToPlainTextForWebFetch(body)
-          : body;
+        const finalUrl = response.url || url;
+        const rawContentType = response.headers.get("content-type");
+        const mime = rawContentType?.split(";", 1)[0].trim().toLowerCase() ?? "";
+        const declaredKind = mime === "" || mime === "application/octet-stream"
+          ? undefined
+          : classifyBody(mime, () => Buffer.alloc(0));
+        if (declaredKind === "pdf" || declaredKind === "binary") {
+          discardBody(response);
+          throw new WebFetchContentError(unsupportedBodyMessage(declaredKind, mime));
+        }
+        const body = await readResponseBytes(response, context.abortSignal);
+        const kind = declaredKind ?? classifyBody(mime, () => body);
+        if (kind === "pdf" || kind === "binary") {
+          throw new WebFetchContentError(unsupportedBodyMessage(kind, mime));
+        }
+        const decoded = decodeBody(body, rawContentType);
+        const converted = kind === "html" ? htmlToMarkdown(decoded, finalUrl) : { markdown: decoded };
+        if (!response.ok) {
+          throw new WebFetchContentError(
+            `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
+            converted.markdown.slice(0, HTTP_ERROR_EXCERPT_CHARS),
+          );
+        }
         // Preserve complete bounded output for the shared history/artifact and
         // chunk reader. Provider projection owns previews, not this producer.
-        const output = JSON.stringify({ url, content: text, truncated: false });
+        const output = JSON.stringify({
+          url,
+          ...(finalUrl !== url ? { finalUrl } : {}),
+          status: response.status,
+          contentType: mime || "unknown",
+          format: kind === "html" ? "markdown" : "text",
+          ...("title" in converted && converted.title ? { title: converted.title } : {}),
+          content: converted.markdown,
+        });
         if (Buffer.byteLength(output, "utf8") > MAX_TOOL_RESULT_ARTIFACT_BYTES) {
           throw new Error(`Serialized response exceeds the ${MAX_TOOL_RESULT_ARTIFACT_BYTES}-byte tool result limit.`);
         }
@@ -237,6 +281,7 @@ export function createWebFetchTool(singleHopFetch: typeof fetch): Tool {
             url,
             error: t("be_tools.webFetchError"),
             details: errorMessage(error),
+            ...(error instanceof WebFetchContentError && error.excerpt ? { excerpt: error.excerpt } : {}),
           }),
           isError: true,
         };
