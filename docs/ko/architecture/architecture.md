@@ -3102,7 +3102,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
   않는다.
 - **Apache attribution / 라이선스**: ASRT (`@anthropic-ai/sandbox-runtime`) 는
   Apache-2.0 이며 attribution 은 repo 루트의 `THIRD-PARTY-NOTICES.md` 에 유지한다;
-  Ave 자체 라이선스는 MIT 로 변동 없다.
+  Ave 자체는 proprietary (Copyright (c) 2026 Ken Jo, All rights reserved; 루트 `LICENSE`) 이다.
 
 ### 9.2 Plugin Manifest Spec
 
