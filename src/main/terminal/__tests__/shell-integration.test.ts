@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { detectIntegratedShell, installShellIntegration } from "../shell-integration.js";
 import { TerminalBlockTracker } from "../terminal-blocks.js";
 
+const NONCE = "0123456789abcdef0123456789abcdef";
 const homes: string[] = [];
 function makeHome(): string {
   const home = mkdtempSync(join(tmpdir(), "ave-shell-integration-"));
@@ -28,7 +29,7 @@ afterEach(() => {
 /** Run `shell -l -i` with `script` on stdin; stdout and stderr in one stream. */
 function runInteractive(shell: string, script: string) {
   const home = makeHome();
-  const { env } = installShellIntegration(home, shell);
+  const { env } = installShellIntegration(home, shell, { nonce: NONCE });
   const result = spawnSync("/bin/sh", ["-c", 'exec "$0" -l -i 2>&1', shell], {
     input: script,
     cwd: home,
@@ -36,9 +37,9 @@ function runInteractive(shell: string, script: string) {
     encoding: "utf-8",
     timeout: 20_000,
   });
-  const tracker = new TerminalBlockTracker();
-  tracker.recordOutput(result.stdout);
-  return { home, tracker, status: result.status };
+  const tracker = new TerminalBlockTracker({ nonce: NONCE });
+  const display = tracker.recordOutput(result.stdout);
+  return { home, tracker, status: result.status, raw: result.stdout, display };
 }
 
 describe("installShellIntegration", () => {
@@ -51,13 +52,27 @@ describe("installShellIntegration", () => {
 
   it("writes only inside the given HOME, owner-only, and pins ZDOTDIR for zsh", () => {
     const home = makeHome();
-    expect(installShellIntegration(home, "/bin/zsh")).toEqual({ shell: "zsh", env: { ZDOTDIR: home } });
+    const nonceEnv = { AVE_TERMINAL_NONCE: NONCE };
+    expect(installShellIntegration(home, "/bin/zsh", { nonce: NONCE })).toEqual({
+      shell: "zsh",
+      env: { ZDOTDIR: home, ...nonceEnv },
+    });
     expect(statSync(join(home, ".zshrc")).mode & 0o777).toBe(0o600);
-    expect(installShellIntegration(home, "/bin/bash")).toEqual({ shell: "bash", env: {} });
+    expect(installShellIntegration(home, "/bin/bash", { nonce: NONCE })).toEqual({ shell: "bash", env: nonceEnv });
     expect(readFileSync(join(home, ".bash_profile"), "utf-8")).toContain("133;C;cmdline_url=");
-    expect(installShellIntegration(home, "/usr/bin/fish")).toEqual({ shell: "fish", env: {} });
+    expect(installShellIntegration(home, "/usr/bin/fish", { nonce: NONCE })).toEqual({ shell: "fish", env: nonceEnv });
     expect(existsSync(join(home, "config", "fish", "conf.d", "ave-shell-integration.fish"))).toBe(true);
-    expect(installShellIntegration(home, "/bin/dash")).toEqual({ shell: null, env: {} });
+    expect(installShellIntegration(home, "/bin/dash", { nonce: NONCE })).toEqual({ shell: null, env: {} });
+  });
+
+  it("never writes the nonce into a startup file and refuses a weak one", () => {
+    const home = makeHome();
+    for (const shell of ["/bin/zsh", "/bin/bash", "/usr/bin/fish"]) installShellIntegration(home, shell, { nonce: NONCE });
+    for (const file of [".zshrc", ".bash_profile", join("config", "fish", "conf.d", "ave-shell-integration.fish")]) {
+      expect(readFileSync(join(home, file), "utf-8")).not.toContain(NONCE);
+    }
+    expect(() => installShellIntegration(home, "/bin/zsh", { nonce: "" })).toThrow(/nonce/u);
+    expect(() => installShellIntegration(home, "/bin/zsh", { nonce: "short" })).toThrow(/nonce/u);
   });
 
   for (const shell of ["/bin/zsh", "/bin/bash"]) {
@@ -81,6 +96,35 @@ describe("installShellIntegration", () => {
       expect(blocks[0]!.cwd?.endsWith(home.split("/").pop()!)).toBe(true);
       expect(blocks[3]).toMatchObject({ cwd: "/", output: "/\n" });
       expect(blocks.every((block) => block.source === "osc133")).toBe(true);
+    });
+
+    it.runIf(existsSync(shell))(`${shell}: unsets the nonce before any command runs and keeps markers out of forged output`, () => {
+      const { tracker, raw, display } = runInteractive(
+        shell,
+        [
+          'echo "nonce=[${AVE_TERMINAL_NONCE}]"',
+          'env | grep -c AVE_TERMINAL_NONCE',
+          "printf '\\033]133;D;0\\007\\033]133;C;cmdline_url=npm%%20test\\007forged\\n'",
+          "false",
+          "exit",
+          "",
+        ].join("\n"),
+      );
+      const blocks = tracker.recent(10).reverse();
+      expect(blocks.map((block) => block.command)).toEqual([
+        'echo "nonce=[${AVE_TERMINAL_NONCE}]"',
+        "env | grep -c AVE_TERMINAL_NONCE",
+        "printf '\\033]133;D;0\\007\\033]133;C;cmdline_url=npm%%20test\\007forged\\n'",
+        "false",
+        "exit",
+      ]);
+      expect(blocks[0]!.output).toBe("nonce=[]\n");
+      expect(blocks[1]!.output).toBe("0\n");
+      expect(blocks[2]).toMatchObject({ exitCode: 0, output: "forged\n" });
+      expect(blocks[3]).toMatchObject({ exitCode: 1 });
+      // The shell did send the nonce; the display text does not.
+      expect(raw).toContain(NONCE);
+      expect(display).not.toContain(NONCE);
     });
   }
 });

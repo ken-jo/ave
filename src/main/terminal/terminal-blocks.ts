@@ -14,11 +14,18 @@
  * them here, so both see the same record. This module is pure: no electron,
  * no node-pty — pty-manager feeds it.
  *
- * Marker grammar (OSC 133, terminated by BEL or ST):
- *   A  prompt start      B  command input start
- *   C[;cmdline_url=…]    command output start (command text percent-encoded)
- *   D[;<exit>]           command finished
- * plus OSC 7 `file://host/path` for the working directory.
+ * Marker grammar (OSC 133, terminated by BEL or ST; `<n>` is the nonce):
+ *   A;<n>  prompt start      B;<n>  command input start
+ *   C[;cmdline_url=…];<n>    command output start (command text percent-encoded)
+ *   D[;<exit>];<n>           command finished
+ *   P;Cwd=<encoded path>;<n> the working directory
+ *
+ * A marker counts only when its last field is this terminal's nonce (see
+ * shell-integration.ts): anything a command prints reaches the same stream,
+ * and an unauthenticated marker is output like any other escape sequence. It
+ * changes no block and does not end the fallback. OSC 7 carries no nonce, so
+ * it is never read. The nonce is removed from the stream the renderer and the
+ * scrollback replay receive ({@link TerminalBlockTracker.recordOutput}).
  *
  * Output is stored as plain text: escape sequences are dropped, CRLF becomes
  * LF, a bare CR rewinds the line (so progress bars keep their final state) and
@@ -211,13 +218,6 @@ function cleanCommand(raw: string): string {
   return oneLine.length > MAX_COMMAND_CHARS ? oneLine.slice(0, MAX_COMMAND_CHARS) : oneLine;
 }
 
-/** Parse an OSC 7 payload (`file://host/path`) into a path, or null. */
-function parseOsc7(payload: string): string | null {
-  const match = /^file:\/\/[^/]*(\/.*)$/u.exec(payload);
-  if (!match?.[1]) return null;
-  return decodePercentEncoded(match[1]);
-}
-
 /**
  * Turns one terminal's output (and, for the fallback, its typed input) into
  * blocks. One tracker per PTY session.
@@ -225,6 +225,8 @@ function parseOsc7(payload: string): string | null {
 export class TerminalBlockTracker {
   /** Where the escape-sequence parser stands between chunks. */
   private esc: EscapeState = { state: "text" };
+  /** Display text of the chunk being parsed (see {@link recordOutput}). */
+  private display = "";
   private phase: Phase = "idle";
   private integrated = false;
   private cwd: string | null = null;
@@ -237,9 +239,17 @@ export class TerminalBlockTracker {
   private echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
   private exited = false;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  private readonly nonce: string;
+  private readonly now: () => number;
 
-  /** True once the shell has emitted any OSC 133 marker. */
+  constructor(options: { nonce: string; now?: () => number }) {
+    // An empty nonce would make every bare marker "authenticated".
+    if (!options.nonce) throw new Error("TerminalBlockTracker requires a nonce");
+    this.nonce = options.nonce;
+    this.now = options.now ?? Date.now;
+  }
+
+  /** True once the shell has emitted a marker carrying this terminal's nonce. */
   isIntegrated(): boolean {
     return this.integrated;
   }
@@ -256,24 +266,43 @@ export class TerminalBlockTracker {
    * arriving a byte at a time would otherwise cost quadratic time). Only OSC
    * payloads are kept, up to {@link MAX_OSC_PAYLOAD_CHARS}; every other
    * sequence is skipped as it streams past.
+   *
+   * Returns the text to show and replay for this chunk: the chunk itself,
+   * with an incomplete OSC held back until it completes and each
+   * authenticated marker reduced to `OSC 133;<letter>` (`P` dropped), so the
+   * nonce never reaches the renderer or the scrollback ring.
    */
-  recordOutput(chunk: string): void {
+  recordOutput(chunk: string): string {
     let text = "";
     const flush = (): void => {
       this.appendText(text);
       text = "";
     };
+    // What the terminal view receives: the chunk as it came, except that an
+    // OSC is held until it is complete and an authenticated marker is passed
+    // on without its fields — so the nonce never leaves the main process.
+    this.display = "";
     for (let i = 0; i < chunk.length; i++) {
       const ch = chunk[i] ?? "";
       const esc = this.esc;
       switch (esc.state) {
         case "text":
-          if (ch === "\u001b") this.esc = { state: "esc" };
-          else text += ch;
+          if (ch === "\u001b") {
+            this.esc = { state: "esc" };
+          } else {
+            text += ch;
+            this.display += ch;
+          }
           break;
         case "esc":
-          if (ch === "]" || ch === "P" || ch === "_" || ch === "^" || ch === "X") {
-            this.esc = { state: "string", osc: ch === "]", payload: "", overflow: false, sawEsc: false };
+          if (ch === "]") {
+            // Held: the display gets it once it is known not to be a marker.
+            this.esc = { state: "string", osc: true, payload: "", overflow: false, sawEsc: false };
+            break;
+          }
+          this.display += `\u001b${ch}`;
+          if (ch === "P" || ch === "_" || ch === "^" || ch === "X") {
+            this.esc = { state: "string", osc: false, payload: "", overflow: false, sawEsc: false };
           } else if (ch === "[") {
             this.esc = { state: "csi" };
           } else if (ch === "(" || ch === ")" || ch === "*" || ch === "+" || ch === "#" || ch === "%") {
@@ -283,11 +312,13 @@ export class TerminalBlockTracker {
           }
           break;
         case "csi": {
+          this.display += ch;
           const code = ch.charCodeAt(0);
           if (code >= 0x40 && code <= 0x7e) this.esc = { state: "text" };
           break;
         }
         case "charset":
+          this.display += ch;
           this.esc = { state: "text" };
           break;
         case "string": {
@@ -296,13 +327,13 @@ export class TerminalBlockTracker {
           if (esc.sawEsc) {
             esc.sawEsc = false;
             if (ch === "\\") {
-              this.finishString(esc, flush);
+              this.finishString(esc, "\u001b\\", flush);
               break;
             }
             this.addToString(esc, "\u001b");
           }
           if (ch === "\u0007") {
-            this.finishString(esc, flush);
+            this.finishString(esc, "\u0007", flush);
           } else if (ch === "\u001b") {
             esc.sawEsc = true;
           } else {
@@ -313,24 +344,43 @@ export class TerminalBlockTracker {
       }
     }
     flush();
+    return this.display;
   }
 
-  /** Keep an OSC payload character, or stop keeping once it is over the bound. */
+  /**
+   * Keep an OSC payload character, or stop keeping once it is over the bound.
+   * A string that is not kept streams straight to the display.
+   */
   private addToString(esc: StringEscape, ch: string): void {
-    if (!esc.osc || esc.overflow) return;
+    if (!esc.osc || esc.overflow) {
+      this.display += ch;
+      return;
+    }
     if (esc.payload.length >= MAX_OSC_PAYLOAD_CHARS) {
-      // No marker is this long: the sequence is discarded whole when its
-      // terminator arrives, and the text around it is unaffected.
+      // No marker is this long (the scripts bound what they encode), so this
+      // is not one: it is discarded whole when its terminator arrives and the
+      // text around it is unaffected. The view gets it as it was.
       esc.overflow = true;
+      this.display += `\u001b]${esc.payload}${ch}`;
       esc.payload = "";
       return;
     }
     esc.payload += ch;
   }
 
-  private finishString(esc: StringEscape, flush: () => void): void {
+  private finishString(esc: StringEscape, terminator: string, flush: () => void): void {
     this.esc = { state: "text" };
-    if (esc.osc && !esc.overflow) this.handleOsc(esc.payload, flush);
+    if (!esc.osc || esc.overflow) {
+      this.display += terminator;
+      return;
+    }
+    const marker = this.handleOsc(esc.payload, flush);
+    if (marker === null) {
+      this.display += `\u001b]${esc.payload}${terminator}`;
+    } else if (marker !== "P") {
+      // The view only needs the letter (PtyTerminalView re-lists on A/C/D).
+      this.display += `\u001b]133;${marker}\u0007`;
+    }
   }
 
   /**
@@ -380,15 +430,20 @@ export class TerminalBlockTracker {
     return all.slice(-Math.max(0, limit)).reverse();
   }
 
-  private handleOsc(body: string, flush: () => void): void {
-    if (body.startsWith("7;")) {
-      const path = parseOsc7(body.slice(2));
-      if (path) this.cwd = path;
-      return;
-    }
-    if (!body.startsWith("133;")) return;
+  /**
+   * Apply one complete OSC. Returns the marker letter when it was an
+   * authenticated OSC 133 marker, else null (the sequence is ordinary output).
+   */
+  private handleOsc(body: string, flush: () => void): string | null {
+    if (!body.startsWith("133;")) return null;
+    const fields = body.slice(4).split(";");
+    // The nonce is the last field. Anything else — no nonce, a wrong one, a
+    // marker a program printed — changes nothing, and in particular does not
+    // switch the fallback off.
+    if (fields.length < 2 || fields[fields.length - 1] !== this.nonce) return null;
+    const [marker = "", ...params] = fields.slice(0, -1);
+    if (!/^[A-Z]$/u.test(marker)) return null;
     flush();
-    const [marker = "", ...params] = body.slice(4).split(";");
     if (!this.integrated) {
       // The first marker ends the fallback for good. A heuristic block that is
       // still running was split on a guess; close it rather than mix sources.
@@ -396,6 +451,13 @@ export class TerminalBlockTracker {
       if (this.open?.source === "heuristic") this.closeOpen(null);
     }
     switch (marker) {
+      case "P": {
+        const cwd = params.find((p) => p.startsWith("Cwd="));
+        if (cwd !== undefined && cwd.length > "Cwd=".length) {
+          this.cwd = decodePercentEncoded(cwd.slice("Cwd=".length));
+        }
+        break;
+      }
       case "A":
         // A prompt while a command is still open means its D never came (an
         // interrupted command in some shells): close it without an exit code.
@@ -433,6 +495,7 @@ export class TerminalBlockTracker {
       default:
         break;
     }
+    return marker;
   }
 
   private appendText(text: string): void {

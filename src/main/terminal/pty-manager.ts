@@ -33,6 +33,7 @@
  * files even before the `denyWrite` floor. A renderer-supplied cwd is validated
  * (absolute + within the workspace root) before it anchors the jail.
  */
+import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { IPty } from "node-pty";
@@ -351,10 +352,13 @@ async function spawnNewTerminal(
   // Command-block markers: the integration file goes into this terminal's own
   // sandbox HOME, never the user's. A HOME that cannot take one small file is
   // not a HOME the shell can use either, so a write failure fails the spawn.
+  // The nonce authenticates this terminal's markers (shell-integration.ts):
+  // only the startup file and the tracker know it, and it is never logged.
   const shell = resolveLoginShell();
+  const markerNonce = randomBytes(16).toString("hex");
   let integrationEnv: Record<string, string>;
   try {
-    integrationEnv = installShellIntegration(sandboxHome.path, shell).env;
+    integrationEnv = installShellIntegration(sandboxHome.path, shell, { nonce: markerNonce }).env;
   } catch (err) {
     cleanupSandboxHome();
     return {
@@ -415,7 +419,7 @@ async function spawnNewTerminal(
 
     const session: TerminalSession = {
       pty,
-      blocks: new TerminalBlockTracker(),
+      blocks: new TerminalBlockTracker({ nonce: markerNonce }),
       ring: [],
       ringBytes: 0,
       disposeData: () => {},
@@ -427,9 +431,13 @@ async function spawnNewTerminal(
     };
 
     const dataSub = pty.onData((chunk) => {
-      pushRing(session, chunk);
-      session.blocks.recordOutput(chunk);
-      _emit("data", { tabId, chunk });
+      // The view and the replay ring get the tracker's display text: the
+      // same bytes with the marker nonce removed (and an incomplete OSC held
+      // until it completes).
+      const display = session.blocks.recordOutput(chunk);
+      if (!display) return;
+      pushRing(session, display);
+      _emit("data", { tabId, chunk: display });
     });
     session.disposeData = () => dataSub.dispose();
 

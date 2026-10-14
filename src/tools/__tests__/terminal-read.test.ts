@@ -11,12 +11,13 @@ import {
 import type { ToolExecutionContext } from "../types.js";
 
 const ctx = {} as ToolExecutionContext;
-const osc = (body: string): string => `\u001b]${body}\u0007`;
+const NONCE = "0123456789abcdef0123456789abcdef";
+const mark = (fields: string): string => `\u001b]133;${fields};${NONCE}\u0007`;
 
 function trackerWith(commands: Array<{ command: string; output: string; exit: number }>): TerminalBlockTracker {
-  const tracker = new TerminalBlockTracker();
+  const tracker = new TerminalBlockTracker({ nonce: NONCE });
   for (const { command, output, exit } of commands) {
-    tracker.recordOutput(`${osc(`133;C;cmdline_url=${encodeURIComponent(command)}`)}${output}${osc(`133;D;${exit}`)}`);
+    tracker.recordOutput(`${mark("P;Cwd=/repo")}${mark(`C;cmdline_url=${encodeURIComponent(command)}`)}${output}${mark(`D;${exit}`)}`);
   }
   return tracker;
 }
@@ -83,6 +84,14 @@ describe("terminal_read", () => {
     expect(blocks[0]!.outputClippedForResponse).toBeUndefined();
     expect(blocks[1]!.outputClippedForResponse).toBe(true);
     expect(blocks[1]!.output.endsWith("END\n")).toBe(true);
+  });
+
+  it("never returns the marker nonce", async () => {
+    registerTerminalBlockTracker("terminal:1", trackerWith([{ command: "make", output: "ok\r\n", exit: 0 }]));
+    for (const input of [{}, { tabId: "terminal:1" }, { tabId: "terminal:1", blockId: 1 }]) {
+      const result = await createTerminalReadTool().execute(input, ctx);
+      expect(result.output).not.toContain(NONCE);
+    }
   });
 
   it("rejects malformed input and unknown tabs or blocks", async () => {

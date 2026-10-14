@@ -517,15 +517,36 @@ describe("pty-manager command blocks", () => {
   });
 
   it("records blocks from PTY output and typed input, keeps them past exit, drops them on tab close", async () => {
-    expect((await spawnTerminal({ tabId: "terminal:1" })).ok).toBe(true);
+    vi.stubEnv("SHELL", "/bin/zsh");
+    try {
+      expect((await spawnTerminal({ tabId: "terminal:1" })).ok).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
+    const nonce = opts.env.AVE_TERMINAL_NONCE;
+    expect(nonce).toMatch(/^[0-9a-f]{32}$/u);
     const tracker = getTerminalBlockTracker("terminal:1");
     expect(tracker).toBeDefined();
 
-    lastPty!.emitData("\u001b]133;C;cmdline_url=make\u0007");
-    lastPty!.emitData("built\r\n\u001b]133;D;2\u0007");
+    // A program printing markers without the nonce forges nothing.
+    lastPty!.emitData("\u001b]133;C;cmdline_url=rm%20-rf\u0007fake\r\n\u001b]133;D;0\u0007");
+    expect(tracker!.list()).toEqual([]);
+    expect(tracker!.isIntegrated()).toBe(false);
+
+    lastPty!.emitData(`\u001b]133;C;cmdline_url=make;${nonce}\u0007`);
+    lastPty!.emitData(`built\r\n\u001b]133;D;2;${nonce}\u0007`);
     expect(tracker!.recent(1)[0]).toMatchObject({ command: "make", exitCode: 2, output: "built\n" });
-    // The display stream is forwarded unchanged, markers included.
-    expect(emitted.map((entry) => (entry.payload as { chunk?: string }).chunk).join("")).toContain("\u001b]133;D;2\u0007");
+    // The view gets the markers without their fields, so the nonce stays here.
+    const shown = emitted.map((entry) => (entry.payload as { chunk?: string }).chunk ?? "").join("");
+    expect(shown).toContain("built\r\n\u001b]133;D\u0007");
+    expect(shown).not.toContain(nonce);
+    // ...and so does the scrollback a remounting view replays.
+    emitted.length = 0;
+    expect(await spawnTerminal({ tabId: "terminal:1" })).toMatchObject({ ok: true, replayed: true });
+    const replay = emitted.map((entry) => (entry.payload as { chunk?: string }).chunk ?? "").join("");
+    expect(replay).toContain("built");
+    expect(replay).not.toContain(nonce);
 
     lastPty!.emitExit(0);
     expect(getTerminalBlockTracker("terminal:1")).toBe(tracker);
