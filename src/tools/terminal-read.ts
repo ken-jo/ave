@@ -11,6 +11,11 @@
  *   { tabId, limit? }       → the newest `limit` blocks of one tab, with output
  *   { tabId, blockId }      → one block with output
  *
+ * Results are framed `<terminal-output trust="untrusted-terminal-data">`
+ * (fence-sanitizer.ts): command text and output are whatever programs printed,
+ * so the model is told they are data, and no printed close tag can end the
+ * frame. Errors are host-written and stay bare JSON.
+ *
  * category="read": it reads host-owned records and nothing else — it cannot
  * write to a terminal or start a command. It still takes the ordinary read
  * path (no standing allow), because terminal output can hold private data.
@@ -18,6 +23,7 @@
 import { createDynamicTool, type Tool } from "./base.js";
 import { getTerminalBlockTracker, listTerminalBlockTabs } from "../main/terminal/terminal-blocks.js";
 import type { TerminalBlock } from "../shared/terminal-blocks.js";
+import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 import { t } from "../i18n/index.js";
 
 const DEFAULT_LIMIT = 5;
@@ -33,6 +39,37 @@ const MAX_RESPONSE_OUTPUT_CHARS = 96 * 1024;
 
 function failure(error: string) {
   return { output: JSON.stringify({ error }), isError: true };
+}
+
+/** The open tag of the fence every successful result is framed in. */
+const TERMINAL_OUTPUT_FENCE_OPEN = '<terminal-output trust="untrusted-terminal-data">';
+
+/**
+ * Frame a result as untrusted terminal data. Everything in it — command text,
+ * output, directories — is whatever programs printed, so no field may close
+ * the frame: a forged `</terminal-output>` is neutralized in every string
+ * before the JSON is built (afterwards, the inserted backslash could form an
+ * invalid JSON escape such as `\ `).
+ */
+function fenced(payload: unknown) {
+  return {
+    output: [
+      TERMINAL_OUTPUT_FENCE_OPEN,
+      t("be_terminalRead.untrusted"),
+      JSON.stringify(neutralizeStrings(payload)),
+      "</terminal-output>",
+    ].join("\n"),
+    isError: false,
+  };
+}
+
+function neutralizeStrings(value: unknown): unknown {
+  if (typeof value === "string") return neutralizeFenceClose(value, "terminal-output");
+  if (Array.isArray(value)) return value.map(neutralizeStrings);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, neutralizeStrings(entry)]));
+  }
+  return value;
 }
 
 function withOutputBudget(blocks: readonly TerminalBlock[]) {
@@ -98,13 +135,10 @@ export function createTerminalReadTool(): Tool {
           exited: tracker.hasExited(),
           recentBlocks: tracker.list().slice(0, SUMMARIES_PER_TAB),
         }));
-        return {
-          output: JSON.stringify({
-            terminals,
-            ...(terminals.length === 0 ? { note: t("be_terminalRead.noTerminals") } : {}),
-          }),
-          isError: false,
-        };
+        return fenced({
+          terminals,
+          ...(terminals.length === 0 ? { note: t("be_terminalRead.noTerminals") } : {}),
+        });
       }
 
       const tracker = getTerminalBlockTracker(input.tabId);
@@ -114,17 +148,14 @@ export function createTerminalReadTool(): Tool {
       if (input.blockId !== undefined) {
         const block = tracker.get(input.blockId as number);
         if (!block) return failure(`no block ${String(input.blockId)} in terminal ${input.tabId}`);
-        return { output: JSON.stringify({ tabId: input.tabId, block: withOutputBudget([block])[0] }), isError: false };
+        return fenced({ tabId: input.tabId, block: withOutputBudget([block])[0] });
       }
       const limit = (input.limit as number | undefined) ?? DEFAULT_LIMIT;
-      return {
-        output: JSON.stringify({
-          tabId: input.tabId,
-          shellIntegration: tracker.isIntegrated(),
-          blocks: withOutputBudget(tracker.recent(limit)),
-        }),
-        isError: false,
-      };
+      return fenced({
+        tabId: input.tabId,
+        shellIntegration: tracker.isIntegrated(),
+        blocks: withOutputBudget(tracker.recent(limit)),
+      });
     },
   });
 }
