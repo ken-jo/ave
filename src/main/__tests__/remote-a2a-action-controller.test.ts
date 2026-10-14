@@ -184,4 +184,32 @@ describe("production remote A2A action controller", () => {
     });
     expect(replayRuntime.execute).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps the Task's Get/Cancel fields when a replay throws, like every other failure path", async () => {
+    const recoveryRoute = { handle: "recovery_handle_123", operationId: "initial-op", targetAgentId: 1, targetLabel: "Agent one", lineage, messageId: "initial-message", credentialRevisionId: 11 };
+    const known = runtime({
+      execute: vi.fn(async () => { throw new Error("private-replay-provider-detail"); }),
+      getOperationRecoveryRoute: vi.fn(async () => recoveryRoute),
+    });
+    const knownController = createRemoteA2AActionController({ runtime: known as never, config, projectRoot: "/project", makeId: ids() });
+    await expect(knownController.replay({ taskHandle: "recovery_handle_123" })).resolves.toMatchObject({
+      state: "failed",
+      outcome: "a2a-remote-replay-failed",
+      recoveryEligible: true,
+      taskAvailable: true,
+      taskState: A2ATaskState.WORKING,
+    });
+
+    // An unreadable projection is no Task, not a guessed one.
+    const unreadable = runtime({
+      execute: vi.fn(async () => { throw new Error("private-replay-provider-detail"); }),
+      getOperationRecoveryRoute: vi.fn(async () => recoveryRoute),
+      getTaskProjection: vi.fn(async () => { throw new Error("private-store-detail"); }),
+    });
+    const unreadableController = createRemoteA2AActionController({ runtime: unreadable as never, config, projectRoot: "/project", makeId: ids() });
+    const status = await unreadableController.replay({ taskHandle: "recovery_handle_123" });
+    expect(status).toMatchObject({ state: "failed", outcome: "a2a-remote-replay-failed", taskAvailable: false, recoveryEligible: true });
+    expect(status).not.toHaveProperty("taskState");
+    expect(JSON.stringify(status)).not.toContain("private-store-detail");
+  });
 });

@@ -227,7 +227,12 @@ export function createRemoteA2AActionController(
       const projection = await options.runtime.getTaskProjection(input.taskHandle, ownerId);
       latest = Object.freeze({ state: result.ok ? "sent" : "failed", operationId: recovery.operationId, taskHandle: input.taskHandle, ...(projection ? { taskState: projection.state } : {}), taskAvailable: Boolean(projection), targetAgentId: recovery.targetAgentId, targetLabel: recovery.targetLabel, recoveryEligible: !result.ok && (result.outcome === "reconciling" || result.outcome === "unknown-manual-reconciliation-required"), outcome: result.ok ? "success" : result.outcome, updatedAt: now().toISOString() });
     } catch {
-      latest = Object.freeze({ state: "failed", operationId: recovery.operationId, taskHandle: input.taskHandle, targetAgentId: recovery.targetAgentId, targetLabel: recovery.targetLabel, recoveryEligible: true, outcome: "a2a-remote-replay-failed", updatedAt: now().toISOString() });
+      // Same Task fields as every other failure path: a replay that threw says
+      // nothing about whether the Task exists, so what the store still projects
+      // keeps Get/Cancel reachable. An unreadable projection is reported as no
+      // Task rather than guessed at.
+      const projection = await options.runtime.getTaskProjection(input.taskHandle, ownerId).catch(() => null);
+      latest = Object.freeze({ state: "failed", operationId: recovery.operationId, taskHandle: input.taskHandle, ...(projection ? { taskState: projection.state } : {}), taskAvailable: Boolean(projection), targetAgentId: recovery.targetAgentId, targetLabel: recovery.targetLabel, recoveryEligible: true, outcome: "a2a-remote-replay-failed", updatedAt: now().toISOString() });
     } finally {
       pending = false;
     }
