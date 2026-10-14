@@ -1,8 +1,8 @@
 # Ave
 
-Extensible Electron desktop agent workspace for Ave chat, extension workflows, local indexing, meetings, and managed marketplace extensions.
+Hello, I'm Ave. Ave is a comprehensive agent browser: the desktop place where you, your agents, the models you choose, and your computer meet. Its goals and what ships today are stated once, in [docs/vision/README.md](./docs/vision/README.md).
 
-Ave brings chat, work mode, tool execution, extensions, local state, permissions, and installable extensions into one desktop host. This repository owns the Electron main/renderer/preload layers, extension runtime, managed marketplace install flow, Python runtime bootstrap, local/cloud retrieval bridge, and OS installer packaging.
+This repository owns the Electron main/renderer/preload layers, extension runtime, managed marketplace install flow, Python runtime bootstrap, local/cloud retrieval bridge, and OS installer packaging.
 
 Korean documentation: [docs/ko/app-readme.md](./docs/ko/app-readme.md)
 
@@ -19,9 +19,9 @@ Korean documentation: [docs/ko/app-readme.md](./docs/ko/app-readme.md)
 
 ## Core Capabilities
 
-### Desktop Agent Workspace
+### Agent Browser Workspace
 
-Ave is designed as a reliable desktop environment where chat, work mode, tools, extensions, settings, and local status can coexist without visual noise. The UI makes model state, tool calls, extension activity, file effects, approvals, indexing, and permissions visible enough for repeated daily work.
+Ave's window is where chat, browser, terminal, tools, extensions, settings, and local status coexist without visual noise. The UI makes model state, tool calls, extension activity, file effects, approvals, indexing, and permissions visible enough for repeated daily work.
 
 The main area follows a workbench model: it is divided into framed chat groups, called tiles below, and each tile is a conversation of its own rather than a second view of the same one. Work mode holds up to four tiles; chat mode holds exactly one. Focus is drawn on the tile's frame, so which tile the next keystroke lands in is answerable at a glance.
 

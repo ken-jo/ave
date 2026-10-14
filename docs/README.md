@@ -1,6 +1,6 @@
 # Ave Project Documentation
 
-Ave (Local Versatile Intelligent System) is a desktop agent platform for local-first, project-aware AI workflows. This directory is the canonical English documentation surface for the app.
+Hello, I'm Ave: a comprehensive agent browser where you, your agents, the models you choose, and your computer meet. What Ave is and where it is going is stated once, in [Vision](./vision/README.md). This directory is the canonical English documentation surface for the app.
 
 The Korean documentation snapshot is preserved under [docs/ko](./ko/README.md). English pages stay in the default paths; Korean pages mirror the same paths below `docs/ko`.
 

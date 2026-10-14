@@ -15,7 +15,11 @@ state durable constraints here and put detailed designs in their owning docs.
   and current shipped behavior of comparable CLI and desktop coding-agent
   hosts. IDE/workspace products are secondary references: use them for generic
   editor or filesystem conventions, not as the primary model for agent-host
-  lifecycle or interaction behavior.
+  lifecycle or interaction behavior. For browser and terminal surfaces, the
+  agent browsers and agent terminals named in `docs/vision/README.md` are
+  primary comparisons too.
+- The product goal is stated once, in `docs/vision/README.md`. Link to it
+  instead of restating Ave's positioning elsewhere.
 - Plugin integration is defined by `src/plugins/types.ts`, manifests, schemas,
   and HostApi self-registration. Do not add plugin-specific host branches.
 - Permission behavior follows `docs/architecture/permission-policy-design.md`

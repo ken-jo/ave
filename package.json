@@ -13,7 +13,7 @@
     "#hooks/*": "./src/hooks/*.ts",
     "#lib/*": "./src/lib/*.ts"
   },
-  "description": "Extensible Electron desktop agent workspace for Ave chat, plugin workflows, local indexing, meetings, and managed marketplace extensions.",
+  "description": "Ave, a comprehensive agent browser: you, your agents, your models and your computer in one desktop app with browser, terminal, chat, plugins and skills.",
   "keywords": [
     "ave",
     "electron",
