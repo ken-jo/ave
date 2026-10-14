@@ -25,6 +25,31 @@ export interface PrePushUpdates {
   complete: boolean;
 }
 
+export declare function isIntegrationBranchRef(ref: string): boolean;
+
+export interface RemoteHeads {
+  defaultRef: string;
+  heads: Map<string, string>;
+}
+export interface BaseCandidate {
+  ref: string;
+  sha: string;
+}
+export interface GitResult {
+  status: number | null;
+  stdout?: string;
+}
+export type GitRunner = (args: string[]) => GitResult;
+
+export declare function parseRemoteHeads(text: string): RemoteHeads | null;
+export declare function selectBaseCandidates(remoteHeads: RemoteHeads): BaseCandidate[];
+export declare function findMissingCandidateTips(candidates: BaseCandidate[], git: GitRunner): BaseCandidate[];
+export declare function chooseNewBranchBase(
+  localSha: string,
+  candidates: BaseCandidate[],
+  git: GitRunner,
+): { ref: string; sha: string; count: number } | null;
+
 export declare function parsePrePushUpdates(input: PrePushInput): PrePushUpdates;
 
 /**
