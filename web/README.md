@@ -1,32 +1,47 @@
-# former-site.invalid
+# Ave website
 
-Unified web home for [Ave AI](https://former-site.invalid) — marketing landing (`/`) and the
-user guide (`/docs/*`) in a single Next.js 14 static-export app.
+The product site and user guide for Ave, a Next.js static export served from
+the canonical host. Korean lives at `/`, English under `/en/`.
 
-- Design system: see `docs/DESIGN.md` (marketplace-aligned neutral system)
-- Deployment: Cloudflare Pages via wrangler direct upload — see `DEPLOY.md`
-- `docs.former-site.invalid` is a 301 redirect shim to `former-site.invalid/docs/*` (see `infra/docs-redirect/`)
+- Design decisions: `DESIGN.md`
+- Deployment: `DEPLOY.md`
+
+## Pages
+
+```
+/                 home (ko)        /en/                 home (en)
+/download/        installers       /en/download/
+/docs/            guide index      /en/docs/
+/docs/<slug>/     guide pages      /en/docs/<slug>/
+```
+
+Guide pages are data in `lib/docs.ts`; one template renders them. Home copy is
+in `lib/home.ts`. Pages that existed before this structure are redirected by
+`public/_redirects`.
+
+## Files the app reads
+
+These keep their URLs. The app fetches them from the canonical host.
+
+- `public/.well-known/ave-service.json`: the service descriptor current builds read.
+- `public/.well-known/former-service.json`: the same document, for builds from
+  before the rename.
+- `public/announcements/v1.json`: announcements the descriptor names.
+- `public/schemas/**`: the plugin host protocol schema mirror, maintained by
+  `scripts/lib/plugin-host-protocol-mirror.mjs`.
+
+`test/scripts/web-site-contract.test.ts` checks them, the download links and
+the page map.
 
 ## Local development
 
 ```bash
-npm install
-npm run dev      # http://localhost:3000
-npm run build    # static export → out/
-npm run preview  # serve out/ locally
+bun install --frozen-lockfile
+bun run dev      # http://localhost:3000
+bun run build    # static export → out/
 ```
 
-## Structure
-
-```
-app/            landing (/) + docs routes (/docs/**)
-components/     landing/*, docs/*, motion/*, ui/*
-lib/            navigation, search-index, roadmap, downloads
-public/         favicon, ave-mark
-infra/          docs-redirect shim for the legacy docs domain
-```
-
-## Desktop packages
+## Downloads
 
 Every download button links to a stable alias on the R2 release channel, the
 same host installed apps update from (`package.json` `build.publish`):
@@ -42,4 +57,4 @@ The release workflow refreshes these aliases on every tag
 under `releases/`, and each one downloads under its versioned file name
 (`Content-Disposition`). See `docs/guides/release-r2.md`.
 
-The landing page auto-detects the visitor's OS and highlights the matching card.
+The home page names the visitor's system on its main button when it can tell.

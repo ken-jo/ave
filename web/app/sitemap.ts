@@ -1,25 +1,14 @@
 import type { MetadataRoute } from "next";
-import { flattenNavFor } from "@/lib/navigation";
+import { DOC_SLUGS } from "@/lib/docs";
+import { SITE_ORIGIN } from "@/lib/i18n";
 
 export const dynamic = "force-static";
 
-/**
- * Sitemap derived from lib/navigation(.en).ts so it can never drift from the
- * nav — both locales. With trailingSlash: true every route resolves slashed.
- */
+/** Every page in both locales. With trailingSlash: true every route is slashed. */
 export default function sitemap(): MetadataRoute.Sitemap {
-  const base = "https://former-site.invalid";
-  const slash = (href: string) => (href.endsWith("/") ? href : `${href}/`);
-  const docRoutes = (["ko", "en"] as const).flatMap((locale) =>
-    flattenNavFor(locale).map((item) => ({
-      url: `${base}${slash(item.href)}`,
-      changeFrequency: "weekly" as const,
-      priority: 0.6,
-    }))
-  );
-  return [
-    { url: `${base}/`, changeFrequency: "weekly", priority: 1 },
-    { url: `${base}/en/`, changeFrequency: "weekly", priority: 0.9 },
-    ...docRoutes,
-  ];
+  const paths = ["/", "/download/", "/docs/", ...DOC_SLUGS.map((s) => `/docs/${s}/`)];
+  return paths.flatMap((path) => [
+    { url: `${SITE_ORIGIN}${path}`, changeFrequency: "weekly" as const, priority: path === "/" ? 1 : 0.7 },
+    { url: `${SITE_ORIGIN}/en${path}`, changeFrequency: "weekly" as const, priority: path === "/" ? 0.9 : 0.6 },
+  ]);
 }
