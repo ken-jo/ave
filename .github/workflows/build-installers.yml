@@ -20,7 +20,11 @@ jobs:
   # never controls secret injection; public tag secrets are fixed in workflow.
   release-profile:
     name: Verify immutable unsigned release profile
-    runs-on: ubuntu-latest
+    # Linux jobs here take the runner from repo variable AVE_LINUX_RUNNER
+    # (JSON label array, e.g. ["self-hosted","Linux","ARM64","ave"]); unset =
+    # hosted fallback, as in ci.yml. Private repo only: unset every AVE_*_RUNNER
+    # variable before the repo goes public.
+    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
     permissions:
       contents: read
     steps:
@@ -273,7 +277,7 @@ jobs:
     name: Publish GitHub Release assets (atomic)
     needs: [release-profile, installers]
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
     permissions:
       contents: write
     steps:
@@ -379,7 +383,7 @@ jobs:
     name: Publish to the R2 release channel
     needs: [release-profile, installers]
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
     permissions:
       contents: read
     steps:
@@ -451,6 +455,11 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/upload-release-r2.mjs --dir release-staging --tag "$RELEASE_TAG" --dry-run
+      # Self-hosted runners carry no AWS CLI. The script installs the official
+      # build after checking its signature, with no secret in scope.
+      - name: Provide the AWS CLI
+        shell: bash
+        run: bash .github/scripts/install-aws-cli.sh
       - name: Upload to R2
         shell: bash
         env:

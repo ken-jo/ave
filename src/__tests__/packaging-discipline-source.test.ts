@@ -407,6 +407,58 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
+  it("runs every release Linux job on the runner the repo variable names", () => {
+    const linuxRunner = "runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}";
+    const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
+    for (const id of ["release-profile", "publish-release", "publish-r2"]) {
+      const body = installers.get(id);
+      if (body === undefined) throw new Error(`build-installers.yml has no ${id} job`);
+      expect(body.match(/^ {4}runs-on: .*$/gmu), id).toEqual([`    ${linuxRunner}`]);
+    }
+    const probe = workflowJobs(readRepoFile(".github/workflows/r2-probe.yml")).get("probe");
+    if (probe === undefined) throw new Error("r2-probe.yml has no probe job");
+    expect(probe.match(/^ {4}runs-on: .*$/gmu)).toEqual([`    ${linuxRunner}`]);
+  });
+
+  it("provides the AWS CLI from a signature-checked official build before any aws call", () => {
+    const install = "bash .github/scripts/install-aws-cli.sh";
+    const jobs = [
+      ["publish-r2", workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("publish-r2")],
+      ["probe", workflowJobs(readRepoFile(".github/workflows/r2-probe.yml")).get("probe")],
+    ] as const;
+    for (const [id, body] of jobs) {
+      if (body === undefined) throw new Error(`no ${id} job`);
+      expect(jobRunCommands(body).filter((command) => command.includes("install-aws-cli")), id).toEqual([install]);
+      const at = body.indexOf(install);
+      const step = body.slice(body.lastIndexOf("\n      - ", at), body.indexOf("\n      - ", at));
+      // No secret is in scope while a downloaded installer runs.
+      expect(step, id).not.toContain("secrets.");
+      expect(step, id).not.toContain("continue-on-error");
+      expect(body.indexOf("uses: actions/checkout@"), id).toBeLessThan(at);
+      expect(at, id).toBeLessThan(body.indexOf("aws --version"));
+      expect(at, id).toBeLessThan(body.indexOf("secrets."));
+    }
+
+    const script = readRepoFile(".github/scripts/install-aws-cli.sh");
+    const fingerprint = "FB5DB77FD5C118B80511ADA8A6310ACC4672475C";
+    expect(script).toContain(`AWS_CLI_KEY_FINGERPRINT="${fingerprint}"`);
+    expect(script).toMatch(/^AWS_CLI_VERSION="2\.\d+\.\d+"$/mu);
+    expect(script).toContain('url="https://awscli.amazonaws.com/awscli-exe-linux-${arch}-${AWS_CLI_VERSION}.zip"');
+    expect(script).toContain('--output "$work/awscliv2.sig" "$url.sig"');
+    expect(script).toContain('gpg --batch --status-fd 1 --verify "$work/awscliv2.sig" "$work/awscliv2.zip"');
+    expect(script).toContain("GOODSIG");
+    expect(script).toContain("VALIDSIG");
+    expect(script).toContain("GNUPGHOME");
+    expect(script).toContain('"$work/aws/install" --install-dir "$prefix" --bin-dir "$bin_dir"');
+    expect(script).toContain('echo "$bin_dir" >> "$GITHUB_PATH"');
+    expect(script.indexOf("--verify")).toBeLessThan(script.indexOf("unzip -q"));
+    expect(script).not.toMatch(/\bsudo\b|set -[a-z]*x|\|\s*(ba)?sh\b/u);
+
+    const key = readRepoFile(".github/scripts/aws-cli-team-public-key.asc");
+    expect(key.startsWith("-----BEGIN PGP PUBLIC KEY BLOCK-----\n")).toBe(true);
+    expect(key.trimEnd().endsWith("-----END PGP PUBLIC KEY BLOCK-----")).toBe(true);
+  });
+
   it("keeps privileged workflows on trusted default-branch events", () => {
     const deploy = readRepoFile(".github/workflows/web-deploy.yml");
     expect(deploy).toContain("repository_dispatch:");
