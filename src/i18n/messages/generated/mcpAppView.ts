@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/McpAppView.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/McpAppView.tsx.
 export const en = {
   "mcpAppView.sandboxBadge": "MCP · Isolated Process · Restricted Network",
   "mcpAppView.loading": "Loading MCP App...",

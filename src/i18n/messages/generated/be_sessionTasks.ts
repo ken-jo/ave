@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/tools/session-tasks.ts. Do not edit by hand.
+// i18n fragment. Source: src/tools/session-tasks.ts.
 export const en = {
   "be_sessionTasks.toolDescription": "Manage the checklist the assistant follows in this session. " +
     "Tasks are numbered from 1 in the order listed; the user sees the same numbers, so \"task 2\" means the same thing to both of you. " +

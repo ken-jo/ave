@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/main.ts. Do not edit by hand.
+// i18n fragment. Source: src/main.ts.
 export const en = {
   // createViewMenu / menu labels
   "be_main.menuPlugins": "Extensions",

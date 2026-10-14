@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/LazyCalendar.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/LazyCalendar.tsx.
 export const en = {
   "lazyCalendar.calendarLoading": "Calendar loading",
 } as const;

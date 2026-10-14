@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/BottomActionRow.tsx. Do not edit by hand.
+// i18n fragment. Extracted from src/ui/renderer/components/BottomActionRow.tsx, which no longer exists.
 export const en = {
   "bottomActionRow.newline": "New line",
   "bottomActionRow.immediateInject": "Inject immediately",

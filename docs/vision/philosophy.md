@@ -8,9 +8,11 @@ Korean mirror: [docs/ko/vision/philosophy.md](../ko/vision/philosophy.md).
 ## Principles
 
 - **Side by side, not behind a wall.** The agent works in surfaces the user can
-  see: the same browser tabs, the same terminal, the same files. The user can
-  watch, interrupt, and take over at any point, and the agent can pick up where
-  the user left off.
+  see. It already works in the same files; working in the same browser tabs and
+  the same terminal as the user is a goal, not yet shipped
+  ([where Ave is today](./README.md#where-ave-is-today)). The user can watch,
+  interrupt, and take over at any point, and the agent can pick up where the
+  user left off.
 - **One place, shared context.** Chat, browser, terminal, files, plugins, and
   remote sessions share one project context, so nothing has to be re-explained
   when work moves between surfaces.

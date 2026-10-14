@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/permissions/AuditPanel.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/permissions/AuditPanel.tsx.
 export const en = {
   "auditPanel.title": "Permission Audit Log",
   "auditPanel.panelAriaLabel": "Permission audit panel",

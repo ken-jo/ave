@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/utils/tool-display.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/utils/tool-display.ts.
 export const en = {
   "toolDisplay.taskAdd": "Add task",
   "toolDisplay.taskList": "Task list",

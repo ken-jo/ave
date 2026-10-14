@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/permissions/PermissionEvaluationContextPanel.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/permissions/PermissionEvaluationContextPanel.tsx.
 export const en = {
   "permissionEvaluationContextPanel.noContext": "No verification environment context",
   "permissionEvaluationContextPanel.missingPayload": "The verification environment payload was not included. This request does not reconstruct the permission evaluation context.",

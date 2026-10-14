@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/Composer.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/Composer.tsx.
 export const en = {
   "composer.defaultPlaceholder": "Type your question... (Cmd/Ctrl+V to paste from clipboard)",
   "composer.attachLimitPasteBlocked": "Attachment limit of {max} reached — clipboard paste was blocked",

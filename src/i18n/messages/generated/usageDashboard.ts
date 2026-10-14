@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/UsageDashboard.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/UsageDashboard.tsx.
 export const en = {
   "usageDashboard.title": "Usage",
   "usageDashboard.description": "View token usage, costs, and per-model totals by period",

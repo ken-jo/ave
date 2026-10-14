@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/StarredView.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/StarredView.tsx.
 export const en = {
   "starredView.title": "Insights",
   "starredView.refresh": "Refresh",
