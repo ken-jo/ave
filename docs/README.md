@@ -1,24 +1,97 @@
 # Ave Project Documentation
 
-Hello, I'm Ave: a comprehensive agent browser where you, your agents, the models you choose, and your computer meet. What Ave is and where it is going is stated once, in [Vision](./vision/README.md). This directory is the canonical English documentation surface for the app.
+Hello, I'm Ave: a comprehensive agent browser where you, your agents, the models
+you choose, and your computer meet. What Ave is and where it is going is stated
+once, in [Vision](./vision/README.md); every other page links there instead of
+restating it.
 
-The Korean documentation snapshot is preserved under [docs/ko](./ko/README.md). English pages stay in the default paths; Korean pages mirror the same paths below `docs/ko`.
+Read the sections in order: the goal, the architecture that serves it, the
+guides for using and extending Ave, the reference contracts that code and tests
+hold to, and the decision records behind them. Source files and tests win when a
+page drifts from the code.
 
-## Navigation
+## 1. Vision
 
-| Area | English Entry | Korean Mirror |
-| --- | --- | --- |
-| Vision | [Vision](./vision/README.md) | [Korean](./ko/vision/README.md) |
-| Architecture | [Architecture](./architecture/README.md) | [Korean](./ko/architecture/README.md) |
-| Design | [Design](./design/README.md), [Tiled chat groups](./design/tiled-chat-groups.md), [Plugin HostApi as a versioned protocol](./design/plugin-hostapi-protocol.md) | [Korean archive](./ko/design/README.md) |
-| Guides | [Getting Started](./guides/getting-started.md) | [Korean](./ko/guides/getting-started.md) |
-| Plugin Development | [Plugin Development Guide](./guides/plugin-development.md) | [Korean historical reference](./ko/guides/plugin-development.md) |
-| MCP Apps | [Authoring an MCP App (`ui://` card)](./guides/mcp-app-authoring.md) | — |
-| Release | [Production Release Checklist](./references/production-release-checklist.md) | [Korean](./ko/references/production-release-checklist.md) |
-| Blueprints | [Blueprints](./blueprints/README.md) | [Korean](./ko/blueprints/README.md) |
+- [Vision](./vision/README.md): the goal (agent browser, terminal, and one
+  platform for chat, extensions, skills, and remote) and what ships today.
+- [Philosophy](./vision/philosophy.md): the principles behind the goal.
 
-## Language Policy
+## 2. Architecture
 
-- English is the default documentation language for app behavior, architecture, and contributor workflows.
-- Korean source material stays under the mirrored `docs/ko` path while its topic is live. Closed-out phase reports and mockups for removed features are deleted, not archived; git history keeps them.
-- New docs should start in English and may add a Korean mirror when Korean-specific context is useful.
+How the host is built. Start with the [architecture index](./architecture/README.md).
+
+- [Architecture](./architecture/architecture.md): host, renderer, IPC, storage,
+  extensions, tool governance, security and audit.
+- [Tool governance](./architecture/tool-governance.md) and
+  [permission policy](./architecture/permission-policy-design.md): how a tool
+  call is exposed, approved, reviewed, audited, and executed.
+- [Tiled chat groups](./design/tiled-chat-groups.md) and the
+  [visual design system](./DESIGN.md): the workbench where chat, the work panel,
+  the browser, and the terminal live.
+- [Multi-surface conversation runtime](./architecture/multisurface-conversation-runtime.md):
+  remote surfaces, the headless host, and paired devices.
+- Extensions: [extensions and plugins](./design/extensions-and-plugins.md),
+  [HostApi protocol](./design/plugin-hostapi-protocol.md),
+  [plugin process isolation](./blueprints/plugin-process-isolation.md),
+  [deployment model](./architecture/plugin-deployment-model.md), and the
+  [git marketplace](./design/multi-source-git-marketplace.md).
+
+## 3. Guides
+
+- [Getting started](./guides/getting-started.md): build, run, connect a provider.
+- [Windows setup](./guides/windows-setup.md) and the
+  [native Linux host](./guides/native-server.md).
+- [Telegram bridge](./guides/telegram-bridge.md): reach a conversation from a
+  private chat.
+- Building extensions: [extension development](./guides/plugin-development.md),
+  [local development](./guides/local-plugin-development.md),
+  [version quickref](./guides/plugin-version-quickref.md),
+  [MCP app cards](./guides/mcp-app-authoring.md),
+  [testing a marketplace locally](./guides/local-marketplace-testing.md), and
+  [publishing to a git marketplace](./guides/marketplace-publishing.md).
+- Releasing: [release process](./development/release-process.md),
+  [production release checklist](./references/production-release-checklist.md),
+  and the [R2 release channel](./guides/release-r2.md).
+
+## 4. Reference and contracts
+
+Pages that code, tests, or scripts read or cite by section. Change them in the
+same commit as the behavior they describe.
+
+| Area | Pages |
+| --- | --- |
+| Protocols | [A2A exact send replay](./protocols/ave-a2a-exact-send-replay.md) (pinned by `bun run check:a2a-p4-5-contract` together with the [A2A blueprint](./blueprints/a2a-subagent-messaging.md)) |
+| Extensions | [Plugin tool schema](./references/plugin-tool-schema-design.md), [overlay triggers and alerts](./references/overlay-trigger.md), [plugin alerts](./design/plugin-alerts.md), [marketplace trust operations](./references/plugin-signing-operations.md) |
+| Tools and models | [Tool loading policy](./development/tool-loading-policy.md), [tool-level deferral](./development/tool-level-deferral-design.md), [skill loading policy](./development/skill-loading-policy.md), [MCP resources policy](./development/mcp-resources-policy.md), [MCP alignment](./architecture/mcp-alignment-design.md), [hook runtime](./architecture/hook-runtime-expansion-design.md), [tool result kinds](./references/tool-result-kind-sentinels.md), [model capability catalog](./design/model-capability-catalog.md), [model upgrade verification](./development/model-upgrade-verification.md) |
+| Providers and runtime | [OpenAI provider integration](./architecture/openai-provider-integration.md), [CLI subscription runtime](./architecture/claude-code-subscription-runtime.md), [session model v2](./architecture/session-model-v2.md), [image preparation](./architecture/image-preparation.md), [native host secret encryption](./architecture/headless-secret-encryption.md), [Linux workload resource controller](./architecture/linux-workload-resource-controller.md) |
+| Development | [Theme system](./development/theme-system.md), [observability](./references/observability-guide.md), [main-process bundle budget](./development/main-process-bundle.md), [knip baseline](./development/knip-baseline.md), [legacy sunset policy](./development/legacy-sunset-policy.md) and its [inventory](./development/legacy-sunset-inventory.json) |
+
+`scripts/hooks/documentation-references.json` lists every document that code
+reads (`consumed`) or names (`referencedOnly`); moving or deleting one of those
+needs the same change there and in the code that names it.
+
+## 5. Decisions
+
+Plans, proposals, and research. Each page states its status (proposed,
+implemented, superseded) at the top.
+
+- [Blueprints](./blueprints/README.md): staged plans, such as the A2A messaging
+  blueprint, the git marketplace phases, and headless relay separation.
+- Proposals, listed in the [architecture index](./architecture/README.md#proposals):
+  suggested replies, the git marketplace architecture, reviewer re-adjudication,
+  declared-category removal, and the Tailnet observer surface.
+- Architecture decisions: [Windows toast lifecycle](./architecture/all-profile-windows-toast-lifecycle-adr.md),
+  [hook runtime event parity](./architecture/hook-runtime-common-event-parity.md).
+- Research: [OS sandbox isolation](./research/sandbox-isolation.md) and
+  [network-restricted evaluation](./research/network-restricted-eval.md).
+
+Closed-out phase reports, superseded plans, and mockups of shipped UI are
+deleted rather than archived; git history keeps them.
+
+## Language policy
+
+English is the documentation language. The [Korean pages](./ko/README.md) are
+kept only where a reader or a test needs them: the Korean app README and setup
+guides, the Korean vision, and three older Korean specifications whose section
+numbers source comments still cite. When an English page and a Korean page
+disagree, the English page and the source are authoritative.
