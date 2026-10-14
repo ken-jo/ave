@@ -25,6 +25,7 @@ import {
   type RefObject,
 } from "react";
 import type { PluginOnboardingAction } from "../../../plugins/public-contract.js";
+import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 
 export type OverlayItemSource =
   | { kind: "routine"; routineId: string; firedAt: string }
@@ -48,6 +49,36 @@ export type OverlayItemSource =
       proposalId: string;
       action: PluginOnboardingAction;
     };
+
+/**
+ * Address a card the user did not ask for to the dedicated Suggestions
+ * conversation.
+ *
+ * A card with no origin used to be drawn in the FOCUSED pane, and its confirm
+ * started a turn in whatever conversation that pane held — a plugin's
+ * suggestion, an alert, a routine's result or a proposal landing inside the
+ * user's own work. Every such card now names the Suggestions conversation, so
+ * `overlayCardTile` draws it only where that conversation is open, and the
+ * sidebar marks its row otherwise. An `app` card is the exception: it was
+ * raised inside a conversation the user is in, and keeps that origin.
+ *
+ * Applied at the one renderer ingress for cards, so cards staged by an older
+ * build (a stored alert, an unacknowledged routine result) are routed the same
+ * way without rewriting anything on disk.
+ */
+export function routeToSuggestionsSession(item: OverlayItem): OverlayItem {
+  switch (item.source.kind) {
+    case "app":
+      return item;
+    case "plugin":
+    case "alert":
+    case "routine":
+    case "proposal":
+      return item.originSessionId === undefined
+        ? { ...item, originSessionId: SUGGESTIONS_SESSION_ID }
+        : item;
+  }
+}
 
 export type OverlayPriority = "low" | "normal" | "high";
 
@@ -86,8 +117,9 @@ export interface OverlayItem {
   /** routine-specific — unified conversation session id */
   routineSessionId?: string;
   /**
-   * Plugin insertion overlay — prompt to inject into main chat when the
-   * user confirms (primary action). Absent for routine-source items.
+   * Plugin insertion overlay — prompt inserted into the card's origin
+   * conversation (the Suggestions conversation for every unrequested card)
+   * when the user confirms (primary action). Absent for routine-source items.
    */
   pendingPrompt?: string;
   /**
@@ -112,8 +144,9 @@ export interface OverlayItem {
    * An MCP app card is raised by a card mounted in a specific conversation, so
    * it belongs to whichever tile is holding that conversation. A routine fires
    * on a schedule and a plugin trigger fires on an event — neither has a
-   * conversation behind it, and both leave this absent, which is what makes
-   * them the focused tile's to show.
+   * conversation behind it, so they (with alerts and proposals) are addressed
+   * to the dedicated Suggestions conversation by
+   * {@link routeToSuggestionsSession} rather than to the focused tile.
    *
    * NOT `source.eventId`: that identifies the plugin EVENT, not a session.
    */

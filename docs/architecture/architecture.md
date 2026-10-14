@@ -784,8 +784,9 @@ Key boundaries:
 - optional `manifest.onboarding` copy is inert, localized metadata. An extension
   declares one `firstTask` and up to five `highlights`; the host asks each as a
   tile overlay card once and remembers the answer — accept, later, or never — in
-  `~/.ave/onboarding/proposals.json`. Accepting performs the declared `action`
-  and only that (prefill the visible composer, or move the settings view onto a
+  `~/.ave/onboarding/proposals.json`. Like every unrequested card it is shown in
+  the dedicated Suggestions conversation. Accepting performs the declared `action`
+  and only that (prefill that conversation's composer, or move the settings view onto a
   destination written `<tab>` or `<tab>/<section>`, so the reader lands on the
   control rather than on the page that holds it); nothing auto-submits, starts a
   turn, or invokes a tool, and undeclared or unusable extensions produce no
@@ -917,6 +918,11 @@ meeting-summary OS notifications. A new kind first encountered during an update
 starts off. A visibility increase disables the kind until the user consents.
 Eligible predecessor choices transfer through retained configuration under the
 migration rules; the generic settings patch cannot author alert choices.
+
+Unrequested cards — alerts, accepted `triggerConversation` suggestions, routine
+cards and onboarding proposals — land in one dedicated, persistent Suggestions
+conversation (a reserved-id `main` session created on demand), never in the
+focused conversation; confirming one runs it there. See the overlay contract.
 
 `triggerConversation` survives for setup suggestions. Extensions declaring alerts
 must declare their suggestion sources and receive at most one acceptance per

@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { Sidebar } from "../Sidebar.js";
+import { SUGGESTIONS_SESSION_ID } from "../../../../shared/suggestions-session.js";
 import type { SessionSummary } from "../../hooks/use-sessions.js";
 import { sessionRow } from "../../../../../test/renderer/mock-ave-api.js";
 import type { ProjectIdentity } from "../../../../shared/project-identity.js";
@@ -1634,6 +1635,33 @@ describe("Sidebar — every conversation family", () => {
       expect(
         getByTestId("sidebar-unassigned-sessions").contains(getByTestId("sidebar-session-side-orphan")),
       ).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("Sidebar — the dedicated Suggestions conversation", () => {
+  it("counts the suggestions waiting on its row", async () => {
+    const { getByTestId, queryByTestId, restore } = renderSidebar({
+      sessions: [
+        sessionRow({ id: SUGGESTIONS_SESSION_ID, title: "제안", modifiedAt: new Date().toISOString() }),
+        sessionRow({ id: "sess-2", title: "다른 대화", modifiedAt: new Date(Date.now() - 3600_000).toISOString() }),
+      ],
+      pendingAnswerSessionIds: new Set([SUGGESTIONS_SESSION_ID]),
+      suggestionsPendingCount: 3,
+    });
+    try {
+      await waitFor(() => getByTestId(`sidebar-session-${SUGGESTIONS_SESSION_ID}`));
+      const row = getByTestId(`sidebar-session-${SUGGESTIONS_SESSION_ID}`);
+      expect(row.textContent).toContain("제안");
+      const badge = getByTestId(`sidebar-pending-count-${SUGGESTIONS_SESSION_ID}`);
+      expect(row.contains(badge)).toBe(true);
+      expect(badge.textContent).toBe("3");
+      expect(badge.getAttribute("aria-label")).toBe("대기 중인 제안 3개");
+      // The count stands in for the dot on that row; other rows carry none.
+      expect(queryByTestId(`sidebar-pending-answer-${SUGGESTIONS_SESSION_ID}`)).toBeNull();
+      expect(queryByTestId("sidebar-pending-count-sess-2")).toBeNull();
     } finally {
       restore();
     }

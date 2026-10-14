@@ -56,6 +56,7 @@ import {
   SIDEBAR_MIN_WIDTH,
 } from "../../../shared/side-panel.js";
 import { formatRelativeSessionTime } from "../../../shared/format-time.js";
+import { isSuggestionsSession } from "../../../shared/suggestions-session.js";
 
 // A nav row draws the same glyph the pane header draws for the view it opens —
 // one map, so a row and the header it produces cannot disagree.
@@ -225,6 +226,11 @@ export interface SidebarProps {
   pendingAnswerSessionIds?: ReadonlySet<string>;
   /** A plugin or host request names no conversation and is waiting — the Plugins row carries the dot. */
   pluginRequestPending?: boolean;
+  /**
+   * Cards waiting in the dedicated Suggestions conversation — the count its row
+   * carries. Derived from the window's card queue.
+   */
+  suggestionsPendingCount?: number;
 }
 
 // ─── Platform bridge (darwin traffic-light line) ───────────────────────────────
@@ -1003,6 +1009,7 @@ function SessionRow({
   onOpenMenu,
   unread,
   pendingAnswer = false,
+  pendingCount = 0,
   responding,
   archived,
   renaming,
@@ -1037,6 +1044,11 @@ function SessionRow({
    * yellow dot says "interrupted here, something is waiting for an answer".
    */
   pendingAnswer?: boolean;
+  /**
+   * Suggestions waiting in this conversation — drawn as a count. Only the
+   * dedicated Suggestions conversation has any.
+   */
+  pendingCount?: number;
   /** A turn is running here — the kind glyph gives way to a pulsing dot. */
   responding?: boolean;
   /** Archived — kept legible but visibly set aside. */
@@ -1183,7 +1195,15 @@ function SessionRow({
           <span className={`min-w-0 flex-1 truncate ${unread ? "font-semibold text-foreground" : ""}`}>
             {session.title}
           </span>
-          {pendingAnswer ? (
+          {pendingCount > 0 ? (
+            <span
+              className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground tabular-nums"
+              aria-label={t("sidebar.suggestionsPendingCount", { count: pendingCount })}
+              data-testid={`sidebar-pending-count-${session.id}`}
+            >
+              {pendingCount}
+            </span>
+          ) : pendingAnswer ? (
             <PendingAnswerDot inline testId={`sidebar-pending-answer-${session.id}`} />
           ) : null}
         </button>
@@ -1243,6 +1263,7 @@ function ProjectSessionList({
   scrollViewportRef,
   onExpandSidebar,
   pendingAnswerSessionIds,
+  suggestionsPendingCount,
 }: {
   collapsed: boolean;
   sessions: SessionSummary[];
@@ -1282,6 +1303,8 @@ function ProjectSessionList({
   onExpandSidebar?: () => void;
   /** See `SidebarProps.pendingAnswerSessionIds`. */
   pendingAnswerSessionIds?: ReadonlySet<string>;
+  /** See `SidebarProps.suggestionsPendingCount`. */
+  suggestionsPendingCount: number;
 }) {
   const { t } = useTranslation();
   const openNativeContextMenu = useNativeContextMenu();
@@ -1531,11 +1554,15 @@ function ProjectSessionList({
 
   const renderSessionRow = (session: SessionSummary) => {
     if (session.family !== "main") return renderFamilyRow(session, false);
+    // The dedicated Suggestions conversation carries the number of
+    // suggestions waiting in it.
+    const suggestions = isSuggestionsSession(session.id);
     const sideChats = sideChatsByParent.get(session.id);
     const row = (
       <SessionRow
         key={session.id}
         session={session}
+        pendingCount={suggestions ? suggestionsPendingCount : 0}
         active={conversationSurfaceVisible && session.id === currentSessionId}
         onLoadSession={onLoadSession}
         isPinned={isSessionPinned(session.id)}
@@ -2004,6 +2031,7 @@ export function Sidebar({
   onToggleProjectPin,
   pendingAnswerSessionIds,
   pluginRequestPending = false,
+  suggestionsPendingCount = 0,
 }: SidebarProps) {
   const { t } = useTranslation();
   const resizable = !collapsed && Boolean(onWidthChange && onWidthCommit);
@@ -2497,6 +2525,7 @@ export function Sidebar({
                     conversationActions={conversationActions}
                     projectActions={projectActions}
                     pendingAnswerSessionIds={pendingAnswerSessionIds}
+                    suggestionsPendingCount={suggestionsPendingCount}
                     scrollViewportRef={navScrollViewportRef}
                     onExpandSidebar={expandSidebar}
                   />

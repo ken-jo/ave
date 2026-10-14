@@ -32,6 +32,7 @@ import type { MarketplaceAnnouncement } from "../../src/shared/marketplace-annou
 import { CHAT_SESSION_DRAG_TYPE } from "../../src/ui/renderer/components/pane-drop.js";
 import type { AveApi } from "../../src/ui/renderer/types.js";
 import { A2ATaskState } from "../../src/shared/a2a.js";
+import { SUGGESTIONS_SESSION_ID } from "../../src/shared/suggestions-session.js";
 
 /** The permission namespace's subscriptions, as the mock records them. */
 function permissionSubscription(api: MockAveApi, name: string): ReturnType<typeof vi.fn> {
@@ -210,12 +211,14 @@ describe("overlay cards with two tiles", () => {
     expect(primary!.element.textContent).not.toContain("archive the invoice");
   });
 
-  it("draws a routine card once, in the focused tile, and moves it when focus moves", async () => {
-    const { container, emitRoutineFired } = await renderApp({ hasApiKey: true });
+  it("draws a routine card once, in the tile holding the Suggestions conversation, whatever has focus", async () => {
+    // The primary tile holds the dedicated Suggestions conversation.
+    const { container, emitRoutineFired } = await renderApp({ hasApiKey: true, currentSession: SUGGESTIONS_SESSION_ID });
     const [primary, second] = await splitIntoTwoTiles(container);
-    // Focus follows the split, so the second tile is the focused one when the
-    // card arrives. A routine turn runs in no tile; the card is drawn where
-    // the user is, and confirming it starts a turn there.
+    // Focus follows the split, so the second tile — the user's other
+    // conversation — is focused when the card arrives. A routine turn runs in
+    // no tile; its card is news for the Suggestions conversation, not for the
+    // conversation the user is working in.
     await act(async () => {
       emitRoutineFired({
         id: "schedule-daily",
@@ -226,37 +229,33 @@ describe("overlay cards with two tiles", () => {
       });
     });
 
-    await waitFor(() => expect(overlayRegions(second!)).toHaveLength(1));
-    expect(container.querySelectorAll('[data-testid="overlay-card-region"]')).toHaveLength(1);
-    expect(overlayRegions(primary!)).toHaveLength(0);
-    expect(windowRegion(container)).toBeNull();
-
-    await focusTile(primary!);
-
-    // One card, where the user is now. A card left in the unfocused tile is a
-    // card nobody is looking at, and with several tiles open it would soon be
-    // one card per tile.
     await waitFor(() => expect(overlayRegions(primary!)).toHaveLength(1));
     expect(container.querySelectorAll('[data-testid="overlay-card-region"]')).toHaveLength(1);
     expect(overlayRegions(second!)).toHaveLength(0);
     expect(windowRegion(container)).toBeNull();
+
+    // Moving focus does not move it: it stays with its conversation.
+    await focusTile(primary!);
+    await focusTile(second!);
+    expect(overlayRegions(primary!)).toHaveLength(1);
+    expect(overlayRegions(second!)).toHaveLength(0);
+    expect(windowRegion(container)).toBeNull();
   });
 
-  it("replaces the spinner with the result in the focused tile, still one card", async () => {
+  it("replaces the spinner with the result in the Suggestions tile, still one card", async () => {
     const { container, emitRoutineRunningStarted, emitRoutineFired } =
-      await renderApp({ hasApiKey: true });
+      await renderApp({ hasApiKey: true, currentSession: SUGGESTIONS_SESSION_ID });
     const [primary, second] = await splitIntoTwoTiles(container);
     const firedAt = new Date().toISOString();
 
-    // The spinner arrives over the tile the split focused.
     await act(async () => {
       emitRoutineRunningStarted({ routineId: "schedule-daily", firedAt, title: "Daily schedule" });
     });
-    await waitFor(() => expect(overlayRegions(second!)).toHaveLength(1));
+    await waitFor(() => expect(overlayRegions(primary!)).toHaveLength(1));
 
-    // The user works elsewhere while the routine runs — tens of seconds, in
-    // practice — and only then does the result land.
-    await focusTile(primary!);
+    // The user works elsewhere while the routine runs, and only then does the
+    // result land.
+    await focusTile(second!);
     await act(async () => {
       emitRoutineFired({
         id: "schedule-daily",
@@ -267,16 +266,16 @@ describe("overlay cards with two tiles", () => {
       });
     });
 
-    // The result REPLACES the spinner in the queue — one card, drawn where the
-    // user is now, not a spinner left behind in the other tile.
+    // The result REPLACES the spinner in the queue — one card, in the
+    // Suggestions tile, nothing over the conversation the user is in.
     await waitFor(() => expect(primary!.element.textContent).toContain("daily summary"));
     expect(overlayRegions(primary!)).toHaveLength(1);
     expect(overlayRegions(second!)).toHaveLength(0);
     expect(container.querySelectorAll('[data-testid="overlay-card-region"]')).toHaveLength(1);
   });
 
-  it("starts the confirmed turn in the focused tile — the one showing the card", async () => {
-    const { container, api, emitOverlayShow } = await renderApp({ hasApiKey: true });
+  it("starts the confirmed turn in the Suggestions conversation, never in the focused one", async () => {
+    const { container, api, emitOverlayShow } = await renderApp({ hasApiKey: true, currentSession: SUGGESTIONS_SESSION_ID });
     const [primary, second] = await splitIntoTwoTiles(container);
 
     await act(async () => {
@@ -284,19 +283,14 @@ describe("overlay cards with two tiles", () => {
         id: "plugin:notes:focused",
         source: { kind: "plugin", pluginId: "notes", eventId: "focused" },
         title: "notes",
-        summary: "focused target",
+        summary: "suggested target",
         running: false,
         pendingPrompt: "<untrusted-plugin>notes</untrusted-plugin>",
         createdAt: new Date().toISOString(),
       });
     });
-    await waitFor(() => {
-      expect(second!.element.querySelector('[data-testid="overlay-card-primary-action"]')).not.toBeNull();
-    });
-
-    // Focus moves before the click; the card moves with it, and the confirm
-    // the user reaches is the one in the tile they are in.
-    await focusTile(primary!);
+    // The second tile is focused, but the card is drawn only where the
+    // Suggestions conversation is.
     const confirm = await waitFor(() => {
       const button = primary!.element.querySelector<HTMLButtonElement>(
         '[data-testid="overlay-card-primary-action"]',
@@ -304,19 +298,42 @@ describe("overlay cards with two tiles", () => {
       expect(button).not.toBeNull();
       return button!;
     });
+    expect(second!.element.querySelector('[data-testid="overlay-card-primary-action"]')).toBeNull();
+
     await act(async () => {
       fireEvent.click(confirm);
     });
 
-    // The staged prompt is inserted through the TILE's own handle, so the
-    // transcript it lands in is the answer to "which conversation ran it".
-    await waitFor(() => expect(primary!.element.textContent).toContain("focused target"));
-    expect(second!.element.textContent).not.toContain("focused target");
+    // The staged prompt is inserted through the Suggestions tile's own handle.
+    await waitFor(() => expect(primary!.element.textContent).toContain("suggested target"));
+    expect(second!.element.textContent).not.toContain("suggested target");
     expect(api.chatSend).toHaveBeenCalled();
   });
 
+  it("holds a suggestion while its conversation is not open, drawing it over no other conversation", async () => {
+    const { container, api, emitOverlayShow } = await renderApp({ hasApiKey: true });
+    await splitIntoTwoTiles(container);
+
+    await act(async () => {
+      emitOverlayShow({
+        id: "plugin:notes:held",
+        source: { kind: "plugin", pluginId: "notes", eventId: "held" },
+        title: "notes",
+        summary: "held suggestion",
+        running: false,
+        pendingPrompt: "<untrusted-plugin>notes</untrusted-plugin>",
+        createdAt: new Date().toISOString(),
+      });
+    });
+
+    // The window re-reads its list for the Suggestions row; no tile draws it.
+    await waitFor(() => expect(api.chatSessions.mock.calls.length).toBeGreaterThan(1));
+    expect(container.querySelectorAll('[data-testid="overlay-card-region"]')).toHaveLength(0);
+    expect(container.textContent).not.toContain("held suggestion");
+  });
+
   it("dismisses a routine card once, acknowledging it a single time", async () => {
-    const { container, api, emitRoutineFired } = await renderApp({ hasApiKey: true });
+    const { container, api, emitRoutineFired } = await renderApp({ hasApiKey: true, currentSession: SUGGESTIONS_SESSION_ID });
     await splitIntoTwoTiles(container);
     const firedAt = new Date().toISOString();
 
@@ -416,10 +433,14 @@ describe("overlay cards whose origin conversation leaves the screen", () => {
 });
 
 describe("overlay cards in a pane routed off its conversation", () => {
-  /** A plugin's staged prompt: no origin conversation, so it is drawn in the focused pane. */
+  /**
+   * A staged prompt with no origin conversation, so it is drawn in the focused
+   * pane. Plugin cards are addressed to the Suggestions conversation, so an
+   * app message that named none is the unowned kind left.
+   */
   const pluginCard = (id: string, summary: string) => ({
     id,
-    source: { kind: "plugin", pluginId: "mail-assistant", eventId: id },
+    source: { kind: "app", serverId: "mail-assistant", eventId: id },
     title: "mail-action",
     summary,
     running: false,
@@ -576,13 +597,15 @@ describe("an unowned card follows focus without losing its state", () => {
       const [primary, second] = await splitIntoTwoTiles(container);
       await focusTile(primary!);
 
-      // No origin, so the card is drawn in the focused tile — the primary
-      // here. Moving focus moves it; what the user did to it comes along.
+      // No origin (an app message that named no conversation — every plugin
+      // card is addressed to the Suggestions conversation instead), so the card
+      // is drawn in the focused tile — the primary here. Moving focus moves
+      // it; what the user did to it comes along.
       const createdAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
       await act(async () => {
         emitOverlayShow({
-          id: "plugin:notes:e1",
-          source: { kind: "plugin", pluginId: "notes", eventId: "e1" },
+          id: "app:notes:e1",
+          source: { kind: "app", serverId: "notes", eventId: "e1" },
           title: "notes",
           summary: "긴 요약 ".repeat(50),
           running: false,
@@ -1412,8 +1435,9 @@ describe("the skill badge with three tiles", () => {
  */
 describe("three tiles, every kind of surface at once", () => {
   it("puts each surface on exactly one tile, and what no tile owns in the window", async () => {
+    // The first tile holds the dedicated Suggestions conversation.
     const { container, api, emitApproval, emitAskUserQuestion, emitSkillLoaded, emitRoutineFired } =
-      await renderApp({ hasApiKey: true });
+      await renderApp({ hasApiKey: true, currentSession: SUGGESTIONS_SESSION_ID });
     const [first, middle, third] = await splitIntoThreeTiles(container);
     const onHit = permissionSubscription(api, "onUserApprovalHit");
     const middleSession = `session-${middle!.chatGroupId}`;
@@ -1463,19 +1487,19 @@ describe("three tiles, every kind of surface at once", () => {
     expect(count(container, "overlay-card-region")).toBe(1);
 
     // The approval card that just landed in the middle tile takes focus with
-    // it; the user goes back to the third tile, and the routine card — drawn
-    // where the user is — goes with them.
+    // it; the user goes back to the third tile. The routine card stays with
+    // the Suggestions conversation in the first tile.
     await focusTile(third!);
 
     // The two the middle tile's turn raised are inside the middle tile.
     expect(count(middle!.element, "approval-dock")).toBe(1);
     expect(count(middle!.element, "skill-badge")).toBe(1);
-    // The routine belongs to no conversation, so it is drawn in the focused
-    // tile — exactly one tile draws it, and the window draws none. Naming the
-    // tile is the point: "exactly one tile draws it" would pass with the card
-    // on the wrong tile, which is the whole subject here.
-    await waitFor(() => expect(count(third!.element, "overlay-card-region")).toBe(1));
-    expect(count(first!.element, "overlay-card-region")).toBe(0);
+    // The routine card is addressed to the Suggestions conversation, so the
+    // tile holding it draws it — exactly one tile, and the window draws none.
+    // Naming the tile is the point: "exactly one tile draws it" would pass
+    // with the card on the wrong tile, which is the whole subject here.
+    await waitFor(() => expect(count(first!.element, "overlay-card-region")).toBe(1));
+    expect(count(third!.element, "overlay-card-region")).toBe(0);
     expect(count(middle!.element, "overlay-card-region")).toBe(0);
     expect(container.querySelector('[data-overlay-surface="window"]')).toBeNull();
 
@@ -1498,15 +1522,16 @@ describe("three tiles, every kind of surface at once", () => {
     await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(2));
 
     // Nothing the middle tile raised reached its neighbours, and the routine
-    // card is where focus ended up: the third tile, and only there.
-    const focused = third!;
+    // card stayed with the Suggestions conversation: the first tile, and only
+    // there, wherever focus went.
+    const suggestions = first!;
     for (const tile of [first!, third!]) {
       expect(tile.element.querySelectorAll(BLOCKING_SURFACE_SELECTOR)).toHaveLength(0);
       expect(count(tile.element, "skill-badge")).toBe(0);
       expect(count(tile.element, "user-approval-hit-toast")).toBe(0);
-      expect(count(tile.element, "overlay-card-region")).toBe(tile === focused ? 1 : 0);
+      expect(count(tile.element, "overlay-card-region")).toBe(tile === suggestions ? 1 : 0);
     }
-    expect(count(focused.element, "overlay-card-region")).toBe(1);
+    expect(count(suggestions.element, "overlay-card-region")).toBe(1);
     expect(count(container, "overlay-card-region")).toBe(1);
   });
 });

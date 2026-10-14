@@ -12,11 +12,19 @@ import { ROUTINES } from "../../shared/ipc-channels.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
+import { stageInSuggestionsSession } from "../../main/suggestions-session.js";
 
 const log = createLogger("ave");
 
 export function wireRoutinesScheduler(ctx: BootContext): void {
-  const { routinesScheduler, routineEngine, routinesStore, getMainWindow, notificationService } = ctx;
+  const { routinesScheduler, routineEngine, routinesStore, getMainWindow, notificationService, memoryManager } = ctx;
+  // Every routine card (running, failed, result) is addressed to the dedicated
+  // Suggestions conversation, not the focused one, so that conversation is
+  // made to exist — and rise in the list — in the same tick as the send.
+  const announce = (channel: string, payload: unknown): void => {
+    stageInSuggestionsSession(memoryManager);
+    getMainWindow()?.webContents.send(channel, payload);
+  };
 
   // RoutinesScheduler v2 — fires per due routine, branching on execution mode.
   // llm-session routines start a ConversationLoop with prePrompt.
@@ -33,7 +41,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       // with title+firedAt so renderer can push a proper running OverlayItem
       // immediately. The completed event later carries the routineSessionId.
       try {
-        getMainWindow()?.webContents.send(ROUTINES.runningStarted, {
+        announce(ROUTINES.runningStarted, {
           routineId: routine.id,
           firedAt,
           title,
@@ -65,7 +73,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         log.warn("routines llm-session run failed: %s", (err as Error).message);
         // Emit failed so renderer knows to clear running state.
         try {
-          getMainWindow()?.webContents.send(ROUTINES.failed, {
+          announce(ROUTINES.failed, {
             routineId: routine.id,
             error: (err as Error).message,
           });
@@ -84,7 +92,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       const summary = runSummary;
       // Explicit allowlist payload — no ...routine spread to prevent PII leak.
       try {
-        getMainWindow()?.webContents.send(ROUTINES.fired, {
+        announce(ROUTINES.fired, {
           id: routine.id,
           trigger: routine.trigger,
           execution: routine.execution,
@@ -115,7 +123,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
     try {
       const firedAt = routine.lastFiredAt ?? new Date().toISOString();
       const title = routine.title ?? routine.notificationTitle ?? routine.id.slice(0, 8);
-      getMainWindow()?.webContents.send(ROUTINES.fired, {
+      announce(ROUTINES.fired, {
         id: routine.id,
         trigger: routine.trigger,
         execution: routine.execution,

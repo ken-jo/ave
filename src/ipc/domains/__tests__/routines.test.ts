@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ROUTINES } from "../../../shared/ipc-channels.js";
 import { hostFrameEvent } from "../../../__tests__/test-helpers.js";
+import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -53,6 +54,7 @@ function makeDeps(
         ...session,
       }))),
       deleteSession: vi.fn(async () => undefined),
+      touchSessionTranscript: vi.fn(),
     },
     auditLogger: { log: vi.fn() },
     getMainWindow: vi.fn(() => null),
@@ -82,7 +84,7 @@ describe("routine pending results", () => {
   });
 
   it("attaches only the stored exact routine session id", async () => {
-    await setup([
+    const deps = await setup([
       { id: "latest-wrong", routineFiredAt: "2026-05-16T13:00:00.000Z", preview: "wrong preview" },
       { id: "exact-session", routineFiredAt: "2026-05-16T12:00:00.000Z", preview: "exact preview" },
     ], "exact-session");
@@ -96,6 +98,10 @@ describe("routine pending results", () => {
         summary: "exact preview",
       }),
     ]);
+    // The result cards are addressed to the dedicated Suggestions
+    // conversation, so a non-empty drain makes it exist without moving it.
+    expect(deps.memoryManager.touchSessionTranscript)
+      .toHaveBeenCalledWith(SUGGESTIONS_SESSION_ID, { bump: false });
   });
 
   it("does not fall back to the latest routine session when the stored id is missing", async () => {

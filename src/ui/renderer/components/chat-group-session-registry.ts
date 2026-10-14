@@ -276,9 +276,14 @@ export interface OverlayCardPlacement {
  * drawn pane holds it, the card is orphaned: it waits, and the sidebar row of
  * its conversation carries the attention dot until the row is opened.
  *
- * A card with NO origin conversation — a plugin trigger, a headless routine —
- * is drawn in the FOCUSED pane, and follows focus. The window holds one queue
- * of such cards and that queue has one reader, the user, who is at the focused
+ * Unrequested cards — a plugin trigger, an alert, a routine, a proposal — are
+ * addressed to the dedicated Suggestions conversation at the renderer ingress
+ * (`routeToSuggestionsSession`), so they take the branch above: drawn only
+ * where that conversation is open, and never confirmed into another one.
+ *
+ * A card with NO origin conversation is drawn in the FOCUSED pane, and follows
+ * focus. The window holds one queue of such cards and that queue has one
+ * reader, the user, who is at the focused
  * pane: a card parked in an unfocused pane is a card nobody is looking at, and
  * with several panes open it would soon be one card per pane. The region that
  * draws it acts in its own pane (`actionChatGroupId`), so confirming the card

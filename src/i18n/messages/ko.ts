@@ -6,6 +6,8 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "be_suggestionsSession.title": "제안",
+  "sidebar.suggestionsPendingCount": "대기 중인 제안 {count}개",
   "be_streamCollector.imageInputUnsupported": "대화에 포함된 이미지를 선택한 모델로 보낼 수 없습니다. 이미지를 받는 모델로 바꾸거나, 이미지가 없는 새 대화를 시작해 주세요.",
   "llmTab.modelNoToolsBadge": "도구 미지원",
   "llmTab.modelNoToolsHelp": "이 모델에는 도구를 보내지 않습니다",

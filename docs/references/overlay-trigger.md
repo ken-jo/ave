@@ -55,8 +55,9 @@ available when the renderer attaches.
 An accepted card remains queued if a window send fails; `delivered.card`
 reports staging, not renderer acknowledgment.
 
-Accepting a card inserts its pending prompt into the chosen conversation and
-closes the alert with reason `accepted`. Dismissal closes it with `dismissed`.
+Accepting a card inserts its pending prompt into the dedicated Suggestions
+conversation (see [Where cards land](#where-cards-land)) and closes the alert
+with reason `accepted`. Dismissal closes it with `dismissed`.
 The renderer reports closures through `ave:alerts:card-closed` and obtains
 staged cards through `ave:alerts:open-cards`; both are host-renderer-only IPC.
 Plugin restarts and updates do not discard cards. Uninstall cleanup withdraws
@@ -83,6 +84,28 @@ Only the alerts pipeline can mint `overlay:<pluginId>--<kind>` sources. Host
 kinds use `overlay:host--<kind>`, with `@host` as their identity namespace; the
 package name `host` is reserved. A suggestion's overlay source differs from a
 routine's `suggestion:<pluginId>:<intent>` idempotency marker.
+
+## Where cards land
+
+Cards nobody asked for in the conversation at hand — alert cards, accepted
+`triggerConversation` suggestions, routine running/result/failure cards and
+onboarding proposals — are addressed to one dedicated, persistent Suggestions
+conversation, never to the focused one. It is an ordinary conversation in the
+main session store under a reserved id (`src/shared/suggestions-session.ts`),
+created empty on demand by the host just before the first card is staged (and
+again if the user deletes it). A newly staged card moves it to the top of the
+conversation list; a snapshot pull only makes it exist. The sidebar names it
+"Suggestions" in the user's language and shows how many cards wait in it.
+
+A card is drawn only in a pane holding the Suggestions conversation; otherwise
+it waits and the row carries the count. Confirming a card runs its staged
+prompt there, with the same staged origin and envelope. Opening a routine
+result still opens the routine run's own session. MCP App messages are not
+suggestions: they were raised in a conversation and stay with it. The routing
+rule keys on card kind only, is applied at the renderer's single card
+ingress, and therefore also routes cards staged by an earlier build; nothing
+on disk is rewritten. Plugin contracts (`triggerConversation`, `raiseAlert`,
+onboarding manifests) are unchanged.
 
 ## Trust and migration
 
@@ -121,4 +144,6 @@ write guard, including when optional effect classification is disabled.
 - Events and suggestion limits: `src/alerts/{events,suggestion-ledger}.ts`.
 - Boot and renderer boundary: `src/boot/steps/alerts-setup.ts`, `src/ipc/domains/alerts.ts`.
 - Routine persistence and dispatch: `src/main/{routines-store,routines-scheduler}.ts`.
+- Suggestions conversation: `src/shared/suggestions-session.ts`, `src/main/suggestions-session.ts`,
+  `routeToSuggestionsSession` in `src/ui/renderer/context/OverlayContext.tsx`.
 - Complete budgets and migration rules: [plugin alerts design](../design/plugin-alerts.md).

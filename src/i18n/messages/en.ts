@@ -11,6 +11,8 @@
  * migrated off hardcoded strings.
  */
 export const en = {
+  "be_suggestionsSession.title": "Suggestions",
+  "sidebar.suggestionsPendingCount": "{count} suggestions waiting",
   "be_streamCollector.imageInputUnsupported": "Images in this conversation cannot be sent to the selected model. Switch to an image-capable model, or start a new conversation without images.",
   "llmTab.modelNoToolsBadge": "No tools",
   "llmTab.modelNoToolsHelp": "Tools are not sent to this model.",

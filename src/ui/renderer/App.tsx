@@ -62,6 +62,7 @@ import { useActiveView } from "./hooks/use-active-view.js";
 import { useSettingsTab } from "./hooks/use-settings-tab.js";
 import { useProjectPreferences } from "./hooks/use-project-preferences.js";
 import { useRoutineOverlay } from "./hooks/use-routine-overlay.js";
+import { isSuggestionsSession } from "../../shared/suggestions-session.js";
 import { usePluginViewRouting } from "./hooks/use-plugin-view-routing.js";
 import { useOnboardingTourController } from "./hooks/use-onboarding-tour-controller.js";
 import { usePluginLifecycleRefresh } from "./hooks/use-plugin-lifecycle-refresh.js";
@@ -543,6 +544,11 @@ export function App() {
     sessions,
   }), [approvalQueue, tileSessions, deferredSessionIds, overlayQueue, sessions]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
+  // Cards waiting in the dedicated Suggestions conversation — its row's count.
+  const suggestionsPendingCount = useMemo(
+    () => overlayQueue.filter((card) => isSuggestionsSession(card.originSessionId)).length,
+    [overlayQueue],
+  );
   // Approval-memory hit + reviewer suggestion. Both report on the WINDOW's
   // permission settings, not on one conversation, so they are subscribed once
   // here — per tile they would raise the same disclosure in every open
@@ -651,6 +657,10 @@ export function App() {
     },
     [navigateToLocation],
   );
+  // A card addressed to the Suggestions conversation: main made that
+  // conversation exist (or moved it up the list) before sending it, so the
+  // list is re-read for its row to carry the card's dot and count.
+  const refreshSessionsOnSuggestion = useCallback(() => { void refreshSessions(); }, [refreshSessions]);
   const {
     addFireRef,
     dismissRef,
@@ -662,6 +672,7 @@ export function App() {
   } = useRoutineOverlay({
     api, t, locale, registry: chatGroupSessions,
     onNavigateToSettings: navigateToSettingsPath,
+    onSuggestionStaged: refreshSessionsOnSuggestion,
   });
 
   const viewHistory = useViewHistory(location, navigateToLocation, restoresApplied);
@@ -1928,6 +1939,7 @@ export function App() {
                 onOpenSideChat={(sideChatSessionId, originSessionId) =>
                   void openSideChat(sideChatSessionId, originSessionId)}
                 pendingAnswerSessionIds={pendingAnswers.sessionIds}
+                suggestionsPendingCount={suggestionsPendingCount}
                 pluginRequestPending={pendingAnswers.unattributed.length > 0}
                 hasApiKey={effectiveLlmReady}
                 subscriptionUnavailable={subscriptionUnavailableProvider !== undefined}

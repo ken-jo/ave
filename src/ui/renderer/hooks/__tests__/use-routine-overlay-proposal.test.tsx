@@ -62,6 +62,7 @@ function setup() {
       locale: "en",
       registry: registry as never,
       onNavigateToSettings,
+      onSuggestionStaged: vi.fn(),
     }));
 
   return {

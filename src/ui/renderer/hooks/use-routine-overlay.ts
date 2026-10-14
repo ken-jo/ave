@@ -3,9 +3,10 @@ import type { getApi } from "../api-client.js";
 import type { RoutineFiredPayload } from "../../../shared/routines-types.js";
 import type { AlertCardClosedReason } from "../../../shared/alerts-types.js";
 import { ALERT_HOST_PLUGIN_ID } from "../../../shared/alerts-types.js";
-import type {
-  OverlayContextValue,
-  OverlayItem,
+import {
+  routeToSuggestionsSession,
+  type OverlayContextValue,
+  type OverlayItem,
 } from "../context/OverlayContext.js";
 import {
   tileHoldingSession,
@@ -13,6 +14,7 @@ import {
 } from "../components/chat-group-session-registry.js";
 import type { TranslateFn } from "../../../i18n/translate.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { isSuggestionsSession } from "../../../shared/suggestions-session.js";
 import { parseSettingsPath, type SettingsPath } from "../../../shared/settings-tabs.js";
 import type { OnboardingProposalDisposition } from "../../../main/onboarding-proposal-store.js";
 
@@ -60,6 +62,7 @@ export function useRoutineOverlay({
   locale,
   registry,
   onNavigateToSettings,
+  onSuggestionStaged,
 }: {
   api: Api;
   t: TranslateFn;
@@ -72,6 +75,12 @@ export function useRoutineOverlay({
    * navigation, so it supplies the move.
    */
   onNavigateToSettings: (path: SettingsPath) => void;
+  /**
+   * A card addressed to the dedicated Suggestions conversation arrived. Main
+   * made that conversation exist (or moved it up) before sending, so the window
+   * re-reads its list: the row has to be listed for the card to mark it.
+   */
+  onSuggestionStaged: () => void;
 }): UseRoutineOverlayResult {
   // runningRoutines tracks in-flight LLM sessions.
   const [runningRoutines, setRunningRoutines] = useState<Set<string>>(new Set());
@@ -80,9 +89,25 @@ export function useRoutineOverlay({
   // so the IPC subscription below can call it without prop-drilling
   const addFireRef = useRef<OverlayContextValue["addFire"] | null>(null);
   const dismissRef = useRef<OverlayContextValue["dismiss"] | null>(null);
+  const onSuggestionStagedRef = useRef(onSuggestionStaged);
+  useEffect(() => {
+    onSuggestionStagedRef.current = onSuggestionStaged;
+  }, [onSuggestionStaged]);
+
+  /**
+   * The one way a card enters the queue: routed first, so a card the user did
+   * not ask for is addressed to the Suggestions conversation and never to the
+   * focused one. Returns the card as queued.
+   */
+  const stage = useCallback((incoming: OverlayItem): OverlayItem => {
+    const item = routeToSuggestionsSession(incoming);
+    addFireRef.current?.(item);
+    if (isSuggestionsSession(item.originSessionId)) onSuggestionStagedRef.current();
+    return item;
+  }, []);
 
   const pushRoutineResult = useCallback((evt: RoutineFiredPayload) => {
-    addFireRef.current?.({
+    stage({
       id: `${evt.id}-${evt.firedAt}`,
       source: { kind: "routine", routineId: evt.id, firedAt: evt.firedAt },
       title: evt.title,
@@ -91,7 +116,7 @@ export function useRoutineOverlay({
       createdAt: evt.firedAt,
       routineSessionId: evt.routineSessionId,
     });
-  }, []);
+  }, [stage]);
 
   // Single subscription for routine IPC events. runningStarted pushes a
   // running OverlayItem immediately (running:true); fired replaces it with the
@@ -101,7 +126,7 @@ export function useRoutineOverlay({
     const unsubStarted = api.onRoutineRunningStarted((payload) => {
       const { routineId, firedAt, title } = payload;
       setRunningRoutines((prev) => new Set([...prev, routineId]));
-      addFireRef.current?.({
+      stage({
         id: `${routineId}-running`,
         source: { kind: "routine", routineId, firedAt },
         title,
@@ -129,7 +154,7 @@ export function useRoutineOverlay({
         return next;
       });
       const failedAt = new Date().toISOString();
-      addFireRef.current?.({
+      stage({
         id: `${evt.routineId}-running`,
         source: { kind: "routine", routineId: evt.routineId, firedAt: failedAt },
         title: t("app.routineFailedTitle"),
@@ -152,7 +177,7 @@ export function useRoutineOverlay({
     const unsubFired = api.onRoutineFired(pushRoutineResult);
 
     return () => { unsubStarted(); unsubFinished(); unsubFailed(); unsubFired(); };
-  }, [api, pushRoutineResult, t]);
+  }, [api, pushRoutineResult, stage, t]);
 
   // Overlay items ref tracks all items pushed via onOverlayShow so
   // handlePluginPrimaryAction can look up pendingPrompt by id without needing
@@ -164,11 +189,12 @@ export function useRoutineOverlay({
   // Overlay IPC subscriptions: main pushes plugin OverlayItems via OVERLAY_V1.show.
   useEffect(() => {
     if (typeof api.onOverlayShow !== "function") return;
-    const show = (item: OverlayItem): void => {
+    const show = (incoming: OverlayItem): void => {
       // The lookup handlePluginPrimaryAction reads by id; the queue takes the
-      // same object.
+      // same (routed) object, so the confirm resolves the same conversation the
+      // card is drawn in.
+      const item = stage(incoming);
       overlayItemsRef.current.set(item.id, item);
-      addFireRef.current?.(item);
     };
     const changedDuringPull = new Set<string>();
     alertSnapshotChangesRef.current = changedDuringPull;
@@ -204,7 +230,7 @@ export function useRoutineOverlay({
       finishPull();
     }
     return () => { pulled = false; finishPull(); unsubShow(); unsubDismiss(); };
-  }, [api]);
+  }, [api, stage]);
 
   // Insertion-overlay primary action handler (user confirm → main chat insert).
   // Called from OverlayCardRegion with the OverlayItem.id after OverlayContext.dismiss()

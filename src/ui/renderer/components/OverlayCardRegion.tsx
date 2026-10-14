@@ -6,6 +6,9 @@
 // by no region: it waits with its conversation, and the sidebar row carries
 // the attention dot — see `overlayCardTile` and `pendingAnswers`.
 // Never injects entries into chat history; routine sources remain isolated.
+// Plugin, alert, routine and proposal cards are addressed to the dedicated
+// Suggestions conversation, so they render only in the region of a tile that
+// holds it — never over the conversation the user is working in.
 //
 // One card renders on ONE surface — see `overlayCardTile`. The queue is the
 // window's, but the SLICE of it a surface shows, and which card of that slice

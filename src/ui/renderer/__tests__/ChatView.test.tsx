@@ -16,6 +16,7 @@ import {
   __teardownSuggestedRepliesIpcForTests,
 } from "../hooks/use-suggested-replies.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
+import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 
 function installDeterministicScrollMetrics(initialScrollHeight = 2400, clientHeight = 600) {
   const descriptors = {
@@ -1338,7 +1339,8 @@ describe("ChatView", () => {
   });
 
   it("keeps overlay-import tool and final assistant output in the normal chat flow", async () => {
-    const { container, api, emitOverlayShow, emitChatStream } = await renderApp({ hasApiKey: true });
+    // Plugin cards are addressed to the Suggestions conversation; it is the one open here.
+    const { container, api, emitOverlayShow, emitChatStream } = await renderApp({ hasApiKey: true, currentSession: SUGGESTIONS_SESSION_ID });
     await act(async () => {
       emitOverlayShow({
         id: "plugin:meeting:trigger-1",
@@ -1403,7 +1405,8 @@ describe("ChatView", () => {
   });
 
   it("treats overlay imports after an existing chat as a separate turn boundary", async () => {
-    const { container, api, emitOverlayShow, emitChatStream } = await renderApp({ hasApiKey: true });
+    // Plugin cards are addressed to the Suggestions conversation; it is the one open here.
+    const { container, api, emitOverlayShow, emitChatStream } = await renderApp({ hasApiKey: true, currentSession: SUGGESTIONS_SESSION_ID });
     await submitChatMessage(container, "첫 질문");
     await act(async () => {
       emitChatStream({ type: "text_delta", text: "첫 최종 답변" });

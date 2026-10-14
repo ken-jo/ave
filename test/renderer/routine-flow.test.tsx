@@ -10,6 +10,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
 import { deferred, submitChatMessage } from "./helpers.js";
+import { SUGGESTIONS_SESSION_ID } from "../../src/shared/suggestions-session.js";
 
 function makeRoutineResult() {
   return {
@@ -22,9 +23,12 @@ function makeRoutineResult() {
 }
 
 
+// Routine cards are addressed to the dedicated Suggestions conversation, so
+// these tests open it in the window's tile; the last test checks the card
+// stays out of any other conversation.
 describe("Routine flow (Phase 3.3 regression net)", () => {
   it("onRoutineFired renders the OverlayCard", async () => {
-    const { container, emitRoutineFired } = await renderApp();
+    const { container, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });
     await act(async () => {
       emitRoutineFired(makeRoutineResult());
     });
@@ -36,7 +40,7 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
 
   it("replays the latest result on mount when one was already generated", async () => {
     const routineResult = makeRoutineResult();
-    const { container } = await renderApp({ latestRoutineResult: routineResult });
+    const { container } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID, latestRoutineResult: routineResult });
     await waitFor(() => {
       expect(container.querySelector('[data-testid="routine-card"]')).toBeTruthy();
       expect(container.textContent).toContain("daily summary");
@@ -48,7 +52,7 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
       ...makeRoutineResult(),
       routineSessionId: "routine-session-1",
     };
-    const { container, api } = await renderApp({ pendingRoutineResults: [routineResult] });
+    const { container, api } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID, pendingRoutineResults: [routineResult] });
     await waitFor(() => {
       expect(container.querySelector('[data-testid="routine-card"]')).toBeTruthy();
       expect(container.textContent).toContain("daily summary");
@@ -67,7 +71,7 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
     let resolveLatest: ((value: unknown) => void) | null = null;
     const stale = { ...makeRoutineResult(), firedAt: new Date(Date.now() - 10_000).toISOString(), summary: "stale summary" };
     const fresh = { ...makeRoutineResult(), summary: "fresh summary" };
-    const { container, emitRoutineFired } = await renderApp({
+    const { container, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID,
       latestRoutineResult: new Promise((resolve) => {
         resolveLatest = resolve;
       }),
@@ -87,7 +91,7 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
   });
 
   it("clicking dismiss removes the card", async () => {
-    const { container, emitRoutineFired } = await renderApp();
+    const { container, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });
     await act(async () => {
       emitRoutineFired(makeRoutineResult());
     });
@@ -114,7 +118,7 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
   // Snooze was dropped on UX grounds (OverlayContext.tsx / OverlayCard.tsx),
   // so its reappearance is a regression, not a feature.
   it("renders the result-view action for routines with a session id", async () => {
-    const { container, api, emitRoutineFired } = await renderApp();
+    const { container, api, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });
     await act(async () => {
       emitRoutineFired({
         ...makeRoutineResult(),
@@ -147,7 +151,7 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
   });
 
   it("does not acknowledge or dismiss a routine result when opening its session fails", async () => {
-    const { container, api, emitRoutineFired } = await renderApp();
+    const { container, api, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });
     api.chatSessionResume.mockResolvedValueOnce({
       ok: false,
       compacted: false,
@@ -178,7 +182,7 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
   });
 
   it("opens a routine's session while the active chat is streaming, without taking its place", async () => {
-    const { container, api, emitRoutineFired } = await renderApp();
+    const { container, api, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });
     const pendingSend = deferred<{ ok: true }>();
     api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
 
@@ -216,7 +220,7 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
   });
 
   it("stacks results with distinct routineIds and shows the index indicator", async () => {
-    const { container, emitRoutineFired } = await renderApp();
+    const { container, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });
     await act(async () => {
       emitRoutineFired({ ...makeRoutineResult(), id: "wakeup", summary: "morning" });
     });
@@ -232,7 +236,7 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
   });
 
   it("in-place updates a card when the same routineId arrives again", async () => {
-    const { container, emitRoutineFired } = await renderApp();
+    const { container, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });
     await act(async () => {
       emitRoutineFired({ ...makeRoutineResult(), summary: "v1" });
     });
@@ -246,6 +250,20 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
       // Single card → no indicator rendered.
       expect(container.querySelector('[data-testid="routine-card-indicator"]')).toBeFalsy();
     });
+  });
+
+  it("keeps the card out of the user's own conversation and counts it on the Suggestions row", async () => {
+    const { container, emitRoutineFired } = await renderApp({
+      sessions: [{ id: SUGGESTIONS_SESSION_ID, modifiedAt: new Date().toISOString() }],
+    });
+    await act(async () => {
+      emitRoutineFired(makeRoutineResult());
+    });
+    await waitFor(() => {
+      const badge = container.querySelector(`[data-testid="sidebar-pending-count-${SUGGESTIONS_SESSION_ID}"]`);
+      expect(badge?.textContent).toBe("1");
+    });
+    expect(container.querySelector('[data-testid="routine-card"]')).toBeNull();
   });
 });
 
