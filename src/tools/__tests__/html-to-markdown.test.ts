@@ -70,4 +70,17 @@ describe("htmlToMarkdown", () => {
     expect(result.title).toBe("Deep");
     expect(result.markdown).toContain("bottom");
   });
+
+  it("reads deeply nested lists and quotes as plain text instead of re-indenting them per level", () => {
+    for (const [open, close] of [["<ul><li>", "</li></ul>"], ["<blockquote>", "</blockquote>"]]) {
+      const levels = Math.floor(2_000_000 / open.length);
+      const html = `<title>Nest</title>${open.repeat(levels)}deepest${close.repeat(levels)}`;
+      const started = performance.now();
+      const result = htmlToMarkdown(html);
+      expect(performance.now() - started).toBeLessThan(5_000);
+      expect(result.title).toBe("Nest");
+      expect(result.markdown).toContain("deepest");
+      expect(result.markdown.length).toBeLessThan(html.length);
+    }
+  });
 });

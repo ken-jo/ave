@@ -222,7 +222,17 @@ const CODE = "\u0003";
 interface RenderContext {
   readonly baseUrl: URL | undefined;
   readonly codeBlocks: string[];
+  /**
+   * Characters the render may still produce, summed over every level. Each
+   * level re-reads what its children produced (lists and quotes re-indent
+   * it), so the sum grows with depth × size: 262k nested `<ul><li>` in a
+   * 2 MB page took two minutes. Past the budget the page is read as plain
+   * text instead.
+   */
+  budget: number;
 }
+
+class RenderBudgetExceeded extends Error {}
 
 function textContent(node: HtmlNode): string {
   if (node.kind === "text") return node.text;
@@ -386,7 +396,26 @@ function renderNode(node: HtmlNode, ctx: RenderContext): string {
 function renderChildren(nodes: readonly HtmlNode[], ctx: RenderContext): string {
   let output = "";
   for (const node of nodes) output += renderNode(node, ctx);
+  ctx.budget -= output.length;
+  if (ctx.budget < 0) throw new RenderBudgetExceeded();
   return output;
+}
+
+/** The page's text in document order, one pass and no recursion: the fallback past the budget. */
+function plainText(tree: ElementNode): string {
+  const parts: string[] = [];
+  const pending: HtmlNode[] = [tree];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (node.kind === "text") {
+      parts.push(node.text);
+      continue;
+    }
+    if (OMITTED.has(node.name) || node.name === "title") continue;
+    if (BLOCK.has(node.name) || node.name === "br" || node.name === "li") parts.push("\n");
+    for (let i = node.children.length - 1; i >= 0; i -= 1) pending.push(node.children[i]);
+  }
+  return parts.join("").replace(/[ \t\f\v\r]+/g, " ").replace(/ *\n[\s]*/g, "\n\n").trim();
 }
 
 /**
@@ -436,8 +465,15 @@ export function htmlToMarkdown(html: string, baseUrl?: string): HtmlMarkdown {
     }
   };
   findHeadData(tree);
-  const ctx: RenderContext = { baseUrl: base, codeBlocks: [] };
-  const markdown = normalizeMarkdown(renderChildren(tree.children, ctx))
+  const ctx: RenderContext = { baseUrl: base, codeBlocks: [], budget: Math.max(4_000_000, html.length * 8) };
+  let rendered: string;
+  try {
+    rendered = renderChildren(tree.children, ctx);
+  } catch (error) {
+    if (!(error instanceof RenderBudgetExceeded)) throw error;
+    return { ...(title ? { title } : {}), markdown: plainText(tree) };
+  }
+  const markdown = normalizeMarkdown(rendered)
     .replace(/\u0002/g, "> ")
     .replace(/\u0001/g, " ")
     .replace(/[ \t]+$/gm, "")
