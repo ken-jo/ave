@@ -20,7 +20,16 @@ jobs:
   # never controls secret injection; public tag secrets are fixed in workflow.
   release-profile:
     name: Verify immutable unsigned release profile
-    runs-on: ubuntu-latest
+    # Every job takes its runner from a repo variable: AVE_LINUX_RUNNER,
+    # AVE_MACOS_RUNNER, AVE_WINDOWS_RUNNER (a JSON label array, e.g.
+    # ["self-hosted","Linux","ARM64","ave"], or a hosted label such as
+    # "ubuntu-24.04-arm" to opt into a GitHub-hosted runner explicitly). Every
+    # other job needs this one, so the check below fails the run naming any
+    # unset variable instead of falling back to a billing-blocked hosted label.
+    # Only this job falls back when AVE_LINUX_RUNNER is unset, and to any
+    # self-hosted runner, so the check can still run and say so. Before the
+    # repo goes public, set every AVE_*_RUNNER to its hosted label.
+    runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}
     permissions:
       contents: read
     steps:
@@ -28,6 +37,13 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Require the release runner variables
+        shell: bash
+        env:
+          AVE_LINUX_RUNNER: ${{ vars.AVE_LINUX_RUNNER }}
+          AVE_MACOS_RUNNER: ${{ vars.AVE_MACOS_RUNNER }}
+          AVE_WINDOWS_RUNNER: ${{ vars.AVE_WINDOWS_RUNNER }}
+        run: bash .github/scripts/require-runner-vars.sh AVE_LINUX_RUNNER AVE_MACOS_RUNNER AVE_WINDOWS_RUNNER
       - name: Verify exact source head
         shell: bash
         env:
@@ -81,26 +97,54 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # macOS and Windows take their runner from repo variables AVE_MACOS_RUNNER
+      # and AVE_WINDOWS_RUNNER (JSON label arrays, e.g.
+      # ["self-hosted","macOS","ARM64","ave-release"] and
+      # ["self-hosted","Windows","X64","ave-release"], or a hosted label).
+      # release-profile has already failed the run if either is unset.
+      #
+      # Linux stays on the hosted x64 label: no target arch is pinned, so the
+      # build host's architecture is the shipped architecture, and the
+      # self-hosted Linux runners are ARM64.
       matrix:
         include:
           - name: macOS installer
-            os: macos-15
+            os: ${{ fromJSON(vars.AVE_MACOS_RUNNER) }}
             target: mac
           - name: Linux installer
             os: ubuntu-latest
             target: linux
           - name: Windows installer
-            os: windows-latest
+            os: ${{ fromJSON(vars.AVE_WINDOWS_RUNNER) }}
             target: win
     runs-on: ${{ matrix.os }}
+    # One shell on every OS. On Windows `bash` is the Git for Windows shell,
+    # which a self-hosted Windows runner must have on PATH (checkout needs Git
+    # too); an unset shell there would depend on which PowerShell is installed.
+    defaults:
+      run:
+        shell: bash
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      # Bun's package cache defaults to .bun/install/cache in the runner user's
+      # home, which on a self-hosted runner is the owner's own cache. Keep it
+      # in the workspace.
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
     steps:
+      # `clean: true` (git clean -ffdx + reset) wipes the previous run's
+      # release/, .cache/ and node_modules/ on a persistent self-hosted runner.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          clean: true
+      # Self-hosted machines have no preinstalled toolcache; install Node into
+      # the runner's own tool cache instead of relying on a system Node.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
       - name: Verify exact source head
         shell: bash
         env:
@@ -112,12 +156,45 @@ jobs:
             echo "Checkout HEAD does not equal immutable event source SHA" >&2
             exit 1
           fi
+      # setup-bun has no install-directory input: it installs into
+      # os.homedir()/.bun/bin, which on a self-hosted runner would replace the
+      # owner's own bun. os.homedir() reads HOME (POSIX) and USERPROFILE
+      # (Windows), so this step alone sees a home under RUNNER_TEMP, which the
+      # runner empties at the start and end of every job. setup-bun adds that
+      # bin directory to the job PATH. The version comes from .bun-version.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+        env:
+          HOME: ${{ runner.temp }}/bun-home
+          USERPROFILE: ${{ runner.temp }}/bun-home
+      - name: Verify bun is the job-local pinned build
+        shell: bash
+        env:
+          BUN_HOME: ${{ runner.temp }}/bun-home
+        run: |
+          set -euo pipefail
+          expected="$(tr -d '[:space:]' < .bun-version)"
+          actual="$(bun --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "bun $actual on PATH, expected $expected from .bun-version" >&2
+            exit 1
+          fi
+          # Git Bash on Windows reports PATH entries in /c/... form.
+          home="$(cygpath -u "$BUN_HOME" 2>/dev/null || printf '%s' "$BUN_HOME")"
+          bun_path="$(command -v bun)"
+          case "$bun_path" in
+            "$home"/*) ;;
+            *)
+              echo "bun on PATH is $bun_path, not the job-local install under $home" >&2
+              exit 1
+              ;;
+          esac
       - name: Restore package manager and installer caches
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.bun/install/cache
+            .cache/bun
             .cache/electron
             .cache/electron-builder
           key: ${{ runner.os }}-installers-${{ hashFiles('bun.lock') }}-${{ hashFiles('package.json') }}
@@ -170,10 +247,15 @@ jobs:
             args+=("--skip-code-sign")
             echo "skip_sign=true" >> "$GITHUB_OUTPUT"
           elif [ "${{ inputs.skip_code_sign }}" = "true" ] \
+            || [ "${{ runner.environment }}" != "github-hosted" ] \
             || { [ "${{ matrix.target }}" = "mac" ] && [ -z "${CSC_LINK:-}" ]; } \
             || { [ "${{ matrix.target }}" = "win" ] && [ -z "${WIN_CSC_LINK:-}" ]; }; then
             # Manual candidates are secret-free; default to unsigned unless a
             # future protected workflow deliberately adds signing evidence.
+            # A self-hosted runner is the owner's own machine: signing there
+            # would import into and search its keychain, and a signing
+            # variable in that machine's environment is not workflow evidence,
+            # so it always builds unsigned.
             args+=("--skip-code-sign")
             echo "skip_sign=true" >> "$GITHUB_OUTPUT"
           else
@@ -194,15 +276,26 @@ jobs:
         # and secret-free manual candidates therefore skip only this macOS
         # launch gate so their artifacts can upload; Linux/Windows still run
         # smoke. `steps.build.outputs.skip_sign` is the signing SOT.
-        if: matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true'
+        #
+        # A self-hosted Windows runner is the owner's own PC, so it never
+        # launches the packaged app: the full application claims HKCU ave://
+        # for its executable (setAsDefaultProtocolClient), replacing the
+        # owner's registration, and a cancelled job would leave it pointing at
+        # a deleted release/. The NSIS setup smoke also installs machine-wide
+        # and genuinely uninstalls. Both therefore run only on a disposable
+        # hosted Windows runner; a self-hosted Windows build ships without a
+        # launch smoke, as an unsigned macOS build does.
+        if: >-
+          (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')
+          && (matrix.target != 'win' || runner.environment == 'github-hosted')
         shell: bash
         env:
           # Explicitly authorize machine-wide mutation only on the disposable
           # Windows runner, then verify both preservation and full cleanup.
-          AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}
-          # Windows runners are disposable, so the installer smoke can verify
-          # both /KEEP_APP_DATA preservation and the full uninstall cleanup.
-          AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}
+          AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && runner.environment == 'github-hosted' && '1' || '' }}
+          # Hosted Windows runners are disposable, so the installer smoke can
+          # verify both /KEEP_APP_DATA preservation and the full uninstall cleanup.
+          AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE: ${{ matrix.target == 'win' && runner.environment == 'github-hosted' && '1' || '' }}
         run: |
           set -euo pipefail
           if [ "${{ matrix.target }}" = "linux" ]; then
@@ -217,9 +310,12 @@ jobs:
       # A2, Gates (ii)): the plugin child's Electron view measured under the
       # packaged runtime, beside the packaged application's own main process as
       # the control. Same launch condition and Linux session as the smoke above:
-      # the control is a full application.
+      # the control is a full application, so it never runs on the owner's
+      # self-hosted Windows PC either.
       - name: Packaged escape gate
-        if: matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true'
+        if: >-
+          (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')
+          && (matrix.target != 'win' || runner.environment == 'github-hosted')
         shell: bash
         run: |
           set -euo pipefail
@@ -254,6 +350,12 @@ jobs:
             release/latest*.yml
           if-no-files-found: error
           retention-days: 14
+      # A persistent runner keeps its workspace between runs; drop the
+      # installers now rather than holding them until the next checkout cleans.
+      # .cache/ stays until then because the cache action saves it after this.
+      - name: Remove build output from a self-hosted runner
+        if: always() && runner.environment == 'self-hosted'
+        run: rm -rf release
 
   # ─────────────────────────────────────────────────────────────────────
   # publish-release — atomic single-job publisher.
@@ -273,7 +375,7 @@ jobs:
     name: Publish GitHub Release assets (atomic)
     needs: [release-profile, installers]
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
     permissions:
       contents: write
     steps:
@@ -379,7 +481,7 @@ jobs:
     name: Publish to the R2 release channel
     needs: [release-profile, installers]
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
     permissions:
       contents: read
     steps:
@@ -451,6 +553,11 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/upload-release-r2.mjs --dir release-staging --tag "$RELEASE_TAG" --dry-run
+      # Self-hosted runners carry no AWS CLI. The script installs the official
+      # build after checking its signature, with no secret in scope.
+      - name: Provide the AWS CLI
+        shell: bash
+        run: bash .github/scripts/install-aws-cli.sh
       - name: Upload to R2
         shell: bash
         env:
