@@ -2,42 +2,32 @@ import type { Locale } from "./i18n";
 
 /**
  * Home page copy. Every product claim here is taken from the app's own docs
- * and UI strings (permission mode labels, approval buttons, provider list,
- * marketplace source kinds), so the site names what a user will see.
+ * and UI strings (provider list, marketplace source kinds, work mode keys),
+ * so the site names what a user will see. "Ave" is Latin for hello; the
+ * greeting and the harness picture are the page's frame, the facts are the
+ * app's.
  */
-
-type Verdict = "run" | "ask" | "review" | "block";
-type ModeId = "default" | "strict" | "auto" | "allow";
 
 export interface HomeCopy {
   meta: { title: string; description: string };
-  nav: { permissions: string; plugins: string; docs: string; download: string; lang: string; langLabel: string };
-  hero: { line1: string; line2: string; lead: string; cta: string; ctaMac: string; ctaWin: string; ctaLinux: string; docs: string };
-  frag: {
-    windowTitle: string;
-    tileA: { title: string; user: string; toolRead: string; toolReadResult: string; ai: string; dockTitle: string; dockPath: string; kind: string; risk: string; reject: string; once: string; always: string };
-    tileB: { title: string; user: string; toolShell: string; running: string; queuedLabel: string; queued: string };
-    composer: string;
-    mode: string;
-    pending: string;
-    model: string;
+  nav: { models: string; plugins: string; docs: string; download: string; lang: string; langLabel: string; menu: string };
+  hero: { pill: string; title: string; sub: string; cta: string; ctaMac: string; ctaWin: string; ctaLinux: string; docs: string };
+  harness: {
+    label: string;
+    you: string;
+    youSays: string;
+    ave: string;
+    aveRole: string;
+    models: string;
+    computer: string;
+    computerItems: string[];
+    toolLine: string;
   };
-  perm: {
-    title: string;
-    statement: string;
-    legend: string;
-    modes: { id: ModeId; label: string; desc: string }[];
-    tableCaption: string;
-    colRequest: string;
-    colKind: string;
-    colResult: string;
-    verdicts: Record<Verdict, string>;
-    requests: { what: string; code?: string; kind: string; result: Record<ModeId, Verdict> }[];
-    facts: { title: string; body: string }[];
-  };
+  intro: { claim: string; rest: string; control: string; controlLink: string };
   wb: {
     title: string;
     body: string;
+    windowTitle: string;
     keys: { key: string; body: string }[];
     quad: { title: string; state: string; tone: "go" | "warn" | "plain"; line: string; excerpt: string }[];
   };
@@ -48,6 +38,10 @@ export interface HomeCopy {
     codeNote: string;
     codeComment1: string;
     codeComment2: string;
+    sceneLabel: string;
+    repo: string;
+    check: string;
+    kinds: string[];
     sourcesCaption: string;
     colSource: string;
     colWhere: string;
@@ -57,6 +51,7 @@ export interface HomeCopy {
   };
   side: {
     title: string;
+    sceneLabel: string;
     rows: { title: string; body: string }[];
     sidebar: { chats: string; projects: string; today: string; earlier: string; items: { label: string; when: string; mark: "dot" | "ring" | "none"; child?: boolean; on?: boolean }[] };
   };
@@ -64,90 +59,44 @@ export interface HomeCopy {
   footer: { docs: string; download: string; lang: string; copy: string };
 }
 
-const allowed = (r: Record<ModeId, Verdict>) => r;
-
 const ko: HomeCopy = {
   meta: {
-    title: "Ave — 먼저 묻는 AI 에이전트",
+    title: "Ave — 안녕하세요, 에이전트를 위한 하네스",
     description:
-      "Ave는 macOS, Windows, Linux용 데스크톱 AI 에이전트 앱입니다. 파일을 읽고 쓰고 명령을 실행하되, 쓰기와 명령과 네트워크 요청은 호스트의 권한 검사를 먼저 거칩니다.",
+      "Ave는 라틴어로 ‘안녕’이라는 인사입니다. 나와 에이전트, 내가 고른 모델, 내 컴퓨터가 만나는 macOS, Windows, Linux용 데스크톱 앱입니다.",
   },
-  nav: { permissions: "권한", plugins: "플러그인", docs: "문서", download: "내려받기", lang: "English", langLabel: "영어 페이지로 이동" },
+  nav: { models: "모델", plugins: "플러그인", docs: "문서", download: "내려받기", lang: "English", langLabel: "영어 페이지로 이동", menu: "메뉴" },
   hero: {
-    line1: "먼저 묻는",
-    line2: "AI 에이전트",
-    lead: "Ave는 macOS, Windows, Linux용 데스크톱 앱입니다. 에이전트가 내 컴퓨터에서 파일을 읽고 쓰고 명령을 실행하지만, 쓰기와 명령과 네트워크 요청은 모두 호스트의 권한 검사를 먼저 거칩니다.",
+    pill: "Ave · 라틴어로 ‘안녕’",
+    title: "안녕하세요, Ave입니다",
+    sub: "나와 에이전트, 내가 고른 모델, 내 컴퓨터가 한자리에서 만나는 데스크톱 하네스.",
     cta: "Ave 내려받기",
     ctaMac: "Mac용 내려받기",
     ctaWin: "Windows용 내려받기",
     ctaLinux: "Linux용 내려받기",
     docs: "문서 보기",
   },
-  frag: {
-    windowTitle: "작업 모드",
-    tileA: {
-      title: "3분기 회의록 정리",
-      user: "지난 분기 회의록을 모아서 보고서 초안을 써 줘",
-      toolRead: "read_file  meetings/2026-07 … 09",
-      toolReadResult: "14개 파일",
-      ai: "회의록 14개를 읽었습니다. 결정 9건, 미결 3건으로 정리했어요. 초안을 프로젝트 폴더에 저장하려고 합니다.",
-      dockTitle: "write_file 이(가) 파일을 쓰려고 합니다",
-      dockPath: "q3/report.md",
-      kind: "쓰기",
-      risk: "위험도 중간",
-      reject: "거절",
-      once: "한 번만 허용",
-      always: "항상 허용",
-    },
-    tileB: {
-      title: "결제 테스트",
-      user: "결제 테스트가 가끔 실패해. 원인을 찾아 줘",
-      toolShell: "shell  bun test payments --repeat 20",
-      running: "실행 중",
-      queuedLabel: "대기 중",
-      queued: "고친 다음 커밋은 하지 마",
-    },
-    composer: "메시지 입력…",
-    mode: "쓰기만 확인",
-    pending: "승인 1",
-    model: "모델: 직접 선택",
+  harness: {
+    label: "나의 메시지가 Ave를 거쳐 모델에 닿고, 에이전트가 내 컴퓨터의 파일, 셸, 플러그인, MCP 서버로 일하는 그림",
+    you: "나",
+    youSays: "지난 분기 회의록을 모아서 보고서 초안을 써 줘",
+    ave: "Ave",
+    aveRole: "하네스",
+    models: "모델",
+    computer: "내 컴퓨터",
+    computerItems: ["파일", "셸", "플러그인", "MCP 서버"],
+    toolLine: "read_file  meetings/2026-07 … 09",
   },
-  perm: {
-    title: "규칙 하나, 모드 넷",
-    statement:
-      "무엇을 해도 되는지는 모델이 아니라 호스트가 정합니다. 민감한 경로는 어느 모드에서도 막히고, 리뷰어는 위험도를 올릴 수만 있을 뿐 낮추지 못합니다.",
-    legend: "권한 모드를 골라 보세요",
-    modes: [
-      { id: "default", label: "쓰기만 확인", desc: "기본값입니다. 읽기는 바로 하고, 바꾸는 작업은 승인을 받습니다." },
-      { id: "strict", label: "모두 확인", desc: "읽기까지 모든 도구 호출에 승인을 받습니다." },
-      { id: "auto", label: "자동 검증", desc: "저위험 작업은 바로 하고, 나머지는 권한 리뷰어가 검증합니다." },
-      { id: "allow", label: "모두 허용", desc: "하드 차단 밖은 자동으로 허용하되, 허용 디렉터리 밖 접근은 따로 승인을 받습니다." },
-    ],
-    tableCaption: "같은 여섯 요청이 모드에 따라 이렇게 처리됩니다.",
-    colRequest: "요청",
-    colKind: "종류",
-    colResult: "결과",
-    verdicts: { run: "바로 실행", ask: "승인 요청", review: "리뷰어 검증", block: "차단" },
-    requests: [
-      { what: "프로젝트의 plan.md 읽기", kind: "읽기", result: allowed({ default: "run", strict: "ask", auto: "run", allow: "run" }) },
-      { what: "plan.md 고치기", kind: "쓰기", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
-      { what: "테스트 실행", code: "bun test", kind: "셸", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
-      { what: "웹 페이지 가져오기", kind: "네트워크", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
-      { what: "허용 디렉터리 밖에 저장", code: "~/Desktop/report.md", kind: "쓰기", result: allowed({ default: "ask", strict: "ask", auto: "ask", allow: "ask" }) },
-      { what: "SSH 키 읽기", code: "~/.ssh/id_ed25519", kind: "읽기", result: allowed({ default: "block", strict: "block", auto: "block", allow: "block" }) },
-    ],
-    facts: [
-      { title: "항상 허용은 좁게", body: "항상 허용은 그 도구, 그 입력, 그 작업 폴더에만 묶입니다. 비슷한 다른 호출까지 열리지 않습니다." },
-      { title: "승인은 화면 아래에서", body: "승인 요청은 화면 아래 독에 쌓입니다. 대화를 가리지 않으니 앞뒤를 읽고 결정할 수 있습니다." },
-      { title: "리뷰어가 멈추면 보류", body: "리뷰어가 답하지 못하면 통과가 아니라 보류입니다. 헤드리스 실행의 위험한 단계는 대기열에서 나를 기다립니다." },
-      { title: "고칠 수 없는 감사 로그", body: "~/.ave/audit.log 는 HMAC 체인으로 이어져 중간을 고치면 드러납니다. 비밀 값은 기록하지 않습니다." },
-      { title: "보내기 전에 가림", body: "비밀 값과 개인정보는 모델로 보내기 전에 가려지고, 가린 사실은 감사 로그에 남습니다." },
-      { title: "OS 샌드박스는 선택", body: "켜면 macOS는 Seatbelt, Linux는 bwrap, Windows는 srt-win으로 도구 실행을 가두고 네트워크를 기본 차단합니다. 기본값은 꺼짐입니다." },
-    ],
+  intro: {
+    claim: "Ave는 라틴어로 ‘안녕’이라는 인사입니다.",
+    rest: "macOS, Windows, Linux용 데스크톱 앱으로, 에이전트가 내가 고른 모델로 내 컴퓨터의 파일을 읽고 쓰고 명령을 실행합니다.",
+    control: "쓰기와 명령, 네트워크 요청은 호스트의 권한 검사를 먼저 거치고, 얼마나 자주 물을지는 내가 정합니다.",
+    controlLink: "권한이 동작하는 방식",
   },
   wb: {
     title: "대화 넷을 나란히",
     body: "작업 모드에서는 창을 최대 네 칸으로 나눕니다. 칸마다 자기 대화를 갖고 따로 답을 받습니다. 지금 입력이 들어갈 칸은 테두리로 보입니다.",
+    windowTitle: "작업 모드",
     keys: [
       { key: "Enter", body: "답하는 중에 누르면 메시지가 대기열에 들어가고, 진행 중인 턴이 다음 쉼표에서 받아 갑니다." },
       { key: "⌘ / Ctrl + Enter", body: "진행 중인 턴을 멈추고 바로 보냅니다. 멈춘 답에는 ‘사용자가 중지함’ 표시가 남습니다." },
@@ -175,6 +124,10 @@ const ko: HomeCopy = {
     codeNote: "링크는 확인 화면만 엽니다. 설치는 내가 확인한 뒤에 일어납니다.",
     codeComment1: "# 마켓플레이스 추가",
     codeComment2: "# 패키지 설치",
+    sceneLabel: "git 저장소의 marketplace.json 에서 받은 패키지가 SHA-256 확인을 거쳐 Ave에 플러그인, MCP 서버, 스킬, 에이전트, 테마로 들어오는 그림",
+    repo: "git 저장소",
+    check: "SHA-256 확인",
+    kinds: ["플러그인", "MCP 서버", "스킬", "에이전트", "테마"],
     sourcesCaption: "어디서 받는지",
     colSource: "소스",
     colWhere: "추가하는 곳",
@@ -187,21 +140,18 @@ const ko: HomeCopy = {
     ],
     facts: [
       { title: "따로 도는 프로세스", body: "플러그인은 앱과 다른 프로세스에서 돕니다. 하나가 시작에 실패해도 나머지는 그대로 일하고, 그 플러그인을 부르면 실제 이유를 알려 줍니다." },
-      { title: "네트워크는 호스트를 거쳐", body: "플러그인은 선언한 도메인 최대 16개에만 나갈 수 있고, 요청은 호스트가 한 번에 한 홉씩 보냅니다. 리디렉션도 매번 다시 검사합니다." },
       { title: "적용은 조용할 때", body: "새 버전은 부팅 때와 정해진 간격으로 확인하고, 적용은 대화가 쉬고 있을 때 하나씩 합니다. 권한, MCP 서버, 훅이 바뀌었거나 승인을 다시 확인해야 하면 자동으로 적용하지 않고 내 검토를 기다립니다." },
-      { title: "회수할 수 있는 버전", body: "소스는 revocations.json 으로 특정 버전을 끄거나 지울 수 있고, 그 소스에서 설치한 것에만 적용됩니다." },
-      { title: "담을 수 있는 것", body: "플러그인, MCP 서버, 스킬, 에이전트, 테마, 글꼴, 언어, 모델 제공자, 메시징 연결을 같은 방식으로 배포합니다." },
       { title: "기본으로 들어오는 둘", body: "회의 플러그인과 로컬 인덱서 플러그인은 처음 설치할 때 함께 들어옵니다." },
     ],
   },
   side: {
     title: "곁에서 도는 일",
+    sceneLabel: "로컬 인덱스, 회의, 루틴, 서브에이전트가 각자 채팅 목록의 대화로 들어오는 그림",
     rows: [
       { title: "로컬 인덱스", body: "로컬 인덱서 플러그인이 내 문서를 색인합니다. 키워드(BM25)와 벡터 검색 결과를 순위 융합으로 합쳐 대화에 가져오고, 색인은 ~/.ave 아래에 둡니다." },
       { title: "회의", body: "마이크와 시스템 소리는 호스트가 받고, 회의 플러그인이 받아쓰기와 요약을 맡습니다. 요약 알림은 내가 켰을 때만 옵니다." },
       { title: "루틴", body: "매일, 매주, 매월, 일정 간격, cron 식으로, 또는 앱을 끌 때 실행합니다. 실행마다 따로 대화가 생겨 채팅 목록에 남고, 쓸 수 있는 플러그인과 폴더도 루틴마다 정합니다." },
       { title: "서브에이전트", body: "에이전트가 하위 에이전트를 한 단계까지 띄우고, agent_send 와 agent_guide 로 서로 메시지를 보냅니다. 우편함이 디스크에 남아 멈춘 하위 에이전트를 다시 이어 갈 수 있습니다." },
-      { title: "스킬, MCP, 훅", body: "스킬은 이름과 설명만 프롬프트에 두고 본문은 필요할 때 불러오며, 첫 로드는 승인을 받습니다. MCP 서버와 플러그인 도구는 같은 권한 경로를 지나고, PreToolUse 같은 훅으로 내 스크립트를 끼울 수 있습니다." },
     ],
     sidebar: {
       chats: "채팅",
@@ -231,86 +181,42 @@ const ko: HomeCopy = {
 
 const en: HomeCopy = {
   meta: {
-    title: "Ave — the AI agent that asks first",
+    title: "Ave — hello, and a harness for your agents",
     description:
-      "Ave is a desktop AI agent app for macOS, Windows and Linux. It reads and writes files and runs commands, and every write, command and network request passes the host's permission check first.",
+      "Ave is Latin for hello. It is a desktop app for macOS, Windows and Linux where you, your agents, the models you choose and your computer meet.",
   },
-  nav: { permissions: "Permissions", plugins: "Plugins", docs: "Docs", download: "Download", lang: "한국어", langLabel: "Go to the Korean page" },
+  nav: { models: "Models", plugins: "Plugins", docs: "Docs", download: "Download", lang: "한국어", langLabel: "Go to the Korean page", menu: "Menu" },
   hero: {
-    line1: "The agent",
-    line2: "that asks first",
-    lead: "Ave is a desktop app for macOS, Windows and Linux. Its agents read and write files and run commands on your computer, and every write, command and network request passes the host’s permission check first.",
+    pill: "Ave · Latin for hello",
+    title: "Hello, I’m Ave",
+    sub: "The desktop harness where you, your agents, the models you choose and your computer meet.",
     cta: "Download Ave",
     ctaMac: "Download for Mac",
     ctaWin: "Download for Windows",
     ctaLinux: "Download for Linux",
     docs: "Read the docs",
   },
-  frag: {
-    windowTitle: "Work mode",
-    tileA: {
-      title: "Q3 meeting notes",
-      user: "Collect last quarter’s meeting notes and draft a report",
-      toolRead: "read_file  meetings/2026-07 … 09",
-      toolReadResult: "14 files",
-      ai: "I read 14 sets of notes: 9 decisions, 3 open items. I’d like to save the draft in the project folder.",
-      dockTitle: "write_file wants to write a file",
-      dockPath: "q3/report.md",
-      kind: "write",
-      risk: "risk: medium",
-      reject: "Reject",
-      once: "Allow once",
-      always: "Always allow",
-    },
-    tileB: {
-      title: "Payments test",
-      user: "The payments test fails now and then. Find out why",
-      toolShell: "shell  bun test payments --repeat 20",
-      running: "running",
-      queuedLabel: "Queued",
-      queued: "Don’t commit after the fix",
-    },
-    composer: "Message…",
-    mode: "Confirm writes",
-    pending: "Approval 1",
-    model: "Model: your choice",
+  harness: {
+    label: "Your message passes through Ave to a model, and the agent works on your computer through files, the shell, plugins and MCP servers",
+    you: "You",
+    youSays: "Collect last quarter’s meeting notes and draft a report",
+    ave: "Ave",
+    aveRole: "harness",
+    models: "Models",
+    computer: "Your computer",
+    computerItems: ["Files", "Shell", "Plugins", "MCP servers"],
+    toolLine: "read_file  meetings/2026-07 … 09",
   },
-  perm: {
-    title: "One rule, four modes",
-    statement:
-      "The host, not the model, decides what an agent may do. Sensitive paths are blocked in every mode, and the reviewer can raise a risk rating but never lower it.",
-    legend: "Pick a permission mode",
-    modes: [
-      { id: "default", label: "Confirm writes", desc: "The default. Reads run; anything that changes something asks first." },
-      { id: "strict", label: "Confirm all", desc: "Every tool call asks for approval, reads included." },
-      { id: "auto", label: "Auto-verify", desc: "Low-risk work runs; the rest is checked by the permission reviewer." },
-      { id: "allow", label: "Allow all", desc: "Everything outside the hard blocks runs, but access outside the allowed folders still asks." },
-    ],
-    tableCaption: "The same six requests, handled by the mode you picked.",
-    colRequest: "Request",
-    colKind: "Kind",
-    colResult: "Result",
-    verdicts: { run: "Runs", ask: "Asks you", review: "Reviewer checks", block: "Blocked" },
-    requests: [
-      { what: "Read plan.md in the project", kind: "read", result: allowed({ default: "run", strict: "ask", auto: "run", allow: "run" }) },
-      { what: "Edit plan.md", kind: "write", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
-      { what: "Run the tests", code: "bun test", kind: "shell", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
-      { what: "Fetch a web page", kind: "network", result: allowed({ default: "ask", strict: "ask", auto: "review", allow: "run" }) },
-      { what: "Save outside the allowed folders", code: "~/Desktop/report.md", kind: "write", result: allowed({ default: "ask", strict: "ask", auto: "ask", allow: "ask" }) },
-      { what: "Read an SSH key", code: "~/.ssh/id_ed25519", kind: "read", result: allowed({ default: "block", strict: "block", auto: "block", allow: "block" }) },
-    ],
-    facts: [
-      { title: "Always allow, narrowly", body: "Always allow is bound to that tool, that input and that working folder. It never opens similar calls." },
-      { title: "Approvals sit below", body: "Requests stack in a dock at the bottom of the window. Nothing covers the conversation, so you can read before you decide." },
-      { title: "A silent reviewer holds", body: "If the reviewer cannot answer, the request is held, not passed. Risky steps in headless runs wait in a queue for you." },
-      { title: "An audit log you can’t edit", body: "~/.ave/audit.log is HMAC-chained, so a change in the middle shows. Secret values are never written to it." },
-      { title: "Masked before sending", body: "Secrets and personal data are masked before anything goes to the model, and each mask is recorded in the audit log." },
-      { title: "OS sandbox, opt-in", body: "Turn it on and tools run inside Seatbelt on macOS, bwrap on Linux and srt-win on Windows, with network denied by default. It ships off." },
-    ],
+  intro: {
+    claim: "Ave is Latin for hello.",
+    rest: "It is a desktop app for macOS, Windows and Linux where agents read and write files and run commands on your computer, with the models you bring.",
+    control: "Writes, commands and network requests pass the host’s permission check first, and you choose how often it asks.",
+    controlLink: "How permissions work",
   },
   wb: {
     title: "Four chats side by side",
     body: "Work mode splits the window into up to four tiles. Each tile holds its own conversation and streams on its own. A frame shows which tile your next keystroke lands in.",
+    windowTitle: "Work mode",
     keys: [
       { key: "Enter", body: "While a turn is running, the message joins the queue and the turn picks it up at its next brake point." },
       { key: "⌘ / Ctrl + Enter", body: "Stops the running turn and sends now. The stopped answer keeps a “stopped by user” badge." },
@@ -338,6 +244,10 @@ const en: HomeCopy = {
     codeNote: "A link only opens a confirmation screen. Nothing installs until you confirm.",
     codeComment1: "# add a marketplace",
     codeComment2: "# install a package",
+    sceneLabel: "Packages from a git repository’s marketplace.json pass a SHA-256 check and arrive in Ave as plugins, MCP servers, skills, agents and themes",
+    repo: "git repository",
+    check: "SHA-256 check",
+    kinds: ["Plugins", "MCP servers", "Skills", "Agents", "Themes"],
     sourcesCaption: "Where packages come from",
     colSource: "Source",
     colWhere: "Added from",
@@ -350,21 +260,18 @@ const en: HomeCopy = {
     ],
     facts: [
       { title: "A process of its own", body: "Plugins run outside the app process. If one fails to start, the rest keep working, and calls to the failed one report the real reason." },
-      { title: "Network through the host", body: "A plugin reaches only the domains it declares, sixteen at most, and the host sends each request one hop at a time, checking every redirect again." },
       { title: "Applied when idle", body: "New versions are checked at launch and on a schedule, and applied one at a time while the conversation is idle. If permissions, MCP servers or hooks changed, or an approval needs confirming again, the update waits for your review instead of applying itself." },
-      { title: "Versions can be recalled", body: "A source can disable or remove a version through revocations.json, and it applies only to installs from that source." },
-      { title: "What it carries", body: "Plugins, MCP servers, skills, agents, themes, fonts, languages, model providers and messaging connections all ship the same way." },
       { title: "Two come with Ave", body: "The meeting plugin and the local indexer are installed on first run." },
     ],
   },
   side: {
     title: "Work that runs alongside",
+    sceneLabel: "The local index, meetings, routines and sub-agents each arrive as conversations in the chat list",
     rows: [
       { title: "Local index", body: "The local indexer plugin indexes your documents. Keyword (BM25) and vector results are merged by rank fusion and brought into the conversation; the index lives under ~/.ave." },
       { title: "Meetings", body: "The host captures microphone and system audio; the meeting plugin transcribes and summarises. Summary alerts arrive only if you turn them on." },
       { title: "Routines", body: "Run daily, weekly, monthly, on an interval, on a cron expression, or when the app shuts down. Each run is its own conversation in the chat list, with its own plugins and folders allowed." },
       { title: "Sub-agents", body: "An agent can start sub-agents one level deep and trade messages with agent_send and agent_guide. Mailboxes are kept on disk, so a paused sub-agent can be resumed." },
-      { title: "Skills, MCP, hooks", body: "Skills keep only a name and description in the prompt and load the body when needed, asking the first time. MCP servers and plugin tools share one permission path, and hooks such as PreToolUse run your own scripts." },
     ],
     sidebar: {
       chats: "Chats",

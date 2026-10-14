@@ -1,83 +1,11 @@
 import type { HomeCopy } from "@/lib/home";
+import type { DownloadTarget } from "@/lib/downloads";
 
 /**
  * Cropped fragments of Ave's own interface, built in HTML at true size.
  * `data-ui` marks them: inside, the app's conventions (hairlines, small
  * radii, a window shadow) apply instead of the page's.
  */
-
-export function WorkbenchFragment({ c }: { c: HomeCopy["frag"] }) {
-  const a = c.tileA;
-  const b = c.tileB;
-  return (
-    <div data-ui aria-hidden="true">
-      <div className="win">
-        <div className="win-bar">
-          <span className="dots"><i /><i /><i /></span>
-          <span className="win-title">Ave</span>
-          <span className="badge">
-            <span className="chip">{c.mode}</span>
-            <span className="chip chip-warn">{c.pending}</span>
-          </span>
-        </div>
-        <div className="tiles">
-          <section className="tile focused">
-            <div className="tile-head">
-              <span>{a.title}</span>
-              <span className="tile-ctl">⋯</span>
-            </div>
-            <div className="msgs">
-              <div className="msg-user">{a.user}</div>
-              <div className="tool">
-                <code>{a.toolRead}</code>
-                <span className="ok">{a.toolReadResult}</span>
-              </div>
-              <div className="msg-ai"><span className="stream">{a.ai}</span></div>
-            </div>
-            <div className="dock">
-              <div className="dock-title">{a.dockTitle}</div>
-              <div className="dock-meta">
-                <span className="chip">{a.dockPath}</span>
-                <span className="chip">{a.kind}</span>
-                <span className="chip chip-warn">{a.risk}</span>
-              </div>
-              <div className="dock-actions">
-                <span className="ui-btn">{a.reject}</span>
-                <span className="ui-btn">{a.always}</span>
-                <span className="ui-btn ui-btn-primary">{a.once}</span>
-              </div>
-            </div>
-          </section>
-          <section className="tile secondary">
-            <div className="tile-head">
-              <span>{b.title}</span>
-              <span className="tile-ctl">⋯</span>
-            </div>
-            <div className="msgs">
-              <div className="msg-user">{b.user}</div>
-              <div className="tool">
-                <code>{b.toolShell}</code>
-                <span className="run">{b.running}</span>
-              </div>
-              <div className="msg-ai">
-                <span className="caret" />
-              </div>
-              <div className="queued">
-                <b>{b.queuedLabel}</b>
-                {b.queued}
-              </div>
-            </div>
-            <div className="composer">{c.composer}</div>
-          </section>
-        </div>
-        <div className="status">
-          <span>{c.model}</span>
-          <span className="push">⌘ Enter</span>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export function QuadFragment({ quad, title }: { quad: HomeCopy["wb"]["quad"]; title: string }) {
   return (
@@ -129,6 +57,37 @@ export function SidebarFragment({ s }: { s: HomeCopy["side"]["sidebar"] }) {
           {today.map(row)}
           <div className="side-group">{s.earlier}</div>
           {earlier.map(row)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The first-launch steps of one system as a small window: the installer's
+ * name, then each step and its command, exactly as the setup section lists
+ * them (web/DESIGN.md 19, 29).
+ */
+export function InstallFragment({ d }: { d: DownloadTarget }) {
+  const file = d.href.slice(d.href.lastIndexOf("/") + 1);
+  return (
+    <div data-ui aria-hidden="true">
+      <div className="win">
+        <div className="win-bar">
+          <span className="dots"><i /><i /><i /></span>
+          <span className="win-title">{d.osLabel}</span>
+          <span className="badge"><span className="chip">{d.format}</span></span>
+        </div>
+        <div className="install">
+          <code className="install-file">{file}</code>
+          <ol>
+            {d.steps.map((s) => (
+              <li key={s.label}>
+                <span>{s.label}</span>
+                {s.command ? <code>{s.command}</code> : null}
+              </li>
+            ))}
+          </ol>
         </div>
       </div>
     </div>

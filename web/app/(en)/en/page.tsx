@@ -7,7 +7,7 @@ export const metadata: Metadata = { alternates: { canonical: "/en/", languages: 
 export default function Page() {
   return (
     <>
-      <Header locale="en" path="/" />
+      <Header locale="en" path="/" over />
       <Home locale="en" />
       <Footer locale="en" path="/" />
     </>

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { Button } from "./ui/button";
 
 /**
  * Marks the document as scripted (so entrance styles apply) and reveals each
@@ -50,10 +51,12 @@ export function OsCta({ base, labels }: { base: string; labels: { any: string; m
   useEffect(() => setOs(detectOs()), []);
   const label = os ? labels[os] : labels.any;
   return (
-    <Link className="button" href={os ? `${base}#${os}` : base}>
-      {label}
-      <span className="button-arrow" aria-hidden="true">→</span>
-    </Link>
+    <Button asChild className="group">
+      <Link href={os ? `${base}#${os}` : base}>
+        {label}
+        <span className="motion-safe:transition-transform motion-safe:duration-150 motion-safe:group-hover:translate-x-0.5" aria-hidden="true">→</span>
+      </Link>
+    </Button>
   );
 }
 

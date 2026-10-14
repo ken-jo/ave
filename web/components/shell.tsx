@@ -9,7 +9,7 @@ import "../app/globals.css";
    stack, Geist Mono for code. All three are OFL and self-hosted by next/font. */
 const geist = Geist({ subsets: ["latin"], display: "swap", variable: "--font-geist" });
 const kr = Noto_Sans_KR({ subsets: ["latin"], display: "swap", variable: "--font-kr", preload: false });
-const mono = Geist_Mono({ subsets: ["latin"], display: "swap", variable: "--font-mono", preload: false });
+const mono = Geist_Mono({ subsets: ["latin"], display: "swap", variable: "--font-geist-mono", preload: false });
 
 export const viewport: Viewport = { themeColor: "#ffffff" };
 

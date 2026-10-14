@@ -3,7 +3,9 @@ import { href, type Locale } from "@/lib/i18n";
 import { getDownloads } from "@/lib/downloads";
 import { docPages, type Block, type DocPage } from "@/lib/docs";
 import { CopyButton } from "./client";
-import { Chevron } from "./home";
+import { Chevron } from "./chevron";
+import { InstallFragment } from "./fragments";
+import { Button } from "./ui/button";
 
 const words = {
   ko: {
@@ -72,13 +74,12 @@ export function DownloadPage({ locale }: { locale: Locale }) {
           <ul className="os-cards">
             {downloads.map((d) => (
               <li key={d.os} className="os-card">
-                <div className="os-face" aria-hidden="true">
-                  <span className="os-name">{d.osLabel}</span>
-                  <span className="os-format">{d.format}</span>
+                <div className="os-face">
+                  <InstallFragment d={d} />
                 </div>
                 <p><strong>{d.osLabel}</strong> {d.title}, {d.format}</p>
                 <div className="os-actions">
-                  <a className="button" href={d.href} aria-label={`${d.osLabel} ${w.get}`}>{w.get}</a>
+                  <Button href={d.href} aria-label={`${d.osLabel} ${w.get}`}>{w.get}</Button>
                   <a className="textlink" href={`#${d.os}`}>{w.setup}</a>
                 </div>
               </li>
@@ -103,7 +104,7 @@ export function DownloadPage({ locale }: { locale: Locale }) {
               </ol>
               {d.extraNote ? <p className="note">{d.extraNote}</p> : null}
               <p className="os-again">
-                <a className="button" href={d.href}>{w.get}</a>
+                <Button href={d.href}>{w.get}</Button>
               </p>
             </div>
           </div>
