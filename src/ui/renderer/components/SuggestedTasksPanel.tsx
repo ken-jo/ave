@@ -9,6 +9,7 @@
  * error (a quiet line with a retry), and empty (nothing at all).
  */
 import { useId } from "react";
+import { useStatusLiveRegion } from "./transcript-log-context.js";
 import { File, Globe, Search, Sparkles, Terminal, type LucideIcon } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
@@ -32,6 +33,7 @@ export function SuggestedTasksPanel({ onChoose }: SuggestedTasksPanelProps) {
   const { state, reload } = useSuggestedTasks(true);
   // One panel per empty chat tile; a fixed id would collide across tiles.
   const headingId = useId();
+  const liveRegion = useStatusLiveRegion();
 
   if (state.status === "ready" && state.tasks.length === 0) return null;
 
@@ -50,7 +52,7 @@ export function SuggestedTasksPanel({ onChoose }: SuggestedTasksPanelProps) {
         {t("suggestedTasks.heading")}
       </h2>
       {state.status === "error" ? (
-        <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground" role="status">
+        <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground" {...liveRegion}>
           <span>{t("suggestedTasks.error")}</span>
           <Button
             type="button"

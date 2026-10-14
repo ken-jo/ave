@@ -411,16 +411,22 @@ export function ChatGroupSession({
   const questionRef = useRef(question);
   questionRef.current = question;
   const draftSessionIdRef = useRef<string | null>(null);
+  // Set by a new chat started from a conversation with no entries (the
+  // composer's project selector does this): that conversation is being
+  // replaced, not left, so its text belongs to the one that replaces it.
+  const draftCarryFromRef = useRef<string | null>(null);
   useLayoutEffect(() => {
     const previous = draftSessionIdRef.current;
     if (previous === currentSessionId) return;
     draftSessionIdRef.current = currentSessionId;
-    // No conversation yet (mount, or the tile's session still resolving):
-    // whatever was typed belongs to the conversation that is arriving, so it
-    // stays, and a parked draft only fills an empty composer.
-    if (!previous) {
-      const restored = takeComposerDraft(currentSessionId);
-      if (restored && !questionRef.current) setQuestion(restored);
+    const carry = previous !== null && previous === draftCarryFromRef.current;
+    draftCarryFromRef.current = null;
+    // No conversation yet (mount, or the tile's session still resolving), or
+    // an empty one being replaced: whatever was typed belongs to the
+    // conversation that is arriving, so it stays, and a parked draft only
+    // fills an empty composer (otherwise it stays parked).
+    if (!previous || carry) {
+      if (!questionRef.current) setQuestion(takeComposerDraft(currentSessionId));
       return;
     }
     parkComposerDraft(previous, questionRef.current);
@@ -617,13 +623,14 @@ export function ChatGroupSession({
         reportChatNewRefused(created.error);
         return false;
       }
+      if (entries.length === 0) draftCarryFromRef.current = currentSessionId;
       clearForNewChat();
       resetForNewSession();
       await refreshSessionId();
       await env.refreshSessions();
       return true;
     },
-    [api, streaming, clearForNewChat, resetForNewSession, refreshSessionId, env, reportChatNewRefused],
+    [api, streaming, entries.length, currentSessionId, clearForNewChat, resetForNewSession, refreshSessionId, env, reportChatNewRefused],
   );
 
   const handleAttachmentWarning = useCallback((message: string) => {

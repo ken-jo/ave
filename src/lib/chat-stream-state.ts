@@ -247,9 +247,13 @@ export type ChatEntry =
       streaming?: boolean;
       /** Wall clock of the first live delta (or the persisted creation time). */
       createdAt?: number;
+      /** Wall clock of the latest live delta: where the thinking stopped. */
+      lastDeltaAt?: number;
       /**
-       * How long the model thought: first live delta to finalization. Live
-       * turns only — a transcript loaded from disk has no reliable end time.
+       * How long the model thought: first live delta to the last one. Not to
+       * finalization, which only happens once the answer after the thinking
+       * has streamed too. Live turns only — a transcript loaded from disk has
+       * no reliable end time.
        */
       durationMs?: number;
     }
@@ -633,11 +637,12 @@ export function upsertStreamingReasoning(
   );
 
   if (reasoningIdx >= 0) {
-    // Keep the start time of the first delta; only the text grows.
-    next[reasoningIdx] = { ...(next[reasoningIdx] as ReasoningEntry), text, streaming: true };
+    // Keep the start time of the first delta; the text grows and the end moves.
+    next[reasoningIdx] = { ...(next[reasoningIdx] as ReasoningEntry), text, streaming: true, lastDeltaAt: Date.now() };
     return next;
   }
-  const reasoning = { kind: "reasoning" as const, text, streaming: true, createdAt: Date.now() };
+  const now = Date.now();
+  const reasoning = { kind: "reasoning" as const, text, streaming: true, createdAt: now, lastDeltaAt: now };
 
   const assistantIdx = findLastIdx(
     next,
@@ -753,7 +758,7 @@ export function finalizeStreamingReasoning(
       text,
       streaming: false,
       ...(reasoning.createdAt !== undefined
-        ? { durationMs: Math.max(0, Date.now() - reasoning.createdAt) }
+        ? { durationMs: Math.max(0, (reasoning.lastDeltaAt ?? Date.now()) - reasoning.createdAt) }
         : {}),
     };
     return next;

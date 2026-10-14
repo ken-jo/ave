@@ -5,6 +5,7 @@ import { createRef } from "react";
 import { render, screen } from "@testing-library/react";
 import { ChatTranscript, type ChatTranscriptProps } from "../ChatTranscript.js";
 import { t } from "../../../../i18n/runtime.js";
+import { PermissionReviewStatusCard } from "../PermissionReviewStatusCard.js";
 
 function props(streaming: boolean): ChatTranscriptProps {
   return {
@@ -42,5 +43,22 @@ describe("ChatTranscript accessibility", () => {
     // A new turn clears the previous notice so the next completion is announced again.
     rerender(<ChatTranscript {...props(true)} />);
     expect(screen.getByTestId("chat-transcript-status").textContent).toBe("");
+  });
+
+  it("keeps status cards from being a second live region inside the log", () => {
+    const entry = { kind: "permission_review", toolUseId: "t1", status: "reviewing", source: "builtin" } as const;
+    const card = <PermissionReviewStatusCard entry={entry as never} />;
+    const { unmount } = render(<ChatTranscript {...props(false)} transcriptEntries={card} />);
+    const inLog = screen.getByTestId("permission-review-status-card");
+    expect(screen.getByRole("log").contains(inLog)).toBe(true);
+    expect(inLog).not.toHaveAttribute("role");
+    expect(inLog).not.toHaveAttribute("aria-live");
+    unmount();
+
+    // The side chat shares the card without a log: there it stays a live region.
+    render(card);
+    const standalone = screen.getByTestId("permission-review-status-card");
+    expect(standalone).toHaveAttribute("role", "status");
+    expect(standalone).toHaveAttribute("aria-live", "polite");
   });
 });

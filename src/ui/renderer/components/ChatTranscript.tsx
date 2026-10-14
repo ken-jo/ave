@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { ScrollArea } from "../../../components/ui/scroll-area.js";
 import { SkillBadge, type SkillBadgeProps } from "./SkillBadge.js";
+import { TranscriptLogContext } from "./transcript-log-context.js";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 
 export interface ChatTranscriptProps {
@@ -66,6 +67,7 @@ export function ChatTranscript({
       aria-busy={streaming}
       data-testid="chat-transcript-log"
     >
+      <TranscriptLogContext.Provider value>
       {/* Workflow tools (S1+S2): skill badges + ask-user inline.
           SessionTasksPanel is intentionally NOT here — it sits above the input
           cluster (see below the ScrollArea) so it stays visible regardless of
@@ -94,6 +96,7 @@ export function ChatTranscript({
       {visibleEntries.length === 0 ? emptyState : null}
       {transcriptEntries}
       <div ref={chatEndRef} />
+      </TranscriptLogContext.Provider>
     </div></ScrollArea>
     </>
   );

@@ -7,10 +7,13 @@
  * closing a tile dropped it. Drafts are parked here on switch/unmount and
  * restored when the conversation comes back to any tile.
  *
- * In memory only: an app restart starts with empty composers.
+ * In memory only: an app restart starts with empty composers. Nothing tells
+ * the renderer when a conversation is deleted, so the store is bounded instead:
+ * past `MAX_PARKED_DRAFTS` the least recently parked draft is dropped.
  */
 import { stripMarkers } from "../utils/attachment-markers.js";
 
+const MAX_PARKED_DRAFTS = 50;
 const drafts = new Map<string, string>();
 
 /**
@@ -21,8 +24,13 @@ const drafts = new Map<string, string>();
 export function parkComposerDraft(sessionId: string, text: string): void {
   if (!sessionId) return;
   const kept = stripMarkers(text);
-  if (kept) drafts.set(sessionId, kept);
-  else drafts.delete(sessionId);
+  drafts.delete(sessionId);
+  if (!kept) return;
+  drafts.set(sessionId, kept);
+  if (drafts.size > MAX_PARKED_DRAFTS) {
+    const oldest = drafts.keys().next().value;
+    if (oldest !== undefined) drafts.delete(oldest);
+  }
 }
 
 /** Take (and remove) the parked draft for `sessionId`, or "" when none. */
