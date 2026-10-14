@@ -161,4 +161,19 @@ describe("RemoteA2AActionButton production IPC surface", () => {
     expect(screen.getByTestId("remote-a2a-status").textContent).not.toContain("private-provider-detail");
     expect(screen.getByTestId("remote-a2a-status").textContent).not.toContain("a2a-remote-send-failed");
   });
+
+  it("tells the owner a may-have-been-sent action is unknown, not merely unsent", async () => {
+    installApi({ state: "failed", taskHandle: "task_handle_123456", taskAvailable: true, taskState: "TASK_STATE_INPUT_REQUIRED", outcome: "continue-reconciliation-required:transport-ambiguous", updatedAt: "2026-07-16T00:00:00.000Z" });
+    await openPanel();
+    const text = screen.getByTestId("remote-a2a-status").textContent ?? "";
+    expect(text).toBe(t("remoteA2aActionButton.deliveryUnknown"));
+    expect(text).not.toContain(t("remoteA2aActionButton.notSent", { reason: "" }).trim());
+  });
+
+  it("tells the owner a never-sent action can be tried again, and keeps its Task actions", async () => {
+    installApi({ state: "failed", taskHandle: "task_handle_123456", taskAvailable: true, taskState: "TASK_STATE_INPUT_REQUIRED", outcome: "not-sent", updatedAt: "2026-07-16T00:00:00.000Z" });
+    await openPanel();
+    expect(screen.getByTestId("remote-a2a-status").textContent).toContain(t("remoteA2aActionButton.neverSentRetry"));
+    expect(screen.getByTestId("remote-a2a-resume")).toBeTruthy();
+  });
 });

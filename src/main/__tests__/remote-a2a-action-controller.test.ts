@@ -212,4 +212,29 @@ describe("production remote A2A action controller", () => {
     expect(status).not.toHaveProperty("taskState");
     expect(JSON.stringify(status)).not.toContain("private-store-detail");
   });
+
+  it("runs a double-clicked Resume once, and lets a never-sent one be tried again", async () => {
+    let release: (() => void) | undefined;
+    const execute = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve({ ok: false, outcome: "not-sent" }); }))
+      .mockResolvedValue({ ok: true, result: { message: {} }, record: {} });
+    // The store releases the slot once the first attempt is NOT_SENT.
+    const value = runtime({ execute });
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+
+    const first = controller.resume({ taskHandle: "task_handle_123456", intent: "continue please" });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    await expect(controller.resume({ taskHandle: "task_handle_123456", intent: "continue please" }))
+      .resolves.toMatchObject({ state: "failed", outcome: "a2a-remote-busy", taskAvailable: true });
+    release!();
+    await expect(first).resolves.toMatchObject({ state: "failed", outcome: "not-sent", taskAvailable: true });
+    expect(execute).toHaveBeenCalledTimes(1);
+
+    await expect(controller.resume({ taskHandle: "task_handle_123456", intent: "continue please" }))
+      .resolves.toMatchObject({ state: "sent" });
+    expect(execute).toHaveBeenCalledTimes(2);
+    // A fresh operation, never the never-sent one re-driven.
+    const ops = execute.mock.calls.map((call) => (call[0] as { operationId: string }).operationId);
+    expect(new Set(ops).size).toBe(2);
+  });
 });

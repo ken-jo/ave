@@ -1004,6 +1004,11 @@ export class A2ARemoteDurableStore {
         record.retryNotBefore = new Date(this.now().getTime() + 1_000).toISOString();
       }
       if (update.outcomeCode !== undefined) record.outcomeCode = update.outcomeCode;
+      // NOT_SENT carries no resolved route: the schema requires it, and the
+      // restart path already drops it. A `resolved` -> NOT_SENT transition
+      // (the socket CAS lost) used to keep it, so the next load quarantined the
+      // very record that proves nothing was sent.
+      if (stage === "NOT_SENT") delete record.resolved;
       record.updatedAt = this.now().toISOString();
       if (update.deletePayload) {
         let source = record;
@@ -1268,6 +1273,15 @@ export class A2ARemoteDurableStore {
         item.prepared.taskHandle === handle && item.prepared.operation === operation);
       if (!latest) return { kind: "none" };
       if (latest.prepared.ownerDigestSha256 !== sha256Hex(ownerId)) return { kind: "blocked", outcome: "task-owner-mismatch" };
+      // A NOT_SENT attempt provably never reached a socket: every transition
+      // into it starts from `prepared` or `resolved`, and `in-flight` is
+      // persisted before the request is written — a restart turns a left-over
+      // `prepared`/`resolved` into NOT_SENT and a left-over `in-flight` into
+      // `outcome-unknown`. So it releases the Task's action slot, and the owner
+      // can try again with a fresh operation; exactly-once holds because
+      // nothing that may have been sent is ever released here. Everything else
+      // stays blocked and is reported as unknown delivery.
+      if (latest.stage === "NOT_SENT") return { kind: "none" };
       if (latest.stage === "settled" && latest.outcomeCode === "success") {
         const task = state.tasks.find((item) => item.handle === handle && item.ownerDigestSha256 === sha256Hex(ownerId));
         if (task

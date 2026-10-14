@@ -300,3 +300,127 @@ describe("remote durable recovery lifecycle", () => {
     });
   });
 });
+
+describe("a Task action that provably never left the process releases the Task", () => {
+  async function storeWithTask() {
+    const f = fixture();
+    const initial = prepared({ operationId: "initial-task-op" });
+    await f.store.prepare(initial);
+    await f.store.resolveCas(initial.attemptId, resolved(initial));
+    await f.store.transition(initial.attemptId, ["resolved"], "in-flight");
+    await f.store.transition(initial.attemptId, ["in-flight"], "settled", {
+      outcomeCode: "success",
+      taskProjection: {
+        handle: "task_handle_123456",
+        ownerId: "owner",
+        targetAgentId: 1,
+        targetLabel: "Agent one",
+        lineage,
+        credentialRevisionId: 11,
+        task: { id: "remote-task", contextId: "remote-context", status: { state: "TASK_STATE_INPUT_REQUIRED" }, history: [] } as never,
+      },
+    });
+    return f;
+  }
+
+  function action(operation: "continue" | "cancel", n: number) {
+    return prepared({
+      operationId: `${operation}-op-${n}`,
+      attemptId: `${operation}-attempt-${n}`,
+      ownerToken: `${operation}-owner-${n}`,
+      operation,
+      method: operation === "cancel" ? A2AJsonRpcMethod.CANCEL_TASK : A2AJsonRpcMethod.SEND_MESSAGE,
+      messageId: operation === "continue" ? `continue-message-${n}` : undefined,
+    });
+  }
+
+  function reopen(f: ReturnType<typeof fixture>) {
+    return new A2ARemoteDurableStore({
+      namespace: f.namespace,
+      encryption,
+      random: (size) => Buffer.alloc(size, 4),
+      now: () => new Date("2026-07-16T00:01:00.000Z"),
+    });
+  }
+
+  it.each([
+    ["continue", "prepared", "secret-unavailable"],
+    ["continue", "prepared", "final-resolve-rejected"],
+    ["continue", "prepared", "resolved-cas-lost"],
+    ["continue", "resolved", "socket-cas-lost"],
+    ["cancel", "prepared", "secret-unavailable"],
+    ["cancel", "prepared", "final-resolve-rejected"],
+    ["cancel", "resolved", "socket-cas-lost"],
+  ] as const)("releases %s after a pre-socket %s -> NOT_SENT (%s), durably", async (operation, from, outcomeCode) => {
+    const f = await storeWithTask();
+    const first = action(operation, 1);
+    await f.store.prepare(first);
+    if (from === "resolved") await f.store.resolveCas(first.attemptId, resolved(first));
+    await f.store.transition(first.attemptId, [from], "NOT_SENT", { outcomeCode, deletePayload: true });
+
+    await expect(f.store.taskActionDisposition("task_handle_123456", operation, "owner")).resolves.toEqual({ kind: "none" });
+    // The marker is on disk before anything reads it as released: a restart
+    // still sees a never-sent attempt, not one to reconcile.
+    const restarted = reopen(f);
+    await expect(restarted.getAttempt(first.attemptId)).resolves.toMatchObject({ stage: "NOT_SENT", outcomeCode });
+    await expect(restarted.taskActionDisposition("task_handle_123456", operation, "owner")).resolves.toEqual({ kind: "none" });
+    // And the retry is a fresh operation the journal accepts.
+    await expect(restarted.prepare(action(operation, 2))).resolves.toMatchObject({ ok: true, duplicate: false });
+  });
+
+  it.each(["prepared", "resolved"] as const)("releases an action a restart caught at %s, before the socket", async (stage) => {
+    const f = await storeWithTask();
+    const first = action("continue", 1);
+    await f.store.prepare(first);
+    if (stage === "resolved") await f.store.resolveCas(first.attemptId, resolved(first));
+
+    const restarted = reopen(f);
+    await expect(restarted.getAttempt(first.attemptId)).resolves.toMatchObject({
+      stage: "NOT_SENT",
+      outcomeCode: "restart-before-socket-aborted",
+    });
+    await expect(restarted.taskActionDisposition("task_handle_123456", "continue", "owner")).resolves.toEqual({ kind: "none" });
+  });
+
+  it("keeps an action blocked when a crash lands after the in-flight mark, before or during the write", async () => {
+    const f = await storeWithTask();
+    const first = action("continue", 1);
+    await f.store.prepare(first);
+    await f.store.resolveCas(first.attemptId, resolved(first));
+    // The mark that precedes every socket write is durable from here on.
+    await f.store.transition(first.attemptId, ["resolved"], "in-flight");
+
+    const restarted = reopen(f);
+    await expect(restarted.getAttempt(first.attemptId)).resolves.toMatchObject({
+      stage: "outcome-unknown",
+      outcomeCode: "restart-in-flight-ambiguous",
+    });
+    // May have been sent: never released, never retried on its own.
+    await expect(restarted.taskActionDisposition("task_handle_123456", "continue", "owner")).resolves.toEqual({
+      kind: "blocked",
+      outcome: "restart-in-flight-ambiguous",
+    });
+  });
+
+  it("keeps a sent-and-settled failure blocked, and a never-sent one blocked for another owner", async () => {
+    const f = await storeWithTask();
+    const sent = action("continue", 1);
+    await f.store.prepare(sent);
+    await f.store.resolveCas(sent.attemptId, resolved(sent));
+    await f.store.transition(sent.attemptId, ["resolved"], "in-flight");
+    await f.store.transition(sent.attemptId, ["in-flight"], "settled", { outcomeCode: "remote-error", deletePayload: true });
+    await expect(f.store.taskActionDisposition("task_handle_123456", "continue", "owner")).resolves.toEqual({
+      kind: "blocked",
+      outcome: "remote-error",
+    });
+
+    const other = await storeWithTask();
+    const notSent = action("cancel", 1);
+    await other.store.prepare(notSent);
+    await other.store.transition(notSent.attemptId, ["prepared"], "NOT_SENT", { outcomeCode: "secret-unavailable" });
+    await expect(other.store.taskActionDisposition("task_handle_123456", "cancel", "someone-else")).resolves.toEqual({
+      kind: "blocked",
+      outcome: "task-owner-mismatch",
+    });
+  });
+});

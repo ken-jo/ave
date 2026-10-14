@@ -13,6 +13,18 @@ import type { RemoteA2AActionStatus } from "../types.js";
 type Target = { targetAgentId: number; label: string };
 type Translate = ReturnType<typeof useTranslation>["t"];
 
+/**
+ * An action that may have reached the remote agent and whose result is not
+ * known here. It is never retried on its own, so the owner is told to check the
+ * remote rather than shown a "not sent" they could act on twice.
+ */
+function isUnknownDelivery(outcome: string | undefined): boolean {
+  return outcome !== undefined
+    && (outcome === "unknown-manual-reconciliation-required"
+      || outcome.startsWith("continue-reconciliation-required:")
+      || outcome.startsWith("cancel-reconciliation-required:"));
+}
+
 function outcomeCopy(outcome: string | undefined, t: Translate): string {
   switch (outcome) {
     case "a2a-remote-busy":
@@ -21,6 +33,9 @@ function outcomeCopy(outcome: string | undefined, t: Translate): string {
       return t("remoteA2aActionButton.retryLater");
     case "cancel-already-settled":
       return t("remoteA2aActionButton.alreadySettled");
+    // Provably never left this desktop: the Task's actions are free again.
+    case "not-sent":
+      return t("remoteA2aActionButton.neverSentRetry");
     case "a2a-remote-disabled":
     case "a2a-remote-start-failed":
     case "a2a-remote-input-invalid":
@@ -37,6 +52,7 @@ function statusCopy(status: RemoteA2AActionStatus | null, t: Translate): string 
   if (status.taskState === "TASK_STATE_AUTH_REQUIRED") return t("remoteA2aActionButton.authRequired");
   if (status.state === "awaiting-approval") return t("remoteA2aActionButton.awaitingApproval");
   if (status.outcome === "cancel-already-settled") return outcomeCopy(status.outcome, t);
+  if (isUnknownDelivery(status.outcome)) return t("remoteA2aActionButton.deliveryUnknown");
   if (status.state === "sent") {
     return t("remoteA2aActionButton.sentTo", {
       target: status.targetLabel ?? t("remoteA2aActionButton.remoteAgentFallback"),
