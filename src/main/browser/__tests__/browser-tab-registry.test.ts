@@ -102,6 +102,41 @@ describe("BrowserTabRegistry", () => {
     expect(registry.liveTab("tab-1")?.agentOrigin).toBeNull();
   });
 
+  it.each(["https://a.example/user-chosen", "https://b.example/user-chosen"])("binds a user-navigated bootstrap after takeover without granting agent control (%s)", async (url) => {
+    const { registry, ops, control } = setup();
+    const abort = new AbortController();
+    const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" }, { signal: abort.signal });
+    const requestId = ops.at(-1)!.request.requestId;
+    try {
+      expect(registry.stop(1, "browser:early")).toBe(true);
+      registry.guestAttached(new FakeGuest(31, url), 1);
+      expect(registry.bindTab(1, { tabId: "browser:early", webContentsId: 31, requestId })).toEqual({ ok: true });
+      await expect(opened).resolves.toEqual({ ok: false, error: "aborted" });
+      expect(registry.listTabs(1)).toEqual([{ tabId: "tab-1", url, title: "A", openedBy: "user", active: false }]);
+      expect(registry.liveTab("tab-1")?.agentOrigin).toBeNull();
+      expect(control.at(-1)?.state.agentControlledTabIds).toEqual([]);
+    } finally {
+      abort.abort();
+      await opened;
+    }
+  });
+
+  it.each(["tab", "window"])("does not relax bootstrap provenance for a takeover in another %s", async (scope) => {
+    const { registry, ops } = setup();
+    const abort = new AbortController();
+    const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" }, { signal: abort.signal });
+    try {
+      registry.stop(scope === "window" ? 2 : 1, scope === "tab" ? "browser:other" : "browser:early");
+      registry.guestAttached(new FakeGuest(31, "https://a.example/user-chosen"), 1);
+      expect(registry.bindTab(1, { tabId: "browser:early", webContentsId: 31, requestId: ops.at(-1)!.request.requestId }))
+        .toEqual({ ok: false, error: "guest-not-hosted" });
+      expect(registry.listTabs(1)).toEqual([]);
+    } finally {
+      abort.abort();
+      await opened;
+    }
+  });
+
   it("does not let another window's bind claim a new-tab request", async () => {
     vi.useFakeTimers();
     const { registry, ops } = setup();
@@ -254,6 +289,8 @@ describe("concrete new-tab attachment", () => {
     if (kind !== "nonblank") registry.guestAttached(new FakeGuest(1, "about:blank"), 1);
     if (kind === "bound") registry.bindTab(1, { tabId: "user", webContentsId: 1 });
     const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/" }, { timeoutMs: 20 });
+    // Revocation does not relax attachment identity or freshness checks.
+    if (kind !== "nonblank") registry.stop(1, kind === "bound" ? "user" : "new");
     if (kind === "nonblank") registry.guestAttached(new FakeGuest(1), 1);
     expect(registry.bindTab(1, { tabId: kind === "bound" ? "user" : "new", webContentsId: 1, requestId: ops.at(-1)!.request.requestId }))
       .toEqual({ ok: false, error: "guest-not-hosted" });

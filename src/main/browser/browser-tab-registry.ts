@@ -147,6 +147,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (!entry || entry.guest.isDestroyed()) return { ok: false, error: "guest-not-live" };
     if (entry.windowId !== senderWindowId) return { ok: false, error: "guest-not-hosted" };
     const key = windowTabKey(senderWindowId, request.tabId);
+    const takenOver = this.userOwnedTabs.has(key);
     let handle = this.handleByWindowTab.get(key);
     let tab = handle === undefined ? undefined : this.tabs.get(handle);
     const pendingNew = request.requestId === undefined ? undefined : this.pending.get(request.requestId);
@@ -156,7 +157,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         return { ok: false, error: "guest-not-hosted" };
       }
       if (entry.guest.getURL() === "") return { ok: false, error: "guest-not-live" };
-      if (entry.guest.getURL() !== "about:blank") return { ok: false, error: "guest-not-hosted" };
+      // A taken-over bootstrap may already show the user's page; it receives no agent authority.
+      if (!takenOver && entry.guest.getURL() !== "about:blank") return { ok: false, error: "guest-not-hosted" };
     }
     if (!tab) {
       handle = `tab-${this.nextHandle++}`;
@@ -190,7 +192,6 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     tab.guest = entry.guest;
     if (pendingNew && pendingNew.windowId === senderWindowId && pendingNew.request.op === "new") {
-      const takenOver = this.userOwnedTabs.has(key);
       tab.opener = takenOver ? "user" : "agent";
       tab.agentOrigin = takenOver ? null : browserOrigin(pendingNew.request.url);
       this.pending.delete(request.requestId!);

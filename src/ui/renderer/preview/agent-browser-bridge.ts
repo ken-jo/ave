@@ -169,8 +169,9 @@ export function bindGuestToTab(
   if (!browserTabs) return () => undefined;
   let cancelled = false;
   let retry: ReturnType<typeof setTimeout> | undefined;
-  /** The guest last sent to main; a dom-ready of the same guest does not bind again. */
+  /** The latest requested guest, pending or accepted; rejection allows another dom-ready attempt. */
   let sentFor: number | undefined;
+  let bindSequence = 0;
   const guestId = (): number | undefined => {
     try {
       const id = (webview as HTMLElement & { getWebContentsId?: () => number }).getWebContentsId?.();
@@ -184,15 +185,24 @@ export function bindGuestToTab(
     if (cancelled) return;
     const webContentsId = guestId();
     if (webContentsId === undefined) return;
+    if (retry !== undefined) {
+      clearTimeout(retry);
+      retry = undefined;
+    }
+    const sequence = ++bindSequence;
     sentFor = webContentsId;
     void browserTabs.bindTab({
       tabId,
       webContentsId,
       ...(requestId === undefined ? {} : { requestId }),
     }).then((result) => {
-      if (!result.ok && result.error === "guest-not-live" && attempt < BIND_RETRY_LIMIT && !cancelled) {
+      if (cancelled || sequence !== bindSequence || result.ok) return;
+      sentFor = undefined;
+      if (result.error === "guest-not-live" && attempt < BIND_RETRY_LIMIT) {
         retry = setTimeout(() => onAttach(attempt + 1), BIND_RETRY_MS);
       }
+    }, () => {
+      if (!cancelled && sequence === bindSequence) sentFor = undefined;
     });
   };
   const onAttachEvent = () => onAttach();

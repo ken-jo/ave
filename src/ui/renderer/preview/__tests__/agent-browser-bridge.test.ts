@@ -4,7 +4,7 @@
  * conversation it is for.
  */
 import { describe, expect, it, vi } from "vitest";
-import { navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
+import { bindGuestToTab, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
 import type { AveApi } from "../../types.js";
 
 function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { calls: string[] } {
@@ -40,6 +40,70 @@ describe("user browser navigation", () => {
     const navigate = vi.fn();
     await navigateBrowserTabAsUser(api, "browser:1", navigate);
     expect(navigate).not.toHaveBeenCalled();
+  });
+});
+
+describe("guest binding", () => {
+  it.each(["refused", "disconnected"])("retries a rejected bind on the next dom-ready and remembers only an accepted guest (%s)", async (failure) => {
+    const bindTab = vi.fn().mockResolvedValue({ ok: true });
+    if (failure === "refused") bindTab.mockResolvedValueOnce({ ok: false, error: "guest-not-hosted" });
+    else bindTab.mockRejectedValueOnce(new Error("disconnected"));
+    const guest = Object.assign(document.createElement("webview"), { getWebContentsId: () => 31 });
+    const unbind = bindGuestToTab({ browserTabs: { bindTab } } as unknown as AveApi, guest, "browser:early", "browser-op-early");
+    try {
+      await Promise.resolve();
+      guest.dispatchEvent(new Event("dom-ready"));
+      await Promise.resolve();
+      expect(bindTab).toHaveBeenCalledTimes(2);
+      expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:early", webContentsId: 31, requestId: "browser-op-early" });
+      guest.dispatchEvent(new Event("dom-ready"));
+      await Promise.resolve();
+      expect(bindTab).toHaveBeenCalledTimes(2);
+    } finally {
+      unbind();
+    }
+  });
+
+  it("keeps a newer guest bound when an earlier bind is rejected", async () => {
+    let rejectEarlier!: (result: { ok: false; error: string }) => void;
+    const bindTab = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { rejectEarlier = resolve; }))
+      .mockResolvedValue({ ok: true });
+    let guestId = 31;
+    const guest = Object.assign(document.createElement("webview"), { getWebContentsId: () => guestId });
+    const unbind = bindGuestToTab({ browserTabs: { bindTab } } as unknown as AveApi, guest, "browser:early", "browser-op-early");
+    try {
+      guestId = 32;
+      guest.dispatchEvent(new Event("did-attach"));
+      await Promise.resolve();
+      rejectEarlier({ ok: false, error: "guest-not-hosted" });
+      await Promise.resolve();
+      guest.dispatchEvent(new Event("dom-ready"));
+      expect(bindTab).toHaveBeenCalledTimes(2);
+      expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:early", webContentsId: 32, requestId: "browser-op-early" });
+    } finally {
+      unbind();
+    }
+  });
+
+  it("cancels an attach retry when dom-ready successfully binds the guest first", async () => {
+    vi.useFakeTimers();
+    const bindTab = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: "guest-not-live" })
+      .mockResolvedValue({ ok: true });
+    const guest = Object.assign(document.createElement("webview"), { getWebContentsId: () => 31 });
+    const unbind = bindGuestToTab({ browserTabs: { bindTab } } as unknown as AveApi, guest, "browser:early", undefined);
+    try {
+      await Promise.resolve();
+      guest.dispatchEvent(new Event("dom-ready"));
+      await Promise.resolve();
+      expect(bindTab).toHaveBeenCalledTimes(2);
+      await vi.runAllTimersAsync();
+      expect(bindTab).toHaveBeenCalledTimes(2);
+    } finally {
+      unbind();
+      vi.useRealTimers();
+    }
   });
 });
 
