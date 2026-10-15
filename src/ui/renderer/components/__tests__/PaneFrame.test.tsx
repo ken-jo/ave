@@ -625,6 +625,32 @@ describe("useChatGroups pane content", () => {
     expect(result.current.contentById["group-2"]).toEqual({ view: "terminal", surface: "terminal:2" });
   });
 
+  it("moves a surface between panes as a swap, opens one on an edge, and finds a pane's neighbours", () => {
+    const { result } = renderHook(() => useChatGroups("work"));
+    act(() => result.current.split("main", "row"));
+    act(() => result.current.setPaneContent("main", { view: "terminal", surface: "terminal:1" }));
+    act(() => result.current.setPaneContent("group-2", { view: "web", surface: "browser:2" }));
+    expect(result.current.paneNeighbor("main", "right")).toBe("group-2");
+    expect(result.current.paneNeighbor("group-2", "left")).toBe("main");
+    expect(result.current.paneNeighbor("main", "left")).toBeUndefined();
+    expect(result.current.paneNeighbor("main", "down")).toBeUndefined();
+
+    // A swap — both surfaces stay on screen — even though each location is
+    // already "open elsewhere", which `setPaneContent` alone would refuse.
+    act(() => result.current.movePaneContent("main", "group-2"));
+    expect(result.current.contentById.main).toEqual({ view: "web", surface: "browser:2" });
+    expect(result.current.contentById["group-2"]).toEqual({ view: "terminal", surface: "terminal:1" });
+    expect(result.current.focusedId).toBe("group-2");
+
+    // Onto an edge: a new pane under group-2 holds it, and the pane it left goes home.
+    let placed: string | null = null;
+    act(() => { placed = result.current.placeOnEdge("group-2", "bottom", { view: "web", surface: "browser:2" }, "main"); });
+    expect(placed).toBe("group-3");
+    expect(result.current.contentById["group-3"]).toEqual({ view: "web", surface: "browser:2" });
+    expect(result.current.contentById.main).toEqual({ view: "home" });
+    expect(result.current.paneNeighbor("group-2", "down")).toBe("group-3");
+  });
+
   it("focuses the pane a plugin is already open in rather than opening a second guest", () => {
     // The plugin case is the one with a cost beyond redundancy: two panes on
     // one `plugin:<id>:<viewId>` are two <webview> guests in the SAME session

@@ -7,6 +7,14 @@ export const en = {
   "mainPanels.surfaceGone": "This panel was closed.",
   "mainPanels.newTerminalPanel": "New Terminal Panel",
   "mainPanels.newWebPanel": "New Web Panel",
+  "mainPanels.moveToMain": "Move to main area",
+  "mainPanels.moveToSide": "Move to side panel",
+  "mainPanels.command.moveLeft": "Move Panel Left",
+  "mainPanels.command.moveRight": "Move Panel Right",
+  "mainPanels.command.moveUp": "Move Panel Up",
+  "mainPanels.command.moveDown": "Move Panel Down",
+  "mainPanels.command.toggleMaximize": "Maximize or Restore Pane",
+  "mainPanels.command.reopenClosed": "Reopen Closed Panel",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "mainPanels.back": "뒤로",
@@ -16,4 +24,12 @@ export const ko: Record<keyof typeof en, string> = {
   "mainPanels.surfaceGone": "이 패널은 닫혔습니다.",
   "mainPanels.newTerminalPanel": "새 터미널 패널",
   "mainPanels.newWebPanel": "새 웹 패널",
+  "mainPanels.moveToMain": "메인 영역으로 이동",
+  "mainPanels.moveToSide": "사이드 패널로 이동",
+  "mainPanels.command.moveLeft": "패널 왼쪽으로 이동",
+  "mainPanels.command.moveRight": "패널 오른쪽으로 이동",
+  "mainPanels.command.moveUp": "패널 위로 이동",
+  "mainPanels.command.moveDown": "패널 아래로 이동",
+  "mainPanels.command.toggleMaximize": "패널 최대화 또는 복원",
+  "mainPanels.command.reopenClosed": "닫은 패널 다시 열기",
 };

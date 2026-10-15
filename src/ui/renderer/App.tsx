@@ -30,9 +30,13 @@ import { StarredView } from "./components/StarredView.js";
 import { SettingsInlineView } from "./SettingsInlineView.js";
 import { PageShell } from "./components/PageShell.js";
 import type { ConversationRowActions, ProjectRowActions } from "./components/Sidebar.js";
+import { PanelRightOpen } from "lucide-react";
 import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
 import { SurfacePane } from "./components/MainSurfacePanels.js";
-import { SURFACE_KIND_OF_VIEW, useMainSurfaces } from "./preview/main-surfaces.js";
+import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces } from "./preview/main-surfaces.js";
+import { SurfaceMovesContext, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
+import { getWebSurfaces } from "./preview/web-surfaces.js";
+import { PANEL_COMMANDS, panelCommandFor, type PanelCommandId } from "./components/panel-commands.js";
 import { PaneGutter, PANE_HOME, PaneFrame, areaStyle, chatGroupApi, useChatGroups, type PaneSplitAxis } from "./components/PaneFrame.js";
 import type { DropTarget } from "./components/pane-drop.js";
 import { useSessionList, useTurnAttention, type SessionSummary } from "./hooks/use-sessions.js";
@@ -48,7 +52,7 @@ import type { UserApprovalVerdict } from "../../shared/permissions-events.js";
 import type { ExactDenyDraft } from "./exact-permission-decision.js";
 
 // ─── Imports: types / constants / helpers / components / tabs ────────
-import { getApi, getPluginViewLabel, toViewKey } from "./api-client.js";
+import { getApi, getPluginViewLabel, isDarwin, toViewKey } from "./api-client.js";
 import type { PluginEntry } from "./types.js";
 import { pluginIconFor } from "./utils/plugin-icon.js";
 import {
@@ -489,6 +493,124 @@ export function App() {
     if (deliver()) return;
     return chatGroupSessions.subscribe(chatGroupId, () => { deliver(); });
   }, [pendingSessionDrop, chatGroupSessions]);
+
+  /**
+   * Terminals and web pages moving between side panels and panes. The surface
+   * itself never moves (see `preview/surface-moves.ts`): its record changes
+   * store and its location changes pane, in this one event.
+   */
+  const surfaceMoves = useMemo<SurfaceMoves>(() => {
+    const sinkOf = (chatGroupId: string) => {
+      const sink = getSideTabsSink(chatGroupId);
+      // Every pane is a mounted conversation group with its own side panel;
+      // a pane without one is a broken invariant, not a case to skip.
+      if (!sink) throw new Error(`side-tabs-sink-missing:${chatGroupId}`);
+      return sink;
+    };
+    const guestUrl = (tabId: string) => getWebSurfaces().find((each) => each.tabId === tabId)?.url ?? null;
+    return {
+      tabToMain: (fromGroupId, tabId, drop) => {
+        const sink = sinkOf(fromGroupId);
+        const tab = sink.release(tabId);
+        if (!tab) return;
+        if (!isMovableTabKind(tab.kind)) throw new Error(`surface-not-movable:${tab.kind}`);
+        mainSurfaces.adopt({ tabId, kind: tab.kind, ordinal: tab.ordinal, url: tab.kind === "browser" ? guestUrl(tabId) : null });
+        const location: ViewLocation = { view: VIEW_OF_SURFACE_KIND[tab.kind], surface: tabId };
+        if (drop) {
+          const placed = drop.target === "center" ? null : chatGroups.placeOnEdge(drop.paneId, drop.target, location);
+          if (placed === null) {
+            chatGroups.setPaneContent(drop.paneId, location);
+            chatGroups.focus(drop.paneId);
+          }
+          return;
+        }
+        // Beside the conversation it came from when the canvas has room, so
+        // the chat and the surface are both in view; else in that pane itself.
+        const beside = chatGroups.canSplit
+          && chatGroups.splitFits(fromGroupId, "row", measuredCanvasSize(chatGroupCanvasRef.current))
+          ? chatGroups.placeOnEdge(fromGroupId, "right", location)
+          : null;
+        if (beside === null) chatGroups.setPaneContent(fromGroupId, location);
+      },
+      paneToSide: (paneId, toGroupId = paneId) => {
+        const surfaceId = chatGroups.contentById[paneId]?.surface;
+        if (!surfaceId) return;
+        const surface = mainSurfaces.release(surfaceId);
+        if (!surface) return;
+        const sink = sinkOf(toGroupId);
+        sink.adopt({ id: surface.tabId, kind: surface.kind, ordinal: surface.ordinal }, surface.kind === "browser" ? guestUrl(surface.tabId) : null);
+        // The pane goes back to its conversation, whose side panel now shows
+        // the surface.
+        chatGroups.setPaneContent(paneId, PANE_HOME);
+        sink.open();
+        chatGroups.focus(toGroupId);
+      },
+    };
+  }, [chatGroups, mainSurfaces]);
+
+  /** A surface dropped on a pane: a side tab, or another pane dragged by its header. */
+  const handleSurfaceDrop = useCallback((targetPaneId: string, payload: SurfaceDragPayload, target: DropTarget) => {
+    if ("side" in payload.from) {
+      surfaceMoves.tabToMain(payload.from.side, payload.tabId, { paneId: targetPaneId, target });
+      return;
+    }
+    const fromPane = payload.from.pane;
+    if (fromPane === targetPaneId) return;
+    const location = chatGroups.contentById[fromPane];
+    if (!location?.surface) return;
+    const placed = target === "center" ? null : chatGroups.placeOnEdge(targetPaneId, target, location, fromPane);
+    if (placed === null) chatGroups.movePaneContent(fromPane, targetPaneId);
+  }, [chatGroups, surfaceMoves]);
+
+  /** Bring back the most recently closed surface, new, in the focused pane. */
+  const reopenClosedSurface = useCallback(() => {
+    const closed = mainSurfaces.takeLastClosed();
+    if (!closed) return;
+    const surface = mainSurfaces.create(closed.kind, closed.url);
+    chatGroups.setPaneContent(chatGroups.focusedId, { view: VIEW_OF_SURFACE_KIND[closed.kind], surface: surface.tabId });
+  }, [chatGroups, mainSurfaces]);
+
+  const runPanelCommand = useCallback((id: PanelCommandId) => {
+    const focused = chatGroups.focusedId;
+    switch (id) {
+      case "pane.moveLeft":
+      case "pane.moveRight":
+      case "pane.moveUp":
+      case "pane.moveDown": {
+        // Moves what the focused pane shows when it is a terminal or a page;
+        // a conversation pane is moved by dragging its sessions, not by this.
+        if (!chatGroups.contentById[focused]?.surface) return;
+        const direction = ({ "pane.moveLeft": "left", "pane.moveRight": "right", "pane.moveUp": "up", "pane.moveDown": "down" } as const)[id];
+        const neighbor = chatGroups.paneNeighbor(focused, direction);
+        if (neighbor) chatGroups.movePaneContent(focused, neighbor);
+        return;
+      }
+      case "pane.toggleMaximize":
+        if (chatGroups.canMaximize) chatGroups.toggleMaximize(focused);
+        return;
+      case "surface.reopenClosed":
+        reopenClosedSurface();
+        return;
+    }
+  }, [chatGroups, reopenClosedSurface]);
+
+  // The panel chords, from the one table. Bound in the capture phase so a
+  // terminal (whose input is a textarea) does not swallow them; three
+  // modifiers are never typed text.
+  const runPanelCommandRef = useRef(runPanelCommand);
+  runPanelCommandRef.current = runPanelCommand;
+  useEffect(() => {
+    const darwin = isDarwin();
+    const onKeyDown = (event: KeyboardEvent) => {
+      const id = panelCommandFor(event, darwin);
+      if (!id) return;
+      event.preventDefault();
+      event.stopPropagation();
+      runPanelCommandRef.current(id);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
 
   // Pinned-project preference — pinned projects sort to the top of the
   // sidebar's Projects tab.
@@ -1450,8 +1572,12 @@ export function App() {
         handleNewChat,
         openNewSurface: (view) => showInstanceView(chatGroupsRef.current.focusedId, view, true),
         pluginViews,
-      }),
-    [pluginViews, handleNewChat, handleViewSelect, onOpenSettings, showInstanceView],
+      }).concat(PANEL_COMMANDS.map((command) => ({
+        id: command.id,
+        label: isDarwin() ? `${t(command.labelKey)}  ${command.hint}` : t(command.labelKey),
+        run: () => runPanelCommand(command.id),
+      }))),
+    [pluginViews, handleNewChat, handleViewSelect, onOpenSettings, showInstanceView, runPanelCommand, t],
   );
 
   const onNewChat = useCallback(() => { void handleNewChat(); }, [handleNewChat]);
@@ -1673,6 +1799,7 @@ export function App() {
       // bottom slot the conversation's composer dock would.
       settle,
       restoreAttention: paneRestoreAttention(paneId),
+      onSurfaceDrop: (payload: SurfaceDragPayload, target: DropTarget) => handleSurfaceDrop(paneId, payload, target),
       ...(chatGroups.canSplit ? {
         canSplit: true,
         onSplit: (axis: PaneSplitAxis) => chatGroups.split(paneId, axis),
@@ -1847,7 +1974,20 @@ export function App() {
           api={api}
           surface={surface}
           paneId={paneId}
-          frame={{ ...asTile, onClose: closeSurface, closeLabel: routedCloseLabel(name) }}
+          frame={{
+            ...asTile,
+            onClose: closeSurface,
+            closeLabel: routedCloseLabel(name),
+            // The header is the surface's drag handle: onto another pane, or
+            // onto a side panel's tabs.
+            dragSurface: { tabId: surface.tabId, kind: surface.kind, from: { pane: paneId } },
+            actions: [{
+              id: "surface.moveToSide",
+              label: t("mainPanels.moveToSide"),
+              icon: <PanelRightOpen className="h-4 w-4" />,
+              onSelect: () => surfaceMoves.paneToSide(paneId),
+            }],
+          }}
           onNavigate={mainSurfaces.setUrl}
         />
       ));
@@ -2225,6 +2365,7 @@ export function App() {
                           keeps the wrapper out of the layout entirely, so the
                           flex chain reads exactly as it does when this is the
                           only child. */}
+                      <SurfaceMovesContext.Provider value={surfaceMoves}>
                       <div
                         data-testid="chat-surface"
                         data-visible={chatGroups.groups.some((group) => !group.hidden
@@ -2340,6 +2481,8 @@ export function App() {
                                         onFocus={() => chatGroups.focus(group.id)}
                                         onSessionDrop={(sessionId, target) =>
                                           handleSessionDrop(group.id, sessionId, target)}
+                                        onSurfaceDrop={(payload, target) =>
+                                          handleSurfaceDrop(group.id, payload, target)}
                                         canSplit={chatGroups.canSplit}
                                         /* A conversation lays out its own transcript and composer to
                                            the hairline, and its work panel lands in the frame's aside
@@ -2390,6 +2533,7 @@ export function App() {
                               </>
                             </PageShell>
                       </div>
+                      </SurfaceMovesContext.Provider>
                     </ErrorBoundary>
                   </div>
                   {/* StatusBar notifications render inside ChatView, directly above

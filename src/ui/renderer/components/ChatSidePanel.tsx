@@ -9,6 +9,7 @@ import {
   Bot,
   LayoutGrid,
   Loader2,
+  PanelLeftOpen,
   Pin,
   Plus,
   X,
@@ -29,6 +30,7 @@ import type { AveApi } from "../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-targets.js";
 import { PtyTerminalView } from "./PtyTerminalView.js";
 import { SideChatView, type SideChatOpenRequest } from "./SideChatView.js";
+import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, isMovableTabKind, useSurfaceMoves, type MovableTabKind } from "../preview/surface-moves.js";
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
 import { useVerticalSplit } from "../hooks/use-vertical-split.js";
@@ -740,6 +742,8 @@ export interface ChatSidePanelProps {
    * terminal block reaches the chat. Returns false when the composer is full.
    */
   onAttachText?: (text: string) => boolean;
+  /** The tile this panel belongs to — where a pane's surface lands when moved here. */
+  chatGroupId?: string;
   className?: string;
 }
 
@@ -767,9 +771,15 @@ export function ChatSidePanel({
   onOpenActivityItemPinned,
   onOpenActivityItemInSystemApp,
   onAttachText,
+  chatGroupId,
   className = "",
 }: ChatSidePanelProps) {
   const { t } = useTranslation();
+  // Terminals and pages move between this panel and the main area. Absent
+  // outside the app shell (a panel rendered on its own has no main area).
+  const surfaceMoves = useSurfaceMoves();
+  const canMoveSurfaces = surfaceMoves !== null && chatGroupId !== undefined;
+  const [stripDropActive, setStripDropActive] = useState(false);
 
   // The sub-agents the side chat's own turns started. The tile's list above
   // holds only the tile's conversation, and the tile drops a side chat's
@@ -854,6 +864,8 @@ export function ChatSidePanel({
     // Mouse-only: touch already gets native `overflow-x-auto` panning; a second
     // handler would double-scroll. Right/middle buttons never start a pan.
     if (event.pointerType !== "mouse" || event.button !== 0) return;
+    // A terminal or page tab is dragged out to the main area instead of panning.
+    if ((event.target as HTMLElement).closest('[draggable="true"]')) return;
     const el = tabScrollElRef.current;
     if (!el) return;
     tabDragRef.current = { dragging: true, startX: event.clientX, startScroll: el.scrollLeft, moved: false };
@@ -977,8 +989,29 @@ export function ChatSidePanel({
   // mode, so the group header above stays the conversation's line alone.
   const tabStripContent = (
     <div
-      className="flex min-w-0 shrink-0 items-center gap-2 border-b px-2 py-1"
+      className={cn(
+        "flex min-w-0 shrink-0 items-center gap-2 border-b px-2 py-1",
+        stripDropActive && "bg-primary/(--opacity-subtle) ring-2 ring-inset ring-primary",
+      )}
       data-testid="chat-side-panel-tab-strip"
+      data-drop-target={stripDropActive ? "true" : undefined}
+      // A pane's terminal or page, dragged by its header, lands in these tabs.
+      {...(canMoveSurfaces ? {
+        onDragOver: (event: React.DragEvent<HTMLDivElement>) => {
+          if (!event.dataTransfer.types.includes(SURFACE_DRAG_TYPE)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setStripDropActive(true);
+        },
+        onDragLeave: () => setStripDropActive(false),
+        onDrop: (event: React.DragEvent<HTMLDivElement>) => {
+          setStripDropActive(false);
+          if (!event.dataTransfer.types.includes(SURFACE_DRAG_TYPE)) return;
+          event.preventDefault();
+          const payload = decodeSurfaceDrag(event.dataTransfer.getData(SURFACE_DRAG_TYPE));
+          if (payload && "pane" in payload.from) surfaceMoves!.paneToSide(payload.from.pane, chatGroupId);
+        },
+      } : {})}
     >
           <div
             ref={attachTabScroll}
@@ -1003,6 +1036,7 @@ export function ChatSidePanel({
                 tabs.filter((other) => !other.content && other.kind === tab.kind).length > 1;
               const label = tabLabel(tab, targetById, t, showOrdinal);
               const isEphemeral = tab.mode === "ephemeral";
+              const movable = canMoveSurfaces && isMovableTabKind(tab.kind);
               return (
                 // Layout wrapper only (role="presentation"): the pin/close
                 // controls are SIBLINGS of the tab button, never nested inside
@@ -1026,6 +1060,17 @@ export function ChatSidePanel({
                     className="flex min-w-0 items-center gap-1 rounded-sm text-inherit focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
                     onClick={() => setActiveTabId(tab.id)}
                     onDoubleClick={() => promoteToPinned(tab.id)}
+                    {...(movable ? {
+                      draggable: true,
+                      onDragStart: (event: React.DragEvent<HTMLButtonElement>) => {
+                        event.dataTransfer.setData(SURFACE_DRAG_TYPE, encodeSurfaceDrag({
+                          tabId: tab.id,
+                          kind: tab.kind as MovableTabKind,
+                          from: { side: chatGroupId! },
+                        }));
+                        event.dataTransfer.effectAllowed = "move";
+                      },
+                    } : {})}
                   >
                     <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     <span className={`max-w-24 truncate ${isEphemeral ? "italic" : ""}`}>{label}</span>
@@ -1042,6 +1087,18 @@ export function ChatSidePanel({
                       onClick={() => promoteToPinned(tab.id)}
                     >
                       <Pin className="h-3 w-3" />
+                    </button>
+                  ) : null}
+                  {movable ? (
+                    <button
+                      type="button"
+                      aria-label={t("mainPanels.moveToMain")}
+                      title={t("mainPanels.moveToMain")}
+                      data-testid="chat-side-panel-move-to-main"
+                      className="ml-0.5 rounded p-0.5 hover:bg-background/(--opacity-muted) focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                      onClick={() => surfaceMoves!.tabToMain(chatGroupId!, tab.id)}
+                    >
+                      <PanelLeftOpen className="h-3 w-3" />
                     </button>
                   ) : null}
                   <button

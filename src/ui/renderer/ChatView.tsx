@@ -31,6 +31,7 @@ import type { ProjectIdentity } from "../../shared/project-identity.js";
 import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
 import { collectChatPreviewModel } from "./preview/preview-targets.js";
 import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
+import { registerSideTabsSink } from "./preview/surface-moves.js";
 import { SIDE_PANEL_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { normalizeBrowserNavigationUrl } from "./preview/url-safety.js";
 import { createPortal } from "react-dom";
@@ -132,6 +133,11 @@ export interface ChatViewProps {
   sidePanelOpen?: boolean;
   onSidePanelOpenChange: (open: boolean) => void;
   /**
+   * The tile this view belongs to. Its side panel's tabs are what the main
+   * area moves terminals and pages into and out of (`surface-moves.ts`).
+   */
+  chatGroupId?: string;
+  /**
    * A stored side chat a sidebar row asked THIS tile to show. Addressed to one
    * tile because the panel that draws it is one conversation's own column.
    */
@@ -160,7 +166,7 @@ export interface ChatViewProps {
 
 const SIDE_PANEL_LAYOUT_TRANSITION_MS = 300;
 
-export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, appMode = "work", onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, sidePanelOpen = false, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, blogLayout = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError }: ChatViewProps) {
+export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, appMode = "work", onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, sidePanelOpen = false, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, blogLayout = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -254,6 +260,19 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // them on every such transition. ChatView stays mounted across those, so the
   // store lives here — tab state now survives. See preview/workspace-tabs.ts.
   const workspaceTabs = useWorkspaceTabs();
+  // The main area reaches this tile's side-panel tabs through the sink: a
+  // terminal or page moved here from a pane lands in these tabs.
+  const { adoptTab, releaseTab } = workspaceTabs;
+  const openSidePanelRef = useRef(onSidePanelOpenChange);
+  openSidePanelRef.current = onSidePanelOpenChange;
+  useEffect(() => {
+    if (chatGroupId === undefined) return undefined;
+    return registerSideTabsSink(chatGroupId, {
+      adopt: adoptTab,
+      release: releaseTab,
+      open: () => openSidePanelRef.current(true),
+    });
+  }, [chatGroupId, adoptTab, releaseTab]);
   const seenSubAgentSpawnKeysRef = useRef<Set<string>>(new Set());
   // Docked side-panel width — durable shell preference (settings round-trip),
   // owned next to the tab store so it survives ChatSidePanel unmount.
@@ -973,6 +992,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         >
           <ChatSidePanel
             api={api}
+            {...(chatGroupId !== undefined ? { chatGroupId } : {})}
             sessionId={currentSessionId}
             targets={previewModel.targets}
             files={previewModel.files}

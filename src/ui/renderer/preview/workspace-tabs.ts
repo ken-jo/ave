@@ -116,6 +116,17 @@ export interface WorkspaceTabsStore {
   closeContainerTab: (kind: WorkspaceTabKind) => void;
   /** Set (or clear, with `null`) the manually-typed address for a browser tab. */
   setBrowserTabUrl: (tabId: string, url: string | null) => void;
+  /**
+   * Hand a tab out to the main area. The tab leaves this store WITHOUT being
+   * closed: its PTY or page lives on under the same id wherever it lands.
+   */
+  releaseTab: (id: string) => WorkspaceTab | undefined;
+  /**
+   * Take in a tab that moved here (from the main area), as a pinned container
+   * tab with its id and number unchanged, and make it the active one. A browser
+   * tab's page keeps its address through `url`.
+   */
+  adoptTab: (tab: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => void;
 }
 
 function contentKey(ref: WorkspaceTabContentRef): string {
@@ -178,6 +189,9 @@ function withTabClosed(prev: WorkspaceState, id: string): WorkspaceState {
 
 export function useWorkspaceTabs(): WorkspaceTabsStore {
   const [state, setState] = useState<WorkspaceState>(EMPTY_STATE);
+  // The committed state, for `releaseTab`, which must answer in the same event.
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const nextOrdinalRef = useRef<Record<WorkspaceTabKind, number>>({
     "file-browser": 1,
     preview: 1,
@@ -331,6 +345,25 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     });
   }, []);
 
+  const releaseTab = useCallback((id: string) => {
+    const tab = stateRef.current.tabs.find((each) => each.id === id);
+    if (!tab) return undefined;
+    setState((prev) => withTabClosed(prev, id));
+    return tab;
+  }, []);
+
+  const adoptTab = useCallback((incoming: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => {
+    setState((prev) => {
+      if (prev.tabs.some((tab) => tab.id === incoming.id)) return { ...prev, activeTabId: incoming.id };
+      const tab: WorkspaceTab = { id: incoming.id, kind: incoming.kind, ordinal: incoming.ordinal, mode: "pinned", content: null };
+      return {
+        tabs: [...prev.tabs, tab],
+        activeTabId: tab.id,
+        browserUrlByTab: url ? { ...prev.browserUrlByTab, [tab.id]: url } : prev.browserUrlByTab,
+      };
+    });
+  }, []);
+
   return useMemo(
     () => ({
       tabs: state.tabs,
@@ -346,7 +379,9 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
       closeTab,
       closeContainerTab,
       setBrowserTabUrl,
+      releaseTab,
+      adoptTab,
     }),
-    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl],
+    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl, releaseTab, adoptTab],
   );
 }

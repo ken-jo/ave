@@ -1,0 +1,92 @@
+import { createContext, useContext } from "react";
+import type { DropTarget } from "../components/pane-drop.js";
+import type { WorkspaceTab } from "./workspace-tabs.js";
+
+/**
+ * Moving terminals and web pages between a side panel and the main area.
+ *
+ * A move never touches the surface itself — the PTY and the web guest are
+ * keyed by the window-unique tab id — it moves the RECORD: out of one store
+ * (a group's side-panel tabs, or the main-surface store) and into the other,
+ * and changes which pane or tab shows it. The two halves happen in one event,
+ * so the web layer's reconcile sees the tab listed throughout and the guest
+ * is never let go.
+ */
+export type MovableTabKind = "terminal" | "browser";
+
+export function isMovableTabKind(kind: WorkspaceTab["kind"]): kind is MovableTabKind {
+  return kind === "terminal" || kind === "browser";
+}
+
+/** Where a dragged surface comes from. */
+export type SurfaceOrigin = { side: string } | { pane: string };
+
+export interface SurfaceDragPayload {
+  tabId: string;
+  kind: MovableTabKind;
+  from: SurfaceOrigin;
+}
+
+/** The drag type a dragged terminal or web surface carries. */
+export const SURFACE_DRAG_TYPE = "application/x-ave-surface";
+
+export function encodeSurfaceDrag(payload: SurfaceDragPayload): string {
+  return JSON.stringify(payload);
+}
+
+/** Parse a dropped payload; anything malformed is not a surface drag. */
+export function decodeSurfaceDrag(raw: string): SurfaceDragPayload | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const { tabId, kind, from } = value as Record<string, unknown>;
+  if (typeof tabId !== "string" || (kind !== "terminal" && kind !== "browser")) return null;
+  if (typeof from !== "object" || from === null) return null;
+  const origin = from as Record<string, unknown>;
+  if (typeof origin.side === "string") return { tabId, kind, from: { side: origin.side } };
+  if (typeof origin.pane === "string") return { tabId, kind, from: { pane: origin.pane } };
+  return null;
+}
+
+/** A group's side-panel tab store, as the main area reaches it. */
+export interface SideTabsSink {
+  adopt: (tab: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => void;
+  release: (tabId: string) => WorkspaceTab | undefined;
+  /** Open the group's side panel so an adopted tab is seen. */
+  open: () => void;
+}
+
+const sinks = new Map<string, SideTabsSink>();
+
+export function registerSideTabsSink(chatGroupId: string, sink: SideTabsSink): () => void {
+  sinks.set(chatGroupId, sink);
+  return () => {
+    if (sinks.get(chatGroupId) === sink) sinks.delete(chatGroupId);
+  };
+}
+
+export function getSideTabsSink(chatGroupId: string): SideTabsSink | undefined {
+  return sinks.get(chatGroupId);
+}
+
+/** What the window offers the side panels for moving their tabs out. */
+export interface SurfaceMoves {
+  /**
+   * Move a side tab of `fromGroupId` into the main area: into `drop`'s pane
+   * (centre) or a new pane on its edge, or — with no drop — a new pane beside
+   * the group's own, else the group's own pane.
+   */
+  tabToMain: (fromGroupId: string, tabId: string, drop?: { paneId: string; target: DropTarget }) => void;
+  /** Move the surface a pane shows into `toGroupId`'s side panel (default: the pane's own group). */
+  paneToSide: (paneId: string, toGroupId?: string) => void;
+}
+
+export const SurfaceMovesContext = createContext<SurfaceMoves | null>(null);
+
+export function useSurfaceMoves(): SurfaceMoves | null {
+  return useContext(SurfaceMovesContext);
+}

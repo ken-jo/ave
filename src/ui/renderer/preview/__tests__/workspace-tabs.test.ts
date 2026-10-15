@@ -287,3 +287,28 @@ describe("useWorkspaceTabs", () => {
     });
   });
 });
+
+describe("useWorkspaceTabs moves", () => {
+  it("releases a tab without closing it and adopts one with its id, number and address", () => {
+    const { result } = renderHook(() => useWorkspaceTabs());
+    act(() => result.current.addTab("terminal"));
+    act(() => result.current.addTab("browser"));
+    const [terminal, browser] = result.current.tabs;
+    let released: ReturnType<typeof result.current.releaseTab>;
+    act(() => { released = result.current.releaseTab(terminal!.id); });
+    expect(released!).toEqual(terminal);
+    expect(result.current.tabs.map((tab) => tab.id)).toEqual([browser!.id]);
+    expect(result.current.releaseTab("missing")).toBeUndefined();
+
+    act(() => result.current.adoptTab({ id: "browser:77", kind: "browser", ordinal: 4 }, "https://example.com/"));
+    const adopted = result.current.tabs.at(-1)!;
+    expect(adopted).toEqual({ id: "browser:77", kind: "browser", ordinal: 4, mode: "pinned", content: null });
+    expect(result.current.activeTabId).toBe("browser:77");
+    expect(result.current.browserUrlByTab["browser:77"]).toBe("https://example.com/");
+    // Adopting a tab already held only activates it.
+    act(() => result.current.setActiveTabId(browser!.id));
+    act(() => result.current.adoptTab({ id: "browser:77", kind: "browser", ordinal: 4 }, null));
+    expect(result.current.tabs.filter((tab) => tab.id === "browser:77")).toHaveLength(1);
+    expect(result.current.activeTabId).toBe("browser:77");
+  });
+});
