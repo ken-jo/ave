@@ -130,6 +130,7 @@ describe("IPC domain runtime named-export lock", () => {
           "registerAppHandlers",
         ],
         "attach": [
+          "DROP_TOKEN_TTL_MS",
           "registerAttachHandlers",
         ],
         "audit": [

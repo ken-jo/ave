@@ -268,6 +268,36 @@ describe("TranscriptRenderer — minimal (required-only) contract", () => {
     expect(getByTestId("work-group").textContent).not.toContain("작업 완료");
   });
 
+  it("reads each work group's duration from its own turn's carried summary", () => {
+    const summary = (seconds: number): ChatEntry => ({
+      kind: "turn_summary",
+      endedByEndTurn: true,
+      turnDurationMs: seconds * 1000,
+      toolCount: 1,
+      cumulativeToolMs: 10,
+      tokensIn: 1,
+      freshInputTokens: 1,
+      tokensOut: 1,
+    });
+    const { getAllByTestId } = renderCore(
+      <TranscriptRenderer
+        entries={[
+          userEntry("q1"), toolGroup("a"), summary(7), assistant("done1"),
+          userEntry("q2"), toolGroup("b"), summary(3), assistant("done2"),
+          userEntry("q3"), toolGroup("c"), assistant("done3"),
+        ]}
+        streaming={false}
+        currentSessionId="s1"
+      />,
+    );
+    const groups = getAllByTestId("work-group").map((g) => g.textContent ?? "");
+    expect(groups).toHaveLength(3);
+    expect(groups[0]).toContain("7.0");
+    expect(groups[1]).toContain("3.0");
+    // The third turn carries no summary: it must not borrow the second's.
+    expect(groups[2]).not.toContain("3.0");
+  });
+
   it("can force historical WorkGroups open for read-only companion surfaces", () => {
     const entries = [userEntry("q"), toolGroup("forced-tool"), assistant("done")];
     const { getByTestId } = renderCore(
