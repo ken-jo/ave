@@ -76,6 +76,11 @@ vi.mock("node:fs", async (importOriginal) => ({
 }));
 vi.mock("../persisted-app-mode.js", () => ({ readPersistedAppModeSync: () => "work" }));
 vi.mock("../native-window-coordinator.js", () => ({ requestNativeChromeRefresh: vi.fn() }));
+const killTerminalsOwnedBy = vi.fn((_ownerWindowId: number) => 0);
+vi.mock("../terminal/pty-manager.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../terminal/pty-manager.js")>()),
+  killTerminalsOwnedBy: (ownerWindowId: number) => killTerminalsOwnedBy(ownerWindowId),
+}));
 
 const appState = await import("../app-state.js");
 const { createWindow, getAppWindows, loadMainInterface, rendererIndexUrl } = await import("../main-window.js");
@@ -125,6 +130,17 @@ describe("main windows", () => {
 
     const third = open();
     expect(appState.getPrimaryMainWindow()).toBe(third);
+  });
+
+  it("closes the terminals of a window that closes for real, and only that window's", () => {
+    killTerminalsOwnedBy.mockClear();
+    const first = open();
+    const second = open();
+    expect(first.close()).toBe(true);
+    expect(killTerminalsOwnedBy.mock.calls).toEqual([[first.id]]);
+    // The last window hides to the tray: it is not gone, nor are its shells.
+    expect(second.close()).toBe(false);
+    expect(killTerminalsOwnedBy.mock.calls).toEqual([[first.id]]);
   });
 
   it("never reloads or re-roles the other windows when the primary closes", async () => {

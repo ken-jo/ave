@@ -103,6 +103,7 @@ import { ko as ko_htmlPreview } from "../generated/htmlPreview.js";
 import { ko as ko_inputActionBar } from "../generated/inputActionBar.js";
 import { ko as ko_lazyCalendar } from "../generated/lazyCalendar.js";
 import { ko as ko_llmTab } from "../generated/llmTab.js";
+import { ko as ko_mainPanels } from "../generated/mainPanels.js";
 import { ko as ko_mainToolbar } from "../generated/mainToolbar.js";
 import { ko as ko_marketplaceAnnouncementBanner } from "../generated/marketplaceAnnouncementBanner.js";
 import { ko as ko_marketplaceTab } from "../generated/marketplaceTab.js";
@@ -128,6 +129,7 @@ import { ko as ko_pluginPerfTab } from "../generated/pluginPerfTab.js";
 import { ko as ko_pluginUninstallDialog } from "../generated/pluginUninstallDialog.js";
 import { ko as ko_pluginUpdatesPill } from "../generated/pluginUpdatesPill.js";
 import { ko as ko_privacyTab } from "../generated/privacyTab.js";
+import { ko as ko_ptyTerminal } from "../generated/ptyTerminal.js";
 import { ko as ko_reasoningCard } from "../generated/reasoningCard.js";
 import { ko as ko_remoteA2aActionButton } from "../generated/remoteA2aActionButton.js";
 import { ko as ko_remoteSurfacesTab } from "../generated/remoteSurfacesTab.js";
@@ -140,6 +142,7 @@ import { ko as ko_sessionResumeDivider } from "../generated/sessionResumeDivider
 import { ko as ko_sessionTasksPanel } from "../generated/sessionTasksPanel.js";
 import { ko as ko_settingsContent } from "../generated/settingsContent.js";
 import { ko as ko_shellExecution } from "../generated/shellExecution.js";
+import { ko as ko_sideChatTarget } from "../generated/sideChatTarget.js";
 import { ko as ko_sidebar } from "../generated/sidebar.js";
 import { ko as ko_skillBadge } from "../generated/skillBadge.js";
 import { ko as ko_slashPicker } from "../generated/slashPicker.js";
@@ -176,6 +179,7 @@ import { ko as ko_useStatusBarVendor } from "../generated/useStatusBarVendor.js"
 import { ko as ko_userMessageEditor } from "../generated/userMessageEditor.js";
 import { ko as ko_viewModeBanner } from "../generated/viewModeBanner.js";
 import { ko as ko_viewPathNav } from "../generated/viewPathNav.js";
+import { ko as ko_webSurface } from "../generated/webSurface.js";
 import { ko as ko_webTab } from "../generated/webTab.js";
 import { ko as ko_workBoard } from "../generated/workBoard.js";
 import { ko as ko_workGroup } from "../generated/workGroup.js";
@@ -285,6 +289,7 @@ export const koMessages: Record<string, string> = {
   ...ko_inputActionBar,
   ...ko_lazyCalendar,
   ...ko_llmTab,
+  ...ko_mainPanels,
   ...ko_mainToolbar,
   ...ko_marketplaceAnnouncementBanner,
   ...ko_marketplaceTab,
@@ -310,6 +315,7 @@ export const koMessages: Record<string, string> = {
   ...ko_pluginUninstallDialog,
   ...ko_pluginUpdatesPill,
   ...ko_privacyTab,
+  ...ko_ptyTerminal,
   ...ko_reasoningCard,
   ...ko_remoteA2aActionButton,
   ...ko_remoteSurfacesTab,
@@ -322,6 +328,7 @@ export const koMessages: Record<string, string> = {
   ...ko_sessionTasksPanel,
   ...ko_settingsContent,
   ...ko_shellExecution,
+  ...ko_sideChatTarget,
   ...ko_sidebar,
   ...ko_skillBadge,
   ...ko_slashPicker,
@@ -358,6 +365,7 @@ export const koMessages: Record<string, string> = {
   ...ko_userMessageEditor,
   ...ko_viewModeBanner,
   ...ko_viewPathNav,
+  ...ko_webSurface,
   ...ko_webTab,
   ...ko_workBoard,
   ...ko_workGroup,

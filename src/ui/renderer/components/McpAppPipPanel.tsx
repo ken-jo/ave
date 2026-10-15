@@ -43,6 +43,7 @@ import {
   reviveCardIfAt,
   subscribeSlotOccupant,
 } from "../state/mcp-app-card-location-store.js";
+import { useWebSurfaceOccluder } from "../preview/use-web-surface-occluder.js";
 
 /** Panel chrome default size — the conventional picture-in-picture panel footprint. */
 const PIP_WIDTH = 400;
@@ -93,6 +94,8 @@ export function McpAppPipPanel() {
   const getSnapshot = useCallback(() => getSlotOccupant("pip"), []);
   const occupant = useSyncExternalStore(subscribe, getSnapshot);
   const [position, setPosition] = useState<Position>(defaultPosition);
+  // The card floats over the panes; a web page there must not paint over it.
+  const occluderRef = useWebSurfaceOccluder(position);
   const dragCleanupRef = useRef<(() => void) | null>(null);
 
   // Re-clamp on viewport resize so the panel is never stranded off-screen.
@@ -154,6 +157,7 @@ export function McpAppPipPanel() {
 
   return (
     <div
+      ref={occluderRef}
       data-testid="mcp-app-pip-panel"
       className="fixed z-50 flex flex-col overflow-hidden rounded-lg border bg-background shadow-lg"
       style={{ left: position.x, top: position.y, width: PIP_WIDTH, maxHeight: PIP_HEIGHT }}

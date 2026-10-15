@@ -12,6 +12,7 @@ import "../../../../../test/renderer/setup.js";
 import { render, waitFor, act, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { McpAppFullscreenPanel } from "../McpAppFullscreenPanel.js";
+import { getWebSurfaceOccluders } from "../../preview/web-surfaces.js";
 import { McpAppView } from "../McpAppView.js";
 import { McpAppPipPanel } from "../McpAppPipPanel.js";
 import { stubMcpAve, ThemeWrapper } from "./mcp-app-test-helpers.js";
@@ -65,6 +66,15 @@ describe("McpAppFullscreenPanel — the fullscreen slot's surface", () => {
   it("is empty when no card occupies the fullscreen slot", () => {
     const { container } = render(<McpAppFullscreenPanel />, { wrapper: ThemeWrapper });
     expect(container.querySelector('[data-testid="mcp-app-fullscreen-panel"]')).toBeNull();
+  });
+
+  it("is cut out of every web page while it holds the window", async () => {
+    moveCard("card-1", { kind: "fullscreen" }, { payload: payload("github"), originSessionId: "sess-1" });
+    const { container, unmount } = render(<McpAppFullscreenPanel />, { wrapper: ThemeWrapper });
+    const panel = container.querySelector<HTMLElement>('[data-testid="mcp-app-fullscreen-panel"]')!;
+    await waitFor(() => expect(getWebSurfaceOccluders().has(panel)).toBe(true));
+    unmount();
+    expect(getWebSurfaceOccluders().has(panel)).toBe(false);
   });
 
   it("mounts a live McpAppView for the card the store says is in fullscreen", async () => {

@@ -39,6 +39,7 @@ import { MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH } from "../shared/shell-g
 import { isAppUpdateInstallRequested } from "./app-update-install-intent.js";
 import { BOOTSTRAP_SPLASH, markBootstrapSplashShown } from "./bootstrap-splash.js";
 import { requestNativeChromeRefresh } from "./native-window-coordinator.js";
+import { killTerminalsOwnedBy } from "./terminal/pty-manager.js";
 import { preloadPreferences } from "./preload-bundles.js";
 import { MAIN_WINDOW_ROLE_QUERY_KEY } from "../shared/main-window-role.js";
 import {
@@ -207,6 +208,8 @@ export function createWindow(
     },
   });
   registerMainWindow(win, nextMainWindowRole());
+  // Read now: a closed window's id is what its terminals are recorded under.
+  const windowId = win.id;
   // Point-to-point sends (menu actions, dialogs) follow the window in use.
   win.on("focus", () => markMainWindowFocused(win));
 
@@ -261,6 +264,10 @@ export function createWindow(
   });
   win.on("closed", () => {
     unregisterMainWindow(win);
+    // Its shells go with it. On macOS the app outlives its last window, and a
+    // window opened later restores the layout under the same terminal ids, in
+    // new shells (`pty-manager.ts` waits for these to exit first).
+    killTerminalsOwnedBy(windowId);
     requestNativeChromeRefresh();
   });
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {

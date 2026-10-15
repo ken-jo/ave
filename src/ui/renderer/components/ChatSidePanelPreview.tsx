@@ -1,4 +1,4 @@
-import { createElement, useEffect, useMemo, useState } from "react";
+import { createElement, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { WorkspaceTabKind } from "../preview/workspace-tabs.js";
 import {
   Activity,
@@ -38,6 +38,9 @@ import { PreviewContent } from "../preview/preview-renderers.js";
 import { FileEditDiff } from "./FileEditDiff.js";
 import { ToolPayloadBlock } from "./ToolPayloadBlock.js";
 import { McpAppView } from "./McpAppView.js";
+import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
+import { bindGuestToTab } from "../preview/agent-browser-bridge.js";
+import { committedWebSurfaceLocation, subscribeWebSurfaceLocations } from "../preview/web-surfaces.js";
 
 export interface FileTreeNode {
   id: string;
@@ -480,18 +483,24 @@ export function BrowserDocumentViewer({ target }: { target: Extract<ChatPreviewT
   );
 }
 
-/** Bind retries while main has not yet seen the guest attach (see UrlDocumentViewer). */
-const BIND_RETRY_LIMIT = 20;
-const BIND_RETRY_MS = 100;
 
 export function UrlDocumentViewer({
   api,
   target,
   showHeader = true,
+  surfaceTabId,
   browserTab,
 }: {
   api: AveApi;
   target: Extract<ChatPreviewTarget, { kind: "url" }>;
+  /**
+   * The browser tab this page belongs to. A tab's page is a web SURFACE: its
+   * guest lives in the window's `WebSurfaceLayer` and this viewer renders only
+   * the slot it is laid over, so switching tabs or moving the tab never reloads
+   * the page. Without a tab (a url previewed inside another workspace) the
+   * viewer owns its `<webview>` inline, as before.
+   */
+  surfaceTabId?: string;
   /**
    * The workspace tab this viewer renders. When set, each guest the webview
    * attaches is bound to the tab in main (`ave:browser:bind-tab`) so the
@@ -526,8 +535,21 @@ export function UrlDocumentViewer({
   } | null>(null);
   // Guest navigation updates disclosure only. The mounted guest's initial src
   // remains stable so displaying its committed URL cannot reload the page.
+  // A tab's page lives in the web-surface layer, which records what its main
+  // frame committed (and forgets it when the guest attaches again).
+  const surfaceCommitted = useSyncExternalStore(
+    subscribeWebSurfaceLocations,
+    () => (surfaceTabId ? committedWebSurfaceLocation(surfaceTabId) : null),
+  );
+  const surfaceObservedUrl = useMemo(() => {
+    if (surfaceCommitted === null) return null;
+    const checked = validateExternalUrl(surfaceCommitted);
+    return checked.ok ? checked.url : null;
+  }, [surfaceCommitted]);
   const externalUrl = blankBootstrap
-    ? observedLocation !== null && observedLocation.element === webviewElement && observedLocation.requestId === bindRequestId ? observedLocation.url : null
+    ? surfaceTabId
+      ? surfaceObservedUrl
+      : observedLocation !== null && observedLocation.element === webviewElement && observedLocation.requestId === bindRequestId ? observedLocation.url : null
     : url;
   const displayedUrl = externalUrl ?? url;
   useEffect(() => {
@@ -549,42 +571,8 @@ export function UrlDocumentViewer({
     };
   }, [blankBootstrap, webviewElement, bindRequestId]);
   useEffect(() => {
-    if (!webviewElement || bindTabId === undefined || !api.browserTabs) return;
-    const bind = api.browserTabs.bindTab;
-    let cancelled = false;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    const onAttach = (attempt = 0) => {
-      if (cancelled) return;
-      let webContentsId: number | undefined;
-      try {
-        webContentsId = (webviewElement as HTMLElement & { getWebContentsId?: () => number }).getWebContentsId?.();
-      } catch {
-        // Not attached yet: the did-attach listener below binds it then.
-        return;
-      }
-      if (typeof webContentsId !== "number") return;
-      void bind({
-        tabId: bindTabId,
-        webContentsId,
-        ...(bindRequestId === undefined ? {} : { requestId: bindRequestId }),
-      }).then((result) => {
-        // The page's did-attach can reach this view before main has seen the
-        // guest attach (main's did-attach-webview); main answers guest-not-live
-        // until then, so try again shortly.
-        if (!result.ok && result.error === "guest-not-live" && attempt < BIND_RETRY_LIMIT && !cancelled) {
-          retry = setTimeout(() => onAttach(attempt + 1), BIND_RETRY_MS);
-        }
-      });
-    };
-    const onAttachEvent = () => onAttach();
-    webviewElement.addEventListener("did-attach", onAttachEvent);
-    // Already attached (the tab id or request changed on a live guest).
-    onAttach();
-    return () => {
-      cancelled = true;
-      if (retry !== undefined) clearTimeout(retry);
-      webviewElement.removeEventListener("did-attach", onAttachEvent);
-    };
+    if (!webviewElement || bindTabId === undefined) return undefined;
+    return bindGuestToTab(api, webviewElement, bindTabId, bindRequestId);
   }, [api, webviewElement, bindTabId, bindRequestId]);
 
   if (!url) {
@@ -625,7 +613,9 @@ export function UrlDocumentViewer({
           </Tooltip>
         </div>
       ) : null}
-      {createElement("webview", {
+      {surfaceTabId ? (
+        <WebSurfaceSlot tabId={surfaceTabId} url={url} location="side-panel" {...(bindRequestId === undefined ? {} : { bindRequestId })} />
+      ) : createElement("webview", {
         ref: setWebviewElement,
         "data-testid": "chat-side-panel-browser-webview",
         src: url,
