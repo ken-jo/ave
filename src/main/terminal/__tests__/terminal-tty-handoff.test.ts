@@ -26,8 +26,8 @@ import {
   createTerminalTtyHandoff,
   ownPtySlavePath,
   renderHandoffScript,
-  terminalNeedsOwnTtyGrant,
 } from "../terminal-tty-handoff.js";
+import { terminalNeedsOwnTtyGrant } from "../terminal-tty-platform.js";
 
 describe("ownPtySlavePath", () => {
   it("returns node-pty's slave path", () => {

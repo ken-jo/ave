@@ -59,14 +59,8 @@ import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
 import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { installShellIntegration } from "./shell-integration.js";
-import {
-  TRAMPOLINE_ENV,
-  createTerminalTtyHandoff,
-  ownPtySlavePath,
-  renderHandoffScript,
-  terminalNeedsOwnTtyGrant,
-  type TerminalTtyHandoff,
-} from "./terminal-tty-handoff.js";
+import type { TerminalTtyHandoff } from "./terminal-tty-handoff.js";
+import { terminalNeedsOwnTtyGrant } from "./terminal-tty-platform.js";
 import {
   TerminalBlockTracker,
   registerTerminalBlockTracker,
@@ -416,15 +410,20 @@ async function spawnNewTerminal(
     const ptyOptions = { name: "xterm-256color", cols, rows, cwd };
 
     let ownTty: string | undefined;
+    let renderHandoffScript: ((argv: readonly string[], env: Readonly<Record<string, string>>) => string) | undefined;
     if (terminalNeedsOwnTtyGrant()) {
+      // Loaded on spawn, like node-pty: terminal-only code, and the main
+      // bundle's initial size has a budget.
+      const ttyHandoff = await import("./terminal-tty-handoff.js");
+      renderHandoffScript = ttyHandoff.renderHandoffScript;
       const { spawn: ptySpawn } = await loadPty();
       if (owner.cancelled) throw new Error("terminal spawn cancelled");
-      handoff = await createTerminalTtyHandoff();
+      handoff = await ttyHandoff.createTerminalTtyHandoff();
       trampolinePty = ptySpawn(handoff.trampoline.file, [...handoff.trampoline.args], {
         ...ptyOptions,
-        env: { ...TRAMPOLINE_ENV },
+        env: { ...ttyHandoff.TRAMPOLINE_ENV },
       });
-      ownTty = ownPtySlavePath(trampolinePty);
+      ownTty = ttyHandoff.ownPtySlavePath(trampolinePty);
     }
 
     const { argv, env } =
@@ -499,7 +498,7 @@ async function spawnNewTerminal(
     });
     session.disposeExit = () => exitSub.dispose();
 
-    if (handoff !== undefined) {
+    if (handoff !== undefined && renderHandoffScript !== undefined) {
       // Subscribed first: the shell starts writing as soon as it is exec'd.
       pendingSession = session;
       await handoff.deliver(renderHandoffScript(argv, childEnv));

@@ -44,11 +44,6 @@ export const TRAMPOLINE_ENV: Readonly<Record<string, string>> = Object.freeze({ 
 
 const DELIVER_TIMEOUT_MS = 10_000;
 
-/** macOS is the only platform whose profile filters terminal ioctls by path. */
-export function terminalNeedsOwnTtyGrant(platform: NodeJS.Platform = process.platform): boolean {
-  return platform === "darwin";
-}
-
 /**
  * The pty slave node-pty allocated for `pty`. node-pty's UnixTerminal exposes
  * it as `ptsName` (not in its typings). Anything that is not a pty slave path

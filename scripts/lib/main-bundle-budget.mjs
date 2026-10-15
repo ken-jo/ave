@@ -67,10 +67,14 @@ export function isSafeMainBundleManifestPath(path) {
  * consulted by the permission manager on every tool call, so they belong in the initial
  * graph; with the permissions category joined with that `main` the measurement is entry
  * 423_073, initial 5_389_392, total 9_031_357, and the initial ceiling moves to 5_390_000.
+ * The terminal's own-tty wrap (`wrapTerminalCommand`, the handoff root) lives in the
+ * boot-time sandbox module; the handoff itself is loaded on spawn. Measured on that
+ * `main`: entry 423_113, initial 5_390_708, total 9_035_522; the initial ceiling moves to
+ * 5_395_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_390_000,
+  initialBytes: 5_395_000,
   totalBytes: 11_050_000,
 });
 

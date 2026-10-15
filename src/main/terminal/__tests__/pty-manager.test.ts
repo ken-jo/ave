@@ -52,11 +52,13 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
 let needsOwnTtyGrant = false;
 const deliverMock = vi.fn<(script: string) => Promise<void>>(() => Promise.resolve());
 const handoffDisposeMock = vi.fn();
+vi.mock("../terminal-tty-platform.js", () => ({
+  terminalNeedsOwnTtyGrant: () => needsOwnTtyGrant,
+}));
 vi.mock("../terminal-tty-handoff.js", async () => {
   const actual = await vi.importActual<typeof import("../terminal-tty-handoff.js")>("../terminal-tty-handoff.js");
   return {
     ...actual,
-    terminalNeedsOwnTtyGrant: () => needsOwnTtyGrant,
     createTerminalTtyHandoff: () =>
       Promise.resolve({
         trampoline: { file: "/bin/sh", args: ["/handoff/t-1/exec"] },
