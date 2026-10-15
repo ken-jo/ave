@@ -26,6 +26,9 @@ let gateActive = true;
 const wrapWorkerCommandMock = vi.fn<
   (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
 >(() => Promise.resolve({ argv: ["sandbox-exec", "-p", "prof", "/bin/bash", "-c", "exec /bin/zsh -l -i"], env: {} }));
+const wrapTerminalCommandMock = vi.fn<
+  (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
+>(() => Promise.resolve({ argv: ["/bin/bash", "-c", "sandbox-exec -p prof /bin/zsh -l -i"], env: { HTTP_PROXY: "http://p" } }));
 const cleanupMock = vi.fn(() => Promise.resolve());
 vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
   sandboxTempEnvLaunch: (await vi.importActual<typeof import("../../../permissions/asrt-sandbox.js")>(
@@ -33,6 +36,7 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
   )).sandboxTempEnvLaunch,
   isAsrtSandboxActive: () => gateActive,
   wrapWorkerCommand: (command: string, options?: unknown) => wrapWorkerCommandMock(command, options),
+  wrapTerminalCommand: (command: string, options?: unknown) => wrapTerminalCommandMock(command, options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
   getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh"],
   getDefaultSensitiveWriteDenyPaths: () => [
@@ -43,6 +47,28 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
     "/home/u/Library/LaunchAgents",
   ],
 }));
+
+// ─── macOS own-tty handoff — platform + fifo controllable per test ──
+let needsOwnTtyGrant = false;
+const deliverMock = vi.fn<(script: string, options?: { signal?: AbortSignal }) => Promise<void>>(() =>
+  Promise.resolve(),
+);
+const handoffDisposeMock = vi.fn();
+vi.mock("../terminal-tty-platform.js", () => ({
+  terminalNeedsOwnTtyGrant: () => needsOwnTtyGrant,
+}));
+vi.mock("../terminal-tty-handoff.js", async () => {
+  const actual = await vi.importActual<typeof import("../terminal-tty-handoff.js")>("../terminal-tty-handoff.js");
+  return {
+    ...actual,
+    createTerminalTtyHandoff: () =>
+      Promise.resolve({
+        trampoline: { file: "/bin/sh", args: ["/handoff/t-1/exec"] },
+        deliver: (script: string, options?: { signal?: AbortSignal }) => deliverMock(script, options),
+        dispose: () => handoffDisposeMock(),
+      }),
+  };
+});
 
 // ─── shell-containment gate ─────────────────────────────────
 let shellContained = true;
@@ -90,19 +116,20 @@ type DataCb = (chunk: string) => void;
 type ExitCb = (e: { exitCode: number; signal?: number }) => void;
 class FakePty {
   pid = 9999;
+  ptsName: unknown = "/dev/ttys012";
   written: string[] = [];
   resized: Array<[number, number]> = [];
   killed = false;
   killSignals: Array<string | undefined> = [];
   private dataCb: DataCb | null = null;
-  private exitCb: ExitCb | null = null;
+  private exitCbs = new Set<ExitCb>();
   onData(cb: DataCb) {
     this.dataCb = cb;
     return { dispose: () => { this.dataCb = null; } };
   }
   onExit(cb: ExitCb) {
-    this.exitCb = cb;
-    return { dispose: () => { this.exitCb = null; } };
+    this.exitCbs.add(cb);
+    return { dispose: () => { this.exitCbs.delete(cb); } };
   }
   write(d: string) { this.written.push(d); }
   resize(c: number, r: number) { this.resized.push([c, r]); }
@@ -112,7 +139,7 @@ class FakePty {
   }
   // test helpers
   emitData(chunk: string) { this.dataCb?.(chunk); }
-  emitExit(exitCode: number) { this.exitCb?.({ exitCode }); }
+  emitExit(exitCode: number) { for (const cb of [...this.exitCbs]) cb({ exitCode }); }
 }
 let lastPty: FakePty | null = null;
 let spawnedPtys: FakePty[] = [];
@@ -157,6 +184,11 @@ beforeEach(() => {
   lastPty = null;
   spawnedPtys = [];
   wrapWorkerCommandMock.mockClear();
+  wrapTerminalCommandMock.mockClear();
+  needsOwnTtyGrant = false;
+  deliverMock.mockReset();
+  deliverMock.mockImplementation(() => Promise.resolve());
+  handoffDisposeMock.mockClear();
   cleanupMock.mockClear();
   sandboxHomeCleanupMock.mockClear();
   ptySpawnMock.mockClear();
@@ -588,5 +620,140 @@ describe("pty-manager command blocks", () => {
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
     expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
     expect(getTerminalBlockTracker("terminal:1")).toBeUndefined();
+  });
+});
+
+describe("pty-manager on macOS: the shell gets its own terminal and no other", () => {
+  beforeEach(() => {
+    needsOwnTtyGrant = true;
+  });
+
+  it("spawns the trampoline first, wraps with that pty's own slave path, then hands it the wrapped shell", async () => {
+    const res = await spawnTerminal({ tabId: "terminal:1" });
+    expect(res.ok).toBe(true);
+    expect(ptySpawnMock).toHaveBeenCalledTimes(1);
+    const [file, args, opts] = ptySpawnMock.mock.calls[0];
+    expect(file).toBe("/bin/sh");
+    expect(args).toEqual(["/handoff/t-1/exec"]);
+    // The trampoline runs nothing but sh: no session env, no secrets.
+    expect((opts as { env: Record<string, string> }).env).toEqual({ PATH: "/usr/bin:/bin" });
+
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(wrapTerminalCommandMock).toHaveBeenCalledTimes(1);
+    const wrapOpts = wrapTerminalCommandMock.mock.calls[0][1] as { ownTty: string; filesystem: { denyRead: string[] } };
+    expect(wrapOpts.ownTty).toBe("/dev/ttys012");
+    expect(wrapOpts.filesystem.denyRead).toContain("/home/u/.ssh");
+
+    expect(deliverMock).toHaveBeenCalledTimes(1);
+    const script = deliverMock.mock.calls[0][0];
+    expect(script.startsWith("exec /usr/bin/env -i ")).toBe(true);
+    expect(script).toContain("sandbox-exec -p prof /bin/zsh -l -i");
+    expect(script).toContain("TERM=xterm-256color");
+    expect(script).toContain("HTTP_PROXY=http://p");
+    expect(handoffDisposeMock).toHaveBeenCalled();
+    expect(__terminalSessionCountForTest()).toBe(1);
+
+    // Output reaches the view through the same session wiring.
+    lastPty!.emitData("hello");
+    expect(emitted.some((e) => e.event === "data")).toBe(true);
+  });
+
+  it("fails the spawn without wrapping when node-pty reports no slave path", async () => {
+    ptySpawnMock.mockImplementationOnce(() => {
+      lastPty = new FakePty();
+      lastPty.ptsName = undefined;
+      spawnedPtys.push(lastPty);
+      return lastPty;
+    });
+    const res = await spawnTerminal({ tabId: "terminal:1" });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.message).toMatch(/no pty slave device/);
+    expect(wrapTerminalCommandMock).not.toHaveBeenCalled();
+    expect(lastPty!.killSignals).toEqual(["SIGKILL"]);
+    expect(handoffDisposeMock).toHaveBeenCalled();
+    expect(cleanupMock).not.toHaveBeenCalled();
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("refuses a malformed slave path the wrap rejects, and kills the trampoline", async () => {
+    wrapTerminalCommandMock.mockImplementationOnce(() => Promise.reject(new Error("ttys: \"/dev/ttys*\" is not a pty slave device")));
+    const res = await spawnTerminal({ tabId: "terminal:1" });
+    expect(res.ok).toBe(false);
+    expect(lastPty!.killSignals).toEqual(["SIGKILL"]);
+    expect(cleanupMock).not.toHaveBeenCalled();
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("kills the trampoline and releases the wrap ONCE when the handoff fails", async () => {
+    deliverMock.mockImplementationOnce(() => Promise.reject(new Error("trampoline did not take its command")));
+    const res = await spawnTerminal({ tabId: "terminal:1" });
+    expect(res.ok).toBe(false);
+    const pty = lastPty!;
+    expect(pty.killSignals).toEqual(["SIGKILL"]);
+    // Its exit after the kill must not run the session cleanup again.
+    pty.emitExit(137);
+    await Promise.resolve();
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(emitted.some((e) => e.event === "exit")).toBe(false);
+    expect(handoffDisposeMock).toHaveBeenCalled();
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("kills the shell instead of registering it when the tab closes during the handoff", async () => {
+    deliverMock.mockImplementationOnce(() => {
+      killTerminal("terminal:1");
+      return Promise.resolve();
+    });
+    const res = await spawnTerminal({ tabId: "terminal:1" });
+    expect(res.ok).toBe(false);
+    const pty = lastPty!;
+    expect(pty.killSignals).toContain("SIGKILL");
+    pty.emitExit(137);
+    await Promise.resolve();
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(sandboxHomeCleanupMock).toHaveBeenCalled();
+    expect(emitted.some((e) => e.event === "exit")).toBe(false);
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("kills the shell instead of registering it when shutdown starts during the handoff", async () => {
+    let shutdown: Promise<number> | undefined;
+    deliverMock.mockImplementationOnce(() => {
+      shutdown = forceKillAllTerminalsForShutdown(50);
+      return Promise.resolve();
+    });
+    const res = await spawnTerminal({ tabId: "terminal:1" });
+    expect(res.ok).toBe(false);
+    expect(lastPty!.killSignals).toContain("SIGKILL");
+    await shutdown;
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("stops waiting when the trampoline exits before reading the fifo, and cleans up once", async () => {
+    let signalSeen: AbortSignal | undefined;
+    deliverMock.mockImplementationOnce((_script, options) => {
+      signalSeen = options?.signal;
+      return new Promise<void>((_, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new Error("trampoline exited")), { once: true });
+        lastPty!.emitExit(127);
+      });
+    });
+    const res = await spawnTerminal({ tabId: "terminal:1" });
+    expect(res.ok).toBe(false);
+    expect(signalSeen?.aborted).toBe(true);
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
+    expect(emitted.some((e) => e.event === "exit")).toBe(false);
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("never passes a tty off macOS", async () => {
+    needsOwnTtyGrant = false;
+    const res = await spawnTerminal({ tabId: "terminal:1" });
+    expect(res.ok).toBe(true);
+    expect(wrapTerminalCommandMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
+    expect(deliverMock).not.toHaveBeenCalled();
   });
 });

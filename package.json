@@ -453,5 +453,8 @@
       "artifactName": "${productName}-${version}-windows-${arch}-setup.${ext}"
     },
     "beforePack": "scripts/electron-before-pack.cjs"
+  },
+  "patchedDependencies": {
+    "@anthropic-ai/sandbox-runtime@0.0.76": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.76.patch"
   }
 }

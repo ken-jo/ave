@@ -68,7 +68,7 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
-          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -319,7 +319,7 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
-          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -487,7 +487,7 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
-          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -612,7 +612,7 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
-          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave

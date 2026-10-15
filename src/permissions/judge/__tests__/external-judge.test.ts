@@ -215,7 +215,7 @@ describe("buildExternalJudgeEnv", () => {
   it("passes only the base set plus configured names", () => {
     const env = buildExternalJudgeEnv(["JEV_ENDPOINT"], {
       PATH: "/usr/bin",
-      HOME: "/home/sample",
+      HOME: "/home/example",
       LANG: "en_US.UTF-8",
       TMPDIR: "/tmp",
       JEV_ENDPOINT: "local",
@@ -223,6 +223,6 @@ describe("buildExternalJudgeEnv", () => {
       GITHUB_TOKEN: "t",
       ANTHROPIC_API_KEY: "k",
     }, "linux");
-    expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/sample", LANG: "en_US.UTF-8", TMPDIR: "/tmp", JEV_ENDPOINT: "local" });
+    expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/example", LANG: "en_US.UTF-8", TMPDIR: "/tmp", JEV_ENDPOINT: "local" });
   });
 });
