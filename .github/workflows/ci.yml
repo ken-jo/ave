@@ -49,7 +49,10 @@ jobs:
         if: steps.docs-impact.outputs.docs_only == 'true'
         working-directory: ave
         run: node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
+      # the owner's own bun home on a self-hosted runner; on Windows it is a
+      # checksum-verified release download (see the action).
+      - uses: ./ave/.github/actions/setup-bun
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
@@ -268,39 +271,13 @@ jobs:
           if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
-      # setup-bun installs into os.homedir()/.bun/bin, which on a self-hosted
-      # runner would replace the owner's own bun; this step alone sees a home
-      # under RUNNER_TEMP (see build-installers.yml).
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
+      # the owner's own bun home on a self-hosted runner; on Windows it is a
+      # checksum-verified release download (see the action).
+      - uses: ./ave/.github/actions/setup-bun
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
-        env:
-          HOME: ${{ runner.temp }}/bun-home
-          USERPROFILE: ${{ runner.temp }}/bun-home
-      - name: Verify bun is the job-local pinned build
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        shell: bash
-        env:
-          BUN_HOME: ${{ runner.temp }}/bun-home
-        run: |
-          set -euo pipefail
-          expected="$(tr -d '[:space:]' < ave/.bun-version)"
-          actual="$(bun --version)"
-          if [ "$actual" != "$expected" ]; then
-            echo "bun $actual on PATH, expected $expected from .bun-version" >&2
-            exit 1
-          fi
-          # Git Bash on Windows reports PATH entries in /c/... form.
-          home="$(cygpath -u "$BUN_HOME" 2>/dev/null || printf '%s' "$BUN_HOME")"
-          bun_path="$(command -v bun)"
-          case "$bun_path" in
-            "$home"/*) ;;
-            *)
-              echo "bun on PATH is $bun_path, not the job-local install under $home" >&2
-              exit 1
-              ;;
-          esac
       # Every later step (install scripts, the Windows helper checks, the
       # tests and the post-job cache saves) sees a home and a temp directory
       # under RUNNER_TEMP, which the runner empties around every job, instead
@@ -438,37 +415,13 @@ jobs:
           if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
-      # setup-bun installs into os.homedir()/.bun/bin, which on a self-hosted
-      # runner would replace the owner's own bun; this step alone sees a home
-      # under RUNNER_TEMP (see build-installers.yml).
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
+      # the owner's own bun home on a self-hosted runner; on Windows it is a
+      # checksum-verified release download (see the action).
+      - uses: ./ave/.github/actions/setup-bun
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
-        env:
-          HOME: ${{ runner.temp }}/bun-home
-          USERPROFILE: ${{ runner.temp }}/bun-home
-      - name: Verify bun is the job-local pinned build
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        shell: bash
-        env:
-          BUN_HOME: ${{ runner.temp }}/bun-home
-        run: |
-          set -euo pipefail
-          expected="$(tr -d '[:space:]' < ave/.bun-version)"
-          actual="$(bun --version)"
-          if [ "$actual" != "$expected" ]; then
-            echo "bun $actual on PATH, expected $expected from .bun-version" >&2
-            exit 1
-          fi
-          bun_path="$(command -v bun)"
-          case "$bun_path" in
-            "$BUN_HOME"/*) ;;
-            *)
-              echo "bun on PATH is $bun_path, not the job-local install under $BUN_HOME" >&2
-              exit 1
-              ;;
-          esac
       # Every later step (install scripts, the tests and the post-job cache
       # saves) sees a home and a temp directory under RUNNER_TEMP, which the
       # runner empties around every job, instead of the owner's home, its
@@ -598,7 +551,10 @@ jobs:
       - name: Prove the sandbox backend
         if: steps.docs-impact.outputs.docs_only != 'true'
         run: bwrap --version && socat -V | head -1 && rg --version | head -1 && bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
+      # the owner's own bun home on a self-hosted runner; on Windows it is a
+      # checksum-verified release download (see the action).
+      - uses: ./ave/.github/actions/setup-bun
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
