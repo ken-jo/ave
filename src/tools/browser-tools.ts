@@ -40,7 +40,8 @@
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { resolveSessionWindow, type SessionWindowScopeDeps } from "./session-window-scope.js";
-import { BROWSER_TOOL, type BrowserToolName } from "../shared/browser-tools.js";
+import { BROWSER_TOOL, browserOrigin, type BrowserToolName } from "../shared/browser-tools.js";
+export { browserOrigin } from "../shared/browser-tools.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import type { ApprovalMemoryScope, BrowserTabOpener } from "../shared/permissions-events.js";
 import type { ToolCategory } from "../shared/permission-review-status.js";
@@ -70,6 +71,7 @@ interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
 export interface BrowserActionTab<G extends BrowserGuest = BrowserGuest> {
   readonly tab: BrowserTabRecord<G>;
   readonly signal: AbortSignal;
+  readonly approval?: { readonly tabId: string; readonly origin: string; readonly documentId: number };
 }
 
 /** The page actions (main/browser/browser-actions.ts), loaded on first use. */
@@ -107,19 +109,6 @@ const MAX_WAIT_MS = 30_000;
 /** A tab handle from browser_tabs (minted by the main-side registry). */
 export const BROWSER_TAB_ID_PATTERN = /^tab-\d+$/;
 
-/** `scheme://host:port` of an http(s) URL, or null for anything else. */
-export function browserOrigin(url: string): string | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname) return null;
-  const port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
-  return `${parsed.protocol}//${parsed.hostname.toLowerCase()}:${port}`;
-}
-
 export type BrowserToolInput = Record<string, unknown>;
 
 function asInput(raw: unknown): BrowserToolInput {
@@ -156,7 +145,13 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
 
   const pageScope = (raw: unknown, ctx?: ToolPolicyContext): ApprovalMemoryScope | undefined => {
     const resolved = policy.resolveTab(asInput(raw), ctx?.sessionId);
-    return resolved?.origin ? { kind: "browser-origin", origin: resolved.origin, tabOpener: resolved.opener } : undefined;
+    return resolved?.origin ? {
+      kind: "browser-origin",
+      origin: resolved.origin,
+      tabOpener: resolved.opener,
+      tabId: resolved.tab.handle,
+      documentId: resolved.tab.documentId,
+    } : undefined;
   };
   const onAgentTab = (raw: unknown, ctx?: ToolPolicyContext): boolean =>
     policy.resolveTab(asInput(raw), ctx?.sessionId)?.opener === "agent";
@@ -176,10 +171,19 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
     return checked.ok && browserOrigin(checked.url) !== null ? "network" : "read";
   };
   /** The origin of the URL a call opens, in a tab of `opener`. */
-  const urlScope = (raw: unknown, opener: BrowserTabOpener | undefined): ApprovalMemoryScope | undefined => {
+  const urlScope = (
+    raw: unknown,
+    opener: BrowserTabOpener | undefined,
+    tab?: BrowserTabRecord<G>,
+  ): ApprovalMemoryScope | undefined => {
     const input = asInput(raw);
     const origin = typeof input.url === "string" ? browserOrigin(input.url) : null;
-    return origin && opener ? { kind: "browser-origin", origin, tabOpener: opener } : undefined;
+    return origin && opener ? {
+      kind: "browser-origin",
+      origin,
+      tabOpener: opener,
+      ...(tab ? { tabId: tab.handle, documentId: tab.documentId } : {}),
+    } : undefined;
   };
 
   // The execute bodies load on the first browser call, outside the initial bundle.
@@ -261,7 +265,10 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       category: "network",
       categoryForInput: urlCategory,
       requiresPerActionApproval: notAgentTab,
-      approvalMemoryScope: (raw, ctx) => urlScope(raw, policy.resolveTab(asInput(raw), ctx?.sessionId)?.opener),
+      approvalMemoryScope: (raw, ctx) => {
+        const resolved = policy.resolveTab(asInput(raw), ctx?.sessionId);
+        return urlScope(raw, resolved?.opener, resolved?.tab);
+      },
       jsonSchema: object({ tabId: tabIdProperty, url: { type: "string", description: t("be_browserTools.urlDescription") } }, ["url"]),
       execute: execute(BROWSER_TOOL.navigate),
     }),
@@ -318,7 +325,12 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       description: t("be_browserTools.tabCloseDescription"),
       category: "write",
       requiresPerActionApproval: notAgentTab,
-      approvalMemoryScope: (raw, ctx) => onAgentTab(raw, ctx) ? { kind: "browser-agent-tabs" } : undefined,
+      approvalMemoryScope: (raw, ctx) => {
+        const resolved = policy.resolveTab(asInput(raw), ctx?.sessionId);
+        return resolved?.opener === "agent"
+          ? { kind: "browser-agent-tabs", tabId: resolved.tab.handle, documentId: resolved.tab.documentId }
+          : undefined;
+      },
       jsonSchema: object({ tabId: tabIdProperty }, ["tabId"]),
       execute: execute(BROWSER_TOOL.tabClose),
     }),

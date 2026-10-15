@@ -30,7 +30,7 @@ function browserRequest(tabOpener: "agent" | "user"): ApprovalRequest {
     approvalMemory: {
       kind: "key",
       key: "browser_click:origin",
-      scope: { kind: "browser-origin", origin: "https://a.example:443", tabOpener },
+      scope: { kind: "browser-origin", origin: "https://a.example:443", tabOpener, tabId: "tab-1", documentId: 1 },
     },
   };
 }

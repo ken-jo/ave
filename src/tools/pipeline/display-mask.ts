@@ -82,9 +82,14 @@ function approvalMemoryFor(
   const executionPlan = hostShellExecutionPlan === undefined
     ? null
     : getHostShellExecutionPlanCacheIdentity(hostShellExecutionPlan);
+  // Remember the origin policy while handing execute this invocation's live
+  // tab and document identity. Cached metadata must never select an old tab.
+  const memoryScope = scope.kind === "browser-origin"
+    ? { kind: scope.kind, origin: scope.origin, tabOpener: scope.tabOpener }
+    : scope.kind === "browser-agent-tabs" ? { kind: scope.kind } : scope;
   return Object.freeze({
     kind: "key",
-    key: `${tool.name}:${canonicalStringify({ scope, executionPlan })}`,
+    key: `${tool.name}:${canonicalStringify({ scope: memoryScope, executionPlan })}`,
     scope: Object.freeze({ ...scope }),
   });
 }

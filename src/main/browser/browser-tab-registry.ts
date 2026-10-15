@@ -36,6 +36,7 @@ import type {
   BrowserTabOpRequest,
 } from "../../shared/browser-surface.js";
 import type { BrowserTabOpener } from "../../shared/permissions-events.js";
+import { browserOrigin } from "../../shared/browser-tools.js";
 
 /** What the registry needs of a guest. Production passes Electron `WebContents`. */
 export interface BrowserGuest {
@@ -51,6 +52,8 @@ export interface BrowserTabRecord<G extends BrowserGuest> {
   readonly rendererTabId: string;
   guest: G | null;
   opener: BrowserTabOpener;
+  documentId: number;
+  agentOrigin: string | null;
   /** Aborted (and replaced) on user input into an agent tab, on stop, and on unbind. */
   actions: AbortController;
 }
@@ -77,6 +80,7 @@ export type BrowserTabOpOutcome =
 interface PendingTabOp {
   readonly windowId: number;
   readonly request: BrowserTabOpRequest;
+  readonly attachmentSequence: number;
   readonly settle: (outcome: BrowserTabOpOutcome) => void;
 }
 
@@ -91,18 +95,22 @@ const AGENT_INPUT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "mouseWheel",
 ]);
 
+const DEBUGGER_INPUT_MODIFIER = 1 << 23;
+const DERIVED_TAP_MODIFIERS = 1 << 25;
+
 /** Whether an input event type is the user acting on the page (not hovering). */
 export function isUserActionInputType(type: string): boolean {
   return AGENT_INPUT_EVENT_TYPES.has(type);
 }
 
 export class BrowserTabRegistry<G extends BrowserGuest> {
-  private readonly attached = new Map<number, { guest: G; windowId: number }>();
+  private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number }>();
   private readonly tabs = new Map<string, BrowserTabRecord<G>>();
   private readonly handleByWindowTab = new Map<string, string>();
   private readonly activeSurface = new Map<number, ActiveWorkspaceSurface>();
   private readonly pending = new Map<string, PendingTabOp>();
-  private readonly agentInputDepth = new Map<number, number>();
+  private nextAttachment = 0;
+  private readonly injectedTouches = new Map<number, { pressed: boolean; down: boolean; shown: boolean }>();
   private link: BrowserTabRendererLink | null = null;
   private nextHandle = 1;
   private nextRequest = 1;
@@ -115,11 +123,12 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   /** A browser guest attached to `windowId`. Call `guestDestroyed` when it goes. */
   guestAttached(guest: G, windowId: number): void {
-    this.attached.set(guest.id, { guest, windowId });
+    this.attached.set(guest.id, { guest, windowId, sequence: ++this.nextAttachment });
   }
 
   guestDestroyed(guestId: number): void {
     this.attached.delete(guestId);
+    this.injectedTouches.delete(guestId);
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
       tab.guest = null;
@@ -138,6 +147,15 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const key = windowTabKey(senderWindowId, request.tabId);
     let handle = this.handleByWindowTab.get(key);
     let tab = handle === undefined ? undefined : this.tabs.get(handle);
+    const pendingNew = request.requestId === undefined ? undefined : this.pending.get(request.requestId);
+    if (pendingNew?.request.op === "new" && pendingNew.windowId === senderWindowId) {
+      if (entry.sequence <= pendingNew.attachmentSequence || tab?.guest
+        || [...this.tabs.values()].some((other) => other.guest?.id === entry.guest.id)) {
+        return { ok: false, error: "guest-not-hosted" };
+      }
+      if (entry.guest.getURL() === "") return { ok: false, error: "guest-not-live" };
+      if (entry.guest.getURL() !== "about:blank") return { ok: false, error: "guest-not-hosted" };
+    }
     if (!tab) {
       handle = `tab-${this.nextHandle++}`;
       tab = {
@@ -146,6 +164,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         rendererTabId: request.tabId,
         guest: null,
         opener: "user",
+        documentId: 1,
+        agentOrigin: null,
         actions: new AbortController(),
       };
       this.tabs.set(handle, tab);
@@ -153,12 +173,23 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     // A guest moves to exactly one tab: unbind it from any other.
     for (const other of this.tabs.values()) {
-      if (other !== tab && other.guest?.id === entry.guest.id) other.guest = null;
+      if (other !== tab && other.guest?.id === entry.guest.id) {
+        other.guest = null;
+        other.documentId++;
+        other.actions.abort(new Error("the tab's page moved"));
+        other.actions = new AbortController();
+        this.broadcastControl(other.windowId);
+      }
+    }
+    if (tab.guest !== entry.guest) {
+      tab.documentId++;
+      tab.actions.abort(new Error("the tab's page was replaced"));
+      tab.actions = new AbortController();
     }
     tab.guest = entry.guest;
-    const pendingNew = request.requestId === undefined ? undefined : this.pending.get(request.requestId);
     if (pendingNew && pendingNew.windowId === senderWindowId && pendingNew.request.op === "new") {
       tab.opener = "agent";
+      tab.agentOrigin = browserOrigin(pendingNew.request.url);
       this.pending.delete(request.requestId!);
       pendingNew.settle({ ok: true, tabId: tab.handle });
     }
@@ -173,6 +204,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const tab = handle === undefined ? undefined : this.tabs.get(handle);
     if (!tab) return false;
     tab.opener = "user";
+    tab.agentOrigin = null;
     tab.actions.abort(new Error("the user stopped the agent in this tab"));
     tab.actions = new AbortController();
     this.broadcastControl(senderWindowId);
@@ -183,10 +215,38 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
    * The user gave a guest keyboard or mouse input. In an agent-controlled tab
    * this cancels the pending tool actions; input the tools inject is ignored.
    */
-  userInput(guestId: number): void {
-    if ((this.agentInputDepth.get(guestId) ?? 0) > 0) return;
+  userInput(guestId: number, input?: { type: string; _modifiers?: number }): void {
+    const modifiers = input?._modifiers ?? 0;
+    // Native provenance marks the raw injected touch and key events.
+    if (input && input.type !== "mouseDown" && (modifiers & DEBUGGER_INPUT_MODIFIER) !== 0) {
+      if (input.type === "touchStart") this.injectedTouches.set(guestId, { pressed: true, down: false, shown: false });
+      if (input.type === "touchEnd") {
+        const touch = this.injectedTouches.get(guestId);
+        if (touch) touch.pressed = false;
+      }
+      if (input.type === "touchCancel") this.injectedTouches.delete(guestId);
+      return;
+    }
+    const touch = this.injectedTouches.get(guestId);
+    // Match only the native tap sequence derived from that marked contact.
+    // An unmarked contact, key, mouse or other gesture still cancels below.
+    if (touch && modifiers === DERIVED_TAP_MODIFIERS) {
+      if (input?.type === "gestureTapDown" && touch.pressed && !touch.down) {
+        touch.down = true;
+        return;
+      }
+      if (input?.type === "gestureShowPress" && touch.down && !touch.shown) {
+        touch.shown = true;
+        return;
+      }
+      if (input?.type === "gestureTap" && touch.down && !touch.pressed) {
+        this.injectedTouches.delete(guestId);
+        return;
+      }
+    }
+    this.injectedTouches.delete(guestId);
     for (const tab of this.tabs.values()) {
-      if (tab.guest?.id !== guestId || tab.opener !== "agent") continue;
+      if (tab.guest?.id !== guestId) continue;
       tab.actions.abort(new Error("the user took over this tab"));
       tab.actions = new AbortController();
     }
@@ -209,16 +269,22 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
   }
 
-  /** Run `inject` with input to `guestId` attributed to the agent, not the user. */
-  async withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T> {
-    this.agentInputDepth.set(guestId, (this.agentInputDepth.get(guestId) ?? 0) + 1);
-    try {
-      return await inject();
-    } finally {
-      const depth = (this.agentInputDepth.get(guestId) ?? 1) - 1;
-      if (depth <= 0) this.agentInputDepth.delete(guestId);
-      else this.agentInputDepth.set(guestId, depth);
+  /** Group an operation; native event provenance owns its individual inputs. */
+  async withAgentInput<T>(_guestId: number, inject: () => Promise<T>): Promise<T> {
+    return inject();
+  }
+
+  /** Invalidate document authority before the next main-frame load commits. */
+  navigationStarted(guestId: number, url: string): void {
+    for (const tab of this.tabs.values()) {
+      if (tab.guest?.id !== guestId) continue;
+      tab.documentId++;
+      this.checkProvenance(tab, url);
     }
+  }
+
+  documentChanged(guestId: number): void {
+    for (const tab of this.tabs.values()) if (tab.guest?.id === guestId) tab.documentId++;
   }
 
   // ── active surface ─────────────────────────────────────────────────────
@@ -253,6 +319,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   /** A live tab by handle, in any window. For approval hooks, which have no session. */
   liveTab(handle: string): BrowserTabRecord<G> | undefined {
     const tab = this.tabs.get(handle);
+    if (tab?.guest) this.checkProvenance(tab, tab.guest.getURL());
     return tab && this.isLive(tab) ? tab : undefined;
   }
 
@@ -292,7 +359,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     const requestId = `browser-op-${this.nextRequest++}`;
     const request: BrowserTabOpRequest = op.op === "new"
-      ? { requestId, op: "new", url: op.url, ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }) }
+      ? { requestId, op: "new", url: "about:blank", ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }) }
       : { requestId, op: op.op, tabId: this.tabs.get(op.tabId)!.rendererTabId };
     return new Promise<BrowserTabOpOutcome>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -304,8 +371,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         resolve(outcome);
       };
       // Keep the handle main knows (not the renderer id) for close/select.
-      const pendingRequest: BrowserTabOpRequest = op.op === "new" ? request : { requestId, op: op.op, tabId: op.tabId };
-      this.pending.set(requestId, { windowId, request: pendingRequest, settle });
+      const pendingRequest: BrowserTabOpRequest = op.op === "new" ? { ...request, ...op } : { requestId, op: op.op, tabId: op.tabId };
+      this.pending.set(requestId, { windowId, request: pendingRequest, attachmentSequence: this.nextAttachment, settle });
       if (options.signal?.aborted) {
         settle({ ok: false, error: "aborted" });
         return;
@@ -324,6 +391,15 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   private isLive(tab: BrowserTabRecord<G>): boolean {
     return tab.guest !== null && !tab.guest.isDestroyed();
+  }
+
+  private checkProvenance(tab: BrowserTabRecord<G>, url: string): void {
+    // The initial empty document is never an independently approved site.
+    if (url === "" || url === "about:blank") return;
+    if (tab.opener !== "agent" || browserOrigin(url) === tab.agentOrigin) return;
+    tab.opener = "user";
+    tab.agentOrigin = null;
+    this.broadcastControl(tab.windowId);
   }
 
   private settleSelectIfShown(windowId: number): void {
@@ -355,10 +431,11 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.handleByWindowTab.clear();
     this.activeSurface.clear();
     this.pending.clear();
-    this.agentInputDepth.clear();
+    this.injectedTouches.clear();
     this.link = null;
     this.nextHandle = 1;
     this.nextRequest = 1;
+    this.nextAttachment = 0;
   }
 }
 

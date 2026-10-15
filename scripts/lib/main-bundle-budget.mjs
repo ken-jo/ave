@@ -73,10 +73,14 @@ export function isSafeMainBundleManifestPath(path) {
  * tools' en/ko catalog fragments (the catalog barrel imports every fragment) and the
  * approval card's browser-scope strings. Measured entry 425_021, initial 5_410_703,
  * total 9_079_452; the initial ceiling moves to 5_412_000.
+ * Concrete browser document authority, input attribution and navigation
+ * provenance remain in the initial registry graph. Measured entry 425_021,
+ * initial 5_413_433, total 9_091_289; the ceiling moves from 5_412_000 to
+ * 5_415_000 to cover that functionality.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_412_000,
+  initialBytes: 5_415_000,
   totalBytes: 11_050_000,
 });
 

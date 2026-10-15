@@ -53,9 +53,16 @@ export type ApprovalMemoryScope =
   // Browser actions on one page origin (`scheme://host:port`) in a tab the
   // agent opened or a tab the user opened. The opener is part of the scope:
   // an approval for agent tabs never answers for the user's own tabs.
-  | { readonly kind: "browser-origin"; readonly origin: string; readonly tabOpener: BrowserTabOpener }
+  | {
+      readonly kind: "browser-origin";
+      readonly origin: string;
+      readonly tabOpener: BrowserTabOpener;
+      /** The concrete target of this invocation, independent of origin memory. */
+      readonly tabId?: string;
+      readonly documentId?: number;
+    }
   // Closing tabs the agent opened. A user-opened tab is never covered.
-  | { readonly kind: "browser-agent-tabs" };
+  | { readonly kind: "browser-agent-tabs"; readonly tabId?: string; readonly documentId?: number };
 
 /** Who opened a browser tab: the agent (`browser_tab_new`) or the user. */
 export type BrowserTabOpener = "agent" | "user";

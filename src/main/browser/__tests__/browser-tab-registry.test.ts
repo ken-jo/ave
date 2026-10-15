@@ -81,9 +81,9 @@ describe("BrowserTabRegistry", () => {
     expect(registry.liveTab("tab-1")?.opener).toBe("user");
 
     const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
-    expect(ops.at(-1)).toMatchObject({ windowId: 1, request: { op: "new", url: "https://a.example/" } });
+    expect(ops.at(-1)).toMatchObject({ windowId: 1, request: { op: "new", url: "about:blank" } });
     const requestId = ops.at(-1)!.request.requestId;
-    registry.guestAttached(new FakeGuest(11), 1);
+    registry.guestAttached(new FakeGuest(11, "about:blank"), 1);
     registry.bindTab(1, { tabId: "browser:1", webContentsId: 11, requestId });
     await expect(opened).resolves.toEqual({ ok: true, tabId: "tab-2" });
     expect(registry.liveTab("tab-2")?.opener).toBe("agent");
@@ -129,13 +129,13 @@ describe("BrowserTabRegistry", () => {
   it("cancels an agent tab's pending actions on user input, but not on its own injected input", async () => {
     const { registry, ops } = setup();
     const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
-    registry.guestAttached(new FakeGuest(11), 1);
+    registry.guestAttached(new FakeGuest(11, "about:blank"), 1);
     registry.bindTab(1, { tabId: "browser:1", webContentsId: 11, requestId: ops.at(-1)!.request.requestId });
     await opened;
     const tab = registry.liveTab("tab-1")!;
 
     const first = tab.actions.signal;
-    await registry.withAgentInput(11, async () => registry.userInput(11));
+    await registry.withAgentInput(11, async () => registry.userInput(11, { type: "keyDown", _modifiers: 1 << 23 }));
     expect(first.aborted).toBe(false);
 
     registry.userInput(11);
@@ -143,16 +143,16 @@ describe("BrowserTabRegistry", () => {
     expect(tab.actions.signal.aborted).toBe(false);
   });
 
-  it("leaves a user tab alone on user input; stop releases an agent tab to the user", async () => {
+  it("cancels user-tab work on input; stop releases an agent tab to the user", async () => {
     const { registry, ops, control } = setup();
     registry.guestAttached(new FakeGuest(10), 1);
     registry.bindTab(1, { tabId: "browser:0", webContentsId: 10 });
     const userSignal = registry.liveTab("tab-1")!.actions.signal;
     registry.userInput(10);
-    expect(userSignal.aborted).toBe(false);
+    expect(userSignal.aborted).toBe(true);
 
     const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
-    registry.guestAttached(new FakeGuest(11), 1);
+    registry.guestAttached(new FakeGuest(11, "about:blank"), 1);
     registry.bindTab(1, { tabId: "browser:1", webContentsId: 11, requestId: ops.at(-1)!.request.requestId });
     await opened;
     const agentSignal = registry.liveTab("tab-2")!.actions.signal;
@@ -187,5 +187,90 @@ describe("BrowserTabRegistry", () => {
     const before = ops.length;
     registry.releaseFocus(99);
     expect(ops).toHaveLength(before);
+  });
+});
+
+describe("injected interval intervention", () => {
+  it("cancels genuine user input while an injection is pending", async () => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
+    registry.guestAttached(new FakeGuest(91, "about:blank"), 1);
+    registry.bindTab(1, { tabId: "browser:agent", webContentsId: 91, requestId: ops.at(-1)!.request.requestId });
+    await opening;
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    await registry.withAgentInput(91, async () => {
+      registry.userInput(91);
+      expect(signal.aborted).toBe(true);
+    });
+  });
+
+  it("bootstraps an agent-created view without issuing the approved URL first", async () => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/redirect" });
+    expect(ops.at(-1)?.request).toMatchObject({ op: "new", url: "about:blank" });
+    registry.guestAttached(new FakeGuest(91, "about:blank"), 1);
+    registry.bindTab(1, { tabId: "browser:agent", webContentsId: 91, requestId: ops.at(-1)!.request.requestId });
+    await opening;
+  });
+
+  it("requires site approval again when an agent tab reaches another origin", async () => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
+    const guest = new FakeGuest(91, "about:blank");
+    registry.guestAttached(guest, 1);
+    registry.bindTab(1, { tabId: "browser:agent", webContentsId: 91, requestId: ops.at(-1)!.request.requestId });
+    await opening;
+    guest.url = "https://b.example/";
+    expect(registry.liveTab("tab-1")!.opener).toBe("user");
+  });
+});
+
+describe("concrete new-tab attachment", () => {
+  it("cancels pending work in a user-owned tab on intervention", () => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(1), 1);
+    registry.bindTab(1, { tabId: "user", webContentsId: 1 });
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    registry.userInput(1);
+    expect(signal.aborted).toBe(true);
+  });
+  it.each(["bound", "old-blank", "nonblank"])("does not promote a %s guest through a new-tab request", async (kind) => {
+    vi.useFakeTimers();
+    const { registry, ops } = setup();
+    if (kind !== "nonblank") registry.guestAttached(new FakeGuest(1, "about:blank"), 1);
+    if (kind === "bound") registry.bindTab(1, { tabId: "user", webContentsId: 1 });
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/" }, { timeoutMs: 20 });
+    if (kind === "nonblank") registry.guestAttached(new FakeGuest(1), 1);
+    expect(registry.bindTab(1, { tabId: kind === "bound" ? "user" : "new", webContentsId: 1, requestId: ops.at(-1)!.request.requestId }))
+      .toEqual({ ok: false, error: "guest-not-hosted" });
+    vi.advanceTimersByTime(20);
+    await expect(opening).resolves.toEqual({ ok: false, error: "timeout" });
+    expect(registry.liveTab("tab-1")?.opener).not.toBe("agent");
+  });
+});
+
+describe("native injected touch attribution", () => {
+  it("matches only the marked touch's derived tap sequence", () => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    registry.userInput(11, { type: "touchStart", _modifiers: 1 << 23 });
+    registry.userInput(11, { type: "gestureTapDown", _modifiers: 1 << 25 });
+    registry.userInput(11, { type: "touchEnd", _modifiers: 1 << 23 });
+    registry.userInput(11, { type: "gestureShowPress", _modifiers: 1 << 25 });
+    registry.userInput(11, { type: "gestureTap", _modifiers: 1 << 25 });
+    expect(signal.aborted).toBe(false);
+    registry.userInput(11, { type: "gestureTap", _modifiers: 1 << 25 });
+    expect(signal.aborted).toBe(true);
+  });
+  it.each(["mouseDown", "keyDown", "touchStart", "gestureTapDown", "gestureScrollBegin", "pointerDown"])("cancels unmarked %s during a marked touch sequence", (type) => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    registry.userInput(11, { type: "touchStart", _modifiers: 1 << 23 });
+    registry.userInput(11, { type });
+    expect(signal.aborted).toBe(true);
   });
 });

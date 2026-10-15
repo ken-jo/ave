@@ -25,6 +25,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/
 import { useTranslation } from "../../../i18n/react.js";
 import { wrapRenderHtmlInlineFrameDocument } from "../../../shared/render-html-preview.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
+import { isBrowserBlankBootstrap } from "../../../shared/browser-tools.js";
+import { validateExternalUrl } from "../../../shared/external-url.js";
 import type { AveApi } from "../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-targets.js";
 import { resolveIpcErrorKey } from "../format-ipc-error.js";
@@ -508,14 +510,44 @@ export function UrlDocumentViewer({
   showHeader?: boolean;
 }) {
   const { t } = useTranslation();
-  // Single URL-safety SOT (rejects non-http(s) + credential-laden urls). This is
-  // the viewer boundary the url-safety header documents — it must not diverge
-  // from the store / main-process checks, so it calls the shared validator
-  // rather than re-implementing a weaker inline protocol-only check.
-  const url = useMemo(() => normalizeBrowserNavigationUrl(target.url), [target.url]);
   const bindTabId = browserTab?.tabId;
   const bindRequestId = browserTab?.agentRequestId;
+  const blankBootstrap = isBrowserBlankBootstrap(target.url, bindRequestId);
+  // A host-requested tab binds an empty guest before main installs navigation
+  // guards. All other URLs retain the ordinary navigation validator.
+  const url = useMemo(() => blankBootstrap
+    ? target.url
+    : normalizeBrowserNavigationUrl(target.url), [target.url, blankBootstrap]);
   const [webviewElement, setWebviewElement] = useState<HTMLElement | null>(null);
+  const [observedLocation, setObservedLocation] = useState<{
+    element: HTMLElement;
+    requestId: string;
+    url: string | null;
+  } | null>(null);
+  // Guest navigation updates disclosure only. The mounted guest's initial src
+  // remains stable so displaying its committed URL cannot reload the page.
+  const externalUrl = blankBootstrap
+    ? observedLocation !== null && observedLocation.element === webviewElement && observedLocation.requestId === bindRequestId ? observedLocation.url : null
+    : url;
+  const displayedUrl = externalUrl ?? url;
+  useEffect(() => {
+    if (!blankBootstrap || !webviewElement || bindRequestId === undefined) return;
+    const handleNavigation = (event: Event) => {
+      const navigation = event as Event & { url?: unknown; isMainFrame?: unknown };
+      if (navigation.isMainFrame === false || (event.type === "did-navigate-in-page" && navigation.isMainFrame !== true)) return;
+      const checked = validateExternalUrl(navigation.url);
+      setObservedLocation({ element: webviewElement, requestId: bindRequestId, url: checked.ok ? checked.url : null });
+    };
+    const handleAttach = () => setObservedLocation(null);
+    webviewElement.addEventListener("did-attach", handleAttach);
+    webviewElement.addEventListener("did-navigate", handleNavigation);
+    webviewElement.addEventListener("did-navigate-in-page", handleNavigation);
+    return () => {
+      webviewElement.removeEventListener("did-attach", handleAttach);
+      webviewElement.removeEventListener("did-navigate", handleNavigation);
+      webviewElement.removeEventListener("did-navigate-in-page", handleNavigation);
+    };
+  }, [blankBootstrap, webviewElement, bindRequestId]);
   useEffect(() => {
     if (!webviewElement || bindTabId === undefined || !api.browserTabs) return;
     const bind = api.browserTabs.bindTab;
@@ -572,7 +604,7 @@ export function UrlDocumentViewer({
       {showHeader ? (
         <div className="flex min-h-9 shrink-0 items-center gap-2 border-b bg-muted/(--opacity-muted) px-2 text-[11px] text-muted-foreground">
           <Globe className="h-3.5 w-3.5 shrink-0" />
-          <span className="min-w-0 flex-1 truncate">{url}</span>
+          <span className="min-w-0 flex-1 truncate">{displayedUrl}</span>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -580,7 +612,10 @@ export function UrlDocumentViewer({
                 size="icon"
                 variant="ghost"
                 className="h-7 w-7 shrink-0"
-                onClick={() => void api.openExternalUrl(url)}
+                disabled={externalUrl === null}
+                onClick={() => {
+                  if (externalUrl !== null) void api.openExternalUrl(externalUrl);
+                }}
                 aria-label={t("chatPreviewRail.openUrl")}
               >
                 <ExternalLink className="h-3.5 w-3.5" />

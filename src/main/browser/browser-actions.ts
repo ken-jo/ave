@@ -18,6 +18,9 @@
  */
 import type { WebContents } from "electron";
 import type { BrowserPageActions } from "../../tools/browser-tools.js";
+import { browserOrigin } from "../../shared/browser-tools.js";
+import { BrowserActionError, frameTree, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
+export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import {
   browserRefs,
   findByFingerprint,
@@ -27,38 +30,11 @@ import {
   type BrowserRefTable,
 } from "./browser-snapshot.js";
 
-export interface CdpSession {
-  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
-}
-
-/** A failure the tool reports to the model as is. */
-export class BrowserActionError extends Error {
-  constructor(readonly code: string, message: string) {
-    super(message);
-    this.name = "BrowserActionError";
-  }
-}
-
-/** One tab, as the page actions see it. */
-export interface ActionTarget {
-  readonly tabId: string;
-  url(): string;
-  title(): string;
-  readonly cdp: CdpSession;
-  /** Run input the agent injects, so it is not mistaken for the user taking over. */
-  injectInput<T>(inject: () => Promise<T>): Promise<T>;
-  /**
-   * Hand keyboard focus back to where it was in the app (the composer, say)
-   * after an action took it. The agent holds page focus only while acting.
-   */
-  releaseFocus(): void;
-  readonly signal: AbortSignal;
-}
-
 const attached = new WeakMap<WebContents, CdpSession>();
 
 /** The guest's CDP session, attached on first use and kept for the guest's life. */
-async function cdpFor(guest: WebContents): Promise<CdpSession> {
+async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void): Promise<CdpSession> {
+  throwIfAborted(signal);
   const existing = attached.get(guest);
   if (existing) return existing;
   try {
@@ -71,19 +47,22 @@ async function cdpFor(guest: WebContents): Promise<CdpSession> {
   }
   const session: CdpSession = {
     send: (method, params) => guest.debugger.sendCommand(method, params ?? {}) as Promise<unknown>,
+    onEvent: (listener) => {
+      const onMessage = (_event: unknown, method: string, params: Record<string, unknown>) => listener(method, params);
+      guest.debugger.on("message", onMessage);
+      return () => { guest.debugger.removeListener("message", onMessage); };
+    },
   };
   await session.send("DOM.enable");
+  throwIfAborted(signal);
   await session.send("Accessibility.enable");
+  throwIfAborted(signal);
   await session.send("Page.enable");
+  throwIfAborted(signal);
+  // Approval predating the observer cannot prove which document it covered.
+  onTrackingStarted();
   attached.set(guest, session);
   return session;
-}
-
-function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) {
-    const reason = signal.reason instanceof Error ? signal.reason.message : "cancelled";
-    throw new BrowserActionError("cancelled", `nothing more was done: ${reason}`);
-  }
 }
 
 async function fullTree(cdp: CdpSession): Promise<AXNode[]> {
@@ -101,8 +80,20 @@ export async function snapshot(
   throwIfAborted(target.signal);
   const nodes = await fullTree(target.cdp);
   throwIfAborted(target.signal);
+  const frames = await frameTree(target.cdp);
+  throwIfAborted(target.signal);
+  const iframeOrigins: string[] = [];
+  const visitFrames = (tree: typeof frames): void => {
+    for (const child of tree.childFrames ?? []) {
+      iframeOrigins.push(browserOrigin(child.frame.url) ?? "opaque origin");
+      visitFrames(child);
+    }
+  };
+  visitFrames(frames);
   const url = target.url();
-  return { url, title: target.title(), ...refs.render(target.tabId, url, nodes, options) };
+  return { url, title: target.title(), ...refs.render(target.tabId, url, nodes, {
+    ...options, iframeOrigins: target.iframeOrigins?.() ?? iframeOrigins, loaderId: frames.frame.loaderId, documentId: target.documentId?.(),
+  }) };
 }
 
 /**
@@ -191,6 +182,12 @@ export async function resolveRef(target: ActionTarget, ref: string, refs: Browse
   if (entry.pageUrl !== pageKey(target.url())) {
     throw new BrowserActionError("stale-ref", `ref ${ref} is stale: the tab has navigated since the snapshot; take a new browser_snapshot`);
   }
+  if (entry.loaderId !== undefined && entry.loaderId !== (await frameTree(target.cdp)).frame.loaderId) {
+    throw new BrowserActionError("stale-ref", `ref ${ref} belongs to a previous document; take a new browser_snapshot`);
+  }
+  if (entry.documentId !== undefined && entry.documentId !== target.documentId?.()) {
+    throw new BrowserActionError("stale-ref", `ref ${ref} belongs to a previous document; take a new browser_snapshot`);
+  }
   const current = await nodeRoleAndName(target.cdp, entry.backendNodeId);
   if (current && current.role === entry.role && current.name === entry.name) return entry.backendNodeId;
   const moved = findByFingerprint(await fullTree(target.cdp), entry.role, entry.name);
@@ -200,7 +197,7 @@ export async function resolveRef(target: ActionTarget, ref: string, refs: Browse
   }
   throw new BrowserActionError(
     "stale-ref",
-    `ref ${ref} is stale: the ${entry.role}${entry.name ? ` "${entry.name}"` : ""} it named is no longer on the page; take a new browser_snapshot`,
+    `ref ${ref} is stale: the ${entry.role.slice(0, 200)}${entry.name ? ` "${entry.name.slice(0, 200)}"` : ""} it named is no longer on the page; take a new browser_snapshot`,
   );
 }
 
@@ -223,15 +220,18 @@ async function centerOf(cdp: CdpSession, backendNodeId: number): Promise<{ x: nu
   if (!quad) throw new BrowserActionError("not-visible", "the element has no visible box to click");
   const xs = [quad[0]!, quad[2]!, quad[4]!, quad[6]!];
   const ys = [quad[1]!, quad[3]!, quad[5]!, quad[7]!];
-  return { x: xs.reduce((a, b) => a + b, 0) / 4, y: ys.reduce((a, b) => a + b, 0) / 4 };
+  return { x: Math.round(xs.reduce((a, b) => a + b, 0) / 4), y: Math.round(ys.reduce((a, b) => a + b, 0) / 4) };
 }
 
 export async function click(target: ActionTarget, ref: string, refs: BrowserRefTable = browserRefs): Promise<void> {
-  throwIfAborted(target.signal);
-  const backendNodeId = await resolveRef(target, ref, refs);
-  const { x, y } = await centerOf(target.cdp, backendNodeId);
-  throwIfAborted(target.signal);
-  await target.injectInput(() => withPageFocus(target, () => pressAt(target.cdp, x, y)));
+  return withGuardedAction(target, async (target) => {
+    throwIfAborted(target.signal);
+    const backendNodeId = await resolveRef(target, ref, refs);
+    target.expectNode(backendNodeId);
+    const { x, y } = await centerOf(target.cdp, backendNodeId);
+    throwIfAborted(target.signal);
+    await target.injectInput(() => withPageFocus(target, () => pressAt(target.cdp, x, y)));
+  });
 }
 
 const FOCUS_POLL_MS = 50;
@@ -272,10 +272,9 @@ const RELEASE_MAX_MS = 1_000;
 /**
  * Run an action that may take the page's keyboard focus, and give focus back
  * afterwards, whether the action succeeds or fails, when the page did not
- * hold it before. Waits (bounded) until the page has let go, so the whole
- * hand-back stays inside the agent's input window: input arriving in the page
- * meanwhile is not mistaken for the user taking over, and anything after it
- * is the user's.
+ * hold it before. Waits (bounded) until the page has let go. Individual native
+ * events carry their attribution; genuine intervention still cancels while
+ * focus is being restored.
  */
 async function withPageFocus<T>(target: ActionTarget, act: () => Promise<T>): Promise<T> {
   const hadFocus = await pageHasFocus(target.cdp);
@@ -293,8 +292,8 @@ async function withPageFocus<T>(target: ActionTarget, act: () => Promise<T>): Pr
 
 async function pressAt(cdp: CdpSession, x: number, y: number): Promise<void> {
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
-  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
-  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 
 /** Why a field is refused for agent typing, or null when it is not sensitive. */
@@ -322,39 +321,42 @@ export async function type(
   options: { submit?: boolean },
   refs: BrowserRefTable = browserRefs,
 ): Promise<void> {
-  throwIfAborted(target.signal);
-  const backendNodeId = await resolveRef(target, ref, refs);
-  const sensitive = sensitiveFieldReason(await attributesOf(target.cdp, backendNodeId));
-  if (sensitive) {
-    throw new BrowserActionError("sensitive-field", `refused: ${ref} is ${sensitive}; the user types those themselves`);
-  }
-  const { x, y } = await centerOf(target.cdp, backendNodeId);
-  throwIfAborted(target.signal);
-  await target.injectInput(() => withPageFocus(target, async () => {
-    // Click into the field first, as a person would: Chromium drops synthesized
-    // key and text input for a page that does not hold focus (focus emulation,
-    // Page.bringToFront and webContents.focus() do not give it while the app
-    // window is in the background); a press on the page does. Focus can still
-    // move away between the press and the text, so the field's value is read
-    // back from the accessibility tree and the typing repeated if it missed.
-    for (let attempt = 1; ; attempt++) {
-      await pressForFocus(target, x, y);
-      await target.cdp.send("DOM.focus", { backendNodeId });
-      // Replace what the field holds: select all of it, then insert.
-      await target.cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, commands: ["selectAll"] });
-      await target.cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
-      await target.cdp.send("Input.insertText", { text: value });
-      const landed = await pollUntil(target.signal, TYPE_CHECK_MS, async () => {
-        const now = await fieldValue(target.cdp, backendNodeId);
-        return now === null || now === collapse(value) ? true : undefined;
-      });
-      if (landed) break;
-      if (attempt >= TYPE_ATTEMPTS) {
-        throw new BrowserActionError("not-typed", `the text did not reach ${ref} (the page kept losing focus); check the field and try again`);
-      }
+  return withGuardedAction(target, async (target) => {
+    throwIfAborted(target.signal);
+    const backendNodeId = await resolveRef(target, ref, refs);
+    target.expectNode(backendNodeId);
+    const sensitive = sensitiveFieldReason(await attributesOf(target.cdp, backendNodeId));
+    if (sensitive) {
+      throw new BrowserActionError("sensitive-field", `refused: ${ref} is ${sensitive}; the user types those themselves`);
     }
-    if (options.submit) await dispatchKey(target.cdp, "Enter");
-  }));
+    const { x, y } = await centerOf(target.cdp, backendNodeId);
+    throwIfAborted(target.signal);
+    await target.injectInput(() => withPageFocus(target, async () => {
+      // Click into the field first: the page drops synthesized
+      // key and text input for a page that does not hold focus (focus emulation,
+      // Page.bringToFront and webContents.focus() do not give it while the app
+      // window is in the background); a press on the page does. Focus can still
+      // move away between the press and the text, so the field's value is read
+      // back from the accessibility tree and the typing repeated if it missed.
+      for (let attempt = 1; ; attempt++) {
+        await pressForFocus(target, x, y);
+        await target.cdp.send("DOM.focus", { backendNodeId });
+        // Replace what the field holds: select all of it, then insert.
+        await target.cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, commands: ["selectAll"] });
+        await target.cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+        await target.cdp.send("Input.insertText", { text: value });
+        const landed = await pollUntil(target.signal, TYPE_CHECK_MS, async () => {
+          const now = await fieldValue(target.cdp, backendNodeId);
+          return now === null || now === collapse(value) ? true : undefined;
+        });
+        if (landed) break;
+        if (attempt >= TYPE_ATTEMPTS) {
+          throw new BrowserActionError("not-typed", `the text did not reach ${ref} (the page kept losing focus); check the field and try again`);
+        }
+      }
+      if (options.submit) await dispatchKey(target.cdp, "Enter");
+    }));
+  });
 }
 
 const TYPE_ATTEMPTS = 3;
@@ -428,33 +430,36 @@ async function pageHasFocus(cdp: CdpSession): Promise<boolean> {
  * when the page holds no focus (a synthesized key would be dropped silently).
  */
 export async function pressKey(target: ActionTarget, key: string, ref: string | undefined, refs: BrowserRefTable = browserRefs): Promise<void> {
-  throwIfAborted(target.signal);
-  let point: { x: number; y: number; backendNodeId: number } | undefined;
-  if (ref !== undefined) {
-    const role = refs.get(ref)?.role;
-    if ((key === "Enter" || key === "Space") && role !== undefined && ACTIVATED_BY_CLICK.has(role)) {
-      // Clicking into it already activates it; the key would activate it twice.
+  return withGuardedAction(target, async (target) => {
+    throwIfAborted(target.signal);
+    let point: { x: number; y: number; backendNodeId: number } | undefined;
+    if (ref !== undefined) {
+      const role = refs.get(ref)?.role;
+      if ((key === "Enter" || key === "Space") && role !== undefined && ACTIVATED_BY_CLICK.has(role)) {
+        // Clicking into it already activates it; the key would activate it twice.
+        throw new BrowserActionError(
+          "use-click",
+          `${ref} is a ${role}: pressing ${key} in it would click it twice; use browser_click`,
+        );
+      }
+      const backendNodeId = await resolveRef(target, ref, refs);
+      target.expectNode(backendNodeId);
+      point = { ...(await centerOf(target.cdp, backendNodeId)), backendNodeId };
+    } else if (!(await pageHasFocus(target.cdp))) {
       throw new BrowserActionError(
-        "use-click",
-        `${ref} is a ${role}: pressing ${key} in it would click it twice; use browser_click`,
+        "no-focus",
+        "the page does not have keyboard focus, so the key would go nowhere; pass ref to press it in an element",
       );
     }
-    const backendNodeId = await resolveRef(target, ref, refs);
-    point = { ...(await centerOf(target.cdp, backendNodeId)), backendNodeId };
-  } else if (!(await pageHasFocus(target.cdp))) {
-    throw new BrowserActionError(
-      "no-focus",
-      "the page does not have keyboard focus, so the key would go nowhere; pass ref to press it in an element",
-    );
-  }
-  throwIfAborted(target.signal);
-  await target.injectInput(() => withPageFocus(target, async () => {
-    if (point) {
-      await pressForFocus(target, point.x, point.y);
-      await target.cdp.send("DOM.focus", { backendNodeId: point.backendNodeId });
-    }
-    await dispatchKey(target.cdp, key);
-  }));
+    throwIfAborted(target.signal);
+    await target.injectInput(() => withPageFocus(target, async () => {
+      if (point) {
+        await pressForFocus(target, point.x, point.y);
+        await target.cdp.send("DOM.focus", { backendNodeId: point.backendNodeId });
+      }
+      await dispatchKey(target.cdp, key);
+    }));
+  });
 }
 
 // ── navigate ──────────────────────────────────────────────────────────────
@@ -463,8 +468,8 @@ export async function pressKey(target: ActionTarget, key: string, ref: string | 
 export interface NavigableGuest {
   loadURL(url: string): Promise<void>;
   getURL(): string;
-  on(event: "will-redirect", listener: (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => void): unknown;
-  removeListener(event: "will-redirect", listener: (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => void): unknown;
+  on(event: "will-redirect" | "will-navigate" | "will-frame-navigate", listener: (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => void): unknown;
+  removeListener(event: "will-redirect" | "will-navigate" | "will-frame-navigate", listener: (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => void): unknown;
   stop(): void;
 }
 
@@ -481,16 +486,20 @@ export async function navigate(
   originOf: (url: string) => string | null,
 ): Promise<{ url: string }> {
   throwIfAborted(signal);
+  if (originOf(url) !== approvedOrigin) throw new BrowserActionError("unapproved-origin", "the requested URL does not match the approved origin");
   let refusedRedirect: string | null = null;
   const onRedirect = (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => {
     if (!details.isMainFrame) return;
     if (originOf(details.url) !== approvedOrigin) {
       refusedRedirect = details.url;
       details.preventDefault();
+      guest.stop();
     }
   };
   const onAbort = () => guest.stop();
   guest.on("will-redirect", onRedirect);
+  guest.on("will-navigate", onRedirect);
+  guest.on("will-frame-navigate", onRedirect);
   signal.addEventListener("abort", onAbort, { once: true });
   let loadError: Error | null = null;
   try {
@@ -499,6 +508,8 @@ export async function navigate(
     loadError = err as Error;
   } finally {
     guest.removeListener("will-redirect", onRedirect);
+    guest.removeListener("will-navigate", onRedirect);
+    guest.removeListener("will-frame-navigate", onRedirect);
     signal.removeEventListener("abort", onAbort);
   }
   throwIfAborted(signal);
@@ -543,18 +554,43 @@ export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = S
 interface InputAttribution {
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
   releaseFocus(guestId: number): void;
+  documentChanged(guestId: number): void;
 }
 
 /** One live registry tab and the signal that cancels its action. */
 interface LiveTab {
-  readonly tab: { readonly handle: string; readonly guest: WebContents | null };
+  readonly tab: { readonly handle: string; readonly guest: WebContents | null; readonly documentId: number };
   readonly signal: AbortSignal;
+  readonly approval?: { readonly tabId: string; readonly origin: string; readonly documentId: number };
 }
 
-async function targetFor(live: LiveTab, attribution: InputAttribution): Promise<ActionTarget> {
+async function targetFor(live: LiveTab, attribution: InputAttribution, input = false): Promise<ActionTarget> {
   const guest = live.tab.guest;
   if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
-  const cdp = await cdpFor(guest);
+  const approval = live.approval;
+  const assertCurrent = (keyboard: boolean) => {
+    throwIfAborted(live.signal);
+    if (guest.isDestroyed() || live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was closed or replaced");
+    if ((input || approval) && (!approval || approval.tabId !== live.tab.handle || approval.origin !== browserOrigin(guest.getURL())
+      || approval.documentId !== live.tab.documentId)) {
+      throw new BrowserActionError("document-changed", "this tab or document is no longer the approved target; nothing more was done");
+    }
+    if (keyboard && guest.focusedFrame !== guest.mainFrame) {
+      throw new BrowserActionError("wrong-input-target", "keyboard focus belongs to another frame; nothing more was done");
+    }
+  };
+  assertCurrent(false);
+  const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+  assertCurrent(false);
+  const cdp: CdpSession = {
+    onEvent: (listener) => session.onEvent(listener),
+    send: async (method, params) => {
+      assertCurrent(method === "Input.dispatchKeyEvent" || method === "Input.insertText");
+      const result = await session.send(method, params);
+      assertCurrent(false);
+      return result;
+    },
+  };
   return {
     tabId: live.tab.handle,
     url: () => guest.getURL(),
@@ -563,6 +599,11 @@ async function targetFor(live: LiveTab, attribution: InputAttribution): Promise<
     injectInput: (inject) => attribution.withAgentInput(guest.id, inject),
     releaseFocus: () => attribution.releaseFocus(guest.id),
     signal: live.signal,
+    documentId: () => live.tab.documentId,
+    iframeOrigins: () => guest.mainFrame.framesInSubtree
+      .filter((frame) => frame !== guest.mainFrame)
+      .map((frame) => browserOrigin(frame.url) ?? "opaque origin"),
+    assertCurrent,
   };
 }
 
@@ -580,10 +621,10 @@ export function createBrowserPageActions(
     screenshot: async (live: LiveTab) => screenshot(await targetFor(live, attribution)),
     waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
       waitFor(await targetFor(live, attribution), options),
-    click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution), ref),
+    click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution, true), ref),
     type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>
-      type(await targetFor(live, attribution), ref, text, options),
-    pressKey: async (live: LiveTab, key: string, ref?: string) => pressKey(await targetFor(live, attribution), key, ref),
+      type(await targetFor(live, attribution, true), ref, text, options),
+    pressKey: async (live: LiveTab, key: string, ref?: string) => pressKey(await targetFor(live, attribution, true), key, ref),
     navigate: async (live: LiveTab, url: string, approvedOrigin: string) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");

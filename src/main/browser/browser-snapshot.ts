@@ -15,6 +15,8 @@
  * name, new node), and how it notices the node now being something else.
  */
 
+import { BROWSER_OUTPUT_MAX_CHARS, BROWSER_PAGE_STRING_MAX_CHARS } from "../../shared/browser-tools.js";
+
 interface AXValue {
   readonly type?: string;
   readonly value?: unknown;
@@ -82,14 +84,16 @@ const SHOWN_PROPERTIES: ReadonlySet<string> = new Set([
   "invalid",
 ]);
 
-/** Snapshot character ceiling (Claude in Chrome's `read_page` bound). */
-export const SNAPSHOT_MAX_CHARS = 50_000;
+/** Snapshot character ceiling, shared with the result fence. */
+export const SNAPSHOT_MAX_CHARS = BROWSER_OUTPUT_MAX_CHARS;
 
 export interface RefTarget {
   readonly ref: string;
   readonly tabId: string;
   /** The page (URL without fragment) the ref was minted on. */
   readonly pageUrl: string;
+  readonly loaderId?: string;
+  readonly documentId?: number;
   backendNodeId: number;
   readonly role: string;
   readonly name: string;
@@ -97,6 +101,8 @@ export interface RefTarget {
 
 interface TabRefState {
   pageUrl: string;
+  loaderId?: string;
+  documentId?: number;
   readonly byNode: Map<number, string>;
   /** The last snapshot's lines per mode, for `delta`. */
   readonly lastLines: Map<"full" | "interactive", readonly string[]>;
@@ -115,7 +121,7 @@ function text(value: AXValue | undefined): string {
 }
 
 function quote(value: string): string {
-  return JSON.stringify(value.length > 200 ? `${value.slice(0, 200)}…` : value);
+  return JSON.stringify(value.length > BROWSER_PAGE_STRING_MAX_CHARS ? `${value.slice(0, BROWSER_PAGE_STRING_MAX_CHARS - 1)}…` : value);
 }
 
 /**
@@ -127,12 +133,12 @@ export class BrowserRefTable {
   private readonly refs = new Map<string, RefTarget>();
   private readonly tabs = new Map<string, TabRefState>();
 
-  private tabState(tabId: string, pageUrl: string): TabRefState {
+  private tabState(tabId: string, pageUrl: string, loaderId?: string, documentId?: number): TabRefState {
     let state = this.tabs.get(tabId);
-    if (!state || state.pageUrl !== pageUrl) {
+    if (!state || state.pageUrl !== pageUrl || state.loaderId !== loaderId || state.documentId !== documentId) {
       // A new page: its elements are new elements. Old refs stay resolvable
       // only to be reported stale (their pageUrl no longer matches).
-      state = { pageUrl, byNode: new Map(), lastLines: new Map() };
+      state = { pageUrl, loaderId, documentId, byNode: new Map(), lastLines: new Map() };
       this.tabs.set(tabId, state);
     }
     return state;
@@ -148,7 +154,7 @@ export class BrowserRefTable {
     }
     const ref = `e${this.nextRef++}`;
     state.byNode.set(backendNodeId, ref);
-    this.refs.set(ref, { ref, tabId, pageUrl: state.pageUrl, backendNodeId, role, name });
+    this.refs.set(ref, { ref, tabId, pageUrl: state.pageUrl, loaderId: state.loaderId, documentId: state.documentId, backendNodeId, role, name });
     return ref;
   }
 
@@ -161,9 +167,9 @@ export class BrowserRefTable {
     tabId: string,
     pageUrl: string,
     nodes: readonly AXNode[],
-    options: { interactive?: boolean; delta?: boolean; maxChars?: number } = {},
+    options: { interactive?: boolean; delta?: boolean; maxChars?: number; iframeOrigins?: readonly string[]; loaderId?: string; documentId?: number } = {},
   ): { text: string; truncated: boolean; refCount: number; delta: boolean } {
-    const state = this.tabState(tabId, pageKey(pageUrl));
+    const state = this.tabState(tabId, pageKey(pageUrl), options.loaderId, options.documentId);
     const byId = new Map(nodes.map((node) => [node.nodeId, node]));
     const root = nodes.find((node) => node.parentId === undefined || !byId.has(node.parentId));
     const lines: string[] = [];
@@ -173,6 +179,7 @@ export class BrowserRefTable {
       if (visited.has(node.nodeId)) return;
       visited.add(node.nodeId);
       const role = text(node.role);
+      if (role.toLowerCase() === "iframe" || (role === "RootWebArea" && node !== root)) return;
       const name = text(node.name);
       // InlineTextBox only repeats its StaticText parent's text, line by line.
       const shown = !node.ignored && role !== "" && role !== "InlineTextBox" && !(TRANSPARENT_ROLES.has(role) && name === "")
@@ -193,6 +200,7 @@ export class BrowserRefTable {
       }
     };
     if (root) visit(root, 0, new Set());
+    for (const origin of options.iframeOrigins ?? []) lines.push(`- iframe ${quote(origin)} [contents omitted; no refs]`);
 
     const mode = interactive ? "interactive" : "full";
     const previous = state.lastLines.get(mode);

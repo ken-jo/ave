@@ -1354,7 +1354,7 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
     const browserMemory = {
       kind: "key" as const,
       key: "browser_click:origin-a",
-      scope: { kind: "browser-origin" as const, origin: "https://a.example:443", tabOpener: "agent" as const },
+      scope: { kind: "browser-origin" as const, origin: "https://a.example:443", tabOpener: "agent" as const, tabId: "tab-1", documentId: 1 },
     };
     await setup({ snapshotApprovalCacheKey: undefined, snapshotApprovalMemory: browserMemory });
     const persistent = await invoke(PERMISSIONS.userApprovalRecord, {

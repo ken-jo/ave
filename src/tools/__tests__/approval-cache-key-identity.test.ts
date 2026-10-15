@@ -161,6 +161,30 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     return { tool: { ...real, execute } as Tool, execute };
   }
 
+  it("remembers a browser origin independently of the invocation's concrete tab and document", () => {
+    let tabId = "tab-1";
+    let documentId = 1;
+    const tool = createDynamicTool({
+      name: "browser_click",
+      description: "Acts on the approved page",
+      source: "builtin",
+      category: "write",
+      jsonSchema: { type: "object" },
+      approvalMemoryScope: () => Object.assign({ kind: "browser-origin" as const, origin: "https://a.example:443", tabOpener: "agent" as const }, { tabId, documentId }),
+      execute: async () => ({ output: "ok", isError: false }),
+    });
+    const first = approvalIdentityFor(tool, {}, dir).approvalMemory;
+    tabId = "tab-2";
+    documentId = 9;
+    const second = approvalIdentityFor(tool, {}, dir).approvalMemory;
+    expect(first.kind).toBe("key");
+    expect(second.kind).toBe("key");
+    if (first.kind !== "key" || second.kind !== "key") throw new Error("Expected scoped approval identity");
+    expect(second.key).toBe(first.key);
+    expect(first.scope).toMatchObject({ tabId: "tab-1", documentId: 1 });
+    expect(second.scope).toMatchObject({ tabId: "tab-2", documentId: 9 });
+  });
+
   it("allow-session on one URL covers the same origin after a fresh review, not another host", async () => {
     const { tool, execute } = webFetch();
     const { cards, run, reviewedUrls } = harness([tool]);

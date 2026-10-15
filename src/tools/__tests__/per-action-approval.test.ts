@@ -144,6 +144,8 @@ describe("per-action approval and the authorized scope", () => {
               kind: "browser-origin",
               origin: "https://a.example:443",
               tabOpener: (input as { owner: string }).owner === "user" ? "user" : "agent",
+              tabId: "tab-1",
+              documentId: 1,
             }),
           }
         : {}),
@@ -201,6 +203,8 @@ describe("per-action approval and the authorized scope", () => {
       kind: "browser-origin",
       origin: "https://a.example:443",
       tabOpener: "user",
+      tabId: "tab-1",
+      documentId: 1,
     });
   });
 

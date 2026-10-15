@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { normalizeBrowserNavigationUrl } from "./url-safety.js";
+import { isBrowserBlankBootstrap } from "../../../shared/browser-tools.js";
 
 /**
  * Workspace-tab store — the state that ChatSidePanel used to hold in
@@ -307,7 +308,9 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
   }, []);
 
   const openAgentBrowserTab = useCallback((rawUrl: string, agentRequestId: string): string | null => {
-    const content = normalizeContentRef({ source: "browser", url: rawUrl });
+    const content: WorkspaceTabContentRef | null = isBrowserBlankBootstrap(rawUrl, agentRequestId)
+      ? { source: "browser", url: rawUrl }
+      : normalizeContentRef({ source: "browser", url: rawUrl });
     if (!content) return null;
     // The id is taken here, outside the updater: an updater runs at flush
     // time, and the caller needs the id now.

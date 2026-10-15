@@ -12,7 +12,7 @@ import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { authorizedApprovalMemoryScope } from "./approval-memory-context.js";
 import { neutralizeFenceClose, neutralizeFenceOpen } from "../shared/fence-sanitizer.js";
 import { validateExternalUrl } from "../shared/external-url.js";
-import { BROWSER_TOOL, type BrowserToolName } from "../shared/browser-tools.js";
+import { BROWSER_OUTPUT_MAX_CHARS, BROWSER_PAGE_STRING_MAX_CHARS, BROWSER_TOOL, type BrowserToolName } from "../shared/browser-tools.js";
 import type { BrowserGuest } from "../main/browser/browser-tab-registry.js";
 import {
   BROWSER_PRESSABLE_KEYS,
@@ -34,7 +34,7 @@ const REF_PATTERN = /^e\d+$/;
 const NO_WINDOW = "the browser tools are available only to a conversation in an app window (or its sub-agents); this session has no browser";
 
 function failure(error: string): ToolExecutionResult {
-  return { output: JSON.stringify({ error }), isError: true };
+  return { output: fenceBrowserContent({ error }), isError: true };
 }
 
 const FENCE_OPEN = '<browser-content trust="untrusted-web-data">';
@@ -43,13 +43,40 @@ function neutralize(value: string): string {
   return neutralizeFenceOpen(neutralizeFenceClose(value, "browser-content"), "browser-content");
 }
 
-function neutralizeStrings(value: unknown): unknown {
-  if (typeof value === "string") return neutralize(value);
-  if (Array.isArray(value)) return value.map(neutralizeStrings);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, neutralizeStrings(entry)]));
+function pageString(value: string, state: { truncated: boolean }): string {
+  const safe = neutralize(value.slice(0, BROWSER_PAGE_STRING_MAX_CHARS));
+  if (value.length <= BROWSER_PAGE_STRING_MAX_CHARS && safe.length <= BROWSER_PAGE_STRING_MAX_CHARS) return safe;
+  state.truncated = true;
+  return `${safe.slice(0, BROWSER_PAGE_STRING_MAX_CHARS - 1)}…`;
+}
+
+/** Preserve valid JSON while dropping entries that cannot fit the result budget. */
+function boundedHeader(value: unknown, budget: number, state: { truncated: boolean }, depth = 0): string | undefined {
+  if (depth > 20) {
+    state.truncated = true;
+    return budget >= 4 ? "null" : undefined;
   }
-  return value;
+  if (value !== null && typeof value === "object") {
+    if (budget < 2) return undefined;
+    const array = Array.isArray(value);
+    const parts: string[] = [];
+    let used = 2;
+    const entries = array ? value.map((entry) => ["", entry] as const) : Object.entries(value);
+    for (const [key, entry] of entries) {
+      const prefix = array ? "" : `${JSON.stringify(pageString(key, state))}:`;
+      const separator = parts.length > 0 ? 1 : 0;
+      const encoded = boundedHeader(entry, budget - used - separator - prefix.length, state, depth + 1);
+      if (encoded === undefined) {
+        state.truncated = true;
+        break;
+      }
+      parts.push(`${prefix}${encoded}`);
+      used += separator + prefix.length + encoded.length;
+    }
+    return `${array ? "[" : "{"}${parts.join(",")}${array ? "]" : "}"}`;
+  }
+  const encoded = JSON.stringify(typeof value === "string" ? pageString(value, state) : value) ?? "null";
+  return encoded.length <= budget ? encoded : undefined;
 }
 
 /**
@@ -58,13 +85,19 @@ function neutralizeStrings(value: unknown): unknown {
  * the frame (or open a fake second one).
  */
 export function fenceBrowserContent(header: unknown, body?: string): string {
-  return [
-    FENCE_OPEN,
-    t("be_browserTools.untrusted"),
-    JSON.stringify(neutralizeStrings(header)),
-    ...(body === undefined ? [] : [neutralize(body)]),
-    "</browser-content>",
-  ].join("\n");
+  const prefix = `${FENCE_OPEN}\n${t("be_browserTools.untrusted")}\n`;
+  const suffix = "\n</browser-content>";
+  const separator = body === undefined ? "" : "\n";
+  const budget = BROWSER_OUTPUT_MAX_CHARS - prefix.length - suffix.length - separator.length;
+  const state = { truncated: false };
+  const record = header !== null && typeof header === "object" && !Array.isArray(header) ? header : { result: header };
+  // Reserve the truncation field before allocating the header and page outline.
+  let json = boundedHeader(record, budget - 20, state) ?? "{}";
+  const safeBody = body === undefined ? undefined : neutralize(body.slice(0, BROWSER_OUTPUT_MAX_CHARS));
+  if (body !== undefined && (body.length > BROWSER_OUTPUT_MAX_CHARS || safeBody!.length > budget - json.length)) state.truncated = true;
+  if (state.truncated) json = JSON.stringify({ ...JSON.parse(json) as Record<string, unknown>, truncated: true });
+  const outline = safeBody === undefined ? "" : safeBody.slice(0, Math.max(0, budget - json.length));
+  return `${prefix}${json}${separator}${outline}${suffix}`;
 }
 
 function fenced(header: unknown, body?: string): ToolExecutionResult {
@@ -96,7 +129,9 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     if (input.tabId !== undefined && (typeof input.tabId !== "string" || !BROWSER_TAB_ID_PATTERN.test(input.tabId))) {
       return { ok: false, result: failure("tabId must be a tab id from browser_tabs, like \"tab-2\"") };
     }
-    const handle = (input.tabId as string | undefined) ?? deps.tabs.activeBrowserTab(scope.windowId);
+    const approved = authorizedApprovalMemoryScope(ctx);
+    const approvedTabId = approved?.kind === "browser-origin" || approved?.kind === "browser-agent-tabs" ? approved.tabId : undefined;
+    const handle = (input.tabId as string | undefined) ?? approvedTabId ?? deps.tabs.activeBrowserTab(scope.windowId);
     if (handle === undefined) {
       return { ok: false, result: failure("no browser tab is shown; pass a tabId from browser_tabs or open one with browser_tab_new") };
     }
@@ -111,40 +146,72 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
 
   /**
    * TOCTOU: the page this call was approved for must still be the page the
-   * tab shows, in a tab with the same opener. A read on an agent tab carries
-   * no approval and only needs the tab to still be the agent's.
+   * tab shows, in the concrete tab and document that supplied the approval.
    */
   const unchangedSinceApproval = (
     ctx: ToolExecutionContext,
     resolved: ResolvedBrowserTab<G>,
-    options: { readOnAgentTab?: boolean } = {},
   ): ToolExecutionResult | null => {
     const scope = authorizedApprovalMemoryScope(ctx);
-    if (options.readOnAgentTab && scope?.kind === "browser-origin" && scope.tabOpener === "agent" && resolved.opener === "agent") {
-      return null;
-    }
     if (scope?.kind !== "browser-origin") {
       return failure("this call was not approved for the page the tab shows; nothing was done. Call it again to ask.");
     }
-    if (scope.origin !== resolved.origin || scope.tabOpener !== resolved.opener) {
+    if (!Number.isSafeInteger(scope.documentId) || scope.tabId !== resolved.tab.handle || scope.documentId !== resolved.tab.documentId
+      || scope.origin !== resolved.origin || scope.tabOpener !== resolved.opener) {
       const now = resolved.origin ?? "a page that is not an http(s) site";
       const who = scope.tabOpener !== resolved.opener ? " and the user has taken over the tab" : "";
       return failure(
-        `the tab changed after approval (approved for ${scope.origin}; it now shows ${now}${who}); nothing was done. Call again to ask about the page it shows now.`,
+        `the tab changed after approval (approved for ${scope.origin}; it now shows ${now}${who}); nothing was done. Call again.`,
       );
     }
     return null;
   };
 
-  const run = async (work: (actions: BrowserPageActions<G>) => Promise<ToolExecutionResult>): Promise<ToolExecutionResult> => {
+  const recheck = (
+    input: BrowserToolInput,
+    ctx: ToolExecutionContext,
+    target: Extract<ReturnType<typeof live>, { ok: true }>,
+  ): ReturnType<typeof live> => {
+    if (target.signal.aborted) return { ok: false, result: failure("the browser action was cancelled; nothing was done. Call again.") };
+    return live({ ...input, tabId: target.resolved.tab.handle }, ctx);
+  };
+
+  const pageTarget = (ctx: ToolExecutionContext, target: Extract<ReturnType<typeof live>, { ok: true }>): BrowserActionTab<G> => {
+    const scope = authorizedApprovalMemoryScope(ctx);
+    if (scope?.kind !== "browser-origin" || scope.tabId === undefined || scope.documentId === undefined) {
+      throw new Error("Missing browser approval identity");
+    }
+    return {
+      tab: target.resolved.tab,
+      signal: target.signal,
+      approval: { tabId: scope.tabId, origin: scope.origin, documentId: scope.documentId },
+    };
+  };
+
+  const navigationUnchangedSinceApproval = (
+    ctx: ToolExecutionContext,
+    resolved: ResolvedBrowserTab<G>,
+    origin: string,
+  ): ToolExecutionResult | null => {
+    const scope = authorizedApprovalMemoryScope(ctx);
+    return scope?.kind === "browser-origin" && scope.origin === origin && scope.tabOpener === resolved.opener
+      && scope.tabId === resolved.tab.handle && Number.isSafeInteger(scope.documentId) && scope.documentId === resolved.tab.documentId
+      ? null
+      : failure("this navigation was not approved for this tab as it is now; nothing was done. Call it again to ask.");
+  };
+
+  const safely = async (work: () => Promise<ToolExecutionResult>): Promise<ToolExecutionResult> => {
     try {
-      return await work(await deps.loadActions());
+      return await work();
     } catch (err) {
       const error = err as { name?: string; message?: string };
       if (error?.name === "BrowserActionError") return failure(error.message ?? "the browser action failed");
       return failure(`the browser action failed: ${error?.message ?? String(err)}`);
     }
   };
+
+  const run = (work: (actions: BrowserPageActions<G>) => Promise<ToolExecutionResult>): Promise<ToolExecutionResult> =>
+    safely(async () => work(await deps.loadActions()));
 
   /** A model-supplied URL: http(s) only, no embedded credentials. */
   const validUrl = (value: unknown): { ok: true; url: string; origin: string } | { ok: false; result: ToolExecutionResult } => {
@@ -173,7 +240,11 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     const changed = unchangedSinceApproval(ctx, target.resolved);
     if (changed) return changed;
     return run(async (actions) => {
-      await act(actions, { tab: target.resolved.tab, signal: target.signal }, input);
+      const fresh = recheck(input, ctx, target);
+      if (!fresh.ok) return fresh.result;
+      const changed = unchangedSinceApproval(ctx, fresh.resolved);
+      if (changed) return changed;
+      await act(actions, pageTarget(ctx, fresh), input);
       return fenced({
         tabId: target.resolved.tab.handle,
         done: name,
@@ -183,7 +254,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     });
   };
 
-  return {
+  const executors: BrowserToolExecutors = {
     [BROWSER_TOOL.tabs]: async (input, ctx) => {
       const scope = policy.windowOf(sessionOf(ctx));
       if (!scope) return failure(NO_WINDOW);
@@ -208,11 +279,15 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       }
       const target = live(input, ctx);
       if (!target.ok) return target.result;
-      const changed = unchangedSinceApproval(ctx, target.resolved, { readOnAgentTab: true });
+      const changed = unchangedSinceApproval(ctx, target.resolved);
       if (changed) return changed;
       return run(async (actions) => {
+        const fresh = recheck(input, ctx, target);
+        if (!fresh.ok) return fresh.result;
+        const changed = unchangedSinceApproval(ctx, fresh.resolved);
+        if (changed) return changed;
         const shot = await actions.snapshot(
-          { tab: target.resolved.tab, signal: target.signal },
+          pageTarget(ctx, fresh),
           { interactive: input.interactive === true, delta: input.delta === true },
         );
         return fenced({
@@ -229,10 +304,14 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     [BROWSER_TOOL.screenshot]: async (input, ctx) => {
       const target = live(input, ctx);
       if (!target.ok) return target.result;
-      const changed = unchangedSinceApproval(ctx, target.resolved, { readOnAgentTab: true });
+      const changed = unchangedSinceApproval(ctx, target.resolved);
       if (changed) return changed;
       return run(async (actions) => {
-        const image = await actions.screenshot({ tab: target.resolved.tab, signal: target.signal });
+        const fresh = recheck(input, ctx, target);
+        if (!fresh.ok) return fresh.result;
+        const changed = unchangedSinceApproval(ctx, fresh.resolved);
+        if (changed) return changed;
+        const image = await actions.screenshot(pageTarget(ctx, fresh));
         return {
           output: fenceBrowserContent({ tabId: target.resolved.tab.handle, url: target.resolved.tab.guest?.getURL() ?? "" }),
           isError: false,
@@ -252,8 +331,10 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       const target = live(input, ctx);
       if (!target.ok) return target.result;
       return run(async (actions) => {
+        const fresh = recheck(input, ctx, target);
+        if (!fresh.ok) return fresh.result;
         const waited = await actions.waitFor(
-          { tab: target.resolved.tab, signal: target.signal },
+          { tab: fresh.resolved.tab, signal: fresh.signal },
           {
             ...(typeof input.text === "string" ? { text: input.text } : {}),
             ...(typeof input.timeMs === "number" ? { timeMs: input.timeMs } : {}),
@@ -268,12 +349,14 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (!url.ok) return url.result;
       const target = live(input, ctx);
       if (!target.ok) return target.result;
-      const scope = authorizedApprovalMemoryScope(ctx);
-      if (scope?.kind !== "browser-origin" || scope.origin !== url.origin || scope.tabOpener !== target.resolved.opener) {
-        return failure("this navigation was not approved for this tab as it is now; nothing was done. Call it again to ask.");
-      }
+      const changed = navigationUnchangedSinceApproval(ctx, target.resolved, url.origin);
+      if (changed) return changed;
       return run(async (actions) => {
-        const loaded = await actions.navigate({ tab: target.resolved.tab, signal: target.signal }, url.url, url.origin);
+        const fresh = recheck(input, ctx, target);
+        if (!fresh.ok) return fresh.result;
+        const changed = navigationUnchangedSinceApproval(ctx, fresh.resolved, url.origin);
+        if (changed) return changed;
+        const loaded = await actions.navigate(pageTarget(ctx, fresh), url.url, url.origin);
         return fenced({ tabId: target.resolved.tab.handle, url: loaded.url, title: target.resolved.tab.guest?.getTitle() ?? "" });
       });
     },
@@ -318,11 +401,17 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (!outcome.ok) return failure(`could not open the tab (${outcome.error})`);
       const tab = deps.tabs.liveTabInWindow(outcome.tabId, scope.windowId);
       if (!tab) return failure(`the tab ${outcome.tabId} closed as it opened`);
-      // The tab binds as soon as its view attaches, before its page loads; answer
-      // once the page is there so the next call sees the page, not an empty tab.
+      const documentId = tab.documentId;
+      const guest = tab.guest;
+      const signal = AbortSignal.any([tab.actions.signal, ...(ctx.abortSignal ? [ctx.abortSignal] : [])]);
+      // The bound view starts blank. Navigation installs the origin guard before
+      // allowing the approved URL or any redirect to load.
       return run(async (actions) => {
-        const signal = AbortSignal.any([tab.actions.signal, ...(ctx.abortSignal ? [ctx.abortSignal] : [])]);
-        const loaded = await actions.settle({ tab, signal });
+        const fresh = deps.tabs.liveTabInWindow(outcome.tabId, scope.windowId);
+        if (!fresh || signal.aborted || fresh.guest !== guest || fresh.documentId !== documentId || fresh.opener !== "agent") {
+          return failure("the new tab changed before navigation; nothing was done. Call again.");
+        }
+        const loaded = await actions.navigate({ tab: fresh, signal }, url.url, url.origin);
         return fenced({ tabId: outcome.tabId, url: loaded.url, title: tab.guest?.getTitle() ?? "", openedBy: "agent" });
       });
     },
@@ -332,12 +421,20 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       const target = live(input, ctx);
       if (!target.ok) return target.result;
       const authorized = authorizedApprovalMemoryScope(ctx);
-      if (authorized?.kind === "browser-agent-tabs" && target.resolved.opener !== "agent") {
-        return failure("the user has taken over this tab since approval; nothing was done. Call again to ask.");
+      if ((target.resolved.opener === "agent" || authorized?.kind === "browser-agent-tabs")
+        && (authorized?.kind !== "browser-agent-tabs" || target.resolved.opener !== "agent"
+          || authorized.tabId !== target.resolved.tab.handle || !Number.isSafeInteger(authorized.documentId)
+          || authorized.documentId !== target.resolved.tab.documentId)) {
+        return failure("the tab changed or the user took it over since approval; nothing was done. Call again to ask.");
       }
       const outcome = await deps.tabs.requestTabOp(target.windowId, { op: "close", tabId: target.resolved.tab.handle }, signalOptions(ctx));
       if (!outcome.ok) return failure(`could not close the tab (${outcome.error})`);
-      return { output: JSON.stringify({ closed: target.resolved.tab.handle }), isError: false };
+      return fenced({ closed: target.resolved.tab.handle });
     },
   };
+  for (const name of Object.values(BROWSER_TOOL)) {
+    const execute = executors[name];
+    executors[name] = (input, ctx) => safely(() => execute(input, ctx));
+  }
+  return executors;
 }

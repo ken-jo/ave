@@ -155,7 +155,7 @@ export function configureSideBrowserWebviewAttach(input: {
   if (input.params.partition !== AVE_SIDE_BROWSER_PARTITION) return "ignored";
 
   const src = input.params.src ?? "";
-  if (!isHttpUrl(src)) {
+  if (src !== "about:blank" && !isHttpUrl(src)) {
     input.event.preventDefault();
     return "blocked";
   }
@@ -166,13 +166,13 @@ export function configureSideBrowserWebviewAttach(input: {
 }
 
 /**
- * Whether a side-browser page may open `url` as a new window. http(s) covers
- * `target=_blank` links and OAuth popups; `about:blank` is how many OAuth
- * libraries (and `window.open('')`) bootstrap a popup before navigating it,
- * and the blank document is then held to the same navigation guard.
+ * Whether a side-browser page may open `url` as a new window. Blank popup
+ * requests are ambiguous: a script URL can arrive as `about:blank` and execute
+ * without a cancellable navigation event. Only concrete http(s) URLs are safe
+ * to admit here. Blank guest bootstraps use the separate attach policy.
  */
 export function isSideBrowserPopupUrlAllowed(url: string): boolean {
-  return url === "about:blank" || isHttpUrl(url);
+  return isHttpUrl(url);
 }
 
 function sideBrowserPopupOptions(owner: BrowserWindow): BrowserWindowConstructorOptions {

@@ -31,11 +31,17 @@ const ALLOWED_CDP_METHODS = new Set([
   "DOM.focus",
   "DOM.scrollIntoViewIfNeeded",
   "DOM.getContentQuads",
+  "DOM.getNodeForLocation",
   "Input.dispatchMouseEvent",
+  "Input.dispatchTouchEvent",
   "Input.dispatchKeyEvent",
   "Input.insertText",
   "Page.enable",
   "Page.captureScreenshot",
+  "Page.getFrameTree",
+  "Page.frameNavigated",
+  "Page.frameDetached",
+  "DOM.documentUpdated",
 ]);
 
 /** `"Domain.method"` string literals: every CDP method name these modules spell. */
@@ -68,11 +74,12 @@ describe("browser tool CDP surface", () => {
     }
   });
 
-  it("every CDP call in the actions goes through a literal method name", () => {
+  it("keeps dynamic dispatch confined to the checked session adapter", () => {
     const source = readFileSync(join(REPO, "src/main/browser/browser-actions.ts"), "utf8");
     const sends = [...source.matchAll(/\.send\(\s*([^,)]+)/g)].map((match) => match[1]!.trim());
     expect(sends.length).toBeGreaterThan(10);
     // The one pass-through is the session wrapper that forwards to webContents.debugger.
-    expect(sends.filter((argument) => !/^"[A-Z][A-Za-z]+\.[a-z][A-Za-z]+"$/.test(argument))).toEqual([]);
+    expect(sends.filter((argument) => !/^"[A-Z][A-Za-z]+\.[a-z][A-Za-z]+"$/.test(argument))).toEqual(["method"]);
+    expect(source).toContain("await session.send(method, params)");
   });
 });

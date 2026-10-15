@@ -63,7 +63,13 @@ describe("side browser webview attach policy", () => {
     expect(prefs.partition).toBe(AVE_SIDE_BROWSER_PARTITION);
   });
 
-  it("blocks non-http side-browser navigations", () => {
+  it.each([
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "about:blank#script",
+    "about:blank?script=1",
+    "about:srcdoc",
+  ])("blocks non-http side-browser attachment to %s", (src) => {
     const attachEvent = event();
 
     const result = configureSideBrowserWebviewAttach({
@@ -71,12 +77,26 @@ describe("side browser webview attach policy", () => {
       webPreferences: {},
       params: {
         partition: AVE_SIDE_BROWSER_PARTITION,
-        src: "javascript:alert(1)",
+        src,
       },
     });
 
     expect(result).toBe("blocked");
     expect(attachEvent.preventDefault).toHaveBeenCalledOnce();
+  });
+
+  it("accepts the exact blank document for a guarded tab bootstrap", () => {
+    const attachEvent = event();
+    const prefs: Record<string, unknown> = { preload: "untrusted.js", nodeIntegration: true };
+
+    expect(configureSideBrowserWebviewAttach({
+      event: attachEvent,
+      webPreferences: prefs,
+      params: { partition: AVE_SIDE_BROWSER_PARTITION, src: "about:blank" },
+    })).toBe("accepted");
+    expect(attachEvent.preventDefault).not.toHaveBeenCalled();
+    expect(prefs).toMatchObject({ nodeIntegration: false, contextIsolation: true, sandbox: true });
+    expect(prefs.preload).toBeUndefined();
   });
 
   it("blocks credentialed side-browser URLs", () => {
@@ -145,11 +165,12 @@ describe("side browser webview attach policy", () => {
     }
   });
 
-  it("allows only http(s) and about:blank popups", () => {
+  it("allows only concrete http(s) popup URLs", () => {
     expect(isSideBrowserPopupUrlAllowed("https://accounts.google.com/o/oauth2/auth")).toBe(true);
     expect(isSideBrowserPopupUrlAllowed("http://example.com/")).toBe(true);
-    expect(isSideBrowserPopupUrlAllowed("about:blank")).toBe(true);
     for (const blocked of [
+      "about:blank",
+      "",
       "file:///etc/passwd",
       "javascript:alert(1)",
       "data:text/html,x",
@@ -185,12 +206,20 @@ describe("side browser webview attach policy", () => {
     return { isDestroyed: () => destroyed, destroy: () => { destroyed = true; } };
   }
 
+  it("denies ambiguous blank popup requests before creating a window", () => {
+    const guest = fakeContents(electronMock.sideBrowserSession);
+    attachSideBrowserWebview(guest as never, fakeOwner() as never);
+
+    expect(guest.open("about:blank")).toEqual({ action: "deny" });
+  });
+
   it("lets the guest open hardened popup windows and guards each popup recursively", () => {
     const owner = fakeOwner();
     const guest = fakeContents(electronMock.sideBrowserSession);
     attachSideBrowserWebview(guest as never, owner as never);
 
     expect(guest.open("javascript:alert(1)")).toEqual({ action: "deny" });
+    expect(guest.open("data:text/html,<script>alert(1)</script>")).toEqual({ action: "deny" });
     const allowed = guest.open("https://accounts.google.com/signin");
     expect(allowed.action).toBe("allow");
     const prefs = allowed.overrideBrowserWindowOptions?.webPreferences ?? {};
