@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { cn } from "../../../lib/utils.js";
 import type { WorkspaceTab, WorkspaceTabKind, WorkspaceTabsStore } from "../preview/workspace-tabs.js";
 import {
@@ -41,6 +41,7 @@ import { TranscriptRenderer } from "./TranscriptRenderer.js";
 import { historyToEntries } from "../utils/history.js";
 import {
   BrowserWorkspace,
+  VisitedSites,
   FileBrowserWorkspace,
   PreviewWorkspace,
 } from "./ChatSidePanelWorkspaces.js";
@@ -561,6 +562,7 @@ function LauncherItems({
  */
 function WorkspaceLauncher({
   onOpen,
+  visitedSites,
   onOpenActivityTab,
   activity,
   onOpenActivityItem,
@@ -568,6 +570,8 @@ function WorkspaceLauncher({
   onOpenActivityItemInSystemApp,
 }: {
   onOpen: (kind: WorkspaceTabKind) => void;
+  /** The conversation's pages, found here rather than inside a browser tab. */
+  visitedSites: ReactNode;
   /** The activity tab, reused if one is already open — the compact report's way to the full lists. */
   onOpenActivityTab: () => void;
 } & Pick<ChatSidePanelProps, "activity" | "onOpenActivityItem" | "onOpenActivityItemPinned" | "onOpenActivityItemInSystemApp">) {
@@ -576,14 +580,20 @@ function WorkspaceLauncher({
   // tab is competing for the space, and the items there open the very tabs
   // the picker below offers.
   const showActivity = toolActivityTotal(activity) > 0;
+  const showVisited = visitedSites !== null;
   return (
     <div
       className={cn(
         "flex h-full min-h-0 w-full flex-col overflow-auto p-6",
-        showActivity ? "gap-4" : "items-center justify-center",
+        showActivity || showVisited ? "gap-4" : "items-center justify-center",
       )}
       data-testid="chat-side-panel-launcher"
     >
+      {showVisited ? (
+        <div className="flex max-h-[40%] min-h-0 w-full shrink-0 flex-col overflow-hidden rounded-md border" data-testid="chat-side-panel-launcher-visited">
+          {visitedSites}
+        </div>
+      ) : null}
       {showActivity ? (
         <div
           className="flex max-h-[50%] min-h-0 w-full shrink-0 flex-col overflow-hidden"
@@ -598,7 +608,7 @@ function WorkspaceLauncher({
           />
         </div>
       ) : null}
-      <div className={cn("w-full max-w-xs space-y-3", showActivity && "self-center")}>
+      <div className={cn("w-full max-w-xs space-y-3", (showActivity || showVisited) && "self-center")}>
         <div className="flex flex-col items-center gap-1 text-center">
           <LayoutGrid className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
           <div className="text-sm font-semibold">{t("chatPreviewRail.launcher.title")}</div>
@@ -1103,6 +1113,17 @@ export function ChatSidePanel({
           {activeTab == null ? (
             <WorkspaceLauncher
               onOpen={addTab}
+              visitedSites={browserTargets.length > 0 ? (
+                <VisitedSites
+                  api={api}
+                  targets={browserTargets}
+                  onOpen={(target) => workspaceTabs.openInEphemeral(
+                    target.kind === "url"
+                      ? { source: "browser", url: target.url }
+                      : { source: "preview", targetId: target.id },
+                  )}
+                />
+              ) : null}
               onOpenActivityTab={() => ensureContainerTab("activity")}
               activity={activity}
               onOpenActivityItem={onOpenActivityItem}
@@ -1125,8 +1146,6 @@ export function ChatSidePanel({
               api={api}
               tabId={activeTab.id}
               targets={browserTargets}
-              selectedId={selectedId}
-              onSelect={onSelect}
               manualUrl={browserUrlByTab[activeTab.id] ?? null}
               onManualUrlChange={setBrowserTabUrl}
             />

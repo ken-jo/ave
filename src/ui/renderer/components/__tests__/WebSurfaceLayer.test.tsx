@@ -11,6 +11,7 @@ import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { useState } from "react";
 import { WebSurfaceLayer, WebSurfaceSlot, placeWebSurfaces } from "../WebSurfaceLayer.js";
+import { EdgeResizeBar } from "../EdgeResizeBar.js";
 import {
   beginSurfaceDrag,
   endSurfaceDrag,
@@ -144,5 +145,22 @@ describe("WebSurfaceLayer", () => {
     endSurfaceDrag();
     act(() => { placeWebSurfaces(); });
     expect(placed.style.pointerEvents).toBe("auto");
+  });
+
+  it("cuts a resize bar out of the page it overlaps, so the bar can still be grabbed", () => {
+    publishLiveWebTabs(source, new Set(["browser:1"]));
+    render(
+      <>
+        <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="side-panel" />
+        <EdgeResizeBar width={448} edge="start" variant="inset" onWidthChange={() => {}} onWidthCommit={() => {}} min={300} max={900} resetWidth={448} ariaLabel="resize" data-testid="bar" />
+        <WebSurfaceLayer />
+      </>,
+    );
+    Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1400 });
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
+    stubBox(screen.getByTestId("web-surface-slot"), { left: 774, top: 128, width: 448, height: 615 });
+    stubBox(screen.getByTestId("bar"), { left: 774, top: 49, width: 8, height: 694 });
+    act(() => { placeWebSurfaces(); });
+    expect(frame("browser:1").style.clipPath).toBe('path(evenodd, "M0 0H448V615H0ZM0 0H8V615H0Z")');
   });
 });

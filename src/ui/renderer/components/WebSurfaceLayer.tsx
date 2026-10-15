@@ -69,8 +69,24 @@ function isEmpty(box: Box): boolean {
   return box.right - box.left < 1 || box.bottom - box.top < 1;
 }
 
+/**
+ * The rounded corners a clipping ancestor gives the visible box where the two
+ * share a corner — the side panel is a rounded card, and a page laid over its
+ * last pixels must round off with it rather than poke out of its corners.
+ */
+function sharedCorners(visible: Box, clip: Box, style: CSSStyleDeclaration, current: string[]): string[] {
+  const near = (a: number, b: number) => Math.abs(a - b) <= 1;
+  const corners: Array<[boolean, string]> = [
+    [near(visible.left, clip.left) && near(visible.top, clip.top), style.borderTopLeftRadius],
+    [near(visible.right, clip.right) && near(visible.top, clip.top), style.borderTopRightRadius],
+    [near(visible.right, clip.right) && near(visible.bottom, clip.bottom), style.borderBottomRightRadius],
+    [near(visible.left, clip.left) && near(visible.bottom, clip.bottom), style.borderBottomLeftRadius],
+  ];
+  return corners.map(([shared, radius], index) => (current[index] === "0px" && shared && radius ? radius : current[index]!));
+}
+
 /** The slot's box cut down to what every clipping ancestor leaves visible. */
-function visibleBox(slot: HTMLElement): { slot: Box; visible: Box } | null {
+function visibleBox(slot: HTMLElement): { slot: Box; visible: Box; radius: string } | null {
   // No client rects: the slot or an ancestor is `display: none`. `visibility`
   // inherits, so the slot's own computed value covers its ancestors too.
   if (!slot.isConnected || slot.getClientRects().length === 0) return null;
@@ -83,14 +99,20 @@ function visibleBox(slot: HTMLElement): { slot: Box; visible: Box } | null {
     right: document.documentElement.clientWidth,
     bottom: document.documentElement.clientHeight,
   });
+  const clips: Array<{ box: Box; style: CSSStyleDeclaration }> = [];
   for (let node = slot.parentElement; node && node !== document.body; node = node.parentElement) {
     const style = getComputedStyle(node);
     if (style.overflowX === "visible" && style.overflowY === "visible") continue;
-    const clip = node.getBoundingClientRect();
-    visible = intersect(visible, { left: clip.left, top: clip.top, right: clip.right, bottom: clip.bottom });
+    const rect = node.getBoundingClientRect();
+    const box = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+    clips.push({ box, style });
+    visible = intersect(visible, box);
     if (isEmpty(visible)) return null;
   }
-  return isEmpty(visible) ? null : { slot: slotBox, visible };
+  if (isEmpty(visible)) return null;
+  let corners = ["0px", "0px", "0px", "0px"];
+  for (const clip of clips) corners = sharedCorners(visible, clip.box, clip.style, corners);
+  return { slot: slotBox, visible, radius: corners.join(" ") };
 }
 
 /** An occluder's boxes; a `display: contents` wrapper contributes its children's. */
@@ -134,9 +156,10 @@ const placed = new Map<string, Placed>();
 /** Measure every guest's slot and write the frames that moved. Exported for the budget probe. */
 let dragApplied = false;
 
-export function placeWebSurfaces(): { visible: number } {
+export function placeWebSurfaces(): { visible: number; moved: number } {
   const drag = isSurfaceDragActive();
   dragApplied = drag;
+  let moved = 0;
   const occluderList: Box[] = [];
   for (const element of getWebSurfaceOccluders()) occluderBoxes(element, occluderList);
   let visibleCount = 0;
@@ -152,7 +175,7 @@ export function placeWebSurfaces(): { visible: number } {
       const holes = occluderList
         .map((box) => intersect(box, v))
         .filter((box) => !isEmpty(box));
-      key = [v.left, v.top, v.right, v.bottom, s.left, s.top, s.right, s.bottom, drag ? 1 : 0, clipPathFor(v, holes)].join(",");
+      key = [v.left, v.top, v.right, v.bottom, s.left, s.top, s.right, s.bottom, drag ? 1 : 0, boxes.radius, clipPathFor(v, holes)].join(",");
       if (key !== entry.key) {
         const frameStyle = entry.frame.style;
         frameStyle.visibility = "visible";
@@ -161,6 +184,7 @@ export function placeWebSurfaces(): { visible: number } {
         frameStyle.width = `${v.right - v.left}px`;
         frameStyle.height = `${v.bottom - v.top}px`;
         frameStyle.clipPath = clipPathFor(v, holes);
+        frameStyle.borderRadius = boxes.radius;
         frameStyle.pointerEvents = drag ? "none" : "auto";
         const guestStyle = entry.guest.style;
         guestStyle.left = `${s.left - v.left}px`;
@@ -169,6 +193,7 @@ export function placeWebSurfaces(): { visible: number } {
         guestStyle.height = `${s.bottom - s.top}px`;
       }
     }
+    if (key !== entry.key) moved += 1;
     if (key === "hidden" && entry.key !== "hidden") {
       // Hidden, not unmounted: the guest keeps its page. Its last size is kept
       // too, so showing it again does not make the page relayout twice.
@@ -177,7 +202,7 @@ export function placeWebSurfaces(): { visible: number } {
     }
     entry.key = key;
   }
-  return { visible: visibleCount };
+  return { visible: visibleCount, moved };
 }
 
 let loopFrames = 0;
@@ -185,8 +210,10 @@ let rafId = 0;
 
 function tick(): void {
   rafId = 0;
-  placeWebSurfaces();
-  if (isSurfaceDragActive()) loopFrames = SETTLE_FRAMES;
+  const { moved } = placeWebSurfaces();
+  // A slot still moving keeps the loop alive: the side panel slides in with a
+  // script-driven transform, which no resize or transition event reports.
+  if (moved > 0 || isSurfaceDragActive()) loopFrames = SETTLE_FRAMES;
   if (loopFrames > 0) {
     loopFrames -= 1;
     rafId = requestAnimationFrame(tick);
