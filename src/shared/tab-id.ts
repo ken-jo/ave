@@ -9,7 +9,7 @@
  * window ids restart with every launch, so a restored id could meet a new
  * window minting the same one.
  */
-export const TAB_ID_PATTERN = /^([a-z][a-z-]*):([0-9a-f]{8})-([1-9]\d*)$/;
+const TAB_ID_PATTERN = /^([a-z][a-z-]*):([0-9a-f]{8})-([1-9]\d*)$/;
 
 export function parseTabId(id: string): { kind: string; scope: string; n: number } | null {
   const match = TAB_ID_PATTERN.exec(id);

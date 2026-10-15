@@ -21,7 +21,7 @@ export type PanelCommandId =
   | "surface.reopenClosed"
   | "terminal.jumpToUnread";
 
-export interface PanelChord {
+interface PanelChord {
   /** `KeyboardEvent.key`, compared case-insensitively. */
   key: string;
   /** The platform's primary modifier: ⌘ on macOS, Ctrl elsewhere. */
@@ -48,7 +48,7 @@ export const PANEL_COMMANDS: readonly PanelCommand[] = [
   { id: "terminal.jumpToUnread", labelKey: "mainPanels.command.jumpToUnread", chord: { key: "u", primary: true, shift: true, alt: false }, hint: "⌘⇧U" },
 ];
 
-export function matchesPanelChord(
+function matchesPanelChord(
   event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">,
   chord: PanelChord,
   darwin: boolean,

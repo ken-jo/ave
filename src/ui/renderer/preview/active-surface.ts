@@ -16,7 +16,7 @@ import { useSyncExternalStore } from "react";
  * the single place the window's choice is made, and the one a main-side
  * listener subscribes to.
  */
-export type ActiveSurfaceKind = "terminal" | "browser";
+type ActiveSurfaceKind = "terminal" | "browser";
 
 export interface ActiveSurface {
   kind: ActiveSurfaceKind;

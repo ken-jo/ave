@@ -44,7 +44,7 @@ import {
 } from "../preview/web-surfaces.js";
 
 /** Above app content, below the `z-50` portal layer (popovers, menus, dialogs). */
-export const WEB_SURFACE_LAYER_Z = 40;
+const WEB_SURFACE_LAYER_Z = 40;
 /** Frames the loop keeps measuring after the last trigger, to follow transitions. */
 const SETTLE_FRAMES = 24;
 /** Low-rate safety pass while a guest is visible: catches moves nothing reported. */

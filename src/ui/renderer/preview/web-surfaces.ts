@@ -100,10 +100,6 @@ export function subscribeWebSurfaceLocations(listener: () => void): () => void {
   };
 }
 
-export function hasWebSurface(tabId: string): boolean {
-  return surfaces.some((surface) => surface.tabId === tabId);
-}
-
 /** The slot element the tab's guest is placed over, if one is mounted. */
 export function getWebSurfaceSlot(tabId: string): HTMLElement | null {
   return slots.get(tabId) ?? null;

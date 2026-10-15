@@ -31,7 +31,7 @@ export interface MainSurface {
 }
 
 /** What reopening a closed surface brings back: its kind and where it was. */
-export interface ClosedSurface {
+interface ClosedSurface {
   kind: MainSurfaceKind;
   url: string | null;
   /** A terminal's last directory; its replacement starts there. */
@@ -39,7 +39,7 @@ export interface ClosedSurface {
 }
 
 /** How many closed surfaces "reopen closed" remembers. */
-export const CLOSED_SURFACE_MEMORY = 10;
+const CLOSED_SURFACE_MEMORY = 10;
 
 export const SURFACE_KIND_OF_VIEW: Record<InstanceViewKey, MainSurfaceKind> = {
   terminal: "terminal",

@@ -20,7 +20,7 @@ export function isMovableTabKind(kind: WorkspaceTab["kind"]): kind is MovableTab
 }
 
 /** Where a dragged surface comes from. */
-export type SurfaceOrigin = { side: string } | { pane: string };
+type SurfaceOrigin = { side: string } | { pane: string };
 
 export interface SurfaceDragPayload {
   tabId: string;
