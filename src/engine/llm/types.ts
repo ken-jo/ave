@@ -96,6 +96,20 @@ export interface MessageMeta {
 
 
   compactedAt?: string;
+  /**
+   * The row exists only in the request being sent (per-turn context, a round
+   * nudge): it is never appended to history, so it is not part of the prefix
+   * the next request repeats. Transports that mark a reusable prefix stop the
+   * prefix before these rows.
+   */
+  requestOnly?: true;
+  /**
+   * The last N content parts of this user row exist only in the request being
+   * sent (the turn context, a round nudge). The row's own content precedes
+   * them, so a transport marking a reusable prefix ends it before these parts
+   * and the row repeats byte-identical without them next request.
+   */
+  requestOnlyParts?: number;
   /** Compact boundary marker (idempotency + revert anchor) */
   compactBoundary?: boolean;
 
@@ -112,6 +126,14 @@ export interface MessageMeta {
 
 
   systemNotice?: "context-error" | "stream-error" | "interrupted";
+  /**
+   * Directory instruction files appended to this tool_result on first touch
+   * (`engine/turn/directory-instructions.ts`): each file's project-relative
+   * path and the bytes its block added. A file counts as attached only while
+   * a row naming it still reaches the provider, so compaction that drops or
+   * stubs the row lets the next touch attach it again.
+   */
+  directoryInstructions?: { source: string; bytes: number }[];
   /**
    * Tool-result generic size cap marker (Issue #902).
    *
@@ -558,6 +580,12 @@ export interface StreamTurnParams {
    * vendors ignore it (see vendorSupportsLengthContinuation).
    */
   continuationPrefill?: boolean;
+  /**
+   * Stable key that groups requests sharing one reusable prompt prefix (the
+   * conversation's session id). Transports whose provider routes cached
+   * prefixes by a caller key forward it; the rest ignore it.
+   */
+  promptCacheKey?: string;
   /** Abort signal to cancel the streaming request. Providers forward to the underlying SDK when supported. */
   abortSignal?: AbortSignal;
 }
@@ -595,6 +623,12 @@ export interface LLMProvider {
    * Subscription usage is intentionally kept out of API-key pricing.
    */
   readonly subscriptionRuntime?: SubscriptionChatRuntimeSelection;
+  /**
+   * The model ids the subscription runtime's live catalog offers right now —
+   * the list its own session start re-checks a model against. Present only on
+   * a runtime with a selectable model; rejects when the catalog is unreachable.
+   */
+  listSubscriptionModels?(): Promise<readonly string[]>;
   /**
    * Optional transport-native input projection. Returning undefined preserves
    * the engine's generic estimator instead of widening provider failures into

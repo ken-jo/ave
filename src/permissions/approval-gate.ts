@@ -192,12 +192,12 @@ function auditSafeText(value: string): string {
 
 /**
  * Permission mode hint passed alongside an ApprovalRequest. Drives the
- * §S4 isReadOnly short-circuit: in "ask_all" and "plan" modes even
- * read-only tools must still show the approval dock.
+ * §S4 isReadOnly short-circuit: in "ask_all" mode even read-only tools
+ * must still show the approval dock.
  *
  * `undefined` → treat as "default" (standard read-only auto-approve).
  */
-export type ApprovalMode = "default" | "ask_all" | "plan" | "full_auto";
+export type ApprovalMode = "default" | "ask_all" | "full_auto";
 
 /**
  * Permission policy P2.5 — discriminated kinds for the approval dock.
@@ -324,14 +324,14 @@ export interface ApprovalRequest {
   };
   /**
    * §S4: tool self-declares it does not mutate state. When true and the
-   * current mode is not "plan", the approval dock is skipped and the call is
+   * current mode is not "ask_all", the approval dock is skipped and the call is
    * auto-approved with reason "read-only auto-approve".
    */
   isReadOnly?: boolean;
   /**
    * §S4: current permission mode. Drives the isReadOnly short-circuit:
    *   - "default" / "full_auto" / undefined → read-only tools auto-approve
-   *   - "ask_all" / "plan" → still show the approval dock
+   *   - "ask_all" → still show the approval dock
    */
   mode?: ApprovalMode;
   /**
@@ -1756,7 +1756,7 @@ export class ApprovalGate {
     //     agent-action and a rationale card are each a decision about the
     //     user's own authority, not about whether a child's call serves its
     //     task.
-    //   - mode: `ask_all` and `plan` are the user saying "show me every one of
+    //   - mode: `ask_all` is the user saying "show me every one of
     //     these", which a lane that answers some of them would contradict.
     //   - remote origin: a call a remote controller's turn raised is answered
     //     at the desk or not at all.
@@ -1780,7 +1780,6 @@ export class ApprovalGate {
       request.category === "tool" &&
       request.toolCategory !== "meta" &&
       request.mode !== "ask_all" &&
-      request.mode !== "plan" &&
       input.remoteControllerOrigin === undefined &&
       !input.forceExplicit &&
       !input.oneShotPermitBound &&
@@ -2300,7 +2299,7 @@ export class ApprovalGate {
       (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
       req.evaluationContext?.headless === false &&
       Boolean(req.evaluationContext.executionCwd) &&
-      !forceExplicit && req.mode !== "ask_all" && req.mode !== "plan" &&
+      !forceExplicit && req.mode !== "ask_all" &&
       remoteControllerOrigin === undefined && remoteControllerAuthority === undefined;
     const assessmentBasis = matchesReviewerApprovalBasis(reviewerApprovalBasis, req)
       ? reviewerApprovalBasis : undefined;
@@ -2419,7 +2418,7 @@ export class ApprovalGate {
     const canRememberRequest = durableApprovalRecordAllowed && !highRiskOneShot &&
       riskCeilingAtApproval !== "high" &&
       (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
-      !forceExplicit && req.mode !== "ask_all" && req.mode !== "plan" &&
+      !forceExplicit && req.mode !== "ask_all" &&
       remoteControllerOrigin === undefined && remoteControllerAuthority === undefined &&
       (requestedChoices === undefined || requestedChoices.includes("allow-always"));
     // One-shot requests never persist a working-directory identity. Do not make
@@ -2508,8 +2507,8 @@ export class ApprovalGate {
     }
 
     // §S4: isReadOnly short-circuit — if the tool self-declares read-only
-    // and we are NOT in plan mode, skip the approval dock. Plan
-    // mode still blocks (plan = dry-run / inspect only).
+    // and the user did not ask to see every prompt (`ask_all`), skip the
+    // approval dock.
     //
     // Permission policy P2.5: directory-confirm requests (kind="out-of-allowed-dir")
     // MUST NOT auto-approve via §S4 — even a read of an out-of-allowed
@@ -2518,7 +2517,6 @@ export class ApprovalGate {
       fullReq.isReadOnly === true &&
       oneShotPermitBinding === undefined &&
       fullReq.mode !== "ask_all" &&
-      fullReq.mode !== "plan" &&
       fullReq.kind !== "out-of-allowed-dir" &&
       fullReq.kind !== "agent-action" &&
       fullReq.kind !== "rationale"

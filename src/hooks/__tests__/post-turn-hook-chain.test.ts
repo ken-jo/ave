@@ -44,7 +44,7 @@ describe("PostTurnHookChain", () => {
       route: "chat",
     });
 
-    expect(result.compactedMessages).toBeNull();
+    expect(result.messagesForPersistence).toBe(messages);
     expect(saveSession).toHaveBeenCalledWith("session-disabled", messages);
   });
 
@@ -52,9 +52,9 @@ describe("PostTurnHookChain", () => {
   // boundary marker 생성 시나리오 자체 폐기. 동등 검증은 `runPreflightGuard` 의 LLM compact 경로
   // (engine 통합 테스트) 에서 다뤄짐 — `structured-compact.test.ts:compactWithBoundary` 참조.
 
-  it("runs mark-stale alone (no full compact) when threshold is not met", async () => {
-    vi.spyOn(console, "log").mockImplementation(() => {});
-
+  it("leaves earlier tool results untouched after a turn", async () => {
+    // Rewriting an earlier row after the turn would change the prefix the next
+    // request repeats. Stubbing belongs to compaction, not to the turn's end.
     const saveSession = vi.fn();
     const memoryManager = {
       saveSession,
@@ -69,7 +69,6 @@ describe("PostTurnHookChain", () => {
     } as unknown as SettingsService;
     const chain = new PostTurnHookChain({ memoryManager, settingsService });
 
-    // 10개 tool_result가 있는 히스토리 — 미세압축은 6개 strip, 임계치는 미달
     const messages: GenericMessage[] = [{ role: "user", content: "시작" }];
     for (let i = 0; i < 10; i++) {
       const id = `t${i}`;
@@ -85,6 +84,7 @@ describe("PostTurnHookChain", () => {
         content: "y".repeat(3000),
       });
     }
+    const before = structuredClone(messages);
 
     const result = await chain.run({
       sessionId: "session-micro",
@@ -95,40 +95,9 @@ describe("PostTurnHookChain", () => {
       route: "chat",
     });
 
-    expect(result.compactedMessages).not.toBeNull();
-    // full-compact 요약 marker 는 없음 (mark-stale 만 실행됨)
-    const marker = result.compactedMessages?.find(
-      (m) => m.role === "user" && m.meta?.compactBoundary === true,
-    );
-    expect(marker).toBeUndefined();
-    // 마킹된 (compactedAt set) tool_result 가 *memory 에서는 verbatim*
-    const marked =
-      result.compactedMessages?.filter(
-        (m) => m.role === "tool_result" && m.meta?.compactedAt !== undefined,
-      ) ?? [];
-    expect(marked.length).toBeGreaterThan(0);
-    for (const m of marked) {
-      if (m.role === "tool_result") {
-        // memory 의 content 는 *원본 그대로* (3000자) — saveSession 이 직렬화 시 stub/artifact 처리
-        expect(m.content.length).toBeGreaterThan(2000);
-        expect(m.content).not.toContain("[tool_result stripped");
-      }
-    }
-    // saveSession 은 raw marked history 를 받고, MemoryManager.saveSession 이
-    // JSONL stub + file-backed artifact 직렬화를 담당한다.
-    expect(saveSession).toHaveBeenCalledTimes(1);
-    const persisted = saveSession.mock.calls[0]?.[1] as GenericMessage[];
-    expect(persisted).toBeDefined();
-    const persistedMarked = persisted.filter(
-      (m) => m.role === "tool_result" && m.meta?.compactedAt !== undefined,
-    );
-    expect(persistedMarked.length).toBeGreaterThan(0);
-    for (const m of persistedMarked) {
-      if (m.role === "tool_result") {
-        expect(m.content.length).toBeGreaterThan(2000);
-        expect(m.content).not.toContain("[tool_result stripped");
-      }
-    }
+    expect(result.messagesForPersistence).toEqual(before);
+    expect(result.messagesForPersistence.some((m) => m.meta?.compactedAt !== undefined)).toBe(false);
+    expect(saveSession).toHaveBeenCalledWith("session-micro", messages);
   });
 
   it("detect-checkpoint: returns detector result with newTitle and checkpointSuggested", async () => {

@@ -35,7 +35,7 @@ import { isIP } from "node:net";
 import { maskSensitiveData, scrubSecretsForLLM } from "../../audit/dlp-filter.js";
 import { isGloballyRoutableAddress } from "../../core/network-guard.js";
 import { PERMISSION_REVIEWER_SYSTEM_PROMPT } from "../../shared/permission-reviewer-framework.js";
-import { getDottedFieldValue } from "../../shared/dotted-field-value.js";
+import { selectDeclaredPathValues } from "../../shared/dotted-field-value.js";
 import { extractShellCommands } from "../../shared/shell-command-fields.js";
 import { stripCommandPath, tokenizeShell, type ShellLeaf } from "../../shared/shell-tokenizer.js";
 import {
@@ -1718,8 +1718,7 @@ function isGraphMetadataRead(input: Record<string, unknown>, target: NetworkTarg
 function extractDeclaredPaths(ctx: ToolInvocationContext): string[] {
   const paths: string[] = [];
   for (const field of ctx.pathFields) {
-    const candidate = getDottedFieldValue(ctx.finalInput, field);
-    const values = Array.isArray(candidate) ? candidate : [candidate];
+    const values = selectDeclaredPathValues(ctx.finalInput, field);
     for (const value of values) {
       if (typeof value !== "string" || value.length === 0) continue;
       try {

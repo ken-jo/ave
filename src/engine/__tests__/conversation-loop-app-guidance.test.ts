@@ -59,7 +59,6 @@ interface ExecCall {
 
 function makePostTurnHookSpy() {
   const run = vi.fn(async (ctx: PostTurnHookContext) => ({
-    compactedMessages: null,
     detector: {
       cleanedText: ctx.output,
       newTitle: null,

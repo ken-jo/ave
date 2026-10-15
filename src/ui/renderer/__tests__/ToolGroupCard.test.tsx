@@ -600,7 +600,7 @@ describe("ToolGroupCard", () => {
     }));
   });
 
-  // File edit diff UI — edit_file / apply_patch / write_file render an inline
+  // File edit diff UI — edit_file / multi_edit / write_file render an inline
   // unified-diff card with theme-adaptive colors. Data comes from `tool.input`
   // for edit/patch (no backend change), and from `ave.write_file` JSON for
   // writes (WriteFileTool captures before-snapshot).
@@ -636,12 +636,12 @@ describe("ToolGroupCard", () => {
     expect(added?.className).not.toContain("text-success-foreground");
   });
 
-  it("single apply_patch with 2 replacements: renders 2 hunks", () => {
+  it("single multi_edit with 2 replacements: renders 2 hunks", () => {
     const group = makeGroup({
       tools: [
         {
           toolUseId: "tu-patch",
-          name: "apply_patch",
+          name: "multi_edit",
           input: {
             path: "src/bar.ts",
             replacements: [

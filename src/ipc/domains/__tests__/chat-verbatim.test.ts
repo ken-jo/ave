@@ -2400,3 +2400,27 @@ describe("an interrupt send while a turn is running", () => {
     await first;
   });
 });
+
+describe("ave:chat:compact focus", () => {
+  const SESSION_ID = "df98a854-4084-4ba1-8fbc-f00faea193bf";
+
+  it("passes a trimmed focus to manual compaction and omits an empty one", async () => {
+    const loop = makeConversationLoop(SESSION_ID, []);
+    loop.manualCompact.mockResolvedValue({ compacted: false, compactedAt: null, summary: "noop", removedMessageCount: 0 });
+    await setupHandlers(loop);
+
+    await invokeRegisteredHandler(handlers, CHANNELS.chat.compact, "main", "  the auth migration ");
+    await invokeRegisteredHandler(handlers, CHANNELS.chat.compact, "main", "   ");
+
+    expect(loop.manualCompact.mock.calls[0]![0]).toMatchObject({ focus: "the auth migration" });
+    expect(loop.manualCompact.mock.calls[1]![0]).not.toHaveProperty("focus");
+  });
+
+  it("rejects a focus that is not a string", async () => {
+    const loop = makeConversationLoop(SESSION_ID, []);
+    await setupHandlers(loop);
+
+    expect(() => invokeRegisteredHandler(handlers, CHANNELS.chat.compact, "main", { text: "x" })).toThrow("invalid compact focus");
+    expect(loop.manualCompact).not.toHaveBeenCalled();
+  });
+});
