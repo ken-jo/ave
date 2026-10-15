@@ -33,6 +33,8 @@ import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 import { TranscriptRenderer } from "./TranscriptRenderer.js";
 import { Composer, ComposerFrame, type ComposerHandle } from "./Composer.js";
+import { ActiveSurfaceChip } from "./ActiveSurfaceChip.js";
+import { registerComposerTarget } from "../preview/composer-targets.js";
 import { ComposerApiKeyChip, resolveComposerRuntimeGates } from "./ChatComposerDock.js";
 import { AttachButton, ShortcutsButton, TurnControlButton } from "./InputActionBar.js";
 import { MessageQueuePanel } from "./MessageQueuePanel.js";
@@ -112,9 +114,14 @@ interface SideChatViewProps {
   onSessionIdChange?: ((sessionId: string) => void) | undefined;
   /** Lets the retained panel observe this exact claim after the side view closes. */
   onSessionClaim?: ((isCurrent: () => boolean) => void) | undefined;
+  /**
+   * The conversation group whose side panel holds this chat: its composer is
+   * one a terminal block in that panel can be attached to.
+   */
+  chatGroupId?: string | undefined;
 }
 
-export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSessionIdChange, onSessionClaim }: SideChatViewProps) {
+export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSessionIdChange, onSessionClaim, chatGroupId }: SideChatViewProps) {
   const { t } = useTranslation();
   // If side chat is unavailable (preload without the surface), surface a stable
   // disabled state rather than a broken composer.
@@ -138,6 +145,7 @@ export function SideChatView({ api, openRequest, onSessionsChanged, shown = true
       shown={shown}
       onSessionIdChange={onSessionIdChange}
       onSessionClaim={onSessionClaim}
+      chatGroupId={chatGroupId}
     />
   );
 }
@@ -150,6 +158,7 @@ function SideChatSession({
   shown,
   onSessionIdChange,
   onSessionClaim,
+  chatGroupId,
 }: SideChatViewProps & { sideChat: NonNullable<AveApi["sideChat"]>; shown: boolean }) {
   const { t } = useTranslation();
   const chatContext = useOptionalChatContext();
@@ -388,7 +397,7 @@ function SideChatSession({
     handleComposerSend({ inputOrigin: "user-keyboard", token: "" });
   }, [handleComposerSend]);
 
-  const { handleAttach, handleDropFiles } = useAttachmentPicker({
+  const { handleAttach, handleDropFiles, attachPastedText } = useAttachmentPicker({
     attachmentNCounter,
     setAttachments,
     setQuestion: setDraft,
@@ -399,6 +408,25 @@ function SideChatSession({
     filesEnabled,
     imageAttachmentLimits: subscriptionRuntimePolicy?.imageAttachmentLimits,
   });
+
+  // This side chat's composer, as a place a terminal block in the same side
+  // panel can be attached to — while it is the tab the panel shows (see
+  // `preview/composer-targets.ts`).
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const attachPastedTextRef = useRef(attachPastedText);
+  attachPastedTextRef.current = attachPastedText;
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  useEffect(() => {
+    if (chatGroupId === undefined) return undefined;
+    return registerComposerTarget({
+      groupId: chatGroupId,
+      kind: "side-chat",
+      attach: (text) => attachPastedTextRef.current(text),
+      available: () => shownRef.current,
+      element: () => dockRef.current,
+    });
+  }, [chatGroupId]);
 
   return (
     <div className="relative flex h-full min-h-0 flex-col" data-testid="side-chat-view" data-approval-scope>
@@ -467,6 +495,7 @@ function SideChatSession({
           main dock: the queue panel, the field, and the action row below all
           carry test ids the main dock also renders. */}
       <div
+        ref={dockRef}
         className="shrink-0 border-t px-2 pb-2 pt-1.5"
         data-testid="side-chat-composer-dock"
         data-composer-surface="side"
@@ -490,6 +519,7 @@ function SideChatSession({
             />
           </div>
         ) : null}
+        <ActiveSurfaceChip />
         <ComposerFrame>
           <Composer
             ref={composerRef}

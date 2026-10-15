@@ -43,6 +43,8 @@ const FIXED_POSITIONING_ALLOWED: Record<string, string> = {
     "developer chrome behind AVE_DEV that inspects the window; not a product surface",
   "components/DevComponentLabels.tsx":
     "developer overlay behind AVE_DEV that measures the window; it never participates in layout",
+  "components/WebSurfaceLayer.tsx":
+    "the window-level web-surface layer: each browser tab's <webview> is mounted once for the window (re-parenting it would reload the page), so its frame is placed in viewport coordinates over the slot in whichever pane or side panel shows it, clipped to that slot",
 };
 
 /** Files that may step off the z ladder with an arbitrary value, and why. */

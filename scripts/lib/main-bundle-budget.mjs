@@ -71,6 +71,15 @@ export function isSafeMainBundleManifestPath(path) {
  * boot-time sandbox module; the handoff itself is loaded on spawn. Measured on that
  * `main`: entry 423_113, initial 5_390_708, total 9_035_522; the initial ceiling moves to
  * 5_395_000.
+ * The main-area terminal and web panels add renderer strings to the one i18n catalog main
+ * also imports (that catalog is shared by design), plus the `terminal`/`web` view keys;
+ * with them the measurement is entry 423_073, initial 5_390_727, and the initial ceiling
+ * moves to 5_395_000. The saved main-window layout is checked by the settings store when
+ * the profile is read at boot (`shared/main-layout.ts`, one parser for both processes),
+ * so it is initial too, together with the terminal tab-id scope the parser checks ids
+ * against (`shared/tab-id.ts`), and main-window closing a closed window's terminals; with
+ * them the measurement is entry 423_380, initial 5_399_503, total 9_041_529, and the
+ * initial ceiling moves to 5_400_000.
  * The agent browser tools keep their schemas, execute bodies and CDP page actions out of
  * the initial graph (desktop-boot and dynamic imports); what joins it is what boot wires
  * eagerly: the browser tab registry and its IPC domain, guest tracking on did-attach, the
@@ -83,10 +92,15 @@ export function isSafeMainBundleManifestPath(path) {
  * 5_415_000 to cover that functionality.
  * The terminal own-tty wrap joined with that `main` measures entry 425_096,
  * initial 5_415_405, total 9_097_784; the initial ceiling moves to 5_420_000.
+ * The main-area panels joined with that main (the browser agent tools beside the
+ * panels' layout parser, terminal ownership and window-close cleanup) measure entry
+ * 425_328, initial 5_423_655, total 9_102_793; the initial ceiling moves to 5_425_000.
+ * The terminal own-tty wrap joined with that `main` measures entry 425_403,
+ * initial 5_425_510, total 9_107_949; the initial ceiling moves to 5_430_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_420_000,
+  initialBytes: 5_430_000,
   totalBytes: 11_050_000,
 });
 

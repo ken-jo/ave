@@ -26,6 +26,7 @@ import {
   formatBlockForChat,
   formatBlockForCopy,
 } from "../utils/terminal-block-text.js";
+import type { AttachTextResult } from "../preview/composer-targets.js";
 
 type TerminalApi = NonNullable<AveApi["terminal"]>;
 
@@ -38,13 +39,16 @@ export function TerminalBlocksBar({
   tabLabel,
   revision,
   onAttachText,
+  onCwd,
 }: {
   terminalApi: TerminalApi;
   tabId: string;
   tabLabel: string;
   /** Bumped by the terminal view whenever a block may have started or ended. */
   revision: number;
-  onAttachText?: (text: string) => boolean;
+  onAttachText?: (text: string) => AttachTextResult;
+  /** The directory the shell last reported, from the newest block that has one. */
+  onCwd?: (cwd: string) => void;
 }): ReactElement {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -76,6 +80,15 @@ export function TerminalBlocksBar({
     };
   }, [terminalApi, tabId, revision]);
 
+  // Blocks are newest first; the newest one with a reported cwd is where the
+  // shell last said it was.
+  const latestCwd = blocks.find((block) => block.cwd)?.cwd ?? null;
+  useEffect(() => {
+    // Nothing reported yet (the list is still loading, or the shell sends no
+    // markers) is not "no directory": what was known stays.
+    if (latestCwd) onCwd?.(latestCwd);
+  }, [onCwd, latestCwd]);
+
   const visible = useMemo(() => filterBlocksByCommand(blocks, query), [blocks, query]);
   const latestDone = useMemo(() => blocks.find((block) => block.status === "done") ?? blocks[0] ?? null, [blocks]);
 
@@ -103,8 +116,9 @@ export function TerminalBlocksBar({
     (blockId: number) => {
       if (!onAttachText) return;
       void withBlock(blockId, ({ chat }) => {
-        if (!onAttachText(chat)) {
-          setNotice(t("terminalBlocks.attachFull"));
+        const result = onAttachText(chat);
+        if (result !== true) {
+          setNotice(t(result === "no-composer" ? "terminalBlocks.attachNoComposer" : "terminalBlocks.attachFull"));
           return;
         }
         setAttachedId(blockId);

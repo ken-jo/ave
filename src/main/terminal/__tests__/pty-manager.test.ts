@@ -155,10 +155,12 @@ vi.mock("node-pty", () => ({
 // Module under test — imported AFTER mocks.
 import {
   spawnTerminal,
+  terminalOwnedBy,
   writeTerminal,
   resizeTerminal,
   killTerminal,
   killAllTerminals,
+  killTerminalsOwnedBy,
   forceKillAllTerminalsForShutdown,
   setTerminalEmitter,
   __resetTerminalsForTest,
@@ -175,12 +177,18 @@ import { getTerminalBlockTracker, listTerminalBlockTabs } from "../terminal-bloc
 const ROOT = canonicalizePathForMatch(process.cwd());
 
 let emitted: Array<{ event: string; payload: unknown }> = [];
-const emit: TerminalEmit = (event, payload) => emitted.push({ event, payload });
+/** The window each emitted event was addressed to, index for index with `emitted`. */
+let emittedOwners: Array<number | null> = [];
+const emit: TerminalEmit = (event, payload, ownerWindowId) => {
+  emitted.push({ event, payload });
+  emittedOwners.push(ownerWindowId);
+};
 
 beforeEach(() => {
   gateActive = true;
   shellContained = true;
   emitted = [];
+  emittedOwners = [];
   lastPty = null;
   spawnedPtys = [];
   wrapWorkerCommandMock.mockClear();
@@ -205,7 +213,7 @@ afterEach(() => {
 describe("pty-manager fail-closed", () => {
   it("refuses to spawn when the gate is inactive", async () => {
     gateActive = false;
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("not-shell-contained");
     expect(ptySpawnMock).not.toHaveBeenCalled();
@@ -214,9 +222,17 @@ describe("pty-manager fail-closed", () => {
 
   it("refuses to spawn when the sandbox is not shell-contained (e.g. Windows fs+network partial)", async () => {
     shellContained = false;
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("not-shell-contained");
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses an id that is not a terminal tab id, before anything reaches a shell", async () => {
+    for (const tabId of ["terminal:1", "browser:0000000a-1", "terminal:0000000a-1; rm -rf /", "terminal:ZZZZZZZZ-1"]) {
+      const res = await spawnTerminal({ tabId });
+      expect(res).toEqual({ ok: false, reason: "bad-request", message: "tabId is not a terminal tab id" });
+    }
     expect(ptySpawnMock).not.toHaveBeenCalled();
   });
 
@@ -230,7 +246,7 @@ describe("pty-manager fail-closed", () => {
 describe("pty-manager happy path (fs-contained)", () => {
   it("wraps with the restated read+write sensitive floors + a workspace-anchored cwd jail and spawns the wrapped argv", async () => {
     // No cwd supplied (the production renderer path) → default = workspace root.
-    const res = await spawnTerminal({ tabId: "terminal:1", cols: 120, rows: 40 });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1", cols: 120, rows: 40 });
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.replayed).toBe(false);
 
@@ -264,6 +280,8 @@ describe("pty-manager happy path (fs-contained)", () => {
     expect(opts.cols).toBe(120);
     expect(opts.rows).toBe(40);
     expect(opts.env.TERM).toBe("xterm-256color");
+    // The stable terminal id reaches the shell, whatever view the tab is shown in.
+    expect(opts.env.AVE_TERMINAL_ID).toBe("terminal:0000000a-1");
     expect(opts.env.HOME).toBe(sandboxHome);
   });
 
@@ -271,7 +289,7 @@ describe("pty-manager happy path (fs-contained)", () => {
     vi.stubEnv("SHELL", "/bin/sh");
     let res: Awaited<ReturnType<typeof spawnTerminal>>;
     try {
-      res = await spawnTerminal({ tabId: "terminal:1" });
+      res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     } finally {
       vi.unstubAllEnvs();
     }
@@ -296,7 +314,7 @@ describe("pty-manager happy path (fs-contained)", () => {
       writeFileSync(join(path, "tmp"), "");
       return { path, env: { HOME: path }, cleanup: sandboxHomeCleanupMock };
     });
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     create.mockRestore();
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("spawn-failed");
@@ -306,7 +324,7 @@ describe("pty-manager happy path (fs-contained)", () => {
 
   it("honors a renderer-supplied cwd that is WITHIN the workspace root", async () => {
     const inside = `${ROOT}/proj`;
-    const res = await spawnTerminal({ tabId: "terminal:1", cwd: inside });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: inside });
     expect(res.ok).toBe(true);
     const spawnArgs = ptySpawnMock.mock.calls[0] as [string, string[], { cwd: string }];
     expect(spawnArgs[2].cwd).toBe(inside);
@@ -315,21 +333,21 @@ describe("pty-manager happy path (fs-contained)", () => {
   });
 
   it("streams pty output to the emitter and buffers it for replay", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
     lastPty?.emitData("hello");
-    expect(emitted).toContainEqual({ event: "data", payload: { tabId: "terminal:1", chunk: "hello" } });
+    expect(emitted).toContainEqual({ event: "data", payload: { tabId: "terminal:0000000a-1", chunk: "hello" } });
   });
 
   it("forwards input + resize to the pty", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
-    writeTerminal("terminal:1", "ls\n");
-    resizeTerminal("terminal:1", 100, 30);
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    writeTerminal("terminal:0000000a-1", "ls\n");
+    resizeTerminal("terminal:0000000a-1", 100, 30);
     expect(lastPty?.written).toContain("ls\n");
     expect(lastPty?.resized).toContainEqual([100, 30]);
   });
 
   it("emits exit + decrements ASRT state when the pty exits", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
     lastPty?.emitExit(0);
     expect(emitted.some((e) => e.event === "exit")).toBe(true);
     expect(cleanupMock).toHaveBeenCalled();
@@ -339,16 +357,16 @@ describe("pty-manager happy path (fs-contained)", () => {
   });
 
   it("is idempotent per tab: a second spawn replays the ring and does not start a second shell", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
     lastPty?.emitData("scrollback");
     emitted = [];
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.replayed).toBe(true);
     // no second pty spawn.
     expect(ptySpawnMock).toHaveBeenCalledTimes(1);
     // ring replayed.
-    expect(emitted).toContainEqual({ event: "data", payload: { tabId: "terminal:1", chunk: "scrollback" } });
+    expect(emitted).toContainEqual({ event: "data", payload: { tabId: "terminal:0000000a-1", chunk: "scrollback" } });
   });
 
   it("shares an in-flight same-tab spawn instead of creating two PTYs", async () => {
@@ -357,8 +375,8 @@ describe("pty-manager happy path (fs-contained)", () => {
       releaseWrap = resolve;
     }));
 
-    const first = spawnTerminal({ tabId: "terminal:1" });
-    const overlapping = spawnTerminal({ tabId: "terminal:1" });
+    const first = spawnTerminal({ tabId: "terminal:0000000a-1" });
+    const overlapping = spawnTerminal({ tabId: "terminal:0000000a-1" });
     expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
     releaseWrap?.({ argv: ["sandbox-exec", "/bin/bash"], env: {} });
 
@@ -375,8 +393,8 @@ describe("pty-manager happy path (fs-contained)", () => {
       releaseWrap = resolve;
     }));
 
-    const spawn = spawnTerminal({ tabId: "terminal:closing" });
-    killTerminal("terminal:closing");
+    const spawn = spawnTerminal({ tabId: "terminal:0000000a-11" });
+    killTerminal("terminal:0000000a-11");
     releaseWrap?.({ argv: ["sandbox-exec", "/bin/bash"], env: {} });
 
     await expect(spawn).resolves.toMatchObject({ ok: false, reason: "spawn-failed" });
@@ -389,32 +407,38 @@ describe("pty-manager happy path (fs-contained)", () => {
 
 describe("pty-manager lifecycle", () => {
   it("kill tears down the pty + decrements ASRT state", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
-    killTerminal("terminal:1");
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    killTerminal("terminal:0000000a-1");
     expect(lastPty?.killed).toBe(true);
     expect(cleanupMock).not.toHaveBeenCalled();
     expect(sandboxHomeCleanupMock).not.toHaveBeenCalled();
     expect(__terminalSessionCountForTest()).toBe(1);
-    writeTerminal("terminal:1", "stale input\n");
-    resizeTerminal("terminal:1", 140, 50);
+    writeTerminal("terminal:0000000a-1", "stale input\n");
+    resizeTerminal("terminal:0000000a-1", 140, 50);
     expect(lastPty?.written).toEqual([]);
     expect(lastPty?.resized).toEqual([]);
-    const replay = await spawnTerminal({ tabId: "terminal:1" });
-    expect(replay.ok).toBe(true);
-    if (replay.ok) expect(replay.replayed).toBe(true);
+    // A spawn under the closing id does not attach to the dying shell, and no
+    // second PTY starts while it is alive: it waits for the exit.
+    const closing = lastPty!;
+    const next = spawnTerminal({ tabId: "terminal:0000000a-1" });
+    await Promise.resolve();
     expect(ptySpawnMock).toHaveBeenCalledTimes(1);
-    lastPty?.emitExit(0);
+    closing.emitExit(0);
     expect(cleanupMock).toHaveBeenCalledTimes(1);
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
+    expect(await next).toEqual({ ok: true, tabId: "terminal:0000000a-1", replayed: false });
+    expect(ptySpawnMock).toHaveBeenCalledTimes(2);
+    killTerminal("terminal:0000000a-1");
+    lastPty?.emitExit(0);
     expect(__terminalSessionCountForTest()).toBe(0);
   });
 
   it("retains a closing session and force-kills a PTY that ignores SIGHUP", async () => {
     vi.useFakeTimers();
     try {
-      await spawnTerminal({ tabId: "terminal:1" });
+      await spawnTerminal({ tabId: "terminal:0000000a-1" });
       const pty = lastPty;
-      killTerminal("terminal:1");
+      killTerminal("terminal:0000000a-1");
       expect(pty?.killSignals).toEqual([undefined]);
       expect(__terminalSessionCountForTest()).toBe(1);
 
@@ -431,8 +455,8 @@ describe("pty-manager lifecycle", () => {
   });
 
   it("killAllTerminals kills every live session", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
-    await spawnTerminal({ tabId: "terminal:2" });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    await spawnTerminal({ tabId: "terminal:0000000a-2" });
     expect(__terminalSessionCountForTest()).toBe(2);
     const killed = killAllTerminals();
     expect(killed).toBe(2);
@@ -442,7 +466,7 @@ describe("pty-manager lifecycle", () => {
   });
 
   it("app shutdown sends SIGKILL immediately and awaits definitive exits", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
     const pty = lastPty;
     const shutdown = forceKillAllTerminalsForShutdown();
     expect(pty?.killSignals).toEqual(["SIGKILL"]);
@@ -459,7 +483,7 @@ describe("pty-manager lifecycle", () => {
       releaseWrap = resolve;
     }));
 
-    const spawn = spawnTerminal({ tabId: "terminal:starting" });
+    const spawn = spawnTerminal({ tabId: "terminal:0000000a-14" });
     const shutdown = forceKillAllTerminalsForShutdown();
     releaseWrap?.({ argv: ["sandbox-exec", "/bin/bash"], env: {} });
 
@@ -469,21 +493,21 @@ describe("pty-manager lifecycle", () => {
     expect(cleanupMock).toHaveBeenCalledTimes(1);
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
     expect(__terminalSessionCountForTest()).toBe(0);
-    await expect(spawnTerminal({ tabId: "terminal:late" }))
+    await expect(spawnTerminal({ tabId: "terminal:0000000a-12" }))
       .resolves.toMatchObject({ ok: false, reason: "spawn-failed" });
   });
 });
 
 describe("pty-manager cwd validation (write-jail anchor)", () => {
   it("defaults the cwd to the workspace root when none is supplied (never $HOME)", async () => {
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     expect(res.ok).toBe(true);
     const spawnArgs = ptySpawnMock.mock.calls[0] as [string, string[], { cwd: string }];
     expect(spawnArgs[2].cwd).toBe(ROOT);
   });
 
   it("rejects a renderer-supplied cwd OUTSIDE the workspace root (no $HOME write-jail)", async () => {
-    const res = await spawnTerminal({ tabId: "terminal:1", cwd: "/etc" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: "/etc" });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("bad-request");
     // No PTY spawned for a rejected cwd.
@@ -491,10 +515,168 @@ describe("pty-manager cwd validation (write-jail anchor)", () => {
   });
 
   it("rejects a relative (non-absolute) cwd", async () => {
-    const res = await spawnTerminal({ tabId: "terminal:1", cwd: "relative/path" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: "relative/path" });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("bad-request");
     expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("pty-manager window ownership (two windows)", () => {
+  it("keeps a terminal to the window that spawned it: another window cannot attach, type into, or claim it", async () => {
+    expect((await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 1 })).ok).toBe(true);
+    expect(terminalOwnedBy("terminal:0000000a-1", 1)).toBe(true);
+    expect(terminalOwnedBy("terminal:0000000a-1", 2)).toBe(false);
+    // The second window's spawn of the same id is refused, and no second shell starts.
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 2 })).toEqual({
+      ok: false,
+      reason: "bad-request",
+      message: "terminal tab belongs to another window",
+    });
+    expect(ptySpawnMock).toHaveBeenCalledTimes(1);
+    // Its own id in the same window form is its own terminal.
+    expect((await spawnTerminal({ tabId: "terminal:0000000b-1", ownerWindowId: 2 })).ok).toBe(true);
+    expect(ptySpawnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("addresses every output and exit to the owning window only", async () => {
+    await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 1 });
+    const first = lastPty!;
+    await spawnTerminal({ tabId: "terminal:0000000b-1", ownerWindowId: 2 });
+    const second = lastPty!;
+    emitted.length = 0;
+    emittedOwners.length = 0;
+    first.emitData("from one");
+    second.emitData("from two");
+    first.emitExit(0);
+    expect(emitted.map((entry, index) => [entry.event, (entry.payload as { tabId: string }).tabId, emittedOwners[index]])).toEqual([
+      ["data", "terminal:0000000a-1", 1],
+      ["data", "terminal:0000000b-1", 2],
+      ["exit", "terminal:0000000a-1", 1],
+    ]);
+    // An exited shell no longer holds its id.
+    expect(terminalOwnedBy("terminal:0000000a-1", 2)).toBe(true);
+  });
+});
+
+describe("pty-manager window close (close, then reopen and restore)", () => {
+  it("closes a closed window's shells, and the next window's restore of the same id gets a new shell once the old one exits", async () => {
+    expect((await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 1 })).ok).toBe(true);
+    const old = lastPty!;
+    expect((await spawnTerminal({ tabId: "terminal:0000000b-1", ownerWindowId: 2 })).ok).toBe(true);
+    const otherWindow = lastPty!;
+
+    expect(killTerminalsOwnedBy(1)).toBe(1);
+    expect(old.killed).toBe(true);
+    expect(otherWindow.killed).toBe(false);
+    // The closed window no longer owns the id.
+    expect(terminalOwnedBy("terminal:0000000a-1", 3)).toBe(true);
+
+    // The reopened window restores the saved layout under the same id.
+    let settled = false;
+    const restored = spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 3 }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    // Not attached to the dying shell: it waits for it.
+    expect(settled).toBe(false);
+    old.emitExit(129);
+    expect(await restored).toEqual({ ok: true, tabId: "terminal:0000000a-1", replayed: false });
+    expect(ptySpawnMock).toHaveBeenCalledTimes(3);
+    expect(terminalOwnedBy("terminal:0000000a-1", 3)).toBe(true);
+    expect(terminalOwnedBy("terminal:0000000a-1", 1)).toBe(false);
+  });
+
+  it("cancels a closed window's spawn still starting, and the restore after it starts fresh", async () => {
+    const starting = spawnTerminal({ tabId: "terminal:0000000a-2", ownerWindowId: 1 });
+    expect(killTerminalsOwnedBy(1)).toBe(1);
+    const restored = await spawnTerminal({ tabId: "terminal:0000000a-2", ownerWindowId: 3 });
+    expect((await starting).ok).toBe(false);
+    expect(restored).toEqual({ ok: true, tabId: "terminal:0000000a-2", replayed: false });
+    expect(terminalOwnedBy("terminal:0000000a-2", 3)).toBe(true);
+  });
+
+  it("drops a waiting restore when its window closes too: no shell starts for a window that is gone", async () => {
+    expect((await spawnTerminal({ tabId: "terminal:0000000a-4", ownerWindowId: 1 })).ok).toBe(true);
+    const old = lastPty!;
+    killTerminalsOwnedBy(1);
+    const waiting = spawnTerminal({ tabId: "terminal:0000000a-4", ownerWindowId: 3 });
+    // The waiting window holds the id: a third window cannot take it meanwhile.
+    expect(terminalOwnedBy("terminal:0000000a-4", 3)).toBe(true);
+    expect(terminalOwnedBy("terminal:0000000a-4", 5)).toBe(false);
+    expect(killTerminalsOwnedBy(3)).toBe(1);
+    expect(await waiting).toEqual({ ok: false, reason: "spawn-failed", message: "terminal spawn cancelled" });
+    old.emitExit(129);
+    await Promise.resolve();
+    expect(ptySpawnMock).toHaveBeenCalledTimes(1);
+    expect(__terminalSessionCountForTest()).toBe(0);
+    expect(terminalOwnedBy("terminal:0000000a-4", 5)).toBe(true);
+  });
+
+  it("clears the wait's deadline timer when the wait is cancelled", async () => {
+    vi.useFakeTimers();
+    try {
+      expect((await spawnTerminal({ tabId: "terminal:0000000a-6", ownerWindowId: 1 })).ok).toBe(true);
+      killTerminalsOwnedBy(1);
+      // The old shell's SIGKILL escalation timer.
+      const before = vi.getTimerCount();
+      const waiting = spawnTerminal({ tabId: "terminal:0000000a-6", ownerWindowId: 3 });
+      expect(vi.getTimerCount()).toBe(before + 1);
+      killTerminalsOwnedBy(3);
+      expect(await waiting).toEqual({ ok: false, reason: "spawn-failed", message: "terminal spawn cancelled" });
+      expect(vi.getTimerCount()).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds the whole wait by one deadline, also behind a cancelled spawn that is slow to settle", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseWrap!: () => void;
+      wrapWorkerCommandMock.mockImplementationOnce(() => new Promise((resolve) => {
+        releaseWrap = () => resolve({ argv: ["/bin/zsh"], env: {} });
+      }));
+      const starting = spawnTerminal({ tabId: "terminal:0000000a-5", ownerWindowId: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      killTerminalsOwnedBy(1);
+      const restored = spawnTerminal({ tabId: "terminal:0000000a-5", ownerWindowId: 3 });
+      await vi.advanceTimersByTimeAsync(4_999);
+      let settled = false;
+      void restored.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await restored).toEqual({
+        ok: false,
+        reason: "still-closing",
+        message: "the previous shell for this tab is still closing",
+      });
+      releaseWrap();
+      expect((await starting).ok).toBe(false);
+      expect(ptySpawnMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses clearly, rather than hanging, when the old shell will not exit", async () => {
+    vi.useFakeTimers();
+    try {
+      expect((await spawnTerminal({ tabId: "terminal:0000000a-3", ownerWindowId: 1 })).ok).toBe(true);
+      killTerminalsOwnedBy(1);
+      const restored = spawnTerminal({ tabId: "terminal:0000000a-3", ownerWindowId: 3 });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await restored).toEqual({
+        ok: false,
+        reason: "still-closing",
+        message: "the previous shell for this tab is still closing",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -502,11 +684,11 @@ describe("pty-manager anti-DoS caps", () => {
   it("refuses to spawn past the concurrent-session cap", async () => {
     const MAX = 16;
     for (let i = 0; i < MAX; i++) {
-      const res = await spawnTerminal({ tabId: `terminal:${i}` });
+      const res = await spawnTerminal({ tabId: `terminal:0000000a-${i + 100}` });
       expect(res.ok).toBe(true);
     }
     expect(__terminalSessionCountForTest()).toBe(MAX);
-    const over = await spawnTerminal({ tabId: "terminal:overflow" });
+    const over = await spawnTerminal({ tabId: "terminal:0000000a-13" });
     expect(over.ok).toBe(false);
     if (!over.ok) expect(over.reason).toBe("too-many-terminals");
     // No extra PTY spawned past the cap.
@@ -515,21 +697,21 @@ describe("pty-manager anti-DoS caps", () => {
 
   it("replaying an EXISTING tab at the cap is still allowed (does not count as new)", async () => {
     const MAX = 16;
-    for (let i = 0; i < MAX; i++) await spawnTerminal({ tabId: `terminal:${i}` });
+    for (let i = 0; i < MAX; i++) await spawnTerminal({ tabId: `terminal:0000000a-${i + 100}` });
     // Remount of an existing tab replays — must NOT be rejected by the cap.
-    const replay = await spawnTerminal({ tabId: "terminal:0" });
+    const replay = await spawnTerminal({ tabId: "terminal:0000000a-100" });
     expect(replay.ok).toBe(true);
     if (replay.ok) expect(replay.replayed).toBe(true);
   });
 
   it("drops an oversized single input write instead of streaming it to the PTY", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
     const huge = "x".repeat(1024 * 1024 + 1); // 1 byte over the cap
-    writeTerminal("terminal:1", huge);
+    writeTerminal("terminal:0000000a-1", huge);
     expect(lastPty?.written).not.toContain(huge);
     expect(lastPty?.written.length ?? 0).toBe(0);
     // A normal write still passes.
-    writeTerminal("terminal:1", "ls\n");
+    writeTerminal("terminal:0000000a-1", "ls\n");
     expect(lastPty?.written).toContain("ls\n");
   });
 });
@@ -538,7 +720,7 @@ describe("pty-manager command blocks", () => {
   it("writes the zsh integration into the terminal's own HOME and pins ZDOTDIR there", async () => {
     vi.stubEnv("SHELL", "/bin/zsh");
     try {
-      expect((await spawnTerminal({ tabId: "terminal:1" })).ok).toBe(true);
+      expect((await spawnTerminal({ tabId: "terminal:0000000a-1" })).ok).toBe(true);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -551,17 +733,17 @@ describe("pty-manager command blocks", () => {
   it("records blocks from PTY output and typed input, keeps them past exit, drops them on tab close", async () => {
     vi.stubEnv("SHELL", "/bin/zsh");
     try {
-      expect((await spawnTerminal({ tabId: "terminal:1", ownerWindowId: 3 })).ok).toBe(true);
+      expect((await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 3 })).ok).toBe(true);
     } finally {
       vi.unstubAllEnvs();
     }
     const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
     const nonce = opts.env.AVE_TERMINAL_NONCE;
     expect(nonce).toMatch(/^[0-9a-f]{32}$/u);
-    const tracker = getTerminalBlockTracker("terminal:1");
+    const tracker = getTerminalBlockTracker("terminal:0000000a-1");
     expect(tracker).toBeDefined();
     // Registered under the window that asked for it, and only that window.
-    expect(listTerminalBlockTabs(3).map((entry) => entry.tabId)).toEqual(["terminal:1"]);
+    expect(listTerminalBlockTabs(3).map((entry) => entry.tabId)).toEqual(["terminal:0000000a-1"]);
     expect(listTerminalBlockTabs(4)).toEqual([]);
 
     // A program printing markers without the nonce forges nothing.
@@ -578,25 +760,25 @@ describe("pty-manager command blocks", () => {
     expect(shown).not.toContain(nonce);
     // ...and so does the scrollback a remounting view replays.
     emitted.length = 0;
-    expect(await spawnTerminal({ tabId: "terminal:1" })).toMatchObject({ ok: true, replayed: true });
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 3 })).toMatchObject({ ok: true, replayed: true });
     const replay = emitted.map((entry) => (entry.payload as { chunk?: string }).chunk ?? "").join("");
     expect(replay).toContain("built");
     expect(replay).not.toContain(nonce);
 
     lastPty!.emitExit(0);
-    expect(getTerminalBlockTracker("terminal:1")).toBe(tracker);
+    expect(getTerminalBlockTracker("terminal:0000000a-1")).toBe(tracker);
     expect(tracker!.hasExited()).toBe(true);
 
-    killTerminal("terminal:1");
-    expect(getTerminalBlockTracker("terminal:1")).toBeUndefined();
+    killTerminal("terminal:0000000a-1");
+    expect(getTerminalBlockTracker("terminal:0000000a-1")).toBeUndefined();
   });
 
   it("feeds typed input to the fallback splitter", async () => {
-    expect((await spawnTerminal({ tabId: "terminal:1" })).ok).toBe(true);
+    expect((await spawnTerminal({ tabId: "terminal:0000000a-1" })).ok).toBe(true);
     lastPty!.emitData("$ ls");
-    writeTerminal("terminal:1", "\r");
+    writeTerminal("terminal:0000000a-1", "\r");
     expect(lastPty!.written).toEqual(["\r"]);
-    expect(getTerminalBlockTracker("terminal:1")!.recent(1)[0]).toMatchObject({ command: "$ ls", source: "heuristic" });
+    expect(getTerminalBlockTracker("terminal:0000000a-1")!.recent(1)[0]).toMatchObject({ command: "$ ls", source: "heuristic" });
   });
 
   it("refuses the spawn and releases the HOME when the integration cannot be written", async () => {
@@ -611,7 +793,7 @@ describe("pty-manager command blocks", () => {
     vi.stubEnv("SHELL", "/bin/zsh");
     let res: Awaited<ReturnType<typeof spawnTerminal>>;
     try {
-      res = await spawnTerminal({ tabId: "terminal:1" });
+      res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     } finally {
       vi.unstubAllEnvs();
       create.mockRestore();
@@ -619,7 +801,7 @@ describe("pty-manager command blocks", () => {
     expect(res).toMatchObject({ ok: false, reason: "spawn-failed" });
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
     expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
-    expect(getTerminalBlockTracker("terminal:1")).toBeUndefined();
+    expect(getTerminalBlockTracker("terminal:0000000a-1")).toBeUndefined();
   });
 });
 

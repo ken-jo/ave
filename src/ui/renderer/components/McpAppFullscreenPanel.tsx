@@ -29,6 +29,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { Minimize2 } from "lucide-react";
 import { McpAppView } from "./McpAppView.js";
+import { useWebSurfaceOccluder } from "../preview/use-web-surface-occluder.js";
 import { useTranslation } from "../../../i18n/react.js";
 import {
   getSlotOccupant,
@@ -44,11 +45,14 @@ export function McpAppFullscreenPanel() {
   );
   const getSnapshot = useCallback(() => getSlotOccupant("fullscreen"), []);
   const occupant = useSyncExternalStore(subscribe, getSnapshot);
+  // The app takes over the window; no web page may paint over it.
+  const occluderRef = useWebSurfaceOccluder();
 
   if (!occupant) return null;
 
   return (
     <div
+      ref={occluderRef}
       data-testid="mcp-app-fullscreen-panel"
       // Below `McpAppPipPanel`'s z-50: a card in pip and a DIFFERENT card in
       // fullscreen can occupy their slots at the same time, and the floating overlay
