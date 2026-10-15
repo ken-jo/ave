@@ -62,4 +62,20 @@ describe("ToolApprovalContent session-only browser scope", () => {
     render(<ToolApprovalContent conversationLabel="conversation" open request={browserRequest("user")} onDecide={vi.fn()} />);
     expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("직접 연 탭");
   });
+
+  it("names the page and whose tab it is on a one-shot user-tab card", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    const request: ApprovalRequest = {
+      ...browserRequest("user"),
+      allowedChoices: ["allow-once", "deny-once"],
+      persistentAllowAllowed: false,
+      requireExplicit: true,
+    };
+    render(<ToolApprovalContent conversationLabel="conversation" open request={request} onDecide={vi.fn()} />);
+    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
+    expect(screen.queryByTestId("allow-always-exact-scope")).toBeNull();
+    const target = screen.getByTestId("approval-browser-target");
+    expect(target).toHaveTextContent("https://a.example:443");
+    expect(target).toHaveTextContent("직접 연 탭");
+  });
 });
