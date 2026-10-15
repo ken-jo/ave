@@ -693,17 +693,6 @@ function scanCodeText(text: string, state: ScanState): void {
 }
 
 /**
- * The sensitive-table pattern a path-like token of free code text reaches, or
- * null — the scan used for hidden code, shared with the PowerShell floor
- * (`powershell-exfiltration.ts`), whose text is not bash.
- */
-export function sensitivePathInCodeText(text: string, cwd: string | undefined): string | null {
-  const state: ScanState = { cwd, dotglob: false, sensitive: null, network: false, hidden: false };
-  scanCodeText(text, state);
-  return state.sensitive;
-}
-
-/**
  * The sensitive-table pattern one path-like argument reaches, or null — for
  * a quoted argument of non-bash code whose path holds spaces
  * (`"…\User Data\Default\Login Data"`), which the token scan would split.

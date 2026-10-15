@@ -63,7 +63,7 @@ import type { ExecutionMode } from "../shared/permission-mode.js";
 export type PermissionDecision = "allow" | "deny" | "ask";
 
 /** Which host shell's language a shell rule subject is written in. */
-export type ShellRuleDialect = "bash" | "powershell";
+type ShellRuleDialect = "bash" | "powershell";
 
 
 // This deliberately names one host-owned operation instead of weakening the

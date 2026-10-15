@@ -63,6 +63,7 @@
  */
 import { homedir } from "node:os";
 import { join, posix } from "node:path";
+import { expandLeadingTilde } from "../../shared/home-tilde.js";
 import { SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import {
   canonicalPowerShellName,
@@ -1748,9 +1749,8 @@ function normalizePaths(text: string): string {
 
 /** Components beneath an explicit or working-directory-relative profile anchor. */
 function homeSegments(text: string, cwd: string | undefined): string[] | undefined {
-  const normalized = posix.normalize(normalizePaths(text));
-  if (normalized === "~") return [];
-  if (normalized.startsWith("~/")) return normalized.slice(2).split("/");
+  const path = posix.normalize(normalizePaths(text));
+  const normalized = normalizePaths(expandLeadingTilde(path));
   const home = normalizePaths(homedir()).replace(/\/$/, "");
   if (normalized.toLowerCase() === home.toLowerCase()) return [];
   if (normalized.toLowerCase().startsWith(`${home.toLowerCase()}/`)) return normalized.slice(home.length + 1).split("/");
