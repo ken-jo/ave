@@ -28,6 +28,8 @@ import type { AveApi } from "../types.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
+import { useTranslation } from "../../../i18n/react.js";
+import { useSurfaceMount } from "../preview/surface-mounts.js";
 
 /** Delay before re-listing blocks after an Enter, so the shell has echoed. */
 const ENTER_RELIST_DELAY_MS = 150;
@@ -53,19 +55,45 @@ function terminalTheme(host: HTMLElement): ITheme {
   };
 }
 
-export function PtyTerminalView({
-  api,
-  tabId,
-  tabLabel,
-  onAttachText,
-}: {
+interface PtyTerminalViewProps {
   api: AveApi;
   tabId: string;
   /** The tab's visible name ("Terminal 2"), used when a block is attached. */
   tabLabel: string;
   /** Hand a block's text to the chat composer; false when it is full. */
   onAttachText?: (text: string) => boolean;
+}
+
+/**
+ * One terminal tab may be on screen in one place only (side panel or a main
+ * pane). The view that holds the tab's single mount attaches to the PTY; any
+ * other view of the same tab shows a notice and takes over once the holder
+ * unmounts — see `surface-mounts.ts`.
+ */
+export function PtyTerminalView({
+  location,
+  ...props
+}: PtyTerminalViewProps & {
+  /** Where this view is mounted: "side-panel" or "pane:<id>". */
+  location: string;
 }) {
+  const { t } = useTranslation();
+  const mount = useSurfaceMount(props.tabId, location);
+  if (!mount.owned) {
+    return (
+      <div
+        className="flex h-full min-h-0 w-full items-center justify-center bg-background p-4 text-center text-sm text-muted-foreground"
+        data-testid="pty-terminal-mounted-elsewhere"
+        data-owner-location={mount.ownerLocation ?? ""}
+      >
+        {t("ptyTerminal.mountedElsewhere")}
+      </div>
+    );
+  }
+  return <AttachedPtyTerminal {...props} />;
+}
+
+function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText }: PtyTerminalViewProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [blockRevision, setBlockRevision] = useState(0);
   const termRef = useRef<Terminal | null>(null);

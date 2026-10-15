@@ -58,6 +58,20 @@ describe("useWorkspaceTabs", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it("mints tab ids that are unique across every store in the window", () => {
+    // One store per chat group; main keys PTYs (and guests) by tab id globally.
+    const groupA = renderHook(() => useWorkspaceTabs());
+    const groupB = renderHook(() => useWorkspaceTabs());
+    act(() => groupA.result.current.addTab("terminal"));
+    act(() => groupB.result.current.addTab("terminal"));
+    act(() => groupA.result.current.openInEphemeral({ source: "browser", url: "https://example.com" }));
+    act(() => groupB.result.current.openPinned({ source: "browser", url: "https://example.com" }));
+    const ids = [...groupA.result.current.tabs, ...groupB.result.current.tabs].map((tab) => tab.id);
+    expect(ids).toHaveLength(4);
+    expect(new Set(ids).size).toBe(4);
+    for (const id of ids) expect(id).toMatch(/^(terminal|browser):\d+$/);
+  });
+
   it("closeTab removes the tab and falls back to the previous tab when closing the active one", () => {
     const { result } = renderHook(() => useWorkspaceTabs());
     act(() => result.current.addTab("browser"));

@@ -146,6 +146,20 @@ interface WorkspaceState {
 
 const EMPTY_STATE: WorkspaceState = { tabs: [], activeTabId: null, browserUrlByTab: {} };
 
+/**
+ * Tab ids are minted from ONE counter per renderer (= per window), not per
+ * store. Every chat group mounts its own store, but main keys live resources
+ * by tab id across the whole window — the PTY map in `pty-manager.ts` is
+ * global — so a per-store counter let a second group's `terminal:1` attach to
+ * the first group's shell. Window-unique ids also let a tab move between the
+ * side panel and the main area without being renamed.
+ */
+let nextWindowTabId = 1;
+
+function mintTabId(kind: WorkspaceTabKind): string {
+  return `${kind}:${nextWindowTabId++}`;
+}
+
 function withTabClosed(prev: WorkspaceState, id: string): WorkspaceState {
   const closingIndex = prev.tabs.findIndex((tab) => tab.id === id);
   if (closingIndex < 0) return prev;
@@ -163,7 +177,6 @@ function withTabClosed(prev: WorkspaceState, id: string): WorkspaceState {
 
 export function useWorkspaceTabs(): WorkspaceTabsStore {
   const [state, setState] = useState<WorkspaceState>(EMPTY_STATE);
-  const nextIdRef = useRef(1);
   const nextOrdinalRef = useRef<Record<WorkspaceTabKind, number>>({
     "file-browser": 1,
     preview: 1,
@@ -181,7 +194,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
   const addTab = useCallback((kind: WorkspaceTabKind) => {
     setState((prev) => {
       const ordinal = nextOrdinalRef.current[kind]++;
-      const id = `${kind}:${nextIdRef.current++}`;
+      const id = mintTabId(kind);
       const tab: WorkspaceTab = { id, kind, ordinal, mode: "pinned", content: null };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -194,7 +207,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
         return prev.activeTabId === existing.id ? prev : { ...prev, activeTabId: existing.id };
       }
       const ordinal = nextOrdinalRef.current[kind]++;
-      const id = `${kind}:${nextIdRef.current++}`;
+      const id = mintTabId(kind);
       const tab: WorkspaceTab = { id, kind, ordinal, mode: "pinned", content: null };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -225,7 +238,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
         };
       }
       // R3: no ephemeral slot — append a new ephemeral content tab.
-      const id = `${kind}:${nextIdRef.current++}`;
+      const id = mintTabId(kind);
       const tab: WorkspaceTab = { id, kind, ordinal: 0, mode: "ephemeral", content };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -247,7 +260,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
         };
       }
       // R4: append a new pinned content tab; leave the ephemeral slot alone.
-      const id = `${kind}:${nextIdRef.current++}`;
+      const id = mintTabId(kind);
       const tab: WorkspaceTab = { id, kind, ordinal: 0, mode: "pinned", content };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });

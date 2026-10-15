@@ -1133,6 +1133,7 @@ export function ChatSidePanel({
           ) : activeTab.kind === "terminal" ? (
             <PtyTerminalView
               api={api}
+              location="side-panel"
               tabId={activeTab.id}
               tabLabel={`${t(tabLabelKey(activeTab.kind))} ${activeTab.ordinal}`}
               {...(onAttachText ? { onAttachText } : {})}

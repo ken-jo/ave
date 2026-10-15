@@ -126,6 +126,7 @@ import { ko as ko_pluginPerfTab } from "../generated/pluginPerfTab.js";
 import { ko as ko_pluginUninstallDialog } from "../generated/pluginUninstallDialog.js";
 import { ko as ko_pluginUpdatesPill } from "../generated/pluginUpdatesPill.js";
 import { ko as ko_privacyTab } from "../generated/privacyTab.js";
+import { ko as ko_ptyTerminal } from "../generated/ptyTerminal.js";
 import { ko as ko_reasoningCard } from "../generated/reasoningCard.js";
 import { ko as ko_remoteA2aActionButton } from "../generated/remoteA2aActionButton.js";
 import { ko as ko_remoteSurfacesTab } from "../generated/remoteSurfacesTab.js";
@@ -306,6 +307,7 @@ export const koMessages: Record<string, string> = {
   ...ko_pluginUninstallDialog,
   ...ko_pluginUpdatesPill,
   ...ko_privacyTab,
+  ...ko_ptyTerminal,
   ...ko_reasoningCard,
   ...ko_remoteA2aActionButton,
   ...ko_remoteSurfacesTab,

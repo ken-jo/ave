@@ -7,9 +7,11 @@
  * drop the shell's screen and scrollback).
  */
 import "../../../../../test/renderer/setup.js";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PtyTerminalView } from "../PtyTerminalView.js";
+import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
+import { surfaceMountLocation } from "../../preview/surface-mounts.js";
 import { ThemeProvider } from "../../theme/ThemeProvider.js";
 import { setInstalledThemeBundles } from "../../theme/bundles/index.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../../installed-content.js";
@@ -79,7 +81,7 @@ describe("PtyTerminalView theme", () => {
 
     render(
       <ThemeProvider api={api as never} initialBundleId="harbor">
-        <PtyTerminalView api={ave as never} tabId="tab-1" tabLabel="Terminal 1" />
+        <PtyTerminalView api={ave as never} location="side-panel" tabId="tab-1" tabLabel="Terminal 1" />
       </ThemeProvider>,
     );
     await waitFor(() => expect(terminals).toHaveLength(1));
@@ -118,6 +120,7 @@ describe("PtyTerminalView command blocks", () => {
     render(
       <PtyTerminalView
         api={ave as never}
+        location="side-panel"
         tabId="terminal:1"
         tabLabel="Terminal 1"
         {...(onAttachText ? { onAttachText } : {})}
@@ -170,5 +173,61 @@ describe("PtyTerminalView command blocks", () => {
     renderView(() => false);
     fireEvent.click(await screen.findByTestId("terminal-blocks-attach-last"));
     expect(await screen.findByRole("status")).toBeTruthy();
+  });
+});
+
+describe("PtyTerminalView tab identity across groups", () => {
+  it("gives two groups' first terminals distinct PTYs", async () => {
+    // Each chat group mounts its own tab store; both open their first terminal.
+    const groupA = renderHook(() => useWorkspaceTabs());
+    const groupB = renderHook(() => useWorkspaceTabs());
+    act(() => groupA.result.current.addTab("terminal"));
+    act(() => groupB.result.current.addTab("terminal"));
+    const tabA = groupA.result.current.tabs[0]!;
+    const tabB = groupB.result.current.tabs[0]!;
+    // Both read "Terminal 1" to the user, but main keys PTYs by id window-wide.
+    expect(tabA.ordinal).toBe(1);
+    expect(tabB.ordinal).toBe(1);
+    expect(tabA.id).not.toBe(tabB.id);
+
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const ave = { ...api, terminal };
+    render(
+      <>
+        <PtyTerminalView api={ave as never} location="pane:a" tabId={tabA.id} tabLabel="Terminal 1" />
+        <PtyTerminalView api={ave as never} location="pane:b" tabId={tabB.id} tabLabel="Terminal 1" />
+      </>,
+    );
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
+    const spawnedIds = (terminal.spawn.mock.calls as unknown as Array<[{ tabId: string }]>).map(([req]) => req.tabId);
+    expect(new Set(spawnedIds)).toEqual(new Set([tabA.id, tabB.id]));
+    expect(screen.queryByTestId("pty-terminal-mounted-elsewhere")).toBeNull();
+  });
+
+  it("mounts one tab in one place only and hands the mount over when the holder leaves", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const ave = { ...api, terminal };
+    const view = (location: string) => (
+      <PtyTerminalView key={location} api={ave as never} location={location} tabId="terminal:7" tabLabel="Terminal 7" />
+    );
+    const { rerender } = render(<>{view("side-panel")}{view("pane:main")}</>);
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
+    // The second view does not attach a second xterm to the same PTY.
+    expect(terminals).toHaveLength(1);
+    const notice = screen.getByTestId("pty-terminal-mounted-elsewhere");
+    expect(notice.getAttribute("data-owner-location")).toBe("side-panel");
+    expect(surfaceMountLocation("terminal:7")).toBe("side-panel");
+
+    // Moving the tab: the side-panel view unmounts and the pane view takes over.
+    rerender(<>{view("pane:main")}</>);
+    await waitFor(() => expect(surfaceMountLocation("terminal:7")).toBe("pane:main"));
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId("pty-terminal-mounted-elsewhere")).toBeNull();
+    expect(terminal.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ tabId: "terminal:7" }));
+
+    rerender(<></>);
+    expect(surfaceMountLocation("terminal:7")).toBeNull();
   });
 });
