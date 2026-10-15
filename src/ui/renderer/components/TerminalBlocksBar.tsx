@@ -26,6 +26,7 @@ import {
   formatBlockForChat,
   formatBlockForCopy,
 } from "../utils/terminal-block-text.js";
+import type { AttachTextResult } from "../preview/composer-targets.js";
 
 type TerminalApi = NonNullable<AveApi["terminal"]>;
 
@@ -45,7 +46,7 @@ export function TerminalBlocksBar({
   tabLabel: string;
   /** Bumped by the terminal view whenever a block may have started or ended. */
   revision: number;
-  onAttachText?: (text: string) => boolean;
+  onAttachText?: (text: string) => AttachTextResult;
   /** The directory the shell last reported, from the newest block that has one. */
   onCwd?: (cwd: string) => void;
 }): ReactElement {
@@ -115,8 +116,9 @@ export function TerminalBlocksBar({
     (blockId: number) => {
       if (!onAttachText) return;
       void withBlock(blockId, ({ chat }) => {
-        if (!onAttachText(chat)) {
-          setNotice(t("terminalBlocks.attachFull"));
+        const result = onAttachText(chat);
+        if (result !== true) {
+          setNotice(t(result === "no-composer" ? "terminalBlocks.attachNoComposer" : "terminalBlocks.attachFull"));
           return;
         }
         setAttachedId(blockId);

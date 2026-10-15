@@ -24,6 +24,7 @@ import { PaneFrame } from "./PaneFrame.js";
 import { PtyTerminalView } from "./PtyTerminalView.js";
 import { useTerminalAttention } from "../preview/terminal-attention.js";
 import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
+import type { AttachTextResult } from "../preview/composer-targets.js";
 
 /** The subset of a `<webview>` a panel's chrome drives. */
 interface GuestElement extends HTMLElement {
@@ -222,7 +223,7 @@ export function SurfacePane({
   /** A terminal's shell reported its working directory. */
   onCwd: (tabId: string, cwd: string) => void;
   /** Hand a terminal block's text to a chat composer; false when it is full. */
-  onAttachText?: (text: string) => boolean;
+  onAttachText?: (text: string) => AttachTextResult;
 }) {
   const { t } = useTranslation();
   const view = surface.kind === "terminal" ? "terminal" : "web";

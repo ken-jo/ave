@@ -34,6 +34,7 @@ import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, isMovableTabKi
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import { TerminalAttentionDot } from "./TerminalAttentionDot.js";
 import { useTerminalAttention } from "../preview/terminal-attention.js";
+import { forgetActiveSurface, showActiveSurface } from "../preview/active-surface.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
 import { useVerticalSplit } from "../hooks/use-vertical-split.js";
 import type { SubAgentSpawn } from "../subagents/types.js";
@@ -61,6 +62,7 @@ import {
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../shared/test-ids.js";
 import { useOptionalChatContext } from "../context/ChatContext.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../shared/processing-display-level.js";
+import type { AttachTextResult } from "../preview/composer-targets.js";
 
 /** The panel keeps the side chat's agents only; its cards stay with the side-chat view. */
 const drawsNoCard = (): boolean => false;
@@ -743,7 +745,7 @@ export interface ChatSidePanelProps {
    * Attach text to the conversation's composer as a pasted-text chip — how a
    * terminal block reaches the chat. Returns false when the composer is full.
    */
-  onAttachText?: (text: string) => boolean;
+  onAttachText?: (text: string) => AttachTextResult;
   /** The tile this panel belongs to — where a pane's surface lands when moved here. */
   chatGroupId?: string;
   className?: string;
@@ -921,6 +923,7 @@ export function ChatSidePanel({
     (id: string) => {
       const closing = tabs.find((tab) => tab.id === id);
       if (closing?.kind === "terminal") void api.terminal?.kill(id);
+      forgetActiveSurface(id);
       closeTab(id);
     },
     [tabs, api, closeTab],
@@ -948,6 +951,17 @@ export function ChatSidePanel({
   // approval claim and the questions its turn parked. Unmounting it on a tab
   // switch would drop all three — and a question dropped here is a gate the
   // host keeps waiting on with no card left anywhere to answer it.
+  // A terminal or page brought to the front here becomes what the side chat
+  // acts on (see `preview/active-surface.ts`). Keyed by the tab alone: a label
+  // that changes later does not re-take a target the user dropped.
+  const frontSurface = activeTab && isMovableTabKind(activeTab.kind)
+    ? { kind: activeTab.kind, tabId: activeTab.id, label: tabLabel(activeTab, targetById, t, true) }
+    : null;
+  const frontSurfaceRef = useRef(frontSurface);
+  frontSurfaceRef.current = frontSurface;
+  useEffect(() => {
+    if (frontSurfaceRef.current) showActiveSurface(frontSurfaceRef.current);
+  }, [frontSurface?.tabId]);
   const sideChatActive = activeTab?.kind === "side-chat" && !activeTab.content;
   const sideChatMounted = tabs.some((tab) => tab.kind === "side-chat" && !tab.content);
 
@@ -1249,6 +1263,7 @@ export function ChatSidePanel({
                 shown={sideChatActive}
                 onSessionIdChange={handleSideChatSession}
                 onSessionClaim={handleSideChatClaim}
+                {...(chatGroupId !== undefined ? { chatGroupId } : {})}
               />
             </div>
           ) : null}

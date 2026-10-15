@@ -140,6 +140,7 @@ import { ko as ko_sessionResumeDivider } from "../generated/sessionResumeDivider
 import { ko as ko_sessionTasksPanel } from "../generated/sessionTasksPanel.js";
 import { ko as ko_settingsContent } from "../generated/settingsContent.js";
 import { ko as ko_shellExecution } from "../generated/shellExecution.js";
+import { ko as ko_sideChatTarget } from "../generated/sideChatTarget.js";
 import { ko as ko_sidebar } from "../generated/sidebar.js";
 import { ko as ko_skillBadge } from "../generated/skillBadge.js";
 import { ko as ko_slashPicker } from "../generated/slashPicker.js";
@@ -323,6 +324,7 @@ export const koMessages: Record<string, string> = {
   ...ko_sessionTasksPanel,
   ...ko_settingsContent,
   ...ko_shellExecution,
+  ...ko_sideChatTarget,
   ...ko_sidebar,
   ...ko_skillBadge,
   ...ko_slashPicker,

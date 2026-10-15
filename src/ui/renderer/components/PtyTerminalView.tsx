@@ -31,6 +31,7 @@ import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
+import type { AttachTextResult } from "../preview/composer-targets.js";
 
 /** Delay before re-listing blocks after an Enter, so the shell has echoed. */
 const ENTER_RELIST_DELAY_MS = 150;
@@ -62,7 +63,7 @@ interface PtyTerminalViewProps {
   /** The tab's visible name ("Terminal 2"), used when a block is attached. */
   tabLabel: string;
   /** Hand a block's text to the chat composer; false when it is full. */
-  onAttachText?: (text: string) => boolean;
+  onAttachText?: (text: string) => AttachTextResult;
   /**
    * Where a NEW shell starts. Only the first spawn of a tab reads it — a
    * remount replays the running shell, which is wherever it already is.

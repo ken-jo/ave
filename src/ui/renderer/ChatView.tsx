@@ -32,6 +32,7 @@ import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
 import { collectChatPreviewModel } from "./preview/preview-targets.js";
 import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
 import { registerSideTabsSink } from "./preview/surface-moves.js";
+import { attachToComposer, registerComposerTarget } from "./preview/composer-targets.js";
 import { SIDE_PANEL_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { normalizeBrowserNavigationUrl } from "./preview/url-safety.js";
 import { createPortal } from "react-dom";
@@ -663,6 +664,30 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     onPastedTextClipped: emitPastedTextClipped,
   });
 
+  // This conversation's composer, as a place a terminal block can be attached
+  // to (see `preview/composer-targets.ts`). Read through refs so the
+  // registration is made once per group.
+  const attachPastedTextRef = useRef(attachPastedText);
+  attachPastedTextRef.current = attachPastedText;
+  const conversationHiddenRef = useRef(hidden);
+  conversationHiddenRef.current = hidden;
+  useEffect(() => {
+    if (chatGroupId === undefined) return undefined;
+    return registerComposerTarget({
+      groupId: chatGroupId,
+      kind: "conversation",
+      attach: (text) => attachPastedTextRef.current(text),
+      available: () => !conversationHiddenRef.current,
+      element: () => chatViewRootRef.current?.querySelector<HTMLElement>('[data-composer-surface="main"]') ?? null,
+    });
+  }, [chatGroupId]);
+  // A terminal in this group's side panel attaches to whichever of the
+  // group's composers was used last — the side chat or this conversation.
+  const attachFromSidePanel = useCallback(
+    (text: string) => (chatGroupId === undefined ? attachPastedText(text) : attachToComposer(text, { fromGroup: chatGroupId })),
+    [chatGroupId, attachPastedText],
+  );
+
   // Token progress ring — square, hover=percent, click=detail. The former
   // sibling cost badge is gone: the cost/amount now lives INSIDE the ring's
   // click-detail popover (a single flat surface), so the action row carries
@@ -1020,7 +1045,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
             onOpenActivityItem={routeActivityItem}
             onOpenActivityItemPinned={routeActivityItemPinned}
             onOpenActivityItemInSystemApp={openActivityItemInSystemApp}
-            onAttachText={attachPastedText}
+            onAttachText={attachFromSidePanel}
             className="relative flex shrink-0"
           />
         </div>

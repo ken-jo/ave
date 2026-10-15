@@ -36,6 +36,8 @@ import { SurfacePane } from "./components/MainSurfacePanels.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
+import { forgetActiveSurface, showActiveSurface, updateActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
+import { attachToComposer } from "./preview/composer-targets.js";
 import { getWebSurfaces } from "./preview/web-surfaces.js";
 import { PANEL_COMMANDS, panelCommandFor, type PanelCommandId } from "./components/panel-commands.js";
 import { PaneGutter, PANE_HOME, PaneFrame, areaStyle, chatGroupApi, useChatGroups, type PaneSplitAxis } from "./components/PaneFrame.js";
@@ -604,6 +606,28 @@ export function App() {
       }
     }
   }, [chatGroups, mainSurfaces]);
+
+  // Focusing a pane that shows a terminal or a page makes it what the side
+  // chat acts on (`preview/active-surface.ts`). Shown once per focus change;
+  // a directory the shell reports later only updates the current target.
+  const focusedSurfaceId = chatGroups.contentById[chatGroups.focusedId]?.surface;
+  const focusedMainSurface = focusedSurfaceId ? mainSurfaces.surfaces.find((each) => each.tabId === focusedSurfaceId) : undefined;
+  const focusedActiveSurface: ActiveSurface | null = focusedMainSurface
+    ? {
+      kind: focusedMainSurface.kind,
+      tabId: focusedMainSurface.tabId,
+      label: `${t(BUILTIN_LABEL_KEYS[VIEW_OF_SURFACE_KIND[focusedMainSurface.kind]])} ${focusedMainSurface.ordinal}`,
+      cwd: focusedMainSurface.cwd ?? null,
+    }
+    : null;
+  const focusedActiveSurfaceRef = useRef(focusedActiveSurface);
+  focusedActiveSurfaceRef.current = focusedActiveSurface;
+  useEffect(() => {
+    if (focusedActiveSurfaceRef.current) showActiveSurface(focusedActiveSurfaceRef.current);
+  }, [chatGroups.focusedId, focusedActiveSurface?.tabId]);
+  useEffect(() => {
+    if (focusedActiveSurfaceRef.current) updateActiveSurface(focusedActiveSurfaceRef.current);
+  }, [focusedActiveSurface?.label, focusedActiveSurface?.cwd]);
 
   const runPanelCommand = useCallback((id: PanelCommandId) => {
     const focused = chatGroups.focusedId;
@@ -2005,6 +2029,7 @@ export function App() {
       const closeSurface = () => {
         closePane();
         mainSurfaces.close(surface.tabId);
+        forgetActiveSurface(surface.tabId);
         if (surface.kind === "terminal") void api.terminal?.kill(surface.tabId);
       };
       return paneShell(view, (
@@ -2028,6 +2053,9 @@ export function App() {
           }}
           onNavigate={mainSurfaces.setUrl}
           onCwd={mainSurfaces.setCwd}
+          // A main terminal has no conversation beside it: its blocks go to
+          // the composer the user last typed in.
+          onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId })}
         />
       ));
     }
