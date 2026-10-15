@@ -230,6 +230,17 @@ Senders are seen through wrappers, `busybox`, and static `sh -c` / `eval` / here
 - no allow-rule match;
 - a forced per-call ask in `checkDetailed`, in every mode.
 
+**PowerShell** (`src/permissions/rules/powershell-exfiltration.ts`). Both floors apply to every host shell that runs a command string: the invocation pipeline gives the `bash` and `powershell` tools a shell rule subject with a `dialect`, and a subject without a known dialect is a contract violation. The PowerShell reading is the union of the bash floor over the same text and a PowerShell-aware pass:
+- it knows cmdlets and aliases (`Invoke-WebRequest`/`iwr`, `Invoke-RestMethod`/`irm`, and `curl`/`wget`, their aliases in Windows PowerShell 5.1), parameter-name prefixes (`-InF`), `(…)`/`$(…)`/`{…}`/`@{…}` groups, assignments, `foreach (… in …)`, `$_` in a pipeline fed by file data, and `@p` splats of a hashtable assigned in the same command;
+- senders: `-InFile`; any argument built from file data; pipeline input (it binds to `-Body`, like `… | curl -d @-`); `Start-BitsTransfer -TransferType Upload`; `Send-MailMessage -Attachments`; `Copy-Item -ToSession`; `WebClient.UploadFile` and `.NET` upload methods given file data; other network cmdlets (`Resolve-DnsName`, `Test-NetConnection`, …) given file data; a splat it cannot see on a network command;
+- file data: `Get-Content`/`gc`/`cat`/`type`, `Select-String`, `Import-Clixml`, `Get-Item`, `[IO.File]::Read*`, secret stores (`Get-Secret`, `Get-StoredCredential`, `cmdkey`), `env:` drive listings, and variables assigned from any of them;
+- the sensitive-path scan normalizes `$env:USERPROFILE`/`$env:HOME`/`${env:…}`/`$HOME`, `~\`, `\` separators, backtick escapes and `FileSystem::` prefixes;
+- text the lexer cannot read is hidden code: floored with any sensitive path, and a regex fallback still catches visible uploads.
+
+As in bash, `$env:TOKEN` in a header (`curl -H "…$TOKEN"`) and plain `Invoke-WebRequest` GETs, `-OutFile` included, are not floored. The rule classifier grades the builtin `powershell` tool with the same reading.
+
+PowerShell has no rule language. `Bash(...)` rules match `bash` only — they are not aliased to PowerShell in either direction — and a PowerShell call carries no project rule scope. `PowerShell(...)` is reserved for Claude Code's convention: a rule matcher there needs a PowerShell grammar the synchronous decision can read (the host's PowerShell AST needs a `pwsh` child), and without one it would approve almost nothing. Until then the floors, the rule classifier and the mode matrix decide PowerShell calls. `sensitive-paths.ts` has no Windows credential-store rows (`%APPDATA%\Microsoft\Credentials`, …); the scan covers what the table names.
+
 Plain GETs, form fields without `@`, local `rsync`, `scp` downloads and `git push` are unaffected.
 
 ### Gaps closed by P1b

@@ -76,7 +76,7 @@ const SHELLS = new Set(SHELL_PREFIX_POLICY.shells);
  * `gh pr create --body "$(cat body.md)"`): only the sensitive-path rule
  * applies to them.
  */
-const MULTI_PURPOSE_NETWORK = new Set(["git", "gh", "glab", "npm", "pnpm", "yarn", "docker", "podman", "kubectl", "gpg", "psql", "mysql", "openssl"]);
+export const MULTI_PURPOSE_NETWORK: ReadonlySet<string> = new Set(["git", "gh", "glab", "npm", "pnpm", "yarn", "docker", "podman", "kubectl", "gpg", "psql", "mysql", "openssl"]);
 const CURL_BOOLEAN_SHORT = /^[sSfLkviIlnNqgGjJORZpaBM0-9]*$/;
 const CURL_DATA_LONG = ["--data", "--data-binary", "--data-raw", "--data-urlencode", "--data-ascii", "--json"];
 // `--form-string` sends its value literally (no `@` file read).
@@ -672,6 +672,17 @@ function scanCodeText(text: string, state: ScanState): void {
       if (state.sensitive) return;
     }
   }
+}
+
+/**
+ * The sensitive-table pattern a path-like token of free code text reaches, or
+ * null — the scan used for hidden code, shared with the PowerShell floor
+ * (`powershell-exfiltration.ts`), whose text is not bash.
+ */
+export function sensitivePathInCodeText(text: string, cwd: string | undefined): string | null {
+  const state: ScanState = { cwd, dotglob: false, sensitive: null, network: false, hidden: false };
+  scanCodeText(text, state);
+  return state.sensitive;
 }
 
 function commandArgv(cmd: ShellCommand): (string | undefined)[] {

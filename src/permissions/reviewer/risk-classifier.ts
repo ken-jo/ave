@@ -66,6 +66,7 @@ import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.
 import type { RiskLevel } from "../../shared/permission-review-status.js";
 import { resolve as resolvePath } from "node:path";
 import { SHELL_EXFIL_VERDICT_REASON, shellExfiltrationSignal } from "../rules/shell-exfiltration.js";
+import { powerShellExfiltrationSignal } from "../rules/powershell-exfiltration.js";
 
 /** Verdict shape returned by every classifier. */
 export interface RiskVerdict {
@@ -1800,8 +1801,13 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   (ctx) => {
     if (ctx.category !== "shell") return null;
     const cwd = shellInvocationCwd(ctx);
+    // The builtin PowerShell tool's text is read as PowerShell (the reading
+    // the permission floor uses); every other shell-category tool as bash.
+    const signalOf = ctx.source === "builtin" && ctx.toolName === "powershell"
+      ? powerShellExfiltrationSignal
+      : shellExfiltrationSignal;
     for (const cmd of extractShellCommands(ctx.finalInput)) {
-      const signal = shellExfiltrationSignal(cmd, cwd);
+      const signal = signalOf(cmd, cwd);
       if (signal) return { level: "high", reason: `${SHELL_EXFIL_VERDICT_REASON} (${signal})` };
     }
     return null;

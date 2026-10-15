@@ -61,11 +61,14 @@ export function isSafeMainBundleManifestPath(path) {
  * entry 419_603, initial 5_313_581, total 8_937_684, and the initial ceiling moves to 5_315_000.
  * Joined again after main took skills-on-demand, chat-ux and suggestion-session, the
  * measurement is entry 419_821, initial 5_319_059, total 8_942_001, and the initial
- * ceiling moves to 5_320_000.
+ * ceiling moves to 5_320_000. The PowerShell shell floors (`powershell-exfiltration.ts`)
+ * are read by the permission manager on every PowerShell call, so they join the initial
+ * graph too: entry 419_821, initial 5_334_129, total 8_957_071, and the initial ceiling
+ * moves to 5_335_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_320_000,
+  initialBytes: 5_335_000,
   totalBytes: 11_050_000,
 });
 
