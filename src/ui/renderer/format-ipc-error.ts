@@ -46,6 +46,10 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "managed": "formatIpcError.managed",
   "durable-mode-denied": "formatIpcError.durableModeDenied",
   "one-shot-not-recordable": "formatIpcError.durableModeDenied",
+  "session-only-scope": "formatIpcError.sessionOnlyScope",
+  // ── Browser tabs (agent browser tools) ──
+  "bad-request": "formatIpcError.invalidRequest",
+  "no-such-tab": "formatIpcError.notFound",
   "a2a-remote-disabled": "formatIpcError.remoteA2aDisabled",
   "a2a-remote-start-failed": "formatIpcError.remoteA2aStartFailed",
   "tailnet-sharing-disabled": "formatIpcError.tailnetSharingDisabled",

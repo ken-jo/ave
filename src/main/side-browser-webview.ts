@@ -128,12 +128,6 @@ export function isSideBrowserContents(contents: WebContents): boolean {
   return contents.session === session.fromPartition(AVE_SIDE_BROWSER_PARTITION);
 }
 
-export function takePendingSideBrowserSrc(pendingSrcs: string[], attachedUrl: string): string | null {
-  const index = pendingSrcs.indexOf(attachedUrl);
-  if (index < 0) return null;
-  return pendingSrcs.splice(index, 1)[0] ?? null;
-}
-
 /**
  * Preferences forced on every remote-content surface of the side browser: the
  * `<webview>` guest at attach time and every popup window it opens. Remote
@@ -157,31 +151,28 @@ export function configureSideBrowserWebviewAttach(input: {
   event: { preventDefault: () => void };
   webPreferences: Record<string, unknown>;
   params: Record<string, string>;
-  enqueueAllowedSrc: (src: string) => void;
 }): SideBrowserAttachResult {
   if (input.params.partition !== AVE_SIDE_BROWSER_PARTITION) return "ignored";
 
   const src = input.params.src ?? "";
-  if (!isHttpUrl(src)) {
+  if (src !== "about:blank" && !isHttpUrl(src)) {
     input.event.preventDefault();
     return "blocked";
   }
 
   hardenRemoteWebPreferences(input.webPreferences);
   input.webPreferences.partition = AVE_SIDE_BROWSER_PARTITION;
-
-  input.enqueueAllowedSrc(src);
   return "accepted";
 }
 
 /**
- * Whether a side-browser page may open `url` as a new window. http(s) covers
- * `target=_blank` links and OAuth popups; `about:blank` is how many OAuth
- * libraries (and `window.open('')`) bootstrap a popup before navigating it,
- * and the blank document is then held to the same navigation guard.
+ * Whether a side-browser page may open `url` as a new window. Blank popup
+ * requests are ambiguous: a script URL can arrive as `about:blank` and execute
+ * without a cancellable navigation event. Only concrete http(s) URLs are safe
+ * to admit here. Blank guest bootstraps use the separate attach policy.
  */
 export function isSideBrowserPopupUrlAllowed(url: string): boolean {
-  return url === "about:blank" || isHttpUrl(url);
+  return isHttpUrl(url);
 }
 
 function sideBrowserPopupOptions(owner: BrowserWindow): BrowserWindowConstructorOptions {

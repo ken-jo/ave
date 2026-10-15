@@ -8,8 +8,12 @@
  * user's terminal actually printed.
  *
  *   {}                      → every terminal tab with its recent block summaries
+ *                             (the one the user is looking at marked `active`)
  *   { tabId, limit? }       → the newest `limit` blocks of one tab, with output
  *   { tabId, blockId }      → one block with output
+ *   { limit } / { blockId } → the same for the window's active terminal, when
+ *                             the user is looking at one (a default, not an
+ *                             authority: an explicit tabId always wins)
  *
  * Results are framed `<terminal-output trust="untrusted-terminal-data">`
  * (fence-sanitizer.ts): command text and output are whatever programs printed,
@@ -30,6 +34,7 @@ import { getWindowTerminalBlockTracker, listTerminalBlockTabs } from "../main/te
 import type { TerminalBlock } from "../shared/terminal-blocks.js";
 import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 import { t } from "../i18n/index.js";
+import { resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
@@ -42,35 +47,20 @@ const SUMMARIES_PER_TAB = 10;
  */
 const MAX_RESPONSE_OUTPUT_CHARS = 96 * 1024;
 
-/** Nested sub-agent levels walked to find the conversation a child belongs to. */
-const MAX_SCOPE_DEPTH = 8;
-
-export interface TerminalReadToolDeps {
-  /** The window id hosting this interactive session, or null when none does. */
-  windowIdForHostedSession: (sessionId: string) => number | null;
-  /** The spawning session of a running sub-agent, or undefined for any other session. */
-  liveOriginSessionId: (sessionId: string) => string | undefined;
+export interface TerminalReadToolDeps extends SessionWindowScopeDeps {
+  /** The terminal tab the user is looking at in a window, if a terminal is the active surface. */
+  activeTerminalTabId?: (windowId: number) => string | undefined;
 }
 
 /**
- * The app window whose terminals `sessionId` may read: its own window when a
- * window hosts it, else its parent's when it is a running sub-agent, else
- * none. Never a default — an unresolved session reads nothing.
+ * The app window whose terminals `sessionId` may read (session-window-scope.ts):
+ * its own window, else its parent's when it is a running sub-agent, else none.
  */
 export function resolveTerminalWindowId(
   sessionId: string | undefined,
-  deps: TerminalReadToolDeps,
+  deps: SessionWindowScopeDeps,
 ): number | null {
-  const seen = new Set<string>();
-  let current = sessionId;
-  for (let depth = 0; current !== undefined && depth <= MAX_SCOPE_DEPTH; depth++) {
-    if (seen.has(current)) return null;
-    seen.add(current);
-    const windowId = deps.windowIdForHostedSession(current);
-    if (windowId !== null) return windowId;
-    current = deps.liveOriginSessionId(current);
-  }
-  return null;
+  return resolveSessionWindowId(sessionId, deps);
 }
 
 function failure(error: string) {
@@ -160,19 +150,17 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
       ) {
         return failure(`limit must be an integer from 1 to ${MAX_LIMIT}`);
       }
-      if (input.tabId === undefined && (input.blockId !== undefined || input.limit !== undefined)) {
-        return failure("blockId and limit require tabId; call terminal_read with no arguments to list terminals");
-      }
-
       const sessionId = typeof ctx?.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
       const windowId = resolveTerminalWindowId(sessionId, deps);
       if (windowId === null) {
         return failure("terminal_read is available only to a conversation in an app window (or its sub-agents); this session has no terminals");
       }
+      const activeTabId = deps.activeTerminalTabId?.(windowId);
 
-      if (input.tabId === undefined) {
+      if (input.tabId === undefined && input.blockId === undefined && input.limit === undefined) {
         const terminals = listTerminalBlockTabs(windowId).map(({ tabId, tracker }) => ({
           tabId,
+          ...(tabId === activeTabId ? { active: true } : {}),
           shellIntegration: tracker.isIntegrated(),
           exited: tracker.hasExited(),
           recentBlocks: tracker.list().slice(0, SUMMARIES_PER_TAB),
@@ -183,19 +171,25 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
         });
       }
 
+      // An explicit tabId wins; without one, blockId/limit read the terminal
+      // the user is looking at, when there is one.
+      const tabId = (input.tabId as string | undefined) ?? activeTabId;
+      if (tabId === undefined) {
+        return failure("blockId and limit require tabId when no terminal is active; call terminal_read with no arguments to list terminals");
+      }
       // A tab of another window answers exactly like a tab that does not exist.
-      const tracker = getWindowTerminalBlockTracker(input.tabId, windowId);
+      const tracker = getWindowTerminalBlockTracker(tabId, windowId);
       if (!tracker) {
-        return failure(`no terminal with tabId ${JSON.stringify(input.tabId)}; call terminal_read with no arguments to list terminals`);
+        return failure(`no terminal with tabId ${JSON.stringify(tabId)}; call terminal_read with no arguments to list terminals`);
       }
       if (input.blockId !== undefined) {
         const block = tracker.get(input.blockId as number);
-        if (!block) return failure(`no block ${String(input.blockId)} in terminal ${input.tabId}`);
-        return fenced({ tabId: input.tabId, block: withOutputBudget([block])[0] });
+        if (!block) return failure(`no block ${String(input.blockId)} in terminal ${tabId}`);
+        return fenced({ tabId, block: withOutputBudget([block])[0] });
       }
       const limit = (input.limit as number | undefined) ?? DEFAULT_LIMIT;
       return fenced({
-        tabId: input.tabId,
+        tabId,
         shellIntegration: tracker.isIntegrated(),
         blocks: withOutputBudget(tracker.recent(limit)),
       });

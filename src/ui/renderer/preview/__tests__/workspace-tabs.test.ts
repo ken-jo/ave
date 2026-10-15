@@ -214,6 +214,47 @@ describe("useWorkspaceTabs", () => {
   });
 
   describe("url-safety at the store boundary", () => {
+    it("opens an exact blank bootstrap only with an agent request id", () => {
+      const { result } = renderHook(() => useWorkspaceTabs());
+      let tabId: string | null = null;
+      act(() => {
+        tabId = result.current.openAgentBrowserTab("about:blank", "browser-op-blank");
+      });
+      expect(tabId).not.toBeNull();
+      expect(result.current.tabs).toEqual([expect.objectContaining({
+        id: tabId,
+        content: { source: "browser", url: "about:blank" },
+        agentRequestId: "browser-op-blank",
+      })]);
+    });
+
+    it.each(["", " "])("rejects a blank bootstrap without a non-empty request id (%j)", (requestId) => {
+      const { result } = renderHook(() => useWorkspaceTabs());
+      let tabId: string | null = "unset";
+      act(() => {
+        tabId = result.current.openAgentBrowserTab("about:blank", requestId);
+      });
+      expect(tabId).toBeNull();
+      expect(result.current.tabs).toEqual([]);
+    });
+
+    it.each(["about:blank#fragment", "about:blank?script=1", "ABOUT:blank", " about:blank ", "javascript:alert(1)", "data:text/html,<script>1</script>"])("refuses a non-exact agent bootstrap URL (%s)", (url) => {
+      const { result } = renderHook(() => useWorkspaceTabs());
+      let tabId: string | null = "unset";
+      act(() => {
+        tabId = result.current.openAgentBrowserTab(url, "browser-op-blank");
+      });
+      expect(tabId).toBeNull();
+      expect(result.current.tabs).toEqual([]);
+    });
+
+    it("keeps blank bootstraps out of ordinary content opening", () => {
+      const { result } = renderHook(() => useWorkspaceTabs());
+      act(() => result.current.openPinned({ source: "browser", url: "about:blank" }));
+      act(() => result.current.openInEphemeral({ source: "browser", url: "about:blank" }));
+      expect(result.current.tabs).toEqual([]);
+    });
+
     it("openInEphemeral rejects a browser url carrying credentials", () => {
       const { result } = renderHook(() => useWorkspaceTabs());
       act(() => result.current.openInEphemeral({ source: "browser", url: "https://user:pass@evil.example/" }));
