@@ -66,6 +66,14 @@ export class PowerShellFileProvenance {
     return POWERSHELL_FILE_TYPES[posix.extname(this.path(text))];
   }
 
+  /** Normalize a potential runner with the existing path rules and executable suffix table. */
+  executableStem(text: string): string {
+    const name = posix.basename(this.path(text));
+    const extension = posix.extname(name);
+    const type = POWERSHELL_FILE_TYPES[extension];
+    return type === "opaque" || type === "script" ? name.slice(0, -extension.length) : name;
+  }
+
   isDirectory(text: string): boolean {
     this.budget.spend();
     return /[\\/]$/.test(text) || /^(?:\.{1,2}|[a-z]:[\\/])$/i.test(text);

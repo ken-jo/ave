@@ -929,14 +929,10 @@ function fileExecutionSignal(stage: PsCommand, feeder: PsCommand | undefined, ct
   if (!policy || policy.native || policy.materializes?.native) {
     const signal = materialized(name);
     if (signal) return signal;
-    // Bare, untouched script names retain the existing script policy. Explicit
-    // paths and call operators remain governed by embedded-code inspection.
-    const type = ctx.files.fileType(name);
-    if (!policy && !isPowerShell(name) && posix.extname(name) && (type === "opaque" || (!probe && type !== "script"))) return hiddenCode("opaque executable file payload");
     // The interpreter's file operand executes even a document extension;
     // other document operands retain their data role.
     const script = nativeInvocation(name, args, ctx).scriptPath;
-    const packageTask = PACKAGE_TASK_PROGRAMS.has(name.replace(/\.(?:exe|cmd)$/, ""))
+    const packageTask = PACKAGE_TASK_PROGRAMS.has(ctx.files.executableStem(name))
       && !(args.length === 1 && /^(?:--version|--help|-[vh])$/.test(nativeArguments(args, ctx)[0] ?? ""));
     if (script) {
       const scriptSignal = materialized(script);
@@ -945,6 +941,10 @@ function fileExecutionSignal(stage: PsCommand, feeder: PsCommand | undefined, ct
     if ((packageTask || (!script && policy?.argv && knownNativeData(name, args, ctx)
       && !policy.argv.info?.includes(nativeArguments(args, ctx)[0]!))) && ctx.files.hasExecutableWrites(packageTask))
       return hiddenCode("materialized task input");
+    // Bare, untouched script names retain the existing script policy. Explicit
+    // paths and call operators remain governed by embedded-code inspection.
+    const type = ctx.files.fileType(name);
+    if (!policy && !isPowerShell(name) && posix.extname(name) && (type === "opaque" || (!probe && type !== "script"))) return hiddenCode("opaque executable file payload");
     // An opaque consumer cannot prove that a materialized executable operand is
     // data. Inert document operands do not acquire an execution role from argv.
     for (const token of args) {

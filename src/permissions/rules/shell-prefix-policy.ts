@@ -42,8 +42,8 @@ const WRAPPERS = [
  */
 const STRING_JOINING_WRAPPERS = new Set(["watch", "parallel", "sg"]);
 const DASH_C_WRAPPERS = new Set(["su", "script", "flock", "runuser"]);
-/** Package runners that fetch and execute arbitrary packages: a 1-token prefix is refused. */
-const PACKAGE_RUNNERS = ["npx", "bunx", "pnpx", "uvx", "pipx"];
+/** Package and project task runners: a 1-token prefix cannot constrain their execution. */
+const PACKAGE_RUNNERS = ["npx", "bunx", "pnpx", "uvx", "pipx", "corepack", "yarnpkg", "deno"];
 
 /**
  * Arity table (opencode-style): how many leading tokens a suggestion keeps.
