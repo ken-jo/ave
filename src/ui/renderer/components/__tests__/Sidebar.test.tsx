@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { Sidebar } from "../Sidebar.js";
+import { SUGGESTIONS_SESSION_ID } from "../../../../shared/suggestions-session.js";
 import type { SessionSummary } from "../../hooks/use-sessions.js";
 import { sessionRow } from "../../../../../test/renderer/mock-ave-api.js";
 import type { ProjectIdentity } from "../../../../shared/project-identity.js";
@@ -943,6 +944,38 @@ describe("Sidebar conversation row actions", () => {
     restore();
   });
 
+  it("offers no archive or rename on the Suggestions conversation, but keeps delete", async () => {
+    // Archived rows leave the list, so archiving the conversation every
+    // unrequested card is addressed to would hide each suggestion and its
+    // count. Delete stays: main clears it and recreates the row.
+    const state = rowState();
+    const { getByTestId, showNativeContextMenu, restore } = renderSidebar({
+      sessions: [
+        sessionRow({ id: SUGGESTIONS_SESSION_ID, title: "Inbox", modifiedAt: new Date().toISOString() }),
+        sessionRow({ id: "sess-2", title: "다른 대화", modifiedAt: new Date(Date.now() - 3600_000).toISOString() }),
+      ],
+      conversationActions: asActions(state),
+    });
+    try {
+      await waitFor(() => getByTestId(`sidebar-session-menu-${SUGGESTIONS_SESSION_ID}`));
+      fireEvent.click(getByTestId(`sidebar-session-menu-${SUGGESTIONS_SESSION_ID}`));
+      const suggestions = showNativeContextMenu.mock.calls.at(-1)?.[0];
+      expect(suggestions?.commands).not.toContain("conversation.archive");
+      expect(suggestions?.commands).not.toContain("conversation.unarchive");
+      expect(suggestions?.commands).not.toContain("conversation.rename");
+      expect(suggestions?.commands).toContain("conversation.delete");
+
+      // An ordinary row next to it still offers both.
+      fireEvent.click(getByTestId("sidebar-session-menu-sess-2"));
+      const ordinary = showNativeContextMenu.mock.calls.at(-1)?.[0];
+      expect(ordinary?.commands).toEqual(
+        expect.arrayContaining(["conversation.archive", "conversation.rename", "conversation.delete"]),
+      );
+    } finally {
+      restore();
+    }
+  });
+
   it("hides archived conversations until the archive toggle is used", () => {
     const state = rowState();
     state.archived.add("sess-1");
@@ -1634,6 +1667,35 @@ describe("Sidebar — every conversation family", () => {
       expect(
         getByTestId("sidebar-unassigned-sessions").contains(getByTestId("sidebar-session-side-orphan")),
       ).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("Sidebar — the dedicated Suggestions conversation", () => {
+  it("names its row from the catalog, ignoring a stored title, and counts the suggestions waiting there", async () => {
+    const { getByTestId, queryByTestId, restore } = renderSidebar({
+      sessions: [
+        // A title stored by an earlier build or a rename is ignored for this id.
+        sessionRow({ id: SUGGESTIONS_SESSION_ID, title: "Inbox", modifiedAt: new Date().toISOString() }),
+        sessionRow({ id: "sess-2", title: "다른 대화", modifiedAt: new Date(Date.now() - 3600_000).toISOString() }),
+      ],
+      pendingAnswerSessionIds: new Set([SUGGESTIONS_SESSION_ID]),
+      suggestionsPendingCount: 3,
+    });
+    try {
+      await waitFor(() => getByTestId(`sidebar-session-${SUGGESTIONS_SESSION_ID}`));
+      const row = getByTestId(`sidebar-session-${SUGGESTIONS_SESSION_ID}`);
+      expect(row.textContent).toContain("제안");
+      expect(row.textContent).not.toContain("Inbox");
+      const badge = getByTestId(`sidebar-pending-count-${SUGGESTIONS_SESSION_ID}`);
+      expect(row.contains(badge)).toBe(true);
+      expect(badge.textContent).toBe("3");
+      expect(badge.getAttribute("aria-label")).toBe("대기 중인 제안 3개");
+      // The count stands in for the dot on that row; other rows carry none.
+      expect(queryByTestId(`sidebar-pending-answer-${SUGGESTIONS_SESSION_ID}`)).toBeNull();
+      expect(queryByTestId("sidebar-pending-count-sess-2")).toBeNull();
     } finally {
       restore();
     }

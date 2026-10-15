@@ -22,6 +22,7 @@ import { withAllPluginInstallLocks, withPluginInstallLock } from "../../../plugi
 import { PluginMarketplaceService } from "../../../plugins/marketplace.js";
 import { resolvePluginPaths } from "../../../plugins/plugin-paths.js";
 import { readPluginRegistry } from "../../../plugins/registry.js";
+import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 
 const kinds = [
   {
@@ -51,6 +52,7 @@ const disposers: Array<() => void> = [];
 
 function context() {
   const send = vi.fn();
+  const touchSessionTranscript = vi.fn();
   const config: Record<string, Record<string, unknown>> = {};
   const listeners = new Map<string, Set<() => void>>();
   const ctx = {
@@ -73,8 +75,9 @@ function context() {
     bootAuditLogger: { log: vi.fn() },
     notificationService: { isFocusGateActive: () => false, fire: vi.fn() },
     getMainWindow: () => ({ isDestroyed: () => false, webContents: { send } }),
+    memoryManager: { touchSessionTranscript },
   } as unknown as BootContext;
-  return { ctx, send };
+  return { ctx, send, touchSessionTranscript };
 }
 
 async function raiseReply(ctx: BootContext) {
@@ -368,7 +371,7 @@ describe("setupAlerts", () => {
   });
 
   it("delivers the host deadline through the pipeline with no plugin and still emits the board event", async () => {
-    const { ctx, send } = context();
+    const { ctx, send, touchSessionTranscript } = context();
     disposers.push(await setupAlerts(ctx));
     const now = Date.now();
     const dueAt = new Date(now + 60 * 60_000).toISOString();
@@ -389,6 +392,9 @@ describe("setupAlerts", () => {
     expect(ctx.alertsService.listOpen()[0]?.source.pluginId).toBe("@host");
     expect(send).toHaveBeenCalledWith(ALERTS.kindsChanged);
     expect(send).toHaveBeenCalledWith(OVERLAY_V1.show, expect.objectContaining({ source: expect.objectContaining({ pluginId: "@host" }) }));
+    // The card is addressed to the dedicated Suggestions conversation, which
+    // exists (and rose in the list) before the card went out.
+    expect(touchSessionTranscript).toHaveBeenCalledWith(SUGGESTIONS_SESSION_ID, { bump: true });
     await ctx.alertsService.flush();
   });
   it("blocks a successor while its predecessor from the hinted source is installed and not revoked", async () => {

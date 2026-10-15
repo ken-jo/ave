@@ -2002,7 +2002,7 @@ describe("skill_load tool", () => {
     approve: async () => undefined,
   } as never;
 
-  it("loads packaged report-writing skill from seed source and emits badge", async () => {
+  it("reads packaged report-writing skill as its tool result and emits badge", async () => {
     // Post-first-boot, the seed copies report-writing into ~/.ave/skills/.
     // Pointing userDir at resources/skills/ simulates that on-disk state.
     const store = new SkillStore({ userDir: BUILTIN_SKILLS_DIR });
@@ -2017,15 +2017,42 @@ describe("skill_load tool", () => {
     });
     const r = await tool.execute({ skillName: "report-writing" }, ctx("sess-1"));
     expect(r.isError).toBe(false);
-    const parsed = JSON.parse(r.output);
-    expect(parsed.loaded).toBe(true);
-    expect(parsed.skillName).toBe("report-writing");
+    // Progressive disclosure: the body IS the tool result — it enters the
+    // context only through this visible call, never the system prompt.
+    const body = (await store.load("report-writing"))!.body;
+    expect(r.output.startsWith('<ave-skill name="report-writing"')).toBe(true);
+    expect(r.output).toContain(body);
+    expect(r.output.endsWith("</ave-skill>")).toBe(true);
     expect(events).toEqual(["report-writing"]);
-    // The overlay carries the skill body for the current user turn's follow-up
-    // rounds; ConversationLoop clears it at the turn boundary.
-    const overlaySection = overlay.buildSection("sess-1");
-    expect(overlaySection).toContain("<ave-skill name=\"report-writing\"");
-    expect(overlaySection).toContain("</ave-active-skills>");
+    // The read is recorded for the conversation (authorizes skill_read).
+    expect(overlay.list("sess-1").map((entry) => entry.name)).toEqual(["report-writing"]);
+    expect(tool.category).toBe("read");
+  });
+
+  it("asks for an unapproved body under the tool's real category, outside the away one-shot contract", async () => {
+    const store = new SkillStore({ userDir: BUILTIN_SKILLS_DIR });
+    const requestAndWait = vi.fn(async (_request: Record<string, unknown>) => ({ choice: "deny-once" }));
+    const tool = createSkillLoadTool({
+      store,
+      overlay: new SkillOverlay(),
+      approvals: { isApproved: async () => false, approve: async () => undefined } as never,
+      approvalGate: { requestAndWait } as never,
+      emit: () => undefined,
+    });
+    const r = await tool.execute({ skillName: "report-writing" }, ctx("sess-ask"));
+    expect(r.isError).toBe(true);
+    expect(requestAndWait).toHaveBeenCalledOnce();
+    const request = requestAndWait.mock.calls[0][0];
+    expect(request).toMatchObject({
+      category: "tool",
+      toolName: "skill_load",
+      toolCategory: tool.category,
+      source: "builtin",
+      sessionId: "sess-ask",
+    });
+    // Away-authority answers only allow-once/deny-once asks; leaving the
+    // choices unset keeps an unseen body out of an away "read" grant.
+    expect(request).not.toHaveProperty("allowedChoices");
   });
 
   it("returns error for missing skill", async () => {

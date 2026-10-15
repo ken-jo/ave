@@ -123,6 +123,7 @@ import {
   getDeclaredWorkProposalKinds,
 } from "../../../plugins/runtime/manifest-validation.js";
 import { suggestionLedger } from "../../../alerts/suggestion-ledger.js";
+import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 import type { AlertsService } from "../../../alerts/service.js";
 import { alertEventReaches, isAlertEvent } from "../../../alerts/events.js";
 import type {
@@ -321,6 +322,12 @@ export interface CreateHostApiFactoryDeps {
    * (a minimal test host) registers no kinds, and `raiseAlert` fails loudly.
    */
   getAlertsService: () => AlertsService | undefined;
+  /**
+   * Make the dedicated Suggestions conversation exist and rise in the list.
+   * Called synchronously as an accepted `triggerConversation` card is staged:
+   * the card is addressed to that conversation, never to the focused one.
+   */
+  stageInSuggestionsSession: () => void;
   /** What a host-secret grant reads from disk (design §10.3). */
   grantEvidence: GrantEvidenceReader;
 }
@@ -367,6 +374,7 @@ export function createHostApiFactory(
     routinesStore,
     getWorkBoardStore,
     getAlertsService,
+    stageInSuggestionsSession,
     grantEvidence,
   } = deps;
   const credentialRegistry = new CredentialLeaseRegistry(
@@ -1780,9 +1788,10 @@ export function createHostApiFactory(
       // Overlay runner: gate body lives in evaluateTriggerSpec() so prod
       // and tests share one implementation. On allow, the host holds the spec
       // in OverlayContext staging via IPC (fresh ConversationLoop is NOT
-      // started). The user's confirm action inserts the prompt as a user
-      // message into main chat via the imported_trigger mechanism.
-      //
+      // started). The card is addressed to the dedicated Suggestions
+      // conversation (`shared/suggestions-session.ts`), which is made to exist
+      // here first; the user's confirm inserts the prompt there via the
+      // imported_trigger mechanism, never into the focused conversation.
       //
       // A plugin that declares `alerts` may pass only its declared suggestion
       // sources, each accepted once per 30 days. Stage synchronously before
@@ -1809,9 +1818,10 @@ export function createHostApiFactory(
               primaryActionLabel: spec.primaryActionLabel ?? t("be_pluginRuntime.overlayPrimaryActionLabel"),
               pendingPrompt: formatPluginPendingPrompt(spec.prompt, source),
               createdAt: new Date().toISOString(),
+              originSessionId: SUGGESTIONS_SESSION_ID,
             };
+            stageInSuggestionsSession();
             overlayTarget.webContents.send(OVERLAY_V1.show, overlayItem);
-
           },
           assertDeliveryAvailable: () => { requireMainWindow(); },
           spec,

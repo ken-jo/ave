@@ -15,6 +15,7 @@ import type { IpcDeps } from "../types.js";
 import type { AlertCard, AlertCardClosedReason, AlertKindRow, SetAlertKindResult, SetAlertOsNotificationsResult } from "../../shared/alerts-types.js";
 
 import { AlertPredecessorAccess } from "./alert-predecessor.js";
+import { ensureSuggestionsSession } from "../../main/suggestions-session.js";
 import type { GitMarketplacePort } from "./git-marketplace.js";
 
 function isClosedReason(value: unknown): value is AlertCardClosedReason {
@@ -76,6 +77,10 @@ export function registerAlertsHandlers(deps: IpcDeps, marketplace: () => Promise
       auditUnauthorized(auditLogger, ALERTS.listOpen, e);
       return UNAUTHORIZED_FRAME;
     }
-    return alertsService?.listOpen() ?? [];
+    const cards = alertsService?.listOpen() ?? [];
+    // Alert cards are addressed to the dedicated Suggestions conversation;
+    // cards staged before it existed (or after it was deleted) need it now.
+    if (cards.length > 0) ensureSuggestionsSession(deps.memoryManager);
+    return cards;
   });
 }
