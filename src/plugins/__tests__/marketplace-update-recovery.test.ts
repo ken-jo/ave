@@ -541,7 +541,17 @@ describe("marketplace pending-update recovery", () => {
     // The promoted root's child left a link in its own sockets/. Recovery
     // removes it rather than throwing, or the plugin would stay unresolved on
     // every boot; the link's target is never touched.
-    it("resolve past a link a child left in its sockets/", async () => {
+    //
+    // Which link: an unprivileged process on Windows cannot create a file
+    // symlink (EPERM without SeCreateSymbolicLinkPrivilege) but can create a
+    // directory junction, which lstat reports as a link and which a recursive
+    // delete that followed it would empty. So Windows covers the junction a
+    // child can actually leave there; POSIX covers both a file and a directory
+    // symlink. A hard link is not this case: it is a regular file, which the
+    // carry moves as a socket entry rather than refusing.
+    const childLinks: ReadonlyArray<"file symlink" | "directory link"> =
+      process.platform === "win32" ? ["directory link"] : ["file symlink", "directory link"];
+    it.each(childLinks)("resolve past a %s a child left in its sockets/", async (linkKind) => {
       const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
       const backupDir = join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-1`);
       await mkdir(join(backupDir, "dist"), { recursive: true });
@@ -559,16 +569,30 @@ describe("marketplace pending-update recovery", () => {
       await writeFile(join(live, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
       await writeFile(installReceiptPath(paths.cacheRoot, pluginId), JSON.stringify({ pluginId, version: "2.0.0" }));
       const victim = join(dirname(paths.pluginsRoot), "victim");
-      await writeFile(victim, "original");
-      await mkdir(join(live, "sockets"), { recursive: true });
-      await symlink(victim, join(live, "sockets", "evil.sock"));
+      // The file the link reaches: the target itself, or one inside the
+      // linked directory.
+      let victimFile = victim;
+      if (linkKind === "file symlink") {
+        await writeFile(victim, "original");
+        await mkdir(join(live, "sockets"), { recursive: true });
+        await symlink(victim, join(live, "sockets", "evil.sock"));
+      } else {
+        victimFile = join(victim, "kept.txt");
+        await mkdir(victim, { recursive: true });
+        await writeFile(victimFile, "original");
+        await mkdir(join(live, "sockets"), { recursive: true });
+        // A junction on Windows (absolute target, no privilege needed); the
+        // type is ignored on POSIX, where this is a directory symlink.
+        await symlink(victim, join(live, "sockets", "evil.sock"), "junction");
+      }
 
       expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
       expect(await readFile(join(live, "plugin.json"), "utf-8")).toBe(oldManifest);
       expect(statSync(join(live, "sockets")).ino).toBe(inode);
       expect(await readdir(join(live, "sockets"))).toEqual(["egress.sock"]);
-      expect(await readFile(victim, "utf-8")).toBe("original");
-      expect(statSync(victim).nlink).toBe(1);
+      expect(await readFile(victimFile, "utf-8")).toBe("original");
+      expect(statSync(victimFile).nlink).toBe(1);
+      if (linkKind === "directory link") expect(await readdir(victim)).toEqual(["kept.txt"]);
     });
 
     it("come back from a copy-mode backup into the restored root", async () => {
