@@ -21,6 +21,13 @@ export interface WebSurface {
   tabId: string;
   /** The url the guest was last pointed at by the host (not its live url). */
   url: string;
+  /**
+   * The agent request a host-opened tab was made for (`browser_tab_new`): the
+   * layer binds the guest to its tab with it, which is what lets main accept
+   * an empty bootstrap guest. Kept once set; a later slot without one (the tab
+   * moved to a pane) does not clear it.
+   */
+  bindRequestId?: string;
 }
 
 let surfaces: readonly WebSurface[] = [];
@@ -66,12 +73,14 @@ export function getWebSurfaces(): readonly WebSurface[] {
  * Point the tab's guest at `url`, creating the entry on first use. The same
  * url is a no-op; a different one navigates the existing guest.
  */
-export function setWebSurfaceUrl(tabId: string, url: string): void {
+export function setWebSurfaceUrl(tabId: string, url: string, bindRequestId?: string): void {
   const existing = surfaces.find((surface) => surface.tabId === tabId);
-  if (existing?.url === url) return;
+  const requestId = bindRequestId ?? existing?.bindRequestId;
+  if (existing?.url === url && existing.bindRequestId === requestId) return;
+  const next: WebSurface = requestId === undefined ? { tabId, url } : { tabId, url, bindRequestId: requestId };
   surfaces = existing
-    ? surfaces.map((surface) => (surface.tabId === tabId ? { tabId, url } : surface))
-    : [...surfaces, { tabId, url }];
+    ? surfaces.map((surface) => (surface.tabId === tabId ? next : surface))
+    : [...surfaces, next];
   emit();
   scheduleReconcile();
 }
@@ -86,6 +95,20 @@ export function noteWebSurfaceLocation(tabId: string, url: string): void {
   if (locations.get(tabId) === url) return;
   locations.set(tabId, url);
   for (const listener of [...locationListeners]) listener();
+}
+
+/**
+ * The guest attached again (a new page process): what it committed before is
+ * not this page's address any more.
+ */
+export function forgetWebSurfaceLocation(tabId: string): void {
+  if (!locations.delete(tabId)) return;
+  for (const listener of [...locationListeners]) listener();
+}
+
+/** The address the tab's main frame committed, or null before its first navigation. */
+export function committedWebSurfaceLocation(tabId: string): string | null {
+  return locations.get(tabId) ?? null;
 }
 
 /** The tab's last main-frame address, else the url the host set, else null. */

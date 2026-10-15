@@ -8,12 +8,14 @@
  */
 import "../../../../../test/renderer/setup.js";
 import { act, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AveApi } from "../../types.js";
 import { useState } from "react";
 import { WebSurfaceLayer, WebSurfaceSlot, placeWebSurfaces } from "../WebSurfaceLayer.js";
 import { EdgeResizeBar } from "../EdgeResizeBar.js";
 import {
   beginSurfaceDrag,
+  committedWebSurfaceLocation,
   endSurfaceDrag,
   getWebSurfaces,
   publishLiveWebTabs,
@@ -47,12 +49,51 @@ function Harness({ where }: { where: "side" | "pane" | "none" }) {
     <>
       <div data-testid="side">{where === "side" ? <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="side-panel" /> : null}</div>
       <div data-testid="pane">{where === "pane" ? <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="pane:main" /> : null}</div>
-      <WebSurfaceLayer />
+      <WebSurfaceLayer api={layerApi} />
     </>
   );
 }
 
+const bindTab = vi.fn(async (_request: { tabId: string; webContentsId: number; requestId?: string }) => ({ ok: true as const }));
+const layerApi = { browserTabs: { bindTab } } as unknown as AveApi;
+
 describe("WebSurfaceLayer", () => {
+  it("binds a tab's guest for the agent tools once, with the request it was opened for, and keeps that binding across a move", async () => {
+    bindTab.mockClear();
+    publishLiveWebTabs(source, new Set(["browser:9"]));
+    const Moving = ({ where }: { where: "side" | "pane" }) => (
+      <>
+        {where === "side"
+          ? <WebSurfaceSlot tabId="browser:9" url="about:blank" location="side-panel" bindRequestId="browser-op-9" />
+          : <WebSurfaceSlot tabId="browser:9" url="about:blank" location="pane:main" />}
+        <WebSurfaceLayer api={layerApi} />
+      </>
+    );
+    const { rerender } = render(<Moving where="side" />);
+    const guest = guests()[0]! as HTMLElement & { getWebContentsId?: () => number };
+    guest.getWebContentsId = () => 77;
+    act(() => { guest.dispatchEvent(new Event("did-attach")); });
+    await act(async () => { await Promise.resolve(); });
+    expect(bindTab.mock.calls).toEqual([[{ tabId: "browser:9", webContentsId: 77, requestId: "browser-op-9" }]]);
+
+    // The main frame's committed address is recorded; a subframe's is not.
+    act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/" })); });
+    act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate-in-page"), { url: "https://frame.example/", isMainFrame: false })); });
+    expect(committedWebSurfaceLocation("browser:9")).toBe("https://a.example/");
+
+    // Moved to a pane: the same guest, not bound again, its request kept.
+    rerender(<Moving where="pane" />);
+    expect(guests()).toEqual([guest]);
+    expect(bindTab).toHaveBeenCalledTimes(1);
+    expect(getWebSurfaces().find((surface) => surface.tabId === "browser:9")?.bindRequestId).toBe("browser-op-9");
+
+    // A new guest process: the old address is forgotten and the guest bound again.
+    act(() => { guest.dispatchEvent(new Event("did-attach")); });
+    await act(async () => { await Promise.resolve(); });
+    expect(committedWebSurfaceLocation("browser:9")).toBeNull();
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:9", webContentsId: 77, requestId: "browser-op-9" });
+  });
+
   it("keeps one guest for a tab while its slot moves, hides it with no slot, and lets it go when the tab closes", async () => {
     publishLiveWebTabs(source, new Set(["browser:1"]));
     const { rerender } = render(<Harness where="side" />);
@@ -89,7 +130,7 @@ describe("WebSurfaceLayer", () => {
         <>
           {both ? <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="side-panel" /> : null}
           <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="pane:main" />
-          <WebSurfaceLayer />
+          <WebSurfaceLayer api={layerApi} />
         </>
       );
     }
@@ -111,7 +152,7 @@ describe("WebSurfaceLayer", () => {
             {ready ? <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="pane:main" /> : null}
           </div>
           <div data-testid="card" />
-          <WebSurfaceLayer />
+          <WebSurfaceLayer api={layerApi} />
         </>
       );
     }
@@ -153,7 +194,7 @@ describe("WebSurfaceLayer", () => {
       <>
         <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="side-panel" />
         <EdgeResizeBar width={448} edge="start" variant="inset" onWidthChange={() => {}} onWidthCommit={() => {}} min={300} max={900} resetWidth={448} ariaLabel="resize" data-testid="bar" />
-        <WebSurfaceLayer />
+        <WebSurfaceLayer api={layerApi} />
       </>,
     );
     Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1400 });

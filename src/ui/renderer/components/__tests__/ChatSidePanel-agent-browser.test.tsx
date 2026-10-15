@@ -11,13 +11,16 @@ import { approvalSurfaceStub, emptyToolActivity } from "../../../../../test/rend
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
 import { UrlDocumentViewer } from "../ChatSidePanelPreview.js";
+import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { useWorkspaceTabs, type WorkspaceTabsStore } from "../../preview/workspace-tabs.js";
 import { __resetBrowserTabBridgeForTest, registerBrowserTabHost } from "../../preview/agent-browser-bridge.js";
 
 /**
  * The side panel's half of the agent browser: page tabs stay mounted when
  * hidden, the agent's tabs carry the control badge with a working stop, and
- * the panel reports the tab the user is looking at.
+ * the panel reports the tab the user is looking at. A tab's page is a web
+ * surface: its guest lives in the window's `WebSurfaceLayer` (mounted here as
+ * App mounts it), which binds it to the tab and records where it navigates.
  */
 function makeApi() {
   let controlHandler: ((state: BrowserTabControlState) => void) | null = null;
@@ -65,6 +68,7 @@ function Harness({ api }: { api: AveApi }) {
           onClose={vi.fn()}
           activity={emptyToolActivity()}
         />
+        <WebSurfaceLayer api={api} />
       </ApprovalSurfaceProvider>
     </TooltipProvider>
   );

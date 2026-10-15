@@ -94,7 +94,7 @@ describe("useMainSurfaces", () => {
     render(
       <TooltipProvider>
         <SurfacePane api={makeMockAveApi().api as never} surface={page} paneId="main" frame={{}} onNavigate={() => {}} onCwd={() => {}} />
-        <WebSurfaceLayer />
+        <WebSurfaceLayer api={makeMockAveApi().api as never} />
       </TooltipProvider>,
     );
     await act(async () => { await Promise.resolve(); });

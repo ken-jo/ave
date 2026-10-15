@@ -128,6 +128,59 @@ function subscribeControl(listener: () => void): () => void {
   return () => controlListeners.delete(listener);
 }
 
+/** Bind retries while main has not yet seen the guest attach. */
+const BIND_RETRY_LIMIT = 20;
+const BIND_RETRY_MS = 100;
+
+/**
+ * Bind the guest of `webview` to `tabId` in main (`ave:browser:bind-tab`) on
+ * every attach, and now if it is already attached, so the agent browser tools
+ * can reach the tab's page. `requestId` marks a tab opened for the agent.
+ * Returns the cleanup. The page's did-attach can reach the renderer before
+ * main has seen the guest attach (main's did-attach-webview); main answers
+ * guest-not-live until then, so the bind is retried shortly.
+ */
+export function bindGuestToTab(
+  api: AveApi,
+  webview: HTMLElement,
+  tabId: string,
+  requestId: string | undefined,
+): () => void {
+  const browserTabs = api.browserTabs;
+  if (!browserTabs) return () => undefined;
+  let cancelled = false;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  const onAttach = (attempt = 0) => {
+    if (cancelled) return;
+    let webContentsId: number | undefined;
+    try {
+      webContentsId = (webview as HTMLElement & { getWebContentsId?: () => number }).getWebContentsId?.();
+    } catch {
+      // Not attached yet: the did-attach listener below binds it then.
+      return;
+    }
+    if (typeof webContentsId !== "number") return;
+    void browserTabs.bindTab({
+      tabId,
+      webContentsId,
+      ...(requestId === undefined ? {} : { requestId }),
+    }).then((result) => {
+      if (!result.ok && result.error === "guest-not-live" && attempt < BIND_RETRY_LIMIT && !cancelled) {
+        retry = setTimeout(() => onAttach(attempt + 1), BIND_RETRY_MS);
+      }
+    });
+  };
+  const onAttachEvent = () => onAttach();
+  webview.addEventListener("did-attach", onAttachEvent);
+  // Already attached (the tab id or request changed on a live guest).
+  onAttach();
+  return () => {
+    cancelled = true;
+    if (retry !== undefined) clearTimeout(retry);
+    webview.removeEventListener("did-attach", onAttachEvent);
+  };
+}
+
 /** The window's tab ids the agent controls (badge + stop button). */
 export function useAgentControlledTabIds(): ReadonlySet<string> {
   return useSyncExternalStore(subscribeControl, () => controlled, () => controlled);

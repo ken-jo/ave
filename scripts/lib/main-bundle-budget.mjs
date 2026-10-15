@@ -86,11 +86,13 @@ export function isSafeMainBundleManifestPath(path) {
  * provenance remain in the initial registry graph. Measured entry 425_021,
  * initial 5_413_433, total 9_091_289; the ceiling moves from 5_412_000 to
  * 5_415_000 to cover that functionality.
- * MERGE_MEASUREMENT_PLACEHOLDER
+ * The main-area panels joined with that main (the browser agent tools beside the
+ * panels' layout parser, terminal ownership and window-close cleanup) measure entry
+ * 425_328, initial 5_423_655, total 9_102_793; the initial ceiling moves to 5_425_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_415_000,
+  initialBytes: 5_425_000,
   totalBytes: 11_050_000,
 });
 
