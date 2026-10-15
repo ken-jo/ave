@@ -32,7 +32,7 @@ export interface PagesCopy {
 const ko: PagesCopy = {
   download: {
     title: "Ave 내려받기",
-    lead: "macOS, Windows, Linux용 설치 파일입니다. 공개 빌드는 아직 코드 서명이 없어서, 운영체제마다 처음 실행할 때 한 단계가 더 필요합니다. 그 단계를 아래에 그대로 적어 두었습니다.",
+    lead: "Ave는 macOS, Windows, Linux에서 실행됩니다. 공개 빌드는 아직 코드 서명이 없어서, 운영체제마다 처음 실행할 때 한 단계가 더 필요합니다. 그 단계를 아래에 그대로 적어 두었습니다.",
     pending: "릴리스 준비 중",
     pendingNote: "첫 공개 릴리스를 올리는 중이라 아직 설치 파일 링크가 없습니다. 무엇이 들어가는지는 변경 기록에서 볼 수 있습니다.",
     get: "설치 파일 받기",
@@ -63,7 +63,7 @@ const ko: PagesCopy = {
   changelog: {
     title: "변경 기록",
     lead: "버전마다 바뀐 것을 저장소의 CHANGELOG.md에서 그대로 옮겨 둡니다. 최신 버전이 맨 위에 있습니다.",
-    note: "",
+    note: "Ave는 0.14.0부터 시작합니다. 그보다 앞선 버전은 이전 앱의 기록입니다.",
     versions: "버전",
   },
   notFound: {
@@ -86,7 +86,7 @@ const ko: PagesCopy = {
 const en: PagesCopy = {
   download: {
     title: "Download Ave",
-    lead: "Installers for macOS, Windows and Linux. Public builds are not code-signed yet, so each system needs one extra step on first launch. The steps are written out below.",
+    lead: "Ave runs on macOS, Windows and Linux. Public builds are not code-signed yet, so each system needs one extra step on first launch. The steps are written out below.",
     pending: "Release in preparation",
     pendingNote: "The first public release is being uploaded, so there is no installer link yet. The changelog shows what it contains.",
     get: "Get the installer",
@@ -117,7 +117,7 @@ const en: PagesCopy = {
   changelog: {
     title: "Changelog",
     lead: "What changed in each version, taken as written from the repository’s CHANGELOG.md. The newest version is at the top.",
-    note: "The release notes are written in Korean and shown here as written.",
+    note: "The release notes are written in Korean and shown here as written. Ave starts at 0.14.0; earlier versions belong to its predecessor app.",
     versions: "Versions",
   },
   notFound: {

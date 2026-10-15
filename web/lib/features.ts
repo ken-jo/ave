@@ -30,12 +30,12 @@ const ko: Pages = {
   browser: {
     meta: {
       title: "브라우저",
-      description: "Ave의 에이전트는 자기 탭을 열어 페이지를 읽고 누르고 입력합니다. 내가 연 탭에서는 모든 동작을 매번 묻습니다.",
+      description: "Ave의 에이전트는 자기 탭을 열어 페이지를 읽고 누르고 입력합니다. 내가 연 탭에서 누르고 입력하고 이동하는 동작은 매번 묻습니다.",
     },
     hero: {
       eyebrow: "브라우저",
       title: "에이전트가 웹 페이지를 열고, 읽고, 확인합니다",
-      lead: "에이전트는 작업 패널의 브라우저에서 자기 탭을 열고 페이지를 읽은 뒤 링크를 누르고 양식에 입력합니다. 누르고 입력하는 동작은 실행 전에 묻고, 내가 연 탭은 매번 따로 묻습니다.",
+      lead: "에이전트는 작업 패널의 브라우저에서 자기 탭을 열고 페이지를 읽은 뒤 링크를 누르고 양식에 입력합니다. 누르고 입력하는 동작은 실행 전에 묻고, 내가 연 탭에서는 그런 동작을 매번 따로 묻습니다.",
       pic: { k: "browser-agent", alt: "에이전트가 연 탭에 trail-notes 미리보기가 열려 있고, 아래 독에 browser_click 승인 창이 떠 있는 화면" },
     },
     first: {
@@ -47,7 +47,7 @@ const ko: Pages = {
         ["browser_click, browser_type, browser_press_key", "는 참조로 짚은 요소를 누르고, 입력하고, Enter·Tab·화살표 같은 키를 보냅니다."],
         ["browser_navigate", "는 http와 https 주소만 열고, 다른 사이트로 넘기는 리다이렉트는 따라가지 않습니다."],
         ["browser_wait", "는 글자가 나타날 때까지, 또는 최대 30초까지 기다립니다."],
-        ["browser_tabs, browser_tab_new, browser_tab_close", "로 자기 창의 탭을 보고 열고 닫습니다. 루틴과 헤드리스 실행에는 브라우저가 없습니다."],
+        ["browser_tabs, browser_tab_new, browser_tab_close", "로 대화가 열린 창의 탭을 보고 열고 닫습니다. 내가 연 탭도 여기에 포함됩니다. 루틴과 헤드리스 실행에는 브라우저가 없습니다."],
       ],
       pic: { k: "browser-done", alt: "에이전트가 Ridge Loop 상세 페이지를 열어 확인한 뒤, 목록에 4개 트레일이 있고 고도 단위가 빠졌다고 보고한 화면" },
     },
@@ -94,7 +94,7 @@ const ko: Pages = {
     },
     faqTitle: "자주 묻는 질문",
     faqs: [
-      { q: "에이전트가 내가 로그인해 둔 탭을 마음대로 쓸 수 있나요?", a: "내가 연 탭에서의 모든 동작은 어떤 권한 모드에서든 매번 묻습니다. ‘모두 허용’ 모드에서도 같고, 승인은 기억되지 않습니다. 물어볼 사람이 없으면 거부됩니다." },
+      { q: "에이전트가 내가 로그인해 둔 탭을 마음대로 쓸 수 있나요?", a: "내가 연 탭에서 누르기, 입력, 키 누르기, 이동, 닫기는 어떤 권한 모드에서든 매번 묻고 기억되지 않습니다. 물어볼 사람이 없으면 거부됩니다. 그 탭을 읽거나 캡처하는 것은 네트워크 동작으로, 사이트별로 이번 세션 동안 한 번 묻고 ‘모두 허용’에서는 묻지 않습니다." },
       { q: "비밀번호도 입력하나요?", a: "아니요. 에이전트는 비밀번호, 결제 카드, 일회용 코드 입력란에는 입력하지 않습니다." },
       { q: "승인 창이 떠 있는 동안 페이지가 바뀌면요?", a: "그 동작은 아무것도 하지 않습니다. 에이전트가 다시 시도하면 바뀐 페이지를 기준으로 다시 묻습니다." },
       { q: "에이전트가 일하는 동안 제가 페이지를 만지면요?", a: "에이전트는 동작하는 순간에만 페이지 포커스를 잡고 바로 돌려줍니다. 탭의 중지 버튼을 누르거나 페이지를 직접 누르고 입력하면 대기 중인 동작이 멈춥니다." },
@@ -105,7 +105,7 @@ const ko: Pages = {
     next: {
       doc: "작업 패널의 브라우저 탭과 출처 표시는 작업 화면 문서에 있습니다.",
       feature: "실제 셸을 돌리는 터미널과, 에이전트가 그 출력을 읽는 방법.",
-      download: "macOS, Windows, Linux용 설치 파일과 첫 실행 단계.",
+      download: "macOS, Windows, Linux에서 내려받기와 첫 실행 단계.",
     },
   },
   terminal: {
@@ -187,7 +187,7 @@ const ko: Pages = {
     next: {
       doc: "작업 패널과 칸 구성은 작업 화면 문서에 있습니다.",
       feature: "API 키, 직접 띄운 서버, 구독으로 모델을 연결하는 방법.",
-      download: "macOS, Windows, Linux용 설치 파일과 첫 실행 단계.",
+      download: "macOS, Windows, Linux에서 내려받기와 첫 실행 단계.",
     },
   },
   models: {
@@ -205,9 +205,9 @@ const ko: Pages = {
       title: "연결하는 세 가지 길",
       body: "어느 길로 연결하든 모델 선택은 하나이고, 제공자별로 묶여 보입니다.",
       items: [
-        { tag: "API 키", title: "제공자 키로", points: ["기본 제공: OpenAI, Claude, Gemini, OpenRouter", "그 밖의 제공자는 마켓플레이스의 제공자 패키지로", "OpenAI는 브라우저 로그인, 기기 코드, API 키 채팅 세 가지로"] },
+        { tag: "API 키", title: "제공자 키로", points: ["기본 제공: OpenAI, Claude, Gemini, OpenRouter", "그 밖의 제공자는 마켓플레이스의 제공자 패키지로", "OpenAI는 API 키 채팅으로도 연결"] },
         { tag: "직접 띄운 서버", title: "OpenAI 호환 엔드포인트", points: ["로컬이나 사내 서버를 주소로 연결", "모델 목록은 엔드포인트에서 동기화", "이미지 입력 지원 여부를 직접 지정 가능"] },
-        { tag: "구독", title: "ChatGPT와 Claude 요금제", points: ["ChatGPT: 격리된 로컬 Codex 런타임으로 로그인", "Claude: 내가 고른 공식 claude CLI를 앱 전용 설정 폴더로 실행", "구독 자격 증명은 API 키로 바뀌지 않음"] },
+        { tag: "구독", title: "ChatGPT와 Claude 요금제", points: ["ChatGPT: 브라우저 로그인이나 기기 코드로, 격리된 로컬 Codex 런타임에서", "Claude: 내가 고른 공식 claude CLI를 앱 전용 설정 폴더로 실행", "구독 자격 증명은 API 키로 바뀌지 않음"] },
       ],
     },
     first: {
@@ -270,7 +270,7 @@ const ko: Pages = {
     next: {
       doc: "제공자 추가, 로그인, 구독, 대체 체인을 단계별로 설명합니다.",
       feature: "플러그인과 마켓플레이스, 그리고 설치 전에 보는 것.",
-      download: "macOS, Windows, Linux용 설치 파일과 첫 실행 단계.",
+      download: "macOS, Windows, Linux에서 내려받기와 첫 실행 단계.",
     },
   },
   plugins: {
@@ -334,7 +334,7 @@ const ko: Pages = {
       items: [
         { title: "두 가지 실행 방식", body: "entry는 JavaScript 모듈, process는 표준 입출력의 JSON-RPC로 호스트와 대화하는 아무 언어의 프로그램입니다. process는 OS 샌드박스가 켜져 있어야 돌고 Windows에서는 지원하지 않습니다." },
         { title: "나눠서 내보내기", body: "게시자는 특정 버전을 회수하거나 설치본의 일부에 먼저 내보낼 수 있고, 사용자는 canaryOptIn 설정으로 카나리 버전을 받을 수 있습니다." },
-        { title: "알림은 켜야 옵니다", body: "플러그인 알림은 사용자가 켠 것만, 쿨다운과 빈도 제한을 지켜 카드나 OS 알림으로 옵니다. 플러그인이 제안한 대화는 수락해야 시작합니다." },
+        { title: "알림은 종류별로", body: "플러그인이 선언한 알림 종류는 설치할 때 플러그인이 정한 기본값으로 켜지거나 꺼지고, 종류마다 따로 끌 수 있습니다. 쿨다운과 빈도 제한을 지켜 카드나 OS 알림으로 옵니다. 플러그인이 제안한 대화는 수락해야 시작합니다." },
       ],
     },
     faqTitle: "자주 묻는 질문",
@@ -350,7 +350,7 @@ const ko: Pages = {
     next: {
       doc: "플러그인 매니페스트, 실행 방식, 격리와 네트워크를 설명합니다.",
       feature: "권한 모드, 승인, 샌드박스, 감사 로그.",
-      download: "macOS, Windows, Linux용 설치 파일과 첫 실행 단계.",
+      download: "macOS, Windows, Linux에서 내려받기와 첫 실행 단계.",
     },
   },
   security: {
@@ -369,12 +369,12 @@ const ko: Pages = {
       title: "얼마나 자주 물을지는 내가 정합니다",
       body: "모드와 상관없이 강제 차단 규칙이 먼저 돕니다. 민감한 경로, 잘못된 매니페스트, 샌드박스 한계가 여기에 걸립니다.",
       points: [
-        ["쓰기 확인.", "기본값입니다. 읽기는 허용하고 쓰기, 셸, 네트워크는 승인을 받습니다."],
+        ["쓰기만 확인.", "기본값입니다. 읽기는 허용하고 쓰기, 셸, 네트워크는 승인을 받습니다."],
         ["모두 확인.", "읽기를 포함해 모든 도구가 승인을 받습니다."],
-        ["자동 확인.", "낮은 위험은 처리하고, 나머지는 권한 검토기가 확인합니다."],
+        ["자동 검증.", "대화에서 낮음과 중간 위험은 감사 기록을 남기고 자동 허용하고, 높은 위험만 묻습니다. 헤드리스 실행은 별도의 리뷰 대기열을 씁니다."],
         ["모두 허용.", "강제 차단 밖은 허용하지만, 허용된 폴더 밖 접근은 따로 승인을 받습니다."],
       ],
-      pic: { k: "settings-permissions", alt: "권한 설정의 권한 정책 목록. 모두 확인, 쓰기 확인(선택됨), 자동 확인, 모두 허용" },
+      pic: { k: "settings-permissions", alt: "권한 설정의 권한 정책 목록. 모두 확인, 쓰기만 확인(선택됨), 자동 검증, 모두 허용" },
     },
     grid: {
       eyebrow: "실제 화면",
@@ -390,8 +390,8 @@ const ko: Pages = {
         },
         {
           title: "브라우저 동작 승인",
-          body: "에이전트 탭의 허용은 Ave를 다시 시작할 때까지만, 내 탭에서는 매번 묻습니다.",
-          pic: { k: "browser-approval", alt: "browser_click 승인 창. 에이전트가 연 탭이며 내 탭은 매번 묻는다는 안내" },
+          body: "에이전트 탭의 허용은 Ave를 다시 시작할 때까지만 유지되고, 내 탭에서 누르고 입력하는 동작은 매번 묻습니다.",
+          pic: { k: "browser-approval", alt: "browser_click 승인 창. 에이전트가 연 탭이며 Ave를 다시 시작할 때까지 이 사이트에서 허용한다는 안내" },
           w: 3,
           inset: true,
         },
@@ -425,8 +425,8 @@ const ko: Pages = {
     facts: {
       title: "그 밖에 정해 둔 것",
       items: [
-        { title: "허용 디렉터리", body: "프로젝트 루트, ~/.ave, 전용 임시 폴더에서 시작하고 설정의 permissions.additionalDirectories로 늘립니다. 그 밖은 따로 묻습니다." },
-        { title: "검토기 선택", body: "검증 끔(자동 통과), 규칙 기반 검증, LLM 검증, 엄격(모두 보류) 중에서 고릅니다." },
+        { title: "허용 디렉터리", body: "프로젝트 루트, ~/.ave, 전용 임시 폴더, 시스템 임시 폴더(macOS와 Linux는 /tmp 포함)에서 시작하고 설정의 permissions.additionalDirectories로 늘립니다. 그 밖은 따로 묻습니다." },
+        { title: "검토기 선택", body: "검증 끔(자동 통과), 규칙 기반 검증, LLM 검증, 엄격(모두 보류) 중에서 고릅니다. 엄격은 바꾸는 작업을 모두 보류 대기열로 보내 직접 승인하게 합니다." },
         { title: "정책 파일", body: "사용자와 관리자가 각자 policy.json을 둘 수 있고, 유효한 관리자 정책은 다루는 설정을 잠급니다." },
       ],
     },
@@ -436,7 +436,7 @@ const ko: Pages = {
       { q: "검토기가 실패하면요?", a: "요청은 통과되지 않고 보류됩니다. LLM 검토는 위험도를 올릴 수만 있고 내릴 수는 없습니다." },
       { q: "헤드리스 실행이나 루틴에서는 누가 승인하나요?", a: "낮은 위험을 넘는 요청은 지연 대기열에 들어가 내가 볼 때까지 기다립니다." },
       { q: "어떤 경로는 항상 막히나요?", a: "~/.ssh 아래 키나 .env 파일 같은 민감한 경로는 어떤 모드에서도 막힙니다." },
-      { q: "모델에 비밀 값이 넘어가나요?", a: "비밀 값과 개인 정보는 모델로 가기 전에 가려지고, 가린 기록이 감사 로그에 남습니다." },
+      { q: "모델에 비밀 값이 넘어가나요?", a: "API 키를 비롯한 자격 증명은 설정과 무관하게 항상 제거하고 보냅니다. 이메일, 전화번호, 카드 번호 같은 개인 정보는 설정의 PII 리댁트(기본값 꺼짐)를 켜면 [REDACTED:*]로 바꿔 보내고, 가린 개수를 감사 로그에 남깁니다." },
       { q: "플러그인이 스스로 대화를 시작할 수 있나요?", a: "host:overlay 기능이 있는 플러그인은 대화를 제안할 수 있지만, 수락해야 시작합니다. 그 대화 안에서도 쓰기, 셸, 네트워크 도구는 다시 묻습니다." },
       { q: "Windows에서는 무엇이 다른가요?", a: "srt-win은 파일과 네트워크를 가두지만 프로세스는 가두지 않습니다. 플러그인끼리의 격리는 macOS와 Linux에서만 됩니다." },
       { q: "OS 샌드박스는 기본으로 켜져 있나요?", a: "아니요. 직접 켜는 기능이고, 켜면 앱을 다시 시작해야 합니다. 켜면 네트워크는 기본으로 막힙니다." },
@@ -444,7 +444,7 @@ const ko: Pages = {
     next: {
       doc: "권한 모드, 결정 순서, 허용 폴더, 샌드박스, 감사 로그를 설명합니다.",
       feature: "",
-      download: "macOS, Windows, Linux용 설치 파일과 첫 실행 단계.",
+      download: "macOS, Windows, Linux에서 내려받기와 첫 실행 단계.",
     },
   },
 };
@@ -453,12 +453,12 @@ const en: Pages = {
   browser: {
     meta: {
       title: "Browser",
-      description: "Ave’s agents open their own tabs, read pages, click and type. In tabs you opened, every action asks every time.",
+      description: "Ave’s agents open their own tabs, read pages, click and type. In tabs you opened, clicking, typing and navigating ask every time.",
     },
     hero: {
       eyebrow: "Browser",
       title: "Agents open web pages, read them and check them",
-      lead: "In the work panel’s browser, the agent opens its own tab, reads the page, then follows links and fills in forms. Clicking and typing ask before they run, and tabs you opened ask separately, every time.",
+      lead: "In the work panel’s browser, the agent opens its own tab, reads the page, then follows links and fills in forms. Clicking and typing ask before they run, and in tabs you opened those actions ask every time.",
       pic: { k: "browser-agent", alt: "A tab the agent opened shows the trail-notes preview while an approval card for browser_click waits in the dock below" },
     },
     first: {
@@ -470,7 +470,7 @@ const en: Pages = {
         ["browser_click, browser_type, browser_press_key", " press, type into, or send keys such as Enter, Tab and the arrows to an element by its reference."],
         ["browser_navigate", " opens http and https addresses only and does not follow redirects to another site."],
         ["browser_wait", " waits for text to appear, or for up to 30 seconds."],
-        ["browser_tabs, browser_tab_new, browser_tab_close", " list, open and close tabs in the agent’s own window. Routines and headless runs get no browser."],
+        ["browser_tabs, browser_tab_new, browser_tab_close", " list, open and close tabs in the window where the conversation is open, your own tabs included. Routines and headless runs get no browser."],
       ],
       pic: { k: "browser-done", alt: "After opening the Ridge Loop detail page, the agent reports four trails on the list and a missing elevation unit" },
     },
@@ -517,7 +517,7 @@ const en: Pages = {
     },
     faqTitle: "Questions",
     faqs: [
-      { q: "Can the agent use a tab I’m signed in to?", a: "Every action in a tab you opened asks every time, in every permission mode, including Allow all. Nothing is remembered, and with no one to ask, the action is denied." },
+      { q: "Can the agent use a tab I’m signed in to?", a: "In a tab you opened, clicking, typing, pressing keys, navigating and closing ask every time, in every permission mode, and nothing is remembered; with no one to ask, they are denied. Reading or capturing that tab is a network action: it asks once per site for the session, and passes under Allow all." },
       { q: "Does it type passwords?", a: "No. The agent does not type into password, payment-card or one-time-code fields." },
       { q: "What if the page changes while the approval card is open?", a: "The action does nothing. If the agent tries again, it asks about the page as it is now." },
       { q: "What if I touch the page while the agent works?", a: "The agent holds the page’s focus only while it acts, then gives it back. Press Stop on the tab, or click or type in the page, and its pending actions stop." },
@@ -528,7 +528,7 @@ const en: Pages = {
     next: {
       doc: "The work panel’s Browser tab and its source labels are in the workbench guide.",
       feature: "A terminal that runs a real shell, and how the agent reads its output.",
-      download: "Installers for macOS, Windows and Linux, and the first-launch steps.",
+      download: "Getting Ave on macOS, Windows and Linux, and the first-launch steps.",
     },
   },
   terminal: {
@@ -610,7 +610,7 @@ const en: Pages = {
     next: {
       doc: "The work panel and tile layout are in the workbench guide.",
       feature: "Connect a model with an API key, your own server or a subscription.",
-      download: "Installers for macOS, Windows and Linux, and the first-launch steps.",
+      download: "Getting Ave on macOS, Windows and Linux, and the first-launch steps.",
     },
   },
   models: {
@@ -628,9 +628,9 @@ const en: Pages = {
       title: "Three ways to connect",
       body: "Whichever way you connect, there is one model chooser, grouped by provider.",
       items: [
-        { tag: "API key", title: "With a provider key", points: ["Built in: OpenAI, Claude, Gemini, OpenRouter", "Other providers as marketplace provider packages", "OpenAI: browser sign-in, device code, or API-key chat"] },
+        { tag: "API key", title: "With a provider key", points: ["Built in: OpenAI, Claude, Gemini, OpenRouter", "Other providers as marketplace provider packages", "OpenAI also through API-key chat"] },
         { tag: "Your own server", title: "An OpenAI-compatible endpoint", points: ["A local or company server, by address", "The model list syncs from the endpoint", "Declare image input support yourself if needed"] },
-        { tag: "Subscription", title: "ChatGPT and Claude plans", points: ["ChatGPT: sign in through an isolated local Codex runtime", "Claude: the official claude CLI you select, with an app-owned config folder", "Subscription credentials never become API keys"] },
+        { tag: "Subscription", title: "ChatGPT and Claude plans", points: ["ChatGPT: sign in in the browser or with a device code, through an isolated local Codex runtime", "Claude: the official claude CLI you select, with an app-owned config folder", "Subscription credentials never become API keys"] },
       ],
     },
     first: {
@@ -693,7 +693,7 @@ const en: Pages = {
     next: {
       doc: "Adding providers, signing in, subscriptions and the fallback chain, step by step.",
       feature: "Plugins, marketplaces, and what you review before installing.",
-      download: "Installers for macOS, Windows and Linux, and the first-launch steps.",
+      download: "Getting Ave on macOS, Windows and Linux, and the first-launch steps.",
     },
   },
   plugins: {
@@ -757,7 +757,7 @@ const en: Pages = {
       items: [
         { title: "Two ways to run", body: "An entry plugin is a JavaScript module; a process plugin is a program in any language that talks to the host over JSON-RPC on standard input and output. Process plugins need the OS sandbox and are not supported on Windows." },
         { title: "Staged releases", body: "Publishers can yank a version or roll it out to a share of installs first, and you can opt into canary versions with the canaryOptIn setting." },
-        { title: "Alerts only when you ask", body: "Plugin alerts arrive only if you turn them on, with cooldowns and rate limits, as cards or system notifications. A conversation a plugin suggests starts only when you accept it." },
+        { title: "Alerts by kind", body: "Each alert kind a plugin declares starts on or off at install as the plugin chooses, and you can switch each kind off. Alerts keep to cooldowns and rate limits, as cards or system notifications. A conversation a plugin suggests starts only when you accept it." },
       ],
     },
     faqTitle: "Questions",
@@ -773,7 +773,7 @@ const en: Pages = {
     next: {
       doc: "The plugin manifest, how plugins run, isolation and network.",
       feature: "Permission modes, approvals, the sandbox and the audit log.",
-      download: "Installers for macOS, Windows and Linux, and the first-launch steps.",
+      download: "Getting Ave on macOS, Windows and Linux, and the first-launch steps.",
     },
   },
   security: {
@@ -794,7 +794,7 @@ const en: Pages = {
       points: [
         ["Confirm writes.", "The default. Reads are allowed; writes, shell commands and network requests ask for approval."],
         ["Confirm all.", "Every tool asks for approval, reads included."],
-        ["Auto-verify.", "Low-risk work is processed; the rest is checked by the permission reviewer."],
+        ["Auto-verify.", "In chat, low and medium risk are allowed automatically with an audit trail, and only high risk asks. Headless runs use a separate reviewer queue."],
         ["Allow all.", "Everything outside the hard blocks is allowed, but access outside the allowed folders still asks."],
       ],
       pic: { k: "settings-permissions", alt: "The permission policy list in Permissions settings: Confirm all, Confirm writes (selected), Auto-verify and Allow all" },
@@ -813,8 +813,8 @@ const en: Pages = {
         },
         {
           title: "Approving a browser action",
-          body: "In agent tabs an approval lasts until Ave restarts; in your own tabs, every action asks.",
-          pic: { k: "browser-approval", alt: "An approval card for browser_click: a tab the agent opened, and a note that your own tabs ask every time" },
+          body: "In agent tabs an approval lasts until Ave restarts; in your own tabs, clicking and typing ask every time.",
+          pic: { k: "browser-approval", alt: "An approval card for browser_click in a tab the agent opened, allowed on this site until Ave restarts" },
           w: 3,
           inset: true,
         },
@@ -848,8 +848,8 @@ const en: Pages = {
     facts: {
       title: "Also decided for you",
       items: [
-        { title: "Allowed folders", body: "They start with the project root, ~/.ave and a private scratch folder, and grow through permissions.additionalDirectories in settings. Anything outside them asks separately." },
-        { title: "Choose the reviewer", body: "Validation off (auto-pass), rule-based validation, LLM validation, or strict, where every request waits for you." },
+        { title: "Allowed folders", body: "They start with the project root, ~/.ave, a private scratch folder and the system temporary folder (plus /tmp on macOS and Linux), and grow through permissions.additionalDirectories in settings. Anything outside them asks separately." },
+        { title: "Choose the reviewer", body: "Validation off (auto-pass), rule-based validation, LLM validation, or strict, where every request that changes something waits in a queue for you." },
         { title: "Policy files", body: "Users and administrators can each keep a policy.json, and a valid administrator policy locks the settings it covers." },
       ],
     },
@@ -859,7 +859,7 @@ const en: Pages = {
       { q: "What if the reviewer fails?", a: "The request is held, not passed. LLM validation can raise a risk rating, never lower it." },
       { q: "Who approves in routines and headless runs?", a: "Anything above low risk goes to a deferred queue and waits for you." },
       { q: "Which paths are always blocked?", a: "Sensitive paths, such as keys under ~/.ssh and .env files, are blocked in every mode." },
-      { q: "Do secrets reach the model?", a: "Secrets and personal data are masked before anything goes to the model, and each mask is recorded in the audit log." },
+      { q: "Do secrets reach the model?", a: "API keys and other credentials are always removed before anything is sent, whatever the settings say. Personal data such as email addresses, phone numbers and card numbers is replaced with [REDACTED:*] when you turn on PII Redaction (off by default), and the count is recorded in the audit log." },
       { q: "Can a plugin start a conversation by itself?", a: "A plugin with the host:overlay capability can suggest one, but it starts only when you accept it, and write, shell and network tools inside it ask again." },
       { q: "What is different on Windows?", a: "srt-win confines files and network, not processes, and isolation between plugins is available on macOS and Linux only." },
       { q: "Is the OS sandbox on by default?", a: "No. You turn it on, and it needs a restart. With the sandbox on, network is denied by default." },
@@ -867,7 +867,7 @@ const en: Pages = {
     next: {
       doc: "Permission modes, how a request is decided, allowed folders, the sandbox and the audit log.",
       feature: "",
-      download: "Installers for macOS, Windows and Linux, and the first-launch steps.",
+      download: "Getting Ave on macOS, Windows and Linux, and the first-launch steps.",
     },
   },
 };

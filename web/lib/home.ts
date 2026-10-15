@@ -131,8 +131,8 @@ const ko: HomeCopy = {
       },
       {
         title: "내 탭과 에이전트 탭을 구분",
-        body: "에이전트가 연 탭은 사이트별로 Ave를 다시 시작할 때까지만 허용을 기억하고, 내가 연 탭에서는 매번 묻습니다.",
-        pic: { k: "browser-approval", alt: "builtin:browser_click 승인 창. 에이전트가 연 탭의 페이지이며 내 탭은 매번 묻는다는 안내가 적힌 화면" },
+        body: "에이전트가 연 탭은 사이트별로 Ave를 다시 시작할 때까지만 허용을 기억하고, 내가 연 탭에서 누르고 입력하는 동작은 매번 묻습니다.",
+        pic: { k: "browser-approval", alt: "builtin:browser_click 승인 창. 에이전트가 연 탭의 페이지이며 Ave를 다시 시작할 때까지 이 사이트에서 허용한다는 안내가 적힌 화면" },
         w: 6,
         inset: true,
       },
@@ -141,7 +141,7 @@ const ko: HomeCopy = {
   safetyFacts: [
     { title: "OS 샌드박스", body: "켜면 macOS는 Seatbelt, Linux는 bwrap, Windows는 srt-win이 도구 실행을 운영체제 수준에서 가둡니다. 네트워크는 기본으로 막힙니다." },
     { title: "민감한 경로", body: "~/.ssh 아래 키나 .env 파일 같은 경로는 ‘모두 허용’을 포함해 어떤 권한 모드에서도 막힙니다." },
-    { title: "가린 다음에 보냅니다", body: "비밀 값과 개인 정보는 모델로 가기 전에 가려지고, 무엇을 가렸는지 감사 로그에 남습니다." },
+    { title: "자격 증명은 빼고 보냅니다", body: "API 키 같은 자격 증명은 모델로 가기 전에 항상 제거합니다. 개인 정보 가리기(PII 리댁트)는 설정에서 켜는 기능입니다." },
   ],
   plugins: {
     eyebrow: "플러그인",
@@ -285,8 +285,8 @@ const en: HomeCopy = {
       },
       {
         title: "Your tabs and the agent’s tabs",
-        body: "In tabs the agent opened, an approval holds per site until Ave restarts. In tabs you opened, every action asks every time.",
-        pic: { k: "browser-approval", alt: "An approval card for builtin:browser_click saying the page is in a tab the agent opened and that your own tabs still ask every time" },
+        body: "In tabs the agent opened, an approval holds per site until Ave restarts. In tabs you opened, clicking, typing and navigating ask every time.",
+        pic: { k: "browser-approval", alt: "An approval card for builtin:browser_click saying the page is in a tab the agent opened and the approval holds on this site until Ave restarts" },
         w: 6,
         inset: true,
       },
@@ -295,7 +295,7 @@ const en: HomeCopy = {
   safetyFacts: [
     { title: "The OS sandbox", body: "Turned on, Seatbelt on macOS, bwrap on Linux and srt-win on Windows confine tool execution at the operating-system level, and network is denied by default." },
     { title: "Sensitive paths", body: "Paths such as keys under ~/.ssh and .env files are blocked in every permission mode, Allow all included." },
-    { title: "Masked before sending", body: "Secrets and personal data are masked before anything goes to the model, and each mask is recorded in the audit log." },
+    { title: "Credentials stay out", body: "API keys and other credentials are always removed before anything goes to the model. Masking personal data (PII Redaction) is a setting you turn on." },
   ],
   plugins: {
     eyebrow: "Plugins",

@@ -186,7 +186,7 @@ const ko: Record<DocSlug, DocPage> = {
           { dl: [
             ["쓰기만 확인", "기본값. 읽기는 허용하고 바꾸는 작업은 승인을 요청합니다."],
             ["모두 확인", "읽기를 포함한 모든 도구에 승인을 요청합니다."],
-            ["자동 검증", "저위험 작업은 처리하고, 헤드리스 실행과 대화의 나머지 요청은 권한 리뷰어가 검증합니다."],
+            ["자동 검증", "대화에서 저위험·중위험 판정은 감사 기록과 함께 자동 허용하고 고위험만 승인을 요청합니다. 헤드리스 실행은 별도의 실패 폐쇄형 리뷰 대기열을 씁니다."],
             ["모두 허용", "하드 차단 밖은 자동으로 허용합니다. 허용 디렉터리 밖 접근은 따로 승인을 받습니다."],
           ] },
           { p: "도구 호출은 읽기, 쓰기, 셸, 네트워크, 메타로 나뉘고, 위험도는 낮음, 중간, 높음입니다." },
@@ -216,7 +216,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "directories",
         h: "허용 디렉터리와 민감한 경로",
         blocks: [
-          { p: "허용 디렉터리는 프로젝트 루트, ~/.ave, 그리고 전용 임시 폴더에서 시작하고, 설정의 permissions.additionalDirectories 로 넓힙니다. 그 밖에 접근하면 따로 승인을 받습니다." },
+          { p: "허용 디렉터리는 프로젝트 루트, ~/.ave, 전용 임시 폴더, 시스템 임시 폴더(macOS와 Linux는 /tmp 포함)에서 시작하고, 설정의 permissions.additionalDirectories 로 넓힙니다. 그 밖에 접근하면 따로 승인을 받습니다." },
           { p: "~/.ssh 의 키, .env 파일 같은 민감한 경로는 어떤 모드에서도 막힙니다." },
           { p: "사용자와 관리자가 각각 policy.json 을 둘 수 있고, 올바른 관리자 정책이 있으면 사용자가 그 항목을 바꿀 수 없습니다." },
         ],
@@ -238,7 +238,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "audit",
         h: "감사 로그와 가림",
         blocks: [
-          { p: "~/.ave/audit.log 는 HMAC 체인으로 이어져 있어 중간을 바꾸면 드러납니다. 감사 기록에는 비밀 값을 넣지 않습니다. 비밀 값과 개인정보는 모델로 보내기 전에 가려지고, 가린 사실은 감사 로그에 남습니다." },
+          { p: "~/.ave/audit.log 는 HMAC 체인으로 이어져 있어 중간을 바꾸면 드러납니다. 감사 기록에는 비밀 값을 넣지 않습니다. API 키를 비롯한 자격 증명은 설정과 무관하게 항상 제거하고 보냅니다. 설정의 PII 리댁트(기본값 꺼짐)를 켜면 이메일, 전화번호, 카드 번호 같은 개인정보도 가려 보내고, 가린 개수가 감사 로그에 남습니다." },
         ],
       },
     ],
@@ -295,7 +295,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "alerts",
         h: "알림과 제안",
         blocks: [
-          { p: "플러그인 알림은 내가 켠 것만 오고, 재알림 간격과 횟수 제한이 있습니다. 카드나 OS 알림으로 나타납니다. host:overlay 권한이 있는 플러그인은 대화를 제안할 수 있지만, 제안은 내가 받아들일 때까지 시작되지 않습니다." },
+          { p: "플러그인이 선언한 알림 종류는 설치할 때 플러그인이 정한 기본값으로 켜지거나 꺼지고, 종류마다 끌 수 있으며, 재알림 간격과 횟수 제한이 있습니다. 카드나 OS 알림으로 나타납니다. host:overlay 권한이 있는 플러그인은 대화를 제안할 수 있지만, 제안은 내가 받아들일 때까지 시작되지 않습니다." },
         ],
       },
     ],
@@ -641,7 +641,7 @@ const en: Record<DocSlug, DocPage> = {
           { dl: [
             ["Confirm writes", "The default. Reads are allowed; operations that change something ask for approval."],
             ["Confirm all", "Every tool asks for approval, reads included."],
-            ["Auto-verify", "Low-risk work is processed; other requests in headless runs and chat are verified by the permission reviewer."],
+            ["Auto-verify", "In chat, low- and medium-risk verdicts are allowed automatically with an audit trail, and high risk asks. Headless runs use a separate fail-closed reviewer queue."],
             ["Allow all", "Everything outside the hard blocks is allowed. Access outside the allowed folders still needs its own approval."],
           ] },
           { p: "Tool calls fall into read, write, shell, network and meta. Risk is low, medium or high." },
@@ -671,7 +671,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "directories",
         h: "Allowed folders and sensitive paths",
         blocks: [
-          { p: "Allowed folders start with the project root, ~/.ave and a private scratch folder, and grow through permissions.additionalDirectories in settings. Anything outside them asks separately." },
+          { p: "Allowed folders start with the project root, ~/.ave, a private scratch folder and the system temporary folder (plus /tmp on macOS and Linux), and grow through permissions.additionalDirectories in settings. Anything outside them asks separately." },
           { p: "Sensitive paths, such as keys under ~/.ssh and .env files, are blocked in every mode." },
           { p: "Users and administrators can each keep a policy.json. A valid administrator policy locks the settings it covers." },
         ],
@@ -693,7 +693,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "audit",
         h: "Audit log and masking",
         blocks: [
-          { p: "~/.ave/audit.log is HMAC-chained, so a change in the middle shows. Audit records never contain raw secrets. Secrets and personal data are masked before anything goes to the model, and each mask is recorded in the audit log." },
+          { p: "~/.ave/audit.log is HMAC-chained, so a change in the middle shows. Audit records never contain raw secrets. API keys and other credentials are always removed before anything is sent, whatever the settings say. Turn on PII Redaction in settings (off by default) and personal data such as email addresses, phone numbers and card numbers is masked too, with the count recorded in the audit log." },
         ],
       },
     ],
@@ -750,7 +750,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "alerts",
         h: "Alerts and suggestions",
         blocks: [
-          { p: "Plugin alerts arrive only if you turn them on, with cooldowns and rate limits, as cards or OS notifications. A plugin with the host:overlay capability can suggest a conversation, but it does not start until you accept it." },
+          { p: "Each alert kind a plugin declares starts on or off at install as the plugin chooses, and you can switch each kind off; alerts keep to cooldowns and rate limits and arrive as cards or OS notifications. A plugin with the host:overlay capability can suggest a conversation, but it does not start until you accept it." },
         ],
       },
     ],
