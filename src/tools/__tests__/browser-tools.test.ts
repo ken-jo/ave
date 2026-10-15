@@ -332,6 +332,8 @@ describe("browser tools", () => {
       expect(result.isError, url).toBe(true);
     }
     expect(page.calls).toEqual([]);
+    // A scheme the tools refuse is refused without first asking the user about it.
+    expect(cards.filter((card) => card.toolName === BROWSER_TOOL.navigate)).toEqual([]);
     const refused = await run(BROWSER_TOOL.tabNew, { url: "javascript:alert(1)" });
     expect(refused.output).toContain("file:, javascript:, data: and other schemes are denied");
 

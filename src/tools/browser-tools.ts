@@ -41,6 +41,7 @@ import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js"
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { resolveSessionWindow, type SessionWindowScopeDeps } from "./session-window-scope.js";
 import { BROWSER_TOOL, type BrowserToolName } from "../shared/browser-tools.js";
+import { validateExternalUrl } from "../shared/external-url.js";
 import type { ApprovalMemoryScope, BrowserTabOpener } from "../shared/permissions-events.js";
 import type { ToolCategory } from "../shared/permission-review-status.js";
 import type {
@@ -163,6 +164,17 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
   const notAgentTab = (raw: unknown, ctx?: ToolPolicyContext): boolean => !onAgentTab(raw, ctx);
   const readOnAgentTab = (raw: unknown, ctx?: ToolPolicyContext): ToolCategory =>
     onAgentTab(raw, ctx) ? "read" : "network";
+  /**
+   * A URL the tools will refuse (not http/https) opens nothing, so asking the
+   * user about it would only ask them to approve a refusal: it runs as a read
+   * and execute refuses it.
+   */
+  const urlCategory = (raw: unknown): ToolCategory => {
+    const input = asInput(raw);
+    if (typeof input.url !== "string") return "read";
+    const checked = validateExternalUrl(input.url);
+    return checked.ok && browserOrigin(checked.url) !== null ? "network" : "read";
+  };
   /** The origin of the URL a call opens, in a tab of `opener`. */
   const urlScope = (raw: unknown, opener: BrowserTabOpener | undefined): ApprovalMemoryScope | undefined => {
     const input = asInput(raw);
@@ -247,6 +259,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       name: BROWSER_TOOL.navigate,
       description: t("be_browserTools.navigateDescription"),
       category: "network",
+      categoryForInput: urlCategory,
       requiresPerActionApproval: notAgentTab,
       approvalMemoryScope: (raw, ctx) => urlScope(raw, policy.resolveTab(asInput(raw), ctx?.sessionId)?.opener),
       jsonSchema: object({ tabId: tabIdProperty, url: { type: "string", description: t("be_browserTools.urlDescription") } }, ["url"]),
@@ -294,6 +307,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       name: BROWSER_TOOL.tabNew,
       description: t("be_browserTools.tabNewDescription"),
       category: "network",
+      categoryForInput: urlCategory,
       approvalMemoryScope: (raw) => urlScope(raw, "agent"),
       jsonSchema: object({ url: { type: "string", description: t("be_browserTools.urlDescription") } }, ["url"]),
       execute: execute(BROWSER_TOOL.tabNew),
