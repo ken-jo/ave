@@ -4,9 +4,42 @@ import { isValidRemoteA2ATargetAgentId, isValidRemoteA2ATaskHandle } from "../..
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
+import { snapshotA2ARemoteGates } from "../../main/a2a-remote-gates.js";
+import { activeRemoteA2AReceiverPort } from "../../main/a2a-remote-receiver-server.js";
 
-const DISABLED = { ok: false, error: "a2a-remote-disabled" as const };
+const DISABLED = { ok: false as const, error: "a2a-remote-disabled" as const };
+/**
+ * A gate the owner turned on whose runtime did not start this run. Distinct from
+ * {@link DISABLED} so the surface does not tell them the switch is off; every
+ * remote request is still refused, because nothing behind it started. `reason`
+ * is the boot step's clamped `a2a-remote-*` code, never a thrown message.
+ */
+function unavailable(deps: IpcDeps): { ok: false; error: "a2a-remote-disabled" } | { ok: false; error: "a2a-remote-start-failed"; reason: string } {
+  const reason = deps.remoteA2AStartFailureReason;
+  return reason === undefined ? DISABLED : { ok: false, error: "a2a-remote-start-failed", reason };
+}
 const OPERATION_REJECTED = { ok: false, error: "a2a-remote-operation-rejected" as const };
+
+/**
+ * Whether the saved remote A2A switches differ from the ones this run booted
+ * with. Both gates are read once at boot, so a switch flipped since then is
+ * configured but not running until the next launch; the status channel says so
+ * in its own field rather than folding it into the error code, which keeps
+ * reporting what the running process actually does. Absent when the saved
+ * switches cannot be read: an unanswerable comparison claims nothing.
+ */
+function restartPendingField(deps: IpcDeps): { restartPending: boolean } | Record<string, never> {
+  try {
+    const saved = snapshotA2ARemoteGates(deps.settingsService);
+    const booted = deps.remoteA2ABootGates;
+    return {
+      restartPending: saved.outboundRouting !== booted.outboundRouting
+        || saved.receiverProfile !== booted.receiverProfile,
+    };
+  } catch {
+    return {};
+  }
+}
 const MAX_REMOTE_A2A_USER_INTENT_LENGTH = 8_192;
 
 function isValidUserIntent(value: unknown): value is string {
@@ -23,7 +56,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
-    if (!controller) return DISABLED;
+    if (!controller) return unavailable(deps);
     try {
       return { ok: true, targets: controller.listTargets() };
     } catch {
@@ -37,9 +70,28 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
-    if (!controller) return DISABLED;
+    // The receiver's port is random per launch and is what the HTTPS tunnel
+    // has to target; null while the receiver is not running.
+    const runtimeFields = { ...restartPendingField(deps), receiverPort: activeRemoteA2AReceiverPort() };
+    if (!controller) return { ...unavailable(deps), ...runtimeFields };
     try {
-      return { ok: true, status: controller.status() };
+      return { ok: true, status: controller.status(), ...runtimeFields };
+    } catch {
+      return { ...OPERATION_REJECTED, ...runtimeFields };
+    }
+  });
+
+  // Each recent Task's own latest status (with its reply), newest first. A
+  // read of what this run already holds: no network, no approval.
+  ipcMain.handle(CHANNELS.remoteA2a.tasks, (event) => {
+    if (!validateHostRendererSender(event)) {
+      auditUnauthorized(deps.auditLogger, CHANNELS.remoteA2a.tasks, event);
+      return UNAUTHORIZED_FRAME;
+    }
+    const controller = deps.remoteA2AActionController;
+    if (!controller) return unavailable(deps);
+    try {
+      return { ok: true, tasks: controller.tasks() };
     } catch {
       return OPERATION_REJECTED;
     }
@@ -51,7 +103,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
-    if (!controller) return DISABLED;
+    if (!controller) return unavailable(deps);
     const value = payload && typeof payload === "object" && !Array.isArray(payload)
       ? payload as Record<string, unknown>
       : {};
@@ -78,7 +130,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
-    if (!controller) return DISABLED;
+    if (!controller) return unavailable(deps);
     const value = payload && typeof payload === "object" && !Array.isArray(payload)
       ? payload as Record<string, unknown>
       : {};
@@ -99,7 +151,7 @@ export function registerRemoteA2AHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     const controller = deps.remoteA2AActionController;
-    if (!controller) return DISABLED;
+    if (!controller) return unavailable(deps);
     const value = payload && typeof payload === "object" && !Array.isArray(payload)
       ? payload as Record<string, unknown>
       : {};

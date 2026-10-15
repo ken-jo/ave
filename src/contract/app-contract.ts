@@ -229,6 +229,7 @@ export const CHANNELS = {
     send: "ave:a2a-remote:send",
     status: "ave:a2a-remote:status",
     task: "ave:a2a-remote:task",
+    tasks: "ave:a2a-remote:tasks",
     action: "ave:a2a-remote:action",
   },
   // Local-owner-only Tailnet pairing/share administration. These are INTERNAL:

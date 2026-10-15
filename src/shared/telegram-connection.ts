@@ -59,6 +59,16 @@ const TELEGRAM_CONNECTION_STATES = [
    */
   "shared-conversation-missing",
   "paused-by-owner",
+  /**
+   * The owner left the connection on and Telegram is not answering — the
+   * machine is offline, just woke, or the network changed. Main keeps retrying
+   * on a growing backoff and again the moment the machine wakes or comes back
+   * online, so nothing is asked of the owner; `lastErrorCode` carries the
+   * reason. Distinct from `error`, which is a stop that needs the owner, and
+   * from `active`, which a share whose polls were all failing used to keep
+   * claiming.
+   */
+  "reconnecting",
   "error",
 ] as const;
 export type TelegramConnectionState = (typeof TELEGRAM_CONNECTION_STATES)[number];

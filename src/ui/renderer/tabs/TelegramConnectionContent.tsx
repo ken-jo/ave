@@ -76,6 +76,7 @@ function stateLabel(
     case "shared-conversation-missing":
       return t("telegramConnection.stateSharedConversationMissing");
     case "paused-by-owner": return t("telegramConnection.statePausedByOwner");
+    case "reconnecting": return t("telegramConnection.stateReconnecting");
     case "error": return t("telegramConnection.stateError");
   }
 }
@@ -436,24 +437,28 @@ export function TelegramConnectionContent({ api, chatGroupId, onCompleted }: Tel
                     <Button size="sm" disabled={busy} onClick={() => void run(() => api.telegramConnection.resume())} data-testid="telegram-connection-resume">
                       {t("telegramConnection.resume")}
                     </Button>
-                  ) : snapshot.state === "error" ? (
+                  ) : snapshot.state === "error" || snapshot.state === "reconnecting" ? (
                     /*
                       The one repair for a connection that is down but still
                       configured. It re-reads the token, re-verifies the bot and
                       re-activates, and a successful activation clears the
                       recorded error — so it is the non-destructive way back
                       from a failure that kept the pairing, which the only other
-                      control here (Disconnect) would spend. Pausing a bridge
-                      that is already not receiving would say nothing.
+                      control here (Disconnect) would spend. While reconnecting
+                      main is already retrying on its own; this is "now".
                     */
                     <Button size="sm" disabled={busy} onClick={() => void run(() => api.telegramConnection.resume())} data-testid="telegram-connection-retry">
                       {t("telegramConnection.retry")}
                     </Button>
-                  ) : (
+                  ) : null}
+                  {/* Pausing a bridge that already stopped on an error would say
+                      nothing; one that is reconnecting is still trying to reach
+                      Telegram, and the owner may want that to stop. */}
+                  {snapshot.state !== "paused-by-owner" && snapshot.state !== "error" ? (
                     <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(() => api.telegramConnection.pause())} data-testid="telegram-connection-pause">
                       {t("telegramConnection.pause")}
                     </Button>
-                  )}
+                  ) : null}
                   {snapshot.approval !== null ? (
                     <Button
                       size="sm"

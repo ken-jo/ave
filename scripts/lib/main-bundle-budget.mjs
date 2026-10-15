@@ -60,16 +60,17 @@ export function isSafeMainBundleManifestPath(path) {
  * measurement is entry 415_595, initial 5_297_263, total 8_937_183, and the initial
  * ceiling moves to 5_300_000. Joined again with main after skills-on-demand, chat-ux and
  * release-ci, the measurement is entry 419_912, initial 5_313_199, total 8_951_548, and
- * the initial ceiling moves to 5_315_000. Permission rules (rule files, scopes, the shell
- * prefix/exfiltration matchers) and approval-memory identity are consulted by the
- * permission manager on every tool call, so they belong in the initial graph; with the
- * permissions category joined with this `main` the measurement is entry 420_159,
- * initial 5_377_970, total 9_017_238 (about 63 KB over this `main`, all of it the rule matchers
- * and approval-memory code), and the initial ceiling moves to 5_380_000.
+ * the initial ceiling moves to 5_315_000.
+ * Remote-connection joined with that main measures entry 423_044, initial 5_326_014,
+ * total 8_967_523, and the initial ceiling moves to 5_330_000. Permission rules (rule
+ * files, scopes, the shell prefix/exfiltration matchers) and approval-memory identity are
+ * consulted by the permission manager on every tool call, so they belong in the initial
+ * graph; with the permissions category joined with that `main` the measurement is entry
+ * 423_073, initial 5_389_392, total 9_031_357, and the initial ceiling moves to 5_390_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_380_000,
+  initialBytes: 5_390_000,
   totalBytes: 11_050_000,
 });
 

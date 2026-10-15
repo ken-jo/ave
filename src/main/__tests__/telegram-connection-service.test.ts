@@ -15,7 +15,11 @@ import type {
   TelegramBotApiFailureReason,
 } from "../telegram-bot-api-client.js";
 import {
+  createNetworkOnlineSource,
   createTelegramConnectionService,
+  isTransientTelegramResumeFailure,
+  telegramResumeRetryDelayMs,
+  type TelegramBridgeStartHooks,
   type TelegramConnectionService,
 } from "../telegram-connection-service.js";
 import {
@@ -136,7 +140,7 @@ interface Harness {
   readonly calls: string[];
   readonly secrets: ReturnType<typeof secretsFixture>;
   readonly bot: ReturnType<typeof botApiFixture>;
-  readonly bridge: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> };
+  readonly bridge: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; nudge: ReturnType<typeof vi.fn> };
   /**
    * The composed reconcile, as a spy over the real store call. `digest` is the
    * name of the key this machine can load right now, so a test rotates the key
@@ -159,6 +163,7 @@ async function harness(
   options: {
     readonly encrypted?: boolean;
     readonly existingConversations?: readonly string[];
+    readonly serviceOptions?: Partial<Parameters<typeof createTelegramConnectionService>[0]>;
   } = {},
 ): Promise<Harness> {
   const directory = mkdtempSync(join(tmpdir(), "ave-telegram-service-"));
@@ -178,7 +183,7 @@ async function harness(
   const tracked = trackedStore(real);
   const secrets = secretsFixture(options.encrypted ?? true);
   const bot = botApiFixture();
-  const bridge = { start: vi.fn(async () => {}), stop: vi.fn(async () => {}) };
+  const bridge = { start: vi.fn(async (_hooks?: unknown) => {}), stop: vi.fn(async () => {}), nudge: vi.fn() };
   // Mirrors main composition: the reconcile names this machine's actor key to
   // the store, and the store alone decides what a changed name costs.
   const reconcile = { digest: ACTOR_KEY_DIGEST, fail: false };
@@ -204,6 +209,7 @@ async function harness(
     // transport; this one fails loudly if that ever changes.
     networkFetch: unusedNetworkFetch,
     createBotApiClient: bot.factory,
+    ...options.serviceOptions,
   });
   return {
     service, store: real, directory, calls: tracked.calls,
@@ -839,5 +845,233 @@ describe("createTelegramConnectionService", () => {
     const settled = changes;
     await h.service.disconnect();
     expect(changes).toBe(settled);
+  });
+});
+
+describe("reconnecting after sleep, a network change, or an outage", () => {
+  /** A retry timer the test fires by hand. */
+  function manualRetries() {
+    const pending: Array<{ run: () => void; delayMs: number; cancelled: boolean }> = [];
+    return {
+      pending,
+      scheduleRetry: (run: () => void, delayMs: number) => {
+        const entry = { run, delayMs, cancelled: false };
+        pending.push(entry);
+        return () => { entry.cancelled = true; };
+      },
+      live: () => pending.filter((entry) => !entry.cancelled),
+    };
+  }
+
+  /** A wake source the test triggers, counting live subscriptions. */
+  function manualSource() {
+    const listeners = new Set<() => void>();
+    return {
+      listeners,
+      source: (listener: () => void) => {
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      },
+      fire: () => { for (const listener of [...listeners]) listener(); },
+    };
+  }
+
+  async function connectedThenOffline() {
+    const retries = manualRetries();
+    const resumeEvents = manualSource();
+    const online = manualSource();
+    const h = await harness({
+      serviceOptions: {
+        scheduleRetry: retries.scheduleRetry,
+        onSystemResume: resumeEvents.source,
+        onNetworkOnline: online.source,
+      },
+    });
+    expect(await h.service.connect(BOT_TOKEN)).toEqual({ ok: true });
+    h.bot.rejectWith("unreachable");
+    return { h, retries, resumeEvents, online };
+  }
+
+  it("keeps retrying a boot resume Telegram did not answer, and says so with the reason", async () => {
+    const { h, retries, online } = await connectedThenOffline();
+
+    await h.service.resumeStoredConnection();
+
+    const offline = snapshotOf(h.service);
+    expect(offline.state).toBe("reconnecting");
+    expect(offline.lastErrorCode).toBe("telegram-provider-unreachable");
+    expect(retries.live().map((entry) => entry.delayMs)).toEqual([5_000]);
+    // Watching for the network only while there is something to reconnect.
+    expect(online.listeners.size).toBe(1);
+
+    // Still down on the first retry: the next wait grows.
+    retries.live()[0]!.run();
+    await vi.waitFor(() => expect(retries.pending).toHaveLength(2));
+    expect(retries.live().map((entry) => entry.delayMs)).toEqual([10_000]);
+    expect(snapshotOf(h.service).state).toBe("reconnecting");
+
+    // Telegram answers again.
+    h.bot.state.getMe = { ok: true, value: { username: BOT_USERNAME } };
+    retries.live()[0]!.run();
+    await vi.waitFor(() => expect(snapshotOf(h.service).state).toBe("connected-unpaired"));
+    expect(snapshotOf(h.service).lastErrorCode).toBeNull();
+    expect(retries.live()).toHaveLength(0);
+    expect(online.listeners.size).toBe(0);
+  });
+
+  it("does not retry a failure the owner has to see", async () => {
+    const { h, retries, online } = await connectedThenOffline();
+    h.bot.rejectWith("unauthorized");
+
+    await h.service.resumeStoredConnection();
+
+    expect(snapshotOf(h.service).state).toBe("error");
+    expect(snapshotOf(h.service).lastErrorCode).toBe("telegram-bot-token-rejected");
+    expect(retries.pending).toHaveLength(0);
+    expect(online.listeners.size).toBe(0);
+  });
+
+  it("retries at once when the machine wakes or the network comes back", async () => {
+    const { h, retries, resumeEvents, online } = await connectedThenOffline();
+    await h.service.resumeStoredConnection();
+    expect(retries.live()).toHaveLength(1);
+    const getMeCalls = vi.mocked(h.bot.client.getMe).mock.calls.length;
+
+    resumeEvents.fire();
+    // No waiting out the 5 s timer: the attempt runs now, fails, and the next
+    // wait starts from the bottom of the backoff again.
+    await vi.waitFor(() => expect(vi.mocked(h.bot.client.getMe).mock.calls.length).toBe(getMeCalls + 1));
+    await vi.waitFor(() => expect(retries.live().map((entry) => entry.delayMs)).toEqual([5_000]));
+
+    h.bot.state.getMe = { ok: true, value: { username: BOT_USERNAME } };
+    online.fire();
+    await vi.waitFor(() => expect(snapshotOf(h.service).state).toBe("connected-unpaired"));
+    expect(retries.live()).toHaveLength(0);
+  });
+
+  it("stops retrying the moment the owner pauses or disconnects", async () => {
+    const paused = await connectedThenOffline();
+    await paused.h.service.resumeStoredConnection();
+    expect(await paused.h.service.pause()).toEqual({ ok: true });
+    expect(paused.retries.live()).toHaveLength(0);
+    expect(snapshotOf(paused.h.service).state).toBe("paused-by-owner");
+    expect(paused.online.listeners.size).toBe(0);
+
+    const disconnected = await connectedThenOffline();
+    await disconnected.h.service.resumeStoredConnection();
+    expect(await disconnected.h.service.disconnect()).toEqual({ ok: true });
+    expect(disconnected.retries.live()).toHaveLength(0);
+    // A wake afterwards reaches nothing.
+    const getMeCalls = vi.mocked(disconnected.h.bot.client.getMe).mock.calls.length;
+    disconnected.resumeEvents.fire();
+    expect(vi.mocked(disconnected.h.bot.client.getMe).mock.calls.length).toBe(getMeCalls);
+  });
+
+  it("keeps a pause whose save is still in flight when a retry fires", async () => {
+    const { h, retries, online } = await connectedThenOffline();
+    await h.service.resumeStoredConnection();
+    expect(retries.live()).toHaveLength(1);
+    // Telegram is reachable again, so a retry that got past the queue would connect.
+    h.bot.state.getMe = { ok: true, value: { username: BOT_USERNAME } };
+    const startsBefore = h.bridge.start.mock.calls.length;
+    const getMeBefore = vi.mocked(h.bot.client.getMe).mock.calls.length;
+
+    // The pause is queued first; the retry fires before its save lands and
+    // still reads "connected" outside the queue.
+    const pausing = h.service.pause();
+    retries.live()[0]!.run();
+
+    expect(await pausing).toEqual({ ok: true });
+    // The retry's resume is queued behind the pause; let it run to completion
+    // (it persists through the real store) before reading the outcome.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(retries.live()).toHaveLength(0);
+    expect(vi.mocked(h.bot.client.getMe).mock.calls.length).toBe(getMeBefore);
+    expect(snapshotOf(h.service).state).toBe("paused-by-owner");
+    expect(h.bridge.start.mock.calls.length).toBe(startsBefore);
+    expect(online.listeners.size).toBe(0);
+  });
+
+  it("lets the owner resume a paused connection", async () => {
+    const { h } = await connectedThenOffline();
+    h.bot.state.getMe = { ok: true, value: { username: BOT_USERNAME } };
+    expect(await h.service.pause()).toEqual({ ok: true });
+    expect(await h.service.resume()).toEqual({ ok: true });
+    expect(snapshotOf(h.service).state).toBe("connected-unpaired");
+  });
+
+  it("reads a running poll loop that Telegram stopped answering as reconnecting, not active", async () => {
+    const online = manualSource();
+    const resumeEvents = manualSource();
+    const h = await harness({ serviceOptions: { onNetworkOnline: online.source, onSystemResume: resumeEvents.source } });
+    expect(await h.service.connect(BOT_TOKEN)).toEqual({ ok: true });
+    const hooks = h.bridge.start.mock.calls.at(-1)?.[0] as TelegramBridgeStartHooks;
+    const before = snapshotOf(h.service).state;
+
+    hooks.onPollHealth("retrying");
+    expect(snapshotOf(h.service).state).toBe("reconnecting");
+    // Nothing durable was written; the reason is projected from memory.
+    expect(snapshotOf(h.service).lastErrorCode).toBe("telegram-provider-unreachable");
+    expect(h.store.ownerSnapshot().lastErrorCode).toBeNull();
+    expect(online.listeners.size).toBe(1);
+
+    // A wake with no pending resume tells the running loop to poll now.
+    resumeEvents.fire();
+    expect(h.bridge.nudge).toHaveBeenCalledTimes(1);
+
+    hooks.onPollHealth("receiving");
+    expect(snapshotOf(h.service).state).toBe(before);
+    expect(snapshotOf(h.service).lastErrorCode).toBeNull();
+    expect(online.listeners.size).toBe(0);
+  });
+
+  it("drops its wake subscriptions and any pending retry on dispose", async () => {
+    const { h, retries, resumeEvents, online } = await connectedThenOffline();
+    await h.service.resumeStoredConnection();
+    h.service.dispose();
+    expect(retries.live()).toHaveLength(0);
+    expect(resumeEvents.listeners.size).toBe(0);
+    expect(online.listeners.size).toBe(0);
+  });
+
+  it("backs a resume off from 5 s to a 5 min cap and retries only an unreachable provider", () => {
+    expect([1, 2, 3, 4, 6, 7, 20].map(telegramResumeRetryDelayMs))
+      .toEqual([5_000, 10_000, 20_000, 40_000, 160_000, 300_000, 300_000]);
+    expect(isTransientTelegramResumeFailure("telegram-provider-unreachable")).toBe(true);
+    for (const code of [
+      "telegram-bot-token-rejected",
+      "telegram-webhook-conflict",
+      "telegram-poll-conflict",
+      "telegram-bot-token-unreadable",
+      "telegram-connection-state-unwritable",
+      "telegram-connection-unavailable",
+      "telegram-encryption-unavailable",
+    ] as const) {
+      expect(isTransientTelegramResumeFailure(code)).toBe(false);
+    }
+  });
+
+  it("raises a network-online event only on an offline-to-online transition", () => {
+    vi.useFakeTimers();
+    try {
+      let online = false;
+      const listener = vi.fn();
+      const stop = createNetworkOnlineSource(() => online, 1_000)(listener);
+      vi.advanceTimersByTime(1_000);
+      expect(listener).not.toHaveBeenCalled();
+      online = true;
+      vi.advanceTimersByTime(1_000);
+      expect(listener).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(3_000);
+      expect(listener).toHaveBeenCalledTimes(1);
+      stop();
+      online = false;
+      vi.advanceTimersByTime(1_000);
+      online = true;
+      vi.advanceTimersByTime(1_000);
+      expect(listener).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
