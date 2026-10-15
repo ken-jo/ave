@@ -1334,7 +1334,7 @@ export function BrowserWorkspace({
         {displayedTarget?.kind === "html" ? (
           <BrowserDocumentViewer target={displayedTarget} />
         ) : displayedTarget?.kind === "url" ? (
-          <UrlDocumentViewer api={api} target={displayedTarget} showHeader={false} surfaceTabId={tabId} />
+          <UrlDocumentViewer api={api} target={displayedTarget} showHeader={false} surfaceTabId={tabId} browserTab={{ tabId }} />
         ) : (
           <div className="p-4 text-xs text-muted-foreground" data-testid="chat-side-panel-browser-blank">{t("mainPanels.webEmpty")}</div>
         )}

@@ -38,6 +38,14 @@ import type {
 } from "../shared/permissions-events.js";
 import type { DeferredApprovalSource } from "../shared/permission-review-status.js";
 import type { TerminalBlock, TerminalBlockSummary } from "../shared/terminal-blocks.js";
+import {
+  parseBrowserTabOpRequest,
+  type ActiveWorkspaceSurface,
+  type BrowserTabBindRequest,
+  type BrowserTabBindResult,
+  type BrowserTabControlState,
+  type BrowserTabOpRequest,
+} from "../shared/browser-surface.js";
 import type { MarketplaceAnnouncementPayload } from "../shared/marketplace-announcements.js";
 import type { PackageUpdateView } from "../shared/git-marketplace.js";
 import type { AiProviderPingIpcResult } from "../shared/ai-provider-ping.js";
@@ -324,6 +332,37 @@ export function buildInternalApiSurface() {
         | { ok: false; error: string }
       >,
   },
+  // ─── Browser tabs + active surface (agent browser tools) ───
+  // Host-renderer-only. bindTab ties a tab id to its guest <webview>
+  // (getWebContentsId) after attach; stop is the agent badge's stop button;
+  // onTabOp / onControl subscribe to main→renderer events. setActiveSurface
+  // reports the browser/terminal tab the user is looking at (a hint tools
+  // default to). Wire types: shared/browser-surface.ts.
+  browserTabs: {
+    bindTab: async (request: BrowserTabBindRequest) =>
+      ipcRenderer.invoke(CHANNELS.browser.bindTab, request) as Promise<BrowserTabBindResult>,
+    stop: async (tabId: string) =>
+      ipcRenderer.invoke(CHANNELS.browser.stop, { tabId }) as Promise<{ ok: true } | { ok: false; error: string }>,
+    onTabOp: (handler: (request: BrowserTabOpRequest) => void) => {
+      const listener = (_event: unknown, payload: unknown) => {
+        const request = parseBrowserTabOpRequest(payload);
+        if (request) handler(request);
+      };
+      ipcRenderer.on(CHANNELS.browser.tabOp, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.browser.tabOp, listener);
+    },
+    onControl: (handler: (state: BrowserTabControlState) => void) => {
+      const listener = (_event: unknown, payload: { agentControlledTabIds?: unknown }) => {
+        const ids = payload?.agentControlledTabIds;
+        if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string")) return;
+        handler({ agentControlledTabIds: ids as string[] });
+      };
+      ipcRenderer.on(CHANNELS.browser.control, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.browser.control, listener);
+    },
+  },
+  setActiveSurface: async (surface: ActiveWorkspaceSurface | null) =>
+    ipcRenderer.invoke(CHANNELS.surface.setActive, surface) as Promise<{ ok: true } | { ok: false; error: string }>,
   // ─── Side chat (workspace rail) ──────────────────────
   // A second, independently-streaming chat session. send/new/load/abort are
   // invokes; onStream/onFallback subscribe to the DEDICATED

@@ -24,6 +24,8 @@ import { createPortal } from "react-dom";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
+import { bindGuestToTab } from "../preview/agent-browser-bridge.js";
+import type { AveApi } from "../types.js";
 import {
   getWebSurfaceOccluders,
   getWebSurfaceSlot,
@@ -33,6 +35,7 @@ import {
   beginSurfaceDrag,
   endSurfaceDrag,
   setWebSurfaceElement,
+  forgetWebSurfaceLocation,
   noteWebSurfaceLocation,
   setWebSurfaceSlot,
   clearWebSurfaceSlot,
@@ -229,7 +232,7 @@ function kick(): void {
   if (rafId === 0) rafId = requestAnimationFrame(tick);
 }
 
-function GuestFrame({ surface }: { surface: WebSurface }) {
+function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
   const frameRef = useRef<HTMLDivElement | null>(null);
   const guestRef = useRef<HTMLElement | null>(null);
 
@@ -239,21 +242,34 @@ function GuestFrame({ surface }: { surface: WebSurface }) {
   }, [surface.tabId]);
 
   // Where the page went on its own (links, redirects, in-page routes), for
-  // the saved layout's "last address".
+  // the saved layout's "last address" and the tab's address row. Only the
+  // main frame moves the page; a new guest process starts with no address.
   useEffect(() => {
     const guest = guestRef.current;
     if (!guest) return undefined;
     const onNavigate = (event: Event) => {
       const { url, isMainFrame } = event as Event & { url?: string; isMainFrame?: boolean };
-      if (typeof url === "string" && isMainFrame !== false) noteWebSurfaceLocation(surface.tabId, url);
+      if (isMainFrame === false || (event.type === "did-navigate-in-page" && isMainFrame !== true)) return;
+      if (typeof url === "string") noteWebSurfaceLocation(surface.tabId, url);
     };
+    const onAttach = () => forgetWebSurfaceLocation(surface.tabId);
+    guest.addEventListener("did-attach", onAttach);
     guest.addEventListener("did-navigate", onNavigate);
     guest.addEventListener("did-navigate-in-page", onNavigate);
     return () => {
+      guest.removeEventListener("did-attach", onAttach);
       guest.removeEventListener("did-navigate", onNavigate);
       guest.removeEventListener("did-navigate-in-page", onNavigate);
     };
   }, [surface.tabId]);
+
+  // The guest is the tab's page wherever the tab is shown, so the layer binds
+  // it to the tab in main for the agent browser tools.
+  useEffect(() => {
+    const guest = guestRef.current;
+    if (!guest) return undefined;
+    return bindGuestToTab(api, guest, surface.tabId, surface.bindRequestId);
+  }, [api, surface.tabId, surface.bindRequestId]);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -295,7 +311,7 @@ function GuestFrame({ surface }: { surface: WebSurface }) {
   );
 }
 
-export function WebSurfaceLayer() {
+export function WebSurfaceLayer({ api }: { api: AveApi }) {
   const surfaces = useSyncExternalStore(subscribeWebSurfaces, getWebSurfaces);
 
   useEffect(() => {
@@ -356,7 +372,7 @@ export function WebSurfaceLayer() {
       data-testid="web-surface-layer"
       style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: WEB_SURFACE_LAYER_Z }}
     >
-      {surfaces.map((surface) => <GuestFrame key={surface.tabId} surface={surface} />)}
+      {surfaces.map((surface) => <GuestFrame key={surface.tabId} api={api} surface={surface} />)}
     </div>,
     document.body,
   );
@@ -374,20 +390,23 @@ export function WebSurfaceSlot({
   tabId,
   url,
   location,
+  bindRequestId,
 }: {
   tabId: string;
   /** The url the host wants this tab on; navigates the guest when it changes. */
   url: string;
   /** Where the slot is mounted: "side-panel" or "pane:<id>". */
   location: string;
+  /** The agent request the tab was opened for, bound with its guest (see `WebSurface`). */
+  bindRequestId?: string;
 }) {
   const { t } = useTranslation();
   const mount = useSurfaceMount(tabId, location);
   const [element, setElement] = useState<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (mount.owned) setWebSurfaceUrl(tabId, url);
-  }, [mount.owned, tabId, url]);
+    if (mount.owned) setWebSurfaceUrl(tabId, url, bindRequestId);
+  }, [mount.owned, tabId, url, bindRequestId]);
 
   useEffect(() => {
     if (!mount.owned || !element) return undefined;

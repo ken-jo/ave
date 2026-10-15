@@ -1,4 +1,4 @@
-import { createElement, useEffect, useMemo, useState } from "react";
+import { createElement, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { WorkspaceTabKind } from "../preview/workspace-tabs.js";
 import {
   Activity,
@@ -25,6 +25,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/
 import { useTranslation } from "../../../i18n/react.js";
 import { wrapRenderHtmlInlineFrameDocument } from "../../../shared/render-html-preview.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
+import { isBrowserBlankBootstrap } from "../../../shared/browser-tools.js";
+import { validateExternalUrl } from "../../../shared/external-url.js";
 import type { AveApi } from "../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-targets.js";
 import { resolveIpcErrorKey } from "../format-ipc-error.js";
@@ -37,6 +39,8 @@ import { FileEditDiff } from "./FileEditDiff.js";
 import { ToolPayloadBlock } from "./ToolPayloadBlock.js";
 import { McpAppView } from "./McpAppView.js";
 import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
+import { bindGuestToTab } from "../preview/agent-browser-bridge.js";
+import { committedWebSurfaceLocation, subscribeWebSurfaceLocations } from "../preview/web-surfaces.js";
 
 export interface FileTreeNode {
   id: string;
@@ -479,11 +483,13 @@ export function BrowserDocumentViewer({ target }: { target: Extract<ChatPreviewT
   );
 }
 
+
 export function UrlDocumentViewer({
   api,
   target,
   showHeader = true,
   surfaceTabId,
+  browserTab,
 }: {
   api: AveApi;
   target: Extract<ChatPreviewTarget, { kind: "url" }>;
@@ -496,6 +502,13 @@ export function UrlDocumentViewer({
    */
   surfaceTabId?: string;
   /**
+   * The workspace tab this viewer renders. When set, each guest the webview
+   * attaches is bound to the tab in main (`ave:browser:bind-tab`) so the
+   * agent browser tools can reach it; `agentRequestId` marks a tab opened for
+   * the agent.
+   */
+  browserTab?: { tabId: string; agentRequestId?: string };
+  /**
    * Render the viewer's own URL/open-external header band. Default true. The
    * BrowserWorkspace tab passes false because the tab already owns a single
    * address bar above the webview — rendering the header here too produced the
@@ -506,11 +519,61 @@ export function UrlDocumentViewer({
   showHeader?: boolean;
 }) {
   const { t } = useTranslation();
-  // Single URL-safety SOT (rejects non-http(s) + credential-laden urls). This is
-  // the viewer boundary the url-safety header documents — it must not diverge
-  // from the store / main-process checks, so it calls the shared validator
-  // rather than re-implementing a weaker inline protocol-only check.
-  const url = useMemo(() => normalizeBrowserNavigationUrl(target.url), [target.url]);
+  const bindTabId = browserTab?.tabId;
+  const bindRequestId = browserTab?.agentRequestId;
+  const blankBootstrap = isBrowserBlankBootstrap(target.url, bindRequestId);
+  // A host-requested tab binds an empty guest before main installs navigation
+  // guards. All other URLs retain the ordinary navigation validator.
+  const url = useMemo(() => blankBootstrap
+    ? target.url
+    : normalizeBrowserNavigationUrl(target.url), [target.url, blankBootstrap]);
+  const [webviewElement, setWebviewElement] = useState<HTMLElement | null>(null);
+  const [observedLocation, setObservedLocation] = useState<{
+    element: HTMLElement;
+    requestId: string;
+    url: string | null;
+  } | null>(null);
+  // Guest navigation updates disclosure only. The mounted guest's initial src
+  // remains stable so displaying its committed URL cannot reload the page.
+  // A tab's page lives in the web-surface layer, which records what its main
+  // frame committed (and forgets it when the guest attaches again).
+  const surfaceCommitted = useSyncExternalStore(
+    subscribeWebSurfaceLocations,
+    () => (surfaceTabId ? committedWebSurfaceLocation(surfaceTabId) : null),
+  );
+  const surfaceObservedUrl = useMemo(() => {
+    if (surfaceCommitted === null) return null;
+    const checked = validateExternalUrl(surfaceCommitted);
+    return checked.ok ? checked.url : null;
+  }, [surfaceCommitted]);
+  const externalUrl = blankBootstrap
+    ? surfaceTabId
+      ? surfaceObservedUrl
+      : observedLocation !== null && observedLocation.element === webviewElement && observedLocation.requestId === bindRequestId ? observedLocation.url : null
+    : url;
+  const displayedUrl = externalUrl ?? url;
+  useEffect(() => {
+    if (!blankBootstrap || !webviewElement || bindRequestId === undefined) return;
+    const handleNavigation = (event: Event) => {
+      const navigation = event as Event & { url?: unknown; isMainFrame?: unknown };
+      if (navigation.isMainFrame === false || (event.type === "did-navigate-in-page" && navigation.isMainFrame !== true)) return;
+      const checked = validateExternalUrl(navigation.url);
+      setObservedLocation({ element: webviewElement, requestId: bindRequestId, url: checked.ok ? checked.url : null });
+    };
+    const handleAttach = () => setObservedLocation(null);
+    webviewElement.addEventListener("did-attach", handleAttach);
+    webviewElement.addEventListener("did-navigate", handleNavigation);
+    webviewElement.addEventListener("did-navigate-in-page", handleNavigation);
+    return () => {
+      webviewElement.removeEventListener("did-attach", handleAttach);
+      webviewElement.removeEventListener("did-navigate", handleNavigation);
+      webviewElement.removeEventListener("did-navigate-in-page", handleNavigation);
+    };
+  }, [blankBootstrap, webviewElement, bindRequestId]);
+  useEffect(() => {
+    if (!webviewElement || bindTabId === undefined) return undefined;
+    return bindGuestToTab(api, webviewElement, bindTabId, bindRequestId);
+  }, [api, webviewElement, bindTabId, bindRequestId]);
 
   if (!url) {
     return (
@@ -529,7 +592,7 @@ export function UrlDocumentViewer({
       {showHeader ? (
         <div className="flex min-h-9 shrink-0 items-center gap-2 border-b bg-muted/(--opacity-muted) px-2 text-[11px] text-muted-foreground">
           <Globe className="h-3.5 w-3.5 shrink-0" />
-          <span className="min-w-0 flex-1 truncate">{url}</span>
+          <span className="min-w-0 flex-1 truncate">{displayedUrl}</span>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -537,7 +600,10 @@ export function UrlDocumentViewer({
                 size="icon"
                 variant="ghost"
                 className="h-7 w-7 shrink-0"
-                onClick={() => void api.openExternalUrl(url)}
+                disabled={externalUrl === null}
+                onClick={() => {
+                  if (externalUrl !== null) void api.openExternalUrl(externalUrl);
+                }}
                 aria-label={t("chatPreviewRail.openUrl")}
               >
                 <ExternalLink className="h-3.5 w-3.5" />
@@ -548,8 +614,9 @@ export function UrlDocumentViewer({
         </div>
       ) : null}
       {surfaceTabId ? (
-        <WebSurfaceSlot tabId={surfaceTabId} url={url} location="side-panel" />
+        <WebSurfaceSlot tabId={surfaceTabId} url={url} location="side-panel" {...(bindRequestId === undefined ? {} : { bindRequestId })} />
       ) : createElement("webview", {
+        ref: setWebviewElement,
         "data-testid": "chat-side-panel-browser-webview",
         src: url,
         partition: AVE_SIDE_BROWSER_PARTITION,

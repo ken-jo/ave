@@ -68,6 +68,9 @@ function api(): AveApi {
  * same tree shape as the mount — a differently shaped tree remounts the
  * harness and loses the state a test is checking survives.
  */
+/** One api for the layer across rerenders; these tests do not bind guests. */
+const layerApi = api();
+
 function withPanelProviders(ui: ReactElement) {
   return (
     <TooltipProvider>
@@ -75,7 +78,7 @@ function withPanelProviders(ui: ReactElement) {
         {ui}
         {/* The window's browser guests live in this layer (portaled to body),
             not inside the panel — as in the app. */}
-        <WebSurfaceLayer />
+        <WebSurfaceLayer api={layerApi} />
       </ApprovalSurfaceProvider>
     </TooltipProvider>
   );

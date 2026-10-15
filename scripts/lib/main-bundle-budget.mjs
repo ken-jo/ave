@@ -76,10 +76,23 @@ export function isSafeMainBundleManifestPath(path) {
  * against (`shared/tab-id.ts`), and main-window closing a closed window's terminals; with
  * them the measurement is entry 423_380, initial 5_399_503, total 9_041_529, and the
  * initial ceiling moves to 5_400_000.
+ * The agent browser tools keep their schemas, execute bodies and CDP page actions out of
+ * the initial graph (desktop-boot and dynamic imports); what joins it is what boot wires
+ * eagerly: the browser tab registry and its IPC domain, guest tracking on did-attach, the
+ * tools' en/ko catalog fragments (the catalog barrel imports every fragment) and the
+ * approval card's browser-scope strings. Measured entry 425_021, initial 5_410_703,
+ * total 9_079_452; the initial ceiling moves to 5_412_000.
+ * Concrete browser document authority, input attribution and navigation
+ * provenance remain in the initial registry graph. Measured entry 425_021,
+ * initial 5_413_433, total 9_091_289; the ceiling moves from 5_412_000 to
+ * 5_415_000 to cover that functionality.
+ * The main-area panels joined with that main (the browser agent tools beside the
+ * panels' layout parser, terminal ownership and window-close cleanup) measure entry
+ * 425_328, initial 5_423_655, total 9_102_793; the initial ceiling moves to 5_425_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_400_000,
+  initialBytes: 5_425_000,
   totalBytes: 11_050_000,
 });
 

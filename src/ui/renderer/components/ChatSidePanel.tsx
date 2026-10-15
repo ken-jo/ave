@@ -35,6 +35,8 @@ import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import { TerminalAttentionDot } from "./TerminalAttentionDot.js";
 import { useTerminalAttention } from "../preview/terminal-attention.js";
 import { forgetActiveSurface, showActiveSurface } from "../preview/active-surface.js";
+import { AgentControlBadge } from "./AgentControlBadge.js";
+import { useAgentControlledTabIds } from "../preview/agent-browser-bridge.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
 import { useVerticalSplit } from "../hooks/use-vertical-split.js";
 import type { SubAgentSpawn } from "../subagents/types.js";
@@ -503,7 +505,14 @@ function ContentTabView({
   }, [content, tab.id, t]);
   if (!content) return null;
   if (browserTarget) {
-    return <UrlDocumentViewer api={api} target={browserTarget} surfaceTabId={tab.id} />;
+    return (
+      <UrlDocumentViewer
+        api={api}
+        target={browserTarget}
+        surfaceTabId={tab.id}
+        browserTab={{ tabId: tab.id, ...(tab.agentRequestId === undefined ? {} : { agentRequestId: tab.agentRequestId }) }}
+      />
+    );
   }
   const target = content.source === "preview" ? targetById.get(content.targetId) : undefined;
   if (!target) {
@@ -964,6 +973,22 @@ export function ChatSidePanel({
   }, [frontSurface?.tabId]);
   const sideChatActive = activeTab?.kind === "side-chat" && !activeTab.content;
   const sideChatMounted = tabs.some((tab) => tab.kind === "side-chat" && !tab.content);
+  const browserTabs = useMemo(() => tabs.filter((tab) => tab.kind === "browser" && tab.content !== null), [tabs]);
+  const agentControlledTabIds = useAgentControlledTabIds();
+
+  // The tab the user is looking at, reported to main as a hint the agent
+  // tools default to (a browser tool with no tabId, terminal_read's
+  // blockId/limit). Cleared when the panel goes away.
+  const activeSurfaceKind = activeTab?.kind === "browser" || activeTab?.kind === "terminal" ? activeTab.kind : null;
+  const activeSurfaceTabId = activeSurfaceKind ? activeTab?.id ?? null : null;
+  useEffect(() => {
+    const setActiveSurface = api.setActiveSurface;
+    if (!setActiveSurface) return;
+    void setActiveSurface(activeSurfaceKind && activeSurfaceTabId ? { kind: activeSurfaceKind, tabId: activeSurfaceTabId } : null);
+  }, [api, activeSurfaceKind, activeSurfaceTabId]);
+  useEffect(() => () => {
+    void api.setActiveSurface?.(null);
+  }, [api]);
 
   // Panel-scoped launcher shortcuts (§6.10.3). Bound only while the panel is
   // mounted so ⌘T/⌘P/⌃⇧G reach the workspace rail without stealing app-wide
@@ -1186,7 +1211,7 @@ export function ChatSidePanel({
       >
         {tabStripContent}
 
-        <div className="min-h-0 flex-1 overflow-hidden" data-active-tab-kind={activeTab?.kind} data-active-tab-mode={activeTab?.mode}>
+        <div className="relative min-h-0 flex-1 overflow-hidden" data-active-tab-kind={activeTab?.kind} data-active-tab-mode={activeTab?.mode}>
           {activeTab == null ? (
             <WorkspaceLauncher
               onOpen={addTab}
@@ -1207,6 +1232,9 @@ export function ChatSidePanel({
               onOpenActivityItemPinned={onOpenActivityItemPinned}
               onOpenActivityItemInSystemApp={onOpenActivityItemInSystemApp}
             />
+          ) : activeTab.kind === "browser" && activeTab.content ? (
+            // Drawn below, where every browser page tab stays mounted.
+            null
           ) : activeTab.content ? (
             <ContentTabView api={api} sessionId={sessionId} tab={activeTab} targetById={targetById} />
           ) : activeTab.kind === "file-browser" ? (
@@ -1249,6 +1277,33 @@ export function ChatSidePanel({
           ) : (
             <PreviewWorkspace api={api} sessionId={sessionId} targets={previewTargets} selectedId={selectedId} onSelect={onSelect} />
           )}
+          {browserTabs.map((tab) => {
+            // Every browser PAGE tab (one url: the agent's tabs, pages opened
+            // from the activity) stays MOUNTED, the visible one in place and the
+            // others hidden beneath it: unmounting a <webview> destroys its page,
+            // and an agent working in a background tab would lose its state on
+            // every tab switch. Hidden with visibility (not display:none) so the
+            // guest keeps a size. The browser launcher tab follows the panel's
+            // shared selection, so it still mounts only while shown.
+            const shown = tab.id === activeTab?.id;
+            const agentControlled = agentControlledTabIds.has(tab.id);
+            return (
+              <div
+                key={tab.id}
+                className={shown ? "flex h-full min-h-0 w-full min-w-0 flex-col" : "pointer-events-none invisible absolute inset-0"}
+                aria-hidden={shown ? undefined : true}
+                data-testid="chat-side-panel-browser-tab-host"
+                data-tab-id={tab.id}
+              >
+                {agentControlled ? (
+                  <AgentControlBadge onStop={() => void api.browserTabs?.stop(tab.id)} />
+                ) : null}
+                <div className="min-h-0 flex-1">
+                  <ContentTabView api={api} sessionId={sessionId} tab={tab} targetById={targetById} />
+                </div>
+              </div>
+            );
+          })}
           {sideChatMounted ? (
             // Side chat — a second, independently-streaming chat session driven
             // by a dedicated ConversationLoop in main. The view subscribes to the

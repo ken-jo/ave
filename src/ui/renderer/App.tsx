@@ -2627,7 +2627,7 @@ export function App() {
             {/* Every browser tab's page, laid over wherever the tab is shown
                 (see WebSurfaceLayer). Portaled to <body>: no ancestor here may
                 capture its fixed positioning or its stacking. */}
-            <WebSurfaceLayer />
+            <WebSurfaceLayer api={api} />
           </OverlayContextProvider>
           </ApprovalSurfaceProvider>
         </TooltipProvider>
