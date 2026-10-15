@@ -67,7 +67,9 @@ function findClipboardImage(items: DataTransferItemList): File | null {
 }
 
 function shouldChipText(text: string): boolean {
-  return text.length > PASTE_INLINE_MAX_CHARS;
+  // Measured as the textarea will hold it: a Windows clipboard's CRLF line
+  // breaks become single LFs on insert and must not push it over the limit.
+  return text.replace(/\r\n/g, "\n").length > PASTE_INLINE_MAX_CHARS;
 }
 
 /**

@@ -73,8 +73,11 @@ describe("handleClipboardPaste", () => {
   });
 
   it("pastes text up to the inline limit verbatim, line breaks included", async () => {
-    for (const text of ["a\nb\nc\nd\ne", "y".repeat(PASTE_INLINE_MAX_CHARS), `${"line\n".repeat(99)}12345`]) {
-      expect(text.length).toBeLessThanOrEqual(PASTE_INLINE_MAX_CHARS);
+    // The last one is 480 characters with 30 Windows CRLF breaks: 510 raw,
+    // 480 once the textarea turns each CRLF into one LF.
+    const crlf = `${"x".repeat(15)}\r\n`.repeat(30);
+    for (const text of ["a\nb\nc\nd\ne", "y".repeat(PASTE_INLINE_MAX_CHARS), `${"line\n".repeat(99)}12345`, crlf]) {
+      expect(text.replace(/\r\n/g, "\n").length).toBeLessThanOrEqual(PASTE_INLINE_MAX_CHARS);
       const outcome = await handleClipboardPaste(makePasteEvent({ text }), {
         count: 0,
         allocateN: () => 1,

@@ -9,6 +9,7 @@ import {
 } from "../../../components/ui/popover.js";
 import {
   ATTACH_MAX_COUNT,
+  PASTE_TEXT_MAX_CHARS,
   type Attachment,
 } from "../types/attachments.js";
 import { collapsePath } from "../utils/attachment-markers.js";
@@ -273,7 +274,7 @@ export function AttachmentOverlay({
           {t("attachmentChip.overlayRemoveHint")}
         </span>
       </div>
-      <div className="max-h-72 space-y-1 overflow-y-auto">
+      <div className="max-h-[60vh] space-y-1 overflow-y-auto">
         {attachments.map((att) => (
           <div
             key={att.id}
@@ -349,10 +350,20 @@ export function AttachmentOverlay({
                 data-testid="overlay-paste-text"
                 aria-label={t("attachmentChip.pastedTextOriginal", { n: att.n })}
                 tabIndex={0}
-                className="max-h-56 w-full basis-full select-text overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-muted/(--opacity-medium) p-2 font-mono text-[11px] leading-relaxed text-foreground"
+                // One scroller: the list around it already scrolls, and a
+                // second one inside would swallow the wheel.
+                className="w-full basis-full select-text whitespace-pre-wrap break-words rounded border border-border bg-muted/(--opacity-medium) p-2 font-mono text-[11px] leading-relaxed text-foreground"
               >
-                {att.text}
+                {/* A clipboard paste is stored whole, however long; laying out
+                    megabytes of wrapped text would freeze the window, so the
+                    view stops at the cap and says how much it left out. */}
+                {att.text.length > PASTE_TEXT_MAX_CHARS ? att.text.slice(0, PASTE_TEXT_MAX_CHARS) : att.text}
               </pre>
+            ) : null}
+            {att.kind === "paste" && att.text.length > PASTE_TEXT_MAX_CHARS ? (
+              <div data-testid="overlay-paste-more" className="w-full basis-full text-[10px] text-muted-foreground">
+                {t("attachmentChip.pastedTextMore", { count: att.text.length - PASTE_TEXT_MAX_CHARS })}
+              </div>
             ) : null}
           </div>
         ))}
