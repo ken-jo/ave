@@ -42,7 +42,13 @@ const WRAPPERS = [
  */
 const STRING_JOINING_WRAPPERS = new Set(["watch", "parallel", "sg"]);
 const DASH_C_WRAPPERS = new Set(["su", "script", "flock", "runuser"]);
-interface PackageRunnerPolicy {
+interface RunnerDataOptions {
+  flags?: readonly string[];
+  values?: readonly string[];
+  optionalValues?: readonly string[];
+}
+
+interface PackageRunnerPolicy extends RunnerDataOptions {
   prefixRunner?: boolean;
   command?: true | readonly string[];
   delegate?: boolean;
@@ -52,29 +58,34 @@ interface PackageRunnerPolicy {
   scriptVerbs?: readonly string[];
   tasks?: ReadonlySet<string>;
   commandDelimiter?: boolean;
-  flags?: readonly string[];
-  values?: readonly string[];
+  taskOptions?: Readonly<Record<string, RunnerDataOptions>>;
 }
 
 const CALL_OPTIONS = ["-c", "--call", "--shell-mode"];
 const TASK_FLAGS = ["--silent", "--quiet", "--offline", "--ignore-scripts", "--frozen-lockfile"];
-const TASK_PATH_OPTIONS = new Set(["-C", "--dir", "--cwd", "--prefix", "-w", "--workspace"]);
-const INLINE_CODE_OPTION = /(?:^|-)(?:code|eval|call|exec|shell|preload|loader|require|import|node-options)(?:-|$)/;
+const CONFIG_SOURCE_OPTIONS = new Set(["config", "userconfig", "globalconfig", "importmap", "nodeoptions", "require", "preload", "import", "scriptshell"]);
+const NPM_INSTALL_OPTIONS = { flags: ["--save", "--legacy-peer-deps", "-g", "--global", "--save-dev", "-D", "--save-exact", "-E", "--no-save"] };
+const PNPM_INSTALL_OPTIONS = { flags: ["--no-frozen-lockfile", "--save-dev", "-D"] };
 const DENO_TASK_VERBS = new Set(["task", "test", "fmt", "lint", "check", "info", "doc", "bench", "cache", "types", "completions", "upgrade", "compile", "install"]);
-/** Runner-owned options stop at a proved command operand or an explicit task delimiter. */
+/** Data bindings belong to each runner; source scans also inspect forwarded argv. */
 const PACKAGE_RUNNER_POLICIES: Readonly<Record<string, PackageRunnerPolicy>> = {
   npx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["-y", "--yes", "--no", "--no-install"], values: ["-p", "--package"] },
   bunx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["--bun", "--no-install"], values: ["-p", "--package"] },
   pnpx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["-s", "--silent"], values: ["--package"] },
   uvx: { prefixRunner: true, command: true, flags: ["--offline", "--no-cache", "-q", "--quiet"], values: ["--from", "--with"] },
-  pipx: { prefixRunner: true, command: ["run"], codeVerbs: ["runpip"], values: ["--spec"] },
-  corepack: { prefixRunner: true, delegate: true },
-  yarnpkg: { prefixRunner: true, command: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: TASK_FLAGS },
-  deno: { prefixRunner: true, code: ["-e", "--eval"], codeVerbs: ["eval"], taskArguments: ["task"], scriptVerbs: ["run"], tasks: DENO_TASK_VERBS, flags: ["--quiet", "--watch"] },
-  npm: { command: ["exec", "x"], code: CALL_OPTIONS, codeVerbs: ["explore"], commandDelimiter: true, values: ["--package"], flags: [...TASK_FLAGS, "--save-dev", "-D", "--save-exact", "-E", "--no-save"] },
-  pnpm: { command: ["exec", "dlx", "x"], code: CALL_OPTIONS, flags: [...TASK_FLAGS, "--save-dev", "-D", "--recursive", "-r"], values: ["--package", "--filter"] },
-  yarn: { command: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: [...TASK_FLAGS, "--dev", "-D", "--immutable"] },
-  bun: { command: ["x"], code: ["-e", "--eval", "-p", "--print", "--preload"], codeVerbs: ["exec", "repl"], taskArguments: ["run"], flags: [...TASK_FLAGS, "--save-dev", "-D", "--coverage", "--watch"] },
+  pipx: { prefixRunner: true, command: ["run"], code: ["--path"], codeVerbs: ["runpip"], values: ["--spec"] },
+  corepack: { prefixRunner: true, delegate: true, taskOptions: { prepare: { flags: ["--activate"] } } },
+  yarnpkg: { prefixRunner: true, command: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: TASK_FLAGS, values: ["--cwd"] },
+  deno: { prefixRunner: true, code: ["-e", "--eval"], codeVerbs: ["eval"], taskArguments: ["task"], scriptVerbs: ["run"], tasks: DENO_TASK_VERBS, flags: ["--quiet", "--watch"],
+    taskOptions: { test: { flags: ["-A"] }, run: { flags: ["-A"], optionalValues: ["--allow-", "--deny-"] }, task: { values: ["--cwd"] }, install: { flags: ["-g", "--global", "--entrypoint"] } } },
+  npm: { command: ["exec", "x"], code: CALL_OPTIONS, codeVerbs: ["explore"], commandDelimiter: true, values: ["--package", "--prefix", "-w", "--workspace"], flags: TASK_FLAGS,
+    taskOptions: { install: NPM_INSTALL_OPTIONS, i: NPM_INSTALL_OPTIONS, ci: { values: ["--omit"] }, init: { flags: ["-y"] }, run: { flags: ["--if-present"] }, publish: { values: ["--access"] } } },
+  pnpm: { command: ["exec", "dlx", "x"], code: CALL_OPTIONS, flags: [...TASK_FLAGS, "--recursive", "-r"], values: ["--package", "--filter", "-C", "--dir"],
+    taskOptions: { install: PNPM_INSTALL_OPTIONS, i: PNPM_INSTALL_OPTIONS, add: PNPM_INSTALL_OPTIONS, run: { flags: ["--parallel"] } } },
+  yarn: { command: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: TASK_FLAGS, values: ["--cwd"],
+    taskOptions: { add: { flags: ["--dev", "-D"] }, install: { flags: ["--immutable"] } } },
+  bun: { command: ["x"], code: ["-e", "--eval", "-p", "--print", "--preload"], codeVerbs: ["exec", "repl"], taskArguments: ["run"], flags: TASK_FLAGS,
+    taskOptions: { run: { flags: ["--hot", "--bail"] }, build: { values: ["--outdir"] }, test: { flags: ["--coverage", "--watch"] }, install: NPM_INSTALL_OPTIONS } },
 };
 /** Package and project task runners: a 1-token prefix cannot constrain their execution. */
 const PACKAGE_RUNNERS = Object.keys(PACKAGE_RUNNER_POLICIES).filter((name) => PACKAGE_RUNNER_POLICIES[name]!.prefixRunner);
@@ -701,21 +712,27 @@ function subscriptedNameReason(program: string, args: readonly (string | undefin
 }
 
 interface PackageRunnerInvocation {
+  // Data binds argv, including project tasks; it does not prove task contents.
+  // Scripts retain interpreter visibility, unknown options ask normally, and
+  // opaque sources force the floor. None defers to intrinsic program handling.
+  kind: "none" | "data" | "script" | "unknown" | "opaque";
   reason: string | null;
   commandIndex?: number;
   program?: string;
   task?: boolean;
+  scriptPath?: string;
 }
 
 function isLocalScriptOperand(value: string | undefined): value is string {
-  return !!value && !value.startsWith("-") && !/^(?:[a-z][a-z\d+.-]+:|[\\/]{2})/i.test(value);
+  return !!value && !value.startsWith("-") && !/^(?:[a-z][a-z\d+.-]+:|[\\/]{2})/i.test(value)
+    && !/^(?:\/dev\/(?:stdin|fd\/\d+)|con(?:in\$)?)$/i.test(value);
 }
 
-/** A forwarded command keeps its argv indices; unknown binding never becomes data. */
+/** Classification is shared; an unknown option asks without hiding code from rules. */
 export function packageRunnerInvocation(argv: readonly (string | undefined)[]): PackageRunnerInvocation {
   const nameAt = (index: number): string => programName(argv[index] ?? "").replace(/^(?!@)([^@]+)@[^@]+$/, "$1");
-  if (!Object.hasOwn(PACKAGE_RUNNER_POLICIES, nameAt(0))) return { reason: null };
-  const opaque = (reason: string): PackageRunnerInvocation => ({ reason: `package runner ${reason}` });
+  if (!Object.hasOwn(PACKAGE_RUNNER_POLICIES, nameAt(0))) return { kind: "none", reason: null };
+  const opaque = (reason: string): PackageRunnerInvocation => ({ kind: "opaque", reason: `package runner ${reason}` });
   if (argv.length > 1024) return opaque("analysis budget exceeded");
   let chars = 0;
   let unresolved = false;
@@ -725,49 +742,67 @@ export function packageRunnerInvocation(argv: readonly (string | undefined)[]): 
     if (chars > 65_536) return opaque("analysis budget exceeded");
   }
   let start = 0;
+  let unknown: string | undefined;
   for (let depth = 0; depth < 16; depth += 1) {
     const program = nameAt(start);
     const policy = Object.hasOwn(PACKAGE_RUNNER_POLICIES, program) ? PACKAGE_RUNNER_POLICIES[program] : undefined;
-    const command = (): PackageRunnerInvocation => ({ reason: unresolved ? "package runner has an unresolved argument" : null,
+    const command = (): PackageRunnerInvocation => ({ kind: unresolved ? "opaque" : unknown ? "unknown" : "data",
+      reason: unresolved ? "package runner has an unresolved argument" : unknown ?? null,
       ...(start ? { commandIndex: start, program } : {}) });
     if (!policy) {
       if (!argv[start] || /[\s;&|`$<>()]/.test(argv[start]!)) return opaque("has an opaque command operand");
       const inner = [program, ...argv.slice(start + 1)];
-      let intrinsic = WRAPPER_SET.has(program) ? "launches a wrapper" : hiddenCodeAt(inner, 0);
-      // A named file is subject to the normal script policy and materialization
-      // checks; an inline option, shell, stdin or remote source is still opaque.
-      if (FILE_OPERAND_INTERPRETERS.has(program) && isLocalScriptOperand(inner[1]) && intrinsic === `code passed to ${program}`) intrinsic = null;
+      if (INTERPRETER_SET.has(program) && inner.slice(1).some((arg) => arg !== undefined && !arg.startsWith("--")
+        && (arg === "-" || (!arg.startsWith("-") && !isLocalScriptOperand(arg))))) return opaque("has a remote or stdin interpreter source");
+      const intrinsic = WRAPPER_SET.has(program) ? "launches a wrapper" : hiddenCodeAt(inner, 0);
       const effect = shellOptionEffect(inner);
       const info = inner.length === 2 && /^(?:--version|--help|-v|-h)$/.test(inner[1]!);
       const forwarded = command();
-      return { ...forwarded, reason: intrinsic ?? (effect?.kind === "exec" ? effect.reason : null)
-        ?? (NETWORK_PROGRAMS.has(program) && !info ? "package runner launches a network-capable command" : forwarded.reason) };
+      const reason = intrinsic ?? (effect?.kind === "exec" ? effect.reason : null)
+        ?? (NETWORK_PROGRAMS.has(program) && !info ? "package runner launches a network-capable command" : null);
+      const script = FILE_OPERAND_INTERPRETERS.has(program) && isLocalScriptOperand(inner[1]) && intrinsic === `code passed to ${program}`;
+      return reason ? { ...forwarded, kind: script ? "script" : "opaque", reason, ...(script ? { scriptPath: inner[1] } : {}) } : forwarded;
     }
+    // Configuration and code sources win over unknown options elsewhere. A
+    // task delimiter ends runner-owned options, but not remote source checks.
+    for (let scan = start + 1; scan < argv.length && argv[scan] !== "--"; scan += 1) {
+      const token = argv[scan]?.replace(/[\u2013-\u2015]/g, "-");
+      if (!token?.startsWith("-")) continue;
+      const flag = token.split("=", 1)[0]!;
+      const key = flag.replace(/[-_.]/g, "").toLowerCase();
+      if (CONFIG_SOURCE_OPTIONS.has(key) || key.startsWith("config")) return opaque("contains a configuration source");
+      if (policy.code?.some((code) => flag === code || (code.length === 2 && token.startsWith(code)))
+        || /^(?:-c|-e|--call|--eval|--print|--shell-mode)(?:=|$)/.test(token)) return opaque("contains inline code");
+    }
+    if (program === "deno" && argv.slice(start + 1).some((arg) => arg === "-"
+      || (arg !== undefined && !arg.startsWith("-") && !isLocalScriptOperand(arg)))) return opaque("has a remote or stdin source");
     const rest = argv.slice(start + 1);
-    if (rest.length === 0 || rest.every((arg) => /^(?:--version|--help|-v|-h)$/.test(arg!))) return command();
+    if (rest.length === 0) return INTERPRETER_SET.has(program) ? { kind: "none", reason: null } : command();
+    if (rest.every((arg) => /^(?:--version|--help|-v|-h)$/.test(arg!))) return { ...command(), task: true };
     let index = start + 1;
     let delimited = false;
-    const option = (task: boolean): string | null => {
+    const option = (data?: RunnerDataOptions): string | null => {
       const token = argv[index]!;
       const equals = token.indexOf("=");
       const flag = equals === -1 ? token : token.slice(0, equals);
-      if (policy.code?.some((code) => flag === code || (code.length === 2 && token.startsWith(code))) || INLINE_CODE_OPTION.test(flag)) return "contains inline code";
-      if (policy.flags?.includes(flag) && equals === -1) { index += 1; return null; }
-      if (policy.values?.includes(flag) || (policy.command !== true && TASK_PATH_OPTIONS.has(flag))) {
+      if ((policy.flags?.includes(flag) || data?.flags?.includes(flag)) && equals === -1) { index += 1; return null; }
+      if (policy.values?.includes(flag) || data?.values?.includes(flag)) {
         const value = equals === -1 ? argv[++index] : token.slice(equals + 1);
-        if (!value || value.startsWith("-") || /[\s;&|`$<>()]/.test(value)) return "has an opaque option value";
+        if (!value || value.startsWith("-")) return "has an opaque option value";
         index += 1;
         return null;
       }
-      if (task) { index += 1; return null; }
-      return "has an unmodeled option";
+      if (data?.optionalValues?.some((prefix) => flag.startsWith(prefix))) { index += 1; return null; }
+      unknown ??= `package runner has an unknown option (${flag})`;
+      index += 1;
+      return null;
     };
-    const leadingOptions = (task = false): string | null => {
+    const leadingOptions = (data?: RunnerDataOptions): string | null => {
       while (index < argv.length) {
         if (argv[index] === undefined) return "has an unresolved argument";
         if (!argv[index]!.startsWith("-")) break;
         if (argv[index] === "--") { delimited = true; index += 1; break; }
-        const reason = option(task);
+        const reason = option(data);
         if (reason) return reason;
       }
       return null;
@@ -789,31 +824,37 @@ export function packageRunnerInvocation(argv: readonly (string | undefined)[]): 
       start = index;
       continue;
     }
+    const data = policy.taskOptions?.[verb];
     if (policy.scriptVerbs?.includes(verb)) {
       index += 1;
-      const leading = leadingOptions();
+      const leading = leadingOptions(data);
       if (leading) return opaque(leading);
-      return isLocalScriptOperand(argv[index]) ? command() : opaque("has an opaque script source");
+      if (!isLocalScriptOperand(argv[index])) return opaque("has an opaque script source");
+      const result = command();
+      return result.kind !== "data" ? result : { ...result, kind: "script", reason: `code passed to ${program}`, scriptPath: argv[index] };
     }
     if (policy.tasks && !policy.tasks.has(verb)) return opaque("has an unmodeled execution form");
     let task: boolean | undefined;
     if (policy.taskArguments?.includes(verb)) {
       index += 1;
-      const leading = leadingOptions(true);
+      const leading = leadingOptions(data);
       if (leading) return opaque(leading);
       if (index >= argv.length) return opaque("has no task operand");
+      if (SCRIPT_FILE_ARG.test(argv[index]!) && !isLocalScriptOperand(argv[index])) return opaque("has a remote or stdin task source");
       task = !SCRIPT_FILE_ARG.test(argv[index]!);
     }
-    // Task options are data unless they name inline code. Command-forwarding
-    // options above still need a proved binding to locate the downstream argv.
+    // Only table entries establish data bindings. Unknown options retain an
+    // ordinary ask and cannot clear a separately recognized code source.
     for (index += 1; !delimited && index < argv.length;) {
       if (argv[index] === undefined) return opaque("has an unresolved argument");
       if (argv[index] === "--") break;
       if (!argv[index]!.startsWith("-")) { index += 1; continue; }
-      const reason = option(true);
+      const reason = option(data);
       if (reason) return opaque(reason);
     }
-    return { ...command(), task: task ?? (!INTERPRETER_SET.has(program) || isTaskRunnerVerb(program, [verb])) };
+    if (INTERPRETER_SET.has(program) && SCRIPT_FILE_ARG.test(verb) && !isLocalScriptOperand(verb)) return opaque("has a remote interpreter source");
+    const result = command();
+    return { ...result, task: task ?? (!INTERPRETER_SET.has(program) || isTaskRunnerVerb(program, [verb])) };
   }
   return opaque("analysis budget exceeded");
 }
@@ -824,6 +865,7 @@ function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): str
   const program = programName(head);
   const args = argv.slice(start + 1);
   const runner = packageRunnerInvocation(argv.slice(start));
+  if (runner.kind === "unknown") return null;
   if (runner.reason) return runner.reason;
   if (runner.task) return null;
   if (WRAPPER_SET.has(program)) {

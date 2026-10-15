@@ -164,10 +164,11 @@ function sensitiveArgument(text: string, ctx: Context): string | null {
  * wrapper grammar the rule matcher uses (`shell-prefix-policy.ts`), which
  * includes `busybox`.
  */
-function unwrap(words: readonly ShellWord[]): { words: readonly ShellWord[]; name: string | undefined } {
+function unwrap(words: readonly ShellWord[]): { words: readonly ShellWord[]; name: string | undefined; runner: ReturnType<typeof packageRunnerInvocation> } {
   const unwrapped = words.slice(wrapperPrefixLength(words.map(wordText)));
   const runner = packageRunnerInvocation(unwrapped.map(wordText));
   return {
+    runner,
     words: unwrapped.slice(runner.commandIndex ?? 0),
     name: runner.program ?? program(unwrapped[0] ? wordText(unwrapped[0]) : undefined),
   };
@@ -325,7 +326,8 @@ function inlineShellCode(name: string, args: readonly ShellWord[]): string | und
 }
 
 function senderSignal(cmd: ShellCommand, feeders: readonly ShellCommand[], ctx: Context): string | null {
-  const { words, name } = unwrap(cmd.words);
+  const { words, name, runner } = unwrap(cmd.words);
+  if (runner.kind === "opaque") return `opaque runner input (${runner.reason})`;
   if (!name) return null;
   const args = words.slice(1);
 

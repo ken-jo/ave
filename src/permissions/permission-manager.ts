@@ -12,6 +12,7 @@ import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js"
 import { isRuleSpecifier } from "./rules/rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
 import { inspectPowerShellCommand } from "./rules/powershell-exfiltration.js";
+import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { parseShellCommand } from "./rules/shell-prefix-policy.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
@@ -1479,6 +1480,8 @@ export class PermissionManager {
     const shellRuleEvaluation = shellSubject
       ? evaluateShellSubject(shellSubject, this.rules, projectRules)
       : undefined;
+    const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject) : undefined;
+    const ordinaryShellAsk = powerShellSignals?.ordinaryAsk ?? (shellShape?.ok ? shellShape.ordinaryAsk : undefined);
     // Credential-exfiltration floor: never remembered, never auto-allowed, in
     // any mode, for every host shell (rules/shell-exfiltration.ts,
     // rules/powershell-exfiltration.ts).
@@ -1649,7 +1652,9 @@ export class PermissionManager {
     }
 
     if (context.headless === true && isMutating && context.ownerUnattended !== true) {
-      return this.categoryBasedDecision(trust, resolvedCategory, context);
+      const category = this.categoryBasedDecision(trust, resolvedCategory, context);
+      return ordinaryShellAsk && category.decision === "allow"
+        ? { decision: "ask", reason: ordinaryShellAsk, layer: 6 } : category;
     }
 
     // 3. Allow rules
@@ -1703,6 +1708,7 @@ export class PermissionManager {
     // 6. Category × Source × Trust via registry descriptor
     if (result === undefined) {
       result = this.categoryBasedDecision(trust, resolvedCategory, context);
+      if (ordinaryShellAsk && result.decision === "allow") result = { decision: "ask", reason: ordinaryShellAsk, layer: 6 };
     }
 
     // Permission policy V1 SOT — per-invocation `decisionOverride="ask"` gate.

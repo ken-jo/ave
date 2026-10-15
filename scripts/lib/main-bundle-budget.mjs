@@ -84,10 +84,11 @@ export function isSafeMainBundleManifestPath(path) {
  * Merged with the browser tools: entry 425_021, initial 5_494_317, total 9_173_400; ceiling 5_495_000.
  * Shared runner argument analysis: entry 425_021, initial 5_498_372, total 9_177_455; ceiling 5_500_000.
  * Runner task-data options: entry 425_021, initial 5_499_048, total 9_178_131; ceiling 5_500_000.
+ * Runner option roles and ordinary asks: entry 425_021, initial 5_501_684, total 9_180_767; ceiling 5_505_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_500_000,
+  initialBytes: 5_505_000,
   totalBytes: 11_050_000,
 });
 

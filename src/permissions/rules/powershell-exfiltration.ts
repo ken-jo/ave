@@ -77,7 +77,7 @@ import {
   type PowerShellPathBinding,
 } from "./powershell-command-policy.js";
 import { PowerShellFileProvenance } from "./powershell-file-provenance.js";
-import { hiddenCodeReason, isNetworkProgram, refusedShellPrefix, SHELL_PREFIX_POLICY, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { hiddenCodeReason, isNetworkProgram, packageRunnerInvocation, refusedShellPrefix, SHELL_PREFIX_POLICY, type ShellCommandInput } from "./shell-prefix-policy.js";
 import {
   MULTI_PURPOSE_NETWORK,
   sensitivePathInArgumentText,
@@ -878,33 +878,34 @@ function hiddenCode(reason: string): string {
 }
 
 /** File-backed execution cannot inherit the benign spelling of a newly written leaf. */
-function fileExecutionSignal(stage: PsCommand, feeder: PsCommand | undefined, ctx: Context, probe: boolean, pathData: boolean): string | null {
+function fileExecutionSignal(stage: PsCommand, feeder: PsCommand | undefined, ctx: Context, probe: boolean, pathData: boolean): { reason: string; materialized: boolean } | null {
+  const fileCode = (reason: string, materialized = false) => ({ reason: hiddenCode(reason), materialized });
   const { name, args, label } = headOf(stage, ctx);
   if (name === undefined) return null;
   if (probe && args.length === 0 && stage.tokens.length === 1
     && (pathData || /^[a-z][a-z\d+.-]*:\/\//i.test(name) || ctx.files.fileType(name) === "document")) return null;
-  const materialized = (path: string): string | null => {
+  const materialized = (path: string) => {
     const file = ctx.files.executionTarget(path);
-    return file ? hiddenCode(`materialized file${file.catalogue ? `, catalogue ${file.catalogue}` : ""}`) : null;
+    return file ? fileCode(`materialized file${file.catalogue ? `, catalogue ${file.catalogue}` : ""}`, true) : null;
   };
   if (name === "invoke-item") {
-    if (args.some((token) => token.kind === "word" && !token.quoted && /^@\w+$/.test(token.text))) return hiddenCode("nonliteral file association target");
+    if (args.some((token) => token.kind === "word" && !token.quoted && /^@\w+$/.test(token.text))) return fileCode("nonliteral file association target");
     const expanded = expandSplats(args, ctx);
     const bound = expanded === null ? undefined : bindArguments(expanded, POWERSHELL_COMMAND_POLICIES[name]!.parameters, ctx);
-    if (bound?.state !== "known") return hiddenCode("opaque file association binding");
-    if (!knownAncillaryValues(bound, new Set(["path", "literalpath"]), ctx)) return hiddenCode("opaque file association option");
+    if (bound?.state !== "known") return fileCode("opaque file association binding");
+    if (!knownAncillaryValues(bound, new Set(["path", "literalpath"]), ctx)) return fileCode("opaque file association option");
     const named = [...(bound.named.get("path") ?? []), ...(bound.named.get("literalpath") ?? [])];
-    if (named.length && bound.positional.length) return hiddenCode("ambiguous file association binding");
+    if (named.length && bound.positional.length) return fileCode("ambiguous file association binding");
     const paths = named.length ? named : bound.positional;
-    if (!paths.length) return feeder ? hiddenCode("opaque associated pipeline item") : null;
+    if (!paths.length) return feeder ? fileCode("opaque associated pipeline item") : null;
     for (const token of paths) {
       const path = literalFilePath(token, ctx);
-      if (!path || /[*?\[\]]/.test(path)) return hiddenCode("opaque file association target");
+      if (!path || /[*?\[\]]/.test(path)) return fileCode("opaque file association target");
       const file = ctx.files.lookup(path);
       if (file?.catalogue) return materialized(path);
       if (ctx.files.isDirectory(path) || ctx.files.fileType(path) === "document"
         || (!probe && !ctx.launched && ctx.files.isExistingDirectory(path))) continue;
-      return materialized(path) ?? hiddenCode("opaque associated file payload");
+      return materialized(path) ?? fileCode("opaque associated file payload");
     }
     return null;
   }
@@ -914,7 +915,7 @@ function fileExecutionSignal(stage: PsCommand, feeder: PsCommand | undefined, ct
   if (policy?.executable) {
     const expanded = expandSplats(args, ctx);
     const bound = expanded === null ? undefined : bindArguments(expanded, policy.parameters, ctx);
-    if (bound?.state !== "known") return hiddenCode("opaque executable binding");
+    if (bound?.state !== "known") return fileCode("opaque executable binding");
     const target = filePath(pathBinding(bound, policy.executable, undefined), ctx);
     if (target) {
       const targetSignal = materialized(target);
@@ -941,11 +942,11 @@ function fileExecutionSignal(stage: PsCommand, feeder: PsCommand | undefined, ct
     }
     if ((packageTask || (!script && policy?.argv && knownNativeData(name, args, ctx)
       && !policy.argv.info?.includes(nativeArguments(args, ctx)[0]!))) && ctx.files.hasExecutableWrites(packageTask))
-      return hiddenCode("materialized task input");
+      return fileCode("materialized task input", true);
     // Bare, untouched script names retain the existing script policy. Explicit
     // paths and call operators remain governed by embedded-code inspection.
     const type = ctx.files.fileType(name);
-    if (!policy && !isPowerShell(name) && posix.extname(name) && (type === "opaque" || (!probe && type !== "script"))) return hiddenCode("opaque executable file payload");
+    if (!policy && !isPowerShell(name) && posix.extname(name) && (type === "opaque" || (!probe && type !== "script"))) return fileCode("opaque executable file payload");
     // An opaque consumer cannot prove that a materialized executable operand is
     // data. Inert document operands do not acquire an execution role from argv.
     for (const token of args) {
@@ -1533,12 +1534,14 @@ function nativeInvocation(name: string, args: readonly PsToken[], ctx: Context) 
   const argv = [PACKAGE_TASK_PROGRAMS.has(stem) ? stem : name, ...values];
   const staticArgv = argv.every((value) => value !== undefined) ? argv as string[] : undefined;
   const prefix = staticArgv ? refusedShellPrefix(staticArgv) : undefined;
+  const runner = packageRunnerInvocation(argv);
   const reason = hiddenCodeReason(argv);
   // A literal script-file operand is ordinary native argv; explicit code options,
   // shells, wrappers and command-running verbs retain their launcher identity.
   const script = prefix === "interpreter" && args.length > 0 && values.every((value) => value !== undefined)
     && argv[1] !== "-" && !argv[1]!.startsWith("-") && reason?.startsWith("code passed to ");
-  return { prefix, reason, scriptPath: script ? argv[1] : undefined };
+  return { prefix, reason, scriptPath: runner.kind === "script" ? runner.scriptPath : script ? argv[1] : undefined,
+    ordinaryAsk: runner.kind === "unknown" ? runner.reason : undefined };
 }
 
 /** Native wrappers and explicit interpreter options retain their code-carrying effects. */
@@ -1822,6 +1825,8 @@ export function powerShellExfiltrationSignal(input: ShellCommandInput, cwd?: str
 interface FloorSignals {
   sensitive: string | null;
   exfiltration: string | null;
+  /** An unmodeled runner option asks after explicit grants, without a floor. */
+  ordinaryAsk?: string;
 }
 
 /** A literal argument is code only when its parsed program reaches an effect. */
@@ -1924,8 +1929,8 @@ export function inspectPowerShellCommand(input: ShellCommandInput, cwd?: string)
 
 function runInspection(input: ShellCommandInput, cwd: string | undefined, budget: PowerShellAnalysisBudget): FloorSignals {
   try {
-    const { sensitive, exfiltration } = inspectPowerShell(input, cwd, budget);
-    return { sensitive, exfiltration };
+    const { sensitive, exfiltration, ordinaryAsk } = inspectPowerShell(input, cwd, budget);
+    return { sensitive, exfiltration, ...(ordinaryAsk ? { ordinaryAsk } : {}) };
   }
   catch (error) {
     if (error instanceof PowerShellBudgetError) return { sensitive: null, exfiltration: "PowerShell hidden code (analysis budget exceeded)" };
@@ -1998,6 +2003,7 @@ function inspectFrame(command: string, cwd: string | undefined, budget: PowerShe
       ? "PowerShell file upload (unparsed)" : "PowerShell hidden code (unparsed)"}: ${reason}` };
   }
   const ctx: Context = { cwd, tainted: new Set(), splats: new Map(), values: new Map(), vocabularyOpaque: false, scopeOpaque: false, launched, literalBoundary: false, files, pathData: new Set(), memberReads: new Set(), budget };
+  let ordinaryAsk: string | undefined;
   collectSplats(pipelines, ctx);
   collectValues(pipelines, ctx);
   invalidateVariableMutations(pipelines, ctx);
@@ -2021,8 +2027,12 @@ function inspectFrame(command: string, cwd: string | undefined, budget: PowerShe
   for (const { stage, feeder, mutatingBlocks } of executionStages(pipelines, budget, ctx.files)) {
     const materialize = materializationPlan(stage, ctx);
     const fileSignal = fileExecutionSignal(stage, feeder, ctx, probe, pathData);
-    exfiltration ??= fileSignal;
-    const { name } = headOf(stage, ctx);
+    // Provenance is more specific than a generic whole-input runner floor;
+    // an opaque target must not replace an already identified upload reason.
+    if (fileSignal?.materialized) exfiltration = fileSignal.reason;
+    else exfiltration ??= fileSignal?.reason ?? null;
+    const { name, args } = headOf(stage, ctx);
+    if (name !== undefined && !POWERSHELL_COMMAND_POLICIES[name]) ordinaryAsk ??= nativeInvocation(name, args, ctx).ordinaryAsk ?? undefined;
     if (name !== undefined && POWERSHELL_COMMAND_POLICIES[name]?.effects.includes("dispatch")) {
       // Repeated dispatch can execute an earlier command after this body's writes.
       // Literal destinations saturate in one pass; opaque destinations taint all.
@@ -2030,6 +2040,7 @@ function inspectFrame(command: string, cwd: string | undefined, budget: PowerShe
         const repeated = inspectPowerShell(block.raw.slice(1, -1), cwd, budget, true, false, ctx.files);
         sensitive ??= repeated.sensitive;
         exfiltration ??= repeated.exfiltration;
+        ordinaryAsk ??= repeated.ordinaryAsk;
       }
     }
     let scanned: string | undefined;
@@ -2043,6 +2054,7 @@ function inspectFrame(command: string, cwd: string | undefined, budget: PowerShe
         const nested = inspectPowerShell(code.text, cwd, budget, true, false, ctx.files);
         sensitive ??= nested.sensitive;
         exfiltration ??= nested.exfiltration;
+        ordinaryAsk ??= nested.ordinaryAsk;
         if (code.opaque) exfiltration ??= "PowerShell hidden code (opaque native command grammar)";
       }
     }
@@ -2063,5 +2075,5 @@ function inspectFrame(command: string, cwd: string | undefined, budget: PowerShe
     if (networkText || hasNetwork(pipelines, ctx)) exfiltration = `${detail} with a network transport`;
     else if (HIDDEN_CODE.test(normalizeDashes(command))) exfiltration = `${detail} with hidden code`;
   }
-  return { sensitive, exfiltration, boundary: boundary || sensitive !== null || exfiltration !== null };
+  return { sensitive, exfiltration, ...(ordinaryAsk ? { ordinaryAsk } : {}), boundary: boundary || sensitive !== null || exfiltration !== null };
 }

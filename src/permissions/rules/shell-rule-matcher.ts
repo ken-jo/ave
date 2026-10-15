@@ -40,6 +40,7 @@ import {
   type ShellCommandInput,
   codeCarryingVariable,
   hiddenCodeReason,
+  packageRunnerInvocation,
   isShellWrapperProgram,
   shellOptionEffect,
   stripGlobalOptions,
@@ -61,6 +62,8 @@ export type ShellRuleShape =
       commands: readonly ShellRuleCommand[];
       /** Reasons commands may be invisible to deny/ask matching. */
       hidden: readonly string[];
+      /** Unknown runner options ask normally but remain visible and rule-coverable. */
+      ordinaryAsk?: string;
       /** Whole-input reasons no allow rule can apply. */
       allowBlockers: readonly string[];
     }
@@ -84,6 +87,7 @@ function shapeOf(parsed: ParsedShellCommand): ShellRuleShape {
 
   const commands: ShellRuleCommand[] = [];
   const hidden: string[] = [];
+  let ordinaryAsk: string | undefined;
   const globalBlockers: string[] = [];
 
   const scanWord = (word: ShellWord, blockers: string[] | null): void => {
@@ -141,6 +145,8 @@ function shapeOf(parsed: ParsedShellCommand): ShellRuleShape {
         }
         if (statement.assignments.length > 0) blockers.push("command-scoped environment assignment");
         const argv = statement.words.map((word) => staticShellWord(word));
+        const runner = packageRunnerInvocation(argv);
+        if (runner.kind === "unknown") ordinaryAsk ??= runner.reason ?? undefined;
         if (argv[0] === undefined) {
           hidden.push("dynamic program name");
           blockers.push("dynamic program name");
@@ -216,7 +222,7 @@ function shapeOf(parsed: ParsedShellCommand): ShellRuleShape {
   };
 
   visit(analysis.program);
-  return { ok: true, commands, hidden, allowBlockers: globalBlockers };
+  return { ok: true, commands, hidden, ...(ordinaryAsk ? { ordinaryAsk } : {}), allowBlockers: globalBlockers };
 }
 
 /** Exact/prefix match on static argv (allow semantics: no wrapper stripping, no basename folding). */

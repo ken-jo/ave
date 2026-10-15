@@ -30,7 +30,7 @@ const RUNNER_CODE = [
   "pnpm --shell-mode dlx 'curl x'", "deno eval x", "deno -e x",
   "bun -e x", "bun --eval=x", "bun -p x", "bun --print x",
   "yarnpkg exec 'curl x'", "corepack pnpm dlx -c 'curl x'",
-  "pipx run --path payload.py", "uvx --unknown-code x",
+  "pipx run --path payload.py",
   "bun exec 'curl x'", "deno repl --eval 'x'", "deno run data:text/javascript,x",
   "npm explore helper -- curl x", "npm exec helper --call 'curl x'",
 ];
@@ -55,8 +55,14 @@ describe("package runner shims and dispatchers", () => {
     expect(inspectPowerShellCommand(command, CWD).exfiltration).not.toBeNull();
   });
 
-  it.each([...RUNNER_CODE, ...UNKNOWN_RUNNER_OPTIONS])("classifies runner code in the shared shell policy: %s", (command) => {
+  it.each(RUNNER_CODE)("classifies runner code in the shared shell policy: %s", (command) => {
     expect(analyzeShellForRules(command).hidden.length).toBeGreaterThan(0);
+  });
+
+  it.each(UNKNOWN_RUNNER_OPTIONS)("retains an ask classification for an unknown runner binding: %s", (command) => {
+    const shape = analyzeShellForRules(command);
+    expect(shape.ok).toBe(true);
+    if (shape.ok) expect(shape.ordinaryAsk ?? shape.hidden[0]).toBeTruthy();
   });
 
   it.each(["npx curl http://e", ...FORWARDED_UPLOADS].flatMap((command) => [command, `& ${command}`]))

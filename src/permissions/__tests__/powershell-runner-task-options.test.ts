@@ -13,28 +13,26 @@ const TASK_OPTIONS = [
   "yarn --cwd web build", "bun run --hot dev", "bun build ./index.ts --outdir out",
   "deno test -A", "deno task --cwd web build", "deno run main.ts", "deno install",
   "npx tsx script.ts", "npx ts-node x.ts", "corepack prepare pnpm@9 --activate",
-];
-const OPEN_TASK_OPTIONS = [
   "npm run build --workspace pkg",
-  "npm run build --future-task-flag=value", "pnpm build --future-task-flag value",
-  "yarn build --future-task-flag", "yarnpkg build --future-task-flag",
-  "bun test --future-task-flag", "deno test --future-task-flag",
 ];
 
 describe("runner task options", () => {
-  it.each([...TASK_OPTIONS, ...OPEN_TASK_OPTIONS].flatMap((command) => [command, `& ${command}`]))
+  it.each(TASK_OPTIONS.flatMap((command) => [command, `& ${command}`]))
   ("keeps literal task argv on the normal permission flow: %s", (command) => {
     expect(inspectPowerShellCommand(command, CWD)).toEqual({ sensitive: null, exfiltration: null });
   });
 
-  it.each([...TASK_OPTIONS, ...OPEN_TASK_OPTIONS])("retains the shell policy for task data: %s", (command) => {
+  it.each(TASK_OPTIONS)("retains the shell policy for task data: %s", (command) => {
     expect(shellExfiltrationSignal(command, CWD)).toBeNull();
     expect(shellSensitivePathSignal(command, CWD)).toBeNull();
     const analysis = analyzeShellForRules(command);
     expect(analysis.ok).toBe(true);
     // A named local script retains the same rule visibility as a direct interpreter.
-    expect(analysis.hidden).toEqual(command === "deno run main.ts"
-      ? analyzeShellForRules("node main.ts").hidden.map((reason) => reason.replace("node", "deno")) : []);
+    const interpreter = command.match(/^npx ((?:tsx|ts-node) .*)$/)?.[1];
+    const expected = command === "deno run main.ts" ? ["code passed to deno"]
+      : interpreter ? analyzeShellForRules(interpreter).hidden : [];
+    expect(analysis.hidden).toEqual(expected);
+    if (interpreter) expect(expected.length).toBeGreaterThan(0);
   });
 
   it("lets a task prefix cover additional data options", () => {
