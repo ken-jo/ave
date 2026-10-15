@@ -13,11 +13,8 @@ import { pathToFileURL } from "node:url";
 import { createLogger } from "../lib/logger.js";
 import { mainDir } from "./main-paths.js";
 import { validateExternalUrl } from "../shared/external-url.js";
-import {
-  attachSideBrowserWebview,
-  isSideBrowserContents,
-  takePendingSideBrowserSrc,
-} from "./side-browser-webview.js";
+import { attachSideBrowserWebview, isSideBrowserContents } from "./side-browser-webview.js";
+import { trackBrowserGuest } from "./browser/browser-guest-tracking.js";
 import { configureMainWindowWebviewAttach } from "./plugin-webview-attach.js";
 import { getCommonChromeOptions } from "./window-chrome.js";
 import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
@@ -288,7 +285,6 @@ export function createWindow(
     }
   });
 
-  const pendingSideBrowserWebviews: string[] = [];
   win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     // Plugin frames, MCP app frames and the side browser each have a guard that
     // sets the guest's preferences in main; a guest no guard owns is refused.
@@ -296,17 +292,23 @@ export function createWindow(
       event,
       webPreferences: webPreferences as Record<string, unknown>,
       params: params as unknown as Record<string, string>,
-      enqueueSideBrowserSrc: (src) => pendingSideBrowserWebviews.push(src),
     });
     if (attach.result === "blocked" || attach.result === "refused") {
       log.warn({ src: params.src, partition: params.partition, owner: attach.owner }, "blocked webview attach");
     }
   });
+  // Every browser guest this window hosts — wherever the renderer mounted it.
+  // The partition identifies it: will-attach-webview refuses any guest whose
+  // partition no guard owns, and the side browser's guard has already blocked
+  // a non-http(s) src, so a guest that attaches on this partition is one the
+  // guard accepted. The tab it renders is bound afterwards by the renderer
+  // (`ave:browser:bind-tab`), keyed by this guest's webContents id — never by
+  // matching URLs, which two tabs can share.
   win.webContents.on("did-attach-webview", (_event, contents) => {
-    const src = takePendingSideBrowserSrc(pendingSideBrowserWebviews, contents.getURL());
-    if (!src || !isSideBrowserContents(contents)) return;
+    if (!isSideBrowserContents(contents)) return;
     attachSideBrowserWebview(contents, win);
-    log.debug({ src, webContentsId: contents.id }, "side browser webview attached");
+    trackBrowserGuest(contents, win.id);
+    log.debug({ webContentsId: contents.id }, "browser webview attached");
   });
 
   // 외부 URL → 시스템 브라우저로 리다이렉트 (앱 내 탐색 방지)
