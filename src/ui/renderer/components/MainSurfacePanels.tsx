@@ -25,6 +25,8 @@ import { PtyTerminalView } from "./PtyTerminalView.js";
 import { useTerminalAttention } from "../preview/terminal-attention.js";
 import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
+import { useAgentControlledTabIds } from "../preview/agent-browser-bridge.js";
+import { AgentControlBadge } from "./AgentControlBadge.js";
 
 /** The subset of a `<webview>` a panel's chrome drives. */
 interface GuestElement extends HTMLElement {
@@ -116,6 +118,13 @@ function WebPanelBody({
 }) {
   const { t } = useTranslation();
   const shownUrl = navigation.url ?? surface.url ?? "";
+  const agentControlled = useAgentControlledTabIds().has(surface.tabId);
+  const stopAgent = () => void api.browserTabs?.stop(surface.tabId);
+  // Driving the page from this row is the user taking the tab over: main
+  // only sees input INTO the page, so the row stops the agent itself first.
+  const takeOver = () => {
+    if (agentControlled) stopAgent();
+  };
   const [draft, setDraft] = useState(shownUrl);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -130,6 +139,7 @@ function WebPanelBody({
       return;
     }
     setError(null);
+    takeOver();
     onNavigate(normalized);
   };
 
@@ -146,6 +156,7 @@ function WebPanelBody({
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="web-panel" data-tab-id={surface.tabId}>
+      {agentControlled ? <AgentControlBadge onStop={stopAgent} /> : null}
       <form
         className="flex shrink-0 items-center gap-1 border-b border-border/(--opacity-half) px-2 py-1"
         onSubmit={(event) => {
@@ -153,9 +164,9 @@ function WebPanelBody({
           submit();
         }}
       >
-        {navButton(t("mainPanels.back"), <ArrowLeft className="h-3.5 w-3.5" />, () => guest?.goBack(), !navigation.canGoBack, "web-panel-back")}
-        {navButton(t("mainPanels.forward"), <ArrowRight className="h-3.5 w-3.5" />, () => guest?.goForward(), !navigation.canGoForward, "web-panel-forward")}
-        {navButton(t("mainPanels.reload"), <RotateCw className="h-3.5 w-3.5" />, () => guest?.reload(), !guest || !shownUrl, "web-panel-reload")}
+        {navButton(t("mainPanels.back"), <ArrowLeft className="h-3.5 w-3.5" />, () => { takeOver(); guest?.goBack(); }, !navigation.canGoBack, "web-panel-back")}
+        {navButton(t("mainPanels.forward"), <ArrowRight className="h-3.5 w-3.5" />, () => { takeOver(); guest?.goForward(); }, !navigation.canGoForward, "web-panel-forward")}
+        {navButton(t("mainPanels.reload"), <RotateCw className="h-3.5 w-3.5" />, () => { takeOver(); guest?.reload(); }, !guest || !shownUrl, "web-panel-reload")}
         <Globe className="ml-1 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         <Input
           data-testid="web-panel-address"

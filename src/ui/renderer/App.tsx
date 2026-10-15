@@ -36,7 +36,8 @@ import { SurfacePane } from "./components/MainSurfacePanels.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
-import { forgetActiveSurface, showActiveSurface, updateActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
+import { forgetActiveSurface, showActiveSurface, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
+import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
 import { attachToComposer } from "./preview/composer-targets.js";
 import { useMainLayout } from "./hooks/use-main-layout.js";
 import { getWebSurfaces } from "./preview/web-surfaces.js";
@@ -610,6 +611,36 @@ export function App() {
       }
     }
   }, [chatGroups, mainSurfaces]);
+
+  // What the side chat acts on is also the tab main's agent tools default to
+  // when none is named: one report per window, from the one store.
+  useReportActiveSurface(api);
+
+  // The main area's web panels are a host of the agent browser tools' tab
+  // operations (`preview/agent-browser-bridge.ts`): select shows the page —
+  // focusing the pane that holds it, else putting it in the focused pane —
+  // and close closes it like the pane's own close. It opens no agent tabs;
+  // those go beside the chat that asked.
+  const mainBrowserHostRef = useRef({ chatGroups, mainSurfaces });
+  mainBrowserHostRef.current = { chatGroups, mainSurfaces };
+  useEffect(() => registerBrowserTabHost(api, {
+    sessionId: () => null,
+    hasTab: (tabId) => mainBrowserHostRef.current.mainSurfaces.get(tabId)?.kind === "browser",
+    selectTab: (tabId) => {
+      const { chatGroups: groups } = mainBrowserHostRef.current;
+      const paneId = Object.entries(groups.contentById).find(([, content]) => content?.surface === tabId)?.[0];
+      if (paneId) groups.focus(paneId);
+      else groups.setPaneContent(groups.focusedId, { view: "web", surface: tabId });
+    },
+    closeTab: (tabId) => {
+      const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
+      for (const [paneId, content] of Object.entries(groups.contentById)) {
+        if (content?.surface === tabId) groups.setPaneContent(paneId, PANE_HOME);
+      }
+      surfaces.close(tabId);
+      forgetActiveSurface(tabId);
+    },
+  }), [api]);
 
   // Focusing a pane that shows a terminal or a page makes it what the side
   // chat acts on (`preview/active-surface.ts`). Shown once per focus change;

@@ -106,6 +106,12 @@ type ApiOverrides = {
    * terminal here". A suite that turns it on also mocks xterm.
    */
   terminal?: boolean;
+  /**
+   * Give the double the agent browser surface (`api.browserTabs`) and the
+   * active-surface report (`api.setActiveSurface`). A test drives main's side
+   * with `emitBrowserTabOp` / `emitBrowserControl` below.
+   */
+  browserTabs?: boolean;
   settings?: unknown;
   /** Override the settings RPC itself when a renderer test needs to control its timing. */
   getSettings?: () => Promise<unknown>;
@@ -228,6 +234,32 @@ function makeTerminalDouble() {
   };
 }
 
+/** The agent browser surface: main's tab operations and control state reach the app through these. */
+function makeBrowserTabsDouble() {
+  const opListeners = new Set<(request: unknown) => void>();
+  const controlListeners = new Set<(state: { agentControlledTabIds: string[] }) => void>();
+  return {
+    bindTab: vi.fn(async () => ({ ok: true as const })),
+    stop: vi.fn(async () => ({ ok: true as const })),
+    onTabOp: vi.fn((listener: (request: unknown) => void) => {
+      opListeners.add(listener);
+      return () => { opListeners.delete(listener); };
+    }),
+    onControl: vi.fn((listener: (state: { agentControlledTabIds: string[] }) => void) => {
+      controlListeners.add(listener);
+      return () => { controlListeners.delete(listener); };
+    }),
+    /** Not part of the surface: an `ave:browser:tab-op` from main. */
+    emitBrowserTabOp: (request: unknown) => {
+      for (const listener of [...opListeners]) listener(request);
+    },
+    /** Not part of the surface: an `ave:browser:control` from main. */
+    emitBrowserControl: (agentControlledTabIds: string[]) => {
+      for (const listener of [...controlListeners]) listener({ agentControlledTabIds });
+    },
+  };
+}
+
 export function makeMockAveApi(overrides: ApiOverrides = {}): {
   api: MockAveApi;
   /** Which groups' loops were released — one spy per group, see the body. */
@@ -340,6 +372,9 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
 
   const api: MockAveApi = {
     ...(overrides.terminal ? { terminal: makeTerminalDouble() } : {}),
+    ...(overrides.browserTabs
+      ? { browserTabs: makeBrowserTabsDouble(), setActiveSurface: vi.fn(async () => ({ ok: true as const })) }
+      : {}),
     notifyPluginTheme: vi.fn(async () => ({ ok: true })),
     remoteA2a: {
       targets: vi.fn(async () => ({ ok: false, error: "a2a-remote-disabled" })),

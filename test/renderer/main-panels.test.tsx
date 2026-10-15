@@ -70,6 +70,38 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(shownSurfaces(container)[0]).toEqual(terminal));
   });
 
+  it("lets the agent browser tools reach a main web panel: reported as the active surface, shown, badged and closed there", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
+    const browser = (api as unknown as {
+      browserTabs: { emitBrowserTabOp: (request: unknown) => void; emitBrowserControl: (ids: string[]) => void };
+      setActiveSurface: ReturnType<typeof vi.fn>;
+    });
+    await clickSidebarNavRow("features", "sidebar-web");
+    await waitFor(() => expect(shownSurfaces(container)[0]?.kind).toBe("browser"));
+    const page = shownSurfaces(container)[0]!.tabId!;
+    // The focused pane's page is the tab the tools default to.
+    await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId: page }));
+
+    // The pane moves on to a terminal; the page keeps running unshown.
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)[0]?.kind).toBe("terminal"));
+    await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "terminal" })));
+
+    // Main asks to show the page: it comes back in the focused pane.
+    act(() => browser.browserTabs.emitBrowserTabOp({ requestId: "r1", op: "select", tabId: page }));
+    await waitFor(() => expect(shownSurfaces(container)[0]?.tabId).toBe(page));
+    await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId: page }));
+
+    // The agent controls it: the pane says so.
+    act(() => browser.browserTabs.emitBrowserControl([page]));
+    await waitFor(() => expect(container.querySelector('[data-testid="web-panel"] [data-testid="agent-browser-control-badge"]')).not.toBeNull());
+
+    // Main closes it: the pane gives it up and nothing is the active surface.
+    act(() => browser.browserTabs.emitBrowserTabOp({ requestId: "r2", op: "close", tabId: page }));
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(0));
+    await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith(null));
+  });
+
   it("lets two panes each hold a terminal of their own", async () => {
     const { container } = await renderApp({ hasApiKey: true });
     await clickSidebarNavRow("features", "sidebar-terminal");

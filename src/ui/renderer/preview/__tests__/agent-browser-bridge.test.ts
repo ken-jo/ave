@@ -29,6 +29,16 @@ describe("routeBrowserTabOp", () => {
     expect(first.calls).toEqual(["new https://b.example/ r2", "new https://c.example/ r3"]);
   });
 
+  it("never opens the agent's new tab in a host that only holds tabs (the main area's web panels)", () => {
+    const { openAgentTab: _unused, ...mainArea } = host(null, ["browser:7"]);
+    const panels = mainArea as BrowserTabHost & { calls: string[] };
+    const chat = host("s1", []);
+    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/" }, [panels, chat]);
+    routeBrowserTabOp({ requestId: "r2", op: "select", tabId: "browser:7" }, [panels, chat]);
+    expect(chat.calls).toEqual(["new https://a.example/ r1"]);
+    expect(panels.calls).toEqual(["select browser:7"]);
+  });
+
   it("selects or closes in the view that holds the tab, and nowhere else", () => {
     const first = host("s1", ["browser:1"]);
     const second = host("s2", ["browser:2"]);
