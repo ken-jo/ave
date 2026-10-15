@@ -123,6 +123,9 @@
   "ignoreBinaries": [
     // The system C compiler that builds the confined-child preload library.
     "cc",
+    // Sigstore cosign: the contract bundle uploader verifies a published
+    // signature with the pinned build .github/scripts/install-cosign.sh installs.
+    "cosign",
     // file(1): the Linux release arch audit cross-checks every ELF with it.
     "file",
     // External Go toolchain for the explicit parser rebuild, pinned by go.mod.

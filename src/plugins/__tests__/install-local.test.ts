@@ -289,6 +289,7 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(result.ok).toBe(true);
   });
 
+  // POSIX-only: an unprivileged Windows source can hold only a junction, and the staging cp({ verbatimSymlinks }) re-creates it as a "dir" symlink (node lib/internal/fs/cp/cp.js onLink), which fails EPERM before rejectSideloadSymlinks (marketplace.ts) is reached.
   it.skipIf(process.platform === "win32")("rejects a contained source symlink before it can be promoted", async () => {
     const target = join(sourceDir, "dist", "hostPlugin.js");
     const link = join(sourceDir, "dist", "hostPlugin-link.js");
@@ -348,13 +349,27 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(await readFile(registryPath, "utf-8")).toBe(before.registry);
   });
 
-  it.skipIf(process.platform === "win32")("rejects an unlisted executable symlink in the installed payload", async () => {
+  // An unprivileged Windows process cannot create a file symlink (EPERM) but
+  // can plant a directory junction, which the receipt walk's lstat reports as
+  // a link. POSIX keeps the executable file symlink and adds the same
+  // directory link.
+  it.each(process.platform === "win32" ? ["directory link"] : ["file symlink", "directory link"])(
+    "rejects an unlisted %s in the installed payload",
+    async (linkKind) => {
     const service = makeService();
     await service.installLocal(sourceDir);
-    const outsideExecutable = join(testDir, "outside-executable");
-    await writeFile(outsideExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     const installDir = join(pluginsDir, "test-plugin");
-    await symlink(outsideExecutable, join(installDir, "dist", "injected-tool"));
+    if (linkKind === "file symlink") {
+      const outsideExecutable = join(testDir, "outside-executable");
+      await writeFile(outsideExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      await symlink(outsideExecutable, join(installDir, "dist", "injected-tool"));
+    } else {
+      const outsideDir = join(testDir, "outside-tools");
+      await mkdir(outsideDir, { recursive: true });
+      await writeFile(join(outsideDir, "tool"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      // A junction on Windows; the type is ignored on POSIX.
+      await symlink(outsideDir, join(installDir, "dist", "injected-tool"), "junction");
+    }
 
     const { verifyInstallReceipt } = await import("../plugin-install-receipt.js");
     await expect(verifyInstallReceipt(cacheRoot, "test-plugin", installDir)).resolves.toEqual({
