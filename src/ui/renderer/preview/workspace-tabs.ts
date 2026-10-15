@@ -3,6 +3,7 @@ import { normalizeBrowserNavigationUrl } from "./url-safety.js";
 import { publishLiveWebTabs, withdrawLiveWebTabs } from "./web-surfaces.js";
 import { parseTabId } from "../../../shared/tab-id.js";
 import { isBrowserBlankBootstrap } from "../../../shared/browser-tools.js";
+import { forgetActiveSurface } from "./active-surface.js";
 
 /**
  * Workspace-tab store — the state that ChatSidePanel used to hold in
@@ -221,6 +222,19 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
   // The committed state, for `releaseTab`, which must answer in the same event.
   const stateRef = useRef(state);
   stateRef.current = state;
+  const previousTabsRef = useRef(state.tabs);
+  const releasedTabIdsRef = useRef(new Set<string>());
+  // Retire surfaces from committed lists, including batched closes and
+  // replacements. A release transfers the surface to another store.
+  useEffect(() => {
+    const nextKinds = new Map(state.tabs.map((tab) => [tab.id, tab.kind]));
+    for (const tab of previousTabsRef.current) {
+      if ((tab.kind === "browser" || tab.kind === "terminal") && nextKinds.get(tab.id) !== tab.kind) {
+        if (!releasedTabIdsRef.current.delete(tab.id)) forgetActiveSurface(tab.id);
+      }
+    }
+    previousTabsRef.current = state.tabs;
+  }, [state.tabs]);
   const nextOrdinalRef = useRef<Record<WorkspaceTabKind, number>>({
     "file-browser": 1,
     preview: 1,
@@ -390,6 +404,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
   const releaseTab = useCallback((id: string) => {
     const tab = stateRef.current.tabs.find((each) => each.id === id);
     if (!tab) return undefined;
+    releasedTabIdsRef.current.add(id);
     setState((prev) => withTabClosed(prev, id));
     return tab;
   }, []);
@@ -397,6 +412,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
   const hasTab = useCallback((id: string) => stateRef.current.tabs.some((tab) => tab.id === id), []);
 
   const adoptTab = useCallback((incoming: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => {
+    releasedTabIdsRef.current.delete(incoming.id);
     // A tab that keeps its number here must not see a later tab of its kind take it again.
     if (nextOrdinalRef.current[incoming.kind] <= incoming.ordinal) nextOrdinalRef.current[incoming.kind] = incoming.ordinal + 1;
     setState((prev) => {

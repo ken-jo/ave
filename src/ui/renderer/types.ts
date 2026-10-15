@@ -582,7 +582,7 @@ export type AveApi = {
   deleteWebApiKey: (provider: string) => Promise<{ ok: true }>;
   /**
    * Browser tabs for the agent browser tools (shared/browser-surface.ts):
-   * bind a tab id to its guest <webview> after attach, the badge's stop,
+   * bind a tab id to its guest <webview> after attach, revoke control on stop or user navigation,
    * and main's tab-op / agent-control events. Optional for test fixtures.
    */
   browserTabs?: {

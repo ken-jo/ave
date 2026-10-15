@@ -334,7 +334,7 @@ export function buildInternalApiSurface() {
   },
   // ─── Browser tabs + active surface (agent browser tools) ───
   // Host-renderer-only. bindTab ties a tab id to its guest <webview>
-  // (getWebContentsId) after attach; stop is the agent badge's stop button;
+  // (getWebContentsId) after attach; stop revokes control for stop or user navigation;
   // onTabOp / onControl subscribe to main→renderer events. setActiveSurface
   // reports the browser/terminal tab the user is looking at (a hint tools
   // default to). Wire types: shared/browser-surface.ts.

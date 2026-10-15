@@ -13,6 +13,7 @@ import { getTerminalAttention, markTerminalRead } from "../../src/ui/renderer/pr
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
 import { MAIN_LAYOUT_SAVE_DELAY_MS } from "../../src/ui/renderer/hooks/use-main-layout.js";
 import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
+import { clearActiveSurface } from "../../src/ui/renderer/preview/active-surface.js";
 
 // The terminal suites below give the app a terminal surface, which mounts
 // xterm; jsdom has no canvas, so xterm is the one thing stood in for.
@@ -33,6 +34,7 @@ vi.mock("@xterm/xterm", () => ({
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 
 afterEach(() => {
+  clearActiveSurface();
   xtermWrites.length = 0;
   resetMainLayoutRestoreForTest();
   for (const tabId of [...getTerminalAttention().keys()]) markTerminalRead(tabId);
@@ -50,6 +52,56 @@ function shownSurfaces(container: HTMLElement): Array<{ kind: string | null; tab
 }
 
 describe("main-area terminal and web panels", () => {
+  it("re-reports an already focused main page after a hidden side page becomes the target", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
+    const browser = api as unknown as {
+      browserTabs: { emitBrowserTabOp: (request: unknown) => void };
+      setActiveSurface: ReturnType<typeof vi.fn>;
+    };
+    await clickSidebarNavRow("features", "sidebar-web");
+    const page = shownSurfaces(container)[0]!.tabId!;
+    const address = container.querySelector('[data-testid="web-panel-address"]')!;
+    await act(async () => {
+      fireEvent.change(address, { target: { value: "https://a.example/" } });
+      fireEvent.submit(address.closest("form")!);
+    });
+    await act(async () => browser.browserTabs.emitBrowserTabOp({ requestId: "new-side-page", op: "new", url: "about:blank" }));
+    const other = document.querySelector('[data-testid="chat-side-panel-browser-tab-host"]')!.getAttribute("data-tab-id");
+    await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId: other }));
+    await act(async () => browser.browserTabs.emitBrowserTabOp({ requestId: "select-main-page", op: "select", tabId: page }));
+    expect(shownSurfaces(container)[0]!.tabId).toBe(page);
+    expect(browser.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId: page });
+  });
+
+  it("clears the active report when the agent closes the last side page", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
+    const browser = api as unknown as {
+      browserTabs: { emitBrowserTabOp: (request: unknown) => void };
+      setActiveSurface: ReturnType<typeof vi.fn>;
+    };
+    await act(async () => fireEvent.click(container.querySelector('[data-testid="pane-panel-toggle"]')!));
+    await act(async () => browser.browserTabs.emitBrowserTabOp({ requestId: "new-side-page", op: "new", url: "about:blank" }));
+    const page = document.querySelector('[data-testid="chat-side-panel-browser-tab-host"]')!.getAttribute("data-tab-id");
+    await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId: page }));
+    await act(async () => browser.browserTabs.emitBrowserTabOp({ requestId: "close-side-page", op: "close", tabId: page }));
+    expect(document.querySelector('[data-testid="chat-side-panel-browser-tab-host"]')).toBeNull();
+    expect(browser.setActiveSurface).toHaveBeenLastCalledWith(null);
+  });
+
+  it("clears the window's active report when App unmounts", async () => {
+    const { container, api, unmount } = await renderApp({ hasApiKey: true, browserTabs: true });
+    const browser = api as unknown as {
+      browserTabs: { emitBrowserTabOp: (request: unknown) => void };
+      setActiveSurface: ReturnType<typeof vi.fn>;
+    };
+    await act(async () => fireEvent.click(container.querySelector('[data-testid="pane-panel-toggle"]')!));
+    await act(async () => browser.browserTabs.emitBrowserTabOp({ requestId: "new-window-page", op: "new", url: "about:blank" }));
+    const page = document.querySelector('[data-testid="chat-side-panel-browser-tab-host"]')!.getAttribute("data-tab-id");
+    await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId: page }));
+    unmount();
+    expect(browser.setActiveSurface).toHaveBeenLastCalledWith(null);
+  });
+
   it("opens a terminal and a web page in the focused pane from the sidebar, and returns to a running terminal", async () => {
     const { container } = await renderApp({ hasApiKey: true });
 
@@ -70,6 +122,38 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(shownSurfaces(container)[0]).toEqual(terminal));
   });
 
+  it("lets the agent browser tools reach a main web panel: reported as the active surface, shown, badged and closed there", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
+    const browser = (api as unknown as {
+      browserTabs: { emitBrowserTabOp: (request: unknown) => void; emitBrowserControl: (ids: string[]) => void };
+      setActiveSurface: ReturnType<typeof vi.fn>;
+    });
+    await clickSidebarNavRow("features", "sidebar-web");
+    await waitFor(() => expect(shownSurfaces(container)[0]?.kind).toBe("browser"));
+    const page = shownSurfaces(container)[0]!.tabId!;
+    // The focused pane's page is the tab the tools default to.
+    await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId: page }));
+
+    // The pane moves on to a terminal; the page keeps running unshown.
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)[0]?.kind).toBe("terminal"));
+    await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "terminal" })));
+
+    // Main asks to show the page: it comes back in the focused pane.
+    act(() => browser.browserTabs.emitBrowserTabOp({ requestId: "r1", op: "select", tabId: page }));
+    await waitFor(() => expect(shownSurfaces(container)[0]?.tabId).toBe(page));
+    await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId: page }));
+
+    // The agent controls it: the pane says so.
+    act(() => browser.browserTabs.emitBrowserControl([page]));
+    await waitFor(() => expect(container.querySelector('[data-testid="web-panel"] [data-testid="agent-browser-control-badge"]')).not.toBeNull());
+
+    // Main closes it: the pane gives it up and nothing is the active surface.
+    act(() => browser.browserTabs.emitBrowserTabOp({ requestId: "r2", op: "close", tabId: page }));
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(0));
+    await waitFor(() => expect(browser.setActiveSurface).toHaveBeenLastCalledWith(null));
+  });
+
   it("lets two panes each hold a terminal of their own", async () => {
     const { container } = await renderApp({ hasApiKey: true });
     await clickSidebarNavRow("features", "sidebar-terminal");
@@ -86,14 +170,17 @@ describe("main-area terminal and web panels", () => {
   });
 
   it("closes a terminal pane's surface and gives the pane back its conversation", async () => {
-    const { container } = await renderApp({ hasApiKey: true });
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
+    const report = (api as unknown as { setActiveSurface: ReturnType<typeof vi.fn> }).setActiveSurface;
     await clickSidebarNavRow("features", "sidebar-terminal");
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    expect(report).toHaveBeenLastCalledWith({ kind: "terminal", tabId: shownSurfaces(container)[0]!.tabId });
     const close = container.querySelector<HTMLButtonElement>('[data-testid="surface-pane"]')!
       .closest('[data-testid="pane"]')!
       .querySelector<HTMLButtonElement>('[data-testid="pane-close"]')!;
     await act(async () => { fireEvent.click(close); });
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(0));
+    expect(report).toHaveBeenLastCalledWith(null);
     // Closed, not parked: the sidebar row now opens a new terminal.
     await clickSidebarNavRow("features", "sidebar-terminal");
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));

@@ -1,9 +1,123 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { useWorkspaceTabs } from "../workspace-tabs.js";
+import { clearActiveSurface, getActiveSurface, showActiveSurface } from "../active-surface.js";
 
 describe("useWorkspaceTabs", () => {
+  it.each(["tab", "container"])("forgets the active surface on a store-level %s close", (method) => {
+    const { result, unmount } = renderHook(() => useWorkspaceTabs());
+    act(() => result.current.addTab("browser"));
+    const tabId = result.current.activeTabId!;
+    showActiveSurface({ kind: "browser", tabId, label: "Browser 1" });
+    try {
+      act(() => {
+        if (method === "tab") result.current.closeTab(tabId);
+        else result.current.closeContainerTab("browser");
+      });
+      expect(result.current.tabs).toHaveLength(0);
+      expect(getActiveSurface()).toBeNull();
+    } finally {
+      unmount();
+      clearActiveSurface();
+    }
+  });
+
+  it("forgets a browser surface when its ephemeral tab is replaced by preview content", () => {
+    const { result, unmount } = renderHook(() => useWorkspaceTabs());
+    act(() => result.current.openInEphemeral({ source: "browser", url: "https://a.example/" }));
+    const tabId = result.current.activeTabId!;
+    showActiveSurface({ kind: "browser", tabId, label: "Page" });
+    try {
+      act(() => result.current.openInEphemeral({ source: "preview", targetId: "preview:1" }));
+      expect(result.current.activeTabId).toBe(tabId);
+      expect(result.current.tabs[0]?.kind).toBe("preview");
+      expect(getActiveSurface()).toBeNull();
+    } finally {
+      unmount();
+      clearActiveSurface();
+    }
+  });
+
+  it("forgets a browser surface replaced after a matching preview tab closes in the same batch", () => {
+    const { result, unmount } = renderHook(() => useWorkspaceTabs());
+    act(() => result.current.openPinned({ source: "preview", targetId: "preview:1" }));
+    const previewId = result.current.activeTabId!;
+    act(() => result.current.openInEphemeral({ source: "browser", url: "https://a.example/" }));
+    const tabId = result.current.activeTabId!;
+    showActiveSurface({ kind: "browser", tabId, label: "Page" });
+    try {
+      act(() => {
+        result.current.closeTab(previewId);
+        result.current.openInEphemeral({ source: "preview", targetId: "preview:1" });
+      });
+      expect(result.current.tabs).toEqual([expect.objectContaining({ id: tabId, kind: "preview" })]);
+      expect(getActiveSurface()).toBeNull();
+    } finally {
+      unmount();
+      clearActiveSurface();
+    }
+  });
+
+  it("preserves the active surface when releasing it to another store", () => {
+    const { result, unmount } = renderHook(() => useWorkspaceTabs());
+    act(() => result.current.addTab("browser"));
+    const tabId = result.current.activeTabId!;
+    const surface = { kind: "browser" as const, tabId, label: "Browser 1" };
+    showActiveSurface(surface);
+    try {
+      act(() => { result.current.releaseTab(tabId); });
+      expect(result.current.tabs).toHaveLength(0);
+      expect(getActiveSurface()).toEqual(surface);
+    } finally {
+      unmount();
+      clearActiveSurface();
+    }
+  });
+
+  it("preserves a surface released before the preceding render's passive effects run", () => {
+    const { result, unmount } = renderHook(() => {
+      const store = useWorkspaceTabs();
+      useLayoutEffect(() => {
+        if (store.tabs.length !== 2) return;
+        const browser = store.tabs.find((tab) => tab.kind === "browser");
+        if (browser) store.releaseTab(browser.id);
+      }, [store.tabs, store.releaseTab]);
+      return store;
+    });
+    act(() => result.current.addTab("browser"));
+    const surface = { kind: "browser" as const, tabId: result.current.activeTabId!, label: "Browser 1" };
+    showActiveSurface(surface);
+    try {
+      act(() => result.current.addTab("preview"));
+      expect(result.current.tabs).toEqual([expect.objectContaining({ kind: "preview" })]);
+      expect(getActiveSurface()).toEqual(surface);
+    } finally {
+      unmount();
+      clearActiveSurface();
+    }
+  });
+
+  it("forgets a closed surface even when it was released and readopted in one batch", () => {
+    const { result, unmount } = renderHook(() => useWorkspaceTabs());
+    act(() => result.current.addTab("browser"));
+    const browser = result.current.tabs[0]!;
+    showActiveSurface({ kind: "browser", tabId: browser.id, label: "Browser 1" });
+    try {
+      act(() => {
+        result.current.releaseTab(browser.id);
+        result.current.adoptTab(browser, "https://a.example/");
+      });
+      act(() => result.current.closeTab(browser.id));
+      expect(result.current.tabs).toHaveLength(0);
+      expect(getActiveSurface()).toBeNull();
+    } finally {
+      unmount();
+      clearActiveSurface();
+    }
+  });
+
   it("starts empty (no default tabs) with no active tab", () => {
     const { result } = renderHook(() => useWorkspaceTabs());
     expect(result.current.tabs).toEqual([]);
