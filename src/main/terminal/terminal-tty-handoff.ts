@@ -57,9 +57,14 @@ export function ownPtySlavePath(pty: unknown): string {
   return name;
 }
 
+/** A portable environment name: what env(1) reads as an assignment and never as an option. */
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /**
  * The one line the trampoline runs: replace itself with the wrapped shell,
  * under exactly `env` (`env -i`, so nothing of the trampoline's leaks in).
+ * `--` ends env(1)'s option parsing, and every name must be a portable
+ * environment name, so no entry can be read as an option such as `-S`.
  */
 export function renderHandoffScript(argv: readonly string[], env: Readonly<Record<string, string>>): string {
   const [file] = argv;
@@ -68,7 +73,7 @@ export function renderHandoffScript(argv: readonly string[], env: Readonly<Recor
   }
   const assignments: string[] = [];
   for (const [key, value] of Object.entries(env)) {
-    if (key.length === 0 || key.includes("=") || key.includes("\0") || value.includes("\0")) {
+    if (!ENV_NAME.test(key) || value.includes("\0")) {
       throw new Error(`terminal: environment entry ${JSON.stringify(key)} cannot be passed to env(1)`);
     }
     assignments.push(shellQuote(`${key}=${value}`));
@@ -76,14 +81,18 @@ export function renderHandoffScript(argv: readonly string[], env: Readonly<Recor
   for (const arg of argv) {
     if (arg.includes("\0")) throw new Error("terminal: wrapped argv contains a NUL byte");
   }
-  return `exec /usr/bin/env -i ${assignments.join(" ")} ${argv.map(shellQuote).join(" ")}\n`;
+  return `exec /usr/bin/env -i -- ${assignments.join(" ")} ${argv.map(shellQuote).join(" ")}\n`;
 }
 
 export interface TerminalTtyHandoff {
   /** Spawn this on the pty: `/bin/sh <fifo>`. */
   readonly trampoline: { readonly file: string; readonly args: readonly string[] };
-  /** Hand the trampoline its script. Rejects if it does not take it in time. */
-  deliver(script: string, timeoutMs?: number): Promise<void>;
+  /**
+   * Hand the trampoline its script. Rejects if it does not take it within
+   * `timeoutMs`, or as soon as `signal` aborts (the trampoline exited). Once it
+   * has rejected, nothing is written to the fifo.
+   */
+  deliver(script: string, options?: { readonly timeoutMs?: number; readonly signal?: AbortSignal }): Promise<void>;
   /** Remove the fifo and its directory. Idempotent. */
   dispose(): void;
 }
@@ -105,29 +114,40 @@ export async function createTerminalTtyHandoff(): Promise<TerminalTtyHandoff> {
     throw err;
   }
 
-  const deliver = async (script: string, timeoutMs = DELIVER_TIMEOUT_MS): Promise<void> => {
+  const deliver = async (
+    script: string,
+    { timeoutMs = DELIVER_TIMEOUT_MS, signal }: { readonly timeoutMs?: number; readonly signal?: AbortSignal } = {},
+  ): Promise<void> => {
+    signal?.throwIfAborted();
+    // Set once deliver has given up: a write that would land after that is
+    // never started, so the shell cannot start behind a failed spawn.
+    let givenUp = false;
     // Opening a fifo for writing blocks until the trampoline opens it.
     const opening = open(fifo, "w");
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timedOut = new Promise<never>((_, reject) => {
+    let onAbort: (() => void) | undefined;
+    const stopped = new Promise<never>((_, reject) => {
       timer = setTimeout(
         () => reject(new Error(`terminal: the shell trampoline did not take its command within ${timeoutMs} ms`)),
         timeoutMs,
       );
+      onAbort = () => reject(new Error("terminal: the shell trampoline exited before taking its command"));
+      signal?.addEventListener("abort", onAbort, { once: true });
     });
     try {
       await Promise.race([
         (async () => {
           const handle = await opening;
           try {
-            await handle.writeFile(script);
+            if (!givenUp) await handle.writeFile(script);
           } finally {
             await handle.close();
           }
         })(),
-        timedOut,
+        stopped,
       ]);
     } catch (err) {
+      givenUp = true;
       // A pending open holds a thread-pool thread until a reader appears: be
       // that reader once, so it returns, and close what it opened.
       try {
@@ -142,6 +162,7 @@ export async function createTerminalTtyHandoff(): Promise<TerminalTtyHandoff> {
       throw err;
     } finally {
       clearTimeout(timer);
+      if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
     }
   };
 

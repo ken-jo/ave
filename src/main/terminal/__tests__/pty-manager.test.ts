@@ -50,7 +50,9 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
 
 // ─── macOS own-tty handoff — platform + fifo controllable per test ──
 let needsOwnTtyGrant = false;
-const deliverMock = vi.fn<(script: string) => Promise<void>>(() => Promise.resolve());
+const deliverMock = vi.fn<(script: string, options?: { signal?: AbortSignal }) => Promise<void>>(() =>
+  Promise.resolve(),
+);
 const handoffDisposeMock = vi.fn();
 vi.mock("../terminal-tty-platform.js", () => ({
   terminalNeedsOwnTtyGrant: () => needsOwnTtyGrant,
@@ -62,7 +64,7 @@ vi.mock("../terminal-tty-handoff.js", async () => {
     createTerminalTtyHandoff: () =>
       Promise.resolve({
         trampoline: { file: "/bin/sh", args: ["/handoff/t-1/exec"] },
-        deliver: (script: string) => deliverMock(script),
+        deliver: (script: string, options?: { signal?: AbortSignal }) => deliverMock(script, options),
         dispose: () => handoffDisposeMock(),
       }),
   };
@@ -120,14 +122,14 @@ class FakePty {
   killed = false;
   killSignals: Array<string | undefined> = [];
   private dataCb: DataCb | null = null;
-  private exitCb: ExitCb | null = null;
+  private exitCbs = new Set<ExitCb>();
   onData(cb: DataCb) {
     this.dataCb = cb;
     return { dispose: () => { this.dataCb = null; } };
   }
   onExit(cb: ExitCb) {
-    this.exitCb = cb;
-    return { dispose: () => { this.exitCb = null; } };
+    this.exitCbs.add(cb);
+    return { dispose: () => { this.exitCbs.delete(cb); } };
   }
   write(d: string) { this.written.push(d); }
   resize(c: number, r: number) { this.resized.push([c, r]); }
@@ -137,7 +139,7 @@ class FakePty {
   }
   // test helpers
   emitData(chunk: string) { this.dataCb?.(chunk); }
-  emitExit(exitCode: number) { this.exitCb?.({ exitCode }); }
+  emitExit(exitCode: number) { for (const cb of [...this.exitCbs]) cb({ exitCode }); }
 }
 let lastPty: FakePty | null = null;
 let spawnedPtys: FakePty[] = [];
@@ -694,6 +696,55 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
     expect(cleanupMock).toHaveBeenCalledTimes(1);
     expect(emitted.some((e) => e.event === "exit")).toBe(false);
     expect(handoffDisposeMock).toHaveBeenCalled();
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("kills the shell instead of registering it when the tab closes during the handoff", async () => {
+    deliverMock.mockImplementationOnce(() => {
+      killTerminal("terminal:1");
+      return Promise.resolve();
+    });
+    const res = await spawnTerminal({ tabId: "terminal:1" });
+    expect(res.ok).toBe(false);
+    const pty = lastPty!;
+    expect(pty.killSignals).toContain("SIGKILL");
+    pty.emitExit(137);
+    await Promise.resolve();
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(sandboxHomeCleanupMock).toHaveBeenCalled();
+    expect(emitted.some((e) => e.event === "exit")).toBe(false);
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("kills the shell instead of registering it when shutdown starts during the handoff", async () => {
+    let shutdown: Promise<number> | undefined;
+    deliverMock.mockImplementationOnce(() => {
+      shutdown = forceKillAllTerminalsForShutdown(50);
+      return Promise.resolve();
+    });
+    const res = await spawnTerminal({ tabId: "terminal:1" });
+    expect(res.ok).toBe(false);
+    expect(lastPty!.killSignals).toContain("SIGKILL");
+    await shutdown;
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("stops waiting when the trampoline exits before reading the fifo, and cleans up once", async () => {
+    let signalSeen: AbortSignal | undefined;
+    deliverMock.mockImplementationOnce((_script, options) => {
+      signalSeen = options?.signal;
+      return new Promise<void>((_, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new Error("trampoline exited")), { once: true });
+        lastPty!.emitExit(127);
+      });
+    });
+    const res = await spawnTerminal({ tabId: "terminal:1" });
+    expect(res.ok).toBe(false);
+    expect(signalSeen?.aborted).toBe(true);
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
+    expect(emitted.some((e) => e.event === "exit")).toBe(false);
     expect(__terminalSessionCountForTest()).toBe(0);
   });
 

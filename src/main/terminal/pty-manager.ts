@@ -482,6 +482,9 @@ async function spawnNewTerminal(
     session.disposeData = () => dataSub.dispose();
 
     const exitSub = pty.onExit(({ exitCode, signal }) => {
+      // A trampoline that exits before it runs the shell fails the spawn: the
+      // spawn's own catch cleans up, once, so this handler must not.
+      if (pendingSession === session) return;
       session.exited = true;
       // The blocks outlive the shell (the tab still shows its output) until
       // the tab closes or a new shell replaces them.
@@ -501,8 +504,21 @@ async function spawnNewTerminal(
     if (handoff !== undefined && renderHandoffScript !== undefined) {
       // Subscribed first: the shell starts writing as soon as it is exec'd.
       pendingSession = session;
-      await handoff.deliver(renderHandoffScript(argv, childEnv));
+      // A trampoline that dies before reading the fifo ends the wait now, not
+      // at the timeout.
+      const trampolineExited = new AbortController();
+      const trampolineExitSub = pty.onExit(() => trampolineExited.abort());
+      try {
+        await handoff.deliver(renderHandoffScript(argv, childEnv), { signal: trampolineExited.signal });
+      } finally {
+        trampolineExitSub.dispose();
+      }
       handoff.dispose();
+      // The tab may have closed, or the app begun shutting down, while the
+      // handoff was in flight. Throw while the session is still pending, so the
+      // catch detaches its listeners and kills the shell instead of registering
+      // it on a HOME that is already gone.
+      if (owner.cancelled) throw new Error("terminal spawn cancelled");
       pendingSession = undefined;
     }
 

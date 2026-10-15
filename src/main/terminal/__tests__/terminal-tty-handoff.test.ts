@@ -7,7 +7,7 @@
  * off. With it, the shell owns its own terminal and still cannot set another.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { closeSync, constants, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IPty } from "node-pty";
@@ -50,7 +50,7 @@ describe("ownPtySlavePath", () => {
 describe("renderHandoffScript", () => {
   it("execs the argv under exactly the given environment, quoted", () => {
     expect(renderHandoffScript(["/bin/bash", "-c", "echo 'hi'"], { A: "x y", B: "it's" })).toBe(
-      `exec /usr/bin/env -i 'A=x y' 'B=it'\\''s' '/bin/bash' '-c' 'echo '\\''hi'\\'''\n`,
+      `exec /usr/bin/env -i -- 'A=x y' 'B=it'\\''s' '/bin/bash' '-c' 'echo '\\''hi'\\'''\n`,
     );
   });
 
@@ -63,6 +63,64 @@ describe("renderHandoffScript", () => {
   it("refuses an environment entry env(1) would misread", () => {
     expect(() => renderHandoffScript(["/bin/sh"], { "A=B": "1" })).toThrow(/cannot be passed/);
     expect(() => renderHandoffScript(["/bin/sh"], { A: "1\0" })).toThrow(/cannot be passed/);
+    // env(1) would read these as options, or they are not portable names.
+    for (const key of ["-S", "-i", "--", "1A", "A-B", "A B", ""]) {
+      expect(() => renderHandoffScript(["/bin/sh"], { [key]: "x" }), key).toThrow(/cannot be passed/);
+    }
+  });
+});
+
+describe("the fifo handoff (real fifo)", () => {
+  it.runIf(process.platform !== "win32")("stops waiting as soon as the trampoline is gone", async () => {
+    const handoff = await createTerminalTtyHandoff();
+    try {
+      const gone = new AbortController();
+      const started = Date.now();
+      const delivering = handoff.deliver("exec true\n", { timeoutMs: 10_000, signal: gone.signal });
+      setTimeout(() => gone.abort(), 50);
+      await expect(delivering).rejects.toThrow(/exited before taking its command/);
+      expect(Date.now() - started).toBeLessThan(5_000);
+    } finally {
+      handoff.dispose();
+    }
+  });
+
+  it.runIf(process.platform !== "win32")("refuses at once, without opening the fifo, when the trampoline is already gone", async () => {
+    const handoff = await createTerminalTtyHandoff();
+    try {
+      const gone = new AbortController();
+      gone.abort();
+      await expect(handoff.deliver("exec true\n", { signal: gone.signal })).rejects.toThrow();
+    } finally {
+      handoff.dispose();
+    }
+  });
+
+  it.runIf(process.platform !== "win32")("leaves nothing in the fifo once it has given up", async () => {
+    const handoff = await createTerminalTtyHandoff();
+    try {
+      await expect(handoff.deliver("exec true\n", { timeoutMs: 50 })).rejects.toThrow(/did not take its command/);
+      // The give-up opened and closed the read end once; a late write would
+      // now block or land. Read with a fresh reader and a short-lived writer.
+      const fifo = handoff.trampoline.args[0]!;
+      const readFd = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const buffer = Buffer.alloc(64);
+        let bytes = 0;
+        try {
+          bytes = readSync(readFd, buffer, 0, buffer.length, null);
+        } catch (err) {
+          // EAGAIN: no writer has anything to give
+          if ((err as NodeJS.ErrnoException).code !== "EAGAIN") throw err;
+        }
+        expect(bytes).toBe(0);
+      } finally {
+        closeSync(readFd);
+      }
+    } finally {
+      handoff.dispose();
+    }
   });
 });
 
