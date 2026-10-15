@@ -30,13 +30,24 @@ import {
   type BrowserRefTable,
 } from "./browser-snapshot.js";
 
-const attached = new WeakMap<WebContents, CdpSession>();
+const attached = new WeakMap<WebContents, Promise<CdpSession>>();
 
 /** The guest's CDP session, attached on first use and kept for the guest's life. */
 async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void): Promise<CdpSession> {
   throwIfAborted(signal);
   const existing = attached.get(guest);
   if (existing) return existing;
+  const pending = attachCdp(guest, signal, onTrackingStarted);
+  attached.set(guest, pending);
+  try {
+    return await pending;
+  } catch (err) {
+    attached.delete(guest);
+    throw err;
+  }
+}
+
+async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void): Promise<CdpSession> {
   try {
     if (!guest.debugger.isAttached()) guest.debugger.attach("1.3");
   } catch (err) {
@@ -59,9 +70,8 @@ async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted
   throwIfAborted(signal);
   await session.send("Page.enable");
   throwIfAborted(signal);
-  // Approval predating the observer cannot prove which document it covered.
+  // Establish this epoch before approval seals its document identity.
   onTrackingStarted();
-  attached.set(guest, session);
   return session;
 }
 
@@ -230,7 +240,7 @@ export async function click(target: ActionTarget, ref: string, refs: BrowserRefT
     target.expectNode(backendNodeId);
     const { x, y } = await centerOf(target.cdp, backendNodeId);
     throwIfAborted(target.signal);
-    await target.injectInput(() => withPageFocus(target, () => pressAt(target.cdp, x, y)));
+    await target.injectInput(() => withPageFocus(target, () => pressAt(target.cdp, x, y, target.finishWithInput)));
   });
 }
 
@@ -290,10 +300,10 @@ async function withPageFocus<T>(target: ActionTarget, act: () => Promise<T>): Pr
   }
 }
 
-async function pressAt(cdp: CdpSession, x: number, y: number): Promise<void> {
+async function pressAt(cdp: CdpSession, x: number, y: number, finish = (dispatch: () => Promise<unknown>) => dispatch()): Promise<void> {
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
-  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await finish(() => cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }));
 }
 
 /** Why a field is refused for agent typing, or null when it is not sensitive. */
@@ -344,7 +354,7 @@ export async function type(
         // Replace what the field holds: select all of it, then insert.
         await target.cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, commands: ["selectAll"] });
         await target.cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
-        await target.cdp.send("Input.insertText", { text: value });
+        await target.finishWithInput(() => target.cdp.send("Input.insertText", { text: value }));
         const landed = await pollUntil(target.signal, TYPE_CHECK_MS, async () => {
           const now = await fieldValue(target.cdp, backendNodeId);
           return now === null || now === collapse(value) ? true : undefined;
@@ -354,7 +364,7 @@ export async function type(
           throw new BrowserActionError("not-typed", `the text did not reach ${ref} (the page kept losing focus); check the field and try again`);
         }
       }
-      if (options.submit) await dispatchKey(target.cdp, "Enter");
+      if (options.submit) await target.finishWithInput(() => dispatchKey(target.cdp, "Enter"));
     }));
   });
 }
@@ -457,7 +467,7 @@ export async function pressKey(target: ActionTarget, key: string, ref: string | 
         await pressForFocus(target, point.x, point.y);
         await target.cdp.send("DOM.focus", { backendNodeId: point.backendNodeId });
       }
-      await dispatchKey(target.cdp, key);
+      await target.finishWithInput(() => dispatchKey(target.cdp, key));
     }));
   });
 }
@@ -568,9 +578,12 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, input = f
   const guest = live.tab.guest;
   if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
   const approval = live.approval;
-  const assertCurrent = (keyboard: boolean) => {
+  const assertGuest = () => {
     throwIfAborted(live.signal);
     if (guest.isDestroyed() || live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was closed or replaced");
+  };
+  const assertCurrent = (keyboard: boolean) => {
+    assertGuest();
     if ((input || approval) && (!approval || approval.tabId !== live.tab.handle || approval.origin !== browserOrigin(guest.getURL())
       || approval.documentId !== live.tab.documentId)) {
       throw new BrowserActionError("document-changed", "this tab or document is no longer the approved target; nothing more was done");
@@ -587,7 +600,9 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, input = f
     send: async (method, params) => {
       assertCurrent(method === "Input.dispatchKeyEvent" || method === "Input.insertText");
       const result = await session.send(method, params);
-      assertCurrent(false);
+      // The action guard owns input completion: its last input may navigate.
+      if (method.startsWith("Input.")) assertGuest();
+      else assertCurrent(false);
       return result;
     },
   };
@@ -616,6 +631,13 @@ export function createBrowserPageActions(
   originOf: (url: string) => string | null,
 ): BrowserPageActions<WebContents> {
   return {
+    prepare: async (live) => {
+      const guest = live.tab.guest;
+      if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+      await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+      throwIfAborted(live.signal);
+      if (live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was replaced");
+    },
     snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
       snapshot(await targetFor(live, attribution), options),
     screenshot: async (live: LiveTab) => screenshot(await targetFor(live, attribution)),

@@ -70,14 +70,14 @@ export const ARGS_APPROVAL_MEMORY: ApprovalMemory = Object.freeze({ kind: "args"
  * hashes the scope together with the sealed host-shell plan, so a decision
  * made under one execution substrate never answers for another.
  */
-function approvalMemoryFor(
+async function approvalMemoryFor(
   tool: Tool,
   input: Record<string, unknown>,
   cwd: string,
   hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
   sessionId?: string,
-): ApprovalMemory {
-  const scope = tool.approvalMemoryScope?.(input, sessionId === undefined ? { cwd } : { cwd, sessionId });
+): Promise<ApprovalMemory> {
+  const scope = await tool.approvalMemoryScope?.(input, sessionId === undefined ? { cwd } : { cwd, sessionId });
   if (scope === undefined) return ARGS_APPROVAL_MEMORY;
   const executionPlan = hostShellExecutionPlan === undefined
     ? null
@@ -94,16 +94,16 @@ function approvalMemoryFor(
   });
 }
 
-export function approvalIdentityFor(
+export async function approvalIdentityFor(
   tool: Tool,
   input: Record<string, unknown>,
   cwd: string,
   hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
   sessionId?: string,
-): InvocationApprovalIdentity {
+): Promise<InvocationApprovalIdentity> {
   return {
     approvalCacheKey: approvalCacheKeyFor(tool, input, cwd, hostShellExecutionPlan),
-    approvalMemory: approvalMemoryFor(tool, input, cwd, hostShellExecutionPlan, sessionId),
+    approvalMemory: await approvalMemoryFor(tool, input, cwd, hostShellExecutionPlan, sessionId),
   };
 }
 

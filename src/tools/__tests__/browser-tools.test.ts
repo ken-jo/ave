@@ -58,6 +58,7 @@ function fakeActions() {
     calls.push({ action, tab: target.tab.handle, args });
   };
   const actions: BrowserPageActions<FakeGuest> = {
+    prepare: async () => {},
     snapshot: async (target) => {
       calls.push({ action: "snapshot", tab: target.tab.handle, args: [] });
       return {
@@ -87,7 +88,6 @@ function fakeActions() {
     type: record("type") as BrowserPageActions<FakeGuest>["type"],
     pressKey: record("pressKey") as BrowserPageActions<FakeGuest>["pressKey"],
     settle: async (target) => {
-      calls.push({ action: "settle", tab: target.tab.handle, args: [] });
       return { url: target.tab.guest!.url };
     },
     navigate: async (target, url) => {
@@ -146,6 +146,7 @@ describe("browser tools", () => {
   function harness(options: {
     onCard?: (card: ApprovalRequest) => void;
     beforeActions?: () => void | Promise<void>;
+    onPrepare?: (target: BrowserActionTab<FakeGuest>) => void | Promise<void>;
     mode?: "default" | "strict" | "auto" | "allow";
   } = {}) {
     const tabs = new BrowserTabRegistry<FakeGuest>();
@@ -158,6 +159,7 @@ describe("browser tools", () => {
       sendControl: () => {},
     });
     const page = fakeActions();
+    page.actions.prepare = async (target) => options.onPrepare?.(target);
     const browserTools = createBrowserTools<FakeGuest>({
       windowIdForHostedSession: (sessionId) => sessionId === HOST_SESSION ? 1 : sessionId === OTHER_WINDOW_SESSION ? 2 : null,
       liveOriginSessionId: (sessionId) => sessionId === CHILD_SESSION ? HOST_SESSION : undefined,
@@ -267,6 +269,51 @@ describe("browser tools", () => {
     await run(BROWSER_TOOL.snapshot, { tabId: user.handle });
     expect(cards).toHaveLength(1);
     expect(page.calls.map((call) => call.action)).toEqual(["snapshot", "snapshot", "snapshot"]);
+  });
+
+  it("waits for cold observation before the one allow-mode action prompt", async () => {
+    let prepared = false;
+    const { run, cards, page, userTab } = harness({
+      mode: "allow",
+      onPrepare: async (target) => {
+        await Promise.resolve();
+        if (!prepared) target.tab.documentId++;
+        prepared = true;
+      },
+      onCard: () => expect(prepared).toBe(true),
+    });
+    const user = userTab("https://a.example/");
+    const result = await run(BROWSER_TOOL.pressKey, { tabId: user.handle, key: "Escape" });
+    expect(result.isError).toBe(false);
+    expect(cards).toHaveLength(1);
+    expect(page.calls).toEqual([{ action: "pressKey", tab: user.handle, args: ["Escape", undefined] }]);
+    expect(page.targets[0]!.approval!.documentId).toBe(page.targets[0]!.tab.documentId);
+  });
+
+  it("refuses an origin change during observation before read policy can be reused", async () => {
+    const { run, cards, page, agentTab } = harness({
+      onPrepare: async (target) => { target.tab.guest!.url = "https://b.example/"; },
+    });
+    const agent = await agentTab("https://a.example/");
+    const result = await run(BROWSER_TOOL.snapshot, { tabId: agent.handle });
+    expect(result.isError).toBe(true);
+    expect(cards).toHaveLength(0);
+    expect(page.calls).toEqual([]);
+  });
+
+  it("keeps the user-tab prompt when observation switches the active surface to an agent tab", async () => {
+    let switchTab: (() => void) | undefined;
+    const { run, cards, page, tabs, userTab, agentTab } = harness({
+      mode: "allow", onPrepare: () => switchTab?.(),
+    });
+    const user = userTab("https://a.example/");
+    const agent = await agentTab("https://a.example/");
+    tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${user.guest.id}` });
+    switchTab = () => tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${agent.guest.id}` });
+    const result = await run(BROWSER_TOOL.pressKey, { key: "Escape" });
+    expect(result.isError).toBe(false);
+    expect(cards).toHaveLength(1);
+    expect(page.calls).toEqual([{ action: "pressKey", tab: user.handle, args: ["Escape", undefined] }]);
   });
 
   it("remembers a user tab's origin exactly: a.example, b.example and http://a.example are three origins", async () => {

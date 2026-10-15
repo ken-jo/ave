@@ -59,6 +59,8 @@ export type {
 export interface ToolPolicyContext {
   readonly cwd?: string;
   readonly sessionId?: string;
+  /** Sealed invocation target, available to the later per-action policy check. */
+  readonly approvalMemoryScope?: ApprovalMemoryScope;
 }
 
 export interface Tool {
@@ -198,8 +200,9 @@ export interface Tool {
    * exact-argument identity. Return a scope only when nothing outside it
    * changes what the user consented to; arguments that differ inside the
    * scope are still re-reviewed before a remembered allow is reused.
+   * May await target observation before sealing the invocation's identity.
    */
-  approvalMemoryScope?(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd"> & ToolPolicyContext): ApprovalMemoryScope | undefined;
+  approvalMemoryScope?(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd"> & ToolPolicyContext): ApprovalMemoryScope | undefined | Promise<ApprovalMemoryScope | undefined>;
   /**
    * BUILTIN-only: this input must be decided by a person, once, every time it
    * is asked. When it returns true and the policy outcome is an ask, the
@@ -331,7 +334,7 @@ export interface DynamicToolSpec {
   /** Permission policy #634 — per-tool approval cache identity. */
   approvalCacheKey?: (input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">) => string | undefined;
   /** See {@link Tool.approvalMemoryScope}. */
-  approvalMemoryScope?: (input: unknown, ctx?: Pick<ToolExecutionContext, "cwd"> & ToolPolicyContext) => ApprovalMemoryScope | undefined;
+  approvalMemoryScope?: Tool["approvalMemoryScope"];
   /** See {@link Tool.requiresPerActionApproval}. */
   requiresPerActionApproval?: (input: unknown, ctx?: ToolPolicyContext) => boolean;
   /** Raw JSON Schema — used when no Zod schema is available (plugin/MCP). */

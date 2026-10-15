@@ -6,6 +6,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { tmpdir } from "node:os";
 import {
   BrowserActionError,
   click,
@@ -23,7 +24,7 @@ import {
 } from "../browser-actions.js";
 import { BrowserRefTable, SNAPSHOT_MAX_CHARS, type AXNode } from "../browser-snapshot.js";
 import { type as typeInto } from "../browser-actions.js";
-import { browserOrigin } from "../../../tools/browser-tools.js";
+import { browserOrigin, createBrowserTools } from "../../../tools/browser-tools.js";
 import { BrowserTabRegistry } from "../browser-tab-registry.js";
 
 function ax(nodeId: string, role: string, name: string, extra: Partial<AXNode> = {}): AXNode {
@@ -748,7 +749,7 @@ describe("focused field and document replacement", () => {
   });
 });
 
-it("refuses approval minted before the first document observer was established", async () => {
+function adapterFixture() {
   const cdp = new FakeCdp();
   cdp.nodes = page([ax("f", "textbox", "Replacement", { backendDOMNodeId: 5 })]);
   cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { value: true } }] };
@@ -759,20 +760,92 @@ it("refuses approval minted before the first document observer was established",
     sendCommand: (method: string, params?: Record<string, unknown>) => cdp.send(method, params),
   });
   const mainFrame = { framesInSubtree: [] };
+  let url = "https://a.example/form";
   const guest = {
-    id: 101, isDestroyed: () => false, getURL: () => "https://a.example/form", getTitle: () => "Page",
+    id: 101, isDestroyed: () => false, isLoading: () => false, getURL: () => url, getTitle: () => "Page",
     mainFrame, focusedFrame: mainFrame, debugger: debuggerEvents,
   };
   const registry = new BrowserTabRegistry();
   registry.guestAttached(guest, 1);
   registry.bindTab(1, { tabId: "user", webContentsId: guest.id });
   const tab = registry.liveTab("tab-1")!;
-  const approval = { tabId: tab.handle, origin: "https://a.example:443", documentId: tab.documentId };
   const actions = createBrowserPageActions(registry, browserOrigin);
-  const live = { tab, signal: tab.actions.signal, approval } as unknown as Parameters<typeof actions.pressKey>[0];
+  const tools = createBrowserTools({
+    tabs: registry,
+    windowIdForHostedSession: () => 1,
+    liveOriginSessionId: () => undefined,
+    loadActions: async () => actions as unknown as import("../../../tools/browser-tools.js").BrowserPageActions<typeof guest>,
+  });
+  const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;
+  const approve = async (name: string) => {
+    const scope = await tool(name).approvalMemoryScope!({ tabId: tab.handle }, { cwd: tmpdir(), sessionId: "conversation" });
+    if (scope?.kind !== "browser-origin" || scope.documentId === undefined) throw new Error("Missing page approval");
+    return {
+      tab, signal: tab.actions.signal,
+      approval: { tabId: tab.handle, origin: scope.origin, documentId: scope.documentId },
+    } as unknown as Parameters<typeof actions.pressKey>[0];
+  };
+  return { cdp, guest, registry, tab, actions, approve, tool, navigate: (next: string) => {
+    url = next;
+    cdp.frameTree.frame = { ...cdp.frameTree.frame, url, loaderId: "loader-2" };
+    registry.navigationStarted(guest.id, url);
+    cdp.events.emit("message", "Page.frameNavigated", { frame: cdp.frameTree.frame });
+  } };
+}
+
+it("executes the first cold action with an unchanged page after one approval binding", async () => {
+  const { cdp, tab, actions, approve } = adapterFixture();
+  const live = await approve("browser_press_key");
+  await expect(actions.pressKey(live, "Escape")).resolves.toBeUndefined();
+  expect(tab.documentId).toBe(live.approval!.documentId);
+  expect(cdp.inputs()).toEqual(["Input.dispatchKeyEvent", "Input.dispatchKeyEvent"]);
+});
+
+it("refuses a real document replacement between approval and the first dispatch", async () => {
+  const { cdp, actions, approve, navigate } = adapterFixture();
+  const live = await approve("browser_press_key");
+  navigate("https://a.example/replacement");
   await expect(actions.pressKey(live, "Escape")).rejects.toMatchObject({ code: "document-changed" });
   expect(cdp.inputs()).toEqual([]);
-  expect(tab.documentId).toBeGreaterThan(approval.documentId);
-  const fresh = { ...live, approval: { ...approval, documentId: tab.documentId } };
-  await expect(actions.pressKey(fresh, "Escape")).resolves.toBeUndefined();
+});
+
+it.each(["https://a.example/next", "https://b.example/next"])("reports navigation completed by the approved link to %s", async (destination) => {
+  const { cdp, tab, actions, approve, navigate, tool } = adapterFixture();
+  tab.opener = "agent";
+  tab.agentOrigin = "https://a.example:443";
+  cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+  await actions.snapshot({ tab, signal: tab.actions.signal } as unknown as Parameters<typeof actions.snapshot>[0], {});
+  const live = await approve("browser_click");
+  const shot = await actions.snapshot(live, {});
+  const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    const result = await send(method, params);
+    // Commit before the dispatch reply: no timers or probabilistic race.
+    if (method === "Input.dispatchTouchEvent" && params?.type === "touchEnd") navigate(destination);
+    return result;
+  });
+  const result = await tool("browser_click").execute({ tabId: tab.handle, ref }, {
+    cwd: tmpdir(), extraAllowedDirectories: [],
+    metadata: { sessionId: "conversation", approvalMemoryScope: {
+      kind: "browser-origin", ...live.approval, tabOpener: "agent",
+    } },
+  });
+  expect(result.isError).toBe(false);
+  expect(JSON.parse(result.output.split("\n")[2]!)).toMatchObject({ url: destination, origin: browserOrigin(destination) });
+  expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent", "Input.dispatchTouchEvent", "Input.dispatchTouchEvent"]);
+  expect(tab.opener).toBe(destination.includes("b.example") ? "user" : "agent");
+});
+
+it.each(["Enter", "Space"])("finishes after navigation on %s without releasing into the next document", async (key) => {
+  const { cdp, actions, approve, navigate } = adapterFixture();
+  const live = await approve("browser_press_key");
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    const result = await send(method, params);
+    if (method === "Input.dispatchKeyEvent" && params?.type === "keyDown") navigate("https://a.example/next");
+    return result;
+  });
+  await expect(actions.pressKey(live, key)).resolves.toBeUndefined();
+  expect(cdp.inputs()).toEqual(["Input.dispatchKeyEvent"]);
 });

@@ -245,10 +245,12 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       const changed = unchangedSinceApproval(ctx, fresh.resolved);
       if (changed) return changed;
       await act(actions, pageTarget(ctx, fresh), input);
+      const outcome = await actions.settle({ tab: fresh.resolved.tab, signal: fresh.signal });
       return fenced({
         tabId: target.resolved.tab.handle,
         done: name,
-        url: target.resolved.tab.guest?.getURL() ?? "",
+        url: outcome.url,
+        origin: browserOrigin(outcome.url),
         title: target.resolved.tab.guest?.getTitle() ?? "",
       });
     });

@@ -76,6 +76,8 @@ export interface BrowserActionTab<G extends BrowserGuest = BrowserGuest> {
 
 /** The page actions (main/browser/browser-actions.ts), loaded on first use. */
 export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
+  /** Establish document observation before approval captures its identity. */
+  prepare(target: BrowserActionTab<G>): Promise<void>;
   snapshot(target: BrowserActionTab<G>, options: { interactive?: boolean; delta?: boolean }): Promise<{
     url: string;
     title: string;
@@ -143,8 +145,21 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
     },
   };
 
-  const pageScope = (raw: unknown, ctx?: ToolPolicyContext): ApprovalMemoryScope | undefined => {
+  const observedTab = async (raw: unknown, ctx?: ToolPolicyContext): Promise<ResolvedBrowserTab<G> | undefined> => {
     const resolved = policy.resolveTab(asInput(raw), ctx?.sessionId);
+    if (!resolved) return undefined;
+    const guest = resolved.tab.guest;
+    const actions = await deps.loadActions();
+    await actions.prepare({ tab: resolved.tab, signal: resolved.tab.actions.signal });
+    // Pin an omitted tab before awaiting; selecting another tab cannot retarget approval.
+    const current = policy.resolveTab({ tabId: resolved.tab.handle }, ctx?.sessionId);
+    if (!current || current.tab.guest !== guest || current.origin !== resolved.origin || current.opener !== resolved.opener) {
+      throw new Error("Browser target changed while preparing approval");
+    }
+    return current;
+  };
+  const pageScope = async (raw: unknown, ctx?: ToolPolicyContext): Promise<ApprovalMemoryScope | undefined> => {
+    const resolved = await observedTab(raw, ctx);
     return resolved?.origin ? {
       kind: "browser-origin",
       origin: resolved.origin,
@@ -153,8 +168,12 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       documentId: resolved.tab.documentId,
     } : undefined;
   };
-  const onAgentTab = (raw: unknown, ctx?: ToolPolicyContext): boolean =>
-    policy.resolveTab(asInput(raw), ctx?.sessionId)?.opener === "agent";
+  const onAgentTab = (raw: unknown, ctx?: ToolPolicyContext): boolean => {
+    const scope = ctx?.approvalMemoryScope;
+    if (scope?.kind === "browser-origin") return scope.tabOpener === "agent";
+    if (scope?.kind === "browser-agent-tabs") return true;
+    return policy.resolveTab(asInput(raw), ctx?.sessionId)?.opener === "agent";
+  };
   /** Acting on anything but a tab the agent opened asks every time. */
   const notAgentTab = (raw: unknown, ctx?: ToolPolicyContext): boolean => !onAgentTab(raw, ctx);
   const readOnAgentTab = (raw: unknown, ctx?: ToolPolicyContext): ToolCategory =>
@@ -265,8 +284,8 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       category: "network",
       categoryForInput: urlCategory,
       requiresPerActionApproval: notAgentTab,
-      approvalMemoryScope: (raw, ctx) => {
-        const resolved = policy.resolveTab(asInput(raw), ctx?.sessionId);
+      approvalMemoryScope: async (raw, ctx) => {
+        const resolved = await observedTab(raw, ctx);
         return urlScope(raw, resolved?.opener, resolved?.tab);
       },
       jsonSchema: object({ tabId: tabIdProperty, url: { type: "string", description: t("be_browserTools.urlDescription") } }, ["url"]),

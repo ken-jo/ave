@@ -509,7 +509,11 @@ export async function authorizeToolInvocation(
     // nothing. Only a deny stands; with no one to ask (headless) it is denied.
     const requiresPerActionApproval =
       source === "builtin" &&
-      tool.requiresPerActionApproval?.(finalInput, sessionId === undefined ? {} : { sessionId }) === true;
+      tool.requiresPerActionApproval?.(finalInput, {
+        ...(sessionId === undefined ? {} : { sessionId }),
+        ...(invocationPermissionContext.approvalMemory?.kind === "key"
+          ? { approvalMemoryScope: invocationPermissionContext.approvalMemory.scope } : {}),
+      }) === true;
     if (requiresPerActionApproval && permissionResult.decision !== "deny") {
       const { reviewer: _reviewer, ...withoutReviewer } = permissionResult;
       permissionResult = invocationPermissionContext.headless === true

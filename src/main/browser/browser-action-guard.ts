@@ -68,14 +68,19 @@ function containsNode(node: DomNode | undefined, id: number): boolean {
 }
 
 /** One document lease, invalidated by navigation, checked at every CDP boundary. */
-export async function withGuardedAction<T>(
+export async function withGuardedAction(
   target: ActionTarget,
-  work: (target: ActionTarget & { expectNode(id: number): void }) => Promise<T>,
-): Promise<T> {
+  work: (target: ActionTarget & {
+    expectNode(id: number): void;
+    finishWithInput<T>(dispatch: () => Promise<T>): Promise<T>;
+  }) => Promise<void>,
+): Promise<void> {
   throwIfAborted(target.signal);
   const origin = browserOrigin(target.url());
   if (!origin) changed();
   let invalidated = false;
+  let finishingInput = false;
+  let completedInput = false;
   let inputNode: number | undefined;
   let touchPoint: { x: number; y: number } | undefined;
   const stop = target.cdp.onEvent((method) => {
@@ -99,9 +104,15 @@ export async function withGuardedAction<T>(
     const frameId = initial.frame.id;
     const loaderId = initial.frame.loaderId;
     assertCurrent();
-    const guarded: ActionTarget & { expectNode(id: number): void } = {
+    const guarded: Parameters<typeof work>[0] = {
       ...target,
       expectNode: (id) => { inputNode = id; },
+      // A navigation after this dispatch is a completed effect. Unwind the
+      // sequence without sending releases, verification or submit to a new page.
+      finishWithInput: async (dispatch) => {
+        finishingInput = true;
+        try { return await dispatch(); } finally { finishingInput = false; }
+      },
       cdp: {
         onEvent: (listener) => target.cdp.onEvent(listener),
         send: async (method, params) => {
@@ -142,6 +153,7 @@ export async function withGuardedAction<T>(
           }
           // No await separates this host identity/focus check from dispatch.
           assertCurrent(keyboard);
+          if (effect) completedInput = input && finishingInput;
           const result = await target.cdp.send(method, params);
           assertCurrent();
           return result;
@@ -149,6 +161,11 @@ export async function withGuardedAction<T>(
       },
     };
     return await work(guarded);
+  } catch (err) {
+    // Once an activating input has reached the approved document, a later
+    // document change is its outcome. No following step reaches that new page.
+    throwIfAborted(target.signal);
+    if (!completedInput || !(err instanceof BrowserActionError) || err.code !== "document-changed") throw err;
   } finally {
     stop();
   }

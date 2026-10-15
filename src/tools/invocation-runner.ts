@@ -1077,7 +1077,7 @@ export async function runToolInvocation(
             }))}`,
             approvalMemory: ARGS_APPROVAL_MEMORY,
           }
-        : approvalIdentityFor(
+        : await approvalIdentityFor(
             tool,
             finalInput,
             executionCwd,
