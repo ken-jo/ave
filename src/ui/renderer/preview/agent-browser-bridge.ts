@@ -30,8 +30,53 @@ let unsubscribe: (() => void) | null = null;
 let controlled: ReadonlySet<string> = new Set();
 const controlListeners = new Set<() => void>();
 
+function isWebview(element: Element): boolean {
+  return element.tagName === "WEBVIEW";
+}
+
+/**
+ * Where keyboard focus was in the app before a browser page took it, so the
+ * agent holds page focus only while it acts. Remembers the last focused
+ * element that is not a page (<webview>); `restore` gives focus back to it,
+ * but only while a page still holds focus: if the user has moved on, their
+ * focus stays where they put it.
+ */
+export class HostFocusMemory {
+  /** Most recent last. Several, because the latest (an approval card's button) is often gone by the time focus comes back. */
+  private recent: HTMLElement[] = [];
+
+  constructor(private readonly doc: Document) {}
+
+  readonly onFocusIn = (event: FocusEvent): void => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || isWebview(target)) return;
+    this.recent = [...this.recent.filter((element) => element !== target), target].slice(-HOST_FOCUS_HISTORY);
+  };
+
+  attach(): () => void {
+    this.doc.addEventListener("focusin", this.onFocusIn, true);
+    return () => this.doc.removeEventListener("focusin", this.onFocusIn, true);
+  }
+
+  restore(): void {
+    const active = this.doc.activeElement;
+    if (!(active instanceof HTMLElement) || !isWebview(active)) return;
+    const back = [...this.recent].reverse().find((element) => element.isConnected && element.closest("[inert]") === null);
+    if (back) back.focus();
+    else active.blur();
+  }
+}
+
+const HOST_FOCUS_HISTORY = 8;
+
+let hostFocus: HostFocusMemory | null = null;
+
 /** Route one operation to the single host that should carry it out. */
 export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: readonly BrowserTabHost[] = hosts): void {
+  if (request.op === "restore-focus") {
+    hostFocus?.restore();
+    return;
+  }
   if (request.op === "new") {
     const host = candidates.find((candidate) => request.sessionId !== undefined && candidate.sessionId() === request.sessionId)
       ?? candidates[0];
@@ -58,9 +103,13 @@ export function registerBrowserTabHost(api: AveApi, host: BrowserTabHost): () =>
   if (!unsubscribe && api.browserTabs) {
     const offOp = api.browserTabs.onTabOp((request) => routeBrowserTabOp(request));
     const offControl = api.browserTabs.onControl((state) => setControlled(state.agentControlledTabIds));
+    hostFocus = new HostFocusMemory(document);
+    const offFocus = hostFocus.attach();
     unsubscribe = () => {
       offOp();
       offControl();
+      offFocus();
+      hostFocus = null;
     };
   }
   return () => {

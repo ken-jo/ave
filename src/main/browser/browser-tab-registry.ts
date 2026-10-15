@@ -192,6 +192,23 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
   }
 
+  /**
+   * The agent's action in `guestId`'s tab is done: ask the window's renderer
+   * to give keyboard focus back to what held it before. Fire-and-forget; the
+   * page actions watch the page lose focus.
+   */
+  releaseFocus(guestId: number): void {
+    for (const tab of this.tabs.values()) {
+      if (tab.guest?.id !== guestId) continue;
+      this.link?.sendTabOp(tab.windowId, {
+        requestId: `browser-op-${this.nextRequest++}`,
+        op: "restore-focus",
+        tabId: tab.rendererTabId,
+      });
+      return;
+    }
+  }
+
   /** Run `inject` with input to `guestId` attributed to the agent, not the user. */
   async withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T> {
     this.agentInputDepth.set(guestId, (this.agentInputDepth.get(guestId) ?? 0) + 1);

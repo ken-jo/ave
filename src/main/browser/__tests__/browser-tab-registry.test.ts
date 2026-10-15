@@ -177,4 +177,15 @@ describe("BrowserTabRegistry", () => {
     expect(["keyDown", "rawKeyDown", "char", "mouseDown", "mouseWheel"].every(isUserActionInputType)).toBe(true);
     expect(["mouseMove", "mouseEnter", "mouseLeave", "keyUp", "mouseUp"].some(isUserActionInputType)).toBe(false);
   });
+
+  it("asks the tab's window to give focus back after an action", async () => {
+    const { registry, ops } = setup();
+    registry.guestAttached(new FakeGuest(10), 1);
+    registry.bindTab(1, { tabId: "browser:0", webContentsId: 10 });
+    registry.releaseFocus(10);
+    expect(ops.at(-1)).toMatchObject({ windowId: 1, request: { op: "restore-focus", tabId: "browser:0" } });
+    const before = ops.length;
+    registry.releaseFocus(99);
+    expect(ops).toHaveLength(before);
+  });
 });

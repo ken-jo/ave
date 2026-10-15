@@ -46,6 +46,10 @@ class FakeCdp implements CdpSession {
   dropTexts = 0;
   private focusedNode: number | undefined;
   private pressed = false;
+  loseFocus(): void {
+    this.pressed = false;
+    this.checksSincePress = 0;
+  }
   private checksSincePress = 0;
   async send(method: string, params?: Record<string, unknown>): Promise<unknown> {
     this.calls.push({ method, ...(params ? { params } : {}) });
@@ -94,7 +98,8 @@ class FakeCdp implements CdpSession {
 function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: AbortSignal } = {}) {
   let url = options.url ?? "https://a.example/form";
   const injected: number[] = [];
-  const value: ActionTarget & { setUrl(next: string): void; injected: number[] } = {
+  const released: number[] = [];
+  const value: ActionTarget & { setUrl(next: string): void; injected: number[]; released: number[] } = {
     tabId: options.tabId ?? "tab-1",
     url: () => url,
     title: () => "Fixture",
@@ -103,6 +108,11 @@ function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: 
       injected.push(cdp.calls.length);
       return inject();
     },
+    releaseFocus: () => {
+      released.push(cdp.calls.length);
+      cdp.loseFocus();
+    },
+    released,
     signal: options.signal ?? new AbortController().signal,
     setUrl: (next) => {
       url = next;
@@ -416,9 +426,11 @@ describe("focus before keyboard input", () => {
   it("waits for the press to give the page focus before typing", async () => {
     const { cdp, ref, refs } = await textField(3);
     await typeInto(target(cdp), ref, "Ada", {}, refs);
-    const lastCheck = cdp.calls.map((call) => call.method).lastIndexOf("Accessibility.getFullAXTree");
-    const firstKey = cdp.calls.findIndex((call) => call.method === "Input.dispatchKeyEvent");
-    expect(firstKey).toBeGreaterThan(lastCheck);
+    const methods = cdp.calls.map((call) => call.method);
+    const firstKey = methods.indexOf("Input.dispatchKeyEvent");
+    const lastPress = cdp.calls.slice(0, firstKey).map((call) => call.params?.type).lastIndexOf("mousePressed");
+    // Focus checks ran after the last press and before the first key.
+    expect(methods.slice(lastPress, firstKey).filter((method) => method === "Accessibility.getFullAXTree").length).toBeGreaterThan(3);
     expect(cdp.calls.find((call) => call.method === "Input.insertText")?.params).toEqual({ text: "Ada" });
   });
 
@@ -441,4 +453,46 @@ describe("focus before keyboard input", () => {
     // No Enter after text that never landed.
     expect(never.cdp.calls.some((call) => call.method === "Input.dispatchKeyEvent" && call.params?.key === "Enter")).toBe(false);
   }, 10_000);
+});
+
+describe("focus hand-back", () => {
+  async function field() {
+    const refs = new BrowserRefTable();
+    const cdp = new FakeCdp();
+    cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5, value: { type: "string", value: "" } })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
+    return { cdp, ref, refs };
+  }
+
+  it("gives focus back once after typing, inside the agent's input window", async () => {
+    const { cdp, ref, refs } = await field();
+    const tab = target(cdp);
+    let inside = false;
+    const released: boolean[] = [];
+    const wrapped = { ...tab, injectInput: async <T,>(inject: () => Promise<T>) => { inside = true; try { return await inject(); } finally { inside = false; } }, releaseFocus: () => { released.push(inside); cdp.loseFocus(); } };
+    await typeInto(wrapped, ref, "Ada", {}, refs);
+    expect(released).toEqual([true]);
+  });
+
+  it("gives focus back after a click and after a failed action too", async () => {
+    const { cdp, ref, refs } = await field();
+    const tab = target(cdp);
+    await click(tab, ref, refs);
+    expect(tab.released).toHaveLength(1);
+
+    const failing = await field();
+    failing.cdp.dropTexts = 99;
+    const failingTab = target(failing.cdp);
+    await expect(typeInto(failingTab, failing.ref, "Ada", {}, failing.refs)).rejects.toMatchObject({ code: "not-typed" });
+    expect(failingTab.released).toHaveLength(1);
+  }, 10_000);
+
+  it("leaves focus with the page when the page already had it", async () => {
+    const { cdp, ref, refs } = await field();
+    cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { type: "booleanOrUndefined", value: true } }] };
+    const tab = target(cdp);
+    await pressKey(tab, "Escape", undefined, refs);
+    await typeInto(tab, ref, "Ada", {}, refs);
+    expect(tab.released).toEqual([]);
+  });
 });

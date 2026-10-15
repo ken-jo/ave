@@ -69,7 +69,13 @@ export type BrowserTabOpRequest =
    */
   | { readonly requestId: string; readonly op: "new"; readonly url: string; readonly sessionId?: string }
   | { readonly requestId: string; readonly op: "select"; readonly tabId: string }
-  | { readonly requestId: string; readonly op: "close"; readonly tabId: string };
+  | { readonly requestId: string; readonly op: "close"; readonly tabId: string }
+  /**
+   * The agent's action in `tabId` is done: give keyboard focus back to what
+   * held it in the window before the action took it. Not awaited by main;
+   * main sees it land as the page losing focus.
+   */
+  | { readonly requestId: string; readonly op: "restore-focus"; readonly tabId: string };
 
 /** Validate a main→renderer {@link BrowserTabOpRequest}; null when malformed. */
 export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | null {
@@ -86,7 +92,7 @@ export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | 
       ...(typeof sessionId === "string" ? { sessionId } : {}),
     };
   }
-  if ((record.op === "select" || record.op === "close") && typeof record.tabId === "string") {
+  if ((record.op === "select" || record.op === "close" || record.op === "restore-focus") && typeof record.tabId === "string") {
     return { requestId: record.requestId, op: record.op, tabId: record.tabId };
   }
   return null;

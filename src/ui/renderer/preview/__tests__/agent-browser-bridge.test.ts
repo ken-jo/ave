@@ -38,4 +38,10 @@ describe("routeBrowserTabOp", () => {
     expect(first.calls).toEqual(["close browser:1"]);
     expect(second.calls).toEqual(["select browser:2"]);
   });
+
+  it("routes restore-focus to no store", () => {
+    const a = host("s1", ["browser:0"]);
+    routeBrowserTabOp({ requestId: "r9", op: "restore-focus", tabId: "browser:0" }, [a]);
+    expect(a.calls).toEqual([]);
+  });
 });

@@ -47,6 +47,11 @@ export interface ActionTarget {
   readonly cdp: CdpSession;
   /** Run input the agent injects, so it is not mistaken for the user taking over. */
   injectInput<T>(inject: () => Promise<T>): Promise<T>;
+  /**
+   * Hand keyboard focus back to where it was in the app (the composer, say)
+   * after an action took it. The agent holds page focus only while acting.
+   */
+  releaseFocus(): void;
   readonly signal: AbortSignal;
 }
 
@@ -226,7 +231,7 @@ export async function click(target: ActionTarget, ref: string, refs: BrowserRefT
   const backendNodeId = await resolveRef(target, ref, refs);
   const { x, y } = await centerOf(target.cdp, backendNodeId);
   throwIfAborted(target.signal);
-  await target.injectInput(() => pressAt(target.cdp, x, y));
+  await target.injectInput(() => withPageFocus(target, () => pressAt(target.cdp, x, y)));
 }
 
 const FOCUS_POLL_MS = 50;
@@ -260,6 +265,30 @@ async function pressForFocus(target: ActionTarget, x: number, y: number): Promis
     if (await pollUntil(target.signal, FOCUS_PRESS_WAIT_MS, async () => (await pageHasFocus(target.cdp)) || undefined)) return;
   }
   throw new BrowserActionError("no-focus", "the page did not take keyboard focus, so nothing was typed; try again");
+}
+
+const RELEASE_MAX_MS = 1_000;
+
+/**
+ * Run an action that may take the page's keyboard focus, and give focus back
+ * afterwards, whether the action succeeds or fails, when the page did not
+ * hold it before. Waits (bounded) until the page has let go, so the whole
+ * hand-back stays inside the agent's input window: input arriving in the page
+ * meanwhile is not mistaken for the user taking over, and anything after it
+ * is the user's.
+ */
+async function withPageFocus<T>(target: ActionTarget, act: () => Promise<T>): Promise<T> {
+  const hadFocus = await pageHasFocus(target.cdp);
+  try {
+    return await act();
+  } finally {
+    if (!hadFocus) {
+      target.releaseFocus();
+      // Not the action's signal: a cancelled action still hands focus back.
+      await pollUntil(new AbortController().signal, RELEASE_MAX_MS, async () =>
+        (await pageHasFocus(target.cdp)) ? undefined : true).catch(() => undefined);
+    }
+  }
 }
 
 async function pressAt(cdp: CdpSession, x: number, y: number): Promise<void> {
@@ -301,7 +330,7 @@ export async function type(
   }
   const { x, y } = await centerOf(target.cdp, backendNodeId);
   throwIfAborted(target.signal);
-  await target.injectInput(async () => {
+  await target.injectInput(() => withPageFocus(target, async () => {
     // Click into the field first, as a person would: Chromium drops synthesized
     // key and text input for a page that does not hold focus (focus emulation,
     // Page.bringToFront and webContents.focus() do not give it while the app
@@ -325,7 +354,7 @@ export async function type(
       }
     }
     if (options.submit) await dispatchKey(target.cdp, "Enter");
-  });
+  }));
 }
 
 const TYPE_ATTEMPTS = 3;
@@ -419,13 +448,13 @@ export async function pressKey(target: ActionTarget, key: string, ref: string | 
     );
   }
   throwIfAborted(target.signal);
-  await target.injectInput(async () => {
+  await target.injectInput(() => withPageFocus(target, async () => {
     if (point) {
       await pressForFocus(target, point.x, point.y);
       await target.cdp.send("DOM.focus", { backendNodeId: point.backendNodeId });
     }
     await dispatchKey(target.cdp, key);
-  });
+  }));
 }
 
 // ── navigate ──────────────────────────────────────────────────────────────
@@ -513,6 +542,7 @@ export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = S
 /** What the adapter needs of the tab registry. */
 interface InputAttribution {
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
+  releaseFocus(guestId: number): void;
 }
 
 /** One live registry tab and the signal that cancels its action. */
@@ -531,6 +561,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution): Promise<
     title: () => guest.getTitle(),
     cdp,
     injectInput: (inject) => attribution.withAgentInput(guest.id, inject),
+    releaseFocus: () => attribution.releaseFocus(guest.id),
     signal: live.signal,
   };
 }
