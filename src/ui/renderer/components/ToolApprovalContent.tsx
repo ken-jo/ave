@@ -7,6 +7,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import {
+  isSessionOnlyApprovalMemoryScope,
   resolveUserApprovalVerdict,
   type UserApprovalVerdict,
 } from "../../../shared/permissions-events.js";
@@ -554,7 +555,43 @@ function rememberScopeText(
       );
     case "command":
       return t("toolApprovalDialog.rememberScopeCommand", { path });
+    case "browser-origin":
+      return t(
+        memory.scope.tabOpener === "agent"
+          ? "toolApprovalDialog.rememberScopeBrowserAgentOrigin"
+          : "toolApprovalDialog.rememberScopeBrowserUserOrigin",
+        { toolName, origin: memory.scope.origin },
+      );
+    case "browser-agent-tabs":
+      return t("toolApprovalDialog.rememberScopeBrowserAgentTabs", { toolName });
   }
+}
+
+/**
+ * Whether this card's remember button records for this app session only
+ * (browser scopes) rather than persistently. Host-derived from the request's
+ * `approvalMemory`, the same predicate the record handler enforces.
+ */
+/**
+ * The page a browser call acts on, and whose tab it is. Shown on every
+ * browser card, including the one-shot cards of the user's own tabs, which
+ * have no remember line to carry it.
+ */
+function browserTargetText(
+  t: (key: string, params?: Record<string, string>) => string,
+  request: Pick<ApprovalRequest, "approvalMemory">,
+): string | null {
+  const memory = request.approvalMemory;
+  if (memory?.kind !== "key" || memory.scope.kind !== "browser-origin") return null;
+  return t(
+    memory.scope.tabOpener === "agent" ? "toolApprovalDialog.browserTargetAgentTab" : "toolApprovalDialog.browserTargetUserTab",
+    { origin: memory.scope.origin },
+  );
+}
+
+function isSessionOnlyRemember(request: Pick<ApprovalRequest, "approvalMemory"> | null | undefined): boolean {
+  const memory = request?.approvalMemory;
+  return memory?.kind === "key" && isSessionOnlyApprovalMemoryScope(memory.scope);
 }
 
 export function ToolApprovalContent({
@@ -711,6 +748,9 @@ export function ToolApprovalContent({
   // For a path grant, availability comes from the shared scope authority
   // (buildApprovalScopeOptions): allow-always exists only when the host
   // resolved a safe parent AND the host did not narrow the choices.
+  // A browser scope is remembered until restart only; the remember button
+  // says so and records `scope: "session"` (the record handler enforces it).
+  const rememberIsSessionOnly = !outOfDirScopes && isSessionOnlyRemember(request);
   const alwaysAllowUnavailable = outOfDirScopes
     ? outOfDirScopes.always === null
     : approvalIsOneShot || request?.persistentAllowAllowed === false ||
@@ -840,7 +880,7 @@ export function ToolApprovalContent({
           args: canonicalArgs,
           source: request.source ?? "builtin",
           decision: "allow",
-          scope: "persistent",
+          scope: rememberIsSessionOnly ? "session" : "persistent",
           verdictAtApproval: finalVerdict as UserApprovalVerdict,
           nlJustification: null,
           trustOrigin: request.trustOrigin,
@@ -882,6 +922,7 @@ export function ToolApprovalContent({
     alwaysAllowUnavailable,
     isOutOfDir,
     interactionLocked,
+    rememberIsSessionOnly,
     tHook,
   ]);
   const approvalExtras = useMemo<ApprovalDecisionExtras | undefined>(
@@ -1490,7 +1531,9 @@ export function ToolApprovalContent({
                 }
                 data-testid={TEST_IDS.allowAlwaysButton}
               >
-                {tHook("toolApprovalDialog.allowAlways")}
+                {rememberIsSessionOnly
+                  ? tHook("toolApprovalDialog.allowForSession")
+                  : tHook("toolApprovalDialog.allowAlways")}
               </Button>
               )}
 {!rationaleDisplayInvalid && (
@@ -1526,6 +1569,11 @@ export function ToolApprovalContent({
                 data-testid="allow-always-unavailable-reason"
               >
                 {persistentUnavailableReason}
+              </p>
+            ) : null}
+            {browserTargetText(tHook, request) ? (
+              <p className="text-[10px] text-muted-foreground" data-testid="approval-browser-target">
+                {browserTargetText(tHook, request)}
               </p>
             ) : null}
             {!alwaysAllowUnavailable && !isOutOfDir && request.persistentApprovalCwd ? (

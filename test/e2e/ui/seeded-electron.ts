@@ -198,6 +198,7 @@ export async function launchSeededElectron(opts: {
   userDataPrefix?: string;
   homePrefix?: string;
   launchEnv?: LaunchEnv;
+  launchArgs?: readonly string[];
 }): Promise<SeededElectronContext> {
   const sessionId = opts.sessionId ?? "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
   const userDataDir = mkdtempSync(
@@ -243,7 +244,7 @@ export async function launchSeededElectron(opts: {
     );
 
     app = await electron.launch({
-      args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
+      args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox", ...(opts.launchArgs ?? [])],
       env: buildIsolatedElectronEnv({
         HOME: tempHome,
         USERPROFILE: tempHome,

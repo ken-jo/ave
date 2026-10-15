@@ -145,6 +145,22 @@ export function findSessionMainWindowContents(sessionId: string | undefined): We
   return holder && !holder.isDestroyed() && mainWindowForContents(holder) ? holder : null;
 }
 
+/**
+ * The renderer that last sent the side chat a turn. The side chat is one
+ * conversation drawn in whichever window's panel the user typed it in; its
+ * workspace tools (terminal_read, the browser tools) reach that window.
+ */
+let sideChatOwnerContents: WebContents | null = null;
+export function setSideChatOwnerContents(contents: WebContents | null): void {
+  sideChatOwnerContents = contents;
+}
+
+/** The live main window the side chat was last driven from, or null. */
+export function sideChatOwnerWindow(): BrowserWindow | null {
+  const owner = sideChatOwnerContents;
+  return owner && !owner.isDestroyed() ? mainWindowForContents(owner) : null;
+}
+
 /** @internal test-only reset for isolated module-state tests. */
 export function resetMainWindowsForTests(): void {
   mainWindows.length = 0;
@@ -152,6 +168,7 @@ export function resetMainWindowsForTests(): void {
   focusedMainWindowId = null;
   primaryMainWindowId = null;
   sessionContentsLookup = null;
+  sideChatOwnerContents = null;
 }
 
 let tray: Tray | null = null;

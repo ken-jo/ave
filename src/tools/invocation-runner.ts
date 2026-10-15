@@ -275,8 +275,9 @@ type AuditPermissionAskArgs = Parameters<AuditWriter["auditPermissionAsk"]>;
 function resolveInvocationCategory(
   tool: Tool,
   finalInput: Record<string, unknown>,
+  sessionId: string | undefined,
 ): ToolCategory {
-  return tool.categoryForInput?.(finalInput) ?? tool.category;
+  return tool.categoryForInput?.(finalInput, sessionId === undefined ? {} : { sessionId }) ?? tool.category;
 }
 
 export interface RationaleBatchExecutionContext {
@@ -503,7 +504,7 @@ export async function runToolInvocation(
     }
     source = tool.source;
     trust = trustFromSource(source);
-    let invocationCategory = resolveInvocationCategory(tool, toolUse.input);
+    let invocationCategory = resolveInvocationCategory(tool, toolUse.input, sessionId);
     // Layer 1's read fence, read once per invocation from the wired policy
     // holder rather than per path operand. `=== true` rather than `?? false`
     // because the question is "did a wired PermissionManager ask for reads to
@@ -862,7 +863,7 @@ export async function runToolInvocation(
       }
     }
     if (finalInput !== toolUse.input) {
-      invocationCategory = resolveInvocationCategory(tool, finalInput);
+      invocationCategory = resolveInvocationCategory(tool, finalInput, sessionId);
       meta.category = invocationCategory;
     }
 
@@ -1076,11 +1077,12 @@ export async function runToolInvocation(
             }))}`,
             approvalMemory: ARGS_APPROVAL_MEMORY,
           }
-        : approvalIdentityFor(
+        : await approvalIdentityFor(
             tool,
             finalInput,
             executionCwd,
             hostShellExecutionPlanAudit,
+            sessionId,
           ));
       // Let the tool's schema identify malformed fields before checking the
       // internal plan contract. An input error must remain self-correctable.
