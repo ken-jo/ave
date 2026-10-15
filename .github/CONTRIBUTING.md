@@ -76,8 +76,10 @@ pushing and keep the tracked working tree and index clean. The hook checks
 this before and after validation, and refuses a different commit with
 checkout instructions. Push different commits separately. Deletion-only
 updates skip code checks because they push no commit tree.
-Annotated tag objects cannot equal `HEAD`; check out their commit and push
-a branch or lightweight tag instead. A complete checkout with no
+An annotated tag is pushed by checking out its commit
+(`git checkout --detach <tag>^{commit}`) and pushing the tag; the hook
+validates the peeled commit. A tag that does not peel to a commit is refused.
+A complete checkout with no
 assume-unchanged or skip-worktree index flags is required for validation.
 
 ## Architecture

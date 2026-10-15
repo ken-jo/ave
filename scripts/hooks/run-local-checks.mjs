@@ -43,8 +43,9 @@
 // those branches advance through reviewed PR merges and lead-run merges of
 // main, so a direct push is the exceptional case and has to carry the whole
 // proof itself.
-// Every non-deletion update must name HEAD and the tracked checkout must be
-// clean before and after checks. Deletion-only pushes have no tree to check.
+// Every non-deletion update must name HEAD (an annotated tag through the
+// commit it peels to) and the tracked checkout must be clean before and after
+// checks. Deletion-only pushes have no tree to check.
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -336,19 +337,54 @@ function runPushPolicyChecks(repoRoot, parsedUpdates) {
   );
 }
 
+// An annotated tag object never equals HEAD, so an update that pushes one is
+// bound to the commit the tag peels to. Release tags must be annotated (the
+// build-installers workflow verifies the tag's peeled commit), so refusing
+// tag objects outright would make a release impossible without bypassing the
+// hook. A tag of a tree or blob, or a nested tag that does not end at a
+// commit, has no commit tree to check and is refused.
+function resolvePushedCommit(readCheckout, sha) {
+  const type = readCheckout(["cat-file", "-t", sha]);
+  if (type === "commit") return { commitSha: sha };
+  if (type !== "tag") return { error: `${sha} is a ${type}, not a commit or an annotated tag of a commit.` };
+  let commitSha;
+  try {
+    commitSha = readCheckout(["rev-parse", "--verify", `${sha}^{commit}`]).toLowerCase();
+  } catch {
+    commitSha = "";
+  }
+  if (!/^[0-9a-f]{40,64}$/.test(commitSha)) {
+    return { error: `${sha} is an annotated tag that does not peel to a commit (a tag of a tree, a blob, or another non-commit).` };
+  }
+  return { commitSha, tagged: true };
+}
+
 function runPushCheckoutChecks(repoRoot, parsedUpdates) {
   const updates = parsedUpdates.updates.filter((update) => !isNullObjectId(update.localSha));
-  if (updates.length === 0) return { treeRequired: false };
+  if (updates.length === 0) return { treeRequired: false, commitByLocalSha: new Map() };
   const readCheckout = (args) => capture(commands.git, ["-C", repoRoot, ...args], repoRoot, withoutGitContext());
   const head = readCheckout(["rev-parse", "--verify", "HEAD"]).toLowerCase();
-  const mismatched = [...new Set(updates.map((update) => update.localSha.toLowerCase()))]
-    .filter((sha) => sha !== head);
+  const commitByLocalSha = new Map();
+  const nonCommits = [];
+  for (const sha of new Set(updates.map((update) => update.localSha.toLowerCase()))) {
+    const resolved = resolvePushedCommit(readCheckout, sha);
+    if (resolved.error) nonCommits.push(`  ${resolved.error}`);
+    else commitByLocalSha.set(sha, resolved);
+  }
+  if (nonCommits.length > 0) {
+    throw new Error([
+      "[PRE_PUSH_TAG_NOT_COMMIT] refusing a ref update that has no commit tree to check.",
+      ...nonCommits,
+      "Push a branch, a lightweight tag of a commit, or an annotated tag of a commit.",
+    ].join("\n"));
+  }
+  const mismatched = [...commitByLocalSha].filter(([, resolved]) => resolved.commitSha !== head);
   if (mismatched.length > 0) {
-    const checkoutInstructions = mismatched.flatMap((sha) => {
-      if (readCheckout(["cat-file", "-t", sha]) !== "tag") return [`  git checkout --detach ${sha}`];
+    const checkoutInstructions = mismatched.flatMap(([sha, resolved]) => {
+      if (!resolved.tagged) return [`  git checkout --detach ${sha}`];
       return [
-        `  ${sha} is an annotated tag object, which cannot equal HEAD.`,
-        `  Check out its commit with git checkout --detach ${sha}^{commit}, then push that HEAD as a branch or lightweight tag.`,
+        `  ${sha} is an annotated tag object; the hook validates the commit it peels to (${resolved.commitSha}).`,
+        `  Check out that commit with git checkout --detach ${sha}^{commit}, then push the tag.`,
       ];
     });
     throw new Error([
@@ -373,7 +409,21 @@ function runPushCheckoutChecks(repoRoot, parsedUpdates) {
       `Commit or restore those changes, then check out the pushed commit: git checkout --detach ${head}`,
     ].join("\n"));
   }
-  return { treeRequired: true };
+  return { treeRequired: true, commitByLocalSha };
+}
+
+// Downstream checks diff, walk and fast-forward-test commits, so an update
+// that pushes an annotated tag object is checked through its peeled commit.
+// The tag object sha stays only in `localTagSha` for the ref update itself.
+function withPushedCommits(parsedUpdates, commitByLocalSha) {
+  return {
+    ...parsedUpdates,
+    updates: parsedUpdates.updates.map((update) => {
+      const resolved = commitByLocalSha.get(update.localSha.toLowerCase());
+      if (!resolved?.tagged) return update;
+      return { ...update, localSha: resolved.commitSha, localTagSha: update.localSha };
+    }),
+  };
 }
 
 // On deploy hosts (operator-marked via env `AVE_DEPLOY_HOST=1`), refuse
@@ -990,7 +1040,7 @@ if (stage === "pre-commit") {
       ? { docsOnly: false, reason: `${stage} stage runs the full checks` }
       : process.env.AVE_PREPUSH_FULL === "1"
         ? { docsOnly: false, reason: "AVE_PREPUSH_FULL=1 requested the full checks" }
-        : classifyPrePushChanges(repoRoot, prePushUpdates, remoteLocation);
+        : classifyPrePushChanges(repoRoot, withPushedCommits(prePushUpdates, pushCheckout.commitByLocalSha), remoteLocation);
   if (classification.fastSource) {
     const relatedSelection = getFastSourceRelatedSelection(repoRoot, classification.relatedFiles);
     classification = relatedSelection.reason
