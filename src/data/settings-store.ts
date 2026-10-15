@@ -882,14 +882,14 @@ export interface SystemSettings {
   /**
    * Persisted TOP-pane percent of the workspace-rail vertical (list↕viewer)
    * split, one field per tab kind whose body is a list-over-viewer layout
-   * (file-browser / preview / subagent / browser). Clamped to the
+   * (file-browser / preview / subagent). A browser tab is its address row and
+   * page only, so it has no split. Clamped to the
    * [SIDE_PANEL_SPLIT_MIN_PERCENT, SIDE_PANEL_SPLIT_MAX_PERCENT] pane range at
    * drag time in the renderer. Default 45.
    */
   sidePanelSplitFilePercent?: number;
   sidePanelSplitPreviewPercent?: number;
   sidePanelSplitSubagentPercent?: number;
-  sidePanelSplitBrowserPercent?: number;
   /**
    * Persisted active sidebar tab ("chats" = the plain ungrouped conversation
    * list, "projects" = named-project groups). Durable UI preference, same
@@ -1674,7 +1674,11 @@ export class SettingsService {
       }
       acceptField(next, "sidebarActiveTab", partial.system.sidebarActiveTab, isSidebarTab, "system", PATCHED_FIELD);
       acceptField(next, "activeView", partial.system.activeView, isActiveViewKey, "system", PATCHED_FIELD);
-      acceptNormalizedField(next, "mainLayout", partial.system.mainLayout, normalizeMainLayout, "system", PATCHED_FIELD);
+      // The reason only is logged on refusal (`normalizeMainLayout`): the value
+      // holds page addresses that may carry tokens. A refused patch keeps the
+      // saved layout.
+      const patchedLayout = normalizeMainLayout(partial.system.mainLayout);
+      if (patchedLayout) next.mainLayout = patchedLayout;
       const rawSettingsTab = partial.system.settingsTab;
       if (rawSettingsTab !== undefined) {
         // `normalizeSettingsTab` folds retired ids onto their replacements and

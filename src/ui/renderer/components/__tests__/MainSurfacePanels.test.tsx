@@ -10,7 +10,7 @@ import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { SurfacePane, directoryName, webPanelTitle } from "../MainSurfacePanels.js";
 import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { useMainSurfaces, type MainSurface } from "../../preview/main-surfaces.js";
-import { getWebSurfaces } from "../../preview/web-surfaces.js";
+import { getWebSurfaces, noteWebSurfaceLocation } from "../../preview/web-surfaces.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 
 vi.mock("@xterm/xterm", () => ({
@@ -62,8 +62,8 @@ describe("useMainSurfaces", () => {
       terminal = result.current.create("terminal");
       page = result.current.create("browser", "https://example.com/");
     });
-    expect(terminal.tabId).toMatch(/^terminal:\d+$/);
-    expect(page.tabId).toMatch(/^browser:\d+$/);
+    expect(terminal.tabId).toMatch(/^terminal:[0-9a-f]{8}-\d+$/);
+    expect(page.tabId).toMatch(/^browser:[0-9a-f]{8}-\d+$/);
     expect(result.current.surfaces.map((each) => each.tabId)).toEqual([terminal.tabId, page.tabId]);
 
     // Released (moving to a side panel): gone from here, not remembered as closed.
@@ -73,6 +73,8 @@ describe("useMainSurfaces", () => {
     act(() => { result.current.adopt(terminal); });
     expect(result.current.get(terminal.tabId)).toEqual(terminal);
 
+    // The page moved on its own; reopening brings back where it was, not where it started.
+    noteWebSurfaceLocation(page.tabId, "https://example.com/next");
     act(() => { result.current.close(page.tabId); });
     expect(result.current.surfaces.map((each) => each.tabId)).toEqual([terminal.tabId]);
     // A terminal remembers where its shell last was, for its replacement.
@@ -80,7 +82,7 @@ describe("useMainSurfaces", () => {
     expect(result.current.get(terminal.tabId)?.cwd).toBe("/work/repo");
     act(() => { result.current.close(terminal.tabId); });
     expect(result.current.takeLastClosed()).toEqual({ kind: "terminal", url: null, cwd: "/work/repo" });
-    expect(result.current.takeLastClosed()).toEqual({ kind: "browser", url: "https://example.com/", cwd: null });
+    expect(result.current.takeLastClosed()).toEqual({ kind: "browser", url: "https://example.com/next", cwd: null });
     expect(result.current.takeLastClosed()).toBeUndefined();
     unmount();
   });

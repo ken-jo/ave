@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { useWorkspaceTabs } from "../workspace-tabs.js";
 
 describe("useWorkspaceTabs", () => {
@@ -69,7 +69,7 @@ describe("useWorkspaceTabs", () => {
     const ids = [...groupA.result.current.tabs, ...groupB.result.current.tabs].map((tab) => tab.id);
     expect(ids).toHaveLength(4);
     expect(new Set(ids).size).toBe(4);
-    for (const id of ids) expect(id).toMatch(/^(terminal|browser):\d+$/);
+    for (const id of ids) expect(id).toMatch(/^(terminal|browser):[0-9a-f]{8}-\d+$/);
   });
 
   it("closeTab removes the tab and falls back to the previous tab when closing the active one", () => {
@@ -310,5 +310,30 @@ describe("useWorkspaceTabs moves", () => {
     act(() => result.current.adoptTab({ id: "browser:77", kind: "browser", ordinal: 4 }, null));
     expect(result.current.tabs.filter((tab) => tab.id === "browser:77")).toHaveLength(1);
     expect(result.current.activeTabId).toBe("browser:77");
+  });
+});
+
+describe("window tab id scope", () => {
+  it("two renderers (windows) mint disjoint terminal ids", async () => {
+    vi.resetModules();
+    const windowA = await import("../workspace-tabs.js");
+    vi.resetModules();
+    const windowB = await import("../workspace-tabs.js");
+    const idsA = [windowA.mintTabId("terminal"), windowA.mintTabId("terminal")];
+    const idsB = [windowB.mintTabId("terminal"), windowB.mintTabId("terminal")];
+    for (const id of [...idsA, ...idsB]) expect(id).toMatch(/^terminal:[0-9a-f]{8}-\d+$/);
+    expect(idsA.filter((id) => idsB.includes(id))).toEqual([]);
+  });
+
+  it("reserving another scope's id does not move this window's counter", async () => {
+    vi.resetModules();
+    const tabs = await import("../workspace-tabs.js");
+    const first = tabs.mintTabId("terminal");
+    const scope = first.slice("terminal:".length, "terminal:".length + 8);
+    const foreign = scope === "00000000" ? "terminal:00000001-50" : "terminal:00000000-50";
+    tabs.reserveTabIds([foreign]);
+    expect(tabs.mintTabId("terminal")).toBe(`terminal:${scope}-2`);
+    tabs.reserveTabIds([`terminal:${scope}-40`]);
+    expect(tabs.mintTabId("terminal")).toBe(`terminal:${scope}-41`);
   });
 });

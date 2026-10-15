@@ -7,6 +7,7 @@ import { MAX_CHAT_GROUPS, MAX_PANES } from "../../../../contract/app-contract.js
 import { CHAT_SESSION_DRAG_TYPE } from "../pane-drop.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import type { AveApi } from "../../types.js";
+import { getWebSurfaceOccluders } from "../../preview/web-surfaces.js";
 
 const t = ((key: string) => key) as never;
 
@@ -379,6 +380,15 @@ describe("PaneFrame drop gesture", () => {
     drag("drop", tile, carriedSession, { x: 795, y: 300 });
     expect(onSessionDrop).toHaveBeenCalledWith("session-7", "right");
     expect(screen.queryByTestId("pane-drop-indicator")).toBeNull();
+  });
+
+  it("cuts the drop indicator out of any web page over the pane while it shows", () => {
+    const tile = tileWithRect({ onSessionDrop: vi.fn(), canSplit: true });
+    drag("dragOver", tile, carriedSession, { x: 795, y: 300 });
+    const indicator = screen.getByTestId("pane-drop-indicator");
+    expect(getWebSurfaceOccluders().has(indicator)).toBe(true);
+    drag("drop", tile, carriedSession, { x: 795, y: 300 });
+    expect(getWebSurfaceOccluders().has(indicator)).toBe(false);
   });
 
   it("takes no drop when it has no receiver", () => {

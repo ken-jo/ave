@@ -60,6 +60,7 @@ import {
   unregisterTerminalBlockTracker,
   __resetTerminalBlocksForTest,
 } from "./terminal-blocks.js";
+import { isTerminalTabId } from "../../shared/tab-id.js";
 
 const log = createLogger("ave");
 
@@ -105,6 +106,8 @@ export type TerminalEmit = (
   payload:
     | { tabId: string; chunk: string }
     | { tabId: string; exitCode: number; signal?: number },
+  /** The window that owns the terminal — the only one its output goes to (null: no window). */
+  ownerWindowId: number | null,
 ) => void;
 
 let _emit: TerminalEmit = () => {};
@@ -116,6 +119,8 @@ export function setTerminalEmitter(fn: TerminalEmit): void {
 
 interface TerminalSession {
   pty: IPty;
+  /** The window that spawned it. Only that window may attach, type, resize or close it. */
+  ownerWindowId: number | null;
   /** Command blocks parsed from this PTY's output (terminal-blocks.ts). */
   blocks: TerminalBlockTracker;
   /** FIFO scrollback chunks, capped to {@link RING_MAX_BYTES}. */
@@ -131,6 +136,7 @@ interface TerminalSession {
 
 interface TerminalSpawnInFlight {
   promise: Promise<SpawnTerminalResult>;
+  ownerWindowId: number | null;
   cancelled: boolean;
   cleanupSandboxHome?: () => void;
 }
@@ -227,6 +233,18 @@ export function spawnTerminal(options: SpawnTerminalOptions): Promise<SpawnTermi
   if (!tabId) {
     return Promise.resolve({ ok: false, reason: "bad-request", message: "missing tabId" });
   }
+  // The id reaches the shell as AVE_TERMINAL_ID and keys the PTY across every
+  // window, so only a well-formed terminal tab id is accepted.
+  if (!isTerminalTabId(tabId)) {
+    return Promise.resolve({ ok: false, reason: "bad-request", message: "tabId is not a terminal tab id" });
+  }
+  // A tab another window owns is not this window's to attach to: tab ids are
+  // unique per window by construction, so a clash is a contract violation.
+  const ownerWindowId = options.ownerWindowId ?? null;
+  if (!terminalOwnedBy(tabId, ownerWindowId)) {
+    log.warn({ tabId }, "terminal: refused a spawn for a tab another window owns");
+    return Promise.resolve({ ok: false, reason: "bad-request", message: "terminal tab belongs to another window" });
+  }
   if (terminalShutdownStarted) {
     return Promise.resolve({
       ok: false,
@@ -239,7 +257,7 @@ export function spawnTerminal(options: SpawnTerminalOptions): Promise<SpawnTermi
   const existing = sessions.get(tabId);
   if (existing && !existing.exited) {
     if (existing.ring.length > 0) {
-      _emit("data", { tabId, chunk: existing.ring.join("") });
+      _emit("data", { tabId, chunk: existing.ring.join("") }, existing.ownerWindowId);
     }
     return Promise.resolve({ ok: true, tabId, replayed: true });
   }
@@ -260,7 +278,7 @@ export function spawnTerminal(options: SpawnTerminalOptions): Promise<SpawnTermi
     resolveTracked = resolve;
     rejectTracked = reject;
   });
-  const owner: TerminalSpawnInFlight = { promise: tracked, cancelled: false };
+  const owner: TerminalSpawnInFlight = { promise: tracked, cancelled: false, ownerWindowId };
   terminalSpawnsInFlight.set(tabId, owner);
   void spawnNewTerminal(options, tabId, owner).then(
     (result) => {
@@ -431,6 +449,7 @@ async function spawnNewTerminal(
 
     const session: TerminalSession = {
       pty,
+      ownerWindowId: options.ownerWindowId ?? null,
       blocks: new TerminalBlockTracker({ nonce: markerNonce }),
       ring: [],
       ringBytes: 0,
@@ -449,7 +468,7 @@ async function spawnNewTerminal(
       const display = session.blocks.recordOutput(chunk);
       if (!display) return;
       pushRing(session, display);
-      _emit("data", { tabId, chunk: display });
+      _emit("data", { tabId, chunk: display }, session.ownerWindowId);
     });
     session.disposeData = () => dataSub.dispose();
 
@@ -459,7 +478,7 @@ async function spawnNewTerminal(
       // the tab closes or a new shell replaces them.
       session.blocks.recordExit();
       if (session.forceKillTimer !== null) clearTimeout(session.forceKillTimer);
-      _emit("exit", { tabId, exitCode, signal });
+      _emit("exit", { tabId, exitCode, signal }, session.ownerWindowId);
       // Per-command ASRT state decrement (mirrors worker-spawn cleanupOnce) +
       // drop the session so a later spawn for the same tab starts fresh.
       void cleanupAsrtSandboxAfterCommand();
@@ -488,6 +507,18 @@ async function spawnNewTerminal(
     }
     return { ok: false, reason: "spawn-failed", message };
   }
+}
+
+/**
+ * Whether `ownerWindowId` may act on `tabId`: no live or starting terminal has
+ * that id, or the one that has it is this window's.
+ */
+export function terminalOwnedBy(tabId: string, ownerWindowId: number | null): boolean {
+  const session = sessions.get(tabId);
+  if (session && !session.exited) return session.ownerWindowId === ownerWindowId;
+  const inFlight = terminalSpawnsInFlight.get(tabId);
+  if (inFlight && !inFlight.cancelled) return inFlight.ownerWindowId === ownerWindowId;
+  return true;
 }
 
 /** Forward user keystrokes to the PTY. No-op for an unknown/exited tab. An

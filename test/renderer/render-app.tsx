@@ -103,6 +103,11 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
 
   vi.stubGlobal("aveApi", api);
   vi.stubGlobal("ave", ns);
+  // Main gives every main window its role; the harness's window is the
+  // primary one unless a test says otherwise (`shared/window-role.ts`).
+  if ((window as { __aveWindowRole?: unknown }).__aveWindowRole === undefined) {
+    vi.stubGlobal("__aveWindowRole", "primary");
+  }
   (window as unknown as { aveApi: MockAveApi }).aveApi = api;
   (window as unknown as { ave: unknown }).ave = ns;
 

@@ -60,6 +60,7 @@ import {
   setPendingRendererReload,
   unregisterMainWindow,
 } from "./app-state.js";
+import { WINDOW_ROLE_ARG_PREFIX } from "../shared/window-role.js";
 
 const log = createLogger("ave");
 
@@ -182,6 +183,7 @@ export function createWindow(
     throw new Error(`[ave] preload.cjs not found at ${hostPreload.preload} — run 'npm run build:preload' first`);
   }
 
+  const role = nextMainWindowRole();
   const win = new BrowserWindow({
     ...initialMainWindowBounds(),
     minWidth: MAIN_WINDOW_MIN_WIDTH,
@@ -206,10 +208,12 @@ export function createWindow(
       // renderer so ThemeProvider and the App shell can both init from frame 0
       // (no flash of fallback theme / wrong mode). See initialThemeArgs() and
       // initialAppModeArgs() above.
-      additionalArguments: [...initialThemeArgs(), ...initialAppModeArgs()],
+      // The window's role (`shared/window-role.ts`): the primary window owns
+      // the saved main-area layout.
+      additionalArguments: [...initialThemeArgs(), ...initialAppModeArgs(), `${WINDOW_ROLE_ARG_PREFIX}${role}`],
     },
   });
-  registerMainWindow(win, nextMainWindowRole());
+  registerMainWindow(win, role);
   // Point-to-point sends (menu actions, dialogs) follow the window in use.
   win.on("focus", () => markMainWindowFocused(win));
 

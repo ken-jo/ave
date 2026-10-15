@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { InstanceViewKey } from "../../../shared/view-key.js";
 import { mintTabId } from "./workspace-tabs.js";
-import { publishLiveWebTabs, withdrawLiveWebTabs } from "./web-surfaces.js";
+import { publishLiveWebTabs, webSurfaceLocation, withdrawLiveWebTabs } from "./web-surfaces.js";
 
 /**
  * The terminals and web pages that live in the MAIN area, as panes — the
@@ -115,7 +115,10 @@ export function useMainSurfaces(): MainSurfacesStore {
   const close = useCallback((tabId: string) => {
     const surface = release(tabId);
     if (surface) {
-      closedRef.current = [{ kind: surface.kind, url: surface.url, cwd: surface.cwd ?? null }, ...closedRef.current].slice(0, CLOSED_SURFACE_MEMORY);
+      // Where the page actually was (links and in-page routes move it without
+      // the address row), not where it was first pointed.
+      const url = surface.kind === "browser" ? webSurfaceLocation(tabId) ?? surface.url : surface.url;
+      closedRef.current = [{ kind: surface.kind, url, cwd: surface.cwd ?? null }, ...closedRef.current].slice(0, CLOSED_SURFACE_MEMORY);
     }
     return surface;
   }, [release]);

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { AveApi } from "../types.js";
-import { parseMainLayout, type MainLayoutSnapshot, type SavedSurface } from "../../../shared/main-layout.js";
+import { normalizeWindowRole } from "../../../shared/window-role.js";
+import { parseMainLayout, type MainLayoutLimits, type MainLayoutSnapshot, type SavedSurface } from "../../../shared/main-layout.js";
+import { MAIN_CHAT_GROUP_ID, MAX_PANES } from "../../../contract/app-contract.js";
 import type { PaneNode } from "../components/pane-tree.js";
 import type { ViewLocation } from "../utils/view-location.js";
 import { VIEW_OF_SURFACE_KIND, type MainSurface } from "../preview/main-surfaces.js";
@@ -15,6 +17,9 @@ import {
   terminalCwd,
 } from "../preview/main-layout-restore.js";
 import { buildMainLayoutSnapshot, savedSurfaceOf } from "../preview/main-layout-snapshot.js";
+
+/** The window's own limits the stored shape is checked against (see `shared/main-layout.ts`). */
+const WINDOW_LAYOUT_LIMITS: MainLayoutLimits = { maxPanes: MAX_PANES, primaryPaneId: MAIN_CHAT_GROUP_ID };
 
 /** How long the layout must hold still before it is written. */
 export const MAIN_LAYOUT_SAVE_DELAY_MS = 300;
@@ -71,6 +76,17 @@ function applyLayout(layout: MainLayoutSnapshot, chatGroups: ChatGroupsForLayout
  * fails its own rules is a bug here; it is reported and not written.
  */
 export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, mainSurfaces: MainSurfacesForLayout): void {
+  // The saved layout is the primary window's (`shared/window-role.ts`): two
+  // windows restoring one layout would both claim its terminal ids, and both
+  // saving it would overwrite each other. A secondary window starts in the
+  // default layout and keeps its own unsaved. A window main gave no role is a
+  // broken launch contract — said once, and nothing restored or saved.
+  const [role] = useState(() => {
+    const value = normalizeWindowRole((window as { __aveWindowRole?: unknown }).__aveWindowRole);
+    if (value === null) console.error("[main-layout] this window has no role from main; its layout is neither restored nor saved");
+    return value;
+  });
+  const ownsLayout = role === "primary";
   const [settled, setSettled] = useState(false);
   const chatGroupsRef = useRef(chatGroups);
   chatGroupsRef.current = chatGroups;
@@ -78,6 +94,7 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
   mainSurfacesRef.current = mainSurfaces;
 
   useEffect(() => {
+    if (!ownsLayout) return undefined;
     let cancelled = false;
     void api
       .getSettings()
@@ -85,7 +102,7 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
         if (cancelled) return;
         const raw = (settings?.system as { mainLayout?: unknown } | undefined)?.mainLayout;
         if (raw === undefined) return;
-        const parsed = parseMainLayout(raw);
+        const parsed = parseMainLayout(raw, WINDOW_LAYOUT_LIMITS);
         if (!parsed.ok) {
           console.warn(`[main-layout] saved layout refused: ${parsed.reason}; starting in the default layout`);
           return;
@@ -101,7 +118,7 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
     return () => {
       cancelled = true;
     };
-  }, [api]);
+  }, [api, ownsLayout]);
 
   const lastWrittenRef = useRef<string | null>(null);
   useEffect(() => {
@@ -134,7 +151,7 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
     const write = () => {
       timer = null;
       const snapshot = current();
-      const checked = parseMainLayout(snapshot);
+      const checked = parseMainLayout(snapshot, WINDOW_LAYOUT_LIMITS);
       if (!checked.ok) {
         console.error(`[main-layout] not saving a layout that breaks its own rules: ${checked.reason}`);
         return;
@@ -148,9 +165,20 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
       if (timer !== null) clearTimeout(timer);
       timer = setTimeout(write, MAIN_LAYOUT_SAVE_DELAY_MS);
     };
+    // A change still waiting out the delay is written as the window goes away
+    // (quit, close, reload) rather than dropped. The settings write is an IPC
+    // send, so it leaves before the page does; a process killed outright can
+    // still lose the last change inside the delay.
+    const flush = () => {
+      if (timer === null) return;
+      clearTimeout(timer);
+      write();
+    };
     const offChange = subscribeMainLayoutChange(schedule);
     const offLocations = subscribeWebSurfaceLocations(schedule);
+    window.addEventListener("pagehide", flush);
     return () => {
+      window.removeEventListener("pagehide", flush);
       if (timer !== null) clearTimeout(timer);
       offChange();
       offLocations();

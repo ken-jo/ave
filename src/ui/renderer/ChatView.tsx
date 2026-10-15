@@ -33,6 +33,7 @@ import { collectChatPreviewModel } from "./preview/preview-targets.js";
 import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
 import { isMovableTabKind, registerSideTabsSink, type MovableTabKind } from "./preview/surface-moves.js";
 import { emitMainLayoutChange, takeRestoredSideTabs, terminalCwd } from "./preview/main-layout-restore.js";
+import { forgetActiveSurface } from "./preview/active-surface.js";
 import { savedSurfaceOf } from "./preview/main-layout-snapshot.js";
 import { webSurfaceLocation } from "./preview/web-surfaces.js";
 import { attachToComposer, registerComposerTarget } from "./preview/composer-targets.js";
@@ -296,7 +297,12 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     });
     // Tabs a restored layout gave this pane, if its restore came first.
     for (const tab of takeRestoredSideTabs(chatGroupId)) adoptTab({ id: tab.tabId, kind: tab.kind, ordinal: tab.ordinal }, tab.url);
-    return unregister;
+    return () => {
+      unregister();
+      // The group is going: a terminal or page of its side panel can no
+      // longer be what the side chat acts on.
+      for (const tab of savedTabsRef.current.tabs) if (isMovableTabKind(tab.kind)) forgetActiveSurface(tab.id);
+    };
   }, [chatGroupId, adoptTab, releaseTab, hasTab, selectWorkspaceTab]);
   // A tab opened, closed, moved or re-pointed is a layout change to save.
   const savedTabsKey = workspaceTabs.tabs.filter((tab) => isMovableTabKind(tab.kind)).map((tab) => `${tab.id}=${workspaceTabs.browserUrlByTab[tab.id] ?? ""}`).join("|");

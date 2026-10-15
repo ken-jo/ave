@@ -30,6 +30,7 @@ import type {
 import {
   normalizePluginActionResult,
 } from "./internal-api-surface.js";
+import { WINDOW_ROLE_ARG_PREFIX, normalizeWindowRole, type WindowRole } from "../shared/window-role.js";
 export { buildInternalApiSurface } from "./internal-api-surface.js";
 
 export type AveInitialThemePayload = Readonly<InitialThemePrime>;
@@ -122,6 +123,18 @@ export function readInitialAppModeArg(): InitialAppMode | null {
     if (!arg) return null;
     const value = arg.slice(INITIAL_APP_MODE_ARG_PREFIX.length);
     return normalizeAppMode(value);
+  } catch {
+    return null;
+  }
+}
+
+/** This main window's role, as main passed it (`shared/window-role.ts`). */
+export function readWindowRoleArg(): WindowRole | null {
+  try {
+    const arg = process.argv.findLast(
+      (a): a is string => typeof a === "string" && a.startsWith(WINDOW_ROLE_ARG_PREFIX),
+    );
+    return arg ? normalizeWindowRole(arg.slice(WINDOW_ROLE_ARG_PREFIX.length)) : null;
   } catch {
     return null;
   }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeBrowserNavigationUrl } from "./url-safety.js";
 import { publishLiveWebTabs, withdrawLiveWebTabs } from "./web-surfaces.js";
+import { parseTabId } from "../../../shared/tab-id.js";
 
 /**
  * Workspace-tab store — the state that ChatSidePanel used to hold in
@@ -169,19 +170,22 @@ const EMPTY_STATE: WorkspaceState = { tabs: [], activeTabId: null, browserUrlByT
  * side panel and the main area without being renamed.
  */
 let nextWindowTabId = 1;
+// Unique to this renderer — this window, this launch (`shared/tab-id.ts`).
+const WINDOW_TAB_SCOPE = Array.from(crypto.getRandomValues(new Uint8Array(4)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 export function mintTabId(kind: WorkspaceTabKind): string {
-  return `${kind}:${nextWindowTabId++}`;
+  return `${kind}:${WINDOW_TAB_SCOPE}-${nextWindowTabId++}`;
 }
 
 /**
- * Tabs restored from a saved layout keep their ids; the counter moves past
- * them so a tab minted afterwards cannot take one.
+ * Tabs restored from a saved layout keep their ids. Ids from another scope
+ * (an earlier launch) cannot meet this one's; one from this scope moves the
+ * counter past it, so a tab minted afterwards cannot take it.
  */
 export function reserveTabIds(ids: Iterable<string>): void {
   for (const id of ids) {
-    const n = Number(id.slice(id.lastIndexOf(":") + 1));
-    if (Number.isInteger(n) && n >= nextWindowTabId) nextWindowTabId = n + 1;
+    const parsed = parseTabId(id);
+    if (parsed && parsed.scope === WINDOW_TAB_SCOPE && parsed.n >= nextWindowTabId) nextWindowTabId = parsed.n + 1;
   }
 }
 

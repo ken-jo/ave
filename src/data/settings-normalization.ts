@@ -1212,6 +1212,7 @@ export function normalizeMainLayout(value: unknown): MainLayoutSnapshot | undefi
   if (value === undefined) return undefined;
   const parsed = parseMainLayout(value);
   if (parsed.ok) return parsed.layout;
+  // The reason only, never the value: page addresses may carry tokens.
   log.warn(`system.mainLayout refused: ${parsed.reason}; the window starts in the default layout`);
   return undefined;
 }
@@ -1298,7 +1299,6 @@ export const SIDE_PANEL_SPLIT_KEYS = [
   "sidePanelSplitFilePercent",
   "sidePanelSplitPreviewPercent",
   "sidePanelSplitSubagentPercent",
-  "sidePanelSplitBrowserPercent",
 ] as const satisfies readonly (keyof SystemSettings)[];
 
 export function normalizeSystem(input: unknown): SystemSettings {
@@ -1388,7 +1388,11 @@ export function normalizeSystem(input: unknown): SystemSettings {
   }
   acceptField(result, "sidebarActiveTab", obj.sidebarActiveTab, isSidebarTab, "system", STORED_FIELD);
   acceptField(result, "activeView", obj.activeView, isActiveViewKey, "system", STORED_FIELD);
-  acceptNormalizedField(result, "mainLayout", obj.mainLayout, normalizeMainLayout, "system", STORED_FIELD);
+  // Not `acceptNormalizedField`: its warning prints the rejected value, and a
+  // saved layout holds page addresses that may carry tokens. The reason alone
+  // is logged (`normalizeMainLayout`).
+  const storedLayout = normalizeMainLayout(obj.mainLayout);
+  if (storedLayout) result.mainLayout = storedLayout;
   const rawSettingsTab = obj.settingsTab;
   if (rawSettingsTab !== undefined) {
     // `normalizeSettingsTab` already folds retired ids and anything

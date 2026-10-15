@@ -31,6 +31,7 @@ import {
 } from "./pane-drop.js";
 import { FloatingRightLane } from "./FloatingRightLane.js";
 import { registerWebSurfaceOccluder } from "../preview/web-surfaces.js";
+import { useWebSurfaceOccluder } from "../preview/use-web-surface-occluder.js";
 import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, type SurfaceDragPayload } from "../preview/surface-moves.js";
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import { AXIS_OF,
@@ -388,6 +389,9 @@ export function PaneFrame({
   };
 
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  // A web page in this pane is drawn above it; the indicator is cut out of
+  // the page so the user sees where the drop lands.
+  const dropIndicatorRef = useWebSurfaceOccluder(dropTarget);
   const carriesSession = (event: React.DragEvent) =>
     onSessionDrop !== undefined && event.dataTransfer.types.includes(CHAT_SESSION_DRAG_TYPE);
   const carriesSurface = (event: React.DragEvent) =>
@@ -692,6 +696,7 @@ export function PaneFrame({
       ) : null}
       {dropTarget ? (
         <div
+          ref={dropIndicatorRef}
           aria-hidden={true}
           className="pointer-events-none absolute rounded-md border-2 border-primary bg-primary/(--opacity-subtle)"
           style={dropIndicatorStyle(dropTarget)}

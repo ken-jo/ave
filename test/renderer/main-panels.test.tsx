@@ -57,7 +57,7 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
     const [terminal] = shownSurfaces(container);
     expect(terminal!.kind).toBe("terminal");
-    expect(terminal!.tabId).toMatch(/^terminal:\d+$/);
+    expect(terminal!.tabId).toMatch(/^terminal:[0-9a-f]{8}-\d+$/);
     // The pane holds it at its own location, so the PTY view is the pane's.
     expect(container.querySelector('[data-testid="pane-header"]')).not.toBeNull();
 
@@ -422,6 +422,37 @@ describe("main-area terminal and web panels", () => {
     await clickSidebarNavRow("features", "sidebar-terminal");
     const ids = new Set([mainTerminal, sideTerminal]);
     await waitFor(() => expect(secondTerminal.spawn.mock.calls.some(([payload]) => !ids.has((payload as { tabId: string }).tabId))).toBe(true));
+  });
+
+  it("leaves the saved layout to the primary window: a second window neither restores it nor saves over it", async () => {
+    const saved = {
+      version: 1,
+      tree: { kind: "leaf", chatGroupId: "main" },
+      focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId: "terminal:0000000a-4", ordinal: 1, cwd: "/work/repo", url: null } },
+      panelOpenIds: [],
+      sideTabs: {},
+    };
+    vi.stubGlobal("__aveWindowRole", "secondary");
+    try {
+      const { container, api } = await renderApp({
+        hasApiKey: true,
+        terminal: true,
+        settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: saved } },
+      });
+      const terminal = (api as unknown as { terminal: { spawn: ReturnType<typeof vi.fn> } }).terminal;
+      await clickSidebarNavRow("features", "sidebar-terminal");
+      await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+      // Its own new terminal, not the primary window's saved one.
+      expect(shownSurfaces(container)[0]!.tabId).not.toBe("terminal:0000000a-4");
+      expect(terminal.spawn.mock.calls.some(([payload]) => (payload as { tabId: string }).tabId === "terminal:0000000a-4")).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, MAIN_LAYOUT_SAVE_DELAY_MS * 3));
+      const layoutWrites = vi.mocked(api.updateSettings).mock.calls
+        .filter(([patch]) => (patch as { system?: { mainLayout?: unknown } }).system?.mainLayout !== undefined);
+      expect(layoutWrites).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("starts in the default layout, saying why, when the saved one breaks a rule", async () => {
