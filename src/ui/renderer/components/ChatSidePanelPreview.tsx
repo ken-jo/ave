@@ -36,6 +36,7 @@ import { PreviewContent } from "../preview/preview-renderers.js";
 import { FileEditDiff } from "./FileEditDiff.js";
 import { ToolPayloadBlock } from "./ToolPayloadBlock.js";
 import { McpAppView } from "./McpAppView.js";
+import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
 
 export interface FileTreeNode {
   id: string;
@@ -482,9 +483,18 @@ export function UrlDocumentViewer({
   api,
   target,
   showHeader = true,
+  surfaceTabId,
 }: {
   api: AveApi;
   target: Extract<ChatPreviewTarget, { kind: "url" }>;
+  /**
+   * The browser tab this page belongs to. A tab's page is a web SURFACE: its
+   * guest lives in the window's `WebSurfaceLayer` and this viewer renders only
+   * the slot it is laid over, so switching tabs or moving the tab never reloads
+   * the page. Without a tab (a url previewed inside another workspace) the
+   * viewer owns its `<webview>` inline, as before.
+   */
+  surfaceTabId?: string;
   /**
    * Render the viewer's own URL/open-external header band. Default true. The
    * BrowserWorkspace tab passes false because the tab already owns a single
@@ -537,7 +547,9 @@ export function UrlDocumentViewer({
           </Tooltip>
         </div>
       ) : null}
-      {createElement("webview", {
+      {surfaceTabId ? (
+        <WebSurfaceSlot tabId={surfaceTabId} url={url} location="side-panel" />
+      ) : createElement("webview", {
         "data-testid": "chat-side-panel-browser-webview",
         src: url,
         partition: AVE_SIDE_BROWSER_PARTITION,

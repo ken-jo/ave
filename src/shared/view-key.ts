@@ -29,9 +29,26 @@ export const BUILTIN_VIEWS = {
   memory: {},
   starred: {},
   insights: {},
+  // A terminal or a web page in the main area. Unlike the views above these
+  // are not places but KINDS of place: a pane shows one instance of them,
+  // named by its surface (tab) id in the location (`ViewLocation.surface`).
+  terminal: {},
+  web: {},
 } as const satisfies Record<string, Record<string, never>>;
 
 export type BuiltinViewKey = keyof typeof BUILTIN_VIEWS;
+
+/** The built-in views a pane shows an INSTANCE of — see `BUILTIN_VIEWS`. */
+export type InstanceViewKey = "terminal" | "web";
+
+/**
+ * Whether a view key names a kind of surface rather than one place. An
+ * instance view has no meaning without its surface id, and its surface does
+ * not outlive the app, so it is never restored as the window's view.
+ */
+export function isInstanceViewKey(raw: string): raw is InstanceViewKey {
+  return raw === "terminal" || raw === "web";
+}
 
 export type PluginViewKey = `plugin:${string}:${string}`;
 

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { useWorkspaceTabs } from "../workspace-tabs.js";
 
 describe("useWorkspaceTabs", () => {
@@ -56,6 +56,20 @@ describe("useWorkspaceTabs", () => {
     expect(kinds).toEqual(["browser:1", "terminal:1", "browser:2"]);
     const ids = result.current.tabs.map((tab) => tab.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("mints tab ids that are unique across every store in the window", () => {
+    // One store per chat group; main keys PTYs (and guests) by tab id globally.
+    const groupA = renderHook(() => useWorkspaceTabs());
+    const groupB = renderHook(() => useWorkspaceTabs());
+    act(() => groupA.result.current.addTab("terminal"));
+    act(() => groupB.result.current.addTab("terminal"));
+    act(() => groupA.result.current.openInEphemeral({ source: "browser", url: "https://example.com" }));
+    act(() => groupB.result.current.openPinned({ source: "browser", url: "https://example.com" }));
+    const ids = [...groupA.result.current.tabs, ...groupB.result.current.tabs].map((tab) => tab.id);
+    expect(ids).toHaveLength(4);
+    expect(new Set(ids).size).toBe(4);
+    for (const id of ids) expect(id).toMatch(/^(terminal|browser):[0-9a-f]{8}-\d+$/);
   });
 
   it("closeTab removes the tab and falls back to the previous tab when closing the active one", () => {
@@ -271,5 +285,55 @@ describe("useWorkspaceTabs", () => {
       act(() => result.current.pruneContentTabs(() => true));
       expect(result.current.tabs).toBe(before);
     });
+  });
+});
+
+describe("useWorkspaceTabs moves", () => {
+  it("releases a tab without closing it and adopts one with its id, number and address", () => {
+    const { result } = renderHook(() => useWorkspaceTabs());
+    act(() => result.current.addTab("terminal"));
+    act(() => result.current.addTab("browser"));
+    const [terminal, browser] = result.current.tabs;
+    let released: ReturnType<typeof result.current.releaseTab>;
+    act(() => { released = result.current.releaseTab(terminal!.id); });
+    expect(released!).toEqual(terminal);
+    expect(result.current.tabs.map((tab) => tab.id)).toEqual([browser!.id]);
+    expect(result.current.releaseTab("missing")).toBeUndefined();
+
+    act(() => result.current.adoptTab({ id: "browser:77", kind: "browser", ordinal: 4 }, "https://example.com/"));
+    const adopted = result.current.tabs.at(-1)!;
+    expect(adopted).toEqual({ id: "browser:77", kind: "browser", ordinal: 4, mode: "pinned", content: null });
+    expect(result.current.activeTabId).toBe("browser:77");
+    expect(result.current.browserUrlByTab["browser:77"]).toBe("https://example.com/");
+    // Adopting a tab already held only activates it.
+    act(() => result.current.setActiveTabId(browser!.id));
+    act(() => result.current.adoptTab({ id: "browser:77", kind: "browser", ordinal: 4 }, null));
+    expect(result.current.tabs.filter((tab) => tab.id === "browser:77")).toHaveLength(1);
+    expect(result.current.activeTabId).toBe("browser:77");
+  });
+});
+
+describe("window tab id scope", () => {
+  it("two renderers (windows) mint disjoint terminal ids", async () => {
+    vi.resetModules();
+    const windowA = await import("../workspace-tabs.js");
+    vi.resetModules();
+    const windowB = await import("../workspace-tabs.js");
+    const idsA = [windowA.mintTabId("terminal"), windowA.mintTabId("terminal")];
+    const idsB = [windowB.mintTabId("terminal"), windowB.mintTabId("terminal")];
+    for (const id of [...idsA, ...idsB]) expect(id).toMatch(/^terminal:[0-9a-f]{8}-\d+$/);
+    expect(idsA.filter((id) => idsB.includes(id))).toEqual([]);
+  });
+
+  it("reserving another scope's id does not move this window's counter", async () => {
+    vi.resetModules();
+    const tabs = await import("../workspace-tabs.js");
+    const first = tabs.mintTabId("terminal");
+    const scope = first.slice("terminal:".length, "terminal:".length + 8);
+    const foreign = scope === "00000000" ? "terminal:00000001-50" : "terminal:00000000-50";
+    tabs.reserveTabIds([foreign]);
+    expect(tabs.mintTabId("terminal")).toBe(`terminal:${scope}-2`);
+    tabs.reserveTabIds([`terminal:${scope}-40`]);
+    expect(tabs.mintTabId("terminal")).toBe(`terminal:${scope}-41`);
   });
 });

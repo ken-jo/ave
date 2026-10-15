@@ -1,5 +1,7 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeBrowserNavigationUrl } from "./url-safety.js";
+import { publishLiveWebTabs, withdrawLiveWebTabs } from "./web-surfaces.js";
+import { parseTabId } from "../../../shared/tab-id.js";
 
 /**
  * Workspace-tab store — the state that ChatSidePanel used to hold in
@@ -115,6 +117,19 @@ export interface WorkspaceTabsStore {
   closeContainerTab: (kind: WorkspaceTabKind) => void;
   /** Set (or clear, with `null`) the manually-typed address for a browser tab. */
   setBrowserTabUrl: (tabId: string, url: string | null) => void;
+  /**
+   * Hand a tab out to the main area. The tab leaves this store WITHOUT being
+   * closed: its PTY or page lives on under the same id wherever it lands.
+   */
+  releaseTab: (id: string) => WorkspaceTab | undefined;
+  /**
+   * Take in a tab that moved here (from the main area), as a pinned container
+   * tab with its id and number unchanged, and make it the active one. A browser
+   * tab's page keeps its address through `url`.
+   */
+  adoptTab: (tab: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => void;
+  /** Whether this store holds `id` now (read from the latest state, not a render). */
+  hasTab: (id: string) => boolean;
 }
 
 function contentKey(ref: WorkspaceTabContentRef): string {
@@ -146,6 +161,34 @@ interface WorkspaceState {
 
 const EMPTY_STATE: WorkspaceState = { tabs: [], activeTabId: null, browserUrlByTab: {} };
 
+/**
+ * Tab ids are minted from ONE counter per renderer (= per window), not per
+ * store. Every chat group mounts its own store, but main keys live resources
+ * by tab id across the whole window — the PTY map in `pty-manager.ts` is
+ * global — so a per-store counter let a second group's `terminal:1` attach to
+ * the first group's shell. Window-unique ids also let a tab move between the
+ * side panel and the main area without being renamed.
+ */
+let nextWindowTabId = 1;
+// Unique to this renderer — this window, this launch (`shared/tab-id.ts`).
+const WINDOW_TAB_SCOPE = Array.from(crypto.getRandomValues(new Uint8Array(4)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+export function mintTabId(kind: WorkspaceTabKind): string {
+  return `${kind}:${WINDOW_TAB_SCOPE}-${nextWindowTabId++}`;
+}
+
+/**
+ * Tabs restored from a saved layout keep their ids. Ids from another scope
+ * (an earlier launch) cannot meet this one's; one from this scope moves the
+ * counter past it, so a tab minted afterwards cannot take it.
+ */
+export function reserveTabIds(ids: Iterable<string>): void {
+  for (const id of ids) {
+    const parsed = parseTabId(id);
+    if (parsed && parsed.scope === WINDOW_TAB_SCOPE && parsed.n >= nextWindowTabId) nextWindowTabId = parsed.n + 1;
+  }
+}
+
 function withTabClosed(prev: WorkspaceState, id: string): WorkspaceState {
   const closingIndex = prev.tabs.findIndex((tab) => tab.id === id);
   if (closingIndex < 0) return prev;
@@ -163,7 +206,9 @@ function withTabClosed(prev: WorkspaceState, id: string): WorkspaceState {
 
 export function useWorkspaceTabs(): WorkspaceTabsStore {
   const [state, setState] = useState<WorkspaceState>(EMPTY_STATE);
-  const nextIdRef = useRef(1);
+  // The committed state, for `releaseTab`, which must answer in the same event.
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const nextOrdinalRef = useRef<Record<WorkspaceTabKind, number>>({
     "file-browser": 1,
     preview: 1,
@@ -174,6 +219,16 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     "side-chat": 1,
   });
 
+  // The browser tabs this store holds keep their guests alive in the window's
+  // web-surface layer; a tab that leaves the store (closed, pruned, replaced by
+  // other content) lets its guest go.
+  const [liveSource] = useState(() => Symbol("workspace-tabs"));
+  const liveBrowserKey = state.tabs.filter((tab) => tab.kind === "browser").map((tab) => tab.id).join("\n");
+  useEffect(() => {
+    publishLiveWebTabs(liveSource, new Set(liveBrowserKey ? liveBrowserKey.split("\n") : []));
+  }, [liveSource, liveBrowserKey]);
+  useEffect(() => () => withdrawLiveWebTabs(liveSource), [liveSource]);
+
   const setActiveTabId = useCallback((id: string) => {
     setState((prev) => (prev.activeTabId === id ? prev : { ...prev, activeTabId: id }));
   }, []);
@@ -181,7 +236,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
   const addTab = useCallback((kind: WorkspaceTabKind) => {
     setState((prev) => {
       const ordinal = nextOrdinalRef.current[kind]++;
-      const id = `${kind}:${nextIdRef.current++}`;
+      const id = mintTabId(kind);
       const tab: WorkspaceTab = { id, kind, ordinal, mode: "pinned", content: null };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -194,7 +249,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
         return prev.activeTabId === existing.id ? prev : { ...prev, activeTabId: existing.id };
       }
       const ordinal = nextOrdinalRef.current[kind]++;
-      const id = `${kind}:${nextIdRef.current++}`;
+      const id = mintTabId(kind);
       const tab: WorkspaceTab = { id, kind, ordinal, mode: "pinned", content: null };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -225,7 +280,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
         };
       }
       // R3: no ephemeral slot — append a new ephemeral content tab.
-      const id = `${kind}:${nextIdRef.current++}`;
+      const id = mintTabId(kind);
       const tab: WorkspaceTab = { id, kind, ordinal: 0, mode: "ephemeral", content };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -247,7 +302,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
         };
       }
       // R4: append a new pinned content tab; leave the ephemeral slot alone.
-      const id = `${kind}:${nextIdRef.current++}`;
+      const id = mintTabId(kind);
       const tab: WorkspaceTab = { id, kind, ordinal: 0, mode: "pinned", content };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -307,6 +362,29 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     });
   }, []);
 
+  const releaseTab = useCallback((id: string) => {
+    const tab = stateRef.current.tabs.find((each) => each.id === id);
+    if (!tab) return undefined;
+    setState((prev) => withTabClosed(prev, id));
+    return tab;
+  }, []);
+
+  const hasTab = useCallback((id: string) => stateRef.current.tabs.some((tab) => tab.id === id), []);
+
+  const adoptTab = useCallback((incoming: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => {
+    // A tab that keeps its number here must not see a later tab of its kind take it again.
+    if (nextOrdinalRef.current[incoming.kind] <= incoming.ordinal) nextOrdinalRef.current[incoming.kind] = incoming.ordinal + 1;
+    setState((prev) => {
+      if (prev.tabs.some((tab) => tab.id === incoming.id)) return { ...prev, activeTabId: incoming.id };
+      const tab: WorkspaceTab = { id: incoming.id, kind: incoming.kind, ordinal: incoming.ordinal, mode: "pinned", content: null };
+      return {
+        tabs: [...prev.tabs, tab],
+        activeTabId: tab.id,
+        browserUrlByTab: url ? { ...prev.browserUrlByTab, [tab.id]: url } : prev.browserUrlByTab,
+      };
+    });
+  }, []);
+
   return useMemo(
     () => ({
       tabs: state.tabs,
@@ -322,7 +400,10 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
       closeTab,
       closeContainerTab,
       setBrowserTabUrl,
+      releaseTab,
+      adoptTab,
+      hasTab,
     }),
-    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl],
+    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl, releaseTab, adoptTab, hasTab],
   );
 }

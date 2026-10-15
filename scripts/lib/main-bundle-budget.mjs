@@ -67,10 +67,19 @@ export function isSafeMainBundleManifestPath(path) {
  * consulted by the permission manager on every tool call, so they belong in the initial
  * graph; with the permissions category joined with that `main` the measurement is entry
  * 423_073, initial 5_389_392, total 9_031_357, and the initial ceiling moves to 5_390_000.
+ * The main-area terminal and web panels add renderer strings to the one i18n catalog main
+ * also imports (that catalog is shared by design), plus the `terminal`/`web` view keys;
+ * with them the measurement is entry 423_073, initial 5_390_727, and the initial ceiling
+ * moves to 5_395_000. The saved main-window layout is checked by the settings store when
+ * the profile is read at boot (`shared/main-layout.ts`, one parser for both processes),
+ * so it is initial too, together with the terminal tab-id scope the parser checks ids
+ * against (`shared/tab-id.ts`), and main-window closing a closed window's terminals; with
+ * them the measurement is entry 423_380, initial 5_399_503, total 9_041_529, and the
+ * initial ceiling moves to 5_400_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_390_000,
+  initialBytes: 5_400_000,
   totalBytes: 11_050_000,
 });
 

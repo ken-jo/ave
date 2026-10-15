@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { cn } from "../../../lib/utils.js";
 import type { WorkspaceTab, WorkspaceTabKind, WorkspaceTabsStore } from "../preview/workspace-tabs.js";
 import {
@@ -9,6 +9,7 @@ import {
   Bot,
   LayoutGrid,
   Loader2,
+  PanelLeftOpen,
   Pin,
   Plus,
   X,
@@ -29,7 +30,11 @@ import type { AveApi } from "../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-targets.js";
 import { PtyTerminalView } from "./PtyTerminalView.js";
 import { SideChatView, type SideChatOpenRequest } from "./SideChatView.js";
+import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, isMovableTabKind, useSurfaceMoves, type MovableTabKind } from "../preview/surface-moves.js";
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
+import { TerminalAttentionDot } from "./TerminalAttentionDot.js";
+import { useTerminalAttention } from "../preview/terminal-attention.js";
+import { forgetActiveSurface, showActiveSurface } from "../preview/active-surface.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
 import { useVerticalSplit } from "../hooks/use-vertical-split.js";
 import type { SubAgentSpawn } from "../subagents/types.js";
@@ -41,6 +46,7 @@ import { TranscriptRenderer } from "./TranscriptRenderer.js";
 import { historyToEntries } from "../utils/history.js";
 import {
   BrowserWorkspace,
+  VisitedSites,
   FileBrowserWorkspace,
   PreviewWorkspace,
 } from "./ChatSidePanelWorkspaces.js";
@@ -56,6 +62,7 @@ import {
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../shared/test-ids.js";
 import { useOptionalChatContext } from "../context/ChatContext.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../shared/processing-display-level.js";
+import type { AttachTextResult } from "../preview/composer-targets.js";
 
 /** The panel keeps the side chat's agents only; its cards stay with the side-chat view. */
 const drawsNoCard = (): boolean => false;
@@ -496,7 +503,7 @@ function ContentTabView({
   }, [content, tab.id, t]);
   if (!content) return null;
   if (browserTarget) {
-    return <UrlDocumentViewer api={api} target={browserTarget} />;
+    return <UrlDocumentViewer api={api} target={browserTarget} surfaceTabId={tab.id} />;
   }
   const target = content.source === "preview" ? targetById.get(content.targetId) : undefined;
   if (!target) {
@@ -561,6 +568,7 @@ function LauncherItems({
  */
 function WorkspaceLauncher({
   onOpen,
+  visitedSites,
   onOpenActivityTab,
   activity,
   onOpenActivityItem,
@@ -568,6 +576,8 @@ function WorkspaceLauncher({
   onOpenActivityItemInSystemApp,
 }: {
   onOpen: (kind: WorkspaceTabKind) => void;
+  /** The conversation's pages, found here rather than inside a browser tab. */
+  visitedSites: ReactNode;
   /** The activity tab, reused if one is already open — the compact report's way to the full lists. */
   onOpenActivityTab: () => void;
 } & Pick<ChatSidePanelProps, "activity" | "onOpenActivityItem" | "onOpenActivityItemPinned" | "onOpenActivityItemInSystemApp">) {
@@ -576,14 +586,20 @@ function WorkspaceLauncher({
   // tab is competing for the space, and the items there open the very tabs
   // the picker below offers.
   const showActivity = toolActivityTotal(activity) > 0;
+  const showVisited = visitedSites !== null;
   return (
     <div
       className={cn(
         "flex h-full min-h-0 w-full flex-col overflow-auto p-6",
-        showActivity ? "gap-4" : "items-center justify-center",
+        showActivity || showVisited ? "gap-4" : "items-center justify-center",
       )}
       data-testid="chat-side-panel-launcher"
     >
+      {showVisited ? (
+        <div className="flex max-h-[40%] min-h-0 w-full shrink-0 flex-col overflow-hidden rounded-md border" data-testid="chat-side-panel-launcher-visited">
+          {visitedSites}
+        </div>
+      ) : null}
       {showActivity ? (
         <div
           className="flex max-h-[50%] min-h-0 w-full shrink-0 flex-col overflow-hidden"
@@ -598,7 +614,7 @@ function WorkspaceLauncher({
           />
         </div>
       ) : null}
-      <div className={cn("w-full max-w-xs space-y-3", showActivity && "self-center")}>
+      <div className={cn("w-full max-w-xs space-y-3", (showActivity || showVisited) && "self-center")}>
         <div className="flex flex-col items-center gap-1 text-center">
           <LayoutGrid className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
           <div className="text-sm font-semibold">{t("chatPreviewRail.launcher.title")}</div>
@@ -729,7 +745,9 @@ export interface ChatSidePanelProps {
    * Attach text to the conversation's composer as a pasted-text chip — how a
    * terminal block reaches the chat. Returns false when the composer is full.
    */
-  onAttachText?: (text: string) => boolean;
+  onAttachText?: (text: string) => AttachTextResult;
+  /** The tile this panel belongs to — where a pane's surface lands when moved here. */
+  chatGroupId?: string;
   className?: string;
 }
 
@@ -757,9 +775,16 @@ export function ChatSidePanel({
   onOpenActivityItemPinned,
   onOpenActivityItemInSystemApp,
   onAttachText,
+  chatGroupId,
   className = "",
 }: ChatSidePanelProps) {
   const { t } = useTranslation();
+  // Terminals and pages move between this panel and the main area. Absent
+  // outside the app shell (a panel rendered on its own has no main area).
+  const surfaceMoves = useSurfaceMoves();
+  const canMoveSurfaces = surfaceMoves !== null && chatGroupId !== undefined;
+  const [stripDropActive, setStripDropActive] = useState(false);
+  const terminalAttention = useTerminalAttention();
 
   // The sub-agents the side chat's own turns started. The tile's list above
   // holds only the tile's conversation, and the tile drops a side chat's
@@ -844,6 +869,8 @@ export function ChatSidePanel({
     // Mouse-only: touch already gets native `overflow-x-auto` panning; a second
     // handler would double-scroll. Right/middle buttons never start a pan.
     if (event.pointerType !== "mouse" || event.button !== 0) return;
+    // A terminal or page tab is dragged out to the main area instead of panning.
+    if ((event.target as HTMLElement).closest('[draggable="true"]')) return;
     const el = tabScrollElRef.current;
     if (!el) return;
     tabDragRef.current = { dragging: true, startX: event.clientX, startScroll: el.scrollLeft, moved: false };
@@ -896,6 +923,7 @@ export function ChatSidePanel({
     (id: string) => {
       const closing = tabs.find((tab) => tab.id === id);
       if (closing?.kind === "terminal") void api.terminal?.kill(id);
+      forgetActiveSurface(id);
       closeTab(id);
     },
     [tabs, api, closeTab],
@@ -923,6 +951,17 @@ export function ChatSidePanel({
   // approval claim and the questions its turn parked. Unmounting it on a tab
   // switch would drop all three — and a question dropped here is a gate the
   // host keeps waiting on with no card left anywhere to answer it.
+  // A terminal or page brought to the front here becomes what the side chat
+  // acts on (see `preview/active-surface.ts`). Keyed by the tab alone: a label
+  // that changes later does not re-take a target the user dropped.
+  const frontSurface = activeTab && isMovableTabKind(activeTab.kind)
+    ? { kind: activeTab.kind, tabId: activeTab.id, label: tabLabel(activeTab, targetById, t, true) }
+    : null;
+  const frontSurfaceRef = useRef(frontSurface);
+  frontSurfaceRef.current = frontSurface;
+  useEffect(() => {
+    if (frontSurfaceRef.current) showActiveSurface(frontSurfaceRef.current);
+  }, [frontSurface?.tabId]);
   const sideChatActive = activeTab?.kind === "side-chat" && !activeTab.content;
   const sideChatMounted = tabs.some((tab) => tab.kind === "side-chat" && !tab.content);
 
@@ -967,8 +1006,29 @@ export function ChatSidePanel({
   // mode, so the group header above stays the conversation's line alone.
   const tabStripContent = (
     <div
-      className="flex min-w-0 shrink-0 items-center gap-2 border-b px-2 py-1"
+      className={cn(
+        "flex min-w-0 shrink-0 items-center gap-2 border-b px-2 py-1",
+        stripDropActive && "bg-primary/(--opacity-subtle) ring-2 ring-inset ring-primary",
+      )}
       data-testid="chat-side-panel-tab-strip"
+      data-drop-target={stripDropActive ? "true" : undefined}
+      // A pane's terminal or page, dragged by its header, lands in these tabs.
+      {...(canMoveSurfaces ? {
+        onDragOver: (event: React.DragEvent<HTMLDivElement>) => {
+          if (!event.dataTransfer.types.includes(SURFACE_DRAG_TYPE)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setStripDropActive(true);
+        },
+        onDragLeave: () => setStripDropActive(false),
+        onDrop: (event: React.DragEvent<HTMLDivElement>) => {
+          setStripDropActive(false);
+          if (!event.dataTransfer.types.includes(SURFACE_DRAG_TYPE)) return;
+          event.preventDefault();
+          const payload = decodeSurfaceDrag(event.dataTransfer.getData(SURFACE_DRAG_TYPE));
+          if (payload && "pane" in payload.from) surfaceMoves!.paneToSide(payload.from.pane, chatGroupId);
+        },
+      } : {})}
     >
           <div
             ref={attachTabScroll}
@@ -993,6 +1053,7 @@ export function ChatSidePanel({
                 tabs.filter((other) => !other.content && other.kind === tab.kind).length > 1;
               const label = tabLabel(tab, targetById, t, showOrdinal);
               const isEphemeral = tab.mode === "ephemeral";
+              const movable = canMoveSurfaces && isMovableTabKind(tab.kind);
               return (
                 // Layout wrapper only (role="presentation"): the pin/close
                 // controls are SIBLINGS of the tab button, never nested inside
@@ -1016,11 +1077,25 @@ export function ChatSidePanel({
                     className="flex min-w-0 items-center gap-1 rounded-sm text-inherit focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
                     onClick={() => setActiveTabId(tab.id)}
                     onDoubleClick={() => promoteToPinned(tab.id)}
+                    {...(movable ? {
+                      draggable: true,
+                      onDragStart: (event: React.DragEvent<HTMLButtonElement>) => {
+                        event.dataTransfer.setData(SURFACE_DRAG_TYPE, encodeSurfaceDrag({
+                          tabId: tab.id,
+                          kind: tab.kind as MovableTabKind,
+                          from: { side: chatGroupId! },
+                        }));
+                        event.dataTransfer.effectAllowed = "move";
+                      },
+                    } : {})}
                   >
                     <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     <span className={`max-w-24 truncate ${isEphemeral ? "italic" : ""}`}>{label}</span>
                     {tab.kind === "side-chat" && !tab.content && sideChatPendingAnswer && !active ? (
                       <PendingAnswerDot inline testId="chat-side-panel-tab-side-chat-pending-answer" />
+                    ) : null}
+                    {tab.kind === "terminal" && terminalAttention.has(tab.id) ? (
+                      <TerminalAttentionDot testId="chat-side-panel-tab-terminal-attention" message={terminalAttention.get(tab.id)!.message} />
                     ) : null}
                   </button>
                   {isEphemeral ? (
@@ -1032,6 +1107,18 @@ export function ChatSidePanel({
                       onClick={() => promoteToPinned(tab.id)}
                     >
                       <Pin className="h-3 w-3" />
+                    </button>
+                  ) : null}
+                  {movable ? (
+                    <button
+                      type="button"
+                      aria-label={t("mainPanels.moveToMain")}
+                      title={t("mainPanels.moveToMain")}
+                      data-testid="chat-side-panel-move-to-main"
+                      className="ml-0.5 rounded p-0.5 hover:bg-background/(--opacity-muted) focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                      onClick={() => surfaceMoves!.tabToMain(chatGroupId!, tab.id)}
+                    >
+                      <PanelLeftOpen className="h-3 w-3" />
                     </button>
                   ) : null}
                   <button
@@ -1103,6 +1190,17 @@ export function ChatSidePanel({
           {activeTab == null ? (
             <WorkspaceLauncher
               onOpen={addTab}
+              visitedSites={browserTargets.length > 0 ? (
+                <VisitedSites
+                  api={api}
+                  targets={browserTargets}
+                  onOpen={(target) => workspaceTabs.openInEphemeral(
+                    target.kind === "url"
+                      ? { source: "browser", url: target.url }
+                      : { source: "preview", targetId: target.id },
+                  )}
+                />
+              ) : null}
               onOpenActivityTab={() => ensureContainerTab("activity")}
               activity={activity}
               onOpenActivityItem={onOpenActivityItem}
@@ -1125,14 +1223,13 @@ export function ChatSidePanel({
               api={api}
               tabId={activeTab.id}
               targets={browserTargets}
-              selectedId={selectedId}
-              onSelect={onSelect}
               manualUrl={browserUrlByTab[activeTab.id] ?? null}
               onManualUrlChange={setBrowserTabUrl}
             />
           ) : activeTab.kind === "terminal" ? (
             <PtyTerminalView
               api={api}
+              location="side-panel"
               tabId={activeTab.id}
               tabLabel={`${t(tabLabelKey(activeTab.kind))} ${activeTab.ordinal}`}
               {...(onAttachText ? { onAttachText } : {})}
@@ -1166,6 +1263,7 @@ export function ChatSidePanel({
                 shown={sideChatActive}
                 onSessionIdChange={handleSideChatSession}
                 onSessionClaim={handleSideChatClaim}
+                {...(chatGroupId !== undefined ? { chatGroupId } : {})}
               />
             </div>
           ) : null}

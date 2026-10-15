@@ -1,7 +1,8 @@
 // FloatingRightLane anchors chat overlays within the pane's horizontal inset.
 // Occupants share the lane's width constraint and stack without covering each
 // other's controls. The action panel now lives in the chat group header.
-import type { ReactNode, WheelEvent } from "react";
+import { useEffect, useRef, type ReactNode, type WheelEvent } from "react";
+import { registerWebSurfaceOccluder } from "../preview/web-surfaces.js";
 
 /**
  * Width shared by every occupant of the lane, so two surfaces sitting one above
@@ -60,8 +61,37 @@ function handleLaneWheel(event: WheelEvent<HTMLDivElement>) {
 }
 
 export function FloatingRightLane({ children }: { children: ReactNode }) {
+  // A page in a web panel is drawn ABOVE the pane (the surface layer), so the
+  // lane's cards would sit under it. Each card is cut out of any page it
+  // overlaps instead; the lane itself spans dead space and is not.
+  const laneRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const lane = laneRef.current;
+    if (!lane) return undefined;
+    const releases = new Map<Element, () => void>();
+    const sync = () => {
+      const present = new Set(lane.children);
+      for (const [child, release] of releases) {
+        if (!present.has(child)) {
+          release();
+          releases.delete(child);
+        }
+      }
+      for (const child of present) {
+        if (!releases.has(child)) releases.set(child, registerWebSurfaceOccluder(child as HTMLElement));
+      }
+    };
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(lane, { childList: true });
+    return () => {
+      observer.disconnect();
+      for (const release of releases.values()) release();
+    };
+  }, []);
   return (
     <div
+      ref={laneRef}
       // `pointer-events-none` on the lane and `-auto` on each occupant: the lane
       // spans dead space between and beside its children, and chat has to stay
       // clickable through it.

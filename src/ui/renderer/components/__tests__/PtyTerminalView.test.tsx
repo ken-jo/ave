@@ -7,9 +7,11 @@
  * drop the shell's screen and scrollback).
  */
 import "../../../../../test/renderer/setup.js";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PtyTerminalView } from "../PtyTerminalView.js";
+import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
+import { surfaceMountLocation } from "../../preview/surface-mounts.js";
 import { ThemeProvider } from "../../theme/ThemeProvider.js";
 import { setInstalledThemeBundles } from "../../theme/bundles/index.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../../installed-content.js";
@@ -20,6 +22,7 @@ interface FakeTerminal {
   options: { theme?: unknown };
   oscHandlers: Map<number, (data: string) => boolean>;
   dataHandler: ((data: string) => void) | null;
+  written: string[];
 }
 const { terminals } = vi.hoisted(() => ({ terminals: [] as FakeTerminal[] }));
 
@@ -46,7 +49,10 @@ vi.mock("@xterm/xterm", () => ({
       this.dataHandler = handler;
       return { dispose: () => { this.dataHandler = null; } };
     }
-    write() {}
+    written: string[] = [];
+    write(text: string) {
+      this.written.push(text);
+    }
     dispose() {}
   },
 }));
@@ -60,7 +66,7 @@ afterEach(() => {
 
 function terminalApi() {
   return {
-    spawn: vi.fn(async () => ({ ok: true })),
+    spawn: vi.fn(async (_payload: { tabId: string; cwd?: string; cols?: number; rows?: number }) => ({ ok: true })),
     input: vi.fn(async () => undefined),
     resize: vi.fn(async () => undefined),
     onData: vi.fn(() => () => {}),
@@ -79,7 +85,7 @@ describe("PtyTerminalView theme", () => {
 
     render(
       <ThemeProvider api={api as never} initialBundleId="harbor">
-        <PtyTerminalView api={ave as never} tabId="tab-1" tabLabel="Terminal 1" />
+        <PtyTerminalView api={ave as never} location="side-panel" tabId="tab-1" tabLabel="Terminal 1" />
       </ThemeProvider>,
     );
     await waitFor(() => expect(terminals).toHaveLength(1));
@@ -118,6 +124,7 @@ describe("PtyTerminalView command blocks", () => {
     render(
       <PtyTerminalView
         api={ave as never}
+        location="side-panel"
         tabId="terminal:1"
         tabLabel="Terminal 1"
         {...(onAttachText ? { onAttachText } : {})}
@@ -170,5 +177,106 @@ describe("PtyTerminalView command blocks", () => {
     renderView(() => false);
     fireEvent.click(await screen.findByTestId("terminal-blocks-attach-last"));
     expect(await screen.findByRole("status")).toBeTruthy();
+  });
+});
+
+describe("PtyTerminalView tab identity across groups", () => {
+  it("gives two groups' first terminals distinct PTYs", async () => {
+    // Each chat group mounts its own tab store; both open their first terminal.
+    const groupA = renderHook(() => useWorkspaceTabs());
+    const groupB = renderHook(() => useWorkspaceTabs());
+    act(() => groupA.result.current.addTab("terminal"));
+    act(() => groupB.result.current.addTab("terminal"));
+    const tabA = groupA.result.current.tabs[0]!;
+    const tabB = groupB.result.current.tabs[0]!;
+    // Both read "Terminal 1" to the user, but main keys PTYs by id window-wide.
+    expect(tabA.ordinal).toBe(1);
+    expect(tabB.ordinal).toBe(1);
+    expect(tabA.id).not.toBe(tabB.id);
+
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const ave = { ...api, terminal };
+    render(
+      <>
+        <PtyTerminalView api={ave as never} location="pane:a" tabId={tabA.id} tabLabel="Terminal 1" />
+        <PtyTerminalView api={ave as never} location="pane:b" tabId={tabB.id} tabLabel="Terminal 1" />
+      </>,
+    );
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
+    const spawnedIds = (terminal.spawn.mock.calls as unknown as Array<[{ tabId: string }]>).map(([req]) => req.tabId);
+    expect(new Set(spawnedIds)).toEqual(new Set([tabA.id, tabB.id]));
+    expect(screen.queryByTestId("pty-terminal-mounted-elsewhere")).toBeNull();
+  });
+
+  it("mounts one tab in one place only and hands the mount over when the holder leaves", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const ave = { ...api, terminal };
+    const view = (location: string) => (
+      <PtyTerminalView key={location} api={ave as never} location={location} tabId="terminal:7" tabLabel="Terminal 7" />
+    );
+    const { rerender } = render(<>{view("side-panel")}{view("pane:main")}</>);
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
+    // The second view does not attach a second xterm to the same PTY.
+    expect(terminals).toHaveLength(1);
+    const notice = screen.getByTestId("pty-terminal-mounted-elsewhere");
+    expect(notice.getAttribute("data-owner-location")).toBe("side-panel");
+    expect(surfaceMountLocation("terminal:7")).toBe("side-panel");
+
+    // Moving the tab: the side-panel view unmounts and the pane view takes over.
+    rerender(<>{view("pane:main")}</>);
+    await waitFor(() => expect(surfaceMountLocation("terminal:7")).toBe("pane:main"));
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId("pty-terminal-mounted-elsewhere")).toBeNull();
+    expect(terminal.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ tabId: "terminal:7" }));
+
+    rerender(<></>);
+    expect(surfaceMountLocation("terminal:7")).toBeNull();
+  });
+});
+
+describe("PtyTerminalView working directory", () => {
+  const block = (id: number, cwd: string | null) => ({
+    id, command: "ls", cwd, exitCode: 0, startedAt: 1_000, endedAt: 2_000,
+    status: "done", source: "osc133", outputChars: 1, truncated: false,
+  });
+
+  it("starts a new shell at the given directory and reports the newest one the shell gave", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    // Newest first: the newest block with a directory is the one reported.
+    terminal.listBlocks.mockResolvedValue({ ok: true, integrated: true, blocks: [block(3, null), block(2, "/repo/app"), block(1, "/repo")] });
+    const onCwd = vi.fn();
+    render(
+      <PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:11" tabLabel="Terminal 11" initialCwd="/repo/app" onCwd={onCwd} />,
+    );
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:11", cwd: "/repo/app" })));
+    await waitFor(() => expect(onCwd).toHaveBeenCalledWith("/repo/app"));
+    expect(onCwd).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts at the workspace root, saying so, when the remembered directory is refused", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.spawn
+      .mockResolvedValueOnce({ ok: false, reason: "bad-request", message: "terminal cwd must be within the workspace root" } as never)
+      .mockResolvedValueOnce({ ok: true });
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:12" tabLabel="Terminal 12" initialCwd="/elsewhere" />);
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
+    expect(terminal.spawn).toHaveBeenNthCalledWith(1, expect.objectContaining({ cwd: "/elsewhere" }));
+    expect(terminal.spawn.mock.calls[1]![0]).not.toHaveProperty("cwd");
+    expect(terminals[0]!.written.join("")).toContain("[starting in the workspace root: terminal cwd must be within the workspace root]");
+    expect(terminals[0]!.written.join("")).not.toContain("[terminal unavailable]");
+  });
+
+  it("keeps the remembered directory when the old shell under its id is still closing: it says so and starts nowhere else", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.spawn.mockResolvedValueOnce({ ok: false, reason: "still-closing", message: "the previous shell for this tab is still closing" } as never);
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:13" tabLabel="Terminal 13" initialCwd="/repo/app" />);
+    await waitFor(() => expect(terminals[0]!.written.join("")).toContain("[terminal unavailable] the previous shell for this tab is still closing"));
+    expect(terminal.spawn).toHaveBeenCalledTimes(1);
+    expect(terminals[0]!.written.join("")).not.toContain("[starting in the workspace root");
   });
 });

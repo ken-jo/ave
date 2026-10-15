@@ -11,6 +11,7 @@ import { approvalSurfaceStub, deferred } from "../../../../../test/renderer/help
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../../shared/side-browser.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
+import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { PaneFrame } from "../PaneFrame.js";
 import { emptyToolActivity } from "../../../../../test/renderer/helpers.js";
 import type { ToolActivityState } from "../ToolActivity.js";
@@ -72,6 +73,9 @@ function withPanelProviders(ui: ReactElement) {
     <TooltipProvider>
       <ApprovalSurfaceProvider value={approvalSurfaceStub()}>
         {ui}
+        {/* The window's browser guests live in this layer (portaled to body),
+            not inside the panel — as in the app. */}
+        <WebSurfaceLayer />
       </ApprovalSurfaceProvider>
     </TooltipProvider>
   );
@@ -567,42 +571,71 @@ describe("ChatSidePanel", () => {
     expect(splitLayout.style.gridTemplateRows).toContain("50%");
 
     // Open a browser tab via the "+" dropdown (replaces scattered add buttons).
-    // The first web artifact is an html doc, so the html viewer renders directly.
+    // A browser tab is its address row and its page — nothing else: the list
+    // of the conversation's pages is not in it. It opens on the latest page
+    // (url-1, created after the html doc).
     addTabViaMenu("browser");
-    expect(screen.getByTestId("chat-side-panel-browser-viewer")).toBeTruthy();
-
-    // The visited-site list sits over the viewer, latest first — the page
-    // named by a result (url-1, created after the html doc) leads.
-    const visited = screen.getByTestId("chat-side-panel-browser-visited");
-    expect(within(visited).getAllByTestId("chat-side-panel-browser-row").map((row) => row.textContent)).toEqual([
-      expect.stringContaining("example.com/docs"),
-      expect.stringContaining("Artifact dashboard"),
-    ]);
-
-    const addressInput = screen.getByTestId("chat-side-panel-browser-address") as HTMLInputElement;
-    fireEvent.change(addressInput, { target: { value: "google.com" } });
-    fireEvent.click(screen.getByTestId("chat-side-panel-browser-go"));
-    const manualWebview = container.querySelector('[data-testid="chat-side-panel-browser-webview"]');
-    expect(manualWebview).not.toBeNull();
-    expect(manualWebview?.getAttribute("src")).toBe("https://google.com/");
-
-    // Pick the first visited site (example.com/docs) from the list.
-    const rows = screen.getAllByTestId("chat-side-panel-browser-row");
-    expect(rows.length).toBeGreaterThanOrEqual(2);
-    // The web row discloses where its address came from: this one was named by
-    // a page, not asked for by the turn.
-    expect(rows[0]!.textContent).toContain("결과에서");
-    fireEvent.click(rows[0]!);
-    const webview = container.querySelector('[data-testid="chat-side-panel-browser-webview"]');
+    expect(screen.queryByTestId("chat-side-panel-browser-visited")).toBeNull();
+    expect(screen.queryByTestId("chat-preview-search")).toBeNull();
+    // The page is a web surface: the panel draws its slot, the window's layer
+    // draws the guest.
+    expect(container.querySelector('[data-testid="web-surface-slot"]')).not.toBeNull();
+    const webview = document.querySelector('[data-testid="chat-side-panel-browser-webview"]');
     expect(webview?.getAttribute("src")).toBe("https://example.com/docs");
     expect(webview?.getAttribute("partition")).toBe(AVE_SIDE_BROWSER_PARTITION);
     expect(webview?.getAttribute("webpreferences")).toContain("javascript=yes");
     expect(webview?.getAttribute("allowpopups")).toBe("true");
 
+    const addressInput = screen.getByTestId("chat-side-panel-browser-address") as HTMLInputElement;
+    expect(addressInput.value).toBe("https://example.com/docs");
+    fireEvent.change(addressInput, { target: { value: "google.com" } });
+    fireEvent.click(screen.getByTestId("chat-side-panel-browser-go"));
+    const navigated = document.querySelector('[data-testid="chat-side-panel-browser-webview"]');
+    // The same guest, navigated — not a second one.
+    expect(navigated).toBe(webview);
+    expect(navigated?.getAttribute("src")).toBe("https://google.com/");
+
     // Open a preview (review) tab via the "+" dropdown.
     addTabViaMenu("preview");
     expect(screen.queryByText("Artifact dashboard")).toBeNull();
     expect(screen.getAllByText("metrics.json").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("lists the conversation's pages on the empty landing, and opens a picked one in a tab", () => {
+    const targets: ChatPreviewTarget[] = [
+      {
+        id: "html-1",
+        kind: "html",
+        title: "Artifact dashboard",
+        subtitle: "render_html",
+        sourceLabel: "builtin",
+        createdOrder: 1,
+        payload: { kind: "ave.render_html", html: "<main>Preview OK</main>", title: "Artifact dashboard", height: 200 },
+      },
+      {
+        id: "url-1",
+        kind: "url",
+        title: "example.com/docs",
+        subtitle: "web_fetch",
+        sourceLabel: "builtin",
+        createdOrder: 2,
+        url: "https://example.com/docs",
+        origin: "result",
+      },
+    ];
+    renderPanel(<HarnessPanel api={api()} sessionId="session-1" targets={targets} files={[]} initialSelectedId={null} />);
+    const visited = within(screen.getByTestId("chat-side-panel-launcher")).getByTestId("chat-side-panel-browser-visited");
+    const rows = within(visited).getAllByTestId("chat-side-panel-browser-row");
+    // Latest first, and the row says where its address came from.
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("example.com/docs"),
+      expect.stringContaining("Artifact dashboard"),
+    ]);
+    expect(rows[0]!.textContent).toContain("결과에서");
+    fireEvent.click(rows[0]!);
+    // A browser content tab, its page a web surface.
+    expect(screen.queryByTestId("chat-side-panel-launcher")).toBeNull();
+    expect(document.querySelector('[data-testid="chat-side-panel-browser-webview"]')?.getAttribute("src")).toBe("https://example.com/docs");
   });
 
   it("preserves added workspace tabs across a ChatSidePanel unmount (session switch)", () => {
