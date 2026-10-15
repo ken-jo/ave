@@ -116,8 +116,9 @@ describe("shared runner decisions", () => {
     expect(shellSensitivePathSignal(command, CWD)).toContain(".env");
   });
 
-  it.each(["npm run build --future-task-flag", "pnpm build --future-task-flag", "yarn build --future-task-flag", "deno test --future-task-flag"])
-  ("honors persisted rules and remembered grants for unknown options: %s", async (command) => {
+  it.each(["npm run build --future-task-flag", "pnpm build --future-task-flag", "yarn build --future-task-flag", "deno test --future-task-flag",
+    "npm install --registry=https://e plain-pkg", "npm install --registry https://e plain-pkg"])
+  ("honors persisted rules and remembered grants for ordinary runner asks: %s", async (command) => {
     const manager = runnerManager(command.split(" ")[0]!);
     const subject = (dialect: "bash" | "powershell") => ({ ruleSubject: { kind: "shell" as const, dialect, command, cwd: CWD } });
     expect(manager.checkDetailed("bash", "builtin", "shell", null, subject("bash"))).toMatchObject({ decision: "ask" });
