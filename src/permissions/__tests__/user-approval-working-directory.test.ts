@@ -6,7 +6,11 @@ import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { captureApprovalWorkingDirectory, recordApproval, lookupApproval, lookupUserDecision, __resetSessionStoreForTest } from "../user-approval-store.js";
+import { approvalCacheKeyIdentity, captureApprovalWorkingDirectory, recordApproval, lookupApproval, lookupUserDecision, __resetSessionStoreForTest } from "../user-approval-store.js";
+
+// Args-identity keys: they narrow the exact-input identity, never replace it.
+const existingPolicyKey = approvalCacheKeyIdentity("existing-policy-key", { kind: "args" })!;
+const differentPolicyKey = approvalCacheKeyIdentity("different-policy-key", { kind: "args" })!;
 
 describe("exact decisions scoped to the captured working directory", () => {
   let root: string;
@@ -31,15 +35,15 @@ describe("exact decisions scoped to the captured working directory", () => {
       const first = join(root, "first");
       await recordApproval(tool, '{"value":"same"}', source, {
         scope: "persistent", verdictAtApproval: "medium", nlJustification: null,
-        trustOrigin: "user-keyboard", approvalCacheKey: "existing-policy-key",
+        trustOrigin: "user-keyboard", approvalCacheKey: existingPolicyKey,
         workingDirectoryIdentity: captureApprovalWorkingDirectory(first).identity,
       });
       __resetSessionStoreForTest();
-      expect(await lookupApproval(tool, '{"value":"same"}', source, "user-keyboard", "existing-policy-key", first)).not.toBeNull();
-      expect(await lookupApproval(tool, '{"value":"same"}', source, "user-keyboard", "existing-policy-key", join(root, "second"))).toBeNull();
-      expect(await lookupApproval(tool, '{"value":"changed"}', source, "user-keyboard", "existing-policy-key", first)).toBeNull();
-      expect(await lookupApproval(tool, '{"value":"same"}', source, "llm-tool-arg", "existing-policy-key", first)).toBeNull();
-      expect(await lookupApproval(tool, '{"value":"same"}', source, "user-keyboard", "different-policy-key", first)).toBeNull();
+      expect(await lookupApproval(tool, '{"value":"same"}', source, "user-keyboard", existingPolicyKey, first)).not.toBeNull();
+      expect(await lookupApproval(tool, '{"value":"same"}', source, "user-keyboard", existingPolicyKey, join(root, "second"))).toBeNull();
+      expect(await lookupApproval(tool, '{"value":"changed"}', source, "user-keyboard", existingPolicyKey, first)).toBeNull();
+      expect(await lookupApproval(tool, '{"value":"same"}', source, "llm-tool-arg", existingPolicyKey, first)).toBeNull();
+      expect(await lookupApproval(tool, '{"value":"same"}', source, "user-keyboard", differentPolicyKey, first)).toBeNull();
     },
   );
 

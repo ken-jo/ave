@@ -23,6 +23,7 @@ import type {
   ToolExecutionResult,
 } from "./types.js";
 import type { PluginToolOperationPolicy } from "./plugin-operation-governance.js";
+import type { ApprovalMemoryScope } from "../shared/permissions-events.js";
 
 interface PluginToolGenerationOwner {
   readonly pluginId: string;
@@ -174,8 +175,20 @@ export interface Tool {
    * The executor prefixes this with `tool.name:` before handing it to the
    * permission manager. Tools that declare this opt out of bare tool-name
    * "allow always" reuse because their arguments carry permission scope.
+   *
+   * This key scopes policy (deny rules, reviewer cache). It never widens a
+   * remembered user decision: those stay on exact-argument identity unless
+   * the tool ALSO opts in through {@link approvalMemoryScope}.
    */
   approvalCacheKey?(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): string | undefined;
+  /**
+   * Opt-in to target-wide remembered decisions. Return the target a
+   * remembered allow/deny should cover for this input, or `undefined` to keep
+   * exact-argument identity. Return a scope only when nothing outside it
+   * changes what the user consented to; arguments that differ inside the
+   * scope are still re-reviewed before a remembered allow is reused.
+   */
+  approvalMemoryScope?(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope | undefined;
 
   /** JSON Schema describing the input shape — sent to LLM providers. */
   toJsonSchema(): unknown;
@@ -294,6 +307,8 @@ export interface DynamicToolSpec {
   version?: string;
   /** Permission policy #634 — per-tool approval cache identity. */
   approvalCacheKey?: (input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">) => string | undefined;
+  /** See {@link Tool.approvalMemoryScope}. */
+  approvalMemoryScope?: (input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">) => ApprovalMemoryScope | undefined;
   /** Raw JSON Schema — used when no Zod schema is available (plugin/MCP). */
   jsonSchema: object;
   execute: (
@@ -333,6 +348,9 @@ export function createDynamicTool(spec: DynamicToolSpec): Tool {
     pathFields: spec.pathFields,
     version: spec.version ?? "1.0.0",
     approvalCacheKey: spec.approvalCacheKey,
+    ...(spec.approvalMemoryScope === undefined
+      ? {}
+      : { approvalMemoryScope: spec.approvalMemoryScope }),
     toJsonSchema: () => spec.jsonSchema,
     isReadOnly: spec.isReadOnly ?? ((): boolean => false),
     execute: spec.execute,

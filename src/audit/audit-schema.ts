@@ -25,6 +25,7 @@ import type {
   WorkloadBrokerOperation,
   WorkloadExecutionGrantProjection,
 } from "../workload/protocol.js";
+import type { JudgeAuditRecord } from "../permissions/judge/judge-engine.js";
 import type { DeferredApprovalSource, DeferredGrantScope, RiskLevel } from "../shared/permission-review-status.js";
 
 
@@ -328,7 +329,22 @@ export interface AuditManifestViolation extends AuditCommon {
   attemptedOperation: string;
 }
 
+/**
+ * An ACTIVE-mode permission judge decision (issue #28 P2). Shadow-mode judge
+ * rows stay on the plain shadow channel; a decision that changed what the
+ * user saw is recorded here, on the HMAC chain. `judgeRecord` carries the
+ * redacted request, never raw tool arguments.
+ */
+interface AuditJudge extends AuditCommon {
+  decision: "judge";
+  tool: string;
+  source: ToolSource;
+  category: ToolCategory;
+  judgeRecord: JudgeAuditRecord;
+}
+
 export type PermissionAuditEntry =
+  | AuditJudge
   | AuditAllow
   | AuditAsk
   | AuditDeny

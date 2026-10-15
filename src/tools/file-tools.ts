@@ -22,6 +22,7 @@ import {
 import { z } from "zod";
 
 import type { PathEffect } from "../permissions/allowed-directories.js";
+import type { ApprovalMemoryScope } from "../shared/permissions-events.js";
 import { consumeExecutionGrantForBuiltinToolInvocation } from "../permissions/execution-router.js";
 import {
   MAX_TEXT_FILE_BYTES,
@@ -887,6 +888,10 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
     return `path:${this.resolveApprovalPath(this.requireStringField(input, "path"), ctx)}`;
   }
 
+  approvalMemoryScope(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope {
+    return { kind: "path", path: this.resolveApprovalPath(this.requireStringField(input, "path"), ctx) };
+  }
+
   protected async executeTyped(
     input: z.infer<typeof WriteFileInputSchema>,
     ctx: ToolExecutionContext,
@@ -1007,6 +1012,10 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
     return `path:${this.resolveApprovalPath(this.requireStringField(input, "path"), ctx)}`;
   }
 
+  approvalMemoryScope(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope {
+    return { kind: "path", path: this.resolveApprovalPath(this.requireStringField(input, "path"), ctx) };
+  }
+
   protected async executeTyped(
     input: z.infer<typeof EditFileInputSchema>,
     ctx: ToolExecutionContext,
@@ -1091,6 +1100,10 @@ export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
 
   approvalCacheKey(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): string {
     return `path:${this.resolveApprovalPath(this.requireStringField(input, "path"), ctx)}`;
+  }
+
+  approvalMemoryScope(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope {
+    return { kind: "path", path: this.resolveApprovalPath(this.requireStringField(input, "path"), ctx) };
   }
 
   protected async executeTyped(
@@ -1336,6 +1349,17 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
     return `source:${source}:destination:${destination}`;
   }
 
+  // `overwrite` replaces an existing destination; approving a plain move
+  // must never cover one that clobbers.
+  approvalMemoryScope(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope {
+    return {
+      kind: "transfer",
+      sourcePath: this.resolveApprovalPath(this.requireStringField(input, "sourcePath"), ctx),
+      destinationPath: this.resolveApprovalPath(this.requireStringField(input, "destinationPath"), ctx),
+      overwrite: (input as Record<string, unknown>).overwrite === true,
+    };
+  }
+
   protected async executeTyped(
     input: z.infer<typeof MoveFileInputSchema>,
     ctx: ToolExecutionContext,
@@ -1408,6 +1432,16 @@ export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
     });
   }
 
+  // The schema is strict and rejects an existing destination: no overwrite.
+  approvalMemoryScope(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope {
+    return {
+      kind: "transfer",
+      sourcePath: this.resolveApprovalPath(this.requireStringField(input, "sourcePath"), ctx),
+      destinationPath: this.resolveApprovalPath(this.requireStringField(input, "destinationPath"), ctx),
+      overwrite: false,
+    };
+  }
+
   protected async executeTyped(
     input: z.infer<typeof CopyPathInputSchema>,
     ctx: ToolExecutionContext,
@@ -1452,6 +1486,15 @@ export class ExtractArchiveTool extends FileTool<typeof ExtractArchiveInputSchem
       destinationPath: this.resolveApprovalPath(this.requireStringField(input, "destinationPath"), ctx),
       formats: ["tar", "tar.gz"],
     });
+  }
+
+  approvalMemoryScope(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope {
+    return {
+      kind: "transfer",
+      sourcePath: this.resolveApprovalPath(this.requireStringField(input, "archivePath"), ctx),
+      destinationPath: this.resolveApprovalPath(this.requireStringField(input, "destinationPath"), ctx),
+      overwrite: false,
+    };
   }
 
   protected async executeTyped(
@@ -1517,6 +1560,10 @@ export class DeleteFileTool extends FileTool<typeof DeleteFileInputSchema> {
 
   approvalCacheKey(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): string {
     return `path:${this.resolveApprovalPath(this.requireStringField(input, "path"), ctx)}`;
+  }
+
+  approvalMemoryScope(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope {
+    return { kind: "path", path: this.resolveApprovalPath(this.requireStringField(input, "path"), ctx) };
   }
 
   protected async executeTyped(

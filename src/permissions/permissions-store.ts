@@ -8,6 +8,7 @@ import type { PermissionRule } from "./permission-manager.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, isMissingPathError } from "../lib/atomic-file.js";
+import { PermissionRulesFileCorruptError, invalidJsonDetail, validateRuleList } from "./rules/rule-files.js";
 
 
 
@@ -36,18 +37,37 @@ async function withPermissionsLock<T>(
 
 // ─── Read ────────────────────────────────────────────
 
+/**
+ * Read Store A. Missing or empty (lock placeholder) → `null`.
+ *
+ * Corrupt content throws {@link PermissionRulesFileCorruptError} (issue #28):
+ * it used to read as `null`, after which the next write replaced the file with
+ * an empty rule list — every saved deny and allow silently lost. Because
+ * {@link updatePermissionsFile} reads first, a corrupt file is now never
+ * overwritten either.
+ */
 export async function readPermissionsFile(filePath: string): Promise<PermissionsFile | null> {
+  let raw: string;
   try {
-    const raw = await readFile(filePath, "utf-8");
-    if (!raw.trim()) return null;
-    const parsed = JSON.parse(raw) as PermissionsFile;
-    if (parsed.version !== 1 || !Array.isArray(parsed.rules)) return null;
-    return parsed;
+    raw = await readFile(filePath, "utf-8");
   } catch (err: unknown) {
     if (isMissingPathError(err)) return null;
-    if (err instanceof SyntaxError) return null;
     throw err;
   }
+  if (!raw.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new PermissionRulesFileCorruptError(filePath, invalidJsonDetail(error, raw));
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new PermissionRulesFileCorruptError(filePath, "not an object");
+  }
+  const file = parsed as PermissionsFile;
+  if (file.version !== 1) throw new PermissionRulesFileCorruptError(filePath, `unsupported version ${String(file.version)}`);
+  validateRuleList(filePath, file.rules, { sourceText: raw });
+  return file;
 }
 
 // ─── Write (atomic read-modify-write under lock) ─────
@@ -66,6 +86,7 @@ export async function updatePermissionsFile(
         updatedAt: new Date().toISOString(),
       };
       await mutator(file);
+      validateRuleList(filePath, file.rules);
       file.updatedAt = new Date().toISOString();
       writeUtf8FileAtomicSync(filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
     });

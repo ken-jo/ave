@@ -9,6 +9,7 @@ import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-
 import type { DisposableSubstrate } from "../permissions/sandbox-capability.js";
 import type { PluginOperationPrincipal } from "../permissions/plugin-operation-grant.js";
 import type { PermissionReviewEvent } from "../shared/permission-review-status.js";
+import type { ApprovalMemory } from "../shared/permissions-events.js";
 import type { ToolOutputCaptureFactory } from "../shared/tool-output-artifact.js";
 import type { RationaleExecutorControlOutcome } from "./pipeline/rationale-pr1-contract.js";
 import type { RationaleHostRuntime } from "./pipeline/rationale-orchestrator.js";
@@ -102,6 +103,8 @@ export interface ToolPermissionContext {
   allowedPluginIds?: ReadonlySet<string>;
   /** Derived only after hooks finalize the invocation arguments. */
   approvalCacheKey?: string;
+  /** What a remembered decision is keyed on; host-derived with approvalCacheKey. */
+  approvalMemory?: ApprovalMemory;
   /** Snapshot of user-configured Layer 1 roots. */
   additionalDirectories?: readonly string[];
   /** Fresh accessor used to observe earlier grants in an ordered batch. */
@@ -125,6 +128,11 @@ export interface ToolPermissionContext {
   expectedMcpServerId?: string;
   /** Recent user-authored intent for reviewer context only. */
   userIntent?: string;
+  /**
+   * Host-detected corruption of a permission store for this invocation, naming
+   * the file (issue #28). Never a tool or wire field.
+   */
+  permissionStoreError?: string;
   onTurnDirectoryGrant?: (approvedDirectory: string) => void;
   onSessionDirectoryGrant?: (approvedDirectory: string) => void;
 }

@@ -32,6 +32,10 @@ contracts. The visual design system for the whole app is
 - [Model capability catalog](./model-capability-catalog.md): one typed record of
   each model's limits, modalities, reasoning controls, and prices, generated with
   recorded provenance. Decided and implemented in slices.
+- [Permissions: always-allow baseline and judge slot](./permissions-always-allow-and-judge.md):
+  the rules language (`Bash(<prefix> *)`, `Edit`, `WebFetch(domain:)`, `Mcp`),
+  deny > ask > allow precedence, the AST shell matcher, per-project rule files,
+  hard floors, and the `PermissionJudge` slot. Decided; P1a implemented.
 - [Permission review scenario board](./permission-review-scenario-board-v2.html):
   the reviewer scenarios that
   `src/permissions/__tests__/permission-review-scenario-board.test.ts` reads.

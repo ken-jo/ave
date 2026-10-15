@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { emitRiskShadowLog, emitEffectShadowLog } from "../reviewer/risk-shadow-log.js";
 import { AuditLogger, type AuditEntry } from "../../audit/audit-logger.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { auditPayload } from "../judge/__tests__/judge-request-fixture.js";
 
 function collectingAudit(): { entries: AuditEntry[]; logger: AuditLogger } {
   const entries: AuditEntry[] = [];
@@ -36,9 +37,7 @@ function collectingAudit(): { entries: AuditEntry[]; logger: AuditLogger } {
 }
 
 /** Parse the structured payload the shadow path packs into `output`. */
-function payload(entry: AuditEntry): Record<string, unknown> {
-  return JSON.parse(entry.output ?? "{}") as Record<string, unknown>;
-}
+const payload = auditPayload;
 
 describe("emitRiskShadowLog — category shadow", () => {
   it("emits the declared vs host-derived pair with diverged=false when equal", () => {

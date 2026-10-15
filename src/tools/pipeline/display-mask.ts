@@ -12,6 +12,8 @@ import {
   type HostShellExecutionPlanAuditProjection,
 } from "../../permissions/host-shell-execution-plan.js";
 import type { PermissionReviewEvent } from "../../shared/permission-review-status.js";
+import type { ApprovalMemory } from "../../shared/permissions-events.js";
+import { canonicalStringify } from "../../shared/canonical-json.js";
 import type { Tool } from "../base.js";
 import type {
   ToolCallMeta,
@@ -49,6 +51,53 @@ export function summarizeInputForDeferred(input: Record<string, unknown>): strin
   } catch {
     return "[unserializable input]";
   }
+}
+
+/**
+ * The policy key of one invocation and what a remembered decision for it is
+ * keyed on (see {@link ApprovalMemory}).
+ */
+export interface InvocationApprovalIdentity {
+  readonly approvalCacheKey: string | undefined;
+  readonly approvalMemory: ApprovalMemory;
+}
+
+export const ARGS_APPROVAL_MEMORY: ApprovalMemory = Object.freeze({ kind: "args" });
+
+/**
+ * Target-wide memory exists only when the tool opts in with
+ * `approvalMemoryScope`; `approvalCacheKey` alone never widens it. The key
+ * hashes the scope together with the sealed host-shell plan, so a decision
+ * made under one execution substrate never answers for another.
+ */
+function approvalMemoryFor(
+  tool: Tool,
+  input: Record<string, unknown>,
+  cwd: string,
+  hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
+): ApprovalMemory {
+  const scope = tool.approvalMemoryScope?.(input, { cwd });
+  if (scope === undefined) return ARGS_APPROVAL_MEMORY;
+  const executionPlan = hostShellExecutionPlan === undefined
+    ? null
+    : getHostShellExecutionPlanCacheIdentity(hostShellExecutionPlan);
+  return Object.freeze({
+    kind: "key",
+    key: `${tool.name}:${canonicalStringify({ scope, executionPlan })}`,
+    scope: Object.freeze({ ...scope }),
+  });
+}
+
+export function approvalIdentityFor(
+  tool: Tool,
+  input: Record<string, unknown>,
+  cwd: string,
+  hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
+): InvocationApprovalIdentity {
+  return {
+    approvalCacheKey: approvalCacheKeyFor(tool, input, cwd, hostShellExecutionPlan),
+    approvalMemory: approvalMemoryFor(tool, input, cwd, hostShellExecutionPlan),
+  };
 }
 
 export function approvalCacheKeyFor(

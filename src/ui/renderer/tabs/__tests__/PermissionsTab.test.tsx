@@ -253,7 +253,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     });
 
     expect(screen.getByTestId("exact-deny-draft")).toHaveTextContent("plugin:meeting_list_preps");
-    expect(screen.getByTestId("exact-deny-draft")).toHaveTextContent("이후의 정확한 일치 요청을 거절");
+    expect(screen.getByTestId("exact-deny-draft")).toHaveTextContent("이후의 일치하는 요청을 거절");
     await waitFor(() => expect(screen.getByTestId("exact-deny-focus-target")).toHaveFocus());
 
     await act(async () => {

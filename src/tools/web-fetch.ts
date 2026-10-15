@@ -3,6 +3,7 @@ import { fetchPublicHttpResponse } from "../core/network-guard.js";
 import { t } from "../i18n/index.js";
 import { MAX_TOOL_RESULT_ARTIFACT_BYTES } from "../shared/tool-output-artifact.js";
 import { errorMessage } from "../shared/error-message.js";
+import type { ApprovalMemoryScope } from "../shared/permissions-events.js";
 import { htmlToMarkdown } from "./html-to-markdown.js";
 import { neutralizeFenceClose, neutralizeFenceOpen } from "../shared/fence-sanitizer.js";
 
@@ -195,6 +196,36 @@ function webFetchApprovalCacheKey(input: unknown): string | undefined {
   }
 }
 
+/**
+ * The target a remembered web_fetch decision covers: the exact origin
+ * `scheme://host:port`, with the scheme's default port written out so an
+ * explicit `:443` and an implicit one are the same origin while `http:` and
+ * another port are not.
+ *
+ * A private-network fetch (`allowPrivateNetwork`, the flag every other
+ * private-network gate here keys off) returns `undefined`: it stays on exact
+ * URL identity, so approving one loopback/LAN URL never covers another path
+ * or port on that host. Because that memory is exact-URL only, DNS rebinding
+ * cannot stretch it either — the SSRF guard still resolves and checks every
+ * hop at execution.
+ */
+function webFetchApprovalMemoryScope(input: unknown): ApprovalMemoryScope | undefined {
+  if (webFetchRequiresPrivateNetwork(input)) return undefined;
+  const args = input && typeof input === "object"
+    ? input as Record<string, unknown>
+    : {};
+  if (typeof args.url !== "string") return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(args.url);
+  } catch {
+    return undefined;
+  }
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname) return undefined;
+  const port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+  return { kind: "origin", origin: `${parsed.protocol}//${parsed.hostname.toLowerCase()}:${port}` };
+}
+
 function webFetchCategoryForInput(input: unknown): "network" {
   // Always `network`, whether or not the URL is private. The destination is
   // model-chosen, so a public URL is an egress channel just as much as a
@@ -239,6 +270,7 @@ export function createWebFetchTool(singleHopFetch: typeof fetch): Tool {
     isReadOnly: () => true,
     arbitraryEgress: true,
     approvalCacheKey: (input) => webFetchApprovalCacheKey(input),
+    approvalMemoryScope: (input) => webFetchApprovalMemoryScope(input),
     jsonSchema: {
       type: "object",
       properties: {

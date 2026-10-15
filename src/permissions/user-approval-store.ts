@@ -4,15 +4,20 @@
  * Spec ref: docs/research/sandbox-isolation.md
  * Issue: #691
  *
- * Stores exact per-invocation allow/deny decisions so subsequent calls with the
- * same tool + canonical input + source/trust tuple can be handled consistently.
+ * Stores remembered allow/deny decisions so subsequent calls with the same
+ * identity can be handled consistently. The identity is tool + source/trust
+ * origin + working directory + EITHER the exact canonical input (the default)
+ * OR, for a tool that opted in with `approvalMemoryScope`, its target-wide
+ * memory key (a public web_fetch origin, a write tool's target path). A
+ * target-wide row records an args hash so a hit on other args can be
+ * re-reviewed. See {@link ApprovalMemory}.
  *
  * Two-store role separation (do NOT merge — migration is out of scope):
  *   • Store A — durable glob allow/deny RULES + the `alwaysAllowed` Map in
  *     PermissionManager, managed by PermissionsTab and consulted by the SYNC
  *     `checkDetailed` (Layers 3 glob / 5 exact). It is edited explicitly in
  *     Settings and is never widened implicitly by a foreground approval card.
- *   • Store B — THIS store. Exact-tuple user DECISIONS, args-scoped, written
+ *   • Store B — THIS store. User DECISIONS, keyed as above, written
  *     for persistent allow or deny choices via the `userApprovalRecord` IPC.
  *     Exact allows are read by the reviewer lane
  *     (PermissionManager.dispatchReviewer) AND by the foreground dock-skip
@@ -43,6 +48,7 @@ import { aveHome } from "../shared/ave-home.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { createLogger } from "../lib/logger.js";
 import type {
+  ApprovalMemory,
   UserApprovalDecision,
   UserApprovalScope,
   UserApprovalVerdict,
@@ -104,6 +110,17 @@ export interface UserApprovalEntry {
    * Optional — absent for entries that did not supply an approvalCacheKey.
    */
   approvalCacheKey?: string;
+  /**
+   * Which identity the map key was computed under. Absent on rows written
+   * before the cache-key identity existed; those are args-identity rows.
+   */
+  rememberBy?: "key" | "args";
+  /**
+   * sha256 of the canonical args the decision was made on, for target-wide
+   * (`rememberBy: "key"`) rows. A hash, never the input: the list API is
+   * renderer-readable and the card may have DLP-masked those values.
+   */
+  argsIdentity?: string;
 }
 
 interface ApprovalsFile {
@@ -159,7 +176,65 @@ export function captureApprovalWorkingDirectory(executionCwd: string): { path: s
   return Object.freeze({ path, identity: sha256Hex(caseFoldForMatch(path)) });
 }
 
-function entryKey(
+/**
+ * The identity components of one invocation that Store B keys on, besides
+ * tool, args, source, trust origin and working directory:
+ *  - `key`: the tool's policy `approvalCacheKey`. Under args identity it only
+ *    narrows the exact-input hash (and it is what pre-v2 rows were hashed with).
+ *  - `memoryKey`: present only when the tool opted into target-wide memory;
+ *    it then REPLACES the args as the remembered identity.
+ */
+export interface ApprovalCacheKeyIdentity {
+  readonly key?: string;
+  readonly memoryKey?: string;
+}
+
+/**
+ * Build the Store B identity from host-derived values. Every caller goes
+ * through this, so a site that carries a policy key but forgot to say what
+ * memory does fails here instead of being guessed.
+ */
+export function approvalCacheKeyIdentity(
+  key: string | undefined,
+  memory: ApprovalMemory | undefined,
+): ApprovalCacheKeyIdentity | undefined {
+  if (key !== undefined && key.length === 0) throw new Error("Approval cache key must be non-empty");
+  if (memory === undefined) {
+    if (key !== undefined) throw new Error("Approval cache key is missing its remembered-identity mode");
+    return undefined;
+  }
+  if (memory.kind === "args") return key === undefined ? undefined : Object.freeze({ key });
+  if (memory.kind !== "key" || typeof memory.key !== "string" || memory.key.length === 0) {
+    throw new Error("Approval memory key must be non-empty");
+  }
+  return Object.freeze({ ...(key === undefined ? {} : { key }), memoryKey: memory.key });
+}
+
+/**
+ * Whether a remembered decision was made for exactly this input. Args-identity
+ * rows always are; a target-wide row is only when its recorded args hash
+ * matches. A target-wide hit on different args must be re-reviewed before a
+ * remembered allow is reused.
+ */
+export function isExactArgsDecision(entry: UserApprovalEntry, args: string): boolean {
+  return entry.argsIdentity === undefined || entry.argsIdentity === sha256Hex(args);
+}
+
+function scopeToWorkingDirectory(unscopedKey: string, workingDirectoryIdentity?: string): string {
+  if (workingDirectoryIdentity === undefined) return unscopedKey;
+  if (!/^[a-f0-9]{64}$/.test(workingDirectoryIdentity)) throw new Error("Invalid approval working-directory identity");
+  return sha256Hex(canonicalStringify({
+    version: "working-directory/v1",
+    unscopedKey,
+    workingDirectoryIdentity,
+  }));
+}
+
+/**
+ * Args identity (v1). Byte-for-byte the formula every entry written before
+ * the cache-key identity used, so args-identity rows on disk keep matching.
+ */
+function argsEntryKey(
   toolName: string,
   args: string,
   source: string,
@@ -170,14 +245,44 @@ function entryKey(
   const components = [toolName, args, source];
   if (trustOrigin) components.push(trustOrigin);
   if (approvalCacheKey) components.push(approvalCacheKey);
-  const unscopedKey = sha256Hex(components.join("\0"));
-  if (workingDirectoryIdentity === undefined) return unscopedKey;
-  if (!/^[a-f0-9]{64}$/.test(workingDirectoryIdentity)) throw new Error("Invalid approval working-directory identity");
-  return sha256Hex(canonicalStringify({
-    version: "working-directory/v1",
-    unscopedKey,
-    workingDirectoryIdentity,
-  }));
+  return scopeToWorkingDirectory(sha256Hex(components.join("\0")), workingDirectoryIdentity);
+}
+
+/**
+ * Target-wide identity (v2): the arguments are deliberately absent. The
+ * version string keeps this hash space disjoint from {@link argsEntryKey}, so
+ * a row recorded under the old args+key formula can never be read as a
+ * target-wide decision. That is the migration rule: old allows for an
+ * opted-in tool stop matching (they only ever covered identical input); old
+ * denies are still honoured for their exact input by {@link lookupUserDecision}.
+ */
+function memoryEntryKey(
+  toolName: string,
+  source: string,
+  trustOrigin: string | undefined,
+  memoryKey: string,
+  workingDirectoryIdentity?: string,
+): string {
+  return scopeToWorkingDirectory(sha256Hex(canonicalStringify({
+    version: "approval-memory-key/v2",
+    toolName,
+    source,
+    trustOrigin: trustOrigin || null,
+    memoryKey,
+  })), workingDirectoryIdentity);
+}
+
+function entryKey(
+  toolName: string,
+  args: string,
+  source: string,
+  trustOrigin: string | undefined,
+  identity: ApprovalCacheKeyIdentity | undefined,
+  workingDirectoryIdentity?: string,
+): string {
+  return identity?.memoryKey !== undefined
+    ? memoryEntryKey(toolName, source, trustOrigin, identity.memoryKey, workingDirectoryIdentity)
+    : argsEntryKey(toolName, args, source, trustOrigin, identity?.key, workingDirectoryIdentity);
 }
 
 function isApprovalVerdict(value: unknown): value is UserApprovalVerdict {
@@ -188,19 +293,42 @@ function hasValidRiskProvenance(entry: UserApprovalEntry): boolean {
     (entry.riskCeilingAtApproval === undefined || isApprovalVerdict(entry.riskCeilingAtApproval));
 }
 
+/**
+ * Store B corruption is reported, never tolerated (issue #28). A malformed
+ * file used to read as empty, and the next record then overwrote it — every
+ * saved approval silently lost. Readers fail closed (the dock asks); writers
+ * refuse to replace the file.
+ */
+export class UserApprovalStoreCorruptError extends Error {
+  constructor(readonly filePath: string, detail: string) {
+    super(`Saved approvals file ${filePath} is corrupt: ${detail}. Fix or remove the file; its approvals are not in force.`);
+    this.name = "UserApprovalStoreCorruptError";
+  }
+}
+
 async function readApprovalsFile(): Promise<ApprovalsFile> {
+  const path = filePath();
+  let raw: string;
   try {
-    const raw = await readFile(filePath(), "utf8");
-    const parsed = JSON.parse(raw) as ApprovalsFile;
-    // Tolerate missing approvals key in malformed file.
-    if (!parsed || typeof parsed.approvals !== "object") {
-      return { approvals: {} };
-    }
-    return parsed;
+    raw = await readFile(path, "utf8");
   } catch (err) {
     if (isMissingPathError(err)) return { approvals: {} };
     throw err;
   }
+  // An empty file holds no data (e.g. a lock placeholder); nothing is lost.
+  if (!raw.trim()) return { approvals: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new UserApprovalStoreCorruptError(path, "invalid JSON");
+  }
+  const approvals = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as { approvals?: unknown }).approvals : undefined;
+  if (!approvals || typeof approvals !== "object" || Array.isArray(approvals)) {
+    throw new UserApprovalStoreCorruptError(path, "missing approvals object");
+  }
+  return parsed as ApprovalsFile;
 }
 
 async function atomicWrite(data: ApprovalsFile): Promise<void> {
@@ -257,7 +385,7 @@ export async function recordApproval(
     nlJustification: string | null;
     approvedAt?: string;
     trustOrigin?: string;
-    approvalCacheKey?: string;
+    approvalCacheKey?: ApprovalCacheKeyIdentity;
     workingDirectoryIdentity?: string;
     riskCeilingAtApproval?: UserApprovalVerdict;
   },
@@ -283,7 +411,9 @@ export async function recordApproval(
     // persist them as metadata: listApprovals is renderer-readable and the
     // approval card may have DLP-masked the same values before display.
     ...(entry.trustOrigin !== undefined ? { trustOrigin: entry.trustOrigin } : {}),
-    ...(entry.approvalCacheKey !== undefined ? { approvalCacheKey: entry.approvalCacheKey } : {}),
+    ...(entry.approvalCacheKey?.key !== undefined ? { approvalCacheKey: entry.approvalCacheKey.key } : {}),
+    rememberBy: entry.approvalCacheKey?.memoryKey !== undefined ? "key" : "args",
+    ...(entry.approvalCacheKey?.memoryKey !== undefined ? { argsIdentity: sha256Hex(args) } : {}),
   };
 
   if (entry.scope === "session") {
@@ -315,13 +445,29 @@ export async function lookupUserDecision(
   args: string,
   source: string,
   trustOrigin?: string,
-  approvalCacheKey?: string,
+  approvalCacheKey?: ApprovalCacheKeyIdentity,
   executionCwd?: string,
 ): Promise<UserApprovalEntry | null> {
-  const key = entryKey(toolName, args, source, trustOrigin, approvalCacheKey,
-    executionCwd === undefined ? undefined : captureApprovalWorkingDirectory(executionCwd).identity);
-  const legacyKey = entryKey(toolName, args, source, trustOrigin, approvalCacheKey);
-  const keys = key === legacyKey ? [key] : [legacyKey, key];
+  const workingDirectoryIdentity = executionCwd === undefined
+    ? undefined
+    : captureApprovalWorkingDirectory(executionCwd).identity;
+  const key = entryKey(toolName, args, source, trustOrigin, approvalCacheKey, workingDirectoryIdentity);
+  // Rows that may only ever restrict this lookup, never allow it:
+  //  - the unscoped key: existing unscoped denials retain their original
+  //    scope and precedence; no legacy allow is migrated or widened.
+  //  - for a target-wide identity, the rows the same invocation has under the
+  //    args(+policy key) formula. An exact deny saved before the tool opted
+  //    in keeps blocking; an old allow (identical-input only) is ignored.
+  const denyOnlyKeys = new Set<string>();
+  const unscopedKey = entryKey(toolName, args, source, trustOrigin, approvalCacheKey);
+  if (unscopedKey !== key) denyOnlyKeys.add(unscopedKey);
+  if (approvalCacheKey?.memoryKey !== undefined) {
+    denyOnlyKeys.add(argsEntryKey(toolName, args, source, trustOrigin, approvalCacheKey.key));
+    if (workingDirectoryIdentity !== undefined) {
+      denyOnlyKeys.add(argsEntryKey(toolName, args, source, trustOrigin, approvalCacheKey.key, workingDirectoryIdentity));
+    }
+  }
+  const keys = [...denyOnlyKeys, key];
   const file = keys.some((candidate) => !sessionStore.has(candidate)) ? await readApprovalsFile() : undefined;
   const readActive = (candidate: string): UserApprovalEntry | null => {
     const entry = sessionStore.get(candidate) ?? file?.approvals[candidate];
@@ -332,11 +478,10 @@ export async function lookupUserDecision(
     sessionStore.set(candidate, entry);
     return entry;
   };
-  // Existing unscoped denials retain their original scope and precedence.
-  // Only a newly scoped allow can satisfy a scoped lookup; no legacy allow
-  // is migrated or widened implicitly.
-  const legacy = key === legacyKey ? null : readActive(legacyKey);
-  if (legacy?.decision === "deny") return legacy;
+  for (const candidate of denyOnlyKeys) {
+    const restrictive = readActive(candidate);
+    if (restrictive?.decision === "deny") return restrictive;
+  }
   return readActive(key);
 }
 
@@ -351,7 +496,7 @@ export async function lookupApproval(
   args: string,
   source: string,
   trustOrigin?: string,
-  approvalCacheKey?: string,
+  approvalCacheKey?: ApprovalCacheKeyIdentity,
   executionCwd?: string,
 ): Promise<UserApprovalEntry | null> {
   const entry = await lookupUserDecision(
@@ -376,7 +521,7 @@ export async function revokeApproval(
   args: string,
   source: string,
   trustOrigin?: string,
-  approvalCacheKey?: string,
+  approvalCacheKey?: ApprovalCacheKeyIdentity,
   executionCwd?: string,
 ): Promise<void> {
   const key = entryKey(toolName, args, source, trustOrigin, approvalCacheKey,
@@ -597,7 +742,9 @@ export async function migrateCanonicalization(): Promise<void> {
           continue;
         }
 
-        const newKey = entryKey(
+        // v1 rows are args-identity rows by construction; re-key them under
+        // the same (args) formula they were written with.
+        const newKey = argsEntryKey(
           entry.toolName,
           reCanonicalizedArgs,
           entry.source,

@@ -363,6 +363,10 @@ export class ToolExecutor {
       this.permissionManager
         ? (payload) => this.permissionManager!.discloseUserApprovalHit(payload)
         : undefined,
+      // A target-wide hit on new arguments is reviewed like a fresh request.
+      this.permissionManager
+        ? (...args) => this.permissionManager!.dispatchReviewer(...args)
+        : undefined,
     );
   }
 
