@@ -121,6 +121,29 @@ describe("ChatSidePanel agent browser", () => {
     await waitFor(() => expect(api.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId }));
   });
 
+  it("binds an agent tab with its request id, retrying until main has seen the guest attach", async () => {
+    const { api } = makeApi();
+    const bindTab = api.browserTabs!.bindTab as ReturnType<typeof vi.fn>;
+    bindTab
+      .mockResolvedValueOnce({ ok: false, error: "guest-not-live" })
+      .mockResolvedValueOnce({ ok: false, error: "guest-not-live" })
+      .mockResolvedValue({ ok: true });
+    render(<Harness api={api} />);
+    let tabId: string | null = null;
+    act(() => {
+      tabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-3");
+    });
+    const webview = screen.getByTestId("chat-side-panel-browser-webview") as HTMLElement & { getWebContentsId?: () => number };
+    webview.getWebContentsId = () => 42;
+    act(() => {
+      webview.dispatchEvent(new Event("did-attach"));
+    });
+    await waitFor(() => expect(bindTab).toHaveBeenCalledTimes(3));
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId, webContentsId: 42, requestId: "browser-op-3" });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(bindTab).toHaveBeenCalledTimes(3);
+  });
+
   it("refuses an unsafe url for an agent tab", () => {
     const { api } = makeApi();
     render(<Harness api={api} />);

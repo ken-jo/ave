@@ -478,6 +478,10 @@ export function BrowserDocumentViewer({ target }: { target: Extract<ChatPreviewT
   );
 }
 
+/** Bind retries while main has not yet seen the guest attach (see UrlDocumentViewer). */
+const BIND_RETRY_LIMIT = 20;
+const BIND_RETRY_MS = 100;
+
 export function UrlDocumentViewer({
   api,
   target,
@@ -515,7 +519,10 @@ export function UrlDocumentViewer({
   useEffect(() => {
     if (!webviewElement || bindTabId === undefined || !api.browserTabs) return;
     const bind = api.browserTabs.bindTab;
-    const onAttach = () => {
+    let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const onAttach = (attempt = 0) => {
+      if (cancelled) return;
       let webContentsId: number | undefined;
       try {
         webContentsId = (webviewElement as HTMLElement & { getWebContentsId?: () => number }).getWebContentsId?.();
@@ -528,12 +535,24 @@ export function UrlDocumentViewer({
         tabId: bindTabId,
         webContentsId,
         ...(bindRequestId === undefined ? {} : { requestId: bindRequestId }),
+      }).then((result) => {
+        // The page's did-attach can reach this view before main has seen the
+        // guest attach (main's did-attach-webview); main answers guest-not-live
+        // until then, so try again shortly.
+        if (!result.ok && result.error === "guest-not-live" && attempt < BIND_RETRY_LIMIT && !cancelled) {
+          retry = setTimeout(() => onAttach(attempt + 1), BIND_RETRY_MS);
+        }
       });
     };
-    webviewElement.addEventListener("did-attach", onAttach);
+    const onAttachEvent = () => onAttach();
+    webviewElement.addEventListener("did-attach", onAttachEvent);
     // Already attached (the tab id or request changed on a live guest).
     onAttach();
-    return () => webviewElement.removeEventListener("did-attach", onAttach);
+    return () => {
+      cancelled = true;
+      if (retry !== undefined) clearTimeout(retry);
+      webviewElement.removeEventListener("did-attach", onAttachEvent);
+    };
   }, [api, webviewElement, bindTabId, bindRequestId]);
 
   if (!url) {

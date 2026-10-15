@@ -100,9 +100,33 @@ export async function snapshot(
   return { url, title: target.title(), ...refs.render(target.tabId, url, nodes, options) };
 }
 
-async function screenshot(target: ActionTarget): Promise<{ data: string; mimeType: "image/png"; bytes: number }> {
+/**
+ * A tab that is not shown paints no frames, and Page.captureScreenshot then
+ * never answers (seen in the real app: a hidden side-panel tab hung until the
+ * host's 120s ceiling). Bound it and say what to do instead.
+ */
+const SCREENSHOT_MAX_MS = 10_000;
+
+export async function screenshot(
+  target: ActionTarget,
+  maxMs = SCREENSHOT_MAX_MS,
+): Promise<{ data: string; mimeType: "image/png"; bytes: number }> {
   throwIfAborted(target.signal);
-  const result = await target.cdp.send("Page.captureScreenshot", { format: "png" }) as { data?: string };
+  const timedOut = Symbol("timed-out");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const result = await Promise.race([
+    target.cdp.send("Page.captureScreenshot", { format: "png" }) as Promise<{ data?: string }>,
+    new Promise<typeof timedOut>((resolve) => {
+      timer = setTimeout(() => resolve(timedOut), maxMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+  throwIfAborted(target.signal);
+  if (result === timedOut) {
+    throw new BrowserActionError(
+      "screenshot-timeout",
+      `the tab drew no image within ${maxMs / 1000}s; a tab that is not shown cannot be captured. Show it with browser_tabs {"select": "${target.tabId}"} or use browser_snapshot, which works on hidden tabs`,
+    );
+  }
   if (typeof result.data !== "string" || result.data.length === 0) {
     throw new BrowserActionError("screenshot-failed", "the tab returned no image; it may be hidden or still loading");
   }
@@ -205,6 +229,39 @@ export async function click(target: ActionTarget, ref: string, refs: BrowserRefT
   await target.injectInput(() => pressAt(target.cdp, x, y));
 }
 
+const FOCUS_POLL_MS = 50;
+/** How long one press waits for focus before pressing again. */
+const FOCUS_PRESS_WAIT_MS = 500;
+const FOCUS_MAX_MS = 3_000;
+
+async function pollUntil<T>(signal: AbortSignal, maxMs: number, probe: () => Promise<T | undefined>): Promise<T | undefined> {
+  const started = Date.now();
+  for (;;) {
+    throwIfAborted(signal);
+    const found = await probe();
+    if (found !== undefined) return found;
+    if (Date.now() - started >= maxMs) return undefined;
+    await sleep(FOCUS_POLL_MS, signal);
+  }
+}
+
+/**
+ * Press into the page until it holds keyboard focus. The press moves focus to
+ * the guest asynchronously, and the app can take it back (an approval card
+ * closing returns focus to the composer); key or text input sent to a page
+ * without focus is dropped without an error. So: press, wait for the
+ * accessibility tree to report the page focused, press again if it does not,
+ * and fail clearly when it never does.
+ */
+async function pressForFocus(target: ActionTarget, x: number, y: number): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < FOCUS_MAX_MS) {
+    await pressAt(target.cdp, x, y);
+    if (await pollUntil(target.signal, FOCUS_PRESS_WAIT_MS, async () => (await pageHasFocus(target.cdp)) || undefined)) return;
+  }
+  throw new BrowserActionError("no-focus", "the page did not take keyboard focus, so nothing was typed; try again");
+}
+
 async function pressAt(cdp: CdpSession, x: number, y: number): Promise<void> {
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
   await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
@@ -248,15 +305,47 @@ export async function type(
     // Click into the field first, as a person would: Chromium drops synthesized
     // key and text input for a page that does not hold focus (focus emulation,
     // Page.bringToFront and webContents.focus() do not give it while the app
-    // window is in the background); a press on the page does.
-    await pressAt(target.cdp, x, y);
-    await target.cdp.send("DOM.focus", { backendNodeId });
-    // Replace what the field holds: select all of it, then insert.
-    await target.cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, commands: ["selectAll"] });
-    await target.cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
-    await target.cdp.send("Input.insertText", { text: value });
+    // window is in the background); a press on the page does. Focus can still
+    // move away between the press and the text, so the field's value is read
+    // back from the accessibility tree and the typing repeated if it missed.
+    for (let attempt = 1; ; attempt++) {
+      await pressForFocus(target, x, y);
+      await target.cdp.send("DOM.focus", { backendNodeId });
+      // Replace what the field holds: select all of it, then insert.
+      await target.cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, commands: ["selectAll"] });
+      await target.cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+      await target.cdp.send("Input.insertText", { text: value });
+      const landed = await pollUntil(target.signal, TYPE_CHECK_MS, async () => {
+        const now = await fieldValue(target.cdp, backendNodeId);
+        return now === null || now === collapse(value) ? true : undefined;
+      });
+      if (landed) break;
+      if (attempt >= TYPE_ATTEMPTS) {
+        throw new BrowserActionError("not-typed", `the text did not reach ${ref} (the page kept losing focus); check the field and try again`);
+      }
+    }
     if (options.submit) await dispatchKey(target.cdp, "Enter");
   });
+}
+
+const TYPE_ATTEMPTS = 3;
+const TYPE_CHECK_MS = 500;
+
+function collapse(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The field's current value as the accessibility tree reports it, whitespace
+ * collapsed like the snapshot's; null when the node reports no value at all
+ * (some editors), where typing cannot be checked.
+ */
+async function fieldValue(cdp: CdpSession, backendNodeId: number): Promise<string | null> {
+  const result = await cdp.send("Accessibility.getPartialAXTree", { backendNodeId, fetchRelatives: false }) as { nodes?: AXNode[] };
+  const node = result.nodes?.find((candidate) => candidate.backendDOMNodeId === backendNodeId) ?? result.nodes?.[0];
+  const raw = node?.value?.value;
+  if (raw === undefined || raw === null) return null;
+  return collapse(String(raw));
 }
 
 /** The keys `browser_press_key` may press. */
@@ -291,6 +380,12 @@ async function dispatchKey(cdp: CdpSession, key: string): Promise<void> {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: domKey, code: spec.code, windowsVirtualKeyCode: spec.keyCode });
 }
 
+/** Roles a click activates: pressing Enter or Space into them after the click would activate them again. */
+const ACTIVATED_BY_CLICK: ReadonlySet<string> = new Set([
+  "button", "link", "checkbox", "radio", "switch", "tab", "option",
+  "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem",
+]);
+
 /** Whether the page holds keyboard focus: the accessibility tree marks its root focused. */
 async function pageHasFocus(cdp: CdpSession): Promise<boolean> {
   const nodes = await fullTree(cdp);
@@ -307,6 +402,14 @@ export async function pressKey(target: ActionTarget, key: string, ref: string | 
   throwIfAborted(target.signal);
   let point: { x: number; y: number; backendNodeId: number } | undefined;
   if (ref !== undefined) {
+    const role = refs.get(ref)?.role;
+    if ((key === "Enter" || key === "Space") && role !== undefined && ACTIVATED_BY_CLICK.has(role)) {
+      // Clicking into it already activates it; the key would activate it twice.
+      throw new BrowserActionError(
+        "use-click",
+        `${ref} is a ${role}: pressing ${key} in it would click it twice; use browser_click`,
+      );
+    }
     const backendNodeId = await resolveRef(target, ref, refs);
     point = { ...(await centerOf(target.cdp, backendNodeId)), backendNodeId };
   } else if (!(await pageHasFocus(target.cdp))) {
@@ -318,7 +421,7 @@ export async function pressKey(target: ActionTarget, key: string, ref: string | 
   throwIfAborted(target.signal);
   await target.injectInput(async () => {
     if (point) {
-      await pressAt(target.cdp, point.x, point.y);
+      await pressForFocus(target, point.x, point.y);
       await target.cdp.send("DOM.focus", { backendNodeId: point.backendNodeId });
     }
     await dispatchKey(target.cdp, key);

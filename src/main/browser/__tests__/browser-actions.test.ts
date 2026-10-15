@@ -12,6 +12,7 @@ import {
   navigate,
   pressKey,
   resolveRef,
+  screenshot,
   sensitiveFieldReason,
   settle,
   snapshot,
@@ -39,11 +40,37 @@ class FakeCdp implements CdpSession {
   nodes: AXNode[] = [];
   attributes = new Map<number, Record<string, string>>();
   readonly calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  /** A mouse press gives the page focus after this many focus checks (Infinity: never). */
+  focusLag = 0;
+  /** Text inserts lost (focus moved away) before one lands. */
+  dropTexts = 0;
+  private focusedNode: number | undefined;
+  private pressed = false;
+  private checksSincePress = 0;
   async send(method: string, params?: Record<string, unknown>): Promise<unknown> {
     this.calls.push({ method, ...(params ? { params } : {}) });
     switch (method) {
-      case "Accessibility.getFullAXTree":
-        return { nodes: this.nodes };
+      case "Input.dispatchMouseEvent":
+        if (params?.type === "mousePressed") this.pressed = true;
+        return {};
+      case "DOM.focus":
+        this.focusedNode = params?.backendNodeId as number;
+        return {};
+      case "Input.insertText": {
+        if (this.dropTexts > 0) {
+          this.dropTexts--;
+          return {};
+        }
+        this.nodes = this.nodes.map((node) => node.backendDOMNodeId === this.focusedNode
+          ? { ...node, value: { type: "string", value: params?.text } }
+          : node);
+        return {};
+      }
+      case "Accessibility.getFullAXTree": {
+        if (!this.pressed || this.checksSincePress++ < this.focusLag) return { nodes: this.nodes };
+        const [root, ...rest] = this.nodes;
+        return { nodes: root ? [{ ...root, properties: [{ name: "focused", value: { type: "booleanOrUndefined", value: true } }] }, ...rest] : [] };
+      }
       case "Accessibility.getPartialAXTree": {
         const node = this.nodes.find((candidate) => candidate.backendDOMNodeId === params?.backendNodeId);
         if (!node) throw new Error("No node with given id found");
@@ -351,4 +378,67 @@ describe("pressing keys", () => {
       "Input.dispatchKeyEvent", "Input.dispatchKeyEvent",
     ]);
   });
+
+  it("refuses Enter or Space into an element a click already activates", async () => {
+    const refs = new BrowserRefTable();
+    const cdp = new FakeCdp();
+    cdp.nodes = page([ax("b", "button", "Submit", { backendDOMNodeId: 6 })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
+    await expect(pressKey(target(cdp), "Enter", ref, refs)).rejects.toMatchObject({ code: "use-click" });
+    await expect(pressKey(target(cdp), "Space", ref, refs)).rejects.toMatchObject({ code: "use-click" });
+    expect(cdp.inputs()).toEqual([]);
+    await pressKey(target(cdp), "Tab", ref, refs);
+    expect(cdp.inputs().filter((method) => method === "Input.dispatchKeyEvent")).toHaveLength(2);
+  });
+});
+
+describe("screenshot", () => {
+  it("fails clearly instead of hanging when the tab draws no frame", async () => {
+    const cdp = new FakeCdp();
+    vi.spyOn(cdp, "send").mockImplementation(() => new Promise(() => {}));
+    await expect(screenshot(target(cdp, { tabId: "tab-7" }), 50)).rejects.toMatchObject({
+      code: "screenshot-timeout",
+      message: expect.stringContaining('browser_tabs {"select": "tab-7"}'),
+    });
+  });
+});
+
+describe("focus before keyboard input", () => {
+  async function textField(focusLag: number) {
+    const refs = new BrowserRefTable();
+    const cdp = new FakeCdp();
+    cdp.focusLag = focusLag;
+    cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5, value: { type: "string", value: "" } })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
+    return { cdp, ref, refs };
+  }
+
+  it("waits for the press to give the page focus before typing", async () => {
+    const { cdp, ref, refs } = await textField(3);
+    await typeInto(target(cdp), ref, "Ada", {}, refs);
+    const lastCheck = cdp.calls.map((call) => call.method).lastIndexOf("Accessibility.getFullAXTree");
+    const firstKey = cdp.calls.findIndex((call) => call.method === "Input.dispatchKeyEvent");
+    expect(firstKey).toBeGreaterThan(lastCheck);
+    expect(cdp.calls.find((call) => call.method === "Input.insertText")?.params).toEqual({ text: "Ada" });
+  });
+
+  it("types nothing and says so when the page never takes focus", async () => {
+    const { cdp, ref, refs } = await textField(Number.POSITIVE_INFINITY);
+    await expect(typeInto(target(cdp), ref, "Ada", {}, refs)).rejects.toMatchObject({ code: "no-focus" });
+    expect(cdp.calls.some((call) => call.method === "Input.dispatchKeyEvent" || call.method === "Input.insertText")).toBe(false);
+  }, 10_000);
+
+  it("types again when the text was lost to a focus change, and reports a field it never reaches", async () => {
+    const lost = await textField(0);
+    lost.cdp.dropTexts = 1;
+    await typeInto(target(lost.cdp), lost.ref, "Ada", {}, lost.refs);
+    expect(lost.cdp.calls.filter((call) => call.method === "Input.insertText")).toHaveLength(2);
+
+    const never = await textField(0);
+    never.cdp.dropTexts = 99;
+    await expect(typeInto(target(never.cdp), never.ref, "Ada", { submit: true }, never.refs)).rejects.toMatchObject({ code: "not-typed" });
+    expect(never.cdp.calls.filter((call) => call.method === "Input.insertText")).toHaveLength(3);
+    // No Enter after text that never landed.
+    expect(never.cdp.calls.some((call) => call.method === "Input.dispatchKeyEvent" && call.params?.key === "Enter")).toBe(false);
+  }, 10_000);
 });
