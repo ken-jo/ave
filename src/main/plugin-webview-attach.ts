@@ -127,14 +127,13 @@ export function configureMainWindowWebviewAttach(input: {
   event: { preventDefault: () => void };
   webPreferences: Record<string, unknown>;
   params: Record<string, string>;
-  enqueueSideBrowserSrc: (src: string) => void;
 }): MainWindowWebviewAttachResult {
   if (configurePluginWebviewAttach(input) === "enforced") return { owner: "plugin", result: "enforced" };
 
   const mcpApp = configureMcpAppWebviewAttach(input);
   if (mcpApp !== "ignored") return { owner: "mcp-app", result: mcpApp };
 
-  const sideBrowser = configureSideBrowserWebviewAttach({ ...input, enqueueAllowedSrc: input.enqueueSideBrowserSrc });
+  const sideBrowser = configureSideBrowserWebviewAttach(input);
   if (sideBrowser !== "ignored") return { owner: "side-browser", result: sideBrowser };
 
   input.event.preventDefault();

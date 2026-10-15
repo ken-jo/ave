@@ -8,8 +8,12 @@
  * user's terminal actually printed.
  *
  *   {}                      → every terminal tab with its recent block summaries
+ *                             (the one the user is looking at marked `active`)
  *   { tabId, limit? }       → the newest `limit` blocks of one tab, with output
  *   { tabId, blockId }      → one block with output
+ *   { limit } / { blockId } → the same for the window's active terminal, when
+ *                             the user is looking at one (a default, not an
+ *                             authority: an explicit tabId always wins)
  *
  * Results are framed `<terminal-output trust="untrusted-terminal-data">`
  * (fence-sanitizer.ts): command text and output are whatever programs printed,
@@ -50,6 +54,8 @@ export interface TerminalReadToolDeps {
   windowIdForHostedSession: (sessionId: string) => number | null;
   /** The spawning session of a running sub-agent, or undefined for any other session. */
   liveOriginSessionId: (sessionId: string) => string | undefined;
+  /** The terminal tab the user is looking at in a window, if a terminal is the active surface. */
+  activeTerminalTabId?: (windowId: number) => string | undefined;
 }
 
 /**
@@ -160,19 +166,17 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
       ) {
         return failure(`limit must be an integer from 1 to ${MAX_LIMIT}`);
       }
-      if (input.tabId === undefined && (input.blockId !== undefined || input.limit !== undefined)) {
-        return failure("blockId and limit require tabId; call terminal_read with no arguments to list terminals");
-      }
-
       const sessionId = typeof ctx?.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
       const windowId = resolveTerminalWindowId(sessionId, deps);
       if (windowId === null) {
         return failure("terminal_read is available only to a conversation in an app window (or its sub-agents); this session has no terminals");
       }
+      const activeTabId = deps.activeTerminalTabId?.(windowId);
 
-      if (input.tabId === undefined) {
+      if (input.tabId === undefined && input.blockId === undefined && input.limit === undefined) {
         const terminals = listTerminalBlockTabs(windowId).map(({ tabId, tracker }) => ({
           tabId,
+          ...(tabId === activeTabId ? { active: true } : {}),
           shellIntegration: tracker.isIntegrated(),
           exited: tracker.hasExited(),
           recentBlocks: tracker.list().slice(0, SUMMARIES_PER_TAB),
@@ -183,19 +187,25 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
         });
       }
 
+      // An explicit tabId wins; without one, blockId/limit read the terminal
+      // the user is looking at, when there is one.
+      const tabId = (input.tabId as string | undefined) ?? activeTabId;
+      if (tabId === undefined) {
+        return failure("blockId and limit require tabId when no terminal is active; call terminal_read with no arguments to list terminals");
+      }
       // A tab of another window answers exactly like a tab that does not exist.
-      const tracker = getWindowTerminalBlockTracker(input.tabId, windowId);
+      const tracker = getWindowTerminalBlockTracker(tabId, windowId);
       if (!tracker) {
-        return failure(`no terminal with tabId ${JSON.stringify(input.tabId)}; call terminal_read with no arguments to list terminals`);
+        return failure(`no terminal with tabId ${JSON.stringify(tabId)}; call terminal_read with no arguments to list terminals`);
       }
       if (input.blockId !== undefined) {
         const block = tracker.get(input.blockId as number);
-        if (!block) return failure(`no block ${String(input.blockId)} in terminal ${input.tabId}`);
-        return fenced({ tabId: input.tabId, block: withOutputBudget([block])[0] });
+        if (!block) return failure(`no block ${String(input.blockId)} in terminal ${tabId}`);
+        return fenced({ tabId, block: withOutputBudget([block])[0] });
       }
       const limit = (input.limit as number | undefined) ?? DEFAULT_LIMIT;
       return fenced({
-        tabId: input.tabId,
+        tabId,
         shellIntegration: tracker.isIntegrated(),
         blocks: withOutputBudget(tracker.recent(limit)),
       });

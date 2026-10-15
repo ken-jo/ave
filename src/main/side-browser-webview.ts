@@ -128,12 +128,6 @@ export function isSideBrowserContents(contents: WebContents): boolean {
   return contents.session === session.fromPartition(AVE_SIDE_BROWSER_PARTITION);
 }
 
-export function takePendingSideBrowserSrc(pendingSrcs: string[], attachedUrl: string): string | null {
-  const index = pendingSrcs.indexOf(attachedUrl);
-  if (index < 0) return null;
-  return pendingSrcs.splice(index, 1)[0] ?? null;
-}
-
 /**
  * Preferences forced on every remote-content surface of the side browser: the
  * `<webview>` guest at attach time and every popup window it opens. Remote
@@ -157,7 +151,6 @@ export function configureSideBrowserWebviewAttach(input: {
   event: { preventDefault: () => void };
   webPreferences: Record<string, unknown>;
   params: Record<string, string>;
-  enqueueAllowedSrc: (src: string) => void;
 }): SideBrowserAttachResult {
   if (input.params.partition !== AVE_SIDE_BROWSER_PARTITION) return "ignored";
 
@@ -169,8 +162,6 @@ export function configureSideBrowserWebviewAttach(input: {
 
   hardenRemoteWebPreferences(input.webPreferences);
   input.webPreferences.partition = AVE_SIDE_BROWSER_PARTITION;
-
-  input.enqueueAllowedSrc(src);
   return "accepted";
 }
 

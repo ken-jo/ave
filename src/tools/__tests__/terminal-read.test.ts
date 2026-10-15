@@ -172,6 +172,23 @@ describe("terminal_read", () => {
     expect(resolveTerminalWindowId("s12", deepDeps)).toBe(7);
   });
 
+  it("defaults blockId/limit to the active terminal, marks it in the listing, and lets tabId win", async () => {
+    register("terminal:1", trackerWith([{ command: "echo one", output: "one\n", exit: 0 }]));
+    register("terminal:2", trackerWith([{ command: "echo two", output: "two\n", exit: 0 }]));
+    const withActive: TerminalReadToolDeps = { ...deps, activeTerminalTabId: (windowId) => (windowId === WINDOW ? "terminal:2" : undefined) };
+    const run = async (input: unknown) => {
+      const result = await createTerminalReadTool(withActive).execute(input, ctx);
+      return bodyOf(result.output as string, result.isError);
+    };
+    const listing = await run({}) as { terminals: Array<{ tabId: string; active?: boolean }> };
+    expect(listing.terminals.map((terminal) => [terminal.tabId, terminal.active === true])).toEqual([
+      ["terminal:1", false],
+      ["terminal:2", true],
+    ]);
+    expect(await run({ limit: 1 })).toMatchObject({ tabId: "terminal:2" });
+    expect(await run({ tabId: "terminal:1", limit: 1 })).toMatchObject({ tabId: "terminal:1" });
+  });
+
   it("rejects malformed input and unknown tabs or blocks", async () => {
     register("terminal:1", trackerWith([{ command: "x", output: "", exit: 0 }]));
     for (const input of [

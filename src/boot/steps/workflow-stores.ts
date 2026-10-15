@@ -33,6 +33,7 @@ import type { BootContext } from "../context.js";
 import { promptSurfaceResolver } from "../host-runtime.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
+import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 
 const log = createLogger("ave");
 
@@ -161,6 +162,8 @@ export async function setupWorkflowStores(
           },
           liveOriginSessionId: (sessionId: string): string | undefined =>
             subAgentRunnerRef.fn?.liveOriginSessionId(sessionId),
+          activeTerminalTabId: (windowId: number): string | undefined =>
+            browserTabRegistry.activeTerminalTabId(windowId),
         },
       }
       : {}),

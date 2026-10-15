@@ -22,6 +22,7 @@ function browserRequest(tabOpener: "agent" | "user"): ApprovalRequest {
     reason: "browser page action",
     source: "builtin",
     createdAt: Date.now(),
+    requireExplicit: false,
     trustOrigin: "user-keyboard",
     reviewerVerdict: { level: "medium", reason: "browser page action" },
     persistentAllowAllowed: true,
