@@ -20,6 +20,7 @@ import { Input } from "../../../components/ui/input.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
+import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
 import type { AveApi } from "../types.js";
 import { isFileChangeOperation, type ChatPreviewTarget, type WorkspaceFileItem } from "../preview/preview-targets.js";
 import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
@@ -1261,7 +1262,7 @@ export function BrowserWorkspace({
     }
     setAddressDraft(normalized);
     setAddressError(null);
-    onManualUrlChange(tabId, normalized);
+    void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, normalized));
   };
 
   return (

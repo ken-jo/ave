@@ -33,6 +33,18 @@ let unsubscribe: (() => void) | null = null;
 let controlled: ReadonlySet<string> = new Set();
 const controlListeners = new Set<() => void>();
 
+/** Main revokes ownership before any user navigation, including while the badge mirror is empty. */
+export async function navigateBrowserTabAsUser(api: AveApi, tabId: string, navigate: () => void): Promise<void> {
+  let stopped;
+  try {
+    stopped = await api.browserTabs?.stop(tabId);
+  } catch {
+    // An unconfirmed takeover must not navigate under the agent's authority.
+    return;
+  }
+  if (stopped?.ok) navigate();
+}
+
 function isWebview(element: Element): boolean {
   return element.tagName === "WEBVIEW";
 }

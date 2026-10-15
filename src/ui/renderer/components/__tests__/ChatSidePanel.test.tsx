@@ -50,6 +50,12 @@ function api(): AveApi {
     // the split ratio through the settings round-trip.
     getSettings: vi.fn(async () => ({}) as never),
     updateSettings: vi.fn(async () => ({ ok: true }) as never),
+    browserTabs: {
+      bindTab: vi.fn(async () => ({ ok: true })),
+      stop: vi.fn(async () => ({ ok: true })),
+      onTabOp: vi.fn(() => () => undefined),
+      onControl: vi.fn(() => () => undefined),
+    },
     sideChat: {
       send: vi.fn(async () => ({ ok: true, result: {} })),
       new: vi.fn(async () => ({ ok: true, sessionId: "side-1" })),
@@ -489,7 +495,7 @@ describe("ChatSidePanel", () => {
     expect(tab.textContent).not.toMatch(/2/);
   });
 
-  it("renders preview targets and separates browser artifacts and files across tabs", () => {
+  it("renders preview targets and separates browser artifacts and files across tabs", async () => {
     const targets: ChatPreviewTarget[] = [
       {
         id: "file-1",
@@ -592,7 +598,7 @@ describe("ChatSidePanel", () => {
     const addressInput = screen.getByTestId("chat-side-panel-browser-address") as HTMLInputElement;
     expect(addressInput.value).toBe("https://example.com/docs");
     fireEvent.change(addressInput, { target: { value: "google.com" } });
-    fireEvent.click(screen.getByTestId("chat-side-panel-browser-go"));
+    await act(async () => { fireEvent.click(screen.getByTestId("chat-side-panel-browser-go")); });
     const navigated = document.querySelector('[data-testid="chat-side-panel-browser-webview"]');
     // The same guest, navigated — not a second one.
     expect(navigated).toBe(webview);

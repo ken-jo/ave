@@ -629,8 +629,11 @@ export function App() {
     selectTab: (tabId) => {
       const { chatGroups: groups } = mainBrowserHostRef.current;
       const paneId = Object.entries(groups.contentById).find(([, content]) => content?.surface === tabId)?.[0];
-      if (paneId) groups.focus(paneId);
-      else groups.setPaneContent(groups.focusedId, { view: "web", surface: tabId });
+      if (paneId) {
+        groups.focus(paneId);
+        const surface = focusedActiveSurfaceRef.current;
+        if (surface?.tabId === tabId) showActiveSurface(surface);
+      } else groups.setPaneContent(groups.focusedId, { view: "web", surface: tabId });
     },
     closeTab: (tabId) => {
       const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;

@@ -89,6 +89,21 @@ afterEach(() => {
 });
 
 describe("ChatSidePanel agent browser", () => {
+  it("revokes control before side-panel address navigation without a badge report", async () => {
+    const { api } = makeApi();
+    render(<Harness api={api} />);
+    act(() => store!.adoptTab({ id: "browser:restored", kind: "browser", ordinal: 1 }, "https://a.example/"));
+    expect(screen.queryByTestId("agent-browser-control-badge")).toBeNull();
+    const address = screen.getByTestId("chat-side-panel-browser-address");
+    await act(async () => {
+      fireEvent.change(address, { target: { value: "https://a.example/user-chosen" } });
+      fireEvent.submit(address.closest("form")!);
+    });
+    expect(api.browserTabs!.stop).toHaveBeenCalledWith("browser:restored");
+    expect(store!.browserUrlByTab["browser:restored"]).toBe("https://a.example/user-chosen");
+    expect(screen.getByTestId("chat-side-panel-browser-webview")).toHaveAttribute("src", "https://a.example/user-chosen");
+  });
+
   it("binds a request-bound blank guest and keeps it mounted after navigation and tab switches", async () => {
     const { api } = makeApi();
     render(<Harness api={api} />);

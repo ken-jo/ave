@@ -34,7 +34,7 @@ import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, isMovableTabKi
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import { TerminalAttentionDot } from "./TerminalAttentionDot.js";
 import { useTerminalAttention } from "../preview/terminal-attention.js";
-import { forgetActiveSurface, showActiveSurface } from "../preview/active-surface.js";
+import { showActiveSurface } from "../preview/active-surface.js";
 import { AgentControlBadge } from "./AgentControlBadge.js";
 import { useAgentControlledTabIds } from "../preview/agent-browser-bridge.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
@@ -932,7 +932,6 @@ export function ChatSidePanel({
     (id: string) => {
       const closing = tabs.find((tab) => tab.id === id);
       if (closing?.kind === "terminal") void api.terminal?.kill(id);
-      forgetActiveSurface(id);
       closeTab(id);
     },
     [tabs, api, closeTab],

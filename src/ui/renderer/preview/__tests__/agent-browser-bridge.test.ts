@@ -4,7 +4,8 @@
  * conversation it is for.
  */
 import { describe, expect, it, vi } from "vitest";
-import { routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
+import { navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
+import type { AveApi } from "../../types.js";
 
 function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { calls: string[] } {
   const calls: string[] = [];
@@ -17,6 +18,30 @@ function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { call
     closeTab: vi.fn((tabId) => calls.push(`close ${tabId}`)),
   };
 }
+
+describe("user browser navigation", () => {
+  it("waits for main to confirm takeover before navigating", async () => {
+    let confirm!: (result: { ok: true }) => void;
+    const stop = vi.fn(() => new Promise<{ ok: true }>((resolve) => { confirm = resolve; }));
+    const navigate = vi.fn();
+    const navigation = navigateBrowserTabAsUser({ browserTabs: { stop } } as unknown as AveApi, "browser:1", navigate);
+    expect(stop).toHaveBeenCalledWith("browser:1");
+    expect(navigate).not.toHaveBeenCalled();
+    confirm({ ok: true });
+    await navigation;
+    expect(navigate).toHaveBeenCalledOnce();
+  });
+
+  it.each(["refused", "rejected", "unavailable"])("does not navigate when takeover is %s", async (failure) => {
+    const stop = failure === "rejected"
+      ? vi.fn(async () => { throw new Error("disconnected"); })
+      : vi.fn(async () => ({ ok: false, error: "bad-request" }));
+    const api = (failure === "unavailable" ? {} : { browserTabs: { stop } }) as unknown as AveApi;
+    const navigate = vi.fn();
+    await navigateBrowserTabAsUser(api, "browser:1", navigate);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+});
 
 describe("routeBrowserTabOp", () => {
   it("opens a new tab beside the conversation it is for, else in the first view", () => {

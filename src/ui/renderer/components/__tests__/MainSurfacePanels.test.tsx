@@ -10,10 +10,11 @@ import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { SurfacePane, directoryName, webPanelTitle } from "../MainSurfacePanels.js";
 import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { useMainSurfaces, type MainSurface } from "../../preview/main-surfaces.js";
-import { getWebSurfaces, noteWebSurfaceLocation } from "../../preview/web-surfaces.js";
+import { getWebSurfaces, noteWebSurfaceLocation, setWebSurfaceElement } from "../../preview/web-surfaces.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { __resetBrowserTabBridgeForTest, registerBrowserTabHost } from "../../preview/agent-browser-bridge.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
+import { BrowserTabRegistry, type BrowserGuest } from "../../../../main/browser/browser-tab-registry.js";
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -111,6 +112,60 @@ describe("useMainSurfaces", () => {
 describe("SurfacePane", () => {
   const surface = (kind: MainSurface["kind"], url: string | null = null): MainSurface => ({ tabId: `${kind}:90${kind.length}`, kind, ordinal: 2, url });
 
+  it.each(["address", "back", "forward", "reload"])("revokes restored agent ownership before user %s navigation without a control report", async (action) => {
+    __resetBrowserTabBridgeForTest();
+    const tabs = new BrowserTabRegistry<BrowserGuest>();
+    let requestId = "";
+    tabs.setRendererLink({ sendTabOp: (_window, request) => { requestId = request.requestId; return true; }, sendControl: () => {} });
+    const guest = { id: 71, url: "about:blank", isDestroyed: () => false, getURL() { return this.url; }, getTitle: () => "Page" };
+    const opened = tabs.requestTabOp(1, { op: "new", url: "https://a.example/" });
+    tabs.guestAttached(guest, 1);
+    const tabId = "browser:restored";
+    tabs.bindTab(1, { tabId, webContentsId: guest.id, requestId });
+    const result = await opened;
+    if (!result.ok) throw new Error(result.error);
+    const record = tabs.liveTab(result.tabId)!;
+    guest.url = "https://a.example/";
+    tabs.navigationStarted(guest.id, guest.url);
+    tabs.guestDestroyed(guest.id);
+    const next = { ...guest, id: 72 };
+    tabs.guestAttached(next, 1);
+    const pendingAction = record.actions.signal;
+    const stop = vi.fn(async (id: string) => ({ ok: tabs.stop(1, id) }));
+    const api = { ...makeMockAveApi().api, browserTabs: { stop, bindTab: vi.fn(), onTabOp: () => () => {}, onControl: () => () => {} } };
+    const navigate = vi.fn(() => {
+      next.url = "https://a.example/user-chosen";
+      tabs.navigationStarted(next.id, next.url);
+    });
+    const element = Object.assign(document.createElement("webview"), {
+      getURL: () => next.url, getTitle: () => "Page", canGoBack: () => true, canGoForward: () => true,
+      goBack: navigate, goForward: navigate, reload: navigate,
+    });
+    setWebSurfaceElement(tabId, element);
+    const unregister = registerBrowserTabHost(api as never, { sessionId: () => null, hasTab: () => false, selectTab: () => {}, closeTab: () => {} });
+    try {
+      render(<TooltipProvider><SurfacePane api={api as never} surface={{ kind: "browser", tabId, ordinal: 1, url: guest.url }} paneId="main" frame={{}} onNavigate={navigate} onCwd={() => {}} /></TooltipProvider>);
+      expect(screen.queryByTestId("agent-browser-control-badge")).toBeNull();
+      await act(async () => {
+        if (action === "address") {
+          const address = screen.getByTestId("web-panel-address");
+          fireEvent.change(address, { target: { value: "https://a.example/user-chosen" } });
+          fireEvent.submit(address.closest("form")!);
+        } else fireEvent.click(screen.getByTestId(`web-panel-${action}`));
+      });
+      expect(next.url).toBe("https://a.example/user-chosen");
+      tabs.bindTab(1, { tabId, webContentsId: next.id });
+      expect(tabs.liveTab(result.tabId)?.opener).toBe("user");
+      expect(tabs.liveTab(result.tabId)?.agentOrigin).toBeNull();
+      expect(pendingAction.aborted).toBe(true);
+      expect(stop.mock.invocationCallOrder[0]!).toBeLessThan(navigate.mock.invocationCallOrder[0]!);
+    } finally {
+      unregister();
+      setWebSurfaceElement(tabId, null);
+      __resetBrowserTabBridgeForTest();
+    }
+  });
+
   it("draws a terminal pane on its tab's PTY, mounted at the pane", async () => {
     const { api } = makeMockAveApi();
     const terminal = terminalApi();
@@ -124,11 +179,11 @@ describe("SurfacePane", () => {
     expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:908" }));
   });
 
-  it("draws an empty web pane until an address is entered, and validates the address", () => {
+  it("draws an empty web pane until an address is entered, and validates the address", async () => {
     const onNavigate = vi.fn();
     render(
       <TooltipProvider>
-        <SurfacePane api={makeMockAveApi().api as never} surface={surface("browser")} paneId="main" frame={{}} onNavigate={onNavigate} onCwd={() => {}} />
+        <SurfacePane api={makeMockAveApi({ browserTabs: true }).api as never} surface={surface("browser")} paneId="main" frame={{}} onNavigate={onNavigate} onCwd={() => {}} />
       </TooltipProvider>,
     );
     expect(screen.getByTestId("web-panel-empty")).toBeTruthy();
@@ -139,11 +194,11 @@ describe("SurfacePane", () => {
     expect(onNavigate).not.toHaveBeenCalled();
     expect(screen.getByTestId("web-panel-address-error")).toBeTruthy();
     fireEvent.change(address, { target: { value: "example.com/docs" } });
-    fireEvent.submit(address.closest("form")!);
+    await act(async () => { fireEvent.submit(address.closest("form")!); });
     expect(onNavigate).toHaveBeenCalledWith("browser:907", "https://example.com/docs");
   });
 
-  it("badges a web pane the agent controls; its stop, and the user driving the address row, take the tab back", () => {
+  it("badges a web pane the agent controls; its stop, and the user driving the address row, take the tab back", async () => {
     let emitControl: (state: BrowserTabControlState) => void = () => {};
     const stop = vi.fn(async () => ({ ok: true as const }));
     const api = {
@@ -168,12 +223,12 @@ describe("SurfacePane", () => {
         </TooltipProvider>,
       );
       const address = screen.getByTestId("web-panel-address");
-      // Not the agent's: the address row navigates and stops nothing.
+      // The badge is only a mirror: navigation always asks main to revoke control.
       expect(screen.queryByTestId("agent-browser-control-badge")).toBeNull();
       fireEvent.change(address, { target: { value: "https://b.example/" } });
-      fireEvent.submit(address.closest("form")!);
+      await act(async () => { fireEvent.submit(address.closest("form")!); });
       expect(onNavigate).toHaveBeenLastCalledWith(page.tabId, "https://b.example/");
-      expect(stop).not.toHaveBeenCalled();
+      expect(stop).toHaveBeenCalledWith(page.tabId);
 
       act(() => emitControl({ agentControlledTabIds: [page.tabId] }));
       expect(screen.getByTestId("web-panel")).toContainElement(screen.getByTestId("agent-browser-control-badge"));
@@ -182,7 +237,7 @@ describe("SurfacePane", () => {
 
       stop.mockClear();
       fireEvent.change(address, { target: { value: "https://c.example/" } });
-      fireEvent.submit(address.closest("form")!);
+      await act(async () => { fireEvent.submit(address.closest("form")!); });
       expect(stop).toHaveBeenCalledWith(page.tabId);
       expect(stop.mock.invocationCallOrder[0]!).toBeLessThan(onNavigate.mock.invocationCallOrder.at(-1)!);
       expect(onNavigate).toHaveBeenLastCalledWith(page.tabId, "https://c.example/");

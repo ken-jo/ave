@@ -90,6 +90,18 @@ describe("BrowserTabRegistry", () => {
     expect(control.at(-1)).toEqual({ windowId: 1, state: { agentControlledTabIds: ["browser:1"] } });
   });
 
+  it("keeps an unknown tab user-owned when takeover arrives before its first bind", async () => {
+    const { registry, ops } = setup();
+    const opened = registry.requestTabOp(1, { op: "new", url: "https://a.example/" });
+    const requestId = ops.at(-1)!.request.requestId;
+    registry.stop(1, "browser:restoring");
+    registry.guestAttached(new FakeGuest(11, "about:blank"), 1);
+    expect(registry.bindTab(1, { tabId: "browser:restoring", webContentsId: 11, requestId })).toEqual({ ok: true });
+    await expect(opened).resolves.toEqual({ ok: false, error: "aborted" });
+    expect(registry.liveTab("tab-1")?.opener).toBe("user");
+    expect(registry.liveTab("tab-1")?.agentOrigin).toBeNull();
+  });
+
   it("does not let another window's bind claim a new-tab request", async () => {
     vi.useFakeTimers();
     const { registry, ops } = setup();
@@ -160,7 +172,9 @@ describe("BrowserTabRegistry", () => {
     expect(agentSignal.aborted).toBe(true);
     expect(registry.liveTab("tab-2")?.opener).toBe("user");
     expect(control.at(-1)).toEqual({ windowId: 1, state: { agentControlledTabIds: [] } });
-    expect(registry.stop(2, "browser:1")).toBe(false);
+    const currentSignal = registry.liveTab("tab-2")!.actions.signal;
+    expect(registry.stop(2, "browser:1")).toBe(true);
+    expect(currentSignal.aborted).toBe(false);
   });
 
   it("keeps the active surface per window and reports the active terminal", () => {

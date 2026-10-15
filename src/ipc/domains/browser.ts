@@ -4,7 +4,7 @@
  *
  * Channels (ALL INTERNAL — never in PUBLIC_CHANNELS / EXTERNAL_MUTATION_CHANNELS):
  *   `ave:browser:bind-tab`    invoke  renderer→main  tab id ↔ guest webContents id
- *   `ave:browser:stop`        invoke  renderer→main  badge stop on an agent tab
+ *   `ave:browser:stop`        invoke  renderer→main  revoke agent control before user navigation or on stop
  *   `ave:browser:tab-op`      event   main→renderer  new / select / close a tab
  *   `ave:browser:control`     event   main→renderer  the window's agent-controlled tabs
  *   `ave:surface:set-active`  invoke  renderer→main  the window's active browser/terminal tab
