@@ -21,13 +21,13 @@ function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { call
 
 describe("user browser navigation", () => {
   it("waits for main to confirm takeover before navigating", async () => {
-    let confirm!: (result: { ok: true }) => void;
-    const stop = vi.fn(() => new Promise<{ ok: true }>((resolve) => { confirm = resolve; }));
+    let resolveStop!: (result: { ok: true }) => void;
+    const stop = vi.fn(() => new Promise<{ ok: true }>((resolve) => { resolveStop = resolve; }));
     const navigate = vi.fn();
     const navigation = navigateBrowserTabAsUser({ browserTabs: { stop } } as unknown as AveApi, "browser:1", navigate);
     expect(stop).toHaveBeenCalledWith("browser:1");
     expect(navigate).not.toHaveBeenCalled();
-    confirm({ ok: true });
+    resolveStop({ ok: true });
     await navigation;
     expect(navigate).toHaveBeenCalledOnce();
   });
