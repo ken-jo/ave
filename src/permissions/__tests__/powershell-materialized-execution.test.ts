@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { _inspectPowerShellForTest, inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 
 const CWD = "/work/project";
@@ -186,6 +189,44 @@ describe("file execution provenance", () => {
     "jpeg", "gif", "json", "xml", "docx", "xlsx", "pptx", "wav", "mp4", "rtf", "svg", "tiff",
   ])("opens common document, media and data associations: %s", (extension) => {
     expect(inspectPowerShellCommand(`Invoke-Item report.${extension}`, CWD)).toEqual({ sensitive: null, exfiltration: null });
+  });
+
+  describe("literal directory associations", () => {
+    let root: string;
+    beforeAll(() => {
+      root = mkdtempSync(join(tmpdir(), "ave-associated-directory-"));
+      mkdirSync(join(root, "ProjectDocs"));
+      writeFileSync(join(root, "program"), "ordinary file");
+    });
+    afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+    it("allows a literal path verified as an existing directory without a trailing separator", () => {
+      for (const command of [
+        "Invoke-Item ProjectDocs", "ii 'ProjectDocs'", "Invoke-Item -LiteralPath:ProjectDocs",
+        `Invoke-Item '${join(root, "ProjectDocs").replace(/'/g, "''")}'`,
+      ]) expect(inspectPowerShellCommand(command, root)).toEqual({ sensitive: null, exfiltration: null });
+    });
+
+    it("requires approval for missing, non-directory and unresolved extensionless targets", () => {
+      for (const command of [
+        "Invoke-Item unresolved", "Invoke-Item program", "Invoke-Item $folder",
+        "$folder = 'ProjectDocs'; Invoke-Item $folder", "Invoke-Item ('ProjectDocs')",
+        "Invoke-Item 'ProjectDocs'$suffix",
+        "Invoke-Item (Join-Path . ProjectDocs)",
+        "$file = 'report.pdf'; Invoke-Item $file", "Invoke-Item ('report.pdf')",
+        "$p = @{ Path = 'ProjectDocs' }; Invoke-Item @p",
+        "Remove-Item ProjectDocs; Invoke-Item ProjectDocs",
+        "Unknown-Writer ProjectDocs; Invoke-Item ProjectDocs",
+        "New-Item -ItemType Directory -Path ProjectDocs; Invoke-Item ProjectDocs",
+        "Set-Location elsewhere; Invoke-Item ProjectDocs",
+        "pwsh -WorkingDirectory elsewhere -Command 'Invoke-Item ProjectDocs'",
+        "Unknown-Runner 'Invoke-Item ProjectDocs'",
+      ]) expect(inspectPowerShellCommand(command, root).exfiltration).not.toBeNull();
+      const repeated = _inspectPowerShellForTest("Invoke-Item ProjectDocs; ".repeat(40), root);
+      expect(repeated.exfiltration).not.toBeNull();
+      expect(repeated.exhausted).toBe(true);
+      expect(repeated.steps).toBeLessThanOrEqual(repeated.limits.steps);
+    });
   });
 
   it("preserves the existing explicit script-path floor", () => {

@@ -1,4 +1,5 @@
-import { posix } from "node:path";
+import { statSync } from "node:fs";
+import { isAbsolute, posix } from "node:path";
 import { POWERSHELL_COMMAND_POLICIES, PowerShellAnalysisBudget } from "./powershell-command-policy.js";
 
 /**
@@ -68,6 +69,20 @@ export class PowerShellFileProvenance {
   isDirectory(text: string): boolean {
     this.budget.spend();
     return /[\\/]$/.test(text) || /^(?:\.{1,2}|[a-z]:[\\/])$/i.test(text);
+  }
+
+  /** A pre-call directory observation cannot survive possible filesystem effects. */
+  isExistingDirectory(text: string): boolean {
+    this.budget.spend(1, text.length);
+    if (this.revision !== 0 || /^(?:~|[\\/]{2})/.test(text) || /^[\\/]{2}/.test(this.cwd ?? "")
+      || (process.platform !== "win32" && (/^[a-z]:/i.test(text) || /^[a-z]:/i.test(this.cwd ?? "")))
+      || (!isAbsolute(text) && (this.cwd === undefined || !isAbsolute(this.cwd)))
+      || (process.platform === "win32" && !/^[a-z]:[\\/]/i.test(isAbsolute(text) ? text : this.cwd ?? ""))) return false;
+    // Charge metadata queries before issuing them; repeated probes exhaust the shared budget.
+    this.budget.spend(256);
+    const path = isAbsolute(text) ? text : `${this.cwd}/${text}`;
+    try { return statSync(path).isDirectory(); }
+    catch { return false; }
   }
 
   record(text: string | undefined, options: { source?: string; directory?: boolean; tree?: boolean } = {}): void {

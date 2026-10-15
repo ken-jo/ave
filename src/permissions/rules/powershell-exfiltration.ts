@@ -772,6 +772,14 @@ function filePath(tokens: readonly PsToken[], ctx: Context): string | undefined 
   return path.state === "opaque" ? undefined : path.provider === "filesystem" ? normalizePaths(path.path) : null;
 }
 
+/** Associations require a literal operand, not a value inferred from runtime code. */
+function literalFilePath(token: PsToken, ctx: Context): string | undefined | null {
+  if (token.kind !== "word" || token.nested.length !== 0
+    || (!(token.raw.startsWith("'") || token.raw.startsWith("@'")) && /[$`]/.test(token.raw))) return undefined;
+  const path = providerPath(valueOf(token.text, false, ctx), ctx);
+  return path.state === "opaque" ? undefined : path.provider === "filesystem" ? path.path.replace(/\\/g, "/") : null;
+}
+
 function pathBinding(bound: BoundArguments, role: PowerShellPathBinding | undefined, source: PowerShellPathBinding | undefined): PsToken[] {
   if (!role) return [];
   for (const parameter of role.parameters) {
@@ -845,6 +853,7 @@ function fileExecutionSignal(stage: PsCommand, feeder: PsCommand | undefined, ct
     return file ? `PowerShell hidden code (materialized file${file.catalogue ? `, catalogue ${file.catalogue}` : ""})` : null;
   };
   if (name === "invoke-item") {
+    if (args.some((token) => token.kind === "word" && !token.quoted && /^@\w+$/.test(token.text))) return "PowerShell hidden code (nonliteral file association target)";
     const expanded = expandSplats(args, ctx);
     const bound = expanded === null ? undefined : bindArguments(expanded, POWERSHELL_COMMAND_POLICIES[name]!.parameters, ctx);
     if (bound?.state !== "known") return "PowerShell hidden code (opaque file association binding)";
@@ -854,11 +863,12 @@ function fileExecutionSignal(stage: PsCommand, feeder: PsCommand | undefined, ct
     const paths = named.length ? named : bound.positional;
     if (!paths.length) return feeder ? "PowerShell hidden code (opaque associated pipeline item)" : null;
     for (const token of paths) {
-      const path = filePath([token], ctx);
+      const path = literalFilePath(token, ctx);
       if (!path || /[*?\[\]]/.test(path)) return "PowerShell hidden code (opaque file association target)";
       const file = ctx.files.lookup(path);
       if (file?.catalogue) return materialized(path);
-      if (ctx.files.isDirectory(path) || ctx.files.fileType(path) === "document") continue;
+      if (ctx.files.isDirectory(path) || ctx.files.fileType(path) === "document"
+        || (!probe && !ctx.launched && ctx.files.isExistingDirectory(path))) continue;
       return materialized(path) ?? "PowerShell hidden code (opaque associated file payload)";
     }
     return null;
