@@ -507,7 +507,8 @@ export async function authorizeToolInvocation(
     // foreground reviewer, no remembered approval, and below, an allow-once /
     // deny-once prompt that records nothing. Deny and standing allows stand.
     const requiresPerActionApproval =
-      source === "builtin" && tool.requiresPerActionApproval?.(finalInput) === true;
+      source === "builtin" &&
+      tool.requiresPerActionApproval?.(finalInput, sessionId === undefined ? {} : { sessionId }) === true;
     if (requiresPerActionApproval && permissionResult.decision === "ask") {
       const { reviewer: _reviewer, ...withoutReviewer } = permissionResult;
       permissionResult = { ...withoutReviewer, forceModal: true };

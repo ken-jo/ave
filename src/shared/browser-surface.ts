@@ -16,7 +16,7 @@
  */
 
 /** The workspace surfaces a window can show and agent tools can default to. */
-export type WorkspaceSurfaceKind = "browser" | "terminal";
+type WorkspaceSurfaceKind = "browser" | "terminal";
 
 /**
  * The surface the user is looking at in one window — a HINT, not an

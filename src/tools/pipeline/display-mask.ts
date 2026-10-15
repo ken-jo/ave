@@ -75,8 +75,9 @@ function approvalMemoryFor(
   input: Record<string, unknown>,
   cwd: string,
   hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
+  sessionId?: string,
 ): ApprovalMemory {
-  const scope = tool.approvalMemoryScope?.(input, { cwd });
+  const scope = tool.approvalMemoryScope?.(input, sessionId === undefined ? { cwd } : { cwd, sessionId });
   if (scope === undefined) return ARGS_APPROVAL_MEMORY;
   const executionPlan = hostShellExecutionPlan === undefined
     ? null
@@ -93,10 +94,11 @@ export function approvalIdentityFor(
   input: Record<string, unknown>,
   cwd: string,
   hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
+  sessionId?: string,
 ): InvocationApprovalIdentity {
   return {
     approvalCacheKey: approvalCacheKeyFor(tool, input, cwd, hostShellExecutionPlan),
-    approvalMemory: approvalMemoryFor(tool, input, cwd, hostShellExecutionPlan),
+    approvalMemory: approvalMemoryFor(tool, input, cwd, hostShellExecutionPlan, sessionId),
   };
 }
 

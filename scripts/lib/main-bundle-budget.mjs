@@ -67,10 +67,16 @@ export function isSafeMainBundleManifestPath(path) {
  * consulted by the permission manager on every tool call, so they belong in the initial
  * graph; with the permissions category joined with that `main` the measurement is entry
  * 423_073, initial 5_389_392, total 9_031_357, and the initial ceiling moves to 5_390_000.
+ * The agent browser tools keep their schemas, execute bodies and CDP page actions out of
+ * the initial graph (desktop-boot and dynamic imports); what joins it is what boot wires
+ * eagerly: the browser tab registry and its IPC domain, guest tracking on did-attach, the
+ * tools' en/ko catalog fragments (the catalog barrel imports every fragment) and the
+ * approval card's browser-scope strings. Measured entry 425_021, initial 5_410_089,
+ * total 9_077_544; the initial ceiling moves to 5_412_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_390_000,
+  initialBytes: 5_412_000,
   totalBytes: 11_050_000,
 });
 

@@ -81,7 +81,7 @@ interface PendingTabOp {
 }
 
 /** How long the renderer has to carry out a tab operation. */
-export const BROWSER_TAB_OP_TIMEOUT_MS = 15_000;
+const BROWSER_TAB_OP_TIMEOUT_MS = 15_000;
 
 const AGENT_INPUT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "keyDown",

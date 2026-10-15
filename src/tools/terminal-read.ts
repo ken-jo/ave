@@ -34,6 +34,7 @@ import { getWindowTerminalBlockTracker, listTerminalBlockTabs } from "../main/te
 import type { TerminalBlock } from "../shared/terminal-blocks.js";
 import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 import { t } from "../i18n/index.js";
+import { resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
@@ -46,37 +47,20 @@ const SUMMARIES_PER_TAB = 10;
  */
 const MAX_RESPONSE_OUTPUT_CHARS = 96 * 1024;
 
-/** Nested sub-agent levels walked to find the conversation a child belongs to. */
-const MAX_SCOPE_DEPTH = 8;
-
-export interface TerminalReadToolDeps {
-  /** The window id hosting this interactive session, or null when none does. */
-  windowIdForHostedSession: (sessionId: string) => number | null;
-  /** The spawning session of a running sub-agent, or undefined for any other session. */
-  liveOriginSessionId: (sessionId: string) => string | undefined;
+export interface TerminalReadToolDeps extends SessionWindowScopeDeps {
   /** The terminal tab the user is looking at in a window, if a terminal is the active surface. */
   activeTerminalTabId?: (windowId: number) => string | undefined;
 }
 
 /**
- * The app window whose terminals `sessionId` may read: its own window when a
- * window hosts it, else its parent's when it is a running sub-agent, else
- * none. Never a default — an unresolved session reads nothing.
+ * The app window whose terminals `sessionId` may read (session-window-scope.ts):
+ * its own window, else its parent's when it is a running sub-agent, else none.
  */
 export function resolveTerminalWindowId(
   sessionId: string | undefined,
-  deps: TerminalReadToolDeps,
+  deps: SessionWindowScopeDeps,
 ): number | null {
-  const seen = new Set<string>();
-  let current = sessionId;
-  for (let depth = 0; current !== undefined && depth <= MAX_SCOPE_DEPTH; depth++) {
-    if (seen.has(current)) return null;
-    seen.add(current);
-    const windowId = deps.windowIdForHostedSession(current);
-    if (windowId !== null) return windowId;
-    current = deps.liveOriginSessionId(current);
-  }
-  return null;
+  return resolveSessionWindowId(sessionId, deps);
 }
 
 function failure(error: string) {

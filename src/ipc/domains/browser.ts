@@ -24,6 +24,7 @@ import { createLogger } from "../../lib/logger.js";
 import { getMainWindows, mainWindowForContents } from "../../main/app-state.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import type {
+  BrowserTabStopRequest,
   ActiveWorkspaceSurface,
   BrowserTabBindResult,
 } from "../../shared/browser-surface.js";
@@ -92,7 +93,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
       return { ok: false, error: "unauthorized-frame" };
     }
     const win = mainWindowForContents(e.sender);
-    const tabId = asTabId((payload as { tabId?: unknown } | null)?.tabId);
+    const tabId = asTabId((payload as { [K in keyof BrowserTabStopRequest]?: unknown } | null)?.tabId);
     if (!win || tabId === null) return { ok: false, error: "bad-request" };
     return browserTabRegistry.stop(win.id, tabId) ? { ok: true } : { ok: false, error: "no-such-tab" };
   });

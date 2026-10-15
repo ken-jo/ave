@@ -19,6 +19,7 @@ import { ko as ko_be_askUserQuestion } from "../generated/be_askUserQuestion.js"
 import { ko as ko_be_askUserQuestionGate } from "../generated/be_askUserQuestionGate.js";
 import { ko as ko_be_bashAstValidator } from "../generated/be_bashAstValidator.js";
 import { ko as ko_be_boot } from "../generated/be_boot.js";
+import { ko as ko_be_browserTools } from "../generated/be_browserTools.js";
 import { ko as ko_be_chatDomain } from "../generated/be_chatDomain.js";
 import { ko as ko_be_chatStreamState } from "../generated/be_chatStreamState.js";
 import { ko as ko_be_conversationLoop } from "../generated/be_conversationLoop.js";
@@ -200,6 +201,7 @@ export const koMessages: Record<string, string> = {
   ...ko_be_askUserQuestionGate,
   ...ko_be_bashAstValidator,
   ...ko_be_boot,
+  ...ko_be_browserTools,
   ...ko_be_chatDomain,
   ...ko_be_chatStreamState,
   ...ko_be_conversationLoop,
