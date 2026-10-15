@@ -17,7 +17,6 @@ import {
   buildAvePlatformWorld,
   buildAveWindowWorld,
   readInitialAppModeArg,
-  readWindowRoleArg,
   readInitialThemeArg,
 } from "./preload/internal-surface.js";
 import { PRELOAD_BUNDLES } from "./shared/preload-bundles.js";
@@ -68,10 +67,6 @@ contextBridge.exposeInMainWorld("__aveInitialTheme", aveInitialTheme);
 // Expose the persisted workspace mode so App.tsx can seed its `appMode` /
 // `sidebarCollapsed` state synchronously on mount (frame-0 correct layout).
 contextBridge.exposeInMainWorld("__aveInitialAppMode", aveInitialAppMode);
-
-// Expose which main window this is, so the renderer can keep one-per-app
-// state (the saved main-area layout) to the primary window.
-contextBridge.exposeInMainWorld("__aveWindowRole", readWindowRoleArg());
 
 contextBridge.exposeInMainWorld("aveApi", api);
 // Dev mode runtime flag — main process sets NODE_ENV=development in

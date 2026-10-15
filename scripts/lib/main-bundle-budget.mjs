@@ -73,8 +73,9 @@ export function isSafeMainBundleManifestPath(path) {
  * moves to 5_395_000. The saved main-window layout is checked by the settings store when
  * the profile is read at boot (`shared/main-layout.ts`, one parser for both processes),
  * so it is initial too, together with the terminal tab-id scope the parser checks ids
- * against (`shared/tab-id.ts`); with them the measurement is entry 423_380, initial
- * 5_397_588, total 9_039_613, and the initial ceiling moves to 5_400_000.
+ * against (`shared/tab-id.ts`), and main-window closing a closed window's terminals; with
+ * them the measurement is entry 423_380, initial 5_398_620, total 9_040_646, and the
+ * initial ceiling moves to 5_400_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,

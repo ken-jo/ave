@@ -107,7 +107,6 @@ describe("preload contextBridge world shape lock", () => {
         "__aveDevMode",
         "__aveInitialAppMode",
         "__aveInitialTheme",
-        "__aveWindowRole",
         "ave",
         "aveApi",
         "aveDrop",
@@ -128,7 +127,6 @@ describe("preload contextBridge world shape lock", () => {
         "__aveDevMode": "boolean",
         "__aveInitialAppMode": "null",
         "__aveInitialTheme": "null",
-        "__aveWindowRole": "null",
         "ave": {
           "approval": [
             "listPending",

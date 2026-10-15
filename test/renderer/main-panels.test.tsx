@@ -433,7 +433,9 @@ describe("main-area terminal and web panels", () => {
       panelOpenIds: [],
       sideTabs: {},
     };
-    vi.stubGlobal("__aveWindowRole", "secondary");
+    // Main loads a secondary window with the role query (`shared/main-window-role.ts`).
+    const before = window.location.href;
+    window.history.replaceState(null, "", "?aveWindow=secondary");
     try {
       const { container, api } = await renderApp({
         hasApiKey: true,
@@ -451,7 +453,7 @@ describe("main-area terminal and web panels", () => {
         .filter(([patch]) => (patch as { system?: { mainLayout?: unknown } }).system?.mainLayout !== undefined);
       expect(layoutWrites).toEqual([]);
     } finally {
-      vi.unstubAllGlobals();
+      window.history.replaceState(null, "", before);
     }
   });
 

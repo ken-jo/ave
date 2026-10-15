@@ -133,6 +133,7 @@ import {
   resizeTerminal,
   killTerminal,
   killAllTerminals,
+  killTerminalsOwnedBy,
   forceKillAllTerminalsForShutdown,
   setTerminalEmitter,
   __resetTerminalsForTest,
@@ -384,13 +385,19 @@ describe("pty-manager lifecycle", () => {
     resizeTerminal("terminal:0000000a-1", 140, 50);
     expect(lastPty?.written).toEqual([]);
     expect(lastPty?.resized).toEqual([]);
-    const replay = await spawnTerminal({ tabId: "terminal:0000000a-1" });
-    expect(replay.ok).toBe(true);
-    if (replay.ok) expect(replay.replayed).toBe(true);
+    // A spawn under the closing id does not attach to the dying shell, and no
+    // second PTY starts while it is alive: it waits for the exit.
+    const closing = lastPty!;
+    const next = spawnTerminal({ tabId: "terminal:0000000a-1" });
+    await Promise.resolve();
     expect(ptySpawnMock).toHaveBeenCalledTimes(1);
-    lastPty?.emitExit(0);
+    closing.emitExit(0);
     expect(cleanupMock).toHaveBeenCalledTimes(1);
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
+    expect(await next).toEqual({ ok: true, tabId: "terminal:0000000a-1", replayed: false });
+    expect(ptySpawnMock).toHaveBeenCalledTimes(2);
+    killTerminal("terminal:0000000a-1");
+    lastPty?.emitExit(0);
     expect(__terminalSessionCountForTest()).toBe(0);
   });
 
@@ -517,6 +524,63 @@ describe("pty-manager window ownership (two windows)", () => {
     ]);
     // An exited shell no longer holds its id.
     expect(terminalOwnedBy("terminal:0000000a-1", 2)).toBe(true);
+  });
+});
+
+describe("pty-manager window close (close, then reopen and restore)", () => {
+  it("closes a closed window's shells, and the next window's restore of the same id gets a new shell once the old one exits", async () => {
+    expect((await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 1 })).ok).toBe(true);
+    const old = lastPty!;
+    expect((await spawnTerminal({ tabId: "terminal:0000000b-1", ownerWindowId: 2 })).ok).toBe(true);
+    const otherWindow = lastPty!;
+
+    expect(killTerminalsOwnedBy(1)).toBe(1);
+    expect(old.killed).toBe(true);
+    expect(otherWindow.killed).toBe(false);
+    // The closed window no longer owns the id.
+    expect(terminalOwnedBy("terminal:0000000a-1", 3)).toBe(true);
+
+    // The reopened window restores the saved layout under the same id.
+    let settled = false;
+    const restored = spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 3 }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    // Not attached to the dying shell: it waits for it.
+    expect(settled).toBe(false);
+    old.emitExit(129);
+    expect(await restored).toEqual({ ok: true, tabId: "terminal:0000000a-1", replayed: false });
+    expect(ptySpawnMock).toHaveBeenCalledTimes(3);
+    expect(terminalOwnedBy("terminal:0000000a-1", 3)).toBe(true);
+    expect(terminalOwnedBy("terminal:0000000a-1", 1)).toBe(false);
+  });
+
+  it("cancels a closed window's spawn still starting, and the restore after it starts fresh", async () => {
+    const starting = spawnTerminal({ tabId: "terminal:0000000a-2", ownerWindowId: 1 });
+    expect(killTerminalsOwnedBy(1)).toBe(1);
+    const restored = await spawnTerminal({ tabId: "terminal:0000000a-2", ownerWindowId: 3 });
+    expect((await starting).ok).toBe(false);
+    expect(restored).toEqual({ ok: true, tabId: "terminal:0000000a-2", replayed: false });
+    expect(terminalOwnedBy("terminal:0000000a-2", 3)).toBe(true);
+  });
+
+  it("refuses clearly, rather than hanging, when the old shell will not exit", async () => {
+    vi.useFakeTimers();
+    try {
+      expect((await spawnTerminal({ tabId: "terminal:0000000a-3", ownerWindowId: 1 })).ok).toBe(true);
+      killTerminalsOwnedBy(1);
+      const restored = spawnTerminal({ tabId: "terminal:0000000a-3", ownerWindowId: 3 });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await restored).toEqual({
+        ok: false,
+        reason: "spawn-failed",
+        message: "the previous shell for this tab is still closing",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

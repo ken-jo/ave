@@ -132,6 +132,9 @@ interface TerminalSession {
   forceKillTimer: ReturnType<typeof setTimeout> | null;
   closing: boolean;
   exited: boolean;
+  /** Settles when the shell has exited and the session is dropped. */
+  gone: Promise<void>;
+  markGone: () => void;
 }
 
 interface TerminalSpawnInFlight {
@@ -251,6 +254,16 @@ export function spawnTerminal(options: SpawnTerminalOptions): Promise<SpawnTermi
       reason: "spawn-failed",
       message: "Terminal shutdown is already in progress",
     });
+  }
+
+  // A shell still closing under this id (its window closed, and that window's
+  // saved layout is now being restored) is waited out, then a new one starts:
+  // replaying the dying one would attach the tab to a shell about to exit.
+  const retiring = retiringTerminal(tabId);
+  if (retiring) {
+    return retiring.then((gone) => gone
+      ? spawnTerminal(options)
+      : { ok: false, reason: "spawn-failed", message: "the previous shell for this tab is still closing" });
   }
 
   // Idempotent replay for a remounting renderer.
@@ -447,6 +460,8 @@ async function spawnNewTerminal(
       env: childEnv,
     });
 
+    let markGone!: () => void;
+    const gone = new Promise<void>((resolve) => { markGone = resolve; });
     const session: TerminalSession = {
       pty,
       ownerWindowId: options.ownerWindowId ?? null,
@@ -459,6 +474,8 @@ async function spawnNewTerminal(
       forceKillTimer: null,
       closing: false,
       exited: false,
+      gone,
+      markGone,
     };
 
     const dataSub = pty.onData((chunk) => {
@@ -486,6 +503,7 @@ async function spawnNewTerminal(
       session.disposeData();
       session.disposeExit();
       if (sessions.get(tabId) === session) sessions.delete(tabId);
+      session.markGone();
     });
     session.disposeExit = () => exitSub.dispose();
 
@@ -511,11 +529,12 @@ async function spawnNewTerminal(
 
 /**
  * Whether `ownerWindowId` may act on `tabId`: no live or starting terminal has
- * that id, or the one that has it is this window's.
+ * that id, or the one that has it is this window's. A terminal being closed
+ * (its tab or its window went away) belongs to no one any more.
  */
 export function terminalOwnedBy(tabId: string, ownerWindowId: number | null): boolean {
   const session = sessions.get(tabId);
-  if (session && !session.exited) return session.ownerWindowId === ownerWindowId;
+  if (session && !session.exited && !session.closing) return session.ownerWindowId === ownerWindowId;
   const inFlight = terminalSpawnsInFlight.get(tabId);
   if (inFlight && !inFlight.cancelled) return inFlight.ownerWindowId === ownerWindowId;
   return true;
@@ -542,6 +561,46 @@ export function resizeTerminal(tabId: string, cols: number, rows: number): void 
   const session = sessions.get(tabId);
   if (!session || session.exited || session.closing) return;
   session.pty.resize(clampDim(cols, 80, MAX_COLS), clampDim(rows, 24, MAX_ROWS));
+}
+
+/** How long a spawn waits for a closing shell under the same id; past the SIGKILL escalation. */
+const RETIRING_WAIT_MS = 5_000;
+
+/**
+ * Resolves `true` once the closing shell or cancelled spawn under `tabId` is
+ * gone, `false` if it outlives {@link RETIRING_WAIT_MS}; `null` when nothing
+ * under that id is closing.
+ */
+function retiringTerminal(tabId: string): Promise<boolean> | null {
+  const session = sessions.get(tabId);
+  const inFlight = terminalSpawnsInFlight.get(tabId);
+  let settled: Promise<unknown> | null = null;
+  if (session && session.closing && !session.exited) settled = session.gone;
+  else if (inFlight && inFlight.cancelled) settled = inFlight.promise.catch(() => undefined);
+  if (!settled) return null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), RETIRING_WAIT_MS); });
+  return Promise.race([settled.then(() => true), timeout]).finally(() => {
+    if (timer !== null) clearTimeout(timer);
+  });
+}
+
+/**
+ * Close every terminal a window owns — the window is gone (macOS keeps the
+ * app running when its last window closes, so nothing else would). Returns
+ * how many were closed.
+ */
+export function killTerminalsOwnedBy(ownerWindowId: number): number {
+  const ids = new Set<string>();
+  for (const [id, session] of sessions) {
+    if (session.ownerWindowId === ownerWindowId && !session.closing && !session.exited) ids.add(id);
+  }
+  for (const [id, inFlight] of terminalSpawnsInFlight) {
+    if (inFlight.ownerWindowId === ownerWindowId && !inFlight.cancelled) ids.add(id);
+  }
+  for (const id of ids) killTerminal(id);
+  if (ids.size > 0) log.info({ ownerWindowId, count: ids.size }, "terminal: closed the terminals of a closed window");
+  return ids.size;
 }
 
 /** Kill + tear down one terminal (tab close / teardown). Idempotent. */

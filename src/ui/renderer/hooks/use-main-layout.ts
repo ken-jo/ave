@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { AveApi } from "../types.js";
-import { normalizeWindowRole } from "../../../shared/window-role.js";
+import { isSecondaryMainWindow } from "../utils/main-window-role.js";
 import { parseMainLayout, type MainLayoutLimits, type MainLayoutSnapshot, type SavedSurface } from "../../../shared/main-layout.js";
 import { MAIN_CHAT_GROUP_ID, MAX_PANES } from "../../../contract/app-contract.js";
 import type { PaneNode } from "../components/pane-tree.js";
@@ -76,17 +76,11 @@ function applyLayout(layout: MainLayoutSnapshot, chatGroups: ChatGroupsForLayout
  * fails its own rules is a bug here; it is reported and not written.
  */
 export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, mainSurfaces: MainSurfacesForLayout): void {
-  // The saved layout is the primary window's (`shared/window-role.ts`): two
-  // windows restoring one layout would both claim its terminal ids, and both
-  // saving it would overwrite each other. A secondary window starts in the
-  // default layout and keeps its own unsaved. A window main gave no role is a
-  // broken launch contract — said once, and nothing restored or saved.
-  const [role] = useState(() => {
-    const value = normalizeWindowRole((window as { __aveWindowRole?: unknown }).__aveWindowRole);
-    if (value === null) console.error("[main-layout] this window has no role from main; its layout is neither restored nor saved");
-    return value;
-  });
-  const ownsLayout = role === "primary";
+  // The saved layout is the primary window's (`shared/main-window-role.ts`):
+  // two windows restoring one layout would both claim its terminal ids, and
+  // both saving it would overwrite each other. A secondary window starts in
+  // the default layout and keeps its own unsaved.
+  const [ownsLayout] = useState(() => !isSecondaryMainWindow());
   const [settled, setSettled] = useState(false);
   const chatGroupsRef = useRef(chatGroups);
   chatGroupsRef.current = chatGroups;

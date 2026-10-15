@@ -42,6 +42,7 @@ import { MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH } from "../shared/shell-g
 import { isAppUpdateInstallRequested } from "./app-update-install-intent.js";
 import { BOOTSTRAP_SPLASH, markBootstrapSplashShown } from "./bootstrap-splash.js";
 import { requestNativeChromeRefresh } from "./native-window-coordinator.js";
+import { killTerminalsOwnedBy } from "./terminal/pty-manager.js";
 import { preloadPreferences } from "./preload-bundles.js";
 import { MAIN_WINDOW_ROLE_QUERY_KEY } from "../shared/main-window-role.js";
 import {
@@ -60,7 +61,6 @@ import {
   setPendingRendererReload,
   unregisterMainWindow,
 } from "./app-state.js";
-import { WINDOW_ROLE_ARG_PREFIX } from "../shared/window-role.js";
 
 const log = createLogger("ave");
 
@@ -183,7 +183,6 @@ export function createWindow(
     throw new Error(`[ave] preload.cjs not found at ${hostPreload.preload} — run 'npm run build:preload' first`);
   }
 
-  const role = nextMainWindowRole();
   const win = new BrowserWindow({
     ...initialMainWindowBounds(),
     minWidth: MAIN_WINDOW_MIN_WIDTH,
@@ -208,12 +207,12 @@ export function createWindow(
       // renderer so ThemeProvider and the App shell can both init from frame 0
       // (no flash of fallback theme / wrong mode). See initialThemeArgs() and
       // initialAppModeArgs() above.
-      // The window's role (`shared/window-role.ts`): the primary window owns
-      // the saved main-area layout.
-      additionalArguments: [...initialThemeArgs(), ...initialAppModeArgs(), `${WINDOW_ROLE_ARG_PREFIX}${role}`],
+      additionalArguments: [...initialThemeArgs(), ...initialAppModeArgs()],
     },
   });
-  registerMainWindow(win, role);
+  registerMainWindow(win, nextMainWindowRole());
+  // Read now: a closed window's id is what its terminals are recorded under.
+  const windowId = win.id;
   // Point-to-point sends (menu actions, dialogs) follow the window in use.
   win.on("focus", () => markMainWindowFocused(win));
 
@@ -268,6 +267,10 @@ export function createWindow(
   });
   win.on("closed", () => {
     unregisterMainWindow(win);
+    // Its shells go with it. On macOS the app outlives its last window, and a
+    // window opened later restores the layout under the same terminal ids, in
+    // new shells (`pty-manager.ts` waits for these to exit first).
+    killTerminalsOwnedBy(windowId);
     requestNativeChromeRefresh();
   });
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
