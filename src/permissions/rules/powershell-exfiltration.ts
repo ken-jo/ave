@@ -453,7 +453,7 @@ const FILE_READERS = new Set([
 const ENV_LISTERS = new Set(["get-childitem", "get-item", "get-content"]);
 const SET_VARIABLE = new Set(["set-variable", "new-variable"]);
 const SCRIPT_BLOCK_RUNNERS = new Set(["foreach-object", "where-object"]);
-const PACKAGE_TASK_PROGRAMS = new Set(["npm", "pnpm", "yarn", "bun", ...SHELL_PREFIX_POLICY.packageRunners]);
+const PACKAGE_TASK_PROGRAMS = new Set(SHELL_PREFIX_POLICY.packageTaskPrograms);
 
 function isReaderCommand(name: string): boolean {
   return FILE_READERS.has(name) || FILE_READERS.has(name.replace(/\.exe$/, ""));
@@ -1529,7 +1529,8 @@ function hasMemberInvocation(cmd: PsCommand): boolean {
 
 function nativeInvocation(name: string, args: readonly PsToken[], ctx: Context) {
   const values = nativeArguments(args, ctx);
-  const argv = [name, ...values];
+  const stem = ctx.files.executableStem(name);
+  const argv = [PACKAGE_TASK_PROGRAMS.has(stem) ? stem : name, ...values];
   const staticArgv = argv.every((value) => value !== undefined) ? argv as string[] : undefined;
   const prefix = staticArgv ? refusedShellPrefix(staticArgv) : undefined;
   const reason = hiddenCodeReason(argv);
@@ -1553,6 +1554,7 @@ function hasNativeLauncher(cmd: PsCommand, ctx: Context): boolean {
 
 function nativeCommandData(stage: PsCommand, ctx: Context, args = headOf(stage, ctx).args): boolean {
   const { name } = headOf(stage, ctx);
+  if (name !== undefined && PACKAGE_TASK_PROGRAMS.has(name) && ctx.literalBoundary) return false;
   return name !== undefined && (POWERSHELL_COMMAND_POLICIES[name]?.native ? knownNativeData(name, args, ctx)
     : (MULTI_PURPOSE_NETWORK.has(name.replace(/\.exe$/, "")) || PACKAGE_TASK_PROGRAMS.has(name))
       && nativeArguments(args, ctx).every((value) => value !== undefined) && !hasNativeLauncher(stage, ctx));

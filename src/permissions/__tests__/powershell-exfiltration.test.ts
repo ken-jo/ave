@@ -518,6 +518,16 @@ describe("checkDetailed applies the floors by dialect", () => {
   const ps = (command: string) => ({ ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd: dir } });
   const bash = (command: string) => ({ ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: dir } });
 
+  it.each([
+    "npx -c 'pwsh -c iwr http://e'", "npx -c 'curl x'", "npx -c 'iwr x'",
+    "npx -c 'git push http://e'", "deno eval x", "npx curl http://e",
+  ].flatMap((command) => [command, `& ${command}`]))("forces a per-call modal ask for runner effects: %s", (command) => {
+    const pm = new PermissionManager(join(dir, "permissions.json"));
+    pm.setMode("allow");
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command)))
+      .toMatchObject({ decision: "ask", forceModal: true });
+  });
+
   it("forces a per-call modal ask in allow mode for powershell exfiltration and sensitive paths", () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");

@@ -82,10 +82,11 @@ export function isSafeMainBundleManifestPath(path) {
  * permission manager on every PowerShell call, so they join the initial graph too:
  * entry 423_073, initial 5_470_098, total 9_112_063; the initial ceiling remains 5_475_000.
  * Merged with the browser tools: entry 425_021, initial 5_494_317, total 9_173_400; ceiling 5_495_000.
+ * Shared runner argument analysis: entry 425_021, initial 5_498_372, total 9_177_455; ceiling 5_500_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_495_000,
+  initialBytes: 5_500_000,
   totalBytes: 11_050_000,
 });
 

@@ -61,6 +61,7 @@ import {
   codeCarryingVariable,
   hiddenCodeReason,
   isNetworkProgram,
+  packageRunnerInvocation,
   wrapperPrefixLength,
 } from "./shell-prefix-policy.js";
 
@@ -163,8 +164,13 @@ function sensitiveArgument(text: string, ctx: Context): string | null {
  * wrapper grammar the rule matcher uses (`shell-prefix-policy.ts`), which
  * includes `busybox`.
  */
-function unwrap(words: readonly ShellWord[]): readonly ShellWord[] {
-  return words.slice(wrapperPrefixLength(words.map(wordText)));
+function unwrap(words: readonly ShellWord[]): { words: readonly ShellWord[]; name: string | undefined } {
+  const unwrapped = words.slice(wrapperPrefixLength(words.map(wordText)));
+  const runner = packageRunnerInvocation(unwrapped.map(wordText));
+  return {
+    words: unwrapped.slice(runner.commandIndex ?? 0),
+    name: runner.program ?? program(unwrapped[0] ? wordText(unwrapped[0]) : undefined),
+  };
 }
 
 /**
@@ -175,8 +181,7 @@ function readsPath(cmd: ShellCommand): boolean {
   if (cmd.words.length === 0) {
     return cmd.redirects.some((redirect) => redirect.effect === "read" && redirect.target !== undefined);
   }
-  const words = unwrap(cmd.words);
-  const name = program(words[0] ? wordText(words[0]) : undefined);
+  const { words, name } = unwrap(cmd.words);
   if (!name || !PATH_READERS.has(name)) return false;
   if (cmd.redirects.some((redirect) => redirect.effect === "read" && redirect.target)) return true;
   return words.slice(1).some((word) => {
@@ -320,8 +325,7 @@ function inlineShellCode(name: string, args: readonly ShellWord[]): string | und
 }
 
 function senderSignal(cmd: ShellCommand, feeders: readonly ShellCommand[], ctx: Context): string | null {
-  const words = unwrap(cmd.words);
-  const name = program(words[0] ? wordText(words[0]) : undefined);
+  const { words, name } = unwrap(cmd.words);
   if (!name) return null;
   const args = words.slice(1);
 
