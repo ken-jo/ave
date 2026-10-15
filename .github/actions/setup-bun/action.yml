@@ -63,7 +63,13 @@ runs:
           echo "SHASUMS256.txt of bun v$version has no single SHA-256 for $asset.zip" >&2
           exit 1
         fi
-        actual="$(sha256sum "$work/$asset.zip" | awk '{ print $1 }')"
+        # Hash stdin: given a path with a backslash (RUNNER_TEMP on Windows),
+        # sha256sum escapes its output line and prefixes the digest with "\".
+        actual="$(sha256sum < "$work/$asset.zip" | awk '{ print $1 }')"
+        if ! [[ "$actual" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "sha256sum gave no plain SHA-256 for $asset.zip: '$actual'" >&2
+          exit 1
+        fi
         if [ "$actual" != "$expected" ]; then
           echo "$asset.zip SHA-256 $actual does not match the release's $expected" >&2
           exit 1

@@ -595,6 +595,10 @@ describe("installer smoke and packaging discipline", () => {
     expect(setupBun).toContain('base="https://github.com/oven-sh/bun/releases/download/bun-v${version}"');
     expect(setupBun).toContain('"$base/SHASUMS256.txt"');
     expect(setupBun).toContain('if [ "$actual" != "$expected" ]; then');
+    // A Windows path holds backslashes, and sha256sum given one escapes its
+    // output with a leading "\\": the digest is read from stdin instead.
+    expect(setupBun).toContain('actual="$(sha256sum < "$work/$asset.zip" | awk');
+    expect(setupBun).not.toMatch(/sha256sum "/u);
     expect(setupBun).toContain('cp "$work/out/$asset/bun.exe" "$bin/bunx.exe"');
     expect(setupBun).not.toMatch(/\bln -s|ItemType SymbolicLink|mklink/u);
     expect(setupBun).toContain("    - name: Verify bun is the job-local pinned build\n");
