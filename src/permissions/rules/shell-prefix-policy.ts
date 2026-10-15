@@ -49,6 +49,7 @@ interface PackageRunnerPolicy {
   code?: readonly string[];
   codeVerbs?: readonly string[];
   taskArguments?: readonly string[];
+  scriptVerbs?: readonly string[];
   tasks?: ReadonlySet<string>;
   commandDelimiter?: boolean;
   flags?: readonly string[];
@@ -57,7 +58,9 @@ interface PackageRunnerPolicy {
 
 const CALL_OPTIONS = ["-c", "--call", "--shell-mode"];
 const TASK_FLAGS = ["--silent", "--quiet", "--offline", "--ignore-scripts", "--frozen-lockfile"];
-const DENO_TASK_VERBS = new Set(["task", "test", "fmt", "lint", "check", "info", "doc", "bench", "cache", "types", "completions", "upgrade", "compile"]);
+const TASK_PATH_OPTIONS = new Set(["-C", "--dir", "--cwd", "--prefix", "-w", "--workspace"]);
+const INLINE_CODE_OPTION = /(?:^|-)(?:code|eval|call|exec|shell|preload|loader|require|import|node-options)(?:-|$)/;
+const DENO_TASK_VERBS = new Set(["task", "test", "fmt", "lint", "check", "info", "doc", "bench", "cache", "types", "completions", "upgrade", "compile", "install"]);
 /** Runner-owned options stop at a proved command operand or an explicit task delimiter. */
 const PACKAGE_RUNNER_POLICIES: Readonly<Record<string, PackageRunnerPolicy>> = {
   npx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["-y", "--yes", "--no", "--no-install"], values: ["-p", "--package"] },
@@ -67,7 +70,7 @@ const PACKAGE_RUNNER_POLICIES: Readonly<Record<string, PackageRunnerPolicy>> = {
   pipx: { prefixRunner: true, command: ["run"], codeVerbs: ["runpip"], values: ["--spec"] },
   corepack: { prefixRunner: true, delegate: true },
   yarnpkg: { prefixRunner: true, command: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: TASK_FLAGS },
-  deno: { prefixRunner: true, code: ["-e", "--eval"], codeVerbs: ["eval"], taskArguments: ["task"], tasks: DENO_TASK_VERBS, flags: ["--quiet", "--watch"] },
+  deno: { prefixRunner: true, code: ["-e", "--eval"], codeVerbs: ["eval"], taskArguments: ["task"], scriptVerbs: ["run"], tasks: DENO_TASK_VERBS, flags: ["--quiet", "--watch"] },
   npm: { command: ["exec", "x"], code: CALL_OPTIONS, codeVerbs: ["explore"], commandDelimiter: true, values: ["--package"], flags: [...TASK_FLAGS, "--save-dev", "-D", "--save-exact", "-E", "--no-save"] },
   pnpm: { command: ["exec", "dlx", "x"], code: CALL_OPTIONS, flags: [...TASK_FLAGS, "--save-dev", "-D", "--recursive", "-r"], values: ["--package", "--filter"] },
   yarn: { command: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: [...TASK_FLAGS, "--dev", "-D", "--immutable"] },
@@ -296,6 +299,7 @@ const BUN_TASK_VERBS = new Set([
   "unlink", "init", "upgrade", "audit", "info", "publish", "patch", "why",
 ]);
 const SCRIPT_FILE_ARG = /[\\/]|\.(?:[cm]?[jt]sx?|sh|py|rb|pl|php|lua)$/i;
+const FILE_OPERAND_INTERPRETERS = new Set(["node", "nodejs", "tsx", "ts-node"]);
 
 function isTaskRunnerVerb(program: string, rest: readonly (string | undefined)[]): boolean {
   const verb = rest[0];
@@ -700,6 +704,11 @@ interface PackageRunnerInvocation {
   reason: string | null;
   commandIndex?: number;
   program?: string;
+  task?: boolean;
+}
+
+function isLocalScriptOperand(value: string | undefined): value is string {
+  return !!value && !value.startsWith("-") && !/^(?:[a-z][a-z\d+.-]+:|[\\/]{2})/i.test(value);
 }
 
 /** A forwarded command keeps its argv indices; unknown binding never becomes data. */
@@ -724,7 +733,10 @@ export function packageRunnerInvocation(argv: readonly (string | undefined)[]): 
     if (!policy) {
       if (!argv[start] || /[\s;&|`$<>()]/.test(argv[start]!)) return opaque("has an opaque command operand");
       const inner = [program, ...argv.slice(start + 1)];
-      const intrinsic = WRAPPER_SET.has(program) ? "launches a wrapper" : hiddenCodeAt(inner, 0);
+      let intrinsic = WRAPPER_SET.has(program) ? "launches a wrapper" : hiddenCodeAt(inner, 0);
+      // A named file is subject to the normal script policy and materialization
+      // checks; an inline option, shell, stdin or remote source is still opaque.
+      if (FILE_OPERAND_INTERPRETERS.has(program) && isLocalScriptOperand(inner[1]) && intrinsic === `code passed to ${program}`) intrinsic = null;
       const effect = shellOptionEffect(inner);
       const info = inner.length === 2 && /^(?:--version|--help|-v|-h)$/.test(inner[1]!);
       const forwarded = command();
@@ -735,26 +747,27 @@ export function packageRunnerInvocation(argv: readonly (string | undefined)[]): 
     if (rest.length === 0 || rest.every((arg) => /^(?:--version|--help|-v|-h)$/.test(arg!))) return command();
     let index = start + 1;
     let delimited = false;
-    const option = (): string | null => {
+    const option = (task: boolean): string | null => {
       const token = argv[index]!;
       const equals = token.indexOf("=");
       const flag = equals === -1 ? token : token.slice(0, equals);
-      if (policy.code?.some((code) => flag === code || (code.length === 2 && token.startsWith(code)))) return "contains inline code";
+      if (policy.code?.some((code) => flag === code || (code.length === 2 && token.startsWith(code))) || INLINE_CODE_OPTION.test(flag)) return "contains inline code";
       if (policy.flags?.includes(flag) && equals === -1) { index += 1; return null; }
-      if (policy.values?.includes(flag)) {
+      if (policy.values?.includes(flag) || (policy.command !== true && TASK_PATH_OPTIONS.has(flag))) {
         const value = equals === -1 ? argv[++index] : token.slice(equals + 1);
         if (!value || value.startsWith("-") || /[\s;&|`$<>()]/.test(value)) return "has an opaque option value";
         index += 1;
         return null;
       }
+      if (task) { index += 1; return null; }
       return "has an unmodeled option";
     };
-    const leadingOptions = (): string | null => {
+    const leadingOptions = (task = false): string | null => {
       while (index < argv.length) {
         if (argv[index] === undefined) return "has an unresolved argument";
         if (!argv[index]!.startsWith("-")) break;
         if (argv[index] === "--") { delimited = true; index += 1; break; }
-        const reason = option();
+        const reason = option(task);
         if (reason) return reason;
       }
       return null;
@@ -776,23 +789,31 @@ export function packageRunnerInvocation(argv: readonly (string | undefined)[]): 
       start = index;
       continue;
     }
-    if (policy.tasks && !policy.tasks.has(verb)) return opaque("has an unmodeled execution form");
-    if (policy.taskArguments?.includes(verb)) {
+    if (policy.scriptVerbs?.includes(verb)) {
       index += 1;
       const leading = leadingOptions();
       if (leading) return opaque(leading);
-      return index < argv.length ? command() : opaque("has no task operand");
+      return isLocalScriptOperand(argv[index]) ? command() : opaque("has an opaque script source");
     }
-    // Task arguments remain data after `--`; options owned by the runner must
-    // have an explicit binding, even when they appear after the task name.
-    for (index += 1; index < argv.length;) {
+    if (policy.tasks && !policy.tasks.has(verb)) return opaque("has an unmodeled execution form");
+    let task: boolean | undefined;
+    if (policy.taskArguments?.includes(verb)) {
+      index += 1;
+      const leading = leadingOptions(true);
+      if (leading) return opaque(leading);
+      if (index >= argv.length) return opaque("has no task operand");
+      task = !SCRIPT_FILE_ARG.test(argv[index]!);
+    }
+    // Task options are data unless they name inline code. Command-forwarding
+    // options above still need a proved binding to locate the downstream argv.
+    for (index += 1; !delimited && index < argv.length;) {
       if (argv[index] === undefined) return opaque("has an unresolved argument");
       if (argv[index] === "--") break;
       if (!argv[index]!.startsWith("-")) { index += 1; continue; }
-      const reason = option();
+      const reason = option(true);
       if (reason) return opaque(reason);
     }
-    return command();
+    return { ...command(), task: task ?? (!INTERPRETER_SET.has(program) || isTaskRunnerVerb(program, [verb])) };
   }
   return opaque("analysis budget exceeded");
 }
@@ -804,6 +825,7 @@ function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): str
   const args = argv.slice(start + 1);
   const runner = packageRunnerInvocation(argv.slice(start));
   if (runner.reason) return runner.reason;
+  if (runner.task) return null;
   if (WRAPPER_SET.has(program)) {
     if (program === "eval") return args.length > 0 ? "code passed to eval" : null;
     if (program === "source" || program === ".") return args.length > 0 ? `script passed to ${program}` : null;
