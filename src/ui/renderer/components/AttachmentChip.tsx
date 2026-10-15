@@ -9,9 +9,14 @@ import {
 } from "../../../components/ui/popover.js";
 import {
   ATTACH_MAX_COUNT,
-  PASTE_TEXT_MAX_CHARS,
   type Attachment,
 } from "../types/attachments.js";
+
+/**
+ * Longest stretch of a pasted text the chip's view lays out. The whole text
+ * is always sent; past this the view says how much it left out.
+ */
+export const PASTE_PREVIEW_MAX_CHARS = 32 * 1024;
 import { collapsePath } from "../utils/attachment-markers.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatBytes } from "../../../lib/turn-summary-format.js";
@@ -274,7 +279,9 @@ export function AttachmentOverlay({
           {t("attachmentChip.overlayRemoveHint")}
         </span>
       </div>
-      <div className="max-h-[60vh] space-y-1 overflow-y-auto">
+      {/* Bounded by the room the popover actually has above the composer
+          (minus its header), so a short window never pushes it off-screen. */}
+      <div className="max-h-[min(60vh,calc(var(--radix-popover-content-available-height)-56px))] space-y-1 overflow-y-auto">
         {attachments.map((att) => (
           <div
             key={att.id}
@@ -356,13 +363,13 @@ export function AttachmentOverlay({
               >
                 {/* A clipboard paste is stored whole, however long; laying out
                     megabytes of wrapped text would freeze the window, so the
-                    view stops at the cap and says how much it left out. */}
-                {att.text.length > PASTE_TEXT_MAX_CHARS ? att.text.slice(0, PASTE_TEXT_MAX_CHARS) : att.text}
+                    view stops at PASTE_PREVIEW_MAX_CHARS and says how much it left out. */}
+                {att.text.length > PASTE_PREVIEW_MAX_CHARS ? att.text.slice(0, PASTE_PREVIEW_MAX_CHARS) : att.text}
               </pre>
             ) : null}
-            {att.kind === "paste" && att.text.length > PASTE_TEXT_MAX_CHARS ? (
+            {att.kind === "paste" && att.text.length > PASTE_PREVIEW_MAX_CHARS ? (
               <div data-testid="overlay-paste-more" className="w-full basis-full text-[10px] text-muted-foreground">
-                {t("attachmentChip.pastedTextMore", { count: att.text.length - PASTE_TEXT_MAX_CHARS })}
+                {t("attachmentChip.pastedTextMore", { count: att.text.length - PASTE_PREVIEW_MAX_CHARS })}
               </div>
             ) : null}
           </div>

@@ -6,6 +6,7 @@ import {
   AttachmentChip,
   AttachmentChipCollapsed,
   AttachmentOverlay,
+  PASTE_PREVIEW_MAX_CHARS,
 } from "../AttachmentChip.js";
 import type {
   Attachment,
@@ -13,7 +14,6 @@ import type {
   FileAttachment,
   PasteAttachment,
 } from "../../types/attachments.js";
-import { PASTE_TEXT_MAX_CHARS } from "../../types/attachments.js";
 
 const img1: ImageAttachment = {
   id: "i1",
@@ -132,10 +132,10 @@ describe("AttachmentChip — single, clickable", () => {
   });
 
   it("stops a very long paste's view at the cap and says how much it left out", () => {
-    const huge = "z".repeat(PASTE_TEXT_MAX_CHARS + 1234);
+    const huge = "z".repeat(PASTE_PREVIEW_MAX_CHARS + 1234);
     render(<AttachmentChip attachment={{ ...paste3, text: huge, chars: huge.length }} total={1} />);
     fireEvent.click(screen.getByTestId("attachment-chip"));
-    expect(screen.getByTestId("overlay-paste-text").textContent).toHaveLength(PASTE_TEXT_MAX_CHARS);
+    expect(screen.getByTestId("overlay-paste-text").textContent).toHaveLength(PASTE_PREVIEW_MAX_CHARS);
     expect(screen.getByTestId("overlay-paste-more").textContent).toContain("1234");
   });
 
