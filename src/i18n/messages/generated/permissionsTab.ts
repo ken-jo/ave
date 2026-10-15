@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/PermissionsTab.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/tabs/PermissionsTab.tsx.
 export const en = {
   // Reviewer interactive options
   "permissionsTab.interactiveAutoApproveLabel": "Automatic approval threshold",

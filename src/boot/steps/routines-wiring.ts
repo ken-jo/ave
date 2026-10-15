@@ -12,11 +12,14 @@ import { ROUTINES } from "../../shared/ipc-channels.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
+import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 
 const log = createLogger("ave");
 
 export function wireRoutinesScheduler(ctx: BootContext): void {
   const { routinesScheduler, routineEngine, routinesStore, getMainWindow, notificationService } = ctx;
+  // Routine state is app-wide: every open main window shows it.
+  const appWindows = () => ctx.host.desktop?.getAppWindows() ?? [getMainWindow()];
 
   // RoutinesScheduler v2 — fires per due routine, branching on execution mode.
   // llm-session routines start a ConversationLoop with prePrompt.
@@ -33,7 +36,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       // with title+firedAt so renderer can push a proper running OverlayItem
       // immediately. The completed event later carries the routineSessionId.
       try {
-        getMainWindow()?.webContents.send(ROUTINES.runningStarted, {
+        fanOutToAllWindows(appWindows(), ROUTINES.runningStarted, {
           routineId: routine.id,
           firedAt,
           title,
@@ -65,7 +68,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         log.warn("routines llm-session run failed: %s", (err as Error).message);
         // Emit failed so renderer knows to clear running state.
         try {
-          getMainWindow()?.webContents.send(ROUTINES.failed, {
+          fanOutToAllWindows(appWindows(), ROUTINES.failed, {
             routineId: routine.id,
             error: (err as Error).message,
           });
@@ -75,7 +78,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       } finally {
       // Always clear running state regardless of success/failure.
         try {
-          getMainWindow()?.webContents.send(ROUTINES.runningFinished, routine.id);
+          fanOutToAllWindows(appWindows(), ROUTINES.runningFinished, routine.id);
         } catch {
           // non-fatal
         }
@@ -84,7 +87,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       const summary = runSummary;
       // Explicit allowlist payload — no ...routine spread to prevent PII leak.
       try {
-        getMainWindow()?.webContents.send(ROUTINES.fired, {
+        fanOutToAllWindows(appWindows(), ROUTINES.fired, {
           id: routine.id,
           trigger: routine.trigger,
           execution: routine.execution,
@@ -115,7 +118,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
     try {
       const firedAt = routine.lastFiredAt ?? new Date().toISOString();
       const title = routine.title ?? routine.notificationTitle ?? routine.id.slice(0, 8);
-      getMainWindow()?.webContents.send(ROUTINES.fired, {
+      fanOutToAllWindows(appWindows(), ROUTINES.fired, {
         id: routine.id,
         trigger: routine.trigger,
         execution: routine.execution,

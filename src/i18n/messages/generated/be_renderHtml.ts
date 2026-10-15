@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/tools/render-html.ts. Do not edit by hand.
+// i18n fragment. Source: src/tools/render-html.ts.
 export const en = {
   "be_renderHtml.toolDescription":
     "Opens HTML in a separate window to display it visually to the user. " +

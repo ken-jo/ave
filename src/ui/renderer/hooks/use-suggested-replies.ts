@@ -169,8 +169,7 @@ export function acceptSuggestedReply(): void {
  * else bounds its lifetime, so without this reset the previous
  * conversation's snapshot survives into the next one — where an empty
  * transcript still reads as "suggestion active" and suppresses the
- * empty-state centered composer (and with it the project selector, which is
- * only mounted in that layout).
+ * empty-conversation affordances (the project selector and suggested tasks).
  *
  * Deliberately records no telemetry: `ignored` counts a suggestion the user
  * saw and passed over within a live turn, and abandoning the whole

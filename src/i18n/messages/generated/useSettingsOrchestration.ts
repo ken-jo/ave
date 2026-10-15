@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/hooks/use-settings-orchestration.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/hooks/use-settings-orchestration.ts.
 export const en = {
   "useSettingsOrchestration.saveFailed": "Failed to save settings",
 } as const;

@@ -20,7 +20,9 @@ import {
   AVE_EXTENSION_NAMESPACE,
   MAX_PLUGIN_ONBOARDING_HIGHLIGHTS,
   flattenAgentPluginsManifest,
+  RENAMED_EXTENSION_NAMESPACE,
   foreignManifestTopLevelFields,
+  renamedExtensionNamespaceProblem,
 } from "../public-contract.js";
 import { parseSettingsPath } from "../../shared/settings-tabs.js";
 import type {
@@ -61,6 +63,7 @@ import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { sandboxDeclarationProblem } from "../sandbox-authority.js";
 import { HOST_PROTOCOL_FIRST_APP_VERSION, HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
+import { isRecord } from "../../shared/is-record.js";
 
 // Re-exported here so manifest/plugin-loading consumers can import the
 // minAppVersion gate error + IPC code alongside the other manifest contracts.
@@ -215,10 +218,6 @@ function refuse(why: string): never {
   throw new DeclarationRefused(why);
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** Length in code points, the unit JSON Schema's `maxLength` counts. */
 function codePointLength(text: string): number {
   let n = 0;
@@ -238,7 +237,7 @@ function checkLocaleText(
   max: number,
   rules: { template?: boolean; singleLine?: boolean } = {},
 ): AlertLocaleText {
-  if (!isObject(value)) refuse(`${at} is not a locale map`);
+  if (!isRecord(value)) refuse(`${at} is not a locale map`);
   const locales = Object.keys(value);
   if (locales.length === 0 || locales.length > MAX_ALERT_LOCALES) {
     refuse(`${at} has ${locales.length} locales; 1 to ${MAX_ALERT_LOCALES} are allowed`);
@@ -303,7 +302,7 @@ function templateReferences(text: string, at: string): string[] {
 }
 
 function checkInheritRule(value: unknown, at: string): AlertInheritRule {
-  if (!isObject(value)) refuse(`${at} is not an object`);
+  if (!isRecord(value)) refuse(`${at} is not an object`);
   checkKeys(value, ["key", "listed", "values", "masterKey"], at);
   checkConfigKey(value.key, `${at}.key`);
   if (value.listed !== "enabled" && value.listed !== "disabled") refuse(`${at}.listed is not "enabled" or "disabled"`);
@@ -322,7 +321,7 @@ function checkInheritRule(value: unknown, at: string): AlertInheritRule {
 }
 
 function checkAlertKind(kind: unknown, at: string): AlertKindDeclaration {
-  if (!isObject(kind)) refuse(`${at} is not an object`);
+  if (!isRecord(kind)) refuse(`${at} is not an object`);
   checkKeys(kind, [
     "id", "label", "description", "defaultEnabled", "visibility", "osNotification",
     "actionLabel", "slots", "summary", "prompt", "inherits",
@@ -339,7 +338,7 @@ function checkAlertKind(kind: unknown, at: string): AlertKindDeclaration {
   }
   if (kind.osNotification !== undefined) {
     const os = kind.osNotification;
-    if (!isObject(os)) refuse(`${where} osNotification is not an object`);
+    if (!isRecord(os)) refuse(`${where} osNotification is not an object`);
     checkKeys(os, ["defaultEnabled", "bypassFocusGate", "body"], `${where} osNotification`);
     checkBoolean(os.defaultEnabled, `${where} osNotification.defaultEnabled`);
     checkBoolean(os.bypassFocusGate, `${where} osNotification.bypassFocusGate`, true);
@@ -354,14 +353,14 @@ function checkAlertKind(kind: unknown, at: string): AlertKindDeclaration {
   // Slot kind by name; only text and list slots may appear in a template.
   const slotKinds = new Map<string, "text" | "list" | "ref">();
   if (kind.slots !== undefined) {
-    if (!isObject(kind.slots)) refuse(`${where} slots is not an object`);
+    if (!isRecord(kind.slots)) refuse(`${where} slots is not an object`);
     const names = Object.keys(kind.slots);
     if (names.length > MAX_ALERT_SLOTS) refuse(`${where} declares more than ${MAX_ALERT_SLOTS} slots`);
     for (const name of names) {
       if (!ALERT_SLOT_NAME_RE.test(name)) refuse(`${where} slot name '${name}' does not match ${ALERT_SLOT_NAME_RE.source}`);
       const slot = kind.slots[name];
       const slotAt = `${where} slot '${name}'`;
-      if (!isObject(slot)) refuse(`${slotAt} is not an object`);
+      if (!isRecord(slot)) refuse(`${slotAt} is not an object`);
       checkBoolean(slot.optional, `${slotAt} optional`, true);
       if (slot.kind === "text") {
         checkKeys(slot, ["kind", "maxLength", "optional"], slotAt);
@@ -405,7 +404,7 @@ function checkAlertKind(kind: unknown, at: string): AlertKindDeclaration {
     }
     const entry: unknown = kind.inherits[0];
     const entryAt = `${where} inherits[0]`;
-    if (!isObject(entry)) refuse(`${entryAt} is not an object`);
+    if (!isRecord(entry)) refuse(`${entryAt} is not an object`);
     checkKeys(entry, ["pluginId", "sourceId", "enabled", "osNotification"], entryAt);
     if (!isPackageName(entry.pluginId)) refuse(`${entryAt}.pluginId is not a plugin id`);
     if (typeof entry.sourceId !== "string" || !SOURCE_ID_RE.test(entry.sourceId)) {
@@ -428,7 +427,7 @@ interface DeclaredAlerts {
 }
 
 function checkAlertsBlock(block: unknown): DeclaredAlerts {
-  if (!isObject(block)) refuse("not an object");
+  if (!isRecord(block)) refuse("not an object");
   checkKeys(block, ["reasoning", "kinds", "suggestions"], "the block");
   if (
     typeof block.reasoning !== "string"
@@ -530,7 +529,7 @@ function checkConfigInherits(list: unknown): readonly ConfigInheritDeclaration[]
   const targets = new Set<string>();
   list.forEach((entry: unknown, i) => {
     const at = `[${i}]`;
-    if (!isObject(entry)) refuse(`${at} is not an object`);
+    if (!isRecord(entry)) refuse(`${at} is not an object`);
     const hasFrom = Object.hasOwn(entry, "from");
     const hasValue = Object.hasOwn(entry, "value");
     if (hasFrom === hasValue) refuse(`${at} must have exactly one of 'from' and 'value'`);
@@ -685,7 +684,7 @@ function checkProcessEntryShape(
   minAppVersion: unknown,
   fail: (fieldPath: string, reason: string, example: string) => never,
 ): void {
-  if (!isObject(processRaw)) {
+  if (!isRecord(processRaw)) {
     fail("process", "must be an object with a 'command'", `"process": { "command": "./bin/plugin" }`);
   }
   const { args, env } = processRaw as { args?: unknown; env?: unknown };
@@ -704,7 +703,7 @@ function checkProcessEntryShape(
     });
   }
   if (env !== undefined) {
-    if (!isObject(env)) fail("process.env", "must be an object of string values", `"env": { "VENDOR_DIR": "\${PLUGIN_ROOT}/vendor" }`);
+    if (!isRecord(env)) fail("process.env", "must be an object of string values", `"env": { "VENDOR_DIR": "\${PLUGIN_ROOT}/vendor" }`);
     for (const [name, value] of Object.entries(env as Record<string, unknown>)) {
       if (!isSafeMcpEnvironmentName(name)) {
         fail(
@@ -794,6 +793,14 @@ export async function parsePluginJson(
 
   if (!validator) {
     throw new Error("Host plugin manifest validator is required");
+  }
+
+  const renamed = renamedExtensionNamespaceProblem(doc);
+  if (renamed) {
+    throw new Error(
+      `Invalid plugin manifest '${pid}' at 'extensions["${RENAMED_EXTENSION_NAMESPACE}"]' (${path}): ${renamed}. ` +
+        `Example: "extensions": { "${AVE_EXTENSION_NAMESPACE}": { ... } }`,
+    );
   }
 
   // Agent Plugins 1.0.0 is explicit that a client reports and ignores unknown

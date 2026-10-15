@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://sdk.former-site.invalid/schemas/marketplace/package.schema.json",
+  "$id": "https://ave.agent-connector.ai/schemas/marketplace/2/package.schema.json",
   "title": "Ave package descriptor (ave-package.json)",
   "description": "One installable package (design §5). The plugin authority fields reference the plugin manifest schema, so a descriptor and the plugin.json it copies are checked by the same definitions.",
   "allOf": [
@@ -389,24 +389,24 @@
       ],
       "properties": {
         "capabilities": {
-          "$ref": "https://sdk.former-site.invalid/schemas/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/capabilities"
+          "$ref": "https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/capabilities"
         },
         "networkAccess": {
-          "$ref": "https://sdk.former-site.invalid/schemas/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/networkAccess"
+          "$ref": "https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/networkAccess"
         },
         "hostSecrets": {
-          "$ref": "https://sdk.former-site.invalid/schemas/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/hostSecrets"
+          "$ref": "https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/hostSecrets"
         },
         "pluginAccess": {
-          "$ref": "https://sdk.former-site.invalid/schemas/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/pluginAccess"
+          "$ref": "https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/pluginAccess"
         },
         "auth": {
-          "$ref": "https://sdk.former-site.invalid/schemas/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/auth"
+          "$ref": "https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/auth"
         },
         "requires": {
           "allOf": [
             {
-              "$ref": "https://sdk.former-site.invalid/schemas/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/requires"
+              "$ref": "https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/requires"
             },
             {
               "type": "object",
@@ -417,10 +417,10 @@
           ]
         },
         "dependencies": {
-          "$ref": "https://sdk.former-site.invalid/schemas/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/dependencies"
+          "$ref": "https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/dependencies"
         },
         "sandbox": {
-          "$ref": "https://sdk.former-site.invalid/schemas/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/sandbox"
+          "$ref": "https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json#/properties/extensions/properties/ai.agent-connector.ave/properties/sandbox"
         }
       }
     },

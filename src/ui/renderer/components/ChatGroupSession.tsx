@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { parkComposerDraft, takeComposerDraft } from "../state/composer-draft-store.js";
 import type { ResolvedOutputTokenLimit, RouteInputModalities } from "../../../shared/context-budget.js";
 import type { ModelPricingRoute } from "../../../shared/model-pricing.js";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
@@ -27,6 +28,7 @@ import { useContextBudget } from "../hooks/use-context-budget.js";
 import { useCostEstimate } from "../hooks/use-cost-estimate.js";
 import { useCurrentSession } from "../hooks/use-sessions.js";
 import { MAIN_CHAT_GROUP_ID } from "../../../contract/app-contract.js";
+import { isSecondaryMainWindow } from "../utils/main-window-role.js";
 import { useSendMessage, type HandleAskRefFn } from "../hooks/use-send-message.js";
 import { useStatusNotices } from "../hooks/use-status-bar.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
@@ -371,7 +373,9 @@ export function ChatGroupSession({
     onLoadedSession: resetForNewSession,
     restoreSubAgents: restoreSubAgentSpawns,
     onSessionsChanged: env.refreshSessions,
-    resumeWindowActiveSession: chatGroupId === MAIN_CHAT_GROUP_ID,
+    // Only the primary window's primary tile resumes the window-active
+    // conversation; a secondary window's first tile is a conversation of its own.
+    resumeWindowActiveSession: chatGroupId === MAIN_CHAT_GROUP_ID && !isSecondaryMainWindow(),
     freshProject: freshTileProject,
     onChatNewRefused: reportChatNewRefused,
     focusSessionHolder: env.focusChatGroup,
@@ -402,6 +406,40 @@ export function ChatGroupSession({
     scope.sessionId = currentSessionId;
     setAttachments([]);
   }, [currentSessionId]);
+
+  // The typed text follows the same rule, but is not thrown away: it is parked
+  // under the conversation it was written for and handed back when that
+  // conversation returns to a tile (this one or another). Layout timing so the
+  // previous conversation's text never paints over the next one.
+  const questionRef = useRef(question);
+  questionRef.current = question;
+  const draftSessionIdRef = useRef<string | null>(null);
+  // Set by a new chat started from a conversation with no entries (the
+  // composer's project selector does this): that conversation is being
+  // replaced, not left, so its text belongs to the one that replaces it.
+  const draftCarryFromRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const previous = draftSessionIdRef.current;
+    if (previous === currentSessionId) return;
+    draftSessionIdRef.current = currentSessionId;
+    const carry = previous !== null && previous === draftCarryFromRef.current;
+    draftCarryFromRef.current = null;
+    // No conversation yet (mount, or the tile's session still resolving), or
+    // an empty one being replaced: whatever was typed belongs to the
+    // conversation that is arriving, so it stays, and a parked draft only
+    // fills an empty composer (otherwise it stays parked).
+    if (!previous || carry) {
+      if (!questionRef.current) setQuestion(takeComposerDraft(currentSessionId));
+      return;
+    }
+    parkComposerDraft(previous, questionRef.current);
+    setQuestion(takeComposerDraft(currentSessionId));
+  }, [currentSessionId]);
+  useEffect(() => () => {
+    const sessionId = draftSessionIdRef.current;
+    if (sessionId !== null) parkComposerDraft(sessionId, questionRef.current);
+    draftSessionIdRef.current = null;
+  }, []);
 
   const composeOutgoing = useCallback(
     (raw: string) => composeOutgoingUtil({ raw, activePreset: env.activePreset, attachments }),
@@ -588,13 +626,17 @@ export function ChatGroupSession({
         reportChatNewRefused(created.error);
         return false;
       }
+      if (entries.length === 0) draftCarryFromRef.current = currentSessionId;
       clearForNewChat();
       resetForNewSession();
-      await refreshSessionId();
+      const applied = await refreshSessionId();
+      // No move to a new id: the carry must not wait for a later, ordinary
+      // switch away from this conversation and take the text along then.
+      if (applied === null || applied === currentSessionId) draftCarryFromRef.current = null;
       await env.refreshSessions();
       return true;
     },
-    [api, streaming, clearForNewChat, resetForNewSession, refreshSessionId, env, reportChatNewRefused],
+    [api, streaming, entries.length, currentSessionId, clearForNewChat, resetForNewSession, refreshSessionId, env, reportChatNewRefused],
   );
 
   const handleAttachmentWarning = useCallback((message: string) => {

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/ToolGroupCard.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/ToolGroupCard.tsx.
 export const en = {
   "toolGroupCard.running": "running",
   "toolGroupCard.failed": "Failed",

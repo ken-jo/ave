@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/hooks/hook-runner.ts. Do not edit by hand.
+// i18n fragment. Source: src/hooks/hook-runner.ts.
 export const en = {
   "be_hookRunner.blockedByHook": "{name} blocked the tool execution",
 } as const;

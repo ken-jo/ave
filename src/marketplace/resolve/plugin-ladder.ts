@@ -23,7 +23,7 @@
  * captured, and lists what the folder holds but does not install.
  */
 import AdmZip from "adm-zip";
-import { createHash } from "node:crypto";
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { MarketplaceArtifactLimits } from "../../plugins/marketplace-artifact-limits.js";
@@ -140,10 +140,6 @@ export function planPluginVersion(row: CatalogRow, version: IndexVersion): Plugi
   // Snapshot validation requires both for every plugin version.
   if (!version.authority || !version.artifact) throw new Error(`${row.name}@${version.version} has no authority or artifact`);
   return { ...planPackage(row, version), kind: "plugin", authority: version.authority, artifact: version.artifact };
-}
-
-function sha256(bytes: Buffer): string {
-  return createHash("sha256").update(bytes).digest("hex");
 }
 
 export { treeDigest };
@@ -263,7 +259,7 @@ function downloadOptions(deps: LadderDeps, plan: PluginInstallPlan, hops: HopTra
 }
 
 function verifyPinned(zipBuffer: Buffer, pin: string, what: string, hops: HopTransport): RungBytes {
-  const digest = sha256(zipBuffer);
+  const digest = sha256Hex(zipBuffer);
   if (digest !== pin.toLowerCase()) {
     throw new VerificationFailure("ARTIFACT_DIGEST_MISMATCH", `${what} hashes to ${digest}, the pin is ${pin.toLowerCase()}`);
   }

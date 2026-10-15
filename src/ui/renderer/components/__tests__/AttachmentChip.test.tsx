@@ -165,6 +165,12 @@ describe("AttachmentOverlay", () => {
     expect(onOpenExternal).toHaveBeenCalledWith(img1.path);
   });
 
+  it("offers no open-external action for an @file mention reference", () => {
+    const mention: FileAttachment = { ...file2, id: "m4", n: 4, reference: true };
+    render(<AttachmentOverlay attachments={[mention]} onOpenExternal={() => {}} />);
+    expect(screen.queryAllByTitle("기본 앱으로 열기").length).toBe(0);
+  });
+
   it("does not render open-external button for paste attachments", () => {
     const list: Attachment[] = [paste3];
     render(

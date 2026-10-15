@@ -774,8 +774,8 @@ describe("RuleBasedRiskClassifier", () => {
     expect(v.level).toBe("low");
   });
 
-  it("network to former-site.invalid → LOW", () => {
-    const v = rb.classify(ctx({ category: "network", finalInput: { url: "https://former-site.invalid/api" } }));
+  it("network to ave.agent-connector.ai → LOW", () => {
+    const v = rb.classify(ctx({ category: "network", finalInput: { url: "https://ave.agent-connector.ai/api" } }));
     expect(v.level).toBe("low");
   });
 

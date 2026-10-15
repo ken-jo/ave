@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/OverlayCardRegion.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/OverlayCardRegion.tsx.
 export const en = {
   "overlayCardRegion.viewResult": "View result",
   "overlayCardRegion.confirm": "Confirm",

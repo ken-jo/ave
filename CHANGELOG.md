@@ -2,21 +2,12 @@
 
 ## v0.14.0 — 2026-10-14
 
-- **Ave를 쓰던 경우 Ave를 새로 설치하세요.** Ave는 Ave의 업데이트가 아니라 별도의 앱입니다.
-  Ave에서 Ave로 업데이트되지 않고, 설정과 데이터도 옮겨지지 않습니다. 아래 항목에서 무엇을
-  다시 설정해야 하는지 확인하세요.
+- **Ave는 새 앱이며, 설치된 Ave는 업데이트되지 않습니다.** Ave는 Ave의 설정과 데이터
+  (`~/.ave`)를 읽지 않고 빈 상태로 시작합니다. Ave의 웹사이트는 `ave.agent-connector.ai`,
+  다운로드와 업데이트는 `downloads.agent-connector.ai`입니다.
 
-- **앱 이름이 Ave에서 Ave로 바뀌었습니다.** 새 앱 ID는 `ai.agent-connector.ave`이고,
-  데이터 폴더는 `~/.ave`, 환경 변수는 `AVE_*`, 링크 스킴은 `ave://`입니다. 화면, 메뉴,
-  알림, 트레이, 설치 프로그램, 런타임 안내 문서에도 Ave라는 이름이 나옵니다.
-
-- **새로 설치하는 앱이며 Ave 데이터를 자동으로 옮기지 않습니다.** Ave는 `~/.ave`와 이전
-  앱 데이터 폴더를 읽지 않고 빈 상태로 시작합니다. 설정, 메모리 마커, 기기 페어링, tailnet
-  세션은 Ave에서 다시 설정해야 합니다. 이전 데이터가 필요하면 Ave를 지우기 전에 따로
-  보관하세요.
-
-- **이전 Ave 앱은 Ave로 자동 업데이트되지 않습니다.** 웹사이트에서 Ave 설치 파일을 내려받아
-  설치하세요. Ave의 다운로드와 업데이트는 `downloads.agent-connector.ai`에서 제공됩니다.
+- **Ave의 식별자와 경로.** 앱 ID는 `ai.agent-connector.ave`, 데이터 폴더는 `~/.ave`, 환경
+  변수는 `AVE_*`, 링크 스킴은 `ave://`입니다.
 
 - **익스텐션 작성자는 호스트 프로토콜 3으로 옮겨야 합니다.** 프로토콜 3은 `ave/*` 와이어를
   쓰며, Ave는 프로토콜 3만 지원합니다. 앱 릴리스 태그에서 계약(`contract/`)을 다시
@@ -24,6 +15,14 @@
   선언한 뒤 다시 게시하세요. 프로토콜 2(`ave/*`)로 만든 익스텐션은 시작 전에 거부됩니다.
   이 버전의 프로토콜 스키마는 `schemas/plugin-host-protocol/3/v0.14.0/protocol.schema.json`으로
   게시됩니다.
+
+- **플러그인 계약 식별자가 Ave 도메인으로 옮겨졌습니다.** `plugin.json`의 Ave 전용 필드는
+  `extensions["ai.agent-connector.ave"]` 아래에, 패키지의 프롬프트·에이전트·훅·루틴 파일은
+  `ai.agent-connector.ave/` 폴더 아래에 둡니다. 스킬 패키지의 `$schema`는
+  `https://ave.agent-connector.ai/schemas/skill/1/skill.schema.json`이고, 매니페스트와
+  마켓플레이스 스키마는 `https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json`,
+  `https://ave.agent-connector.ai/schemas/marketplace/2/…`로 게시됩니다. 이전 이름
+  (`ai.agent-connector.ave`, `sdk.former-site.invalid`)은 인식하지 않습니다.
 
 - **모든 익스텐션이 각자의 프로세스에서 실행됩니다.** 마켓플레이스, 사용자 지정 소스, 폴더,
   직접 설치 등 설치 경로와 관계없이 같습니다. `hostFetch`를 거치지 않고 네트워크에 접근하던
@@ -854,7 +853,7 @@ v0.6.3 에서 플러그인 하나였던 격리 대상이 이번 릴리즈에서 
 ### 플러그인 매니페스트 — Agent Plugins 1.0.0
 
 - **`plugin.json` 이 표준 문서 형식이 되었습니다** (#2273). 최상위에는 표준이
-  정한 필드만 남고, Ave 고유 필드는 `extensions["ai.agent-connector.ave"]` 아래로
+  정한 필드만 남고, Ave 고유 필드는 `extensions["xyz.retiredname-namespace"]` 아래로
   이동했습니다. 호스트는 디스크의 문서를 검증한 뒤 내부 형태로 투영하므로
   매니페스트를 읽는 기존 코드는 그대로입니다.
 - **표준 메타데이터 문자열에 상한을 둡니다** (#2274). `author`/`homepage`/

@@ -12,6 +12,7 @@ import type { ComponentDelta } from "../marketplace/app/component-delta.js";
 import { MARKETPLACE_ERROR_CODES, parseMarketplaceErrorDetail, type EnteredTargetWarningView, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../marketplace/errors.js";
 import type { DirectDetectedFile } from "../marketplace/sources/direct-package.js";
 import type { SourceWarning, SourceWarningView } from "../marketplace/sources/warnings.js";
+import { isRecord } from "./is-record.js";
 
 export type { EnteredTargetWarningView, MarketplaceErrorDetail, PackageKind, SourceWarning, SourceWarningView };
 export { parseMarketplaceErrorDetail };
@@ -914,10 +915,6 @@ export interface GitMarketplaceApi {
 // ─── Bridge checks ──────────────────────────────────────────────────────────
 
 const ENVELOPE_CODES = new Set<string>([...MARKETPLACE_ERROR_CODES, "invalid-request", "unauthorized-frame", "unavailable"]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Shape check for a result crossing the bridge: the envelope is checked and

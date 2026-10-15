@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/PendingAnswerDot.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/PendingAnswerDot.tsx.
 export const en = {
   "pendingAnswerDot.label": "Awaiting your answer",
 } as const;

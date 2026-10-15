@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/Composer.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/Composer.tsx.
 export const en = {
   "composer.defaultPlaceholder": "Type your question... (Cmd/Ctrl+V to paste from clipboard)",
   "composer.attachLimitPasteBlocked": "Attachment limit of {max} reached — clipboard paste was blocked",
@@ -10,6 +10,8 @@ export const en = {
   "composer.resourceAttachFailed": "That resource could not be attached. The server may have disconnected.",
   "composer.resourceAttachBusy": "Still attaching the previous resource — try again in a moment.",
   "composer.resourceNotFetchable": "The server publishes this for direct client access — the host does not fetch it",
+  "composer.fileMentionHint": "Enter attaches the file as a reference the model reads · Esc closes",
+  "composer.dropHint": "Drop files to attach",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "composer.defaultPlaceholder": "질문을 입력하세요... (Cmd/Ctrl+V 로 클립보드 붙여넣기)",
@@ -22,4 +24,6 @@ export const ko: Record<keyof typeof en, string> = {
   "composer.resourceAttachFailed": "이 리소스를 첨부할 수 없습니다. 서버 연결이 끊겼을 수 있습니다.",
   "composer.resourceAttachBusy": "이전 리소스를 첨부하는 중입니다 — 잠시 후 다시 시도하세요.",
   "composer.resourceNotFetchable": "이 리소스는 클라이언트 직접 조회용으로 공개되어 호스트가 가져오지 않음",
+  "composer.fileMentionHint": "Enter 로 파일을 참조로 첨부 (모델이 직접 읽음) · Esc 로 닫기",
+  "composer.dropHint": "파일을 놓으면 첨부됩니다",
 };

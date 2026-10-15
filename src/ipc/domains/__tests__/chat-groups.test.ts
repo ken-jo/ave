@@ -574,3 +574,108 @@ describe("ave:chat:* with chat groups", () => {
     expect(() => invoke(CHANNELS.chat.hasProvider, "group-2")).toThrow("chat-groups-unavailable");
   });
 });
+
+describe("ave:chat:* across several main windows", () => {
+  beforeEach(async () => {
+    handlers.clear();
+    unsubscribes.length = 0;
+    runtimes.length = 0;
+    vi.clearAllMocks();
+    (await import("../../../main/app-state.js")).resetMainWindowsForTests();
+  });
+
+  function fakeMainWindow(id: number) {
+    const events: RendererEvents = {};
+    const webContents = {
+      id: id * 10,
+      isDestroyed: () => false,
+      send: vi.fn(),
+      on: (name: string, fn: (...args: unknown[]) => void) => { (events[name] ??= []).push(fn); },
+    };
+    return { window: { id, isDestroyed: () => false, webContents }, events };
+  }
+
+  it("scopes a secondary window's tiles to that window and releases only them when it closes", async () => {
+    const appState = await import("../../../main/app-state.js");
+    const primary = fakeMainWindow(1);
+    const secondary = fakeMainWindow(2);
+    appState.registerMainWindow(primary.window as never, "primary");
+    appState.registerMainWindow(secondary.window as never, "secondary");
+    const { main, groups, resolveChatGroupLoop, releaseChatGroupLoop } = await registerWithGroups(primary.window);
+    const from = (sender: unknown) => (channel: string, ...args: unknown[]) =>
+      handlers.get(channel)!({ ...RENDERER_EVENT, sender }, ...args);
+    const fromPrimary = from(primary.window.webContents);
+    const fromSecondary = from(secondary.window.webContents);
+
+    // Both renderers number their tiles the same way; only the primary's ids
+    // are global. The secondary's `main` tile is a loop of its own.
+    fromPrimary(CHANNELS.chat.hasProvider, "group-2");
+    fromSecondary(CHANNELS.chat.hasProvider, MAIN_CHAT_GROUP_ID);
+    fromSecondary(CHANNELS.chat.hasProvider, "group-2");
+    expect(resolveChatGroupLoop.mock.calls.map((call) => call[0])).toEqual([
+      "group-2",
+      "window-20:main",
+      "window-20:group-2",
+    ]);
+    expect(main.hasProvider).not.toHaveBeenCalled();
+    expect(groups.get("group-2")).not.toBe(groups.get("window-20:group-2"));
+
+    // Closing the secondary tile named `main` releases that window's loop and
+    // leaves the primary conversation alone.
+    await expect(fromSecondary(CHANNELS.chat.groupRelease, MAIN_CHAT_GROUP_ID))
+      .resolves.toEqual({ ok: true, released: true });
+    expect(releaseChatGroupLoop).toHaveBeenCalledWith("window-20:main");
+    expect(main.newConversation).not.toHaveBeenCalled();
+
+    // The secondary window closing takes its remaining tiles with it; the
+    // primary window's tile stays.
+    secondary.events["destroyed"]![0]!();
+    await vi.waitFor(() => expect(releaseChatGroupLoop).toHaveBeenCalledWith("window-20:group-2"));
+    expect(releaseChatGroupLoop).not.toHaveBeenCalledWith("group-2");
+  });
+
+  it("answers which window shows a session, and leaves a secondary window's tiles alone when the primary closes", async () => {
+    const appState = await import("../../../main/app-state.js");
+    const primary = fakeMainWindow(1);
+    const secondary = fakeMainWindow(2);
+    let primaryClosed = false;
+    const primaryWindow = { ...primary.window, isDestroyed: () => primaryClosed };
+    appState.registerMainWindow(primaryWindow as never, "primary");
+    appState.registerMainWindow(secondary.window as never, "secondary");
+    const { main, groups, releaseChatGroupLoop } = await registerWithGroups(primaryWindow);
+    const fromSecondary = (channel: string, ...args: unknown[]) =>
+      handlers.get(channel)!({ ...RENDERER_EVENT, sender: secondary.window.webContents }, ...args);
+
+    // A prompt about the secondary window's tile goes to that window; the
+    // primary conversation is shown by the primary window; a session no tile
+    // holds has no window of its own.
+    fromSecondary(CHANNELS.chat.hasProvider, "group-2");
+    const secondarySession = groups.get("window-20:group-2")!.sessionId;
+    expect(appState.findSessionMainWindowContents(secondarySession)).toBe(secondary.window.webContents);
+    expect(appState.findSessionMainWindowContents(main.sessionId)).toBe(primary.window.webContents);
+    expect(appState.findSessionMainWindowContents("no-tile-holds-this")).toBeNull();
+
+    // The primary closes. The secondary keeps its role and its tiles: its ids
+    // stay window-scoped and nothing of it is released.
+    primaryClosed = true;
+    appState.unregisterMainWindow(primaryWindow as never);
+    expect(appState.isSecondaryMainWindowContents(secondary.window.webContents)).toBe(true);
+    expect(appState.findSessionMainWindowContents(secondarySession)).toBe(secondary.window.webContents);
+    // No window shows the primary conversation now.
+    expect(appState.findSessionMainWindowContents(main.sessionId)).toBeNull();
+    fromSecondary(CHANNELS.chat.hasProvider, "group-2");
+    expect(groups.get("window-20:group-2")!.sessionId).toBe(secondarySession);
+    expect(releaseChatGroupLoop).not.toHaveBeenCalled();
+  });
+
+  it("keeps auxiliary host surfaces on the global ids", async () => {
+    const appState = await import("../../../main/app-state.js");
+    const primary = fakeMainWindow(1);
+    appState.registerMainWindow(primary.window as never, "primary");
+    const { resolveChatGroupLoop } = await registerWithGroups(primary.window);
+    // A sender that is not a secondary main window (another host surface)
+    // addresses the same groups the primary window does.
+    handlers.get(CHANNELS.chat.hasProvider)!({ ...RENDERER_EVENT, sender: { id: 999 } }, "group-2");
+    expect(resolveChatGroupLoop).toHaveBeenCalledWith("group-2");
+  });
+});
