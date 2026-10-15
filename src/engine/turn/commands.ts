@@ -26,6 +26,25 @@ function toolProvenanceLabel(tool: {
   return "builtin";
 }
 
+/**
+ * Host-owned slash commands handled by {@link handleCommand}. A built-in always
+ * wins over a skill of the same name; any other `/<skill-name>` is a user's
+ * explicit request to use that skill and goes to the model (see run-turn).
+ */
+export const BUILTIN_SLASH_COMMANDS: ReadonlySet<string> = new Set([
+  "new",
+  "remember",
+  "memory",
+  "sessions",
+  "load",
+  "vendor",
+  "compact",
+  "tools",
+  "permission",
+  "goal",
+  "help",
+]);
+
 export async function handleCommand(
   self: ConversationLoop,
     command: string,

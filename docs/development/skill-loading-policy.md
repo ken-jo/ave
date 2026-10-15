@@ -26,18 +26,52 @@ applies to schemas, applied to instruction bytes:
    not a router — keyword routing stays retired — and they are bounded at
    8 entries of 48 characters where the skill record is built, so every
    consumer inherits the same cap.
-4. **Loaded on demand** — the model calls `skill_load({skillName})`. First load
-   is approval-gated with a sha256 binding over the skill's approval **material**
-   (TOCTOU-safe, `src/tools/skill-load.ts`) — the body for a flat skill, and the
-   body plus the resource manifest for a skill carrying bundled files, so adding
-   or resizing a bundled file re-prompts; the body then renders inside a fenced
-   `<ave-skill>` overlay for the next round and is **cleared at the turn
-   boundary** (`src/engine/turn/run-turn.ts`) so it never becomes ambient
-   context.
+4. **Read on demand** — the model calls `skill_load({skillName})` (category
+   `read`) before acting on a skill. First read is approval-gated with a sha256
+   binding over the skill's approval **material** (TOCTOU-safe,
+   `src/tools/skill-load.ts`) — the body for a flat skill, and the body plus the
+   resource manifest for a skill carrying bundled files, so adding or resizing a
+   bundled file re-prompts. The body is the **tool_result**: an
+   `<ave-skill name base>` block (fence-neutralized) holding SKILL.md and the
+   bundled-file manifest (`renderSkillReadResult`, `src/main/skill-overlay.ts`).
+   The transcript shows the step as "Read skill · <name>".
+5. **Extra files on demand** — `skill_read({skillName, resourcePath})` returns one
+   bundled file, only for a skill already read in the same conversation.
 
-The model selects the relevant skill by name from the catalog; the body lives
-only for the turn that needs it. This mirrors the tool `catalog → tool_search →
-promote` loop.
+The model selects the relevant skill by name from the catalog and reads it; the
+body never enters the system prompt. This mirrors the tool `catalog →
+tool_search → promote` loop and the reference hosts (metadata in the prompt,
+SKILL.md read on trigger, referenced files read as needed).
+
+### Why the body is a tool_result (revision of the turn-scoped overlay)
+
+The body used to render inside an `<ave-active-skills>` system-prompt overlay
+for the rest of the user turn and was cleared at the turn boundary. That made the
+read invisible (the tool result carried no content), changed the cached prompt
+prefix twice per turn that used a skill (after the load and again on clear —
+system prompt, tool schemas and history re-written to the cache each time), and
+dropped the skill on the next turn so follow-ups ran without it. As a tool_result
+the body is written to the cache once, stays in history, and the system prompt
+never changes because a skill was read.
+
+- **Per-conversation registry.** `SkillOverlay` records each read (owner,
+  generation, canonical file, manifest — never the body) for `skill_read`
+  authorization. It lives for the conversation and is cleared by
+  `newConversation` and plugin-generation retirement; no generation lease is held
+  past the read itself.
+- **Compaction.** Mark-stale (`src/engine/auto-compact.ts`) exempts the most
+  recent successful `skill_load` result of each skill; older duplicate reads go
+  stale normally. Summary compaction drops reads like any history, and the
+  catalog guidance tells the model to read the skill again when its result is no
+  longer visible. Re-reads do not re-prompt (the approval is hash-bound).
+- **Preview cap.** The generic tool-result cap (head/tail preview over 100 lines
+  or 2k tokens) skips a well-formed `skill_load` result within
+  `MAX_SKILL_READ_RESULT_CHARS` (body cap + manifest cap + header), so the model
+  never gets a partial skill behind an extra chunk-read step; larger or
+  malformed rows stay capped (`src/engine/conversation-history.ts`).
+- **Typed `/<skill-name>`.** A non-built-in slash naming an indexed skill runs as
+  a normal model turn with the text as typed (`src/engine/turn/run-turn.ts`); the
+  catalog guidance makes the model read that skill first. Built-in commands win.
 
 ## Reference Basis
 
@@ -144,24 +178,24 @@ shared semantic extension of the reactive
 `tool_search`/`skill_load` scorer — never an in-place re-order of the resident
 catalog. This is shared future work with the tool side, not a gap in this policy.
 
-### 4. Bodies Stay Turn-Scoped And Gated
+### 4. Bodies Stay Out Of The Prompt And Gated
 
-Unchanged and load-bearing:
+Load-bearing:
 
 - First `skill_load` is approval-gated with a sha256 hash binding over the
   approval material (body, plus the resource manifest for a bundled skill).
   Bundled approvals live in their own record-key namespace (`<name>#bundled`),
   so the two material encodings can never be confused for one another.
-- Bodies render only inside the fenced `<ave-skill>` overlay and are cleared at
-  the turn boundary; they never persist as ambient context.
+- Bodies reach the model only as the `skill_load` tool_result inside a fenced
+  `<ave-skill>` block; they are never part of the system prompt.
 - A plugin skill is loadable only while its plugin generation is active
   (lease-checked).
 
 ### 5. Projection And TPM Are Part Of The Contract
 
-Before a request is sent, projection must include skill-catalog tokens and any
-loaded skill-overlay tokens, alongside the tool figures, so a turn's true
-system-prompt cost (tools + skills) is one number. TPM protection must not rely
+Before a request is sent, projection must include skill-catalog tokens alongside
+the tool figures, so a turn's true system-prompt cost (tools + skills) is one
+number. Read skill bodies are history and are counted with it. TPM protection must not rely
 on auto-compact; compaction does not shrink the active catalog.
 
 ## Security invariants
@@ -174,8 +208,8 @@ on auto-compact; compaction does not shrink the active catalog.
   containment check is a single chokepoint (`isBundleRoot` + `isSafeResourcePath`),
   not a per-caller convention.
 - Ranking/selection operate on metadata only; they cannot promote a body.
-- Skill metadata is injected as `trust="untrusted-metadata"` and bodies inside a
-  fenced overlay — a skill cannot escalate its own trust or scope.
+- Skill metadata is injected as `trust="untrusted-metadata"` and bodies arrive as
+  fenced tool_result data — a skill cannot escalate its own trust or scope.
 
 ## Implementation Direction
 
@@ -195,7 +229,9 @@ rendered (`src/prompts/system-prompt-builder.ts`), reusing the existing
 - Symmetry: the same active-plugin scope drives tool schemas, the skill catalog,
   and `skill_load` admission in one turn — an out-of-scope plugin's skill is
   refused at the same deny point that refuses that plugin's tools.
-- Bodies: approval-gate + hash binding + turn-boundary clearing unchanged.
+- Bodies: approval-gate + hash binding unchanged; a read body is a tool_result,
+  absent from every system prompt, present in later turns, and its latest read
+  survives mark-stale.
 
 ## Front Matter
 

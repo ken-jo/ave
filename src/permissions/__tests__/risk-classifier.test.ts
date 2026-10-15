@@ -25,6 +25,7 @@ import { PERMISSION_REVIEWER_FRAMEWORK } from "../../shared/permission-reviewer-
 import { disposableContainerCapability } from "../sandbox-capability.js";
 import { makeRiskClassifierContext as ctx } from "./test-helpers.js";
 import { verifyAveScratchDir } from "../../shared/ave-scratch.js";
+import { createSkillLoadTool } from "../../tools/skill-load.js";
 
 // The scratch directory is a boot-time artifact; absent unless a case says so.
 vi.mock("../../shared/ave-scratch.js", () => ({
@@ -840,6 +841,29 @@ describe("RuleBasedRiskClassifier", () => {
   it("read outside allowed dirs → HIGH", () => {
     const v = rb.classify(ctx({ category: "read", finalInput: { path: "/etc/passwd" } }));
     expect(v.level).toBe("high");
+  });
+
+  it("skill_load, graded by the generic read rules, → LOW", () => {
+    // Taken from the real tool, not restated: if skill_load ever went back to
+    // `write`, its pathless input would hit "write path not declared" (HIGH,
+    // un-persistable) now that the name-scoped write rule is gone. The
+    // content-bound control stays the body-hash approval inside the tool.
+    const tool = createSkillLoadTool({
+      store: {} as never,
+      overlay: {} as never,
+      approvals: {} as never,
+      approvalGate: {} as never,
+      emit: () => undefined,
+    });
+    expect(tool.category).toBe("read");
+    const v = rb.classify(ctx({
+      toolName: tool.name,
+      source: tool.source,
+      category: tool.category,
+      pathFields: tool.pathFields ?? [],
+      finalInput: { skillName: "report-writing" },
+    }));
+    expect(v).toEqual({ level: "low", reason: "read inside allowed dirs" });
   });
 
   // ── default fail-safe ─────────────────────

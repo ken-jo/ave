@@ -59,6 +59,38 @@ function imageRow(id: string, data = "QUJD"): GenericMessage {
 }
 
 describe("markStaleToolResults", () => {
+  it("keeps the latest read of each skill and lets older duplicate reads go stale", () => {
+    const body = (name: string) => `<ave-skill name="${name}">\n${"step ".repeat(100)}\n</ave-skill>`;
+    const filler = (i: number): GenericMessage[] => [
+      { role: "assistant", content: "", toolCalls: [{ id: makeToolUseId(i), name: "read_file", input: {} }] },
+      { role: "tool_result", toolUseId: makeToolUseId(i), toolName: "read_file", content: "x".repeat(500) },
+    ];
+    const read = (i: number, name: string, isError = false): GenericMessage[] => [
+      { role: "assistant", content: "", toolCalls: [{ id: makeToolUseId(i), name: "skill_load", input: { skillName: name } }] },
+      { role: "tool_result", toolUseId: makeToolUseId(i), toolName: "skill_load", isError, content: isError ? `{"error":"${"e".repeat(300)}"}` : body(name) },
+    ];
+    const messages: GenericMessage[] = [
+      ...read(1, "alpha"), // older duplicate of alpha → eligible
+      ...read(2, "beta"), // only read of beta → kept
+      ...read(3, "alpha"), // latest alpha → kept
+      ...read(4, "gamma", true), // failed read → eligible like any result
+      ...filler(5),
+      ...filler(6),
+    ];
+    const { messages: out } = markStaleToolResults(messages, { preserveRecentToolResults: 1 });
+    const marked = out
+      .filter((m): m is Extract<GenericMessage, { role: "tool_result" }> => m.role === "tool_result")
+      .map((m) => [m.toolUseId, m.meta?.compactedAt !== undefined]);
+    expect(marked).toEqual([
+      [makeToolUseId(1), true],
+      [makeToolUseId(2), false],
+      [makeToolUseId(3), false],
+      [makeToolUseId(4), true],
+      [makeToolUseId(5), true],
+      [makeToolUseId(6), false],
+    ]);
+  });
+
   it("marks older tool_results while preserving the most recent N (memory verbatim)", () => {
     const messages = synth();
     const { messages: out, result } = markStaleToolResults(messages, {
