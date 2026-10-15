@@ -45,6 +45,7 @@ import {
 import {
   SENSITIVE_PATH_ENTRIES,
   SENSITIVE_PATH_PATTERNS,
+  MAX_WALK_UP,
   canonicalizePathForMatch,
   caseFoldForMatch,
   isSensitivePath,
@@ -527,21 +528,29 @@ function segmentRegex(segment: string): RegExp {
  * that exists in that directory (dot names only when the segment starts with
  * `.`, as bash does without `dotglob`) plus one ordinary filler.
  */
-function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolean): string | null {
+type ScanWork = (steps: number, chars?: number) => void;
+
+function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolean, spend?: ScanWork): string | null {
+  spend?.(1, glob.length);
   if (!glob || glob === "-") return null;
   const absolute = isAbsolute(glob) ? glob : resolve(cwd ?? "/", glob);
   let instances: string[][] = [[]];
   for (const segment of absolute.split(/[\\/]/)) {
+    spend?.(1, segment.length);
     const next: string[][] = [];
     const add = (parts: string[]): void => { next.push(parts); };
     for (const prefix of instances) {
+      spend?.(1);
       if (!hasWildcard(segment)) { add([...prefix, unescapeGlob(segment)]); continue; }
       if (segment === "**") add(prefix);
       // The shell expands a glob against the directory as it is: a sensitive
       // name is reachable when it exists there (or when `**` may go deeper).
       const pattern = segment === "**" ? /^/ : segmentRegex(segment);
       const dotAllowed = dotglob || segment.startsWith(".");
+      const wildcards = (segment.match(/\*/g) ?? []).length;
       for (const name of sensitiveNames()) {
+        // Reserve backtracking combinations before entering a pattern matcher.
+        spend?.((name.length + 1) ** wildcards, segment.length + name.length);
         if (!pattern.test(name) || (!dotAllowed && name.startsWith("."))) continue;
         if (existsSync([...prefix, name].join("/") || "/")) add([...prefix, name]);
       }
@@ -553,6 +562,8 @@ function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolea
     instances = next;
   }
   for (const parts of instances) {
+    // Canonicalization has a bounded ancestor walk; reserve its maximum work.
+    spend?.(MAX_WALK_UP + 1, parts.reduce((length, part) => length + part.length + 1, 0));
     const path = parts.join("/") || "/";
     const hit = isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(path)), "read");
     if (hit) return hit;
@@ -574,14 +585,17 @@ function argumentCandidates(glob: string): string[] {
 }
 
 /** Bash brace expansion (`~/.{ssh,aws}/x`); a range (`{1..9}`) becomes a wildcard. */
-function expandBraces(text: string): string[] {
+function expandBraces(text: string, spend?: ScanWork): string[] {
+  spend?.(1, text.length);
   for (let open = 0; open < text.length; open += 1) {
+    spend?.(1);
     if (text[open] === "\\") { open += 1; continue; }
     if (text[open] !== "{") continue;
     let depth = 0;
     let close = open;
     const commas: number[] = [];
     for (; close < text.length; close += 1) {
+      spend?.(1);
       const char = text[close];
       if (char === "\\") { close += 1; continue; }
       if (char === "{") depth += 1;
@@ -592,13 +606,14 @@ function expandBraces(text: string): string[] {
     const head = text.slice(0, open);
     const tail = text.slice(close + 1);
     if (commas.length === 0) {
-      if (text.slice(open + 1, close).includes("..")) return expandBraces(`${head}*${tail}`);
+      if (text.slice(open + 1, close).includes("..")) return expandBraces(`${head}*${tail}`, spend);
       continue;
     }
     const bounds = [open, ...commas, close];
     const out: string[] = [];
     for (let index = 0; index + 1 < bounds.length; index += 1) {
-      for (const expanded of expandBraces(head + text.slice(bounds[index]! + 1, bounds[index + 1]) + tail)) {
+      for (const expanded of expandBraces(head + text.slice(bounds[index]! + 1, bounds[index + 1]) + tail, spend)) {
+        spend?.(1);
         if (out.length >= BRACE_EXPANSION_LIMIT) return out;
         out.push(expanded);
       }
@@ -609,14 +624,15 @@ function expandBraces(text: string): string[] {
 }
 
 /** Glob texts for shell text the AST did not lower (`~user/…`, `{a,b}`) or for a code token. */
-function rawGlobs(raw: string): string[] {
+function rawGlobs(raw: string, spend?: ScanWork): string[] {
+  spend?.(1, raw.length);
   const home = escapeGlob(homedir());
   const text = raw
     .replace(/["']/g, "")
     .replace(/^~([A-Za-z0-9._-]*)(?=\/|$)/, (_match, user: string) => (user ? `/home/${user}` : home))
     .replace(/\$\{HOME\}|\$HOME\b/g, home)
     .replace(/\$\([^)]*\)|`[^`]*`|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*/g, DYNAMIC_SEGMENT);
-  return expandBraces(text);
+  return expandBraces(text, spend);
 }
 
 /** Glob text of a word from the AST, or null when part of it was not lowered. */
@@ -642,12 +658,14 @@ interface ScanState {
   sensitive: string | null;
   network: boolean;
   hidden: boolean;
+  spend?: ScanWork;
 }
 
 function checkGlob(glob: string, state: ScanState): void {
   for (const candidate of argumentCandidates(glob)) {
+    state.spend?.(1, candidate.length);
     if (state.sensitive) return;
-    state.sensitive = sensitivePathHit(candidate, state.cwd, state.dotglob);
+    state.sensitive = sensitivePathHit(candidate, state.cwd, state.dotglob, state.spend);
   }
 }
 
@@ -690,9 +708,9 @@ export function sensitivePathInCodeText(text: string, cwd: string | undefined): 
  * a quoted argument of non-bash code whose path holds spaces
  * (`"…\User Data\Default\Login Data"`), which the token scan would split.
  */
-export function sensitivePathInArgumentText(text: string, cwd: string | undefined): string | null {
-  const state: ScanState = { cwd, dotglob: false, sensitive: null, network: false, hidden: false };
-  for (const glob of rawGlobs(text)) {
+export function sensitivePathInArgumentText(text: string, cwd: string | undefined, spend?: ScanWork): string | null {
+  const state: ScanState = { cwd, dotglob: false, sensitive: null, network: false, hidden: false, spend };
+  for (const glob of rawGlobs(text, spend)) {
     checkGlob(glob, state);
     if (state.sensitive) break;
   }

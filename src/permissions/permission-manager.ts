@@ -11,7 +11,7 @@ import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rules
 import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
 import { isRuleSpecifier } from "./rules/rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
-import { powerShellExfiltrationSignal, powerShellSensitivePathSignal } from "./rules/powershell-exfiltration.js";
+import { inspectPowerShellCommand } from "./rules/powershell-exfiltration.js";
 import { parseShellCommand } from "./rules/shell-prefix-policy.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
@@ -1468,9 +1468,10 @@ export class PermissionManager {
     if (ruleSubject !== undefined && ruleSubject.dialect !== "bash" && ruleSubject.dialect !== "powershell") {
       throw new Error(`shell rule subject has no known dialect: ${String((ruleSubject as { dialect?: unknown }).dialect)}`);
     }
-    // One parse of the shell subject feeds the matcher and both floors (the
-    // PowerShell reading includes the bash floor over the same text).
-    const parsedSubject = ruleSubject === undefined ? undefined : parseShellCommand(ruleSubject.command);
+    // The matcher shares the native shell parse; the other dialect owns a
+    // bounded analysis shared by both of its floors before any other parser.
+    const parsedSubject = ruleSubject?.dialect === "bash" ? parseShellCommand(ruleSubject.command) : undefined;
+    const powerShellSignals = ruleSubject?.dialect === "powershell" ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd) : undefined;
     const shellSubject = ruleSubject?.dialect === "bash"
       ? { command: parsedSubject!, cwd: ruleSubject.cwd }
       : undefined;
@@ -1484,7 +1485,7 @@ export class PermissionManager {
     const shellExfiltration = shellSubject
       ? shellExfiltrationSignal(shellSubject.command, shellSubject.cwd)
       : ruleSubject?.dialect === "powershell"
-        ? powerShellExfiltrationSignal(parsedSubject!, ruleSubject.cwd)
+        ? powerShellSignals!.exfiltration
         : null;
     // Sensitive-path floor for shell arguments (same normalization as the
     // exfiltration scan): `cat ~/.ssh/id_rsa` is never auto-allowed.
@@ -1493,7 +1494,7 @@ export class PermissionManager {
       : shellSubject
         ? shellSensitivePathSignal(shellSubject.command, shellSubject.cwd)
         : ruleSubject?.dialect === "powershell"
-          ? powerShellSensitivePathSignal(parsedSubject!, ruleSubject.cwd)
+          ? powerShellSignals!.sensitive
           : null;
 
     // 1. Deny rules (highest priority, immutable)
