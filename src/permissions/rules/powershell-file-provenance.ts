@@ -135,10 +135,10 @@ export class PowerShellFileProvenance {
     if (!this.opaqueEffects) { this.opaqueEffects = true; this.revision += 1; }
   }
 
-  /** Test and build discovery may execute files without naming them in argv. */
-  hasExecutableWrites(): boolean {
+  /** Discovery need not name its inputs; package scripts can interpret any file type. */
+  hasExecutableWrites(includeDocuments = false): boolean {
     this.budget.spend();
-    if (this.opaque || this.unknownLeaves) return true;
+    if (this.opaque || this.unknownLeaves || (includeDocuments && this.paths.size !== 0)) return true;
     for (const path of this.paths.keys()) if (this.fileType(path) !== "document") return true;
     return false;
   }

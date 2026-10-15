@@ -76,7 +76,7 @@ import {
   type PowerShellPathBinding,
 } from "./powershell-command-policy.js";
 import { PowerShellFileProvenance } from "./powershell-file-provenance.js";
-import { hiddenCodeReason, isNetworkProgram, refusedShellPrefix, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { hiddenCodeReason, isNetworkProgram, refusedShellPrefix, SHELL_PREFIX_POLICY, type ShellCommandInput } from "./shell-prefix-policy.js";
 import {
   MULTI_PURPOSE_NETWORK,
   sensitivePathInArgumentText,
@@ -452,6 +452,7 @@ const FILE_READERS = new Set([
 const ENV_LISTERS = new Set(["get-childitem", "get-item", "get-content"]);
 const SET_VARIABLE = new Set(["set-variable", "new-variable"]);
 const SCRIPT_BLOCK_RUNNERS = new Set(["foreach-object", "where-object"]);
+const PACKAGE_TASK_PROGRAMS = new Set(["npm", "pnpm", "yarn", "bun", ...SHELL_PREFIX_POLICY.packageRunners]);
 
 function isReaderCommand(name: string): boolean {
   return FILE_READERS.has(name) || FILE_READERS.has(name.replace(/\.exe$/, ""));
@@ -935,11 +936,14 @@ function fileExecutionSignal(stage: PsCommand, feeder: PsCommand | undefined, ct
     // The interpreter's file operand executes even a document extension;
     // other document operands retain their data role.
     const script = nativeInvocation(name, args, ctx).scriptPath;
+    const packageTask = PACKAGE_TASK_PROGRAMS.has(name.replace(/\.(?:exe|cmd)$/, ""))
+      && !(args.length === 1 && /^(?:--version|--help|-[vh])$/.test(nativeArguments(args, ctx)[0] ?? ""));
     if (script) {
       const scriptSignal = materialized(script);
       if (scriptSignal) return scriptSignal;
-    } else if (policy?.argv && knownNativeData(name, args, ctx)
-      && !policy.argv.info?.includes(nativeArguments(args, ctx)[0]!) && ctx.files.hasExecutableWrites())
+    }
+    if ((packageTask || (!script && policy?.argv && knownNativeData(name, args, ctx)
+      && !policy.argv.info?.includes(nativeArguments(args, ctx)[0]!))) && ctx.files.hasExecutableWrites(packageTask))
       return hiddenCode("materialized task input");
     // An opaque consumer cannot prove that a materialized executable operand is
     // data. Inert document operands do not acquire an execution role from argv.
@@ -1196,7 +1200,7 @@ function remoteWriteSignal(name: string, args: readonly PsToken[], ctx: Context)
       if (parameterIndex(args, "attachments") !== -1 || args.some((token) => tokenCarriesData(token, ctx))) return null;
       return bound.state === "opaque" || destinations.length === 0
         || destinations.some((tokens) => evaluateValue(tokens, ctx).state === "opaque")
-        ? "PowerShell hidden code (opaque mail destination)" : "Send-MailMessage output upload";
+        ? hiddenCode("opaque mail destination") : "Send-MailMessage output upload";
     }
   } else if (/^export-/.test(name)) {
     // Extension exporters have no trusted signature. Any share operand can be a sink.
@@ -1222,17 +1226,17 @@ function remoteWriteSignal(name: string, args: readonly PsToken[], ctx: Context)
       destinations = args.slice(1).map((token) => [token]);
     } else if (bare === "print" || bare === "mode") {
       // Printer ports may be rebound to remote queues outside this input.
-      return "PowerShell hidden code (opaque printer port destination)";
+      return hiddenCode("opaque printer port destination");
     }
   }
   const values = destinations.map((tokens) => evaluateValue(tokens, ctx));
   if (values.some((value) => isUncPath(value, ctx))) return `${name} UNC file upload`;
-  if (policy?.destination?.kind === "printer") return "PowerShell hidden code (opaque printer destination)";
+  if (policy?.destination?.kind === "printer") return hiddenCode("opaque printer destination");
   if (values.some((value) => /(?:^|\/)(?:(?:lpt|com)(?:[1-9]\d*|[¹²³])|prn|aux)(?::|\.|$)/i.test(normalizePaths(value.text).replace(/^[a-z]:/i, "").trimEnd()))) {
     return `${name} printer port upload`;
   }
   if (nativeBindingOpaque || values.some((value) => providerPath(value, ctx).state === "opaque")
-    || ((nativeWrite || policy?.destination || /^export-/.test(name)) && values.length === 0)) return `PowerShell hidden code (${values.find((value) => value.reason)?.reason ?? "opaque upload destination"})`;
+    || ((nativeWrite || policy?.destination || /^export-/.test(name)) && values.length === 0)) return hiddenCode(values.find((value) => value.reason)?.reason ?? "opaque upload destination");
   return null;
 }
 
