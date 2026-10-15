@@ -108,7 +108,7 @@ test.describe("context-budget token surfaces", () => {
 
       const badge = ctx.page.getByTestId(TEST_IDS.tokenCostBadge).first();
       await expect(badge).toContainText("2.0k");
-      await expect(badge).not.toContainText(t("tokenCostBadge.pricingUnknownBadge"));
+      await expect(badge).not.toContainText(t("tokenCostBadge.pricingUnknownLabel"));
       await badge.click({ force: true });
       await expect(badge).toContainText("≈");
     } finally {

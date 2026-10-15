@@ -206,7 +206,7 @@ describe("the shared layer withholds grants under the protected floor", () => {
       "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(trustedSettings)));",
       "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(ASRT_LINUX_RUNTIME_PROBE_COMMAND,undefined,undefined,abortController.signal,process.cwd());",
       "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,buildPerCommandSandboxCustomConfig(options.filesystem),options.abortSignal);",
-      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,buildPerCommandSandboxCustomConfig(options.filesystem),options.abortSignal);",
+      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,buildPerCommandSandboxCustomConfig(options.filesystem),options.abortSignal,undefined,wrapOptions);",
     ]);
   });
 });

@@ -1886,12 +1886,24 @@ export function appOwnedSandboxHomeRoot(): string {
 }
 
 /**
+ * Where the workspace terminal hands its sandboxed shell command to the
+ * trampoline it spawned on the pty (`terminal-tty-handoff.ts`): one `mkdtemp`
+ * directory with one fifo per spawn. The host alone writes here. No wrap
+ * grants it, so no confined process can write the fifo (which the trampoline
+ * runs unsandboxed), and the read floor denies it, so none can read the
+ * command and environment out of it either.
+ */
+export function appOwnedTerminalHandoffRoot(): string {
+  return join(sandboxPrivateBase(), "handoff");
+}
+
+/**
  * The roots of the confined processes' private directories, read-denied by
  * the floor on macOS and Linux. Empty on Windows, whose floor is unchanged.
  */
 export function appOwnedSandboxPrivateRoots(): string[] {
   if (process.platform === "win32") return [];
-  return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot()];
+  return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot()];
 }
 
 /**
@@ -2085,9 +2097,36 @@ export async function wrapWorkerCommand(
   command: string,
   options: WrapOptions = {},
 ): Promise<SandboxWrapResult> {
+  return wrapLongLivedCommand("wrapWorkerCommand", command, options, undefined);
+}
+
+/**
+ * Wrap the workspace terminal's login shell. The same wrap as
+ * {@link wrapWorkerCommand}, plus ONE terminal grant: macOS `file-ioctl` on
+ * `ownTty`, the pty slave the shell is spawned on, and on no other terminal.
+ * Without it the shell cannot turn off echo or take the terminal for a
+ * foreground job (every command is printed twice, job control is off), and
+ * ASRT's only other grant, `allowPty: true`, covers every `/dev/ttys*` of the
+ * user. ASRT refuses an `ownTty` that is not `/dev/ttys` + 3 or more digits.
+ *
+ * Only the terminal passes a tty: tool and worker wraps never get one.
+ */
+export async function wrapTerminalCommand(
+  command: string,
+  options: WrapOptions & { readonly ownTty: string },
+): Promise<SandboxWrapResult> {
+  return wrapLongLivedCommand("wrapTerminalCommand", command, options, { ttys: [options.ownTty] });
+}
+
+async function wrapLongLivedCommand(
+  caller: string,
+  command: string,
+  options: WrapOptions,
+  wrapOptions: { readonly ttys: readonly string[] } | undefined,
+): Promise<SandboxWrapResult> {
   // Self-enforcing gate — same rationale as wrapToolCommand.
   if (!isAsrtSandboxActive()) {
-    throw new Error("wrapWorkerCommand: ASRT sandbox is not active (initialize at boot first)");
+    throw new Error(`${caller}: ASRT sandbox is not active (initialize at boot first)`);
   }
   noteConfinedProcessesMayRun();
   // Publish the temp root HERE rather than trusting a boot step to have run.
@@ -2095,13 +2134,16 @@ export async function wrapWorkerCommand(
   // wrap that happened without this would hand the child a `TMPDIR` it is not
   // allowed to write — a broken temp directory with no visible cause. Idempotent.
   useAppOwnedSandboxTempRoot();
-  assertPerExecFilesystemSupported(options.filesystem, "wrapWorkerCommand");
+  assertPerExecFilesystemSupported(options.filesystem, caller);
   const SandboxManager = await loadSandboxManager();
+  // `wrapOptions` is undefined for every wrap but the terminal's.
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
     buildPerCommandSandboxCustomConfig(options.filesystem),
     options.abortSignal,
+    undefined,
+    wrapOptions,
   );
   return applyLinuxReadMaskWriteFloor(wrapped, options.filesystem, () => SandboxManager.cleanupAfterCommand());
 }

@@ -46,7 +46,7 @@ import {
   verifyEntryHmac,
   type SecretStore,
 } from "./hmac-chain.js";
-import type { PermissionAuditEntry, PermissionAuditEntryInput } from "./audit-schema.js";
+import { isPermissionAuditEntry, type PermissionAuditEntry, type PermissionAuditEntryInput } from "./audit-schema.js";
 import { aveHome } from "../shared/ave-home.js";
 import {
   normalizeSubscriptionUsageTelemetry,
@@ -473,6 +473,23 @@ function instantWithin(at: number, start?: Date, end?: Date): boolean {
   if (start !== undefined && !(at >= start.getTime())) return false;
   if (end !== undefined && !(at < end.getTime())) return false;
   return true;
+}
+
+/**
+ * The kind a stored row is counted under, by the contract of the channel that
+ * wrote it: a telemetry or sandbox-gate row states its `type`; a permission
+ * row (`<day>.permission-audit.jsonl`, audit-schema.ts) states its `decision`
+ * instead and has no `type`. The Audit tab labels a row the same way.
+ *
+ * A row that states neither matches no channel's contract. It is a corrupt
+ * row and has no kind — the caller does not count it, exactly as it does not
+ * count a line that fails to parse or a row with no readable time.
+ */
+function auditRowKind(entry: unknown): string | undefined {
+  if (typeof entry !== "object" || entry === null) return undefined;
+  const type = (entry as { type?: unknown }).type;
+  if (typeof type === "string" && type.length > 0) return type;
+  return isPermissionAuditEntry(entry) ? entry.decision : undefined;
 }
 
 /** A matched row plus the two keys that order it: its instant, then read order. */
@@ -1423,7 +1440,7 @@ export class AuditLogger {
     const totalByDay: Record<string, number> = {};
     let sensitiveOps = 0;
 
-    const SENSITIVE_TYPES = new Set<AuditEntry["type"]>(["approval", "kill_switch"]);
+    const SENSITIVE_TYPES = new Set<string>(["approval", "kill_switch"] satisfies AuditEntry["type"][]);
 
     for (const file of files) {
       const filePath = join(this.auditDir, file);
@@ -1438,10 +1455,12 @@ export class AuditLogger {
         }
         const at = entryInstant(entry);
         if (!instantWithin(at, range.start, range.end)) continue;
+        const kind = auditRowKind(entry);
+        if (kind === undefined) continue;
         const day = localDateKey(new Date(at));
-        totalByType[entry.type] = (totalByType[entry.type] ?? 0) + 1;
+        totalByType[kind] = (totalByType[kind] ?? 0) + 1;
         totalByDay[day] = (totalByDay[day] ?? 0) + 1;
-        if (SENSITIVE_TYPES.has(entry.type)) sensitiveOps += 1;
+        if (SENSITIVE_TYPES.has(kind)) sensitiveOps += 1;
       }
     }
 

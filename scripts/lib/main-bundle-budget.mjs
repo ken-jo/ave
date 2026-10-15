@@ -67,6 +67,10 @@ export function isSafeMainBundleManifestPath(path) {
  * consulted by the permission manager on every tool call, so they belong in the initial
  * graph; with the permissions category joined with that `main` the measurement is entry
  * 423_073, initial 5_389_392, total 9_031_357, and the initial ceiling moves to 5_390_000.
+ * The terminal's own-tty wrap (`wrapTerminalCommand`, the handoff root) lives in the
+ * boot-time sandbox module; the handoff itself is loaded on spawn. Measured on that
+ * `main`: entry 423_113, initial 5_390_708, total 9_035_522; the initial ceiling moves to
+ * 5_395_000.
  * The main-area terminal and web panels add renderer strings to the one i18n catalog main
  * also imports (that catalog is shared by design), plus the `terminal`/`web` view keys;
  * with them the measurement is entry 423_073, initial 5_390_727, and the initial ceiling
@@ -86,13 +90,17 @@ export function isSafeMainBundleManifestPath(path) {
  * provenance remain in the initial registry graph. Measured entry 425_021,
  * initial 5_413_433, total 9_091_289; the ceiling moves from 5_412_000 to
  * 5_415_000 to cover that functionality.
+ * The terminal own-tty wrap joined with that `main` measures entry 425_096,
+ * initial 5_415_405, total 9_097_784; the initial ceiling moves to 5_420_000.
  * The main-area panels joined with that main (the browser agent tools beside the
  * panels' layout parser, terminal ownership and window-close cleanup) measure entry
  * 425_328, initial 5_423_655, total 9_102_793; the initial ceiling moves to 5_425_000.
+ * The terminal own-tty wrap joined with that `main` measures entry 425_403,
+ * initial 5_425_510, total 9_107_949; the initial ceiling moves to 5_430_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_425_000,
+  initialBytes: 5_430_000,
   totalBytes: 11_050_000,
 });
 
