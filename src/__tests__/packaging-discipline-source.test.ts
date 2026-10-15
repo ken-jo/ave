@@ -3,8 +3,9 @@ import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readRepoFile } from "./test-helpers.js";
+import { assertReleaseSecretEnvironments } from "./support/workflow-secret-policy.js";
 import { jobRunCommands, workflowJobs } from "./support/workflow-source.js";
 
 /** A repository script module, loaded as the gate loads it. */
@@ -394,20 +395,132 @@ describe("installer smoke and packaging discipline", () => {
   });
 
   it("confines every release-bucket secret reader to the release environment", () => {
-    let readers = 0;
     for (const name of workflowFileNames()) {
-      const { jobs, ...settings } = parseYaml(readRepoFile(`.github/workflows/${name}`)) as {
-        jobs: Record<string, { environment?: string | { name: string } }>;
-      };
-      for (const [id, job] of Object.entries(jobs)) {
-        // Include workflow-level settings so inherited secrets need the same boundary.
-        if (!/\bsecrets\s*\.\s*R2_[A-Za-z0-9_]+\b/u.test(JSON.stringify([settings, job]))) continue;
-        readers += 1;
-        const environment = typeof job.environment === "string" ? job.environment : job.environment?.name;
-        expect(environment, `${name}:${id} reads a release-bucket secret`).toBe("release");
-      }
+      assertReleaseSecretEnvironments(readRepoFile(`.github/workflows/${name}`), name);
     }
-    expect(readers).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["dot access", "${{ secrets.R2_BUCKET }}"],
+    ["dot access with whitespace", "${{\n secrets \t . \n R2_ACCESS_KEY_ID \n}}"],
+    ["single-quoted bracket access", "${{ secrets['R2_SECRET_ACCESS_KEY'] }}"],
+    ["double-quoted bracket access", '${{ secrets["R2_ACCOUNT_ID"] }}'],
+    ["single-quoted bracket access with whitespace", "${{\nsecrets \t [ \n 'R2_BUCKET' \t ]\n}}"],
+    ["double-quoted bracket access with whitespace", '${{\tsecrets [\t "R2_BUCKET" \n ]\t}}'],
+    ["context serialization", "${{ toJSON(secrets) }}"],
+    ["context serialization with whitespace and mixed case", "${{ ToJson(\n SeCrEtS \t) }}"],
+    ["the whole context", "${{ secrets }}"],
+    ["the whole context passed to a function", "${{ format('{0}', secrets) }}"],
+    ["a computed secret name", "${{ secrets[inputs.secret_name] }}"],
+    ["a constructed secret name", "${{ secrets[format('R2_{0}', 'BUCKET')] }}"],
+    ["a wildcard secret lookup", "${{ secrets.* }}"],
+    ["access after a quoted expression terminator", "${{ format('}}{0}', secrets.R2_BUCKET) }}"],
+    ["access after an unrelated expression", "${{ secrets.GITHUB_TOKEN }}:${{ secrets['R2_BUCKET'] }}"],
+    ["an expression inside shell quotes", "echo '${{ secrets['R2_BUCKET'] }}'"],
+  ])("rejects a release-secret mutation using %s", (_name, value) => {
+    const workflow = parseYaml("jobs:\n  consumer:\n    runs-on: self-hosted\n    env:\n      VALUE: public\n    steps:\n      - run: 'true'\n") as {
+      jobs: { consumer: { env: { VALUE: string }; environment?: string | { name: string } } };
+    };
+    const check = () => assertReleaseSecretEnvironments(stringifyYaml(workflow), "mutation.yml");
+    expect(check).not.toThrow();
+    workflow.jobs.consumer.env.VALUE = value;
+    expect(check).toThrow("mutation.yml:consumer reads release secrets without environment: release");
+    workflow.jobs.consumer.environment = "staging";
+    expect(check).toThrow("mutation.yml:consumer reads release secrets without environment: release");
+    workflow.jobs.consumer.environment = "release";
+    expect(check).not.toThrow();
+    workflow.jobs.consumer.environment = { name: "release" };
+    expect(check).not.toThrow();
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["inherited secrets", { uses: "./.github/workflows/publish.yml", secrets: "inherit" }],
+    ["an R2-named reusable-workflow secret", {
+      uses: "./.github/workflows/publish.yml",
+      secrets: { R2_BUCKET: "${{ inputs.bucket }}" },
+    }],
+    ["an R2-named secret sourced from another credential", {
+      uses: "./.github/workflows/publish.yml",
+      secrets: { R2_SECRET_ACCESS_KEY: "${{ secrets.RELEASE_ACCESS_KEY }}" },
+    }],
+    ["a renamed reusable-workflow secret", {
+      uses: "./.github/workflows/publish.yml",
+      secrets: { credential: "${{ secrets.R2_SECRET_ACCESS_KEY }}" },
+    }],
+    ["a single-quoted reusable-workflow secret", {
+      uses: "./.github/workflows/publish.yml",
+      secrets: { credential: "${{ secrets [ 'R2_BUCKET' ] }}" },
+    }],
+    ["a double-quoted reusable-workflow secret", {
+      uses: "./.github/workflows/publish.yml",
+      secrets: { credential: '${{ secrets [ "R2_ACCOUNT_ID" ] }}' },
+    }],
+    ["the whole context passed to a reusable workflow", {
+      uses: "./.github/workflows/publish.yml",
+      with: { credentials: "${{ secrets }}" },
+    }],
+    ["a serialized context passed to a reusable workflow", {
+      uses: "./.github/workflows/publish.yml",
+      with: { credentials: "${{ toJSON(secrets) }}" },
+    }],
+    ["an implicit conditional expression", {
+      "runs-on": "self-hosted", if: "contains(toJSON(secrets), 'R2_')", steps: [{ run: "true" }],
+    }],
+    ["an implicit step condition", {
+      "runs-on": "self-hosted", steps: [{ if: "contains(toJSON(secrets), 'R2_')", run: "true" }],
+    }],
+  ])("rejects a release-secret mutation using %s", (_name, job) => {
+    const workflow = { jobs: { consumer: { "runs-on": "self-hosted", steps: [{ run: "true" }] } as Record<string, unknown> } };
+    const check = () => assertReleaseSecretEnvironments(stringifyYaml(workflow), "mutation.yml");
+    expect(check).not.toThrow();
+    workflow.jobs.consumer = job;
+    expect(check).toThrow("mutation.yml:consumer reads release secrets without environment: release");
+  });
+
+  it("rejects workflow-level secret mutations inherited by an unprotected job", () => {
+    const workflow = {
+      env: { VALUE: "public" },
+      jobs: { consumer: { "runs-on": "self-hosted", steps: [{ run: "true" }] } },
+    };
+    const check = () => assertReleaseSecretEnvironments(stringifyYaml(workflow), "mutation.yml");
+    expect(check).not.toThrow();
+    workflow.env.VALUE = '${{ secrets [ "R2_BUCKET" ] }}';
+    expect(check).toThrow("mutation.yml:consumer reads release secrets without environment: release");
+  });
+
+  it.each([
+    "${{ secrets.GITHUB_TOKEN }}",
+    "${{ secrets [ 'GITHUB_TOKEN' ] }}",
+    '${{ secrets [ "GITHUB_TOKEN" ] }}',
+    "${{ inputs.secrets }}",
+    "${{ toJSON(inputs.secrets) }}",
+    "${{ format('{0}', 'secrets.R2_BUCKET') }}",
+    "${{ 'escaped '' secrets.R2_BUCKET' }}",
+    '${{ "secrets.R2_BUCKET" }}',
+    "secrets.R2_BUCKET is an example outside an expression",
+  ])("allows unrelated or literal secret text: %s", (value) => {
+    const workflow = { jobs: { consumer: { "runs-on": "self-hosted", env: { VALUE: value }, steps: [{ run: "true" }] } } };
+    expect(() => assertReleaseSecretEnvironments(stringifyYaml(workflow), "allowed.yml")).not.toThrow();
+  });
+
+  it("allows a reusable workflow to receive an unrelated secret", () => {
+    const workflow = {
+      jobs: { consumer: { uses: "./.github/workflows/publish.yml", secrets: { token: "${{ secrets.GITHUB_TOKEN }}" } } },
+    };
+    expect(() => assertReleaseSecretEnvironments(stringifyYaml(workflow), "allowed.yml")).not.toThrow();
+  });
+
+  it("allows literal if fields in environment values and action inputs", () => {
+    const workflow = {
+      jobs: {
+        consumer: {
+          "runs-on": "self-hosted",
+          env: { if: "secrets.R2_BUCKET" },
+          steps: [{ uses: "./.github/actions/check", with: { if: "secrets.R2_BUCKET" } }],
+        },
+      },
+    };
+    expect(() => assertReleaseSecretEnvironments(stringifyYaml(workflow), "allowed.yml")).not.toThrow();
   });
 
   it("runs contract probes only from main while retaining protected tag publication", () => {

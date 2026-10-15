@@ -59,8 +59,29 @@ Website links: `https://downloads.agent-connector.ai/latest/mac-arm64.dmg`,
    gh secret set R2_BUCKET -R ken-jo/ave --env release
    ```
 
-   Delete any repository-level copies after setting the environment values;
-   every job reading these secrets must use `environment: release`.
+   Verify that all four names are present in the environment:
+
+   ```bash
+   gh secret list -R ken-jo/ave --env release
+   ```
+
+   Only after all four are present, delete their repository-level copies (these
+   commands deliberately omit `--env`):
+
+   ```bash
+   gh secret delete R2_ACCOUNT_ID -R ken-jo/ave
+   gh secret delete R2_ACCESS_KEY_ID -R ken-jo/ave
+   gh secret delete R2_SECRET_ACCESS_KEY -R ken-jo/ave
+   gh secret delete R2_BUCKET -R ken-jo/ave
+   ```
+
+   Confirm that none of the four names remains in the repository-level list:
+
+   ```bash
+   gh secret list -R ken-jo/ave
+   ```
+
+   Every job reading these secrets must use `environment: release`.
    The job fails, naming the missing secret, when any of the four is unset.
    To check the secrets before a tag build, manually dispatch the **R2 Probe**
    workflow (`.github/workflows/r2-probe.yml`) from `main` only. It
