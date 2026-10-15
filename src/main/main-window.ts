@@ -43,23 +43,36 @@ import { isAppUpdateInstallRequested } from "./app-update-install-intent.js";
 import { BOOTSTRAP_SPLASH, markBootstrapSplashShown } from "./bootstrap-splash.js";
 import { requestNativeChromeRefresh } from "./native-window-coordinator.js";
 import { preloadPreferences } from "./preload-bundles.js";
+import { MAIN_WINDOW_ROLE_QUERY_KEY } from "../shared/main-window-role.js";
 import {
   getLastRendererReloadAt,
-  getMainWindow,
+  getMainWindows,
+  getPrimaryMainWindow,
   getServices,
   getTray,
-  getWindowManager,
   isAppShutdownCompleted,
   isAppShutdownStarted,
   isRendererReloadReady,
+  markMainWindowFocused,
+  nextMainWindowRole,
+  registerMainWindow,
   setLastRendererReloadAt,
-  setMainWindow,
   setPendingRendererReload,
+  unregisterMainWindow,
 } from "./app-state.js";
 
 const log = createLogger("ave");
 
 export const rendererIndexUrl = () => pathToFileURL(resolve(mainDir, "..", "index.html")).toString();
+
+/**
+ * The app's own document, bare or carrying the window-role query a secondary
+ * window loads with. Any other path, scheme, query or fragment is refused.
+ */
+function isRendererIndexUrl(url: string): boolean {
+  if (url === rendererIndexUrl()) return true;
+  return url === `${rendererIndexUrl()}?${MAIN_WINDOW_ROLE_QUERY_KEY}=secondary`;
+}
 
 /**
  * Persisted workspace mode used to size the main window and prime the renderer
@@ -153,9 +166,16 @@ function initialAppModeArgs(): string[] {
   return [`${INITIAL_APP_MODE_ARG_PREFIX}${readPersistedAppMode()}`];
 }
 
-export function createWindow(options: { showBootstrapSplash?: boolean; headless?: boolean } = {}) {
+/**
+ * Open one main app window. Several may be open at once; the first live one
+ * owns the primary conversation (see `app-state.ts`). Returns the window, or
+ * `null` for a headless run.
+ */
+export function createWindow(
+  options: { showBootstrapSplash?: boolean; headless?: boolean } = {},
+): BrowserWindow | null {
   // One-shot runs have no desktop surface and must not allocate a renderer.
-  if (options.headless) return;
+  if (options.headless) return null;
   const showBootstrapSplash = options.showBootstrapSplash ?? true;
   const hostPreload = preloadPreferences("preload");
   if (!existsSync(hostPreload.preload)) {
@@ -189,13 +209,9 @@ export function createWindow(options: { showBootstrapSplash?: boolean; headless?
       additionalArguments: [...initialThemeArgs(), ...initialAppModeArgs()],
     },
   });
-  setMainWindow(win);
-
-  // Register with WindowManager so snap logic can track the main window.
-  const windowManager = getWindowManager();
-  if (windowManager) {
-    windowManager.registerMainWindow(win);
-  }
+  registerMainWindow(win, nextMainWindowRole());
+  // Point-to-point sends (menu actions, dialogs) follow the window in use.
+  win.on("focus", () => markMainWindowFocused(win));
 
   // Attach maximize / fullscreen broadcast listeners. These must be registered
   // on every new BrowserWindow instance (initial boot, macOS re-activation,
@@ -216,6 +232,11 @@ export function createWindow(options: { showBootstrapSplash?: boolean; headless?
   win.on("close", (event) => {
     if (isAppUpdateInstallRequested()) return;
     if (isAppShutdownStarted() || isAppShutdownCompleted() || !getTray() || win.isDestroyed()) return;
+    // With another main window still open, closing this one closes it for
+    // real: only the last remaining window follows the close-button
+    // preference (hide to tray / quit), so extra windows never pile up as
+    // hidden zombies and closing one window never quits the others.
+    if (getMainWindows().some((other) => other !== win)) return;
     // Honour user's close-button preference. The default is `hide-to-tray`
     // (keeps routine scheduler + plugin background work alive); a user who
     // picks `quit` in Settings → 일반 → 시스템 동작 gets the conventional
@@ -242,7 +263,7 @@ export function createWindow(options: { showBootstrapSplash?: boolean; headless?
     requestNativeChromeRefresh();
   });
   win.on("closed", () => {
-    if (getMainWindow() === win) setMainWindow(null);
+    unregisterMainWindow(win);
     requestNativeChromeRefresh();
   });
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
@@ -284,7 +305,7 @@ export function createWindow(options: { showBootstrapSplash?: boolean; headless?
   win.webContents.on("did-attach-webview", (_event, contents) => {
     const src = takePendingSideBrowserSrc(pendingSideBrowserWebviews, contents.getURL());
     if (!src || !isSideBrowserContents(contents)) return;
-    attachSideBrowserWebview(contents);
+    attachSideBrowserWebview(contents, win);
     log.debug({ src, webContentsId: contents.id }, "side browser webview attached");
   });
 
@@ -323,7 +344,7 @@ export function createWindow(options: { showBootstrapSplash?: boolean; headless?
     // both `validateSender` and `validateHostRendererSender`. Nothing in the
     // renderer navigates itself; the splash and index are loaded from main via
     // loadURL/loadFile, which do not raise `will-navigate`.
-    if (url === rendererIndexUrl()) return;
+    if (isRendererIndexUrl(url)) return;
     details.preventDefault();
     // The fallback used to hand the raw URL to `shell.openExternal`, which
     // launches any registered handler — `ms-msdt:`, `smb://` (NTLM leak),
@@ -348,12 +369,20 @@ export function createWindow(options: { showBootstrapSplash?: boolean; headless?
       .then(() => showMainWindow(win))
       .catch((err) => log.error({ err }, "splash load failed"));
   }
+  return win;
 }
 
 export async function loadMainInterface(win: BrowserWindow, reason: string) {
   if (win.isDestroyed()) return;
   try {
-    await win.loadFile(resolve(mainDir, "..", "index.html"));
+    // A secondary window's renderer is told so through the document URL (the
+    // primary loads the bare index, exactly as before multi-window). Crash
+    // recovery reloads through here too, so the role is re-derived each time.
+    const isPrimary = getPrimaryMainWindow() === win;
+    await win.loadFile(
+      resolve(mainDir, "..", "index.html"),
+      isPrimary ? undefined : { query: { [MAIN_WINDOW_ROLE_QUERY_KEY]: "secondary" } },
+    );
     setPendingRendererReload(false);
     showMainWindow(win);
     log.info({ reason }, "main interface loaded");
@@ -389,9 +418,9 @@ export function toggleMainWindowVisibility(win: BrowserWindow): "shown" | "hidde
   return "shown";
 }
 
+/** Every open main window — the broadcast target set (see `app-state.ts`). */
 export function getAppWindows(): BrowserWindow[] {
-  const main = getMainWindow();
-  return main && !main.isDestroyed() ? [main] : [];
+  return getMainWindows();
 }
 
 export function registerMainWindowPluginEventBridge(win: BrowserWindow): void {

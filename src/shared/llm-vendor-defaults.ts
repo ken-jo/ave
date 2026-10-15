@@ -692,7 +692,11 @@ export function llmRouteBaseUrls(input: {
 }
 
 /**
- * Stable signature of every endpoint an LLM route could reach.
+ * Stable signature of every endpoint an LLM route could reach: each vendor
+ * block's configured `baseUrl` plus the active marketplace provider preset's
+ * address, which lives in the preset registry rather than in a vendor block.
+ * The settings and chat IPC domains both read this one helper so they cannot
+ * disagree about which endpoints count.
  *
  * Change-detection for the ASRT sandbox network union: the union is rebuilt
  * only when this moves. It is keyed by the SET of endpoints rather than by
@@ -702,9 +706,14 @@ export function llmRouteBaseUrls(input: {
  * fake a change.
  */
 export function llmRouteBaseUrlSignature(
-  input: Parameters<typeof llmRouteBaseUrls>[0],
+  llm: Pick<Parameters<typeof llmRouteBaseUrls>[0], "vendors" | "marketplaceProviderPresetId">,
+  installedProviderPresets: Parameters<typeof llmRouteBaseUrls>[0]["installedProviderPresets"],
 ): string {
-  return [...llmRouteBaseUrls(input)].sort().join("|");
+  return [...llmRouteBaseUrls({
+    vendors: llm.vendors,
+    marketplaceProviderPresetId: llm.marketplaceProviderPresetId,
+    installedProviderPresets,
+  })].sort().join("|");
 }
 
 export function canUseLlmVendorWithoutApiKey(

@@ -16,7 +16,7 @@ export async function fireLifecycleEvent(
   deps: ConversationLoopDeps,
   sessionId: string,
   event: LifecycleHookEvent,
-  payload: import("../../hooks/script-hook-manager.js").LifecycleEventPayload = {},
+  payload: import("../../hooks/script-hook-types.js").LifecycleEventPayload = {},
   sessionIdOverride?: string,
 ): Promise<void> {
     const manager = deps.scriptHookManager;
@@ -41,7 +41,7 @@ export async function fireLifecycleEvent(
 export async function fireUserPromptSubmit(
   deps: ConversationLoopDeps,
   sessionId: string,
-  payload: import("../../hooks/script-hook-manager.js").UserPromptSubmitPayload,
+  payload: import("../../hooks/script-hook-types.js").UserPromptSubmitPayload,
   sessionIdOverride?: string,
 ): Promise<{ decision: "allow" | "deny"; reason: string }> {
     const manager = deps.scriptHookManager;

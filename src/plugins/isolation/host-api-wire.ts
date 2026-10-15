@@ -68,10 +68,9 @@ export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number]
  * the protocol, so it is read off the release history rather than restated.
  */
 export const HOST_PROTOCOL_FIRST_APP_VERSION: Readonly<Record<HostProtocolVersion, string>> = {
-  // Protocol 3 (the `ave/*` wire) is an unreleased candidate recorded at the
-  // current package version; released 0.13.0 served protocol 2. The 0.14.0
-  // release bump replaces the 3/v0.13.0 mirror candidate and this floor.
-  "3": "0.13.0",
+  // Protocol 3 (the `ave/*` wire) first ships in 0.14.0; released 0.13.0
+  // served protocol 2 only, so a protocol-3 plugin cannot load on it.
+  "3": "0.14.0",
 };
 
 /** Whether `value` names a version this build serves. */

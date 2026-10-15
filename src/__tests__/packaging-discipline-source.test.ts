@@ -386,6 +386,27 @@ describe("installer smoke and packaging discipline", () => {
     expect(r2.slice(0, uploadAt)).not.toContain("secrets.");
   });
 
+  it("runs the R2 credential probe only by manual dispatch and only under _ci-probe/", () => {
+    const workflow = readRepoFile(".github/workflows/r2-probe.yml");
+    const trigger = workflow.slice(workflow.indexOf("\non:"), workflow.indexOf("\npermissions:"));
+    // The probe writes to the live release bucket, so no repository event may
+    // start it: only an operator's dispatch.
+    expect(trigger.trim()).toBe("on:\n  workflow_dispatch:");
+    expect(workflow).toMatch(/^ {2}contents: read$/mu);
+    expect(workflow).not.toContain("continue-on-error");
+    expect(workflow).not.toMatch(/set -[a-z]*x/u);
+    for (const name of ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]) {
+      expect(workflow).toContain(`${name}: \${{ secrets.${name} }}`);
+    }
+    expect(workflow.match(/secrets\.[A-Z0-9_]+/gu)?.sort()).toEqual(
+      ["secrets.R2_ACCESS_KEY_ID", "secrets.R2_ACCOUNT_ID", "secrets.R2_BUCKET", "secrets.R2_SECRET_ACCESS_KEY"],
+    );
+    expect(workflow).toContain("PROBE_KEY: _ci-probe/${{ github.run_id }}-${{ github.run_attempt }}.txt");
+    for (const operation of ["put-object", "list-objects-v2", "delete-object"]) {
+      expect(workflow).toContain(`r2 ${operation} `);
+    }
+  });
+
   it("keeps privileged workflows on trusted default-branch events", () => {
     const deploy = readRepoFile(".github/workflows/web-deploy.yml");
     expect(deploy).toContain("repository_dispatch:");
@@ -431,6 +452,12 @@ describe("installer smoke and packaging discipline", () => {
     expect(deploy).toContain("sha256sum -c bundle.sha256");
     expectPinnedAction(deploy, "cloudflare/wrangler-action");
     expect(deploy).toContain('wranglerVersion: "4.114.0"');
+    // Ave's site is the static-assets Worker `ave-web` (ave.agent-connector.ai),
+    // configured by web/wrangler.jsonc, which travels inside the verified bundle.
+    expect(build).toContain("cp web/wrangler.jsonc staged-web/wrangler.jsonc");
+    expect(deploy).toContain("EXPECTED_CONFIG_SHA256");
+    expect(deploy).toContain("command: deploy --config wrangler.jsonc");
+    expect(deploy).not.toContain("pages deploy");
     expect(deploy).not.toContain("actions/checkout");
     expect(deploy).not.toContain("setup-bun");
     expect(deploy).not.toContain("bun install");
@@ -1104,8 +1131,10 @@ describe("installer smoke and packaging discipline", () => {
     // rebuild` deletes the working binding before it fails, and the `&&` chain
     // then skips uv fetch + protocol registration + hook install).
     expect(packageJson.scripts?.postinstall).not.toContain("electron-rebuild");
+    // The prebuilt spawn-helper ships mode 0644; the installed copy the dev
+    // app loads gets its execute bit back before anything else runs.
     expect(packageJson.scripts?.postinstall).toBe(
-      "node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
+      "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
     );
     // afterPack follows node-pty's loader order instead of hardcoding the
     // per-ABI gyp output directory.

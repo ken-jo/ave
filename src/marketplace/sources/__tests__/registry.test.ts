@@ -77,7 +77,7 @@ describe("SourceRegistry listing", () => {
     ]);
     const official = gitSource(registry.get("ave"));
     expect(official.url.url).toBe(normalizeSourceUrl(OFFICIAL_MARKETPLACE.url).url);
-    expect(official.auth).toEqual({ kind: "token", host: "github.com" });
+    expect(official.auth).toEqual({ kind: "none" });
     expect(registry.get("corp")!.label).toBe("Corp");
   });
 

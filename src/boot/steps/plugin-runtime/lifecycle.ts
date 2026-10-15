@@ -11,7 +11,7 @@
 import type { BrowserWindow } from "electron";
 import { t } from "../../../i18n/index.js";
 import { createLogger } from "../../../lib/logger.js";
-import { sendToWindow } from "../../../ipc/safe-send.js";
+import { fanOutToAllWindows } from "../../../ipc/window-fanout.js";
 import { declaresHostManagedPythonRuntime } from "./manifest.js";
 import type { PluginRuntimeOptions,
 } from "../../../plugins/runtime.js";
@@ -116,10 +116,8 @@ export function createLifecycleCallbacks(
       // legacy `pluginToolsForRegistration` direct path is gone.
       // Best-effort renderer refresh signal. Runtime/tool registry state is
       // already updated; a closed window must not make reload fail —
-      // sendToWindow owns the isDestroyed guard + send try/catch.
-      for (const win of deps.getAppWindows()) {
-        sendToWindow(win, "ave:plugins:runtime-updated", { pluginId }, log);
-      }
+      // the fan-out owns the isDestroyed guard + send try/catch.
+      fanOutToAllWindows(deps.getAppWindows(), "ave:plugins:runtime-updated", { pluginId }, { logger: log });
     },
   };
 }

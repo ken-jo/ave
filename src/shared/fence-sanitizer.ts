@@ -11,6 +11,8 @@
  *   · `<ave-memory-consolidation-source>` / `<ave-long-term-memory-overview>` — derived-memory inputs and prompt context
  *   · `<ave-parent-directive>` — a parent agent's mid-run directive to its own sub-agent
  *     (the host label naming the parent sits OUTSIDE; the parent's words are the body)
+ *   · `<terminal-output trust="untrusted-terminal-data">` — `terminal_read`'s result:
+ *     commands and output from the user's terminal, which any program can print into
  *
  * The fence IS the labelling mechanism, so a body that can emit its own closing tag
  * defeats it: everything the author writes after that tag appears, to the model, to sit
@@ -38,7 +40,8 @@ export type FenceTag =
   | "ave-memory-consolidation-source"
   | "ave-long-term-memory-overview"
   | "ave-parent-directive"
-  | "mcp-resource";
+  | "mcp-resource"
+  | "terminal-output";
 
 /**
  * Neutralize any closing tag for `tag` inside app/plugin-authored `text`, so the body

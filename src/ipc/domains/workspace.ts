@@ -59,6 +59,11 @@ import {
 import { getActivePluginSurfacePermissionScope } from "../../boot/plugin-surface-permissions.js";
 import { detachWorkspaceRootSessions } from "../../memory/workspace-root-session-lifecycle.js";
 import { errorMessage } from "../../shared/error-message.js";
+import {
+  searchWorkspaceFiles,
+  WORKSPACE_FILE_QUERY_MAX_CHARS,
+  type WorkspaceFileMatch,
+} from "./workspace-file-search.js";
 
 const log = createLogger("ave");
 
@@ -227,6 +232,10 @@ export interface WorkspaceRemoveRootResult {
   error?: "unauthorized" | "invalid-path" | "not-an-additional-root" | "cannot-remove-default" | "lifecycle-failed";
   message?: string;
 }
+
+type WorkspaceSearchFilesResult =
+  | { ok: true; matches: WorkspaceFileMatch[]; truncated: boolean }
+  | { ok: false; error: "unauthorized" | "invalid-query" | "settings-unreadable" };
 
 export interface WorkspaceRevealResult {
   ok: boolean;
@@ -935,6 +944,44 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           message: errorMessage(err),
         };
       }
+    },
+  );
+
+  /**
+   * Composer `@file` autocomplete. The query is the only renderer input; the
+   * roots are the CURRENT workspace roots (`computeRoots`, the same set the
+   * file browser and read tools use), and every returned path passed the
+   * read-scope + Layer-0 guard. A selected row becomes a path reference the
+   * model reads through `read_file` — nothing is read here.
+   */
+  ipcMain.handle(
+    CHANNELS.workspace.searchFiles,
+    async (e, rawQuery: unknown): Promise<WorkspaceSearchFilesResult> => {
+      if (!validateHostRendererSender(e)) {
+        auditUnauthorized(auditLogger, CHANNELS.workspace.searchFiles, e);
+        return { ok: false, error: "unauthorized" };
+      }
+      if (typeof rawQuery !== "string" || rawQuery.length > WORKSPACE_FILE_QUERY_MAX_CHARS) {
+        return { ok: false, error: "invalid-query" };
+      }
+      let scope: { cwd: string; extraAllowed: string[] };
+      let roots: WorkspaceRoot[];
+      try {
+        scope = currentScope();
+        roots = computeRoots();
+      } catch (error) {
+        if (error instanceof PermissionSettingsUnreadableError) {
+          return { ok: false, error: "settings-unreadable" };
+        }
+        throw error;
+      }
+      const result = await searchWorkspaceFiles({
+        query: rawQuery,
+        roots: roots.map((root) => root.path),
+        cwd: scope.cwd,
+        extraAllowed: scope.extraAllowed,
+      });
+      return { ok: true, ...result };
     },
   );
 

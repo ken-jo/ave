@@ -10,6 +10,7 @@
 import "@testing-library/jest-dom/vitest";
 import { afterEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
+import { clearComposerDrafts } from "../../src/ui/renderer/state/composer-draft-store.js";
 
 const stubbedGlobals = new Map<string, unknown>();
 
@@ -52,6 +53,9 @@ const intersectionStates = new Map<Element, boolean>();
 
 afterEach(() => {
   cleanup();
+  // Unmounting a chat tile parks its unsent text; one test's draft must not
+  // reappear in the next test's composer.
+  clearComposerDrafts();
   intersectionStates.clear();
 });
 

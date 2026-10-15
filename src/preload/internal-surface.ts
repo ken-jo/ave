@@ -217,6 +217,10 @@ export function buildAveNamespaceExtras() {
       ipcRenderer.invoke(CHANNELS.attach.discardClipboardImage, filePath),
     openExternal: (filePath: string) =>
       ipcRenderer.invoke(CHANNELS.attach.openExternal, filePath),
+    // Composer drop, step 2: echo the main-owned token; main authorizes the
+    // files bound to it. Step 1 lives on `aveDrop.prepareFileDrop` (File-only).
+    redeemDrop: (token: string) =>
+      ipcRenderer.invoke(CHANNELS.attach.redeemDrop, token),
   },
   preview: {
     readFile: (filePath: string) =>
@@ -236,6 +240,9 @@ export function buildAveNamespaceExtras() {
     // folder path for Layer-0 + is-a-dir validation and a main-owned ack token.
     dropPrepare: (droppedPath: string) =>
       ipcRenderer.invoke(CHANNELS.workspace.dropPrepare, droppedPath),
+    // Composer `@file` autocomplete over the current workspace roots.
+    searchFiles: (query: string) =>
+      ipcRenderer.invoke(CHANNELS.workspace.searchFiles, query),
   },
   };
 }

@@ -27,6 +27,13 @@ export interface DurationFormatUnits {
   second: string;
 }
 
+/** Unit labels for Korean UI text (`1분 12초`). */
+export const KOREAN_DURATION_UNITS: DurationFormatUnits = {
+  hour: "시간",
+  minute: "분",
+  second: "초",
+};
+
 const COMPACT_DURATION_UNITS: DurationFormatUnits = {
   hour: "h",
   minute: "m",

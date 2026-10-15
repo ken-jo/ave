@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/main/bash-ast-validator.ts. Do not edit by hand.
+// i18n fragment. Source: src/main/bash-ast-validator.ts.
 export const en = {
   "be_bashAstValidator.ifsInjection": "Command separation bypass via IFS manipulation",
   "be_bashAstValidator.braceExpansion": "Dangerous command bypass via brace expansion",

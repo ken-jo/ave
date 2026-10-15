@@ -121,6 +121,7 @@ export type { AppSettings, MemoryCaptureMode };
 import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../../permissions/approval-gate.js";
 import type { PermissionRule } from "../../permissions/permission-manager.js";
 import type { ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource } from "../../permissions/permission-settings-store.js";
+import type { TerminalBlock, TerminalBlockSummary } from "../../shared/terminal-blocks.js";
 export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule, ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource };
 
 export type PluginUiExtension = PluginUiExtensionView;
@@ -595,6 +596,16 @@ export type AveApi = {
     onExit: (
       handler: (payload: { tabId: string; exitCode: number; signal?: number }) => void,
     ) => () => void;
+    /** Command-block summaries of one tab, newest first (no output). */
+    listBlocks: (tabId: string) => Promise<
+      | { ok: true; integrated: boolean; blocks: TerminalBlockSummary[] }
+      | { ok: false; error: string }
+    >;
+    /** One command block with its plain-text output. */
+    getBlock: (tabId: string, blockId: number) => Promise<
+      | { ok: true; block: TerminalBlock }
+      | { ok: false; error: string }
+    >;
   };
   /**
    * Side chat (workspace rail) — a second, independently-streaming chat session
@@ -960,7 +971,7 @@ export type AveApi = {
     | { ok: false; error: string; message: string }
   >;
   // routine_schedule — persistent routine list + lifecycle
-  listRoutines: () => Promise<import("../../shared/routines-types.js").RoutineRecord[]>;
+  listRoutines: () => Promise<import("../../shared/routines-types.js").RoutineListResult>;
   dismissRoutine: (id: string) => Promise<{ ok: boolean; error?: string }>;
   removeRoutine: (id: string) => Promise<{ ok: boolean; error?: string }>;
   triggerRoutineNow: (id: string) => Promise<{ ok: boolean; error?: string }>;
@@ -1274,6 +1285,8 @@ export type AveApi = {
   // Workflow tools — routines
   onAskUserQuestion: (h: (req: AskUserQuestionRequest) => void) => () => void;
   respondAskUserQuestion: (response: AskUserQuestionResponse) => Promise<{ ok: boolean; error?: string }>;
+  /** Questions still waiting that were sent before this renderer subscribed. */
+  listPendingAskUserQuestions?: () => Promise<AskUserQuestionRequest[]>;
   /** Renderer is notified when the gate's 5-minute timeout fires. */
   onAskUserQuestionTimeout?: (
     h: (payload: { requestId: string }) => void,
@@ -1915,6 +1928,36 @@ export interface AveAttachApi {
     error?: string;
   }>;
   openExternal: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Composer drop, step 2. Redeem the one-shot token from
+   * `aveDrop.prepareFileDrop`; main authorizes exactly the files bound to it.
+   * A reused, unknown, other-window or expired token is refused.
+   */
+  redeemDrop: (token: string) => Promise<
+    | {
+        ok: true;
+        files: Array<{
+          path: string;
+          name: string;
+          ext: string;
+          bytes: number;
+          isImage: boolean;
+          mimeType?: string;
+        }>;
+      }
+    | { ok: false; error: "unauthorized" | "drop-token-invalid" | "drop-token-expired" }
+  >;
+}
+
+/** One `@file` autocomplete row: a main-verified readable path in a workspace root. */
+interface WorkspaceFileMatch {
+  path: string;
+  /** Path relative to its root, `/`-separated — the row label. */
+  relativePath: string;
+  /** The workspace root the file belongs to. */
+  root: string;
+  /** Size at listing time, for the attachment chip. */
+  bytes: number;
 }
 
 /**
@@ -2013,6 +2056,14 @@ export interface AveWorkspaceApi {
     /** One-time token bound to the path — confirm by echoing it via `pickRoot`. */
     ackToken?: string;
   }>;
+  /**
+   * Composer `@file` autocomplete. Only the query crosses; main walks the
+   * current roots, applies the Layer-0 sensitive filter and the read-scope guard.
+   */
+  searchFiles: (query: string) => Promise<
+    | { ok: true; matches: WorkspaceFileMatch[]; truncated: boolean }
+    | { ok: false; error: "unauthorized" | "invalid-query" | "settings-unreadable" }
+  >;
 }
 
 /**
@@ -2024,6 +2075,16 @@ export interface AveWorkspaceApi {
  */
 export interface AveDropApi {
   resolveDroppedPaths: (files: FileList | readonly File[]) => string[];
+  /**
+   * Composer drop, step 1. Takes dropped `File`s (never paths): the preload
+   * resolves them and registers them with main in one step, returning a
+   * one-shot token to redeem via `ave.attach.redeemDrop`. `rejected` names the
+   * items main refused, by stable reason code.
+   */
+  prepareFileDrop: (files: FileList | readonly File[]) => Promise<
+    | { ok: true; token: string; rejected: Array<{ name: string; reason: string }> }
+    | { ok: false; error: string; rejected?: Array<{ name: string; reason: string }> }
+  >;
 }
 
 export interface AveUiApi {

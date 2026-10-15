@@ -5,7 +5,7 @@
  * user hasn't opted in. These tests lock in that invariant.
  */
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import type { IpcMainInvokeEvent } from "electron";
+import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
 
 import type { AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
 import { createAutoUpdater, type AutoUpdaterDeps, type UpdaterLike } from "../auto-updater.js";
@@ -78,9 +78,16 @@ function fakeAuditLogger() {
 }
 
 function createTestAutoUpdater(
-  deps: Omit<AutoUpdaterDeps, "auditLogger"> & { auditLogger?: AuditLogger },
+  testDeps: Omit<AutoUpdaterDeps, "auditLogger" | "getWindows" | "getDialogParent"> & {
+    auditLogger?: AuditLogger;
+    /** The single open main window most tests need. */
+    mainWindow: BrowserWindow;
+  },
 ) {
+  const { mainWindow, ...deps } = testDeps;
   return createAutoUpdater({
+    getWindows: () => [mainWindow],
+    getDialogParent: () => mainWindow,
     // Default to the signed / self-installable path plus a no-op guide opener so
     // existing install tests exercise quitAndInstall deterministically (the real
     // codesign probe would otherwise return false on an unsigned CI runner).
@@ -132,6 +139,37 @@ describe("auto-updater", () => {
     });
     // Still no implicit download after the available event.
     expect(u.downloads).toBe(0);
+  });
+
+  it("broadcasts update state to every open main window, read live, skipping closed ones", async () => {
+    const first = fakeWindow();
+    const second = fakeWindow();
+    let firstClosed = false;
+    const firstWin = { ...first.win, isDestroyed: () => firstClosed } as unknown as BrowserWindow;
+    let windows: BrowserWindow[] = [firstWin, second.win];
+    const u = fakeUpdater();
+    const svc = createAutoUpdater({
+      getWindows: () => windows,
+      getDialogParent: () => windows.at(-1) ?? null,
+      auditLogger: fakeAuditLogger().logger,
+      isEnabled: () => true,
+      updaterFactory: () => u,
+      canSelfInstall: () => true,
+      openExternal: () => {},
+    });
+    await svc.triggerCheck();
+    u.emit("update-available", { version: "1.2.3" });
+    expect(first.sent).toHaveLength(1);
+    expect(second.sent).toHaveLength(1);
+
+    // The window open at boot closes; the other keeps receiving state.
+    firstClosed = true;
+    u.emit("update-available", { version: "1.2.4" });
+    expect(first.sent).toHaveLength(1);
+    expect(second.sent.at(-1)).toMatchObject({ payload: { kind: "available", version: "1.2.4" } });
+    windows = [second.win];
+    u.emit("update-available", { version: "1.2.5" });
+    expect(second.sent.at(-1)).toMatchObject({ payload: { version: "1.2.5" } });
   });
 
   it("swallows network errors silently", async () => {
@@ -359,7 +397,7 @@ describe("auto-updater", () => {
     // Reactive safety net: a throwing quitAndInstall must not leave a dead
     // button — it opens the homepage guide and signals manual install.
     expect(result).toEqual({ ok: false, reason: "manual-install-required" });
-    expect(opened).toEqual(["https://former-site.invalid"]);
+    expect(opened).toEqual(["https://ave.agent-connector.ai"]);
     expect(isAppUpdateInstallRequested()).toBe(false);
   });
 
@@ -381,7 +419,7 @@ describe("auto-updater", () => {
     // is never attempted — open the guide and tell the renderer.
     expect(result).toEqual({ ok: false, reason: "manual-install-required" });
     expect(u.installs).toBe(0);
-    expect(opened).toEqual(["https://former-site.invalid"]);
+    expect(opened).toEqual(["https://ave.agent-connector.ai"]);
     expect(isAppUpdateInstallRequested()).toBe(false);
   });
 

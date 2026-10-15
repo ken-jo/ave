@@ -13,8 +13,8 @@
 > `_meta.ui.visibility`, filesystem path 판정은 `_meta["ave/pathFields"]`,
 > per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다.
 > (pre-v6 의 `tools: string[]` + `toolSchemas` map + `uiActions` map + per-tool
-> `category` triple 은 이 하나로 통합·제거됐다 — legacy.) 설계 배경은
-> [`plugin-contract-v6-design.md`](../../architecture/plugin-contract-v6-design.md).
+> `category` triple 은 이 하나로 통합·제거됐다 — legacy.) 설계 배경(`plugin-contract-v6-design.md`)은
+> git 기록에 보존되어 있다.
 
 ---
 
@@ -365,7 +365,7 @@ Renderer UI 는 `ave:plugins:call` IPC 를 통해 app-visible 플러그인 tool 
 | `knowledge-index` | **enforced** | `index.*` emit 게이트. |
 | `background-watcher` | advisory | 플러그인 자체 lifecycle (`start()` hook) 에서 폴러/감시자를 기동한다는 선언. 런타임 게이트 없음 (향후 enforce 예정). |
 | `lifecycle-observer` | advisory | `getInstalledPluginIds` / `onPluginsChanged` 사용 선언 |
-| `host:overlay` | **enforced** | `triggerConversation()` 호출 필수. 사용자가 입력하지 않은 plugin-authored prompt 를 host overlay 에 staged 하고, 사용자 확인 후 main chat 에 삽입하는 surface — 일반 plugin 에 부여하지 말 것. 자세한 설계는 [`overlay-trigger.md`](./overlay-trigger.md) 참조. |
+| `host:overlay` | **enforced** | `triggerConversation()` 호출 필수. 사용자가 입력하지 않은 plugin-authored prompt 를 host overlay 에 staged 하고, 사용자 확인 후 main chat 에 삽입하는 surface — 일반 plugin 에 부여하지 말 것. 자세한 설계는 [`overlay-trigger.md`](../../references/overlay-trigger.md) 참조. |
 
 **이벤트 subscription 정책** (`classifySubscription`):
 
@@ -610,8 +610,8 @@ CSS `initial` 키워드로 렌더되어 invisible regression 이 된다.
    콜백으로 흡수한다 (별도 `bridge.onEvent("host.theme.changed", …)` 두 번째
    구독 금지 — drift 회귀 케이스). React 측은 `useTheme(bridge, opts?)` 가
    `primeTheme` 위의 얇은 wrapper 라 동일 옵션 surface 를 갖는다. 자세한
-   결정 근거 + 마이그레이션 시퀀스는 `docs/architecture/proposals/2026-05-12-plugin-theme-unification.md`
-   참조. SDK 가 없으므로 `primeTheme` / `useTheme` 는 패키지에서 import 하지 않고
+   호스트 쪽 테마 브로드캐스트
+   계약은 [테마 시스템](../../development/theme-system.md)(영문)을 참조한다. SDK 가 없으므로 `primeTheme` / `useTheme` 는 패키지에서 import 하지 않고
    플러그인 소스에 복사해 둔다. 공식 마켓플레이스 모노레포
    [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 의
    `templates/extension/README.md` 가 현재 예시이고, 공식 플러그인
@@ -767,7 +767,7 @@ export function mount(host: PluginHost): PluginInstance {
 | (플러그인 간 직접 tool 호출 없음) | 다른 플러그인에게 작업을 요청하거나 결과를 받으려면 `emitEvent` / `onEvent` 이벤트 계약으로 모델링 | peer plugin module import, handler 직접 호출, 권한 우회 |
 | `callLlm(prompt, options?)` | 호스트 LLM 으로 단발 텍스트 생성 (플러그인 분류·요약) | 대화 히스토리·streaming·tool_use 필요 시 (플러그인이 직접 SDK 사용) |
 | `openAuthWindow(options)` ([external-auth-consumer] 필요) | 외부 포털 interactive 로그인 창을 띄우고 지정 도메인 쿠키 수집 (Selenium/webdriver 대체) | OAuth-style localhost callback이 되는 표준 플로우 (→ Microsoft Graph 패턴 사용) |
-| `triggerConversation(spec)` ([host:overlay] 필요) | 관찰된 신호를 바탕으로 overlay prompt 를 host overlay 에 staged | 사용자 input → tool 결과 패턴 (chat 으로 충분) — 자세한 사용 패턴 / 안전 계약은 [`overlay-trigger.md`](./overlay-trigger.md) |
+| `triggerConversation(spec)` ([host:overlay] 필요) | 관찰된 신호를 바탕으로 overlay prompt 를 host overlay 에 staged | 사용자 input → tool 결과 패턴 (chat 으로 충분) — 자세한 사용 패턴 / 안전 계약은 [`overlay-trigger.md`](../../references/overlay-trigger.md) |
 | `getInstalledPluginIds()` | 다른 플러그인 설치 여부 체크 — 의존성-인식 detector / 조건부 UI | 우선순위 추론 (insertion order ≠ priority). 향후 capability-filtered 변종 (`getProvidersFor(capability)`) 가 superseding 예정 — Phase 1 은 unscoped |
 | `onPluginsChanged(handler)` | install/uninstall 발생 시 reactive 재구성 (예: detector list rebuild). handler 는 `PluginLifecycleEvent` 받음 (`{type, pluginId, source}` discriminated union, self-event 자동 필터). production consumer 는 `source: "local-dev"` 무시 권장 | `updated` (버전 bump) — 별도 spec 진행 중 (P0 미지원). handler 는 forward-compat 위해 `default:` 분기 필수 |
 | `logEvent(level, message, data?)` | 호스트 감사 로그에 플러그인 이벤트 기록 | 디버그 전용 고빈도 로깅 (성능) |
@@ -937,7 +937,7 @@ HostApi 에 새 메서드를 추가하려면:
 | **tool `outputSchema` (Phase 1)** | ❌ 기각 | 응답은 LLM 이 string 으로 재소비 가능. Phase 2 에서 재검토. |
 | **Full capability grant system** | ❌ 기각 | 현행 capability taxonomy (§2.3) + HostApi boundary 로 충분. |
 | **Hot reload (Phase 1)** | ❌ 기각 | 개발 편의 기능. GA 블로커 아님. |
-| **`triggerConversation` HostApi + `host:overlay` capability** | ✅ **승인** | §6.1 예외 #2 — plugin-authored prompt 를 사용자 입력 없이 host overlay 에 staged 하므로 audit / source-aware permission / capability gate / per-plugin rate limit (60s/6) / dedupe / source-pattern + length cap / prompt-length cap 같은 통제가 필수. 단일 consumer 라도 host 에 둠 (plugin-side 재구현 시 통제 일관성 X). 런타임 권한은 `host:overlay` 단일 capability 가 부여한다. 안전 계약 / spec / gate 는 [`overlay-trigger.md`](./overlay-trigger.md). |
+| **`triggerConversation` HostApi + `host:overlay` capability** | ✅ **승인** | §6.1 예외 #2 — plugin-authored prompt 를 사용자 입력 없이 host overlay 에 staged 하므로 audit / source-aware permission / capability gate / per-plugin rate limit (60s/6) / dedupe / source-pattern + length cap / prompt-length cap 같은 통제가 필수. 단일 consumer 라도 host 에 둠 (plugin-side 재구현 시 통제 일관성 X). 런타임 권한은 `host:overlay` 단일 capability 가 부여한다. 안전 계약 / spec / gate 는 [`overlay-trigger.md`](../../references/overlay-trigger.md). |
 
 ---
 
@@ -952,7 +952,7 @@ HostApi 에 새 메서드를 추가하려면:
 
 ### 설치와 잠금
 
-관리형·사용자 배포 모드는 없다. 모든 플러그인은 git 마켓플레이스(또는 개발용 로컬 설치)로 `~/.ave/plugins/<id>/`에 설치되고, 설치 receipt 해시로 fail-closed 검증한다. 제거·비활성화를 막는 것은 시스템 정책 파일의 `marketplaces.requiredInstalls` 항목뿐이며, 그 항목이 가리키는 소스에서 설치된 플러그인만 잠근다(`PluginDeploymentGuard`). 상세 설계: [멀티 소스 git 마켓플레이스 설계서](../design/multi-source-git-marketplace.md) §10.
+관리형·사용자 배포 모드는 없다. 모든 플러그인은 git 마켓플레이스(또는 개발용 로컬 설치)로 `~/.ave/plugins/<id>/`에 설치되고, 설치 receipt 해시로 fail-closed 검증한다. 제거·비활성화를 막는 것은 시스템 정책 파일의 `marketplaces.requiredInstalls` 항목뿐이며, 그 항목이 가리키는 소스에서 설치된 플러그인만 잠근다(`PluginDeploymentGuard`). 상세 설계: [멀티 소스 git 마켓플레이스 설계서](../../design/multi-source-git-marketplace.md) §10.
 
 ### 현행 코드 참조
 

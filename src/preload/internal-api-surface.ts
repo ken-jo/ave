@@ -37,6 +37,7 @@ import type {
   UserApprovalVerdict,
 } from "../shared/permissions-events.js";
 import type { DeferredApprovalSource } from "../shared/permission-review-status.js";
+import type { TerminalBlock, TerminalBlockSummary } from "../shared/terminal-blocks.js";
 import type { MarketplaceAnnouncementPayload } from "../shared/marketplace-announcements.js";
 import type { PackageUpdateView } from "../shared/git-marketplace.js";
 import type { AiProviderPingIpcResult } from "../shared/ai-provider-ping.js";
@@ -312,6 +313,16 @@ export function buildInternalApiSurface() {
       ipcRenderer.on(CHANNELS.terminal.exit, listener);
       return () => ipcRenderer.removeListener(CHANNELS.terminal.exit, listener);
     },
+    listBlocks: async (tabId: string) =>
+      ipcRenderer.invoke(CHANNELS.terminal.blocks, { tabId }) as Promise<
+        | { ok: true; integrated: boolean; blocks: TerminalBlockSummary[] }
+        | { ok: false; error: string }
+      >,
+    getBlock: async (tabId: string, blockId: number) =>
+      ipcRenderer.invoke(CHANNELS.terminal.block, { tabId, blockId }) as Promise<
+        | { ok: true; block: TerminalBlock }
+        | { ok: false; error: string }
+      >,
   },
   // ─── Side chat (workspace rail) ──────────────────────
   // A second, independently-streaming chat session. send/new/load/abort are
@@ -1079,6 +1090,8 @@ export function buildInternalApiSurface() {
   },
   respondAskUserQuestion: async (response: AskUserQuestionResponse) =>
     ipcRenderer.invoke(CHANNELS.askUserQuestion.respond, response),
+  // Questions sent before this renderer subscribed (it loaded later).
+  listPendingAskUserQuestions: async () => ipcRenderer.invoke(CHANNELS.askUserQuestion.pending),
   // Timeout side-channel — main process notifies the renderer when an
   // ask_user_question request expired (5 min default) so the card can drop
   // the stale prompt before the user clicks into a no-op.

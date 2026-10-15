@@ -14,7 +14,15 @@
 // bridge only turns a dropped `File` into a candidate path for that gate to
 // validate. Its surface is deliberately narrow: it exposes a single
 // drop-resolution helper, never raw `webUtils`.
-import { webUtils } from "electron";
+//
+// COMPOSER FILE DROP: `prepareFileDrop` is different in kind. It resolves the
+// paths AND sends them to main in one preload-internal step, so the main world
+// never holds a path string it could substitute. A `File` that is not OS-backed
+// (constructed in script, blob-backed) resolves to "" and is never sent, so the
+// only paths that can reach `attach.registerDrop` are files the user actually
+// dropped or picked. Main answers with a one-shot token the renderer redeems.
+import { ipcRenderer, webUtils } from "electron";
+import { CHANNELS } from "../contract/app-contract.js";
 
 /**
  * Resolve the filesystem paths of dropped files. `webUtils.getPathForFile`
@@ -33,4 +41,21 @@ export function resolveDroppedPaths(files: FileList | readonly File[]): string[]
     if (resolved) out.push(resolved);
   }
   return out;
+}
+
+/**
+ * Register dropped files with main and return its one-shot token.
+ *
+ * Accepts only `File` objects: the paths are resolved here, never taken from
+ * the caller. An empty resolution (no OS-backed file) answers without an IPC.
+ */
+export async function prepareFileDrop(
+  files: FileList | readonly File[],
+): Promise<
+  | { ok: true; token: string; rejected: Array<{ name: string; reason: string }> }
+  | { ok: false; error: string; rejected?: Array<{ name: string; reason: string }> }
+> {
+  const paths = resolveDroppedPaths(files);
+  if (paths.length === 0) return { ok: false, error: "nothing-attachable" };
+  return ipcRenderer.invoke(CHANNELS.attach.registerDrop, paths);
 }

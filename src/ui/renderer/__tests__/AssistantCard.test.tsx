@@ -8,7 +8,7 @@
  */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../../components/ui/tooltip.js";
 import { AssistantCard } from "../components/AssistantCard.js";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
@@ -181,4 +181,79 @@ describe("AssistantCard — live vs restored systemNotice (Issue #2113)", () => 
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("AssistantCard — fenced code block header", () => {
+  it("labels the fence language and copies the raw block source", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const { getByTestId, findByText } = renderCard(
+      makeEntry({ text: "Run this:\n\n```ts\nconst a = 1;\nconsole.log(a);\n```\n" }),
+    );
+    expect(getByTestId("markdown-code-language").textContent).toBe("ts");
+    getByTestId("markdown-code-copy").click();
+    expect(writeText).toHaveBeenCalledWith("const a = 1;\nconsole.log(a);");
+    // "Copied" confirmation only after the clipboard write resolved.
+    await findByText(/Copied|복사됨/);
+  });
+
+  it("falls back to a plain-text label when the fence names no language", () => {
+    const { getByTestId } = renderCard(makeEntry({ text: "```\nplain\n```" }));
+    expect(getByTestId("markdown-code-language").textContent).toMatch(/^(text|텍스트)$/);
+  });
+
+  it("leaves inline code without a header", () => {
+    const { container } = renderCard(makeEntry({ text: "use `npm test` here" }));
+    expect(container.querySelector("[data-testid='markdown-code-block']")).toBeNull();
+  });
+});
+
+describe("AssistantCard — code block syntax highlighting", () => {
+  const SOURCE = "const a = 1; // one\nconsole.log(\"hi\", a);";
+
+  it("highlights a known fence once its grammar loads, keeping the header, copy and exact text", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const { container, getByTestId } = renderCard(makeEntry({ text: "```ts\n" + SOURCE + "\n```\n" }));
+    const pre = () => container.querySelector("[data-testid='markdown-code-block'] pre") as HTMLElement;
+    const before = pre().textContent;
+
+    await waitFor(() => expect(pre().getAttribute("data-highlighted")).toBe("true"), { timeout: 5000 });
+    // Same text — spans recolour only — so nothing reflows or changes on copy.
+    expect(pre().textContent).toBe(before);
+    expect(pre().querySelector("code")?.className).toContain("language-ts");
+    expect(pre().querySelector(".hljs-keyword")?.textContent).toBe("const");
+    expect(pre().querySelector(".hljs-string")?.textContent).toBe("\"hi\"");
+    expect(pre().querySelector(".hljs-comment")?.textContent).toBe("// one");
+    // No markup other than classed spans reached the DOM.
+    expect(pre().querySelectorAll("code *:not(span)")).toHaveLength(0);
+    expect(getByTestId("markdown-code-language").textContent).toBe("ts");
+    getByTestId("markdown-code-copy").click();
+    expect(writeText).toHaveBeenCalledWith(SOURCE);
+  });
+
+  it("leaves a very large fence as plain text", async () => {
+    // Warm the grammar on a small block, so the large one is not just waiting for it.
+    const small = renderCard(makeEntry({ text: "```ts\n" + SOURCE + "\n```\n" }));
+    await waitFor(() => expect(small.container.querySelector("pre")?.getAttribute("data-highlighted")).toBe("true"), { timeout: 5000 });
+    small.unmount();
+
+    const big = "const x = 1;\n".repeat(9_000); // ~117 KB
+    const { container } = renderCard(makeEntry({ text: "```ts\n" + big + "```\n" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const pre = container.querySelector("[data-testid='markdown-code-block'] pre") as HTMLElement;
+    expect(pre.getAttribute("data-highlighted")).not.toBe("true");
+    expect(pre.querySelector(".hljs-keyword")).toBeNull();
+  });
+
+  it("leaves an unknown or missing language as plain text", async () => {
+    const { container } = renderCard(makeEntry({ text: "```brainfuck\n+++.\n```\n\n```\nplain\n```" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const pres = container.querySelectorAll("[data-testid='markdown-code-block'] pre");
+    expect(pres).toHaveLength(2);
+    for (const pre of pres) {
+      expect(pre.getAttribute("data-highlighted")).toBeNull();
+      expect(pre.querySelector("span")).toBeNull();
+    }
+  });
 });

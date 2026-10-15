@@ -115,9 +115,9 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     startWorkBoardDueSoon: ctx.startWorkBoardDueSoon,
     startAlerts: () => ctx.alertsService.start(),
     refreshPluginEventBridge: () => {
-      ctx.replacePluginEventBridge(ctx.pluginEventBridgeWindow);
+      ctx.refreshPluginEventBridges();
     },
-    registerPluginEventBridge: ctx.replacePluginEventBridge,
+    registerPluginEventBridge: ctx.addPluginEventBridgeWindow,
     shutdown: () => {
       if (shutdownPromise) return shutdownPromise;
       shutdownPromise = (async () => {
