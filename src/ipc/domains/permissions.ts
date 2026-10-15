@@ -9,9 +9,10 @@ import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import type { ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
 import { resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
-import type {
-  PermissionReviewSuggestionPayload,
-  PermissionReviewSuggestionReason,
+import {
+  isSessionOnlyApprovalMemoryScope,
+  type PermissionReviewSuggestionPayload,
+  type PermissionReviewSuggestionReason,
 } from "../../shared/permissions-events.js";
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import {
@@ -1105,6 +1106,18 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
     if (!snapshot.durableApprovalRecordAllowed) {
       return { ok: false, error: "one-shot-not-recordable", message: "user-approval record: one-shot approvals cannot be recorded" };
+    }
+    // An allow for a session-only scope (browser actions) is never written to
+    // disk, whatever the renderer asked for: the lifetime is a property of the
+    // host-derived scope, not of the button that was pressed. (A persistent
+    // exact deny stays available from Settings; it only ever narrows.)
+    if (
+      decision === "allow" &&
+      scope === "persistent" &&
+      snapshot.approvalMemory?.kind === "key" &&
+      isSessionOnlyApprovalMemoryScope(snapshot.approvalMemory.scope)
+    ) {
+      return { ok: false, error: "session-only-scope", message: "user-approval record: this approval can only be remembered for the current session" };
     }
     if (displayedVerdictAtApproval !== snapshot.verdictAtApproval) {
       return { ok: false, error: "verdict-mismatch", message: "user-approval record: displayed verdict does not match the host request" };

@@ -31,6 +31,7 @@ import type { ProjectIdentity } from "../../shared/project-identity.js";
 import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
 import { collectChatPreviewModel } from "./preview/preview-targets.js";
 import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
+import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
 import { SIDE_PANEL_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { normalizeBrowserNavigationUrl } from "./preview/url-safety.js";
 import { createPortal } from "react-dom";
@@ -286,7 +287,10 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // panel therefore keeps it mounted — hidden — while a side-chat tab exists:
   // unmounting it released the claim and dropped a question the host was
   // still waiting on, so the gate sat out its deadline with nothing to answer.
-  const sideChatKeepsPanel = workspaceTabs.tabs.some((tab) => tab.kind === "side-chat" && !tab.content);
+  // Likewise a browser tab the agent opened: its page is the agent's working
+  // state, and unmounting the panel would destroy it mid-task.
+  const sideChatKeepsPanel = workspaceTabs.tabs.some((tab) =>
+    (tab.kind === "side-chat" && !tab.content) || tab.agentRequestId !== undefined);
   // Always start collapsed so an initially-open persisted panel never paints
   // expanded before the opening transition lifecycle begins.
   const [dockedPanelExpanded, setDockedPanelExpanded] = useState(false);
@@ -456,6 +460,27 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // changes with every tab switch and the panel callback's with every render
   // of the window, and keying the effect on either re-ran it after the user
   // moved to another tab or closed the panel, snapping both straight back.
+  // The agent browser tools' tab operations (agent-browser-bridge.ts): this
+  // view's store carries out the ones routed to it. Read through refs so the
+  // registration is made once, not on every tab switch.
+  const browserTabHostRef = useRef({ workspaceTabs, currentSessionId, onSidePanelOpenChange });
+  useLayoutEffect(() => {
+    browserTabHostRef.current = { workspaceTabs, currentSessionId, onSidePanelOpenChange };
+  }, [workspaceTabs, currentSessionId, onSidePanelOpenChange]);
+  useEffect(() => registerBrowserTabHost(api, {
+    sessionId: () => browserTabHostRef.current.currentSessionId ?? null,
+    hasTab: (tabId) => browserTabHostRef.current.workspaceTabs.tabs.some((tab) => tab.id === tabId),
+    openAgentTab: (url, requestId) => {
+      const { workspaceTabs: store, onSidePanelOpenChange: openPanel } = browserTabHostRef.current;
+      if (store.openAgentBrowserTab(url, requestId) !== null) openPanel(true);
+    },
+    selectTab: (tabId) => {
+      browserTabHostRef.current.workspaceTabs.setActiveTabId(tabId);
+      browserTabHostRef.current.onSidePanelOpenChange(true);
+    },
+    closeTab: (tabId) => browserTabHostRef.current.workspaceTabs.closeTab(tabId),
+  }), [api]);
+
   const sideChatOpenNonce = sideChatOpenRequest?.nonce;
   const openSideChatTabRef = useRef<() => void>(() => {});
   useLayoutEffect(() => {

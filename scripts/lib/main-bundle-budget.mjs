@@ -71,10 +71,22 @@ export function isSafeMainBundleManifestPath(path) {
  * boot-time sandbox module; the handoff itself is loaded on spawn. Measured on that
  * `main`: entry 423_113, initial 5_390_708, total 9_035_522; the initial ceiling moves to
  * 5_395_000.
+ * The agent browser tools keep their schemas, execute bodies and CDP page actions out of
+ * the initial graph (desktop-boot and dynamic imports); what joins it is what boot wires
+ * eagerly: the browser tab registry and its IPC domain, guest tracking on did-attach, the
+ * tools' en/ko catalog fragments (the catalog barrel imports every fragment) and the
+ * approval card's browser-scope strings. Measured entry 425_021, initial 5_410_703,
+ * total 9_079_452; the initial ceiling moves to 5_412_000.
+ * Concrete browser document authority, input attribution and navigation
+ * provenance remain in the initial registry graph. Measured entry 425_021,
+ * initial 5_413_433, total 9_091_289; the ceiling moves from 5_412_000 to
+ * 5_415_000 to cover that functionality.
+ * The terminal own-tty wrap joined with that `main` measures entry 425_096,
+ * initial 5_415_405, total 9_097_784; the initial ceiling moves to 5_420_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_395_000,
+  initialBytes: 5_420_000,
   totalBytes: 11_050_000,
 });
 

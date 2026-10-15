@@ -161,6 +161,30 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     return { tool: { ...real, execute } as Tool, execute };
   }
 
+  it("remembers a browser origin independently of the invocation's concrete tab and document", async () => {
+    let tabId = "tab-1";
+    let documentId = 1;
+    const tool = createDynamicTool({
+      name: "browser_click",
+      description: "Acts on the approved page",
+      source: "builtin",
+      category: "write",
+      jsonSchema: { type: "object" },
+      approvalMemoryScope: () => Object.assign({ kind: "browser-origin" as const, origin: "https://a.example:443", tabOpener: "agent" as const }, { tabId, documentId }),
+      execute: async () => ({ output: "ok", isError: false }),
+    });
+    const first = (await approvalIdentityFor(tool, {}, dir)).approvalMemory;
+    tabId = "tab-2";
+    documentId = 9;
+    const second = (await approvalIdentityFor(tool, {}, dir)).approvalMemory;
+    expect(first.kind).toBe("key");
+    expect(second.kind).toBe("key");
+    if (first.kind !== "key" || second.kind !== "key") throw new Error("Expected scoped approval identity");
+    expect(second.key).toBe(first.key);
+    expect(first.scope).toMatchObject({ tabId: "tab-1", documentId: 1 });
+    expect(second.scope).toMatchObject({ tabId: "tab-2", documentId: 9 });
+  });
+
   it("allow-session on one URL covers the same origin after a fresh review, not another host", async () => {
     const { tool, execute } = webFetch();
     const { cards, run, reviewedUrls } = harness([tool]);
@@ -233,7 +257,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     it("asks for a row approved under a reviewer, which the rules alone cannot re-check", async () => {
       const { tool } = webFetch();
       const approved = { url: "https://a.example/x" };
-      const identity = approvalIdentityFor(tool, approved, dir);
+      const identity = await approvalIdentityFor(tool, approved, dir);
       // A reviewer-assessed row: a verdict, no rules-only ceiling.
       await recordApproval("web_fetch", canonicalStringify(approved), "builtin", {
         scope: "session",
@@ -255,7 +279,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
   it("a private-network fetch is remembered by exact URL only", async () => {
     const { tool } = webFetch();
     const privateInput = { url: "http://localhost:3000/a", allowPrivateNetwork: true };
-    expect(approvalIdentityFor(tool, privateInput, dir).approvalMemory).toEqual({ kind: "args" });
+    expect((await approvalIdentityFor(tool, privateInput, dir)).approvalMemory).toEqual({ kind: "args" });
     const { cards, run } = harness([tool]);
     await run("web_fetch", privateInput);
     await run("web_fetch", { url: "http://localhost:3000/b", allowPrivateNetwork: true });
@@ -312,7 +336,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     const target = join(dir, "notes.md");
     writeFileSync(target, "content");
     const read = new ReadFileTool();
-    expect(approvalIdentityFor(read, { path: target }, dir).approvalMemory).toEqual({ kind: "args" });
+    expect((await approvalIdentityFor(read, { path: target }, dir)).approvalMemory).toEqual({ kind: "args" });
     await recordApproval("read_file", canonicalStringify({ path: target }), "builtin", {
       scope: "session", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard",
     });
@@ -338,9 +362,9 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     expect(cards[0].approvalMemory).toEqual({ kind: "args" });
   });
 
-  it("declaring only a policy approvalCacheKey never widens memory", () => {
+  it("declaring only a policy approvalCacheKey never widens memory", async () => {
     const tool = createRoutineScheduleTool({} as never);
-    expect(approvalIdentityFor(tool, { execution: "notification-only", schedule: {} }, dir)).toEqual({
+    expect(await approvalIdentityFor(tool, { execution: "notification-only", schedule: {} }, dir)).toEqual({
       approvalCacheKey: "routine_schedule:scope:deny-all",
       approvalMemory: { kind: "args" },
     });
