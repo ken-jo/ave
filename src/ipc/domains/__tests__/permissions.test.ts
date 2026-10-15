@@ -1350,6 +1350,35 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
       }));
   });
 
+  it("refuses a persistent allow for a session-only browser scope and records it for the session", async () => {
+    const browserMemory = {
+      kind: "key" as const,
+      key: "browser_click:origin-a",
+      scope: { kind: "browser-origin" as const, origin: "https://a.example:443", tabOpener: "agent" as const },
+    };
+    await setup({ snapshotApprovalCacheKey: undefined, snapshotApprovalMemory: browserMemory });
+    const persistent = await invoke(PERMISSIONS.userApprovalRecord, {
+      requestId: "req-browser-persistent",
+      args: '{"command":"ls"}',
+      scope: "persistent",
+      verdictAtApproval: "medium",
+      nlJustification: null,
+    });
+    expect(persistent).toMatchObject({ ok: false, error: "session-only-scope" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+
+    const session = await invoke(PERMISSIONS.userApprovalRecord, {
+      requestId: "req-browser-session",
+      args: '{"command":"ls"}',
+      scope: "session",
+      verdictAtApproval: "medium",
+      nlJustification: null,
+    });
+    expect(session).toMatchObject({ ok: true });
+    expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", '{"command":"ls"}', "user-keyboard",
+      expect.objectContaining({ scope: "session" }));
+  });
+
   it("refuses to record a host key that carries no remembered-identity mode", async () => {
     await setup({ snapshotApprovalCacheKey: "web_fetch:web_fetch:host:a.example" });
     const result = await invoke(PERMISSIONS.userApprovalRecord, {

@@ -502,6 +502,17 @@ export async function authorizeToolInvocation(
       };
     }
 
+    // A builtin that declares this input per-action (a browser action on a tab
+    // the user opened) keeps an ask a person's decision every time: no
+    // foreground reviewer, no remembered approval, and below, an allow-once /
+    // deny-once prompt that records nothing. Deny and standing allows stand.
+    const requiresPerActionApproval =
+      source === "builtin" && tool.requiresPerActionApproval?.(finalInput) === true;
+    if (requiresPerActionApproval && permissionResult.decision === "ask") {
+      const { reviewer: _reviewer, ...withoutReviewer } = permissionResult;
+      permissionResult = { ...withoutReviewer, forceModal: true };
+    }
+
     // A pre-issued app mutation grant replaces only the ordinary foreground
     // approval ask. Hard denies, layer-1/2 asks, forceModal, operator Hooks,
     // rate limits, audit, and final one-shot consumption still apply.
@@ -1448,7 +1459,7 @@ export async function authorizeToolInvocation(
         // the exact invocation shown to the user.
         const approvalRequest = {
           id: randomUUID(),
-          ...(hostShellRequiresExplicitApproval || requiresRemoteLocalOneShot
+          ...(hostShellRequiresExplicitApproval || requiresRemoteLocalOneShot || requiresPerActionApproval
             ? {
                 // Plain host-shell and remote-controller approvals are both
                 // exact, local one-shot decisions: neither can mint a cache.

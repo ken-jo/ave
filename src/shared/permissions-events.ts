@@ -49,7 +49,27 @@ export type ApprovalMemoryScope =
     }
   // A digest, not the command text: this scope reaches the renderer, where
   // command text is only ever shown DLP-masked.
-  | { readonly kind: "command"; readonly commandSha256: string; readonly cwd: string | null };
+  | { readonly kind: "command"; readonly commandSha256: string; readonly cwd: string | null }
+  // Browser actions on one page origin (`scheme://host:port`) in a tab the
+  // agent opened or a tab the user opened. The opener is part of the scope:
+  // an approval for agent tabs never answers for the user's own tabs.
+  | { readonly kind: "browser-origin"; readonly origin: string; readonly tabOpener: BrowserTabOpener }
+  // Closing tabs the agent opened. A user-opened tab is never covered.
+  | { readonly kind: "browser-agent-tabs" };
+
+/** Who opened a browser tab: the agent (`browser_tab_new`) or the user. */
+export type BrowserTabOpener = "agent" | "user";
+
+/**
+ * Whether a remembered decision for `scope` may only live for this app
+ * session. Browser scopes are session-only: a page on an approved origin can
+ * steer the model into any action there, so no browser approval outlives the
+ * process (no "always allow" for browser actions in v1). The approval card
+ * and the record handler both read this one predicate.
+ */
+export function isSessionOnlyApprovalMemoryScope(scope: ApprovalMemoryScope): boolean {
+  return scope.kind === "browser-origin" || scope.kind === "browser-agent-tabs";
+}
 
 /**
  * What a remembered user decision is keyed on, besides tool name, source,
