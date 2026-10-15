@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import { isAbsolute, posix } from "node:path";
-import { POWERSHELL_COMMAND_POLICIES, PowerShellAnalysisBudget } from "./powershell-command-policy.js";
+import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES, PowerShellAnalysisBudget } from "./powershell-command-policy.js";
 
 /**
  * Associated types: https://support.microsoft.com/en-us/outlook/blocked-attachments-in-outlook
@@ -97,7 +97,7 @@ export class PowerShellFileProvenance {
     if (options.directory) return;
     const source = options.source;
     const sourceLeaf = source === undefined ? undefined : posix.basename(this.path(source));
-    const catalogue = sourceLeaf && POWERSHELL_COMMAND_POLICIES[sourceLeaf]?.native ? sourceLeaf
+    const catalogue = sourceLeaf && POWERSHELL_COMMAND_POLICIES[canonicalPowerShellName(sourceLeaf)]?.native ? sourceLeaf
       : source ? this.lookup(source)?.catalogue : undefined;
     const file = { catalogue: catalogue ?? this.paths.get(path)?.catalogue };
     this.paths.set(path, file);
@@ -133,6 +133,14 @@ export class PowerShellFileProvenance {
   observeOpaqueEffects(): void {
     this.budget.spend();
     if (!this.opaqueEffects) { this.opaqueEffects = true; this.revision += 1; }
+  }
+
+  /** Test and build discovery may execute files without naming them in argv. */
+  hasExecutableWrites(): boolean {
+    this.budget.spend();
+    if (this.opaque || this.unknownLeaves) return true;
+    for (const path of this.paths.keys()) if (this.fileType(path) !== "document") return true;
+    return false;
   }
 
   /** Unresolved writes constrain execution checks; ordinary data lookups stay precise. */

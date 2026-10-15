@@ -70,7 +70,7 @@ export function isSafeMainBundleManifestPath(path) {
  * The PowerShell shell floors (bounded command analysis, file execution provenance,
  * native launchers, remote output sinks and credential-store rows) are read by the
  * permission manager on every PowerShell call, so they join the initial graph too:
- * entry 423_073, initial 5_465_852, total 9_107_817; the initial ceiling moves to 5_470_000.
+ * entry 423_073, initial 5_469_859, total 9_111_824; the initial ceiling remains 5_470_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,

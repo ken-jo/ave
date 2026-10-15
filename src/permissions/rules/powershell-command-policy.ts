@@ -17,6 +17,9 @@ export interface PowerShellCommandPolicy {
   destination?: PowerShellPathBinding & { kind?: "printer" | "mail" };
   /** A launcher whose executable path has a positively modeled binding. */
   executable?: PowerShellPathBinding;
+  /** Ordinary content slots are data when their destination is proved local. */
+  content?: PowerShellPathBinding;
+  argv?: { info?: readonly string[]; verbs?: readonly string[]; switches?: readonly string[]; modules?: readonly string[]; code?: readonly string[] };
   /** File provenance uses the same command identity and parameter signature. */
   materializes?: {
     kind: "file" | "copy" | "rename" | "new" | "tree";
@@ -38,6 +41,8 @@ const ITEM_PARAMETERS = [...PATH_PARAMETERS, "value", "destination", "name", "it
 const COPY_DESTINATION = { parameters: ["destination"], position: 1 };
 const CONTENT_DESTINATION = { parameters: ["path", "literalpath"], position: 0 };
 const PROPERTY_PARAMETERS = ["property*", "inputobject"];
+const CONTENT_VALUE = { parameters: ["value"], position: 1 };
+const INPUT_OBJECT = { parameters: ["inputobject"] };
 
 function nativePolicy(effects: PowerShellCommandPolicy["effects"], native: NonNullable<PowerShellCommandPolicy["native"]> = "opaque"): PowerShellCommandPolicy {
   return { aliases: [], effects, parameters: [], native };
@@ -98,7 +103,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "dnx.exe": nativePolicy(["launcher"]),
   "dotnet-counters.exe": nativePolicy(["launcher"]),
   "dotnet-trace.exe": nativePolicy(["launcher"]),
-  "dotnet.exe": nativePolicy(["launcher"], "dotnet"),
+  "dotnet.exe": { ...nativePolicy(["launcher"], "dotnet"), argv: { info: ["--info", "--version", "--help", "--list-runtimes", "--list-sdks"], verbs: ["build", "test", "restore", "clean"] } },
   "dxcap.exe": nativePolicy(["launcher"]),
   "ecmangen.exe": nativePolicy(["network"]),
   "esentutl.exe": nativePolicy(["network"]),
@@ -155,6 +160,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "msxsl.exe": nativePolicy(["launcher", "network"]),
   "netsh.exe": nativePolicy(["launcher"]),
   "ngen.exe": nativePolicy(["network"]),
+  "node.exe": { ...nativePolicy(["launcher"]), aliases: ["node", "nodejs", "nodejs.exe"], argv: { info: ["-v", "--version", "-h", "--help"], switches: ["--test"], code: ["-e", "--eval", "-p", "--print", "-r", "--require", "--import", "--loader", "--experimental-loader"] } },
   "nslookup.exe": nativePolicy(["network"]),
   "ntsd.exe": nativePolicy(["launcher"]),
   "odbcconf.exe": nativePolicy(["launcher"]),
@@ -177,6 +183,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "protocolhandler.exe": nativePolicy(["network"]),
   "provlaunch.exe": nativePolicy(["launcher"]),
   "pubprn.vbs": nativePolicy(["launcher"]),
+  "python.exe": { ...nativePolicy(["launcher"]), aliases: ["python", "python2", "python3", "python2.exe", "python3.exe", "pypy", "pypy3", "pypy.exe", "pypy3.exe"], argv: { info: ["-V", "--version", "-h", "--help"], modules: ["pytest", "unittest"], code: ["-c"] } },
   "query.exe": nativePolicy(["launcher"]),
   "rasautou.exe": nativePolicy(["launcher"]),
   "rcsi.exe": nativePolicy(["launcher"]),
@@ -271,16 +278,16 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "new-variable": { aliases: ["nv"], effects: ["variable-write"], parameters: VARIABLE_PARAMETERS },
   "clear-variable": { aliases: ["clv"], effects: ["variable-write"], parameters: ["name", "scope", "force?", "include", "exclude"] },
   "remove-variable": { aliases: ["rv"], effects: ["variable-write"], parameters: ["name", "scope", "force?", "include", "exclude"] },
-  "set-item": { aliases: ["si"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
+  "set-item": { aliases: ["si"], effects: ["provider-write"], content: CONTENT_VALUE, parameters: ITEM_PARAMETERS },
   "new-item": { aliases: ["ni"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, materializes: { kind: "new" }, parameters: ITEM_PARAMETERS },
   "clear-item": { aliases: ["cli"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
   "remove-item": { aliases: ["ri", "rm", "rmdir", "rd", "del", "erase"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
   "copy-item": { aliases: ["cpi", "cp", "copy"], effects: ["provider-write", "file-write"], destination: COPY_DESTINATION, materializes: { kind: "copy", source: CONTENT_DESTINATION }, parameters: [...ITEM_PARAMETERS, "tosession", "fromsession", "container?"] },
   "move-item": { aliases: ["mi", "mv", "move"], effects: ["provider-write", "file-write"], destination: COPY_DESTINATION, materializes: { kind: "copy", source: CONTENT_DESTINATION }, parameters: ITEM_PARAMETERS },
   "rename-item": { aliases: ["rni", "ren"], effects: ["provider-write", "dispatch"], materializes: { kind: "rename", source: CONTENT_DESTINATION, destination: { parameters: ["newname"], position: 1 } }, parameters: [...ITEM_PARAMETERS, "newname"] },
-  "set-content": { aliases: ["sc"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
-  "add-content": { aliases: ["ac"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
-  "out-file": { aliases: [], effects: ["file-write"], destination: { parameters: ["filepath", "literalpath"], position: 0 }, parameters: ["filepath", "literalpath", "inputobject", "encoding", "append?", "force?", "noclobber?", "width", "nonewline?"] },
+  "set-content": { aliases: ["sc"], effects: ["provider-write", "file-write"], content: CONTENT_VALUE, destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
+  "add-content": { aliases: ["ac"], effects: ["provider-write", "file-write"], content: CONTENT_VALUE, destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
+  "out-file": { aliases: [], effects: ["file-write"], content: INPUT_OBJECT, destination: { parameters: ["filepath", "literalpath"], position: 0 }, parameters: ["filepath", "literalpath", "inputobject", "encoding", "append?", "force?", "noclobber?", "width", "nonewline?"] },
   "out-printer": { aliases: ["lp"], effects: ["network", "file-write"], destination: { parameters: ["name"], position: 0, kind: "printer" }, parameters: ["name", "inputobject"] },
   "export-csv": { aliases: ["epcsv"], effects: ["file-write"], destination: CONTENT_DESTINATION, parameters: ["path", "literalpath", "inputobject", "delimiter", "encoding", "append?", "force?", "noclobber?", "notypeinformation?", "useculture?"] },
   "export-clixml": { aliases: [], effects: ["file-write"], destination: CONTENT_DESTINATION, parameters: ["path", "literalpath", "inputobject", "depth", "encoding", "force?", "noclobber?"] },
