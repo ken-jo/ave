@@ -503,15 +503,25 @@ export async function authorizeToolInvocation(
     }
 
     // A builtin that declares this input per-action (a browser action on a tab
-    // the user opened) keeps an ask a person's decision every time: no
-    // foreground reviewer, no remembered approval, and below, an allow-once /
-    // deny-once prompt that records nothing. Deny and standing allows stand.
+    // the user opened) is a person's decision every time, in every mode: no
+    // foreground reviewer, no remembered or mode-wide allow ("allow" mode
+    // included), and below, an allow-once / deny-once prompt that records
+    // nothing. Only a deny stands; with no one to ask (headless) it is denied.
     const requiresPerActionApproval =
       source === "builtin" &&
       tool.requiresPerActionApproval?.(finalInput, sessionId === undefined ? {} : { sessionId }) === true;
-    if (requiresPerActionApproval && permissionResult.decision === "ask") {
+    if (requiresPerActionApproval && permissionResult.decision !== "deny") {
       const { reviewer: _reviewer, ...withoutReviewer } = permissionResult;
-      permissionResult = { ...withoutReviewer, forceModal: true };
+      permissionResult = invocationPermissionContext.headless === true
+        ? { decision: "deny", reason: "this action needs a person's approval each time, and no one can be asked here", layer: permissionResult.layer }
+        : {
+            ...withoutReviewer,
+            decision: "ask",
+            reason: permissionResult.decision === "ask"
+              ? permissionResult.reason
+              : "an action on a tab the user opened asks every time",
+            forceModal: true,
+          };
     }
 
     // A pre-issued app mutation grant replaces only the ordinary foreground

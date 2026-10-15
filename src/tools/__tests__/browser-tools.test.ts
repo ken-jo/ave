@@ -129,7 +129,7 @@ describe("browser tools", () => {
    * Every card is answered allow, remembered for the session when the card
    * allows remembering. `onCard` runs while the card is open.
    */
-  function harness(options: { onCard?: (card: ApprovalRequest) => void } = {}) {
+  function harness(options: { onCard?: (card: ApprovalRequest) => void; mode?: "default" | "strict" | "auto" | "allow" } = {}) {
     const tabs = new BrowserTabRegistry<FakeGuest>();
     const ops: Array<{ windowId: number; requestId?: string; op: string }> = [];
     tabs.setRendererLink({
@@ -150,7 +150,7 @@ describe("browser tools", () => {
     const registry = new ToolRegistry();
     for (const tool of browserTools) registry.register(tool);
     const manager = new PermissionManager(join(dir, "permissions.json"));
-    manager.setMode("auto");
+    manager.setMode(options.mode ?? "auto");
     manager.setInteractiveAutoApprove("off");
     reviewerCache = new VerdictCache(join(aveHomeDir, "reviewer-cache.jsonl"));
     manager.setReviewer({
@@ -278,6 +278,17 @@ describe("browser tools", () => {
       expect(card.persistentAllowAllowed).toBe(false);
     }
     expect(page.calls.filter((call) => call.action === "click")).toHaveLength(2);
+  });
+
+  it.each(["default", "auto", "allow"] as const)("asks before every action in a user tab in %s mode", async (mode) => {
+    const { run, cards, page, userTab } = harness({ mode });
+    const user = userTab("https://a.example/");
+    await run(BROWSER_TOOL.click, { tabId: user.handle, ref: "e1" });
+    await run(BROWSER_TOOL.type, { tabId: user.handle, ref: "e1", text: "x" });
+    await run(BROWSER_TOOL.navigate, { tabId: user.handle, url: "https://a.example/next" });
+    expect(cards.map((card) => card.toolName)).toEqual([BROWSER_TOOL.click, BROWSER_TOOL.type, BROWSER_TOOL.navigate]);
+    for (const card of cards) expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(page.calls.map((call) => call.action)).toEqual(["click", "type", "navigate"]);
   });
 
   it("remembers an action per origin in an agent tab, for the session only", async () => {
