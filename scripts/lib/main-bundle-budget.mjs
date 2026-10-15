@@ -71,10 +71,13 @@ export function isSafeMainBundleManifestPath(path) {
  * total 9_032_275, and the initial ceiling moves to 5_395_000. With the Windows
  * credential-store rows in the sensitive-path table the measurement is entry 420_159,
  * initial 5_394_511, total 9_033_779, inside that ceiling.
+ * Expanded command-text inspection remains in the initial permission graph:
+ * entry 420_159, initial 5_403_226, total 9_042_494. The initial ceiling moves
+ * to 5_405_000, the next 5_000-byte boundary.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_395_000,
+  initialBytes: 5_405_000,
   totalBytes: 11_050_000,
 });
 
