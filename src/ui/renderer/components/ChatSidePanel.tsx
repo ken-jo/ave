@@ -34,7 +34,7 @@ import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, isMovableTabKi
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import { TerminalAttentionDot } from "./TerminalAttentionDot.js";
 import { useTerminalAttention } from "../preview/terminal-attention.js";
-import { forgetActiveSurface, showActiveSurface } from "../preview/active-surface.js";
+import { showActiveSurface } from "../preview/active-surface.js";
 import { AgentControlBadge } from "./AgentControlBadge.js";
 import { useAgentControlledTabIds } from "../preview/agent-browser-bridge.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
@@ -932,7 +932,6 @@ export function ChatSidePanel({
     (id: string) => {
       const closing = tabs.find((tab) => tab.id === id);
       if (closing?.kind === "terminal") void api.terminal?.kill(id);
-      forgetActiveSurface(id);
       closeTab(id);
     },
     [tabs, api, closeTab],
@@ -976,19 +975,6 @@ export function ChatSidePanel({
   const browserTabs = useMemo(() => tabs.filter((tab) => tab.kind === "browser" && tab.content !== null), [tabs]);
   const agentControlledTabIds = useAgentControlledTabIds();
 
-  // The tab the user is looking at, reported to main as a hint the agent
-  // tools default to (a browser tool with no tabId, terminal_read's
-  // blockId/limit). Cleared when the panel goes away.
-  const activeSurfaceKind = activeTab?.kind === "browser" || activeTab?.kind === "terminal" ? activeTab.kind : null;
-  const activeSurfaceTabId = activeSurfaceKind ? activeTab?.id ?? null : null;
-  useEffect(() => {
-    const setActiveSurface = api.setActiveSurface;
-    if (!setActiveSurface) return;
-    void setActiveSurface(activeSurfaceKind && activeSurfaceTabId ? { kind: activeSurfaceKind, tabId: activeSurfaceTabId } : null);
-  }, [api, activeSurfaceKind, activeSurfaceTabId]);
-  useEffect(() => () => {
-    void api.setActiveSurface?.(null);
-  }, [api]);
 
   // Panel-scoped launcher shortcuts (§6.10.3). Bound only while the panel is
   // mounted so ⌘T/⌘P/⌃⇧G reach the workspace rail without stealing app-wide
@@ -1118,6 +1104,14 @@ export function ChatSidePanel({
                     <span className={`max-w-24 truncate ${isEphemeral ? "italic" : ""}`}>{label}</span>
                     {tab.kind === "side-chat" && !tab.content && sideChatPendingAnswer && !active ? (
                       <PendingAnswerDot inline testId="chat-side-panel-tab-side-chat-pending-answer" />
+                    ) : null}
+                    {agentControlledTabIds.has(tab.id) ? (
+                      <Bot
+                        className="h-3 w-3 shrink-0 text-warning"
+                        role="img"
+                        aria-label={t("agentBrowser.controlling")}
+                        data-testid="chat-side-panel-tab-agent-controlled"
+                      />
                     ) : null}
                     {tab.kind === "terminal" && terminalAttention.has(tab.id) ? (
                       <TerminalAttentionDot testId="chat-side-panel-tab-terminal-attention" message={terminalAttention.get(tab.id)!.message} />

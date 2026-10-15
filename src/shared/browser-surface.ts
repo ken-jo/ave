@@ -9,7 +9,7 @@
  *
  * Channels (CHANNELS.browser / CHANNELS.surface in contract/app-contract.ts):
  *   bindTab      invoke  renderer→main  {@link BrowserTabBindRequest} → {@link BrowserTabBindResult}
- *   stop         invoke  renderer→main  {@link BrowserTabStopRequest} (badge stop button)
+ *   stop         invoke  renderer→main  {@link BrowserTabStopRequest} (stop or user navigation)
  *   tabOp        event   main→renderer  {@link BrowserTabOpRequest}
  *   control      event   main→renderer  {@link BrowserTabControlState}
  *   setActive    invoke  renderer→main  {@link ActiveWorkspaceSurface} | null
@@ -52,7 +52,7 @@ export type BrowserTabBindResult =
       readonly error: "bad-request" | "unauthorized-frame" | "guest-not-live" | "guest-not-browser" | "guest-not-hosted";
     };
 
-/** The user pressed stop on an agent-controlled tab's badge. */
+/** The user stopped agent control or navigated, including before the tab's first bind. */
 export interface BrowserTabStopRequest {
   readonly tabId: string;
 }

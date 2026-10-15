@@ -58,6 +58,28 @@ const bindTab = vi.fn(async (_request: { tabId: string; webContentsId: number; r
 const layerApi = { browserTabs: { bindTab } } as unknown as AveApi;
 
 describe("WebSurfaceLayer", () => {
+  it("binds a guest that cannot name itself at attach on its first dom-ready, and only then", async () => {
+    bindTab.mockClear();
+    publishLiveWebTabs(source, new Set(["browser:8"]));
+    render(
+      <>
+        <WebSurfaceSlot tabId="browser:8" url="https://example.com/" location="side-panel" />
+        <WebSurfaceLayer api={layerApi} />
+      </>,
+    );
+    const guest = guests()[0]! as HTMLElement & { getWebContentsId?: () => number };
+    // As Electron does until the guest's first dom-ready.
+    guest.getWebContentsId = () => { throw new Error("The WebView must be attached to the DOM and the dom-ready event emitted"); };
+    act(() => { guest.dispatchEvent(new Event("did-attach")); });
+    await act(async () => { await Promise.resolve(); });
+    expect(bindTab).not.toHaveBeenCalled();
+    guest.getWebContentsId = () => 31;
+    act(() => { guest.dispatchEvent(new Event("dom-ready")); });
+    act(() => { guest.dispatchEvent(new Event("dom-ready")); });
+    await act(async () => { await Promise.resolve(); });
+    expect(bindTab.mock.calls).toEqual([[{ tabId: "browser:8", webContentsId: 31 }]]);
+  });
+
   it("binds a tab's guest for the agent tools once, with the request it was opened for, and keeps that binding across a move", async () => {
     bindTab.mockClear();
     publishLiveWebTabs(source, new Set(["browser:9"]));

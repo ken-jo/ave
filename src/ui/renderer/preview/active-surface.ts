@@ -1,4 +1,5 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
+import type { AveApi } from "../types.js";
 
 /**
  * The window's ACTIVE SURFACE — the terminal or web page the user last
@@ -81,4 +82,31 @@ export function subscribeActiveSurface(listener: () => void): () => void {
 
 export function useActiveSurface(): ActiveSurface | null {
   return useSyncExternalStore(subscribeActiveSurface, getActiveSurface);
+}
+
+/**
+ * Report the window's active surface to main, where it is the tab the agent
+ * tools default to when none is named (`ave:surface:set-active`). Mounted
+ * once per window: this store is the window's one choice, whichever side
+ * panel or pane it was made in. Cleared when the window's view goes away.
+ */
+export function useReportActiveSurface(api: AveApi): void {
+  useEffect(() => {
+    const setActive = api.setActiveSurface;
+    if (!setActive) return undefined;
+    let last: string | null | undefined;
+    const report = () => {
+      const surface = getActiveSurface();
+      const key = surface ? `${surface.kind}\n${surface.tabId}` : null;
+      if (key === last) return;
+      last = key;
+      void setActive(surface ? { kind: surface.kind, tabId: surface.tabId } : null);
+    };
+    report();
+    const unsubscribe = subscribeActiveSurface(report);
+    return () => {
+      unsubscribe();
+      void setActive(null);
+    };
+  }, [api]);
 }
