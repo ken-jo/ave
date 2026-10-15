@@ -71,8 +71,8 @@ export function isSafeMainBundleManifestPath(path) {
  * the initial graph (desktop-boot and dynamic imports); what joins it is what boot wires
  * eagerly: the browser tab registry and its IPC domain, guest tracking on did-attach, the
  * tools' en/ko catalog fragments (the catalog barrel imports every fragment) and the
- * approval card's browser-scope strings. Measured entry 425_021, initial 5_410_089,
- * total 9_077_544; the initial ceiling moves to 5_412_000.
+ * approval card's browser-scope strings. Measured entry 425_021, initial 5_410_703,
+ * total 9_079_452; the initial ceiling moves to 5_412_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,

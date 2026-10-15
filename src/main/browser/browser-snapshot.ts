@@ -67,7 +67,6 @@ const TRANSPARENT_ROLES: ReadonlySet<string> = new Set([
   "presentation",
   "group",
   "LineBreak",
-  "InlineTextBox",
 ]);
 
 /** Properties worth showing next to a role. */
@@ -175,7 +174,8 @@ export class BrowserRefTable {
       visited.add(node.nodeId);
       const role = text(node.role);
       const name = text(node.name);
-      const shown = !node.ignored && role !== "" && !(TRANSPARENT_ROLES.has(role) && name === "")
+      // InlineTextBox only repeats its StaticText parent's text, line by line.
+      const shown = !node.ignored && role !== "" && role !== "InlineTextBox" && !(TRANSPARENT_ROLES.has(role) && name === "")
         && !(role === "StaticText" && name === "");
       let childDepth = depth;
       if (shown) {

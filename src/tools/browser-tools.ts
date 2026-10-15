@@ -85,8 +85,10 @@ export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
   waitFor(target: BrowserActionTab<G>, options: { text?: string; timeMs?: number }): Promise<{ found: boolean; waitedMs: number }>;
   click(target: BrowserActionTab<G>, ref: string): Promise<void>;
   type(target: BrowserActionTab<G>, ref: string, text: string, options: { submit?: boolean }): Promise<void>;
-  pressKey(target: BrowserActionTab<G>, key: string): Promise<void>;
+  pressKey(target: BrowserActionTab<G>, key: string, ref?: string): Promise<void>;
   navigate(target: BrowserActionTab<G>, url: string, approvedOrigin: string): Promise<{ url: string }>;
+  /** Wait (bounded) for a newly opened tab's first page to finish loading. */
+  settle(target: BrowserActionTab<G>): Promise<{ url: string }>;
 }
 
 export interface BrowserToolDeps<G extends BrowserGuest = BrowserGuest> extends SessionWindowScopeDeps {
@@ -278,6 +280,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       description: t("be_browserTools.pressKeyDescription"),
       jsonSchema: object({
         tabId: tabIdProperty,
+        ref: { type: "string", description: t("be_browserTools.pressKeyRefDescription") },
         key: {
           type: "string",
           enum: [...BROWSER_PRESSABLE_KEYS],

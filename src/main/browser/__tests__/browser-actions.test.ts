@@ -10,8 +10,10 @@ import {
   BrowserActionError,
   click,
   navigate,
+  pressKey,
   resolveRef,
   sensitiveFieldReason,
+  settle,
   snapshot,
   type ActionTarget,
   type CdpSession,
@@ -211,6 +213,8 @@ describe("typing", () => {
     const { cdp, ref, refs } = await field({ type: "text", autocomplete: "name" });
     await typeInto(target(cdp), ref, "Ada", { submit: true }, refs);
     expect(cdp.calls.find((call) => call.method === "Input.insertText")?.params).toEqual({ text: "Ada" });
+    // It clicks into the field before typing.
+    expect(cdp.inputs().slice(0, 4)).toEqual(["Input.dispatchMouseEvent", "Input.dispatchMouseEvent", "Input.dispatchMouseEvent", "Input.dispatchKeyEvent"]);
     expect(cdp.calls.filter((call) => call.method === "Input.dispatchKeyEvent").map((call) => call.params?.key)).toEqual(["a", "a", "Enter", "Enter"]);
     expect(sensitiveFieldReason({ type: "email" })).toBeNull();
   });
@@ -283,5 +287,68 @@ describe("navigate", () => {
       .rejects.toMatchObject({ code: "cancelled" });
     expect(load).toHaveBeenCalledOnce();
     expect(guest.stopped).toBe(true);
+  });
+});
+
+describe("settle", () => {
+  it("waits for a committed URL and the load to finish", async () => {
+    let polls = 0;
+    const guest = {
+      getURL: () => (polls++ >= 2 ? "http://127.0.0.1:8775/index.html" : ""),
+      isLoading: () => polls < 5,
+    };
+    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "http://127.0.0.1:8775/index.html" });
+    expect(polls).toBeGreaterThanOrEqual(5);
+  });
+
+  it("gives up at its bound and stops on cancel", async () => {
+    const guest = { getURL: () => "", isLoading: () => true };
+    await expect(settle(guest, new AbortController().signal, 150)).resolves.toEqual({ url: "" });
+    const controller = new AbortController();
+    controller.abort(new Error("the user took over this tab"));
+    await expect(settle(guest, controller.signal)).rejects.toMatchObject({ code: "cancelled" });
+  });
+});
+
+describe("snapshot noise", () => {
+  it("leaves out InlineTextBox lines", async () => {
+    const refs = new BrowserRefTable();
+    const cdp = new FakeCdp();
+    cdp.nodes = [
+      ax("root", "RootWebArea", "Fixture", { childIds: ["t"] }),
+      ax("t", "StaticText", "Hello", { parentId: "root", childIds: ["i"] }),
+      ax("i", "InlineTextBox", "Hello", { parentId: "t" }),
+    ];
+    const shot = await snapshot(target(cdp), {}, refs);
+    expect(shot.text).toBe('- RootWebArea "Fixture"\n  - StaticText "Hello"');
+  });
+});
+
+describe("pressing keys", () => {
+  it("refuses a bare key press when the page holds no focus, instead of dropping it", async () => {
+    const cdp = new FakeCdp();
+    cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5 })]);
+    await expect(pressKey(target(cdp), "Enter", undefined, new BrowserRefTable())).rejects.toMatchObject({ code: "no-focus" });
+    expect(cdp.inputs()).toEqual([]);
+  });
+
+  it("presses into what the page has focused", async () => {
+    const cdp = new FakeCdp();
+    cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5 })]);
+    cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { type: "booleanOrUndefined", value: true } }] };
+    await pressKey(target(cdp), "Escape", undefined, new BrowserRefTable());
+    expect(cdp.calls.filter((call) => call.method === "Input.dispatchKeyEvent").map((call) => call.params?.key)).toEqual(["Escape", "Escape"]);
+  });
+
+  it("clicks into a named element before pressing", async () => {
+    const refs = new BrowserRefTable();
+    const cdp = new FakeCdp();
+    cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5 })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
+    await pressKey(target(cdp), "Backspace", ref, refs);
+    expect(cdp.inputs()).toEqual([
+      "Input.dispatchMouseEvent", "Input.dispatchMouseEvent", "Input.dispatchMouseEvent",
+      "Input.dispatchKeyEvent", "Input.dispatchKeyEvent",
+    ]);
   });
 });

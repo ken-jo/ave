@@ -84,6 +84,10 @@ function fakeActions() {
     click: record("click") as BrowserPageActions<FakeGuest>["click"],
     type: record("type") as BrowserPageActions<FakeGuest>["type"],
     pressKey: record("pressKey") as BrowserPageActions<FakeGuest>["pressKey"],
+    settle: async (target) => {
+      calls.push({ action: "settle", tab: target.tab.handle, args: [] });
+      return { url: target.tab.guest!.url };
+    },
     navigate: async (target, url) => {
       calls.push({ action: "navigate", tab: target.tab.handle, args: [url] });
       target.tab.guest!.url = url;
@@ -331,6 +335,8 @@ describe("browser tools", () => {
     const refused = await run(BROWSER_TOOL.tabNew, { url: "javascript:alert(1)" });
     expect(refused.output).toContain("file:, javascript:, data: and other schemes are denied");
 
+    const badRef = await run(BROWSER_TOOL.pressKey, { tabId: agent.handle, key: "Enter", ref: "#submit" });
+    expect(badRef.output).toContain("ref must be an element ref");
     const ok = await run(BROWSER_TOOL.navigate, { tabId: agent.handle, url: "https://b.example/page" });
     expect(ok.isError).toBe(false);
     expect(page.calls).toEqual([{ action: "navigate", tab: agent.handle, args: ["https://b.example/page"] }]);
@@ -394,6 +400,23 @@ describe("browser tools", () => {
     expect(result.output).toContain("the user took over this tab");
     // The next action runs with a fresh signal.
     expect(tabs.liveTab(agent.handle)?.actions.signal.aborted).toBe(false);
+  });
+
+  it("opens an agent tab and answers once its page has loaded", async () => {
+    const { run, cards, page, ops, tabs } = harness();
+    const opening = run(BROWSER_TOOL.tabNew, { url: "https://a.example/start" });
+    await vi.waitFor(() => expect(ops.at(-1)?.op).toBe("new"));
+    const guest = new FakeGuest(500, "https://a.example/start", "Start");
+    tabs.guestAttached(guest, 1);
+    tabs.bindTab(1, { tabId: "renderer-500", webContentsId: 500, requestId: ops.at(-1)!.requestId! });
+    const result = await opening;
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.approvalMemory).toMatchObject({ scope: { kind: "browser-origin", origin: "https://a.example:443", tabOpener: "agent" } });
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain('"url":"https://a.example/start"');
+    expect(result.output).toContain('"openedBy":"agent"');
+    expect(page.calls.map((call) => call.action)).toEqual(["settle"]);
+    expect(tabs.liveTab("tab-1")?.opener).toBe("agent");
   });
 
   it("closes an agent tab once per session and a user tab only on an explicit ask", async () => {

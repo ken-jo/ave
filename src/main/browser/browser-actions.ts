@@ -202,11 +202,13 @@ export async function click(target: ActionTarget, ref: string, refs: BrowserRefT
   const backendNodeId = await resolveRef(target, ref, refs);
   const { x, y } = await centerOf(target.cdp, backendNodeId);
   throwIfAborted(target.signal);
-  await target.injectInput(async () => {
-    await target.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
-    await target.cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
-    await target.cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
-  });
+  await target.injectInput(() => pressAt(target.cdp, x, y));
+}
+
+async function pressAt(cdp: CdpSession, x: number, y: number): Promise<void> {
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
 }
 
 /** Why a field is refused for agent typing, or null when it is not sensitive. */
@@ -240,8 +242,14 @@ export async function type(
   if (sensitive) {
     throw new BrowserActionError("sensitive-field", `refused: ${ref} is ${sensitive}; the user types those themselves`);
   }
+  const { x, y } = await centerOf(target.cdp, backendNodeId);
   throwIfAborted(target.signal);
   await target.injectInput(async () => {
+    // Click into the field first, as a person would: Chromium drops synthesized
+    // key and text input for a page that does not hold focus (focus emulation,
+    // Page.bringToFront and webContents.focus() do not give it while the app
+    // window is in the background); a press on the page does.
+    await pressAt(target.cdp, x, y);
     await target.cdp.send("DOM.focus", { backendNodeId });
     // Replace what the field holds: select all of it, then insert.
     await target.cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, commands: ["selectAll"] });
@@ -283,9 +291,38 @@ async function dispatchKey(cdp: CdpSession, key: string): Promise<void> {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: domKey, code: spec.code, windowsVirtualKeyCode: spec.keyCode });
 }
 
-async function pressKey(target: ActionTarget, key: string): Promise<void> {
+/** Whether the page holds keyboard focus: the accessibility tree marks its root focused. */
+async function pageHasFocus(cdp: CdpSession): Promise<boolean> {
+  const nodes = await fullTree(cdp);
+  return nodes.some((node) => node.role?.value === "RootWebArea"
+    && (node.properties ?? []).some((property) => property.name === "focused" && property.value?.value === true));
+}
+
+/**
+ * Press `key`. With `ref`, click into that element first (as `type` does);
+ * without one, the key goes to what the page has focused, and fails clearly
+ * when the page holds no focus (a synthesized key would be dropped silently).
+ */
+export async function pressKey(target: ActionTarget, key: string, ref: string | undefined, refs: BrowserRefTable = browserRefs): Promise<void> {
   throwIfAborted(target.signal);
-  await target.injectInput(() => dispatchKey(target.cdp, key));
+  let point: { x: number; y: number; backendNodeId: number } | undefined;
+  if (ref !== undefined) {
+    const backendNodeId = await resolveRef(target, ref, refs);
+    point = { ...(await centerOf(target.cdp, backendNodeId)), backendNodeId };
+  } else if (!(await pageHasFocus(target.cdp))) {
+    throw new BrowserActionError(
+      "no-focus",
+      "the page does not have keyboard focus, so the key would go nowhere; pass ref to press it in an element",
+    );
+  }
+  throwIfAborted(target.signal);
+  await target.injectInput(async () => {
+    if (point) {
+      await pressAt(target.cdp, point.x, point.y);
+      await target.cdp.send("DOM.focus", { backendNodeId: point.backendNodeId });
+    }
+    await dispatchKey(target.cdp, key);
+  });
 }
 
 // ── navigate ──────────────────────────────────────────────────────────────
@@ -344,6 +381,30 @@ export async function navigate(
   return { url: guest.getURL() };
 }
 
+/** What settling needs of a guest. Production passes Electron `WebContents`. */
+export interface LoadingGuest {
+  getURL(): string;
+  isLoading(): boolean;
+}
+
+const SETTLE_POLL_MS = 100;
+const SETTLE_MAX_MS = 15_000;
+
+/**
+ * Wait for a just-opened tab's first page: a URL committed and nothing
+ * loading. Bounded; a page still loading at the bound is returned as is.
+ */
+export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = SETTLE_MAX_MS): Promise<{ url: string }> {
+  const started = Date.now();
+  for (;;) {
+    throwIfAborted(signal);
+    const url = guest.getURL();
+    if (url !== "" && url !== "about:blank" && !guest.isLoading()) return { url };
+    if (Date.now() - started >= maxMs) return { url };
+    await sleep(SETTLE_POLL_MS, signal);
+  }
+}
+
 // ── production adapter ────────────────────────────────────────────────────
 
 /** What the adapter needs of the tab registry. */
@@ -388,11 +449,16 @@ export function createBrowserPageActions(
     click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution), ref),
     type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>
       type(await targetFor(live, attribution), ref, text, options),
-    pressKey: async (live: LiveTab, key: string) => pressKey(await targetFor(live, attribution), key),
+    pressKey: async (live: LiveTab, key: string, ref?: string) => pressKey(await targetFor(live, attribution), key, ref),
     navigate: async (live: LiveTab, url: string, approvedOrigin: string) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
       return navigate(guest as unknown as NavigableGuest, url, approvedOrigin, live.signal, originOf);
+    },
+    settle: async (live: LiveTab) => {
+      const guest = live.tab.guest;
+      if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+      return settle(guest, live.signal);
     },
   };
 }

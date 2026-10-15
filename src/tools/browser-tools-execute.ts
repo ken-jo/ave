@@ -295,10 +295,10 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
 
     [BROWSER_TOOL.pressKey]: pageAction(
       BROWSER_TOOL.pressKey,
-      (input) => typeof input.key === "string" && (BROWSER_PRESSABLE_KEYS as readonly string[]).includes(input.key)
-        ? null
-        : `key must be one of ${BROWSER_PRESSABLE_KEYS.join(", ")}`,
-      (actions, target, input) => actions.pressKey(target, input.key as string),
+      (input) => typeof input.key !== "string" || !(BROWSER_PRESSABLE_KEYS as readonly string[]).includes(input.key)
+        ? `key must be one of ${BROWSER_PRESSABLE_KEYS.join(", ")}`
+        : input.ref === undefined ? null : validRef(input),
+      (actions, target, input) => actions.pressKey(target, input.key as string, input.ref as string | undefined),
     ),
 
     [BROWSER_TOOL.tabNew]: async (input, ctx) => {
@@ -317,7 +317,14 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       );
       if (!outcome.ok) return failure(`could not open the tab (${outcome.error})`);
       const tab = deps.tabs.liveTabInWindow(outcome.tabId, scope.windowId);
-      return fenced({ tabId: outcome.tabId, url: tab?.guest?.getURL() ?? url.url, openedBy: "agent" });
+      if (!tab) return failure(`the tab ${outcome.tabId} closed as it opened`);
+      // The tab binds as soon as its view attaches, before its page loads; answer
+      // once the page is there so the next call sees the page, not an empty tab.
+      return run(async (actions) => {
+        const signal = AbortSignal.any([tab.actions.signal, ...(ctx.abortSignal ? [ctx.abortSignal] : [])]);
+        const loaded = await actions.settle({ tab, signal });
+        return fenced({ tabId: outcome.tabId, url: loaded.url, title: tab.guest?.getTitle() ?? "", openedBy: "agent" });
+      });
     },
 
     [BROWSER_TOOL.tabClose]: async (input, ctx) => {
