@@ -469,6 +469,12 @@ function entryInstant(entry: AuditEntry): number {
  *     A row with no readable time is a corrupt row, and the honest count of
  *     rows on a given day excludes it.
  */
+function instantWithin(at: number, start?: Date, end?: Date): boolean {
+  if (start !== undefined && !(at >= start.getTime())) return false;
+  if (end !== undefined && !(at < end.getTime())) return false;
+  return true;
+}
+
 /**
  * The kind a stored row is counted under, by the contract of the channel that
  * wrote it: a telemetry or sandbox-gate row states its `type`; a permission
@@ -484,12 +490,6 @@ function auditRowKind(entry: unknown): string | undefined {
   const type = (entry as { type?: unknown }).type;
   if (typeof type === "string" && type.length > 0) return type;
   return isPermissionAuditEntry(entry) ? entry.decision : undefined;
-}
-
-function instantWithin(at: number, start?: Date, end?: Date): boolean {
-  if (start !== undefined && !(at >= start.getTime())) return false;
-  if (end !== undefined && !(at < end.getTime())) return false;
-  return true;
 }
 
 /** A matched row plus the two keys that order it: its instant, then read order. */
