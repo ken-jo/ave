@@ -88,6 +88,7 @@ export function isSafeMainBundleManifestPath(path) {
  * Runner source roles and wrapper asks: entry 425_021, initial 5_503_162, total 9_182_245; ceiling 5_505_000.
  * Package source aliases and implicit file inputs: entry 425_021, initial 5_504_377, total 9_183_460; ceiling 5_505_000.
  * Proven package operands and registry choices: entry 425_021, initial 5_505_213, total 9_184_296; ceiling 5_510_000.
+ * Modeled option arity and package operands: entry 425_021, initial 5_505_721, total 9_184_804; ceiling 5_510_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,

@@ -73,10 +73,18 @@ const CONFIG_SOURCE_OPTIONS = new Set(["config", "userconfig", "globalconfig", "
 // Default URL: https://docs.npmjs.com/cli/v11/using-npm/config#registry
 const DEFAULT_PACKAGE_REGISTRY = /^https:\/\/registry\.npmjs\.org\/?$/i;
 const READ_ONLY_PACKAGE_VERBS = new Set(["view", "info", "outdated", "ls", "search"]);
-const NPM_INSTALL_OPTIONS = { flags: ["--save", "--legacy-peer-deps", "-g", "--global", "--save-dev", "-D", "--save-exact", "-E", "--no-save"] };
-const PNPM_INSTALL_OPTIONS = { flags: ["--no-frozen-lockfile", "--save-dev", "-D"] };
+const INSTALL_SAVE_FLAGS = ["--save", "--legacy-peer-deps", "-g", "--global", "--save-dev", "-D", "--save-exact", "-E", "--no-save"];
+// Boolean options never bind the next operand:
+// https://docs.npmjs.com/cli/v11/commands/npm-install
+// https://pnpm.io/cli/add, https://classic.yarnpkg.com/lang/en/docs/cli/add/
+// https://bun.com/docs/pm/cli/add, https://bun.com/docs/pm/cli/install
+const NPM_INSTALL_OPTIONS = { flags: [...INSTALL_SAVE_FLAGS, "--save-prod", "-P", "--save-peer", "--save-optional", "-O", "--save-bundle", "-B", "--package-lock", "--no-package-lock", "--package-lock-only"] };
+const PNPM_INSTALL_OPTIONS = { flags: ["--no-frozen-lockfile", "--save-dev", "-D", "--save-prod", "-P", "--save-peer", "--save-optional", "-O", "--save-exact", "-E", "--global", "-g"] };
+const YARN_TASK_OPTIONS = { add: { flags: ["--dev", "-D", "--peer", "-P", "--optional", "-O", "--exact", "-E"] }, install: { flags: ["--immutable"] } };
+const BUN_INSTALL_OPTIONS = { flags: [...INSTALL_SAVE_FLAGS, "--dev", "--development", "-d", "--optional", "--peer", "--exact"] };
 const CONFIG_GETTERS = ["get", "list", "ls"];
 const PACKAGE_SOURCE_VERBS = ["install", "i", "add"];
+const BUN_PACKAGE_SOURCE_VERBS = [...PACKAGE_SOURCE_VERBS, "a"];
 // Install families and aliases: https://docs.npmjs.com/cli/v11/commands/npm-install
 // https://docs.npmjs.com/cli/v11/commands/npm-install-test
 // https://docs.npmjs.com/cli/v11/commands/npm-ci
@@ -103,19 +111,19 @@ const PACKAGE_RUNNER_POLICIES: Readonly<Record<string, PackageRunnerPolicy>> = {
   uvx: { prefixRunner: true, command: true, flags: ["--offline", "--no-cache", "-q", "--quiet"], packages: ["--from", "--with"] },
   pipx: { prefixRunner: true, command: ["run"], packageCommands: ["run"], code: ["--path"], codeVerbs: ["runpip"], packages: ["--spec"] },
   corepack: { prefixRunner: true, delegate: true, taskOptions: { prepare: { flags: ["--activate"] } } },
-  yarnpkg: { prefixRunner: true, command: ["dlx"], packageCommands: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: TASK_FLAGS, values: ["--cwd", "--cache-folder"], packageSources: PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS },
+  yarnpkg: { prefixRunner: true, command: ["dlx"], packageCommands: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: TASK_FLAGS, values: ["--cwd", "--cache-folder"], packageSources: PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS, taskOptions: YARN_TASK_OPTIONS },
   deno: { prefixRunner: true, code: ["-e", "--eval"], codeVerbs: ["eval"], taskArguments: ["task"], scriptVerbs: ["run"], tasks: DENO_TASK_VERBS, flags: ["--quiet", "--watch"],
     implicitFiles: { "--env-file": ".env" }, // https://docs.deno.com/runtime/reference/env_variables/#env-file
     blockedVerbs: ["init", "serve", "publish", "outdated", "remove", "repl"], packageSources: ["install", "cache", "add"],
     taskOptions: { test: { flags: ["-A"] }, run: { flags: ["-A"], optionalValues: ["--allow-", "--deny-"] }, task: { values: ["--cwd"] }, install: { flags: ["-g", "--global", "--entrypoint"] } } },
   npm: { command: ["exec", "x"], packageCommands: ["exec", "x"], code: CALL_OPTIONS, codeVerbs: ["explore"], commandDelimiter: true, packages: ["--package"], values: ["--prefix", "-w", "--workspace", "--cache"], flags: TASK_FLAGS, packageSources: NPM_PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS,
-    taskOptions: { install: NPM_INSTALL_OPTIONS, i: NPM_INSTALL_OPTIONS, ci: { values: ["--omit"] }, init: { flags: ["-y"] }, run: { flags: ["--if-present"] }, publish: { values: ["--access"] } } },
+    taskOptions: { ...Object.fromEntries(NPM_PACKAGE_SOURCE_VERBS.map((verb) => [verb, NPM_INSTALL_OPTIONS])), ci: { ...NPM_INSTALL_OPTIONS, values: ["--omit"] }, init: { flags: ["-y"] }, run: { flags: ["--if-present"] }, publish: { values: ["--access"] } } },
   pnpm: { command: ["exec", "dlx", "x"], packageCommands: ["dlx"], code: CALL_OPTIONS, flags: [...TASK_FLAGS, "--recursive", "-r"], packages: ["--package"], values: ["--filter", "-C", "--dir", "--store-dir", "--modules-dir", "--virtual-store-dir"], packageSources: PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS,
     taskOptions: { install: PNPM_INSTALL_OPTIONS, i: PNPM_INSTALL_OPTIONS, add: PNPM_INSTALL_OPTIONS, run: { flags: ["--parallel"] } } },
   yarn: { command: ["dlx"], packageCommands: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: TASK_FLAGS, values: ["--cwd", "--cache-folder"], packageSources: PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS,
-    taskOptions: { add: { flags: ["--dev", "-D"] }, install: { flags: ["--immutable"] } } },
-  bun: { command: ["x"], packageCommands: ["x"], code: ["-e", "--eval", "-p", "--print", "--preload"], codeVerbs: ["exec", "repl"], taskArguments: ["run"], flags: TASK_FLAGS, values: ["--cwd"], packageSources: [...PACKAGE_SOURCE_VERBS, "a"],
-    taskOptions: { run: { flags: ["--hot", "--bail"] }, build: { values: ["--outdir"] }, test: { flags: ["--coverage", "--watch"] }, install: NPM_INSTALL_OPTIONS } },
+    taskOptions: YARN_TASK_OPTIONS },
+  bun: { command: ["x"], packageCommands: ["x"], code: ["-e", "--eval", "-p", "--print", "--preload"], codeVerbs: ["exec", "repl"], taskArguments: ["run"], flags: TASK_FLAGS, values: ["--cwd"], packageSources: BUN_PACKAGE_SOURCE_VERBS,
+    taskOptions: { ...Object.fromEntries(BUN_PACKAGE_SOURCE_VERBS.map((verb) => [verb, BUN_INSTALL_OPTIONS])), run: { flags: ["--hot", "--bail"] }, build: { values: ["--outdir"] }, test: { flags: ["--coverage", "--watch"] } } },
 };
 /** Package and project task runners: a 1-token prefix cannot constrain their execution. */
 const PACKAGE_RUNNERS = Object.keys(PACKAGE_RUNNER_POLICIES).filter((name) => PACKAGE_RUNNER_POLICIES[name]!.prefixRunner);
@@ -878,9 +886,9 @@ export function packageRunnerInvocation(argv: readonly (string | undefined)[]): 
     const verb = argv[index];
     if (verb === undefined) return opaque("has no command operand");
     const data = policy.taskOptions?.[verb];
-    // Only positional operands are packages. Even an unknown option consumes
-    // its separated value here; its ordinary ask and script visibility remain.
-    const positionalOperands = (from: number, firstOnly = false): string[] => {
+    // Only modeled value bindings consume a following token. Unknown options
+    // leave later operands eligible for package-source checks.
+    const positionalOperands = (from: number, firstOnly = false, knownBindingsOnly = false): string[] => {
       const operands: string[] = [];
       let positional = delimited;
       for (let scan = from; scan < argv.length; scan += 1) {
@@ -889,7 +897,8 @@ export function packageRunnerInvocation(argv: readonly (string | undefined)[]): 
         if (!positional && arg === "--") { positional = true; continue; }
         if (!positional && arg.startsWith("-")) {
           const bound = runnerOptionBinding(argv, scan);
-          if (!bound.attached && !isFlag(bound.flag, data) && argv[scan + 1] !== undefined && !argv[scan + 1]!.startsWith("-")) scan += 1;
+          if (knownBindingsOnly && !takesValue(bound.flag, data) && !isFlag(bound.flag, data)) return [];
+          if (!bound.attached && takesValue(bound.flag, data) && argv[scan + 1] !== undefined && !argv[scan + 1]!.startsWith("-")) scan += 1;
           continue;
         }
         operands.push(arg);
@@ -897,14 +906,14 @@ export function packageRunnerInvocation(argv: readonly (string | undefined)[]): 
       }
       return operands;
     };
-    const readOnlyConfig = verb === "config" && policy.configGetters?.includes(positionalOperands(index + 1, true)[0] ?? "") && !unresolved;
+    const readOnlyConfig = verb === "config" && policy.configGetters?.includes(positionalOperands(index + 1, true, true)[0] ?? "") && !unresolved;
     readOnlyRegistry = policy.command !== true && (READ_ONLY_PACKAGE_VERBS.has(verb) || !!readOnlyConfig);
     if (program === "deno" && !policy.packageSources?.includes(verb) && !policy.taskArguments?.includes(verb)
       && argv.slice(index + 1).some((arg) => arg !== undefined && REGISTRY_SPECIFIER.test(arg))) return opaque("has a registry code source");
     if (policy.codeVerbs?.includes(verb)) return opaque("contains inline code");
     if (policy.delegate && Object.hasOwn(PACKAGE_RUNNER_POLICIES, nameAt(index))) { unknown ??= registry; start = index; continue; }
     if (policy.command === true || policy.command?.includes(verb)) {
-      if ((policy.command === true || policy.packageCommands?.includes(verb)) && positionalOperands(policy.command === true ? start + 1 : index + 1, true).some(isRemotePackageSource)) return opaque("has a remote package source");
+      if ((policy.command === true || policy.packageCommands?.includes(verb)) && positionalOperands(policy.command === true ? start + 1 : index + 1).some(isRemotePackageSource)) return opaque("has a remote package source");
       if (policy.command !== true) {
         index += 1;
         const leading = leadingOptions();
