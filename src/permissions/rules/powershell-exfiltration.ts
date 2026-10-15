@@ -1545,7 +1545,9 @@ function hasNativeLauncher(cmd: PsCommand, ctx: Context): boolean {
   if (name !== undefined && POWERSHELL_COMMAND_POLICIES[name]?.native) return !knownNativeData(name, args, ctx);
   if (name === undefined || isPowerShell(name) || POWERSHELL_COMMAND_POLICIES[name] || /^[\[$@]/.test(name)) return false;
   const { prefix, reason, scriptPath } = nativeInvocation(name, args, ctx);
-  return prefix === "package-runner" || prefix === "config-writer" || (reason !== null && scriptPath === undefined);
+  // A refused package prefix becomes a runtime launcher only when it carries arguments.
+  return (prefix === "package-runner" && args.length > 0)
+    || prefix === "config-writer" || (reason !== null && scriptPath === undefined);
 }
 
 function nativeCommandData(stage: PsCommand, ctx: Context, args = headOf(stage, ctx).args): boolean {

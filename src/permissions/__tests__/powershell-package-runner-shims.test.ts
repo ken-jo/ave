@@ -12,6 +12,21 @@ const RUNNERS = [
 ];
 
 describe("package runner shims and dispatchers", () => {
+  it.each(SHELL_PREFIX_POLICY.packageRunners)("keeps bare %s subject to intrinsic code checks only", (runner) => {
+    const result = inspectPowerShellCommand(runner, CWD);
+    expect(hiddenCodeReason([runner])).toBe(runner === "deno" ? "deno reads code from stdin" : null);
+    expect(result).toEqual({
+      sensitive: null,
+      exfiltration: runner === "deno" ? "PowerShell hidden code (runtime script)" : null,
+    });
+    expect(refusedShellPrefix([runner])).not.toBeNull();
+  });
+
+  it.each(SHELL_PREFIX_POLICY.packageRunners)("requires approval for bare %s after materialization", (runner) => {
+    expect(inspectPowerShellCommand(`Set-Content package.json x; ${runner}`, CWD).exfiltration)
+      .toContain("materialized task input");
+  });
+
   it.each(RUNNERS.flatMap((runner) => [
     `Set-Content package.json x; ${runner}`,
     `Set-Content payload.ps1 Get-Date; ${runner}`,
