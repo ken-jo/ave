@@ -46,10 +46,16 @@ function diagnostic(text: string): string {
  * xterm's canvas renderer cannot resolve CSS custom properties, so the ACTIVE
  * theme tokens are read off the DOM and handed to xterm as concrete colors —
  * no source-level color literal (color-token-gate compliant).
+ *
+ * The tokens are only ever set on :root (`styles.css` bundle blocks, and
+ * `resolve-theme.ts` inline for installed themes), so they are read there,
+ * once: resolving them on the host instead walks every ancestor's style for an
+ * inherited custom property, which costs seconds per read in a large tree.
  */
 function terminalTheme(host: HTMLElement): ITheme {
+  const style = getComputedStyle(host.ownerDocument.documentElement);
   const readToken = (name: string, fallbackTriple: string): string => {
-    const raw = getComputedStyle(host).getPropertyValue(name).trim();
+    const raw = style.getPropertyValue(name).trim();
     return `hsl(${raw || fallbackTriple})`;
   };
   return {
