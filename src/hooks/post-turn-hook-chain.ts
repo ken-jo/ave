@@ -4,7 +4,6 @@
 
 
 import type { RunModelSettings } from "../shared/run-model-settings.js";
-import { markStaleToolResults } from "../engine/auto-compact.js";
 import { detectFromStream, type DetectorResult } from "../engine/checkpoint-detector.js";
 import { isLLMVendor, type GenericMessage, type TokenUsage, type TokenUsageByModel } from "../engine/llm/types.js";
 import { normalizeAiSdkUsageForCost } from "../engine/llm/pricing.js";
@@ -91,13 +90,10 @@ export interface PostTurnHookChainDeps {
 }
 
 export interface PostTurnHookResult {
-
-  compactedMessages: GenericMessage[] | null;
-
   detector: DetectorResult;
   /**
    * Canonical message array that this hook persisted for transcript replay.
-   * It includes mark-stale compaction and marker-stripped assistant output.
+   * It carries the marker-stripped assistant output.
    */
   messagesForPersistence: GenericMessage[];
 }
@@ -109,25 +105,15 @@ export class PostTurnHookChain {
 
 
   async run(ctx: PostTurnHookContext): Promise<PostTurnHookResult> {
-    let compactedMessages: GenericMessage[] | null = null;
     let messagesForPersistence = ctx.messages;
 
 
 
-    try {
-      const beforeMarkCount = ctx.messages.length;
-      const { messages: afterMark, result: mr } = markStaleToolResults(ctx.messages);
-      if (mr.marked) {
-        compactedMessages = afterMark;
-        log.info(
-          `mark-stale: marked ${mr.markedCount} tool_results, ~${mr.freedCharsOnSerialize} chars saved on serialize (msgCount=${beforeMarkCount}, memory verbatim)`,
-        );
-      } else {
-        log.info(`mark-stale: SKIPPED — no stale tool_result content found (msgCount=${beforeMarkCount})`);
-      }
-    } catch (err) {
-      log.warn({ err }, "mark-stale failed");
-    }
+    // Old tool results are not stubbed here. Rewriting an earlier row after
+    // every turn changes the conversation prefix the next request repeats, so
+    // no provider could reuse it from cache. Stubbing happens only when the
+    // context is actually under pressure: the round loop's micro-compaction
+    // and the compaction itself.
 
     // 2. Detect checkpoint/title markers.
     //    Run before persistence so durable session history stores the same
@@ -156,7 +142,7 @@ export class PostTurnHookChain {
 
     // 세션 영속화
     try {
-      const baseMessages = compactedMessages ?? ctx.messages;
+      const baseMessages = ctx.messages;
       messagesForPersistence =
         outputForPersistence !== ctx.output
           ? replaceLastAssistantOutput(baseMessages, ctx.output, outputForPersistence)
@@ -249,7 +235,7 @@ export class PostTurnHookChain {
       log.warn("idle poke failed: %s", err);
     }
 
-    return { compactedMessages, detector, messagesForPersistence };
+    return { detector, messagesForPersistence };
   }
 }
 

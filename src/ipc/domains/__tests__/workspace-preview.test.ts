@@ -170,7 +170,7 @@ describe("preview:read-file handler", () => {
   it.each([
     ["crlf", "alpha\r\nbeta\r\n", "alpha\r\nbeta"],
     ["mixed", "alpha\rbeta\r\ngamma\n", "alpha\rbeta\r\ngamma"],
-  ])("preserves exact text shared with the %s file reader", async (label, source, content) => {
+  ])("shows the same lines as the %s file reader", async (label, source, content) => {
     const path = join(root, `${label}.txt`);
     writeFileSync(path, source);
     const preview = await invoke(CHANNELS.preview.readFile, OK_FRAME, path) as {
@@ -182,7 +182,8 @@ describe("preview:read-file handler", () => {
     });
     expect(read.isError).toBe(false);
     expect(preview).toMatchObject({ ok: true, content });
-    expect(JSON.parse(read.output).content).toBe(preview.content);
+    const readLines = read.output.split("\n").slice(1).map((line) => line.replace(/^ *\d+\t/, ""));
+    expect(readLines).toEqual(content.split(/\r\n|\r|\n/));
   });
 
   it("reads a file inside an allowed project root", async () => {

@@ -108,11 +108,12 @@ export function hostTimeZone(): string {
 }
 
 /**
- * The instant as a local ISO-8601 string with its numeric offset —
- * `2026-01-02T13:26:05+09:00`. For the model's environment block: the
+ * The instant as a local ISO-8601 string with its numeric offset, to the
+ * minute — `2026-01-02T13:26+09:00`. For the model's per-turn context: the
  * offset is computed from the same instant rather than named, so the string
  * stays self-describing across DST, and a model reading it can turn
- * "tomorrow 9am" into the user's 9am.
+ * "tomorrow 9am" into the user's 9am. Seconds are omitted: no request the
+ * model acts on needs them, and they only make every rendering unique.
  */
 export function formatLocalIsoWithOffset(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -120,7 +121,7 @@ export function formatLocalIsoWithOffset(date: Date): string {
   const offsetSign = offsetMinutes < 0 ? "-" : "+";
   const offset = `${offsetSign}${pad(Math.floor(Math.abs(offsetMinutes) / 60))}:${pad(Math.abs(offsetMinutes) % 60)}`;
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
-    + `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${offset}`;
+    + `T${pad(date.getHours())}:${pad(date.getMinutes())}${offset}`;
 }
 
 /**

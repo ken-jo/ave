@@ -1644,17 +1644,17 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
     }
   });
 
-  it("strips memory_write even when it is explicitly allowlisted", async () => {
+  it("strips memory_write and memory_delete even when they are explicitly allowlisted", async () => {
     const toolRegistry = new ToolRegistry();
     for (const tool of [
-      createDynamicTool({
-        name: "memory_write",
+      ...["memory_write", "memory_delete"].map((name) => createDynamicTool({
+        name,
         description: "persistent write",
         source: "builtin",
         category: "write",
         jsonSchema: { type: "object", properties: {} },
-        execute: async () => ({ output: "would-write-memory", isError: false }),
-      }),
+        execute: async () => ({ output: "would-change-memory", isError: false }),
+      })),
       createDynamicTool({
         name: "noop",
         description: "safe",
@@ -1690,12 +1690,11 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       await runner.spawn({
         title: "read only subagent",
         instructions: "summarize",
-        toolScope: exactToolScope(["memory_write", "noop"]),
+        toolScope: exactToolScope(["memory_write", "memory_delete", "noop"]),
         maxRounds: 1,
       });
 
       expect(provider.observedToolNames[0]).toEqual(["noop"]);
-      expect(provider.observedToolNames[0]).not.toContain("memory_write");
     } finally {
       hasProviderSpy.mockRestore();
       refreshProviderSpy.mockRestore();

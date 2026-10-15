@@ -12,6 +12,7 @@ import type {
   McpResourceTemplateSummary,
   McpStdioServerConfig,
   McpToolSchema,
+  McpToolCallOutput,
   McpUiPayload,
   McpUiResourceMeta,
   McpUiResourceRead,
@@ -73,6 +74,7 @@ import { scrubShortError } from "../shared/dlp.js";
 import { t } from "../i18n/index.js";
 import { sleep } from "../shared/abortable-deadline.js";
 import { errorMessage } from "../shared/error-message.js";
+import { renderMcpContent } from "./mcp-tool-content.js";
 const log = createLogger("mcp-client");
 
 // ─── JSON-RPC 2.0 Types ──────────────────────────────
@@ -1173,7 +1175,7 @@ export class McpClient {
   // ─── Tool Execution ─────────────────────────────────
 
   /** MCP 도구 호출 — ToolExecutor에서 사용 */
-  async callTool(name: string, args: Record<string, unknown>): Promise<{ text: string; uiPayload?: McpUiPayload }> {
+  async callTool(name: string, args: Record<string, unknown>): Promise<McpToolCallOutput> {
     if (this.state.status !== "connected" || !this.transport?.isAlive()) {
       throw new Error(`[mcp-client] ${t("be_mcpClient.serverNotConnected", { id: this.config.id })}`);
     }
@@ -1290,15 +1292,18 @@ export class McpClient {
     return retry;
   }
 
-  /** Render a `complete` CallToolResult to text (+ MCP Apps UI). Throws on isError. */
+  /**
+   * Render a `complete` CallToolResult to text (+ MCP Apps UI). Image blocks
+   * are lifted out undecoded (see `mcp-tool-content.ts`). Throws on isError.
+   */
   private async renderToolResult(
     result: McpToolCallResult,
-  ): Promise<{ text: string; uiPayload?: McpUiPayload }> {
+  ): Promise<McpToolCallOutput> {
     const content = result.content ?? [];
     if (result.isError) {
-      throw new Error(content.map((c) => c.text ?? JSON.stringify(c)).join("\n"));
+      throw new Error(renderMcpContent(content).text);
     }
-    const text = content.map((c) => c.text ?? JSON.stringify(c)).join("\n");
+    const { text, images } = renderMcpContent(content);
     // MCP Apps permission gate (§3.7): ignore `_meta.ui` unless the server's
     // CURRENT advertisement includes the ui extension. Security gate — fails
     // closed on a stale-and-unrefreshable snapshot (§6a.2).
@@ -1332,7 +1337,7 @@ export class McpClient {
           + `resourceUri is not a usable ui:// resource`,
       );
     }
-    return { text, uiPayload };
+    return { text, ...(uiPayload ? { uiPayload } : {}), ...(images.length > 0 ? { images } : {}) };
   }
 
   /** Read the inline `Task` fields off a `CreateTaskResult`/`tasks/get` result (§8). */
@@ -1366,7 +1371,7 @@ export class McpClient {
     _args: Record<string, unknown>,
     createResult: McpToolCallResult,
     timeoutMs: number,
-  ): Promise<{ text: string; uiPayload?: McpUiPayload }> {
+  ): Promise<McpToolCallOutput> {
     const deadline = Date.now() + timeoutMs;
     let current = createResult;
     let task = this.extractTaskState(current, name);

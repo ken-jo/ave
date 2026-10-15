@@ -1233,9 +1233,11 @@ export class PermissionManager {
         return [];
       }
     });
-    const isUnderRoot = (pattern: string): boolean => {
-      const target = extractGrantPath(pattern);
-      if (target === null) return false;
+    // A multi-path grant (`apply_patch`) is pruned when ANY of its paths is
+    // under the removed root: it would otherwise keep authorizing that path.
+    const isUnderRoot = (pattern: string): boolean =>
+      extractGrantPaths(pattern).some((target) => isPathUnderRoot(target));
+    const isPathUnderRoot = (target: string): boolean => {
       // A grant matches if EITHER form equals the root or places it under the root. The two
       // forms are compared like-for-like (canonical↔canonical, raw↔raw) so a
       // realpath'd stored grant and a raw stored grant are both caught.
@@ -2297,7 +2299,7 @@ export class PermissionManager {
 // ── #1493 path-grant prune helpers ───────────────────
 /**
  * The marker `approvalCacheKeyFor` + the single-path file tools (`write_file`,
- * `edit_file`, `apply_patch`, `delete_file`) use to embed a resolved path in a
+ * `edit_file`, `multi_edit`, `delete_file`) use to embed a resolved path in a
  * persisted grant pattern: `<toolName>:path:<absPath>`. Splitting on the FIRST
  * occurrence is Windows-safe — the tool name never contains `:path:`, and the
  * `<absPath>` tail keeps its own drive-letter colon (`C:\…`) intact.
@@ -2330,6 +2332,31 @@ export function extractGrantPath(pattern: string): string | null {
 }
 
 /**
+ * Every absolute path a grant pattern targets: the single `:path:` tail, or
+ * the `paths` list of a `<toolName>:{...,"paths":[...]}` key (`apply_patch`,
+ * whose one call can touch several files). Empty for any other pattern.
+ */
+export function extractGrantPaths(pattern: string): string[] {
+  const separator = pattern.indexOf(":");
+  if (separator > 0 && pattern[separator + 1] === "{") {
+    try {
+      const parsed: unknown = JSON.parse(pattern.slice(separator + 1));
+      const paths = typeof parsed === "object" && parsed !== null
+        ? (parsed as { paths?: unknown }).paths
+        : undefined;
+      if (Array.isArray(paths) && paths.length > 0
+        && paths.every((path) => typeof path === "string" && path.length > 0)) {
+        return paths as string[];
+      }
+    } catch {
+      // Not a JSON key; fall through to the single-path marker.
+    }
+  }
+  const single = extractGrantPath(pattern);
+  return single === null ? [] : [single];
+}
+
+/**
  * #1494 item-4 — decompose a pruned grant pattern into an auditable tuple. The
  * tool-name is the prefix before {@link GRANT_PATH_MARKER}; the path is the tail
  * (already validated non-null by the prune's `isUnderRoot` guard, but fall back
@@ -2338,8 +2365,12 @@ export function extractGrantPath(pattern: string): string | null {
  */
 function describePrunedGrant(pattern: string, tier: GrantTier | undefined): PrunedGrant {
   const idx = pattern.indexOf(GRANT_PATH_MARKER);
-  const toolName = idx > 0 ? pattern.slice(0, idx) : pattern;
-  const path = extractGrantPath(pattern) ?? pattern;
+  const separator = pattern.indexOf(":");
+  const toolName = idx > 0
+    ? pattern.slice(0, idx)
+    : separator > 0 && pattern[separator + 1] === "{" ? pattern.slice(0, separator) : pattern;
+  const paths = extractGrantPaths(pattern);
+  const path = paths.length > 0 ? paths.join(", ") : pattern;
   return { pattern, toolName, tier: normalizeTier(tier), path };
 }
 
