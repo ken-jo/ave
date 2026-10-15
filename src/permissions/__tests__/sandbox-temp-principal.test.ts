@@ -27,6 +27,7 @@ import {
   appOwnedSandboxHomeRoot,
   appOwnedSandboxPrivateRoots,
   appOwnedSandboxTempRoot,
+  appOwnedTerminalHandoffRoot,
   buildPerCommandSandboxCustomConfig,
   ensureSandboxPrivateRoot,
   ensureSandboxTempPrincipalDir,
@@ -205,14 +206,17 @@ describe("the private roots in a sandbox read deny", () => {
       const denyRead = buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead;
       const tempRoot = realpathSync(appOwnedSandboxTempRoot());
       const homeRoot = realpathSync(appOwnedSandboxHomeRoot());
+      const handoffRoot = realpathSync(appOwnedTerminalHandoffRoot());
       // A one-character class: the same path, which ASRT re-emits after its
       // allows minus the ones inside it, rather than a literal re-emitted bare.
       expect(denyRead).toContain(`${tempRoot.slice(0, -1)}[p]`);
       expect(denyRead).toContain(`${homeRoot.slice(0, -1)}[e]`);
+      expect(denyRead).toContain(`${handoffRoot.slice(0, -1)}[f]`);
       expect(denyRead).not.toContain(appOwnedSandboxTempRoot());
       expect(denyRead).not.toContain(appOwnedSandboxHomeRoot());
+      expect(denyRead).not.toContain(appOwnedTerminalHandoffRoot());
       const others = floor.filter((path) => !appOwnedSandboxPrivateRoots().includes(path));
-      expect(denyRead.filter((path) => !/\[[pe]\]$/.test(path))).toEqual(others);
+      expect(denyRead.filter((path) => !/\[[pef]\]$/.test(path))).toEqual(others);
     },
   );
 

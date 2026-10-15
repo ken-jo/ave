@@ -2136,18 +2136,15 @@ async function wrapLongLivedCommand(
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, caller);
   const SandboxManager = await loadSandboxManager();
-  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem);
-  const wrapped =
-    wrapOptions === undefined
-      ? await SandboxManager.wrapWithSandboxArgv(command, options.binShell, customConfig, options.abortSignal)
-      : await SandboxManager.wrapWithSandboxArgv(
-          command,
-          options.binShell,
-          customConfig,
-          options.abortSignal,
-          undefined,
-          wrapOptions,
-        );
+  // `wrapOptions` is undefined for every wrap but the terminal's.
+  const wrapped = await SandboxManager.wrapWithSandboxArgv(
+    command,
+    options.binShell,
+    buildPerCommandSandboxCustomConfig(options.filesystem),
+    options.abortSignal,
+    undefined,
+    wrapOptions,
+  );
   return applyLinuxReadMaskWriteFloor(wrapped, options.filesystem, () => SandboxManager.cleanupAfterCommand());
 }
 
