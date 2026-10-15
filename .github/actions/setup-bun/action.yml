@@ -84,6 +84,49 @@ runs:
         rm -rf "$work"
         cygpath -w "$bin" >> "$GITHUB_PATH"
 
+    # bun install runs node-gyp for native modules (better-sqlite3), and
+    # node-gyp needs Python, which a self-hosted Windows runner may lack.
+    # actions/setup-python is not used here: on Windows it runs the CPython
+    # installer with InstallAllUsers=1 and deletes matching uninstall registry
+    # entries under HKLM/HKCU, a machine-wide change, and needs administrator
+    # rights. The Python Software Foundation's relocatable NuGet package is
+    # unpacked under RUNNER_TEMP instead, after its SHA-256 matches the pin
+    # below (the same bytes NuGet's catalog lists by SHA-512), and only
+    # node-gyp is pointed at it through PYTHON; PATH is left alone.
+    - if: runner.os == 'Windows'
+      name: Provide Python for node-gyp (Windows)
+      shell: bash
+      env:
+        PYTHON_VERSION: 3.12.10
+        PYTHON_NUPKG_SHA256: 0eb85c2dfccccf1b17352de4c397f69194035b7d37149eacc16f1147d93de3b8
+      run: |
+        set -euo pipefail
+        work="$RUNNER_TEMP/python-download"
+        dest="$RUNNER_TEMP/python-$PYTHON_VERSION"
+        rm -rf "$work" "$dest"
+        mkdir -p "$work"
+        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 \
+          --output "$work/python.zip" \
+          "https://api.nuget.org/v3-flatcontainer/python/$PYTHON_VERSION/python.$PYTHON_VERSION.nupkg"
+        # Hash stdin: sha256sum escapes its output for a path with a backslash.
+        actual="$(sha256sum < "$work/python.zip" | awk '{ print $1 }')"
+        if [ "$actual" != "$PYTHON_NUPKG_SHA256" ]; then
+          echo "python.$PYTHON_VERSION.nupkg SHA-256 '$actual' does not match the pinned $PYTHON_NUPKG_SHA256" >&2
+          exit 1
+        fi
+        echo "python.$PYTHON_VERSION.nupkg SHA-256 $actual matches the pin"
+        powershell.exe -NoProfile -NonInteractive -Command \
+          "\$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath '$(cygpath -w "$work/python.zip")' -DestinationPath '$(cygpath -w "$work/out")'"
+        mv "$work/out/tools" "$dest"
+        rm -rf "$work"
+        reported="$("$dest/python.exe" --version)"
+        if [ "$reported" != "Python $PYTHON_VERSION" ]; then
+          echo "unpacked python reports '$reported', expected Python $PYTHON_VERSION" >&2
+          exit 1
+        fi
+        echo "PYTHON=$(cygpath -w "$dest/python.exe")" >> "$GITHUB_ENV"
+        echo "node-gyp will use $reported from $dest"
+
     - name: Verify bun is the job-local pinned build
       shell: bash
       env:

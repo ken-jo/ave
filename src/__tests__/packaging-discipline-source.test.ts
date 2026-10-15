@@ -599,6 +599,25 @@ describe("installer smoke and packaging discipline", () => {
     // output with a leading "\\": the digest is read from stdin instead.
     expect(setupBun).toContain('actual="$(sha256sum < "$work/$asset.zip" | awk');
     expect(setupBun).not.toMatch(/sha256sum "/u);
+
+    // node-gyp needs Python during bun install. On Windows the action unpacks
+    // the PSF NuGet package under RUNNER_TEMP against a pinned SHA-256 and
+    // points only PYTHON at it, before the action returns to bun install;
+    // actions/setup-python would run a machine-wide installer and rewrite
+    // uninstall registry entries on the owner's machine.
+    expect(setupBun).toContain(
+      "    - if: runner.os == 'Windows'\n"
+        + "      name: Provide Python for node-gyp (Windows)\n",
+    );
+    expect(setupBun).toMatch(/^ {8}PYTHON_VERSION: 3\.12\.\d+\n {8}PYTHON_NUPKG_SHA256: [0-9a-f]{64}\n/mu);
+    expect(setupBun).toContain('"https://api.nuget.org/v3-flatcontainer/python/$PYTHON_VERSION/python.$PYTHON_VERSION.nupkg"');
+    expect(setupBun).toContain('if [ "$actual" != "$PYTHON_NUPKG_SHA256" ]; then');
+    expect(setupBun).toContain('dest="$RUNNER_TEMP/python-$PYTHON_VERSION"');
+    expect(setupBun).toContain('echo "PYTHON=$(cygpath -w "$dest/python.exe")" >> "$GITHUB_ENV"');
+    expect(setupBun).not.toMatch(/uses: actions\/setup-python@/u);
+    expect(setupBun.indexOf("name: Provide Python for node-gyp (Windows)")).toBeLessThan(
+      setupBun.indexOf("name: Verify bun is the job-local pinned build"),
+    );
     expect(setupBun).toContain('cp "$work/out/$asset/bun.exe" "$bin/bunx.exe"');
     expect(setupBun).not.toMatch(/\bln -s|ItemType SymbolicLink|mklink/u);
     expect(setupBun).toContain("    - name: Verify bun is the job-local pinned build\n");
