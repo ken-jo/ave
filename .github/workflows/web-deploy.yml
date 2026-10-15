@@ -3,8 +3,19 @@ name: Web Deploy
 on:
   push:
     branches: [main]
+    # The web build also reads these files outside web/ (CHANGELOG.md is the
+    # changelog page; the scripts run the build, its document guard and its
+    # export check), so a change to any of them changes the site.
     paths:
       - 'web/**'
+      - 'CHANGELOG.md'
+      - 'scripts/run-web-build.mjs'
+      - 'scripts/lib/web-export.mjs'
+      - 'scripts/lib/document-consumer-guard.mjs'
+      - 'scripts/lib/document-consumer-node-options.mjs'
+      - 'scripts/lib/git-process-environment.mjs'
+      - 'scripts/hooks/pre-push-markdown-policy.mjs'
+      - 'scripts/hooks/documentation-references.json'
       - '.github/workflows/web-deploy.yml'
   repository_dispatch:
     types: [deploy-web]
