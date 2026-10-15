@@ -231,6 +231,45 @@ describe("AuditLogger.getStats()", () => {
     expect(stats.sensitiveOps).toBe(2);
   });
 
+  it("counts permission-channel rows by their `decision`, never as an `undefined` type", async () => {
+    // The permission channel's contract (audit-schema.ts) discriminates rows
+    // by `decision`; they carry no `type`. Reading them as telemetry rows
+    // produced an "undefined" bucket in the Audit tab's top types.
+    const day = new Date().toISOString().slice(0, 10);
+    const ts = new Date().toISOString();
+    const permissionRow = (decision: string) => ({
+      ts, auditId: `a-${decision}`, decision, tool: "bash", source: "builtin",
+      category: "shell", layer: "policy", trustOrigin: "user", toolUseId: "t1",
+      prevHash: "0", entryHash: "1",
+    });
+    writeJsonl(todayJsonl(), [makeEntry({ type: "turn" })]);
+    writeFileSync(
+      join(auditDir, `${day}.permission-audit.jsonl`),
+      [permissionRow("allow"), permissionRow("allow"), permissionRow("deny")]
+        .map((row) => JSON.stringify(row)).join("\n") + "\n",
+      "utf-8",
+    );
+    const logger = new AuditLogger();
+    const stats = await logger.getStats(30);
+    expect(stats.totalByType).toEqual({ turn: 1, allow: 2, deny: 1 });
+    expect(Object.values(stats.totalByDay).reduce((a, b) => a + b, 0)).toBe(4);
+  });
+
+  it("does not count a row that states neither a `type` nor a permission `decision`", async () => {
+    // Such a row matches no audit channel's contract: it is corrupt, and like
+    // an unparseable line it is not counted under an invented label.
+    writeFileSync(
+      join(auditDir, todayJsonl()),
+      [JSON.stringify(makeEntry({ type: "turn" })), JSON.stringify({ timestamp: new Date().toISOString(), sessionId: "s" })]
+        .join("\n") + "\n",
+      "utf-8",
+    );
+    const logger = new AuditLogger();
+    const stats = await logger.getStats(30);
+    expect(stats.totalByType).toEqual({ turn: 1 });
+    expect(Object.values(stats.totalByDay).reduce((a, b) => a + b, 0)).toBe(1);
+  });
+
   it("returns zero stats when no files", async () => {
     const logger = new AuditLogger();
     const stats = await logger.getStats(7);
