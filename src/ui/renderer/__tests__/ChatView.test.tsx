@@ -17,6 +17,7 @@ import {
 } from "../hooks/use-suggested-replies.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
+import { t } from "../../../i18n/runtime.js";
 
 function installDeterministicScrollMetrics(initialScrollHeight = 2400, clientHeight = 600) {
   const descriptors = {
@@ -276,7 +277,7 @@ describe("ChatView", () => {
     });
   });
 
-  it("centers the empty chat composer dock in work mode", async () => {
+  it("keeps the work-mode composer dock in the reading column", async () => {
     const { container } = await renderApp({ hasApiKey: true });
 
     await waitFor(() => {
@@ -288,52 +289,72 @@ describe("ChatView", () => {
     });
   });
 
-  it("keeps the empty composer centered with project selector when an API key is required", async () => {
+  it("keeps the empty composer bottom-docked with project selector when an API key is required", async () => {
     const { container } = await renderApp({ hasApiKey: false });
 
     await waitFor(() => {
       // The no-key affordance is a zero-height chip in the composer's reserved
-      // strip, NOT a transcript card. The card used to claim
-      // `min-h-[min(12rem,36vh)]`, which is why the dock had to shrink its lift
-      // (`data-composer-centered-lift="compact"`). Both are gone: the composer
-      // is centered identically whether or not a key is configured.
+      // strip, NOT a transcript card.
       expect(container.textContent).toContain("API 키 설정 필요");
       expect(container.querySelector('[data-testid="chat-view:no-api-key-card"]')).toBeNull();
       expect(container.querySelector('[data-testid="composer-api-key-chip"]')).not.toBeNull();
       const composerDock = container.querySelector("[data-composer-placement]");
       expect(composerDock).not.toBeNull();
-      expect(composerDock).toHaveAttribute("data-composer-placement", "center");
-      expect(composerDock).not.toHaveAttribute("data-composer-centered-lift");
+      // One placement: an empty conversation does not lift the composer.
+      expect(composerDock).toHaveAttribute("data-composer-placement", "bottom");
+      expect(composerDock?.className ?? "").not.toMatch(/\bmb-\[clamp/);
       expect(container.querySelector('[data-testid="composer-project-selector-slot"]')).not.toBeNull();
+      // Suggested tasks need a usable composer; with no key they stay hidden.
+      expect(container.querySelector('[data-testid="suggested-tasks"]')).toBeNull();
       expect(container.querySelector(testIdSelector(TEST_IDS.composerTextarea))).not.toBeNull();
       const sendButton = container.querySelector('[data-testid="composer-send-button"]') as HTMLButtonElement | null;
       expect(sendButton?.disabled).toBe(true);
     });
   });
 
-  it("re-centers the empty composer when a new chat follows a turn that suggested replies", async () => {
+  it("shows suggested tasks on an empty conversation and fills the composer on click", async () => {
+    const { container } = await renderApp({ hasApiKey: true });
+    const card = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('[data-testid="suggested-task"][data-task-id="files-explain-project"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    const dock = container.querySelector("[data-composer-placement]");
+    expect(dock).toHaveAttribute("data-composer-placement", "bottom");
+    fireEvent.click(card);
+    const textarea = container.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(textarea.value).toBe(t("suggestedTasks.filesExplainProjectPrompt"));
+    });
+    // Filling is not sending: the conversation is still empty.
+    expect(container.querySelector('[data-testid="suggested-tasks"]')).not.toBeNull();
+  });
+
+  it("restores the empty-conversation affordances when a new chat follows a turn that suggested replies", async () => {
     const { container, emitChatStream } = await renderApp({ hasApiKey: true });
     const dock = () => container.querySelector("[data-composer-placement]");
 
     await waitFor(() => {
-      expect(dock()).toHaveAttribute("data-composer-placement", "center");
+      expect(dock()).toHaveAttribute("data-composer-placement", "bottom");
       expect(container.querySelector('[data-testid="composer-project-selector-slot"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="suggested-tasks"]')).not.toBeNull();
     });
 
-    // Turn end. A suggestion legitimately drops the centered layout — the
-    // ghost text needs the docked composer.
+    // Turn end. A suggestion ghost takes over the empty conversation: the
+    // new-chat affordances step aside while it is on screen.
     await act(async () => {
       emitChatStream({ type: "suggested_replies", reply: "다음 작업 진행" });
     });
     await waitFor(() => {
-      expect(dock()).toHaveAttribute("data-composer-placement", "bottom");
+      expect(container.querySelector('[data-testid="composer-project-selector-slot"]')).toBeNull();
+      expect(container.querySelector('[data-testid="suggested-tasks"]')).toBeNull();
     });
+    expect(dock()).toHaveAttribute("data-composer-placement", "bottom");
 
     // The user starts a brand-new conversation. The suggestion store is a
     // renderer singleton that outlives the view, so unless the new-chat path
-    // resets it the empty conversation still reads as "suggestions on screen":
-    // the composer stays docked at the bottom and the project selector — which
-    // is mounted only in the centered layout — never comes back.
+    // resets it the empty conversation still reads as "suggestions on screen"
+    // and the project selector and suggested tasks never come back.
     const newChat = container.querySelector('[data-testid="sidebar-new-chat"]') as HTMLElement | null;
     expect(newChat).not.toBeNull();
     await act(async () => {
@@ -341,8 +362,9 @@ describe("ChatView", () => {
     });
 
     await waitFor(() => {
-      expect(dock()).toHaveAttribute("data-composer-placement", "center");
+      expect(dock()).toHaveAttribute("data-composer-placement", "bottom");
       expect(container.querySelector('[data-testid="composer-project-selector-slot"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="suggested-tasks"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="suggested-replies-ghost"]')).toBeNull();
     });
   });
@@ -1149,6 +1171,98 @@ describe("ChatView", () => {
     await waitFor(() => expect(container.textContent).toContain("여기엔 없음"));
     // The other conversation never spawned anything: no sub-agent tab rides along.
     await waitFor(() => expect(container.querySelector('[data-testid="chat-side-panel-tab-subagent"]')).toBeNull());
+  });
+
+  it("keeps an unsent draft with its conversation across session switches", async () => {
+    const OTHER = "sess-draft-other";
+    const { container } = await renderApp({
+      hasApiKey: true,
+      sessions: [
+        { id: MOCK_DEFAULT_SESSION_ID, title: "초안 대화", modifiedAt: new Date(2, 0, 2).toISOString() },
+        { id: OTHER, title: "다른 대화", modifiedAt: new Date(2, 0, 1).toISOString() },
+      ],
+      history: { sessionId: MOCK_DEFAULT_SESSION_ID, messages: [{ index: 0, role: "user", content: "첫 대화 내용" }] },
+      historyBySession: { [OTHER]: { sessionId: OTHER, messages: [{ index: 0, role: "user", content: "다른 대화 내용" }] } },
+    });
+    await waitFor(() => expect(container.textContent).toContain("첫 대화 내용"));
+    const textarea = () => container.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement;
+    fireEvent.change(textarea(), { target: { value: "아직 보내지 않은 초안" } });
+    expect(textarea().value).toBe("아직 보내지 않은 초안");
+
+    await act(async () => {
+      fireEvent.click(container.querySelector(`[data-testid="sidebar-session-${OTHER}"]`)!);
+    });
+    await waitFor(() => expect(container.textContent).toContain("다른 대화 내용"));
+    // The draft was written for the first conversation: it must not follow the tile.
+    expect(textarea().value).toBe("");
+
+    await act(async () => {
+      fireEvent.click(container.querySelector(`[data-testid="sidebar-session-${MOCK_DEFAULT_SESSION_ID}"]`)!);
+    });
+    await waitFor(() => expect(container.textContent).toContain("첫 대화 내용"));
+    await waitFor(() => expect(textarea().value).toBe("아직 보내지 않은 초안"));
+  });
+
+  it("carries text typed into an empty conversation into the new chat that replaces it", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true });
+    const textarea = () => container.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea()).not.toBeNull());
+    fireEvent.change(textarea(), { target: { value: "프로젝트 고르기 전에 쓴 질문" } });
+
+    // A new chat (the composer's project selector starts one) gets a new session id.
+    vi.mocked(api.chatGetHistory).mockResolvedValue({ sessionId: "sess-replacing-empty", messages: [] });
+    await act(async () => {
+      fireEvent.click(container.querySelector('[data-testid="sidebar-new-chat"]')!);
+    });
+    await waitFor(() => expect(api.chatNew).toHaveBeenCalled());
+    await waitFor(() => expect(api.chatGetHistory).toHaveBeenCalled());
+    await act(async () => {});
+    expect(textarea().value).toBe("프로젝트 고르기 전에 쓴 질문");
+  });
+
+  it("does not carry text into a later switch when the new chat never got its id", async () => {
+    const OTHER = "sess-after-failed-refresh";
+    const { container, api } = await renderApp({
+      hasApiKey: true,
+      sessions: [
+        { id: MOCK_DEFAULT_SESSION_ID, title: "빈 대화", modifiedAt: new Date(2, 0, 2).toISOString() },
+        { id: OTHER, title: "다른 대화", modifiedAt: new Date(2, 0, 1).toISOString() },
+      ],
+      historyBySession: { [OTHER]: { sessionId: OTHER, messages: [{ index: 0, role: "user", content: "다른 대화 내용" }] } },
+    });
+    const textarea = () => container.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea()).not.toBeNull());
+    fireEvent.change(textarea(), { target: { value: "빈 대화용 초안" } });
+
+    vi.mocked(api.chatGetHistory).mockRejectedValueOnce(new Error("history unavailable"));
+    await act(async () => {
+      fireEvent.click(container.querySelector('[data-testid="sidebar-new-chat"]')!);
+    });
+    await waitFor(() => expect(api.chatNew).toHaveBeenCalled());
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(container.querySelector(`[data-testid="sidebar-session-${OTHER}"]`)!);
+    });
+    await waitFor(() => expect(container.textContent).toContain("다른 대화 내용"));
+    expect(textarea().value).toBe("");
+  });
+
+  it("parks text typed into a conversation with entries when a new chat starts", async () => {
+    const { container, api } = await renderApp({
+      hasApiKey: true,
+      history: { sessionId: MOCK_DEFAULT_SESSION_ID, messages: [{ index: 0, role: "user", content: "이전 대화" }] },
+    });
+    await waitFor(() => expect(container.textContent).toContain("이전 대화"));
+    const textarea = () => container.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement;
+    fireEvent.change(textarea(), { target: { value: "이전 대화용 초안" } });
+
+    vi.mocked(api.chatGetHistory).mockResolvedValue({ sessionId: "sess-after-nonempty", messages: [] });
+    await act(async () => {
+      fireEvent.click(container.querySelector('[data-testid="sidebar-new-chat"]')!);
+    });
+    await waitFor(() => expect(api.chatNew).toHaveBeenCalled());
+    await waitFor(() => expect(textarea().value).toBe(""));
   });
 
   it("does not reconstruct sub-agent rows from loaded parent history", async () => {

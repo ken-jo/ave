@@ -23,7 +23,7 @@ import {
   DialogTitle,
 } from "../../../components/ui/dialog.js";
 import type { AveApi, PluginCardSummary } from "../types.js";
-import type { AddRoutineInput, RoutineRecord, RoutineExecution, RepeatKind, RoutineSchedule } from "../../../shared/routines-types.js";
+import type { AddRoutineInput, InvalidRoutine, RoutineRecord, RoutineExecution, RepeatKind, RoutineSchedule } from "../../../shared/routines-types.js";
 import { MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES } from "../../../shared/routines-types.js";
 import { isValidCronExpression } from "../../../routines/cron-evaluator.js";
 import { formatMediumDateTime, formatRelativeSessionTime } from "../../../shared/format-time.js";
@@ -96,6 +96,30 @@ function describeSchedule(routine: Pick<RoutineRecord, "schedule" | "trigger">):
       : t("routinePanel.scheduleInterval", { mins: String(mins) });
   }
   return atStr || t("routinePanel.scheduleOnce");
+}
+
+/** A stored routine the host holds back: shown as an error with its reason and a remove action. */
+function InvalidRoutineRow({ routine, onRemove }: { routine: InvalidRoutine; onRemove: (id: string) => void }) {
+  return (
+    <div className="rounded-lg border border-destructive/(--opacity-strong) bg-destructive/(--opacity-subtle) p-3" data-testid="invalid-routine-row" role="alert">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <span className="text-sm font-semibold leading-snug text-foreground">{routine.id.slice(0, 8)}</span>
+          <p className="mt-1 break-words text-xs text-destructive">
+            {t("routinePanel.invalidPluginId", { value: routine.value, field: routine.field })}
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 shrink-0 px-2 text-[11px] text-destructive"
+          onClick={() => onRemove(routine.id)}
+        >
+          {t("routinePanel.deleteButton")}
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function RoutineRow({ routine, installedTemplateSources, onDismiss, onRemove, onTriggerNow, recentlyFired }: RoutineRowProps) {
@@ -680,6 +704,7 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
   const templates = useInstalledContent().routineTemplates;
   const installedTemplateSources = useMemo(() => new Set(templates.map(packageRoutineSource)), [templates]);
   const [routines, setRoutines] = useState<RoutineRecord[]>([]);
+  const [invalidRoutines, setInvalidRoutines] = useState<InvalidRoutine[]>([]);
   const [routineSessions, setRoutineSessions] = useState<RoutineRunListRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [recentlyFired, setRecentlyFired] = useState<string[]>([]);
@@ -692,7 +717,7 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
     if (typeof api.listRoutines !== "function") return;
     setLoading(true);
     try {
-      const list = await api.listRoutines();
+      const { routines: list, invalid } = await api.listRoutines();
       const sessions = (
         await Promise.all(
           list
@@ -713,6 +738,7 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
         .slice(0, 30);
       if (!mountedRef.current) return;
       setRoutines(list);
+      setInvalidRoutines(invalid);
       setRoutineSessions(sessions);
     } finally {
       if (mountedRef.current) setLoading(false);
@@ -832,12 +858,15 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
               <ScrollArea className="min-h-[220px] flex-1 px-2 pb-2">
                 {loading ? (
                   <div className="py-8 text-center text-sm text-muted-foreground">{t("routinePanel.loadingLabel")}</div>
-                ) : routines.length === 0 ? (
+                ) : routines.length === 0 && invalidRoutines.length === 0 ? (
                   <div className="py-8 text-center text-sm text-muted-foreground">
                     {t("routinePanel.noRoutinesEmpty")}
                   </div>
                 ) : (
                   <div className="space-y-2">
+                    {invalidRoutines.map((r) => (
+                      <InvalidRoutineRow key={r.id} routine={r} onRemove={(id) => void handleRemove(id)} />
+                    ))}
                     {routines.map((r) => (
                       <RoutineRow
                         key={r.id}

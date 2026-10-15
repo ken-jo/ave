@@ -95,7 +95,8 @@ export function trimOversizedToolResult(content: string): TrimmedToolResult {
   };
 }
 
-function countLines(s: string): number {
+/** Number of lines in `s`: newline count plus one, and zero for the empty string. */
+export function countLines(s: string): number {
   if (s.length === 0) return 0;
   let count = 1;
   for (let i = 0; i < s.length; i++) {

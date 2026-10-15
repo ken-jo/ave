@@ -29,6 +29,7 @@ import { t } from "../../i18n/index.js";
 import type { CommittedPluginGeneration, PluginRuntimeGenerationLifecycle, PluginRuntimeGenerationProjection, PluginRuntimeGenerationAccess, PluginRuntimeRetirementPhase, PluginRuntimeRetirementStep, PreparedPluginRuntimeGenerationPublication, PreparedPluginRuntimeRemovalPublication } from "../plugin-host-generation.js";
 import { resolveDependencies } from "../dependency-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { raceWithTimeout } from "../../shared/abortable-deadline.js";
 import type { ValidateFunction } from "ajv";
 import { readPluginRegistry, updatePluginRegistry } from "../registry.js";
 import { isTrustedRegistryManifestPath } from "../registry-manifest-trust.js";
@@ -1277,18 +1278,13 @@ export async function runPluginFactoryWithTimeout<T>(
   timeoutMs: number = TOOL_TIMEOUT_POLICY.pluginFactoryMs,
 ): Promise<T> {
   const operation = Promise.resolve().then(factory);
-  let timer: NodeJS.Timeout | undefined;
   let timedOut = false;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      reject(new PluginFactoryTimeoutError(timeoutMs));
-    }, timeoutMs);
-  });
   try {
-    return await Promise.race([operation, timeout]);
+    return await raceWithTimeout(operation, timeoutMs, () => {
+      timedOut = true;
+      return new PluginFactoryTimeoutError(timeoutMs);
+    });
   } finally {
-    if (timer) clearTimeout(timer);
     if (timedOut) {
       void operation.then(
         (value) => Promise.resolve(onLateResolution(value)).catch(() => undefined),
@@ -1313,17 +1309,11 @@ export async function runStartWithTimeout(
     declaredTimeoutMs ?? TOOL_TIMEOUT_POLICY.pluginStartupDefaultMs,
     TOOL_TIMEOUT_POLICY.pluginStartupMaxMs,
   );
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(new PluginStartupTimeoutError(hardTimeoutMs));
-    }, hardTimeoutMs);
-  });
-  try {
-    await Promise.race([Promise.resolve(start()), timeout]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+  await raceWithTimeout(
+    Promise.resolve(start()),
+    hardTimeoutMs,
+    () => new PluginStartupTimeoutError(hardTimeoutMs),
+  );
 }
 
 /**
@@ -2357,22 +2347,13 @@ abstract class PluginRuntimeState {
         deactivate,
         drainOperations: async () => {
           if (pendingOperations.size === 0) return;
-          let timer: NodeJS.Timeout | undefined;
-          try {
-            await Promise.race([
-              Promise.allSettled([...pendingOperations]),
-              new Promise<never>((_, reject) => {
-                timer = setTimeout(
-                  () => reject(new Error(
-                    `HostApi operation drain timeout (>${HOST_API_OPERATION_DRAIN_TIMEOUT_MS}ms)`,
-                  )),
-                  HOST_API_OPERATION_DRAIN_TIMEOUT_MS,
-                );
-              }),
-            ]);
-          } finally {
-            if (timer) clearTimeout(timer);
-          }
+          await raceWithTimeout(
+            Promise.allSettled([...pendingOperations]),
+            HOST_API_OPERATION_DRAIN_TIMEOUT_MS,
+            () => new Error(
+              `HostApi operation drain timeout (>${HOST_API_OPERATION_DRAIN_TIMEOUT_MS}ms)`,
+            ),
+          );
         },
         lifecycleHookScope,
         commit: () => {
@@ -2951,25 +2932,18 @@ abstract class PluginRuntimeState {
     lifecycleHookScope?: PluginLifecycleHookScope,
   ): Promise<boolean> {
     if (!instance.stop) return true;
-    let timer: NodeJS.Timeout | undefined;
     try {
-      await Promise.race([
+      await raceWithTimeout(
         this.runPluginLifecycleHook(lifecycleHookScope, () => instance.stop!()),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`stop timeout (>${START_FAILURE_STOP_TIMEOUT_MS}ms)`)),
-            START_FAILURE_STOP_TIMEOUT_MS,
-          );
-        }),
-      ]);
+        START_FAILURE_STOP_TIMEOUT_MS,
+        () => new Error(`stop timeout (>${START_FAILURE_STOP_TIMEOUT_MS}ms)`),
+      );
       logPluginLifecycle("debug", { pluginId, phase: PluginPhase.STOP_OK }, "plugin stopped");
       return true;
     } catch (err) {
       this.quarantinePluginLifecycle(pluginId, (err as Error).message);
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.STOP_FAIL, err }, "plugin stop failed");
       return false;
-    } finally {
-      if (timer) clearTimeout(timer);
     }
   }
 

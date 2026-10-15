@@ -41,6 +41,7 @@ import { parseStrictJson } from "../catalog/strict-json.js";
 import { MarketplaceError } from "../errors.js";
 import { candidateVersion, planPackage, readDescriptorAtVersion, repoPath, type PackagePlan, type RepositoryAccess } from "./descriptor.js";
 import { treeDigest } from "./plugin-ladder.js";
+import { isRecord } from "../../shared/is-record.js";
 
 export interface McpInstallPlan extends PackagePlan {
   kind: "mcp";
@@ -98,10 +99,6 @@ function refuse(message: string): MarketplaceError {
 export function planMcpInstall(row: CatalogRow): McpInstallPlan {
   if (row.kind !== "mcp") throw new Error(`${row.kind} ${row.name} is not an MCP server`);
   return { ...planPackage(row, candidateVersion(row)), kind: "mcp" };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function stringOrUndefined(value: unknown, what: string): string | undefined {

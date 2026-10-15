@@ -150,6 +150,7 @@ import { ko as ko_subAgentCard } from "../generated/subAgentCard.js";
 import { ko as ko_subAgentTranscript } from "../generated/subAgentTranscript.js";
 import { ko as ko_subscriptionProvidersSection } from "../generated/subscriptionProvidersSection.js";
 import { ko as ko_suggestedRepliesGhost } from "../generated/suggestedRepliesGhost.js";
+import { ko as ko_suggestedTasks } from "../generated/suggestedTasks.js";
 import { ko as ko_summaryToast } from "../generated/summaryToast.js";
 import { ko as ko_tailnetAccessTab } from "../generated/tailnetAccessTab.js";
 import { ko as ko_telegramConnection } from "../generated/telegramConnection.js";
@@ -329,6 +330,7 @@ export const koMessages: Record<string, string> = {
   ...ko_subAgentTranscript,
   ...ko_subscriptionProvidersSection,
   ...ko_suggestedRepliesGhost,
+  ...ko_suggestedTasks,
   ...ko_summaryToast,
   ...ko_tailnetAccessTab,
   ...ko_telegramConnection,

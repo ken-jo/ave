@@ -51,7 +51,6 @@ import {
 import { createLogger } from "../../lib/logger.js";
 import { readDiffSidecar, isSafeId } from "../../tools/write-diff-cache.js";
 import { isToolResultStubContent } from "../../shared/tool-result-stub.js";
-import type { LLMSettings, MarketplaceSettings } from "../../data/settings-store.js";
 import {
   getLlmVendorSettings,
   getLlmThinkingBudgetLimit,
@@ -490,27 +489,6 @@ function candidateMemoryActionFailure(error: unknown): { ok: false; error: "inva
   // caller cannot probe whether another project's candidate exists.
   if (message.includes("candidate not found")) return { ok: false, error: "not-found" };
   return { ok: false, error: "write-failed" };
-}
-
-/**
- * Stable signature of every endpoint the active LLM settings can reach, in a
- * fixed order. Reads the same shared helper settings.ts does, so the two
- * domains cannot disagree about which endpoints count — a local copy already
- * drifted once, missing the marketplace preset address that no vendor block
- * holds. Used to guard ASRT sandbox live-refresh calls so the refresh fires
- * only when an endpoint actually changed.
- */
-function vendorBaseUrlSignature(
-  llm: LLMSettings,
-  installedProviderPresets: MarketplaceSettings["installedProviderPresets"],
-): string {
-  return llmRouteBaseUrlSignature({
-    vendors: llm.vendors,
-    ...(llm.marketplaceProviderPresetId
-      ? { marketplaceProviderPresetId: llm.marketplaceProviderPresetId }
-      : {}),
-    installedProviderPresets,
-  });
 }
 
 export type { SerializedHistoryMessage } from "../../shared/chat-history.js";
@@ -1604,7 +1582,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const prevBlock = getLlmVendorSettings(prevLlm.vendors, provider);
       // Re-read at each call: the point is to compare the settings BEFORE and
       // AFTER the patch, and both halves have to be taken the same way.
-      const currentVendorBaseUrlSig = () => vendorBaseUrlSignature(
+      const currentVendorBaseUrlSig = () => llmRouteBaseUrlSignature(
         settingsService.get("llm"),
         settingsService.get("marketplace").installedProviderPresets,
       );

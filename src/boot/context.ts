@@ -1,4 +1,5 @@
 import type { BootHost } from "./host-runtime.js";
+import type { AppServices } from "./types.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 /**
  * BootContext — the accumulator threaded through the boot pipeline (C18).
@@ -200,18 +201,7 @@ export class BootContext {
   declare pluginBundleLifecycle: PluginBundleLifecycle | undefined;
   declare pluginOperationGrants: PluginOperationGrantCoordinator;
   declare pluginOperationIdentityProvider: PluginOperationIdentityProvider;
-  declare requestPluginOperationGrant: (request: {
-    pluginId: string;
-    toolName: string;
-    input: Record<string, unknown>;
-    appSessionId: string;
-    origin?: "ui" | "mcp-app";
-    expectedGenerationId?: string;
-  }) => Promise<{
-    operationGrantToken: string;
-    grantId: string;
-    expiresAt: number;
-  }>;
+  declare requestPluginOperationGrant: AppServices["requestPluginOperationGrant"];
   declare revokePluginOperationGeneration: (pluginId: string, generationId: string,
   ) => void;
   declare revokePluginOperationSession: (appSessionId: string) => void;

@@ -329,7 +329,10 @@ export function AttachmentOverlay({
                       : t("attachmentChip.pastedFromClipboard")}
               </div>
             </div>
-            {(att.kind === "image" || att.kind === "file") && onOpenExternal ? (
+            {/* A `@file` mention is a reference main never authorized for
+                open-in-OS (only picker / redeemed-drop paths are), so it has no
+                open button rather than one that would be refused. */}
+            {(att.kind === "image" || (att.kind === "file" && !att.reference)) && onOpenExternal ? (
               <button
                 type="button"
                 onClick={() => onOpenExternal(att.path)}

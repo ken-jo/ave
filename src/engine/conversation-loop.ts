@@ -855,7 +855,7 @@ export class ConversationLoop {
    */
   async fireLifecycleEvent(
     event: LifecycleHookEvent,
-    payload: import("../hooks/script-hook-manager.js").LifecycleEventPayload = {},
+    payload: import("../hooks/script-hook-types.js").LifecycleEventPayload = {},
     sessionIdOverride?: string,
   ): Promise<void> {
     return fireLifecycleEvent(this.deps, this.sessionId, event, payload, sessionIdOverride);
@@ -876,7 +876,7 @@ export class ConversationLoop {
    * DLP-redacted inside the manager before it reaches any hook.
    */
   async fireUserPromptSubmit(
-    payload: import("../hooks/script-hook-manager.js").UserPromptSubmitPayload,
+    payload: import("../hooks/script-hook-types.js").UserPromptSubmitPayload,
     sessionIdOverride?: string,
   ): Promise<{ decision: "allow" | "deny"; reason: string }> {
     return fireUserPromptSubmit(this.deps, this.sessionId, payload, sessionIdOverride);

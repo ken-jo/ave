@@ -19,7 +19,7 @@ import { maskSensitiveData } from "../../audit/dlp-filter.js";
 import { canonicalStringify } from "../../permissions/user-approval-store.js";
 import { normalizeRationaleApprovalDisplayText } from "../../shared/rationale-approval-display.js";
 import { assertValidToolUseId } from "../../shared/tool-use-id.js";
-import { isRecord } from "../../shared/is-record.js";
+import { hasExactKeys, isRecord } from "../../shared/is-record.js";
 import { UUID_PATTERN } from "../../shared/uuid.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 
@@ -786,10 +786,9 @@ const RATIONALE_TAINTS: readonly string[] = [
   "mcp-prompt-emitted", "plugin-prompt-emitted", "agent-message", "queue-auto", "surface-user", "tailnet-surface", "platform-bridge",
 ];
 
-function assertExactOwnKeys(value: object, expected: readonly string[], label: string): void {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
+/** Reject a contract record whose own keys are not exactly `expected`. */
+export function assertExactOwnKeys(value: object, expected: readonly string[], label: string): void {
+  if (!hasExactKeys(value, expected)) {
     throw new TypeError(label + " contains unexpected or missing fields");
   }
 }
@@ -803,6 +802,11 @@ export function cloneRationaleCanonicalJson<T>(
   label: string,
 ): DeepReadonly<T> {
   return cloneCanonicalJson(value, label);
+}
+
+/** {@link cloneRationaleCanonicalJson} typed back to the input shape for contract builders. */
+export function sealRationaleCanonicalJson<T>(value: T, label: string): T {
+  return cloneCanonicalJson(value, label) as T;
 }
 
 export function normalizeRationaleRiskVerdict(

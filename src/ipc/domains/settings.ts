@@ -9,7 +9,7 @@ import { SETTINGS } from "../../shared/ipc-channels.js";
 import { envForcedSettingsPaths } from "../../shared/env-backed-settings.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
-import { sendToWindow } from "../safe-send.js";
+import { broadcastToAppWindows } from "../window-fanout.js";
 import { normalizeLocale, setLocale, tryLoadLocaleMessages } from "../../i18n/index.js";
 import { reconcileGlobalShortcuts } from "../../main/global-shortcuts.js";
 import { telemetryAllowedHosts } from "../../main/telemetry.js";
@@ -264,31 +264,7 @@ export async function broadcastSettingsSnapshot(
     return;
   }
   if (localeLoaded) setLocale(nextLocale);
-  for (const win of deps.getAppWindows?.() ?? []) {
-    sendToWindow(win, SETTINGS.updated, rendererSettingsSnapshot(snapshot));
-  }
-}
-
-/**
- * Stable signature of every endpoint an LLM route could reach — each vendor
- * block's configured `baseUrl` PLUS the active marketplace provider preset's
- * address, which lives in the preset registry rather than in a vendor block.
- * The ASRT shared network union is built from exactly these, so ANY of them
- * changing — not just the active vendor's or Foundry's — must trigger a
- * sandbox network live-refresh. Used to detect that change across a settings
- * patch and call `refreshSandboxNetworkConfig`.
- */
-function vendorBaseUrlSignature(
-  llm: LLMSettings,
-  installedProviderPresets: MarketplaceSettings["installedProviderPresets"],
-): string {
-  return llmRouteBaseUrlSignature({
-    vendors: llm.vendors,
-    ...(llm.marketplaceProviderPresetId
-      ? { marketplaceProviderPresetId: llm.marketplaceProviderPresetId }
-      : {}),
-    installedProviderPresets,
-  });
+  broadcastToAppWindows(deps, SETTINGS.updated, rendererSettingsSnapshot(snapshot));
 }
 
 /**
@@ -413,8 +389,8 @@ async function finishProviderPresetMarketplaceMutation(
   refreshChatRuntimeProviders(deps);
   deps.refreshActiveLlmWildcard?.();
   if (
-    vendorBaseUrlSignature(prevLlm, prevInstalledProviderPresets)
-    !== vendorBaseUrlSignature(
+    llmRouteBaseUrlSignature(prevLlm, prevInstalledProviderPresets)
+    !== llmRouteBaseUrlSignature(
       newLlm,
       deps.settingsService.get("marketplace").installedProviderPresets,
     )
@@ -528,9 +504,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       provider,
       revision: ++subscriptionRuntimeStatusRevision,
     };
-    for (const win of deps.getAppWindows?.() ?? []) {
-      sendToWindow(win, CHANNELS.settings.subscriptionRuntimeStatusUpdated, event);
-    }
+    broadcastToAppWindows(deps, CHANNELS.settings.subscriptionRuntimeStatusUpdated, event);
   };
 
   const auditSubscriptionMutation = (
@@ -880,7 +854,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     // ASRT dynamic-endpoint union: capture EVERY vendor baseUrl so a change to
     // any user-configured endpoint (e.g. the indexer's Azure OpenAI resource)
     // triggers a sandbox network live-refresh, not just an active/Foundry change.
-    const prevVendorBaseUrlSig = vendorBaseUrlSignature(
+    const prevVendorBaseUrlSig = llmRouteBaseUrlSignature(
       prevLlm,
       settingsService.get("marketplace").installedProviderPresets,
     );
@@ -961,7 +935,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         refreshChatRuntimeProviders(deps);
         deps.refreshActiveLlmWildcard?.();
         if (
-          vendorBaseUrlSignature(
+          llmRouteBaseUrlSignature(
             settingsService.get("llm"),
             settingsService.get("marketplace").installedProviderPresets,
           ) !== prevVendorBaseUrlSig
@@ -991,7 +965,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     // endpoint host is enforced/allowed (and the old one dropped) without a
     // restart. No-op inside the closure when the sandbox gate is OFF.
     if (
-      vendorBaseUrlSignature(
+      llmRouteBaseUrlSignature(
         newLlm,
         settingsService.get("marketplace").installedProviderPresets,
       ) !== prevVendorBaseUrlSig

@@ -91,6 +91,27 @@ describe("allowDirectInstall: false (§12)", () => {
   });
 });
 
+describe("a direct agent plugin under the renamed extension key", () => {
+  it("is refused at the preview naming both keys, for the manifest key and for the package folder", async () => {
+    const top = { $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "legacy", version: "1.0.0", description: "A legacy bundle" };
+    const fs = new FakeVolume("linux")
+      .file("/opt/legacy/plugin.json", JSON.stringify({ ...top, extensions: { "ai.agent-connector.ave": { displayName: "Legacy" } } }))
+      .file("/opt/moved/plugin.json", JSON.stringify(top))
+      .file("/opt/moved/ai.agent-connector.ave/routines.json", JSON.stringify({ version: 1, templates: [] }));
+    const harness = await folderService({ root, folders: { fs, platform: "linux", limits: TEST_FOLDER_LIMITS } });
+    try {
+      const key = harness.service.previewSource({ input: "/opt/legacy", auth: "none" });
+      await expect(key).rejects.toMatchObject({ code: "SOURCE_INDEX_INVALID" });
+      await expect(key).rejects.toThrow("extensions.ai.agent-connector.ave was renamed to extensions.ai.agent-connector.ave; update the manifest");
+      const folder = harness.service.previewSource({ input: "/opt/moved", auth: "none" });
+      await expect(folder).rejects.toMatchObject({ code: "SOURCE_INDEX_INVALID" });
+      await expect(folder).rejects.toThrow("ai.agent-connector.ave/ was renamed to ai.agent-connector.ave/; move ai.agent-connector.ave/routines.json there");
+    } finally {
+      harness.service.close();
+    }
+  });
+});
+
 describe("a read failure inside a direct bundle keeps its own reason (§18.4.5, §18.8)", () => {
   const INNER = "---\nname: inner\ndescription: inner skill\n---\nBody\n";
   /** A direct agent-plugin bundle at C:\m whose skills link to `link`, with the classifier answering `Z:` as given. */

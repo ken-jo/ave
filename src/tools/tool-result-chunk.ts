@@ -11,7 +11,7 @@ import {
   TOOL_RESULT_READ_MIN_CHARS,
 } from "../shared/bounded-tool-output.js";
 import { estimateTokens } from "../shared/token-estimate.js";
-import { MAX_TOOL_RESULT_TOKENS } from "../shared/tool-result-trim.js";
+import { countLines, MAX_TOOL_RESULT_TOKENS } from "../shared/tool-result-trim.js";
 import { isValidToolUseId, MAX_TOOL_USE_ID_UTF8_BYTES } from "../shared/tool-use-id.js";
 import type { ToolOutputArtifactInfo } from "../shared/tool-output-artifact.js";
 
@@ -42,15 +42,6 @@ function parseBoundedInteger(
     throw new Error(`${label} must be an integer between ${min} and ${max}`);
   }
   return raw;
-}
-
-function countLines(text: string): number {
-  if (text.length === 0) return 0;
-  let count = 1;
-  for (let i = 0; i < text.length; i += 1) {
-    if (text.charCodeAt(i) === 10) count += 1;
-  }
-  return count;
 }
 
 function getReader(metadata: Record<string, unknown>): ToolResultChunkReader | null {
