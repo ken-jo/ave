@@ -127,22 +127,15 @@ export interface SystemPromptBuilderDeps {
    */
   getActivatablePluginIds?: () => ReadonlySet<string>;
   /**
-   * Lightweight skill catalog provider. Only name/description are surfaced
-   * here; full bodies stay behind `skill_load`.
+   * Lightweight skill index provider. Only name/description/triggers are
+   * surfaced here; a skill's body enters the context only as the result of an
+   * explicit `skill_load` call, never through the system prompt.
    */
   getAvailableSkills?: () => SkillCatalogEntry[];
   /**
-   * C2(c): current-turn SkillOverlay reader — returns the rendered
-   * <ave-active-skills>…</ave-active-skills> section for the current
-   * user turn, or "" when no skills have been loaded. Decoupled via this
-   * callback so SystemPromptBuilder doesn't import the SkillOverlay module
-   * (keeps the builder slim and testable).
-   */
-  getActiveSkillsSection?: (sessionId: string) => string;
-  /**
    * MCP-app model context (`ui/update-model-context`) — returns the rendered
    * `<mcp-app-context>` section for the ACTIVE session's cards, or "" when no card has
-   * pushed any. Decoupled through this callback exactly like `getActiveSkillsSection`:
+   * pushed any. Decoupled through this callback exactly like `getAvailableSkills`:
    * the builder stays a pure assembler and never imports the store.
    *
    * This callback IS the "deferred to the next turn" semantic of the spec. The app writes
@@ -186,11 +179,11 @@ export class SystemPromptBuilder {
    */
   private originSource: string | null = null;
   /**
-   * C2(c): session id used to scope the active-skills overlay reader.
-   * Set per-turn by ConversationLoop before `build()` so the overlay can
-   * scope to the right session without leaking skills across sessions.
+   * Session id used to scope per-session sections (MCP App Context).
+   * Set per-turn by ConversationLoop before `build()` so those sections
+   * scope to the right session without leaking across sessions.
    */
-  private overlaySessionId: string | null = null;
+  private appContextSessionId: string | null = null;
   private activeRolePrompt: ActiveRolePrompt | null = null;
   /**
    * Current session title injected as inert continuity context.
@@ -389,12 +382,11 @@ export class SystemPromptBuilder {
   }
 
   /**
-   * C2(c): per-round session id, used to scope the
-   * <ave-active-skills> overlay section to the correct ChatSession.
-   * Pass `null` to clear (no overlay rendering).
+   * Per-round session id, used to scope per-session sections (MCP App
+   * Context) to the correct ChatSession. Pass `null` to clear.
    */
   setActiveSessionId(sessionId: string | null): void {
-    this.overlaySessionId = sessionId && sessionId.length > 0 ? sessionId : null;
+    this.appContextSessionId = sessionId && sessionId.length > 0 ? sessionId : null;
   }
 
   /**
@@ -640,8 +632,10 @@ export class SystemPromptBuilder {
     // ④-c Available Skills Catalog (per-turn, lightweight)
     //
     // Progressive disclosure: expose only dispatch metadata so the model can
-    // decide whether a skill is relevant. Full bodies stay behind `skill_load`
-    // and the body-hash approval gate.
+    // decide whether a skill is relevant. A body reaches the model only as the
+    // `skill_load` tool_result (behind the body-hash approval gate), so this
+    // section — and the cached prompt prefix — never changes because a skill
+    // was read.
     const { getAvailableSkills } = deps;
     if (getAvailableSkills) {
       this.sources.push({
@@ -714,26 +708,6 @@ export class SystemPromptBuilder {
       });
     }
 
-    // ④-d Active Skills Overlay (per-turn while current user turn is active)
-    //
-    // C2(c): rendered ONLY when at least one skill has been loaded for the
-    // current user turn. Bodies live inside <ave-skill> fences so the LLM
-    // can attribute the guidance and an attacker-supplied body cannot
-    // masquerade as user input. See main/skill-overlay.ts for the registry.
-    const { getActiveSkillsSection } = deps;
-    if (getActiveSkillsSection) {
-      this.sources.push({
-        id: 4.7,
-        name: "Active Skills Overlay",
-        refresh: "per-turn",
-        build: () => {
-          const sid = this.overlaySessionId;
-          if (!sid) return "";
-          return getActiveSkillsSection(sid);
-        },
-      });
-    }
-
     // ④-e MCP App Context (per-turn, only while a card in THIS session has pushed one)
     //
     // The `ui/update-model-context` slots of the active session's MCP-app cards. Read
@@ -752,7 +726,7 @@ export class SystemPromptBuilder {
         name: "MCP App Context",
         refresh: "per-turn",
         build: () => {
-          const sid = this.overlaySessionId;
+          const sid = this.appContextSessionId;
           if (!sid) return "";
           return getAppModelContext(sid);
         },

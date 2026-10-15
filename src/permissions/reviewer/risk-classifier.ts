@@ -1983,22 +1983,6 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
     if (!allInside) return null;
     return { level: "low", reason: "write inside owner plugin sandbox" };
   },
-  // `skill_load` declares `write` because a skill body mutates the assistant's
-  // future behavior, not the filesystem. It therefore has NO path field by
-  // construction and would permanently trip the "write path not declared" HIGH
-  // rule below — and HIGH is un-persistable, so the user is re-asked on every
-  // single load. That duplicate gate is also redundant: skill_load carries its
-  // own durable control in `tools/skill-load.ts`, an approval record hash-bound
-  // to the exact body + bundle, which prompts once per distinct body and
-  // re-prompts the moment the body changes. That gate is strictly STRONGER than
-  // a level here (content-bound, not tool-bound), so the reviewer defers to it
-  // rather than stacking a second, weaker prompt in front of it. Scoped to the
-  // builtin tool by name: a plugin/MCP tool cannot reach this rule.
-  (ctx) => {
-    if (ctx.category !== "write") return null;
-    if (ctx.source !== "builtin" || ctx.toolName !== "skill_load") return null;
-    return { level: "low", reason: "skill load governed by body-hash approval" };
-  },
   // A plugin-owned write-category tool with NO resolvable target path would
   // fall to the "write path not declared" HIGH below. But when this CALL's
   // execution substrate is genuinely OS-confined — the owner plugin's ASRT
@@ -2032,9 +2016,8 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   //
   // What makes that concretely harmful is that HIGH is un-persistable, so the
   // user is re-asked on every single invocation of a tool that may well be a
-  // pure query. `skill_load` above carries the identical argument in its own
-  // comment; the difference is that skill_load could name a stronger control to
-  // defer to, and here there is none — so this lands on MEDIUM rather than LOW.
+  // pure query. There is no stronger, content-bound control here to defer to,
+  // so this lands on MEDIUM rather than LOW.
   // MEDIUM is the honest encoding of "unknown": still deny-by-default, still
   // prompts, but the user's decision can be durable instead of being asked for
   // forever until they stop reading it.

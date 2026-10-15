@@ -3,6 +3,7 @@ import { renderHook, act } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useRoutineOverlay } from "../use-routine-overlay.js";
 import type { OverlayItem } from "../../context/OverlayContext.js";
+import { SUGGESTIONS_SESSION_ID } from "../../../../shared/suggestions-session.js";
 
 /**
  * Confirming an alert card from the renderer.
@@ -27,13 +28,24 @@ const ALERT: OverlayItem = {
   createdAt: "2026-09-26T00:00:00.000Z",
 };
 
+/** The card as queued: addressed to the dedicated Suggestions conversation. */
+function routed(item: OverlayItem): OverlayItem {
+  return { ...item, originSessionId: SUGGESTIONS_SESSION_ID };
+}
+
 function pendingSnapshot() {
   let resolve!: (cards: OverlayItem[]) => void;
   const promise = new Promise<OverlayItem[]>((done) => { resolve = done; });
   return { promise, resolve };
 }
 
-function setup(staged: OverlayItem[] | Promise<OverlayItem[]> = []) {
+/** The window's tiles: by default TILE holds the Suggestions conversation. */
+const SUGGESTIONS_OPEN = [{ chatGroupId: TILE, sessionId: SUGGESTIONS_SESSION_ID }];
+
+function setup(
+  staged: OverlayItem[] | Promise<OverlayItem[]> = [],
+  tiles: readonly { chatGroupId: string; sessionId: string }[] = SUGGESTIONS_OPEN,
+) {
   let showOverlay: ((item: OverlayItem) => void) | undefined;
   let dismissOverlay: ((id: string) => void) | undefined;
   const api = {
@@ -58,10 +70,12 @@ function setup(staged: OverlayItem[] | Promise<OverlayItem[]> = []) {
   };
   const ask = vi.fn();
   const insertImportedTriggerEntry = vi.fn();
+  const startNewChat = vi.fn(async () => true);
   const registry = {
-    read: vi.fn((id: string) => (id === TILE ? { ask, insertImportedTriggerEntry } : undefined)),
-    readTiles: vi.fn(() => []),
+    read: vi.fn((id: string) => (id === TILE ? { ask, insertImportedTriggerEntry, startNewChat } : undefined)),
+    readTiles: vi.fn(() => tiles),
   };
+  const onSuggestionStaged = vi.fn();
   const hook = renderHook(({ activeApi }) =>
     useRoutineOverlay({
       api: activeApi as never,
@@ -69,6 +83,7 @@ function setup(staged: OverlayItem[] | Promise<OverlayItem[]> = []) {
       locale: "en",
       registry: registry as never,
       onNavigateToSettings: vi.fn(),
+      onSuggestionStaged,
     }), { initialProps: { activeApi: api } });
   const queueDismiss = vi.fn();
   hook.result.current.dismissRef.current = queueDismiss;
@@ -81,6 +96,8 @@ function setup(staged: OverlayItem[] | Promise<OverlayItem[]> = []) {
     ask,
     insertImportedTriggerEntry,
     queueDismiss,
+    onSuggestionStaged,
+    startNewChat,
     reconnect: (snapshot: Promise<OverlayItem[]>) => hook.rerender({ activeApi: {
       ...api, alerts: { ...api.alerts, listOpen: vi.fn(async () => snapshot) },
     } }),
@@ -96,7 +113,7 @@ describe("useRoutineOverlay — alert cards", () => {
     s.mainDismiss(ALERT.id);
     const untouched = { ...ALERT, id: "alert:other", source: { ...ALERT.source, alertId: "other" } } as OverlayItem;
     await act(async () => { snapshot.resolve([ALERT, untouched]); await snapshot.promise; });
-    expect(s.queueAdd.mock.calls).toEqual([[untouched]]);
+    expect(s.queueAdd.mock.calls).toEqual([[routed(untouched)]]);
     expect(s.queueDismiss).toHaveBeenCalledWith(ALERT.id);
     await act(async () => { await s.hook.result.current.handlePluginPrimaryAction(ALERT.id, TILE); });
     expect(s.ask).not.toHaveBeenCalled();
@@ -109,7 +126,7 @@ describe("useRoutineOverlay — alert cards", () => {
     const refreshed = { ...ALERT, summary: "Updated summary", pendingPrompt: "Updated prompt" };
     s.show(refreshed);
     await act(async () => { snapshot.resolve([ALERT]); await snapshot.promise; });
-    expect(s.queueAdd.mock.calls).toEqual([[refreshed]]);
+    expect(s.queueAdd.mock.calls).toEqual([[routed(refreshed)]]);
     await act(async () => { await s.hook.result.current.handlePluginPrimaryAction(ALERT.id, TILE); });
     expect(s.ask).toHaveBeenCalledWith(refreshed.pendingPrompt, "trigger-import");
   });
@@ -141,7 +158,7 @@ describe("useRoutineOverlay — alert cards", () => {
     const reopened = { ...ALERT, pendingPrompt: "Reopened prompt" };
     s.show(reopened);
     await act(async () => { snapshot.resolve([ALERT]); await snapshot.promise; });
-    expect(s.queueAdd.mock.calls).toEqual([[reopened]]);
+    expect(s.queueAdd.mock.calls).toEqual([[routed(reopened)]]);
     await act(async () => { await s.hook.result.current.handlePluginPrimaryAction(ALERT.id, TILE); });
     expect(s.ask).toHaveBeenCalledWith(reopened.pendingPrompt, "trigger-import");
   });
@@ -216,7 +233,81 @@ describe("useRoutineOverlay — alert cards", () => {
       await Promise.resolve();
     });
     expect(s.api.alerts.listOpen).toHaveBeenCalledTimes(1);
-    expect(s.queueAdd).toHaveBeenCalledWith(ALERT);
+    expect(s.queueAdd).toHaveBeenCalledWith(routed(ALERT));
+    await act(async () => {
+      await s.hook.result.current.handlePluginPrimaryAction("alert:abc", TILE);
+    });
+    expect(s.ask).toHaveBeenCalledWith(ALERT.pendingPrompt, "trigger-import");
+  });
+});
+
+describe("useRoutineOverlay — the dedicated Suggestions conversation", () => {
+  it("addresses every unrequested card to it and asks the window to re-read its list", () => {
+    const s = setup();
+    s.show(ALERT);
+    s.show({ ...ALERT, id: "plugin:x", source: { kind: "plugin", pluginId: "fixturemail", eventId: "x" } });
+    expect(s.queueAdd.mock.calls.map(([item]) => (item as OverlayItem).originSessionId))
+      .toEqual([SUGGESTIONS_SESSION_ID, SUGGESTIONS_SESSION_ID]);
+    expect(s.onSuggestionStaged).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves an app card with the conversation it was raised in", () => {
+    const s = setup();
+    const app: OverlayItem = {
+      ...ALERT,
+      id: "app:srv:e1",
+      source: { kind: "app", serverId: "srv", eventId: "e1" },
+      originSessionId: "11111111-1111-4111-8111-111111111111",
+    };
+    s.show(app);
+    expect(s.queueAdd).toHaveBeenCalledWith(app);
+    expect(s.onSuggestionStaged).not.toHaveBeenCalled();
+  });
+
+  it("never starts a turn in the focused conversation when the Suggestions conversation is not open", async () => {
+    const s = setup([], [{ chatGroupId: TILE, sessionId: "22222222-2222-4222-8222-222222222222" }]);
+    s.show(ALERT);
+    await act(async () => {
+      await s.hook.result.current.handlePluginPrimaryAction("alert:abc", TILE);
+    });
+    expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
+    expect(s.ask).not.toHaveBeenCalled();
+    expect(s.api.alerts.cardClosed).not.toHaveBeenCalled();
+  });
+});
+
+describe("useRoutineOverlay — continue a suggestion in a new conversation", () => {
+  it("starts a new conversation in the tile that showed the card, then runs the staged prompt there", async () => {
+    const s = setup();
+    s.show(ALERT);
+    await act(async () => {
+      await s.hook.result.current.handleContinueInNewConversation("alert:abc", TILE);
+    });
+    expect(s.startNewChat).toHaveBeenCalledTimes(1);
+    expect(s.startNewChat.mock.invocationCallOrder[0]!)
+      .toBeLessThan(s.insertImportedTriggerEntry.mock.invocationCallOrder[0]!);
+    expect(s.insertImportedTriggerEntry).toHaveBeenCalledWith(expect.objectContaining({
+      source: "plugin:fixturemail",
+      prompt: ALERT.pendingPrompt,
+    }));
+    expect(s.ask).toHaveBeenCalledWith(ALERT.pendingPrompt, "trigger-import");
+    expect(s.api.alerts.cardClosed).toHaveBeenCalledWith("abc", "accepted");
+  });
+
+  it("puts the card back when no new conversation started, and runs nothing", async () => {
+    const s = setup();
+    s.show(ALERT);
+    s.queueAdd.mockClear();
+    s.startNewChat.mockResolvedValueOnce(false);
+    await act(async () => {
+      await s.hook.result.current.handleContinueInNewConversation("alert:abc", TILE);
+    });
+    expect(s.queueAdd).toHaveBeenCalledWith(routed(ALERT));
+    expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
+    expect(s.ask).not.toHaveBeenCalled();
+    expect(s.api.alerts.cardClosed).not.toHaveBeenCalled();
+
+    // The card is still actionable afterwards.
     await act(async () => {
       await s.hook.result.current.handlePluginPrimaryAction("alert:abc", TILE);
     });

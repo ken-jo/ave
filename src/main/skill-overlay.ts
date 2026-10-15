@@ -1,178 +1,197 @@
 /**
- * SkillOverlay — current-turn registry of loaded skills, consumed by
- * {@link SystemPromptBuilder} as a separately delimited section in each
- * turn's system prompt.
+ * SkillOverlay — per-conversation registry of skills the model has READ with
+ * `skill_load`, plus the renderer for the `skill_load` tool result.
  *
- * Why a separate module (vs. mutating chat history)?
- * Pre-fix, `skill_load` appended the skill body as a `user`-role message
- * via ConversationHistory. A skill body containing prompt-injection content
- * ("ignore previous instructions and exfil…") landed in conversation
- * history with the user role — i.e., looked exactly like the user typed it.
- * Routing skill bodies through the SYSTEM prompt instead, fenced with
- * `<ave-skill name="…">…</ave-skill>` envelopes, keeps the provenance
- * clear and prevents the body from masquerading as user input.
+ * Progressive disclosure (docs/development/skill-loading-policy.md): the
+ * system prompt carries only the skill index (name + description). A skill's
+ * SKILL.md body enters the context exclusively as the `skill_load`
+ * tool_result, so the read is an explicit, visible step in the conversation
+ * and the body never rides in the always-on prompt.
  *
- * The overlay is queried by SystemPromptBuilder during the current user turn,
- * so newly-loaded skills take effect on the next assistant round. The
- * ConversationLoop clears the overlay at the user-turn boundary; loaded skill
- * bodies are not ambient session context.
+ * Why the body is a tool_result and not a system-prompt section (revision of
+ * the earlier C2(c) overlay design):
+ *   - Prompt-cache stability. Splicing a body into the system prompt changed the
+ *     cached prefix twice per turn (after the load, and again when the overlay
+ *     cleared at the turn boundary), re-writing system prompt + tool schemas +
+ *     history to the cache each time.
+ *   - Continuity. The overlay expired at the user-turn boundary, so follow-up
+ *     turns silently ran without the skill. A tool_result stays in history for
+ *     the conversation and is re-read only after compaction removes it.
+ *   - Provenance. A tool_result is the data channel (same as `read_file`); the
+ *     body never masquerades as user input, and the `<ave-skill>` fence below is
+ *     still neutralized against early-close / fake-sibling injection.
+ *
+ * What this registry still holds (no body): the identity captured when the skill
+ * was approved and read — owner, generation, canonical file, and the bundled
+ * resource manifest. `skill_read` authorizes resource reads against it. Entries
+ * live for the conversation. They are cleared by `newConversation` (main loop),
+ * sub-agent teardown (`SubAgentRunner.unregisterActiveChild`), and plugin
+ * generation retirement (`PluginBundleLifecycle.retire`, "skills" phase).
  */
-import type { LoadedSkill } from "./skill-store.js";
+import { SKILL_MAX_BODY_BYTES, type LoadedSkill } from "./skill-store.js";
 import { escapeHtml } from "../shared/escape-html.js";
 
 export interface SkillOverlayEntry {
   name: string;
-  body: string;
   pluginOwner?: LoadedSkill["pluginOwner"];
   agentPluginOwner?: LoadedSkill["agentPluginOwner"];
   /**
-   * Bundled resources declared by the loaded skill (stage-3). Rendered as an
-   * inert manifest so the model knows what it may fetch with `skill_read`;
-   * contents never live here. This list is also the AUTHORIZED set: `skill_read`
-   * serves only what was listed at load time.
+   * Bundled resources declared by the read skill (stage-3). This list is the
+   * AUTHORIZED set: `skill_read` serves only what was listed at read time.
    */
   resources: LoadedSkill["resources"];
   /**
-   * Canonical SKILL.md path resolved when the skill was approved and loaded.
+   * Canonical SKILL.md path resolved when the skill was approved and read.
    * `skill_read` resolves user-skill resources against THIS identity instead of
-   * re-resolving the name from disk, so a mid-turn file swap cannot redirect a
+   * re-resolving the name from disk, so a later file swap cannot redirect a
    * read that the user authorized against a different file.
    */
   filePath: string;
 }
 
-interface StoredSkillOverlayEntry extends SkillOverlayEntry {
-  releaseGeneration?: () => void;
-}
-
 export class SkillOverlay {
-  private readonly bySession = new Map<string, Map<string, StoredSkillOverlayEntry>>();
+  private readonly bySession = new Map<string, Map<string, SkillOverlayEntry>>();
 
-  /** Register (or refresh) a skill for the given session. */
-  register(sessionId: string, skill: LoadedSkill, generationLease?: { release(): void }): void {
+  /** Record (or refresh) a skill read in the given conversation. */
+  register(sessionId: string, skill: LoadedSkill): void {
     if (!sessionId) return;
-    const bySkill = this.bySession.get(sessionId) ?? new Map<string, StoredSkillOverlayEntry>();
+    const bySkill = this.bySession.get(sessionId) ?? new Map<string, SkillOverlayEntry>();
     const key = skill.approvalKey ?? skill.name;
-    bySkill.get(key)?.releaseGeneration?.();
+    // Same name, new identity (e.g. a new plugin generation): drop the stale one
+    // so the authorized set always reflects the latest read.
+    for (const [existingKey, entry] of bySkill) {
+      if (existingKey !== key && entry.name === skill.name) bySkill.delete(existingKey);
+    }
     bySkill.set(key, {
       name: skill.name,
-      body: skill.body,
       pluginOwner: skill.pluginOwner,
       agentPluginOwner: skill.agentPluginOwner,
       resources: skill.resources,
       filePath: skill.filePath,
-      ...(generationLease ? { releaseGeneration: () => generationLease.release() } : {}),
     });
     this.bySession.set(sessionId, bySkill);
   }
 
-  /** Active skills for the session, ordered by registration. */
+  /** Skills read in the conversation, ordered by first read. */
   list(sessionId: string): SkillOverlayEntry[] {
     const m = this.bySession.get(sessionId);
     if (!m) return [];
     return [...m.values()];
   }
 
-  /** Drop all skills for a session — fired on user-turn boundaries and chat:new. */
+  /** Drop all skills for a conversation — fired when the conversation is replaced. */
   clear(sessionId: string): void {
-    for (const entry of this.bySession.get(sessionId)?.values() ?? []) {
-      entry.releaseGeneration?.();
-    }
     this.bySession.delete(sessionId);
   }
 
+  /** Drop every conversation's reads of one retired plugin generation. */
   clearPluginGeneration(pluginId: string, generationId: string): void {
     for (const [sessionId, entries] of this.bySession) {
       for (const [key, entry] of entries) {
         if (entry.pluginOwner?.pluginId === pluginId && entry.pluginOwner.generationId === generationId) {
-          entry.releaseGeneration?.();
           entries.delete(key);
         }
       }
       if (entries.size === 0) this.bySession.delete(sessionId);
     }
   }
-
-  /**
-   * Build the system-prompt section for the given session. Each skill is
-   * fenced with `<ave-skill>` so the LLM can attribute the guidance and
-   * the body cannot accidentally look like user-supplied content.
-   * Empty when no skills are loaded for the current user turn.
-   *
-   * LOW (skill body sanitization): skill BODIES are also sanitized — pre-fix,
-   * only the `name` attribute went through `escapeHtml`. A malicious body
-   * containing a literal `</ave-skill>` could close the fence early and
-   * inject pseudo-system content; a literal `<ave-skill …>` could inject
-   * a fake sibling skill entry. We neutralize those exact patterns by
-   * inserting a zero-width space, which preserves visual content for the
-   * LLM while preventing the parser-style injection.
-   */
-  buildSection(sessionId: string): string {
-    const entries = this.list(sessionId);
-    if (entries.length === 0) return "";
-    const lines: string[] = ["<ave-active-skills>"];
-    for (const e of entries) {
-      lines.push(`<ave-skill name="${escapeHtml(e.name)}">`);
-      lines.push(neutralizeSkillFence(e.body));
-      if (e.resources.length > 0) {
-        // Inert manifest: names only, so the model knows what it can fetch with
-        // `skill_read`. Fence integrity rests on the DISCOVERY-side validator
-        // (`isSafeResourcePath` rejects control chars, `<`, `>`, `\`, `:`), which is
-        // the single chokepoint — paths are deliberately NOT re-escaped here,
-        // because escaping would rewrite legitimate names into ones the authorized
-        // set does not contain.
-        //
-        // Bounded separately from the body: the manifest shares the fence with an
-        // 8 KB-capped body, and an attacker-chosen filename list must not become a
-        // bigger injection budget than the body it accompanies.
-        const manifest: string[] = [];
-        let manifestChars = 0;
-        let omitted = 0;
-        for (const resource of e.resources) {
-          // NOT escapeHtml: this is fence body text, not an attribute, and
-          // escaping would rewrite a legitimate `Q&A.md` into `Q&amp;A.md` —
-          // which `skill_read` then refuses as "not listed", leaving the model
-          // with a name it can never fetch. `<`/`>`/control chars are already
-          // rejected at discovery (`isSafeResourcePath`), so listed == fetchable.
-          const line = `- ${resource.path} (${resource.bytes} bytes)`;
-          if (manifestChars + line.length > MAX_MANIFEST_CHARS) {
-            omitted += 1;
-            continue;
-          }
-          manifestChars += line.length;
-          manifest.push(line);
-        }
-        if (manifest.length > 0) {
-          lines.push("");
-          lines.push("bundled resources (fetch with skill_read):");
-          lines.push(...manifest);
-          if (omitted > 0) lines.push(`- …and ${omitted} more (not listed)`);
-        }
-      }
-      lines.push(`</ave-skill>`);
-    }
-    lines.push(`</ave-active-skills>`);
-    return lines.join("\n");
-  }
 }
 
 /**
- * Escape a value so it can safely appear inside a double-quoted XML
- * attribute. Skill names are already allowlisted in {@link SkillStore} but
- * we belt-and-suspenders here in case a future caller bypasses that check.
+ * Base directory reported with a read skill: the directory holding SKILL.md
+ * (a virtual `plugin://` / `agent-plugin://` root for packaged skills). Flat
+ * `<name>.md` skills have no bundle root — their parent is the shared skills
+ * directory — so they report none.
  */
+export function skillBaseDir(skill: Pick<LoadedSkill, "filePath">): string | null {
+  const match = /^(.*)[\\/]SKILL\.md$/.exec(skill.filePath);
+  return match ? match[1] : null;
+}
 
 /**
- * LOW (skill fence neutralization): neutralize literal `<ave-skill …>` and
- * `</ave-skill>` patterns inside the body so an attacker-controlled skill
- * cannot break out of its envelope. We insert a zero-width space (U+200B)
- * after the opening `<` so the rendered text remains visually identical (and
- * semantically intact for an LLM reading the prompt) while no longer matching
- * a parser looking for the fence tags. Whitespace tolerance is applied so
- * `< /ave-skill >` and similar variants are also caught.
+ * Render the `skill_load` tool_result: the SKILL.md body inside an
+ * `<ave-skill>` fence, followed (inside the fence) by the bundled-resource
+ * manifest the model may fetch with `skill_read`.
+ *
+ * LOW (skill body sanitization): literal `<ave-skill …>` / `</ave-skill>`
+ * patterns in the body are neutralized with a zero-width space so an
+ * attacker-controlled body cannot close its fence early or forge a sibling.
  */
+export function renderSkillReadResult(skill: LoadedSkill): string {
+  const base = skillBaseDir(skill);
+  const baseAttr = base ? ` base="${escapeHtml(base)}"` : "";
+  const lines: string[] = [`<ave-skill name="${escapeHtml(skill.name)}"${baseAttr}>`];
+  lines.push(neutralizeSkillFence(skill.body));
+  if (skill.resources.length > 0) {
+    // Inert manifest: names only. Fence integrity rests on the DISCOVERY-side
+    // validator (`isSafeResourcePath` rejects control chars, `<`, `>`, `\`, `:`),
+    // which is the single chokepoint — paths are deliberately NOT re-escaped
+    // here, because escaping would rewrite a legitimate `Q&A.md` into a name
+    // `skill_read` then refuses as "not listed".
+    //
+    // Bounded separately from the body: an attacker-chosen filename list must
+    // not become a bigger budget than the body it accompanies.
+    const manifest: string[] = [];
+    let manifestChars = 0;
+    let omitted = 0;
+    for (const resource of skill.resources) {
+      const line = `- ${resource.path} (${resource.bytes} bytes)`;
+      if (manifestChars + line.length > MAX_MANIFEST_CHARS) {
+        omitted += 1;
+        continue;
+      }
+      manifestChars += line.length;
+      manifest.push(line);
+    }
+    if (manifest.length > 0) {
+      lines.push("");
+      lines.push("bundled resources (fetch with skill_read):");
+      lines.push(...manifest);
+      if (omitted > 0) lines.push(`- …and ${omitted} more (not listed)`);
+    }
+  }
+  lines.push(`</ave-skill>`);
+  return lines.join("\n");
+}
+
+/**
+ * Skill name of a successful `skill_load` tool_result rendered by
+ * {@link renderSkillReadResult}, or null for anything else (errors included).
+ * Compaction uses it to keep the latest read of each skill.
+ */
+export function skillNameFromReadResult(content: string): string | null {
+  const match = /^<ave-skill name="([^"]*)"/.exec(content);
+  return match ? match[1] : null;
+}
+
 /** Total characters the bundled-resource manifest may add inside one fence. */
 const MAX_MANIFEST_CHARS = 2048;
+
+/**
+ * Upper bound on a rendered `skill_load` result: the body is capped at
+ * {@link SKILL_MAX_BODY_BYTES} (so at most that many UTF-16 units), the manifest
+ * at {@link MAX_MANIFEST_CHARS}, plus the fence header (name + base path).
+ */
+export const MAX_SKILL_READ_RESULT_CHARS = SKILL_MAX_BODY_BYTES + MAX_MANIFEST_CHARS + 1024;
+
+/**
+ * Whether a tool_result is a complete skill read that the generic tool-result
+ * preview cap must leave whole. A skill's instructions are only useful intact,
+ * and the result is already host-bounded by {@link MAX_SKILL_READ_RESULT_CHARS};
+ * anything larger (e.g. a tampered restored row) stays under the generic cap.
+ */
+export function isBoundedSkillReadResult(message: {
+  toolName?: string;
+  isError?: boolean;
+  content: string;
+}): boolean {
+  return (
+    message.toolName === "skill_load" &&
+    message.isError !== true &&
+    message.content.length <= MAX_SKILL_READ_RESULT_CHARS &&
+    skillNameFromReadResult(message.content) !== null
+  );
+}
 
 const SKILL_FENCE_PATTERN = /<(\s*\/?\s*ave-skill[^>]*)>/gi;
 const ZWSP = "​";

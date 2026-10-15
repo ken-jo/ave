@@ -6,7 +6,7 @@ import { isValidSessionId } from "../shared/session-id.js";
 export { isValidSessionId } from "../shared/session-id.js";
 
 
-import { closeSync, constants, existsSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync, unlinkSync, rmSync, renameSync, watch, type FSWatcher } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync, unlinkSync, rmSync, renameSync, watch, type FSWatcher } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, resolve, basename } from "node:path";
 import { withFileLock } from "../lib/with-file-lock.js";
@@ -2829,6 +2829,35 @@ export class MemoryManager implements PromptMemorySource {
   hasSessionTranscript(sessionId: unknown): boolean {
     if (!isValidSessionId(sessionId)) return false;
     return statPathIfPresent(join(this.sessionsDir, `${sessionId}.jsonl`)) !== null;
+  }
+
+  /**
+   * Make sure `sessionId` exists as a listed conversation, like `touch`.
+   *
+   * A missing transcript is created empty — exclusively, so a transcript
+   * written meanwhile is never replaced — and lists as an ordinary `main`
+   * conversation. With `bump`, an existing transcript's modification time moves
+   * to now, which is what orders the conversation list. Synchronous on purpose:
+   * a caller that stages something for this conversation does so in the same
+   * tick, and the row has to exist before the renderer re-reads the list.
+   * Returns whether the transcript was created by this call.
+   */
+  touchSessionTranscript(sessionId: string, options: { bump: boolean }): boolean {
+    if (!isValidSessionId(sessionId)) {
+      throw new Error(`touchSessionTranscript: invalid sessionId "${sessionId}"`);
+    }
+    const path = join(this.sessionsDir, `${sessionId}.jsonl`);
+    try {
+      writeFileSync(path, "", { encoding: "utf-8", flag: "wx" });
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+    if (options.bump) {
+      const now = new Date();
+      utimesSync(path, now, now);
+    }
+    return false;
   }
 
   hasSessionMetadataFile(sessionId: string): boolean {

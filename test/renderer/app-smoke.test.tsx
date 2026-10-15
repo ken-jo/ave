@@ -10,6 +10,7 @@ import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
 import { MOCK_DEFAULT_SESSION_ID } from "./mock-ave-api.js";
 import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
+import { SUGGESTIONS_SESSION_ID } from "../../src/shared/suggestions-session.js";
 
 describe("App smoke (Phase 1 infra)", () => {
   it("renders App without crash", async () => {
@@ -32,7 +33,8 @@ describe("App smoke (Phase 1 infra)", () => {
   });
 
   it("OverlayCard appears when onRoutineFired fires", async () => {
-    const { container, emitRoutineFired } = await renderApp();
+    // Routine cards are addressed to the Suggestions conversation; it is the one open here.
+    const { container, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });
     await act(async () => {
       emitRoutineFired({
         id: "schedule-daily",

@@ -25,6 +25,7 @@ import { hasExclusivePluginLifecycleMutation, hasPluginInstallInFlight, isPlugin
 import { readPluginRegistry } from "../../plugins/registry.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../plugins/config-restart-policy.js";
 import { emitPluginConfigChange } from "../../plugins/config-change-bus.js";
+import { stageInSuggestionsSession } from "../../main/suggestions-session.js";
 
 const log = createLogger("alerts");
 
@@ -114,7 +115,12 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
       });
     },
     overlay: {
-      show: (card) => liveWindow()?.webContents.send(OVERLAY_V1.show, card),
+      // An alert card is addressed to the dedicated Suggestions conversation
+      // (the renderer routes it there), so that conversation exists first.
+      show: (card) => {
+        stageInSuggestionsSession(ctx.memoryManager);
+        liveWindow()?.webContents.send(OVERLAY_V1.show, card);
+      },
       dismiss: (cardId) => liveWindow()?.webContents.send(OVERLAY_V1.dismiss, cardId),
     },
     notifications: notificationService,
