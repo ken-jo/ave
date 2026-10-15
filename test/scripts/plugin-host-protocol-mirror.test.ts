@@ -1,12 +1,16 @@
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  PUBLISHED_SCHEMAS,
   checkProtocolMirror,
+  checkPublishedSchemas,
+  hostProtocolSchemaId,
   publishProtocolMirror,
   syncProtocolMirror,
+  syncPublishedSchemas,
 } from "../../scripts/lib/plugin-host-protocol-mirror.mjs";
 
 const roots: string[] = [];
@@ -20,7 +24,7 @@ function put(root: string, relative: string, bytes: string): void {
 
 function schema(version: string, value: string): string {
   return `${JSON.stringify({
-    $id: `https://former-site.invalid/schemas/plugin-host-protocol/2/v${version}/protocol.schema.json`,
+    $id: hostProtocolSchemaId(`2/v${version}/protocol.schema.json`),
     value,
   })}\n`;
 }
@@ -128,7 +132,7 @@ describe("host protocol web mirror", () => {
   it("rejects a contribution added to a retired canonical protocol", () => {
     const { root, base } = fixture();
     const frozen = `${JSON.stringify({
-      $id: "https://former-site.invalid/schemas/plugin-host-protocol/1/v0.11.0/protocol.schema.json",
+      $id: hostProtocolSchemaId("1/v0.11.0/protocol.schema.json"),
     })}\n`;
     put(root, "schemas/plugin-host-protocol/1/protocol.schema.json", frozen);
     put(root, `${base}/1/v0.11.0/protocol.schema.json`, frozen);
@@ -142,7 +146,7 @@ describe("host protocol web mirror", () => {
     writeFileSync(manifestPath, JSON.stringify(manifest));
     expect(checkProtocolMirror(root)).toContain("4 copies, 2 aliases, 1 candidate");
     put(root, "schemas/plugin-host-protocol/1/protocol.schema.json", `${JSON.stringify({
-      $id: "https://former-site.invalid/schemas/plugin-host-protocol/1/v0.11.0/protocol.schema.json",
+      $id: hostProtocolSchemaId("1/v0.11.0/protocol.schema.json"),
       prompts: [],
     })}\n`);
     expect(() => checkProtocolMirror(root)).toThrow(
@@ -245,5 +249,45 @@ describe("host protocol mirror alias", () => {
     put(root, `${base}/2/v0.13.0/protocol.schema.json`, schema("0.13.0", "edited"));
     expect(() => publishProtocolMirror(root, "2/0.13.0")).toThrow("differs from recorded sha256");
     expect(readManifest(root).copies[1].publishedTag).toBeNull();
+  });
+});
+
+describe("published contract schemas", () => {
+  const repoRoot = resolve(import.meta.dirname, "../..");
+
+  function contractFixture() {
+    const root = mkdtempSync(join(tmpdir(), "contract-schemas-"));
+    roots.push(root);
+    for (const { source, id } of PUBLISHED_SCHEMAS) put(root, source, `${JSON.stringify({ $id: id })}\n`);
+    mkdirSync(join(root, "web/public/schemas"), { recursive: true });
+    syncPublishedSchemas(root);
+    return root;
+  }
+
+  it("serves every contract schema in this repository at its $id", () => {
+    expect(checkPublishedSchemas(repoRoot)).toBe(`${PUBLISHED_SCHEMAS.length} contract schemas`);
+    for (const { id } of PUBLISHED_SCHEMAS) {
+      expect(id).toMatch(/^https:\/\/ave\.agent-connector\.ai\/schemas\/[a-z-]+\/\d+\/[a-z-]+\.schema\.json$/u);
+    }
+  });
+
+  it("rejects a served copy that drifted from its canonical schema", () => {
+    const root = contractFixture();
+    const [{ path, id }] = PUBLISHED_SCHEMAS;
+    put(root, `web/public/schemas/${path}`, `${JSON.stringify({ $id: id, edited: true })}\n`);
+    expect(() => checkPublishedSchemas(root)).toThrow(`web/public/schemas/${path} differs`);
+  });
+
+  it("rejects a canonical schema whose $id is not its served URL", () => {
+    const root = contractFixture();
+    const [{ source }] = PUBLISHED_SCHEMAS;
+    put(root, source, `${JSON.stringify({ $id: "https://example.invalid/plugin.schema.json" })}\n`);
+    expect(() => checkPublishedSchemas(root)).toThrow(`${source} must have $id`);
+  });
+
+  it("rejects a public schema no contract schema publishes", () => {
+    const root = contractFixture();
+    put(root, "web/public/schemas/plugin.schema.json", "{}\n");
+    expect(() => checkPublishedSchemas(root)).toThrow("unrecorded published schema plugin.schema.json");
   });
 });

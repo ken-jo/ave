@@ -2,9 +2,9 @@
   "copies": [
     {
       "protocol": "3",
-      "appVersion": "0.13.0",
-      "sha256": "8e54512111bf6f03570438afb3337e4772b63149e9e4c60e0360115595e2aa7e",
-      "generatedFrom": "332696eef64c292ab80ea310611c73666948609a",
+      "appVersion": "0.14.0",
+      "sha256": "3e92239b7d7a6ac517040c3cfe6909b1c959edb176af4c3a34f5a2aabea18d7a",
+      "generatedFrom": "85157361e4646fd66651741df75d2d4249fafd13",
       "publishedTag": null
     }
   ],

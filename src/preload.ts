@@ -8,7 +8,7 @@ import { resolve as pathResolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildPublicSurface } from "./preload/public-surface.js";
 import type { AveApi } from "./ui/renderer/types.js";
-import { resolveDroppedPaths } from "./preload/webutils-bridge.js";
+import { prepareFileDrop, resolveDroppedPaths } from "./preload/webutils-bridge.js";
 import {
   applyInitialThemePrime,
   buildInternalApiSurface,
@@ -106,7 +106,9 @@ contextBridge.exposeInMainWorld("aveWindow", buildAveWindowWorld());
 // workspace.dropPrepare gate (Layer-0 deny + is-a-dir + main-owned ack token)
 // makes the actual read-scope decision, so this bridge grants no capability.
 // Exposed as its own minimal world (a single resolver), never raw webUtils.
-contextBridge.exposeInMainWorld("aveDrop", { resolveDroppedPaths });
+// prepareFileDrop resolves AND registers in one preload step (composer drop):
+// the main world hands over File objects, never a path string.
+contextBridge.exposeInMainWorld("aveDrop", { resolveDroppedPaths, prepareFileDrop });
 
 contextBridge.exposeInMainWorld("ave", {
   permission: api.permission,

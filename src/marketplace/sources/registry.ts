@@ -54,6 +54,7 @@ import {
 import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PolicySource } from "./policy.js";
 import { FOLDER_REVISION_RE, GIT_COMMIT_RE } from "./source-tree.js";
 import { isSourceWarning, type SourceWarning } from "./warnings.js";
+import { isRecord } from "../../shared/is-record.js";
 
 export type SourceOrigin = "official" | "managed" | "custom" | "direct";
 
@@ -198,10 +199,6 @@ const STATE_KEYS = new Set(["pinnedCommit", "enabled", "lastSync", "pendingRewri
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/u;
 
 class RegistryShapeError extends Error {}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function shape(condition: boolean, message: string): asserts condition {
   if (!condition) throw new RegistryShapeError(message);

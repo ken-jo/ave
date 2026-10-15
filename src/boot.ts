@@ -1,5 +1,5 @@
 import { readPluginRegistry } from "./plugins/registry.js";
-import { requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
+import { promptSurfaceResolver, requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
 import { configureHostResources } from "./main/host-resources.js";
 /**
  * Boot Sequence — §4.2 (thin orchestrator).
@@ -44,7 +44,7 @@ import type { BrowserWindow } from "electron";
 import { CHANNELS } from "./contract/app-contract.js";
 import { resolve } from "node:path";
 import { sweepOrphanUninstallDirs } from "./plugins/orphan-uninstall-sweeper.js";
-import { openFeatureNamespace } from "./main/storage/feature-namespace.js";
+import { agentPluginDataRoot } from "./marketplace/content/agent-plugin-data.js";
 import { migratePluginHostStorage, sweepPluginSocketDiscardDirs } from "./plugins/plugin-storage-layout.js";
 import { preparePluginRegistryForBoot } from "./plugins/plugin-boot-recovery.js";
 import { purgeStaleSessionDiffDirs, clearSessionDiffCache,
@@ -302,7 +302,10 @@ export async function bootstrap(
   // live gate — without this ordering, plugins receive a hostApi missing the
   // namespace and §8 main-process approval routing silently no-ops.
   const approvalGate = await createApprovalGate(
-    mainWindow,
+    // Headless runs have no desktop surface. Otherwise each approval card goes
+    // to the window resolved when it is raised — never a window bound at boot,
+    // which the user may close while another main window stays open.
+    mainWindow === null ? null : promptSurfaceResolver(host, getMainWindow),
     ctx.bootAuditLogger,
     ctx.notificationService,
     // Tier 2 of the sub-agent approval chain, supplied as accessors rather
@@ -357,9 +360,9 @@ export async function bootstrap(
       // The launch mode is the fact; the window is a proxy for it.
       isDeskAttended: () => {
         if (headless) return false;
-        const win = getMainWindow();
-        if (!win || win.isDestroyed()) return false;
-        return win.isVisible() && !win.isMinimized();
+        // Any open main window on screen counts: several may be open.
+        const windows = host.desktop?.getAppWindows() ?? [getMainWindow()];
+        return windows.some((win) => !!win && !win.isDestroyed() && win.isVisible() && !win.isMinimized());
       },
       // The queue a tier-3 escalation lands in when nobody is watching the
       // run. Reached through the permission manager rather than captured: the
@@ -487,7 +490,7 @@ export async function bootstrap(
       });
     });
   // Agent plugins' data directories are tombstoned the same way at runtime.
-  await sweepOrphanUninstallDirs(openFeatureNamespace("agent-plugin-data").dir)
+  await sweepOrphanUninstallDirs(agentPluginDataRoot())
     .catch((err) => log.warn("boot: agent-plugin data tombstone sweep failed (non-fatal): %s", (err as Error).message));
   // Awaited, not fired and forgotten: tombstones are deleted only before any
   // confined process can run, and plugin start (below) begins that phase
@@ -871,8 +874,9 @@ export async function bootstrap(
     skillOverlay: ctx.skillOverlay,
     personaPromptStore: ctx.personaPromptStore,
     onContributionsUpdated: () => {
-      const win = getMainWindow();
-      if (win && !win.isDestroyed()) win.webContents.send(CHANNELS.prompts.updated);
+      for (const win of host.desktop?.getAppWindows() ?? [getMainWindow()]) {
+        if (win && !win.isDestroyed()) win.webContents.send(CHANNELS.prompts.updated);
+      }
     },
     hookManager: ctx.scriptHookManager,
     mcpManager: ctx.mcpManager,

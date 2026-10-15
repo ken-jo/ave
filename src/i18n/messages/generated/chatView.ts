@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/ChatView.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/ChatView.tsx.
 export const en = {
   "chatView.askAnswerSkippedLabel": "↳ Question skipped",
   "chatView.askAnswerSkippedProceed": "Proceeding with defaults",
@@ -62,6 +62,8 @@ export const en = {
   "chatView.routineSessionLabel": "Routine session",
   "chatView.emptyState": "Ave agent is ready. Enter a question or use /command.",
   "chatView.jumpToBottom": "Jump to bottom",
+  "chatView.transcriptLabel": "Conversation",
+  "chatView.responseComplete": "Response complete",
   "chatView.contextUsagePercent": "Context {pct}% used",
   "chatView.contextOverflowWarning": "— Auto-compaction will run before the next send.",
   "chatView.contextNearingWarning": "— Auto-compaction coming soon.",
@@ -132,6 +134,8 @@ export const ko: Record<keyof typeof en, string> = {
   "chatView.routineSessionLabel": "루틴 세션",
   "chatView.emptyState": "Ave 에이전트가 준비되었습니다. 질문을 입력하거나 /command를 사용하세요.",
   "chatView.jumpToBottom": "맨밑으로",
+  "chatView.transcriptLabel": "대화",
+  "chatView.responseComplete": "응답 완료",
   "chatView.contextUsagePercent": "컨텍스트 {pct}% 사용",
   "chatView.contextOverflowWarning": "— 다음 전송에서 자동 압축을 먼저 실행합니다.",
   "chatView.contextNearingWarning": "— 곧 자동 압축됩니다.",

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/tools/skill-load.ts. Do not edit by hand.
+// i18n fragment. Source: src/tools/skill-load.ts.
 export const en = {
   "be_skillLoad.toolDescription":
     "Reads a skill's instructions (its SKILL.md body) by name. The system prompt lists only skill names and descriptions; " +

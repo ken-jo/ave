@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/tools/agent-spawn.ts. Do not edit by hand.
+// i18n fragment. Source: src/tools/agent-spawn.ts.
 export const en = {
   "be_agentSpawn.toolDescription":
     "Spawns a sub-agent to execute a small, isolated task. Fresh context separated from the parent conversation history; " +

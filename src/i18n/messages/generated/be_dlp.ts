@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/shared/dlp.ts. Do not edit by hand.
+// i18n fragment. Source: src/shared/dlp.ts.
 export const en = {
   "be_dlp.patternResidentId": "Resident Registration Number",
   "be_dlp.patternCreditCard": "Credit Card",

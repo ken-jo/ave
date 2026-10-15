@@ -2,7 +2,6 @@
  * Boot §4.2 Step 7 — ConversationLoop + dependencies (hooks, approval gate,
  * permission manager, PostTurnHookChain, callLlm sanitiser).
  */
-import type { BrowserWindow } from "electron";
 import type { SettingsService } from "../data/settings-store.js";
 import type { MemoryManager, PromptMemorySource } from "../memory/memory-manager.js";
 import type {
@@ -22,6 +21,7 @@ import { SystemPromptBuilder } from "../prompts/system-prompt-builder.js";
 import { PermissionManager } from "../permissions/permission-manager.js";
 import {
   ApprovalGate,
+  type ApprovalSurfaceResolver,
   type ParentAdjudicationGateDeps,
 } from "../permissions/approval-gate.js";
 import { loadPolicy } from "../permissions/policy-store.js";
@@ -142,7 +142,8 @@ export function createPostTurnHookChain(opts: {
 }
 
 export async function createApprovalGate(
-  mainWindow: BrowserWindow | null,
+  /** Where each card is drawn, resolved per request; null for a headless run. */
+  surface: ApprovalSurfaceResolver | null,
   auditLogger: AuditLogger,
   notificationService?: NotificationService,
   /**
@@ -156,13 +157,13 @@ export async function createApprovalGate(
 
   const bootPolicy = await loadPolicy();
   return new ApprovalGate(
-    mainWindow?.webContents ?? null,
+    surface,
     bootPolicy,
     5 * 60 * 1000,
     auditLogger,
     notificationService,
     parentAdjudication,
-    mainWindow === null ? {
+    surface === null ? {
       onDenied: (requestId, toolName) => {
         process.stderr.write(`exec: auto-denied approval ${requestId} tool=${toolName}\n`);
       },

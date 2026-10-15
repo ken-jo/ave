@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/plugins/runtime/index.ts. Do not edit by hand.
+// i18n fragment. Source: src/plugins/runtime/index.ts.
 export const en = {
   "be_runtimeIndex.preparingRuntimeMessage": "Starting extension runtime preparation.",
 } as const;

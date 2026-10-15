@@ -5,10 +5,7 @@
 > page, §13.1 and §16.4 say how. §18 records the design of the change that
 > followed 0.13.0 and ships in 0.14.0: plain http and local folder sources,
 > address warnings instead of refusals, and automatic updates.
-> Architecture: [../architecture/proposals/multi-source-git-marketplace.md](../architecture/proposals/multi-source-git-marketplace.md) ·
-> Blueprint: [../blueprints/multi-source-git-marketplace.md](../blueprints/multi-source-git-marketplace.md) ·
-> Mockup: [multi-source-git-marketplace.html](./multi-source-git-marketplace.html) ·
-> Korean mirror: [../ko/design/multi-source-git-marketplace.md](../ko/design/multi-source-git-marketplace.md)
+> Blueprint: [../blueprints/multi-source-git-marketplace.md](../blueprints/multi-source-git-marketplace.md)
 >
 > This page owns the contracts: file formats, algorithms, IPC, error codes and
 > UI states. When code lands, the code and its tests become authoritative and
@@ -101,18 +98,18 @@ type SourceWarning = "unencrypted" | "token-unencrypted" | "internal-network" | 
   (`id: "ave"`, primary URL, optional mirror URLs, `auth`). Managed sources
   come from the system policy file (§12). Neither is stored in `sources.json`;
   both keep their state in `state.json`.
-- While the design is built, the official repository is private
-  (`https://github.com/ken-jo/agent-marketplace`, decided 2026-09-23
-  because the `former_org` organization cannot host a new public repository
-  or run CI, and renamed from `ave-marketplace-index` on 2026-09-24 when it
-  became the monorepo that also holds the official plugins' source, §3.1).
-  The constant therefore carries
-  `auth: { kind: "token", host: "github.com" }` and the Sources view offers
-  Set token on the official row; an OS credential helper answers as well
-  (§9.3). Before the first public release built on this design, the
-  repository becomes publicly readable or moves, and that release's constant
-  carries the public URL with `auth: { kind: "none" }`. No released build
-  carries the private URL, so no `movedTo`-style migration is needed.
+- The official repository is `https://github.com/ken-jo/agent-marketplace`
+  (decided 2026-09-23, renamed from `ave-marketplace-index` on 2026-09-24
+  when it became the monorepo that also holds the official plugins' source,
+  §3.1). It must be publicly readable: the constant carries
+  `auth: { kind: "none" }`: a fresh profile with no stored token syncs the
+  official catalog anonymously, and the official row offers no Set token.
+  Sync offers a stored token only to a source whose own auth is `token`, so a
+  token stored for `github.com` by a private source the user added is never
+  sent to the official repository (§9.3). If the repository refuses an
+  anonymous read, the sync fails with `SOURCE_AUTH_REQUIRED`; nothing falls
+  back to a token. No released build carries a private URL, so no
+  `movedTo`-style migration is needed.
 - Tokens live in the existing encrypted secret store under
   `marketplace.gitToken.<normalized host>`; no file above holds a secret.
 - `snapshots/` keeps the current pin, the previous pin, and every commit that
@@ -2000,7 +1997,7 @@ files is a device-management action).
 
 - `serviceBase` resolution: managed policy `service.baseUrl` → the move
   recorded for the current build constant (below) → build constant
-  `AVE_SERVICE_BASE_URL` (default `https://former-site.invalid`). There is no user
+  `AVE_SERVICE_BASE_URL` (default `https://ave.agent-connector.ai`). There is no user
   setting. A base is an https origin. The policy section is read exactly
   (`{ "baseUrl": … }`); an invalid one makes the service unavailable — no
   announcements, no telemetry — rather than falling back to the public base.
@@ -3285,10 +3282,9 @@ Where the sections above and the shipped code differ, the code wins:
 >   the stated residuals, the delivery order and the revert-to-fail targets.
 >   Where it and an earlier section disagree, the earlier section describes
 >   the build.
-> - The user docs are the Marketplace pages of former-site.invalid
->   (`web/app/docs/marketplace/`), and the mockup
->   ([multi-source-git-marketplace.html](./multi-source-git-marketplace.html))
->   shows the states of §18.9. Code is cited at `e10c823e2`: the line
+> - The user docs are the website's Marketplace pages
+>   (`web/app/docs/marketplace/`). The mockup of the §18.9 states was removed
+>   once they shipped; git history keeps it. Code is cited at `e10c823e2`: the line
 >   citations in this section are a snapshot of that commit and may differ
 >   from the current code, while §7–§17, which own the behaviour, cite the
 >   current code.

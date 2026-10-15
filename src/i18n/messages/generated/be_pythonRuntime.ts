@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/main/python-runtime.ts. Do not edit by hand.
+// i18n fragment. Source: src/main/python-runtime.ts.
 export const en = {
   // setupIfStillNeeded: runtime ready from cache
   "be_pythonRuntime.statusReadyCached": "Python runtime ready (cached)",

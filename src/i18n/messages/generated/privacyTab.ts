@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/PrivacyTab.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/tabs/PrivacyTab.tsx.
 export const en = {
   "privacyTab.sparklineInsufficientData": "Insufficient data (at least 2 days required)",
   "privacyTab.statsLoadFailed": "Failed to load statistics",

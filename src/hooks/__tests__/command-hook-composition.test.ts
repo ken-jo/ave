@@ -10,7 +10,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";
-import { ScriptHookManager, type HookDispatchPayload } from "../script-hook-manager.js";
+import { ScriptHookManager } from "../script-hook-manager.js";
+import type { HookDispatchPayload } from "../script-hook-types.js";
 import type { HookConfigEntry } from "../hook-config.js";
 import {
   hasExecutable,

@@ -19,6 +19,13 @@ export const PASTE_TEXT_MIN_CHARS = 50;
 export const PASTE_TEXT_MIN_NEWLINES = 3;
 
 /**
+ * Largest text another surface may hand the composer as one pasted-text chip
+ * (`attachPastedText`, e.g. a terminal block). Longer text keeps its start and
+ * its end — where a command's error usually is — and the user is told.
+ */
+export const PASTE_TEXT_MAX_CHARS = 128 * 1024;
+
+/**
  * Path-collapse trigger threshold. The check applies to the *stem*: the
  * substring before the last `.` of the input path, including any parent
  * directory segments. See `collapsePath()` for why whole-path collapse
@@ -55,6 +62,12 @@ export interface FileAttachment {
   name: string;
   ext: string;
   bytes: number;
+  /**
+   * True for an `@file` mention: a path reference the model reads through
+   * read_file. Not in main's attach allowlist, so the chip offers no
+   * open-in-OS action for it.
+   */
+  reference?: true;
 }
 
 export interface PasteAttachment {

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/PermissionReviewStatusCard.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/PermissionReviewStatusCard.tsx.
 export const en = {
   "permissionReviewStatusCard.reviewing": "Reviewing permission...",
   "permissionReviewStatusCard.autoApproved": "Permission review complete · Low risk",

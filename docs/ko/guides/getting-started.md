@@ -1,17 +1,8 @@
 # 시작 가이드
 
-상태: 영문 기준 문서의 한국어 미러입니다. 원문은 [../../guides/getting-started.md](../../guides/getting-started.md)이며, 두 문서가 어긋날 때는 영문 원문과 소스 코드가 기준입니다.
-
-## 이 문서가 다루는 범위
-
-이 문서는 깨끗한 체크아웃에서 데스크톱 앱을 실행하고 검사하고 이해하기까지의 경로를 다룹니다. 이 영역을 변경할 때 가장 먼저 확인할 문서로 사용하세요.
-
-## 현재 운영 규약
-
-- 이 앱 표면의 기준 언어는 영어이고, 이 문서는 그 내용을 한국어로 옮긴 미러입니다.
-- 문서는 지금도 유효한 동작, 그 동작을 강제하는 코드나 테스트의 위치, 그리고 이 설명이 낡았다고 판단할 조건을 함께 밝혀야 합니다.
-- 이 문서의 서술과 구현이 다르면 소스 파일과 테스트가 기준입니다.
-- 영문 원문이 바뀌면 이 미러도 같은 커밋에서 함께 갱신합니다.
+상태: 영문 [Getting Started](../../guides/getting-started.md) 의 한국어 미러이며 같은
+커밋에서 함께 갱신합니다. 두 문서가 어긋나면 영문 원문과 소스 코드가 기준입니다.
+Ave 가 무엇을 위한 앱인지는 [비전](../vision/README.md)에 있습니다.
 
 ## 깨끗한 체크아웃에서 실행
 
@@ -39,22 +30,12 @@ bun run start
 
 ## 구현 위치
 
-- `package.json`
-- `src/plugins/`
-- `src/main/`
-- `src/ui/renderer/`
-- `src/ui/renderer/tabs/LlmTab.tsx`
-- `src/ui/renderer/tabs/SubscriptionProvidersSection.tsx`
-
-## 갱신 점검 목록
-
-- 내용을 덧붙이기 전에 이 문서가 활성인지, 구현됐는지, 대체됐는지, 역사 기록인지 먼저 밝힙니다.
-- 링크는 현재 파일 깊이를 기준으로 상대 경로를 씁니다. `docs/ko` 아래 미러 파일은 기본 문서와 경로가 다릅니다.
-- 문서로 설명한 동작을 코드가 강제한다면 테스트를 함께 추가하거나 갱신합니다.
-- 템플릿 문구와 낡은 계획 문구는 그대로 두지 말고 삭제합니다.
+- `package.json`: 빌드·실행·테스트 스크립트
+- `src/ui/renderer/tabs/LlmTab.tsx`: 설정 → 모델, 공급자 카드와 모델 선택기
+- `src/ui/renderer/tabs/SubscriptionProvidersSection.tsx`: 구독 로그인 행
 
 ## 관련 문서
 
-- [한국어 문서 홈](../README.md)
-- [영문 원문](../../guides/getting-started.md)
-- [Windows 개발 환경](./windows-setup.md)
+- [한국어 문서](../README.md)
+- [Windows 설치 & 실행](./windows-setup.md)
+- [Extension development guide](../../guides/plugin-development.md)
