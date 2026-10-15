@@ -2,7 +2,7 @@
 
 Status: Proposed
 
-- Issue: former_org/ave#1643 (acceptance item 1: "select a reviewed machine-lifecycle design")
+- Issue: #1643 in the previous issue tracker (acceptance item 1: "select a reviewed machine-lifecycle design")
 - Follows: #1628 (shipped exact invoking-user cleanup), #1627
 - Scope of this ADR: choose a reviewed design only. It does NOT change
   `build/installer.nsh`, the cleanup script, or any runtime code. Implementation

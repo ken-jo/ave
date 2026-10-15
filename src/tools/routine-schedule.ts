@@ -38,8 +38,8 @@ import {
   MAX_FUTURE_OFFSET_MS,
   MAX_ROUTINE_SOURCE_LENGTH,
   MIN_INTERVAL_MS,
-  ROUTINE_PLUGIN_ID_PATTERN,
 } from "../main/routines-store.js";
+import { isValidPluginId } from "../plugins/public-contract.js";
 import { isValidCronExpression } from "../routines/cron-evaluator.js";
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -132,7 +132,7 @@ function parseAllowedPlugins(raw: unknown): string[] | null {
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) return null;
   const ids = raw.map((v) => (typeof v === "string" ? v.trim() : ""));
-  if (ids.some((v) => !v || !ROUTINE_PLUGIN_ID_PATTERN.test(v))) return null;
+  if (ids.some((v) => !v || !isValidPluginId(v))) return null;
   return [...new Set(ids)];
 }
 

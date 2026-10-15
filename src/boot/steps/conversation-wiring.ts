@@ -282,16 +282,28 @@ export async function wireConversation(
     });
   }
 
-  // §4.2 Step 7: manifest-driven renderer event bridge.
-  ctx.disposePluginEventBridge = registerPluginEventBridge(pluginRuntime, mainWindow,
-  );
-  ctx.pluginEventBridgeWindow = mainWindow;
-  ctx.replacePluginEventBridge = (win: BrowserWindow | null) => {
-    ctx.pluginEventBridgeWindow = win;
-    ctx.disposePluginEventBridge();
-    ctx.disposePluginEventBridge = registerPluginEventBridge(pluginRuntime, win,
+  // §4.2 Step 7: manifest-driven renderer event bridge — one per main window.
+  // Several main windows may be open, so adding a window never disposes
+  // another window's bridge. Each bridge unsubscribes itself on `closed`
+  // (`registerPluginEventBridge`); a refresh forgets closed windows.
+  const pluginEventBridges = new Map<BrowserWindow, () => void>();
+  ctx.addPluginEventBridgeWindow = (win: BrowserWindow | null) => {
+    if (!win) return;
+    pluginEventBridges.get(win)?.();
+    pluginEventBridges.delete(win);
+    if (win.isDestroyed()) return;
+    const dispose = registerPluginEventBridge(pluginRuntime, win,
     );
+    pluginEventBridges.set(win, dispose);
   };
+  ctx.refreshPluginEventBridges = () => {
+    for (const win of [...pluginEventBridges.keys()]) ctx.addPluginEventBridgeWindow(win);
+  };
+  ctx.disposePluginEventBridge = () => {
+    for (const dispose of pluginEventBridges.values()) dispose();
+    pluginEventBridges.clear();
+  };
+  ctx.addPluginEventBridgeWindow(mainWindow);
 
   // §4.5 + Agent 6: PostTurnHookChain.
   const { postTurnHookChain } = createPostTurnHookChain({

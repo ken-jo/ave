@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/hooks/use-chat-state.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/hooks/use-chat-state.ts.
 export const en = {
   "useChatState.guidanceDroppedText": "⚠️ Direction instruction not applied (response limit reached): {text}",
   "useChatState.errorPrefix": "Error: {error}",

@@ -26,6 +26,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { errorMessage } from "../../shared/error-message.js";
+import { isRecord } from "../../shared/is-record.js";
 import { reportExitCode, reportLines, reportSummary } from "./report.js";
 import { validatePluginDirectory, type ToolArguments } from "./validate-plugin.js";
 
@@ -42,9 +43,7 @@ function readToolArguments(path: string): ToolArguments {
   } catch (error) {
     throw new UsageError(`--tool-args ${path}: ${errorMessage(error)}`);
   }
-  const isObject = (value: unknown): value is Record<string, unknown> =>
-    typeof value === "object" && value !== null && !Array.isArray(value);
-  if (!isObject(parsed) || !Object.values(parsed).every(isObject)) {
+  if (!isRecord(parsed) || !Object.values(parsed).every(isRecord)) {
     throw new UsageError(`--tool-args ${path}: expected { "<tool name>": { …arguments } }`);
   }
   return parsed as ToolArguments;

@@ -35,7 +35,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   chat: {
     systemPrompt:
-      "You are Ave, a local knowledge assistant. You provide accurate, helpful answers grounded in the user's documents and context. Respond in the user's language.",
+      "You are Ave, an agent that works beside the user across the web, the terminal, and their files. You provide accurate, helpful answers grounded in the user's documents and context. Respond in the user's language.",
     autoCompact: true,
     processingDisplayLevel: DEFAULT_PROCESSING_DISPLAY_LEVEL,
     // Tool rounds a sub-agent may run before it hits `round-cap` and suspends.

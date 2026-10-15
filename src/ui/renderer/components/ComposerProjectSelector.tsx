@@ -35,22 +35,21 @@ export interface ComposerProjectSelectorProps {
   /** Surface a refused add — the same App-level toast the sidebar's project
    *  context menu reports its own failures through. */
   onProjectError?: ProjectErrorReporter;
-  /** Controls the dropdown's open state so the caller (ChatComposerDock) can
-   *  force-close it when the composer transitions off the centered layout
-   *  (first message sent) — see the close-animation requirement. */
+  /** Controls the dropdown's open state so the caller (ChatView) can
+   *  force-close it when the conversation stops being empty (first message
+   *  sent) and the trigger unmounts. */
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
 /**
  * Empty-state composer project selector — a small "📁 <project name> ⌄"
- * trigger attached directly above the composer card, opening a DOWNWARD
- * dropdown (side="bottom") that lists known projects + "add new project".
+ * trigger attached directly above the composer card, opening an UPWARD
+ * dropdown (side="top") that lists known projects + "add new project".
  * The trigger sits in the same
  * reserved toast-zone the composer dock already carries (see
- * `composer-toast-dock`), and the panel opens over the composer area below it
- * rather than upward, since the centered composer sits in the screen's
- * vertical middle with limited headroom above.
+ * `composer-toast-dock`). The composer is bottom-docked, so the empty
+ * conversation above it is where the panel has room.
  *
  * Data/actions are NOT reimplemented here — `projects` / `onSelectProject` /
  * `onRefreshProjects` are the exact same App-level state + handlers the
@@ -150,23 +149,17 @@ export function ComposerProjectSelector({
           <ChevronDown className="h-3 w-3 shrink-0" />
         </Button>
       </DropdownMenuTrigger>
-      {/* side="bottom" — the panel opens DOWNWARD over the composer area below
-          the trigger (not upward), matching the reference behavior for a
-          centered composer with limited headroom. avoidCollisions off: we
-          WANT it to overlay the composer, not flip to avoid it.
+      {/* side="top" — the composer is bottom-docked, so the panel opens
+          UPWARD into the empty conversation above it.
           forceMount + data-state transition: Radix keeps the panel mounted
-          through its close so the fade/scale-out actually plays instead of
-          the content vanishing instantly — this is what lets the dropdown
-          close gracefully in step with the composer's descent (ChatView
-          force-closes `open` the moment the centered layout ends; this
-          transition is what makes that visible instead of an abrupt cut). */}
+          through its close so the fade/scale-out plays instead of the content
+          vanishing instantly. */}
       <DropdownMenuContent
-        side="bottom"
+        side="top"
         align="start"
-        avoidCollisions={false}
         sideOffset={6}
         forceMount
-        className="w-64 origin-top transition-[opacity,transform] duration-(--motion-normal) ease-(--motion-ease-out) motion-reduce:transition-none data-[state=closed]:pointer-events-none data-[state=closed]:opacity-0 data-[state=closed]:scale-95 data-[state=open]:opacity-100 data-[state=open]:scale-100"
+        className="w-64 origin-bottom transition-[opacity,transform] duration-(--motion-normal) ease-(--motion-ease-out) motion-reduce:transition-none data-[state=closed]:pointer-events-none data-[state=closed]:opacity-0 data-[state=closed]:scale-95 data-[state=open]:opacity-100 data-[state=open]:scale-100"
         data-testid="composer-project-selector-menu"
       >
         {namedProjects.length > 0 ? (

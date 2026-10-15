@@ -14,6 +14,7 @@
 import { HOST_FONT_STACK } from "./host-font-stack.js";
 import type { ThemeSurfaces, ThemeTokens } from "./theme-tokens.js";
 import type { AgentPluginRoutineTemplate } from "./agent-plugin-routine-template.js";
+import { isRecord } from "./is-record.js";
 
 export const CONTENT_ASSET_SCHEME = "ave-content";
 
@@ -128,10 +129,6 @@ export type LanguageMessagesResult =
 export interface InstalledContentApi {
   installed(): Promise<InstalledContentResult>;
   languageMessages(locale: string): Promise<LanguageMessagesResult>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** The IPC answer as the renderer may use it, or null when it is not one. */

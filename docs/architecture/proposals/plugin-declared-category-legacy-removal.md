@@ -24,8 +24,8 @@ The declared category is meanwhile already dead at its source:
   unconditionally — `src/mcp/plugin-tool-from-mcp.ts:157` hardcodes
   `category = "write"` and `isReadOnly: () => false`, ignoring any
   `_meta["ave/category"]` on the wire (completed for the out-of-process
-  stdio path by #1582; see
-  `docs/references/plugin-contract-v6-final-report.md`).
+  stdio path by #1582; the 0.5.x contract-v6 final report recording this
+  was removed from the docs and is in git history).
 - An external MCP tool registers as `"network"`
   (`src/mcp/mcp-tool-adapter.ts:89`).
 - The per-tool manifest `category` key was removed from the manifest schema in
@@ -228,4 +228,4 @@ writer tests. Full gate at publish per the repository contract.
 - [Architecture](../architecture.md) — Tool Governance, OS Execution Sandbox
   And Plugin Workers
 - [Permission policy design](../permission-policy-design.md)
-- [Plugin contract v6 final report](../../references/plugin-contract-v6-final-report.md)
+- [Plugin tool schema design](../../references/plugin-tool-schema-design.md)

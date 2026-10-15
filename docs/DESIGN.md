@@ -188,7 +188,7 @@ a built-in view, Settings, or a plugin surface; the chrome around it does not ch
 the content. The frame also owns the floating lane at the top-right of its body, so a card
 floats over whatever the pane it is drawn in holds.
 `src/ui/renderer/components/PaneFrame.tsx` is the only place that chrome is
-drawn, and `src/ui/renderer/__tests__/PaneFrame.test.tsx` holds it there. A second frame
+drawn, and `src/ui/renderer/components/__tests__/PaneFrame.test.tsx` holds it there. A second frame
 for a second kind of content is the defect this rule exists to name: two frames drift, and
 the user learns two sets of controls for one idea.
 

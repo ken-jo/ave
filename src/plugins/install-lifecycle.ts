@@ -1,5 +1,6 @@
 import { isAppUpdateInstallRequested } from "../main/app-update-install-intent.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { raceWithTimeout } from "../shared/abortable-deadline.js";
 
 const inflightInstallLocks = new Map<string, Promise<unknown>>();
 interface HeldPluginInstallLock {
@@ -599,17 +600,11 @@ async function drainReentrantOperations(token: HeldPluginInstallLock): Promise<v
     if (pending.length === 0) break;
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) throw new PluginLifecycleDrainTimeoutError();
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        Promise.allSettled(pending.map((branch) => branch.promise)),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new PluginLifecycleDrainTimeoutError()), remainingMs);
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
+    await raceWithTimeout(
+      Promise.allSettled(pending.map((branch) => branch.promise)),
+      remainingMs,
+      () => new PluginLifecycleDrainTimeoutError(),
+    );
   }
   const failures = [...token.pendingReentrantOperations]
     .filter((operation) => !excluded.has(operation))

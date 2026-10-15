@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/MarketplaceTab.tsx. Do not edit by hand.
+// i18n fragment. Extracted from src/ui/renderer/tabs/MarketplaceTab.tsx, which no longer exists.
 export const en = {
   "marketplaceTab.trustProviderCredentials": "Uses provider credentials",
   "marketplaceTab.trustProviderNetwork": "Sends model requests to provider",

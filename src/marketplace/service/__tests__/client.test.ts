@@ -16,7 +16,7 @@ import {
   type ServiceClientOptions,
 } from "../client.js";
 
-const OLD = "https://former-site.invalid";
+const OLD = "https://ave.agent-connector.ai";
 const NEW = "https://ave.example";
 
 const doc = (fields: Record<string, unknown> = {}) => ({ schemaVersion: 1, announcements: "/announcements/v1.json", telemetry: null, movedTo: null, movedFrom: null, ...fields });
@@ -27,7 +27,7 @@ const announcement = (id: number) => ({
   body: "Body",
   level: "info",
   createdAt: "2026-09-23T00:00:00.000Z",
-  actions: [{ label: { en: "Open", ko: "열기" }, target: { kind: "url", url: "https://former-site.invalid/news" } }],
+  actions: [{ label: { en: "Open", ko: "열기" }, target: { kind: "url", url: "https://ave.agent-connector.ai/news" } }],
 });
 
 /** A fetch over a URL → JSON map; a missing URL answers 404, a number answers that status, a Response is returned as is. */
@@ -44,16 +44,16 @@ function fakeFetch(routes: Record<string, unknown>) {
 
 describe("normalizeServiceBase", () => {
   it("accepts an https origin and refuses paths, plain http and credentials", () => {
-    expect(normalizeServiceBase("https://former-site.invalid/")).toBe("https://former-site.invalid");
-    expect(() => normalizeServiceBase("https://former-site.invalid/base")).toThrow(/origin/u);
-    expect(() => normalizeServiceBase("http://former-site.invalid")).toThrow(/https/u);
-    expect(() => normalizeServiceBase("https://user:pw@former-site.invalid")).toThrow(/origin/u);
+    expect(normalizeServiceBase("https://ave.agent-connector.ai/")).toBe("https://ave.agent-connector.ai");
+    expect(() => normalizeServiceBase("https://ave.agent-connector.ai/base")).toThrow(/origin/u);
+    expect(() => normalizeServiceBase("http://ave.agent-connector.ai")).toThrow(/https/u);
+    expect(() => normalizeServiceBase("https://user:pw@ave.agent-connector.ai")).toThrow(/origin/u);
     expect(() => normalizeServiceBase("http://127.0.0.1:8123")).toThrow(/https/u);
     expect(normalizeServiceBase("http://127.0.0.1:8123", { allowLoopbackHttp: true })).toBe("http://127.0.0.1:8123");
     expect(() => normalizeServiceBase("http://10.0.0.1", { allowLoopbackHttp: true })).toThrow(/https/u);
   });
 
-  it.each(["https:former-site.invalid", " https://former-site.invalid", "https://former-site.invalid ", "https://:@former-site.invalid", "https://former-site.invalid?", "https://former-site.invalid#", "https://former-site.invalid/%2e", "https://AVEAI.xyz"])(
+  it.each(["https:ave.agent-connector.ai", " https://ave.agent-connector.ai", "https://ave.agent-connector.ai ", "https://:@ave.agent-connector.ai", "https://ave.agent-connector.ai?", "https://ave.agent-connector.ai#", "https://ave.agent-connector.ai/%2e", "https://AVEAI.xyz"])(
     "refuses %j, a spelling the URL parser would repair",
     (value) => {
       expect(() => normalizeServiceBase(value)).toThrow(/origin/u);
@@ -127,7 +127,7 @@ describe("readPolicyServiceBase", () => {
     ["plain http", { service: { baseUrl: "http://ave.corp.example" } }],
     ["a missing baseUrl", { service: {} }],
     ["invalid JSON", "{"],
-    ["a duplicated baseUrl", '{"service":{"baseUrl":"https://ave.corp.example","baseUrl":"https://former-site.invalid"}}'],
+    ["a duplicated baseUrl", '{"service":{"baseUrl":"https://ave.corp.example","baseUrl":"https://ave.agent-connector.ai"}}'],
   ])("throws on %s, so a typo does not fall back to the public base", async (_label, value) => {
     await expect(readPolicyServiceBase(policy(value))).rejects.toThrow();
   });
@@ -159,7 +159,7 @@ describe("ServiceClient", () => {
   };
 
   it("uses the build constant by default", () => {
-    expect(AVE_SERVICE_BASE_URL).toBe("https://former-site.invalid");
+    expect(AVE_SERVICE_BASE_URL).toBe("https://ave.agent-connector.ai");
   });
 
   it("reads announcements and the telemetry endpoint from the build base", async () => {

@@ -17,7 +17,7 @@ export function lintStudioFiles(files: readonly { path: string; data: Buffer }[]
   const findings: StudioLintFinding[] = [];
   for (const file of files) {
     const textFile = /^skills\/.+\/SKILL\.md$/u.test(file.path)
-      || /^xyz\.ave\/prompts\/.+\.md$/u.test(file.path)
+      || /^ai\.agent-connector\.ave\/prompts\/.+\.md$/u.test(file.path)
       || file.path === "ai.agent-connector.ave/routines.json";
     if (textFile) {
       const text = file.data.toString("utf8");
@@ -26,7 +26,7 @@ export function lintStudioFiles(files: readonly { path: string; data: Buffer }[]
           findings.push({ path: file.path, matched: match[0], message: rule.message });
         }
       }
-      if (/^xyz\.ave\/prompts\/.+\.md$/u.test(file.path) && /^\/\S/u.test(text.replace(/^---[\s\S]*?---\s*/u, ""))) {
+      if (/^ai\.agent-connector\.ave\/prompts\/.+\.md$/u.test(file.path) && /^\/\S/u.test(text.replace(/^---[\s\S]*?---\s*/u, ""))) {
         findings.push({ path: file.path, matched: text.replace(/^---[\s\S]*?---\s*/u, "").split("\n")[0]!, message: "Template begins with a slash command" });
       }
     }

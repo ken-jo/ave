@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/ToolActivity.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/ToolActivity.tsx.
 export const en = {
   "toolActivity.title": "Tool Activity",
   "toolActivity.openInSystemApp": "Open in system app",

@@ -16,10 +16,18 @@ import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { DENY_EXTENSIONS as DENY_LIST } from "../../shared/attachments-deny-list.js";
 import {
+  MAX_COMPOSER_ATTACHMENT_COUNT,
   MAX_COMPOSER_IMAGE_BYTES,
   sniffComposerImageFormat,
 } from "../../shared/composer-image-input.js";
 import { errorMessage } from "../../shared/error-message.js";
+import {
+  canonicalizePathForMatch,
+  caseFoldForMatch,
+  isSensitivePath,
+} from "../../permissions/sensitive-paths.js";
+import { randomBytes } from "node:crypto";
+import type { IpcMainInvokeEvent } from "electron";
 
 // Convert the shared array into a Set once at module load for O(1) lookup
 // in the file-picker hot path. Source of truth lives in the shared module.
@@ -74,6 +82,116 @@ function authorizeClipboardTempImage(
   CLIPBOARD_TEMP_IMAGE_PATHS.add(filePath);
 }
 
+/** A minted drop token is redeemable for this window, then refused. */
+export const DROP_TOKEN_TTL_MS = 60_000;
+/** Bounds the pending-token map; oldest entries are evicted first. */
+const DROP_TOKEN_MAX_PENDING = 32;
+
+/** Why a dropped item was not bound to the token. Stable codes, never prose. */
+type DropRejectReason =
+  | "denied-extension"
+  | "sensitive-path"
+  | "not-a-file"
+  | "not-found"
+  | "too-many";
+
+/** A dropped file main validated and bound to a token (metadata only, no bytes). */
+type DroppedFile = OpenFileResult["files"][number];
+
+/**
+ * Main-held pending composer drops, keyed by a one-time token.
+ *
+ * Why a token at all, when the preload hands main the paths: the paths reach
+ * main only through `aveDrop.prepareFileDrop(files)`, which resolves real
+ * OS-backed `File`s via `webUtils.getPathForFile` in the preload and invokes
+ * `registerDrop` in the same call. Nothing in the main world can send a path
+ * string to this channel. Registering authorizes nothing; it validates and
+ * binds. The renderer must then REDEEM the token for the files to enter
+ * {@link ATTACH_PATH_ALLOWLIST}, so a drop that lands outside the composer (and
+ * is never redeemed) widens nothing and simply expires.
+ *
+ * The binding is to the exact validated file list, the webContents that
+ * registered it, and an expiry. Redemption consumes the entry on first lookup,
+ * whatever the outcome, mirroring `workspace.pickRoot({ ackToken })`.
+ */
+const pendingDrops = new Map<string, { senderId: number; files: DroppedFile[]; expires: number }>();
+
+function prunePendingDrops(now: number): void {
+  for (const [token, pending] of pendingDrops) {
+    if (now > pending.expires) pendingDrops.delete(token);
+  }
+  while (pendingDrops.size >= DROP_TOKEN_MAX_PENDING) {
+    const oldest = pendingDrops.keys().next().value;
+    if (oldest === undefined) break;
+    pendingDrops.delete(oldest);
+  }
+}
+
+function senderIdOf(e: IpcMainInvokeEvent): number | null {
+  const id = (e.sender as { id?: unknown } | undefined)?.id;
+  return typeof id === "number" ? id : null;
+}
+
+function sensitiveForRead(p: string): boolean {
+  return isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(p)), "read") !== null;
+}
+
+/**
+ * The allowlist holds the spelling that was authorized, not what it points to
+ * now: a symlink that passed the checks can be retargeted afterwards. Every use
+ * resolves it again and re-applies the same refusals to the current target.
+ */
+async function resolveAuthorizedTarget(
+  filePath: string,
+): Promise<{ ok: true; real: string } | { ok: false; error: string }> {
+  let real: string;
+  try {
+    real = await fs.realpath(filePath);
+  } catch {
+    return { ok: false, error: "not-found" };
+  }
+  if (sensitiveForRead(real)) return { ok: false, error: "sensitive-path" };
+  if (DENY_EXTENSIONS.has(getExt(real))) return { ok: false, error: "denied_extension" };
+  return { ok: true, real };
+}
+
+/** Validate one dropped path into metadata, or say why it is refused. */
+async function validateDroppedPath(
+  p: string,
+): Promise<{ ok: true; file: DroppedFile } | { ok: false; reason: DropRejectReason }> {
+  const ext = getExt(p);
+  if (DENY_EXTENSIONS.has(ext)) return { ok: false, reason: "denied-extension" };
+  // Both the dropped spelling and its real target: a harmless-looking name may
+  // be a symlink to a credential file.
+  if (sensitiveForRead(p)) return { ok: false, reason: "sensitive-path" };
+  let real: string;
+  try {
+    real = await fs.realpath(p);
+  } catch {
+    return { ok: false, reason: "not-found" };
+  }
+  if (sensitiveForRead(real)) return { ok: false, reason: "sensitive-path" };
+  if (DENY_EXTENSIONS.has(getExt(real))) return { ok: false, reason: "denied-extension" };
+  try {
+    const stat = await fs.stat(real);
+    if (!stat.isFile()) return { ok: false, reason: "not-a-file" };
+    const imageFormat = await sniffImageFilePrefix(real);
+    return {
+      ok: true,
+      file: {
+        path: p,
+        name: path.basename(p),
+        ext,
+        bytes: stat.size,
+        isImage: imageFormat !== null && imageFormat !== undefined,
+        mimeType: imageFormat?.mimeType,
+      },
+    };
+  } catch {
+    return { ok: false, reason: "not-found" };
+  }
+}
+
 /**
  * Preserve the old permissive pre-decode DoS guard. The decoded image cap
  * itself comes from the shared composer image input contract.
@@ -114,6 +232,16 @@ export interface OpenFileResult {
   }>;
   rejected: string[]; // paths rejected by deny-list
 }
+
+/** Step 1 of a composer drop: main validated the dropped paths and bound a token. */
+export type RegisterDropResult =
+  | { ok: true; token: string; rejected: Array<{ name: string; reason: DropRejectReason }> }
+  | { ok: false; error: "unauthorized" | "invalid-payload" | "nothing-attachable"; rejected?: Array<{ name: string; reason: DropRejectReason }> };
+
+/** Step 2: the token was redeemed and exactly its files were authorized. */
+export type RedeemDropResult =
+  | { ok: true; files: OpenFileResult["files"] }
+  | { ok: false; error: "unauthorized" | "drop-token-invalid" | "drop-token-expired" };
 
 export interface ReadImageResult {
   ok: boolean;
@@ -204,6 +332,65 @@ export function registerAttachHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(
+    CHANNELS.attach.registerDrop,
+    async (e, rawPaths: unknown): Promise<RegisterDropResult> => {
+      if (!validateHostRendererSender(e)) {
+        auditUnauthorized(auditLogger, CHANNELS.attach.registerDrop, e);
+        return { ok: false, error: "unauthorized" };
+      }
+      const senderId = senderIdOf(e);
+      if (senderId === null) return { ok: false, error: "unauthorized" };
+      if (
+        !Array.isArray(rawPaths)
+        || rawPaths.length === 0
+        || !rawPaths.every((p): p is string => typeof p === "string" && p.length > 0 && path.isAbsolute(p))
+      ) {
+        return { ok: false, error: "invalid-payload" };
+      }
+      const files: DroppedFile[] = [];
+      const rejected: Array<{ name: string; reason: DropRejectReason }> = [];
+      for (const p of rawPaths) {
+        if (files.length >= MAX_COMPOSER_ATTACHMENT_COUNT) {
+          rejected.push({ name: path.basename(p), reason: "too-many" });
+          continue;
+        }
+        const verdict = await validateDroppedPath(p);
+        if (verdict.ok) files.push(verdict.file);
+        else rejected.push({ name: path.basename(p), reason: verdict.reason });
+      }
+      if (files.length === 0) return { ok: false, error: "nothing-attachable", rejected };
+      const now = Date.now();
+      prunePendingDrops(now);
+      const token = randomBytes(32).toString("base64url");
+      pendingDrops.set(token, { senderId, files, expires: now + DROP_TOKEN_TTL_MS });
+      return { ok: true, token, rejected };
+    },
+  );
+
+  ipcMain.handle(
+    CHANNELS.attach.redeemDrop,
+    async (e, rawToken: unknown): Promise<RedeemDropResult> => {
+      if (!validateHostRendererSender(e)) {
+        auditUnauthorized(auditLogger, CHANNELS.attach.redeemDrop, e);
+        return { ok: false, error: "unauthorized" };
+      }
+      if (typeof rawToken !== "string" || rawToken.length === 0) {
+        return { ok: false, error: "drop-token-invalid" };
+      }
+      const pending = pendingDrops.get(rawToken);
+      // Consume on first lookup regardless of what follows: a token is never
+      // worth a second attempt, from this sender or any other.
+      if (pending) pendingDrops.delete(rawToken);
+      if (!pending || pending.senderId !== senderIdOf(e)) {
+        return { ok: false, error: "drop-token-invalid" };
+      }
+      if (Date.now() > pending.expires) return { ok: false, error: "drop-token-expired" };
+      for (const file of pending.files) authorizePath(file.path);
+      return { ok: true, files: pending.files };
+    },
+  );
+
+  ipcMain.handle(
     CHANNELS.attach.readImage,
     async (e, filePath: string): Promise<ReadImageResult> => {
       if (!validateHostRendererSender(e)) {
@@ -220,19 +407,21 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         if (!ATTACH_PATH_ALLOWLIST.has(filePath)) {
           return { ok: false, error: "path_not_authorized" };
         }
+        const target = await resolveAuthorizedTarget(filePath);
+        if (!target.ok) return { ok: false, error: target.error };
         // Stat first so we can refuse to buffer a multi-GB file. Vision
         // APIs reject anything beyond ~20MB, so 25MB cap is generous.
-        const stat = await fs.stat(filePath);
+        const stat = await fs.stat(target.real);
         if (stat.size > MAX_COMPOSER_IMAGE_BYTES) {
           return {
             ok: false,
             error: `image_too_large: ${stat.size} > ${MAX_COMPOSER_IMAGE_BYTES}`,
           };
         }
-        if (!await sniffImageFilePrefix(filePath)) {
+        if (!await sniffImageFilePrefix(target.real)) {
           return { ok: false, error: "not_image" };
         }
-        const buf = await fs.readFile(filePath);
+        const buf = await fs.readFile(target.real);
         if (buf.length > MAX_COMPOSER_IMAGE_BYTES) {
           return {
             ok: false,
@@ -379,7 +568,9 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         if (DENY_EXTENSIONS.has(getExt(filePath))) {
           return { ok: false, error: "denied_extension" };
         }
-        const result = await shell.openPath(filePath);
+        const target = await resolveAuthorizedTarget(filePath);
+        if (!target.ok) return { ok: false, error: target.error };
+        const result = await shell.openPath(target.real);
         if (result) return { ok: false, error: result };
         return { ok: true };
       } catch (err) {

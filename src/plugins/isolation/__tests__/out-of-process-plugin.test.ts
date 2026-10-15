@@ -701,12 +701,12 @@ describe("the host keeps the child's config snapshot current", () => {
       };
       expect(before.configuredDomains).toEqual(["portal.example.com"]);
 
-      hostApi.setHostConfig("domains", ["former-site.invalid"]);
+      hostApi.setHostConfig("domains", ["ave.agent-connector.ai"]);
 
       const after = (await instance.handlers.pilot_echo!()) as {
         configuredDomains: unknown;
       };
-      expect(after.configuredDomains).toEqual(["former-site.invalid"]);
+      expect(after.configuredDomains).toEqual(["ave.agent-connector.ai"]);
       await instance.stop?.();
     } finally {
       rmSync(dir, { recursive: true, force: true });

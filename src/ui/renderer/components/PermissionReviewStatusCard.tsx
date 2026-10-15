@@ -3,6 +3,7 @@ import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
+import { useStatusLiveRegion } from "./transcript-log-context.js";
 
 type PermissionReviewEntry = Extract<ChatEntry, { kind: "permission_review" }>;
 
@@ -75,6 +76,7 @@ export function PermissionReviewStatusCard({
   variant?: "standalone" | "attached";
 }) {
   const { t: tComp } = useTranslation();
+  const liveRegion = useStatusLiveRegion();
   const source = entry.source === "plugin" ? tComp("permissionReviewStatusCard.sourcePlugin") :
     entry.source === "mcp" ? "MCP" :
     entry.source === "builtin" ? tComp("permissionReviewStatusCard.sourceBuiltin") :
@@ -86,8 +88,7 @@ export function PermissionReviewStatusCard({
         data-testid="permission-review-status-card"
         data-status={entry.status}
         data-variant="attached"
-        role="status"
-        aria-live="polite"
+        {...liveRegion}
         tabIndex={reason ? 0 : undefined}
         className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] [&_svg]:h-3 [&_svg]:w-3 ${toneClass(entry)}`}
       >
@@ -108,8 +109,7 @@ export function PermissionReviewStatusCard({
       data-testid="permission-review-status-card"
       data-status={entry.status}
       data-variant="standalone"
-      role="status"
-      aria-live="polite"
+      {...liveRegion}
       className={`w-full max-w-full min-w-0 rounded-md border px-3 py-2 text-xs ave-anim-message-in ${toneClass(entry)}`}
     >
       <div className="flex min-w-0 items-center gap-2">

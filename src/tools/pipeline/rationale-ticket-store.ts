@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { canonicalStringify } from "../../permissions/user-approval-store.js";
 import {
   RATIONALE_CONTROL_CONTRACT_VERSION,
-  cloneRationaleCanonicalJson,
   verifyRationaleRequiredControl,
   type RationaleRequiredControl,
+  sealRationaleCanonicalJson,
 } from "./rationale-control.js";
 import {
   createRationaleReviewRequiredRecord,
@@ -22,10 +22,6 @@ import {
 } from "./rationale-ticket-lifecycle.js";
 import { UUID_PATTERN } from "../../shared/uuid.js";
 import { isValidSessionId } from "../../memory/memory-manager.js";
-
-function seal<T>(value: T, label: string): T {
-  return cloneRationaleCanonicalJson(value, label) as T;
-}
 
 const TICKET_STATES: readonly RationaleTicketState[] = [
   "review_required",
@@ -171,7 +167,7 @@ export function createRationaleTicketCasExpectation(
   ) {
     throw new TypeError("invalid host rationale ticket snapshot");
   }
-  return seal({
+  return sealRationaleCanonicalJson({
     sessionId: snapshot.sessionId,
     ticketId: snapshot.ticket.ticketId,
     actionDigest: snapshot.ticket.actionDigest,
@@ -239,7 +235,7 @@ export class InProcessRationaleTicketStore {
       return null;
     }
 
-    const control = seal(input.control, "StoredRationaleRequiredControl");
+    const control = sealRationaleCanonicalJson(input.control, "StoredRationaleRequiredControl");
     const ticket = createRationaleReviewRequiredRecord(control, now);
     const snapshot = this.#createSnapshot({
       sessionId: input.sessionId,
@@ -379,53 +375,7 @@ export class InProcessRationaleTicketStore {
     expectation: RationaleTicketCasExpectation,
     now = Date.now(),
   ): HostConsumedAllowOnceReceipt | null {
-    assertFiniteNow(now);
-    now = this.#observeTimeAndPrune(now);
-    const entry = this.#resolveExpectation(expectation, now, "allow-once");
-    if (!entry) return null;
-
-    let ticket: RationaleTicketStateRecord;
-    try {
-      ticket = transitionRationaleTicket(
-        entry.ticket,
-        createRationaleTicketEvent(entry.control, "allow-once"),
-      );
-    } catch {
-      this.#retireUnexpected(entry, "stale-replay", now);
-      return null;
-    }
-
-    let receiptId = randomUUID();
-    while (this.#receipts.has(receiptId)) receiptId = randomUUID();
-    const receipt = seal({
-      contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
-      kind: "host-consumed-allow-once-cas" as const,
-      receiptId,
-      ticketId: entry.control.ticketId,
-      actionDigest: entry.control.action.actionDigest,
-      invocationDigest: entry.control.invocationDigest,
-      consumedAt: now,
-      ticket,
-    }, "HostConsumedAllowOnceReceipt") as HostConsumedAllowOnceReceipt;
-    validateHostConsumedAllowOnceReceipt(receipt, entry.control, ticket, now);
-
-    const committed = this.#commitSnapshot(
-      entry,
-      ticket,
-      "allow-once",
-      now,
-      "allow-once-consumed",
-      receipt.receiptId,
-      {
-        sessionId: entry.sessionId,
-        expiresAt: entry.control.anchor.expiresAt,
-        receipt,
-      },
-    );
-    if (committed.ticket.state !== "allowed_once") {
-      throw new Error("allow-once CAS failed to commit terminal state");
-    }
-    return receipt;
+    return this.#consumeOnce(expectation, now, "allow-once", "allow-once-consumed");
   }
 
   /**
@@ -442,16 +392,35 @@ export class InProcessRationaleTicketStore {
     expectation: RationaleTicketCasExpectation,
     now = Date.now(),
   ): HostConsumedAllowOnceReceipt | null {
+    return this.#consumeOnce(
+      expectation,
+      now,
+      "reviewer-authorize-once",
+      "reviewer-authorized-once-consumed",
+    );
+  }
+
+  /**
+   * The one-shot allow-once CAS shared by the user and reviewer terminals:
+   * transition, mint and validate the receipt, then commit the terminal
+   * `allowed_once` state with the provenance-specific audit operation.
+   */
+  #consumeOnce(
+    expectation: RationaleTicketCasExpectation,
+    now: number,
+    event: "allow-once" | "reviewer-authorize-once",
+    operation: "allow-once-consumed" | "reviewer-authorized-once-consumed",
+  ): HostConsumedAllowOnceReceipt | null {
     assertFiniteNow(now);
     now = this.#observeTimeAndPrune(now);
-    const entry = this.#resolveExpectation(expectation, now, "reviewer-authorize-once");
+    const entry = this.#resolveExpectation(expectation, now, event);
     if (!entry) return null;
 
     let ticket: RationaleTicketStateRecord;
     try {
       ticket = transitionRationaleTicket(
         entry.ticket,
-        createRationaleTicketEvent(entry.control, "reviewer-authorize-once"),
+        createRationaleTicketEvent(entry.control, event),
       );
     } catch {
       this.#retireUnexpected(entry, "stale-replay", now);
@@ -460,7 +429,7 @@ export class InProcessRationaleTicketStore {
 
     let receiptId = randomUUID();
     while (this.#receipts.has(receiptId)) receiptId = randomUUID();
-    const receipt = seal({
+    const receipt = sealRationaleCanonicalJson({
       contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
       kind: "host-consumed-allow-once-cas" as const,
       receiptId,
@@ -475,9 +444,9 @@ export class InProcessRationaleTicketStore {
     const committed = this.#commitSnapshot(
       entry,
       ticket,
-      "reviewer-authorize-once",
+      event,
       now,
-      "reviewer-authorized-once-consumed",
+      operation,
       receipt.receiptId,
       {
         sessionId: entry.sessionId,
@@ -486,7 +455,7 @@ export class InProcessRationaleTicketStore {
       },
     );
     if (committed.ticket.state !== "allowed_once") {
-      throw new Error("reviewer-authorize-once CAS failed to commit terminal state");
+      throw new Error(`${event} CAS failed to commit terminal state`);
     }
     return receipt;
   }
@@ -498,7 +467,7 @@ export class InProcessRationaleTicketStore {
     try {
       assertFiniteNow(now);
       now = this.#observeTimeAndPrune(now);
-      const candidate = seal(receipt, "HostConsumedAllowOnceReceipt");
+      const candidate = sealRationaleCanonicalJson(receipt, "HostConsumedAllowOnceReceipt");
       const stored = this.#receipts.get(candidate.receiptId);
       if (
         !stored ||
@@ -522,7 +491,7 @@ export class InProcessRationaleTicketStore {
     assertFiniteNow(now);
     assertSessionId(sessionId);
     this.#observeTimeAndPrune(now);
-    return seal(
+    return sealRationaleCanonicalJson(
       [...(this.#activeBySession.get(sessionId) ?? [])],
       "ActiveRationaleTicketIds",
     );
@@ -570,7 +539,7 @@ export class InProcessRationaleTicketStore {
       }
     }
     if (firstAuditError !== undefined) throw firstAuditError;
-    return seal(retired, "ClosedRationaleTicketSnapshots");
+    return sealRationaleCanonicalJson(retired, "ClosedRationaleTicketSnapshots");
   }
 
   #resolveExpectation(
@@ -705,7 +674,7 @@ export class InProcessRationaleTicketStore {
       this.#entries.delete(ticket.ticketId);
       this.#removeActiveSessionTicket(previous.sessionId, ticket.ticketId);
       if (now < previous.control.anchor.expiresAt) {
-        this.#tombstones.set(ticket.ticketId, seal({
+        this.#tombstones.set(ticket.ticketId, sealRationaleCanonicalJson({
           sessionId: previous.sessionId,
           ticketId: ticket.ticketId,
           actionDigest: ticket.actionDigest,
@@ -731,7 +700,7 @@ export class InProcessRationaleTicketStore {
   #createSnapshot(
     input: Omit<HostRationaleTicketSnapshot, "contractVersion" | "kind">,
   ): HostRationaleTicketSnapshot {
-    return seal({
+    return sealRationaleCanonicalJson({
       contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
       kind: "host-rationale-ticket-snapshot" as const,
       ...input,
@@ -782,7 +751,7 @@ export class InProcessRationaleTicketStore {
     receiptId: string | null;
     at: number;
   }): void {
-    this.#dispatchAudit(seal({
+    this.#dispatchAudit(sealRationaleCanonicalJson({
       contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
       kind: "host-rationale-ticket-store-audit" as const,
       operation: input.operation,
@@ -809,7 +778,7 @@ export class InProcessRationaleTicketStore {
       if (now < current.updatedAt) {
         throw new TypeError("ticket store time cannot move backwards");
       }
-      this.#dispatchAudit(seal({
+      this.#dispatchAudit(sealRationaleCanonicalJson({
         contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
         kind: "host-rationale-ticket-store-audit" as const,
         operation: "replay-rejected" as const,
@@ -832,7 +801,7 @@ export class InProcessRationaleTicketStore {
     if (now < current.retiredAt) {
       throw new TypeError("ticket store time cannot move backwards");
     }
-    this.#dispatchAudit(seal({
+    this.#dispatchAudit(sealRationaleCanonicalJson({
       contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
       kind: "host-rationale-ticket-store-audit" as const,
       operation: "replay-rejected" as const,
@@ -857,7 +826,7 @@ export class InProcessRationaleTicketStore {
     now: number,
   ): void {
     const tombstone = this.#tombstones.get(entry.receipt.ticketId);
-    this.#dispatchAudit(seal({
+    this.#dispatchAudit(sealRationaleCanonicalJson({
       contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
       kind: "host-rationale-ticket-store-audit" as const,
       operation: "receipt-revoked" as const,

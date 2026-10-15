@@ -199,7 +199,7 @@ describe("main-window.ts — headless creation allocates no window", () => {
     const start = windowSource.indexOf("export function createWindow(");
     expect(start).toBeGreaterThanOrEqual(0);
     const body = windowSource.slice(start);
-    const guard = body.indexOf("if (options.headless) return;");
+    const guard = body.indexOf("if (options.headless) return null;");
     // The host preload comes from the preload table, and its built file is
     // checked before any window exists.
     const preload = body.indexOf('preloadPreferences("preload")');

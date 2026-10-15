@@ -8,9 +8,10 @@
  * child registry, the snap geometry, and the per-window bounds persistence went with
  * the feature they served.
  *
- * What remains is the main window: who it is (`registerMainWindow` / `getMainWindow`,
- * the one place the rest of main asks), and the animated resizes the workspace mode and
- * the chat side panel ask for. Auxiliary HTML-preview, link, and auth windows own
+ * What remains is the animated resizes the workspace mode and the chat side panel ask
+ * for. Several main windows may be open (`app-state.ts` owns which), so each resize
+ * acts on the main window whose renderer asked — never on "the" main window — and
+ * each window has its own tween. Auxiliary HTML-preview, link, and auth windows own
  * themselves and do not route through here.
  */
 
@@ -19,33 +20,33 @@ import { auditUnauthorized, UNAUTHORIZED_FRAME } from "../ipc-bridge.js";
 import { validateHostRendererSender } from "../ipc/gated.js";
 import { CHANNELS } from "../contract/app-contract.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
+import { getMainWindows } from "./app-state.js";
 import {
   computeChatModeSidePanelBounds,
   computeInitialMainWindowBounds,
   computeWorkModeBounds,
 } from "./main-window-bounds.js";
 
+/** The live main window whose renderer sent `event`, or null for any other sender. */
+function senderMainWindow(event: IpcMainInvokeEvent): BrowserWindow | null {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return null;
+  return getMainWindows().includes(win) ? win : null;
+}
+
 export class WindowManager {
-  private _mainWindowId: number | null = null;
   /**
-   * Active resize tween interval. At most one tween runs at a time — a new tween
-   * cancels any in-flight one so rapid chat↔work toggling does not overlap
-   * animations; the latest target always wins and lands exactly.
+   * Active resize tween per window id. At most one tween runs per window — a new
+   * tween cancels that window's in-flight one so rapid chat↔work toggling does not
+   * overlap animations; the latest target always wins and lands exactly.
    */
-  private _resizeTween: ReturnType<typeof setInterval> | null = null;
+  private readonly _resizeTweens = new Map<number, ReturnType<typeof setInterval>>();
 
-  // ── Registration ──────────────────────────────────────────────────────────
-
-  registerMainWindow(win: BrowserWindow): void {
-    this._mainWindowId = win.id;
-    win.on("closed", () => {
-      this._mainWindowId = null;
-    });
-  }
-
-  getMainWindow(): BrowserWindow | null {
-    if (this._mainWindowId === null) return null;
-    return BrowserWindow.fromId(this._mainWindowId) ?? null;
+  private cancelTween(windowId: number): void {
+    const tween = this._resizeTweens.get(windowId);
+    if (tween === undefined) return;
+    clearInterval(tween);
+    this._resizeTweens.delete(windowId);
   }
 
   /**
@@ -55,7 +56,7 @@ export class WindowManager {
    * height with an easeOutCubic curve on a ~60fps interval so the resize is
    * smooth uniformly on every platform.
    *
-   * Cancellation: any in-flight tween (`_resizeTween`) is cleared before a new
+   * Cancellation: the window's in-flight tween (`_resizeTweens`) is cleared before a new
    * one starts, so rapid chat↔work toggling never overlaps animations — the
    * latest target wins and still lands EXACTLY on `target` (the final step
    * snaps to the precise integer bounds rather than an interpolated value).
@@ -67,13 +68,10 @@ export class WindowManager {
   ): void {
     const durationMs = opts.durationMs ?? 220;
 
-    // Cancel any in-flight tween — latest target wins.
-    if (this._resizeTween !== null) {
-      clearInterval(this._resizeTween);
-      this._resizeTween = null;
-    }
-
     if (win.isDestroyed()) return;
+    const windowId = win.id;
+    // Cancel this window's in-flight tween — latest target wins.
+    this.cancelTween(windowId);
 
     const start = win.getBounds();
     const sameTarget =
@@ -91,12 +89,9 @@ export class WindowManager {
     // easeOutCubic: fast start, gentle settle.
     const ease = (t: number): number => 1 - Math.pow(1 - t, 3);
 
-    this._resizeTween = setInterval(() => {
+    this._resizeTweens.set(windowId, setInterval(() => {
       if (win.isDestroyed()) {
-        if (this._resizeTween !== null) {
-          clearInterval(this._resizeTween);
-          this._resizeTween = null;
-        }
+        this.cancelTween(windowId);
         return;
       }
 
@@ -105,10 +100,7 @@ export class WindowManager {
 
       if (linear >= 1) {
         // Final step — snap to the EXACT target, never an interpolated value.
-        if (this._resizeTween !== null) {
-          clearInterval(this._resizeTween);
-          this._resizeTween = null;
-        }
+        this.cancelTween(windowId);
         win.setBounds(target, false);
         return;
       }
@@ -123,13 +115,13 @@ export class WindowManager {
         },
         false,
       );
-    }, frameMs);
+    }, frameMs));
   }
 
   // ── IPC registration ──────────────────────────────────────────────────────
 
   registerIpc(auditLogger: AuditLogger): void {
-    // Resize the main window to match the active workspace mode.
+    // Resize the sender's main window to match the active workspace mode.
     //   work → centered 1243×768 (golden ratio, clamped to the work area), the focused
     //          working canvas where inline views need room.
     //   chat → the right-docked initial bounds (the same ones the window boots with),
@@ -144,8 +136,8 @@ export class WindowManager {
       if (mode !== "chat" && mode !== "work") {
         return { ok: false, error: "invalid-mode" };
       }
-      const main = this.getMainWindow();
-      if (!main || main.isDestroyed()) return { ok: false, error: "main-window-not-found" };
+      const main = senderMainWindow(event);
+      if (!main) return { ok: false, error: "main-window-not-found" };
 
       const { workArea } = screen.getPrimaryDisplay();
       if (mode === "work") {
@@ -158,7 +150,7 @@ export class WindowManager {
       return { ok: true };
     });
 
-    // Resize the main window when the in-chat right-side work panel opens or
+    // Resize the sender's main window when the in-chat right-side work panel opens or
     // closes. Work mode keeps the panel in normal flex layout and does not call
     // this channel; this is only for chat mode's narrower OS window.
     ipcMain.handle(CHANNELS.window.resizeForSidePanel, (event: IpcMainInvokeEvent, open: unknown) => {
@@ -169,8 +161,8 @@ export class WindowManager {
       if (typeof open !== "boolean") {
         return { ok: false, error: "invalid-open-state" };
       }
-      const main = this.getMainWindow();
-      if (!main || main.isDestroyed()) return { ok: false, error: "main-window-not-found" };
+      const main = senderMainWindow(event);
+      if (!main) return { ok: false, error: "main-window-not-found" };
 
       const { workArea } = screen.getPrimaryDisplay();
       this.animateBoundsTo(

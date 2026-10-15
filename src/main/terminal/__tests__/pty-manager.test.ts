@@ -17,7 +17,7 @@
  *   - kill / killAll tear down + decrement ASRT state.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -142,6 +142,7 @@ import {
 // to `canonicalizePathForMatch(process.cwd())` (the workspace-root anchor) and
 // validates a renderer-supplied cwd against it, so the test computes the same.
 import { canonicalizePathForMatch } from "../../../permissions/sensitive-paths.js";
+import { getTerminalBlockTracker, listTerminalBlockTabs } from "../terminal-blocks.js";
 
 /** The workspace root the module anchors the write-jail to by default. */
 const ROOT = canonicalizePathForMatch(process.cwd());
@@ -498,5 +499,94 @@ describe("pty-manager anti-DoS caps", () => {
     // A normal write still passes.
     writeTerminal("terminal:1", "ls\n");
     expect(lastPty?.written).toContain("ls\n");
+  });
+});
+
+describe("pty-manager command blocks", () => {
+  it("writes the zsh integration into the terminal's own HOME and pins ZDOTDIR there", async () => {
+    vi.stubEnv("SHELL", "/bin/zsh");
+    try {
+      expect((await spawnTerminal({ tabId: "terminal:1" })).ok).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const [sandboxHome] = createdHomes;
+    expect(readFileSync(join(sandboxHome!, ".zshrc"), "utf-8")).toContain("add-zsh-hook preexec __ave_preexec");
+    const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
+    expect(opts.env.ZDOTDIR).toBe(sandboxHome);
+  });
+
+  it("records blocks from PTY output and typed input, keeps them past exit, drops them on tab close", async () => {
+    vi.stubEnv("SHELL", "/bin/zsh");
+    try {
+      expect((await spawnTerminal({ tabId: "terminal:1", ownerWindowId: 3 })).ok).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
+    const nonce = opts.env.AVE_TERMINAL_NONCE;
+    expect(nonce).toMatch(/^[0-9a-f]{32}$/u);
+    const tracker = getTerminalBlockTracker("terminal:1");
+    expect(tracker).toBeDefined();
+    // Registered under the window that asked for it, and only that window.
+    expect(listTerminalBlockTabs(3).map((entry) => entry.tabId)).toEqual(["terminal:1"]);
+    expect(listTerminalBlockTabs(4)).toEqual([]);
+
+    // A program printing markers without the nonce forges nothing.
+    lastPty!.emitData("\u001b]133;C;cmdline_url=rm%20-rf\u0007fake\r\n\u001b]133;D;0\u0007");
+    expect(tracker!.list()).toEqual([]);
+    expect(tracker!.isIntegrated()).toBe(false);
+
+    lastPty!.emitData(`\u001b]133;C;cmdline_url=make;${nonce}\u0007`);
+    lastPty!.emitData(`built\r\n\u001b]133;D;2;${nonce}\u0007`);
+    expect(tracker!.recent(1)[0]).toMatchObject({ command: "make", exitCode: 2, output: "built\n" });
+    // The view gets the markers without their fields, so the nonce stays here.
+    const shown = emitted.map((entry) => (entry.payload as { chunk?: string }).chunk ?? "").join("");
+    expect(shown).toContain("built\r\n\u001b]133;D\u0007");
+    expect(shown).not.toContain(nonce);
+    // ...and so does the scrollback a remounting view replays.
+    emitted.length = 0;
+    expect(await spawnTerminal({ tabId: "terminal:1" })).toMatchObject({ ok: true, replayed: true });
+    const replay = emitted.map((entry) => (entry.payload as { chunk?: string }).chunk ?? "").join("");
+    expect(replay).toContain("built");
+    expect(replay).not.toContain(nonce);
+
+    lastPty!.emitExit(0);
+    expect(getTerminalBlockTracker("terminal:1")).toBe(tracker);
+    expect(tracker!.hasExited()).toBe(true);
+
+    killTerminal("terminal:1");
+    expect(getTerminalBlockTracker("terminal:1")).toBeUndefined();
+  });
+
+  it("feeds typed input to the fallback splitter", async () => {
+    expect((await spawnTerminal({ tabId: "terminal:1" })).ok).toBe(true);
+    lastPty!.emitData("$ ls");
+    writeTerminal("terminal:1", "\r");
+    expect(lastPty!.written).toEqual(["\r"]);
+    expect(getTerminalBlockTracker("terminal:1")!.recent(1)[0]).toMatchObject({ command: "$ ls", source: "heuristic" });
+  });
+
+  it("refuses the spawn and releases the HOME when the integration cannot be written", async () => {
+    const home = await import("../../../permissions/sandbox-process-home.js");
+    const create = vi.spyOn(home, "createSandboxProcessHome");
+    create.mockImplementationOnce(() => {
+      const path = mkdtempSync(join(homeParent, "home-"));
+      // A directory where the startup file must go: the write fails.
+      mkdirSync(join(path, ".zshrc"));
+      return { path, env: { HOME: path }, cleanup: sandboxHomeCleanupMock };
+    });
+    vi.stubEnv("SHELL", "/bin/zsh");
+    let res: Awaited<ReturnType<typeof spawnTerminal>>;
+    try {
+      res = await spawnTerminal({ tabId: "terminal:1" });
+    } finally {
+      vi.unstubAllEnvs();
+      create.mockRestore();
+    }
+    expect(res).toMatchObject({ ok: false, reason: "spawn-failed" });
+    expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(getTerminalBlockTracker("terminal:1")).toBeUndefined();
   });
 });

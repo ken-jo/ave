@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/permissions/PermissionModeBadge.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/permissions/PermissionModeBadge.tsx.
 export const en = {
   "permissionModeBadge.labelDefault": "Confirm writes",
   "permissionModeBadge.labelStrict": "Confirm all",

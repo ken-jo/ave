@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/onboarding/default-tour-scenarios.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/onboarding/default-tour-scenarios.ts.
 export const en = {
   "defaultTourScenarios.firstBootTitle": "Ave Getting Started Guide",
   "defaultTourScenarios.firstBootStep1Title": "Step 1 · Start a conversation",

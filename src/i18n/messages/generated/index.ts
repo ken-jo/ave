@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 175
+ * Fragments: 178
  */
 import { en as en_alerts } from "./alerts.js";
 import { en as en_app } from "./app.js";
@@ -75,6 +75,7 @@ import { en as en_be_structuredCompact } from "./be_structuredCompact.js";
 import { en as en_be_subagentRunner } from "./be_subagentRunner.js";
 import { en as en_be_systemPromptBuilder } from "./be_systemPromptBuilder.js";
 import { en as en_be_telegramBridge } from "./be_telegramBridge.js";
+import { en as en_be_terminalRead } from "./be_terminalRead.js";
 import { en as en_be_toolSearch } from "./be_toolSearch.js";
 import { en as en_be_tools } from "./be_tools.js";
 import { en as en_be_windowDomain } from "./be_windowDomain.js";
@@ -158,9 +159,11 @@ import { en as en_subAgentCard } from "./subAgentCard.js";
 import { en as en_subAgentTranscript } from "./subAgentTranscript.js";
 import { en as en_subscriptionProvidersSection } from "./subscriptionProvidersSection.js";
 import { en as en_suggestedRepliesGhost } from "./suggestedRepliesGhost.js";
+import { en as en_suggestedTasks } from "./suggestedTasks.js";
 import { en as en_summaryToast } from "./summaryToast.js";
 import { en as en_tailnetAccessTab } from "./tailnetAccessTab.js";
 import { en as en_telegramConnection } from "./telegramConnection.js";
+import { en as en_terminalBlocks } from "./terminalBlocks.js";
 import { en as en_tokenCostBadge } from "./tokenCostBadge.js";
 import { en as en_tokenProgressRing } from "./tokenProgressRing.js";
 import { en as en_toolActivity } from "./toolActivity.js";
@@ -252,6 +255,7 @@ export const generatedEn: Record<string, string> = {
   ...en_be_subagentRunner,
   ...en_be_systemPromptBuilder,
   ...en_be_telegramBridge,
+  ...en_be_terminalRead,
   ...en_be_toolSearch,
   ...en_be_tools,
   ...en_be_windowDomain,
@@ -335,9 +339,11 @@ export const generatedEn: Record<string, string> = {
   ...en_subAgentTranscript,
   ...en_subscriptionProvidersSection,
   ...en_suggestedRepliesGhost,
+  ...en_suggestedTasks,
   ...en_summaryToast,
   ...en_tailnetAccessTab,
   ...en_telegramConnection,
+  ...en_terminalBlocks,
   ...en_tokenCostBadge,
   ...en_tokenProgressRing,
   ...en_toolActivity,

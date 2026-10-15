@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/tools/routine-schedule.ts. Do not edit by hand.
+// i18n fragment. Source: src/tools/routine-schedule.ts.
 export const en = {
   "be_routineSchedule.toolDescription":
     "Registers a routine (automatic self-trigger) that fires at the scheduled time. " +

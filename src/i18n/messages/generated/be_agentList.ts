@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/tools/agent-list.ts. Do not edit by hand.
+// i18n fragment. Source: src/tools/agent-list.ts.
 export const en = {
   "be_agentList.toolDescription":
     "Returns the available Ave agent profiles AND this conversation's existing sub-agents (with their resumeId and state). Call this before agent_spawn: when asked to continue existing agents, resume the listed resumable entries with agent_spawn with their resumeId instead of spawning fresh ones. Sub-agents persisted from this conversation appear here after an app restart too — agent_status lists live runs only.",
