@@ -566,6 +566,53 @@ describe("pty-manager window close (close, then reopen and restore)", () => {
     expect(terminalOwnedBy("terminal:0000000a-2", 3)).toBe(true);
   });
 
+  it("drops a waiting restore when its window closes too: no shell starts for a window that is gone", async () => {
+    expect((await spawnTerminal({ tabId: "terminal:0000000a-4", ownerWindowId: 1 })).ok).toBe(true);
+    const old = lastPty!;
+    killTerminalsOwnedBy(1);
+    const waiting = spawnTerminal({ tabId: "terminal:0000000a-4", ownerWindowId: 3 });
+    // The waiting window holds the id: a third window cannot take it meanwhile.
+    expect(terminalOwnedBy("terminal:0000000a-4", 3)).toBe(true);
+    expect(terminalOwnedBy("terminal:0000000a-4", 5)).toBe(false);
+    expect(killTerminalsOwnedBy(3)).toBe(1);
+    expect(await waiting).toEqual({ ok: false, reason: "spawn-failed", message: "terminal spawn cancelled" });
+    old.emitExit(129);
+    await Promise.resolve();
+    expect(ptySpawnMock).toHaveBeenCalledTimes(1);
+    expect(__terminalSessionCountForTest()).toBe(0);
+    expect(terminalOwnedBy("terminal:0000000a-4", 5)).toBe(true);
+  });
+
+  it("bounds the whole wait by one deadline, also behind a cancelled spawn that is slow to settle", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseWrap!: () => void;
+      wrapWorkerCommandMock.mockImplementationOnce(() => new Promise((resolve) => {
+        releaseWrap = () => resolve({ argv: ["/bin/zsh"], env: {} });
+      }));
+      const starting = spawnTerminal({ tabId: "terminal:0000000a-5", ownerWindowId: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      killTerminalsOwnedBy(1);
+      const restored = spawnTerminal({ tabId: "terminal:0000000a-5", ownerWindowId: 3 });
+      await vi.advanceTimersByTimeAsync(4_999);
+      let settled = false;
+      void restored.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await restored).toEqual({
+        ok: false,
+        reason: "spawn-failed",
+        message: "the previous shell for this tab is still closing",
+      });
+      releaseWrap();
+      expect((await starting).ok).toBe(false);
+      expect(ptySpawnMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refuses clearly, rather than hanging, when the old shell will not exit", async () => {
     vi.useFakeTimers();
     try {

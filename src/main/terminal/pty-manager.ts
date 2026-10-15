@@ -232,6 +232,15 @@ function pushRing(session: TerminalSession, chunk: string): void {
  * the PTY survives ChatSidePanel unmount (redesign "state survives" goal).
  */
 export function spawnTerminal(options: SpawnTerminalOptions): Promise<SpawnTerminalResult> {
+  return spawnTerminalBefore(options, Date.now() + RETIRING_WAIT_MS);
+}
+
+/**
+ * {@link spawnTerminal} with one deadline for every wait on a closing shell
+ * under this id: a cancelled spawn can leave a closing session behind it, and
+ * waiting for that one must not start a second full wait.
+ */
+function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): Promise<SpawnTerminalResult> {
   const tabId = typeof options.tabId === "string" ? options.tabId : "";
   if (!tabId) {
     return Promise.resolve({ ok: false, reason: "bad-request", message: "missing tabId" });
@@ -259,11 +268,20 @@ export function spawnTerminal(options: SpawnTerminalOptions): Promise<SpawnTermi
   // A shell still closing under this id (its window closed, and that window's
   // saved layout is now being restored) is waited out, then a new one starts:
   // replaying the dying one would attach the tab to a shell about to exit.
-  const retiring = retiringTerminal(tabId);
+  // The wait is held under its window, so the window closing (or the tab
+  // closing) during it cancels it rather than starting a shell for no one.
+  const retiring = retiringTerminal(tabId, deadline);
   if (retiring) {
-    return retiring.then((gone) => gone
-      ? spawnTerminal(options)
-      : { ok: false, reason: "spawn-failed", message: "the previous shell for this tab is still closing" });
+    const waiter = addSpawnWaiter(tabId, ownerWindowId);
+    return Promise.race([retiring, waiter.cancelledSignal]).then((outcome) => {
+      removeSpawnWaiter(tabId, waiter);
+      if (outcome === "cancelled" || waiter.cancelled) {
+        return { ok: false, reason: "spawn-failed", message: "terminal spawn cancelled" } as const;
+      }
+      return outcome
+        ? spawnTerminalBefore(options, deadline)
+        : { ok: false, reason: "spawn-failed", message: "the previous shell for this tab is still closing" } as const;
+    });
   }
 
   // Idempotent replay for a remounting renderer.
@@ -537,6 +555,10 @@ export function terminalOwnedBy(tabId: string, ownerWindowId: number | null): bo
   if (session && !session.exited && !session.closing) return session.ownerWindowId === ownerWindowId;
   const inFlight = terminalSpawnsInFlight.get(tabId);
   if (inFlight && !inFlight.cancelled) return inFlight.ownerWindowId === ownerWindowId;
+  // A spawn waiting out a closing shell holds the id for its window.
+  for (const waiter of terminalSpawnWaiters.get(tabId) ?? []) {
+    if (!waiter.cancelled) return waiter.ownerWindowId === ownerWindowId;
+  }
   return true;
 }
 
@@ -563,23 +585,62 @@ export function resizeTerminal(tabId: string, cols: number, rows: number): void 
   session.pty.resize(clampDim(cols, 80, MAX_COLS), clampDim(rows, 24, MAX_ROWS));
 }
 
-/** How long a spawn waits for a closing shell under the same id; past the SIGKILL escalation. */
+/**
+ * How long a spawn may wait, in all, for closing shells under the same id;
+ * past the SIGKILL escalation.
+ */
 const RETIRING_WAIT_MS = 5_000;
+
+interface TerminalSpawnWaiter {
+  ownerWindowId: number | null;
+  cancelled: boolean;
+  cancel: () => void;
+  cancelledSignal: Promise<"cancelled">;
+}
+
+/** Spawns waiting for a closing shell under their id, by tab id. */
+const terminalSpawnWaiters = new Map<string, Set<TerminalSpawnWaiter>>();
+
+function addSpawnWaiter(tabId: string, ownerWindowId: number | null): TerminalSpawnWaiter {
+  let resolveCancelled!: (value: "cancelled") => void;
+  const waiter: TerminalSpawnWaiter = {
+    ownerWindowId,
+    cancelled: false,
+    cancelledSignal: new Promise<"cancelled">((resolve) => { resolveCancelled = resolve; }),
+    cancel: () => {
+      waiter.cancelled = true;
+      resolveCancelled("cancelled");
+    },
+  };
+  const waiters = terminalSpawnWaiters.get(tabId) ?? new Set<TerminalSpawnWaiter>();
+  waiters.add(waiter);
+  terminalSpawnWaiters.set(tabId, waiters);
+  return waiter;
+}
+
+function removeSpawnWaiter(tabId: string, waiter: TerminalSpawnWaiter): void {
+  const waiters = terminalSpawnWaiters.get(tabId);
+  if (!waiters) return;
+  waiters.delete(waiter);
+  if (waiters.size === 0) terminalSpawnWaiters.delete(tabId);
+}
 
 /**
  * Resolves `true` once the closing shell or cancelled spawn under `tabId` is
- * gone, `false` if it outlives {@link RETIRING_WAIT_MS}; `null` when nothing
- * under that id is closing.
+ * gone, `false` if it outlives `deadline`; `null` when nothing under that id
+ * is closing.
  */
-function retiringTerminal(tabId: string): Promise<boolean> | null {
+function retiringTerminal(tabId: string, deadline: number): Promise<boolean> | null {
   const session = sessions.get(tabId);
   const inFlight = terminalSpawnsInFlight.get(tabId);
   let settled: Promise<unknown> | null = null;
   if (session && session.closing && !session.exited) settled = session.gone;
   else if (inFlight && inFlight.cancelled) settled = inFlight.promise.catch(() => undefined);
   if (!settled) return null;
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return Promise.resolve(false);
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const timeout = new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), RETIRING_WAIT_MS); });
+  const timeout = new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), remaining); });
   return Promise.race([settled.then(() => true), timeout]).finally(() => {
     if (timer !== null) clearTimeout(timer);
   });
@@ -598,6 +659,15 @@ export function killTerminalsOwnedBy(ownerWindowId: number): number {
   for (const [id, inFlight] of terminalSpawnsInFlight) {
     if (inFlight.ownerWindowId === ownerWindowId && !inFlight.cancelled) ids.add(id);
   }
+  // Spawns still waiting out a closing shell would start one for no window.
+  for (const [id, waiters] of terminalSpawnWaiters) {
+    for (const waiter of waiters) {
+      if (waiter.ownerWindowId === ownerWindowId && !waiter.cancelled) {
+        waiter.cancel();
+        ids.add(id);
+      }
+    }
+  }
   for (const id of ids) killTerminal(id);
   if (ids.size > 0) log.info({ ownerWindowId, count: ids.size }, "terminal: closed the terminals of a closed window");
   return ids.size;
@@ -606,6 +676,7 @@ export function killTerminalsOwnedBy(ownerWindowId: number): number {
 /** Kill + tear down one terminal (tab close / teardown). Idempotent. */
 export function killTerminal(tabId: string): void {
   unregisterTerminalBlockTracker(tabId);
+  for (const waiter of terminalSpawnWaiters.get(tabId) ?? []) waiter.cancel();
   const inFlight = terminalSpawnsInFlight.get(tabId);
   if (inFlight) {
     inFlight.cancelled = true;
@@ -739,6 +810,8 @@ export function __resetTerminalsForTest(): void {
   sessions.clear();
   for (const owner of terminalSpawnsInFlight.values()) owner.cancelled = true;
   terminalSpawnsInFlight.clear();
+  for (const waiters of terminalSpawnWaiters.values()) for (const waiter of waiters) waiter.cancel();
+  terminalSpawnWaiters.clear();
   terminalShutdownStarted = false;
   __resetTerminalBlocksForTest();
   _emit = () => {};
