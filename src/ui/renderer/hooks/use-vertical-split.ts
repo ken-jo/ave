@@ -12,8 +12,7 @@ import {
 export type VerticalSplitStorageKey =
   | "sidePanelSplitFilePercent"
   | "sidePanelSplitPreviewPercent"
-  | "sidePanelSplitSubagentPercent"
-  | "sidePanelSplitBrowserPercent";
+  | "sidePanelSplitSubagentPercent";
 
 export interface UseVerticalSplitResult {
   /** Current TOP-pane percent (drag-live), clamped to the pane range. */

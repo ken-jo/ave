@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { beginSurfaceDrag, endSurfaceDrag } from "../preview/web-surfaces.js";
 
 /**
  * Shared drag-to-resize primitive for edge-anchored panels (the left
@@ -101,6 +102,9 @@ export function useEdgeResize({
       event.preventDefault();
       (event.currentTarget as Element).setPointerCapture?.(event.pointerId);
       cleanupRef.current?.();
+      // A web page under the pointer would take the drag's moves and its
+      // release; the surface layer stands aside until the drag ends.
+      beginSurfaceDrag();
       const along = (point: { clientX: number; clientY: number }) =>
         axis === "x" ? point.clientX : point.clientY;
       const start = along(event);
@@ -126,6 +130,7 @@ export function useEdgeResize({
         window.removeEventListener("pointercancel", cleanup);
         if (raf) cancelAnimationFrame(raf);
         cleanupRef.current = null;
+        endSurfaceDrag();
         onWidthCommit(liveRef.current);
       };
       cleanupRef.current = cleanup;

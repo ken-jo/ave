@@ -1,4 +1,5 @@
-import type { CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
+import { registerWebSurfaceOccluder } from "../preview/web-surfaces.js";
 import { useEdgeResize, type UseEdgeResizeOptions } from "../hooks/use-edge-resize.js";
 
 export interface EdgeResizeBarProps extends UseEdgeResizeOptions {
@@ -62,6 +63,12 @@ export function EdgeResizeBar({
     applyElementRef,
   });
 
+  // A bar can sit on a web page's edge (the side panel's inset handle lies
+  // inside the card, over the page's first pixels). Pages are drawn above the
+  // app, so the bar is cut out of any page it overlaps — the pointer reaches it.
+  const [bar, setBar] = useState<HTMLDivElement | null>(null);
+  useEffect(() => (bar ? registerWebSurfaceOccluder(bar) : undefined), [bar]);
+
   const straddle = variant === "straddle";
   const placement = axis === "x"
     ? [
@@ -78,6 +85,7 @@ export function EdgeResizeBar({
     ];
   return (
     <div
+      ref={setBar}
       role="separator"
       aria-orientation={axis === "x" ? "vertical" : "horizontal"}
       aria-label={ariaLabel}

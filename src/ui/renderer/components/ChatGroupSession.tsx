@@ -955,6 +955,7 @@ export function ChatGroupSession({
     <ChatContextProvider value={chatContextValue}>
       <ChatView
         api={api}
+        chatGroupId={chatGroupId}
         onAsk={(q, intent, opts) => handleAsk(q, "default", intent, opts)}
         /* opts 의 inputOrigin / injectHint 가 그대로 handleAsk 4번째
            인자로 전달 — queue-auto inject path 활성. */
