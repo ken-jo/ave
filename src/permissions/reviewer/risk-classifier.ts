@@ -350,7 +350,7 @@ const REVERSIBLE_SHELL_RE =
  * suffix list below.
  */
 const TRUSTED_NETWORK_HOSTS: ReadonlySet<string> = new Set([
-  "former-site.invalid",
+  "ave.agent-connector.ai",
   "api.openai.com",
   "api.anthropic.com",
   "generativelanguage.googleapis.com",

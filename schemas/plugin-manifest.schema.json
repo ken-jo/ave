@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://sdk.former-site.invalid/schemas/plugin.schema.json",
+  "$id": "https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json",
   "title": "Ave Plugin Manifest (Agent Plugins 1.0.0)",
   "description": "Manifest shape for extensions and agent plugins. Runtime and marketplace boundaries apply their own required metadata.",
   "type": "object",

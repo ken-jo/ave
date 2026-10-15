@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://sdk.former-site.invalid/schemas/skill.schema.json",
+  "$id": "https://ave.agent-connector.ai/schemas/skill/1/skill.schema.json",
   "title": "Ave Skill Package Manifest",
   "description": "The plugin.json of a standalone skill package distributed through the Ave marketplace. The package is a directory holding this manifest next to SKILL.md. The skill itself — what SKILL.md's front matter declares — is described once, in $defs/skillComponent, and that same definition governs a skill bundled inside an Agent Plugins 1.0.0 plugin through the manifest's skills[] directory declarations. The package manifest reuses the component's fields by $ref, so the standalone path and the bundled path cannot drift apart. The Ave host owns this schema (design §5.6): src/main/skill-store.ts implements $defs/skillComponent, and its contract test reads the rule from this file. Marketplace delivery describes a skill package with its ave-package.json descriptor instead of this manifest.",
   "type": "object",
@@ -14,7 +14,7 @@
   "properties": {
     "$schema": {
       "type": "string",
-      "const": "https://sdk.former-site.invalid/schemas/skill.schema.json",
+      "const": "https://ave.agent-connector.ai/schemas/skill/1/skill.schema.json",
       "description": "Schema URI used to classify skill packages. Pinned to this schema's $id."
     },
     "id": {

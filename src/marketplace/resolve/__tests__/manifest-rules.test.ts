@@ -87,6 +87,15 @@ describe("git-install manifest rules (design §5.3)", () => {
     expect(gitInstallManifestMismatches({ name: "alpha", version: "1.2.0" }, expected())).toEqual(['extensions["ai.agent-connector.ave"] is missing']);
   });
 
+  it("names the renamed extension key on its own and beside the current one", () => {
+    const renamed = "extensions.ai.agent-connector.ave was renamed to extensions.ai.agent-connector.ave; update the manifest";
+    const current = manifest();
+    const legacyOnly = { ...current, extensions: { "xyz.retiredname-namespace": (current.extensions as Record<string, unknown>)["ai.agent-connector.ave"] } };
+    const both = { ...current, extensions: { ...(current.extensions as Record<string, unknown>), "xyz.retiredname-namespace": {} } };
+    expect(gitInstallManifestMismatches(legacyOnly, expected())).toEqual([renamed]);
+    expect(gitInstallManifestMismatches(both, expected())).toEqual([renamed]);
+  });
+
   it("throws MANIFEST_MISMATCH naming every problem", () => {
     try {
       assertGitInstallManifest(manifest({ capabilities: [] }), expected());

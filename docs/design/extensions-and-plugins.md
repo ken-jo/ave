@@ -11,7 +11,8 @@ An extension for app 0.14.0 or later declares
 `schemas/plugin-host-protocol/3/protocol.schema.json`, and a package is published
 with an `ave-package.json` descriptor; the user data folder is `~/.ave`. A protocol `2`
 package (the `ave/*` wire of apps 0.12–0.13) is refused before activation. The
-`ai.agent-connector.ave` manifest key and directory are unchanged. Where §6.3-6.4 below say
+`ai.agent-connector.ave` manifest key and package directory (Ave's domain reversed) replace
+Ave's `ai.agent-connector.ave` with no alias. Where §6.3-6.4 below say
 `hostProtocol: "2"`, they record the 0.12.0 Lease wave, not the current rule.
 
 Status: design, decided by owner direction of 2026-09-27 and the owner decisions
@@ -1323,7 +1324,7 @@ Vocabulary only, in the surfaces that speak to users and readers:
 | Tool names (`^[a-zA-Z_][a-zA-Z0-9_]*$`) | unchanged | They are the model-facing surface and the permission rules' keys; the three namespaces stay distinct without runtime conversion (`AGENTS.md:189-190`) |
 | IPC channels `ave:plugins:*`, `ave:marketplace:*` | unchanged | Locked by the channel inventory (`src/ipc/__tests__/channel-inventory.test.ts:1-8`) and the preload shape (`src/__tests__/preload-shape.test.ts:1-9`); a rename is a coherent handler/preload/type/caller/test change that buys nothing users see |
 | `plugin.json` file name | unchanged | Agent Plugins §5.1 mandates it for both extensions and plugins; it is the specification's name, not Ave's |
-| `extensions["ai.agent-connector.ave"]` key | unchanged | The client namespace the specification reserves (§8); vendored by every extension repository and hash-checked (marketplace design §5.6). The proposal's `ave-plugin.json` rename (proposal §3.2) is rejected: the collision it feared is resolved by the namespace, which the manifest already uses (`public-contract.ts:38-39`, `:47`) |
+| `extensions[...]` namespace mechanism | unchanged; the key moved once, to `ai.agent-connector.ave`, with 0.14.0's re-vendoring | The client namespace the specification reserves (§8); vendored by every extension repository and hash-checked (marketplace design §5.6). The proposal's `ave-plugin.json` rename (proposal §3.2) is rejected: the collision it feared is resolved by the namespace, which the manifest already uses (`public-contract.ts:38-39`, `:47`) |
 | Install receipts (`installSource`, schema v3/v4, `artifactSha256`, `manifestSha256`) | unchanged | Persisted values that the grant chain and the Doctor read (marketplace design §2.3, §10.3); AGENTS.md treats shipped audit and persisted keys as migration decisions, not renames |
 | Descriptor and index kind literal `plugin` | unchanged | Every snapshot, ledger row, policy `requiredInstalls[].kind`, deep link and index carries it; renaming it is the older-app trap of §5.2 |
 | i18n **keys** (`sidebar.pluginsLabel`, `gitMarketplace.kind.plugin`, …) | unchanged | Keys are identifiers the catalog gates and the used-keys test match on (`src/i18n/__tests__/used-keys-exist.test.ts:35-62`); only values change |

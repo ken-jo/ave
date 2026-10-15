@@ -125,7 +125,7 @@ describe("the schema names what the host serves, and nothing else", () => {
       version: string;
     };
     expect(SCHEMA.$id).toBe(
-      `https://former-site.invalid/schemas/plugin-host-protocol/3/v${version}/protocol.schema.json`,
+      `https://ave.agent-connector.ai/schemas/plugin-host-protocol/3/v${version}/protocol.schema.json`,
     );
   });
 
