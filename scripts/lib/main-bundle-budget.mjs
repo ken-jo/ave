@@ -61,10 +61,12 @@ export function isSafeMainBundleManifestPath(path) {
  * ceiling moves to 5_300_000. Joined again with main after skills-on-demand, chat-ux and
  * release-ci, the measurement is entry 419_912, initial 5_313_199, total 8_951_548, and
  * the initial ceiling moves to 5_315_000.
+ * Remote-connection joined with that main measures entry 423_044, initial 5_326_014,
+ * total 8_967_523, and the initial ceiling moves to 5_330_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_315_000,
+  initialBytes: 5_330_000,
   totalBytes: 11_050_000,
 });
 

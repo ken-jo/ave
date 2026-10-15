@@ -38,5 +38,6 @@ if (argv.some(isPermissionAuditSelfTestArg)) {
   }
 } else {
   configureHeadlessRuntimeIdentity(projectRoot);
-  await import("./headless-host.js");
+  const { runHeadlessHost } = await import("./headless-host.js");
+  runHeadlessHost();
 }

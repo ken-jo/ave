@@ -24,6 +24,7 @@ vi.mock("../../api-client.js", () => ({
     getSettings: async () => ({ system: {}, features: {} }),
     updateSettings: async () => ({}),
     envForcedSettings: async () => [],
+    remoteA2a: { status: async () => ({ ok: false, error: "a2a-remote-disabled" }) },
   }),
 }));
 
@@ -105,6 +106,9 @@ function makeApi(options: {
     })),
     updateSettings: vi.fn(async () => ({ ok: true })),
     openExternalUrl: vi.fn(async () => undefined),
+    remoteA2a: {
+      status: vi.fn(async () => ({ ok: false as const, error: "a2a-remote-disabled" })),
+    },
     tailnetObserver: {
       snapshot: vi.fn(async () => ({ ok: true as const, snapshot: observerSnapshot() })),
       apply: vi.fn(async () => ({ ok: true as const })),
@@ -280,6 +284,72 @@ describe("RemoteSurfacesTab", () => {
       .toBe(`https://${DNS_NAME}`);
   });
 
+  describe("the folded Tailnet line", () => {
+    const LISTENING = {
+      effective: { ...OBSERVER_CONFIG, enabled: true },
+      listeningPort: 46_173,
+    };
+
+    async function rowStateFor(snapshot: Record<string, unknown> | "rejected" | "unavailable") {
+      const { api } = makeApi();
+      const read = vi.mocked(api.tailnetObserver.snapshot);
+      if (snapshot === "rejected") read.mockRejectedValue(new Error("ipc closed"));
+      else if (snapshot === "unavailable") {
+        read.mockResolvedValue({ ok: false, error: "tailnet-observer-unavailable" } as never);
+      } else read.mockResolvedValue({ ok: true, snapshot: { ...observerSnapshot(), ...snapshot } } as never);
+      const view = render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+      let text = "";
+      await waitFor(() => {
+        text = screen.getByTestId("connection:tailnet:state").textContent ?? "";
+        expect(text).not.toBe("");
+      });
+      view.unmount();
+      return text;
+    }
+
+    it("reads connected only once the listener is up and behind Serve", async () => {
+      expect(await rowStateFor({
+        ...LISTENING,
+        environment: { ...observerSnapshot().environment, serveConfigured: true, serveTargetPort: 46_173 },
+      })).toBe("연결됨");
+      // Listening but not fronted by Serve: reachable from this desktop only.
+      expect(await rowStateFor(LISTENING)).toBe("설정 필요");
+      expect(await rowStateFor({
+        ...LISTENING,
+        environment: { ...observerSnapshot().environment, serveConfigured: true, serveTargetPort: 9_999 },
+      })).toBe("설정 필요");
+    });
+
+    it("reads every failure the open section reports as needing attention", async () => {
+      expect(await rowStateFor({ effective: { ...OBSERVER_CONFIG, enabled: true }, lastStartError: "tailnet-observer-port-in-use" }))
+        .toBe("확인 필요");
+      expect(await rowStateFor({ configFileError: "tailnet-observer-config-unreadable" })).toBe("확인 필요");
+      expect(await rowStateFor({ pairedSharingBootstrapFailed: true })).toBe("확인 필요");
+      expect(await rowStateFor({
+        ...LISTENING,
+        environment: { ...observerSnapshot().environment, state: "cli-failed", detail: "tailscaled not running" },
+      })).toBe("확인 필요");
+    });
+
+    it("reads a status read that failed or threw as needing attention", async () => {
+      expect(await rowStateFor("unavailable")).toBe("확인 필요");
+      expect(await rowStateFor("rejected")).toBe("확인 필요");
+    });
+  });
+
+  it("does not claim a local-API count it could not read", async () => {
+    const { api } = makeApi();
+    vi.mocked(api.getSettings).mockRejectedValue(new Error("ipc closed"));
+    render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("connection:local-api:state").textContent).toBe("확인 필요");
+    });
+    expect(screen.queryByTestId("connection:local-api:endpoint")?.textContent ?? "").not.toContain("0");
+    // The Tailnet row is read independently and still answers.
+    expect(screen.getByTestId("connection:tailnet:state").textContent).toBe("설정 필요");
+  });
+
   it("counts the local-API opt-ins on its own line rather than hiding them", async () => {
     const { api } = makeApi();
     render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
@@ -290,5 +360,46 @@ describe("RemoteSurfacesTab", () => {
     });
     expect(screen.getByTestId("connection:local-api:endpoint").textContent)
       .toBe("127.0.0.1 · 4개 중 0개 켜짐");
+  });
+
+  describe("the local-API row reads the remote A2A runtime, not only its switch", () => {
+    async function localApiRowFor(status: "start-failed" | "disabled" | "rejected" | "restart-pending") {
+      const { api } = makeApi();
+      vi.mocked(api.getSettings).mockResolvedValue({
+        marketplace: { installedMessagingConnections: [TELEGRAM] },
+        system: {},
+        features: { a2aRemoteRouting: true },
+      } as never);
+      const read = vi.mocked(api.remoteA2a.status);
+      if (status === "rejected") read.mockRejectedValue(new Error("ipc closed"));
+      else if (status === "restart-pending") {
+        read.mockResolvedValue({ ok: false, error: "a2a-remote-disabled", restartPending: true });
+      }
+      else if (status === "start-failed") {
+        read.mockResolvedValue({ ok: false, error: "a2a-remote-start-failed", reason: "a2a-remote-outbound-config-incomplete" });
+      }
+      const view = render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+      let text = "";
+      await waitFor(() => {
+        text = screen.getByTestId("connection:local-api:state").textContent ?? "";
+        expect(text).not.toBe("");
+      });
+      view.unmount();
+      return text;
+    }
+
+    it("reads a switched-on gate whose runtime did not start as needing attention", async () => {
+      expect(await localApiRowFor("start-failed")).toBe("확인 필요");
+    });
+
+    it("reads a switch flipped since launch as pending a restart, not connected", async () => {
+      expect(await localApiRowFor("restart-pending")).toBe("대기 중");
+    });
+
+    it("keeps reading a switched-on gate as connected when nothing failed to start", async () => {
+      expect(await localApiRowFor("disabled")).toBe("연결됨");
+      // A status read that itself failed claims nothing either way.
+      expect(await localApiRowFor("rejected")).toBe("연결됨");
+    });
   });
 });

@@ -300,9 +300,26 @@ export type UsageSummaryShape = {
   generatedAt: string;
 };
 
+/**
+ * `reason` accompanies only `a2a-remote-start-failed`: the clamped `a2a-remote-*`
+ * code naming why a switched-on gate did not start this run.
+ */
+type RemoteA2AFailure = { ok: false; error: string; reason?: string };
+
+/**
+ * The status channel also says whether the saved remote A2A switches differ
+ * from the ones this run booted with (a change waiting for a restart). Absent
+ * on the other channels, and when main could not read the saved switches.
+ */
+type RemoteA2ARuntimeFields = {
+  restartPending?: boolean;
+  /** The inbound receiver's loopback port this launch; null while it is not running. */
+  receiverPort?: number | null;
+};
+
 type RemoteA2AStatusResult =
-  | { ok: true; status: RemoteA2AActionStatus }
-  | { ok: false; error: string };
+  | ({ ok: true; status: RemoteA2AActionStatus } & RemoteA2ARuntimeFields)
+  | (RemoteA2AFailure & RemoteA2ARuntimeFields);
 
 type RemoteA2AActionCall = {
   (action: "resume", taskHandle: string, userIntent: string): Promise<RemoteA2AStatusResult>;
@@ -464,11 +481,12 @@ export type AveApi = {
   remoteA2a: {
     targets: () => Promise<
       | { ok: true; targets: Array<{ targetAgentId: number; label: string }> }
-      | { ok: false; error: string }
+      | RemoteA2AFailure
     >;
     status: () => Promise<RemoteA2AStatusResult>;
     send: (targetAgentId: number, userIntent: string) => Promise<RemoteA2AStatusResult>;
     task: (taskHandle: string) => Promise<RemoteA2AStatusResult>;
+    tasks: () => Promise<{ ok: true; tasks: RemoteA2AActionStatus[] } | RemoteA2AFailure>;
     action: RemoteA2AActionCall;
   };
   tailnetSharing: TailnetSharingOwnerApi;

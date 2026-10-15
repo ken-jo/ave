@@ -9,6 +9,7 @@ import {
 } from "./MessagingConnectionsSection.js";
 import { TailnetAccessContent } from "./TailnetAccessContent.js";
 import type { AveApi } from "../types.js";
+import type { TailnetObserverSnapshot } from "../../../shared/tailnet-observer-config.js";
 
 export interface RemoteSurfacesTabProps {
   api: AveApi;
@@ -39,6 +40,9 @@ const LOCAL_API_ROW = "connection:local-api";
  */
 const LOCAL_API_HOST = "127.0.0.1";
 
+/** What main answers when a switched-on remote A2A gate did not start this run. */
+const REMOTE_A2A_START_FAILED = "a2a-remote-start-failed";
+
 /** The four opt-ins the local-API row summarizes and its body switches. */
 const LOCAL_API_GATE_COUNT = 4;
 
@@ -60,15 +64,40 @@ interface HostSurfaceReadings {
   readonly tailnet: ConnectionRowState | null;
   readonly tailnetOrigin: string | null;
   readonly localApi: ConnectionRowState | null;
-  readonly localApiGatesOn: number;
+  /** Null when the settings could not be read, so no count is claimed. */
+  readonly localApiGatesOn: number | null;
 }
 
 const UNREAD: HostSurfaceReadings = Object.freeze({
   tailnet: null,
   tailnetOrigin: null,
   localApi: null,
-  localApiGatesOn: 0,
+  localApiGatesOn: null,
 });
+
+/**
+ * What the collapsed Tailnet line says.
+ *
+ * A failure the expanded section already reports in red — a listener that did
+ * not start, a configuration file that could not be read, paired sharing that
+ * failed at boot, or Tailscale itself not answering — is "needs attention" on
+ * the folded line too. Reading those as "setup needed" told an owner whose
+ * listener had crashed that they simply had not turned it on yet. A listener
+ * that is up but not yet behind Tailscale Serve is reachable from nowhere but
+ * this desktop, which is a setup step still to take, not a connection.
+ */
+function tailnetRowState(snapshot: TailnetObserverSnapshot): ConnectionRowState {
+  if (snapshot.configFileError !== null
+    || snapshot.lastStartError !== null
+    || snapshot.pairedSharingBootstrapFailed) {
+    return "attention";
+  }
+  if (!snapshot.effective.enabled || snapshot.listeningPort === null) return "needs-setup";
+  if (snapshot.environment.state !== "ready") return "attention";
+  const serveOn = snapshot.environment.serveConfigured
+    && snapshot.environment.serveTargetPort === snapshot.listeningPort;
+  return serveOn ? "connected" : "needs-setup";
+}
 
 /**
  * The owner-facing home for surfaces that observe or drive this desktop's
@@ -116,28 +145,47 @@ export function RemoteSurfacesTab({ api, chatGroupId, sectionTarget = null }: Re
   useEffect(() => {
     let alive = true;
     void (async () => {
-      const [observer, settings] = await Promise.all([
+      // Settled separately: one read failing must not leave the other row
+      // unread, and a rejected read is a state to show, not an unhandled
+      // rejection that leaves both lines blank.
+      const [observerRead, settingsRead, remoteA2ARead] = await Promise.allSettled([
         api.tailnetObserver.snapshot(),
         api.getSettings(),
+        api.remoteA2a.status(),
       ]);
       if (!alive) return;
-      const gatesOn = [
+      const observer = observerRead.status === "fulfilled" && observerRead.value.ok
+        ? observerRead.value.snapshot
+        : null;
+      const settings = settingsRead.status === "fulfilled" ? settingsRead.value : null;
+      const gatesOn = settings === null ? null : [
         settings.system?.localApiServer,
         settings.features?.a2aLoopbackServer,
         settings.features?.a2aRemoteRouting,
         settings.features?.a2aRemoteReceiver,
       ].filter((gate) => gate === true).length;
+      // The switches say what the owner asked for; this says whether the remote
+      // A2A runtime behind two of them actually came up. A switch that is on
+      // over a runtime that failed to start is not "connected". A status read
+      // that itself failed claims nothing either way.
+      const remoteA2AStartFailed = remoteA2ARead.status === "fulfilled"
+        && !remoteA2ARead.value.ok
+        && remoteA2ARead.value.error === REMOTE_A2A_START_FAILED;
+      // A switch moved since launch is configured but not running: the owner's
+      // next move is a restart, which is what "pending" means on this row.
+      const remoteA2ARestartPending = remoteA2ARead.status === "fulfilled"
+        && remoteA2ARead.value.restartPending === true;
       setReadings({
-        tailnet: !observer.ok
-          ? "attention"
-          : observer.snapshot.effective.enabled && observer.snapshot.listeningPort !== null
-            ? "connected"
-            : "needs-setup",
-        tailnetOrigin: observer.ok ? observer.snapshot.derivedWebOrigin : null,
+        tailnet: observer === null ? "attention" : tailnetRowState(observer),
+        tailnetOrigin: observer?.derivedWebOrigin ?? null,
         // Off rather than "setup needed": these four are the owner's own
         // switches, and all of them down is a resting state, not an unfinished
         // one.
-        localApi: gatesOn > 0 ? "connected" : "off",
+        localApi: gatesOn === null || remoteA2AStartFailed
+          ? "attention"
+          : remoteA2ARestartPending
+            ? "pending"
+            : gatesOn > 0 ? "connected" : "off",
         localApiGatesOn: gatesOn,
       });
     })();
@@ -145,7 +193,7 @@ export function RemoteSurfacesTab({ api, chatGroupId, sectionTarget = null }: Re
   }, [api, expandedRowIds]);
 
   const localApiSubline = useMemo(
-    () => (readings.localApi === null ? null : t("localApiSurfaces.rowSubline", {
+    () => (readings.localApiGatesOn === null ? null : t("localApiSurfaces.rowSubline", {
       host: LOCAL_API_HOST,
       enabled: String(readings.localApiGatesOn),
       total: String(LOCAL_API_GATE_COUNT),

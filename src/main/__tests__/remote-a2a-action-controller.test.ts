@@ -86,6 +86,44 @@ describe("production remote A2A action controller", () => {
     expect(value.execute).toHaveBeenCalledWith(expect.objectContaining({ operation: "replay", operationId: "initial-op", intendedCredentialRevisionId: 12, predecessorCredentialRevisionId: 11, messageId: "initial-message" }));
   });
 
+  it("keeps a known Task actionable after Refresh, Resume, Cancel and their refusals", async () => {
+    const value = runtime();
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+    await expect(controller.get({ taskHandle: "task_handle_123456" })).resolves.toMatchObject({ state: "sent", taskAvailable: true, taskState: A2ATaskState.WORKING });
+    await expect(controller.resume({ taskHandle: "task_handle_123456", intent: "continue" })).resolves.toMatchObject({ state: "sent", taskAvailable: true });
+    await expect(controller.cancel({ taskHandle: "task_handle_123456" })).resolves.toMatchObject({ state: "sent", taskAvailable: true });
+
+    const failing = runtime({ execute: vi.fn(async () => ({ ok: false, outcome: "authentication-failed" })) });
+    const failingController = createRemoteA2AActionController({ runtime: failing as never, config, projectRoot: "/project", makeId: ids() });
+    await expect(failingController.get({ taskHandle: "task_handle_123456" })).resolves.toMatchObject({ state: "failed", taskAvailable: true, outcome: "authentication-failed" });
+
+    const blocked = runtime({ taskActionDisposition: vi.fn(async () => ({ kind: "blocked", outcome: "transport-ambiguous" })) });
+    const blockedController = createRemoteA2AActionController({ runtime: blocked as never, config, projectRoot: "/project", makeId: ids() });
+    await expect(blockedController.cancel({ taskHandle: "task_handle_123456" })).resolves.toMatchObject({ state: "failed", taskAvailable: true });
+  });
+
+  it("keeps the Task actionable when a second action arrives while one is in flight", async () => {
+    let release!: () => void;
+    const value = runtime({ execute: vi.fn(() => new Promise((resolve) => { release = () => resolve({ ok: true, result: {}, record: {} }); })) });
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+    const first = controller.get({ taskHandle: "task_handle_123456" });
+    await vi.waitFor(() => expect(value.execute).toHaveBeenCalledOnce());
+    await expect(controller.get({ taskHandle: "task_handle_123456" })).resolves.toMatchObject({ state: "failed", outcome: "a2a-remote-busy", taskAvailable: true });
+    release();
+    await expect(first).resolves.toMatchObject({ state: "sent", taskAvailable: true });
+  });
+
+  it("offers Task actions after a replay only when the replay produced a host-held Task", async () => {
+    const recoveryRoute = { handle: "recovery_handle_123", operationId: "initial-op", targetAgentId: 1, targetLabel: "Agent one", lineage, messageId: "initial-message", credentialRevisionId: 11 };
+    const withTask = runtime({ getOperationRecoveryRoute: vi.fn(async () => recoveryRoute) });
+    await expect(createRemoteA2AActionController({ runtime: withTask as never, config, projectRoot: "/project", makeId: ids() })
+      .replay({ taskHandle: "recovery_handle_123" })).resolves.toMatchObject({ state: "sent", taskAvailable: true, taskState: A2ATaskState.WORKING });
+
+    const withoutTask = runtime({ getOperationRecoveryRoute: vi.fn(async () => recoveryRoute), getTaskProjection: vi.fn(async () => null) });
+    await expect(createRemoteA2AActionController({ runtime: withoutTask as never, config, projectRoot: "/project", makeId: ids() })
+      .replay({ taskHandle: "recovery_handle_123" })).resolves.toMatchObject({ state: "sent", taskAvailable: false });
+  });
+
   it("reuses an authorized active revision when no rotation successor exists and rejects stale revisions", async () => {
     const sameRevisionConfig = { ...config, targets: [{ ...config.targets[0]!, replayCredentialRevisionIds: [] }] };
     const same = runtime({ getOperationRecoveryRoute: vi.fn(async () => ({ handle: "recovery_handle_123", operationId: "initial-op", targetAgentId: 1, targetLabel: "Agent one", lineage, messageId: "initial-message", credentialRevisionId: 11 })) });
@@ -145,5 +183,110 @@ describe("production remote A2A action controller", () => {
       outcome: "a2a-remote-replay-failed",
     });
     expect(replayRuntime.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the Task's Get/Cancel fields when a replay throws, like every other failure path", async () => {
+    const recoveryRoute = { handle: "recovery_handle_123", operationId: "initial-op", targetAgentId: 1, targetLabel: "Agent one", lineage, messageId: "initial-message", credentialRevisionId: 11 };
+    const known = runtime({
+      execute: vi.fn(async () => { throw new Error("private-replay-provider-detail"); }),
+      getOperationRecoveryRoute: vi.fn(async () => recoveryRoute),
+    });
+    const knownController = createRemoteA2AActionController({ runtime: known as never, config, projectRoot: "/project", makeId: ids() });
+    await expect(knownController.replay({ taskHandle: "recovery_handle_123" })).resolves.toMatchObject({
+      state: "failed",
+      outcome: "a2a-remote-replay-failed",
+      recoveryEligible: true,
+      taskAvailable: true,
+      taskState: A2ATaskState.WORKING,
+    });
+
+    // An unreadable projection is no Task, not a guessed one.
+    const unreadable = runtime({
+      execute: vi.fn(async () => { throw new Error("private-replay-provider-detail"); }),
+      getOperationRecoveryRoute: vi.fn(async () => recoveryRoute),
+      getTaskProjection: vi.fn(async () => { throw new Error("private-store-detail"); }),
+    });
+    const unreadableController = createRemoteA2AActionController({ runtime: unreadable as never, config, projectRoot: "/project", makeId: ids() });
+    const status = await unreadableController.replay({ taskHandle: "recovery_handle_123" });
+    expect(status).toMatchObject({ state: "failed", outcome: "a2a-remote-replay-failed", taskAvailable: false, recoveryEligible: true });
+    expect(status).not.toHaveProperty("taskState");
+    expect(JSON.stringify(status)).not.toContain("private-store-detail");
+  });
+
+  it("runs a double-clicked Resume once, and lets a never-sent one be tried again", async () => {
+    let release: (() => void) | undefined;
+    const execute = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve({ ok: false, outcome: "not-sent" }); }))
+      .mockResolvedValue({ ok: true, result: { message: {} }, record: {} });
+    // The store releases the slot once the first attempt is NOT_SENT.
+    const value = runtime({ execute });
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+
+    const first = controller.resume({ taskHandle: "task_handle_123456", intent: "continue please" });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    await expect(controller.resume({ taskHandle: "task_handle_123456", intent: "continue please" }))
+      .resolves.toMatchObject({ state: "failed", outcome: "a2a-remote-busy", taskAvailable: true });
+    release!();
+    await expect(first).resolves.toMatchObject({ state: "failed", outcome: "not-sent", taskAvailable: true });
+    expect(execute).toHaveBeenCalledTimes(1);
+
+    await expect(controller.resume({ taskHandle: "task_handle_123456", intent: "continue please" }))
+      .resolves.toMatchObject({ state: "sent" });
+    expect(execute).toHaveBeenCalledTimes(2);
+    // A fresh operation, never the never-sent one re-driven.
+    const ops = execute.mock.calls.map((call) => (call[0] as { operationId: string }).operationId);
+    expect(new Set(ops).size).toBe(2);
+  });
+
+  it("keeps one status per Task, newest first, each carrying the reply the store projects", async () => {
+    const reply = { text: "Here is the answer.", truncated: false, artifactCount: 0, redactions: 0 };
+    const value = runtime({ getTaskProjection: vi.fn(async (handle: string) => ({ handle, targetAgentId: 1, targetLabel: "Agent one", state: A2ATaskState.WORKING, updatedAt: "2026-07-16T00:00:00.000Z", terminal: false, reply })) });
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+
+    const first = await controller.send({ targetAgentId: 1, intent: "first" });
+    const second = await controller.send({ targetAgentId: 1, intent: "second" });
+    expect(first.reply).toEqual(reply);
+    expect(first.taskHandle).not.toBe(second.taskHandle);
+    expect(controller.tasks().map((status) => status.taskHandle)).toEqual([second.taskHandle, first.taskHandle]);
+    // Following up on the first no longer loses what the second said.
+    await controller.get({ taskHandle: first.taskHandle! });
+    expect(controller.tasks().map((status) => status.taskHandle)).toEqual([first.taskHandle, second.taskHandle]);
+    expect(controller.taskStatus(second.taskHandle!)).toMatchObject({ state: "sent", reply });
+    expect(controller.taskStatus("task_handle_unknown")).toBeNull();
+  });
+
+  it("does not let a busy refusal overwrite what a Task last reported", async () => {
+    const reply = { text: "Here is the answer.", truncated: false, artifactCount: 0, redactions: 0 };
+    let release!: () => void;
+    let calls = 0;
+    const value = runtime({
+      getTaskProjection: vi.fn(async (handle: string) => ({ handle, targetAgentId: 1, targetLabel: "Agent one", state: A2ATaskState.WORKING, updatedAt: "2026-07-16T00:00:00.000Z", terminal: false, reply })),
+      execute: vi.fn(() => {
+        calls += 1;
+        if (calls === 1) return Promise.resolve({ ok: true, result: {}, record: {} });
+        return new Promise((resolve) => { release = () => resolve({ ok: true, result: {}, record: {} }); });
+      }),
+    });
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+    const sent = await controller.send({ targetAgentId: 1, intent: "first" });
+    const handle = sent.taskHandle!;
+    const inFlight = controller.get({ taskHandle: handle });
+    await vi.waitFor(() => expect(calls).toBe(2));
+    await expect(controller.get({ taskHandle: handle })).resolves.toMatchObject({ outcome: "a2a-remote-busy" });
+    expect(controller.taskStatus(handle)).toMatchObject({ state: "sent", reply });
+    release();
+    await inFlight;
+  });
+
+  it("projects a direct Message reply, which leaves no Task behind, through the same mask", async () => {
+    const value = runtime({
+      execute: vi.fn(async () => ({ ok: true, result: { message: { messageId: "m", role: "ROLE_AGENT", parts: [{ text: "Quick answer, token sk-abcdefghijklmnopqrstuvwxyz123456" }] } }, record: {} })),
+      getTaskProjection: vi.fn(async () => null),
+    });
+    const controller = createRemoteA2AActionController({ runtime: value as never, config, projectRoot: "/project", makeId: ids() });
+    const status = await controller.send({ targetAgentId: 1, intent: "hello" });
+    expect(status).toMatchObject({ state: "sent", taskAvailable: false });
+    expect(status.reply?.text).toContain("Quick answer");
+    expect(status.reply?.text).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
   });
 });
