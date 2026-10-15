@@ -317,8 +317,8 @@ const ko: Pages = {
         },
         {
           title: "바로 적용되는 테마",
-          body: "설치한 테마는 테마 설정에 마켓플레이스 표시와 함께 나타납니다.",
-          pic: { k: "settings-theme", alt: "테마 설정의 색 테마 목록에 Moonstone, Gallery와 마켓플레이스에서 설치한 Tokyo Night이 있는 화면" },
+          body: "설치한 테마는 테마 설정에 마켓플레이스 표시와 함께 나타납니다. 어두운 화면의 사진은 Tokyo Night 테마를 켠 모습입니다.",
+          pic: { k: "settings-theme", alt: "테마 설정의 색 테마 목록에 Moonstone, Gallery와 마켓플레이스에서 설치한 Tokyo Night 테마가 있는 화면. 어두운 버전은 Tokyo Night을 켠 상태" },
           w: 3,
         },
         {
@@ -740,8 +740,8 @@ const en: Pages = {
         },
         {
           title: "Themes apply right away",
-          body: "An installed theme appears in Theme settings marked as coming from the marketplace.",
-          pic: { k: "settings-theme", alt: "The color theme list in Theme settings with Moonstone, Gallery and Tokyo Night installed from the marketplace" },
+          body: "An installed theme appears in Theme settings marked as coming from the marketplace. The dark picture shows the Tokyo Night theme turned on.",
+          pic: { k: "settings-theme", alt: "The color theme list in Theme settings with Moonstone, Gallery and the Tokyo Night theme installed from the marketplace; the dark version shows Tokyo Night turned on" },
           w: 3,
         },
         {
