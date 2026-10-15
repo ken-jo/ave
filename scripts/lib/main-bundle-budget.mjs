@@ -54,11 +54,13 @@ export function isSafeMainBundleManifestPath(path) {
  * initial 5_253_957, total 9_160_964; the initial ceiling therefore moves to 5_255_000
  * rather than hiding the functionality behind a build-only workaround.
  * Remote-connection joined with main measures entry 422_488, initial 5_261_694, total
- * 8_888_088, so the initial ceiling moves to 5_265_000.
+ * 8_888_088, so the initial ceiling moves to 5_265_000. Joined again after main took
+ * skills-on-demand, chat-ux and suggestion-session, it measures entry 422_706, initial
+ * 5_267_174, total 8_892_363, and the initial ceiling moves to 5_270_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_265_000,
+  initialBytes: 5_270_000,
   totalBytes: 11_050_000,
 });
 

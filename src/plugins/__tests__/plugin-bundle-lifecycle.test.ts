@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { SkillStore } from "../../main/skill-store.js";
+import { SkillOverlay } from "../../main/skill-overlay.js";
 import { PersonaPromptStore } from "../../main/persona-prompt-store.js";
 import type { PluginManifest } from "../types.js";
 import {
@@ -44,12 +45,13 @@ function inertLoopbackManager() {
 }
 
 function makeLifecycle(
-  deps: Omit<PluginBundleLifecycleDeps, "loopbackManager" | "revokeOperationGeneration" | "personaPromptStore" | "onContributionsUpdated"> &
-    Partial<Pick<PluginBundleLifecycleDeps, "loopbackManager" | "revokeOperationGeneration" | "personaPromptStore" | "onContributionsUpdated">>,
+  deps: Omit<PluginBundleLifecycleDeps, "loopbackManager" | "revokeOperationGeneration" | "skillOverlay" | "personaPromptStore" | "onContributionsUpdated"> &
+    Partial<Pick<PluginBundleLifecycleDeps, "loopbackManager" | "revokeOperationGeneration" | "skillOverlay" | "personaPromptStore" | "onContributionsUpdated">>,
 ): PluginBundleLifecycle {
   return new PluginBundleLifecycle({
     loopbackManager: inertLoopbackManager() as never,
     revokeOperationGeneration: vi.fn(),
+    skillOverlay: { clearPluginGeneration: vi.fn() },
     personaPromptStore: new PersonaPromptStore({ userDir: join(deps.receiptCacheRoot, "prompts") }),
     onContributionsUpdated: vi.fn(),
     ...deps,
@@ -256,6 +258,7 @@ describe("PluginBundleLifecycle", () => {
       publish: vi.fn(),
     }));
     let activationId = "test-activation-1";
+    const skillOverlay = new SkillOverlay();
     const lifecycle = makeLifecycle({
       pluginRuntime: {
         getPluginManifest: () => manifest,
@@ -273,6 +276,7 @@ describe("PluginBundleLifecycle", () => {
       },
       receiptCacheRoot: cacheRoot,
       skillStore,
+      skillOverlay,
       hookManager,
       mcpManager: {
         bundledServerIdsForPlugin: vi.fn(() => []),
@@ -324,8 +328,22 @@ describe("PluginBundleLifecycle", () => {
     expect(Object.isFrozen(active?.manifest.tools)).toBe(true);
     const generationId = active?.generationId;
     expect(generationId).toMatch(/^[a-f0-9]{64}$/);
+    // A conversation that read the active generation's skill holds its
+    // skill_read authorization in the overlay; a user skill read alongside it
+    // belongs to no generation and must survive the retirement.
+    const lease = await lifecycle.acquire("sampleportal");
+    const readSkill = skillStore.loadPluginGeneration(lease.generation, "plugin:sampleportal:checkin");
+    lease.release();
+    expect(readSkill?.pluginOwner?.generationId).toBe(generationId);
+    skillOverlay.register("reader-session", readSkill!);
+    skillOverlay.register("reader-session", {
+      name: "user-skill",
+      resources: [],
+      filePath: join(root, "user-skills", "user-skill.md"),
+    } as never);
     await lifecycle.deactivate("sampleportal");
     await lifecycle.waitForRetirements();
+    expect(skillOverlay.list("reader-session").map((entry) => entry.name)).toEqual(["user-skill"]);
     expect(prepareRuntimeRemoval).toHaveBeenCalledWith(
       "sampleportal",
       generationId,

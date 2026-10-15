@@ -435,7 +435,7 @@ describe("PermissionManager — Tailnet controller P1 policy", () => {
       ["powershell", "shell"],
       ["request_plugin", "read"],
       ["tool_search", "read"],
-      ["skill_load", "write"],
+      ["skill_load", "read"],
     ] as const) {
       expect(pm.checkDetailed(toolName, "builtin", category, null, {
         remoteControllerAuthority: authority,

@@ -57,6 +57,7 @@ async function fixture() {
       retirePublishedMcpReplacement: vi.fn(async () => undefined),
     } as never,
     revokeOperationGeneration: vi.fn(),
+    skillOverlay: { clearPluginGeneration: vi.fn() },
     onContributionsUpdated: vi.fn(),
   });
   runtime.setGenerationAccess(lifecycle);

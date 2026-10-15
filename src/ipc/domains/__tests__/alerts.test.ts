@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import { hostFrameEvent, pluginShellFrameEvent } from "../../../__tests__/test-helpers.js";
 import { ALERTS } from "../../../shared/ipc-channels.js";
+import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 
 const handlers = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
 
@@ -48,7 +49,15 @@ describe("alerts IPC", () => {
   });
 
   it("serves the staged cards, and none without a service", () => {
-    expect(register(service)(ALERTS.listOpen)).toEqual([card]);
+    // The cards are addressed to the dedicated Suggestions conversation, so a
+    // non-empty snapshot makes it exist — without moving it up the list.
+    const memoryManager = { touchSessionTranscript: vi.fn() };
+    expect(register(service, { memoryManager })(ALERTS.listOpen)).toEqual([card]);
+    expect(memoryManager.touchSessionTranscript).toHaveBeenCalledWith(SUGGESTIONS_SESSION_ID, { bump: false });
+    memoryManager.touchSessionTranscript.mockClear();
+    service.listOpen.mockReturnValueOnce([]);
+    expect(register(service, { memoryManager })(ALERTS.listOpen)).toEqual([]);
+    expect(memoryManager.touchSessionTranscript).not.toHaveBeenCalled();
     expect(register(undefined)(ALERTS.listOpen)).toEqual([]);
     expect(register(undefined)(ALERTS.cardClosed, "abc", "accepted")).toEqual({ ok: false, error: "no-alerts-service" });
   });

@@ -10,6 +10,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import { formatRelativeTime, type RelativeTimeLabels } from "../../../shared/format-time.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
+import { sessionDisplayTitle } from "../../../shared/suggestions-session.js";
 
 const RELATIVE_TIME_LABELS: RelativeTimeLabels = {
   justNow: () => t("memorySearchPanel.justNow"),
@@ -77,11 +78,11 @@ function SessionRow({
       type="button"
       className="group w-full rounded-lg border bg-background px-3 py-3 text-left shadow-sm transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       onClick={() => void handleClick()}
-      aria-label={t("memorySearchPanel.openChatAriaLabel", { title: session.title ?? shortSessionId(session.sessionId) })}
+      aria-label={t("memorySearchPanel.openChatAriaLabel", { title: sessionDisplayTitle(session.sessionId, session.title, t) ?? shortSessionId(session.sessionId) })}
     >
       <div className="flex min-w-0 items-baseline justify-between gap-2">
         <span className="min-w-0 flex-1 line-clamp-1 text-sm font-semibold leading-snug text-foreground">
-          {session.title || t("memorySearchPanel.sessionFallbackTitle", { id: shortSessionId(session.sessionId) })}
+          {sessionDisplayTitle(session.sessionId, session.title, t) || t("memorySearchPanel.sessionFallbackTitle", { id: shortSessionId(session.sessionId) })}
         </span>
         <span className="shrink-0 text-[10px] text-muted-foreground">{formatRelativeTime(session.timestamp, RELATIVE_TIME_LABELS)}</span>
       </div>

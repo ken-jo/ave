@@ -15,6 +15,7 @@ import { formatHhMm, formatMediumDateTime, formatMonthYear } from "../../../shar
 import { InsightsUsageBreakdown } from "./InsightsUsageBreakdown.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
 import { usePaneActions } from "./PaneFrame.js";
+import { sessionDisplayTitle } from "../../../shared/suggestions-session.js";
 
 export interface StarredItem {
   id: string;
@@ -288,7 +289,7 @@ export function StarredView({
       const projectName = projectLabelForSession(session, workspaceProjects);
       byId.set(session.id, {
         sessionId: session.id,
-        title: session.title?.trim() || t("starredView.untitledSession"),
+        title: sessionDisplayTitle(session.id, session.title, t)?.trim() || t("starredView.untitledSession"),
         ...(projectName ? { projectName } : {}),
         modifiedAt: session.modifiedAt,
       });
