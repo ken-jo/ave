@@ -50,6 +50,7 @@ export function toolGroupRevision(group: ToolGroupEntry): string {
         tool.mcpServerId ?? "",
         tool.durationMs ?? "",
         tool.startedAt ?? "",
+        textRevision(tool.liveOutput),
         valueRevision(tool.uiPayload),
       ].join(":"))
       .join("|"),

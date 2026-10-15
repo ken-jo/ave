@@ -1,8 +1,7 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, promises as fs } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, resolve, sep, win32 } from "node:path";
+import { lstatSync, promises as fs } from "node:fs";
+import { isAbsolute, join, resolve, win32 } from "node:path";
 import { getAveAppVersion } from "../shared/app-version.js";
 import { MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH, isSubscriptionToolDescription } from "../shared/subscription-runtime.js";
 import {
@@ -11,6 +10,7 @@ import {
   type SubscriptionTransportDiagnosticError,
 } from "./subscription-transport-error-diagnostics.js";
 import { forceKillManagedChildProcess, spawnManaged } from "./managed-child-processes.js";
+import { resolveCodexVendorExecutable } from "./codex-vendor-path.js";
 import {
   assertSubscriptionPromptAttachments,
   SubscriptionAttachmentTransportError,
@@ -22,8 +22,6 @@ import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "../shared/safe-
 import { JsonLineReader } from "../lib/json-line-reader.js";
 import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
 import type { ProviderRpcOperation } from "../engine/llm/provider-error-diagnostics.js";
-
-const require = createRequire(import.meta.url);
 
 export const CODEX_RPC_REQUEST_TIMEOUT_MS = 15_000;
 export const CODEX_MAX_RPC_LINE_BYTES = 1_000_000;
@@ -367,49 +365,6 @@ interface NormalizedDynamicTools {
   readonly keys: ReadonlySet<string>;
 }
 
-const PLATFORM_TARGETS: Partial<Record<NodeJS.Platform, Partial<Record<NodeJS.Architecture, {
-  packageName: string;
-  targetTriple: string;
-  executableName: string;
-}>>>> = {
-  darwin: {
-    x64: {
-      packageName: "@openai/codex-darwin-x64",
-      targetTriple: "x86_64-apple-darwin",
-      executableName: "codex",
-    },
-    arm64: {
-      packageName: "@openai/codex-darwin-arm64",
-      targetTriple: "aarch64-apple-darwin",
-      executableName: "codex",
-    },
-  },
-  linux: {
-    x64: {
-      packageName: "@openai/codex-linux-x64",
-      targetTriple: "x86_64-unknown-linux-musl",
-      executableName: "codex",
-    },
-    arm64: {
-      packageName: "@openai/codex-linux-arm64",
-      targetTriple: "aarch64-unknown-linux-musl",
-      executableName: "codex",
-    },
-  },
-  win32: {
-    x64: {
-      packageName: "@openai/codex-win32-x64",
-      targetTriple: "x86_64-pc-windows-msvc",
-      executableName: "codex.exe",
-    },
-    arm64: {
-      packageName: "@openai/codex-win32-arm64",
-      targetTriple: "aarch64-pc-windows-msvc",
-      executableName: "codex.exe",
-    },
-  },
-};
-
 const SAFE_LOCALE_ENV_NAMES = ["LANG", "LC_ALL"] as const;
 /** Host tools own execution; the private runtime workspace is not a model environment. */
 const NO_NATIVE_ENVIRONMENTS = Object.freeze([]);
@@ -431,32 +386,7 @@ const PASSIVE_NATIVE_STREAM_ITEM_TYPES = new Set([
  * its own error union while sharing one resolution path.
  */
 export function resolveBundledCodexExecutable(unavailable: () => Error): string {
-  const target = PLATFORM_TARGETS[process.platform]?.[process.arch];
-  if (!target) throw unavailable();
-
-  let packageJson: string;
-  try {
-    packageJson = require.resolve(`${target.packageName}/package.json`);
-  } catch {
-    throw unavailable();
-  }
-  const packagedPath = join(
-    dirname(packageJson),
-    "vendor",
-    target.targetTriple,
-    "bin",
-    target.executableName,
-  );
-  const executable = preferAsarUnpackedPath(packagedPath);
-  if (!existsSync(executable)) throw unavailable();
-  return executable;
-}
-
-function preferAsarUnpackedPath(candidate: string): string {
-  const asarSegment = `${sep}app.asar${sep}`;
-  if (!candidate.includes(asarSegment)) return candidate;
-  const unpacked = candidate.replace(asarSegment, `${sep}app.asar.unpacked${sep}`);
-  return existsSync(unpacked) ? unpacked : candidate;
+  return resolveCodexVendorExecutable("codex", unavailable);
 }
 
 export function spawnPackagedCodex(

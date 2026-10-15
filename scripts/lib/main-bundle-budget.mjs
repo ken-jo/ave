@@ -52,20 +52,24 @@ export function isSafeMainBundleManifestPath(path) {
  * instead of against a feeling. The chat-turn progress lifecycle is a main-process
  * feature for sub-agent transcript snapshots. Its latest measurement is entry 313_848,
  * initial 5_253_957, total 9_160_964; the initial ceiling therefore moves to 5_255_000
- * rather than hiding the functionality behind a build-only workaround. Permission rules
- * (rule files, scopes, the shell prefix/exfiltration matchers) are consulted by the
- * permission manager on every tool call, so they belong in the initial graph; with them
- * the measurement is entry 415_935, initial 5_268_219, total 8_889_102, and the initial
- * ceiling moves to 5_270_000. With the permissions category joined with `main` (agent-core
- * tools, terminal blocks and the rest of main's main-process growth) the measurement is
- * entry 419_603, initial 5_313_581, total 8_937_684, and the initial ceiling moves to 5_315_000.
- * Joined again after main took skills-on-demand, chat-ux and suggestion-session, the
- * measurement is entry 419_821, initial 5_319_059, total 8_942_001, and the initial
- * ceiling moves to 5_320_000.
+ * rather than hiding the functionality behind a build-only workaround. The built-in
+ * search, web and memory tools are registered with the tool registry at boot, so their
+ * definitions sit in the initial graph; with them the measurement is entry 416_271,
+ * initial 5_273_794, total 8_909_524, and the initial ceiling moves to 5_275_000.
+ * Joined with main's terminal blocks (terminal_read registers at boot too), the
+ * measurement is entry 415_595, initial 5_297_263, total 8_937_183, and the initial
+ * ceiling moves to 5_300_000. Joined again with main after skills-on-demand, chat-ux and
+ * release-ci, the measurement is entry 419_912, initial 5_313_199, total 8_951_548, and
+ * the initial ceiling moves to 5_315_000. Permission rules (rule files, scopes, the shell
+ * prefix/exfiltration matchers) and approval-memory identity are consulted by the
+ * permission manager on every tool call, so they belong in the initial graph; with the
+ * permissions category joined with this `main` the measurement is entry 420_159,
+ * initial 5_377_970, total 9_017_238 (about 63 KB over this `main`, all of it the rule matchers
+ * and approval-memory code), and the initial ceiling moves to 5_380_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_320_000,
+  initialBytes: 5_380_000,
   totalBytes: 11_050_000,
 });
 

@@ -71,19 +71,22 @@ import {
   ListFilesTool,
   MoveFileTool,
   normalizeCanonicalFileToolInput,
+  MultiEditTool,
   ReadFileTool,
   ViewImageTool,
   WriteFileTool,
 } from "../file-tools.js";
+import { disposeSessionFileReads, recordFileRead, workloadFileReadKey } from "../file-read-state.js";
 
 const capability = broker.capability as unknown as BrokeredWorkloadCapability;
+const BROKER_SESSION = "broker-session";
 
 function context(tool: Tool, rawInput: unknown, cwd = broker.cwd): ToolExecutionContext {
   const normalizedInput = normalizeCanonicalFileToolInput(tool, rawInput);
   return {
     cwd,
     extraAllowedDirectories: [],
-    metadata: {},
+    metadata: { sessionId: BROKER_SESSION },
     executionRouteGrant: issueBrokeredToolExecutionGrant({
       toolUseId: "tool-use-test",
       capability,
@@ -155,7 +158,7 @@ describe("canonical file tool broker transport", () => {
       },
     },
     {
-      tool: new ApplyPatchTool(),
+      tool: new MultiEditTool(),
       input: { path: "patch.txt", replacements: [{ oldText: "old", newText: "new" }] },
       operation: "file.patch",
       payload: {
@@ -190,6 +193,9 @@ describe("canonical file tool broker transport", () => {
   ] as const)("maps $operation without touching node:fs", async ({ tool, input, operation, payload }) => {
     const brokerResult: ToolExecutionResult = { output: `broker:${operation}`, isError: false };
     broker.execute.mockResolvedValueOnce(brokerResult);
+    for (const guestPath of ["/broker/workspace/edit.txt", "/broker/workspace/patch.txt"]) {
+      recordFileRead(BROKER_SESSION, workloadFileReadKey(guestPath), { mtimeMs: 0, size: 0, sha256: null });
+    }
 
     const result = await tool.execute(input, context(tool, input));
 
@@ -202,6 +208,53 @@ describe("canonical file tool broker transport", () => {
       expect.objectContaining({ operation, toolName: tool.name }),
       undefined,
     );
+  });
+
+  it("refuses grep_files options the legacy file.grep payload cannot carry", async () => {
+    const tool = new GrepFilesTool();
+    const input = { pattern: "needle", outputMode: "count", context: 2, type: "ts", offset: 5 };
+
+    const result = await tool.execute(input, context(tool, input));
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("type, outputMode, context, offset");
+    expect(broker.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["edit_file", () => new EditFileTool(), { path: "edit.txt", oldText: "old", newText: "new" }],
+    ["multi_edit", () => new MultiEditTool(), { path: "edit.txt", replacements: [{ oldText: "old", newText: "new" }] }],
+  ] as const)("%s requires a workload read in this session before calling the broker", async (_name, make, input) => {
+    disposeSessionFileReads(BROKER_SESSION);
+    const tool = make();
+    const refused = await tool.execute(input, context(tool, input));
+    expect(refused.isError).toBe(true);
+    expect(refused.output).toContain("read it with read_file in this session first");
+    expect(broker.execute).not.toHaveBeenCalled();
+
+    const reader = new ReadFileTool();
+    const readInput = { path: "edit.txt" };
+    broker.execute.mockResolvedValueOnce({
+      output: "1\told",
+      isError: false,
+      metadata: { path: "/broker/workspace/edit.txt", startLine: 1, endLine: 1, lineCount: 1, truncated: false },
+    });
+    expect((await reader.execute(readInput, context(reader, readInput))).isError).toBe(false);
+
+    broker.execute.mockResolvedValueOnce({ output: "edited", isError: false });
+    const admitted = await tool.execute(input, context(tool, input));
+    expect(admitted).toEqual({ output: "edited", isError: false });
+  });
+
+  it("refuses the patch envelope without calling the broker", async () => {
+    const tool = new ApplyPatchTool();
+    const input = { patch: "*** Begin Patch\n*** Delete File: old.txt\n*** End Patch" };
+
+    const result = await tool.execute(input, context(tool, input));
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("apply_patch is not available in the disposable workload");
+    expect(broker.execute).not.toHaveBeenCalled();
   });
 
   it("routes view_image bytes through the bounded controller decoder and preserves image output", async () => {

@@ -27,6 +27,7 @@ const TOOL_DISPLAY_KEYS: Record<string, string> = {
   grep_files: "toolDisplay.grepFiles",
   write_file: "toolDisplay.writeFile",
   edit_file: "toolDisplay.editFile",
+  multi_edit: "toolDisplay.editFile",
   apply_patch: "toolDisplay.applyPatch",
   move_file: "toolDisplay.moveFile",
   delete_file: "toolDisplay.deleteFile",

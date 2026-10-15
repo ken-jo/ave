@@ -1527,24 +1527,30 @@ export class MemoryManager implements PromptMemorySource {
     return this.agentsCustomMd;
   }
 
-  /** Single-entry, stat-revalidated cache for the active project's AGENTS.md. */
-  private projectAgentsMdCache: { root: string; sig: number; value: ProjectAgentsMd } | null = null;
+  /** Single-entry, stat-revalidated cache for the active project's instruction chain. */
+  private projectAgentsMdCache: { root: string; sig: string; value: ProjectAgentsMd } | null = null;
 
   /**
-   * Committed project AGENTS.md discovered at `projectRoot`. Re-discovered when
-   * the file's mtime changes (single-entry cache; a project switch changes the
-   * root and re-discovers), so an edit is visible on the next turn build with no
-   * fs.watch lifecycle to manage across project switches — unlike the global
-   * file's watcher. Returns empty layers when the file is absent.
+   * Committed project instructions discovered for `projectRoot` (see
+   * `project-agents-md.ts`). Re-discovered when any watched path's mtime
+   * changes — every candidate file on the chain, present or not, and every
+   * imported file — so a new, edited or deleted file is visible on the next
+   * turn build with no fs.watch lifecycle to manage across project switches.
+   * Returns empty layers when the chain has no file.
    */
   getProjectAgentsMd(projectRoot: string): ProjectAgentsMd {
     const root = resolve(projectRoot);
-    const sig = this.getFileMtimeMs(join(root, "AGENTS.md"));
     const cached = this.projectAgentsMdCache;
-    if (cached && cached.root === root && cached.sig === sig) return cached.value;
+    if (cached && cached.root === root && cached.sig === this.projectAgentsMdSignature(cached.value)) {
+      return cached.value;
+    }
     const value = discoverProjectAgentsMd(root);
-    this.projectAgentsMdCache = { root, sig, value };
+    this.projectAgentsMdCache = { root, sig: this.projectAgentsMdSignature(value), value };
     return value;
+  }
+
+  private projectAgentsMdSignature(value: ProjectAgentsMd): string {
+    return value.watchedPaths.map((path) => this.getFileMtimeMs(path)).join(",");
   }
 
   getMemoryIndex(options: ProjectScopedMemoryOptions = {}): string {
@@ -1772,33 +1778,7 @@ export class MemoryManager implements PromptMemorySource {
   selectRelevantMemories(query: string, options: MemorySelectionOptions = {}): MemorySelection {
     const tokenBudget = Math.max(1, Math.min(options.tokenBudget ?? DEFAULT_MEMORY_SELECTION_TOKEN_BUDGET, 8_000));
     const maxEntries = Math.max(1, Math.min(options.maxEntries ?? DEFAULT_MEMORY_SELECTION_MAX_ENTRIES, 24));
-    const entries = this.listMemoryEntries({
-      projectRoot: options.projectRoot,
-      projectName: options.projectName,
-      includeUnscoped: options.includeUnscoped,
-    }).filter((entry) => this.isPromptVisibleMemory(entry, options));
-    const terms = memoryTextTerms(query);
-    const normalizedQuery = query.normalize("NFKC").trim().toLocaleLowerCase();
-    const ranked = entries
-      .flatMap((entry) => {
-        const title = entry.title.normalize("NFKC").toLocaleLowerCase();
-        const content = entry.content.normalize("NFKC").toLocaleLowerCase();
-        let score = entry.pinned ? 8 : 0;
-        if (terms.length === 0) return entry.pinned ? [{ entry, score }] : [];
-        for (const term of terms) {
-          if (title.includes(term)) score += 18;
-          if (content.includes(term)) score += 5;
-        }
-        if (normalizedQuery.length >= 2 && title.includes(normalizedQuery)) score += 12;
-        if (normalizedQuery.length >= 2 && content.includes(normalizedQuery)) score += 4;
-        return score > 0 ? [{ entry, score }] : [];
-      })
-      .sort((left, right) =>
-        right.score - left.score
-        || Number(right.entry.pinned === true) - Number(left.entry.pinned === true)
-        || String(right.entry.updatedAt ?? "").localeCompare(String(left.entry.updatedAt ?? ""))
-        || left.entry.filename.localeCompare(right.entry.filename),
-      );
+    const ranked = this.rankPromptVisibleMemories(query, options, { includeUnmatchedPinned: true });
 
     const selected: NoteEntry[] = [];
     const sections: string[] = [];
@@ -1822,6 +1802,62 @@ export class MemoryManager implements PromptMemorySource {
     const context = sections.join("\n\n---\n\n");
     return { entries: selected, context, usedTokens: context ? estimateTokens(context) : 0 };
   }
+  /**
+   * Model-initiated recall (`memory_search`): exactly the memories prompt
+   * selection could inject for this scope — active, unexpired, not derived —
+   * ranked by the same scoring. Unlike prompt selection, an unmatched pinned
+   * memory is not returned for a query, and an empty query lists every visible
+   * memory, most recently updated first.
+   */
+  searchModelVisibleMemories(query: string, options: ProjectScopedMemoryOptions = {}): NoteEntry[] {
+    if (memoryTextTerms(query).length === 0) {
+      return this.listPromptVisibleMemories(options).sort((left, right) =>
+        String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))
+        || left.filename.localeCompare(right.filename));
+    }
+    return this.rankPromptVisibleMemories(query, options, { includeUnmatchedPinned: false }).map(({ entry }) => entry);
+  }
+
+  private listPromptVisibleMemories(options: ProjectScopedMemoryOptions): NoteEntry[] {
+    return this.listMemoryEntries({
+      projectRoot: options.projectRoot,
+      projectName: options.projectName,
+      includeUnscoped: options.includeUnscoped,
+    }).filter((entry) => this.isPromptVisibleMemory(entry, options));
+  }
+
+  private rankPromptVisibleMemories(
+    query: string,
+    options: ProjectScopedMemoryOptions,
+    policy: { includeUnmatchedPinned: boolean },
+  ): Array<{ entry: NoteEntry; score: number }> {
+    const terms = memoryTextTerms(query);
+    const normalizedQuery = query.normalize("NFKC").trim().toLocaleLowerCase();
+    return this.listPromptVisibleMemories(options)
+      .flatMap((entry) => {
+        const title = entry.title.normalize("NFKC").toLocaleLowerCase();
+        const content = entry.content.normalize("NFKC").toLocaleLowerCase();
+        let matched = 0;
+        if (terms.length === 0) {
+          return entry.pinned && policy.includeUnmatchedPinned ? [{ entry, score: 8 }] : [];
+        }
+        for (const term of terms) {
+          if (title.includes(term)) matched += 18;
+          if (content.includes(term)) matched += 5;
+        }
+        if (normalizedQuery.length >= 2 && title.includes(normalizedQuery)) matched += 12;
+        if (normalizedQuery.length >= 2 && content.includes(normalizedQuery)) matched += 4;
+        if (matched === 0 && !(entry.pinned && policy.includeUnmatchedPinned)) return [];
+        return [{ entry, score: matched + (entry.pinned ? 8 : 0) }];
+      })
+      .sort((left, right) =>
+        right.score - left.score
+        || Number(right.entry.pinned === true) - Number(left.entry.pinned === true)
+        || String(right.entry.updatedAt ?? "").localeCompare(String(left.entry.updatedAt ?? ""))
+        || left.entry.filename.localeCompare(right.entry.filename),
+      );
+  }
+
   listSessionEntries(limit = 50, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped"> = {}): SessionSearchEntry[] {
     const UUID_RE = /^[0-9a-f-]{8,}$/i;
     return this.listSessions({ ...options, limit })

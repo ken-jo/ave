@@ -193,6 +193,21 @@ export async function runStreamedTurn(
           },
           ownerDetail: { input: toolInput },
         }),
+      onToolOutput: (name, text, meta) =>
+        send({
+          kind: "tool.output.delta",
+          tool: {
+            name,
+            groupId: meta.groupId,
+            toolUseId: meta.toolUseId,
+            displayOrder: meta.displayOrder,
+            ...(meta.source === undefined ? {} : { source: meta.source }),
+            ...(meta.category === undefined ? {} : { category: meta.category }),
+            ...(meta.pluginId === undefined ? {} : { pluginId: meta.pluginId }),
+            ...(meta.mcpServerId === undefined ? {} : { mcpServerId: meta.mcpServerId }),
+          },
+          ownerDetail: { text },
+        }),
       onPermissionReview: (event) =>
         send({
           kind: "permission.reviewed",
