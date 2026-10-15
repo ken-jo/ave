@@ -199,10 +199,21 @@ function parseChangelog(source: string): Release[] {
   return releases;
 }
 
+/**
+ * Ave's first release. The file goes on with the predecessor app's history,
+ * which this site does not publish.
+ */
+const FIRST_RELEASE = "v0.14.0";
+
 let cached: Release[] | null = null;
 
-/** Every release, newest first, as the file lists them. */
+/** Ave's releases, newest first, as the file lists them: from the top down to FIRST_RELEASE. */
 export function releases(): Release[] {
-  cached ??= parseChangelog(readFileSync(FILE, "utf8"));
+  if (!cached) {
+    const all = parseChangelog(readFileSync(FILE, "utf8"));
+    const first = all.findIndex((r) => r.name === FIRST_RELEASE);
+    if (first < 0) throw new Error(`CHANGELOG.md has no ${FIRST_RELEASE} release`);
+    cached = all.slice(0, first + 1);
+  }
   return cached;
 }

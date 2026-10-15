@@ -21,7 +21,7 @@ shows it.
 | `/browser/`, `/terminal/`, `/models/`, `/plugins/`, `/security/` | One feature each: hero shot, a split, a bento of crops, facts or a second split, 5–8 questions, next steps. |
 | `/download/` | One card per system with the first-launch steps, then connecting a model, leading on to the start guide. |
 | `/docs/**` | The guide (`lib/docs.ts`), one template. |
-| `/changelog/` | `CHANGELOG.md` at build time, every version with an anchor. |
+| `/changelog/` | `CHANGELOG.md` at build time, Ave's releases (v0.14.0 and later) each with an anchor. |
 | `404.html`, `en/404.html` | Not-found page with links out. |
 
 ## Navigation
