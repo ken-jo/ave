@@ -1553,7 +1553,8 @@ function hasNativeLauncher(cmd: PsCommand, ctx: Context): boolean {
 function nativeCommandData(stage: PsCommand, ctx: Context, args = headOf(stage, ctx).args): boolean {
   const { name } = headOf(stage, ctx);
   return name !== undefined && (POWERSHELL_COMMAND_POLICIES[name]?.native ? knownNativeData(name, args, ctx)
-    : MULTI_PURPOSE_NETWORK.has(name.replace(/\.exe$/, "")) && nativeArguments(args, ctx).every((value) => value !== undefined) && !hasNativeLauncher(stage, ctx));
+    : (MULTI_PURPOSE_NETWORK.has(name.replace(/\.exe$/, "")) || PACKAGE_TASK_PROGRAMS.has(name))
+      && nativeArguments(args, ctx).every((value) => value !== undefined) && !hasNativeLauncher(stage, ctx));
 }
 
 /** Literal script blocks are traversed in place; member dispatch needs a known target. */
@@ -1871,7 +1872,7 @@ function closedWorldSignal(pipelines: readonly PsPipeline[], ctx: Context, sensi
     const launcher = name !== undefined && (isPowerShell(name) || policy?.effects.includes("launcher"));
     const dispatch = policy?.effects.includes("dispatch") ?? false;
     const splatted = args.some((token) => token.kind === "word" && !token.quoted && token.text.startsWith("@"));
-    if (!policy && !reader && !network && !launcher && effectBoundary) {
+    if (!policy && !reader && !network && !launcher && effectBoundary && !nativeCommandData(stage, ctx)) {
       return hiddenCode("unknown command");
     }
     if (launcher) continue; // Embedded-code inspection owns the launcher's complete binding.

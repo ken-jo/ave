@@ -10,8 +10,33 @@ const RUNNERS = [
   "corepack pnpm test", "corepack yarn test", "yarnpkg test", "deno task test",
   "corepack.ps1 pnpm test", "yarnpkg.ps1 test", "deno.ps1 task test",
 ];
+const RUNNER_ARGUMENTS: Readonly<Record<string, string>> = {
+  npx: "tsc --version", bunx: "tsc --version", pnpx: "tsc --version",
+  uvx: "ruff check .", pipx: "run black --check .", corepack: "pnpm install",
+  yarnpkg: "test", deno: "task test",
+};
+const CALL_RUNNERS = SHELL_PREFIX_POLICY.packageRunners.flatMap((runner) => {
+  const args = RUNNER_ARGUMENTS[runner];
+  if (args === undefined) throw new Error(`Missing runner arguments: ${runner}`);
+  return ["", args].map((suffix) => ({ command: `& ${runner}${suffix ? ` ${suffix}` : ""}`, stdin: runner === "deno" && suffix === "" }));
+});
 
 describe("package runner shims and dispatchers", () => {
+  it.each(CALL_RUNNERS)("retains normal call-operator flow: $command", ({ command, stdin }) => {
+    expect(inspectPowerShellCommand(command, CWD)).toEqual({
+      sensitive: null, exfiltration: stdin ? "PowerShell hidden code (runtime script)" : null,
+    });
+  });
+
+  it.each(CALL_RUNNERS)("requires approval after a write through the call operator: $command", ({ command }) => {
+    expect(inspectPowerShellCommand(`Set-Content package.json x; ${command}`, CWD).exfiltration)
+      .toContain("materialized task input");
+  });
+
+  it.each(SHELL_PREFIX_POLICY.packageRunners)("requires approval for opaque call-operator arguments to %s", (runner) => {
+    expect(inspectPowerShellCommand(`& ${runner} $opaque`, CWD).exfiltration).not.toBeNull();
+  });
+
   it.each(SHELL_PREFIX_POLICY.packageRunners)("keeps bare %s subject to intrinsic code checks only", (runner) => {
     const result = inspectPowerShellCommand(runner, CWD);
     expect(hiddenCodeReason([runner])).toBe(runner === "deno" ? "deno reads code from stdin" : null);
