@@ -74,6 +74,8 @@ import type { PromptMemorySource } from "../../memory/memory-manager.js";
 import { makePromptMemorySource } from "../../prompts/__tests__/test-helpers.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
+import { SkillOverlay } from "../../main/skill-overlay.js";
+import type { LoadedSkill } from "../../main/skill-store.js";
 
 // ─── Test scaffolding ─────────────────────────────────
 
@@ -243,6 +245,88 @@ describe("SubAgentRunner — authorization terminal propagation", () => {
       hasProviderSpy.mockRestore();
       refreshProviderSpy.mockRestore();
       await cleanupTmpDir(permissionDirectory);
+    }
+  });
+});
+
+describe("SubAgentRunner — shared SkillOverlay teardown", () => {
+  it("drops the finished child's read-skill entries and keeps the parent's", async () => {
+    const overlay = new SkillOverlay();
+    const parentSessionId = "8f0f47bf-c978-4a4b-948d-eb86cd8f9258";
+    const skill = (name: string) => ({
+      name,
+      body: "",
+      resources: [],
+      filePath: `/skills/${name}/SKILL.md`,
+    }) as unknown as LoadedSkill;
+    overlay.register(parentSessionId, skill("parent-skill"));
+
+    const childSessionIds: string[] = [];
+    const toolRegistry = new ToolRegistry();
+    // Stands in for skill_load: registers the read under the CALLING session.
+    toolRegistry.register(createDynamicTool({
+      name: "overlay_probe",
+      description: "Registers a skill read for the calling session",
+      source: "builtin",
+      category: "read",
+      isReadOnly: () => true,
+      jsonSchema: { type: "object", properties: {} },
+      execute: async (_input, ctx) => {
+        const sessionId = ctx.metadata?.sessionId;
+        if (typeof sessionId !== "string" || !sessionId) {
+          return { output: "no session", isError: true };
+        }
+        childSessionIds.push(sessionId);
+        overlay.register(sessionId, skill("child-skill"));
+        return { output: "registered", isError: false };
+      },
+    }));
+    const provider = new ScriptedProvider([
+      [
+        { type: "tool_call", id: "probe-1", name: "overlay_probe", input: {} },
+        { type: "message_complete", stopReason: "tool_use" },
+      ],
+      ...endTurnScript("done"),
+    ]);
+    const runner = new SubAgentRunner({
+      parentDeps: {
+        ...buildLoopDeps(toolRegistry),
+        skillOverlay: overlay,
+      },
+      toolRegistry,
+      subAgentMemoryManager: fakeSubAgentMemoryManager(),
+    });
+    const hasProviderSpy = vi
+      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
+      .mockReturnValue(true);
+    const refreshProviderSpy = vi
+      .spyOn(
+        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
+        "refreshProvider",
+      )
+      .mockImplementation(function (this: ConversationLoop) {
+        (this as { provider: LLMProvider | null }).provider = provider;
+      });
+
+    try {
+      const result = await runner.spawn({
+        title: "overlay child",
+        instructions: "load a skill",
+        toolScope: exactToolScope(["overlay_probe"]),
+        maxRounds: 3,
+        originSessionId: parentSessionId,
+      });
+
+      expect(result.ok).toBe(true);
+      // The probe ran in the child, under the child's own session id.
+      expect(childSessionIds).toHaveLength(1);
+      const [childSessionId] = childSessionIds;
+      expect(childSessionId).not.toBe(parentSessionId);
+      expect(overlay.list(childSessionId)).toEqual([]);
+      expect(overlay.list(parentSessionId).map((entry) => entry.name)).toEqual(["parent-skill"]);
+    } finally {
+      hasProviderSpy.mockRestore();
+      refreshProviderSpy.mockRestore();
     }
   });
 });

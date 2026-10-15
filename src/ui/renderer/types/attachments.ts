@@ -14,9 +14,12 @@
  */
 export { MAX_COMPOSER_ATTACHMENT_COUNT as ATTACH_MAX_COUNT } from "../../../shared/composer-image-input.js";
 
-/** Long-text-paste detection threshold: 50+ chars OR 3+ newlines. */
-export const PASTE_TEXT_MIN_CHARS = 50;
-export const PASTE_TEXT_MIN_NEWLINES = 3;
+/**
+ * Longest pasted text that goes into the composer verbatim, line breaks and
+ * all. Anything longer becomes a pasted-text chip (its marker stays in the
+ * body), and the chip shows the original text when opened.
+ */
+export const PASTE_INLINE_MAX_CHARS = 500;
 
 /**
  * Largest text another surface may hand the composer as one pasted-text chip
@@ -62,6 +65,12 @@ export interface FileAttachment {
   name: string;
   ext: string;
   bytes: number;
+  /**
+   * True for an `@file` mention: a path reference the model reads through
+   * read_file. Not in main's attach allowlist, so the chip offers no
+   * open-in-OS action for it.
+   */
+  reference?: true;
 }
 
 export interface PasteAttachment {

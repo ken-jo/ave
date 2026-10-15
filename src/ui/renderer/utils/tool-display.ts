@@ -36,6 +36,8 @@ const TOOL_DISPLAY_KEYS: Record<string, string> = {
 
   // Misc
   skill_load: "toolDisplay.skillLoad",
+  skill_read: "toolDisplay.skillRead",
+  skill_list: "toolDisplay.skillList",
   ask_user_question: "toolDisplay.askUserQuestion",
   noop: "toolDisplay.noop",
 };
@@ -44,6 +46,25 @@ export function getToolDisplayName(toolName: string): string {
   if (TOOL_DISPLAY_KEYS[toolName]) return t(TOOL_DISPLAY_KEYS[toolName]);
   // Unknown tool names render as readable text (underscores -> spaces).
   return toolName.replace(/_/g, " ");
+}
+
+/**
+ * Label for ONE tool call row: the display name, plus the call's subject where
+ * the subject is what the user needs to see. Reading a skill is the visible
+ * progressive-disclosure step, so the row names the skill ("Read skill ·
+ * email-polish") instead of a bare "Read skill".
+ */
+export function getToolCallLabel(toolName: string, input: unknown): string {
+  const args = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const skillName = typeof args.skillName === "string" ? args.skillName.trim() : "";
+  if (toolName === "skill_load" && skillName) {
+    return t("toolDisplay.skillLoadNamed", { name: skillName });
+  }
+  const resourcePath = typeof args.resourcePath === "string" ? args.resourcePath.trim() : "";
+  if (toolName === "skill_read" && skillName && resourcePath) {
+    return t("toolDisplay.skillReadNamed", { name: skillName, path: resourcePath });
+  }
+  return getToolDisplayName(toolName);
 }
 
 /**

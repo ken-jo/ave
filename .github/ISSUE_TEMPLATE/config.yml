@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Ave documentation
-    url: https://former-site.invalid/docs
+    url: https://ave.agent-connector.ai/docs
     about: Check architecture, development, release, and plugin documentation before opening an issue.

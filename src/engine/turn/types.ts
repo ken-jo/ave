@@ -539,10 +539,17 @@ export interface ConversationLoopDeps {
   /** Disable normal ~/.ave/sessions persistence for isolated child loops. */
   disableSessionPersistence?: boolean;
   /**
-   * Current-turn SkillOverlay handle. Cleared at user-turn start/end so skill
-   * bodies never persist as ambient session context.
+   * Per-conversation read-skill registry (authorizes `skill_read`). Holds no
+   * skill bodies — those live in history as `skill_load` tool_results — and is
+   * cleared when the conversation is replaced (`newConversation`).
    */
   skillOverlay?: { clear(sessionId: string): void };
+  /**
+   * Whether `/<name>` names a skill in the index. A user message starting with
+   * a non-built-in `/<skill-name>` is then sent to the model (which reads the
+   * skill with `skill_load`) instead of failing as an unknown command.
+   */
+  isSkillName?: (name: string) => boolean;
   /**
    * Issue #260: optional system notification service. When supplied, the
    * loop fires a `turn-end` notification when runTurn resolves successfully

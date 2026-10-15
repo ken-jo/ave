@@ -53,13 +53,6 @@ export function createSystemPromptBuilder(opts: {
   memoryManager: PromptMemorySource;
   toolRegistry: ToolRegistry;
   pluginRuntime: PluginRuntime;
-  /**
-   * C2(c): current-turn SkillOverlay reader. The builder calls this each
-   * round with the active session id and folds the returned section into
-   * the system prompt. Optional so unit tests can stub the builder
-   * without touching the overlay.
-   */
-  getActiveSkillsSection?: (sessionId: string) => string;
   getAvailableSkills?: () => SkillCatalogEntry[];
   /**
    * Session-scoped on-demand activation allow-list — see
@@ -81,7 +74,7 @@ export function createSystemPromptBuilder(opts: {
    */
   mcpServerGuidanceProvider?: () => Array<{ serverId: string; instructions: string }>;
 }): SystemPromptBuilder {
-  const { memoryManager, toolRegistry, pluginRuntime, getActiveSkillsSection, getAvailableSkills, getActivatablePluginIds, getAppModelContext, mcpServerGuidanceProvider,
+  const { memoryManager, toolRegistry, pluginRuntime, getAvailableSkills, getActivatablePluginIds, getAppModelContext, mcpServerGuidanceProvider,
   } = opts;
   return new SystemPromptBuilder({
     memoryManager,
@@ -94,7 +87,6 @@ export function createSystemPromptBuilder(opts: {
     getPluginCards: (registry) => pluginRuntime.listPluginCards(registry),
     getActivatablePluginIds,
     getAvailableSkills,
-    getActiveSkillsSection,
     getAppModelContext,
     mcpServerGuidanceProvider,
   });
@@ -252,8 +244,10 @@ export interface ConversationDeps {
    * not only slash-dispatch grants.
    */
   broadcastPermissionConfigChanged?: () => void;
-  /** C2(c): current-turn SkillOverlay handle, cleared on newConversation(). */
+  /** Per-conversation read-skill registry, cleared on newConversation(). */
   skillOverlay?: { clear(sessionId: string): void };
+  /** Whether `/<name>` names an indexed skill (routes a typed skill slash to the model). */
+  isSkillName?: (name: string) => boolean;
   /** Issue #260: optional notification service for turn-end auto-fire. */
   notificationService?: NotificationService;
   auditLogger?: AuditLogger;
@@ -555,6 +549,7 @@ export function createConversationLoop(deps: ConversationDeps,
     pluginOperationGrants: deps.pluginOperationGrants,
     pluginOperationIdentityProvider: deps.pluginOperationIdentityProvider,
     skillOverlay: deps.skillOverlay,
+    isSkillName: deps.isSkillName,
     notificationService: deps.notificationService,
     auditLogger: deps.auditLogger,
     rewireReviewerAgent: deps.rewireReviewerAgent,

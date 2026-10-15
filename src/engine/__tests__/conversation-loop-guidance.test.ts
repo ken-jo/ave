@@ -560,7 +560,8 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
           message.content.includes("A-only guidance"),
       ),
     ).toBe(false);
-    expect(skillOverlay.clear).toHaveBeenLastCalledWith(loop.getSessionId());
+    // Turn cleanup does not touch the per-conversation read-skill registry.
+    expect(skillOverlay.clear).not.toHaveBeenCalled();
   });
 
   it("cleans queued guidance when SessionStart throws before the prompt gate", async () => {

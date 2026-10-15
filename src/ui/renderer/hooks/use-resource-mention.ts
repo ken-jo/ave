@@ -32,8 +32,12 @@ import {
 import { displaySafeLabel } from "../../../shared/display-safe-text.js";
 import { detectMentionQuery } from "../utils/slash-trigger.js";
 import { resolveIpcErrorKey } from "../format-ipc-error.js";
-import type { AveApi } from "../types.js";
-import type { ResourceAttachment } from "../types/attachments.js";
+import type { AveApi, AveWorkspaceApi } from "../types.js";
+import {
+  ATTACH_MAX_COUNT,
+  type FileAttachment,
+  type ResourceAttachment,
+} from "../types/attachments.js";
 
 /**
  * Rows the menu will render at once.
@@ -55,7 +59,17 @@ const MENTION_MAX_ROWS = 50;
  */
 type ResourceMentionTarget =
   | { kind: "resource"; uri: string }
-  | { kind: "template"; uriTemplate: string; variables: readonly string[] };
+  | { kind: "template"; uriTemplate: string; variables: readonly string[] }
+  /**
+   * A workspace file main found and verified readable. Accepting it attaches a
+   * PATH REFERENCE (`[File #N]`), never content: the model reads it through
+   * `read_file` and its normal permission path at turn time.
+   */
+  | { kind: "file"; path: string; relativePath: string; bytes: number };
+
+/** Debounce between keystrokes and a workspace file query. */
+const FILE_SEARCH_DEBOUNCE_MS = 120;
+const NO_ROWS: ResourceMentionItem[] = [];
 
 /** One offered row, already display-normalized. */
 export interface ResourceMentionItem {
@@ -87,6 +101,22 @@ export interface UseResourceMentionArgs {
   mcp: AveApi["mcp"] | undefined;
   /** Resource attachments already in the composer — the cap is per turn. */
   resourceCount: number;
+  /**
+   * `@file` source: the main-side workspace search. Omitted on surfaces without
+   * the workspace bridge, and then no file rows are offered.
+   */
+  searchFiles?: AveWorkspaceApi["searchFiles"];
+  /** False when the active runtime cannot take file attachments. */
+  filesEnabled: boolean;
+  /** Image/file/paste attachments already in the composer — they share {@link ATTACH_MAX_COUNT}. */
+  chipCount: number;
+  /** Commit a file mention: same single-flushSync contract as {@link onAttach}. */
+  onAttachFile: (
+    attachment: FileAttachment,
+    marker: string,
+    range: { start: number; end: number },
+    mentionToken: string,
+  ) => void;
   allocateN: () => number;
   /**
    * Commit the attachment and the marker TOGETHER. The Composer owns this because the
@@ -147,7 +177,13 @@ interface CatalogueEntry {
 
 /** Stable identity for a row, and the React key. */
 function targetId(target: ResourceMentionTarget): string {
+  if (target.kind === "file") return target.path;
   return target.kind === "resource" ? target.uri : target.uriTemplate;
+}
+
+function basenameOf(p: string): string {
+  const parts = p.split(/[\\/]/);
+  return parts[parts.length - 1] ?? p;
 }
 
 export function useResourceMention({
@@ -157,6 +193,10 @@ export function useResourceMention({
   isComposing,
   mcp,
   resourceCount,
+  searchFiles,
+  filesEnabled,
+  chipCount,
+  onAttachFile,
   allocateN,
   onAttach,
   onError,
@@ -176,6 +216,52 @@ export function useResourceMention({
   );
   const triggerKey = trigger ? `${trigger.start}:${trigger.end}:${trigger.query}` : null;
   const active = trigger !== null;
+  const fileQuery = trigger?.query ?? null;
+  // Results carry the query they answer: during the debounce and the search
+  // the previous query's rows must not be on screen, or Enter would attach a
+  // match for text the user already changed.
+  const [fileResults, setFileResults] = useState<{ query: string; rows: ResourceMentionItem[] } | null>(null);
+  const fileRows = fileResults !== null && fileResults.query === fileQuery ? fileResults.rows : NO_ROWS;
+
+  // Workspace files are searched in MAIN per query (debounced), not filtered
+  // here: main owns the roots, the sensitive filter and the read-scope guard,
+  // so the renderer only ever sees paths main already vouched for.
+  useEffect(() => {
+    if (fileQuery === null || !filesEnabled || !searchFiles) {
+      setFileResults(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void searchFiles(fileQuery)
+        .then((result) => {
+          if (cancelled) return;
+          if (!result.ok) {
+            setFileResults({ query: fileQuery, rows: NO_ROWS });
+            return;
+          }
+          setFileResults({ query: fileQuery, rows: result.matches.map((match) => ({
+            key: `file::${match.path}`,
+            serverId: "",
+            target: {
+              kind: "file",
+              path: match.path,
+              relativePath: match.relativePath,
+              bytes: match.bytes,
+            },
+            label: displaySafeLabel(basenameOf(match.relativePath), MCP_RESOURCE_NAME_MAX_CHARS),
+            hint: displaySafeLabel(match.relativePath, MCP_RESOURCE_NAME_MAX_CHARS),
+          })) });
+        })
+        .catch(() => {
+          if (!cancelled) setFileResults({ query: fileQuery, rows: NO_ROWS });
+        });
+    }, FILE_SEARCH_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [fileQuery, filesEnabled, searchFiles]);
 
   // Refetched whenever a mention token appears rather than cached for the session: a
   // server connects or drops between two messages, and a catalogue that outlives the
@@ -283,7 +369,7 @@ export function useResourceMention({
     const matched = query.length === 0
       ? catalogue
       : catalogue.filter((entry) => entry.search.includes(query));
-    return matched.slice(0, MENTION_MAX_ROWS).map((entry) => ({
+    const resourceRows = matched.map((entry) => ({
       key: `${entry.serverId}::${entry.target.kind}::${targetId(entry.target)}`,
       serverId: entry.serverId,
       target: entry.target,
@@ -291,7 +377,9 @@ export function useResourceMention({
       hint: entry.hint,
       ...(entry.unavailableReason ? { unavailableReason: entry.unavailableReason } : {}),
     }));
-  }, [trigger, catalogue]);
+    // Files first: they are the common case of `@`, resources the specialist one.
+    return [...fileRows, ...resourceRows].slice(0, MENTION_MAX_ROWS);
+  }, [trigger, catalogue, fileRows]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -381,7 +469,7 @@ export function useResourceMention({
     // the two channels would otherwise make the other kind's rows silently inert — the
     // menu accepts the keypress and nothing happens, which reads as a broken app rather
     // than an absent capability.
-    if (!trigger || !mcp) return;
+    if (!trigger) return;
     const item = items[index ?? activeIndex];
     if (!item) return;
     // A row the read would refuse says so instead of spending a round-trip to fail.
@@ -389,16 +477,44 @@ export function useResourceMention({
       onError(item.unavailableReason);
       return;
     }
-    // Capped in the UI at the SAME number main enforces, so the user is stopped by a
-    // message naming the limit instead of by a refused send at the end of the turn.
-    // Checked again when a template's form is submitted, because the answer can change
-    // while that form is open.
+    // Resource rows are capped in the UI at the SAME number main enforces (checked
+    // below, after the file branch), so the user is stopped by a message naming the
+    // limit instead of by a refused send. Checked again when a template's form is
+    // submitted, because the answer can change while that form is open.
+    const range = { start: trigger.start, end: trigger.end };
+    const mentionToken = text.slice(trigger.start, trigger.end);
+    if (item.target.kind === "file") {
+      // A reference, not a read: nothing crosses to main here. The file shares
+      // the picker's cap, not the per-turn resource bound.
+      if (chipCount >= ATTACH_MAX_COUNT) {
+        onError(t("composer.attachLimitWarning", { max: ATTACH_MAX_COUNT }));
+        return;
+      }
+      const n = allocateN();
+      const name = basenameOf(item.target.path);
+      const dot = name.lastIndexOf(".");
+      onAttachFile(
+        {
+          id: `file-${Date.now()}-${n}`,
+          n,
+          kind: "file",
+          path: item.target.path,
+          name,
+          ext: dot > 0 ? name.slice(dot + 1).toLowerCase() : "",
+          bytes: item.target.bytes,
+          reference: true,
+        },
+        `[File #${n}] `,
+        range,
+        mentionToken,
+      );
+      return;
+    }
+    if (!mcp) return;
     if (resourceCount >= MCP_RESOURCE_ATTACHMENTS_PER_TURN) {
       onError(t("composer.resourceLimit", { max: MCP_RESOURCE_ATTACHMENTS_PER_TURN }));
       return;
     }
-    const range = { start: trigger.start, end: trigger.end };
-    const mentionToken = text.slice(trigger.start, trigger.end);
     if (item.target.kind === "template") {
       // Resolved INSIDE the branch, so the narrowing the call needs is the same
       // expression that decided the capability is there. Hoisting it above the branch
@@ -434,7 +550,7 @@ export function useResourceMention({
       { serverId: item.serverId, label: item.label, uri, range, mentionToken },
       () => attachResource(item.serverId, uri),
     );
-  }, [trigger, triggerKey, items, activeIndex, mcp, resourceCount, onError, runAttach, t, text]);
+  }, [trigger, triggerKey, items, activeIndex, mcp, resourceCount, chipCount, allocateN, onAttachFile, onError, runAttach, t, text]);
 
   const cancelTemplate = useCallback(() => setPendingTemplate(null), []);
 

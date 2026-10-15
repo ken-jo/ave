@@ -258,7 +258,7 @@ describe("ConversationLoop queryLoop", () => {
     });
   });
 
-  it("clears skill overlay at user-turn boundaries", async () => {
+  it("keeps the read-skill registry across user-turn boundaries", async () => {
     const toolRegistry = new ToolRegistry();
     const provider = new FakeProvider([
       [
@@ -287,17 +287,18 @@ describe("ConversationLoop queryLoop", () => {
     await loop.runTurn("질문", undefined, undefined, { inputOrigin: "user-keyboard",
     });
 
-    expect(clear).toHaveBeenCalledTimes(2);
-    expect(clear.mock.calls[0][0]).toBe(clear.mock.calls[1][0]);
+    // The read-skill registry lives for the conversation: a turn boundary must
+    // not drop it (the bodies it authorizes stay in history).
+    expect(clear).not.toHaveBeenCalled();
   });
 
-  it("injects a loaded skill body only for the active user turn", async () => {
+  it("delivers a read skill body as a tool result that stays in history, never in the system prompt", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-skill-turn-"));
     try {
       mkdirSync(dir, { recursive: true });
       writeFileSync(
         join(dir, "brief.md"),
-        "---\nname: brief\ndescription: Brief writer\n---\nBODY ONLY THIS TURN",
+        "---\nname: brief\ndescription: Brief writer\n---\nBRIEF SKILL BODY",
         "utf8",
       );
       const toolRegistry = new ToolRegistry();
@@ -313,7 +314,6 @@ describe("ConversationLoop queryLoop", () => {
         emit: () => undefined,
       }),
       );
-      let activeSessionId: string | null = null;
       const provider = new RecordingPromptProvider([
         [
           { type: "tool_call", id: "tu-1", name: "skill_load", input: { skillName: "brief" },
@@ -333,11 +333,9 @@ describe("ConversationLoop queryLoop", () => {
         settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
         },
         systemPromptBuilder: {
-          build: () => activeSessionId ? overlay.buildSection(activeSessionId) : "",
+          build: () => "system",
           setToolScope: vi.fn(),
-          setActiveSessionId: (sessionId: string | null) => {
-            activeSessionId = sessionId;
-          },
+          setActiveSessionId: vi.fn(),
         },
         inputClassifier: new InputClassifier(),
         routeEngine: new RouteEngine(),
@@ -353,19 +351,27 @@ describe("ConversationLoop queryLoop", () => {
       await loop.runTurn("new topic", undefined, undefined, { inputOrigin: "user-keyboard",
       });
 
-      expect(provider.systemPrompts[0]).not.toContain("BODY ONLY THIS TURN");
-      expect(provider.systemPrompts[1]).toContain("BODY ONLY THIS TURN");
-      expect(provider.systemPrompts[2]).not.toContain("BODY ONLY THIS TURN");
-      expect(JSON.stringify(provider.messages[1])).not.toContain("BODY ONLY THIS TURN",
-      );
-      expect(JSON.stringify(loop.getHistory().getMessages())).not.toContain("BODY ONLY THIS TURN",
+      for (const systemPrompt of provider.systemPrompts) {
+        expect(systemPrompt).not.toContain("BRIEF SKILL BODY");
+      }
+      expect(JSON.stringify(provider.messages[0])).not.toContain("BRIEF SKILL BODY");
+      // Round 2 sees the body as the skill_load tool_result …
+      expect(JSON.stringify(provider.messages[1])).toContain("BRIEF SKILL BODY");
+      // … and the next user turn still has it, without a re-read.
+      expect(JSON.stringify(provider.messages[2])).toContain("BRIEF SKILL BODY");
+      const history = loop.getHistory().getMessages();
+      const toolResult = history.find((m) => m.role === "tool_result");
+      expect(toolResult).toMatchObject({ role: "tool_result", toolName: "skill_load" });
+      expect(JSON.stringify(toolResult)).toContain("BRIEF SKILL BODY");
+      expect(history.filter((m) => m.role === "user").map((m) => JSON.stringify(m)).join("")).not.toContain(
+        "BRIEF SKILL BODY",
       );
     } finally {
       await cleanupTmpDir(dir);
     }
   });
 
-  it("uses the sessionIdOverride when rebuilding the skill overlay prompt", async () => {
+  it("records a child turn's skill read under the sessionIdOverride", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-skill-child-turn-"));
     try {
       writeFileSync(
@@ -386,7 +392,6 @@ describe("ConversationLoop queryLoop", () => {
         emit: () => undefined,
       }),
       );
-      let activeSessionId: string | null = null;
       const provider = new RecordingPromptProvider([
         [
           { type: "tool_call", id: "tu-1", name: "skill_load", input: { skillName: "brief" },
@@ -402,11 +407,9 @@ describe("ConversationLoop queryLoop", () => {
         settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
         },
         systemPromptBuilder: {
-          build: () => activeSessionId ? overlay.buildSection(activeSessionId) : "",
+          build: () => "system",
           setToolScope: vi.fn(),
-          setActiveSessionId: (sessionId: string | null) => {
-            activeSessionId = sessionId;
-          },
+          setActiveSessionId: vi.fn(),
         },
         inputClassifier: new InputClassifier(),
         routeEngine: new RouteEngine(),
@@ -422,11 +425,60 @@ describe("ConversationLoop queryLoop", () => {
         sessionIdOverride: "child-1",
       });
 
-      expect(provider.systemPrompts[0]).not.toContain("CHILD BODY ONLY");
-      expect(provider.systemPrompts[1]).toContain("CHILD BODY ONLY");
+      expect(overlay.list("child-1").map((entry) => entry.name)).toEqual(["brief"]);
+      expect(overlay.list(loop.getSessionId())).toEqual([]);
+      expect(provider.systemPrompts.join("")).not.toContain("CHILD BODY ONLY");
+      expect(JSON.stringify(provider.messages[1])).toContain("CHILD BODY ONLY");
     } finally {
       await cleanupTmpDir(dir);
     }
+  });
+
+  describe("typed /<skill-name> invocation", () => {
+    function makeSlashLoop(isSkillName?: (name: string) => boolean) {
+      const provider = new RecordingPromptProvider([
+        [
+          { type: "text_delta", text: "model answered" },
+          { type: "message_complete", stopReason: "end_turn" },
+        ],
+      ]);
+      const loop = new ConversationLoop({
+        settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
+        systemPromptBuilder: { build: () => "system", setToolScope: vi.fn(), setActiveSessionId: vi.fn() },
+        inputClassifier: new InputClassifier(),
+        routeEngine: new RouteEngine(),
+        toolRegistry: new ToolRegistry(),
+        memoryManager: { saveSession: () => {}, listSessions: () => [] },
+        ...(isSkillName ? { isSkillName } : {}),
+        disableSessionPersistence: true,
+      } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+      (loop as { provider: LLMProvider | null }).provider = provider;
+      return { loop, provider };
+    }
+
+    it("sends a non-built-in /<skill> to the model with the text as typed", async () => {
+      const { loop, provider } = makeSlashLoop((name) => name === "email-polish");
+      const result = await loop.runTurn("/email-polish tighten this", undefined, undefined, {
+        inputOrigin: "user-keyboard",
+      });
+      expect(result.route).toBe("llm");
+      expect(result.text).toBe("model answered");
+      expect(JSON.stringify(provider.messages[0])).toContain("/email-polish tighten this");
+    });
+
+    it("keeps an unknown /<name> on the command route", async () => {
+      const { loop, provider } = makeSlashLoop((name) => name === "email-polish");
+      const result = await loop.runTurn("/not-a-skill", undefined, undefined, { inputOrigin: "user-keyboard" });
+      expect(result.route).toBe("command");
+      expect(provider.messages).toHaveLength(0);
+    });
+
+    it("lets a built-in command win over a skill of the same name", async () => {
+      const { loop, provider } = makeSlashLoop(() => true);
+      const result = await loop.runTurn("/help", undefined, undefined, { inputOrigin: "user-keyboard" });
+      expect(result.route).toBe("command");
+      expect(provider.messages).toHaveLength(0);
+    });
   });
 
   it("classifies model-generated tool args from a typed prompt as llm-tool-arg", async () => {

@@ -140,6 +140,7 @@ describe("preload contextBridge world shape lock", () => {
             "openExternal",
             "openFile",
             "readImage",
+            "redeemDrop",
             "saveClipboardImage",
           ],
           "env": [
@@ -228,6 +229,7 @@ describe("preload contextBridge world shape lock", () => {
             "pickRoot",
             "removeRoot",
             "reveal",
+            "searchFiles",
           ],
         },
         "aveApi": {
@@ -675,6 +677,7 @@ describe("preload contextBridge world shape lock", () => {
           ],
         },
         "aveDrop": {
+          "prepareFileDrop": "function",
           "resolveDroppedPaths": "function",
         },
         "aveHost": {

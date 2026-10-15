@@ -58,11 +58,13 @@ export function isSafeMainBundleManifestPath(path) {
  * initial 5_273_794, total 8_909_524, and the initial ceiling moves to 5_275_000.
  * Joined with main's terminal blocks (terminal_read registers at boot too), the
  * measurement is entry 415_595, initial 5_297_263, total 8_937_183, and the initial
- * ceiling moves to 5_300_000.
+ * ceiling moves to 5_300_000. Joined again with main after skills-on-demand, chat-ux and
+ * release-ci, the measurement is entry 419_912, initial 5_313_199, total 8_951_548, and
+ * the initial ceiling moves to 5_315_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_300_000,
+  initialBytes: 5_315_000,
   totalBytes: 11_050_000,
 });
 

@@ -11,6 +11,12 @@ import {
   ATTACH_MAX_COUNT,
   type Attachment,
 } from "../types/attachments.js";
+
+/**
+ * Longest stretch of a pasted text the chip's view lays out. The whole text
+ * is always sent; past this the view says how much it left out.
+ */
+export const PASTE_PREVIEW_MAX_CHARS = 32 * 1024;
 import { collapsePath } from "../utils/attachment-markers.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatBytes } from "../../../lib/turn-summary-format.js";
@@ -273,12 +279,14 @@ export function AttachmentOverlay({
           {t("attachmentChip.overlayRemoveHint")}
         </span>
       </div>
-      <div className="max-h-72 space-y-1 overflow-y-auto">
+      {/* Bounded by the room the popover actually has above the composer
+          (minus its header), so a short window never pushes it off-screen. */}
+      <div className="max-h-[min(60vh,calc(var(--radix-popover-content-available-height)-56px))] space-y-1 overflow-y-auto">
         {attachments.map((att) => (
           <div
             key={att.id}
             data-testid="overlay-item"
-            className="flex items-center gap-3 border-b border-muted/(--opacity-medium) py-2 last:border-b-0"
+            className="flex flex-wrap items-center gap-3 border-b border-muted/(--opacity-medium) py-2 last:border-b-0"
           >
             <div className="flex-shrink-0">
               {att.kind === "image" ? (
@@ -329,7 +337,10 @@ export function AttachmentOverlay({
                       : t("attachmentChip.pastedFromClipboard")}
               </div>
             </div>
-            {(att.kind === "image" || att.kind === "file") && onOpenExternal ? (
+            {/* A `@file` mention is a reference main never authorized for
+                open-in-OS (only picker / redeemed-drop paths are), so it has no
+                open button rather than one that would be refused. */}
+            {(att.kind === "image" || (att.kind === "file" && !att.reference)) && onOpenExternal ? (
               <button
                 type="button"
                 onClick={() => onOpenExternal(att.path)}
@@ -338,6 +349,28 @@ export function AttachmentOverlay({
               >
                 ↗ {t("attachmentChip.openExternalButton")}
               </button>
+            ) : null}
+            {/* The chip stands in for the text in the body; opening it shows
+                exactly what will be sent, selectable for a copy. */}
+            {att.kind === "paste" ? (
+              <pre
+                data-testid="overlay-paste-text"
+                aria-label={t("attachmentChip.pastedTextOriginal", { n: att.n })}
+                tabIndex={0}
+                // One scroller: the list around it already scrolls, and a
+                // second one inside would swallow the wheel.
+                className="w-full basis-full select-text whitespace-pre-wrap break-words rounded border border-border bg-muted/(--opacity-medium) p-2 font-mono text-[11px] leading-relaxed text-foreground"
+              >
+                {/* A clipboard paste is stored whole, however long; laying out
+                    megabytes of wrapped text would freeze the window, so the
+                    view stops at PASTE_PREVIEW_MAX_CHARS and says how much it left out. */}
+                {att.text.length > PASTE_PREVIEW_MAX_CHARS ? att.text.slice(0, PASTE_PREVIEW_MAX_CHARS) : att.text}
+              </pre>
+            ) : null}
+            {att.kind === "paste" && att.text.length > PASTE_PREVIEW_MAX_CHARS ? (
+              <div data-testid="overlay-paste-more" className="w-full basis-full text-[10px] text-muted-foreground">
+                {t("attachmentChip.pastedTextMore", { count: att.text.length - PASTE_PREVIEW_MAX_CHARS })}
+              </div>
             ) : null}
           </div>
         ))}

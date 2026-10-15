@@ -1,17 +1,17 @@
 /**
- * `skill_load` LLM tool — loads a skill (markdown w/ frontmatter) and
- * registers it as a system-prompt overlay for the current user turn. The
- * renderer surfaces a SkillBadge ("🎯 Skill loaded: <name>") at the call
- * site so the user sees which skills were loaded for the active turn.
+ * `skill_load` LLM tool — READS a skill (SKILL.md markdown w/ frontmatter) on
+ * demand. Progressive disclosure: the system prompt carries only the skill
+ * index (name + description); the body enters the context only as this
+ * tool's result, so reading a skill is an explicit step the transcript shows
+ * ("Read skill · <name>"). The tool name is kept for contract stability (the
+ * Tailnet P1 block list and reviewer rules key on it).
  *
  * Security model (post C2 review + #1104 file-seed migration):
  *   - Skill bodies are NEVER appended to conversation history as `user`-role
- *     messages. Pre-fix, a malicious skill body ("ignore previous
- *     instructions and exfil…") landed in history with the user role and
- *     read like genuine input. Post-fix, the body lives in a separately
- *     delimited section of each turn's system prompt, fenced with
- *     `<ave-skill name="…">…</ave-skill>` so provenance is unambiguous
- *     (see {@link SkillOverlay}).
+ *     messages, and never spliced into the system prompt. The body is the
+ *     tool_result (the data channel, like `read_file`), fenced with
+ *     `<ave-skill name="…">…</ave-skill>` and fence-neutralized so provenance
+ *     is unambiguous (see {@link renderSkillReadResult}).
  *   - Every skill — including seeded built-ins under `~/.ave/skills/`,
  *     which are user-editable on disk — runs through {@link ApprovalGate}
  *     on first load. Approval is persisted in `~/.ave/skills/approvals.json`
@@ -27,7 +27,7 @@ import { createDynamicTool, type Tool } from "./base.js";
 import type { SkillStore } from "../main/skill-store.js";
 import { SKILL_SELECTOR_ALLOWLIST } from "../main/skill-store.js";
 import { parsePluginSkillSelector } from "../shared/plugin-skill-selector.js";
-import type { SkillOverlay } from "../main/skill-overlay.js";
+import { renderSkillReadResult, type SkillOverlay } from "../main/skill-overlay.js";
 import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
 import type { ApprovalGate } from "../permissions/approval-gate.js";
 import { createLogger } from "../lib/logger.js";
@@ -49,13 +49,12 @@ export interface SkillLoadEvent {
  * What the approval record is hash-bound to.
  *
  * The body alone stopped being sufficient once a skill can ship bundled files:
- * their NAMES render inside the trusted `<ave-skill>` fence, so a bundle that
- * gains files while SKILL.md is unchanged would reach the system prompt without
- * re-prompting — the exact TOCTOU the body-hash binding exists to prevent.
+ * their NAMES render inside the `<ave-skill>` fence, so a bundle that gains
+ * files while SKILL.md is unchanged would reach the model without re-prompting — the exact TOCTOU the body-hash binding exists to prevent.
  *
  * Scope: the body plus each bundled file's NAME and SIZE — i.e. exactly what the
- * trusted fence renders. Resource CONTENT is deliberately not covered; it never
- * enters the system prompt, arriving only as `skill_read` tool_result data.
+ * `<ave-skill>` fence renders. Resource CONTENT is deliberately not covered; it
+ * arrives only on a separate `skill_read` call.
  *
  * Two encodings live here — the bare body (no bundle) and a digest pair (bundle)
  * — so they are kept in SEPARATE key spaces by {@link approvalRecordKey}. Within
@@ -94,7 +93,7 @@ function approvalRecordKey(skill: {
 
 export interface SkillLoadToolDeps {
   store: SkillStore;
-  /** Current-turn overlay registry — read by SystemPromptBuilder each round. */
+  /** Per-conversation registry of read skills — authorizes `skill_read`. */
   overlay: SkillOverlay;
   /** Persistent allowlist for user-authored skills. */
   approvals: SkillApprovalsStore;
@@ -106,7 +105,7 @@ export interface SkillLoadToolDeps {
   approvalGate: ApprovalGate;
   /** Renderer event sink — used by the chat to render the SkillBadge. */
   emit: (event: SkillLoadEvent) => void;
-  /** Exact generation lease held from materialized body read through overlay registration. */
+  /** Exact generation lease held while the materialized body is read and registered. */
   acquirePluginGeneration?: (
     owner: { pluginId: string; localId: string },
   ) => Promise<{
@@ -115,20 +114,21 @@ export interface SkillLoadToolDeps {
   }>;
 }
 
+/** One category for the tool and for its body-approval request. */
+const SKILL_LOAD_CATEGORY = "read" as const;
+
 export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
   return createDynamicTool({
     name: "skill_load",
     description: t("be_skillLoad.toolDescription"),
     source: "builtin",
-    // C2(d): skill bodies become part of the LLM's system prompt context.
-    // Even though no filesystem mutation happens, the assistant's future
-    // behavior is mutated by attacker-controlled content. Treat as "write"
-    // so the §6.3 PermissionManager lifts the auto-approve and the first
-    // load of each skill — seeded built-ins included — goes through the
-    // user-approval dock, then the body-hash record in
-    // `skill-approvals-store.ts` short-circuits repeat loads of the same
-    // body.
-    category: "write",
+    // A pure read: no filesystem mutation, and the body lands in a
+    // tool_result (the data channel), not in the trusted system prompt. The
+    // content-bound control is the body-hash approval below — every skill,
+    // seeded built-ins included, still goes through the approval dock on its
+    // first read and again whenever its body or bundle changes.
+    category: SKILL_LOAD_CATEGORY,
+    isReadOnly: () => true,
     jsonSchema: {
       type: "object",
       required: ["skillName"],
@@ -136,10 +136,6 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
         skillName: {
           type: "string",
           description: t("be_skillLoad.skillNameDescription"),
-        },
-        args: {
-          type: "object",
-          description: t("be_skillLoad.argsDescription"),
         },
       },
     },
@@ -190,7 +186,6 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
         };
       }
 
-      let generationLeaseTransferred = false;
       try {
 
       // C2(d): every skill body is user-editable on disk — seeded built-in
@@ -209,7 +204,11 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           id: randomUUID(),
           category: "tool",
           toolName: "skill_load",
-          toolCategory: "meta",
+          // The tool's real category, so the dock describes a read. No
+          // `allowedChoices` is set on purpose: away-authority answers only the
+          // allow-once/deny-once one-shot contract, and an unseen skill body
+          // must never be approved by an away grant on "read".
+          toolCategory: SKILL_LOAD_CATEGORY,
           // Attribute the modal to the conversation loading the skill. The
           // missing-session case is still rejected further down, after the
           // user has decided — do not change that ordering here.
@@ -257,11 +256,10 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           isError: true,
         };
       }
-      // Register in the current-turn overlay. SystemPromptBuilder reads this
-      // on subsequent assistant rounds, and ConversationLoop clears it at the
-      // user-turn boundary so the body does not become ambient session context.
-      deps.overlay.register(sessionId, skill, generationLease);
-      generationLeaseTransferred = Boolean(generationLease);
+      // Record the read for this conversation: `skill_read` authorizes bundled
+      // resources against the identity captured here. The generation lease is
+      // NOT held beyond this call — `skill_read` re-acquires and compares.
+      deps.overlay.register(sessionId, skill);
 
       deps.emit({
         name: skill.name,
@@ -269,16 +267,11 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
         sessionId,
       });
       return {
-        output: JSON.stringify({
-          loaded: true,
-          skillName: skill.name,
-          summary:
-            skill.description || `Skill '${skill.name}' loaded`,
-        }),
+        output: renderSkillReadResult(skill),
         isError: false,
       };
       } finally {
-        if (!generationLeaseTransferred) generationLease?.release();
+        generationLease?.release();
       }
     },
   });

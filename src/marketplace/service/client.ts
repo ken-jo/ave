@@ -28,7 +28,7 @@ import { isRecord } from "../../shared/is-record.js";
 const log = createMarketplaceLogger("service-endpoint");
 
 /** The build constant: changing it ships with an app update, which drops a move accepted under the old one. */
-export const AVE_SERVICE_BASE_URL = "https://former-site.invalid";
+export const AVE_SERVICE_BASE_URL = "https://ave.agent-connector.ai";
 
 const DOCUMENT_PATH = "/.well-known/ave-service.json";
 const MAX_DOCUMENT_BYTES = 64 * 1024;

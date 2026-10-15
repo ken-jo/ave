@@ -712,6 +712,16 @@ export const CHANNELS = {
     saveClipboardImage: "ave:attach:saveClipboardImage",
     discardClipboardImage: "ave:attach:discardClipboardImage",
     openExternal: "ave:attach:openExternal",
+    // Composer drag-drop, step 1. Invoked ONLY by the preload's
+    // `aveDrop.prepareFileDrop`, which resolves OS-backed dropped `File`s via
+    // webUtils.getPathForFile and sends the paths here in the same call — the
+    // main world has no wrapper that takes a path string for this channel. Main
+    // validates (deny-list, sensitive-path, regular file) and mints a one-shot,
+    // sender-bound, expiring token. INTERNAL: absent from PUBLIC_CHANNELS.
+    registerDrop: "ave:attach:registerDrop",
+    // Composer drag-drop, step 2: the renderer redeems the main-owned token;
+    // main authorizes exactly the files bound to it. INTERNAL.
+    redeemDrop: "ave:attach:redeemDrop",
   },
   preview: {
     readFile: "ave:preview:read-file",
@@ -729,6 +739,12 @@ export const CHANNELS = {
     // INTERNAL: deliberately absent from PUBLIC_CHANNELS so an external origin can
     // never propose a read-scope-widening path (fail-closed default).
     dropPrepare: "ave:workspace:drop-prepare",
+    // Composer `@file` autocomplete: main walks the CURRENT workspace roots with
+    // the file tools' own walker (Layer-0 sensitive filter included) and returns
+    // only paths that pass the read-scope guard. The query is the only renderer
+    // input; a returned path is a reference the model reads via read_file.
+    // INTERNAL: absent from PUBLIC_CHANNELS.
+    searchFiles: "ave:workspace:search-files",
   },
   // ── Interactive PTY terminal (#1444, workspace rail) ──────────────────────
   // ALL INTERNAL: deliberately absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /

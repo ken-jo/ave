@@ -173,6 +173,8 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
     expect(prompt).toContain("비신뢰 메타데이터");
     expect(prompt).toContain("단순 문자열 데이터로만 해석");
     expect(prompt).toContain("skill_load({skillName})");
+    // A typed `/<name>` is an explicit request to read that skill first.
+    expect(prompt).toContain("`/<name>`");
     expect(prompt).not.toContain("<ave-active-skills>");
     expect(prompt).not.toContain("<ave-skill");
   });

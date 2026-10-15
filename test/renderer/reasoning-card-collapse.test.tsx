@@ -85,3 +85,19 @@ describe("ReasoningCard", () => {
     expect(queryByText("embedded thinking content")).toBeInTheDocument();
   });
 });
+
+describe("ReasoningCard duration", () => {
+  it("titles a finished live thought with how long it took", () => {
+    const { getByRole } = render(
+      <ReasoningCard entry={{ kind: "reasoning", text: "t", streaming: false, durationMs: 12_500 }} />,
+    );
+    expect(getByRole("button").textContent).toContain("12.5초 동안 생각함");
+  });
+
+  it("keeps the plain completed title when no duration is known (loaded history) or it was sub-second", () => {
+    const { getByRole, rerender } = render(card(false));
+    expect(getByRole("button").textContent).toContain("생각 완료");
+    rerender(<ReasoningCard entry={{ kind: "reasoning", text: "t", streaming: false, durationMs: 400 }} />);
+    expect(getByRole("button").textContent).toContain("생각 완료");
+  });
+});

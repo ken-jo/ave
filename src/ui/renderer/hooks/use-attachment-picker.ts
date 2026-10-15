@@ -28,6 +28,8 @@ export interface UseAttachmentPickerParams {
   onAttachmentUnavailable?: () => void;
   /** Notify the user when a supported image exceeds its current runtime budget. */
   onImageAttachmentLimitExceeded?: () => void;
+  /** Notify the user that `count` dropped items were refused (folder, blocked type, protected path, expired drop). */
+  onDropRejected?: (count: number) => void;
   /** Notify the user that `attachPastedText` kept only part of a long text. */
   onPastedTextClipped?: (info: { keptChars: number; totalChars: number }) => void;
 }
@@ -53,8 +55,24 @@ export function clipPastedText(text: string): { text: string; clipped: boolean }
   };
 }
 
+/** One authorized file, as the picker and a redeemed drop both describe it. */
+interface PickedFile {
+  path: string;
+  name: string;
+  ext: string;
+  bytes: number;
+  isImage: boolean;
+  mimeType?: string;
+}
+
 export interface UseAttachmentPickerResult {
   handleAttach: () => Promise<void>;
+  /**
+   * Attach files dropped on the composer. Hands the `File`s to the preload
+   * (which resolves and registers them with main in one step), redeems the
+   * one-shot token, and commits through the SAME path as the picker.
+   */
+  handleDropFiles: (files: FileList | readonly File[]) => Promise<void>;
   /**
    * Attach `text` as a pasted-text chip, as if the user had pasted it — the
    * path for content another surface hands to the composer (a terminal
@@ -102,6 +120,7 @@ export function useAttachmentPicker({
   setQuestion,
   onAttachmentUnavailable,
   onImageAttachmentLimitExceeded,
+  onDropRejected,
   onPastedTextClipped,
   composerRef,
   imagesEnabled = true,
@@ -118,20 +137,19 @@ export function useAttachmentPicker({
   // contextBridge "ave" → attach). The disable gate (attachments cap /
   // no-api-key) is applied by the InputActionBar attachDisabled prop, so this
   // handler only runs when attaching is allowed.
-  const handleAttach = useCallback(async () => {
-    const result = await window.ave.attach.openFile();
+  //
+  // `commitFiles` is shared by the picker and the composer drop: both hand it
+  // files main has already authorized, and both need the same capability gates,
+  // the commit-time cap and the single-flushSync marker insert.
+  const commitFiles = useCallback(async (files: readonly PickedFile[]) => {
     let unavailableAttachmentSkipped = false;
     let imageAttachmentLimitExceeded = false;
-    if (result.canceled) return;
-    if (result.rejected.length > 0) {
-      console.warn("attachment rejected (deny-list):", result.rejected, "deny:", DENY_EXTENSIONS);
-    }
     // Build all candidate attachments first. The 5-cap is enforced at *commit*
     // time inside the setAttachments updater, so a concurrent clipboard paste
     // during the readImage await cannot push us past the limit (the updater
     // receives the latest committed state, not the closure-captured one).
     const candidates: Attachment[] = [];
-    for (const f of result.files) {
+    for (const f of files) {
       if ((f.isImage && !capabilityRef.current.imagesEnabled) || (!f.isImage && !capabilityRef.current.filesEnabled)) {
         // The picker can return mixed selections. Do not allocate a marker
         // number or read an image before its verified runtime capability gate.
@@ -267,6 +285,39 @@ export function useAttachmentPicker({
     composerRef.current?.focus();
   }, [attachmentNCounter, composerRef, onAttachmentUnavailable, onImageAttachmentLimitExceeded, setAttachments, setQuestion]);
 
+  const handleAttach = useCallback(async () => {
+    const result = await window.ave.attach.openFile();
+    if (result.canceled) return;
+    if (result.rejected.length > 0) {
+      console.warn("attachment rejected (deny-list):", result.rejected, "deny:", DENY_EXTENSIONS);
+    }
+    await commitFiles(result.files);
+  }, [commitFiles]);
+
+  const handleDropFiles = useCallback(async (files: FileList | readonly File[]) => {
+    const dropped = files.length;
+    if (dropped === 0) return;
+    // Step 1 runs in the preload: it resolves OS-backed paths and registers
+    // them with main. This world never sees or sends a path string.
+    const prepared = await window.aveDrop.prepareFileDrop(files);
+    const refusedAtRegister = prepared.rejected?.length ?? (prepared.ok ? 0 : dropped);
+    if (!prepared.ok) {
+      onDropRejected?.(Math.max(refusedAtRegister, 1));
+      composerRef.current?.focus();
+      return;
+    }
+    if (refusedAtRegister > 0) onDropRejected?.(refusedAtRegister);
+    // Step 2: redeem the main-owned token; main authorizes exactly its files.
+    const redeemed = await window.ave.attach.redeemDrop(prepared.token);
+    if (!redeemed.ok) {
+      console.warn("drop token refused:", redeemed.error);
+      onDropRejected?.(dropped - refusedAtRegister);
+      composerRef.current?.focus();
+      return;
+    }
+    await commitFiles(redeemed.files);
+  }, [commitFiles, composerRef, onDropRejected]);
+
   const attachPastedText = useCallback((rawText: string): boolean => {
     const { text, clipped } = clipPastedText(rawText);
     // Allocated outside the updater, as handleAttach does: React may run an
@@ -297,5 +348,5 @@ export function useAttachmentPicker({
     return true;
   }, [attachmentNCounter, composerRef, onPastedTextClipped, setAttachments, setQuestion]);
 
-  return { handleAttach, attachPastedText };
+  return { handleAttach, handleDropFiles, attachPastedText };
 }

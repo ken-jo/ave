@@ -41,8 +41,9 @@ function toolProvenanceLabel(tool: {
 
 /**
  * The names {@link handleCommand} dispatches, in step with its switch. A
- * custom command file can only claim a name outside this set: built-ins
- * always win.
+ * custom command file or a skill can only claim a name outside this set:
+ * built-ins always win. Any other `/<skill-name>` is a user's explicit request
+ * to use that skill and goes to the model (see run-turn).
  */
 export const BUILTIN_SLASH_COMMANDS: ReadonlySet<string> = new Set([
   "new", "remember", "memory", "sessions", "load", "model", "vendor",

@@ -211,7 +211,6 @@ async function runTurnInSpan(
           rawIntent: options.requestAnchorRawIntent,
         })
       : null;
-    self.deps.skillOverlay?.clear(effectiveSessionId);
 
 
     self.tracer.step("REQUEST_ENTRY", { inputLen: turnInput.length, inputOrigin,
@@ -265,11 +264,6 @@ async function runTurnInSpan(
       turnStateFinalized = true;
       self.currentAbortController = null;
       self.turnAdditionalDirectories = [];
-      try {
-        self.deps.skillOverlay?.clear(effectiveSessionId);
-      } catch {
-        // Overlay cleanup failure must not strand queued guidance.
-      }
       await self.dropPendingGuidance("turn-ended", callbacks);
     };
 
@@ -288,14 +282,25 @@ async function runTurnInSpan(
       const customCommand = isUserKeyboardOrigin(inputOrigin) && !BUILTIN_SLASH_COMMANDS.has(routeResult.command)
         ? await loadCustomCommand(routeResult.command, self.getSessionProjectContext().projectRoot)
         : null;
-      if (!customCommand) {
+      if (customCommand) {
+        customCommandDisplayText = turnInput;
+        turnInput = expandCustomCommand(customCommand.body, routeResult.args);
+        routeResult = { route: "llm", input: turnInput };
+      } else if (
+        !BUILTIN_SLASH_COMMANDS.has(routeResult.command) &&
+        self.deps.isSkillName?.(routeResult.command) === true
+      ) {
+        // `/<skill-name> …` typed by the user is an explicit request to use that
+        // skill, not a host command: it runs as a normal model turn with the text
+        // as typed, and the skill index guidance makes the model read the skill
+        // with `skill_load` first (a visible tool step). Built-in commands and
+        // the person's own command files win over a skill of the same name.
+        routeResult = { route: "llm", input: turnInput };
+      } else {
         self.currentAbortController = null;
         return self.handleCommand(routeResult.command, routeResult.args, inputOrigin, callbacks,
         );
       }
-      customCommandDisplayText = turnInput;
-      turnInput = expandCustomCommand(customCommand.body, routeResult.args);
-      routeResult = { route: "llm", input: turnInput };
     }
 
     // §4.5.2 step 4 — TURN_ORCHESTRATE

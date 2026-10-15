@@ -1,0 +1,16 @@
+// The Worker that serves Ave's website at ave.agent-connector.ai: static
+// assets only (no script), from the static export in ./out. The preview at
+// dev.agent-connector.ai is the Worker `ave-web-dev` with the same shape.
+// `_headers` and `_redirects` in the export apply to static assets.
+{
+  "name": "ave-web",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./out",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash"
+  },
+  "routes": [{ "pattern": "ave.agent-connector.ai", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false
+}

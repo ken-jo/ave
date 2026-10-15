@@ -10,6 +10,7 @@
  */
 import type { PackageKind } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
+import { AVE_EXTENSION_NAMESPACE, RENAMED_EXTENSION_NAMESPACE } from "../../plugins/public-contract.js";
 
 export const CONTENT_KINDS = ["agent-plugin", "skill", "agent", "theme", "font", "language", "provider", "messaging-connection"] as const satisfies readonly PackageKind[];
 export type ContentKind = (typeof CONTENT_KINDS)[number];
@@ -121,6 +122,9 @@ export function contentFileProblem(kind: ContentKind, path: string): string | nu
   const rule = CONTENT_RULES[kind];
   const lower = path.toLowerCase();
   if (lower.endsWith(".svg") || lower.endsWith(".svgz")) return `SVG is not allowed: ${path}`;
+  if (kind === "agent-plugin" && path.startsWith(`${RENAMED_EXTENSION_NAMESPACE}/`)) {
+    return `${RENAMED_EXTENSION_NAMESPACE}/ was renamed to ${AVE_EXTENSION_NAMESPACE}/; move ${path} there`;
+  }
   if (!rule.layout(path)) return `a ${kind} package holds ${rule.describe} only: ${path}`;
   const extensions = rule.extensionsAt?.(path) ?? (rule.extensionsAt ? null : rule.extensions);
   if (extensions === null) return null;
