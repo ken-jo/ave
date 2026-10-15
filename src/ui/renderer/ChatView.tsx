@@ -262,7 +262,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const workspaceTabs = useWorkspaceTabs();
   // The main area reaches this tile's side-panel tabs through the sink: a
   // terminal or page moved here from a pane lands in these tabs.
-  const { adoptTab, releaseTab } = workspaceTabs;
+  const { adoptTab, releaseTab, hasTab, setActiveTabId: selectWorkspaceTab } = workspaceTabs;
   const openSidePanelRef = useRef(onSidePanelOpenChange);
   openSidePanelRef.current = onSidePanelOpenChange;
   useEffect(() => {
@@ -271,8 +271,14 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       adopt: adoptTab,
       release: releaseTab,
       open: () => openSidePanelRef.current(true),
+      activate: (tabId) => {
+        if (!hasTab(tabId)) return false;
+        selectWorkspaceTab(tabId);
+        openSidePanelRef.current(true);
+        return true;
+      },
     });
-  }, [chatGroupId, adoptTab, releaseTab]);
+  }, [chatGroupId, adoptTab, releaseTab, hasTab, selectWorkspaceTab]);
   const seenSubAgentSpawnKeysRef = useRef<Set<string>>(new Set());
   // Docked side-panel width — durable shell preference (settings round-trip),
   // owned next to the tab store so it survives ChatSidePanel unmount.

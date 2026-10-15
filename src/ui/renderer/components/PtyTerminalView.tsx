@@ -30,6 +30,7 @@ import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
+import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
 
 /** Delay before re-listing blocks after an Enter, so the shell has echoed. */
 const ENTER_RELIST_DELAY_MS = 150;
@@ -62,6 +63,19 @@ interface PtyTerminalViewProps {
   tabLabel: string;
   /** Hand a block's text to the chat composer; false when it is full. */
   onAttachText?: (text: string) => boolean;
+  /**
+   * Where a NEW shell starts. Only the first spawn of a tab reads it — a
+   * remount replays the running shell, which is wherever it already is.
+   */
+  initialCwd?: string | null;
+  /** The working directory the shell last reported (its latest block's). */
+  onCwd?: (cwd: string) => void;
+  /**
+   * Whether the user is looking at this terminal when it is on screen: a
+   * side panel's front tab is (default); a main pane is while it has focus,
+   * so a terminal in the other half of a split still rings.
+   */
+  attended?: boolean;
 }
 
 /**
@@ -93,8 +107,15 @@ export function PtyTerminalView({
   return <AttachedPtyTerminal {...props} />;
 }
 
-function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText }: PtyTerminalViewProps) {
+function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, onCwd, attended = true }: PtyTerminalViewProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  // Read once, at the spawn: a later report must not respawn anything.
+  const initialCwdRef = useRef(initialCwd ?? null);
+  // Attention is "seen" only while the terminal is both attended and on
+  // screen; the box is measured by the resize observer below.
+  const attendedRef = useRef(attended);
+  attendedRef.current = attended;
+  const hasBoxRef = useRef(false);
   const [blockRevision, setBlockRevision] = useState(0);
   const termRef = useRef<Terminal | null>(null);
   // Changes after the applied theme's values were written to :root — another
@@ -170,8 +191,23 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText }: PtyTerminal
     });
 
     // Spawn (or replay). Fail-closed reasons surface as a buffer diagnostic.
-    void terminalApi
-      .spawn({ tabId, cols, rows })
+    // A replay of the running shell's scrollback arrives before the spawn
+    // resolves; it is output already seen, so it must not ring attention again.
+    setTerminalReplaying(tabId, true);
+    const startCwd = initialCwdRef.current;
+    const spawnAt = (cwd: string | null) =>
+      terminalApi.spawn({ tabId, cols, rows, ...(cwd ? { cwd } : {}) });
+    void spawnAt(startCwd)
+      .then(async (res) => {
+        // The directory a closed terminal was in may be gone, or outside what
+        // the workspace allows; the new shell then starts where every new
+        // shell does, and says why.
+        if (!res.ok && startCwd && (res.reason === "bad-request" || res.reason === "spawn-failed") && !disposed) {
+          term.write(diagnostic(`[starting in the workspace root: ${res.message}]`));
+          return spawnAt(null);
+        }
+        return res;
+      })
       .then((res) => {
         if (disposed) return;
         if (!res.ok) term.write(diagnostic(`[terminal unavailable] ${res.message}`));
@@ -180,10 +216,20 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText }: PtyTerminal
         if (!disposed) {
           term.write(diagnostic(`[terminal error] ${errorMessage(err)}`));
         }
-      });
+      })
+      .finally(() => setTerminalReplaying(tabId, false));
+
+    // The user is looking at this terminal while its host has a box: a hidden
+    // pane or a side panel set aside lays it out at zero size.
+    const reportAttended = () => {
+      hasBoxRef.current = host.offsetWidth > 0 && host.offsetHeight > 0;
+      setTerminalAttended(tabId, attendedRef.current && hasBoxRef.current);
+    };
+    reportAttended();
 
     // Resize the PTY when the pane changes size.
     const resizeObserver = new ResizeObserver(() => {
+      reportAttended();
       const dims = safeFit();
       void terminalApi.resize(tabId, dims.cols, dims.rows);
     });
@@ -191,6 +237,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText }: PtyTerminal
 
     return () => {
       disposed = true;
+      setTerminalAttended(tabId, false);
       resizeObserver.disconnect();
       if (enterTimer !== null) clearTimeout(enterTimer);
       markerSub.dispose();
@@ -203,6 +250,11 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText }: PtyTerminal
       // torn down on tab close (closeWorkspaceTab → terminal.kill).
     };
   }, [api, tabId]);
+
+  // Focus moving to or from this terminal's pane.
+  useEffect(() => {
+    if (termRef.current) setTerminalAttended(tabId, attended && hasBoxRef.current);
+  }, [tabId, attended]);
 
   // Re-tint the live terminal when the applied theme changes: its options take
   // a new theme in place, so the shell, scrollback and cursor are kept.
@@ -225,6 +277,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText }: PtyTerminal
           tabLabel={tabLabel}
           revision={blockRevision}
           {...(onAttachText ? { onAttachText } : {})}
+          {...(onCwd ? { onCwd } : {})}
         />
       ) : null}
       <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" />

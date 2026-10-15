@@ -9,8 +9,29 @@ import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
 import { clickSidebarNavRow, splitIntoTwoTiles } from "./helpers.js";
 import { SURFACE_DRAG_TYPE } from "../../src/ui/renderer/preview/surface-moves.js";
+import { getTerminalAttention, markTerminalRead } from "../../src/ui/renderer/preview/terminal-attention.js";
 
-afterEach(() => vi.restoreAllMocks());
+// The terminal suites below give the app a terminal surface, which mounts
+// xterm; jsdom has no canvas, so xterm is the one thing stood in for.
+vi.mock("@xterm/xterm", () => ({
+  Terminal: class {
+    cols = 80;
+    rows = 24;
+    options = {};
+    parser = { registerOscHandler: () => ({ dispose() {} }) };
+    loadAddon() {}
+    open() {}
+    onData() { return { dispose() {} }; }
+    write() {}
+    dispose() {}
+  },
+}));
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+
+afterEach(() => {
+  for (const tabId of [...getTerminalAttention().keys()]) markTerminalRead(tabId);
+  vi.restoreAllMocks();
+});
 
 function surfacePanes(container: HTMLElement): HTMLElement[] {
   return [...container.querySelectorAll<HTMLElement>('[data-testid="surface-pane"]')];
@@ -153,6 +174,108 @@ describe("main-area terminal and web panels", () => {
     await act(async () => { fireEvent.drop(strip, { dataTransfer: back }); });
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(0));
     expect(sideTabIds()).toContain(tabId);
+  });
+
+  type TerminalDouble = { emitTerminalData: (tabId: string, chunk: string) => void };
+  const notify = (api: unknown, tabId: string, message: string) =>
+    act(() => { (api as { terminal: TerminalDouble }).terminal.emitTerminalData(tabId, `\x1b]9;${message}\x07`); });
+  const jumpToUnread = () => act(() => {
+    fireEvent.keyDown(window, { key: "u", ctrlKey: true, shiftKey: true });
+  });
+
+  /** jsdom lays nothing out; give every element a box so "on screen" holds as in the app. */
+  function withLaidOutBoxes() {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(400);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(300);
+  }
+
+  it("rings a main terminal that asks for attention unless its pane has focus, and the jump chord focuses and reads it", async () => {
+    withLaidOutBoxes();
+    const { container, api } = await renderApp({ hasApiKey: true, terminal: true });
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    const terminal = shownSurfaces(container)[0]!;
+    const terminalPane = () => container.querySelector(`[data-testid="surface-pane"][data-tab-id="${terminal.tabId}"]`)!.closest('[data-testid="pane"]')!;
+    // Its pane has focus: the user is looking at it, so nothing rings.
+    expect(terminalPane().getAttribute("data-focused")).toBe("true");
+    notify(api, terminal.tabId!, "seen already");
+    expect(getTerminalAttention().has(terminal.tabId!)).toBe(false);
+
+    // Focus moves to the other half of a split: still on screen, but not attended.
+    await splitIntoTwoTiles(container);
+    await waitFor(() => expect(terminalPane().getAttribute("data-focused")).toBeNull());
+    notify(api, terminal.tabId!, "build done");
+    await waitFor(() => expect(terminalPane().getAttribute("data-attention")).toBe("true"));
+
+    await jumpToUnread();
+    await waitFor(() => expect(terminalPane().getAttribute("data-focused")).toBe("true"));
+    expect(terminalPane().getAttribute("data-attention")).toBeNull();
+  });
+
+  it("badges a side-panel terminal tab that asks for attention, and the jump chord selects it", async () => {
+    withLaidOutBoxes();
+    const { container, api } = await renderApp({ hasApiKey: true, terminal: true });
+    const tabId = await openSideTerminal(container);
+    // Another tab takes the front, so the terminal is out of view.
+    // Radix opens the "+" menu on pointerdown.
+    const add = document.querySelector<HTMLButtonElement>('[data-testid="chat-side-panel-add-tab"]')!;
+    await act(async () => {
+      fireEvent.pointerDown(add, { button: 0, ctrlKey: false });
+      fireEvent.click(add);
+    });
+    const browser = await waitFor(() => {
+      const item = document.querySelector<HTMLElement>('[data-testid="chat-side-panel-launcher-menu-browser"]');
+      expect(item).not.toBeNull();
+      return item!;
+    });
+    await act(async () => { fireEvent.click(browser); });
+    const terminalTab = () => document.querySelector<HTMLElement>(`[data-testid="chat-side-panel-tab-strip"] [data-tab-id="${tabId}"] [role="tab"]`)!;
+    await waitFor(() => expect(terminalTab().getAttribute("aria-selected")).toBe("false"));
+
+    notify(api, tabId, "tests passed");
+    const dot = await waitFor(() => {
+      const el = terminalTab().querySelector('[data-testid="chat-side-panel-tab-terminal-attention"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(dot.getAttribute("title")).toContain("tests passed");
+
+    await jumpToUnread();
+    await waitFor(() => expect(terminalTab().getAttribute("aria-selected")).toBe("true"));
+    expect(terminalTab().querySelector('[data-testid="chat-side-panel-tab-terminal-attention"]')).toBeNull();
+  });
+
+  it("shows a main terminal's directory in its header and reopens a closed one there", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true, terminal: true });
+    const terminalApi = (api as unknown as { terminal: { listBlocks: ReturnType<typeof vi.fn>; spawn: ReturnType<typeof vi.fn> } }).terminal;
+    terminalApi.listBlocks.mockResolvedValue({
+      ok: true,
+      integrated: true,
+      blocks: [{ id: 1, command: "cd app", cwd: "/work/repo/app", exitCode: 0, startedAt: 1, endedAt: 2, status: "done", source: "osc133", outputChars: 0, truncated: false }],
+    });
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    const meta = await waitFor(() => {
+      const el = container.querySelector('[data-testid="pane-header-meta"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(meta.textContent).toBe("app");
+    expect(meta.getAttribute("title")).toBe("/work/repo/app");
+    // A new shell starts where every new shell does.
+    expect(terminalApi.spawn.mock.calls[0]![0]).not.toHaveProperty("cwd");
+
+    const close = container.querySelector('[data-testid="surface-pane"]')!
+      .closest('[data-testid="pane"]')!
+      .querySelector<HTMLButtonElement>('[data-testid="pane-close"]')!;
+    await act(async () => { fireEvent.click(close); });
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(0));
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "T", ctrlKey: true, shiftKey: true });
+    });
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    await waitFor(() => expect(terminalApi.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: "/work/repo/app" })));
   });
 
   it("moves the focused pane's surface to its neighbour with the directional chord", async () => {

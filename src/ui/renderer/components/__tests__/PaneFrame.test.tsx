@@ -170,6 +170,23 @@ describe("PaneFrame", () => {
     expect(frame().getAttribute("data-focused")).toBe("true");
   });
 
+  it("rings a pane whose content asks for attention, over focus, and names the request in the header", () => {
+    const view = render(pane({ focused: true, attention: "build done", meta: { text: "app", title: "/repo/app" } }));
+    const frame = view.container.querySelector('[data-testid="pane"]')!;
+    expect(frame.getAttribute("data-attention")).toBe("true");
+    expect(frame.className).toContain("ring-2");
+    expect(frame.className).not.toContain("border-primary/(--opacity-half)");
+    expect(view.container.querySelector("h2")!.getAttribute("title")).toBe("build done");
+    const meta = screen.getByTestId("pane-header-meta");
+    expect(meta.textContent).toBe("app");
+    expect(meta.getAttribute("title")).toBe("/repo/app");
+
+    view.rerender(pane({ focused: true }));
+    expect(frame.getAttribute("data-attention")).toBeNull();
+    expect(frame.className).not.toContain("ring-2");
+    expect(screen.queryByTestId("pane-header-meta")).toBeNull();
+  });
+
   it("drops a two-way split choice — beside or under — instead of guessing from the tile's shape", () => {
     const onSplit = vi.fn();
     const splitFits = vi.fn((axis: "row" | "column") => axis === "row");

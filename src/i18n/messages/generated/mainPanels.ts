@@ -15,6 +15,9 @@ export const en = {
   "mainPanels.command.moveDown": "Move Panel Down",
   "mainPanels.command.toggleMaximize": "Maximize or Restore Pane",
   "mainPanels.command.reopenClosed": "Reopen Closed Panel",
+  "mainPanels.command.jumpToUnread": "Jump to Terminal Asking for Attention",
+  "mainPanels.terminalUnread": "Asked for attention",
+  "mainPanels.terminalNotificationTitle": "A terminal asks for attention",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "mainPanels.back": "뒤로",
@@ -32,4 +35,7 @@ export const ko: Record<keyof typeof en, string> = {
   "mainPanels.command.moveDown": "패널 아래로 이동",
   "mainPanels.command.toggleMaximize": "패널 최대화 또는 복원",
   "mainPanels.command.reopenClosed": "닫은 패널 다시 열기",
+  "mainPanels.command.jumpToUnread": "확인 요청한 터미널로 이동",
+  "mainPanels.terminalUnread": "확인 요청 있음",
+  "mainPanels.terminalNotificationTitle": "터미널이 확인을 요청했습니다",
 };

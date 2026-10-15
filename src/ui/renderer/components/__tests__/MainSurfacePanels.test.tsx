@@ -7,7 +7,7 @@ import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
-import { SurfacePane, webPanelTitle } from "../MainSurfacePanels.js";
+import { SurfacePane, directoryName, webPanelTitle } from "../MainSurfacePanels.js";
 import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { useMainSurfaces, type MainSurface } from "../../preview/main-surfaces.js";
 import { getWebSurfaces } from "../../preview/web-surfaces.js";
@@ -45,6 +45,14 @@ afterEach(async () => {
   await act(async () => { await Promise.resolve(); });
 });
 
+describe("directoryName", () => {
+  it("keeps the last segment of a path for the header", () => {
+    expect(directoryName("/work/repo/app")).toBe("app");
+    expect(directoryName("/work/repo/app/")).toBe("app");
+    expect(directoryName("/")).toBe("/");
+  });
+});
+
 describe("useMainSurfaces", () => {
   it("creates window-unique surfaces, hands them out without closing them, and remembers closed ones", async () => {
     const { result, unmount } = renderHook(() => useMainSurfaces());
@@ -67,7 +75,12 @@ describe("useMainSurfaces", () => {
 
     act(() => { result.current.close(page.tabId); });
     expect(result.current.surfaces.map((each) => each.tabId)).toEqual([terminal.tabId]);
-    expect(result.current.takeLastClosed()).toEqual({ kind: "browser", url: "https://example.com/" });
+    // A terminal remembers where its shell last was, for its replacement.
+    act(() => { result.current.setCwd(terminal.tabId, "/work/repo"); });
+    expect(result.current.get(terminal.tabId)?.cwd).toBe("/work/repo");
+    act(() => { result.current.close(terminal.tabId); });
+    expect(result.current.takeLastClosed()).toEqual({ kind: "terminal", url: null, cwd: "/work/repo" });
+    expect(result.current.takeLastClosed()).toEqual({ kind: "browser", url: "https://example.com/", cwd: null });
     expect(result.current.takeLastClosed()).toBeUndefined();
     unmount();
   });
@@ -78,7 +91,7 @@ describe("useMainSurfaces", () => {
     act(() => { page = result.current.create("browser", "https://example.com/"); });
     render(
       <TooltipProvider>
-        <SurfacePane api={makeMockAveApi().api as never} surface={page} paneId="main" frame={{}} onNavigate={() => {}} />
+        <SurfacePane api={makeMockAveApi().api as never} surface={page} paneId="main" frame={{}} onNavigate={() => {}} onCwd={() => {}} />
         <WebSurfaceLayer />
       </TooltipProvider>,
     );
@@ -99,7 +112,7 @@ describe("SurfacePane", () => {
     const terminal = terminalApi();
     render(
       <TooltipProvider>
-        <SurfacePane api={{ ...api, terminal } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} />
+        <SurfacePane api={{ ...api, terminal } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} onCwd={() => {}} />
       </TooltipProvider>,
     );
     expect(screen.getByTestId("pane-header").textContent).toMatch(/ 2$/);
@@ -111,7 +124,7 @@ describe("SurfacePane", () => {
     const onNavigate = vi.fn();
     render(
       <TooltipProvider>
-        <SurfacePane api={makeMockAveApi().api as never} surface={surface("browser")} paneId="main" frame={{}} onNavigate={onNavigate} />
+        <SurfacePane api={makeMockAveApi().api as never} surface={surface("browser")} paneId="main" frame={{}} onNavigate={onNavigate} onCwd={() => {}} />
       </TooltipProvider>,
     );
     expect(screen.getByTestId("web-panel-empty")).toBeTruthy();

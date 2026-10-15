@@ -7,8 +7,9 @@
  * keymap store yet, so these are the defaults every user gets.
  *
  * The chords follow the terminal tools the owner pointed at: cmux moves a
- * surface between panes with ⌥⌘⇧+arrow and reopens a closed one with ⌘⇧T;
- * Warp maximizes a pane with ⌘⇧Enter.
+ * surface between panes with ⌥⌘⇧+arrow, reopens a closed one with ⌘⇧T and
+ * jumps to the latest terminal asking for attention with ⌘⇧U; Warp maximizes
+ * a pane with ⌘⇧Enter.
  * "⌘" is the platform's primary modifier (Ctrl off macOS).
  */
 export type PanelCommandId =
@@ -17,7 +18,8 @@ export type PanelCommandId =
   | "pane.moveUp"
   | "pane.moveDown"
   | "pane.toggleMaximize"
-  | "surface.reopenClosed";
+  | "surface.reopenClosed"
+  | "terminal.jumpToUnread";
 
 export interface PanelChord {
   /** `KeyboardEvent.key`, compared case-insensitively. */
@@ -43,6 +45,7 @@ export const PANEL_COMMANDS: readonly PanelCommand[] = [
   { id: "pane.moveDown", labelKey: "mainPanels.command.moveDown", chord: { key: "ArrowDown", primary: true, shift: true, alt: true }, hint: "⌥⌘⇧↓" },
   { id: "pane.toggleMaximize", labelKey: "mainPanels.command.toggleMaximize", chord: { key: "Enter", primary: true, shift: true, alt: false }, hint: "⌘⇧↩" },
   { id: "surface.reopenClosed", labelKey: "mainPanels.command.reopenClosed", chord: { key: "t", primary: true, shift: true, alt: false }, hint: "⌘⇧T" },
+  { id: "terminal.jumpToUnread", labelKey: "mainPanels.command.jumpToUnread", chord: { key: "u", primary: true, shift: true, alt: false }, hint: "⌘⇧U" },
 ];
 
 export function matchesPanelChord(

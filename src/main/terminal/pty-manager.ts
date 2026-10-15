@@ -413,6 +413,10 @@ async function spawnNewTerminal(
       TERM: "xterm-256color",
       COLORTERM: "truecolor",
       LANG: process.env.LANG ?? "en_US.UTF-8",
+      // The terminal's stable id, wherever its view is mounted (side panel or
+      // a main pane): what a script or an agent in the shell names it by.
+      // Added after the strip above, which removes inherited AVE_* keys.
+      AVE_TERMINAL_ID: tabId,
     };
 
     const { spawn: ptySpawn } = await loadPty();

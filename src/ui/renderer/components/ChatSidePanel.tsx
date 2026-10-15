@@ -32,6 +32,8 @@ import { PtyTerminalView } from "./PtyTerminalView.js";
 import { SideChatView, type SideChatOpenRequest } from "./SideChatView.js";
 import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, isMovableTabKind, useSurfaceMoves, type MovableTabKind } from "../preview/surface-moves.js";
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
+import { TerminalAttentionDot } from "./TerminalAttentionDot.js";
+import { useTerminalAttention } from "../preview/terminal-attention.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
 import { useVerticalSplit } from "../hooks/use-vertical-split.js";
 import type { SubAgentSpawn } from "../subagents/types.js";
@@ -780,6 +782,7 @@ export function ChatSidePanel({
   const surfaceMoves = useSurfaceMoves();
   const canMoveSurfaces = surfaceMoves !== null && chatGroupId !== undefined;
   const [stripDropActive, setStripDropActive] = useState(false);
+  const terminalAttention = useTerminalAttention();
 
   // The sub-agents the side chat's own turns started. The tile's list above
   // holds only the tile's conversation, and the tile drops a side chat's
@@ -1076,6 +1079,9 @@ export function ChatSidePanel({
                     <span className={`max-w-24 truncate ${isEphemeral ? "italic" : ""}`}>{label}</span>
                     {tab.kind === "side-chat" && !tab.content && sideChatPendingAnswer && !active ? (
                       <PendingAnswerDot inline testId="chat-side-panel-tab-side-chat-pending-answer" />
+                    ) : null}
+                    {tab.kind === "terminal" && terminalAttention.has(tab.id) ? (
+                      <TerminalAttentionDot testId="chat-side-panel-tab-terminal-attention" message={terminalAttention.get(tab.id)!.message} />
                     ) : null}
                   </button>
                   {isEphemeral ? (

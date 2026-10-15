@@ -127,6 +127,8 @@ export interface WorkspaceTabsStore {
    * tab's page keeps its address through `url`.
    */
   adoptTab: (tab: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => void;
+  /** Whether this store holds `id` now (read from the latest state, not a render). */
+  hasTab: (id: string) => boolean;
 }
 
 function contentKey(ref: WorkspaceTabContentRef): string {
@@ -352,6 +354,8 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     return tab;
   }, []);
 
+  const hasTab = useCallback((id: string) => stateRef.current.tabs.some((tab) => tab.id === id), []);
+
   const adoptTab = useCallback((incoming: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => {
     setState((prev) => {
       if (prev.tabs.some((tab) => tab.id === incoming.id)) return { ...prev, activeTabId: incoming.id };
@@ -381,7 +385,8 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
       setBrowserTabUrl,
       releaseTab,
       adoptTab,
+      hasTab,
     }),
-    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl, releaseTab, adoptTab],
+    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl, releaseTab, adoptTab, hasTab],
   );
 }

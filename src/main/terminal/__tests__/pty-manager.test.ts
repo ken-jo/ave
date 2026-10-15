@@ -232,6 +232,8 @@ describe("pty-manager happy path (fs-contained)", () => {
     expect(opts.cols).toBe(120);
     expect(opts.rows).toBe(40);
     expect(opts.env.TERM).toBe("xterm-256color");
+    // The stable terminal id reaches the shell, whatever view the tab is shown in.
+    expect(opts.env.AVE_TERMINAL_ID).toBe("terminal:1");
     expect(opts.env.HOME).toBe(sandboxHome);
   });
 

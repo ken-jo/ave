@@ -23,12 +23,19 @@ export interface MainSurface {
   ordinal: number;
   /** A browser surface's host-set url; null for a terminal or a blank page. */
   url: string | null;
+  /**
+   * A terminal's working directory: where the shell last said it was, or —
+   * before it has said — where a reopened one is to start. Null when unknown.
+   */
+  cwd?: string | null;
 }
 
 /** What reopening a closed surface brings back: its kind and where it was. */
 export interface ClosedSurface {
   kind: MainSurfaceKind;
   url: string | null;
+  /** A terminal's last directory; its replacement starts there. */
+  cwd: string | null;
 }
 
 /** How many closed surfaces "reopen closed" remembers. */
@@ -51,7 +58,7 @@ export interface MainSurfacesStore {
   surfaces: readonly MainSurface[];
   get: (tabId: string) => MainSurface | undefined;
   /** A new surface of `kind`; returned synchronously so the caller can show it. */
-  create: (kind: MainSurfaceKind, url?: string | null) => MainSurface;
+  create: (kind: MainSurfaceKind, url?: string | null, cwd?: string | null) => MainSurface;
   /** Take in a surface that moved here from a side panel. */
   adopt: (surface: MainSurface) => void;
   /** Hand a surface out (moving to a side panel) — it is not destroyed. */
@@ -61,6 +68,7 @@ export interface MainSurfacesStore {
   /** The most recently closed surface, removed from the memory. */
   takeLastClosed: () => ClosedSurface | undefined;
   setUrl: (tabId: string, url: string) => void;
+  setCwd: (tabId: string, cwd: string) => void;
 }
 
 export function useMainSurfaces(): MainSurfacesStore {
@@ -84,8 +92,8 @@ export function useMainSurfaces(): MainSurfacesStore {
 
   const get = useCallback((tabId: string) => surfacesRef.current.find((surface) => surface.tabId === tabId), []);
 
-  const create = useCallback((kind: MainSurfaceKind, url: string | null = null) => {
-    const surface: MainSurface = { tabId: mintTabId(kind), kind, ordinal: nextMainOrdinal[kind]++, url };
+  const create = useCallback((kind: MainSurfaceKind, url: string | null = null, cwd: string | null = null) => {
+    const surface: MainSurface = { tabId: mintTabId(kind), kind, ordinal: nextMainOrdinal[kind]++, url, cwd };
     commit([...surfacesRef.current, surface]);
     return surface;
   }, [commit]);
@@ -105,7 +113,7 @@ export function useMainSurfaces(): MainSurfacesStore {
   const close = useCallback((tabId: string) => {
     const surface = release(tabId);
     if (surface) {
-      closedRef.current = [{ kind: surface.kind, url: surface.url }, ...closedRef.current].slice(0, CLOSED_SURFACE_MEMORY);
+      closedRef.current = [{ kind: surface.kind, url: surface.url, cwd: surface.cwd ?? null }, ...closedRef.current].slice(0, CLOSED_SURFACE_MEMORY);
     }
     return surface;
   }, [release]);
@@ -122,8 +130,14 @@ export function useMainSurfaces(): MainSurfacesStore {
     commit(current.map((each) => (each.tabId === tabId ? { ...each, url } : each)));
   }, [commit]);
 
+  const setCwd = useCallback((tabId: string, cwd: string) => {
+    const current = surfacesRef.current;
+    if (!current.some((each) => each.tabId === tabId && each.cwd !== cwd)) return;
+    commit(current.map((each) => (each.tabId === tabId ? { ...each, cwd } : each)));
+  }, [commit]);
+
   return useMemo(
-    () => ({ surfaces, get, create, adopt, release, close, takeLastClosed, setUrl }),
-    [surfaces, get, create, adopt, release, close, takeLastClosed, setUrl],
+    () => ({ surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd }),
+    [surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd],
   );
 }

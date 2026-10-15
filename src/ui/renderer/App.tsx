@@ -34,7 +34,8 @@ import { PanelRightOpen } from "lucide-react";
 import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
 import { SurfacePane } from "./components/MainSurfacePanels.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces } from "./preview/main-surfaces.js";
-import { SurfaceMovesContext, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
+import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
+import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
 import { getWebSurfaces } from "./preview/web-surfaces.js";
 import { PANEL_COMMANDS, panelCommandFor, type PanelCommandId } from "./components/panel-commands.js";
 import { PaneGutter, PANE_HOME, PaneFrame, areaStyle, chatGroupApi, useChatGroups, type PaneSplitAxis } from "./components/PaneFrame.js";
@@ -239,6 +240,10 @@ export function App() {
   // The terminals and web pages that live in the main area as panes. See
   // `preview/main-surfaces.ts`; which pane shows one is that pane's content.
   const mainSurfaces = useMainSurfaces();
+  // Every terminal's output is watched for "look at me" notifications, shown
+  // or not; see `preview/terminal-attention.ts`.
+  const terminalNotificationTitle = useCallback(() => t("mainPanels.terminalNotificationTitle"), [t]);
+  useTerminalAttentionWatcher(api.terminal, terminalNotificationTitle);
 
   /**
    * The conversation the WINDOW is talking about.
@@ -566,8 +571,38 @@ export function App() {
   const reopenClosedSurface = useCallback(() => {
     const closed = mainSurfaces.takeLastClosed();
     if (!closed) return;
-    const surface = mainSurfaces.create(closed.kind, closed.url);
+    // A terminal comes back where its shell last was; a page at its address.
+    const surface = mainSurfaces.create(closed.kind, closed.url, closed.cwd);
     chatGroups.setPaneContent(chatGroups.focusedId, { view: VIEW_OF_SURFACE_KIND[closed.kind], surface: surface.tabId });
+  }, [chatGroups, mainSurfaces]);
+
+  /**
+   * Show the terminal that most recently asked for attention: its pane when a
+   * pane shows it, the focused pane when it is a main terminal no pane shows,
+   * else the side panel that holds it. Showing it is what reads it. An entry
+   * whose terminal is gone is read and the next one tried.
+   */
+  const jumpToUnreadTerminal = useCallback(() => {
+    for (let latest = latestUnreadTerminal(); latest; latest = latestUnreadTerminal()) {
+      const { tabId } = latest;
+      const paneId = Object.entries(chatGroups.contentById).find(([, location]) => location?.surface === tabId)?.[0];
+      if (paneId) {
+        chatGroups.focus(paneId);
+        markTerminalRead(tabId);
+        return;
+      }
+      if (mainSurfaces.get(tabId)) {
+        chatGroups.setPaneContent(chatGroups.focusedId, { view: "terminal", surface: tabId });
+        markTerminalRead(tabId);
+        return;
+      }
+      const groupId = activateSideTab(tabId);
+      markTerminalRead(tabId);
+      if (groupId) {
+        chatGroups.focus(groupId);
+        return;
+      }
+    }
   }, [chatGroups, mainSurfaces]);
 
   const runPanelCommand = useCallback((id: PanelCommandId) => {
@@ -591,8 +626,11 @@ export function App() {
       case "surface.reopenClosed":
         reopenClosedSurface();
         return;
+      case "terminal.jumpToUnread":
+        jumpToUnreadTerminal();
+        return;
     }
-  }, [chatGroups, reopenClosedSurface]);
+  }, [chatGroups, reopenClosedSurface, jumpToUnreadTerminal]);
 
   // The panel chords, from the one table. Bound in the capture phase so a
   // terminal (whose input is a textarea) does not swallow them; three
@@ -1989,6 +2027,7 @@ export function App() {
             }],
           }}
           onNavigate={mainSurfaces.setUrl}
+          onCwd={mainSurfaces.setCwd}
         />
       ));
     }

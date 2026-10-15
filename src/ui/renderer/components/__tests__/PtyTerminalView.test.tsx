@@ -22,6 +22,7 @@ interface FakeTerminal {
   options: { theme?: unknown };
   oscHandlers: Map<number, (data: string) => boolean>;
   dataHandler: ((data: string) => void) | null;
+  written: string[];
 }
 const { terminals } = vi.hoisted(() => ({ terminals: [] as FakeTerminal[] }));
 
@@ -48,7 +49,10 @@ vi.mock("@xterm/xterm", () => ({
       this.dataHandler = handler;
       return { dispose: () => { this.dataHandler = null; } };
     }
-    write() {}
+    written: string[] = [];
+    write(text: string) {
+      this.written.push(text);
+    }
     dispose() {}
   },
 }));
@@ -62,7 +66,7 @@ afterEach(() => {
 
 function terminalApi() {
   return {
-    spawn: vi.fn(async () => ({ ok: true })),
+    spawn: vi.fn(async (_payload: { tabId: string; cwd?: string; cols?: number; rows?: number }) => ({ ok: true })),
     input: vi.fn(async () => undefined),
     resize: vi.fn(async () => undefined),
     onData: vi.fn(() => () => {}),
@@ -229,5 +233,40 @@ describe("PtyTerminalView tab identity across groups", () => {
 
     rerender(<></>);
     expect(surfaceMountLocation("terminal:7")).toBeNull();
+  });
+});
+
+describe("PtyTerminalView working directory", () => {
+  const block = (id: number, cwd: string | null) => ({
+    id, command: "ls", cwd, exitCode: 0, startedAt: 1_000, endedAt: 2_000,
+    status: "done", source: "osc133", outputChars: 1, truncated: false,
+  });
+
+  it("starts a new shell at the given directory and reports the newest one the shell gave", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    // Newest first: the newest block with a directory is the one reported.
+    terminal.listBlocks.mockResolvedValue({ ok: true, integrated: true, blocks: [block(3, null), block(2, "/repo/app"), block(1, "/repo")] });
+    const onCwd = vi.fn();
+    render(
+      <PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:11" tabLabel="Terminal 11" initialCwd="/repo/app" onCwd={onCwd} />,
+    );
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:11", cwd: "/repo/app" })));
+    await waitFor(() => expect(onCwd).toHaveBeenCalledWith("/repo/app"));
+    expect(onCwd).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts at the workspace root, saying so, when the remembered directory is refused", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.spawn
+      .mockResolvedValueOnce({ ok: false, reason: "bad-request", message: "terminal cwd must be within the workspace root" } as never)
+      .mockResolvedValueOnce({ ok: true });
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:12" tabLabel="Terminal 12" initialCwd="/elsewhere" />);
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
+    expect(terminal.spawn).toHaveBeenNthCalledWith(1, expect.objectContaining({ cwd: "/elsewhere" }));
+    expect(terminal.spawn.mock.calls[1]![0]).not.toHaveProperty("cwd");
+    expect(terminals[0]!.written.join("")).toContain("[starting in the workspace root: terminal cwd must be within the workspace root]");
+    expect(terminals[0]!.written.join("")).not.toContain("[terminal unavailable]");
   });
 });

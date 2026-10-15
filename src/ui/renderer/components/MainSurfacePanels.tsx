@@ -9,7 +9,7 @@
  * itself lives in the window's surface layer and is only laid over the slot,
  * so a routed-away or hidden web pane keeps its page.
  */
-import { useEffect, useState, useSyncExternalStore, type ComponentProps, type ReactNode } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore, type ComponentProps, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, ExternalLink, Globe, RotateCw } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -22,6 +22,7 @@ import { getWebSurfaceElement, subscribeWebSurfaces } from "../preview/web-surfa
 import type { MainSurface } from "../preview/main-surfaces.js";
 import { PaneFrame } from "./PaneFrame.js";
 import { PtyTerminalView } from "./PtyTerminalView.js";
+import { useTerminalAttention } from "../preview/terminal-attention.js";
 import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
 
 /** The subset of a `<webview>` a panel's chrome drives. */
@@ -190,6 +191,12 @@ function WebPanelBody({
   );
 }
 
+/** The last segment of a directory path — the header has room for a name, not a path. */
+export function directoryName(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  return trimmed.slice(trimmed.lastIndexOf("/") + 1) || "/";
+}
+
 type FrameProps = Omit<ComponentProps<typeof PaneFrame>, "title" | "icon" | "children" | "description">;
 
 /**
@@ -203,6 +210,7 @@ export function SurfacePane({
   paneId,
   frame,
   onNavigate,
+  onCwd,
   onAttachText,
 }: {
   api: AveApi;
@@ -211,6 +219,8 @@ export function SurfacePane({
   frame: FrameProps;
   /** A web surface's address row asked for `url`. */
   onNavigate: (tabId: string, url: string) => void;
+  /** A terminal's shell reported its working directory. */
+  onCwd: (tabId: string, cwd: string) => void;
   /** Hand a terminal block's text to a chat composer; false when it is full. */
   onAttachText?: (text: string) => boolean;
 }) {
@@ -222,10 +232,15 @@ export function SurfacePane({
   const navigation = useGuestNavigation(surface.kind === "browser" ? guest : null);
   const label = `${kindLabel} ${surface.ordinal}`;
   const title = surface.kind === "terminal" ? label : webPanelTitle(navigation, surface.url, label);
+  const attention = useTerminalAttention().get(surface.tabId)?.message ?? null;
+  const reportCwd = useCallback((cwd: string) => onCwd(surface.tabId, cwd), [onCwd, surface.tabId]);
+  const meta = surface.kind === "terminal" && surface.cwd ? { text: directoryName(surface.cwd), title: surface.cwd } : null;
   return (
     <PaneFrame
       {...frame}
       title={title}
+      attention={attention}
+      meta={meta}
       {...(surface.kind === "browser" && (navigation.url ?? surface.url) ? { description: navigation.url ?? surface.url ?? "" } : {})}
       icon={<Icon className="h-4 w-4" />}
       bodyInset="none"
@@ -237,6 +252,9 @@ export function SurfacePane({
             location={`pane:${paneId}`}
             tabId={surface.tabId}
             tabLabel={label}
+            initialCwd={surface.cwd ?? null}
+            attended={frame.focused ?? false}
+            onCwd={reportCwd}
             {...(onAttachText ? { onAttachText } : {})}
           />
         ) : (

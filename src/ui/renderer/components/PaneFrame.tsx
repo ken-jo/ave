@@ -160,6 +160,14 @@ interface PaneFrameProps {
   trailing?: ReactNode;
   /** Whether this pane currently has focus — drives the border, see above. */
   focused?: boolean;
+  /**
+   * What the pane's content asked the user to look at and they have not yet
+   * seen (a terminal's notification). Drawn as a ring around the tile, and as
+   * the header's tooltip, until the pane is seen.
+   */
+  attention?: string | null;
+  /** A short fact about the content after the title — a terminal's directory. */
+  meta?: { text: string; title: string } | null;
   /** Raised when anything inside the pane is interacted with, so the frame
    *  can take focus. */
   onFocus?: () => void;
@@ -336,6 +344,8 @@ export function PaneFrame({
   actions = [],
   trailing,
   focused,
+  attention = null,
+  meta = null,
   onFocus,
   canSplit,
   onSplit,
@@ -397,6 +407,7 @@ export function PaneFrame({
     <section
       data-testid="pane"
       data-focused={focused ? "true" : undefined}
+      data-attention={attention !== null ? "true" : undefined}
       data-drop-target={dropTarget ?? undefined}
       onDragOver={acceptsDrops ? (event) => {
         const surface = carriesSurface(event);
@@ -443,7 +454,11 @@ export function PaneFrame({
         // Focus lives on the frame. `border-border` is the resting hairline;
         // the focused group swaps the whole border rather than adding a ring,
         // so a group never changes size when focus moves to it.
-        focused ? "border-primary/(--opacity-half)" : "border-border",
+        // Attention rings OUTSIDE the border (a box shadow), so the tile keeps
+        // its size; it outranks focus because it is what is not yet seen.
+        attention !== null
+          ? "border-primary ring-2 ring-primary/(--opacity-half)"
+          : focused ? "border-primary/(--opacity-half)" : "border-border",
       ].join(" ")}
     >
       {/* One approval scope per pane: the column that holds this pane's
@@ -476,9 +491,14 @@ export function PaneFrame({
         {icon ? <span className="flex shrink-0 items-center text-muted-foreground">{icon}</span> : null}
         <h2
           className="min-w-0 flex-1 truncate text-caption font-medium text-foreground"
-          title={description}
+          title={attention ?? description}
         >
           {title}
+          {meta ? (
+            <span className="ml-(--chrome-gap-tight) font-mono font-normal text-muted-foreground" title={meta.title} data-testid="pane-header-meta">
+              {meta.text}
+            </span>
+          ) : null}
         </h2>
         {headerActions.map((action) =>
           action.items ? (

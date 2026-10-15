@@ -58,6 +58,8 @@ export interface SideTabsSink {
   release: (tabId: string) => WorkspaceTab | undefined;
   /** Open the group's side panel so an adopted tab is seen. */
   open: () => void;
+  /** Show `tabId` when this group holds it: select it and open the panel. */
+  activate: (tabId: string) => boolean;
 }
 
 const sinks = new Map<string, SideTabsSink>();
@@ -71,6 +73,12 @@ export function registerSideTabsSink(chatGroupId: string, sink: SideTabsSink): (
 
 export function getSideTabsSink(chatGroupId: string): SideTabsSink | undefined {
   return sinks.get(chatGroupId);
+}
+
+/** Select `tabId` in whichever group's side panel holds it; that group's id, or null. */
+export function activateSideTab(tabId: string): string | null {
+  for (const [chatGroupId, sink] of sinks) if (sink.activate(tabId)) return chatGroupId;
+  return null;
 }
 
 /** What the window offers the side panels for moving their tabs out. */
