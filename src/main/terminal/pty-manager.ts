@@ -154,14 +154,14 @@ interface TerminalSpawnInFlight {
    * trampoline, longer than a restore waits for the cancelled spawn).
    */
   abort: AbortController;
-  cleanupSandboxHome?: () => void;
+  cleanupResources?: () => void;
 }
 
-/** Cancel an in-flight spawn: it registers no session, and its HOME goes now. */
+/** Cancel an in-flight spawn and release everything it has acquired so far. */
 function cancelInFlightSpawn(owner: TerminalSpawnInFlight): void {
   owner.cancelled = true;
   owner.abort.abort(new Error("terminal spawn cancelled"));
-  owner.cleanupSandboxHome?.();
+  owner.cleanupResources?.();
 }
 
 const sessions = new Map<string, TerminalSession>();
@@ -399,6 +399,35 @@ async function spawnNewTerminal(
   const cols = clampDim(options.cols, 80, MAX_COLS);
   const rows = clampDim(options.rows, 24, MAX_ROWS);
 
+  // Until registration, cancellation owns every acquired resource. A result
+  // arriving after disposal is released on arrival, before another effect.
+  const cleanups: Array<() => void> = [];
+  let disposed = false;
+  const addCleanup = (cleanup: () => void): (() => void) => {
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      cleanup();
+    };
+    if (disposed) release();
+    else cleanups.push(release);
+    return release;
+  };
+  const disposeResources = (): void => {
+    if (disposed) return;
+    disposed = true;
+    for (const release of cleanups.reverse()) {
+      try {
+        release();
+      } catch (err) {
+        log.warn({ tabId, err: errorMessage(err) }, "terminal: spawn cleanup failed");
+      }
+    }
+    cleanups.length = 0;
+  };
+  owner.cleanupResources = disposeResources;
+
   let sandboxHome: ReturnType<typeof createSandboxProcessHome>;
   // No initializer, matching `sandboxHome` above: the catch below returns, so
   // reaching past the try means both were assigned. A no-op placeholder would
@@ -407,13 +436,7 @@ async function spawnNewTerminal(
   let cleanupSandboxHome: () => void;
   try {
     sandboxHome = createSandboxProcessHome();
-    let homeCleanupRequested = false;
-    cleanupSandboxHome = () => {
-      if (homeCleanupRequested) return;
-      homeCleanupRequested = true;
-      sandboxHome.cleanup();
-    };
-    owner.cleanupSandboxHome = cleanupSandboxHome;
+    cleanupSandboxHome = addCleanup(() => sandboxHome.cleanup());
   } catch (err) {
     return {
       ok: false,
@@ -425,7 +448,7 @@ async function spawnNewTerminal(
   try {
     mkdirSync(tempDir, { mode: 0o700 });
   } catch (err) {
-    cleanupSandboxHome();
+    disposeResources();
     return {
       ok: false,
       reason: "spawn-failed",
@@ -447,7 +470,7 @@ async function spawnNewTerminal(
       sandboxEnv: sandboxHome.env,
     }).env;
   } catch (err) {
-    cleanupSandboxHome();
+    disposeResources();
     return {
       ok: false,
       reason: "spawn-failed",
@@ -470,10 +493,10 @@ async function spawnNewTerminal(
   const denyRead = getDefaultSensitiveReadDenyPaths();
   const denyWrite = getDefaultSensitiveWriteDenyPaths();
 
-  let wrapped = false;
   // macOS only (terminal-tty-handoff.ts): the pty is spawned first, on a
   // trampoline, so the wrap can grant the shell its own terminal by path.
   let handoff: TerminalTtyHandoff | undefined;
+  let disposeHandoff: (() => void) | undefined;
   let trampolinePty: IPty | undefined;
   let pendingSession: TerminalSession | undefined;
   try {
@@ -487,23 +510,29 @@ async function spawnNewTerminal(
       // Loaded on spawn, like node-pty: terminal-only code, and the main
       // bundle's initial size has a budget.
       const ttyHandoff = await import("./terminal-tty-handoff.js");
+      owner.abort.signal.throwIfAborted();
       renderHandoffScript = ttyHandoff.renderHandoffScript;
       const { spawn: ptySpawn } = await loadPty();
-      if (owner.cancelled) throw new Error("terminal spawn cancelled");
-      handoff = await ttyHandoff.createTerminalTtyHandoff();
-      trampolinePty = ptySpawn(handoff.trampoline.file, [...handoff.trampoline.args], {
+      owner.abort.signal.throwIfAborted();
+      const acquiredHandoff = await ttyHandoff.createTerminalTtyHandoff();
+      handoff = acquiredHandoff;
+      disposeHandoff = addCleanup(() => acquiredHandoff.dispose());
+      owner.abort.signal.throwIfAborted();
+      const trampoline = ptySpawn(handoff.trampoline.file, [...handoff.trampoline.args], {
         ...ptyOptions,
         env: { ...ttyHandoff.TRAMPOLINE_ENV },
       });
+      trampolinePty = trampoline;
+      addCleanup(() => trampoline.kill("SIGKILL"));
       ownTty = ttyHandoff.ownPtySlavePath(trampolinePty);
     }
 
     const { argv, env } =
       ownTty === undefined
-        ? await wrapWorkerCommand(cmdline, { filesystem })
-        : await wrapTerminalCommand(cmdline, { filesystem, ownTty });
-    wrapped = true;
-    if (owner.cancelled) throw new Error("terminal spawn cancelled");
+        ? await wrapWorkerCommand(cmdline, { filesystem, abortSignal: owner.abort.signal })
+        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, abortSignal: owner.abort.signal });
+    const cleanupWrap = addCleanup(() => { void cleanupAsrtSandboxAfterCommand(); });
+    owner.abort.signal.throwIfAborted();
 
     const [cmd, ...wrappedArgs] = argv;
     if (cmd === undefined) {
@@ -529,8 +558,9 @@ async function spawnNewTerminal(
       pty = trampolinePty;
     } else {
       const { spawn: ptySpawn } = await loadPty();
-      if (owner.cancelled) throw new Error("terminal spawn cancelled");
+      owner.abort.signal.throwIfAborted();
       pty = ptySpawn(cmd, wrappedArgs, { ...ptyOptions, env: childEnv });
+      addCleanup(() => pty.kill("SIGKILL"));
     }
 
     let markGone!: () => void;
@@ -550,6 +580,7 @@ async function spawnNewTerminal(
       gone,
       markGone,
     };
+    pendingSession = session;
 
     const dataSub = pty.onData((chunk) => {
       // The view and the replay ring get the tracker's display text: the
@@ -560,7 +591,7 @@ async function spawnNewTerminal(
       pushRing(session, display);
       _emit("data", { tabId, chunk: display }, session.ownerWindowId);
     });
-    session.disposeData = () => dataSub.dispose();
+    session.disposeData = addCleanup(() => dataSub.dispose());
 
     const exitSub = pty.onExit(({ exitCode, signal }) => {
       // A trampoline that exits before it runs the shell fails the spawn: the
@@ -574,63 +605,47 @@ async function spawnNewTerminal(
       _emit("exit", { tabId, exitCode, signal }, session.ownerWindowId);
       // Per-command ASRT state decrement (mirrors worker-spawn cleanupOnce) +
       // drop the session so a later spawn for the same tab starts fresh.
-      void cleanupAsrtSandboxAfterCommand();
+      cleanupWrap();
       session.cleanupSandboxHome();
       session.disposeData();
       session.disposeExit();
       if (sessions.get(tabId) === session) sessions.delete(tabId);
       session.markGone();
     });
-    session.disposeExit = () => exitSub.dispose();
+    session.disposeExit = addCleanup(() => exitSub.dispose());
 
     if (handoff !== undefined && renderHandoffScript !== undefined) {
       // Subscribed first: the shell starts writing as soon as it is exec'd.
-      pendingSession = session;
       // A trampoline that dies before reading the fifo ends the wait now, not
       // at the timeout; so does the spawn's cancel (its tab or window closed,
       // or shutdown began), which a restore of the same id is waiting out.
       const trampolineExited = new AbortController();
       const trampolineExitSub = pty.onExit(() => trampolineExited.abort());
+      const disposeTrampolineExit = addCleanup(() => trampolineExitSub.dispose());
       try {
         await handoff.deliver(renderHandoffScript(argv, childEnv), {
           signal: AbortSignal.any([trampolineExited.signal, owner.abort.signal]),
         });
+        owner.abort.signal.throwIfAborted();
       } finally {
-        trampolineExitSub.dispose();
+        disposeTrampolineExit();
       }
-      handoff.dispose();
-      // The tab may have closed, or the app begun shutting down, while the
-      // handoff was in flight. Throw while the session is still pending, so the
-      // catch detaches its listeners and kills the shell instead of registering
-      // it on a HOME that is already gone.
-      if (owner.cancelled) throw new Error("terminal spawn cancelled");
-      pendingSession = undefined;
+      disposeHandoff?.();
     }
 
+    owner.abort.signal.throwIfAborted();
+    pendingSession = undefined;
     sessions.set(tabId, session);
     registerTerminalBlockTracker(tabId, session.blocks, options.ownerWindowId ?? null);
+    // The session now owns its wrap, HOME and subscriptions until exit.
+    owner.cleanupResources = undefined;
+    cleanups.length = 0;
     log.info({ tabId, cwd, cols, rows, pid: pty.pid }, "terminal: spawned sandboxed PTY");
     return { ok: true, tabId, replayed: false };
   } catch (err) {
-    // A trampoline that never ran the shell: drop its listeners first, so its
-    // exit does not run the session cleanup a second time, then kill it.
-    if (pendingSession !== undefined) {
-      pendingSession.disposeData();
-      pendingSession.disposeExit();
-    }
-    if (trampolinePty !== undefined && sessions.get(tabId)?.pty !== trampolinePty) {
-      try {
-        trampolinePty.kill("SIGKILL");
-      } catch {
-        // already gone
-      }
-    }
-    handoff?.dispose();
-    // FAIL CLOSED: the wrap succeeded but pty.spawn threw → decrement the ASRT
-    // per-command state so a failed spawn leaves no lingering ref (mirrors
-    // worker-spawn's catch).
-    if (wrapped) void cleanupAsrtSandboxAfterCommand();
-    cleanupSandboxHome();
+    // Reverse acquisition order detaches listeners before killing the PTY;
+    // each release is shared with cancellation and any late setup result.
+    disposeResources();
     const message = errorMessage(err);
     if (owner.cancelled) {
       log.info({ tabId }, "terminal: cancelled in-flight spawn");

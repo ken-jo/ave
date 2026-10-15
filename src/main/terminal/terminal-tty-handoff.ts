@@ -124,6 +124,17 @@ export async function createTerminalTtyHandoff(): Promise<TerminalTtyHandoff> {
     let givenUp = false;
     // Opening a fifo for writing blocks until the trampoline opens it.
     const opening = open(fifo, "w");
+    const giveUp = (): void => {
+      if (givenUp) return;
+      givenUp = true;
+      // Unblock the pending open before cancellation can unlink the fifo.
+      // Its late handle is closed by the delivery's finally below.
+      try {
+        closeSync(openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK));
+      } catch {
+        // already gone or already open: nothing is waiting on it
+      }
+    };
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: (() => void) | undefined;
     const stopped = new Promise<never>((_, reject) => {
@@ -131,7 +142,10 @@ export async function createTerminalTtyHandoff(): Promise<TerminalTtyHandoff> {
         () => reject(new Error(`terminal: the shell trampoline did not take its command within ${timeoutMs} ms`)),
         timeoutMs,
       );
-      onAbort = () => reject(new Error("terminal: the shell trampoline exited before taking its command"));
+      onAbort = () => {
+        giveUp();
+        reject(new Error("terminal: the shell trampoline exited before taking its command"));
+      };
       signal?.addEventListener("abort", onAbort, { once: true });
     });
     try {
@@ -147,18 +161,7 @@ export async function createTerminalTtyHandoff(): Promise<TerminalTtyHandoff> {
         stopped,
       ]);
     } catch (err) {
-      givenUp = true;
-      // A pending open holds a thread-pool thread until a reader appears: be
-      // that reader once, so it returns, and close what it opened.
-      try {
-        closeSync(openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK));
-      } catch {
-        // already gone or already open: nothing is waiting on it
-      }
-      opening.then(
-        (handle) => handle.close().catch(() => {}),
-        () => {},
-      );
+      giveUp();
       throw err;
     } finally {
       clearTimeout(timer);

@@ -20,6 +20,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
 
 // ─── ASRT mock — gate + wrap controllable per test ──────────
 let gateActive = true;
@@ -54,6 +55,14 @@ const deliverMock = vi.fn<(script: string, options?: { signal?: AbortSignal }) =
   Promise.resolve(),
 );
 const handoffDisposeMock = vi.fn();
+function terminalHandoff(): TerminalTtyHandoff {
+  return {
+    trampoline: { file: "/bin/sh", args: ["/handoff/t-1/exec"] },
+    deliver: (script, options) => deliverMock(script, options),
+    dispose: () => handoffDisposeMock(),
+  };
+}
+const createHandoffMock = vi.fn<() => Promise<TerminalTtyHandoff>>(() => Promise.resolve(terminalHandoff()));
 vi.mock("../terminal-tty-platform.js", () => ({
   terminalNeedsOwnTtyGrant: () => needsOwnTtyGrant,
 }));
@@ -61,12 +70,7 @@ vi.mock("../terminal-tty-handoff.js", async () => {
   const actual = await vi.importActual<typeof import("../terminal-tty-handoff.js")>("../terminal-tty-handoff.js");
   return {
     ...actual,
-    createTerminalTtyHandoff: () =>
-      Promise.resolve({
-        trampoline: { file: "/bin/sh", args: ["/handoff/t-1/exec"] },
-        deliver: (script: string, options?: { signal?: AbortSignal }) => deliverMock(script, options),
-        dispose: () => handoffDisposeMock(),
-      }),
+    createTerminalTtyHandoff: () => createHandoffMock(),
   };
 });
 
@@ -197,6 +201,8 @@ beforeEach(() => {
   deliverMock.mockReset();
   deliverMock.mockImplementation(() => Promise.resolve());
   handoffDisposeMock.mockClear();
+  createHandoffMock.mockReset();
+  createHandoffMock.mockImplementation(() => Promise.resolve(terminalHandoff()));
   cleanupMock.mockClear();
   sandboxHomeCleanupMock.mockClear();
   ptySpawnMock.mockClear();
@@ -802,6 +808,133 @@ describe("pty-manager command blocks", () => {
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
     expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
     expect(getTerminalBlockTracker("terminal:0000000a-1")).toBeUndefined();
+  });
+});
+
+describe("pty-manager cancellation during terminal acquisition", () => {
+  const TAB_ID = "terminal:0000000d-1";
+  const CANCEL_PATHS = ["killTerminal", "window close", "shutdown"] as const;
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((yes) => { resolve = yes; });
+    return { promise, resolve };
+  }
+
+  function cancelSpawn(path: typeof CANCEL_PATHS[number]): Promise<unknown> {
+    if (path === "killTerminal") killTerminal(TAB_ID);
+    else if (path === "window close") killTerminalsOwnedBy(1);
+    else return forceKillAllTerminalsForShutdown(0);
+    return Promise.resolve();
+  }
+
+  function resourceState() {
+    return {
+      kills: [...(lastPty?.killSignals ?? [])],
+      handoffs: handoffDisposeMock.mock.calls.length,
+      wraps: cleanupMock.mock.calls.length,
+      homes: sandboxHomeCleanupMock.mock.calls.length,
+    };
+  }
+
+  function expectNoSession() {
+    lastPty?.emitExit(137);
+    lastPty?.emitData("late output");
+    expect(__terminalSessionCountForTest()).toBe(0);
+    expect(getTerminalBlockTracker(TAB_ID)).toBeUndefined();
+    expect(emitted).toEqual([]);
+  }
+
+  beforeEach(() => { needsOwnTtyGrant = true; });
+
+  it.each(CANCEL_PATHS)("%s during handoff creation disposes the late FIFO without spawning", async (path) => {
+    const entered = deferred<void>();
+    const handoff = deferred<TerminalTtyHandoff>();
+    createHandoffMock.mockImplementationOnce(() => {
+      entered.resolve();
+      return handoff.promise;
+    });
+    const starting = spawnTerminal({ tabId: TAB_ID, ownerWindowId: 1 });
+    await entered.promise;
+    const cancelled = cancelSpawn(path);
+    const immediate = resourceState();
+    handoff.resolve(terminalHandoff());
+    expect(await starting).toMatchObject({ ok: false, reason: "spawn-failed" });
+    await cancelled;
+    await cancelSpawn(path);
+    expectNoSession();
+    expect(immediate).toEqual({ kills: [], handoffs: 0, wraps: 0, homes: 1 });
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+    expect(wrapTerminalCommandMock).not.toHaveBeenCalled();
+    expect(deliverMock).not.toHaveBeenCalled();
+    expect(resourceState()).toEqual({ kills: [], handoffs: 1, wraps: 0, homes: 1 });
+  });
+
+  it.each(CANCEL_PATHS)("%s during wrap immediately kills the trampoline and disposes the FIFO", async (path) => {
+    const entered = deferred<void>();
+    const wrap = deferred<{ argv: string[]; env: NodeJS.ProcessEnv }>();
+    let signal: AbortSignal | undefined;
+    wrapTerminalCommandMock.mockImplementationOnce((_command, options) => {
+      signal = (options as { abortSignal?: AbortSignal }).abortSignal;
+      entered.resolve();
+      // Deliberately ignore abort: even a late successful wrap needs cleanup.
+      return wrap.promise;
+    });
+    const starting = spawnTerminal({ tabId: TAB_ID, ownerWindowId: 1 });
+    await entered.promise;
+    const cancelled = cancelSpawn(path);
+    const immediate = resourceState();
+    wrap.resolve({ argv: ["/bin/zsh"], env: {} });
+    expect(await starting).toMatchObject({ ok: false, reason: "spawn-failed" });
+    await cancelled;
+    await cancelSpawn(path);
+    expectNoSession();
+    expect(immediate).toEqual({ kills: ["SIGKILL"], handoffs: 1, wraps: 0, homes: 1 });
+    expect(signal?.aborted).toBe(true);
+    expect(deliverMock).not.toHaveBeenCalled();
+    expect(resourceState()).toEqual({ kills: ["SIGKILL"], handoffs: 1, wraps: 1, homes: 1 });
+  });
+
+  it.each(CANCEL_PATHS)("%s during deliver releases everything before the late delivery settles", async (path) => {
+    const entered = deferred<void>();
+    const delivery = deferred<void>();
+    let signal: AbortSignal | undefined;
+    deliverMock.mockImplementationOnce((_script, options) => {
+      signal = options?.signal;
+      entered.resolve();
+      return delivery.promise;
+    });
+    const starting = spawnTerminal({ tabId: TAB_ID, ownerWindowId: 1 });
+    await entered.promise;
+    const cancelled = cancelSpawn(path);
+    const immediate = resourceState();
+    delivery.resolve();
+    expect(await starting).toMatchObject({ ok: false, reason: "spawn-failed" });
+    await cancelled;
+    await cancelSpawn(path);
+    expectNoSession();
+    expect(signal?.aborted).toBe(true);
+    expect(immediate).toEqual({ kills: ["SIGKILL"], handoffs: 1, wraps: 1, homes: 1 });
+    expect(resourceState()).toEqual(immediate);
+  });
+
+  it.each(CANCEL_PATHS)("%s after deliver resolves prevents registration and releases each resource once", async (path) => {
+    let cancelled: Promise<unknown> | undefined;
+    let immediate: ReturnType<typeof resourceState> | undefined;
+    deliverMock.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      resolve();
+      queueMicrotask(() => {
+        cancelled = cancelSpawn(path);
+        immediate = resourceState();
+      });
+    }));
+    expect(await spawnTerminal({ tabId: TAB_ID, ownerWindowId: 1 }))
+      .toMatchObject({ ok: false, reason: "spawn-failed" });
+    await cancelled;
+    await cancelSpawn(path);
+    expectNoSession();
+    expect(immediate).toEqual({ kills: ["SIGKILL"], handoffs: 1, wraps: 1, homes: 1 });
+    expect(resourceState()).toEqual(immediate);
   });
 });
 
