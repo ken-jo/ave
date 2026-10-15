@@ -267,7 +267,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
    */
   requestTabOp(
     windowId: number,
-    op: { op: "new"; url: string } | { op: "select" | "close"; tabId: string },
+    op: { op: "new"; url: string; sessionId?: string } | { op: "select" | "close"; tabId: string },
     options: { timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<BrowserTabOpOutcome> {
     if (op.op !== "new" && !this.liveTabInWindow(op.tabId, windowId)) {
@@ -275,7 +275,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     const requestId = `browser-op-${this.nextRequest++}`;
     const request: BrowserTabOpRequest = op.op === "new"
-      ? { requestId, op: "new", url: op.url }
+      ? { requestId, op: "new", url: op.url, ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }) }
       : { requestId, op: op.op, tabId: this.tabs.get(op.tabId)!.rendererTabId };
     return new Promise<BrowserTabOpOutcome>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;

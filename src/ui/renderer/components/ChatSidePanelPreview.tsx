@@ -482,9 +482,17 @@ export function UrlDocumentViewer({
   api,
   target,
   showHeader = true,
+  browserTab,
 }: {
   api: AveApi;
   target: Extract<ChatPreviewTarget, { kind: "url" }>;
+  /**
+   * The workspace tab this viewer renders. When set, each guest the webview
+   * attaches is bound to the tab in main (`ave:browser:bind-tab`) so the
+   * agent browser tools can reach it; `agentRequestId` marks a tab opened for
+   * the agent.
+   */
+  browserTab?: { tabId: string; agentRequestId?: string };
   /**
    * Render the viewer's own URL/open-external header band. Default true. The
    * BrowserWorkspace tab passes false because the tab already owns a single
@@ -501,6 +509,32 @@ export function UrlDocumentViewer({
   // from the store / main-process checks, so it calls the shared validator
   // rather than re-implementing a weaker inline protocol-only check.
   const url = useMemo(() => normalizeBrowserNavigationUrl(target.url), [target.url]);
+  const bindTabId = browserTab?.tabId;
+  const bindRequestId = browserTab?.agentRequestId;
+  const [webviewElement, setWebviewElement] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!webviewElement || bindTabId === undefined || !api.browserTabs) return;
+    const bind = api.browserTabs.bindTab;
+    const onAttach = () => {
+      let webContentsId: number | undefined;
+      try {
+        webContentsId = (webviewElement as HTMLElement & { getWebContentsId?: () => number }).getWebContentsId?.();
+      } catch {
+        // Not attached yet: the did-attach listener below binds it then.
+        return;
+      }
+      if (typeof webContentsId !== "number") return;
+      void bind({
+        tabId: bindTabId,
+        webContentsId,
+        ...(bindRequestId === undefined ? {} : { requestId: bindRequestId }),
+      });
+    };
+    webviewElement.addEventListener("did-attach", onAttach);
+    // Already attached (the tab id or request changed on a live guest).
+    onAttach();
+    return () => webviewElement.removeEventListener("did-attach", onAttach);
+  }, [api, webviewElement, bindTabId, bindRequestId]);
 
   if (!url) {
     return (
@@ -538,6 +572,7 @@ export function UrlDocumentViewer({
         </div>
       ) : null}
       {createElement("webview", {
+        ref: setWebviewElement,
         "data-testid": "chat-side-panel-browser-webview",
         src: url,
         partition: AVE_SIDE_BROWSER_PARTITION,

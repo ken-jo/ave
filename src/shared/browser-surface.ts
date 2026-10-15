@@ -63,7 +63,11 @@ export interface BrowserTabStopRequest {
  * (new), the guest going away (close), or the tab bound and active (select).
  */
 export type BrowserTabOpRequest =
-  | { readonly requestId: string; readonly op: "new"; readonly url: string }
+  /**
+   * `sessionId` names the conversation the tab is opened for (a sub-agent's
+   * parent), so a window with several chats opens it beside that one.
+   */
+  | { readonly requestId: string; readonly op: "new"; readonly url: string; readonly sessionId?: string }
   | { readonly requestId: string; readonly op: "select"; readonly tabId: string }
   | { readonly requestId: string; readonly op: "close"; readonly tabId: string };
 
@@ -73,7 +77,14 @@ export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | 
   const record = value as { requestId?: unknown; op?: unknown; url?: unknown; tabId?: unknown };
   if (typeof record.requestId !== "string" || record.requestId.length === 0) return null;
   if (record.op === "new") {
-    return typeof record.url === "string" ? { requestId: record.requestId, op: "new", url: record.url } : null;
+    if (typeof record.url !== "string") return null;
+    const sessionId = (value as { sessionId?: unknown }).sessionId;
+    return {
+      requestId: record.requestId,
+      op: "new",
+      url: record.url,
+      ...(typeof sessionId === "string" ? { sessionId } : {}),
+    };
   }
   if ((record.op === "select" || record.op === "close") && typeof record.tabId === "string") {
     return { requestId: record.requestId, op: record.op, tabId: record.tabId };

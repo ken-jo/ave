@@ -67,6 +67,11 @@ export interface WorkspaceTab {
   mode: WorkspaceTabMode;
   /** `null` = launcher container tab (always pinned); non-null = content tab. */
   content: WorkspaceTabContentRef | null;
+  /**
+   * Set on a browser tab opened for the agent's `browser_tab_new`: main's
+   * request id, echoed on the tab's bind so main can tell the agent opened it.
+   */
+  agentRequestId?: string;
 }
 
 export interface WorkspaceTabsStore {
@@ -115,6 +120,12 @@ export interface WorkspaceTabsStore {
   closeContainerTab: (kind: WorkspaceTabKind) => void;
   /** Set (or clear, with `null`) the manually-typed address for a browser tab. */
   setBrowserTabUrl: (tabId: string, url: string | null) => void;
+  /**
+   * Open a NEW pinned browser tab for the agent (`browser_tab_new`) and
+   * activate it. Never reuses a tab showing the same url: the agent gets a tab
+   * of its own. Returns the new tab's id, or null for an unsafe url.
+   */
+  openAgentBrowserTab: (url: string, agentRequestId: string) => string | null;
 }
 
 function contentKey(ref: WorkspaceTabContentRef): string {
@@ -295,6 +306,17 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     });
   }, []);
 
+  const openAgentBrowserTab = useCallback((rawUrl: string, agentRequestId: string): string | null => {
+    const content = normalizeContentRef({ source: "browser", url: rawUrl });
+    if (!content) return null;
+    // The id is taken here, outside the updater: an updater runs at flush
+    // time, and the caller needs the id now.
+    const id = `browser:${nextIdRef.current++}`;
+    const tab: WorkspaceTab = { id, kind: "browser", ordinal: 0, mode: "pinned", content, agentRequestId };
+    setState((prev) => ({ ...prev, tabs: [...prev.tabs, tab], activeTabId: id }));
+    return id;
+  }, []);
+
   const setBrowserTabUrl = useCallback((tabId: string, url: string | null) => {
     setState((prev) => {
       if (url == null) {
@@ -322,7 +344,8 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
       closeTab,
       closeContainerTab,
       setBrowserTabUrl,
+      openAgentBrowserTab,
     }),
-    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl],
+    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl, openAgentBrowserTab],
   );
 }
