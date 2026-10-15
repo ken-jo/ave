@@ -1,39 +1,133 @@
 # Windows Setup
 
-Status: Active English default. The Korean archive keeps earlier review history and original discussion, but this page must be usable on its own.
+Status: Active. Covers running Ave from source on Windows 10 or 11. Korean version: [Windows 개발 환경](../ko/guides/windows-setup.md).
 
-Korean archive: [docs/ko mirror](../ko/guides/windows-setup.md).
+The general setup is in [Getting started](./getting-started.md). This page covers only what differs on Windows. `bun run start` applies the Windows launch defaults itself, so a clean checkout should start without extra configuration.
 
-## What This Page Owns
+## 1. Prerequisites
 
-This page owns Windows-first setup, corporate network constraints, certificate handling, and path-sensitive validation. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
+| Tool | Version | Check |
+|---|---|---|
+| Node.js | `>=22.4` (from `package.json` `engines`) | `node -v` |
+| Bun | Current release | `bun -v` |
+| Git | Any recent release | `git --version` |
 
-## Current Operating Contract
+Both Bun and Node.js must be on `PATH`: Bun is the package manager, and the launcher and several build scripts run the system `node`. PowerShell, Windows Terminal and cmd all work.
 
-- English is the default review and contributor language for this app surface.
-- The document must name the behavior that still matters today, the code or test locations that enforce it, and the conditions that make the note stale.
-- Source files and tests are authoritative when this prose and implementation disagree.
-- Korean-only material stays in the mirrored archive unless it is translated or summarized here.
+Optional, only for background shell commands (see section 5): C++ build tools that `vswhere` can find.
 
-## Implementation Anchors
+## 2. Install and run from source
 
-- `package.json`
-- `src/plugins/`
-- `src/main/`
-- `src/ui/renderer/`
+```powershell
+git clone <repo-url>
+cd ave
+bun install
+bun run start
+```
 
-## Update Checklist
+`bun run start` runs `bun run build` and then `node scripts/run-electron.mjs dist/src/main/main.js`.
 
-- State whether the document is active, implemented, superseded, or historical before adding new detail.
-- Keep links relative to the current file depth; mirrored files under `docs/ko` need different paths from default docs.
-- Add or update tests when a documented behavior is enforced by code.
-- Remove template language and stale plan wording instead of carrying it forward.
+CI installs with `bun install --frozen-lockfile`. If a local build works but CI reports a lockfile mismatch, run the same command locally and commit the resulting `bun.lock` change.
 
-## Related Entry Points
+Plugins are not taken from sibling checkouts. Install them from a marketplace, or for a local build use Settings, Plugin Config, Developer Tools, "Install from local folder", and select the folder that contains `plugin.json`. See [Local plugin development](./local-plugin-development.md).
 
-- [Ave Project Documentation](../README.md)
-- [Getting Started](./getting-started.md)
+Success: the log shows `boot: ready (N tools, N plugins, N mcp)` and the window opens.
 
-## Review Notes
+## 3. What the Windows launcher sets
 
-This English page should let a reviewer understand scope, risk, and validation without opening the Korean archive. If the archive contains rationale that still matters, translate the relevant part into this page and keep the archive link as provenance.
+`scripts/run-electron.mjs` (with `scripts/lib/electron-launch-options.mjs` and `scripts/electron-flags.mjs`) applies these on `win32`:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `--disable-gpu`, `--disable-software-rasterizer`, `--disable-gpu-compositing`, `--no-sandbox` | Added unless `AVE_KEEP_GPU=1` | Avoids the "GPU process isn't usable" crash on machines with restricted GPU drivers. |
+| `AVE_WIN_NO_SANDBOX=1` | Set with the flags above | Lets the `ave://` protocol registration match the launch flags. Ignored by packaged builds. |
+| `--user-data-dir` | `%APPDATA%\Electron-Ave-Run`, or `AVE_USER_DATA_DIR` | Separate profile for source runs. |
+| `PYTHONIOENCODING`, `PYTHONUTF8`, `LANG`, `LC_ALL` | `utf-8`, `1`, `en_US.UTF-8` | UTF-8 output from Python and other children. |
+| `chcp 65001` | Electron starts through `cmd.exe` in the same console | Console output stays UTF-8. |
+
+Overrides:
+
+| Variable | Effect |
+|---|---|
+| `AVE_KEEP_GPU=1` | Skip the GPU and Chromium-sandbox flags (machines with a working GPU). |
+| `AVE_EXTRA_ELECTRON_FLAGS="--a --b"` | Append flags while keeping the defaults. |
+| `AVE_USER_DATA_DIR` | Use another profile directory. |
+| `AVE_DEBUG=1` | Print the final args to stderr (`[run-electron] args=...`). |
+
+For one session:
+
+```powershell
+$env:AVE_DEBUG = "1"
+bun run start
+```
+
+## 4. Troubleshooting
+
+### GPU crash: "GPU process isn't usable. Goodbye!"
+
+Make sure `AVE_KEEP_GPU` is not set, so the safe flags are applied:
+
+```powershell
+Remove-Item Env:\AVE_KEEP_GPU -ErrorAction SilentlyContinue
+bun run start
+```
+
+If it still crashes, add flags with `AVE_EXTRA_ELECTRON_FLAGS` (for example `--disable-webgl`) and confirm them with `AVE_DEBUG=1`.
+
+### Garbled log output
+
+Windows PowerShell 5.1 caches `[Console]::OutputEncoding` at session start, so `chcp 65001` alone may not help. In the current session:
+
+```powershell
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+chcp 65001
+bun run start
+```
+
+To make it permanent, add the first two lines and `chcp 65001 | Out-Null` to `$PROFILE`. PowerShell 7 and Windows Terminal default to UTF-8.
+
+### Clean reinstall leaves directories behind
+
+`Remove-Item -Recurse` in PowerShell 5.x can fail on locked trees. Use cmd instead:
+
+```powershell
+cmd /c "if exist node_modules rmdir /s /q node_modules"
+cmd /c "if exist dist rmdir /s /q dist"
+bun install
+```
+
+### Plugin build changes do not appear
+
+The local install copies the build folder, so the app runs the installed copy, not your checkout. After rebuilding, install the folder again through "Install from local folder". This copies it again and restarts the extension. See [Local plugin development](./local-plugin-development.md#reload).
+
+## 5. Windows-specific features
+
+- **Background shell commands** run under a Windows job object launched by `resources/windows-job/<arch>/ave-job.exe` (`src/main/windows-job-launcher.ts`). The executable is git-ignored, not checked in. Build it with `bun run build:windows-job`, which needs the C++ build tools. Without it, a background shell command fails with "Windows job launcher is missing". Foreground commands are unaffected.
+- **OS tool sandbox** is off by default. When turned on in Settings, Permissions, it needs a one-time administrator setup. On Windows it confines filesystem and network access, not processes; see [Sandbox isolation](../research/sandbox-isolation.md). If live sandbox tests skip with an access-denied warning, follow the sandbox troubleshooting steps in the [README](../../README.md).
+
+## 6. Path-sensitive validation
+
+Windows path spelling (drive letters, `\` separators, case folding, file locking) is exercised by the Windows CI job in `.github/workflows/ci.yml`. After changing permissions, paths, storage or shell code, run the relevant part of that job locally:
+
+```powershell
+bun run check:plugin-host-protocol-schema
+bun run test -- src/permissions/__tests__/allowed-directories.test.ts src/permissions/__tests__/sensitive-paths-canonicalize.test.ts src/shared/__tests__/ave-home.test.ts src/lib/__tests__/atomic-file.test.ts src/lib/__tests__/with-file-lock.test.ts src/tools/__tests__/bash-dialect.test.ts src/tools/__tests__/shell-windows-partial-plan-b.test.ts src/permissions/__tests__/windows-sandbox-logic.test.ts src/permissions/__tests__/asrt-windows-support.test.ts src/main/__tests__/windows-job-launcher.test.ts
+```
+
+The CI job is the full list. It also builds the native helpers (`scripts/build-windows-job.ps1`, then `node scripts/test-windows-job.mjs` and `node scripts/test-windows-path-kind.mjs`).
+
+Use `bun run test`, not `bun test`. The suite runs under Vitest through `scripts/run-vitest-under-electron.mjs`.
+
+Checklist after a first run:
+
+- Logs are readable (no mojibake).
+- `boot: ready (...)` appears and the window opens.
+- DevTools (`Ctrl+Shift+I`) shows no errors in the console.
+- No GPU crash on launch.
+
+## Related
+
+- [Getting started](./getting-started.md)
+- [Local plugin development](./local-plugin-development.md)
+- [Sandbox isolation](../research/sandbox-isolation.md)

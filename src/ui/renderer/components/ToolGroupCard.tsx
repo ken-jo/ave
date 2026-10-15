@@ -90,7 +90,10 @@ function RunningDurationBadge({ startedAt }: { startedAt?: number }) {
       className="shrink-0 font-mono text-[10px] tabular-nums opacity-70"
       title={`${elapsed} ms (${t("toolGroupCard.running")})`}
       data-testid="tool-duration-running"
-      aria-live="polite"
+      // A 200 ms tick is not something to read aloud, and inside the
+      // transcript log every text change would be. The finished duration
+      // badge carries the number for assistive tech.
+      aria-hidden="true"
     >
       ⏱ {label}
     </span>

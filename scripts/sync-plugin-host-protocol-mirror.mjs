@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withoutGitContext } from "./lib/git-process-environment.mjs";
-import { publishProtocolMirror, syncProtocolMirror } from "./lib/plugin-host-protocol-mirror.mjs";
+import { publishProtocolMirror, syncProtocolMirror, syncPublishedSchemas } from "./lib/plugin-host-protocol-mirror.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -15,6 +15,7 @@ try {
       encoding: "utf8", env: withoutGitContext(),
     }).trim();
     syncProtocolMirror(root, generatedFrom);
+    syncPublishedSchemas(root);
     console.log(`[plugin-host-protocol-mirror] refreshed candidate from ${generatedFrom}`);
   } else {
     throw new Error("usage: node scripts/sync-plugin-host-protocol-mirror.mjs [--publish <protocol>/<version>]");

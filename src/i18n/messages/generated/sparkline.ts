@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/Sparkline.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/Sparkline.tsx.
 export const en = {
   "sparkline.noData": "No data",
 } as const;

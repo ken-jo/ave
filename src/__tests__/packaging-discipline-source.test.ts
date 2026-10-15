@@ -452,6 +452,12 @@ describe("installer smoke and packaging discipline", () => {
     expect(deploy).toContain("sha256sum -c bundle.sha256");
     expectPinnedAction(deploy, "cloudflare/wrangler-action");
     expect(deploy).toContain('wranglerVersion: "4.114.0"');
+    // Ave's site is the static-assets Worker `ave-web` (ave.agent-connector.ai),
+    // configured by web/wrangler.jsonc, which travels inside the verified bundle.
+    expect(build).toContain("cp web/wrangler.jsonc staged-web/wrangler.jsonc");
+    expect(deploy).toContain("EXPECTED_CONFIG_SHA256");
+    expect(deploy).toContain("command: deploy --config wrangler.jsonc");
+    expect(deploy).not.toContain("pages deploy");
     expect(deploy).not.toContain("actions/checkout");
     expect(deploy).not.toContain("setup-bun");
     expect(deploy).not.toContain("bun install");
@@ -1125,8 +1131,10 @@ describe("installer smoke and packaging discipline", () => {
     // rebuild` deletes the working binding before it fails, and the `&&` chain
     // then skips uv fetch + protocol registration + hook install).
     expect(packageJson.scripts?.postinstall).not.toContain("electron-rebuild");
+    // The prebuilt spawn-helper ships mode 0644; the installed copy the dev
+    // app loads gets its execute bit back before anything else runs.
     expect(packageJson.scripts?.postinstall).toBe(
-      "node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
+      "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
     );
     // afterPack follows node-pty's loader order instead of hardcoding the
     // per-ABI gyp output directory.

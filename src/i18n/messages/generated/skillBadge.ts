@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/SkillBadge.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/SkillBadge.tsx.
 export const en = {
   "skillBadge.loadedLabel": "Skill loaded: {name}",
   "skillBadge.loadedFallback": "Skill {name} loaded.",

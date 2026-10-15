@@ -1,6 +1,7 @@
 import { isAbsolute, posix } from "node:path";
 import { z } from "zod";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { TOOL_NAME_PATTERN } from "../tools/types.js";
 
 const WORKLOAD_BROKER_CAPABILITY_VERSION =
   "ave-workload-broker-capability/v1" as const;
@@ -58,7 +59,6 @@ const EXECUTION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const ERROR_CODE = /^[a-z][a-z0-9_.-]{0,95}$/;
-const TOOL_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 function byteLengthAtMost(value: string, bytes: number): boolean {
   return Buffer.byteLength(value, "utf8") <= bytes;
@@ -103,7 +103,7 @@ const ToolUseIdSchema = z.string().min(1).refine(
   (value) => byteLengthAtMost(value, 256) && !/[\u0000-\u001f\u007f-\u009f]/u.test(value),
   "invalid tool use id",
 );
-const ToolNameSchema = z.string().regex(TOOL_NAME).refine(
+const ToolNameSchema = z.string().regex(TOOL_NAME_PATTERN).refine(
   (value) => byteLengthAtMost(value, 128),
   "tool name too large",
 );

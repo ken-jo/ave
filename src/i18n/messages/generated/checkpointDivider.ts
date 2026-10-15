@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/CheckpointDivider.tsx. Do not edit by hand.
+// i18n fragment. Extracted from src/ui/renderer/components/CheckpointDivider.tsx, which no longer exists.
 export const en = {
   "checkpointDivider.statusSummarized": "Summarized",
   "checkpointDivider.statusContentTruncated": "Partially Truncated",

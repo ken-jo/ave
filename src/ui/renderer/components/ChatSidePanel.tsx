@@ -725,6 +725,11 @@ export interface ChatSidePanelProps {
   onOpenActivityItem?: (target: string, web: boolean) => void;
   onOpenActivityItemPinned?: (target: string, web: boolean) => void;
   onOpenActivityItemInSystemApp?: (target: string, web: boolean) => void;
+  /**
+   * Attach text to the conversation's composer as a pasted-text chip — how a
+   * terminal block reaches the chat. Returns false when the composer is full.
+   */
+  onAttachText?: (text: string) => boolean;
   className?: string;
 }
 
@@ -751,6 +756,7 @@ export function ChatSidePanel({
   onOpenActivityItem,
   onOpenActivityItemPinned,
   onOpenActivityItemInSystemApp,
+  onAttachText,
   className = "",
 }: ChatSidePanelProps) {
   const { t } = useTranslation();
@@ -1125,7 +1131,12 @@ export function ChatSidePanel({
               onManualUrlChange={setBrowserTabUrl}
             />
           ) : activeTab.kind === "terminal" ? (
-            <PtyTerminalView api={api} tabId={activeTab.id} />
+            <PtyTerminalView
+              api={api}
+              tabId={activeTab.id}
+              tabLabel={`${t(tabLabelKey(activeTab.kind))} ${activeTab.ordinal}`}
+              {...(onAttachText ? { onAttachText } : {})}
+            />
           ) : activeTab.kind === "subagent" ? (
             <SubAgentViewer
               api={api}

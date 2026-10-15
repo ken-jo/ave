@@ -233,29 +233,29 @@ describe("manifest-validation names the process-entry field to fix", () => {
 
   it("refuses a manifest with both entry and process", async () => {
     await expect(parse({ process: PROCESS, entry: "dist/p.js" })).rejects.toThrow(
-      /at 'extensions\["xyz\.ave"\]\.process'.*exactly one of 'entry' and 'process'/u,
+      /at 'extensions\["ai\.agent-connector\.ave"\]\.process'.*exactly one of 'entry' and 'process'/u,
     );
   });
 
   it("refuses a manifest with neither entry nor process", async () => {
-    await expect(parse({})).rejects.toThrow(/at 'extensions\["xyz\.ave"\]\.entry'.*or declare 'process' instead/u);
+    await expect(parse({})).rejects.toThrow(/at 'extensions\["ai\.agent-connector\.ave"\]\.entry'.*or declare 'process' instead/u);
   });
 
   it("refuses an argument that looks like a path, naming its index", async () => {
     await expect(parse({ process: { ...PROCESS, args: ["--x=1", "../vendor"] } })).rejects.toThrow(
-      /at 'extensions\["xyz\.ave"\]\.process\.args\[1\]'.*looks like a path/u,
+      /at 'extensions\["ai\.agent-connector\.ave"\]\.process\.args\[1\]'.*looks like a path/u,
     );
   });
 
   it("refuses a reserved environment name in any letter case", async () => {
     await expect(parse({ process: { ...PROCESS, env: { Plugin_Data: "x" } } })).rejects.toThrow(
-      /at 'extensions\["xyz\.ave"\]\.process\.env\.Plugin_Data'.*reserves/u,
+      /at 'extensions\["ai\.agent-connector\.ave"\]\.process\.env\.Plugin_Data'.*reserves/u,
     );
   });
 
   it("refuses a process entry below the version floor", async () => {
     await expect(parse({ process: PROCESS, requires: { minAppVersion: "0.12.9", hostProtocol: "3" } })).rejects.toThrow(
-      /at 'extensions\["xyz\.ave"\]\.requires\.minAppVersion'.*0\.13\.0 or newer/u,
+      /at 'extensions\["ai\.agent-connector\.ave"\]\.requires\.minAppVersion'.*0\.13\.0 or newer/u,
     );
   });
 });

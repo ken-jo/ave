@@ -32,6 +32,9 @@ process.stdin.on("end", () => {
     p.messagesAfter !== undefined ? "ma=" + p.messagesAfter : null,
     p.tokensBefore !== undefined ? "tb=" + p.tokensBefore : null,
     p.tokensAfter !== undefined ? "ta=" + p.tokensAfter : null,
+    p.agentId !== undefined ? "agent=" + p.agentId : null,
+    p.agentType !== undefined ? "agentType=" + p.agentType : null,
+    p.message !== undefined ? "msg=" + p.message : null,
     // #811 m2 — UserPromptSubmit (blocking) fields.
     p.inputText !== undefined ? "text=" + p.inputText : null,
     p.inputOrigin !== undefined ? "origin=" + p.inputOrigin : null,

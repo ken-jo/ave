@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/boot/steps/plugin-runtime.ts. Do not edit by hand.
+// i18n fragment. Source: src/boot/steps/plugin-runtime.ts.
 export const en = {
   "be_pluginRuntime.overlaySummaryTruncationMarker": "\n…[truncated — view full in chat]",
   "be_pluginRuntime.pluginRuntimePreparationStarting": "Preparing extension runtime…",

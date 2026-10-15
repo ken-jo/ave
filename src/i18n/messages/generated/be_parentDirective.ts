@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/engine/parent-directive.ts. Do not edit by hand.
+// i18n fragment. Source: src/engine/parent-directive.ts.
 export const en = {
   "be_parentDirective.hostInstruction":
     "[Host] The following is a directive from the parent agent that started you, sent while you "

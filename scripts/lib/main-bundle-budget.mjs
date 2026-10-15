@@ -56,11 +56,13 @@ export function isSafeMainBundleManifestPath(path) {
  * (rule files, scopes, the shell prefix/exfiltration matchers) are consulted by the
  * permission manager on every tool call, so they belong in the initial graph; with them
  * the measurement is entry 415_935, initial 5_268_219, total 8_889_102, and the initial
- * ceiling moves to 5_270_000.
+ * ceiling moves to 5_270_000. With the permissions category joined with `main` (agent-core
+ * tools, terminal blocks and the rest of main's main-process growth) the measurement is
+ * entry 419_603, initial 5_313_581, total 8_937_684, and the initial ceiling moves to 5_315_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_270_000,
+  initialBytes: 5_315_000,
   totalBytes: 11_050_000,
 });
 

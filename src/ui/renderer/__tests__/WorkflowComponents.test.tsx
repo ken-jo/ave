@@ -22,7 +22,7 @@ function fakeApi(overrides: Partial<AveApi> = {}): AveApi {
   return {
     // Only methods used by the components under test need real impls;
     // the rest are stubbed minimally to satisfy the type.
-    listRoutines: () => Promise.resolve([]),
+    listRoutines: () => Promise.resolve({ routines: [], invalid: [] }),
     dismissRoutine: stub as never,
     removeRoutine: stub as never,
     listRoutineSessions: () => Promise.resolve([]),
@@ -331,7 +331,7 @@ describe("RoutinePanel", () => {
   it("renders an active routine card", async () => {
     const api = fakeApi({
       listRoutines: () =>
-        Promise.resolve([
+        Promise.resolve({ invalid: [], routines: [
           {
             id: "r1",
             trigger: "schedule" as const,
@@ -340,7 +340,7 @@ describe("RoutinePanel", () => {
             notificationTitle: "year-end",
             createdAt: "2024-01-01T00:00:00.000Z",
           },
-        ]),
+        ] }),
     });
     const { findByText } = render(<RoutinePanel api={api} />);
     expect(await findByText("year-end")).toBeInTheDocument();
@@ -364,7 +364,7 @@ describe("RoutinePanel", () => {
     const onOpenSession = vi.fn();
     const api = fakeApi({
       listRoutines: () =>
-        Promise.resolve([
+        Promise.resolve({ invalid: [], routines: [
           {
             id: "r-llm",
             trigger: "schedule" as const,
@@ -373,7 +373,7 @@ describe("RoutinePanel", () => {
             title: "뉴스 요약",
             createdAt: "2024-01-01T00:00:00.000Z",
           },
-        ]),
+        ] }),
       listRoutineSessions: listRoutineSessions as never,
     });
     const { findByTestId } = render(<RoutinePanel api={api} onOpenSession={onOpenSession} />);

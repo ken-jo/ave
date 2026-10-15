@@ -13,7 +13,7 @@
 import { useRef } from "react";
 import { createPortal } from "react-dom";
 import type { RefObject } from "react";
-import { Database, FormInput } from "lucide-react";
+import { Database, FileText, FormInput } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { useCaretAnchoredBox } from "../hooks/use-caret-anchored-box.js";
 import type { ResourceMentionItem } from "../hooks/use-resource-mention.js";
@@ -82,7 +82,9 @@ export function ResourceMentionMenu({
               follows the active row for the same reason — an icon distinguishes the rows
               but does not change what a sentence underneath them says.
             */}
-            {item.target.kind === "template" ? (
+            {item.target.kind === "file" ? (
+              <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            ) : item.target.kind === "template" ? (
               <FormInput className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             ) : (
               <Database className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -115,7 +117,9 @@ export function ResourceMentionMenu({
       >
         {t(items[activeIndex]?.target.kind === "template"
           ? "composer.resourceMentionTemplateHint"
-          : "composer.resourceMentionHint")}
+          : items[activeIndex]?.target.kind === "file"
+            ? "composer.fileMentionHint"
+            : "composer.resourceMentionHint")}
       </div>
     </div>,
     document.body,

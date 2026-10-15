@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/AttachmentChip.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/AttachmentChip.tsx.
 export const en = {
   "attachmentChip.chipAriaLabel": "Attachment {label} — view info or open file",
   "attachmentChip.chipTitle": "View attachment info / open file",

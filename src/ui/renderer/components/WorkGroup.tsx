@@ -1,14 +1,8 @@
 import { Children, memo, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { debugLog, isDebugStreamEnabled } from "../../../lib/debug-stream.js";
-import { formatDuration, type DurationFormatUnits } from "../../../lib/turn-summary-format.js";
+import { formatDuration, KOREAN_DURATION_UNITS } from "../../../lib/turn-summary-format.js";
 import { useTranslation } from "../../../i18n/react.js";
-
-const KOREAN_DURATION_UNITS: DurationFormatUnits = {
-  hour: "시간",
-  minute: "분",
-  second: "초",
-};
 
 interface WorkGroupProps {
   stepCount: number;

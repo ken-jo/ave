@@ -30,6 +30,7 @@
  * installed directory.
  */
 import { createHash } from "node:crypto";
+import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { readdir, readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { canonicalStringify } from "../shared/canonical-json.js";
@@ -59,10 +60,6 @@ export interface ApprovalComponent {
   transport: "stdio" | "http";
   /** Each command line the component runs (a hook file may hold several), with environment values appended. */
   argvs: readonly (readonly string[])[];
-}
-
-function sha256(bytes: Buffer | string): string {
-  return createHash("sha256").update(bytes).digest("hex");
 }
 
 const JSON_WHITESPACE = new Set([" ", "\t", "\n", "\r"]);
@@ -157,7 +154,7 @@ function comparedBytes(file: PayloadFile): Buffer {
  */
 export function payloadTreeSha256(files: readonly PayloadFile[]): string {
   const lines = files
-    .map((file) => ({ key: Buffer.from(file.path, "utf8"), line: `${file.executable === true ? "100755" : "100644"} ${sha256(comparedBytes(file))} ${file.path}\n` }))
+    .map((file) => ({ key: Buffer.from(file.path, "utf8"), line: `${file.executable === true ? "100755" : "100644"} ${sha256Hex(comparedBytes(file))} ${file.path}\n` }))
     .sort((a, b) => Buffer.compare(a.key, b.key));
   const hash = createHash("sha256");
   for (const { line } of lines) hash.update(line, "utf8");
@@ -185,7 +182,7 @@ export function extensionDeclarationPaths(manifestDocument: unknown): string[] {
  * The split is for display only: it never decides whether an update applies.
  */
 export function changedPayloadFiles(before: readonly PayloadFile[], after: readonly PayloadFile[], declaring: ReadonlySet<string>): { code: string[]; nonCode: string[] } {
-  const digests = (files: readonly PayloadFile[]) => new Map(files.map((file) => [file.path, `${file.executable === true ? "x" : "-"}${sha256(comparedBytes(file))}`]));
+  const digests = (files: readonly PayloadFile[]) => new Map(files.map((file) => [file.path, `${file.executable === true ? "x" : "-"}${sha256Hex(comparedBytes(file))}`]));
   const left = digests(before);
   const right = digests(after);
   const changed = [...new Set([...left.keys(), ...right.keys()])].filter((path) => left.get(path) !== right.get(path)).sort();
@@ -287,7 +284,7 @@ export function approvalDigest(component: ApprovalComponent, files: readonly Pay
         const path = anchoredPath(token, component.baseDir, byPath);
         if (path === undefined) return null;
         if (path === null) continue;
-        anchored.push(`${entry}:${index}\0${path}\0${sha256(byPath.get(path)!.data)}`);
+        anchored.push(`${entry}:${index}\0${path}\0${sha256Hex(byPath.get(path)!.data)}`);
       }
     }
     if (launcher !== null) closure = { kind: "launcher", spec: launcher, treeSha256 };
@@ -295,7 +292,7 @@ export function approvalDigest(component: ApprovalComponent, files: readonly Pay
     else if (anchored.length > 0) closure = { kind: "package", treeSha256 };
     else return null;
   }
-  return sha256(canonicalStringify({ declaration: component.declaration, anchored: anchored.sort(), closure }));
+  return sha256Hex(canonicalStringify({ declaration: component.declaration, anchored: anchored.sort(), closure }));
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -331,7 +328,7 @@ export function extensionComponentDigests(manifestDocument: unknown, files: read
       continue;
     }
     // The static fingerprint `materializePluginContributions` computes for a one-file declaration.
-    const fingerprint = sha256(`${file.path}\0${sha256(file.data)}`);
+    const fingerprint = sha256Hex(`${file.path}\0${sha256Hex(file.data)}`);
     let raw: unknown;
     try {
       raw = JSON.parse(file.data.toString("utf8"));

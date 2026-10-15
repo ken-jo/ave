@@ -6,10 +6,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { HookRunner } from "../hook-runner.js";
-import {
-  ScriptHookManager,
-  type HookDispatchPayload,
-} from "../script-hook-manager.js";
+import { ScriptHookManager } from "../script-hook-manager.js";
+import type { HookDispatchPayload } from "../script-hook-types.js";
 import type { HookConfigEntry } from "../hook-config.js";
 import type { TailnetControllerAuthority } from "../../shared/chat-origin.js";
 import {

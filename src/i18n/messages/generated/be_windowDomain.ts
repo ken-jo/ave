@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ipc/domains/window.ts. Do not edit by hand.
+// i18n fragment. Source: src/ipc/domains/window.ts.
 export const en = {
   "be_windowDomain.htmlPreviewDefaultTitle": "HTML Preview",
 } as const;
