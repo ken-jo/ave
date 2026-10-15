@@ -61,6 +61,11 @@ export interface OverlayCardProps {
   onPrimaryAction?: () => void;
 
   primaryActionLabel?: string;
+  /**
+   * A second answer beside the primary one, drawn quieter — an insertion card's
+   * "continue in a new conversation". Shown only with a primary action.
+   */
+  secondaryAction?: { label: string; onClick: () => void };
 
   /**
    * Whether the summary is expanded, and how to change it.
@@ -119,6 +124,7 @@ export function OverlayCard({
   onDismiss,
   onPrimaryAction,
   primaryActionLabel,
+  secondaryAction,
   expanded,
   onExpandedChange,
   kind = "routine",
@@ -345,7 +351,18 @@ export function OverlayCard({
           </div>
         )}
         {!running && !dispositions && onPrimaryAction && (
-          <div className="mt-2 flex justify-end">
+          <div className="mt-2 flex justify-end gap-1">
+            {secondaryAction ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                data-testid="overlay-card-secondary-action"
+                onClick={secondaryAction.onClick}
+              >
+                {secondaryAction.label}
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="default"

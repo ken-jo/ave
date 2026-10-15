@@ -6,6 +6,7 @@ import { normalizeToolOutputArtifactInfo } from "../shared/tool-output-artifact.
 import type { GenericMessage } from "./llm/types.js";
 import { createDlpSafeUuid } from "../shared/dlp-safe-id.js";
 import { trimOversizedToolResult } from "../shared/tool-result-trim.js";
+import { isBoundedSkillReadResult } from "../main/skill-overlay.js";
 import { normalizeLocalUserContentParts } from "../main/subscription-attachment-input.js";
 
 export interface ConversationHistoryOptions {
@@ -299,7 +300,12 @@ function applyToolResultCap(
     message = { ...message, meta: { ...meta, ...(outputArtifact ? { outputArtifact } : { outputArtifactUnavailable: true as const }) } };
   }
   if (!opts?.recompute && message.meta?.truncated !== undefined) return message;
-  const trimmed = trimOversizedToolResult(message.content);
+  // A skill read is the skill's instructions and is already host-bounded; a
+  // head/tail preview would hand the model a partial skill behind an extra
+  // chunk-read step. Measured as under-cap so a forged `truncated` is stripped.
+  const trimmed = isBoundedSkillReadResult(message)
+    ? { truncated: undefined }
+    : trimOversizedToolResult(message.content);
   if (trimmed.truncated === undefined) {
     if (!opts?.recompute) return message;
     // Recompute path with sub-cap content: strip any forged host meta so

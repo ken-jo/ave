@@ -460,12 +460,12 @@ export class ConversationLoop {
     scope: ToolScope,
     originSource: string | null,
     rolePrompt?: ActiveRolePrompt,
-    overlaySessionId = this.sessionId,
+    appContextSessionId = this.sessionId,
     memoryQuery = "",
   ): string {
     this.deps.systemPromptBuilder.setToolScope?.(scope);
     this.deps.systemPromptBuilder.setOriginSource?.(originSource);
-    this.deps.systemPromptBuilder.setActiveSessionId?.(overlaySessionId);
+    this.deps.systemPromptBuilder.setActiveSessionId?.(appContextSessionId);
     this.deps.systemPromptBuilder.setActiveRolePrompt?.(rolePrompt ?? null);
     try {
       return this.deps.systemPromptBuilder.build({ memoryQuery });
@@ -496,14 +496,14 @@ export class ConversationLoop {
     originSource: string | null,
     rolePrompt: ActiveRolePrompt | undefined,
     toolSchemas: ToolSchema[],
-    overlaySessionId = this.sessionId,
+    appContextSessionId = this.sessionId,
     memoryQuery = "",
   ): RequestProjectionContext {
     const buildSystemPrompt = () => this.buildSystemPromptForScope(
       scope,
       originSource,
       rolePrompt,
-      overlaySessionId,
+      appContextSessionId,
       memoryQuery,
     );
     return {

@@ -98,6 +98,7 @@ describe("prepared activation cleanup error identity", () => {
         retirePublishedMcpReplacement: async () => undefined,
       } as never,
       revokeOperationGeneration: () => undefined,
+      skillOverlay: { clearPluginGeneration: () => undefined },
       onContributionsUpdated: () => undefined,
     });
     runtime.setGenerationAccess(lifecycle);

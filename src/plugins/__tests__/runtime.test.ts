@@ -4235,6 +4235,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
         if (fault) throw fault;
       },
       revokeOperationGeneration: () => undefined,
+      skillOverlay: { clearPluginGeneration: () => undefined },
       loopbackManager: {
         prepareGeneration: async (manifest: PluginManifest, generationId: string) => {
           const fault = faults.loopbackPrepare;

@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import type { ScriptHookManager } from "../hooks/script-hook-manager.js";
 import { PluginHookTrustStore, preparePluginHookGeneration, type PreparedPluginHookProjection } from "../hooks/plugin-hook-projection.js";
 import type { SkillStore } from "../main/skill-store.js";
+import type { SkillOverlay } from "../main/skill-overlay.js";
 import type { PersonaPromptStore } from "../main/persona-prompt-store.js";
 import { parseAgentPluginRoutineTemplates } from "../marketplace/content/agent-plugin-components.js";
 import type { AgentPluginRoutineTemplate } from "../shared/agent-plugin-routine-template.js";
@@ -128,6 +129,8 @@ export interface PluginBundleLifecycleDeps {
   >;
   receiptCacheRoot: string;
   skillStore: SkillStore;
+  /** Per-conversation read-skill registry; a retired generation's reads are dropped with its skills. */
+  skillOverlay: Pick<SkillOverlay, "clearPluginGeneration">;
   personaPromptStore: PersonaPromptStore;
   onContributionsUpdated: () => void;
   hookManager: ScriptHookManager;
@@ -1200,13 +1203,15 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     });
     await runPhase("skills", () => {
       this.deps.skillStore.removePluginGeneration(generation.pluginId, generation.generationId);
+      // Same phase, same identity: the conversations that read one of these
+      // skills lose the skill_read authorization it granted. The read body
+      // already sits in their history as a tool_result; skill_load holds its
+      // generation lease only for the read itself, so nothing here waits on it.
+      this.deps.skillOverlay.clearPluginGeneration(generation.pluginId, generation.generationId);
     });
     await runPhase("hooks", () => {
       this.deps.hookManager.removePluginGeneration(generation.pluginId, generation.generationId);
     });
-    // Current-turn Skill overlays own generation leases. They release at the
-    // turn boundary, so coordinator drain itself guarantees the body remains
-    // available for every subsequent assistant round of the admitted turn.
     await runPhase("mcp", () =>
       this.deps.mcpManager.disconnectBundledGeneration(
         generation.pluginId,
