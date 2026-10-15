@@ -281,11 +281,12 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     // credential stores are all read-DENIED, not just `~/.ave/secrets`.
     // The floor also read-denies the sandbox private roots — every other
     // principal's temp directory and every other process's HOME are under
-    // them, and ASRT's reads are deny-only.
+    // them, and the terminal's shell handoff fifos, and ASRT's reads are
+    // deny-only.
     const sensitive = getDefaultSensitiveReadDenyPaths();
     expect(options.filesystem.denyRead).toEqual(sensitive);
     const privateRoots = appOwnedSandboxPrivateRoots();
-    expect(privateRoots.map((root) => basename(root))).toEqual(["tmp", "home"]);
+    expect(privateRoots.map((root) => basename(root))).toEqual(["tmp", "home", "handoff"]);
     for (const root of privateRoots) expect(options.filesystem.denyRead).toContain(root);
     expect(options.filesystem.denyRead).toContain(join(aveHome(), "secrets"));
     expect(options.filesystem.denyRead).toContain(join(aveHome(), "sessions"));

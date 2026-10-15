@@ -19,7 +19,11 @@
  * The wrap contract mirrors {@link ../../permissions/worker-spawn.ts} exactly:
  *   `wrapWorkerCommand(cmdline, { filesystem })` returns `{ argv, env }`; the
  *   host spawns `argv[0]` with `argv.slice(1)` — here through `pty.spawn` so the
- *   inner shell gets a real controlling TTY. Per-command `denyRead`/`denyWrite`
+ *   inner shell gets a real controlling TTY. On macOS the shell must also be
+ *   allowed to SET that TTY (echo off, foreground job), so the pty is spawned
+ *   first on a trampoline and the wrap is `wrapTerminalCommand` with the pty's
+ *   own slave path, and no other terminal (terminal-tty-handoff.ts).
+ *   Per-command `denyRead`/`denyWrite`
  *   REPLACE the shared boot arrays in ASRT, so we RESTATE
  *   `getDefaultSensitiveReadDenyPaths()` (else the shell regains read of
  *   `~/.ssh` / `~/.ave/secrets` / …) AND `getDefaultSensitiveWriteDenyPaths()`
@@ -43,6 +47,7 @@ import { buildSandboxedChildEnv } from "../../tools/safe-env.js";
 import {
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
+  wrapTerminalCommand,
   wrapWorkerCommand,
   cleanupAsrtSandboxAfterCommand,
   isAsrtSandboxActive,
@@ -54,6 +59,14 @@ import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
 import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { installShellIntegration } from "./shell-integration.js";
+import {
+  TRAMPOLINE_ENV,
+  createTerminalTtyHandoff,
+  ownPtySlavePath,
+  renderHandoffScript,
+  terminalNeedsOwnTtyGrant,
+  type TerminalTtyHandoff,
+} from "./terminal-tty-handoff.js";
 import {
   TerminalBlockTracker,
   registerTerminalBlockTracker,
@@ -392,11 +405,32 @@ async function spawnNewTerminal(
   const denyWrite = getDefaultSensitiveWriteDenyPaths();
 
   let wrapped = false;
+  // macOS only (terminal-tty-handoff.ts): the pty is spawned first, on a
+  // trampoline, so the wrap can grant the shell its own terminal by path.
+  let handoff: TerminalTtyHandoff | undefined;
+  let trampolinePty: IPty | undefined;
+  let pendingSession: TerminalSession | undefined;
   try {
     const cmdline = buildShellCommand(shell, tempDir);
-    const { argv, env } = await wrapWorkerCommand(cmdline, {
-      filesystem: { allowWrite, allowRead, denyRead, denyWrite },
-    });
+    const filesystem = { allowWrite, allowRead, denyRead, denyWrite };
+    const ptyOptions = { name: "xterm-256color", cols, rows, cwd };
+
+    let ownTty: string | undefined;
+    if (terminalNeedsOwnTtyGrant()) {
+      const { spawn: ptySpawn } = await loadPty();
+      if (owner.cancelled) throw new Error("terminal spawn cancelled");
+      handoff = await createTerminalTtyHandoff();
+      trampolinePty = ptySpawn(handoff.trampoline.file, [...handoff.trampoline.args], {
+        ...ptyOptions,
+        env: { ...TRAMPOLINE_ENV },
+      });
+      ownTty = ownPtySlavePath(trampolinePty);
+    }
+
+    const { argv, env } =
+      ownTty === undefined
+        ? await wrapWorkerCommand(cmdline, { filesystem })
+        : await wrapTerminalCommand(cmdline, { filesystem, ownTty });
     wrapped = true;
     if (owner.cancelled) throw new Error("terminal spawn cancelled");
 
@@ -415,15 +449,14 @@ async function spawnNewTerminal(
       LANG: process.env.LANG ?? "en_US.UTF-8",
     };
 
-    const { spawn: ptySpawn } = await loadPty();
-    if (owner.cancelled) throw new Error("terminal spawn cancelled");
-    const pty = ptySpawn(cmd, wrappedArgs, {
-      name: "xterm-256color",
-      cols,
-      rows,
-      cwd,
-      env: childEnv,
-    });
+    let pty: IPty;
+    if (trampolinePty !== undefined) {
+      pty = trampolinePty;
+    } else {
+      const { spawn: ptySpawn } = await loadPty();
+      if (owner.cancelled) throw new Error("terminal spawn cancelled");
+      pty = ptySpawn(cmd, wrappedArgs, { ...ptyOptions, env: childEnv });
+    }
 
     const session: TerminalSession = {
       pty,
@@ -466,11 +499,33 @@ async function spawnNewTerminal(
     });
     session.disposeExit = () => exitSub.dispose();
 
+    if (handoff !== undefined) {
+      // Subscribed first: the shell starts writing as soon as it is exec'd.
+      pendingSession = session;
+      await handoff.deliver(renderHandoffScript(argv, childEnv));
+      handoff.dispose();
+      pendingSession = undefined;
+    }
+
     sessions.set(tabId, session);
     registerTerminalBlockTracker(tabId, session.blocks, options.ownerWindowId ?? null);
     log.info({ tabId, cwd, cols, rows, pid: pty.pid }, "terminal: spawned sandboxed PTY");
     return { ok: true, tabId, replayed: false };
   } catch (err) {
+    // A trampoline that never ran the shell: drop its listeners first, so its
+    // exit does not run the session cleanup a second time, then kill it.
+    if (pendingSession !== undefined) {
+      pendingSession.disposeData();
+      pendingSession.disposeExit();
+    }
+    if (trampolinePty !== undefined && sessions.get(tabId)?.pty !== trampolinePty) {
+      try {
+        trampolinePty.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    handoff?.dispose();
     // FAIL CLOSED: the wrap succeeded but pty.spawn threw → decrement the ASRT
     // per-command state so a failed spawn leaves no lingering ref (mirrors
     // worker-spawn's catch).
