@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
 import { handleClipboardPaste } from "../clipboard-paste.js";
+import { PASTE_INLINE_MAX_CHARS } from "../../types/attachments.js";
 
 function makePasteEvent({
   text = "",
@@ -54,8 +55,8 @@ describe("handleClipboardPaste", () => {
     expect(outcome.handled).toBe(false);
   });
 
-  it("chips long text (>=50 chars)", async () => {
-    const longText = "x".repeat(60);
+  it("chips text longer than the inline limit, keeping the original whole", async () => {
+    const longText = "x".repeat(PASTE_INLINE_MAX_CHARS + 1);
     const ev = makePasteEvent({ text: longText });
     const allocate = vi.fn(() => 7);
     const outcome = await handleClipboardPaste(ev, {
@@ -68,19 +69,20 @@ describe("handleClipboardPaste", () => {
     expect(allocate).toHaveBeenCalled();
     expect(outcome.newAttachment?.kind).toBe("paste");
     expect(outcome.insertText).toContain("[Pasted text #7 +1 lines]");
+    expect(outcome.newAttachment).toMatchObject({ kind: "paste", text: longText, chars: longText.length });
   });
 
-  it("chips multi-newline text (>=3 newlines)", async () => {
-    const multiline = "a\nb\nc\nd";
-    const ev = makePasteEvent({ text: multiline });
-    const outcome = await handleClipboardPaste(ev, {
-      count: 0,
-      allocateN: () => 1,
-      saveClipboardImage: mockSaveOk,
-      max: 5,
-    });
-    expect(outcome.handled).toBe(true);
-    expect(outcome.newAttachment?.kind).toBe("paste");
+  it("pastes text up to the inline limit verbatim, line breaks included", async () => {
+    for (const text of ["a\nb\nc\nd\ne", "y".repeat(PASTE_INLINE_MAX_CHARS), `${"line\n".repeat(99)}12345`]) {
+      expect(text.length).toBeLessThanOrEqual(PASTE_INLINE_MAX_CHARS);
+      const outcome = await handleClipboardPaste(makePasteEvent({ text }), {
+        count: 0,
+        allocateN: () => 1,
+        saveClipboardImage: mockSaveOk,
+        max: 5,
+      });
+      expect(outcome.handled).toBe(false);
+    }
   });
 
   it("creates image attachment when image is on clipboard", async () => {

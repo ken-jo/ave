@@ -14,7 +14,7 @@ import type { UserKeyboardIntentSnapshot } from "../../../../shared/chat-origin.
 import type { QuickAction } from "../command-actions.js";
 import type { PluginEntry } from "../../types.js";
 import { MCP_RESOURCE_ATTACHMENTS_PER_TURN } from "../../../../shared/mcp-resource-bounds.js";
-import { PASTE_TEXT_MIN_CHARS } from "../../types/attachments.js";
+import { PASTE_INLINE_MAX_CHARS } from "../../types/attachments.js";
 import type { SubscriptionImageAttachmentLimits } from "../../../../shared/subscription-runtime.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 
@@ -235,7 +235,7 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
 
   // Long text normally becomes a `paste` attachment chip with a marker token in
   // the textarea. Ctrl/⌘+Shift+V asks for the original text instead.
-  const LONG_PASTE = "a".repeat(PASTE_TEXT_MIN_CHARS + 20);
+  const LONG_PASTE = "a".repeat(PASTE_INLINE_MAX_CHARS + 20);
 
   function textClipboardData(text: string): DataTransfer {
     return {

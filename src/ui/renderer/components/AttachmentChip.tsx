@@ -278,7 +278,7 @@ export function AttachmentOverlay({
           <div
             key={att.id}
             data-testid="overlay-item"
-            className="flex items-center gap-3 border-b border-muted/(--opacity-medium) py-2 last:border-b-0"
+            className="flex flex-wrap items-center gap-3 border-b border-muted/(--opacity-medium) py-2 last:border-b-0"
           >
             <div className="flex-shrink-0">
               {att.kind === "image" ? (
@@ -341,6 +341,18 @@ export function AttachmentOverlay({
               >
                 ↗ {t("attachmentChip.openExternalButton")}
               </button>
+            ) : null}
+            {/* The chip stands in for the text in the body; opening it shows
+                exactly what will be sent, selectable for a copy. */}
+            {att.kind === "paste" ? (
+              <pre
+                data-testid="overlay-paste-text"
+                aria-label={t("attachmentChip.pastedTextOriginal", { n: att.n })}
+                tabIndex={0}
+                className="max-h-56 w-full basis-full select-text overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-muted/(--opacity-medium) p-2 font-mono text-[11px] leading-relaxed text-foreground"
+              >
+                {att.text}
+              </pre>
             ) : null}
           </div>
         ))}

@@ -119,6 +119,23 @@ describe("AttachmentChipCollapsed", () => {
 });
 
 describe("AttachmentChip — single, clickable", () => {
+  it("shows the full original text of a pasted-text chip when opened", () => {
+    const original = `first line\n${"middle ".repeat(200)}\nlast line with <tags> & $1`;
+    const paste: PasteAttachment = { ...paste3, text: original, lines: 3, chars: original.length };
+    render(<AttachmentChip attachment={paste} total={1} />);
+    expect(screen.queryByTestId("overlay-paste-text")).toBeNull();
+    fireEvent.click(screen.getByTestId("attachment-chip"));
+    const shown = screen.getByTestId("overlay-paste-text");
+    expect(shown.textContent).toBe(original);
+    expect(shown.tagName).toBe("PRE");
+  });
+
+  it("shows no text block for attachments that are not pasted text", () => {
+    render(<AttachmentChipCollapsed attachments={[img1, file2]} />);
+    fireEvent.click(screen.getByTestId("attachment-chip-collapsed"));
+    expect(screen.queryByTestId("overlay-paste-text")).toBeNull();
+  });
+
   it("opens overlay on click and lists the single attachment", () => {
     render(<AttachmentChip attachment={img1} total={1} />);
     expect(screen.getByTestId("attachment-chip")).toBeTruthy();
