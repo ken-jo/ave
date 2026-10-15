@@ -81,6 +81,32 @@ function sessionWith(events: StreamEvent[]): {
 }
 
 describe("SubscriptionLlmProvider", () => {
+  it("offers the live Codex catalog through every provider wrapper", async () => {
+    const listModels = vi.fn(async () => ({
+      status: { capabilities: { chat: true } },
+      models: [{ id: "gpt-5.5-codex" }, { id: "gpt-5.5-codex-mini" }],
+    }));
+    const provider = createSubscriptionLlmProvider({
+      selection: { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" },
+      service: { openTextSession: vi.fn(), listModels } as unknown as Pick<SubscriptionRuntimeService, "openTextSession" | "listModels">,
+    });
+    const wrapped = new FallbackProvider(provider, [], () => "unused");
+    await expect(wrapped.listSubscriptionModels?.()).resolves.toEqual(["gpt-5.5-codex", "gpt-5.5-codex-mini"]);
+    await expect(wrapped.withCallbacks({}).listSubscriptionModels?.()).resolves.toEqual(["gpt-5.5-codex", "gpt-5.5-codex-mini"]);
+    expect(listModels).toHaveBeenCalledWith("codex");
+  });
+
+  it("refuses to answer from a Codex catalog that cannot chat", async () => {
+    const provider = createSubscriptionLlmProvider({
+      selection: { kind: "subscription", provider: "codex" },
+      service: {
+        openTextSession: vi.fn(),
+        listModels: vi.fn(async () => ({ status: { capabilities: { chat: false } }, models: [] })),
+      } as unknown as Pick<SubscriptionRuntimeService, "openTextSession" | "listModels">,
+    });
+    await expect(provider.listSubscriptionModels?.()).rejects.toThrow();
+  });
+
   it("projects the subscription envelope plus bridge-normalized transport sidecars", () => {
     const provider = createSubscriptionLlmProvider({
       selection: { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" },

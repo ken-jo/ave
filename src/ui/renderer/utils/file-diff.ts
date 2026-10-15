@@ -1,7 +1,7 @@
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { isRecord } from "../../../shared/is-record.js";
 
-export type FileDiffTool = "edit_file" | "apply_patch" | "write_file";
+export type FileDiffTool = "edit_file" | "multi_edit" | "write_file";
 
 export interface FileEditHunk {
   oldText: string;
@@ -23,8 +23,8 @@ export function extractFileEditDiff(tool: ToolItem): FileEditDiffData | null {
   switch (tool.name) {
     case "edit_file":
       return extractEditFile(tool);
-    case "apply_patch":
-      return extractApplyPatch(tool);
+    case "multi_edit":
+      return extractMultiEdit(tool);
     case "write_file":
       return extractWriteFile(tool);
     default:
@@ -41,7 +41,7 @@ function extractEditFile(tool: ToolItem): FileEditDiffData | null {
   return { path, tool: "edit_file", hunks: [{ oldText, newText }] };
 }
 
-function extractApplyPatch(tool: ToolItem): FileEditDiffData | null {
+function extractMultiEdit(tool: ToolItem): FileEditDiffData | null {
   if (!isRecord(tool.input)) return null;
   const path = readResultField(tool.result, "path") ?? asString(tool.input.path);
   const reps = tool.input.replacements;
@@ -54,7 +54,7 @@ function extractApplyPatch(tool: ToolItem): FileEditDiffData | null {
     if (o != null && n != null) hunks.push({ oldText: o, newText: n });
   }
   if (hunks.length === 0) return null;
-  return { path, tool: "apply_patch", hunks };
+  return { path, tool: "multi_edit", hunks };
 }
 
 function extractWriteFile(tool: ToolItem): FileEditDiffData | null {

@@ -109,6 +109,14 @@ describe("platform conversation protocol", () => {
     })).toEqual({ kind: "turn.failed" });
   });
 
+  it("keeps live tool output owner-only", () => {
+    expect(projectSharedConversationEvent({
+      kind: "tool.output.delta",
+      tool: { name: "bash", groupId: "group-1", toolUseId: "tool-1", displayOrder: 0 },
+      ownerDetail: { text: "secret build log" },
+    })).toBeUndefined();
+  });
+
   it("never projects a turn's user input to shared surfaces", () => {
     // The submitting chat platform already shows the sender their own message;
     // sharing it back would duplicate every remote turn and hand other

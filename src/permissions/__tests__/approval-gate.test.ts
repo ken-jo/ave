@@ -1064,33 +1064,33 @@ describe("ApprovalGate", () => {
     expect(gate.pendingCount).toBe(0);
   });
 
-  it("isReadOnly=true + mode=plan → still blocked by plan mode (dialog shown)", async () => {
+  it("isReadOnly=true + mode=ask_all → still shows the dialog", async () => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
     const req = makeRequest({
-      id: "req-readonly-plan",
+      id: "req-readonly-ask-all",
       toolName: "index_search",
       isReadOnly: true,
-      mode: "plan",
+      mode: "ask_all",
     });
 
     const promise = gate.requestAndWait(req);
 
-    // Plan mode must NOT short-circuit — dialog must be sent
+    // ask_all must NOT short-circuit — dialog must be sent
     expect(wc.send).toHaveBeenCalledTimes(1);
     const [channel, payload] = wc.send.mock.calls[0] as [
       string,
       ApprovalRequest,
     ];
     expect(channel).toBe("ave:approval:request");
-    expect(payload.id).toBe("req-readonly-plan");
-    expect(payload.mode).toBe("plan");
+    expect(payload.id).toBe("req-readonly-ask-all");
+    expect(payload.mode).toBe("ask_all");
     expect(payload.isReadOnly).toBe(true);
     expect(gate.pendingCount).toBe(1);
 
     // Simulate user denying
-    gate.resolve("req-readonly-plan", {
-      requestId: "req-readonly-plan",
+    gate.resolve("req-readonly-ask-all", {
+      requestId: "req-readonly-ask-all",
       choice: "deny-once",
     });
     const result = await promise;

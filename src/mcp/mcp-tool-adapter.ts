@@ -42,7 +42,8 @@ import {
   parseToolSurfaces,
   type ToolSurface,
 } from "../plugins/runtime/tool-visibility.js";
-import type { McpToolSchema, McpUiPayload } from "./types.js";
+import type { McpToolCallOutput, McpToolSchema } from "./types.js";
+import { prepareMcpContentImage } from "./mcp-tool-content.js";
 import { errorMessage } from "../shared/error-message.js";
 
 /**
@@ -84,15 +85,17 @@ function toolSurfaces(schema: McpToolSchema): readonly ToolSurface[] {
  * @param schema           The raw tool schema from `tools/list`.
  * @param callTool         Callback that invokes `tools/call` with
  *                         the original (un-namespaced) tool name.
- *                         Returns the rendered text response and an optional
- *                         {@link McpUiPayload} when the server declares a UI
- *                         extension via `_meta.ui` (MCP Apps spec §3.2).
+ *                         Returns the rendered text response, an optional
+ *                         UI payload when the server declares a UI extension
+ *                         via `_meta.ui` (MCP Apps spec §3.2), and any image
+ *                         blocks; the first image reaches the model through
+ *                         `ToolExecutionResult.image`.
  */
 export function mcpToolToTool(
   serverId: string,
   namespacedName: string,
   schema: McpToolSchema,
-  callTool: (name: string, args: Record<string, unknown>) => Promise<{ text: string; uiPayload?: McpUiPayload }>,
+  callTool: (name: string, args: Record<string, unknown>) => Promise<McpToolCallOutput>,
 ): Tool {
   const surfaces = toolSurfaces(schema);
   return createDynamicTool({
@@ -115,14 +118,16 @@ export function mcpToolToTool(
       properties: schema.inputSchema.properties,
       required: schema.inputSchema.required,
     },
-    execute: async (rawInput) => {
+    execute: async (rawInput, ctx) => {
       const args = (rawInput ?? {}) as Record<string, unknown>;
       try {
-        const { text, uiPayload } = await callTool(schema.name, args);
+        const { text, uiPayload, images } = await callTool(schema.name, args);
+        const { image, note } = await prepareMcpContentImage(images ?? [], ctx?.abortSignal);
         return {
-          output: text,
+          output: note ? `${text}\n${note}` : text,
           isError: false,
           ...(uiPayload && { metadata: { uiPayload } }),
+          ...(image && { image }),
         };
       } catch (err) {
         return {

@@ -52,6 +52,7 @@ import type { RolePreset } from "../../../data/role-presets.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import type { McpPromptEntry } from "./slash-picker-data.js";
 import type { AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
+import type { CustomCommandEntry } from "../../../shared/custom-command.js";
 import type { InputStatusRow } from "../hooks/use-input-status-row.js";
 import type { ExecutionMode, ExecutionModeDisplay } from "../../../shared/permission-mode.js";
 import { EXEC_MODE_OPTIONS } from "../constants.js";
@@ -66,6 +67,8 @@ export interface InputActionBarProps {
   onInsertSlashCommand: (cmd: string) => void;
   onRunMcpPrompt: (prompt: McpPromptEntry) => void;
   onRunPluginPrompt: (prompt: AgentPluginTemplatePrompt) => void;
+  /** Lists this tile's custom slash commands; absent on surfaces without the channel. */
+  loadCustomCommands?: () => Promise<{ commands: CustomCommandEntry[] }>;
   slashPickerOpen: boolean;
   onSlashPickerOpenChange: (open: boolean) => void;
   // Leading — attachment picker (single unified button, no count badge —
@@ -142,6 +145,7 @@ export function InputActionBar({
   onInsertSlashCommand,
   onRunMcpPrompt,
   onRunPluginPrompt,
+  loadCustomCommands,
   slashPickerOpen,
   onSlashPickerOpenChange,
   onAttach,
@@ -179,6 +183,7 @@ export function InputActionBar({
           onInsert={onInsertSlashCommand}
           onRunMcpPrompt={onRunMcpPrompt}
           onRunPluginPrompt={onRunPluginPrompt}
+          {...(loadCustomCommands ? { loadCustomCommands } : {})}
           open={slashPickerOpen}
           onOpenChange={onSlashPickerOpenChange}
         />

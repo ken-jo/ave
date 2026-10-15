@@ -1,11 +1,12 @@
 
 
-import { Terminal, Zap, Puzzle, Server, Sparkles, MessageSquareText, type LucideIcon } from "lucide-react";
+import { Terminal, Zap, Puzzle, Server, Sparkles, MessageSquareText, FileText, type LucideIcon } from "lucide-react";
 import { t } from "../../../i18n/runtime.js";
 import type { QuickAction } from "./command-actions.js";
 import type { PluginEntry } from "../types.js";
 import type { RolePreset } from "../../../data/role-presets.js";
 import type { AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
+import type { CustomCommandEntry } from "../../../shared/custom-command.js";
 import type { NativeMenuRow } from "../hooks/use-native-context-menu.js";
 
 /** A single live MCP-server tool, namespaced by its server. */
@@ -50,6 +51,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { cmd: "/goal", labelKey: "slashPickerPanel.cmdGoal" },
   { cmd: "/remember", labelKey: "slashPickerPanel.cmdRemember" },
   { cmd: "/memory", labelKey: "slashPickerPanel.cmdMemory" },
+  { cmd: "/model", labelKey: "slashPickerPanel.cmdModel" },
   { cmd: "/vendor", labelKey: "slashPickerPanel.cmdVendor" },
   { cmd: "/tools", labelKey: "slashPickerPanel.cmdTools" },
   { cmd: "/permission", labelKey: "slashPickerPanel.cmdPermission" },
@@ -64,13 +66,14 @@ export const SLASH_COMMANDS: SlashCommand[] = [
 ];
 
 /** The drill-down category model — one step per group, with a global search. */
-export type Category = "command" | "shortcut" | "plugin" | "mcp" | "mcp-prompts" | "plugin-prompts" | "skills";
+export type Category = "command" | "custom-commands" | "shortcut" | "plugin" | "mcp" | "mcp-prompts" | "plugin-prompts" | "skills";
 
 /** Stable category order for both the popover drill-down and the inline menu. */
-export const CATEGORY_ORDER: Category[] = ["command", "shortcut", "plugin", "mcp", "plugin-prompts", "mcp-prompts", "skills"];
+export const CATEGORY_ORDER: Category[] = ["command", "custom-commands", "shortcut", "plugin", "mcp", "plugin-prompts", "mcp-prompts", "skills"];
 
 export const CATEGORY_ICON: Record<Category, LucideIcon> = {
   command: Terminal,
+  "custom-commands": FileText,
   shortcut: Zap,
   plugin: Puzzle,
   mcp: Server,
@@ -84,6 +87,8 @@ export function catLabel(category: Category): string {
   switch (category) {
     case "command":
       return t("slashPicker.catCommand");
+    case "custom-commands":
+      return t("slashPicker.catCustomCommands");
     case "shortcut":
       return t("slashPicker.catShortcut");
     case "plugin":
@@ -182,6 +187,8 @@ export function buildComposerMenuSections(input: {
   mcpTools: McpToolEntry[];
   mcpPrompts: McpPromptEntry[];
   pluginPrompts: AgentPluginTemplatePrompt[];
+  /** Project and personal command files; absent when the surface cannot list them. */
+  customCommands?: CustomCommandEntry[];
   skills: SkillEntry[];
   onSelectPersona: (id: string) => void;
   onInsert: (cmd: string) => void;
@@ -212,6 +219,16 @@ export function buildComposerMenuSections(input: {
     label: `${command.cmd} — ${t(command.labelKey)}`,
     // The trailing space is what lets the user keep typing arguments.
     onSelect: () => input.onInsert(`${command.cmd} `),
+  })));
+  // Inserted rather than run: the command's arguments are typed after it, and
+  // the main process expands the file when the message is sent.
+  push("custom-commands", (input.customCommands ?? []).map((command) => ({
+    id: `custom-command:${command.name}`,
+    label: `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`,
+    sublabel: command.description || t(command.scope === "project"
+      ? "slashPicker.customCommandProject"
+      : "slashPicker.customCommandUser"),
+    onSelect: () => input.onInsert(`/${command.name} `),
   })));
   push("plugin", input.plugins.map((plugin) => ({
     id: `plugin:${plugin.viewKey}`,

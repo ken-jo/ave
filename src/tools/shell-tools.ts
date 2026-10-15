@@ -18,7 +18,7 @@ import type {
 import { spawn, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, isAbsolute, join, resolve as pathResolve } from "node:path";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
@@ -33,9 +33,13 @@ import {
   type ToolExecutionResult,
 } from "./base.js";
 import { buildHostShellChildEnv, buildSafeChildEnv, buildSandboxedChildEnv } from "./safe-env.js";
-import { prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellCommand, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
+import { prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { POWER_SHELL_AST_PARSER, normalizePowerShellAstSummary, type PowerShellArgument, type PowerShellAstSummary } from "./powershell-ast.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { hostPathForShellPath } from "../lib/shell-resolver.js";
+import { ShellCwdProbeFilter, type ShellCwdProbe } from "./shell-cwd-probe.js";
+import { clearShellSessionCwd, recordShellSessionCwd } from "./shell-session-cwd.js";
+import { createLiveOutputStream, toolOutputProgressFromMetadata, type ToolOutputProgressSink } from "./tool-output-progress.js";
 import {
   findResolvedShellPathViolation,
   findShellPathPolicyViolation,
@@ -206,7 +210,16 @@ function captureFactoryFromContext(ctx: ToolExecutionContext): BoundOutputCaptur
   return typeof factory === "function" ? factory as BoundOutputCaptureFactory : undefined;
 }
 
-function createOutputCollector(child: PipedChild, factory?: BoundOutputCaptureFactory) {
+interface OutputCollectorOptions {
+  readonly captureFactory?: BoundOutputCaptureFactory;
+  readonly cwdProbe?: Pick<ShellCwdProbe, "start" | "end">;
+  /** Display-only live output; the formatted result stays bounded. */
+  readonly progress?: ToolOutputProgressSink;
+}
+
+function createOutputCollector(child: PipedChild, options: OutputCollectorOptions = {}) {
+  const factory = options.captureFactory;
+  const cwdProbe = options.cwdProbe;
   // Four bytes cover any UTF-8 code point. The display cap remains in UTF-16
   // characters; raw whitespace also counts against this capture budget.
   const buffer = Buffer.alloc(OUTPUT_CAP * 4);
@@ -215,6 +228,10 @@ function createOutputCollector(child: PipedChild, factory?: BoundOutputCaptureFa
   let capture: ToolOutputCapture | undefined;
   let finalized = false;
   let paused = false;
+  // The probe reports on stderr; its bytes never reach the display buffer,
+  // the output artifact, or live progress.
+  const probeFilter = cwdProbe === undefined ? undefined : new ShellCwdProbeFilter(cwdProbe);
+  const live = options.progress === undefined ? undefined : createLiveOutputStream(options.progress);
   const append = (chunk: Buffer): void => {
     if (!capture || capture.append(chunk) || paused) return;
     paused = true;
@@ -228,24 +245,43 @@ function createOutputCollector(child: PipedChild, factory?: BoundOutputCaptureFa
       }
     });
   };
+  const collect = (chunk: Buffer): void => {
+    if (finalized || chunk.length === 0) return;
+    // Reserve only when output can exceed the bounded display. The prefix
+    // accumulated before reservation is replayed once, in observed order.
+    if (!capture && factory && size + chunk.length > OUTPUT_CAP) {
+      capture = factory();
+      if (size > 0) append(buffer.subarray(0, size));
+    }
+    append(chunk);
+    const retained = Math.min(chunk.length, buffer.length - size);
+    if (retained > 0) chunk.copy(buffer, size, 0, retained);
+    size += retained;
+    if (retained < chunk.length) truncated = true;
+  };
+  const collectStderrBytes = (chunk: Buffer): void => {
+    collect(chunk);
+    if (chunk.length > 0) live?.write("stderr", chunk);
+  };
   return {
     collect(chunk: Buffer): void {
       if (finalized) return;
-      // Reserve only when output can exceed the bounded display. The prefix
-      // accumulated before reservation is replayed once, in observed order.
-      if (!capture && factory && size + chunk.length > OUTPUT_CAP) {
-        capture = factory();
-        if (size > 0) append(buffer.subarray(0, size));
-      }
-      append(chunk);
-      const retained = Math.min(chunk.length, buffer.length - size);
-      if (retained > 0) chunk.copy(buffer, size, 0, retained);
-      size += retained;
-      if (retained < chunk.length) truncated = true;
+      collect(chunk);
+      live?.write("stdout", chunk);
+    },
+    collectStderr(chunk: Buffer): void {
+      if (finalized) return;
+      collectStderrBytes(probeFilter === undefined ? chunk : probeFilter.push(chunk));
     },
     async finish(interrupted: boolean): Promise<Record<string, unknown>> {
+      if (probeFilter !== undefined && !finalized) collectStderrBytes(probeFilter.flush());
+      live?.close();
       finalized = true;
       return capture ? { outputArtifact: await capture.finish(interrupted) } : {};
+    },
+    /** The shell's final directory as it reported it, when the probe completed. */
+    reportedCwd(): string | undefined {
+      return probeFilter?.reportedCwd;
     },
     format(completion?: ShellCompletion): string {
       const prefix = buffer.subarray(0, size);
@@ -1192,6 +1228,17 @@ function createManager(): BackgroundShellManager {
 export const backgroundShellManager: BackgroundShellManager = createManager();
 
 /**
+ * The one shell teardown for an ending session, parent or sub-agent: stop its
+ * background shells, forget its saved working directory, and settle any
+ * brokered cleanup. The caller decides what an unproven cleanup means.
+ */
+export async function endShellSession(sessionId: string): Promise<BrokerSessionCleanupReport | undefined> {
+  backgroundShellManager.disposeSession(sessionId);
+  clearShellSessionCwd(sessionId);
+  return await backgroundShellManager.settleSessionCleanup(sessionId);
+}
+
+/**
  * SafeBashExecutor (Tier A1) — non-interactive shell execution with
  * preflight detection for interactive scaffolds, timeout handling with
  * partial-output drain, graceful terminate→kill ladder, and output cap.
@@ -1227,7 +1274,12 @@ function validateHostShellExecutionRequest(
 export const BashToolInputSchema = z.object({
   ...hostShellExecutionFields,
   command: z.string().min(1).describe("Shell command to execute"),
-  cwd: z.string().optional().describe("Working directory override"),
+  cwd: z.string().optional().describe(
+    "Working directory for this call only; a relative path resolves from the session directory. " +
+      "A `cd` in a foreground command carries into later bash calls of this session while the " +
+      "directory stays inside the workspace or an allowed directory. Environment variables, " +
+      "functions, and shell options do not persist between calls.",
+  ),
   // Optional-but-defaulted and strictly positive: a command always has a
   // deadline, so nothing waits forever. Local execution has no upper bound;
   // the brokered workload protocol has the model-visible maximum documented
@@ -1286,7 +1338,20 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
   }
 
   readonly name = "bash";
-  readonly description = "Run a shell command in the local repository under permission and path checks. Recursive copying and archive creation/extraction remain blocked in this shell. Use copy_path for ordinary binary/text files or complete directory trees, and extract_archive for tar or gzip-compressed tar extraction, subject to existing write approvals. Both require an absent exact destination with an existing parent; no overwrite or merge. ZIP extraction and archive creation have no built-in equivalent. Single-file shell copying and archive listing remain subject to the same checks.";
+  readonly description =
+    "Run a non-interactive shell command in the local repository under permission and path checks. " +
+    "Prefer the dedicated tools when one fits: grep_files instead of grep/rg, glob_files or list_files instead of " +
+    "find/ls, read_file instead of cat/head/tail, edit_file or apply_patch instead of sed -i, write_file instead of " +
+    "echo/heredoc redirects. Quote paths that contain spaces. " +
+    "A command runs until it exits or `timeoutSeconds` (default 120) elapses; for a slow build or test, pass a " +
+    "larger timeoutSeconds rather than retrying the same one. For a long-running process you will check on, set " +
+    "run_in_background, then read its output with bash_output (waitFor/waitMs) and stop it with bash_kill. " +
+    "Output is previewed up to 12,000 characters; when a result says it was truncated, page the rest with " +
+    "read_tool_result_chunk instead of rerunning the command. " +
+    "Recursive copying and archive creation/extraction remain blocked in this shell: use copy_path for files or " +
+    "directory trees and extract_archive for tar or gzip-compressed tar extraction. Both require an absent exact " +
+    "destination with an existing parent; no overwrite or merge. ZIP extraction and archive creation have no " +
+    "built-in equivalent.";
   readonly inputSchema = BashToolInputSchema;
   override readonly category: ToolCategory = "shell";
 
@@ -1472,8 +1537,12 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         resolvedCwd,
         writePaths,
         input.timeoutSeconds, prepared, ctx.abortSignal, captureFactoryFromContext(ctx),
+        toolOutputProgressFromMetadata(ctx.metadata),
       );
-      return withBackgroundUnavailable(sandboxResult, input.run_in_background === true);
+      return withBackgroundUnavailable(
+        trackSessionCwd(sandboxResult, resolvedCwd, ctx),
+        input.run_in_background === true,
+      );
     }
 
     // Clean plain host-shell path — the ONLY path that may background. The ASRT
@@ -1491,7 +1560,15 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       return disposableExecution ? withDisposableExecutionMetadata(result) : result;
     }
 
-    const plainResult = await spawnWithTimeout(input.command, resolvedCwd, input.timeoutSeconds, prepared, ctx.abortSignal, captureFactoryFromContext(ctx));
+    const spawnedResult = await spawnWithTimeout(
+      input.command, resolvedCwd, input.timeoutSeconds, prepared, ctx.abortSignal,
+      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata),
+    );
+    // A disposable route's directory belongs to its own lifecycle, not the
+    // host session's.
+    const plainResult = disposableExecution
+      ? withoutReportedCwd(spawnedResult)
+      : trackSessionCwd(spawnedResult, resolvedCwd, ctx);
     if (disposableExecution) {
       return withBackgroundUnavailable(
         withDisposableExecutionMetadata(plainResult),
@@ -1518,6 +1595,42 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     }
   }
 }
+
+function withoutReportedCwd(result: SpawnResult): SpawnResult {
+  const { reportedCwd: _reportedCwd, ...rest } = result;
+  return rest;
+}
+
+/**
+ * Carry a foreground command's final directory into the session. Only a
+ * directory change made by the command itself moves the session: a per-call
+ * `cwd` override that the command did not leave stays per-call. A directory
+ * outside the workspace and allowed directories resets the session to the
+ * workspace root and says so in the result.
+ */
+function trackSessionCwd(result: SpawnResult, startCwd: string, ctx: ToolExecutionContext): SpawnResult {
+  const reported = result.reportedCwd;
+  const rest = withoutReportedCwd(result);
+  if (reported === undefined) return rest;
+  const finalCwd = pathResolve(reported);
+  if (finalCwd === pathResolve(startCwd)) return rest;
+  const sessionId = ctx.metadata.sessionId;
+  const violation = validateShellWorkingDirectory(finalCwd, ctx.cwd, ctx.extraAllowedDirectories);
+  if (violation === null) {
+    recordShellSessionCwd(sessionId, ctx.cwd, finalCwd);
+    return rest;
+  }
+  recordShellSessionCwd(sessionId, ctx.cwd, ctx.cwd);
+  return {
+    ...rest,
+    output: `${rest.output}\n\nShell working directory reset to ${pathResolve(ctx.cwd)}: ` +
+      `${finalCwd} is outside the workspace and allowed directories.`,
+    metadata: { ...rest.metadata, cwdReset: true },
+  };
+}
+
+/** Post-run clamp seam: path policy keeps real commands from reaching it. */
+export const _trackShellSessionCwdForTest = trackSessionCwd;
 
 /** Session id threaded by the executor in ctx.metadata; used to scope background shells. */
 function sessionIdFromContext(ctx: ToolExecutionContext): string {
@@ -1791,6 +1904,12 @@ interface SpawnResult {
   output: string;
   isError: boolean;
   metadata: Record<string, unknown>;
+  /**
+   * Host path of the directory a completed foreground command ended in, from
+   * the cwd probe. Absent after a timeout, cancellation, spawn failure, or a
+   * shell that never reached the probe. Never forwarded to the model as-is.
+   */
+  reportedCwd?: string;
 }
 
 /**
@@ -1835,6 +1954,7 @@ export async function spawnWithSandbox(
   prepared: PreparedShellInvocation,
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
+  progress?: ToolOutputProgressSink,
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
@@ -1859,7 +1979,7 @@ export async function spawnWithSandbox(
   let wrapped: { argv: string[]; env: NodeJS.ProcessEnv };
   try {
     const binShell = shell.cmd;
-    wrapped = await wrapToolCommand(preparedSandboxBootstrap(prepared), {
+    wrapped = await wrapToolCommand(preparedSandboxBootstrap(prepared, { cwdProbe: true }), {
       filesystem,
       abortSignal: signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal,
       binShell,
@@ -1920,9 +2040,13 @@ export async function spawnWithSandbox(
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash:asrt" });
 
-    const outputCollector = createOutputCollector(child, outputCaptureFactory);
+    const outputCollector = createOutputCollector(child, {
+      captureFactory: outputCaptureFactory,
+      cwdProbe: preparedShellCwdProbe(prepared).probe,
+      progress,
+    });
     child.stdout.on("data", outputCollector.collect);
-    child.stderr.on("data", outputCollector.collect);
+    child.stderr.on("data", outputCollector.collectStderr);
 
     let settled = false;
 
@@ -1957,6 +2081,7 @@ export async function spawnWithSandbox(
           output: formatted,
           isError: lifetime.aborted || code !== 0,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, sandboxed: true },
+          ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
         });
       }
     };
@@ -1988,12 +2113,14 @@ async function spawnWithTimeout(
   prepared: PreparedShellInvocation,
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
+  progress?: ToolOutputProgressSink,
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
   signal?.throwIfAborted();
   return await new Promise((resolve) => {
-    const { shell, argv, environment } = preparedShellCommand(prepared);
+    const { shell, environment } = preparedShellCommand(prepared);
+    const { argv, probe } = preparedShellCwdProbe(prepared);
     assertManagedChildProcessAdmissionOpen("tool:bash");
     const child: PipedChild = spawn(shell.cmd, [...argv], {
       detached: process.platform !== "win32",
@@ -2008,9 +2135,9 @@ async function spawnWithTimeout(
     child.once("close", cleanupPreparedAfterTermination);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash" });
 
-    const outputCollector = createOutputCollector(child, outputCaptureFactory);
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, cwdProbe: probe, progress });
     child.stdout.on("data", outputCollector.collect);
-    child.stderr.on("data", outputCollector.collect);
+    child.stderr.on("data", outputCollector.collectStderr);
 
     let settled = false;
 
@@ -2035,6 +2162,7 @@ async function spawnWithTimeout(
           output: formatted,
           isError: lifetime.aborted || code !== 0,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code },
+          ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
         });
       }
     };
@@ -2055,6 +2183,15 @@ async function spawnWithTimeout(
     });
   });
   } finally { releaseClaim(); }
+}
+
+function reportedHostCwd(
+  shell: Parameters<typeof hostPathForShellPath>[0],
+  reported: string | undefined,
+): { reportedCwd?: string } {
+  if (reported === undefined || reported === "") return {};
+  const hostPath = hostPathForShellPath(shell, reported);
+  return hostPath === undefined || !isAbsolute(hostPath) ? {} : { reportedCwd: hostPath };
 }
 
 function formatTimeoutOutput(
@@ -2581,10 +2718,14 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         resolvedCwd,
         writePaths,
         input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
+        toolOutputProgressFromMetadata(ctx.metadata),
       );
     }
 
-    const plainResult = await spawnPowerShell(input.command, resolvedCwd, input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx));
+    const plainResult = await spawnPowerShell(
+      input.command, resolvedCwd, input.timeoutSeconds, ctx.abortSignal,
+      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata),
+    );
     if (disposableExecution) return withDisposableExecutionMetadata(plainResult);
     if (!hostShellPlan.requiresExplicitUserApproval) return plainResult;
     return {
@@ -2865,6 +3006,7 @@ async function spawnPowerShellWithSandbox(
   timeoutSeconds: number,
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
+  progress?: ToolOutputProgressSink,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   // Resolve before allocating the temporary profile so a missing PowerShell
@@ -2983,9 +3125,9 @@ async function spawnPowerShellWithSandbox(
     }
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell:asrt" });
 
-    const outputCollector = createOutputCollector(child, outputCaptureFactory);
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
     child.stdout.on("data", outputCollector.collect);
-    child.stderr.on("data", outputCollector.collect);
+    child.stderr.on("data", outputCollector.collectStderr);
 
     let settled = false;
 
@@ -3044,6 +3186,7 @@ async function spawnPowerShell(
   timeoutSeconds: number,
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
+  progress?: ToolOutputProgressSink,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   return new Promise((resolve) => {
@@ -3062,9 +3205,9 @@ async function spawnPowerShell(
     );
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell" });
 
-    const outputCollector = createOutputCollector(child, outputCaptureFactory);
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
     child.stdout.on("data", outputCollector.collect);
-    child.stderr.on("data", outputCollector.collect);
+    child.stderr.on("data", outputCollector.collectStderr);
 
     let settled = false;
 

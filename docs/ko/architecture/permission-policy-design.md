@@ -280,12 +280,15 @@ Shell leaf 의 read/write 판정은 risk classifier 의 verb table (`permissions
 | `read_file` | `read` | `["path"]` | UTF-8 bounded file read |
 | `list_files` | `read` | `["path"]` | Depth/limit bounded directory listing |
 | `glob_files` | `read` | `["path"]` | Path-pattern search; does not inspect file content |
-| `grep_files` | `read` | `["path"]` | UTF-8 content search with optional include glob |
+| `grep_files` | `read` | `["path"]` | ripgrep content search (bundled Codex `codex-path/rg`): include glob / type, content·files_with_matches·count modes, context lines, multiline, limit/offset paging; sensitive result paths dropped |
 | `write_file` | `write` | `["path"]` | Full-file create/overwrite only |
 | `edit_file` | `write` | `["path"]` | Exact text replace; ambiguous matches fail unless explicit |
-| `apply_patch` | `write` | `["path"]` | Ordered exact replacements in one file; atomic preflight |
+| `multi_edit` | `write` | `["path"]` | Ordered exact replacements in one file; atomic preflight |
+| `apply_patch` | `write` | `["patch#patch-envelope"]` | `*** Begin Patch` envelope: add/update/move/delete across files; every section validated before any write. The `#patch-envelope` field selects the paths the patch text names |
 | `move_file` | `write` | `["sourcePath", "destinationPath"]` | Rename/move regular files; overwrite must be explicit |
 | `delete_file` | `write` | `["path"]` | Delete regular files only; directories are refused |
+
+`edit_file`, `multi_edit`, `apply_patch` updates and `write_file` overwrites of an existing file require that the session read the file with `read_file` and that its bytes still match that read (or the tool's own last write); creating a new file does not.
 
 `write_file` intentionally does not absorb `edit` or `apply` semantics. Full-file write, exact edit, and patch application are distinct intent/permission surfaces, so each ships as a separate `write` category tool with its own schema and validation.
 
@@ -726,7 +729,7 @@ compat/fallback surface 는 제외하고, host/app/plugin contract 는 다음 �
 - Native tools Phase 2: `apply_patch`, `move_file`, `delete_file`, `powershell`
 - Authority-sensitive tool approval identity: tools may publish `approvalCacheKey(input, ctx)` so allow/deny rules bind to the exact capability scope, not only the tool name. `routine_schedule` keys include the normalized routine plugin scope, shell tools key command+cwd, and write-capable native file tools key canonical target path(s) so one approval cannot authorize unrelated plugin scope, shell command, or filesystem target.
 - Native tools receive `ToolExecutionContext.allowedDirectories` from the executor and use that single scope for internal sandbox checks. `permissions.additionalDirectories` therefore affects Layer 1 and tool-local validation identically. The tool-local check takes the same effect argument as Layer 1 (`FileTool.ensureAllowed(path, ctx, effect)`) and asks the same `pathEffectIsConfined` predicate, so a read the permission layer admitted cannot be refused again at execute time.
-- `glob_files` and `grep_files` scan within the bounded traversal budget, then apply include/content filtering before the user-visible result limit so late valid matches are not skipped by early non-matching files.
+- `glob_files` scans within the bounded traversal budget, then applies the include filter before the user-visible result limit so late valid matches are not skipped by early non-matching files. `grep_files` delegates the walk to ripgrep (.gitignore-aware, path-sorted), drops every result whose path matches the sensitive-path floor, and pages the filtered entries with `limit`/`offset`.
 - Per-tool allow/deny audit decisions and hook quarantine events are double-written to the HMAC-chained permission audit channel while the general telemetry channel remains during parity verification.
 - `src/lib/glob-matcher.ts` is the shared minimatch-subset implementation for Layer 0 sensitive paths and native file glob/include matching.
 - PermissionManager rules → registry-driven

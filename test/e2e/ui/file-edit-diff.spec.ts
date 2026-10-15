@@ -2,7 +2,7 @@ import { test, expect } from './fixtures';
 
 /**
  * E2E smoke for the FileEditDiff card rendered by ToolGroupCard for
- * edit_file / apply_patch / write_file tool results.
+ * edit_file / multi_edit / write_file tool results.
  *
  * Strategy mirrors tool-duration.spec.ts — inject synthetic tool_start
  * + tool_end events into the renderer's chat-stream channel via

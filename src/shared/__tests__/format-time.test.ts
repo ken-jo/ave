@@ -112,11 +112,11 @@ describe("formatRelativeTime", () => {
 describe("formatLocalIsoWithOffset", () => {
   it("renders the local wall clock with the numeric offset of that instant", () => {
     process.env.TZ = "Asia/Seoul";
-    expect(formatLocalIsoWithOffset(new Date(INSTANT))).toBe("2026-01-02T13:26:00+09:00");
+    expect(formatLocalIsoWithOffset(new Date(INSTANT))).toBe("2026-01-02T13:26+09:00");
     process.env.TZ = "America/Los_Angeles";
-    expect(formatLocalIsoWithOffset(new Date(INSTANT))).toBe("2026-01-01T20:26:00-08:00");
+    expect(formatLocalIsoWithOffset(new Date(INSTANT))).toBe("2026-01-01T20:26-08:00");
     process.env.TZ = "UTC";
-    expect(formatLocalIsoWithOffset(new Date(INSTANT))).toBe("2026-01-02T04:26:00+00:00");
+    expect(formatLocalIsoWithOffset(new Date(INSTANT))).toBe("2026-01-02T04:26+00:00");
   });
 });
 

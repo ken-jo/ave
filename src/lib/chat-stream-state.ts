@@ -196,7 +196,47 @@ export type ToolEntryItem = {
    * progress vs. hung. Cleared by applyToolEnd in favor of `durationMs`.
    */
   startedAt?: number;
+  /**
+   * Tail of the live output a running host shell tool has printed so far,
+   * bounded by {@link LIVE_TOOL_OUTPUT_TAIL_CHARS}. Display state only:
+   * applyToolEnd clears it in favor of the bounded `result`.
+   */
+  liveOutput?: string;
 };
+
+/** Characters of live tool output a transcript row keeps while running. */
+export const LIVE_TOOL_OUTPUT_TAIL_CHARS = 16 * 1024;
+
+/** Append live output to the running tool it belongs to; any other frame is ignored. */
+function applyToolOutput(
+  entries: ChatEntry[],
+  payload: { groupId: string; toolUseId: string; text: string },
+): ChatEntry[] {
+  if (payload.text.length === 0) return entries;
+  const groupIdx = findLastIdx(
+    entries,
+    (entry): entry is Extract<ChatEntry, { kind: "tool_group" }> =>
+      entry.kind === "tool_group" && entry.groupIds.includes(payload.groupId),
+  );
+  if (groupIdx < 0) return entries;
+  const group = entries[groupIdx] as ToolGroupEntry;
+  const toolIdx = group.tools.findIndex(
+    (tool: ToolEntryItem) => tool.toolUseId === payload.toolUseId && tool.status === "running",
+  );
+  if (toolIdx < 0) return entries;
+  const tool = group.tools[toolIdx]!;
+  const combined = (tool.liveOutput ?? "") + payload.text;
+  const liveOutput = combined.length > LIVE_TOOL_OUTPUT_TAIL_CHARS
+    ? combined.slice(combined.length - LIVE_TOOL_OUTPUT_TAIL_CHARS)
+    : combined;
+  const next = [...entries];
+  next[groupIdx] = {
+    ...group,
+    tools: group.tools.map((entry: ToolEntryItem, index: number) =>
+      index === toolIdx ? { ...entry, liveOutput } : entry),
+  };
+  return next;
+}
 
 export type ChatEntry =
   | {
@@ -1148,7 +1188,7 @@ export function applyToolEnd(
   const group = next[groupIdx] as ToolGroupEntry;
   const tools = group.tools.map((tool: ToolEntryItem) => {
     if (tool.toolUseId !== payload.toolUseId) return tool;
-    const { startedAt: _startedAt, ...rest } = tool;
+    const { startedAt: _startedAt, liveOutput: _liveOutput, ...rest } = tool;
     return {
       ...rest,
       status: (payload.cancelled
@@ -1424,6 +1464,7 @@ export function parseTurnSummaryEvent(ev: ChatStreamEvent): Pick<
 const TRANSCRIPT_FRAME_TYPES: ReadonlySet<ChatStreamEvent["type"]> = new Set<ChatStreamEvent["type"]>([
   "permission_review",
   "tool_start",
+  "tool_output",
   "tool_end",
   "turn_summary",
   "compact_notice",
@@ -1472,6 +1513,10 @@ export function applyTranscriptFrame(entries: ChatEntry[], ev: ChatStreamEvent):
         ...(pluginId ? { pluginId } : {}),
         ...(mcpServerId ? { mcpServerId } : {}),
       });
+    }
+    case "tool_output": {
+      if (!ev.groupId || ev.toolUseId === undefined || typeof ev.text !== "string") return entries;
+      return applyToolOutput(entries, { groupId: ev.groupId, toolUseId: ev.toolUseId, text: ev.text });
     }
     case "tool_end": {
       if (!ev.name || !ev.groupId || ev.toolUseId === undefined) return entries;
