@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -219,11 +220,16 @@ describe("installer smoke and packaging discipline", () => {
     expect(workflow).toContain("Smoke launch packaged app");
     expect(workflow).toContain("scripts/smoke-packaged-app.mjs --target");
     expect(workflow).toContain("xvfb-run -a");
-    expect(workflow).toContain("sudo apt-get update && sudo apt-get install -y fakeroot rpm xvfb dbus dbus-x11 gnome-keyring");
+    expect(workflow).toContain("x86_64) tools+=(xvfb-run:xvfb dbus-run-session:dbus dbus-launch:dbus-x11 gnome-keyring-daemon:gnome-keyring) ;;");
+    expect(workflow).toContain('sudo apt-get install -y --no-install-recommends --no-upgrade "${missing[@]}"');
     expect(workflow).toContain("dbus-run-session -- bash -euo pipefail -c");
     expect(workflow).toContain("gnome-keyring-daemon --unlock --components=secrets");
     expectPinnedAction(workflow, "actions/cache");
-    expect(workflow).toContain("~/.bun/install/cache");
+    // Bun's package cache lives in the workspace, never the runner user's
+    // ~/.bun (on a self-hosted runner, the owner's own cache).
+    expect(workflow).toContain("BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun");
+    expect(workflow).toContain("            .cache/bun\n");
+    expect(workflow).not.toContain("~/.bun");
     expect(workflow).toContain("ELECTRON_BUILDER_CACHE");
     expect(workflow).toContain("--skip-native-rebuild");
     expect(workflow.indexOf("Smoke launch packaged app")).toBeLessThan(workflow.indexOf("Upload installers"));
@@ -407,6 +413,262 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
+  it("runs every release Linux job on the runner the repo variable names", () => {
+    // Only a job with nothing before it falls back, and only to a self-hosted
+    // runner so its check step can name the unset variable; never to a
+    // billing-blocked hosted label.
+    const entryRunner = "runs-on: ${{ vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'self-hosted' }}";
+    const linuxRunner = "runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}";
+    const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
+    for (const [id, runner] of [
+      ["release-profile", entryRunner],
+      ["publish-release", linuxRunner],
+      ["publish-r2", linuxRunner],
+    ] as const) {
+      const body = installers.get(id);
+      if (body === undefined) throw new Error(`build-installers.yml has no ${id} job`);
+      expect(body.match(/^ {4}runs-on: .*$/gmu), id).toEqual([`    ${runner}`]);
+    }
+    for (const id of ["installers", "publish-release", "publish-r2"]) {
+      expect(installers.get(id), id).toMatch(/^ {4}needs: (?:release-profile|\[release-profile, installers\])$/mu);
+    }
+    const probe = workflowJobs(readRepoFile(".github/workflows/r2-probe.yml")).get("probe");
+    if (probe === undefined) throw new Error("r2-probe.yml has no probe job");
+    expect(probe.match(/^ {4}runs-on: .*$/gmu)).toEqual([`    ${entryRunner}`]);
+  });
+
+  it("fails a release run naming any unset runner variable before a job needs it", () => {
+    const check = "bash .github/scripts/require-runner-vars.sh";
+    const profile = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("release-profile");
+    const probe = workflowJobs(readRepoFile(".github/workflows/r2-probe.yml")).get("probe");
+    if (profile === undefined || probe === undefined) throw new Error("missing release-profile or probe job");
+    const names = ["AVE_LINUX_RUNNER", "AVE_MACOS_RUNNER", "AVE_WINDOWS_RUNNER"];
+    expect(jobRunCommands(profile)).toContain(`${check} ${names.join(" ")}`);
+    expect(jobRunCommands(probe)).toContain(`${check} AVE_LINUX_RUNNER`);
+    for (const name of names) expect(profile).toContain(`${name}: \${{ vars.${name} }}`);
+    expect(probe).toContain("AVE_LINUX_RUNNER: ${{ vars.AVE_LINUX_RUNNER }}");
+    // The check precedes every other step that could depend on the runner.
+    expect(profile.indexOf(check)).toBeLessThan(profile.indexOf("Verify exact source head"));
+    expect(probe.indexOf(check)).toBeLessThan(probe.indexOf("install-aws-cli"));
+    // No workflow job that a runner variable chooses falls back to a hosted label.
+    for (const name of ["build-installers.yml", "r2-probe.yml"]) {
+      expect(readRepoFile(`.github/workflows/${name}`), name).not.toMatch(/fromJSON\(vars\.AVE_[A-Z]+_RUNNER\) \|\| '(?!self-hosted')/u);
+    }
+
+    const run = (env: Record<string, string>, ...args: string[]) => {
+      const clean = Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !/^AVE_[A-Z]+_RUNNER$/u.test(key)),
+      );
+      return spawnSync("bash", [".github/scripts/require-runner-vars.sh", ...args], {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...clean, ...env },
+      });
+    };
+    const selfHosted = '["self-hosted","Linux","ARM64","ave"]';
+    const ok = run({ AVE_LINUX_RUNNER: selfHosted, AVE_MACOS_RUNNER: '"macos-15"', AVE_WINDOWS_RUNNER: '["windows-latest"]' }, ...names);
+    expect(ok.status, ok.stdout + ok.stderr).toBe(0);
+    expect(ok.stdout).toContain(`AVE_LINUX_RUNNER = ${selfHosted}`);
+
+    const unset = run({ AVE_LINUX_RUNNER: selfHosted, AVE_WINDOWS_RUNNER: "" }, ...names);
+    expect(unset.status).toBe(1);
+    expect(unset.stdout).toContain("::error::Repository variable AVE_MACOS_RUNNER is not set.");
+    expect(unset.stdout).toContain("::error::Repository variable AVE_WINDOWS_RUNNER is not set.");
+    expect(unset.stdout).not.toContain("AVE_LINUX_RUNNER is not set");
+
+    for (const bad of ["ubuntu-latest", "[]", '[""]', "[1]", "{}", "null"]) {
+      const malformed = run({ AVE_LINUX_RUNNER: bad }, "AVE_LINUX_RUNNER");
+      expect(malformed.status, bad).toBe(1);
+      expect(malformed.stdout, bad).toContain("::error::Repository variable AVE_LINUX_RUNNER must be a JSON label string");
+    }
+    expect(run({}).status).toBe(2);
+  });
+
+  it("ships x64 Linux installers from any runner arch and refuses a foreign-arch binary", () => {
+    const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
+    if (installers === undefined) throw new Error("build-installers.yml has no installers job");
+    const buildInstallers = readRepoFile("scripts/build-installers.mjs");
+    const afterPack = readRepoFile("scripts/electron-after-pack.cjs");
+
+    // The target arch is pinned, never inferred from the runner.
+    const build = jobRunCommands(installers).find((command) => command.includes("node scripts/build-installers.mjs"));
+    expect(build).toContain('if [ "${{ matrix.target }}" = "linux" ]; then\n# Linux installers ship x64 whatever the runner\'s arch.\nargs+=("--arch" "x64")\nfi\n');
+
+    // The arch audit is a plain, unconditional-on-success Linux step between
+    // the build and anything that launches or uploads the package.
+    const audit = "node scripts/verify-linux-package-arch.mjs --release-dir release --arch x64 --require-installers";
+    expect(jobRunCommands(installers).filter((command) => command.includes(audit))).toEqual([`set -euo pipefail\n${audit}`]);
+    const auditAt = installers.indexOf(audit);
+    expect(auditAt).toBeGreaterThan(installers.indexOf("node scripts/build-installers.mjs"));
+    expect(auditAt).toBeLessThan(installers.indexOf("Smoke launch packaged app"));
+    expect(auditAt).toBeLessThan(installers.indexOf("Upload installers"));
+    expect(installers).not.toContain("continue-on-error");
+
+    // An ARM64 host cannot launch the x64 app without host-wide binfmt; the
+    // launch gates skip only there, by the host's own arch.
+    expect(installers).toContain('if [ "${{ matrix.target }}" = "linux" ] && [ "$(uname -m)" != "x86_64" ]; then');
+    for (const step of ["Smoke launch packaged app", "Packaged escape gate"]) {
+      const at = installers.indexOf(`- name: ${step}`);
+      expect(installers.slice(at, installers.indexOf("\n      - ", at + 1)), step).toContain(
+        "if: >-\n          steps.launch.outputs.run == 'true'\n          && (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')\n",
+      );
+    }
+
+    // Cross mode: target-arch node_modules from the frozen lockfile with no
+    // install script, node-pty compiled by the cross toolchain, and no
+    // electron-builder rebuild with the host compiler.
+    expect(buildInstallers).toContain('"--frozen-lockfile", "--ignore-scripts", `--cpu=${arch}`, "--os=linux"');
+    expect(buildInstallers).toContain('"arm64->x64": { triple: "x86_64-linux-gnu", gypArch: "x64" }');
+    expect(buildInstallers).toContain("requires --skip-native-rebuild");
+    expect(buildInstallers).toContain("cross-build: node-pty compiled as");
+    // Only the packed arch's node-pty prebuild and sandbox helper ship.
+    expect(afterPack).toContain("pruneForeignNodePtyPrebuilds(context);");
+    expect(afterPack).toContain("if (archDir !== arch) rmSync(join(keepRoot, archDir), { recursive: true, force: true });");
+  });
+
+  it("builds macOS and Windows installers on the runners the repo variables name", () => {
+    const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
+    if (installers === undefined) throw new Error("build-installers.yml has no installers job");
+
+    // `vars` and `fromJSON` are available in `strategy`, so each matrix entry
+    // carries its own runner, with no hosted fallback; the Linux entry
+    // cross-builds x64 on the ARM64 self-hosted runners.
+    expect(installers.match(/^ {12}os: .*$/gmu)).toEqual([
+      "            os: ${{ fromJSON(vars.AVE_MACOS_RUNNER) }}",
+      "            os: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}",
+      "            os: ${{ fromJSON(vars.AVE_WINDOWS_RUNNER) }}",
+    ]);
+    expect(installers.match(/^ {4}runs-on: .*$/gmu)).toEqual(["    runs-on: ${{ matrix.os }}"]);
+
+    // Every step runs in one shell that exists on all three hosts.
+    expect(installers).toMatch(/^ {4}defaults:\n {6}run:\n {8}shell: bash$/mu);
+
+    // A persistent runner starts from a clean checkout, gets Node from the
+    // runner tool cache rather than a system install, and drops its build
+    // output after the upload.
+    expect(installers).toMatch(/^ {10}persist-credentials: false\n {10}clean: true$/mu);
+    expectPinnedAction(installers, "actions/setup-node");
+    expect(installers).toContain('node-version: "24"');
+    const setupNode = installers.indexOf("uses: actions/setup-node@");
+    expect(setupNode).toBeGreaterThan(installers.indexOf("uses: actions/checkout@"));
+    expect(setupNode).toBeLessThan(installers.indexOf("node scripts/build-installers.mjs"));
+
+    // setup-bun has no install-directory input and installs into
+    // os.homedir()/.bun/bin; that one step sees a home under RUNNER_TEMP, so it
+    // never replaces the owner's bun. The version is .bun-version, the same
+    // file ci.yml reads, and a step proves the job-local pinned bun is on PATH.
+    expect(installers).toContain(
+      "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0\n"
+        + "        with:\n"
+        + "          bun-version-file: .bun-version\n"
+        + "        env:\n"
+        + "          HOME: ${{ runner.temp }}/bun-home\n"
+        + "          USERPROFILE: ${{ runner.temp }}/bun-home\n"
+        + "      - name: Verify bun is the job-local pinned build\n",
+    );
+    expect(installers.indexOf("Verify bun is the job-local pinned build")).toBeLessThan(
+      installers.indexOf("bun install --frozen-lockfile"),
+    );
+    expect(readRepoFile(".bun-version")).toMatch(/^\d+\.\d+\.\d+\n$/u);
+    const ci = readRepoFile(".github/workflows/ci.yml");
+    const ciSetups = ci.match(/uses: oven-sh\/setup-bun@/gu)?.length ?? 0;
+    expect(ciSetups).toBeGreaterThan(0);
+    expect(ci.match(/bun-version-file: ave\/\.bun-version\n/gu)?.length).toBe(ciSetups);
+
+    expect(installers).toContain(
+      "      - name: Remove build output from a self-hosted runner\n"
+        + "        if: always() && runner.environment == 'self-hosted'\n"
+        + "        run: rm -rf release",
+    );
+    expect(installers.indexOf("Remove build output")).toBeGreaterThan(installers.indexOf("Upload installers"));
+
+    // Installer caches stay per OS.
+    expect(installers).toContain("key: ${{ runner.os }}-installers-");
+    expect(installers).toContain("key: ${{ runner.os }}-uv-");
+  });
+
+  it("never authorizes a destructive or host-mutating release step on a self-hosted runner", () => {
+    const hosted = "runner.environment == 'github-hosted'";
+    const workflows = readdirSync(resolve(root, ".github/workflows")).filter((name) => /\.ya?ml$/u.test(name));
+    // Every place any workflow sets a disposable-host or destructive smoke
+    // authorization requires a hosted runner in the same expression, so a
+    // self-hosted runner's own environment can never turn one on.
+    let authorizations = 0;
+    for (const name of workflows) {
+      for (const line of readRepoFile(`.github/workflows/${name}`).split("\n")) {
+        if (!/AVE_ALLOW_[A-Z_]*(DISPOSABLE|DESTRUCTIVE)[A-Z_]*:/u.test(line)) continue;
+        authorizations += 1;
+        expect(line, `${name}: ${line.trim()}`).toContain(`&& ${hosted} && '1' || ''`);
+      }
+    }
+    expect(authorizations).toBe(2);
+
+    const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
+    if (installers === undefined) throw new Error("build-installers.yml has no installers job");
+    const commands = jobRunCommands(installers);
+
+    // The packaged application claims HKCU ave:// for its executable when it
+    // launches, so no step launches it on a self-hosted (owner) Windows PC:
+    // every step that runs a packaged-app launcher is gated to hosted Windows.
+    const launchers = ["scripts/smoke-packaged-app.mjs", "scripts/packaged-escape-gate.mjs"];
+    const windowsHostedOnly = "&& (matrix.target != 'win' || runner.environment == 'github-hosted')";
+    let launchSteps = 0;
+    for (const step of installers.split(/\n(?= {6}- )/u)) {
+      if (!launchers.some((launcher) => step.includes(launcher))) continue;
+      launchSteps += 1;
+      const condition = step.match(/^ {8}if: >-\n((?: {10}.*\n)+)/mu)?.[1] ?? "";
+      expect(condition, step.split("\n")[0]).toContain(windowsHostedOnly);
+    }
+    expect(launchSteps).toBe(launchers.length);
+    expect(installers).not.toContain("--skip-windows-installer-smoke");
+
+    // Signing imports into and searches a keychain; a self-hosted runner is
+    // the owner's machine, so it always builds unsigned.
+    const build = commands.find((command) => command.includes("node scripts/build-installers.mjs"));
+    const unsignedBranch = build?.slice(build.indexOf("elif "), build.indexOf("else\n")) ?? "";
+    expect(unsignedBranch).toContain('|| [ "${{ runner.environment }}" != "github-hosted" ] \\\n');
+    expect(unsignedBranch).toContain('args+=("--skip-code-sign")');
+  });
+
+  it("provides the AWS CLI from a signature-checked official build before any aws call", () => {
+    const install = "bash .github/scripts/install-aws-cli.sh";
+    const jobs = [
+      ["publish-r2", workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("publish-r2")],
+      ["probe", workflowJobs(readRepoFile(".github/workflows/r2-probe.yml")).get("probe")],
+    ] as const;
+    for (const [id, body] of jobs) {
+      if (body === undefined) throw new Error(`no ${id} job`);
+      expect(jobRunCommands(body).filter((command) => command.includes("install-aws-cli")), id).toEqual([install]);
+      const at = body.indexOf(install);
+      const step = body.slice(body.lastIndexOf("\n      - ", at), body.indexOf("\n      - ", at));
+      // No secret is in scope while a downloaded installer runs.
+      expect(step, id).not.toContain("secrets.");
+      expect(step, id).not.toContain("continue-on-error");
+      expect(body.indexOf("uses: actions/checkout@"), id).toBeLessThan(at);
+      expect(at, id).toBeLessThan(body.indexOf("aws --version"));
+      expect(at, id).toBeLessThan(body.indexOf("secrets."));
+    }
+
+    const script = readRepoFile(".github/scripts/install-aws-cli.sh");
+    const fingerprint = "FB5DB77FD5C118B80511ADA8A6310ACC4672475C";
+    expect(script).toContain(`AWS_CLI_KEY_FINGERPRINT="${fingerprint}"`);
+    expect(script).toMatch(/^AWS_CLI_VERSION="2\.\d+\.\d+"$/mu);
+    expect(script).toContain('url="https://awscli.amazonaws.com/awscli-exe-linux-${arch}-${AWS_CLI_VERSION}.zip"');
+    expect(script).toContain('--output "$work/awscliv2.sig" "$url.sig"');
+    expect(script).toContain('gpg --batch --status-fd 1 --verify "$work/awscliv2.sig" "$work/awscliv2.zip"');
+    expect(script).toContain("GOODSIG");
+    expect(script).toContain("VALIDSIG");
+    expect(script).toContain("GNUPGHOME");
+    expect(script).toContain('"$work/aws/install" --install-dir "$prefix" --bin-dir "$bin_dir"');
+    expect(script).toContain('echo "$bin_dir" >> "$GITHUB_PATH"');
+    expect(script.indexOf("--verify")).toBeLessThan(script.indexOf("unzip -q"));
+    expect(script).not.toMatch(/\bsudo\b|set -[a-z]*x|\|\s*(ba)?sh\b/u);
+
+    const key = readRepoFile(".github/scripts/aws-cli-team-public-key.asc");
+    expect(key.startsWith("-----BEGIN PGP PUBLIC KEY BLOCK-----\n")).toBe(true);
+    expect(key.trimEnd().endsWith("-----END PGP PUBLIC KEY BLOCK-----")).toBe(true);
+  });
+
   it("keeps privileged workflows on trusted default-branch events", () => {
     const deploy = readRepoFile(".github/workflows/web-deploy.yml");
     expect(deploy).toContain("repository_dispatch:");
@@ -452,6 +714,12 @@ describe("installer smoke and packaging discipline", () => {
     expect(deploy).toContain("sha256sum -c bundle.sha256");
     expectPinnedAction(deploy, "cloudflare/wrangler-action");
     expect(deploy).toContain('wranglerVersion: "4.114.0"');
+    // Ave's site is the static-assets Worker `ave-web` (ave.agent-connector.ai),
+    // configured by web/wrangler.jsonc, which travels inside the verified bundle.
+    expect(build).toContain("cp web/wrangler.jsonc staged-web/wrangler.jsonc");
+    expect(deploy).toContain("EXPECTED_CONFIG_SHA256");
+    expect(deploy).toContain("command: deploy --config wrangler.jsonc");
+    expect(deploy).not.toContain("pages deploy");
     expect(deploy).not.toContain("actions/checkout");
     expect(deploy).not.toContain("setup-bun");
     expect(deploy).not.toContain("bun install");
@@ -817,10 +1085,24 @@ describe("installer smoke and packaging discipline", () => {
     expect(readRepoFile("src/main/ave-protocol-registration.ts"))
       .toContain(".ave-nsis-per-machine-v1");
 
-    const cleanupScript = smoke.slice(
-      smoke.indexOf("const WINDOWS_PROTOCOL_CLEANUP_SCRIPT"),
-      smoke.indexOf("const TARGET_PLATFORM"),
+    // The owner-only cleanup is shared: the launch smoke and the packaged
+    // escape gate both launch the full application from win-unpacked, and
+    // each removes exactly the claim that launch wrote.
+    const cleanupImport =
+      'import { cleanupOwnedWindowsProtocolHandler } from "./lib/windows-protocol-cleanup.mjs";';
+    expect(smoke).toContain(cleanupImport);
+    const gate = readRepoFile("scripts/packaged-escape-gate.mjs");
+    expect(gate).toContain(cleanupImport);
+    const control = gate.slice(gate.indexOf("async function measureControl"), gate.indexOf("async function main"));
+    expect(control).toMatch(/\} finally \{\n {4}await app\.close\(\);\n(?: {4}\/\/.*\n)* {4}cleanupOwnedWindowsProtocolHandler\(executable\);\n {2}\}/u);
+
+    const cleanup = readRepoFile("scripts/lib/windows-protocol-cleanup.mjs");
+    expect(cleanup).toContain('if (process.platform !== "win32") return;');
+    const cleanupScript = cleanup.slice(
+      cleanup.indexOf("const WINDOWS_PROTOCOL_CLEANUP_SCRIPT"),
+      cleanup.indexOf("export function cleanupOwnedWindowsProtocolHandler"),
     );
+    expect(cleanupScript.length).toBeGreaterThan(0);
     expect(cleanupScript).toContain("$expectedCommand");
     expect(cleanupScript).toContain(
       "$expectedCommand = '\\\"' + $env:AVE_PROTOCOL_OWNER_EXE + '\\\" \\\"%1\\\"'",
@@ -1052,11 +1334,11 @@ describe("installer smoke and packaging discipline", () => {
     expect(runtimeAssets).toContain("resources/licenses/uv");
     expect(runtimeAssets).toContain("better-sqlite3-native-binding");
     expect(runtimeAssets).toContain("python-wheelhouse");
-    expect(buildInstallers).toContain("hostRuntimeAssetSummary(target)");
+    expect(buildInstallers).toContain("hostRuntimeAssetSummary(target, arch)");
     expect(buildInstallers).toContain("required runtime assets");
     expect(buildInstallers).toContain("checkPackageFootprint(target, fast)");
     expect(buildInstallers).toContain("expected exactly one packaged app.asar");
-    expect(buildInstallers).toContain("assertUvRuntimePayload(target)");
+    expect(buildInstallers).toContain("assertUvRuntimePayload(target, arch)");
     expect(buildInstallers).toContain("staged uv runtime must contain only");
     expect(buildInstallers).toContain("compressed uv archive missing from staged runtime");
     expect(buildInstallers).toContain("staged uv binary SHA mismatch");

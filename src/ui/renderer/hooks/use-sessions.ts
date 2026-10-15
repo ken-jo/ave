@@ -143,16 +143,18 @@ export function useCurrentSession(api: AveApi, deps: CurrentSessionDeps = {}) {
   const [currentSessionProject, setCurrentSessionProject] = useState<SessionProjectSummary>({});
   const sessionReadTokenRef = useRef(0);
 
-  const refreshSessionId = useCallback(async () => {
+  /** Resolves to the session id it applied, or null when it applied none. */
+  const refreshSessionId = useCallback(async (): Promise<string | null> => {
     const token = ++sessionReadTokenRef.current;
     try {
       const h = await api.chatGetHistory();
-      if (token !== sessionReadTokenRef.current) return;
+      if (token !== sessionReadTokenRef.current) return null;
       setCurrentSessionId(h.sessionId);
       setCurrentSessionKind(h.sessionKind ?? "main");
       setCurrentSessionTitle(h.sessionTitle);
       setCurrentSessionProject(sessionProjectFromHistory(h));
-    } catch { /* ignore */ }
+      return h.sessionId;
+    } catch { return null; }
   }, [api]);
 
   const hydrateInitialSession = useCallback(async () => {

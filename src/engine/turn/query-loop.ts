@@ -2368,13 +2368,6 @@ export async function queryLoop(
           }
         }
       }
-      if (toolUsesForExecutor.some((tu) => tu.name === "skill_load")) {
-        systemPrompt = self.buildSystemPromptForScope(
-          scope,
-          bounds.rolePrompt,
-          bounds.sessionIdOverride ?? self.sessionId,
-        );
-      }
     }
 
     // Outer for-loop bound (`loopRoundBound`) exhausted — reachable when

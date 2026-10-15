@@ -110,9 +110,12 @@ function credentialIn(name: string, versions: readonly string[], components: Rea
   return null;
 }
 
-const INDEX_ID = "https://sdk.former-site.invalid/schemas/marketplace/index.schema.json";
-const PACKAGE_ID = "https://sdk.former-site.invalid/schemas/marketplace/package.schema.json";
-const REVOCATIONS_ID = "https://sdk.former-site.invalid/schemas/marketplace/revocations.schema.json";
+// Each schema names its own published URL; the ids are read from the files so
+// there is one copy of each (scripts/lib/plugin-host-protocol-mirror.mjs checks
+// it against the served path).
+const INDEX_ID = indexSchema.$id;
+const PACKAGE_ID = packageSchema.$id;
+const REVOCATIONS_ID = revocationsSchema.$id;
 
 interface Validators {
   indexRoot: ValidateFunction;

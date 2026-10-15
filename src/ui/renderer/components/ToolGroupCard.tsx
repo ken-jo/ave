@@ -6,7 +6,7 @@ import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { parseRenderHtmlResult } from "../utils/html-preview.js";
 import { extractFileEditDiff } from "../utils/file-diff.js";
 import type { FileEditDiffData } from "../utils/file-diff.js";
-import { getToolDisplayName } from "../utils/tool-display.js";
+import { getToolCallLabel, getToolDisplayName } from "../utils/tool-display.js";
 import { formatDuration } from "../../../lib/turn-summary-format.js";
 import type { RenderHtmlPayload } from "../types.js";
 import { HtmlPreview } from "./HtmlPreview.js";
@@ -124,7 +124,10 @@ function RunningDurationBadge({ startedAt }: { startedAt?: number }) {
       className="shrink-0 font-mono text-[10px] tabular-nums opacity-70"
       title={`${elapsed} ms (${t("toolGroupCard.running")})`}
       data-testid="tool-duration-running"
-      aria-live="polite"
+      // A 200 ms tick is not something to read aloud, and inside the
+      // transcript log every text change would be. The finished duration
+      // badge carries the number for assistive tech.
+      aria-hidden="true"
     >
       ⏱ {label}
     </span>
@@ -236,7 +239,7 @@ function SingleToolInline({
       <>
         <CompactedToolResult
           toolUseId={tool.toolUseId}
-          toolName={getToolDisplayName(tool.name)}
+          toolName={getToolCallLabel(tool.name, tool.input)}
           input={tool.input}
           compactedResultText={tool.result as string}
           sessionId={sessionId}
@@ -302,7 +305,7 @@ function SingleToolInline({
           aria-expanded={open}
         >
           <Wrench className="h-3 w-3 flex-shrink-0" />
-          <span className="min-w-0 truncate font-medium">{getToolDisplayName(tool.name)}</span>
+          <span className="min-w-0 truncate font-medium">{getToolCallLabel(tool.name, tool.input)}</span>
           <ToolSourceBadge tool={tool} />
         </button>
         {review && <PermissionReviewStatusCard entry={review} variant="attached" />}
@@ -491,7 +494,7 @@ export function ToolGroupCard({
                     aria-expanded={isExpanded}
                   >
                     {isExpanded ? <ChevronDown className="h-2.5 w-2.5 flex-shrink-0" /> : <ChevronRight className="h-2.5 w-2.5 flex-shrink-0" />}
-                    <span className="min-w-0 truncate">{getToolDisplayName(tool.name)}</span>
+                    <span className="min-w-0 truncate">{getToolCallLabel(tool.name, tool.input)}</span>
                     <ToolSourceBadge tool={tool} />
                   </button>
                   {review && <PermissionReviewStatusCard entry={review} variant="attached" />}
@@ -522,7 +525,7 @@ export function ToolGroupCard({
                         {isToolResultStub(tool.result) && sessionId ? (
                           <CompactedToolResult
                             toolUseId={tool.toolUseId}
-                            toolName={getToolDisplayName(tool.name)}
+                            toolName={getToolCallLabel(tool.name, tool.input)}
                             input={tool.input}
                             compactedResultText={tool.result}
                             sessionId={sessionId}

@@ -158,6 +158,14 @@ function assertSandboxVendorBinaries(context) {
       `packaged sandbox-runtime vendor binary missing for ${platform}: ${keepRoot} (kept binary directory absent)`,
     );
   }
+  // The kept binary is vendored once per arch; only the packed arch's copy
+  // runs, and a foreign-arch ELF in a cross-built Linux installer fails
+  // scripts/verify-linux-package-arch.mjs. Drop the other arch dirs.
+  if (arch) {
+    for (const archDir of readdirSync(keepRoot)) {
+      if (archDir !== arch) rmSync(join(keepRoot, archDir), { recursive: true, force: true });
+    }
+  }
   const archDirs = arch ? [arch] : readdirSync(keepRoot);
   let found = false;
   for (const archDir of archDirs) {
@@ -238,6 +246,25 @@ function resolveNodePtyBindingDir(context) {
 }
 
 /**
+ * node-pty's npm package carries prebuilds for darwin-{arm64,x64} and
+ * win32-{arm64,x64}; asarUnpack packs all of them. Only
+ * `prebuilds/<platform>-<arch>` can ever load (it is node-pty's own last
+ * search dir), so the rest are dead weight — and on Linux, where node-pty
+ * ships no prebuild and loads `build/Release`, they are Mach-O/PE `.node`
+ * files that the Linux arch audit rightly refuses.
+ */
+function pruneForeignNodePtyPrebuilds(context) {
+  const arch = ARCH_DIR_BY_ENUM[context.arch];
+  if (!arch) return;
+  const prebuildsDir = join(electronResourcesDir(context), "app.asar.unpacked", "node_modules", "node-pty", "prebuilds");
+  if (!existsSync(prebuildsDir)) return;
+  const keep = `${context.electronPlatformName}-${arch}`;
+  for (const entry of readdirSync(prebuildsDir)) {
+    if (entry !== keep) rmSync(join(prebuildsDir, entry), { recursive: true, force: true });
+  }
+}
+
+/**
  * node-pty ships a native `.node` addon (+ a `spawn-helper` exec on macOS) that
  * the main process resolves unbundled from `app.asar.unpacked/node_modules/
  * node-pty` (the package.json `asarUnpack` glob). Assert both are present and
@@ -248,6 +275,7 @@ function resolveNodePtyBindingDir(context) {
  */
 function assertNodePtyBinary(context) {
   const platform = context.electronPlatformName;
+  pruneForeignNodePtyPrebuilds(context);
   const ptyRoot = resolveNodePtyBindingDir(context);
   const requiredNativeFiles = platform === "win32"
     ? [

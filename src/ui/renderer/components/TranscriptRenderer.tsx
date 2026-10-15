@@ -10,6 +10,7 @@ import type { ChatEntry, CheckpointTrigger } from "../../../lib/chat-stream-stat
 import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 import { debugLog } from "../../../lib/debug-stream.js";
 import { detectFromStream } from "../../../lib/stream-markers.js";
+import { formatDuration, KOREAN_DURATION_UNITS } from "../../../lib/turn-summary-format.js";
 import { knownModelPricing, resolveModelPricing } from "../../../shared/model-pricing.js";
 import { usePricingOverrides } from "../hooks/use-pricing-overrides.js";
 import { highlightText } from "../utils/html-preview.js";
@@ -239,6 +240,18 @@ export function TranscriptRenderer({
   const { lastTurnStartIdx, entryClassMap, finalTurnStartMap, entryTurnStartMap } =
     classifyTurnEntries(activeEntries, streaming);
 
+  // One backward pass instead of a scan from the top per work group: this
+  // memo re-runs on every streamed token, and a per-group `findIndex` made a
+  // long session quadratic in its length on each token.
+  const nextTurnStartAfter = new Int32Array(activeEntries.length + 1);
+  nextTurnStartAfter[activeEntries.length] = -1;
+  for (let k = activeEntries.length - 1; k >= 0; k--) {
+    const following = activeEntries[k + 1];
+    nextTurnStartAfter[k] = following !== undefined && isTurnStartEntry(following)
+      ? k + 1
+      : nextTurnStartAfter[k + 1] ?? -1;
+  }
+
   const rendered: React.ReactNode[] = [];
   // Reasoning, permission-review and tool-group rows draw the same whether
   // the entry is the live tail of a turn or an unclassified straggler.
@@ -448,16 +461,20 @@ export function TranscriptRenderer({
           </div>
         );
       }
-      const hasCurrentTurnOutput = activeEntries
-        .slice(idx + 1)
-        .some(
-          (nextEntry) =>
-            nextEntry.kind === "assistant" ||
-            nextEntry.kind === "reasoning" ||
-            nextEntry.kind === "tool_group" ||
-            nextEntry.kind === "permission_review",
+      // Only the active turn's start can need the placeholder, so only it pays
+      // for the scan (a scan per user message made long sessions quadratic).
+      const needsActiveStart =
+        streaming &&
+        idx === lastTurnStartIdx &&
+        !activeEntries.some(
+          (nextEntry, nextIdx) =>
+            nextIdx > idx &&
+            (nextEntry.kind === "assistant" ||
+              nextEntry.kind === "reasoning" ||
+              nextEntry.kind === "tool_group" ||
+              nextEntry.kind === "permission_review"),
         );
-      if (streaming && idx === lastTurnStartIdx && !hasCurrentTurnOutput) {
+      if (needsActiveStart) {
         rendered.push(
           <WorkGroup
             key={`wg-${currentSessionId}:${idx}:active-start`}
@@ -692,10 +709,7 @@ export function TranscriptRenderer({
         // this group renders. In particular, a permission review attached to a
         // tool row must not be counted once here and again inside that tool.
         const fallbackStepCount = groupEntries.length;
-        const nextTurnStartIdx = activeEntries.findIndex(
-          (candidate, candidateIdx) =>
-            candidateIdx > groupTurnStart && isTurnStartEntry(candidate),
-        );
+        const nextTurnStartIdx = nextTurnStartAfter[groupTurnStart] ?? -1;
         const turnEntries = activeEntries.slice(
           groupTurnStart + 1,
           nextTurnStartIdx === -1 ? activeEntries.length : nextTurnStartIdx,
@@ -1008,12 +1022,19 @@ export function ReasoningCard({
 }: {
   entry: Extract<ChatEntry, { kind: "reasoning" }>;
 }) {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const streaming = entry.streaming === true;
   // Always collapsed by default — even while streaming. Expands only on click.
   const [open, setOpen] = useState(false);
 
-  const title = streaming ? t("reasoningCard.thinkingTitle") : t("reasoningCard.thoughtCompleteTitle");
+  const title = streaming
+    ? t("reasoningCard.thinkingTitle")
+    : entry.durationMs !== undefined && entry.durationMs >= 1000
+      // Sub-second thinking says nothing a duration would add.
+      ? t("reasoningCard.thoughtForDuration", {
+          duration: formatDuration(entry.durationMs, locale.startsWith("ko") ? KOREAN_DURATION_UNITS : undefined),
+        })
+      : t("reasoningCard.thoughtCompleteTitle");
   const hasBody = entry.text.trim().length > 0;
   const bodyVisible = open && hasBody;
 

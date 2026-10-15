@@ -1,7 +1,6 @@
 import { t } from "../../../i18n/runtime.js";
 import {
-  PASTE_TEXT_MIN_CHARS,
-  PASTE_TEXT_MIN_NEWLINES,
+  PASTE_INLINE_MAX_CHARS,
   type Attachment,
   type ImageAttachment,
   type PasteAttachment,
@@ -68,9 +67,9 @@ function findClipboardImage(items: DataTransferItemList): File | null {
 }
 
 function shouldChipText(text: string): boolean {
-  if (text.length >= PASTE_TEXT_MIN_CHARS) return true;
-  const newlines = (text.match(/\n/g) ?? []).length;
-  return newlines >= PASTE_TEXT_MIN_NEWLINES;
+  // Measured as the textarea will hold it: a Windows clipboard's CRLF line
+  // breaks become single LFs on insert and must not push it over the limit.
+  return text.replace(/\r\n/g, "\n").length > PASTE_INLINE_MAX_CHARS;
 }
 
 /**

@@ -9,18 +9,15 @@ import {
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 
 /**
- * The no-API-key affordance used to be a transcript card claiming
- * `min-h-[min(12rem,36vh)]`. Its height forced the centered composer to shrink
- * its lift (`data-composer-centered-lift="compact"`), so an empty conversation
- * never looked centered while a key was missing. It is now a zero-height chip in
- * the composer's reserved top strip, mirrored across from the project selector.
+ * The no-API-key affordance is a zero-height chip in the composer's reserved
+ * top strip, mirrored across from the project selector (it used to be a
+ * transcript card).
  *
- * These tests pin that: the card is gone, the chip sits in the strip (not in the
- * scrolling transcript), and the dock keeps its FULL lift. The lift is the sharp
- * assertion — the retired `compact` variant resolved to `mb-48` (192px) at
- * >=720px tall, whereas the full lift is `clamp(9rem,32vh,20rem)` (~255px at
- * 798px). Measuring `margin-bottom` therefore distinguishes them numerically,
- * not just by an attribute that a future refactor might drop.
+ * These tests pin that the card is gone, the chip sits in the strip (not in the
+ * scrolling transcript), and the composer is bottom-docked on an empty
+ * conversation. An empty conversation used to lift the composer into the middle
+ * of the column and animate it down on first send; that placement is retired,
+ * so `margin-bottom` is measured to be 0 rather than trusting the attribute.
  */
 test.describe("chat no-API-key layout", () => {
   test.skip(!builtMainExists(), "dist/src/main/main.js not built; run bun run build first");
@@ -87,7 +84,7 @@ test.describe("chat no-API-key layout", () => {
     });
 
     expect(metrics).not.toBeNull();
-    expect(metrics?.placement).toBe("center");
+    expect(metrics?.placement).toBe("bottom");
     expect(metrics?.hasLiftAttr, JSON.stringify(metrics)).toBe(false);
     expect(metrics?.chipInsideScroll).toBe(false);
     expect(metrics?.overlapsComposer, JSON.stringify(metrics)).toBe(false);
@@ -100,7 +97,7 @@ test.describe("chat no-API-key layout", () => {
     );
   });
 
-  test("keeps the full centered lift on a tall viewport when no key is set", async () => {
+  test("keeps the composer bottom-docked on a tall viewport when no key is set", async () => {
     ctx = await launchSeededElectron({
       historyRows: [],
       settings: buildLlmSettings("openai", "gpt-5.4-mini"),
@@ -113,36 +110,12 @@ test.describe("chat no-API-key layout", () => {
     await expect(ctx.page.locator('[data-testid="composer-api-key-chip"]')).toBeVisible();
     await expect(ctx.page.locator(testIdSelector(TEST_IDS.composerInputBar))).toBeVisible();
 
-    // The dock animates its margin (`transition-[margin,transform] duration-300`),
-    // and a viewport resize restarts that transition — sampling immediately reads
-    // a mid-flight value. Poll until it settles.
-    //
-    // Full lift is `mb-[clamp(9rem,32vh,20rem)]` = clamp(144px, .32 * vh, 320px),
-    // where `vh` is the CSS viewport (`documentElement.clientHeight`), not
-    // `window.innerHeight`. The retired `compact` variant resolved to mb-32
-    // (128px) / mb-48 (192px) via min-height media queries, so matching the
-    // computed clamp proves the full lift is applied and no `compact` path
-    // survived.
-    await expect.poll(
-      async () =>
-        ctx.page.evaluate(() => {
-          const dock = document.querySelector("[data-composer-placement]");
-          if (!dock) return null;
-          const cssVh = document.documentElement.clientHeight;
-          const expected = Math.min(Math.max(144, cssVh * 0.32), 320);
-          const actual = Number.parseFloat(getComputedStyle(dock).marginBottom);
-          return Math.abs(actual - expected) <= 1;
-        }),
-      { timeout: 5_000, message: "composer dock never settled at the full centered lift" },
-    ).toBe(true);
-
     const metrics = await ctx.page.evaluate(() => {
       const composerDock = document.querySelector("[data-composer-placement]");
       const composerEl = document.querySelector('[data-testid="composer-input-bar"]');
       if (!composerDock || !composerEl) return null;
       return {
         viewportHeight: window.innerHeight,
-        cssViewportHeight: document.documentElement.clientHeight,
         placement: composerDock.getAttribute("data-composer-placement"),
         hasLiftAttr: composerDock.hasAttribute("data-composer-centered-lift"),
         marginBottom: Number.parseFloat(getComputedStyle(composerDock).marginBottom),
@@ -151,10 +124,12 @@ test.describe("chat no-API-key layout", () => {
     });
 
     expect(metrics).not.toBeNull();
-    expect(metrics?.placement).toBe("center");
+    expect(metrics?.placement).toBe("bottom");
     expect(metrics?.hasLiftAttr, JSON.stringify(metrics)).toBe(false);
-    expect(metrics?.composerTop, JSON.stringify(metrics)).toBeLessThan(
-      (metrics?.viewportHeight ?? 0) * 0.72,
+    expect(metrics?.marginBottom, JSON.stringify(metrics)).toBe(0);
+    // Docked: the composer sits in the lower part of the window, not mid-column.
+    expect(metrics?.composerTop, JSON.stringify(metrics)).toBeGreaterThan(
+      (metrics?.viewportHeight ?? 0) * 0.6,
     );
   });
 

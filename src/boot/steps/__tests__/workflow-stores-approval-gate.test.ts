@@ -96,7 +96,7 @@ describe("setupWorkflowStores — tool and idle-scheduler wiring", () => {
     const result = await tool!.execute({ skillName: "demo" }, toolCtx("sess-gate"));
 
     expect(result.isError).toBe(false);
-    expect(JSON.parse(result.output).loaded).toBe(true);
+    expect(result.output.startsWith('<ave-skill name="demo"')).toBe(true);
     // The modal reached the very gate the BootContext carries.
     expect(probe.requests).toHaveLength(1);
     expect(probe.requests[0]?.toolName).toBe("skill_load");

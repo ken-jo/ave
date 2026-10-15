@@ -3,7 +3,7 @@ import { KeyRound, ShieldQuestion, Store } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { imageInputRecoveryMessage } from "../../../shared/model-capability-settings.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
-import { useCallback, useEffect, useState, type RefObject } from "react";
+import { useCallback, type RefObject } from "react";
 import { SessionTasksPanel } from "./SessionTasksPanel.js";
 import { SessionGoalPanel } from "./SessionGoalPanel.js";
 import { MessageQueuePanel } from "./MessageQueuePanel.js";
@@ -23,7 +23,6 @@ import type { ViewModeState } from "./ViewModeBanner.js";
 import type { RolePreset } from "../../../data/role-presets.js";
 import type { AskUserQuestionRequest } from "./AskUserQuestionCard.js";
 import { ComposerProjectSelector } from "./ComposerProjectSelector.js";
-import { usePrefersReducedMotion } from "../hooks/use-prefers-reduced-motion.js";
 import type { ProjectErrorReporter } from "../hooks/use-add-project-folder.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import type { McpPromptEntry } from "./slash-picker-data.js";
@@ -37,14 +36,20 @@ type InputStatusRow = React.ComponentProps<typeof ComposerStatusRow>["statusRow"
 
 export interface ChatComposerDockProps {
   dockColumnClass: string;
-  /** Empty work-mode conversation: visually lift the composer into the first screen. */
-  centered?: boolean;
+  /**
+   * Empty work-mode conversation: offer the new-chat project selector. The
+   * composer itself stays bottom-docked whether or not the conversation is
+   * empty — there is no centered placement and no descent on first send.
+   */
+  emptyConversation?: boolean;
   workflowApi: AveApi;
   api: AveApi;
   currentSessionId: string;
   messageQueueStore: MessageQueueStore;
   onMessageQueueSendNow: (item: MessageQueueItem) => void;
   question: string;
+  /** Prompts typed earlier in this session, oldest first (Up-arrow recall). */
+  promptHistory?: readonly string[];
   statusBar?: StatusBarProps;
   composerRef: RefObject<ComposerHandle | null>;
   setQuestion: React.Dispatch<React.SetStateAction<string>>;
@@ -68,6 +73,8 @@ export interface ChatComposerDockProps {
   onSlashPickerOpenChange: (open: boolean) => void;
   ringSlot: React.ReactNode;
   onAttach: () => Promise<void> | void;
+  /** Files dropped on the composer (resolved and registered through the preload). */
+  onDropFiles?: (files: FileList) => void;
   /** App-owned warning for a verified image-capability refusal only. */
   onImageAttachmentUnavailable?: () => void;
   /** Canonical selected subscription runtime policy; legacy markers are fallback-only. */
@@ -113,8 +120,8 @@ export interface ChatComposerDockProps {
   onRefreshProjects?: () => void | Promise<void>;
   onProjectError?: ProjectErrorReporter;
   /** Controlled open state for the project selector dropdown — owned by
-   *  ChatView so it can be force-closed when the composer leaves the
-   *  centered layout. */
+   *  ChatView so it can be force-closed when the conversation stops being
+   *  empty. */
   projectSelectorOpen: boolean;
   onProjectSelectorOpenChange: (open: boolean) => void;
 }
@@ -249,13 +256,14 @@ export function resolveComposerRuntimeGates({
  */
 export function ChatComposerDock({
   dockColumnClass,
-  centered = false,
+  emptyConversation = false,
   workflowApi,
   api,
   currentSessionId,
   messageQueueStore,
   onMessageQueueSendNow,
   question,
+  promptHistory,
   statusBar,
   composerRef,
   setQuestion,
@@ -280,6 +288,7 @@ export function ChatComposerDock({
   onImageAttachmentLimitExceeded,
   ringSlot,
   onAttach,
+  onDropFiles,
   subscriptionRuntimePolicy,
   subscriptionImageAttachmentProvider,
   subscriptionFileAttachmentProvider,
@@ -312,38 +321,7 @@ export function ChatComposerDock({
   projectSelectorOpen,
   onProjectSelectorOpenChange,
 }: ChatComposerDockProps) {
-  // Linger the project-selector slot mounted for one composer-descent cycle
-  // after `centered` flips false (first message sent), so ComposerProjectSelector
-  // — including its own forceMount + data-state fade/scale-out — has time to
-  // finish its close transition instead of being cut off by an instant unmount.
-  // Matches the outer dock's layout descent so both animations
-  // read as one coordinated motion. Reduced-motion users skip the linger
-  // entirely (no transition to wait out).
-  const [showProjectSelectorSlot, setShowProjectSelectorSlot] = useState(centered);
   const { t } = useTranslation();
-  const prefersReducedMotion = usePrefersReducedMotion();
-  useEffect(() => {
-    if (centered) {
-      setShowProjectSelectorSlot(true);
-      return;
-    }
-    if (prefersReducedMotion) {
-      setShowProjectSelectorSlot(false);
-      return;
-    }
-    const timer = window.setTimeout(() => setShowProjectSelectorSlot(false), 300);
-    return () => window.clearTimeout(timer);
-  }, [centered, prefersReducedMotion]);
-
-  // One lift, unconditionally. The `"compact"` variant existed only to leave
-  // room for the no-API-key transcript card; that card is gone (its affordance
-  // is now the zero-height `ComposerApiKeyChip` in the strip above), so an empty
-  // conversation always centers the composer the same way, key or no key.
-  // The lift is a share of the CHAT COLUMN's height (cqh — the column is a size
-  // container), not of the viewport: a tile that is half the window tall must
-  // centre its composer in its own half, not at the window's centre line. The
-  // floor is low enough that a half-height tile's share is not clamped away.
-  const centeredMarginClass = centered ? "mb-[clamp(4rem,32cqh,20rem)]" : "mb-0";
 
   // Stable identity, not an inline arrow. `allocateN` is a dependency of the mention
   // hook's accept callback, which is a dependency of the composer's memoized keydown
@@ -385,11 +363,10 @@ export function ChatComposerDock({
     || draftHasUnsupportedAttachment;
   return (
     <div
-      className={[
-        "relative z-30 w-full max-w-full min-w-0 overflow-visible transition-[margin,transform] duration-[var(--motion-layout)] ease-[var(--motion-ease-out)] motion-reduce:transition-none",
-        centeredMarginClass,
-      ].join(" ")}
-      data-composer-placement={centered ? "center" : "bottom"}
+      className="relative z-30 w-full max-w-full min-w-0 overflow-visible"
+      // The composer-dock anchor QuestionOverlay and ApprovalDock look up. The
+      // composer has one placement (bottom-docked); the value is kept for them.
+      data-composer-placement="bottom"
       // Which surface this whole dock subtree serves. The Composer's textarea
       // carries the same attribute for the field itself; here it covers the
       // queue panel and action bar too, so a test (or a stylesheet) can address
@@ -431,20 +408,11 @@ export function ChatComposerDock({
         <div className="relative mx-3 mb-2 pt-9">
           {/* Empty-state project selector — attached directly above the
               composer card, in the reserved strip it shares with the no-key
-              chip. Rendered for the centered (empty-conversation) layout AND
-              for one descent cycle after it ends (`showProjectSelectorSlot`
-              lingers per the effect above), so the dropdown's own
-              forceMount+data-state close transition (see
-              ComposerProjectSelector) has time to play instead of being cut
-              off by an instant unmount when the composer drops to the
-              bottom-docked position. `open` is gated on `centered` directly
-              (not the lingering slot) so the dropdown starts closing the
-              INSTANT the transition begins, in lockstep with the composer's
-              own descent — the slot then unmounts once both animations
-              finish. */}
-          {showProjectSelectorSlot && onNewChatForProject ? (
+              chip. Offered only while the conversation is empty: a project is
+              chosen before the first message. */}
+          {emptyConversation && onNewChatForProject ? (
             <div
-              className="absolute left-0 top-0 z-20 transition-opacity duration-[var(--motion-normal)] ease-[var(--motion-ease-out)] motion-reduce:transition-none"
+              className="absolute left-0 top-0 z-20"
               data-testid="composer-project-selector-slot"
             >
               <ComposerProjectSelector
@@ -453,15 +421,15 @@ export function ChatComposerDock({
                 onSelectProject={onNewChatForProject}
                 onRefreshProjects={onRefreshProjects}
                 onProjectError={onProjectError}
-                open={projectSelectorOpen && centered}
+                open={projectSelectorOpen}
                 onOpenChange={onProjectSelectorOpenChange}
               />
             </div>
           ) : null}
           {/* No-key affordance — mirrored across the same reserved strip the
               project selector occupies. Absolutely positioned + popover-based,
-              so it adds no layout height and the centered composer keeps its
-              full lift (it replaced a transcript card that did claim height).
+              so it adds no layout height (it replaced a transcript card that
+              did claim height).
               `hasApiKey` here is App's `effectiveLlmReady`, which already ORs in
               `llmReadyWithoutApiKey` — a keyless-ready session never shows it,
               and `null` (probe unresolved) stays silent. */}
@@ -484,6 +452,7 @@ export function ChatComposerDock({
           surface="main"
           text={question}
           onTextChange={setQuestion}
+          promptHistory={promptHistory}
           attachments={attachments}
           onAttachmentsChange={setAttachments}
           allocateN={allocateN}
@@ -491,6 +460,8 @@ export function ChatComposerDock({
           discardClipboardImage={(filePath) => window.ave.attach.discardClipboardImage(filePath)}
           openExternal={(p) => window.ave.attach.openExternal(p)}
           imagesEnabled={imagesEnabled}
+          filesEnabled={filesEnabled}
+          onDropFiles={onDropFiles}
           imageAttachmentLimits={subscriptionRuntimePolicy?.imageAttachmentLimits}
           onSend={onComposerSend}
           suggestedReplies={suggestedReplies}
@@ -598,10 +569,8 @@ export function ChatComposerDock({
  * Lives in the composer's reserved top zone, mirrored across from
  * `ComposerProjectSelector` (which sits at `left-0` in the same strip). Being an
  * absolutely-positioned chip plus an overlay popover, it contributes ZERO layout
- * height — which is the whole point: it replaced a `min-h-[min(12rem,36vh)]`
- * transcript card whose vertical footprint forced `ChatView` to shrink the
- * centered composer's lift (`centeredLift="compact"`) just to make room. With
- * the card gone the composer stays optically centered on an empty conversation.
+ * height — it replaced a `min-h-[min(12rem,36vh)]` transcript card whose
+ * vertical footprint pushed the empty conversation around.
  *
  * Render condition is a single flag: `hasApiKey === false`. That prop is
  * `App.tsx`'s `effectiveLlmReady`, which already ORs in `llmReadyWithoutApiKey`
