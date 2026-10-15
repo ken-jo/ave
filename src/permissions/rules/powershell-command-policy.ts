@@ -4,6 +4,8 @@ type PowerShellCommandEffect = "local" | "read" | "network" | "launcher" | "disp
 export interface PowerShellPathBinding {
   parameters: readonly string[];
   position?: number;
+  /** Named variable destinations select a non-file parameter set. */
+  variableParameters?: readonly string[];
 }
 
 export interface PowerShellCommandPolicy {
@@ -331,7 +333,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "get-date": { aliases: [], effects: ["local"], parameters: ["date", "format", "uformat"] },
   "join-path": { aliases: [], effects: ["local"], parameters: ["path", "childpath", "additionalchildpath*", "resolve?"] },
   "expand-archive": { aliases: [], effects: ["local"], materializes: { kind: "tree", source: CONTENT_DESTINATION, destination: { parameters: ["destinationpath"], position: 1 } }, parameters: ["path", "literalpath", "destinationpath", "force?", "passthru?"] },
-  "tee-object": { aliases: ["tee"], effects: ["file-write"], destination: { parameters: ["filepath", "literalpath"], position: 0 }, parameters: ["filepath", "literalpath", "inputobject", "variable", "append?"] },
+  "tee-object": { aliases: ["tee"], effects: ["file-write"], destination: { parameters: ["filepath", "literalpath"], position: 0, variableParameters: ["variable"] }, parameters: ["filepath", "literalpath", "inputobject", "variable", "append?"] },
   "copy.exe": { aliases: [], effects: ["file-write"], materializes: { kind: "copy", native: true, source: { parameters: [], position: 0 }, destination: { parameters: [], position: 1 } }, parameters: [] },
   "xcopy": { aliases: ["xcopy.exe"], effects: ["file-write"], materializes: { kind: "copy", native: true, source: { parameters: [], position: 0 }, destination: { parameters: [], position: 1 } }, parameters: [] },
   "robocopy": { aliases: ["robocopy.exe"], effects: ["file-write"], materializes: { kind: "tree", native: true, source: { parameters: [], position: 0 }, destination: { parameters: [], position: 1 } }, parameters: [] },
