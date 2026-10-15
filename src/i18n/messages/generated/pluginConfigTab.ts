@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/PluginConfigTab.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/tabs/PluginConfigTab.tsx.
 export const en = {
   "pluginConfigTab.phaseInstalling": "Installing…",
   "pluginConfigTab.prepPhasePending": "Preparing to boot",

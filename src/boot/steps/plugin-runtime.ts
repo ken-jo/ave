@@ -21,6 +21,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { raceWithTimeout } from "../../shared/abortable-deadline.js";
 import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app-shutdown.js";
 import { onEvent as onHostEvent } from "../types.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -319,25 +320,17 @@ export async function initPluginRuntime(
     pluginShutdownPromise = (async () => {
       await Promise.allSettled(
         pluginShutdownHandlers.map(async ({ pluginId, handler }) => {
-          let timer: NodeJS.Timeout | undefined;
           try {
-            await Promise.race([
+            await raceWithTimeout(
               Promise.resolve().then(() => handler()),
-              new Promise<never>((_, reject) => {
-                timer = setTimeout(() => reject(new Error(`shutdown handler timeout [plugin:${pluginId}]`,
-                      ),
-                    ),
-                  TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs,
-                );
-              }),
-            ]);
+              TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs,
+              () => new Error(`shutdown handler timeout [plugin:${pluginId}]`),
+            );
           } catch (err) {
             log.warn(
               `shutdown handler error [plugin:${pluginId}]: %s`,
               (err as Error).message,
             );
-          } finally {
-            if (timer) clearTimeout(timer);
           }
         }),
       );

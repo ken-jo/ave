@@ -196,7 +196,7 @@ describe("RoutinePanel missing plugins", () => {
     let rows = [routine];
     const removeRoutine = vi.fn(async () => { rows = []; return { ok: true }; });
     const api = {
-      listRoutines: vi.fn(async () => rows), listRoutineSessions: vi.fn(async () => []), removeRoutine,
+      listRoutines: vi.fn(async () => ({ routines: rows, invalid: [] })), listRoutineSessions: vi.fn(async () => []), removeRoutine,
       onRoutineFired: vi.fn(() => () => {}),
     } as unknown as AveApi;
     const view = render(<RoutinePanel api={api} />);
@@ -209,6 +209,26 @@ describe("RoutinePanel missing plugins", () => {
   });
 });
 
+describe("RoutinePanel invalid routines", () => {
+  it("shows a held-back routine as an error row with its reason and removes it", async () => {
+    const { RoutinePanel } = await import("../components/RoutinePanel.js");
+    let invalid = [{ id: "legacy-routine", field: "scope.pluginIds.ids", value: "Legacy.Plugin", reason: "invalid-plugin-id" as const }];
+    const removeRoutine = vi.fn(async () => { invalid = []; return { ok: true }; });
+    const api = {
+      listRoutines: vi.fn(async () => ({ routines: [], invalid })), listRoutineSessions: vi.fn(async () => []), removeRoutine,
+      onRoutineFired: vi.fn(() => () => {}),
+    } as unknown as AveApi;
+    const view = render(<RoutinePanel api={api} />);
+    const row = await view.findByTestId("invalid-routine-row");
+    expect(row.getAttribute("role")).toBe("alert");
+    expect(row.textContent).toContain("Legacy.Plugin");
+    expect(row.textContent).toContain("scope.pluginIds.ids");
+    fireEvent.click(view.getByRole("button", { name: "삭제" }));
+    await waitFor(() => expect(view.queryByTestId("invalid-routine-row")).toBeNull());
+    expect(removeRoutine).toHaveBeenCalledWith("legacy-routine");
+  });
+});
+
 it("keeps a user routine after its source template disappears", async () => {
   const template: AgentPluginRoutineTemplate = { id: "daily", packageName: "writer-plugin", version: "1.0.0", title: "Daily draft",
     description: "Write a draft", trigger: "schedule", schedule: { repeat: { kind: "cron", expression: "0 9 * * *" } },
@@ -218,7 +238,7 @@ it("keeps a user routine after its source template disappears", async () => {
   });
   const contentApi = { languageMessages: vi.fn(), installed: vi.fn() } as unknown as InstalledContentApi;
   const routine = { ...makeRoutineRecord(), source: "agent-plugin:writer-plugin:daily" };
-  const api = { listRoutines: vi.fn(async () => [routine]), listRoutineSessions: vi.fn(async () => []),
+  const api = { listRoutines: vi.fn(async () => ({ routines: [routine], invalid: [] })), listRoutineSessions: vi.fn(async () => []),
     onRoutineFired: vi.fn(() => () => {}) } as unknown as AveApi;
   try {
     act(() => applyInstalledContent(content([template]), contentApi));
@@ -236,7 +256,7 @@ it("keeps a user routine after its source template disappears", async () => {
 it("refreshes a skipped occurrence while open without a fired event", async () => {
   const { RoutinePanel } = await import("../components/RoutinePanel.js");
   let rows: RoutineRecord[] = [{ id: "waiting", title: "Waiting", trigger: "schedule", execution: "llm-session", createdAt: new Date().toISOString() }];
-  const api = { listRoutines: vi.fn(async () => rows), listRoutineSessions: vi.fn(async () => []) } as unknown as AveApi;
+  const api = { listRoutines: vi.fn(async () => ({ routines: rows, invalid: [] })), listRoutineSessions: vi.fn(async () => []) } as unknown as AveApi;
   vi.useFakeTimers();
   let view: ReturnType<typeof render> | undefined;
   try {

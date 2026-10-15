@@ -72,12 +72,22 @@
     if (typeof window.avePlugin.getTheme === "function") {
       const theme = await window.avePlugin.getTheme();
       if (theme && typeof theme === "object") {
+        // The payload is `SafeThemePayload` (src/shared/plugin-theme-cache.ts):
+        // bundleId, shell, optional colorScheme and reducedMotion, and tokens.
+        // Mirror the attributes the host renderer sets on its own root
+        // (`applyBundleToDocument`) so plugin CSS keyed on them paints right
+        // before the plugin's own theme handler runs.
         const r = document.documentElement;
-        if (theme.theme) r.setAttribute("data-theme", String(theme.theme));
-        if (theme.codeTheme) r.setAttribute("data-code-theme", String(theme.codeTheme));
-        if (theme.chatTheme && theme.chatTheme !== "default") {
-          r.setAttribute("data-chat-theme", String(theme.chatTheme));
+        if (typeof theme.bundleId === "string" && theme.bundleId) {
+          r.setAttribute("data-theme-bundle", theme.bundleId);
         }
+        if (theme.shell === "light" || theme.shell === "dark") {
+          r.setAttribute("data-shell", theme.shell);
+        }
+        const scheme = theme.colorScheme === "light" || theme.colorScheme === "dark"
+          ? theme.colorScheme
+          : theme.shell === "light" || theme.shell === "dark" ? theme.shell : null;
+        if (scheme) r.style.colorScheme = scheme;
         const tokens = theme.tokens;
         if (tokens && typeof tokens === "object") {
           for (const [k, v] of Object.entries(tokens)) {

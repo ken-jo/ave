@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/utils/trust-origin-label.ts. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/utils/trust-origin-label.ts.
 export const en = {
   "trustOriginLabel.userKeyboard": "Direct user input",
   "trustOriginLabel.pluginEmitted": "Extension generated",

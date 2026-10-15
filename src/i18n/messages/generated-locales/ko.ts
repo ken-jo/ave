@@ -66,6 +66,7 @@ import { ko as ko_be_structuredCompact } from "../generated/be_structuredCompact
 import { ko as ko_be_subagentRunner } from "../generated/be_subagentRunner.js";
 import { ko as ko_be_systemPromptBuilder } from "../generated/be_systemPromptBuilder.js";
 import { ko as ko_be_telegramBridge } from "../generated/be_telegramBridge.js";
+import { ko as ko_be_terminalRead } from "../generated/be_terminalRead.js";
 import { ko as ko_be_toolSearch } from "../generated/be_toolSearch.js";
 import { ko as ko_be_tools } from "../generated/be_tools.js";
 import { ko as ko_be_windowDomain } from "../generated/be_windowDomain.js";
@@ -152,6 +153,7 @@ import { ko as ko_suggestedRepliesGhost } from "../generated/suggestedRepliesGho
 import { ko as ko_summaryToast } from "../generated/summaryToast.js";
 import { ko as ko_tailnetAccessTab } from "../generated/tailnetAccessTab.js";
 import { ko as ko_telegramConnection } from "../generated/telegramConnection.js";
+import { ko as ko_terminalBlocks } from "../generated/terminalBlocks.js";
 import { ko as ko_tokenCostBadge } from "../generated/tokenCostBadge.js";
 import { ko as ko_tokenProgressRing } from "../generated/tokenProgressRing.js";
 import { ko as ko_toolActivity } from "../generated/toolActivity.js";
@@ -243,6 +245,7 @@ export const koMessages: Record<string, string> = {
   ...ko_be_subagentRunner,
   ...ko_be_systemPromptBuilder,
   ...ko_be_telegramBridge,
+  ...ko_be_terminalRead,
   ...ko_be_toolSearch,
   ...ko_be_tools,
   ...ko_be_windowDomain,
@@ -329,6 +332,7 @@ export const koMessages: Record<string, string> = {
   ...ko_summaryToast,
   ...ko_tailnetAccessTab,
   ...ko_telegramConnection,
+  ...ko_terminalBlocks,
   ...ko_tokenCostBadge,
   ...ko_tokenProgressRing,
   ...ko_toolActivity,

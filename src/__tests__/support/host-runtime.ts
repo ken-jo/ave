@@ -40,6 +40,7 @@ export function createDesktopHostFixture(overrides: Partial<DesktopHostCapabilit
   return {
     getAppWindows: () => [],
     getFocusedWindow: () => null,
+    findSessionSurface: () => null,
     getAuthPartition: unavailable,
     openAuthWindowService: unavailable,
     openLinkWindowService: unavailable,

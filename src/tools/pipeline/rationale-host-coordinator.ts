@@ -10,7 +10,7 @@ import type {
   RationaleScopeReviewer,
 } from "../../permissions/reviewer/rationale-scope-reviewer.js";
 import type { SandboxCapability } from "../../permissions/sandbox-capability.js";
-import { canonicalStringify } from "../../shared/canonical-json.js";
+import { canonicalJsonEqual } from "../../shared/canonical-json.js";
 import { runWithAbortableDeadline } from "../../shared/abortable-deadline.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../types.js";
@@ -109,10 +109,6 @@ const PROVIDER_FAILURES: readonly RationaleGenerationProviderFailureCause[] =
     "generation-error",
     "generation-timeout",
   ]);
-
-function equal(left: unknown, right: unknown): boolean {
-  return canonicalStringify(left) === canonicalStringify(right);
-}
 
 function compactResource(value: string): string {
   const normalized = value.trim();
@@ -452,8 +448,8 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       !context ||
       !context.resumeIssued ||
       context.issuedResumeRequest === null ||
-      !equal(context.issuedResumeRequest, probe.request) ||
-      !equal(context.control, probe.request.control)
+      !canonicalJsonEqual(context.issuedResumeRequest, probe.request) ||
+      !canonicalJsonEqual(context.control, probe.request.control)
     ) {
       return null;
     }
@@ -473,7 +469,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       !context ||
       context.receipt === null ||
       context.issuedResumeRequest === null ||
-      !equal(context.issuedResumeRequest, request)
+      !canonicalJsonEqual(context.issuedResumeRequest, request)
     ) {
       return null;
     }
@@ -504,8 +500,8 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       if (
         this.requestAnchor === null ||
         !Number.isFinite(candidate.now) ||
-        !equal(candidate.requestAnchor, this.requestAnchor) ||
-        !equal(candidate.rationaleProvenance, this.rationaleProvenance)
+        !canonicalJsonEqual(candidate.requestAnchor, this.requestAnchor) ||
+        !canonicalJsonEqual(candidate.rationaleProvenance, this.rationaleProvenance)
       ) {
         return null;
       }

@@ -13,12 +13,11 @@ import type { IpcMainInvokeEvent } from "electron";
 
 const handleMap = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
 const listenerMap = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
-const fromId = vi.hoisted(() => vi.fn());
+const fromWebContents = vi.hoisted(() => vi.fn());
 
 vi.mock("electron", () => ({
   BrowserWindow: {
-    fromWebContents: vi.fn(() => null),
-    fromId,
+    fromWebContents,
   },
   ipcMain: {
     handle: vi.fn((channel: string, fn: (e: IpcMainInvokeEvent, ...a: unknown[]) => unknown) => {
@@ -67,14 +66,17 @@ describe("WindowManager IPC — validateSender guard", () => {
   let WindowManager: typeof import("../main/window-manager.js").WindowManager;
   let auditLogger: ReturnType<typeof makeAuditLogger>;
   let wm: InstanceType<typeof WindowManager>;
+  let appState: typeof import("../main/app-state.js");
 
   beforeEach(async () => {
     handleMap.clear();
     listenerMap.clear();
-    fromId.mockReset();
+    fromWebContents.mockReset();
     vi.resetModules();
     // Re-import so handleMap gets freshly registered handlers
     const mod = await import("../main/window-manager.js?t=" + Date.now());
+    appState = await import("../main/app-state.js");
+    appState.resetMainWindowsForTests();
     WindowManager = mod.WindowManager;
     auditLogger = makeAuditLogger();
     wm = new WindowManager();
@@ -103,10 +105,11 @@ describe("WindowManager IPC — validateSender guard", () => {
     // animate flag is macOS-only). The mock window starts at bounds far from
     // any target so the tween runs; tests flush timers and assert the LAST
     // setBounds call lands EXACTLY on the target.
+    let nextWindowId = 7;
     function makeMainWindow() {
       let bounds = { x: 0, y: 0, width: 100, height: 100 };
       return {
-        id: 7,
+        id: nextWindowId++,
         on: vi.fn(),
         isDestroyed: vi.fn(() => false),
         getBounds: vi.fn(() => ({ ...bounds })),
@@ -115,6 +118,11 @@ describe("WindowManager IPC — validateSender guard", () => {
         }),
         webContents: { send: vi.fn() },
       };
+    }
+
+    function useAsSender(main: ReturnType<typeof makeMainWindow>) {
+      appState.registerMainWindow(main as never, appState.nextMainWindowRole());
+      fromWebContents.mockReturnValue(main);
     }
 
     /** Drive the manual tween to completion. */
@@ -150,16 +158,17 @@ describe("WindowManager IPC — validateSender guard", () => {
 
     it("rejects an invalid mode", async () => {
       const main = makeMainWindow();
-      wm.registerMainWindow(main as never);
-      fromId.mockReturnValue(main);
+      useAsSender(main);
       const handler = handleMap.get("ave:window:resize-for-mode")!;
       const result = await handler(hostFrameEvent(), "fullscreen");
       expect(result).toEqual({ ok: false, error: "invalid-mode" });
       expect(main.setBounds).not.toHaveBeenCalled();
     });
 
-    it("returns main-window-not-found when no main window is registered", async () => {
-      fromId.mockReturnValue(null);
+    it("returns main-window-not-found when the sender is not a registered main window", async () => {
+      // A window exists for the sender, but it is not one of the app's main
+      // windows (a popup or viewer): it must not be resized.
+      fromWebContents.mockReturnValue(makeMainWindow());
       const handler = handleMap.get("ave:window:resize-for-mode")!;
       const result = await handler(hostFrameEvent(), "work");
       expect(result).toEqual({ ok: false, error: "main-window-not-found" });
@@ -167,8 +176,7 @@ describe("WindowManager IPC — validateSender guard", () => {
 
     it("centers a 1243×768 window on the work area for work mode", async () => {
       const main = makeMainWindow();
-      wm.registerMainWindow(main as never);
-      fromId.mockReturnValue(main);
+      useAsSender(main);
       const handler = handleMap.get("ave:window:resize-for-mode")!;
       const result = await handler(hostFrameEvent(), "work");
       expect(result).toEqual({ ok: true });
@@ -181,8 +189,7 @@ describe("WindowManager IPC — validateSender guard", () => {
 
     it("restores the right-docked initial bounds for chat mode", async () => {
       const main = makeMainWindow();
-      wm.registerMainWindow(main as never);
-      fromId.mockReturnValue(main);
+      useAsSender(main);
       const handler = handleMap.get("ave:window:resize-for-mode")!;
       const result = await handler(hostFrameEvent(), "chat");
       expect(result).toEqual({ ok: true });
@@ -197,8 +204,7 @@ describe("WindowManager IPC — validateSender guard", () => {
 
     it("resizes chat mode for the side panel and restores normal chat bounds when closed", async () => {
       const main = makeMainWindow();
-      wm.registerMainWindow(main as never);
-      fromId.mockReturnValue(main);
+      useAsSender(main);
       const handler = handleMap.get("ave:window:resize-for-side-panel")!;
 
       const openResult = await handler(hostFrameEvent(), true);
@@ -223,8 +229,7 @@ describe("WindowManager IPC — validateSender guard", () => {
 
     it("rejects invalid side-panel resize payloads", async () => {
       const main = makeMainWindow();
-      wm.registerMainWindow(main as never);
-      fromId.mockReturnValue(main);
+      useAsSender(main);
       const handler = handleMap.get("ave:window:resize-for-side-panel")!;
 
       const result = await handler(hostFrameEvent(), "open");
@@ -241,8 +246,7 @@ describe("WindowManager IPC — validateSender guard", () => {
 
     it("cancels an in-flight tween so the latest target wins and lands exactly", async () => {
       const main = makeMainWindow();
-      wm.registerMainWindow(main as never);
-      fromId.mockReturnValue(main);
+      useAsSender(main);
       const handler = handleMap.get("ave:window:resize-for-mode")!;
       // Start a work tween, advance partway, then switch to chat mid-flight.
       await handler(hostFrameEvent(), "work");
@@ -254,6 +258,26 @@ describe("WindowManager IPC — validateSender guard", () => {
       const bounds = lastBounds(main);
       expect(bounds.width).toBeLessThan(800);
       expect(bounds).not.toEqual({ x: 339, y: 156, width: 1243, height: 768 });
+    });
+
+    it("resizes only the sender's window and keeps each window's tween independent", async () => {
+      const first = makeMainWindow();
+      const second = makeMainWindow();
+      appState.registerMainWindow(first as never, "primary");
+      appState.registerMainWindow(second as never, "secondary");
+      const handler = handleMap.get("ave:window:resize-for-mode")!;
+
+      fromWebContents.mockReturnValue(first);
+      await handler(hostFrameEvent(), "work");
+      vi.advanceTimersByTime(48);
+      fromWebContents.mockReturnValue(second);
+      await handler(hostFrameEvent(), "chat");
+      flushTween();
+
+      // The second window's request neither moved the first window nor
+      // cancelled its tween: the first still lands on the work geometry.
+      expect(lastBounds(first)).toEqual({ x: 339, y: 156, width: 1243, height: 768 });
+      expect(lastBounds(second).width).toBeLessThan(800);
     });
   });
 });

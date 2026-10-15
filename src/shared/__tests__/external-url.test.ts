@@ -3,8 +3,8 @@ import { validateExternalUrl } from "../external-url.js";
 
 describe("validateExternalUrl", () => {
   it("accepts https URLs and returns the canonical form", () => {
-    const result = validateExternalUrl("https://marketplace.former-site.invalid/login");
-    expect(result).toEqual({ ok: true, url: "https://marketplace.former-site.invalid/login" });
+    const result = validateExternalUrl("https://ave.agent-connector.ai/login");
+    expect(result).toEqual({ ok: true, url: "https://ave.agent-connector.ai/login" });
   });
 
   it("accepts plain http URLs", () => {
@@ -67,9 +67,9 @@ describe("validateExternalUrl", () => {
   it("accepts http URLs with path and query", () => {
     // Documents the positive case beyond the bare-host smoke test —
     // path/query do not change the validator's decision.
-    const result = validateExternalUrl("https://marketplace.former-site.invalid/admin?tab=keys");
+    const result = validateExternalUrl("https://ave.agent-connector.ai/admin?tab=keys");
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.url).toBe("https://marketplace.former-site.invalid/admin?tab=keys");
+    if (result.ok) expect(result.url).toBe("https://ave.agent-connector.ai/admin?tab=keys");
   });
 
   it("rejects URLs with embedded credentials", () => {

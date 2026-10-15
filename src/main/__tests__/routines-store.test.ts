@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
-import { readdirSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { platform } from "node:os";
 import { RoutinesStore, MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES, MAX_CRON_EXPR_LENGTH, MAX_ROUTINE_SOURCE_LENGTH } from "../routines-store.js";
@@ -127,6 +127,72 @@ describe("RoutinesStore v2 — basic persistence", () => {
       await store.load();
 
       expect(store.list()).toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("holds back a stored routine whose plugin id the contract rejects while every valid routine loads", async () => {
+    const { store, dir, cleanup } = tempRoutinesStore();
+    try {
+      const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
+      const legacy = {
+        id: "legacy-scope",
+        trigger: "schedule",
+        execution: "notification-only",
+        notificationTitle: "legacy",
+        scope: {
+          pluginIds: { mode: "allow", ids: ["sample-plugin", "Legacy.Plugin"] },
+          forcedPluginIds: [],
+          directories: [join(dir, "workspace", "a")],
+        },
+      };
+      const path = join(dir, "routines.json");
+      writeFileSync(path, `${JSON.stringify({ version: 2, routines: [good, legacy] }, null, 2)}\n`);
+      const legacyText = JSON.stringify({ version: 2, routines: [legacy] }, null, 2).split("\n").slice(3, -2).join("\n");
+
+      await store.load();
+      expect(store.listActive().map((routine) => routine.id)).toEqual([good.id]);
+      expect(store.listInvalid()).toEqual([{
+        id: "legacy-scope",
+        field: "scope.pluginIds.ids",
+        value: "Legacy.Plugin",
+        reason: "invalid-plugin-id",
+      }]);
+      expect(store.listForDisplay()).toEqual({ routines: store.listActive(), invalid: store.listInvalid() });
+
+      // A write rewrites the valid records and carries the held-back one through unchanged.
+      await store.dismiss(good.id);
+      const afterWrite = JSON.parse(readFileSync(path, "utf8")) as { routines: unknown[] };
+      expect(afterWrite.routines).toContainEqual(legacy);
+      expect(readFileSync(path, "utf8")).toContain(legacyText);
+
+      // Workspace removal proceeds on valid records and leaves the held-back one untouched.
+      await expect(store.revokeWorkspaceRoot(join(dir, "workspace"))).resolves.toEqual({
+        routinesUpdated: 0,
+        directoriesRemoved: 0,
+      });
+      expect((JSON.parse(readFileSync(path, "utf8")) as { routines: unknown[] }).routines).toContainEqual(legacy);
+
+      // The remove action deletes the held-back record.
+      await expect(store.remove("legacy-scope")).resolves.toBe(true);
+      expect(store.listInvalid()).toEqual([]);
+      expect((JSON.parse(readFileSync(path, "utf8")) as { routines: Array<{ id: string }> }).routines.map((r) => r.id)).toEqual([good.id]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("refuses to add a routine scoped to a plugin id the contract rejects", async () => {
+    const { store, cleanup } = tempRoutinesStore();
+    try {
+      await expect(store.add({
+        trigger: "schedule",
+        execution: "notification-only",
+        schedule: { at: futureIso() },
+        notificationTitle: "scoped",
+        scope: { pluginIds: { mode: "allow", ids: ["a_b"] }, forcedPluginIds: [], directories: [] },
+      })).rejects.toThrow("must be valid plugin ids");
     } finally {
       await cleanup();
     }
@@ -876,7 +942,6 @@ describe("persisted missing-plugin status validation", () => {
     { needsAttention: true },
     { needsAttention: { missingPluginIds: [] } },
     { needsAttention: { missingPluginIds: [42] } },
-    { needsAttention: { missingPluginIds: ["../private"] } },
   ])("drops malformed status %j while preserving a neighbouring routine", async (patch) => {
     const { store, dir, cleanup } = tempRoutinesStore();
     try {
@@ -885,6 +950,26 @@ describe("persisted missing-plugin status validation", () => {
       await writeFile(join(dir, "routines.json"), JSON.stringify({ version: 2, routines: [good, { ...good, id: "bad", ...patch }] }));
       await store.load();
       expect(store.list().map((routine) => routine.id)).toEqual([good.id]);
+    } finally { await cleanup(); }
+  });
+
+  it("holds back a stored missing-plugin id the contract rejects instead of dropping the routine", async () => {
+    const { store, dir, cleanup } = tempRoutinesStore();
+    try {
+      const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(join(dir, "routines.json"), JSON.stringify({
+        version: 2,
+        routines: [good, { ...good, id: "bad", needsAttention: { missingPluginIds: ["../private"] } }],
+      }));
+      await store.load();
+      expect(store.listActive().map((routine) => routine.id)).toEqual([good.id]);
+      expect(store.listInvalid()).toEqual([{
+        id: "bad",
+        field: "needsAttention.missingPluginIds",
+        value: "../private",
+        reason: "invalid-plugin-id",
+      }]);
     } finally { await cleanup(); }
   });
 });

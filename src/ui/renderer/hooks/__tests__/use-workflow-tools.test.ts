@@ -253,4 +253,39 @@ describe("useWorkflowTools", () => {
     expect(result.current.loadedSkills.map((s) => s.name)).toEqual(["routine-skill"]);
     expect(result.current.subAgentSpawns).toEqual([]);
   });
+
+  it("draws questions still waiting from before it loaded, only its own, once, ahead of live ones", async () => {
+    let onAsk: Parameters<AveApi["onAskUserQuestion"]>[0] | undefined;
+    const ask = (id: string, sessionId: string) => ({
+      id,
+      sessionId,
+      questions: [{ question: `${id}?`, choices: ["yes", "no"] }],
+      createdAt: 0,
+    });
+    let deliverSnapshot: (parked: ReturnType<typeof ask>[]) => void = () => undefined;
+    const api = {
+      onAskUserQuestion: vi.fn((handler: Parameters<AveApi["onAskUserQuestion"]>[0]) => {
+        onAsk = handler;
+        return () => undefined;
+      }),
+      listPendingAskUserQuestions: vi.fn(() => new Promise((resolve) => { deliverSnapshot = resolve; })),
+      onAgentSpawnEvent: vi.fn(() => () => undefined),
+      onSkillLoaded: vi.fn(() => () => undefined),
+      onAskUserQuestionTimeout: vi.fn(() => () => undefined),
+    } as unknown as AveApi;
+    const ownsSession = (sessionId: string) => sessionId === "session-mine";
+    const { result } = renderHook(() => useWorkflowTools(api, { ownsSession }));
+    expect(api.listPendingAskUserQuestions).toHaveBeenCalledOnce();
+
+    // A live question arrives while the snapshot is in flight, and is also in it.
+    act(() => {
+      onAsk?.(ask("live", "session-mine"));
+    });
+    await act(async () => {
+      deliverSnapshot([ask("stranded", "session-mine"), ask("live", "session-mine"), ask("theirs", "session-other")]);
+      await Promise.resolve();
+    });
+
+    expect(result.current.askQuestions.map((q) => q.id)).toEqual(["stranded", "live"]);
+  });
 });

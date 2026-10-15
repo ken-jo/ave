@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://sdk.former-site.invalid/schemas/marketplace/revocations.schema.json",
+  "$id": "https://ave.agent-connector.ai/schemas/marketplace/2/revocations.schema.json",
   "title": "Ave source revocations (policy/revocations.json)",
   "description": "Revocations a source publishes for its own packages (design §10.4). They apply only to installs from the same source.",
   "type": "object",
