@@ -806,12 +806,14 @@ describe("pty-manager command blocks", () => {
 });
 
 describe("pty-manager on macOS: the shell gets its own terminal and no other", () => {
+  const MAC_TAB = "terminal:0000000c-1";
+
   beforeEach(() => {
     needsOwnTtyGrant = true;
   });
 
   it("spawns the trampoline first, wraps with that pty's own slave path, then hands it the wrapped shell", async () => {
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 1 });
     expect(res.ok).toBe(true);
     expect(ptySpawnMock).toHaveBeenCalledTimes(1);
     const [file, args, opts] = ptySpawnMock.mock.calls[0];
@@ -835,9 +837,69 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
     expect(handoffDisposeMock).toHaveBeenCalled();
     expect(__terminalSessionCountForTest()).toBe(1);
 
-    // Output reaches the view through the same session wiring.
+    // Output reaches the view through the same session wiring, addressed to
+    // the window that spawned it, which alone owns the handed-off shell.
     lastPty!.emitData("hello");
     expect(emitted.some((e) => e.event === "data")).toBe(true);
+    expect(emittedOwners).toEqual([1]);
+    expect(terminalOwnedBy(MAC_TAB, 1)).toBe(true);
+    expect(terminalOwnedBy(MAC_TAB, 2)).toBe(false);
+  });
+
+  it("ends a stalled handoff when its window closes, so the restore of that id starts a new shell", async () => {
+    // The trampoline never takes its command: only an abort ends the wait
+    // (the real deliver would otherwise hold it for 10 s, past a restore's 5 s).
+    let signalSeen: AbortSignal | undefined;
+    deliverMock.mockImplementationOnce((_script, options) => {
+      signalSeen = options?.signal;
+      return new Promise<void>((_, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new Error("handoff aborted")), { once: true });
+      });
+    });
+    const starting = spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 1 });
+    await vi.waitFor(() => expect(deliverMock).toHaveBeenCalledTimes(1));
+    const trampoline = lastPty!;
+
+    expect(killTerminalsOwnedBy(1)).toBe(1);
+    const restored = spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 3 });
+    const first = await Promise.race([
+      starting,
+      new Promise<"stalled">((resolve) => setTimeout(() => resolve("stalled"), 200)),
+    ]);
+    expect(first).toMatchObject({ ok: false, reason: "spawn-failed" });
+    expect(signalSeen?.aborted).toBe(true);
+    expect(trampoline.killSignals).toEqual(["SIGKILL"]);
+    trampoline.emitExit(137);
+    // The cancelled spawn released its wrap and HOME once; its trampoline's
+    // exit reported nothing to any window.
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
+    expect(emitted.some((e) => e.event === "exit")).toBe(false);
+
+    // Not "still-closing": the restore got a fresh shell for its own window.
+    expect(await restored).toEqual({ ok: true, tabId: MAC_TAB, replayed: false });
+    expect(ptySpawnMock).toHaveBeenCalledTimes(2);
+    expect(__terminalSessionCountForTest()).toBe(1);
+    expect(terminalOwnedBy(MAC_TAB, 3)).toBe(true);
+    expect(terminalOwnedBy(MAC_TAB, 1)).toBe(false);
+  });
+
+  it("ends a stalled handoff at shutdown, inside the shutdown deadline", async () => {
+    deliverMock.mockImplementationOnce((_script, options) =>
+      new Promise<void>((_, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new Error("handoff aborted")), { once: true });
+      }),
+    );
+    const starting = spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 1 });
+    await vi.waitFor(() => expect(deliverMock).toHaveBeenCalledTimes(1));
+    const trampoline = lastPty!;
+    await forceKillAllTerminalsForShutdown(200);
+    // Settled by the time shutdown returns, not left behind it.
+    const settled = await Promise.race([starting, Promise.resolve("stalled" as const)]);
+    expect(settled).toMatchObject({ ok: false, reason: "spawn-failed" });
+    expect(trampoline.killSignals).toEqual(["SIGKILL"]);
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(__terminalSessionCountForTest()).toBe(0);
   });
 
   it("fails the spawn without wrapping when node-pty reports no slave path", async () => {
@@ -847,7 +909,7 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
       spawnedPtys.push(lastPty);
       return lastPty;
     });
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: MAC_TAB });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.message).toMatch(/no pty slave device/);
     expect(wrapTerminalCommandMock).not.toHaveBeenCalled();
@@ -859,7 +921,7 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
 
   it("refuses a malformed slave path the wrap rejects, and kills the trampoline", async () => {
     wrapTerminalCommandMock.mockImplementationOnce(() => Promise.reject(new Error("ttys: \"/dev/ttys*\" is not a pty slave device")));
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: MAC_TAB });
     expect(res.ok).toBe(false);
     expect(lastPty!.killSignals).toEqual(["SIGKILL"]);
     expect(cleanupMock).not.toHaveBeenCalled();
@@ -868,7 +930,7 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
 
   it("kills the trampoline and releases the wrap ONCE when the handoff fails", async () => {
     deliverMock.mockImplementationOnce(() => Promise.reject(new Error("trampoline did not take its command")));
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: MAC_TAB });
     expect(res.ok).toBe(false);
     const pty = lastPty!;
     expect(pty.killSignals).toEqual(["SIGKILL"]);
@@ -883,10 +945,10 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
 
   it("kills the shell instead of registering it when the tab closes during the handoff", async () => {
     deliverMock.mockImplementationOnce(() => {
-      killTerminal("terminal:1");
+      killTerminal(MAC_TAB);
       return Promise.resolve();
     });
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: MAC_TAB });
     expect(res.ok).toBe(false);
     const pty = lastPty!;
     expect(pty.killSignals).toContain("SIGKILL");
@@ -904,7 +966,7 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
       shutdown = forceKillAllTerminalsForShutdown(50);
       return Promise.resolve();
     });
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: MAC_TAB });
     expect(res.ok).toBe(false);
     expect(lastPty!.killSignals).toContain("SIGKILL");
     await shutdown;
@@ -921,7 +983,7 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
         lastPty!.emitExit(127);
       });
     });
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: MAC_TAB });
     expect(res.ok).toBe(false);
     expect(signalSeen?.aborted).toBe(true);
     expect(cleanupMock).toHaveBeenCalledTimes(1);
@@ -932,7 +994,7 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
 
   it("never passes a tty off macOS", async () => {
     needsOwnTtyGrant = false;
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: MAC_TAB });
     expect(res.ok).toBe(true);
     expect(wrapTerminalCommandMock).not.toHaveBeenCalled();
     expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);

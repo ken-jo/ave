@@ -148,7 +148,20 @@ interface TerminalSpawnInFlight {
   promise: Promise<SpawnTerminalResult>;
   ownerWindowId: number | null;
   cancelled: boolean;
+  /**
+   * Aborted with the spawn: ends a wait that would otherwise outlive the
+   * cancel (the macOS tty handoff waits up to its own timeout for the
+   * trampoline, longer than a restore waits for the cancelled spawn).
+   */
+  abort: AbortController;
   cleanupSandboxHome?: () => void;
+}
+
+/** Cancel an in-flight spawn: it registers no session, and its HOME goes now. */
+function cancelInFlightSpawn(owner: TerminalSpawnInFlight): void {
+  owner.cancelled = true;
+  owner.abort.abort(new Error("terminal spawn cancelled"));
+  owner.cleanupSandboxHome?.();
 }
 
 const sessions = new Map<string, TerminalSession>();
@@ -321,7 +334,12 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
     resolveTracked = resolve;
     rejectTracked = reject;
   });
-  const owner: TerminalSpawnInFlight = { promise: tracked, cancelled: false, ownerWindowId };
+  const owner: TerminalSpawnInFlight = {
+    promise: tracked,
+    cancelled: false,
+    abort: new AbortController(),
+    ownerWindowId,
+  };
   terminalSpawnsInFlight.set(tabId, owner);
   void spawnNewTerminal(options, tabId, owner).then(
     (result) => {
@@ -569,11 +587,14 @@ async function spawnNewTerminal(
       // Subscribed first: the shell starts writing as soon as it is exec'd.
       pendingSession = session;
       // A trampoline that dies before reading the fifo ends the wait now, not
-      // at the timeout.
+      // at the timeout; so does the spawn's cancel (its tab or window closed,
+      // or shutdown began), which a restore of the same id is waiting out.
       const trampolineExited = new AbortController();
       const trampolineExitSub = pty.onExit(() => trampolineExited.abort());
       try {
-        await handoff.deliver(renderHandoffScript(argv, childEnv), { signal: trampolineExited.signal });
+        await handoff.deliver(renderHandoffScript(argv, childEnv), {
+          signal: AbortSignal.any([trampolineExited.signal, owner.abort.signal]),
+        });
       } finally {
         trampolineExitSub.dispose();
       }
@@ -762,10 +783,7 @@ export function killTerminal(tabId: string): void {
   unregisterTerminalBlockTracker(tabId);
   for (const waiter of terminalSpawnWaiters.get(tabId) ?? []) waiter.cancel();
   const inFlight = terminalSpawnsInFlight.get(tabId);
-  if (inFlight) {
-    inFlight.cancelled = true;
-    inFlight.cleanupSandboxHome?.();
-  }
+  if (inFlight) cancelInFlightSpawn(inFlight);
   const session = sessions.get(tabId);
   if (!session || session.closing) return;
   session.closing = true;
@@ -812,10 +830,7 @@ export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promi
   terminalShutdownStarted = true;
   const startedAt = Date.now();
   const inFlight = [...terminalSpawnsInFlight.values()];
-  for (const owner of inFlight) {
-    owner.cancelled = true;
-    owner.cleanupSandboxHome?.();
-  }
+  for (const owner of inFlight) cancelInFlightSpawn(owner);
 
   // Snapshot and signal live PTYs synchronously before yielding to any pending
   // setup promise. Shutdown must not give an existing shell extra runtime just
@@ -892,7 +907,10 @@ export function __resetTerminalsForTest(): void {
     session.disposeExit();
   }
   sessions.clear();
-  for (const owner of terminalSpawnsInFlight.values()) owner.cancelled = true;
+  for (const owner of terminalSpawnsInFlight.values()) {
+    owner.cancelled = true;
+    owner.abort.abort();
+  }
   terminalSpawnsInFlight.clear();
   for (const waiters of terminalSpawnWaiters.values()) for (const waiter of waiters) waiter.cancel();
   terminalSpawnWaiters.clear();
