@@ -57,7 +57,8 @@ import {
   type ToolSurface,
 } from "../plugins/runtime/tool-visibility.js";
 import { createLogger } from "../lib/logger.js";
-import type { McpUiPayload } from "./types.js";
+import type { McpToolCallOutput } from "./types.js";
+import { prepareMcpContentImage } from "./mcp-tool-content.js";
 import type { PluginToolOperationPolicy } from "../tools/plugin-operation-governance.js";
 import { errorMessage } from "../shared/error-message.js";
 
@@ -92,7 +93,7 @@ export interface DiscoveredMcpTool {
 export type PluginMcpInvoke = (
   name: string,
   args: Record<string, unknown>,
-) => Promise<{ text: string; uiPayload?: McpUiPayload; rawResult?: { value: unknown } }>;
+) => Promise<McpToolCallOutput & { rawResult?: { value: unknown } }>;
 
 function readPathFields(meta: Record<string, unknown>): string[] | undefined {
   // Read the SOLE Ave-proprietary wire key, `ave/pathFields`. The legacy
@@ -180,7 +181,7 @@ export function mcpToolToPluginTool(
     // and `createDynamicTool` applies the default "1.0.0" tool version.
     jsonSchema: tool.inputSchema,
     isReadOnly: () => false, // unconditional write baseline — never read-only
-    execute: async (rawInput) => {
+    execute: async (rawInput, ctx) => {
       let parsed: unknown = rawInput ?? {};
       if (typeof parsed === "string") {
         try {
@@ -191,16 +192,18 @@ export function mcpToolToPluginTool(
       }
       const args = (typeof parsed === "object" && parsed !== null ? parsed : {}) as Record<string, unknown>;
       try {
-        const { text, uiPayload, rawResult } = await invoke(tool.name, args);
+        const { text, uiPayload, rawResult, images } = await invoke(tool.name, args);
+        const { image, note } = await prepareMcpContentImage(images ?? [], ctx?.abortSignal);
         // Preserve the host's structured `metadata.rawResult` /
         // `metadata.uiPayload` channel. rawResult is present only on success.
         const metadata: Record<string, unknown> = {};
         if (uiPayload) metadata.uiPayload = uiPayload;
         if (rawResult) metadata.rawResult = rawResult.value;
         return {
-          output: text,
+          output: note ? `${text}\n${note}` : text,
           isError: false,
           ...(Object.keys(metadata).length > 0 && { metadata }),
+          ...(image && { image }),
         };
       } catch (err) {
         return {

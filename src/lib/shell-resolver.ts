@@ -171,6 +171,24 @@ export function shellPathForHostPath(shell: ResolvedShellCommand, hostPath: stri
   return normalized;
 }
 
+/**
+ * Inverse of {@link shellPathForHostPath} for a path the shell reported.
+ * Undefined when a Windows shell path has no drive mapping (for example an
+ * MSYS-internal `/tmp`), so the caller can keep its previous directory.
+ */
+export function hostPathForShellPath(shell: ResolvedShellCommand, shellPath: string): string | undefined {
+  if (process.platform !== "win32") return shellPath;
+  const pattern = shell.windowsFlavor === "wsl"
+    ? /^\/mnt\/([A-Za-z])(?:\/(.*))?$/
+    : shell.windowsFlavor === "msys"
+      ? /^\/([A-Za-z])(?:\/(.*))?$/
+      : undefined;
+  if (pattern === undefined) return win32.isAbsolute(shellPath) ? win32.normalize(shellPath) : undefined;
+  const match = pattern.exec(shellPath);
+  if (!match) return undefined;
+  return win32.normalize(`${match[1].toUpperCase()}:\\${match[2] ?? ""}`);
+}
+
 export function shellCommandForHookPath(shell: ResolvedShellCommand, hookPath: string): string {
   const shellPath = shellPathForHostPath(shell, hookPath);
   if (process.platform === "win32" && isAbsolute(hookPath)) {

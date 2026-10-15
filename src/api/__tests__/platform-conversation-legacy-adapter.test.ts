@@ -47,6 +47,34 @@ describe("platform conversation legacy adapter", () => {
     expect(sseSink).toHaveBeenCalledWith(CHANNELS.chat.stream, expected);
   });
 
+  it("fans live tool output out as a tool_output owner frame", () => {
+    const timeline = createPlatformConversationTimeline();
+    const adapter = createPlatformConversationLegacyStreamAdapter(timeline);
+    const sink = vi.fn();
+    adapter.subscribe(sink);
+
+    timeline.publish({
+      conversationId: "main-session",
+      turnId: createPlatformTurnId(42),
+      event: {
+        kind: "tool.output.delta",
+        tool: { name: "bash", groupId: "group-1", toolUseId: "tool-1", displayOrder: 0, category: "shell" },
+        ownerDetail: { text: "compiling 3/10\n" },
+      },
+    });
+
+    expect(sink).toHaveBeenCalledWith(CHANNELS.chat.stream, {
+      streamId: 42,
+      type: "tool_output",
+      name: "bash",
+      groupId: "group-1",
+      toolUseId: "tool-1",
+      displayOrder: 0,
+      toolCategory: "shell",
+      text: "compiling 3/10\n",
+    });
+  });
+
   it("projects the turn-input event as an owner user_message frame with its origin", () => {
     const timeline = createPlatformConversationTimeline();
     const adapter = createPlatformConversationLegacyStreamAdapter(timeline);

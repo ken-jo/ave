@@ -47,8 +47,9 @@ const FILE_CHANGE_TOOL_CONTRACTS: ReadonlyMap<string, {
   operation: FileChangeOperation;
   inputPathFields?: readonly string[];
 }> = new Map([
-  // Both refuse anything but an existing regular file — an edit is a modify.
+  // All refuse anything but an existing regular file — an edit is a modify.
   ["edit_file", { operation: "modify" }],
+  ["multi_edit", { operation: "modify" }],
   ["apply_patch", { operation: "modify" }],
   // "Create or overwrite": prior existence is not in the call's output.
   ["write_file", { operation: "write" }],

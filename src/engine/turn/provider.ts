@@ -73,7 +73,12 @@ function truncateTextToOutputTokenLimit(value: string, tokenLimit: number): stri
   return codePoints.slice(0, low).join("");
 }
 
-function cleanCodexModelOverride(value: string | undefined): string | undefined {
+/**
+ * A model id accepted as an override: trimmed, non-empty, bounded and free of
+ * control characters. Returns `undefined` for anything else so callers refuse
+ * it rather than forwarding a malformed id to a transport.
+ */
+export function cleanModelOverride(value: string | undefined): string | undefined {
   if (typeof value !== "string") return undefined;
   const model = value.trim();
   if (
@@ -86,6 +91,14 @@ function cleanCodexModelOverride(value: string | undefined): string | undefined 
   return model;
 }
 
+/**
+ * Whether a subscription runtime honours a model override. Only a runtime with
+ * a host-verified model picker does; the others own their default model.
+ */
+export function subscriptionAcceptsModelOverride(selection: SubscriptionChatRuntimeSelection): boolean {
+  return selection.provider === "codex";
+}
+
 function selectionWithModelOverride(
   selection: SubscriptionChatRuntimeSelection,
   modelOverride: string | undefined,
@@ -93,8 +106,8 @@ function selectionWithModelOverride(
   // Only Codex exposes a host-verified model picker. ACP runtimes own their
   // default model, so carrying an agent-profile override across that boundary
   // would fabricate a model selection they do not support.
-  if (selection.provider !== "codex") return selection;
-  const model = cleanCodexModelOverride(modelOverride);
+  if (!subscriptionAcceptsModelOverride(selection)) return selection;
+  const model = cleanModelOverride(modelOverride);
   return model ? Object.freeze({ ...selection, model }) : selection;
 }
 

@@ -25,6 +25,7 @@ import { useTranslation } from "../../../i18n/react.js";
 
 import type { McpPromptEntry } from "./slash-picker-data.js";
 import type { AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
+import type { CustomCommandEntry } from "../../../shared/custom-command.js";
 import { buildComposerMenuSections } from "./slash-picker-data.js";
 import { loadSlashPickerRuntime } from "../hooks/use-slash-picker-runtime.js";
 import { useNativeMenu } from "../hooks/use-native-context-menu.js";
@@ -43,6 +44,8 @@ export interface SlashPickerProps {
   onInsert: (cmd: string) => void;
   onRunMcpPrompt: (prompt: McpPromptEntry) => void;
   onRunPluginPrompt: (prompt: AgentPluginTemplatePrompt) => void;
+  /** Lists the tile's custom slash commands, read at click time like the rest. */
+  loadCustomCommands?: () => Promise<{ commands: CustomCommandEntry[] }>;
   /** Controlled open state — raised externally (e.g. Cmd/Ctrl+K). */
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -57,6 +60,7 @@ export function SlashPicker({
   onInsert,
   onRunMcpPrompt,
   onRunPluginPrompt,
+  loadCustomCommands,
   open,
   onOpenChange,
 }: SlashPickerProps) {
@@ -75,7 +79,10 @@ export function SlashPicker({
       // Read at click time rather than held open in every mounted composer: the
       // menu is built and popped in one call, so what it draws is what is
       // connected now, and a tile that never opens it pays nothing.
-      const runtime = await loadSlashPickerRuntime();
+      const [runtime, customCommands] = await Promise.all([
+        loadSlashPickerRuntime(),
+        loadCustomCommands ? loadCustomCommands().then((result) => result.commands) : Promise.resolve([]),
+      ]);
       const sections = buildComposerMenuSections({
         personas,
         activePersonaId,
@@ -83,6 +90,7 @@ export function SlashPicker({
         mcpTools: runtime.mcpTools,
         mcpPrompts: runtime.mcpPrompts,
         pluginPrompts: runtime.pluginPrompts,
+        customCommands,
         skills: runtime.skills,
         onSelectPersona,
         onInsert,

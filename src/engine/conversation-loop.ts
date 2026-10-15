@@ -3,9 +3,11 @@ import { normalizeToolOutputArtifactInfo } from "../shared/tool-output-artifact.
 
 
 
+import { appendRequestOnlyText } from "./turn/request-only-text.js";
 import { ConversationHistory } from "./conversation-history.js";
 import { ToolExecutor } from "../tools/executor.js";
-import { backgroundShellManager } from "../tools/shell-tools.js";
+import { endShellSession } from "../tools/shell-tools.js";
+import { disposeSessionFileReads } from "../tools/file-read-state.js";
 import { isActiveSandboxFilesystemContainedForPluginEffects } from "../permissions/sandbox-capability.js";
 import { baseAllowedDirectories } from "../permissions/base-allowed-directories.js";
 import { getWorkspaceRootLifecycle } from "../permissions/workspace-root-lifecycle.js";
@@ -61,7 +63,7 @@ import {
   type WorkspaceRootRevocationResult,
   type SessionProjectContext,
 } from "./turn/session.js";
-import { manualCompact, runPreflightGuard, applyBoundaryToSession } from "./turn/compaction.js";
+import { manualCompact, runPreflightGuard, applyBoundaryToSession, type ManualCompactOptions } from "./turn/compaction.js";
 import { GUIDE_MAX_ENTRIES, GUIDE_MAX_CHARS } from "./turn/guidance-limits.js";
 import { runTurn } from "./turn/run-turn.js";
 import type { A2AAgentCausalContext } from "./a2a-agent-message-envelope.js";
@@ -120,6 +122,13 @@ type GuidanceDisposition = Pick<
 
 export class ConversationLoop {
   readonly deps: ConversationLoopDeps;
+  /**
+   * Git ignore verdicts for first-touch instruction files, memoized for the
+   * session so a repeated touch does not spawn git again. Cleared on a session switch.
+   */
+  readonly gitIgnoreVerdicts = new Map<string, boolean>();
+  /** The model override this loop was constructed with; a session switch restores it. */
+  private readonly constructedModelOverride: string | undefined;
   readonly history: ConversationHistory;
   readonly toolExecutor: ToolExecutor;
   readonly auditLogger: AuditLogger;
@@ -258,6 +267,7 @@ export class ConversationLoop {
 
   constructor(deps: ConversationLoopDeps) {
     this.deps = deps;
+    this.constructedModelOverride = deps.modelOverride;
     this.history = new ConversationHistory();
     this.toolExecutor = new ToolExecutor(
       deps.toolRegistry,
@@ -430,6 +440,23 @@ export class ConversationLoop {
     return this.provider !== null;
   }
 
+  /**
+   * Run the current session on `model`, or on the constructed default when
+   * `undefined`. The override is the same `modelOverride` the provider and the
+   * context-window resolver already read, so the provider is rebuilt here and
+   * the next round uses the new model.
+   */
+  setSessionModelOverride(model: string | undefined): void {
+    this.deps.modelOverride = model ?? this.constructedModelOverride;
+    this.refreshProvider();
+  }
+
+  /** Drop a `/model` choice when the loop moves to another session. */
+  resetSessionModelOverride(): void {
+    if (this.deps.modelOverride === this.constructedModelOverride) return;
+    this.setSessionModelOverride(undefined);
+  }
+
 
 
 
@@ -458,19 +485,15 @@ export class ConversationLoop {
 
   buildSystemPromptForScope(
     scope: ToolScope,
-    originSource: string | null,
     rolePrompt?: ActiveRolePrompt,
     appContextSessionId = this.sessionId,
-    memoryQuery = "",
   ): string {
     this.deps.systemPromptBuilder.setToolScope?.(scope);
-    this.deps.systemPromptBuilder.setOriginSource?.(originSource);
     this.deps.systemPromptBuilder.setActiveSessionId?.(appContextSessionId);
     this.deps.systemPromptBuilder.setActiveRolePrompt?.(rolePrompt ?? null);
     try {
-      return this.deps.systemPromptBuilder.build({ memoryQuery });
+      return this.deps.systemPromptBuilder.build();
     } finally {
-      this.deps.systemPromptBuilder.setOriginSource?.(null);
       this.deps.systemPromptBuilder.setActiveSessionId?.(null);
       this.deps.systemPromptBuilder.setActiveRolePrompt?.(null);
     }
@@ -480,13 +503,27 @@ export class ConversationLoop {
     return estimateRequestInputProjection(input, this.provider ?? undefined);
   }
 
+  /**
+   * The per-turn context text (see `SystemPromptBuilder.buildTurnContext`), or
+   * "" when the builder renders none. It is sent only on a round that starts
+   * from a user message, appended inside that message (request-only-text.ts).
+   */
+  buildTurnContext(memoryQuery: string, originSource: string | null): string {
+    return this.deps.systemPromptBuilder.buildTurnContext?.(memoryQuery, originSource) ?? "";
+  }
+
   estimateCurrentRequestProjection(params: {
     systemPrompt: string;
     toolSchemas: ToolSchema[];
+    /** The turn context the request carries inside its trailing user message, if any. */
+    turnContext?: string;
   }): RequestInputProjection {
+    const history = this.history.getMessages();
     return this.projectProviderRequestInput({
       systemPrompt: params.systemPrompt,
-      messages: this.history.getMessages(),
+      messages: params.turnContext && history[history.length - 1]?.role === "user"
+        ? appendRequestOnlyText(history, [params.turnContext])
+        : history,
       toolSchemas: params.toolSchemas,
     });
   }
@@ -501,17 +538,17 @@ export class ConversationLoop {
   ): RequestProjectionContext {
     const buildSystemPrompt = () => this.buildSystemPromptForScope(
       scope,
-      originSource,
       rolePrompt,
       appContextSessionId,
-      memoryQuery,
     );
+    const turnContext = this.buildTurnContext(memoryQuery, originSource);
     return {
       systemPrompt: buildSystemPrompt(),
       toolSchemas,
       estimateCurrent: () => this.estimateCurrentRequestProjection({
         systemPrompt: buildSystemPrompt(),
         toolSchemas,
+        ...(turnContext ? { turnContext } : {}),
       }),
     };
   }
@@ -664,8 +701,8 @@ export class ConversationLoop {
   cleanupSession(lease?: SessionTransitionLease): Promise<void> {
     const cleanup = async (ownedLease: SessionTransitionLease): Promise<void> => {
       this.assertSessionTransitionLease(ownedLease);
-      backgroundShellManager.disposeSession(ownedLease.sessionId);
-      const report = await backgroundShellManager.settleSessionCleanup(ownedLease.sessionId);
+      disposeSessionFileReads(ownedLease.sessionId);
+      const report = await endShellSession(ownedLease.sessionId);
       this.assertSessionTransitionLease(ownedLease);
       if (report?.state === "cleanup-unproven") {
         throw new Error("workload-broker:session-cleanup-unproven");
@@ -938,7 +975,7 @@ export class ConversationLoop {
 
 
 
-  async manualCompact(callbacks?: Pick<TurnCallbacks, "onCompactOccurred" | "onCompactStarted">): Promise<{
+  async manualCompact(callbacks?: ManualCompactOptions): Promise<{
     compacted: boolean;
     compactedAt: string | null;
     summary: string;

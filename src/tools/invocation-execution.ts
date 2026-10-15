@@ -72,6 +72,7 @@ import {
   type PluginOperationPrincipal,
 } from "../permissions/plugin-operation-grant.js";
 import { errorMessage } from "../shared/error-message.js";
+import { createMaskedProgressRelay, TOOL_OUTPUT_PROGRESS_METADATA_KEY } from "./tool-output-progress.js";
 import {
   authorizationRequiredStateOf,
   issueAuthorizationRequiredControl,
@@ -160,6 +161,7 @@ export interface ExecutionStageContext {
   invocationRuntimeAllowedDirectories: string[];
   supportsA2AParentDelivery: boolean | undefined;
   spawnDepth: number | undefined;
+  memoryIncludeUnscoped: boolean | undefined;
   a2aCausalContext: A2AAgentCausalContext | undefined;
   toolResultChunkReader: ExecuteOptions["toolResultChunkReader"];
   toolOutputCaptureFactory?: ExecuteOptions["toolOutputCaptureFactory"];
@@ -208,6 +210,7 @@ export async function executeAuthorizedToolInvocation(
     invocationRuntimeAllowedDirectories,
     supportsA2AParentDelivery,
     spawnDepth,
+    memoryIncludeUnscoped,
     a2aCausalContext,
     toolResultChunkReader,
     toolOutputCaptureFactory,
@@ -673,6 +676,17 @@ export async function executeAuthorizedToolInvocation(
         };
       }
     : undefined;
+  // Live shell output reaches the renderer through the same DLP masker as the
+  // final display result (Step 7b), credentials included when PII redaction is
+  // off, and nothing is delivered before it is masked.
+  const onToolOutput = callbacks?.onToolOutput;
+  const liveOutputPii = isPiiRedactionEnabled();
+  const liveOutputRelay = source === "builtin" && hostShellExecutionPlan && onToolOutput
+    ? createMaskedProgressRelay(
+        (text) => onToolOutput(toolUse.name, text, meta),
+        (text) => maskSensitiveData(text, { pii: liveOutputPii }).masked,
+      )
+    : undefined;
   // Undefined for a builtin, and for a plugin whose data root is not the
   // host's real directory — a replaced root grants nothing.
   const ownerPluginSandboxRoot = tool.pluginId ? resolveOwnerPluginSandboxRoot(tool.pluginId) : undefined;
@@ -699,6 +713,7 @@ export async function executeAuthorizedToolInvocation(
       // C3(b): spawn depth visible to tools — `agent_spawn` reads this
       // and refuses when >= 1 (a sub-agent cannot itself spawn).
       spawnDepth: spawnDepth ?? 0,
+      ...(memoryIncludeUnscoped === true ? { memoryIncludeUnscoped: true } : {}),
       supportsA2AParentDelivery: supportsA2AParentDelivery === true,
       ...(invocationPermissionContext.approvalSurface
         ? { approvalSurface: invocationPermissionContext.approvalSurface }
@@ -708,6 +723,7 @@ export async function executeAuthorizedToolInvocation(
       // 라이프사이클 이벤트에 함께 실어 보냄.
       toolUseId: toolUse.id,
       ...(captureOutput ? { toolOutputCaptureFactory: captureOutput } : {}),
+      ...(liveOutputRelay ? { [TOOL_OUTPUT_PROGRESS_METADATA_KEY]: liveOutputRelay } : {}),
       trustOrigin: invocationPermissionContext.trustOrigin,
       ...(toolResultChunkReader
         ? { [TOOL_RESULT_CHUNK_READER_METADATA_KEY]: toolResultChunkReader }
@@ -851,6 +867,9 @@ export async function executeAuthorizedToolInvocation(
     abortSignal,
     toolUse.name,
   );
+  // A tool that never closed its stream (an error path) still releases what
+  // the relay held, masked, before the call's completion is reported.
+  liveOutputRelay?.end();
   const cancellationSettlement =
     !outcome.ok &&
     (outcome.reason === "ceiling" || outcome.reason === "user-abort") &&

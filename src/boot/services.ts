@@ -24,6 +24,7 @@ import { ToolRegistry } from "../tools/registry.js";
 import { createFileTools } from "../tools/file-tools.js";
 import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
 import { createMemoryWriteTool } from "../tools/memory-write.js";
+import { createMemoryRecallTools } from "../tools/memory-recall.js";
 import {
   BashTool,
   PowerShellTool,
@@ -240,6 +241,11 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   // built-in policy auto-allows ordinary local saves while retaining explicit
   // deny, strict-mode, and staged-origin gates in PermissionManager.
   toolRegistry.register(createMemoryWriteTool({ memoryManager }));
+  // memory_search / memory_read (read) and memory_delete (write, candidates
+  // only, not auto-approved): recall companions on the same store and scope.
+  for (const tool of createMemoryRecallTools({ memoryManager })) {
+    toolRegistry.register(tool);
+  }
   // Background-shell companions to `bash` (run_in_background): read incremental
   // output and terminate by shell id. The shell registry is a module singleton
   // (like managed-child-processes); these tools scope every lookup to the
