@@ -34,6 +34,12 @@ vi.mock("../../gated.js", async (importOriginal) => ({
 // Every group's frames leave through one adapter subscription; releasing the
 // group must let go of it. The adapter is real except that the unsubscribe
 // it hands back is observable.
+vi.mock("../../../core/custom-commands.js", () => ({
+  listCustomCommands: vi.fn(async (projectRoot?: string) => [
+    { name: "from-project", scope: "project", description: projectRoot ?? "" },
+  ]),
+}));
+
 const unsubscribes: ReturnType<typeof vi.fn>[] = [];
 vi.mock("../../../api/platform-conversation-legacy-adapter.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../api/platform-conversation-legacy-adapter.js")>();
@@ -89,6 +95,7 @@ type FakeLoop = {
   };
   refreshProvider: () => void;
   resetAndResume: ReturnType<typeof vi.fn>;
+  getSessionProjectContext: () => { projectRoot?: string };
 };
 
 function fakeLoop(id: string, seed: unknown[] = []): FakeLoop {
@@ -123,6 +130,7 @@ function fakeLoop(id: string, seed: unknown[] = []): FakeLoop {
       restore: () => {},
     }),
     refreshProvider: () => {},
+    getSessionProjectContext: () => ({ projectRoot: `/projects/${id}` }),
     resetAndResume: vi.fn(async (sessionId: string) => {
       loop.sessionId = sessionId;
       return { ok: true, compacted: false, compactedAt: null, removedMessageCount: 0 };
@@ -224,6 +232,16 @@ describe("ave:chat:* with chat groups", () => {
     expect(() => invoke(CHANNELS.chat.hasProvider)).toThrow("chat-group-required");
     expect(() => invoke(CHANNELS.chat.hasProvider, "   ")).toThrow("chat-group-required");
     expect(resolveChatGroupLoop).not.toHaveBeenCalled();
+  });
+
+  it("lists custom commands from the project of the tile that asked", async () => {
+    const { invoke } = await registerWithGroups();
+    const listed = async (group: string) =>
+      ((await invoke(CHANNELS.chat.listCustomCommands, group)) as { commands: Array<{ description: string }> })
+        .commands.map((command) => command.description);
+    expect(await listed("group-2")).toEqual(["/projects/group-2"]);
+    expect(await listed(MAIN_CHAT_GROUP_ID)).toEqual([`/projects/${MAIN_CHAT_GROUP_ID}`]);
+    await expect(Promise.resolve().then(() => invoke(CHANNELS.chat.listCustomCommands))).rejects.toThrow("chat-group-required");
   });
 
   it("runs each group on its own loop, and the primary on the primary", async () => {

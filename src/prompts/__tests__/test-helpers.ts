@@ -15,7 +15,7 @@ export function makePromptMemorySource(
   return {
     getAgentsMd: vi.fn(() => ""),
     getAgentsCustomMd: vi.fn(() => ""),
-    getProjectAgentsMd: vi.fn((projectRoot: string) => ({ projectRoot, layers: [], totalBytes: 0 })),
+    getProjectAgentsMd: vi.fn((projectRoot: string) => ({ projectRoot, layers: [], totalBytes: 0, watchedPaths: [] })),
     getPromptUserPreferences: vi.fn(() => ""),
     getPromptMemoryIndex: vi.fn(() => ""),
     getPromptLongTermMemoryOverview: vi.fn(() => ""),

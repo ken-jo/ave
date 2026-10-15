@@ -11,9 +11,11 @@ import { isValidSessionId, type SessionKind } from "../../memory/memory-manager.
 import type { GenericMessage } from "../llm/types.js";
 import type { WorkspaceRootRevocationOptions } from "./types.js";
 import { normalizeToolPairInvariant } from "../conversation-history.js";
-import { backgroundShellManager } from "../../tools/shell-tools.js";
+import { endShellSession } from "../../tools/shell-tools.js";
+import { disposeSessionFileReads } from "../../tools/file-read-state.js";
 import { createTracer } from "../../observability/conversation-trace.js";
 import { estimateMessagesTokens } from "../auto-compact.js";
+import { withSummaryBoundary } from "../structured-compact.js";
 import { createLogger } from "../../lib/logger.js";
 import { projectBasename, projectRootEquals } from "../../shared/project-identity.js";
 import { createWorkspaceRootRevocationFilter } from "../../permissions/workspace-root-lifecycle.js";
@@ -83,8 +85,8 @@ async function settleOutgoingSession(
   lease: SessionTransitionLease,
 ): Promise<void> {
   self.assertSessionTransitionLease(lease);
-  backgroundShellManager.disposeSession(lease.sessionId);
-  const report = await backgroundShellManager.settleSessionCleanup(lease.sessionId);
+  disposeSessionFileReads(lease.sessionId);
+  const report = await endShellSession(lease.sessionId);
   self.assertSessionTransitionLease(lease);
   if (report?.state === "cleanup-unproven") {
     throw new Error("workload-broker:session-cleanup-unproven");
@@ -119,8 +121,9 @@ function applyFreshSessionState(
   self.lastTurnToolNames = null;
   self.compactNum = 0;
   self.rateLimitRecoveryAttempted = false;
+  self.resetSessionModelOverride();
+  self.gitIgnoreVerdicts.clear();
   self.tracer = createTracer(self.sessionId);
-  self.deps.systemPromptBuilder.setSummaryPreamble?.(null);
 }
 
 
@@ -307,6 +310,8 @@ export async function loadSession(
     self.sessionRoutineId = sessionMeta?.routineId ?? null;
     self.sessionRoutineTitle = sessionMeta?.routineTitle ?? null;
     self.sessionAdditionalDirectories = [];
+    self.resetSessionModelOverride();
+    self.gitIgnoreVerdicts.clear();
     applyProjectContext(self, sessionMeta?.projectRoot
       ? {
           projectRoot: sessionMeta.projectRoot,
@@ -314,7 +319,11 @@ export async function loadSession(
         }
       : self.deps.getDefaultProject?.());
     self.history.clear();
-    self.history.restore(normalized.messages);
+    self.history.restore(withSummaryBoundary(normalized.messages, {
+      compactNum: sessionMeta?.branchedFromCompactNum ?? 0,
+      summary: sessionMeta?.summaryPreamble,
+      ...(sessionMeta?.branchedAt !== undefined ? { createdAt: sessionMeta.branchedAt } : {}),
+    }));
     self.cumulativeUsage = { inputTokens: 0, outputTokens: 0 };
     self.lastRoundProviderInputTokens = 0;
     self.lastReportedSubscriptionContextWindow = null;
@@ -335,9 +344,6 @@ export async function loadSession(
       0,
     ) ?? 0;
     self.tracer = createTracer(self.sessionId);
-    // Inject rolling summary preamble from loaded session metadata.
-    const preamble = sessionMeta?.summaryPreamble ?? null;
-    self.deps.systemPromptBuilder.setSummaryPreamble?.(preamble);
     return true;
   }
 
@@ -437,7 +443,15 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
       );
     }
 
-    const forkMessages = self.deps.memoryManager.rehydrateToolResultArtifacts(self.sessionId, repaired) as GenericMessage[];
+    const rehydrated = self.deps.memoryManager.rehydrateToolResultArtifacts(self.sessionId, repaired) as GenericMessage[];
+    const forkMessages = target.summary
+      ? withSummaryBoundary(rehydrated, {
+          compactNum,
+          summary: target.summary,
+          trigger: target.trigger,
+          createdAt: target.triggeredAt,
+        })
+      : rehydrated;
     await self.deps.memoryManager.saveSession(newSessionId, forkMessages);
 
     // 브랜치 세션 metadata — checkpoint/fork provenance + prior summary.
@@ -452,7 +466,8 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
       branchedAt: new Date().toISOString(),
     });
 
-    const lastMessageRole = forkMessages[forkMessages.length - 1]?.role ?? null;
+    // The transcript decides whether the fork resumes; a prepended summary row does not.
+    const lastMessageRole = rehydrated[rehydrated.length - 1]?.role ?? null;
     const shouldAutoContinue = lastMessageRole === "user";
 
     log.info(`branchFromCheckpoint: new session ${newSessionId} from ${self.sessionId} @ compact #${compactNum}`);

@@ -165,6 +165,16 @@ export type PlatformConversationEvent =
     readonly durationMs: number;
     readonly ownerDetail: ConversationToolEndOwnerDetail;
   }
+  | {
+    /**
+     * Live output of a running host shell tool, coalesced and capped by the
+     * producer. Display only: `tool.completed` still carries the result.
+     */
+    readonly kind: "tool.output.delta";
+    readonly tool: ConversationToolReference;
+    /** Command output can hold user and private material. */
+    readonly ownerDetail: { readonly text: string };
+  }
   | { readonly kind: "permission.reviewed"; readonly review: ConversationPermissionReview }
   | {
     readonly kind: "turn.error";
@@ -451,6 +461,10 @@ export function projectSharedConversationEvent(
         kind: "tool.state",
         state: event.cancelled ? "cancelled" : event.isError ? "failed" : "completed",
       };
+    case "tool.output.delta":
+      // Owner-only: command output never crosses the shared projection, and
+      // `tool.state` already tells a shared surface the call is running.
+      return undefined;
     case "permission.reviewed": {
       if (event.review.status !== "needs_approval") return undefined;
       const tool = sharedApprovalToolIdentifier(event.review.tool);

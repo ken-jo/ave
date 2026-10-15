@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { InputClassifier } from "../../core/input-classifier.js";
 import { RouteEngine } from "../../core/route-engine.js";
@@ -11,7 +11,7 @@ import type { GenericMessage, LLMProvider, StreamEvent, StreamTurnParams,
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { createReadToolResultChunkTool } from "../../tools/tool-result-chunk.js";
-import { createWebFetchTool } from "../../tools/web-fetch.js";
+import { createWebFetchTool, fenceWebContent } from "../../tools/web-fetch.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { MAX_AGENT_SPAWNS_PER_ROUND } from "../../shared/subagent-policy.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
@@ -121,8 +121,8 @@ describe("ConversationLoop queryLoop", () => {
     }),
     ).rejects.toThrow("prompt assembly failed");
 
-    expect(setOriginSource).toHaveBeenNthCalledWith(1, "overlay:test");
-    expect(setOriginSource).toHaveBeenLastCalledWith(null);
+    // The staged origin reaches the turn context, not the system prompt.
+    expect(setOriginSource).not.toHaveBeenCalled();
     expect(setActiveSessionId).toHaveBeenNthCalledWith(1, expect.any(String));
     expect(setActiveSessionId).toHaveBeenLastCalledWith(null);
     expect(setActiveRolePrompt).toHaveBeenNthCalledWith(1, {
@@ -478,6 +478,73 @@ describe("ConversationLoop queryLoop", () => {
       const result = await loop.runTurn("/help", undefined, undefined, { inputOrigin: "user-keyboard" });
       expect(result.route).toBe("command");
       expect(provider.messages).toHaveLength(0);
+    });
+
+    describe("next to a custom command file of the same name", () => {
+      const COMMAND_BODY = "COMMAND FILE BODY for $ARGUMENTS";
+      const originalHome = process.env.AVE_HOME;
+      let dir = "";
+
+      function makeProjectSlashLoop(isSkillName: (name: string) => boolean) {
+        dir = mkdtempSync(join(tmpdir(), "ave-slash-skill-vs-command-"));
+        process.env.AVE_HOME = join(dir, "home");
+        const project = join(dir, "project");
+        const commands = join(project, ".ave", "commands");
+        mkdirSync(commands, { recursive: true });
+        writeFileSync(join(commands, "email-polish.md"), COMMAND_BODY);
+        const made = makeSlashLoop(isSkillName);
+        made.loop.initializeConversation("main", { projectRoot: project, projectName: "project" });
+        return made;
+      }
+
+      function userDisplayText(loop: ConversationLoop): unknown {
+        return loop.history.getMessages().find((message) => message.role === "user")?.meta?.displayText;
+      }
+
+      afterEach(async () => {
+        if (originalHome === undefined) delete process.env.AVE_HOME;
+        else process.env.AVE_HOME = originalHome;
+        if (dir) await cleanupTmpDir(dir);
+        dir = "";
+      });
+
+      it("runs the keyboard-typed command file, not the skill", async () => {
+        const { loop, provider } = makeProjectSlashLoop((name) => name === "email-polish");
+        const result = await loop.runTurn("/email-polish tighten this", undefined, undefined, {
+          inputOrigin: "user-keyboard",
+        });
+        expect(result.route).toBe("llm");
+        const sent = JSON.stringify(provider.messages[0]);
+        expect(sent).toContain("COMMAND FILE BODY for tighten this");
+        expect(userDisplayText(loop)).toBe("/email-polish tighten this");
+      });
+
+      it("sends a non-keyboard /<skill> to the model as plain text, without the command file", async () => {
+        // A surface other than the keyboard cannot invoke slash commands: the
+        // leading slash is stripped before routing, so neither the command file
+        // nor the skill route is reached.
+        const { loop, provider } = makeProjectSlashLoop((name) => name === "email-polish");
+        const result = await loop.runTurn("/email-polish tighten this", undefined, undefined, {
+          inputOrigin: "tailnet-surface",
+        });
+        expect(result.route).toBe("llm");
+        const sent = JSON.stringify(provider.messages[0]);
+        expect(sent).toContain("\"content\":\"email-polish tighten this\"");
+        expect(sent).not.toContain("COMMAND FILE BODY");
+        expect(userDisplayText(loop)).toBeUndefined();
+      });
+
+      it("sends a keyboard /<skill> with no command file of its name to the model", async () => {
+        const { loop, provider } = makeProjectSlashLoop((name) => name === "tone-check");
+        const result = await loop.runTurn("/tone-check this draft", undefined, undefined, {
+          inputOrigin: "user-keyboard",
+        });
+        expect(result.route).toBe("llm");
+        const sent = JSON.stringify(provider.messages[0]);
+        expect(sent).toContain("/tone-check this draft");
+        expect(sent).not.toContain("COMMAND FILE BODY");
+        expect(userDisplayText(loop)).toBeUndefined();
+      });
     });
   });
 
@@ -1104,7 +1171,9 @@ describe("ConversationLoop queryLoop", () => {
     const url = "https://93.184.216.34/document";
     const input = toolName === "web_fetch" ? { url } : {};
     const offset = toolName === "web_fetch" ? 6_000 : 0;
-    const longContent = toolName === "web_fetch" ? JSON.stringify({ url, content: body, truncated: false }) : body;
+    const longContent = toolName === "web_fetch"
+      ? JSON.stringify({ url, status: 200, contentType: "text/plain", format: "text", content: fenceWebContent(body) })
+      : body;
     toolRegistry.register(
       toolName === "web_fetch" ? createWebFetchTool(vi.fn(async () => new Response(body)) as unknown as typeof fetch) : createDynamicTool({
         name: "long_tool",
@@ -1239,7 +1308,6 @@ describe("ConversationLoop queryLoop", () => {
         },
         systemPromptBuilder: {
           build: () => "system",
-          setSummaryPreamble: vi.fn(),
         },
         inputClassifier: new InputClassifier(),
         routeEngine: new RouteEngine(),

@@ -9,7 +9,7 @@ import type {
 import { projectOpenAiMessages, projectOpenAiTools } from "./request.js";
 import { estimateRequestInputProjection } from "../../request-input-projection.js";
 
-type OpenAiTransport = Pick<LLMProvider, "streamTurn" | "projectRequestInput">;
+type OpenAiTransport = Pick<LLMProvider, "streamTurn" | "projectRequestInput" | "listSubscriptionModels">;
 
 export type OpenAiProviderConnection =
   | {
@@ -44,6 +44,13 @@ export class OpenAiProvider implements LLMProvider {
         ...(connection.selection.model === undefined ? {} : { model: connection.selection.model }),
       });
     }
+  }
+
+  listSubscriptionModels(): Promise<readonly string[]> {
+    if (this.connectionKind !== "codex-subscription" || !this.transport.listSubscriptionModels) {
+      return Promise.reject(new Error("model catalog unavailable for this connection"));
+    }
+    return this.transport.listSubscriptionModels();
   }
 
   projectRequestInput(

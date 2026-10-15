@@ -73,6 +73,11 @@ export interface ToolResult {
 
 export interface ToolExecutorCallbacks {
   onToolStart?: (name: string, input: Record<string, unknown>, meta: ToolCallMeta) => void;
+  /**
+   * Display-only live output of a running host shell tool, coalesced and
+   * capped. The tool's final result is still delivered by `onToolEnd`.
+   */
+  onToolOutput?: (name: string, text: string, meta: ToolCallMeta) => void;
   onPermissionReview?: (event: PermissionReviewEvent) => void;
   onToolEnd?: (
     name: string,
@@ -155,6 +160,12 @@ export interface ExecuteOptions {
   sessionId?: string;
   overlayTriggerOrigin?: string | null;
   spawnDepth?: number;
+  /**
+   * The conversation runs in the default project, where prompt memory
+   * selection also includes memories saved before project scoping existed.
+   * Carried to the memory tools so they see the same set.
+   */
+  memoryIncludeUnscoped?: boolean;
   supportsA2AParentDelivery?: boolean;
   approvalReasonPrefix?: string;
   a2aCausalContext?: A2AAgentCausalContext;

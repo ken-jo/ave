@@ -36,6 +36,7 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   "ave:settings:delete-web-api-key": "mutating",
   // Chat
   "ave:chat:has-provider": "public-read",
+  "ave:chat:list-custom-commands": "sensitive",
   "ave:chat:send": "sensitive",
   "ave:chat:new": "mutating",
   "ave:chat:sessions": "public-read",

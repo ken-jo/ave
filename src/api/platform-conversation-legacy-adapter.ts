@@ -101,6 +101,12 @@ function projectPlatformConversationEventToLegacyChatFrame(
         ...(event.ownerDetail.uiPayload === undefined ? {} : { uiPayload: event.ownerDetail.uiPayload }),
         durationMs: event.durationMs,
       }));
+    case "tool.output.delta":
+      return streamFrame(streamChannel, withStreamId({
+        type: "tool_output",
+        ...legacyToolReference(event.tool),
+        text: event.ownerDetail.text,
+      }));
     case "permission.reviewed":
       return streamFrame(streamChannel, withStreamId({
         type: "permission_review",

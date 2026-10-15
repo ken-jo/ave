@@ -8,7 +8,7 @@
  *   - setSessionTitle("") normalises to null (no injection)
  *   - sanitizeTitle() strips dangerous characters (newline, quote, backslash, angle brackets)
  *   - sanitizeTitle() + setSessionTitle() whitespace-only → normalised to null
- *   - Section 8 (Rolling Summary Preamble) injected when preamble set, omitted otherwise
+ *   - The compaction summary never enters the system prompt
  */
 import { afterEach, describe, it, expect, expectTypeOf, vi } from "vitest";
 
@@ -61,7 +61,7 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
     expect(prompt).toContain("outside");
   });
 
-  it("passes the immutable current query to selected-memory lookup", () => {
+  it("ranks memory notes against the turn's query in the turn context, not the system prompt", () => {
     const selectRelevantMemories = vi.fn((query: string) => ({
       entries: [],
       context: `selected:${query}`,
@@ -72,10 +72,12 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
       toolRegistry: new ToolRegistry(),
     });
 
-    const prompt = builder.build({ memoryQuery: "release budget" });
+    const turnContext = builder.buildTurnContext("release budget", null);
 
     expect(selectRelevantMemories).toHaveBeenCalledWith("release budget", undefined);
-    expect(prompt).toContain("selected:release budget");
+    expect(turnContext).toContain("<ave-user-memory>");
+    expect(turnContext).toContain("selected:release budget");
+    expect(builder.build()).not.toContain("selected:");
   });
 
 
@@ -111,10 +113,17 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
     expect(getPromptLongTermMemoryOverview).toHaveBeenLastCalledWith(undefined);
     expect(defaultPrompt).toContain("<ave-long-term-memory-overview>");
     expect(defaultPrompt).toContain("GLOBAL-OVERVIEW<\\/ave-long-term-memory-overview>");
-    expect(defaultPrompt).toContain("<ave-user-memory>");
-    expect(defaultPrompt.indexOf("<ave-long-term-memory-overview>"))
-      .toBeLessThan(defaultPrompt.indexOf("<ave-user-memory>"));
     expect(defaultPrompt.split("</ave-long-term-memory-overview>").length - 1).toBe(1);
+    // Raw notes are ranked per turn and fenced separately in the turn context.
+    expect(defaultPrompt).not.toContain("RAW-MEMORY-NOTES");
+    const turnContext = builder.buildTurnContext("", null);
+    expect(turnContext).toContain("<ave-user-memory>");
+    expect(turnContext).toContain("RAW-MEMORY-NOTES");
+    expect(selectRelevantMemories).toHaveBeenLastCalledWith("", {
+      projectRoot: "C:\\workspace\\default",
+      projectName: "default",
+      includeUnscoped: true,
+    });
 
     builder.setProjectContext({
       projectRoot: "C:\\workspace\\alpha",
@@ -296,7 +305,8 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
     return new SystemPromptBuilder({
       memoryManager: makePromptMemorySource({
         getAgentsMd: () => "GLOBAL personal agents",
-        getProjectAgentsMd,
+        // The builder never reads `watchedPaths`; it exists for the memory cache.
+        getProjectAgentsMd: () => ({ ...getProjectAgentsMd(), watchedPaths: [] }),
       }),
       toolRegistry: new ToolRegistry(),
     });
@@ -352,39 +362,41 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
   it("injects current session title when set", () => {
     const builder = makeSystemPromptBuilder();
     builder.setSessionTitle("메일 조회");
-    const prompt = builder.build();
+    const prompt = builder.buildTurnContext("", null);
     expect(prompt).toContain('현재 세션 제목: "메일 조회"');
+    // The title rides in the turn context; the system prompt stays byte-stable.
+    expect(builder.build()).not.toContain("메일 조회");
   });
 
   it("omits session title line when title is null", () => {
     const builder = makeSystemPromptBuilder();
     builder.setSessionTitle(null);
-    const prompt = builder.build();
+    const prompt = builder.buildTurnContext("", null);
     expect(prompt).not.toContain("현재 세션 제목:");
   });
 
   it("omits session title line when title is empty string (normalised to null)", () => {
     const builder = makeSystemPromptBuilder();
     builder.setSessionTitle("");
-    const prompt = builder.build();
+    const prompt = builder.buildTurnContext("", null);
     expect(prompt).not.toContain("현재 세션 제목:");
   });
 
   it("updates session title between turns", () => {
     const builder = makeSystemPromptBuilder();
     builder.setSessionTitle("첫 번째 제목");
-    expect(builder.build()).toContain('현재 세션 제목: "첫 번째 제목"');
+    expect(builder.buildTurnContext("", null)).toContain('현재 세션 제목: "첫 번째 제목"');
     builder.setSessionTitle("두 번째 제목 — 업데이트");
-    expect(builder.build()).toContain('현재 세션 제목: "두 번째 제목 — 업데이트"');
-    expect(builder.build()).not.toContain("첫 번째 제목");
+    expect(builder.buildTurnContext("", null)).toContain('현재 세션 제목: "두 번째 제목 — 업데이트"');
+    expect(builder.buildTurnContext("", null)).not.toContain("첫 번째 제목");
   });
 
   it("clears session title when set back to null", () => {
     const builder = makeSystemPromptBuilder();
     builder.setSessionTitle("어떤 제목");
-    expect(builder.build()).toContain("현재 세션 제목:");
+    expect(builder.buildTurnContext("", null)).toContain("현재 세션 제목:");
     builder.setSessionTitle(null);
-    expect(builder.build()).not.toContain("현재 세션 제목:");
+    expect(builder.buildTurnContext("", null)).not.toContain("현재 세션 제목:");
     // Continuity guard must still be present after clearing
     expect(builder.build()).toContain("## 대화 연속성 출력 규칙");
   });
@@ -394,7 +406,7 @@ describe("SystemPromptBuilder — sanitizeTitle via setSessionTitle", () => {
   it("strips newline characters (\\n, \\r) from title", () => {
     const builder = makeSystemPromptBuilder();
     builder.setSessionTitle("제목\n주입\r시도");
-    const prompt = builder.build();
+    const prompt = builder.buildTurnContext("", null);
     // newlines replaced by spaces and trimmed — result should not contain raw newlines inside quotes
     expect(prompt).not.toContain("제목\n주입");
     expect(prompt).not.toContain("제목\r주입");
@@ -404,7 +416,7 @@ describe("SystemPromptBuilder — sanitizeTitle via setSessionTitle", () => {
   it("strips double-quote characters from title", () => {
     const builder = makeSystemPromptBuilder();
     builder.setSessionTitle('메일 "이메일" 조회');
-    const prompt = builder.build();
+    const prompt = builder.buildTurnContext("", null);
     // double quotes inside title are replaced with spaces
     expect(prompt).not.toContain('"메일 "이메일"');
     expect(prompt).toContain("현재 세션 제목:");
@@ -413,7 +425,7 @@ describe("SystemPromptBuilder — sanitizeTitle via setSessionTitle", () => {
   it("strips backslash characters from title", () => {
     const builder = makeSystemPromptBuilder();
     builder.setSessionTitle("C:\\Users\\test 파일");
-    const prompt = builder.build();
+    const prompt = builder.buildTurnContext("", null);
     expect(prompt).not.toContain("C:\\Users");
     expect(prompt).toContain("현재 세션 제목:");
   });
@@ -421,7 +433,7 @@ describe("SystemPromptBuilder — sanitizeTitle via setSessionTitle", () => {
   it("strips angle brackets (<>) to prevent prompt-template injection", () => {
     const builder = makeSystemPromptBuilder();
     builder.setSessionTitle("<script>악의적 태그</script>");
-    const prompt = builder.build();
+    const prompt = builder.buildTurnContext("", null);
     expect(prompt).not.toContain("<script>");
     expect(prompt).not.toContain("</script>");
     // content is preserved but angle brackets removed
@@ -432,7 +444,7 @@ describe("SystemPromptBuilder — sanitizeTitle via setSessionTitle", () => {
     const builder = makeSystemPromptBuilder();
     const longTitle = "가".repeat(60);
     builder.setSessionTitle(longTitle);
-    const prompt = builder.build();
+    const prompt = builder.buildTurnContext("", null);
     // 50-char cap: the stored title must not exceed 50 chars
     expect(prompt).toContain("현재 세션 제목:");
     expect(prompt).not.toContain("가".repeat(51));
@@ -442,7 +454,7 @@ describe("SystemPromptBuilder — sanitizeTitle via setSessionTitle", () => {
     const builder = makeSystemPromptBuilder();
     // A title that is all spaces should become empty after trim → treated as null
     builder.setSessionTitle("   ");
-    const prompt = builder.build();
+    const prompt = builder.buildTurnContext("", null);
     expect(prompt).not.toContain("현재 세션 제목:");
   });
 
@@ -450,12 +462,12 @@ describe("SystemPromptBuilder — sanitizeTitle via setSessionTitle", () => {
     const builder = makeSystemPromptBuilder();
     // Only angle brackets and newlines — after strip all that remains is spaces → null
     builder.setSessionTitle("<>\r\n<>");
-    const prompt = builder.build();
+    const prompt = builder.buildTurnContext("", null);
     expect(prompt).not.toContain("현재 세션 제목:");
   });
 });
 
-describe("SystemPromptBuilder — Section 8 Rolling Summary Preamble (always-on)", () => {
+describe("SystemPromptBuilder — Conversation Continuity Guard (always-on)", () => {
   it("Section 9.9 is always present (no gate)", () => {
     const builder = makeSystemPromptBuilder();
     const prompt = builder.build();
@@ -464,17 +476,8 @@ describe("SystemPromptBuilder — Section 8 Rolling Summary Preamble (always-on)
     expect(prompt).not.toContain("<title>10-20자 한국어 제목</title>");
   });
 
-  it("Section 8 (Rolling Summary Preamble) appears when preamble set", () => {
-    const builder = makeSystemPromptBuilder();
-    builder.setSummaryPreamble("이전 세션 요약 내용입니다.");
-    const prompt = builder.build();
-    expect(prompt).toContain("<prior-context-summary>");
-    expect(prompt).toContain("이전 세션 요약 내용입니다.");
-  });
-
-  it("Section 8 is absent when preamble is null (first-turn / fresh session)", () => {
-    const builder = makeSystemPromptBuilder();
-    const prompt = builder.build();
+  it("never carries a compaction summary (it lives in the boundary row)", () => {
+    const prompt = makeSystemPromptBuilder().build();
     expect(prompt).not.toContain("<prior-context-summary>");
   });
 });
@@ -663,7 +666,7 @@ describe("SystemPromptBuilder — response language", () => {
 
   it("tells an interactive run to answer in the user's language, not the prompt's", () => {
     // Naming the locale is not the same as saying what to do with it. The
-    // packaged documents in this prompt are written in one fixed language, and
+    // packaged documents in the system prompt are written in one fixed language, and
     // without this rule the model answers in the language it is READING.
     process.argv = ["electron", "."];
     const prompt = makeSystemPromptBuilder().build();

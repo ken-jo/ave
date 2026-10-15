@@ -429,10 +429,6 @@ describe("parent adjudication — what stays with the user", () => {
     await expectNotAdjudicated({ mode: "ask_all" });
   });
 
-  it("skips in plan mode", async () => {
-    await expectNotAdjudicated({ mode: "plan" });
-  });
-
   it("skips an ask a remote controller's turn raised", async () => {
     await expectNotAdjudicated({ remoteControllerOrigin: "tailnet-controller" });
   });

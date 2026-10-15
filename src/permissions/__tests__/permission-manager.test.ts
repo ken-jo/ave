@@ -9,6 +9,7 @@ import {
   normalizeTier,
   tierRank,
   extractGrantPath,
+  extractGrantPaths,
   isStrictPathDescendant,
 } from "../permission-manager.js";
 import { updatePermissionsFile } from "../permissions-store.js";
@@ -1260,6 +1261,27 @@ describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
       await cleanupTmpDir(outside);
     }
   });
+
+  it("prunes an apply_patch grant when one of its paths is under the removed root", async () => {
+    const removed = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-prune-patch-removed-")));
+    const kept = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-prune-patch-kept-")));
+    try {
+      const straddling = `apply_patch:${JSON.stringify({
+        operation: "apply_patch",
+        paths: [join(kept, "a.ts"), join(removed, "b.ts")],
+      })}`;
+      const elsewhere = `apply_patch:${JSON.stringify({ operation: "apply_patch", paths: [join(kept, "c.ts")] })}`;
+      await pm.addAlwaysAllowedPersist(straddling, "write");
+      await pm.addAlwaysAllowedPersist(elsewhere, "write");
+      const pruned = await pm.prunePathGrantsUnderRoot(removed);
+      expect(pruned.map((grant) => grant.pattern)).toEqual([straddling]);
+      expect(pruned[0]).toMatchObject({ toolName: "apply_patch" });
+      expect(mockStore.rules.map((rule) => rule.pattern)).toEqual([elsewhere]);
+    } finally {
+      await cleanupTmpDir(removed);
+      await cleanupTmpDir(kept);
+    }
+  });
 });
 
 describe("path-grant prune helpers (#1493)", () => {
@@ -1268,6 +1290,16 @@ describe("path-grant prune helpers (#1493)", () => {
     expect(extractGrantPath("write_file:path:C:\\Users\\example\\a.md")).toBe("C:\\Users\\example\\a.md");
     expect(extractGrantPath("web_fetch")).toBeNull();
     expect(extractGrantPath("write_file:path:")).toBeNull();
+  });
+
+  it("extractGrantPaths reads single-path grants and a multi-path key's paths list", () => {
+    expect(extractGrantPaths("write_file:path:/home/example/a.md")).toEqual(["/home/example/a.md"]);
+    expect(extractGrantPaths(
+      'apply_patch:{"operation":"apply_patch","paths":["/w/a.ts","/w/b.ts"]}',
+    )).toEqual(["/w/a.ts", "/w/b.ts"]);
+    expect(extractGrantPaths('copy_path:{"operation":"copy_path","sourcePath":"/w/a"}')).toEqual([]);
+    expect(extractGrantPaths('apply_patch:{"paths":[]}')).toEqual([]);
+    expect(extractGrantPaths("web_fetch")).toEqual([]);
   });
 
   it("isStrictPathDescendant matches descendants, rejects self + sibling-prefix", () => {

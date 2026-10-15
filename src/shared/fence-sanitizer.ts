@@ -11,6 +11,8 @@
  *   · `<ave-memory-consolidation-source>` / `<ave-long-term-memory-overview>` — derived-memory inputs and prompt context
  *   · `<ave-parent-directive>` — a parent agent's mid-run directive to its own sub-agent
  *     (the host label naming the parent sits OUTSIDE; the parent's words are the body)
+ *   · `<web-content trust="untrusted-web-data">` — a page `web_fetch` retrieved (the
+ *     body is the converted page; the URL and status sit outside in the tool's JSON)
  *   · `<terminal-output trust="untrusted-terminal-data">` — `terminal_read`'s result:
  *     commands and output from the user's terminal, which any program can print into
  *
@@ -40,7 +42,10 @@ export type FenceTag =
   | "ave-memory-consolidation-source"
   | "ave-long-term-memory-overview"
   | "ave-parent-directive"
+  | "prior-context-summary"
+  | "compact-focus"
   | "mcp-resource"
+  | "web-content"
   | "terminal-output";
 
 /**

@@ -291,6 +291,7 @@ describe("preload contextBridge world shape lock", () => {
           "chatGuide": "function",
           "chatHasProvider": "function",
           "chatImport": "function",
+          "chatListCustomCommands": "function",
           "chatMainActiveState": "function",
           "chatNew": "function",
           "chatRetryEffort": "function",
