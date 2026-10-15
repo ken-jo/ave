@@ -7,6 +7,7 @@ import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
+import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
 import { RUNNER_DECISIONS } from "./fixtures/runner-decisions.js";
 
 const CWD = "/work/project";
@@ -57,14 +58,19 @@ describe("shared runner decisions", () => {
     if (powerShell === "ordinary") expect(inspectPowerShellCommand(command, CWD).exfiltration).toBeNull();
   });
 
-  it.each(RUNNER_DECISIONS.filter((row) => row.bash !== null))
+  it.each(RUNNER_DECISIONS)
   ("applies shell visibility and rule coverage: $command -> $bash", ({ command, bash }) => {
     const manager = runnerManager("shell");
     const result = manager.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command, cwd: CWD },
     });
-    expect(result.decision).toBe(bash === "ordinary" || bash === "floor" ? "ask" : "allow");
+    expect(result.decision).toBe(bash === "ordinary" || bash === "hidden-ordinary" || bash === "floor" ? "ask" : "allow");
     expect(result.forceModal === true).toBe(bash === "floor");
+    if (bash === "normal") {
+      expect(analyzeShellForRules(command)).toMatchObject({ ok: true, hidden: [] });
+      expect(shellExfiltrationSignal(command, CWD)).toBeNull();
+      expect(shellSensitivePathSignal(command, CWD)).toBeNull();
+    }
     if (bash === "ordinary") {
       const shape = analyzeShellForRules(command);
       expect(shape).toMatchObject({ ok: true, hidden: [], allowBlockers: [] });
@@ -72,10 +78,32 @@ describe("shared runner decisions", () => {
       expect(shellExfiltrationSignal(command, CWD)).toBeNull();
       expect(shellSensitivePathSignal(command, CWD)).toBeNull();
       expect(evaluateShellRules(command, { allow: [prefixRule(command)], deny: [], ask: [] }).decision).toBe("allow");
-    } else if (bash === "hidden") {
+    } else if (bash === "hidden" || bash === "hidden-ordinary") {
       const shape = analyzeShellForRules(command);
       expect(shape.ok).toBe(true);
-      if (shape.ok) expect(shape.hidden.length).toBeGreaterThan(0);
+      if (shape.ok) {
+        expect(shape.hidden.length).toBeGreaterThan(0);
+        if (bash === "hidden-ordinary") expect(shape.ordinaryAsk).toMatch(/unknown option/);
+        const rules = shape.commands.map((entry) => prefixRule(entry.raw));
+        expect(evaluateShellRules(command, { allow: rules, deny: [], ask: [] }).decision).toBeNull();
+      }
+    }
+  });
+
+  it.each(SHELL_PREFIX_POLICY.wrappers.filter((wrapper) => wrapperPrefixLength([wrapper, "npm", "test", "--foo"]) === 1))
+  ("retains the wrapped ordinary ask through %s", (wrapper) => {
+    const direct = analyzeShellForRules("npm test --foo");
+    const wrapped = analyzeShellForRules(`${wrapper} npm test --foo`);
+    expect(direct.ok && direct.ordinaryAsk).toBeTruthy();
+    expect(wrapped.ok && wrapped.ordinaryAsk).toBe(direct.ok && direct.ordinaryAsk);
+  });
+
+  it("keeps script visibility through a wrapper with an unknown option", () => {
+    const direct = analyzeShellForRules("bun --foo x.ts");
+    const wrapped = analyzeShellForRules("nohup bun --foo x.ts");
+    expect(direct.ok && direct.hidden.length).toBeGreaterThan(0);
+    expect(wrapped.ok && wrapped.hidden).toEqual(direct.ok && direct.hidden);
+    for (const command of ["bun --foo x.ts", "nohup bun --foo x.ts"]) {
       expect(evaluateShellRules(command, { allow: [prefixRule(command)], deny: [], ask: [] }).decision).toBeNull();
     }
   });

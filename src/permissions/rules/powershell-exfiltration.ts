@@ -77,7 +77,7 @@ import {
   type PowerShellPathBinding,
 } from "./powershell-command-policy.js";
 import { PowerShellFileProvenance } from "./powershell-file-provenance.js";
-import { hiddenCodeReason, isNetworkProgram, packageRunnerInvocation, refusedShellPrefix, SHELL_PREFIX_POLICY, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { hiddenCodeReason, isNetworkProgram, packageRunnerInvocation, refusedShellPrefix, SHELL_PREFIX_POLICY, wrapperPrefixLength, type ShellCommandInput } from "./shell-prefix-policy.js";
 import {
   MULTI_PURPOSE_NETWORK,
   sensitivePathInArgumentText,
@@ -936,13 +936,13 @@ function fileExecutionSignal(stage: PsCommand, feeder: PsCommand | undefined, ct
     const script = nativeInvocation(name, args, ctx).scriptPath;
     const packageTask = PACKAGE_TASK_PROGRAMS.has(ctx.files.executableStem(name))
       && !(args.length === 1 && /^(?:--version|--help|-[vh])$/.test(nativeArguments(args, ctx)[0] ?? ""));
+    if ((packageTask || (!script && policy?.argv && knownNativeData(name, args, ctx)
+      && !policy.argv.info?.includes(nativeArguments(args, ctx)[0]!))) && ctx.files.hasExecutableWrites(packageTask))
+      return fileCode("materialized task input", true);
     if (script) {
       const scriptSignal = materialized(script);
       if (scriptSignal) return scriptSignal;
     }
-    if ((packageTask || (!script && policy?.argv && knownNativeData(name, args, ctx)
-      && !policy.argv.info?.includes(nativeArguments(args, ctx)[0]!))) && ctx.files.hasExecutableWrites(packageTask))
-      return fileCode("materialized task input", true);
     // Bare, untouched script names retain the existing script policy. Explicit
     // paths and call operators remain governed by embedded-code inspection.
     const type = ctx.files.fileType(name);
@@ -1541,7 +1541,8 @@ function nativeInvocation(name: string, args: readonly PsToken[], ctx: Context) 
   const script = prefix === "interpreter" && args.length > 0 && values.every((value) => value !== undefined)
     && argv[1] !== "-" && !argv[1]!.startsWith("-") && reason?.startsWith("code passed to ");
   return { prefix, reason, scriptPath: runner.kind === "script" ? runner.scriptPath : script ? argv[1] : undefined,
-    ordinaryAsk: runner.kind === "unknown" ? runner.reason : undefined };
+    readOnlyConfig: runner.readOnlyConfig,
+    ordinaryAsk: packageRunnerInvocation(argv.slice(wrapperPrefixLength(argv))).ordinaryAsk };
 }
 
 /** Native wrappers and explicit interpreter options retain their code-carrying effects. */
@@ -1549,10 +1550,10 @@ function hasNativeLauncher(cmd: PsCommand, ctx: Context): boolean {
   const { name, args } = headOf(cmd, ctx);
   if (name !== undefined && POWERSHELL_COMMAND_POLICIES[name]?.native) return !knownNativeData(name, args, ctx);
   if (name === undefined || isPowerShell(name) || POWERSHELL_COMMAND_POLICIES[name] || /^[\[$@]/.test(name)) return false;
-  const { prefix, reason, scriptPath } = nativeInvocation(name, args, ctx);
+  const { prefix, reason, scriptPath, readOnlyConfig } = nativeInvocation(name, args, ctx);
   // A refused package prefix becomes a runtime launcher only when it carries arguments.
   return (prefix === "package-runner" && args.length > 0)
-    || prefix === "config-writer" || (reason !== null && scriptPath === undefined);
+    || (prefix === "config-writer" && !readOnlyConfig) || (reason !== null && scriptPath === undefined);
 }
 
 function nativeCommandData(stage: PsCommand, ctx: Context, args = headOf(stage, ctx).args): boolean {
@@ -1793,6 +1794,12 @@ function sensitiveValue(value: PsValue, ctx: Context): string | null {
 function sensitiveValues(pipelines: readonly PsPipeline[], ctx: Context): string | null {
   for (const pipeline of allPipelines(pipelines, ctx.budget)) for (const stage of pipeline.stages) {
     const values = [evaluateValue(stage.tokens, ctx), ...stage.tokens.map((token) => evaluateValue([token], ctx))];
+    const { name, args } = headOf(stage, ctx);
+    // Argument-mode switches can contain attached file values even though they
+    // are not scalar expressions. Use the same candidate scan as other paths.
+    if (name !== undefined && (!POWERSHELL_COMMAND_POLICIES[name] || POWERSHELL_COMMAND_POLICIES[name]?.native)) {
+      for (const text of nativeArguments(args, ctx)) if (text !== undefined) values.push(valueOf(text, false, ctx));
+    }
     for (const value of values) {
       const hit = sensitiveValue(value, ctx);
       if (hit) return `sensitive path argument (${hit})`;
