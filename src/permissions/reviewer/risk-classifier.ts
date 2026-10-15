@@ -66,6 +66,7 @@ import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.
 import type { RiskLevel } from "../../shared/permission-review-status.js";
 import { resolve as resolvePath } from "node:path";
 import { SHELL_EXFIL_VERDICT_REASON, shellExfiltrationSignal } from "../rules/shell-exfiltration.js";
+import { isBrowserToolName, isBrowserUrlToolName } from "../../shared/browser-tools.js";
 
 /** Verdict shape returned by every classifier. */
 export interface RiskVerdict {
@@ -1879,6 +1880,37 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   (ctx) => {
     if (ctx.category !== "shell") return null;
     return { level: "medium", reason: "shell unclassified" };
+  },
+
+  // ── agent browser tools ────────────────────────────────
+  //
+  // Ahead of the generic network/write rules, which grade a builtin with no
+  // URL or path HIGH ("network untrusted host", "write path not declared").
+  // HIGH is once-only at the gate, so those rules would make the browser's
+  // session-scoped origin memory unreachable and turn every click into a
+  // dialog — answered on reflex, which is the outcome the memory exists to
+  // avoid. What the browser tools touch is a page origin the card names:
+  //   · navigate / tab_new carry a model-chosen URL, so they take web_fetch's
+  //     request screen — a URL carrying a credential, an opaque blob, an
+  //     oversized tail or userinfo still escalates to HIGH.
+  //   · every other browser action is MEDIUM: an action on a page, rememberable
+  //     for the session per origin, never persistently.
+  (ctx) => {
+    if (ctx.source !== "builtin" || !isBrowserToolName(ctx.toolName)) return null;
+    if (!isBrowserUrlToolName(ctx.toolName)) {
+      return { level: "medium", reason: "browser page action" };
+    }
+    const screen = screenEgressRequest(ctx.finalInput);
+    switch (screen.outcome) {
+      case "screened":
+        return { level: "high", reason: `${EXFIL_VERDICT_REASON_PREFIX} (${screen.signal})` };
+      case "public-raw-ip":
+        return { level: "medium", reason: PUBLIC_RAW_IP_FETCH_REASON };
+      case "public-benign":
+        return { level: "low", reason: "browser navigation to a public page" };
+      case "not-public":
+        return { level: "medium", reason: "browser navigation to a local or private address" };
+    }
   },
 
   // ── network rules ──────────────────────────────────────

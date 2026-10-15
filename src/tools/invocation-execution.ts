@@ -73,6 +73,7 @@ import {
 } from "../permissions/plugin-operation-grant.js";
 import { errorMessage } from "../shared/error-message.js";
 import { createMaskedProgressRelay, TOOL_OUTPUT_PROGRESS_METADATA_KEY } from "./tool-output-progress.js";
+import { APPROVAL_MEMORY_SCOPE_METADATA_KEY } from "./approval-memory-context.js";
 import {
   authorizationRequiredStateOf,
   issueAuthorizationRequiredControl,
@@ -714,6 +715,12 @@ export async function executeAuthorizedToolInvocation(
       // and refuses when >= 1 (a sub-agent cannot itself spawn).
       spawnDepth: spawnDepth ?? 0,
       ...(memoryIncludeUnscoped === true ? { memoryIncludeUnscoped: true } : {}),
+      // The target-wide scope this call was authorized under (see
+      // approval-memory-context.ts): a tool whose target can move between the
+      // prompt and execution re-checks it here.
+      ...(invocationPermissionContext.approvalMemory?.kind === "key"
+        ? { [APPROVAL_MEMORY_SCOPE_METADATA_KEY]: invocationPermissionContext.approvalMemory.scope }
+        : {}),
       supportsA2AParentDelivery: supportsA2AParentDelivery === true,
       ...(invocationPermissionContext.approvalSurface
         ? { approvalSurface: invocationPermissionContext.approvalSurface }

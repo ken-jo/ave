@@ -33,6 +33,8 @@ import {
 } from "../tools/mcp-resource-tools.js";
 import { createAgentListTool } from "../tools/agent-list.js";
 import { createTerminalReadTool, type TerminalReadToolDeps } from "../tools/terminal-read.js";
+import { createBrowserTools, type BrowserToolDeps } from "../tools/browser-tools.js";
+import type { WebContents } from "electron";
 import { createAgentGuideTool } from "../tools/agent-guide.js";
 import { createAgentSendTool, type AgentSendRuntime } from "../tools/agent-send.js";
 import type { AskUserQuestionGate } from "../main/ask-user-question-gate.js";
@@ -126,6 +128,12 @@ export interface WorkflowToolDeps {
    * would be a schema with nothing behind it, so this stays unset.
    */
   terminalRead?: TerminalReadToolDeps;
+  /**
+   * Register the agent browser tools with the tab registry and the page
+   * actions they drive. Only a host with app windows has browser tabs; unset
+   * elsewhere, like `terminalRead`.
+   */
+  browser?: BrowserToolDeps<WebContents>;
   emitSkillLoad?: (event: SkillLoadEvent) => void;
   acquirePluginSkillGeneration?: NonNullable<SkillLoadToolDeps["acquirePluginGeneration"]>;
   /**
@@ -208,6 +216,9 @@ export function registerBuiltinTools(
   }
   if (workflowDeps?.terminalRead) {
     builtins.push(createTerminalReadTool(workflowDeps.terminalRead));
+  }
+  if (workflowDeps?.browser) {
+    builtins.push(...createBrowserTools(workflowDeps.browser));
   }
   if (workflowDeps?.getAgentSendRuntime) {
     builtins.push(createAgentSendTool({

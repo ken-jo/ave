@@ -31,6 +31,7 @@ import type { WebContents } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { sendToWebContents } from "../safe-send.js";
+import { setSideChatOwnerContents } from "../../main/app-state.js";
 import { createLogger } from "../../lib/logger.js";
 import { createLegacyChatStreamEventSink } from "../../api/platform-conversation-legacy-adapter.js";
 import type { GenericMessage } from "../../engine/llm/types.js";
@@ -238,6 +239,8 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     activeSideStreamTurn = turnPromise;
     activeSideSendRequestId = typeof p.sendRequestId === "string" ? p.sendRequestId : null;
     activeSideSenderId = e.sender.id;
+    // The window this turn was typed in is the one its terminal/browser tools reach.
+    setSideChatOwnerContents(e.sender);
     // A reloaded or crashed renderer loses the request id that scoped abort
     // requires, and page unload skips the hook's teardown cancel. Its document
     // was the turn's only owner, so its departure cancels the turn; otherwise

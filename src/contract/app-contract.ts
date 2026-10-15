@@ -765,6 +765,24 @@ export const CHANNELS = {
     blocks: "ave:terminal:blocks", // invoke  command-block summaries of one tab (no output)
     block: "ave:terminal:block", // invoke  one command block with its output
   },
+  // ── Browser tabs (agent browser tools) ────────────────────────────────────
+  // ALL INTERNAL: absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /
+  // EXTERNAL_MUTATION_CHANNELS. Binding a guest to a tab id decides what the
+  // agent's browser tools can reach, so only the host renderer of the window
+  // that hosts the guest may do it (validateHostRendererSender + host check in
+  // main). Wire types: shared/browser-surface.ts.
+  browser: {
+    bindTab: "ave:browser:bind-tab", // invoke renderer→main  tab id ↔ guest webContents id
+    stop: "ave:browser:stop", // invoke renderer→main  badge stop: cancel and release an agent tab
+    tabOp: "ave:browser:tab-op", // event  main→renderer  new / select / close a tab
+    control: "ave:browser:control", // event  main→renderer  which tabs the agent controls
+  },
+  // ── Active workspace surface (a hint for agent tools) ─────────────────────
+  // INTERNAL. The renderer reports which browser/terminal tab the user is
+  // looking at in its window; tools default to it when no tab is named.
+  surface: {
+    setActive: "ave:surface:set-active", // invoke renderer→main  ActiveWorkspaceSurface | null
+  },
   // ── Side chat (workspace rail) — 2nd, independently-streaming chat session ──
   // ALL INTERNAL: deliberately absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /
   // EXTERNAL_MUTATION_CHANNELS. Side chat drives a SECOND ConversationLoop that
