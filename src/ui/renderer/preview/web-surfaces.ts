@@ -76,6 +76,30 @@ export function setWebSurfaceUrl(tabId: string, url: string): void {
   scheduleReconcile();
 }
 
+// Where each guest's page actually is — a link, redirect or in-page route
+// moves it without the host setting a url. What a saved layout records.
+const locations = new Map<string, string>();
+const locationListeners = new Set<() => void>();
+
+/** The layer saw the tab's main frame navigate to `url`. */
+export function noteWebSurfaceLocation(tabId: string, url: string): void {
+  if (locations.get(tabId) === url) return;
+  locations.set(tabId, url);
+  for (const listener of [...locationListeners]) listener();
+}
+
+/** The tab's last main-frame address, else the url the host set, else null. */
+export function webSurfaceLocation(tabId: string): string | null {
+  return locations.get(tabId) ?? surfaces.find((surface) => surface.tabId === tabId)?.url ?? null;
+}
+
+export function subscribeWebSurfaceLocations(listener: () => void): () => void {
+  locationListeners.add(listener);
+  return () => {
+    locationListeners.delete(listener);
+  };
+}
+
 export function hasWebSurface(tabId: string): boolean {
   return surfaces.some((surface) => surface.tabId === tabId);
 }
@@ -144,6 +168,7 @@ function scheduleReconcile(): void {
     for (const ids of liveSources.values()) for (const id of ids) live.add(id);
     const next = surfaces.filter((surface) => live.has(surface.tabId));
     if (next.length === surfaces.length) return;
+    for (const surface of surfaces) if (!live.has(surface.tabId)) locations.delete(surface.tabId);
     surfaces = next;
     emit();
   });

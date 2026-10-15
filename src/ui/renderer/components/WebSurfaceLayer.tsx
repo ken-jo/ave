@@ -33,6 +33,7 @@ import {
   beginSurfaceDrag,
   endSurfaceDrag,
   setWebSurfaceElement,
+  noteWebSurfaceLocation,
   setWebSurfaceSlot,
   clearWebSurfaceSlot,
   setWebSurfaceUrl,
@@ -235,6 +236,23 @@ function GuestFrame({ surface }: { surface: WebSurface }) {
   const attach = useCallback((guest: HTMLElement | null) => {
     guestRef.current = guest;
     setWebSurfaceElement(surface.tabId, guest);
+  }, [surface.tabId]);
+
+  // Where the page went on its own (links, redirects, in-page routes), for
+  // the saved layout's "last address".
+  useEffect(() => {
+    const guest = guestRef.current;
+    if (!guest) return undefined;
+    const onNavigate = (event: Event) => {
+      const { url, isMainFrame } = event as Event & { url?: string; isMainFrame?: boolean };
+      if (typeof url === "string" && isMainFrame !== false) noteWebSurfaceLocation(surface.tabId, url);
+    };
+    guest.addEventListener("did-navigate", onNavigate);
+    guest.addEventListener("did-navigate-in-page", onNavigate);
+    return () => {
+      guest.removeEventListener("did-navigate", onNavigate);
+      guest.removeEventListener("did-navigate-in-page", onNavigate);
+    };
   }, [surface.tabId]);
 
   useEffect(() => {

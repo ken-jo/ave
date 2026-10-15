@@ -74,6 +74,7 @@ import {
   type ShortcutSettingsPatch,
 } from "../shared/shortcuts.js";
 import { createLogger } from "../lib/logger.js";
+import type { MainLayoutSnapshot } from "../shared/main-layout.js";
 import { SecretDocumentStore, type SecretDocumentIdentity, type SecretEncryption, type SecretPolicy } from "./secret-document-store.js";
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
 import {
@@ -102,6 +103,7 @@ import {
   normalizeAlertSettings,
   normalizeRetiredPluginConfigs,
   isActiveViewKey,
+  normalizeMainLayout,
   isCloseBehavior,
   normalizeTelemetry,
   normalizeHomeDocs,
@@ -908,6 +910,14 @@ export interface SystemSettings {
    */
   activeView?: InlineViewKey;
   /**
+   * The main window's pane layout when it last changed — panes, which show a
+   * terminal or web page, open side panels, and terminal/browser side tabs
+   * with their last directory or address — restored at launch. Absent until
+   * the layout first changes. SoT for the shape and its rules:
+   * `../shared/main-layout.js`; a value that breaks any rule is refused whole.
+   */
+  mainLayout?: MainLayoutSnapshot;
+  /**
    * Which settings tab the panel was on, so restoring into `activeView:
    * "settings"` lands on the page the user left rather than the default one.
    * Default "llm". SoT for the value set: `../shared/settings-tabs.js`.
@@ -1664,6 +1674,7 @@ export class SettingsService {
       }
       acceptField(next, "sidebarActiveTab", partial.system.sidebarActiveTab, isSidebarTab, "system", PATCHED_FIELD);
       acceptField(next, "activeView", partial.system.activeView, isActiveViewKey, "system", PATCHED_FIELD);
+      acceptNormalizedField(next, "mainLayout", partial.system.mainLayout, normalizeMainLayout, "system", PATCHED_FIELD);
       const rawSettingsTab = partial.system.settingsTab;
       if (rawSettingsTab !== undefined) {
         // `normalizeSettingsTab` folds retired ids onto their replacements and

@@ -1244,6 +1244,33 @@ export function useChatGroups(appMode?: "chat" | "work") {
     return dropOnEdge(besideGroupId, SPLIT_EDGE.row);
   }, [canSplit, splitFits, dropOnEdge]);
 
+  /**
+   * Put back a saved layout at launch: its tree, its focus, which panes had
+   * their side panel open, and what the listed panes show. Every pane holds a
+   * conversation (a fresh one — conversations are not part of a layout).
+   * A pane whose content something already set (the restored `activeView`
+   * may land first) keeps it unless the layout names a surface for it. Group
+   * numbering moves past the restored ids, so a later split cannot reuse one.
+   */
+  const restore = useCallback((layout: {
+    tree: PaneNode;
+    focusedId: string;
+    panelOpenIds: readonly string[];
+    content: Readonly<Record<string, ViewLocation>>;
+  }) => {
+    const ids = leafIds(layout.tree);
+    for (const id of ids) {
+      const n = /^group-(\d+)$/.exec(id);
+      if (n && Number(n[1]) >= nextGroupIndex.current) nextGroupIndex.current = Number(n[1]) + 1;
+    }
+    setTree(layout.tree);
+    setFocusedId(layout.focusedId);
+    setMaximizedId(null);
+    setPanelOpenIds([...layout.panelOpenIds]);
+    setConversationIds(new Set(ids));
+    setContentById((current) => Object.fromEntries(ids.map((id) => [id, layout.content[id] ?? current[id] ?? PANE_HOME])));
+  }, []);
+
   // Boundaries between tiles. Chat mode shows one leaf, so there are none.
   const gutters = useMemo(
     () => layoutGutters(visibleTree),
@@ -1297,6 +1324,8 @@ export function useChatGroups(appMode?: "chat" | "work") {
     canMaximize,
     maximizedId,
     toggleMaximize,
+    panelOpenIds,
+    restore,
   };
 }
 

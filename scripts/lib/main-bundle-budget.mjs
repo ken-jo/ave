@@ -70,11 +70,14 @@ export function isSafeMainBundleManifestPath(path) {
  * The main-area terminal and web panels add renderer strings to the one i18n catalog main
  * also imports (that catalog is shared by design), plus the `terminal`/`web` view keys;
  * with them the measurement is entry 423_073, initial 5_390_727, and the initial ceiling
- * moves to 5_395_000.
+ * moves to 5_395_000. The saved main-window layout is checked by the settings store when
+ * the profile is read at boot (`shared/main-layout.ts`, one parser for both processes),
+ * so it is initial too; with it the measurement is entry 423_069, initial 5_396_725, and
+ * the initial ceiling moves to 5_400_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_395_000,
+  initialBytes: 5_400_000,
   totalBytes: 11_050_000,
 });
 

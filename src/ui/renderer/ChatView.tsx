@@ -31,7 +31,10 @@ import type { ProjectIdentity } from "../../shared/project-identity.js";
 import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
 import { collectChatPreviewModel } from "./preview/preview-targets.js";
 import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
-import { registerSideTabsSink } from "./preview/surface-moves.js";
+import { isMovableTabKind, registerSideTabsSink, type MovableTabKind } from "./preview/surface-moves.js";
+import { emitMainLayoutChange, takeRestoredSideTabs, terminalCwd } from "./preview/main-layout-restore.js";
+import { savedSurfaceOf } from "./preview/main-layout-snapshot.js";
+import { webSurfaceLocation } from "./preview/web-surfaces.js";
 import { attachToComposer, registerComposerTarget } from "./preview/composer-targets.js";
 import { SIDE_PANEL_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { normalizeBrowserNavigationUrl } from "./preview/url-safety.js";
@@ -266,9 +269,13 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const { adoptTab, releaseTab, hasTab, setActiveTabId: selectWorkspaceTab } = workspaceTabs;
   const openSidePanelRef = useRef(onSidePanelOpenChange);
   openSidePanelRef.current = onSidePanelOpenChange;
+  // What the saved layout records of these tabs: the terminals and pages, with
+  // a terminal's last directory and a page's last address.
+  const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab });
+  savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab };
   useEffect(() => {
     if (chatGroupId === undefined) return undefined;
-    return registerSideTabsSink(chatGroupId, {
+    const unregister = registerSideTabsSink(chatGroupId, {
       adopt: adoptTab,
       release: releaseTab,
       open: () => openSidePanelRef.current(true),
@@ -278,8 +285,24 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         openSidePanelRef.current(true);
         return true;
       },
+      snapshot: () => {
+        const { tabs, browserUrlByTab } = savedTabsRef.current;
+        return tabs.filter((tab) => isMovableTabKind(tab.kind)).map((tab) => savedSurfaceOf(
+          { tabId: tab.id, kind: tab.kind as MovableTabKind, ordinal: tab.ordinal },
+          tab.kind === "terminal" ? terminalCwd(tab.id) : null,
+          tab.kind === "browser" ? webSurfaceLocation(tab.id) ?? browserUrlByTab[tab.id] ?? null : null,
+        ));
+      },
     });
+    // Tabs a restored layout gave this pane, if its restore came first.
+    for (const tab of takeRestoredSideTabs(chatGroupId)) adoptTab({ id: tab.tabId, kind: tab.kind, ordinal: tab.ordinal }, tab.url);
+    return unregister;
   }, [chatGroupId, adoptTab, releaseTab, hasTab, selectWorkspaceTab]);
+  // A tab opened, closed, moved or re-pointed is a layout change to save.
+  const savedTabsKey = workspaceTabs.tabs.filter((tab) => isMovableTabKind(tab.kind)).map((tab) => `${tab.id}=${workspaceTabs.browserUrlByTab[tab.id] ?? ""}`).join("|");
+  useEffect(() => {
+    emitMainLayoutChange();
+  }, [savedTabsKey]);
   const seenSubAgentSpawnKeysRef = useRef<Set<string>>(new Set());
   // Docked side-panel width — durable shell preference (settings round-trip),
   // owned next to the tab store so it survives ChatSidePanel unmount.

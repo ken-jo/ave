@@ -100,6 +100,8 @@ export function useMainSurfaces(): MainSurfacesStore {
 
   const adopt = useCallback((surface: MainSurface) => {
     if (surfacesRef.current.some((each) => each.tabId === surface.tabId)) return;
+    // It keeps its number; a surface created later must not take it again.
+    if (nextMainOrdinal[surface.kind] <= surface.ordinal) nextMainOrdinal[surface.kind] = surface.ordinal + 1;
     commit([...surfacesRef.current, surface]);
   }, [commit]);
 

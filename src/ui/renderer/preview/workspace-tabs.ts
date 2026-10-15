@@ -174,6 +174,17 @@ export function mintTabId(kind: WorkspaceTabKind): string {
   return `${kind}:${nextWindowTabId++}`;
 }
 
+/**
+ * Tabs restored from a saved layout keep their ids; the counter moves past
+ * them so a tab minted afterwards cannot take one.
+ */
+export function reserveTabIds(ids: Iterable<string>): void {
+  for (const id of ids) {
+    const n = Number(id.slice(id.lastIndexOf(":") + 1));
+    if (Number.isInteger(n) && n >= nextWindowTabId) nextWindowTabId = n + 1;
+  }
+}
+
 function withTabClosed(prev: WorkspaceState, id: string): WorkspaceState {
   const closingIndex = prev.tabs.findIndex((tab) => tab.id === id);
   if (closingIndex < 0) return prev;
@@ -357,6 +368,8 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
   const hasTab = useCallback((id: string) => stateRef.current.tabs.some((tab) => tab.id === id), []);
 
   const adoptTab = useCallback((incoming: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => {
+    // A tab that keeps its number here must not see a later tab of its kind take it again.
+    if (nextOrdinalRef.current[incoming.kind] <= incoming.ordinal) nextOrdinalRef.current[incoming.kind] = incoming.ordinal + 1;
     setState((prev) => {
       if (prev.tabs.some((tab) => tab.id === incoming.id)) return { ...prev, activeTabId: incoming.id };
       const tab: WorkspaceTab = { id: incoming.id, kind: incoming.kind, ordinal: incoming.ordinal, mode: "pinned", content: null };

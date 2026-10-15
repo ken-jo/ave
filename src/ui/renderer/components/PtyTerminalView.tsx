@@ -21,7 +21,7 @@
  * marker (so a marker split across output chunks is still seen once), and an
  * Enter keystroke covers shells that send no markers.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { AveApi } from "../types.js";
@@ -31,6 +31,7 @@ import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
+import { noteTerminalCwd, takeRestoredTerminal } from "../preview/main-layout-restore.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
 
 /** Delay before re-listing blocks after an Enter, so the shell has echoed. */
@@ -195,7 +196,12 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, o
     // A replay of the running shell's scrollback arrives before the spawn
     // resolves; it is output already seen, so it must not ring attention again.
     setTerminalReplaying(tabId, true);
-    const startCwd = initialCwdRef.current;
+    // A terminal restored from the saved layout gets a NEW shell in its saved
+    // directory: the old process ended with the app, and the buffer says so
+    // rather than letting an empty prompt pass for the old session.
+    const restored = takeRestoredTerminal(tabId);
+    if (restored) term.write(diagnostic(`[restored: new shell${restored.cwd ? ` in ${restored.cwd}` : ""}]`));
+    const startCwd = restored ? restored.cwd : initialCwdRef.current;
     const spawnAt = (cwd: string | null) =>
       terminalApi.spawn({ tabId, cols, rows, ...(cwd ? { cwd } : {}) });
     void spawnAt(startCwd)
@@ -252,6 +258,14 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, o
     };
   }, [api, tabId]);
 
+  // Every reported directory is kept for the saved layout; the caller hears it too.
+  const onCwdRef = useRef(onCwd);
+  onCwdRef.current = onCwd;
+  const reportCwd = useCallback((cwd: string) => {
+    noteTerminalCwd(tabId, cwd);
+    onCwdRef.current?.(cwd);
+  }, [tabId]);
+
   // Focus moving to or from this terminal's pane.
   useEffect(() => {
     if (termRef.current) setTerminalAttended(tabId, attended && hasBoxRef.current);
@@ -278,7 +292,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, o
           tabLabel={tabLabel}
           revision={blockRevision}
           {...(onAttachText ? { onAttachText } : {})}
-          {...(onCwd ? { onCwd } : {})}
+          onCwd={reportCwd}
         />
       ) : null}
       <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" />

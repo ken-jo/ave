@@ -10,9 +10,13 @@ import { renderApp } from "./render-app.js";
 import { clickSidebarNavRow, splitIntoTwoTiles } from "./helpers.js";
 import { SURFACE_DRAG_TYPE } from "../../src/ui/renderer/preview/surface-moves.js";
 import { getTerminalAttention, markTerminalRead } from "../../src/ui/renderer/preview/terminal-attention.js";
+import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
+import { MAIN_LAYOUT_SAVE_DELAY_MS } from "../../src/ui/renderer/hooks/use-main-layout.js";
+import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
 
 // The terminal suites below give the app a terminal surface, which mounts
 // xterm; jsdom has no canvas, so xterm is the one thing stood in for.
+const { xtermWrites } = vi.hoisted(() => ({ xtermWrites: [] as string[] }));
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
@@ -22,13 +26,15 @@ vi.mock("@xterm/xterm", () => ({
     loadAddon() {}
     open() {}
     onData() { return { dispose() {} }; }
-    write() {}
+    write(text: string) { xtermWrites.push(text); }
     dispose() {}
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 
 afterEach(() => {
+  xtermWrites.length = 0;
+  resetMainLayoutRestoreForTest();
   for (const tabId of [...getTerminalAttention().keys()]) markTerminalRead(tabId);
   vi.restoreAllMocks();
 });
@@ -108,6 +114,22 @@ describe("main-area terminal and web panels", () => {
       return el!;
     });
     return tab.getAttribute("data-tab-id")!;
+  }
+
+  /** Open `tile`'s side panel and a terminal tab in it; the tab's id. */
+  async function openSideTerminalIn(tile: HTMLElement): Promise<string> {
+    await act(async () => { fireEvent.click(tile.querySelector('[data-testid="pane-panel-toggle"]')!); });
+    const launcher = await waitFor(() => {
+      const button = tile.ownerDocument.querySelector<HTMLButtonElement>('[data-testid="chat-side-panel-launcher-terminal"]');
+      expect(button).not.toBeNull();
+      return button!;
+    });
+    await act(async () => { fireEvent.click(launcher); });
+    return waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-testid="chat-side-panel-tab-strip"] [data-tab-id^="terminal:"]');
+      expect(el).not.toBeNull();
+      return el!.getAttribute("data-tab-id")!;
+    });
   }
 
   function sideTabIds(): string[] {
@@ -356,6 +378,72 @@ describe("main-area terminal and web panels", () => {
     await act(async () => { fireEvent.click(attach); });
     await waitFor(() => expect(sideInput.value).not.toBe(""));
     expect(mainInput.value).toBe("");
+  });
+
+  it("saves the layout as it changes and puts it back at the next launch, with new shells in the saved directories", async () => {
+    const first = await renderApp({ hasApiKey: true, terminal: true });
+    const firstTerminal = (first.api as unknown as { terminal: { listBlocks: ReturnType<typeof vi.fn> } }).terminal;
+    firstTerminal.listBlocks.mockResolvedValue({
+      ok: true,
+      integrated: true,
+      blocks: [{ id: 1, command: "cd app", cwd: "/work/repo/app", exitCode: 0, startedAt: 1, endedAt: 2, status: "done", source: "osc133", outputChars: 0, truncated: false }],
+    });
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(first.container)).toHaveLength(1));
+    const mainTerminal = shownSurfaces(first.container)[0]!.tabId!;
+    await waitFor(() => expect(first.container.querySelector('[data-testid="pane-header-meta"]')?.textContent).toBe("app"));
+    const tiles = await splitIntoTwoTiles(first.container);
+    const sideTerminal = await openSideTerminalIn(tiles[1]!.element);
+
+    const saved = await waitFor(() => {
+      const calls = vi.mocked(first.api.updateSettings).mock.calls
+        .map(([patch]) => (patch as { system?: { mainLayout?: Record<string, unknown> } }).system?.mainLayout)
+        .filter((each) => each !== undefined);
+      const last = calls.at(-1) as { surfaces: Record<string, { tabId: string; cwd: string | null }>; sideTabs: Record<string, Array<{ tabId: string }>> } | undefined;
+      expect(Object.values(last?.surfaces ?? {}).map((each) => each.tabId)).toEqual([mainTerminal]);
+      expect(Object.values(last?.sideTabs ?? {}).flat().map((each) => each.tabId)).toEqual([sideTerminal]);
+      return last!;
+    }, { timeout: MAIN_LAYOUT_SAVE_DELAY_MS * 10 });
+    expect(Object.values(saved.surfaces)[0]!.cwd).toBe("/work/repo/app");
+    const persisted = await first.api.getSettings();
+    first.unmount();
+    resetMainLayoutRestoreForTest();
+    xtermWrites.length = 0;
+
+    const second = await renderApp({ hasApiKey: true, terminal: true, settings: persisted });
+    const secondTerminal = (second.api as unknown as { terminal: { spawn: ReturnType<typeof vi.fn> } }).terminal;
+    await waitFor(() => expect(shownSurfaces(second.container).map((each) => each.tabId)).toEqual([mainTerminal]));
+    expect(second.container.querySelectorAll('[data-testid^="pane-cell:"]:not([data-hidden="true"])')).toHaveLength(2);
+    await waitFor(() => expect(document.querySelector(`[data-testid="chat-side-panel-tab-strip"] [data-tab-id="${sideTerminal}"]`)).not.toBeNull());
+    // A new shell, in the saved directory, saying it is one.
+    await waitFor(() => expect(secondTerminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ tabId: mainTerminal, cwd: "/work/repo/app" })));
+    expect(xtermWrites.join("")).toContain("[restored: new shell in /work/repo/app]");
+    // A terminal opened after the restore does not take a restored id.
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    const ids = new Set([mainTerminal, sideTerminal]);
+    await waitFor(() => expect(secondTerminal.spawn.mock.calls.some(([payload]) => !ids.has((payload as { tabId: string }).tabId))).toBe(true));
+  });
+
+  it("starts in the default layout, saying why, when the saved one breaks a rule", async () => {
+    const warn = vi.spyOn(console, "warn");
+    const broken = {
+      version: 1,
+      tree: { kind: "leaf", chatGroupId: "main" },
+      focusedId: "group-5",
+      surfaces: {},
+      panelOpenIds: [],
+      sideTabs: {},
+    };
+    const { container } = await renderApp({
+      hasApiKey: true,
+      terminal: true,
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: broken } },
+    });
+    await waitFor(() => expect(warn).toHaveBeenCalledWith(
+      '[main-layout] saved layout refused: focusedId names pane "group-5", which is not in the tree; starting in the default layout',
+    ));
+    expect(container.querySelectorAll('[data-testid^="pane-cell:"]:not([data-hidden="true"])')).toHaveLength(1);
+    expect(shownSurfaces(container)).toHaveLength(0);
   });
 
   it("moves the focused pane's surface to its neighbour with the directional chord", async () => {

@@ -4244,3 +4244,58 @@ describe("SettingsService llm.modelCatalogRefresh", () => {
     expect(service.get("llm").modelCatalogRefresh).toBe("off");
   });
 });
+
+// ─── System — saved main-window layout ────────────────────────────────────────
+
+describe("SettingsService system — main window layout", () => {
+  let userDataPath: string;
+  const layout = {
+    version: 1,
+    tree: {
+      kind: "split",
+      axis: "row",
+      children: [{ kind: "leaf", chatGroupId: "main" }, { kind: "leaf", chatGroupId: "group-2" }],
+      sizes: [0.5, 0.5],
+    },
+    focusedId: "group-2",
+    surfaces: { "group-2": { kind: "terminal", tabId: "terminal:3", ordinal: 1, cwd: "/ws/app", url: null } },
+    panelOpenIds: ["main"],
+    sideTabs: { main: [{ kind: "browser", tabId: "browser:4", ordinal: 1, cwd: null, url: "https://example.com/" }] },
+  } as const;
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-main-layout-"));
+    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+  });
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    await cleanupTmpDir(userDataPath);
+  });
+
+  it("is absent until the window first saves one, then round-trips across restart", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("system").mainLayout).toBeUndefined();
+    await service.patch({ system: { mainLayout: layout } } as never);
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("system").mainLayout).toEqual(layout);
+  });
+
+  it("refuses a patch that breaks a layout rule and keeps the saved layout", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ system: { mainLayout: layout } } as never);
+    await service.patch({ system: { mainLayout: { ...layout, focusedId: "group-9" } } } as never);
+    expect(service.get("system").mainLayout).toEqual(layout);
+  });
+
+  it("drops a corrupt layout on disk whole, leaving the rest of system intact", () => {
+    writeFileSync(
+      join(userDataPath, "ave-settings.json"),
+      JSON.stringify({ system: { closeBehavior: "quit", mainLayout: { ...layout, version: 99 } } }),
+      "utf-8",
+    );
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("system").mainLayout).toBeUndefined();
+    expect(service.get("system").closeBehavior).toBe("quit");
+  });
+});

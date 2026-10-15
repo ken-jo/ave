@@ -177,9 +177,9 @@ export function useActiveView(
         const parsed = parseInlineViewKey(stored);
         // Unparseable, or a key with no inline form: stay home, silently.
         if (!parsed) return;
-        // A terminal or web page does not outlive the app: its surface is gone,
-        // and opening a fresh one in its place would claim a restore that did
-        // not happen. Stay home.
+        // Terminals and web pages are put back by the saved main layout
+        // (`use-main-layout.ts`), which knows which surface each pane held;
+        // the bare view key does not, so it is not acted on here.
         if (isInstanceViewKey(parsed.key)) return;
         if (parsed.kind === "plugin") {
           setPendingPluginView(parsed.key);

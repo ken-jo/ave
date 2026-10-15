@@ -1,6 +1,7 @@
 import { createContext, useContext } from "react";
 import type { DropTarget } from "../components/pane-drop.js";
 import type { WorkspaceTab } from "./workspace-tabs.js";
+import type { SavedSurface } from "../../../shared/main-layout.js";
 
 /**
  * Moving terminals and web pages between a side panel and the main area.
@@ -60,6 +61,8 @@ export interface SideTabsSink {
   open: () => void;
   /** Show `tabId` when this group holds it: select it and open the panel. */
   activate: (tabId: string) => boolean;
+  /** This group's terminal and browser tabs, as a saved layout records them. */
+  snapshot: () => SavedSurface[];
 }
 
 const sinks = new Map<string, SideTabsSink>();

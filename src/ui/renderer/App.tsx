@@ -38,6 +38,7 @@ import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
 import { forgetActiveSurface, showActiveSurface, updateActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
 import { attachToComposer } from "./preview/composer-targets.js";
+import { useMainLayout } from "./hooks/use-main-layout.js";
 import { getWebSurfaces } from "./preview/web-surfaces.js";
 import { PANEL_COMMANDS, panelCommandFor, type PanelCommandId } from "./components/panel-commands.js";
 import { PaneGutter, PANE_HOME, PaneFrame, areaStyle, chatGroupApi, useChatGroups, type PaneSplitAxis } from "./components/PaneFrame.js";
@@ -242,6 +243,9 @@ export function App() {
   // The terminals and web pages that live in the main area as panes. See
   // `preview/main-surfaces.ts`; which pane shows one is that pane's content.
   const mainSurfaces = useMainSurfaces();
+  // The pane layout, its terminals' directories and its pages' addresses come
+  // back at launch and are saved as they change (`hooks/use-main-layout.ts`).
+  useMainLayout(api, chatGroups, mainSurfaces);
   // Every terminal's output is watched for "look at me" notifications, shown
   // or not; see `preview/terminal-attention.ts`.
   const terminalNotificationTitle = useCallback(() => t("mainPanels.terminalNotificationTitle"), [t]);
