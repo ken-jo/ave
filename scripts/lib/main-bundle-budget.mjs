@@ -77,10 +77,13 @@ export function isSafeMainBundleManifestPath(path) {
  * Closed command effects and bounded analysis remain in the initial graph:
  * entry 420_159, initial 5_423_149, total 9_062_417. The initial ceiling moves
  * to 5_425_000, the next 5_000-byte boundary.
+ * Member dispatch and remote-write inspection remain in the initial graph:
+ * entry 420_159, initial 5_431_697, total 9_070_965. The initial ceiling moves
+ * to 5_435_000, the next 5_000-byte boundary.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_425_000,
+  initialBytes: 5_435_000,
   totalBytes: 11_050_000,
 });
 
