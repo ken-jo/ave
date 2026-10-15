@@ -156,6 +156,16 @@ export interface SensitiveEntry {
   readonly rotations?: true;
   /** The configured primary session store is readable, but never tool-writable. */
   readonly access?: "read-only";
+  /**
+   * A Windows location (`%APPDATA%`, `%LOCALAPPDATA%`). Windows paths are
+   * case-insensitive, so its glob matches case-insensitively on EVERY
+   * platform — a command scanned on a POSIX host (a PowerShell script, a
+   * staged copy) must not slip past by spelling `appdata\roaming` in lower
+   * case. Stores that sit at the same place under the profile on every OS
+   * (`.ssh`, `.aws`, `.kube/config`, …) are the POSIX rows above, which the
+   * anchor-free host guard already matches under `C:/Users/<name>/`.
+   */
+  readonly windows?: true;
   /** Why this is secret. Kept next to the row so neither side drifts alone. */
   readonly why: string;
 }
@@ -202,6 +212,21 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: [".python_history"], kind: "file", why: "REPL history" },
   { anchor: "home", segments: [".psql_history"], kind: "file", why: "psql history (may hold DSNs)" },
   { anchor: "home", segments: [".viminfo"], kind: "file", why: "editor history + register contents" },
+  // ── Windows credential stores under the profile (%APPDATA%, %LOCALAPPDATA%) ──
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Credentials"], kind: "dir", windows: true, why: "Windows Credential Manager blobs (roaming)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Credentials"], kind: "dir", windows: true, why: "Windows Credential Manager blobs (local)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Protect"], kind: "dir", windows: true, why: "DPAPI master keys (decrypt every DPAPI-protected secret)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Crypto"], kind: "dir", windows: true, why: "user CryptoAPI/CNG private keys" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Microsoft", "Vault"], kind: "dir", windows: true, why: "Windows Vault (web and app credentials, roaming)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Vault"], kind: "dir", windows: true, why: "Windows Vault (local)" },
+  {
+    anchor: "home",
+    segments: ["AppData", "Local", "Microsoft", "PowerShell", "secretmanagement"],
+    kind: "dir",
+    windows: true,
+    why: "PowerShell SecretStore vault",
+  },
+  { anchor: "home", segments: ["AppData", "Roaming", "GitHub CLI"], kind: "dir", windows: true, why: "GitHub CLI OAuth token on Windows (hosts.yml)" },
   // ── Ave hook scripts — supply-chain / re-exec protection ────────────
   {
     anchor: "home",
@@ -258,6 +283,12 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
  * A `dir` row needs only the `/**` form: `policyMatchPaths` also tries
  * `<path>/`, so `**\/.ssh/**` already matches the bare directory.
  */
+/**
+ * Host-guard-only Windows patterns (no literal form): Chromium-family
+ * `Login Data` under any `User Data` profile (Chrome, Edge, Brave, …).
+ */
+const WINDOWS_UNANCHORED_PATTERNS: readonly string[] = ["**/AppData/Local/**/User Data/**/Login Data"];
+
 function sensitiveEntryGlobs(entries: readonly SensitiveEntry[] = SENSITIVE_PATH_ENTRIES): readonly string[] {
   const globs: string[] = [];
   for (const entry of entries) {
@@ -272,6 +303,12 @@ function sensitiveEntryGlobs(entries: readonly SensitiveEntry[] = SENSITIVE_PATH
 const READ_ONLY_NAMESPACE_PATTERNS = new Set(sensitiveEntryGlobs(
   SENSITIVE_PATH_ENTRIES.filter((entry) => entry.access === "read-only"),
 ));
+
+/** Patterns matched case-insensitively on every platform (Windows locations). */
+const CASE_INSENSITIVE_PATTERNS: ReadonlySet<string> = new Set([
+  ...sensitiveEntryGlobs(SENSITIVE_PATH_ENTRIES.filter((entry) => entry.windows === true)),
+  ...WINDOWS_UNANCHORED_PATTERNS,
+]);
 
 /**
  * Patterns use minimatch-compatible glob syntax:
@@ -305,6 +342,7 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/id_ecdsa",
   "**/id_ecdsa.pub",
   "**/ave-secrets.json", // shallow sibling form (not under the Ave home root)
+  ...WINDOWS_UNANCHORED_PATTERNS,
   // ── Host-guard-only: deliberate sandbox exclusion ───
   // Recorded in `getDefaultSensitiveReadDenyPaths`: encrypted-at-rest and
   // outside ASRT's filesystem threat model, so consciously not on the OS floor.
@@ -518,7 +556,7 @@ export function isSensitivePath(absPath: string, effect: PathEffect = "write"): 
   for (const candidate of candidates) {
     for (const pattern of SENSITIVE_PATH_PATTERNS) {
       if (canReadSession && READ_ONLY_NAMESPACE_PATTERNS.has(pattern)) continue;
-      if (globMatch(candidate, pattern)) {
+      if (globMatch(candidate, pattern, CASE_INSENSITIVE_PATTERNS.has(pattern) ? { caseInsensitive: true } : {})) {
         return pattern;
       }
     }

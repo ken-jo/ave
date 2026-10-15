@@ -685,6 +685,20 @@ export function sensitivePathInCodeText(text: string, cwd: string | undefined): 
   return state.sensitive;
 }
 
+/**
+ * The sensitive-table pattern one path-like argument reaches, or null — for
+ * a quoted argument of non-bash code whose path holds spaces
+ * (`"…\User Data\Default\Login Data"`), which the token scan would split.
+ */
+export function sensitivePathInArgumentText(text: string, cwd: string | undefined): string | null {
+  const state: ScanState = { cwd, dotglob: false, sensitive: null, network: false, hidden: false };
+  for (const glob of rawGlobs(text)) {
+    checkGlob(glob, state);
+    if (state.sensitive) break;
+  }
+  return state.sensitive;
+}
+
 function commandArgv(cmd: ShellCommand): (string | undefined)[] {
   return cmd.words.map((word) => staticShellWord(word));
 }

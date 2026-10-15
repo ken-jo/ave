@@ -68,7 +68,9 @@ export function isSafeMainBundleManifestPath(path) {
  * and approval-memory code), and the initial ceiling moves to 5_380_000. The PowerShell
  * shell floors (`powershell-exfiltration.ts`) are read by the permission manager on every
  * PowerShell call, so they join the initial graph too: entry 420_159, initial 5_393_007,
- * total 9_032_275, and the initial ceiling moves to 5_395_000.
+ * total 9_032_275, and the initial ceiling moves to 5_395_000. With the Windows
+ * credential-store rows in the sensitive-path table the measurement is entry 420_159,
+ * initial 5_394_511, total 9_033_779, inside that ceiling.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,

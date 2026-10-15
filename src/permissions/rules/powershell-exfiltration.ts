@@ -58,6 +58,7 @@ import {
 } from "./shell-prefix-policy.js";
 import {
   MULTI_PURPOSE_NETWORK,
+  sensitivePathInArgumentText,
   sensitivePathInCodeText,
   shellExfiltrationSignal,
   shellSensitivePathSignal,
@@ -724,7 +725,13 @@ export function powerShellSensitivePathSignal(input: ShellCommandInput, cwd?: st
   const parsed = asParsedShellCommand(input);
   const bash = shellSensitivePathSignal(parsed, cwd);
   if (bash) return bash;
-  const hit = sensitivePathInCodeText(normalizePaths(parsed.command), cwd);
+  const text = normalizePaths(parsed.command);
+  let hit = sensitivePathInCodeText(text, cwd);
+  // Quoted paths may hold spaces (`"…\User Data\Default\Login Data"`).
+  for (const quoted of text.matchAll(/"([^"]*)"|'([^']*)'/g)) {
+    if (hit) break;
+    hit = sensitivePathInArgumentText(quoted[1] ?? quoted[2]!, cwd);
+  }
   return hit ? `sensitive path argument (${hit})` : null;
 }
 
