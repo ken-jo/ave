@@ -2,6 +2,7 @@
   "consumed": [
     ".github/CONTRIBUTING.md",
     "AGENTS.md",
+    "CHANGELOG.md",
     "CLAUDE.md",
     "README.md",
     "docs/blueprints/a2a-subagent-messaging.md",

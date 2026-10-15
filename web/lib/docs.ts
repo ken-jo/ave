@@ -2,7 +2,8 @@ import type { Locale } from "./i18n";
 
 /**
  * The user guide. One template renders every page; each page is a list of
- * sections built from paragraphs, term lists, bullet lists and code.
+ * sections built from paragraphs, term lists, bullet lists, code and links
+ * to other pages of the site.
  * Facts come from the app's docs and UI strings; when the app changes a
  * label, change it here too.
  */
@@ -11,7 +12,9 @@ export type Block =
   | { p: string }
   | { dl: [string, string][] }
   | { ul: string[] }
-  | { code: string };
+  | { code: string }
+  /** A link to another page of this site, by its canonical (Korean, slashed) path. */
+  | { link: { to: string; label: string } };
 
 interface DocSection {
   id: string;
@@ -45,6 +48,7 @@ const ko: Record<DocSlug, DocPage> = {
             ["Linux", "x86_64 AppImage. 설치 없이 실행 권한만 주면 됩니다."],
           ] },
           { p: "지금 공개하는 빌드는 코드 서명과 공증을 거치지 않았습니다. 그래서 macOS는 처음 실행할 때 격리 표시를 지워야 하고, Windows는 SmartScreen 경고가 뜹니다. 운영체제별 단계는 내려받기 페이지에 있습니다." },
+          { link: { to: "/download/", label: "운영체제별 설치 단계" } },
         ],
       },
       {
@@ -241,7 +245,7 @@ const ko: Record<DocSlug, DocPage> = {
   },
   plugins: {
     slug: "plugins",
-    title: "플러그인",
+    title: "플러그인 설치와 격리",
     summary: "플러그인이 하는 일, 설치, 격리, 기본 플러그인.",
     sections: [
       {
@@ -447,6 +451,7 @@ const ko: Record<DocSlug, DocPage> = {
             "플러그인을 설치하는 중에는 적용하지 않고, 설치 전에 확인을 받습니다.",
           ] },
           { p: "서명 없는 Mac 빌드는 스스로 교체할 수 없습니다. 업데이트를 적용하려 하면 Ave가 이 사이트의 첫 화면을 엽니다. 그곳의 다운로드에서 새 DMG를 받아 앱을 바꾸고 격리 표시를 다시 지우면 됩니다." },
+          { link: { to: "/download/", label: "운영체제별 설치 단계" } },
         ],
       },
       {
@@ -498,6 +503,7 @@ const en: Record<DocSlug, DocPage> = {
             ["Linux", "x86_64 AppImage. No installation; make it executable and run it."],
           ] },
           { p: "Public builds are currently not code-signed or notarised. On macOS you clear the quarantine flag before the first launch; on Windows SmartScreen shows a warning. The steps for each system are on the download page." },
+          { link: { to: "/download/", label: "Install steps for each system" } },
         ],
       },
       {
@@ -694,7 +700,7 @@ const en: Record<DocSlug, DocPage> = {
   },
   plugins: {
     slug: "plugins",
-    title: "Plugins",
+    title: "Installing and isolating plugins",
     summary: "What plugins do, installing them, isolation, and the default plugins.",
     sections: [
       {
@@ -900,6 +906,7 @@ const en: Record<DocSlug, DocPage> = {
             "An update is not applied while a plugin is installing, and Ave asks before installing it.",
           ] },
           { p: "An unsigned Mac build cannot replace itself. When you apply an update, Ave opens this site’s home page: download the new DMG there, replace the app, and clear the quarantine flag again." },
+          { link: { to: "/download/", label: "Install steps for each system" } },
         ],
       },
       {
