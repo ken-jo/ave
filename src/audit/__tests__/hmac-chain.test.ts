@@ -144,12 +144,26 @@ describe("FileSecretStore", () => {
 });
 
 describe("readStableRegularFileUtf8", () => {
-  it.skipIf(process.platform === "win32")("refuses a symlinked path — the check the journal and the secret store share", () => {
+  // An unprivileged Windows process cannot create a file symlink (EPERM) but
+  // can create a directory junction, which lstat reports as a link; Windows
+  // opens without O_NOFOLLOW, so there the lstat/fstat check is the refusal.
+  // POSIX keeps the file symlink and adds the same directory link.
+  it.each(process.platform === "win32" ? ["directory link"] : ["file symlink", "directory link"])(
+    "refuses a %s path — the check the journal and the secret store share",
+    (linkKind) => {
     const target = join(workDir, "real.txt");
     writeFileSync(target, "real");
-    symlinkSync(target, join(workDir, "link.txt"));
+    if (linkKind === "file symlink") {
+      symlinkSync(target, join(workDir, "link.txt"));
+    } else {
+      // A junction on Windows; the type is ignored on POSIX. Its target stays
+      // inside workDir, so a teardown that followed it deletes nothing else.
+      mkdirSync(join(workDir, "real-dir"));
+      symlinkSync(join(workDir, "real-dir"), join(workDir, "link.txt"), "junction");
+    }
     // O_NOFOLLOW refuses the open itself (ELOOP); the identity check behind it
-    // is the second line of defence for a swap after the open.
+    // is the second line of defence for a swap after the open, and the only
+    // one on Windows.
     expect(() => readStableRegularFileUtf8(join(workDir, "link.txt"), 1024, "fixture"))
       .toThrow(/ELOOP|fixture path is not a stable regular file/);
     expect(readStableRegularFileUtf8(target, 1024, "fixture")).toBe("real");

@@ -553,27 +553,134 @@ describe("installer smoke and packaging discipline", () => {
     expect(setupNode).toBeGreaterThan(installers.indexOf("uses: actions/checkout@"));
     expect(setupNode).toBeLessThan(installers.indexOf("node scripts/build-installers.mjs"));
 
-    // setup-bun has no install-directory input and installs into
-    // os.homedir()/.bun/bin; that one step sees a home under RUNNER_TEMP, so it
-    // never replaces the owner's bun. The version is .bun-version, the same
-    // file ci.yml reads, and a step proves the job-local pinned bun is on PATH.
+    // Every workflow gets bun from the shared setup-bun action, with the
+    // version from .bun-version (ci.yml checks the repository out under ave/).
+    // The action installs under RUNNER_TEMP, so it never replaces the owner's
+    // bun, and its last step proves the job-local pinned bun is on PATH.
     expect(installers).toContain(
-      "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0\n"
+      "      - uses: ./.github/actions/setup-bun\n"
         + "        with:\n"
-        + "          bun-version-file: .bun-version\n"
-        + "        env:\n"
-        + "          HOME: ${{ runner.temp }}/bun-home\n"
-        + "          USERPROFILE: ${{ runner.temp }}/bun-home\n"
-        + "      - name: Verify bun is the job-local pinned build\n",
+        + "          bun-version-file: .bun-version\n",
     );
-    expect(installers.indexOf("Verify bun is the job-local pinned build")).toBeLessThan(
+    expect(installers.indexOf("uses: ./.github/actions/setup-bun")).toBeLessThan(
       installers.indexOf("bun install --frozen-lockfile"),
     );
     expect(readRepoFile(".bun-version")).toMatch(/^\d+\.\d+\.\d+\n$/u);
     const ci = readRepoFile(".github/workflows/ci.yml");
-    const ciSetups = ci.match(/uses: oven-sh\/setup-bun@/gu)?.length ?? 0;
+    const ciSetups = ci.match(/uses: \.\/ave\/\.github\/actions\/setup-bun\n/gu)?.length ?? 0;
     expect(ciSetups).toBeGreaterThan(0);
     expect(ci.match(/bun-version-file: ave\/\.bun-version\n/gu)?.length).toBe(ciSetups);
+    for (const name of readdirSync(resolve(root, ".github/workflows")).filter((entry) => /\.ya?ml$/u.test(entry))) {
+      expect(
+        readRepoFile(`.github/workflows/${name}`),
+        `${name}: install bun through .github/actions/setup-bun, not oven-sh/setup-bun directly`,
+      ).not.toContain("oven-sh/setup-bun");
+    }
+
+    // setup-bun v2.2.0 symlinks bunx.exe to bun.exe before anything else, and
+    // a runner service account on Windows lacks the symlink privilege (EPERM).
+    // The action keeps setup-bun off Windows and installs the release there
+    // only after its SHA-256 matches the release's SHASUMS256.txt.
+    const setupBun = readRepoFile(".github/actions/setup-bun/action.yml");
+    expect(setupBun).toContain(
+      "    - if: runner.os != 'Windows'\n"
+        + "      uses: oven-sh/setup-bun@",
+    );
+    expect(setupBun).toContain(
+      "      env:\n"
+        + "        HOME: ${{ runner.temp }}/bun-home\n"
+        + "        USERPROFILE: ${{ runner.temp }}/bun-home\n",
+    );
+    expect(setupBun).toContain("    - if: runner.os == 'Windows'\n");
+    expect(setupBun).toContain('base="https://github.com/oven-sh/bun/releases/download/bun-v${version}"');
+    expect(setupBun).toContain('"$base/SHASUMS256.txt"');
+    // Each Windows step on its own: a string the Verify step also holds (its
+    // own version compare) must not satisfy a check meant for these.
+    const stepBetween = (from: string, to: string): string => {
+      const start = setupBun.indexOf(from);
+      const end = setupBun.indexOf(to, start);
+      expect(start, `${from} is missing`).toBeGreaterThan(-1);
+      expect(end, `${to} does not follow ${from}`).toBeGreaterThan(start);
+      return setupBun.slice(start, end);
+    };
+    const bunStep = stepBetween(
+      "name: Install the pinned bun release (Windows)",
+      "name: Provide Python for node-gyp (Windows)",
+    );
+    const pythonStep = stepBetween(
+      "name: Provide Python for node-gyp (Windows)",
+      "name: Verify bun is the job-local pinned build",
+    );
+    for (const step of [bunStep, pythonStep]) {
+      expect(step).toMatch(/\n {6}run: \|\n {8}set -euo pipefail\n/u);
+    }
+    // The zip is checked against a SHA-256 pinned in the action for the
+    // .bun-version release, then against that release's SHASUMS256.txt, and
+    // nothing is unpacked or installed before both pass. A .bun-version bump
+    // without a new pin row fails here, and the action refuses it too.
+    const bunVersion = readRepoFile(".bun-version").trim();
+    expect(bunStep).toMatch(new RegExp(
+      `\\n {10}${bunVersion.replace(/\./gu, "\\.")}:bun-windows-x64\\) pinned=[0-9a-f]{64} ;;\\n`,
+      "u",
+    ));
+    expect(bunStep).toContain(
+      '          *) echo "no pinned SHA-256 for $asset.zip of bun v$version in this action" >&2; exit 1 ;;\n',
+    );
+    const pinCompare = bunStep.indexOf(
+      '        if [ "$actual" != "$pinned" ]; then\n'
+        + '          echo "$asset.zip SHA-256 $actual does not match the pinned $pinned" >&2\n'
+        + "          exit 1\n",
+    );
+    const sumsCompare = bunStep.indexOf(
+      '        if [ "$actual" != "$expected" ]; then\n'
+        + '          echo "$asset.zip SHA-256 $actual does not match the release\'s $expected" >&2\n'
+        + "          exit 1\n",
+    );
+    expect(pinCompare).toBeGreaterThan(-1);
+    expect(sumsCompare).toBeGreaterThan(-1);
+    for (const install of ["Expand-Archive", 'cp "$work/out/$asset/bun.exe"', '>> "$GITHUB_PATH"']) {
+      const at = bunStep.indexOf(install);
+      expect(at, `${install} is missing`).toBeGreaterThan(-1);
+      expect(Math.max(pinCompare, sumsCompare), `${install} runs before the zip is verified`).toBeLessThan(at);
+    }
+    const pythonCompare = pythonStep.indexOf(
+      '        if [ "$actual" != "$PYTHON_NUPKG_SHA256" ]; then\n'
+        + "          echo \"python.$PYTHON_VERSION.nupkg SHA-256 '$actual' does not match the pinned $PYTHON_NUPKG_SHA256\" >&2\n"
+        + "          exit 1\n",
+    );
+    expect(pythonCompare).toBeGreaterThan(-1);
+    for (const install of ["Expand-Archive", 'mv "$work/out/tools" "$dest"', '>> "$GITHUB_ENV"']) {
+      const at = pythonStep.indexOf(install);
+      expect(at, `${install} is missing`).toBeGreaterThan(-1);
+      expect(pythonCompare, `${install} runs before the package is verified`).toBeLessThan(at);
+    }
+    // A Windows path holds backslashes, and sha256sum given one escapes its
+    // output with a leading "\\": the digest is read from stdin instead.
+    expect(setupBun).toContain('actual="$(sha256sum < "$work/$asset.zip" | awk');
+    expect(setupBun).not.toMatch(/sha256sum "/u);
+
+    // node-gyp needs Python during bun install. On Windows the action unpacks
+    // the PSF NuGet package under RUNNER_TEMP against a pinned SHA-256 and
+    // points only PYTHON at it, before the action returns to bun install;
+    // actions/setup-python would run a machine-wide installer and rewrite
+    // uninstall registry entries on the owner's machine.
+    expect(setupBun).toContain(
+      "    - if: runner.os == 'Windows'\n"
+        + "      name: Provide Python for node-gyp (Windows)\n",
+    );
+    expect(setupBun).toMatch(/^ {8}PYTHON_VERSION: 3\.12\.\d+\n {8}PYTHON_NUPKG_SHA256: [0-9a-f]{64}\n/mu);
+    expect(setupBun).toContain('"https://api.nuget.org/v3-flatcontainer/python/$PYTHON_VERSION/python.$PYTHON_VERSION.nupkg"');
+    expect(setupBun).toContain('if [ "$actual" != "$PYTHON_NUPKG_SHA256" ]; then');
+    expect(setupBun).toContain('dest="$RUNNER_TEMP/python-$PYTHON_VERSION"');
+    expect(setupBun).toContain('echo "PYTHON=$(cygpath -w "$dest/python.exe")" >> "$GITHUB_ENV"');
+    expect(setupBun).not.toMatch(/uses: actions\/setup-python@/u);
+    expect(setupBun.indexOf("name: Provide Python for node-gyp (Windows)")).toBeLessThan(
+      setupBun.indexOf("name: Verify bun is the job-local pinned build"),
+    );
+    expect(setupBun).toContain('cp "$work/out/$asset/bun.exe" "$bin/bunx.exe"');
+    expect(setupBun).not.toMatch(/\bln -s|ItemType SymbolicLink|mklink/u);
+    expect(setupBun).toContain("    - name: Verify bun is the job-local pinned build\n");
+    expect(setupBun).toContain("for tool in bun bunx; do");
 
     expect(installers).toContain(
       "      - name: Remove build output from a self-hosted runner\n"
@@ -729,10 +836,16 @@ describe("installer smoke and packaging discipline", () => {
   it("pins every external workflow action to a reviewed commit SHA", () => {
     const workflowDirectory = resolve(root, ".github/workflows");
     const pins = new Map<string, { revision: string; at: string }>();
-    for (const name of readdirSync(workflowDirectory).filter((entry) =>
-      /\.ya?ml$/u.test(entry)
-    )) {
-      const source = readRepoFile(`.github/workflows/${name}`);
+    // The repository's own composite actions call external actions too.
+    const actionFiles = readdirSync(resolve(root, ".github/actions"))
+      .map((entry) => `.github/actions/${entry}/action.yml`);
+    expect(actionFiles.length).toBeGreaterThan(0);
+    for (const name of [
+      ...readdirSync(workflowDirectory).filter((entry) => /\.ya?ml$/u.test(entry))
+        .map((entry) => `.github/workflows/${entry}`),
+      ...actionFiles,
+    ]) {
+      const source = readRepoFile(name);
       for (const match of source.matchAll(/uses:\s+([^@\s]+)@([^\s#]+)([^\n]*)/gu)) {
         const [, action, revision, rest] = match;
         if (action.startsWith("./")) continue;
