@@ -60,30 +60,21 @@ export function isSafeMainBundleManifestPath(path) {
  * measurement is entry 415_595, initial 5_297_263, total 8_937_183, and the initial
  * ceiling moves to 5_300_000. Joined again with main after skills-on-demand, chat-ux and
  * release-ci, the measurement is entry 419_912, initial 5_313_199, total 8_951_548, and
- * the initial ceiling moves to 5_315_000. Permission rules (rule files, scopes, the shell
- * prefix/exfiltration matchers) and approval-memory identity are consulted by the
- * permission manager on every tool call, so they belong in the initial graph; with the
- * permissions category joined with this `main` the measurement is entry 420_159,
- * initial 5_377_970, total 9_017_238 (about 63 KB over this `main`, all of it the rule matchers
- * and approval-memory code), and the initial ceiling moves to 5_380_000. The PowerShell
- * shell floors (`powershell-exfiltration.ts`) are read by the permission manager on every
- * PowerShell call, so they join the initial graph too: entry 420_159, initial 5_393_007,
- * total 9_032_275, and the initial ceiling moves to 5_395_000. With the Windows
- * credential-store rows in the sensitive-path table the measurement is entry 420_159,
- * initial 5_394_511, total 9_033_779, inside that ceiling.
- * Expanded command-text inspection remains in the initial permission graph:
- * entry 420_159, initial 5_403_226, total 9_042_494. The initial ceiling moves
- * to 5_405_000, the next 5_000-byte boundary.
- * Closed command effects and bounded analysis remain in the initial graph:
- * entry 420_159, initial 5_423_149, total 9_062_417. The initial ceiling moves
- * to 5_425_000, the next 5_000-byte boundary.
- * Member dispatch and remote-write inspection remain in the initial graph:
- * entry 420_159, initial 5_431_697, total 9_070_965. The initial ceiling moves
- * to 5_435_000, the next 5_000-byte boundary.
+ * the initial ceiling moves to 5_315_000.
+ * Remote-connection joined with that main measures entry 423_044, initial 5_326_014,
+ * total 8_967_523, and the initial ceiling moves to 5_330_000. Permission rules (rule
+ * files, scopes, the shell prefix/exfiltration matchers) and approval-memory identity are
+ * consulted by the permission manager on every tool call, so they belong in the initial
+ * graph; with the permissions category joined with that `main` the measurement is entry
+ * 423_073, initial 5_389_392, total 9_031_357, and the initial ceiling moves to 5_390_000.
+ * The PowerShell shell floors (closed-world command analysis with a bounded work budget, and
+ * the Windows credential-store rows) are read by the permission manager on every PowerShell
+ * call, so they join the initial graph too: entry 423_073, initial 5_443_131, total 9_085_096, and
+ * the initial ceiling moves to 5_445_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_435_000,
+  initialBytes: 5_445_000,
   totalBytes: 11_050_000,
 });
 

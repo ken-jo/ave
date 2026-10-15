@@ -11,7 +11,7 @@ import type { SecretStore } from "../audit/hmac-chain.js";
 import type { ConversationSurfaceRuntime } from "../engine/conversation-surface-runtime.js";
 import type { ConversationCommandPort } from "./conversation-command-port.js";
 import { createTelegramBotApiClient } from "./telegram-bot-api-client.js";
-import { maybeStartTelegramConnectionBridge } from "./telegram-bridge-server.js";
+import { maybeStartTelegramConnectionBridge, type TelegramPollHealth } from "./telegram-bridge-server.js";
 import {
   createTelegramControlReplySender,
   type TelegramControlNotice,
@@ -51,6 +51,12 @@ export interface StartTelegramConnectionActivationOptions {
    * and in any boot without a gate — keeps approvals desk-only.
    */
   readonly approvalGate?: TelegramRemoteApprovalGatePort;
+  /**
+   * Whether Telegram is answering this activation's poll loop. The owner
+   * service reads it so a share does not keep reading `active` while every poll
+   * is failing.
+   */
+  readonly onPollHealth?: (health: TelegramPollHealth) => void;
   /** Test-only injection; production reads Electron's OS-encrypted store. */
   readonly secretStore?: SecretStore;
   readonly log?: (message: string) => void;
@@ -77,6 +83,26 @@ export function createUnroutableNotifier(
 ): (chatId: string, notice: TelegramControlNotice) => Promise<void> {
   return async (chatId, notice) => {
     await controlReplies.notify(chatId, notice);
+  };
+}
+
+/**
+ * Tell the phone a pairing took.
+ *
+ * The ingress already called `onPaired` after a successful redemption, but
+ * nothing was bound to it: the owner typed the code into Telegram and got
+ * silence, which reads the same as a bot that never received it. The reference
+ * remote surfaces confirm a pairing on the paired device; this sends the one
+ * fixed host notice for it. It runs only after the durable store accepted the
+ * code, so its recipient is the paired owner by construction, and it is a
+ * named function for the same reason {@link createUnroutableNotifier} is.
+ * Delivery is best-effort: the sender swallows a provider failure.
+ */
+function createPairedNotifier(
+  controlReplies: Pick<TelegramControlReplySender, "notify">,
+): (senderId: string) => Promise<void> {
+  return async (senderId) => {
+    await controlReplies.notify(senderId, "paired");
   };
 }
 
@@ -172,6 +198,8 @@ export async function startTelegramConnectionActivation(
       return actorDigest !== null && store.activePairingActorDigest() === actorDigest;
     },
     notifyUnroutable: createUnroutableNotifier(controlReplies),
+    onPaired: createPairedNotifier(controlReplies),
+    ...(options.onPollHealth ? { onPollHealth: options.onPollHealth } : {}),
     ...(options.approvalGate ? { approvalGate: options.approvalGate } : {}),
     onFatal: async (code) => {
       // Best-effort, and deliberately not allowed to skip the teardown below.

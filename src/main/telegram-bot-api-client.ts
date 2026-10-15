@@ -36,6 +36,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 /** Hard ceiling applied to a response body BEFORE it is parsed. */
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_RETRY_AFTER_SECONDS = 3_600;
+const MIN_RETRY_AFTER_SECONDS = 1;
 /** Canonical positive decimal id; never a group or channel id. */
 const CANONICAL_CHAT_ID = /^[1-9][0-9]{0,15}$/;
 /** A control notice is a sentence, not a transcript. */
@@ -203,7 +204,7 @@ export function createTelegramBotApiClient(
         body: JSON.stringify(body),
         signal: abort.signal,
       });
-      const classified = classifyStatus(response);
+      const classified = await classifyStatus(response);
       if (classified !== undefined) return classified;
       const payload = await readBoundedJson(response);
       if (payload === undefined) return failure("invalid-response");
@@ -415,13 +416,21 @@ function isValidDecisionButton(value: unknown): value is TelegramDecisionButton 
  * Classify by HTTP status only. Telegram documents that the contents of an
  * error description may change, and the 409 wording exists only in its
  * open-source server, so parsing the description string is not safe.
+ *
+ * Flood control is the one case that reads the body, and it reads only the
+ * documented integer `parameters.retry_after` (Bot API `ResponseParameters`),
+ * never the description. Telegram states the wait there; the `Retry-After`
+ * header is not part of the Bot API contract, so relying on it alone made the
+ * loop retry on a guessed interval and extend the flood wait. A header that is
+ * present still wins.
  */
-function classifyStatus(response: Response): TelegramBotApiResult<never> | undefined {
+async function classifyStatus(response: Response): Promise<TelegramBotApiResult<never> | undefined> {
   if (response.ok) return undefined;
   if (response.status === 401) return failure("unauthorized");
   if (response.status === 409) return failure("conflict");
   if (response.status === 429) {
-    const retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
+    const retryAfterMs = parseRetryAfter(response.headers.get("retry-after"))
+      ?? bodyRetryAfterMs(await readBoundedJson(response).catch(() => undefined));
     return retryAfterMs === undefined
       ? failure("rate-limited")
       : { ok: false, reason: "rate-limited", retryAfterMs };
@@ -431,11 +440,26 @@ function classifyStatus(response: Response): TelegramBotApiResult<never> | undef
 
 function parseRetryAfter(value: string | null): number | undefined {
   if (value === null || !/^\d{1,7}$/.test(value.trim())) return undefined;
-  const seconds = Number(value.trim());
+  return retryAfterSecondsToMs(Number(value.trim()));
+}
+
+function bodyRetryAfterMs(payload: unknown): number | undefined {
+  if (!isRecord(payload) || !isRecord(payload.parameters)) return undefined;
+  const seconds = payload.parameters.retry_after;
+  return typeof seconds === "number" ? retryAfterSecondsToMs(seconds) : undefined;
+}
+
+/**
+ * The one conversion both the header and the body hint go through, so the
+ * floor below cannot apply to one source and not the other. A stated wait of
+ * zero is still flood control: re-polling on it immediately is the tight loop
+ * the hint exists to prevent, so the shortest wait honoured is one second.
+ */
+function retryAfterSecondsToMs(seconds: number): number | undefined {
   if (!Number.isSafeInteger(seconds) || seconds < 0 || seconds > MAX_RETRY_AFTER_SECONDS) {
     return undefined;
   }
-  return seconds * 1_000;
+  return Math.max(seconds, MIN_RETRY_AFTER_SECONDS) * 1_000;
 }
 
 /**

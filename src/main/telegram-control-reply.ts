@@ -31,7 +31,14 @@ const MAX_TRACKED_KEYS = 128;
 
 export type TelegramControlNotice =
   | "conversation-not-shared"
-  | "commands-not-supported";
+  | "commands-not-supported"
+  /**
+   * Sent once to the account that just redeemed a live pairing code, so the
+   * phone learns the pairing took instead of seeing a code vanish into a silent
+   * bot. It confirms nothing a stranger could not already learn: only the
+   * holder of the one-time code can trigger it.
+   */
+  | "paired";
 
 export interface TelegramControlReplySender {
   /**
@@ -96,5 +103,7 @@ function noticeText(notice: TelegramControlNotice): string {
       return t("be_telegramBridge.conversationNotShared");
     case "commands-not-supported":
       return t("be_telegramBridge.commandsNotSupported");
+    case "paired":
+      return t("be_telegramBridge.paired");
   }
 }

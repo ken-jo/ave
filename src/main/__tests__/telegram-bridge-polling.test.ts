@@ -398,6 +398,60 @@ describe("startTelegramPollingIngress", () => {
     running = undefined;
   });
 
+  it("does not end the connection on a conflict it could not classify", async () => {
+    const waits: number[] = [];
+    const h = harness({ wait: async (ms) => { waits.push(ms); } });
+    h.client.getWebhookInfo
+      .mockResolvedValueOnce({ ok: false, reason: "unreachable" } as never)
+      .mockResolvedValueOnce({ ok: true, value: { hasWebhook: true } });
+    h.queue({ ok: false, reason: "conflict" }, { ok: false, reason: "conflict" });
+    const ingress = start(h.options);
+
+    await ingress.finished;
+    running = undefined;
+    // The unclassified 409 backed off instead of guessing; the recurrence was
+    // classified and named the webhook that is actually configured.
+    expect(waits).toEqual([2_000]);
+    expect(h.onFatal.mock.calls).toEqual([["telegram-webhook-conflict"]]);
+  });
+
+  it("backs off exponentially while Telegram is unreachable and resets once it answers", async () => {
+    const waits: number[] = [];
+    const logs: string[] = [];
+    const h = harness({ wait: async (ms) => { waits.push(ms); }, log: (line) => logs.push(line) });
+    const down = { ok: false as const, reason: "unreachable" as const };
+    h.queue(
+      down, down, { ok: false, reason: "invalid-response" }, down, down, down, down, down,
+      { ok: true, value: [] },
+      down,
+    );
+    start(h.options);
+
+    await vi.waitFor(() => expect(waits).toHaveLength(9));
+    expect(waits).toEqual([2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000, 2_000]);
+    expect(h.onFatal).not.toHaveBeenCalled();
+    // One line per outage and one on recovery, not one per retry.
+    expect(logs.filter((line) => line.includes("polling Telegram failed"))).toHaveLength(2);
+    expect(logs).toContain("[telegram-poll] polling Telegram again after 8 failed polls");
+  });
+
+  it("backs off on the streak when the first backlog-skipping poll fails", async () => {
+    const waits: number[] = [];
+    const h = harness({ wait: async (ms) => { waits.push(ms); } });
+    h.setOffset(null);
+    h.queue(
+      { ok: false, reason: "unreachable" },
+      { ok: false, reason: "rate-limited", retryAfterMs: 9_000 },
+      { ok: false, reason: "unreachable" },
+      { ok: true, value: [] },
+    );
+    start(h.options);
+
+    await vi.waitFor(() => expect(h.recordPollOffset).toHaveBeenCalled());
+    expect(waits).toEqual([2_000, 9_000, 4_000]);
+    expect(h.currentOffset()).toBe(0);
+  });
+
   it("ends the activation when a confirmed offset cannot be persisted", async () => {
     // Both write sites, because they are separate calls: a fix applied to one
     // leaves the other killing ingress without a word.
@@ -635,5 +689,73 @@ describe("startTelegramPollingIngress", () => {
       // A tally that outlived its activation would read 3 here.
       expect(tally(second.dropLines().at(-1) as string).total).toBe(1);
     });
+  });
+});
+
+describe("reconnecting after sleep, a network change, or an outage", () => {
+  /** A wait that only ends when its signal aborts, recording each delay asked for. */
+  function blockingWait(waits: number[]) {
+    return (ms: number, signal: AbortSignal) => {
+      waits.push(ms);
+      return new Promise<void>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    };
+  }
+
+  it("reports each health transition once, not once per poll", async () => {
+    const health: string[] = [];
+    const h = harness({ onHealth: (next) => health.push(next) });
+    const down = { ok: false as const, reason: "unreachable" as const };
+    h.queue(down, down, down, { ok: true, value: [] });
+    const ingress = start(h.options);
+
+    await vi.waitFor(() => expect(health).toEqual(["retrying", "receiving"]));
+    ingress.stop();
+    await ingress.finished;
+    running = undefined;
+    expect(health).toEqual(["retrying", "receiving", "stopped"]);
+  });
+
+  it("cuts a backoff wait short on a nudge and restarts the backoff streak", async () => {
+    const waits: number[] = [];
+    const h = harness({ wait: blockingWait(waits) });
+    const down = { ok: false as const, reason: "unreachable" as const };
+    h.queue(down, down);
+    const ingress = start(h.options);
+
+    await vi.waitFor(() => expect(waits).toEqual([2_000]));
+    ingress.nudge();
+    // Re-polled at once; the failure after the wake starts the streak over at
+    // 2 s instead of continuing to 4 s.
+    await vi.waitFor(() => expect(waits).toEqual([2_000, 2_000]));
+    expect(h.getUpdatesCalls).toHaveLength(2);
+    expect(h.onFatal).not.toHaveBeenCalled();
+  });
+
+  it("abandons an in-flight long poll on a nudge without counting a failure or moving the offset", async () => {
+    const health: string[] = [];
+    const h = harness({ onHealth: (next) => health.push(next) });
+    const ingress = start(h.options);
+
+    // Parked on the long poll, as a laptop going to sleep would be.
+    await vi.waitFor(() => expect(h.getUpdatesCalls).toHaveLength(1));
+    ingress.nudge();
+    await vi.waitFor(() => expect(h.getUpdatesCalls).toHaveLength(2));
+
+    expect(h.getUpdatesCalls.map((call) => call.offset)).toEqual([100, 100]);
+    expect(h.recordPollOffset).not.toHaveBeenCalled();
+    expect(health).toEqual([]);
+  });
+
+  it("ignores a nudge after stop", async () => {
+    const h = harness();
+    const ingress = start(h.options);
+    await vi.waitFor(() => expect(h.getUpdatesCalls).toHaveLength(1));
+    ingress.stop();
+    await ingress.finished;
+    running = undefined;
+    ingress.nudge();
+    expect(h.getUpdatesCalls).toHaveLength(1);
   });
 });

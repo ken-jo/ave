@@ -187,6 +187,7 @@ export function buildInternalApiSurface() {
       { targetAgentId, userIntent, intentToken: ipcUserKeyboardIntent() },
     ),
     task: async (taskHandle: string) => ipcRenderer.invoke(CHANNELS.remoteA2a.task, { taskHandle }),
+    tasks: async () => ipcRenderer.invoke(CHANNELS.remoteA2a.tasks),
     action: invokeRemoteA2AAction,
   },
   tailnetSharing: buildTailnetSharingApiSurface(),
