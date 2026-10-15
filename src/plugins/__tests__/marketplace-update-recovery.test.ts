@@ -785,9 +785,13 @@ describe("marketplace pending-update recovery", () => {
     expect(existsSync(backupDir)).toBe(true);
   });
 
-  it.skipIf(process.platform === "win32")(
-    "refuses predecessor recovery when the retained payload contains an unlisted executable symlink",
-    async () => {
+  // An unprivileged Windows process cannot create a file symlink (EPERM) but
+  // can plant a directory junction, which the retained-payload walk's lstat
+  // reports as a link. POSIX keeps the executable file symlink and adds the
+  // same directory link.
+  it.each(process.platform === "win32" ? ["directory link"] : ["file symlink", "directory link"])(
+    "refuses predecessor recovery when the retained payload contains an unlisted %s",
+    async (linkKind) => {
       const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
       const backupDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
       await preparePendingPluginUpdate(paths, entry, {
@@ -796,9 +800,17 @@ describe("marketplace pending-update recovery", () => {
         recoveryBackupMode: "rename",
       });
       await rename(join(paths.pluginsRoot, pluginId), backupDir);
-      const outsideExecutable = join(root, "outside-executable");
-      await writeFile(outsideExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-      await symlink(outsideExecutable, join(backupDir, "dist", "injected-tool"));
+      if (linkKind === "file symlink") {
+        const outsideExecutable = join(root, "outside-executable");
+        await writeFile(outsideExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+        await symlink(outsideExecutable, join(backupDir, "dist", "injected-tool"));
+      } else {
+        const outsideDir = join(root, "outside-tools");
+        await mkdir(outsideDir, { recursive: true });
+        await writeFile(join(outsideDir, "tool"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+        // A junction on Windows; the type is ignored on POSIX.
+        await symlink(outsideDir, join(backupDir, "dist", "injected-tool"), "junction");
+      }
       await mkdir(join(paths.pluginsRoot, pluginId), { recursive: true });
       await writeFile(join(paths.pluginsRoot, pluginId, "plugin.json"), "new payload");
 

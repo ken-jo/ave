@@ -1,5 +1,7 @@
 import {
   existsSync,
+  mkdirSync,
+  readdirSync,
   readFileSync,
   statSync,
   symlinkSync,
@@ -817,24 +819,40 @@ describe("DurableHostInvocationStartCasStore", () => {
     })).rejects.toThrow(/corrupt|canonical/);
   });
 
-  it.skipIf(platform === "win32")(
-    "rejects a final-component symlink replacement",
-    async () => {
+  // An unprivileged Windows process cannot create a file symlink (EPERM) but
+  // can put a directory junction at the journal's name; Windows opens without
+  // O_NOFOLLOW, so the shared reader's lstat/fstat check is the refusal there.
+  // POSIX keeps the file symlink and adds the same directory link.
+  it.each(platform === "win32" ? ["directory link"] : ["file symlink", "directory link"])(
+    "rejects a final-component %s replacement",
+    async (linkKind) => {
       const root = directory();
       const filePath = join(root, "invocations.json");
       await journalStore(filePath).recoverAfterCrash({
         persistAudit: () => {},
         now: 10,
       });
-      const targetPath = join(root, "replacement.json");
-      writeFileSync(targetPath, readFileSync(filePath));
+      if (linkKind === "file symlink") {
+        const targetPath = join(root, "replacement.json");
+        writeFileSync(targetPath, readFileSync(filePath));
+        unlinkSync(filePath);
+        symlinkSync(targetPath, filePath);
+        await expect(journalStore(filePath).recoverAfterCrash({
+          persistAudit: () => {},
+          now: 11,
+        })).rejects.toThrow(/not a regular file|ELOOP/);
+        return;
+      }
       unlinkSync(filePath);
-      symlinkSync(targetPath, filePath);
-
+      // A junction on Windows; the type is ignored on POSIX.
+      const targetDir = join(root, "replacement");
+      mkdirSync(targetDir);
+      symlinkSync(targetDir, filePath, "junction");
       await expect(journalStore(filePath).recoverAfterCrash({
         persistAudit: () => {},
         now: 11,
-      })).rejects.toThrow(/not a regular file|ELOOP/);
+      })).rejects.toThrow(/invocation journal path is not a stable regular file|ELOOP/);
+      expect(readdirSync(targetDir)).toEqual([]);
     },
   );
 
