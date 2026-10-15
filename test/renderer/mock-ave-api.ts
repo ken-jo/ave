@@ -707,7 +707,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     getPricingOverrides: vi.fn(async () => []),
     getAppInfo: vi.fn(async () => appInfo),
     // Routine API
-    listRoutines: vi.fn(async () => []),
+    listRoutines: vi.fn(async () => ({ routines: [], invalid: [] })),
     dismissRoutine: vi.fn(async () => ({ ok: true })),
     removeRoutine: vi.fn(async () => ({ ok: true })),
     triggerRoutineNow: vi.fn(async () => ({ ok: true })),

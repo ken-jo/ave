@@ -1997,7 +1997,7 @@ files is a device-management action).
 
 - `serviceBase` resolution: managed policy `service.baseUrl` → the move
   recorded for the current build constant (below) → build constant
-  `AVE_SERVICE_BASE_URL` (default `https://former-site.invalid`). There is no user
+  `AVE_SERVICE_BASE_URL` (default `https://ave.agent-connector.ai`). There is no user
   setting. A base is an https origin. The policy section is read exactly
   (`{ "baseUrl": … }`); an invalid one makes the service unavailable — no
   announcements, no telemetry — rather than falling back to the public base.

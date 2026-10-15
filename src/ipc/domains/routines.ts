@@ -12,7 +12,7 @@
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import type { IpcDeps } from "../types.js";
-import type { RoutineExecution, RoutineFiredPayload, RoutineSchedule } from "../../shared/routines-types.js";
+import type { RoutineExecution, RoutineFiredPayload, RoutineListResult, RoutineSchedule } from "../../shared/routines-types.js";
 import { ROUTINES } from "../../shared/ipc-channels.js";
 import { toSessionListRow } from "../../memory/memory-manager.js";
 import type { RoutineRunRow } from "../../shared/session-lookup.js";
@@ -26,8 +26,8 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, ROUTINES.list, e);
       return UNAUTHORIZED_FRAME;
     }
-    if (!routinesStore) return [];
-    return routinesStore.listActive();
+    if (!routinesStore) return { routines: [], invalid: [] } satisfies RoutineListResult;
+    return routinesStore.listForDisplay();
   });
 
   ipcMain.handle(ROUTINES.dismiss, async (e, id: string) => {

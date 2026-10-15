@@ -1,6 +1,9 @@
-# 배포 — Cloudflare Pages
+# 배포 — Cloudflare Worker `ave-web`
 
-이 사이트는 **Cloudflare Pages**(프로젝트 `former-site`)로 배포합니다.
+이 사이트(Ave 웹 홈, `https://ave.agent-connector.ai`)는 정적 자산 전용 **Cloudflare Worker**
+`ave-web`으로 배포합니다. 설정은 `wrangler.jsonc`(자산 디렉터리 `./out`, 커스텀 도메인
+`ave.agent-connector.ai`)이고, `out/`의 `_headers`·`_redirects`가 그대로 적용됩니다.
+미리보기 `dev.agent-connector.ai`는 같은 모양의 Worker `ave-web-dev`이며 미리보기 전용입니다.
 
 ## 자동 배포 (기본)
 
@@ -29,35 +32,26 @@ printf '{"reviewers":[{"type":"User","id":42824840}],"deployment_branch_policy":
   | gh api repos/ken-jo/ave/environments/web-production -X PUT --input -
 ```
 
-배포에는 repo 시크릿 `CLOUDFLARE_API_TOKEN`(Cloudflare Pages: Edit)이 필요합니다. 없으면
+배포에는 repo 시크릿 `CLOUDFLARE_API_TOKEN`이 필요합니다. 이 토큰은 Worker를 배포하고
+`agent-connector.ai` 존에 커스텀 도메인을 붙일 수 있어야 합니다(미리보기 `ave-web-dev`를 배포한
+것과 같은 권한). 없으면
 워크플로는 스킵이 아니라 **실패**하므로, 실패한 런은 아래 수동 방식으로 폴백하세요.
 
 ## 수동 배포 (폴백 / 로컬 검증)
 
-git 미연동 direct-upload 방식이라 수동으로도 배포할 수 있습니다:
-
 ```bash
-npm run build   # → out/
-npx wrangler pages deploy out --project-name=former-site --branch=main
+bun run build              # → out/
+npx wrangler deploy        # wrangler.jsonc 의 Worker `ave-web`
 ```
 
-- 프로젝트: `former-site` (production 도메인: `former-site.invalid`)
+- Worker: `ave-web` (도메인: `ave.agent-connector.ai`)
 - wrangler 인증: `npx wrangler login` (OAuth)
 - 배포 검증: 라이브 HTML의 `_next/static/chunks/app/page-<hash>.js`가 로컬 `out/`과 일치하는지 확인
 
-## docs.former-site.invalid 리다이렉트 심
-
-레거시 docs 도메인은 구 프로젝트(`docs-former-site`)가 `infra/docs-redirect/`의
-`_redirects`로 `former-site.invalid/docs/*` 301을 반환합니다. 심을 갱신할 일이 있으면:
-
-```bash
-npx wrangler pages deploy infra/docs-redirect --project-name=docs-former-site --branch=main
-```
-
 ## 롤백
 
-Cloudflare 대시보드 → Workers & Pages → 프로젝트 → Deployments →
-이전 배포의 `…` 메뉴 → **Rollback to this deployment**.
+Cloudflare 대시보드 → Workers & Pages → `ave-web` → Deployments →
+이전 버전으로 **Rollback**, 또는 `npx wrangler rollback`.
 
 ## 로컬 확인
 
@@ -66,7 +60,21 @@ npm run build
 npm run preview   # 정적 out/을 :3000에서 서빙
 ```
 
-## 엣지 라우터 (apex 트래픽)
+## 옛 Ave 사이트 (`former-site.invalid`, Ave 아님)
+
+`former-site.invalid`는 옛 Ave 사이트로 남고 Ave의 홈이 아닙니다. 이 레포의 워크플로는 그곳에 배포하지
+않습니다. `infra/`는 그 사이트의 Cloudflare 설정 기록이며, 아래는 그 설정을 갱신할 때만 씁니다.
+
+### docs.former-site.invalid 리다이렉트 심
+
+레거시 docs 도메인은 구 프로젝트(`docs-former-site`)가 `infra/docs-redirect/`의
+`_redirects`로 `former-site.invalid/docs/*` 301을 반환합니다. 심을 갱신할 일이 있으면:
+
+```bash
+npx wrangler pages deploy infra/docs-redirect --project-name=docs-former-site --branch=main
+```
+
+### 엣지 라우터 (apex 트래픽)
 
 `former-site.invalid` DNS A/AAAA 레코드는 아직 구 GitHub Pages를 가리키지만, 존이 프록시
 상태이므로 `infra/edge-router/`의 Worker(`former-site-router`)가 `former-site.invalid/*`,

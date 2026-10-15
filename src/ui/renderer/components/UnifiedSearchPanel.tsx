@@ -123,7 +123,7 @@ export function UnifiedSearchPanel({
     setRoutinesLoading(true);
     void api.listRoutines()
       .then((list) => {
-        if (alive) setRoutines(list ?? []);
+        if (alive) setRoutines(list?.routines ?? []);
       })
       .catch(() => {
         if (alive) setRoutines([]);

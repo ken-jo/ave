@@ -8,6 +8,7 @@ import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { clampDanglingMarkdownLink } from "../utils/streaming-markdown.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { MARKDOWN_SAFE_COMPONENTS, markdownUrlTransform } from "../utils/markdown-safe.js";
+import { MarkdownCodeBlock } from "./MarkdownCodeBlock.js";
 import { replaceToolNamesInText } from "../utils/tool-display.js";
 import { detectFromStream } from "../../../lib/stream-markers.js";
 
@@ -24,6 +25,9 @@ function splitLegacyInterruptTail(text: string): { text: string; hadMarker: bool
   const stripped = text.replace(LEGACY_INTERRUPT_TAIL, "");
   return { text: stripped, hadMarker: stripped !== text };
 }
+
+/** Safe overrides plus a fenced-code header (language + copy). */
+const ASSISTANT_MARKDOWN_COMPONENTS = { ...MARKDOWN_SAFE_COMPONENTS, pre: MarkdownCodeBlock };
 
 function AssistantCardImpl({
   entry,
@@ -168,7 +172,7 @@ function AssistantCardImpl({
         <ReactMarkdown
           remarkPlugins={MARKDOWN_REMARK_PLUGINS}
           urlTransform={markdownUrlTransform}
-          components={MARKDOWN_SAFE_COMPONENTS}
+          components={ASSISTANT_MARKDOWN_COMPONENTS}
         >
           {entry.streaming ? clampDanglingMarkdownLink(markdownText) : markdownText}
         </ReactMarkdown>

@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://sdk.former-site.invalid/schemas/marketplace/index.schema.json",
+  "$id": "https://ave.agent-connector.ai/schemas/marketplace/2/index.schema.json",
   "title": "Ave marketplace index (marketplace.json)",
   "description": "The root index of a marketplace repository (design §4). Unknown keys are rejected. The app validates the root and each package entry separately: an invalid root rejects the commit, an invalid package entry drops that package with a diagnostic.",
   "allOf": [

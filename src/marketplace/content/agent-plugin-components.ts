@@ -22,8 +22,8 @@ export interface AgentPluginFile {
 }
 
 const COMPONENT_NAME = /^[a-z][a-z0-9-]{0,62}$/u;
-const PROMPT_PATH = /^xyz\.ave\/prompts\/([a-z][a-z0-9-]{0,62})\.md$/u;
-const AGENT_PATH = /^xyz\.ave\/agents\/([a-z][a-z0-9-]{0,62})\/AGENTS\.md$/u;
+const PROMPT_PATH = /^ai\.agent-connector\.ave\/prompts\/([a-z][a-z0-9-]{0,62})\.md$/u;
+const AGENT_PATH = /^ai\.agent-connector\.ave\/agents\/([a-z][a-z0-9-]{0,62})\/AGENTS\.md$/u;
 const SKILL_PATH = /^skills\/([a-z][a-z0-9-]{0,62})\//u;
 
 function fail(path: string, reason: string): never {

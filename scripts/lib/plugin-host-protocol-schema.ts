@@ -55,6 +55,7 @@ import {
   type HostApiWireErrorCode,
 } from "../../src/plugins/isolation/host-api-wire.js";
 import { PLUGIN_INSTANCE_METHODS } from "../../src/plugins/isolation/plugin-instance-wire.js";
+import { hostProtocolSchemaId } from "./plugin-host-protocol-mirror.mjs";
 
 type JsonSchema = Record<string, unknown>;
 
@@ -76,7 +77,7 @@ function hostProtocolSchemaPath(version: string): string {
 
 /** The app-tagged URL a published copy is mirrored at (§6.1). */
 function schemaId(version: string, appVersion: string): string {
-  return `https://former-site.invalid/schemas/plugin-host-protocol/${version}/v${appVersion}/protocol.schema.json`;
+  return hostProtocolSchemaId(`${version}/v${appVersion}/protocol.schema.json`);
 }
 
 /**

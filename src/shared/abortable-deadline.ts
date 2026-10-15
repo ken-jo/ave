@@ -46,6 +46,30 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
+ * Settle with `operation`, or reject with `timeoutError()` if `timeoutMs`
+ * passes first. The timer is cleared on every exit. The operation is not
+ * cancelled — the caller owns whatever it must do with late work — but its
+ * eventual rejection is observed by the race, so it never goes unhandled.
+ * This is the plain wait bound; use {@link runWithAbortableDeadline} when the
+ * work can be told to stop.
+ */
+export async function raceWithTimeout<T>(
+  operation: PromiseLike<T>,
+  timeoutMs: number,
+  timeoutError: () => Error,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(timeoutError()), timeoutMs);
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Run one task under a caller-linked, hard wall-clock deadline. The linked
  * signal lets cooperative work stop; Promise.race also bounds work that ignores
  * AbortSignal. Boundary causes are typed instead of inferred from error text.

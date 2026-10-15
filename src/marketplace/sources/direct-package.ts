@@ -34,6 +34,7 @@ import type { SourceTree } from "./source-tree.js";
 import { manifestAuthority } from "../resolve/manifest-rules.js";
 import { deriveAgentPluginComponents } from "../content/agent-plugin-components.js";
 import { checkContentFiles, CONTENT_RULES } from "../content/rules.js";
+import { isRecord } from "../../shared/is-record.js";
 
 export const DIRECT_FILES = [MARKETPLACE_DESCRIPTOR_FILE, "plugin.json", "SKILL.md", "AGENTS.md", "server.json"] as const;
 
@@ -74,10 +75,6 @@ export interface DirectReadInput {
 /** A version the tree names because the package declares none (design §8.2, §18.4.7). */
 export function isSynthesizedVersion(version: string): boolean {
   return SYNTHESIZED.test(version);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function filePath(dir: string, file: string): string {

@@ -177,7 +177,7 @@ function replaceFlowAuthorship(line: string, key: string, value: string): string
 
 function authoredText(path: string, text: string, author: "model" | "user"): Buffer {
   const skill = /^skills\/[a-z][a-z0-9-]*\/SKILL\.md$/u.test(path);
-  if (!skill && !/^xyz\.ave\/prompts\/[a-z][a-z0-9-]*\.md$/u.test(path)) return Buffer.from(text);
+  if (!skill && !/^ai\.agent-connector\.ave\/prompts\/[a-z][a-z0-9-]*\.md$/u.test(path)) return Buffer.from(text);
   const front = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/u.exec(text);
   if (!front) throw new Error(`Studio authored file ${path} needs frontmatter`);
   const fields: unknown = parseYaml(front[1]!);
@@ -405,7 +405,7 @@ export class PluginStudioStore {
     for (const part of input.files ?? []) {
       filePath(part.path);
       const authoredPath = /^skills\/[a-z][a-z0-9-]*\/SKILL\.md$/u.test(part.path)
-        || /^xyz\.ave\/prompts\/[a-z][a-z0-9-]*\.md$/u.test(part.path)
+        || /^ai\.agent-connector\.ave\/prompts\/[a-z][a-z0-9-]*\.md$/u.test(part.path)
         || part.path === "ai.agent-connector.ave/routines.json";
       if (!authoredPath && !(sessionId === undefined && part.path === "mcp.json")) {
         throw new Error(`Studio cannot author ${part.path}`);
