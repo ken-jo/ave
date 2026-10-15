@@ -67,14 +67,25 @@ export function isSafeMainBundleManifestPath(path) {
  * consulted by the permission manager on every tool call, so they belong in the initial
  * graph; with the permissions category joined with that `main` the measurement is entry
  * 423_073, initial 5_389_392, total 9_031_357, and the initial ceiling moves to 5_390_000.
+ * The agent browser tools keep their schemas, execute bodies and CDP page actions out of
+ * the initial graph (desktop-boot and dynamic imports); what joins it is what boot wires
+ * eagerly: the browser tab registry and its IPC domain, guest tracking on did-attach, the
+ * tools' en/ko catalog fragments (the catalog barrel imports every fragment) and the
+ * approval card's browser-scope strings. Measured entry 425_021, initial 5_410_703,
+ * total 9_079_452; the initial ceiling moves to 5_412_000.
+ * Concrete browser document authority, input attribution and navigation
+ * provenance remain in the initial registry graph. Measured entry 425_021,
+ * initial 5_413_433, total 9_091_289; the ceiling moves from 5_412_000 to
+ * 5_415_000 to cover that functionality.
  * The PowerShell shell floors (bounded command analysis, file execution provenance,
  * native launchers, remote output sinks and credential-store rows) are read by the
  * permission manager on every PowerShell call, so they join the initial graph too:
  * entry 423_073, initial 5_470_098, total 9_112_063; the initial ceiling remains 5_475_000.
+ * Merged with the browser tools: entry 425_021, initial 5_494_317, total 9_173_400; ceiling 5_495_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_475_000,
+  initialBytes: 5_495_000,
   totalBytes: 11_050_000,
 });
 

@@ -211,7 +211,11 @@ export function ApprovalDock({
             );
             return;
           }
-          if (returnTarget?.isConnected) returnTarget.focus();
+          // Restore only if focus is still free: the card's own button went
+          // away with it, so focus sits on the body. If something else took
+          // focus meanwhile (the agent clicking into a browser tab it was just
+          // allowed to type in, or the user moving on), leave it there.
+          if (returnTarget?.isConnected && focusIsFreeFor(rootRef.current)) returnTarget.focus();
         };
         returnFocusFrameRef.current = requestAnimationFrame(() => completeFocusHandoff(0));
         previousRequestIdRef.current = requestId;

@@ -512,6 +512,32 @@ export async function authorizeToolInvocation(
       };
     }
 
+    // A builtin that declares this input per-action (a browser action on a tab
+    // the user opened) is a person's decision every time, in every mode: no
+    // foreground reviewer, no remembered or mode-wide allow ("allow" mode
+    // included), and below, an allow-once / deny-once prompt that records
+    // nothing. Only a deny stands; with no one to ask (headless) it is denied.
+    const requiresPerActionApproval =
+      source === "builtin" &&
+      tool.requiresPerActionApproval?.(finalInput, {
+        ...(sessionId === undefined ? {} : { sessionId }),
+        ...(invocationPermissionContext.approvalMemory?.kind === "key"
+          ? { approvalMemoryScope: invocationPermissionContext.approvalMemory.scope } : {}),
+      }) === true;
+    if (requiresPerActionApproval && permissionResult.decision !== "deny") {
+      const { reviewer: _reviewer, ...withoutReviewer } = permissionResult;
+      permissionResult = invocationPermissionContext.headless === true
+        ? { decision: "deny", reason: "this action needs a person's approval each time, and no one can be asked here", layer: permissionResult.layer }
+        : {
+            ...withoutReviewer,
+            decision: "ask",
+            reason: permissionResult.decision === "ask"
+              ? permissionResult.reason
+              : "an action on a tab the user opened asks every time",
+            forceModal: true,
+          };
+    }
+
     // A pre-issued app mutation grant replaces only the ordinary foreground
     // approval ask. Hard denies, layer-1/2 asks, forceModal, operator Hooks,
     // rate limits, audit, and final one-shot consumption still apply.
@@ -1458,7 +1484,7 @@ export async function authorizeToolInvocation(
         // the exact invocation shown to the user.
         const approvalRequest = {
           id: randomUUID(),
-          ...(hostShellRequiresExplicitApproval || requiresRemoteLocalOneShot
+          ...(hostShellRequiresExplicitApproval || requiresRemoteLocalOneShot || requiresPerActionApproval
             ? {
                 // Plain host-shell and remote-controller approvals are both
                 // exact, local one-shot decisions: neither can mint a cache.
