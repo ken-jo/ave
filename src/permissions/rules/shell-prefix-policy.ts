@@ -45,6 +45,7 @@ const DASH_C_WRAPPERS = new Set(["su", "script", "flock", "runuser"]);
 interface RunnerDataOptions {
   flags?: readonly string[];
   values?: readonly string[];
+  packages?: readonly string[];
   optionalValues?: readonly string[];
 }
 
@@ -59,6 +60,7 @@ interface PackageRunnerPolicy extends RunnerDataOptions {
   blockedVerbs?: readonly string[];
   packageSources?: readonly string[];
   configGetters?: readonly string[];
+  implicitFiles?: Readonly<Record<string, string>>;
   tasks?: ReadonlySet<string>;
   commandDelimiter?: boolean;
   taskOptions?: Readonly<Record<string, RunnerDataOptions>>;
@@ -66,29 +68,39 @@ interface PackageRunnerPolicy extends RunnerDataOptions {
 
 const CALL_OPTIONS = ["-c", "--call", "--shell-mode"];
 const TASK_FLAGS = ["--silent", "--quiet", "--offline", "--ignore-scripts", "--frozen-lockfile"];
-const CONFIG_SOURCE_OPTIONS = new Set(["config", "userconfig", "globalconfig", "importmap", "nodeoptions", "require", "preload", "import", "scriptshell"]);
+const CONFIG_SOURCE_OPTIONS = new Set(["config", "userconfig", "globalconfig", "importmap", "nodeoptions", "require", "preload", "import", "scriptshell", "registry"]);
 const NPM_INSTALL_OPTIONS = { flags: ["--save", "--legacy-peer-deps", "-g", "--global", "--save-dev", "-D", "--save-exact", "-E", "--no-save"] };
 const PNPM_INSTALL_OPTIONS = { flags: ["--no-frozen-lockfile", "--save-dev", "-D"] };
 const CONFIG_GETTERS = ["get", "list", "ls"];
 const PACKAGE_SOURCE_VERBS = ["install", "i", "add"];
+// Install families and aliases: https://docs.npmjs.com/cli/v11/commands/npm-install
+// https://docs.npmjs.com/cli/v11/commands/npm-install-test
+// https://docs.npmjs.com/cli/v11/commands/npm-ci
+// https://docs.npmjs.com/cli/v11/commands/npm-install-ci-test
+const NPM_PACKAGE_SOURCE_VERBS = [...PACKAGE_SOURCE_VERBS, "in", "ins", "inst", "insta", "instal", "isnt", "isnta", "isntal", "isntall",
+  "install-test", "it", "ci", "clean-install", "ic", "install-clean", "isntall-clean", "install-ci-test", "cit", "clean-install-test", "sit", "install-clean-test"];
+// Source commands: https://pnpm.io/cli/install, https://pnpm.io/cli/add,
+// https://yarnpkg.com/cli/install, https://yarnpkg.com/cli/add,
+// https://bun.com/docs/pm/cli/install, https://bun.com/docs/pm/cli/add (also `bun --help`).
 const REMOTE_CODE_SOURCE = /^(?:(?:https?|file|data|blob|ftp|ftps|ssh|git(?:\+[a-z\d+.-]+)?):|[\\/]{2})/i;
 const REGISTRY_SPECIFIER = /^(?:npm|jsr):/i;
 const DENO_TASK_VERBS = new Set(["task", "test", "fmt", "lint", "check", "info", "doc", "bench", "cache", "types", "completions", "upgrade", "compile", "install", "add"]);
 /** Data bindings belong to each runner; source scans also inspect forwarded argv. */
 const PACKAGE_RUNNER_POLICIES: Readonly<Record<string, PackageRunnerPolicy>> = {
-  npx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["-y", "--yes", "--no", "--no-install"], values: ["-p", "--package"] },
-  bunx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["--bun", "--no-install"], values: ["-p", "--package"] },
-  pnpx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["-s", "--silent"], values: ["--package"] },
-  uvx: { prefixRunner: true, command: true, flags: ["--offline", "--no-cache", "-q", "--quiet"], values: ["--from", "--with"] },
-  pipx: { prefixRunner: true, command: ["run"], code: ["--path"], codeVerbs: ["runpip"], values: ["--spec"] },
+  npx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["-y", "--yes", "--no", "--no-install"], packages: ["-p", "--package"] },
+  bunx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["--bun", "--no-install"], packages: ["-p", "--package"] },
+  pnpx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["-s", "--silent"], packages: ["--package"] },
+  uvx: { prefixRunner: true, command: true, flags: ["--offline", "--no-cache", "-q", "--quiet"], packages: ["--from", "--with"] },
+  pipx: { prefixRunner: true, command: ["run"], code: ["--path"], codeVerbs: ["runpip"], packages: ["--spec"] },
   corepack: { prefixRunner: true, delegate: true, taskOptions: { prepare: { flags: ["--activate"] } } },
   yarnpkg: { prefixRunner: true, command: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: TASK_FLAGS, values: ["--cwd"], packageSources: PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS },
   deno: { prefixRunner: true, code: ["-e", "--eval"], codeVerbs: ["eval"], taskArguments: ["task"], scriptVerbs: ["run"], tasks: DENO_TASK_VERBS, flags: ["--quiet", "--watch"],
+    implicitFiles: { "--env-file": ".env" }, // https://docs.deno.com/runtime/reference/env_variables/#env-file
     blockedVerbs: ["init", "serve", "publish", "outdated", "remove", "repl"], packageSources: ["install", "cache", "add"],
     taskOptions: { test: { flags: ["-A"] }, run: { flags: ["-A"], optionalValues: ["--allow-", "--deny-"] }, task: { values: ["--cwd"] }, install: { flags: ["-g", "--global", "--entrypoint"] } } },
-  npm: { command: ["exec", "x"], code: CALL_OPTIONS, codeVerbs: ["explore"], commandDelimiter: true, values: ["--package", "--prefix", "-w", "--workspace"], flags: TASK_FLAGS, packageSources: PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS,
+  npm: { command: ["exec", "x"], code: CALL_OPTIONS, codeVerbs: ["explore"], commandDelimiter: true, packages: ["--package"], values: ["--prefix", "-w", "--workspace"], flags: TASK_FLAGS, packageSources: NPM_PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS,
     taskOptions: { install: NPM_INSTALL_OPTIONS, i: NPM_INSTALL_OPTIONS, ci: { values: ["--omit"] }, init: { flags: ["-y"] }, run: { flags: ["--if-present"] }, publish: { values: ["--access"] } } },
-  pnpm: { command: ["exec", "dlx", "x"], code: CALL_OPTIONS, flags: [...TASK_FLAGS, "--recursive", "-r"], values: ["--package", "--filter", "-C", "--dir"], packageSources: PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS,
+  pnpm: { command: ["exec", "dlx", "x"], code: CALL_OPTIONS, flags: [...TASK_FLAGS, "--recursive", "-r"], packages: ["--package"], values: ["--filter", "-C", "--dir"], packageSources: PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS,
     taskOptions: { install: PNPM_INSTALL_OPTIONS, i: PNPM_INSTALL_OPTIONS, add: PNPM_INSTALL_OPTIONS, run: { flags: ["--parallel"] } } },
   yarn: { command: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: TASK_FLAGS, values: ["--cwd"], packageSources: PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS,
     taskOptions: { add: { flags: ["--dev", "-D"] }, install: { flags: ["--immutable"] } } },
@@ -728,6 +740,7 @@ interface PackageRunnerInvocation {
   reason: string | null;
   ordinaryAsk?: string;
   readOnlyConfig?: boolean;
+  fileInputs?: readonly string[];
   commandIndex?: number;
   program?: string;
   task?: boolean;
@@ -739,17 +752,33 @@ function isLocalScriptOperand(value: string | undefined): value is string {
     && !/^(?:\/dev\/(?:stdin|fd\/\d+)|con(?:in\$)?)$/i.test(value);
 }
 
-function isRemotePackageSource(value: string): boolean {
-  const source = value.replace(/^(?:@[^/@]+\/)?[^/@]+@(?=[a-z][a-z\d+.-]*:)/i, "");
+// Repository shorthand grammar: https://docs.npmjs.com/cli/v11/commands/npm-install#description
+function packageSource(value: string): string {
+  return value.replace(/^(?:(?:npm|jsr):)?(?:@[^/@:\s]+\/)?[^/@:\s]+@/i, "");
+}
+
+function isRemotePackageSource(value: string, shorthand = true): boolean {
+  const source = packageSource(value);
   return [value, source].some((candidate) => REMOTE_CODE_SOURCE.test(candidate)
-    || /^(?:git@[^:]+:|(?:github|gitlab|bitbucket):)/i.test(candidate));
+    || /^(?:git@[^:]+:|(?:github|gitlab|bitbucket):)/i.test(candidate)
+    || (shorthand && /^[^@./~:\s\\][^@/:\s\\]*\/[^@/:\s\\#]+(?:#.*)?$/.test(candidate)));
+}
+
+/** Decode attached and separated values without changing the value's spelling. */
+function runnerOptionBinding(argv: readonly (string | undefined)[], index: number) {
+  const token = argv[index] ?? "";
+  const equals = token.indexOf("=");
+  const attached = equals !== -1;
+  return { flag: attached ? token.slice(0, equals) : token, attached,
+    value: attached ? token.slice(equals + 1) : argv[index + 1], next: index + (attached ? 1 : 2) };
 }
 
 /** Unknown options add an ordinary ask independently of script and source visibility. */
 export function packageRunnerInvocation(argv: readonly (string | undefined)[]): PackageRunnerInvocation {
   const nameAt = (index: number): string => programName(argv[index] ?? "").replace(/^(?!@)([^@]+)@[^@]+$/, "$1");
   if (!Object.hasOwn(PACKAGE_RUNNER_POLICIES, nameAt(0))) return { kind: "none", reason: null };
-  const opaque = (reason: string): PackageRunnerInvocation => ({ kind: "opaque", reason: `package runner ${reason}` });
+  const fileInputs: string[] = [];
+  const opaque = (reason: string): PackageRunnerInvocation => ({ kind: "opaque", reason: `package runner ${reason}`, ...(fileInputs.length ? { fileInputs } : {}) });
   if (argv.length > 1024) return opaque("analysis budget exceeded");
   let chars = 0;
   let unresolved = false;
@@ -767,6 +796,7 @@ export function packageRunnerInvocation(argv: readonly (string | undefined)[]): 
     const command = (): PackageRunnerInvocation => ({ kind: unresolved ? "opaque" : binding ? "blocked" : unknown ? "unknown" : "data",
       reason: unresolved ? "package runner has an unresolved argument" : binding ?? unknown ?? null,
       ...(unknown ? { ordinaryAsk: unknown } : {}),
+      ...(fileInputs.length ? { fileInputs } : {}),
       ...(start ? { commandIndex: start, program } : {}) });
     if (!policy) {
       if (!argv[start] || /[\s;&|`$<>()]/.test(argv[start]!)) return opaque("has an opaque command operand");
@@ -785,13 +815,14 @@ export function packageRunnerInvocation(argv: readonly (string | undefined)[]): 
     // Configuration and code sources win over unknown options elsewhere. A
     // task delimiter ends runner-owned options, but not remote source checks.
     for (let scan = start + 1; scan < argv.length && argv[scan] !== "--"; scan += 1) {
-      const token = argv[scan]?.replace(/[\u2013-\u2015]/g, "-");
-      if (!token?.startsWith("-")) continue;
-      const flag = token.split("=", 1)[0]!;
+      const bound = runnerOptionBinding(argv, scan);
+      const flag = bound.flag.replace(/[\u2013-\u2015]/g, "-");
+      if (!flag.startsWith("-")) continue;
+      if (!bound.attached && policy.implicitFiles?.[flag]) fileInputs.push(policy.implicitFiles[flag]!);
       const key = flag.replace(/[-_.]/g, "").toLowerCase();
       if (CONFIG_SOURCE_OPTIONS.has(key) || key.startsWith("config")) return opaque("contains a configuration source");
-      if (policy.code?.some((code) => flag === code || (code.length === 2 && token.startsWith(code)))
-        || /^(?:-c|-e|--call|--eval|--print|--shell-mode)(?:=|$)/.test(token)) return opaque("contains inline code");
+      if (policy.code?.some((code) => flag === code || (code.length === 2 && flag.startsWith(code)))
+        || /^(?:-c|-e|--call|--eval|--print|--shell-mode)$/.test(flag)) return opaque("contains inline code");
     }
     if (program === "deno" && argv.slice(start + 1).some((arg) => arg === "-"
       || (arg !== undefined && REMOTE_CODE_SOURCE.test(arg.startsWith("-") && arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : arg)))) return opaque("has a remote or stdin source");
@@ -800,15 +831,14 @@ export function packageRunnerInvocation(argv: readonly (string | undefined)[]): 
     if (rest.every((arg) => /^(?:--version|--help|-v|-h)$/.test(arg!))) return { ...command(), task: true };
     let index = start + 1;
     let delimited = false;
+    const takesValue = (flag: string, data?: RunnerDataOptions): boolean => !!(policy.values?.includes(flag) || policy.packages?.includes(flag) || data?.values?.includes(flag));
     const option = (data?: RunnerDataOptions): string | null => {
-      const token = argv[index]!;
-      const equals = token.indexOf("=");
-      const flag = equals === -1 ? token : token.slice(0, equals);
-      if ((policy.flags?.includes(flag) || data?.flags?.includes(flag)) && equals === -1) { index += 1; return null; }
-      if (policy.values?.includes(flag) || data?.values?.includes(flag)) {
-        const value = equals === -1 ? argv[++index] : token.slice(equals + 1);
+      const { flag, value, attached, next } = runnerOptionBinding(argv, index);
+      if ((policy.flags?.includes(flag) || data?.flags?.includes(flag)) && !attached) { index += 1; return null; }
+      if (takesValue(flag, data)) {
         if (!value || value.startsWith("-")) return "has an opaque option value";
-        index += 1;
+        if (policy.packages?.includes(flag) && !/^file:/i.test(packageSource(value)) && isRemotePackageSource(value)) return "has a remote package source";
+        index = next;
         return null;
       }
       if (data?.optionalValues?.some((prefix) => flag.startsWith(prefix))) { index += 1; return null; }
@@ -847,8 +877,18 @@ export function packageRunnerInvocation(argv: readonly (string | undefined)[]): 
       continue;
     }
     const data = policy.taskOptions?.[verb];
-    if (policy.packageSources?.includes(verb) && argv.slice(index + 1).some((arg) => arg !== undefined
-      && isRemotePackageSource(arg))) return opaque("has a remote package source");
+    if (policy.packageSources?.includes(verb)) {
+      let positional = false;
+      for (let scan = start + 1; scan < argv.length; scan += 1) {
+        const arg = argv[scan];
+        if (arg === "--") { positional = true; continue; }
+        const bound = runnerOptionBinding(argv, scan);
+        if (!positional && bound.flag.startsWith("-") && takesValue(bound.flag, data)) {
+          if (bound.value !== undefined && isRemotePackageSource(bound.value, !!policy.packages?.includes(bound.flag))) return opaque("has a remote package source");
+          scan = bound.next - 1;
+        } else if (arg !== undefined && !arg.startsWith("-") && isRemotePackageSource(arg)) return opaque("has a remote package source");
+      }
+    }
     if (policy.scriptVerbs?.includes(verb)) {
       index += 1;
       const leading = leadingOptions(data);

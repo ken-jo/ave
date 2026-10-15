@@ -86,6 +86,7 @@ export function isSafeMainBundleManifestPath(path) {
  * Runner task-data options: entry 425_021, initial 5_499_048, total 9_178_131; ceiling 5_500_000.
  * Runner option roles and ordinary asks: entry 425_021, initial 5_501_684, total 9_180_767; ceiling 5_505_000.
  * Runner source roles and wrapper asks: entry 425_021, initial 5_503_162, total 9_182_245; ceiling 5_505_000.
+ * Package source aliases and implicit file inputs: entry 425_021, initial 5_504_377, total 9_183_460; ceiling 5_505_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,

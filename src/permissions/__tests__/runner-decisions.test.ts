@@ -108,6 +108,14 @@ describe("shared runner decisions", () => {
     }
   });
 
+  it.each(["deno run --env-file main.ts", "deno task --env-file build", "deno test --env-file", "npx deno run --env-file main.ts"])
+  ("scans implicit file inputs in both dialects: %s", (command) => {
+    for (const source of [command, `& ${command}`]) {
+      expect(inspectPowerShellCommand(source, CWD).sensitive).toContain(".env");
+    }
+    expect(shellSensitivePathSignal(command, CWD)).toContain(".env");
+  });
+
   it.each(["npm run build --future-task-flag", "pnpm build --future-task-flag", "yarn build --future-task-flag", "deno test --future-task-flag"])
   ("honors persisted rules and remembered grants for unknown options: %s", async (command) => {
     const manager = runnerManager(command.split(" ")[0]!);

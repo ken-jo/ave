@@ -739,6 +739,7 @@ function scanRedirectTarget(target: ShellWord, state: ScanState): void {
 function scanStatement(statement: ShellStatement, state: ScanState): void {
   switch (statement.kind) {
     case "command": {
+      for (const path of unwrap(statement.words).runner.fileInputs ?? []) checkGlob(escapeGlob(path), state);
       if (isHiddenCommand(statement)) {
         state.hidden = true;
         scanCodeOf(statement, state);

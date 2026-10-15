@@ -1535,14 +1535,16 @@ function nativeInvocation(name: string, args: readonly PsToken[], ctx: Context) 
   const staticArgv = argv.every((value) => value !== undefined) ? argv as string[] : undefined;
   const prefix = staticArgv ? refusedShellPrefix(staticArgv) : undefined;
   const runner = packageRunnerInvocation(argv);
+  const wrapped = wrapperPrefixLength(argv);
+  const innerRunner = wrapped ? packageRunnerInvocation(argv.slice(wrapped)) : runner;
   const reason = hiddenCodeReason(argv);
   // A literal script-file operand is ordinary native argv; explicit code options,
   // shells, wrappers and command-running verbs retain their launcher identity.
   const script = prefix === "interpreter" && args.length > 0 && values.every((value) => value !== undefined)
     && argv[1] !== "-" && !argv[1]!.startsWith("-") && reason?.startsWith("code passed to ");
-  return { prefix, reason, scriptPath: runner.kind === "script" ? runner.scriptPath : script ? argv[1] : undefined,
+  return { prefix, reason, values, fileInputs: innerRunner.fileInputs ?? [], scriptPath: runner.kind === "script" ? runner.scriptPath : script ? argv[1] : undefined,
     readOnlyConfig: runner.readOnlyConfig,
-    ordinaryAsk: packageRunnerInvocation(argv.slice(wrapperPrefixLength(argv))).ordinaryAsk };
+    ordinaryAsk: innerRunner.ordinaryAsk };
 }
 
 /** Native wrappers and explicit interpreter options retain their code-carrying effects. */
@@ -1798,7 +1800,8 @@ function sensitiveValues(pipelines: readonly PsPipeline[], ctx: Context): string
     // Argument-mode switches can contain attached file values even though they
     // are not scalar expressions. Use the same candidate scan as other paths.
     if (name !== undefined && (!POWERSHELL_COMMAND_POLICIES[name] || POWERSHELL_COMMAND_POLICIES[name]?.native)) {
-      for (const text of nativeArguments(args, ctx)) if (text !== undefined) values.push(valueOf(text, false, ctx));
+      const native = nativeInvocation(name, args, ctx);
+      for (const text of [...native.values, ...native.fileInputs]) if (text !== undefined) values.push(valueOf(text, false, ctx));
     }
     for (const value of values) {
       const hit = sensitiveValue(value, ctx);
