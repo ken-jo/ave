@@ -45,15 +45,19 @@ describe("headless direct entry", () => {
     process.env.AVE_WHITELIST_OFFLINE = "1";
 
     const observed: NodeJS.ProcessEnv[] = [];
+    const runs: NodeJS.ProcessEnv[] = [];
     vi.doMock("../main/main-paths.js", () => ({ projectRoot: root }));
     vi.doMock("../headless-host.js", () => {
       observed.push({ ...process.env });
-      return {};
+      // Importing the host runs nothing; the entry starts it exactly once.
+      return { runHeadlessHost: () => { runs.push({ ...process.env }); } };
     });
 
     await import("../headless.js");
 
     expect(observed).toHaveLength(1);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ NODE_ENV: "production" });
     expect(observed[0]).toMatchObject({ NODE_ENV: "production" });
     expect(observed[0]?.VITEST).toBeUndefined();
     expect(observed[0]?.AVE_DEV).toBeUndefined();

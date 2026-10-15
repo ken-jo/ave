@@ -7,9 +7,10 @@ import { LocalApiSurfacesSection } from "../LocalApiSurfacesSection.js";
 const getSettings = vi.fn();
 const updateSettings = vi.fn();
 const envForcedSettings = vi.fn();
+const remoteA2aStatus = vi.fn();
 
 vi.mock("../../api-client.js", () => ({
-  getApi: () => ({ getSettings, updateSettings, envForcedSettings }),
+  getApi: () => ({ getSettings, updateSettings, envForcedSettings, remoteA2a: { status: remoteA2aStatus } }),
 }));
 
 let localeBeforeTest = getLocale();
@@ -20,6 +21,7 @@ beforeEach(() => {
   getSettings.mockResolvedValue({ system: {}, features: {} });
   updateSettings.mockResolvedValue({});
   envForcedSettings.mockResolvedValue([]);
+  remoteA2aStatus.mockResolvedValue({ ok: false, error: "a2a-remote-disabled" });
 });
 
 afterEach(() => {
@@ -92,5 +94,62 @@ describe("LocalApiSurfacesSection", () => {
       .toBe("true");
     expect(screen.getByTestId("local-api-surfaces-a2a-remote-routing").getAttribute("aria-checked"))
       .toBe("false");
+  });
+
+  it("says why a switched-on remote gate did not start, instead of reading it as off", async () => {
+    getSettings.mockResolvedValue({ system: {}, features: { a2aRemoteRouting: true } });
+    remoteA2aStatus.mockResolvedValue({
+      ok: false,
+      error: "a2a-remote-start-failed",
+      reason: "a2a-remote-outbound-config-incomplete",
+    });
+    render(<LocalApiSurfacesSection />);
+
+    const notice = await screen.findByTestId("local-api-surfaces-remote-a2a-start-failed");
+    expect(notice.textContent).toContain("did not start this launch");
+    expect(notice.textContent).toContain("have not been provisioned");
+    expect(notice.textContent).not.toContain("turned off");
+    // The owner's switch still reads as they set it.
+    expect(screen.getByTestId("local-api-surfaces-a2a-remote-routing").getAttribute("aria-checked"))
+      .toBe("true");
+  });
+
+  it("names an unclassified start failure by its code rather than guessing", async () => {
+    remoteA2aStatus.mockResolvedValue({ ok: false, error: "a2a-remote-start-failed", reason: "a2a-remote-store-unreadable" });
+    render(<LocalApiSurfacesSection />);
+
+    const notice = await screen.findByTestId("local-api-surfaces-remote-a2a-start-failed");
+    expect(notice.textContent).toContain("(a2a-remote-store-unreadable)");
+  });
+
+  it("says a switch changed since launch waits for a restart, and re-reads after a toggle", async () => {
+    render(<LocalApiSurfacesSection />);
+    await screen.findByTestId("local-api-surfaces-local-api");
+    expect(screen.queryByTestId("local-api-surfaces-remote-a2a-restart-pending")).toBeNull();
+
+    remoteA2aStatus.mockResolvedValue({ ok: false, error: "a2a-remote-disabled", restartPending: true });
+    fireEvent.click(screen.getByTestId("local-api-surfaces-a2a-remote-routing"));
+
+    const notice = await screen.findByTestId("local-api-surfaces-remote-a2a-restart-pending");
+    expect(notice.textContent).toContain("Restart Ave");
+    expect(screen.queryByTestId("local-api-surfaces-remote-a2a-start-failed")).toBeNull();
+  });
+
+  it("names the inbound receiver's port this launch so the tunnel can be pointed at it", async () => {
+    remoteA2aStatus.mockResolvedValue({ ok: false, error: "a2a-remote-disabled", restartPending: false, receiverPort: 48_123 });
+    render(<LocalApiSurfacesSection />);
+    const port = await screen.findByTestId("local-api-surfaces-remote-a2a-receiver-port");
+    expect(port.textContent).toContain("127.0.0.1:48123");
+  });
+
+  it("shows no start-failure notice when the runtime is merely off or unreadable", async () => {
+    render(<LocalApiSurfacesSection />);
+    await screen.findByTestId("local-api-surfaces-local-api");
+    expect(screen.queryByTestId("local-api-surfaces-remote-a2a-start-failed")).toBeNull();
+
+    remoteA2aStatus.mockRejectedValue(new Error("ipc closed"));
+    render(<LocalApiSurfacesSection />);
+    await waitFor(() => expect(screen.getAllByTestId("local-api-surfaces-local-api")).toHaveLength(2));
+    expect(screen.queryByTestId("local-api-surfaces-remote-a2a-start-failed")).toBeNull();
   });
 });

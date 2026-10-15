@@ -73,6 +73,7 @@ export const en = {
   "telegramConnection.pauseNotice": "Pausing stops queued replies and any reply not yet handed to Telegram. A reply already handed over cannot be recalled.",
 
   "telegramConnection.statePausedByOwner": "Paused by you",
+  "telegramConnection.stateReconnecting": "Reconnecting — Ave keeps retrying on its own",
   "telegramConnection.stateError": "Connection problem",
   "telegramConnection.retry": "Try again",
   "telegramConnection.disconnectNotice": "Disconnecting deletes the stored token, drops the pairing, and stops receiving. It does not change anything on Telegram's side — your bot and any webhook you set up stay exactly as they are.",
@@ -152,6 +153,7 @@ export const ko = {
   "telegramConnection.pauseNotice": "일시중지하면 대기 중인 답변과 아직 Telegram에 넘기지 않은 답변이 멈춥니다. 이미 넘긴 답변은 회수할 수 없습니다.",
 
   "telegramConnection.statePausedByOwner": "직접 일시중지함",
+  "telegramConnection.stateReconnecting": "다시 연결하는 중 — Ave 가 자동으로 계속 재시도합니다",
   "telegramConnection.stateError": "연결 문제",
   "telegramConnection.retry": "다시 시도",
   "telegramConnection.disconnectNotice": "연결을 해제하면 저장된 토큰이 삭제되고 페어링이 해제되며 수신이 중단됩니다. Telegram 쪽은 바뀌지 않습니다 — 봇과 직접 설정한 웹훅은 그대로 남습니다.",

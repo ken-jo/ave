@@ -117,6 +117,14 @@ describe("MessagingConnectionsSection", () => {
     });
   });
 
+  it("reads a connection Telegram stopped answering as needing attention, not connected", async () => {
+    const { api } = makeApi([], "reconnecting");
+    render(<Harness api={api} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("connection:telegram:state").textContent).toBe("확인 필요");
+    });
+  });
+
   it("reads a connection the owner paused as off", async () => {
     const { api } = makeApi([], "paused-by-owner");
     render(<Harness api={api} />);

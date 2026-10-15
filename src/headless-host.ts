@@ -41,7 +41,7 @@ function userDataPath(argv: readonly string[]): string {
   return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "Ave");
 }
 
-async function main(): Promise<number> {
+export async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const packaged = getIsPackaged();
   if (argv.includes("--runtime-check")) {
@@ -116,7 +116,17 @@ async function main(): Promise<number> {
       process.env.AVE_LOCAL_API = "1";
       const listener = await Promise.race([runtime.startLocalApi(), bootstrapInterruption]);
       if (!listener) throw new Error("local-api-server-unavailable");
-      await Promise.race([runtime.startTailnetSurface(), bootstrapInterruption]);
+      // The Tailnet surface is a separate opt-in beside the listener this
+      // command asked for. The desktop logs its start failure and keeps booting;
+      // here it used to abort `--serve` and take the local API down with it.
+      // The reason stays in the observer's own `lastStartError`; stderr gets a
+      // fixed line, because a start error can carry configuration paths.
+      try {
+        await Promise.race([runtime.startTailnetSurface(), bootstrapInterruption]);
+      } catch (error) {
+        if (interrupted) throw error;
+        process.stderr.write("headless: tailnet surface failed to start; serving the local API without it\n");
+      }
       starting = false;
       process.stdout.write(`${JSON.stringify({ type: "server-ready", port: listener.port, pid: process.pid })}\n`);
       await new Promise<void>((done) => {
@@ -155,10 +165,17 @@ async function main(): Promise<number> {
   }
 }
 
-main().then((code) => {
-  process.exit(typeof process.exitCode === "number" && process.exitCode !== 0 ? process.exitCode : code);
-}, (error: unknown) => {
-  const message = errorMessage(error);
-  process.stderr.write(`headless: ${message}\n`);
-  process.exit(message === "host-already-running" ? EXEC_LOCKED_EXIT_CODE : EXEC_FAILURE_EXIT_CODE);
-});
+/**
+ * The process entry: run {@link main} and exit with its code. Called once by
+ * `headless.ts` after the runtime identity is configured; importing this
+ * module runs nothing, so `main` can be driven under test.
+ */
+export function runHeadlessHost(): void {
+  main().then((code) => {
+    process.exit(typeof process.exitCode === "number" && process.exitCode !== 0 ? process.exitCode : code);
+  }, (error: unknown) => {
+    const message = errorMessage(error);
+    process.stderr.write(`headless: ${message}\n`);
+    process.exit(message === "host-already-running" ? EXEC_LOCKED_EXIT_CODE : EXEC_FAILURE_EXIT_CODE);
+  });
+}

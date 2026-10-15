@@ -4,7 +4,8 @@ import { isValidRemoteA2ATargetAgentId, isValidRemoteA2ATaskHandle } from "../sh
 import { A2AJsonRpcMethod, type A2AJsonObject } from "../shared/a2a-wire.js";
 import type { A2ARemoteRuntime } from "./a2a-remote-runtime.js";
 import { maskA2AMessage } from "../engine/a2a-subagent-message-codec.js";
-import { isA2ATerminalTaskState, type A2ATaskState } from "../shared/a2a.js";
+import { isA2ATerminalTaskState, type A2AMessage, type A2ATaskState } from "../shared/a2a.js";
+import { projectA2ARemoteReply, type A2ARemoteReply } from "../api/a2a-remote-store.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 
 const MAX_INTENT_LENGTH = 8_192;
@@ -19,12 +20,43 @@ export interface RemoteA2AActionStatus {
   targetAgentId?: number;
   targetLabel?: string;
   outcome?: string;
+  /** The remote agent's reply as the store projects it: DLP-masked, size-capped text. */
+  reply?: A2ARemoteReply;
   updatedAt: string;
+}
+
+/** How many Tasks keep their own status for the popover's recent list. */
+const MAX_TRACKED_TASKS = 20;
+
+function replyOf(projection: { reply?: A2ARemoteReply } | null | undefined): { reply?: A2ARemoteReply } {
+  return projection?.reply ? { reply: projection.reply } : {};
+}
+
+/**
+ * A reply that came back as a direct Message rather than a Task (A2A v1.0
+ * SendMessage may answer either): nothing is stored for it, so it is projected
+ * here from the result, through the same masking and cap.
+ */
+function directReply(result: unknown): { reply?: A2ARemoteReply } {
+  if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true) return {};
+  const body = (result as { result?: unknown }).result;
+  const message = body && typeof body === "object" ? (body as { message?: unknown }).message : undefined;
+  if (!message || typeof message !== "object" || !Array.isArray((message as { parts?: unknown }).parts)) return {};
+  try {
+    const reply = projectA2ARemoteReply({ message: message as A2AMessage });
+    return reply ? { reply } : {};
+  } catch {
+    return {};
+  }
 }
 
 export interface RemoteA2AActionController {
   listTargets(): ReadonlyArray<Readonly<{ targetAgentId: number; label: string }>>;
   status(): Readonly<RemoteA2AActionStatus>;
+  /** The latest status this run reported for one Task, if any. */
+  taskStatus(taskHandle: string): Readonly<RemoteA2AActionStatus> | null;
+  /** Each recent Task's own latest status, newest first. */
+  tasks(): ReadonlyArray<Readonly<RemoteA2AActionStatus>>;
   send(input: Readonly<{ targetAgentId: number; intent: string }>): Promise<Readonly<RemoteA2AActionStatus>>;
   get(input: Readonly<{ taskHandle: string }>): Promise<Readonly<RemoteA2AActionStatus>>;
   resume(input: Readonly<{ taskHandle: string; intent: string }>): Promise<Readonly<RemoteA2AActionStatus>>;
@@ -89,7 +121,7 @@ export function createRemoteA2AActionController(
     if (action === "continue") {
       const disposition = await options.runtime.taskActionDisposition(input.taskHandle, action, ownerId);
       if (disposition.kind === "blocked") {
-        return Object.freeze({ state: "failed", taskHandle: input.taskHandle, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: `continue-reconciliation-required:${disposition.outcome}`, updatedAt: now().toISOString() });
+        return Object.freeze({ state: "failed", taskHandle: input.taskHandle, taskAvailable: true, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: `continue-reconciliation-required:${disposition.outcome}`, updatedAt: now().toISOString() });
       }
       if (route.state !== "TASK_STATE_INPUT_REQUIRED") {
         throw new Error("a2a-remote-task-not-input-required");
@@ -105,11 +137,12 @@ export function createRemoteA2AActionController(
           || projection.targetLabel !== route.targetLabel
           || projection.state !== "TASK_STATE_CANCELED"
           || projection.terminal !== true) {
-          return Object.freeze({ state: "failed", taskHandle: input.taskHandle, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: "cancel-reconciliation-required:stored-cancel-projection-invalid", updatedAt: now().toISOString() });
+          return Object.freeze({ state: "failed", taskHandle: input.taskHandle, taskAvailable: true, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: "cancel-reconciliation-required:stored-cancel-projection-invalid", updatedAt: now().toISOString() });
         }
         return Object.freeze({
           state: "sent",
           taskHandle: input.taskHandle,
+          taskAvailable: true,
           targetAgentId: route.targetAgentId,
           targetLabel: route.targetLabel,
           taskState: projection.state,
@@ -118,13 +151,13 @@ export function createRemoteA2AActionController(
         });
       }
       if (disposition.kind === "blocked") {
-        return Object.freeze({ state: "failed", taskHandle: input.taskHandle, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: `cancel-reconciliation-required:${disposition.outcome}`, updatedAt: now().toISOString() });
+        return Object.freeze({ state: "failed", taskHandle: input.taskHandle, taskAvailable: true, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: `cancel-reconciliation-required:${disposition.outcome}`, updatedAt: now().toISOString() });
       }
       if (isA2ATerminalTaskState(route.state)) {
         throw new Error("a2a-remote-task-terminal");
       }
     }
-    if (pending) return Object.freeze({ state: "failed", taskHandle: input.taskHandle, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, outcome: "a2a-remote-busy", updatedAt: now().toISOString() });
+    if (pending) return Object.freeze({ state: "failed", taskHandle: input.taskHandle, taskAvailable: true, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, taskState: route.state, outcome: "a2a-remote-busy", updatedAt: now().toISOString() });
     pending = true;
     const operationId = makeId();
     const attemptId = makeId();
@@ -144,7 +177,7 @@ export function createRemoteA2AActionController(
       const message = maskA2AMessage({ messageId, taskId: route.remoteTaskId, ...(route.remoteContextId ? { contextId: route.remoteContextId } : {}), role: "ROLE_USER", parts: [{ text: input.intent! }] } as never).message;
       request = { id: makeId(), method: A2AJsonRpcMethod.SEND_MESSAGE, params: { message: message as unknown as A2AJsonObject } };
     }
-    latest = Object.freeze({ state: action === "get" ? "idle" : "awaiting-approval", operationId, taskHandle: input.taskHandle, taskState: route.state, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, updatedAt: now().toISOString() });
+    latest = Object.freeze({ state: action === "get" ? "idle" : "awaiting-approval", operationId, taskHandle: input.taskHandle, taskAvailable: true, taskState: route.state, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, updatedAt: now().toISOString() });
     try {
       const result = await options.runtime.execute({
         operationId,
@@ -174,14 +207,16 @@ export function createRemoteA2AActionController(
         state: result.ok ? "sent" : "failed",
         operationId,
         taskHandle: input.taskHandle,
+        taskAvailable: true,
         ...(projection ? { taskState: projection.state } : { taskState: route.state }),
+        ...replyOf(projection),
         targetAgentId: route.targetAgentId,
         targetLabel: route.targetLabel,
         outcome: result.ok ? "success" : result.outcome,
         updatedAt: now().toISOString(),
       });
     } catch {
-      latest = Object.freeze({ state: "failed", operationId, taskHandle: input.taskHandle, taskState: route.state, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, outcome: "a2a-remote-task-action-failed", updatedAt: now().toISOString() });
+      latest = Object.freeze({ state: "failed", operationId, taskHandle: input.taskHandle, taskAvailable: true, taskState: route.state, targetAgentId: route.targetAgentId, targetLabel: route.targetLabel, outcome: "a2a-remote-task-action-failed", updatedAt: now().toISOString() });
     } finally {
       pending = false;
     }
@@ -222,16 +257,44 @@ export function createRemoteA2AActionController(
         request: { id: makeId(), method: A2AJsonRpcMethod.SEND_MESSAGE, params: { message: { messageId: recovery.messageId, role: "ROLE_USER", parts: [{ text: "[exact replay uses encrypted original bytes]" }] } } },
         messageId: recovery.messageId,
       });
-      latest = Object.freeze({ state: result.ok ? "sent" : "failed", operationId: recovery.operationId, taskHandle: input.taskHandle, targetAgentId: recovery.targetAgentId, targetLabel: recovery.targetLabel, recoveryEligible: !result.ok && (result.outcome === "reconciling" || result.outcome === "unknown-manual-reconciliation-required"), outcome: result.ok ? "success" : result.outcome, updatedAt: now().toISOString() });
+      const projection = await options.runtime.getTaskProjection(input.taskHandle, ownerId);
+      latest = Object.freeze({ state: result.ok ? "sent" : "failed", operationId: recovery.operationId, taskHandle: input.taskHandle, ...(projection ? { taskState: projection.state } : {}), taskAvailable: Boolean(projection), ...replyOf(projection), targetAgentId: recovery.targetAgentId, targetLabel: recovery.targetLabel, recoveryEligible: !result.ok && (result.outcome === "reconciling" || result.outcome === "unknown-manual-reconciliation-required"), outcome: result.ok ? "success" : result.outcome, updatedAt: now().toISOString() });
     } catch {
-      latest = Object.freeze({ state: "failed", operationId: recovery.operationId, taskHandle: input.taskHandle, targetAgentId: recovery.targetAgentId, targetLabel: recovery.targetLabel, recoveryEligible: true, outcome: "a2a-remote-replay-failed", updatedAt: now().toISOString() });
+      // Same Task fields as every other failure path: a replay that threw says
+      // nothing about whether the Task exists, so what the store still projects
+      // keeps Get/Cancel reachable. An unreadable projection is reported as no
+      // Task rather than guessed at.
+      const projection = await options.runtime.getTaskProjection(input.taskHandle, ownerId).catch(() => null);
+      latest = Object.freeze({ state: "failed", operationId: recovery.operationId, taskHandle: input.taskHandle, ...(projection ? { taskState: projection.state } : {}), taskAvailable: Boolean(projection), ...replyOf(projection), targetAgentId: recovery.targetAgentId, targetLabel: recovery.targetLabel, recoveryEligible: true, outcome: "a2a-remote-replay-failed", updatedAt: now().toISOString() });
     } finally {
       pending = false;
     }
     return Object.freeze(structuredClone(latest));
   };
 
-  return Object.freeze({
+  // One status per Task, not one slot for everything: following up on one
+  // Task used to overwrite what the last action said about any other.
+  const taskStatuses = new Map<string, Readonly<RemoteA2AActionStatus>>();
+  const track = async (
+    action: Promise<Readonly<RemoteA2AActionStatus>>,
+  ): Promise<Readonly<RemoteA2AActionStatus>> => {
+    const status = await action;
+    // A busy answer says nothing about the Task: keep what it last reported
+    // (a reply included) instead of overwriting it with the refusal.
+    if (status.taskHandle !== undefined && status.outcome !== "a2a-remote-busy") {
+      taskStatuses.delete(status.taskHandle);
+      taskStatuses.set(status.taskHandle, Object.freeze(structuredClone(status)));
+      while (taskStatuses.size > MAX_TRACKED_TASKS) {
+        const oldest = taskStatuses.keys().next().value;
+        if (oldest === undefined) break;
+        taskStatuses.delete(oldest);
+      }
+    }
+    return status;
+  };
+
+
+  const actions = {
     listTargets: () => Object.freeze([...targets.values()].map((target) => Object.freeze({
       targetAgentId: target.targetAgentId,
       label: target.label,
@@ -287,6 +350,7 @@ export function createRemoteA2AActionController(
           taskHandle,
           ...(projection ? { taskState: projection.state } : {}),
           taskAvailable: Boolean(projection),
+          ...(replyOf(projection).reply ? replyOf(projection) : directReply(result)),
           recoveryEligible: !result.ok && (result.outcome === "reconciling" || result.outcome === "unknown-manual-reconciliation-required"),
           targetAgentId: target.targetAgentId,
           targetLabel: target.label,
@@ -312,5 +376,20 @@ export function createRemoteA2AActionController(
     resume: (input: Readonly<{ taskHandle: string; intent: string }>) => taskAction("continue", input),
     cancel: (input: Readonly<{ taskHandle: string }>) => taskAction("cancel", input),
     replay: (input: Readonly<{ taskHandle: string }>) => replayAction(input),
+  };
+
+  return Object.freeze({
+    listTargets: actions.listTargets,
+    status: actions.status,
+    taskStatus: (taskHandle: string) => {
+      const status = taskStatuses.get(taskHandle);
+      return status ? Object.freeze(structuredClone(status)) : null;
+    },
+    tasks: () => Object.freeze([...taskStatuses.values()].reverse().map((status) => Object.freeze(structuredClone(status)))),
+    send: (input: Readonly<{ targetAgentId: number; intent: string }>) => track(actions.send(input)),
+    get: (input: Readonly<{ taskHandle: string }>) => track(actions.get(input)),
+    resume: (input: Readonly<{ taskHandle: string; intent: string }>) => track(actions.resume(input)),
+    cancel: (input: Readonly<{ taskHandle: string }>) => track(actions.cancel(input)),
+    replay: (input: Readonly<{ taskHandle: string }>) => track(actions.replay(input)),
   });
 }

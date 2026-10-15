@@ -575,6 +575,7 @@ describe("preload contextBridge world shape lock", () => {
             "status",
             "targets",
             "task",
+            "tasks",
           ],
           "removeRoutine": "function",
           "removeWorkBoardItem": "function",

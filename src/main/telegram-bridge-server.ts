@@ -154,6 +154,17 @@ function preEnvelopeGatewayReason(
 
 const RETRY_BACKOFF_MS = 2_000;
 const MAX_BACKOFF_MS = 60_000;
+
+/**
+ * Wait before the next poll after `consecutive` transient failures in a row:
+ * 2 s, 4 s, 8 s ... capped at a minute. A laptop that is offline or asleep
+ * otherwise re-polled every 2 s for as long as it stayed down, logging each
+ * time; the streak resets on the first poll Telegram answers.
+ */
+function telegramTransientBackoffMs(consecutive: number): number {
+  const exponent = Math.min(Math.max(consecutive, 1) - 1, 16);
+  return Math.min(RETRY_BACKOFF_MS * 2 ** exponent, MAX_BACKOFF_MS);
+}
 const DEFAULT_RATE_LIMIT_BACKOFF_MS = 5_000;
 
 type TelegramPollingFatalCode =
@@ -200,14 +211,36 @@ export interface TelegramPollingIngressOptions {
     callback: TelegramCallbackQueryEnvelope,
   ) => void | Promise<void>;
   readonly log?: (message: string) => void;
+  /**
+   * Whether Telegram is answering this loop. `retrying` on the first failed
+   * poll of a streak, `receiving` once a poll is answered again, `stopped`
+   * when the loop exits for any reason. Transitions only — never once per poll.
+   */
+  readonly onHealth?: (health: TelegramPollHealth) => void;
   /** Test seam; production sleeps on a timer that the abort signal cancels. */
   readonly wait?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
+
+export type TelegramPollHealth = "receiving" | "retrying" | "stopped";
 
 export interface TelegramPollingIngress {
   /** Resolves once the loop has fully exited. */
   readonly finished: Promise<void>;
   stop(): void;
+  /**
+   * Poll again now: the machine woke or came back online. Cuts short a backoff
+   * wait and abandons an in-flight long poll — after sleep its socket is
+   * usually dead and would otherwise hang until the request timeout — and
+   * restarts the backoff streak. Never ends the loop and never skips an update:
+   * the offset only advances on a poll that was answered and processed.
+   */
+  nudge(): void;
+}
+
+/** What `nudge` reaches inside the running loop. */
+interface PollWake {
+  requested: boolean;
+  interrupt: (() => void) | null;
 }
 
 export function startTelegramPollingIngress(
@@ -236,7 +269,9 @@ export function startTelegramPollingIngress(
   const { signal } = controller;
   const wait = options.wait ?? defaultWait;
 
-  const finished = run(options, signal, wait).catch(() => {
+  const wake: PollWake = { requested: false, interrupt: null };
+
+  const finished = run(options, signal, wait, wake).catch(() => {
     // Reached only by a throw this module did not classify. It still ends
     // ingress, so it must leave a trace rather than resolving as if the loop
     // had been asked to stop.
@@ -247,6 +282,11 @@ export function startTelegramPollingIngress(
     stop(): void {
       controller.abort();
     },
+    nudge(): void {
+      if (signal.aborted) return;
+      wake.requested = true;
+      wake.interrupt?.();
+    },
   });
 }
 
@@ -254,14 +294,62 @@ async function run(
   options: TelegramPollingIngressOptions,
   signal: AbortSignal,
   wait: (ms: number, signal: AbortSignal) => Promise<void>,
+  wake: PollWake,
 ): Promise<void> {
   const drops = createPreEnvelopeDropCounter(options.log);
   try {
-    await poll(options, signal, wait, drops);
+    await poll(options, signal, wait, drops, wake);
   } finally {
     // Every exit is an activation ending — aborted, fatal, or thrown — and the
     // final tally is the number an operator asks for after a bad session.
     drops.finish();
+    reportHealth(options, "stopped");
+  }
+}
+
+/** A health listener is the owner surface's business; it cannot stop the loop. */
+function reportHealth(options: TelegramPollingIngressOptions, health: TelegramPollHealth): void {
+  try {
+    options.onHealth?.(health);
+  } catch {
+    /* the loop's own state is the authority */
+  }
+}
+
+type Interruptible<T> =
+  | { readonly interrupted: false; readonly value: T }
+  /** `value` is whatever the abandoned step still produced, if anything. */
+  | { readonly interrupted: true; readonly value: T | undefined };
+
+/**
+ * Run one wait or request under a signal that both `stop` and `nudge` can
+ * abort. A nudge marks the outcome interrupted so the caller re-polls instead
+ * of reading an abandoned request as a failed one; a stop leaves `signal`
+ * aborted, which the caller checks first.
+ */
+async function interruptible<T>(
+  signal: AbortSignal,
+  wake: PollWake,
+  step: (signal: AbortSignal) => Promise<T>,
+): Promise<Interruptible<T>> {
+  const local = new AbortController();
+  let interrupted = false;
+  const forward = (): void => local.abort();
+  if (signal.aborted) local.abort();
+  else signal.addEventListener("abort", forward, { once: true });
+  wake.interrupt = () => {
+    interrupted = true;
+    local.abort();
+  };
+  try {
+    const value = await step(local.signal);
+    return interrupted ? { interrupted: true, value } : { interrupted: false, value };
+  } catch (err) {
+    if (interrupted) return { interrupted: true, value: undefined };
+    throw err;
+  } finally {
+    wake.interrupt = null;
+    signal.removeEventListener("abort", forward);
   }
 }
 
@@ -270,41 +358,81 @@ async function poll(
   signal: AbortSignal,
   wait: (ms: number, signal: AbortSignal) => Promise<void>,
   drops: PreEnvelopeDropCounter,
+  wake: PollWake,
 ): Promise<void> {
   let offset = options.pollOffset();
   let backoffMs = 0;
+  /** Drives the backoff; a wake restarts it. */
+  let streak = 0;
+  /** Failed polls this outage, for the recovery line; a wake does not reset it. */
+  let failedPolls = 0;
+  const transient = (): number => {
+    streak += 1;
+    failedPolls += 1;
+    if (failedPolls === 1) {
+      options.log?.("[telegram-poll] polling Telegram failed; backing off");
+      reportHealth(options, "retrying");
+    }
+    return telegramTransientBackoffMs(streak);
+  };
+  const reached = (): void => {
+    if (failedPolls > 0) {
+      options.log?.(`[telegram-poll] polling Telegram again after ${failedPolls} failed polls`);
+      reportHealth(options, "receiving");
+    }
+    streak = 0;
+    failedPolls = 0;
+  };
 
   while (!signal.aborted) {
     if (backoffMs > 0) {
-      try {
-        await wait(backoffMs, signal);
-      } catch {
-        return;
-      }
-      backoffMs = 0;
+      const delay = backoffMs;
+      // On time or cut short by a nudge, the wait is over either way; only a
+      // stop ends the loop here.
+      await interruptible(signal, wake, (waitSignal) => wait(delay, waitSignal)).catch(() => undefined);
       if (signal.aborted) return;
+      backoffMs = 0;
+    }
+    if (wake.requested) {
+      wake.requested = false;
+      streak = 0;
     }
 
     if (offset === null) {
-      const seeded = await seedOffset(options, signal);
-      if (seeded === "fatal") return;
-      if (seeded === "retry") {
-        backoffMs = RETRY_BACKOFF_MS;
+      const seed = await interruptible(signal, wake, (requestSignal) => seedOffset(options, requestSignal));
+      if (signal.aborted) return;
+      const seeded = seed.value;
+      // A fatal outcome already reported stands even if a nudge raced it.
+      if (seeded !== undefined && typeof seeded !== "number" && seeded.kind === "stop") return;
+      if (seed.interrupted || seeded === undefined) continue;
+      if (typeof seeded !== "number") {
+        backoffMs = seeded.kind === "transient" ? transient() : seeded.ms;
         continue;
       }
+      reached();
       offset = seeded;
       if (!await confirmOffset(options, offset)) return;
       continue;
     }
 
-    const result = await options.client.getUpdates({ offset, signal });
+    const pollOffset = offset;
+    const polled = await interruptible(
+      signal,
+      wake,
+      (requestSignal) => options.client.getUpdates({ offset: pollOffset, signal: requestSignal }),
+    );
     if (signal.aborted) return;
+    // An abandoned long poll is not a failed one; any updates it carried are
+    // fetched again, because the offset has not moved.
+    if (polled.interrupted) continue;
+    const result = polled.value;
     if (!result.ok) {
       const next = await handleFailure(options, result.reason, result.retryAfterMs, signal);
-      if (next === "stop") return;
-      backoffMs = next;
+      if (next.kind === "stop") return;
+      backoffMs = next.kind === "transient" ? transient() : next.ms;
       continue;
     }
+    reached();
 
     // Strictly sequential. The shared core holds no mutex and the turn lease is
     // single-holder, so a concurrent fan-out would silently drop all but one
@@ -354,7 +482,7 @@ async function confirmOffset(
 async function seedOffset(
   options: TelegramPollingIngressOptions,
   signal: AbortSignal,
-): Promise<number | "retry" | "fatal"> {
+): Promise<number | FailureDisposition> {
   const result = await options.client.getUpdates({
     offset: -1,
     limit: 1,
@@ -362,8 +490,7 @@ async function seedOffset(
     signal,
   });
   if (!result.ok) {
-    const next = await handleFailure(options, result.reason, result.retryAfterMs, signal);
-    return next === "stop" ? "fatal" : "retry";
+    return await handleFailure(options, result.reason, result.retryAfterMs, signal);
   }
   const last = result.value[result.value.length - 1];
   return last === undefined ? 0 : last.updateId + 1;
@@ -562,31 +689,46 @@ async function redeemPairing(
   }
 }
 
+/**
+ * What the loop does after a failed poll: end the activation, wait the
+ * interval Telegram named, or back off on the transient-failure streak.
+ */
+type FailureDisposition =
+  | { readonly kind: "stop" }
+  | { readonly kind: "wait"; readonly ms: number }
+  | { readonly kind: "transient" };
+
 async function handleFailure(
   options: TelegramPollingIngressOptions,
   reason: "unauthorized" | "conflict" | "rate-limited" | "unreachable" | "invalid-response",
   retryAfterMs: number | undefined,
   signal: AbortSignal,
-): Promise<number | "stop"> {
+): Promise<FailureDisposition> {
   if (reason === "unauthorized") {
     await safeFatal(options, "telegram-bot-token-rejected");
-    return "stop";
+    return { kind: "stop" };
   }
   if (reason === "conflict") {
     // Classify by asking Telegram what it thinks is configured, never by
     // parsing the 409 description: its contents are explicitly not stable.
     const info = await options.client.getWebhookInfo(signal);
-    const code: TelegramPollingFatalCode = info.ok && info.value.hasWebhook
-      ? "telegram-webhook-conflict"
-      : "telegram-poll-conflict";
-    await safeFatal(options, code);
-    return "stop";
+    if (!info.ok) {
+      // Unclassified is not "another poller": ending the connection with a
+      // reason nobody verified sends the owner after the wrong fix. Back off
+      // and let the next poll's 409, if it recurs, be classified then.
+      options.log?.("[telegram-poll] a poll conflict could not be classified; retrying");
+      return { kind: "transient" };
+    }
+    await safeFatal(
+      options,
+      info.value.hasWebhook ? "telegram-webhook-conflict" : "telegram-poll-conflict",
+    );
+    return { kind: "stop" };
   }
   if (reason === "rate-limited") {
-    return Math.min(retryAfterMs ?? DEFAULT_RATE_LIMIT_BACKOFF_MS, MAX_BACKOFF_MS);
+    return { kind: "wait", ms: Math.min(retryAfterMs ?? DEFAULT_RATE_LIMIT_BACKOFF_MS, MAX_BACKOFF_MS) };
   }
-  options.log?.("[telegram-poll] provider response was unusable; backing off");
-  return RETRY_BACKOFF_MS;
+  return { kind: "transient" };
 }
 
 async function safeFatal(
@@ -642,6 +784,8 @@ export interface TelegramBridgeServer {
 interface TelegramIngressHandle {
   readonly port: number | null;
   close(): Promise<void>;
+  /** Poll again now; see {@link TelegramPollingIngress.nudge}. */
+  nudge(): void;
 }
 
 /**
@@ -744,6 +888,8 @@ export interface StartTelegramConnectionBridgeOptions {
   readonly redeemPairingCode: (codeDigest: string, senderId: string) => Promise<boolean>;
   readonly onFatal: (code: TelegramPollingFatalCode) => void | Promise<void>;
   readonly onPaired?: (senderId: string) => void | Promise<void>;
+  /** Poll-health transitions of this activation; see {@link TelegramPollingIngressOptions.onHealth}. */
+  readonly onPollHealth?: (health: TelegramPollHealth) => void;
   /** Distinguishes an unshared owner from a stranger; only the former is answered. */
   readonly isPairedOwner?: (senderId: string) => boolean;
   readonly notifyUnroutable?: (
@@ -809,6 +955,7 @@ export async function maybeStartTelegramConnectionBridge(
         redeemPairingCode: options.redeemPairingCode,
         onFatal: options.onFatal,
         ...(options.onPaired ? { onPaired: options.onPaired } : {}),
+        ...(options.onPollHealth ? { onHealth: options.onPollHealth } : {}),
         ...(options.isPairedOwner ? { isPairedOwner: options.isPairedOwner } : {}),
         ...(options.notifyUnroutable ? { notifyUnroutable: options.notifyUnroutable } : {}),
         ...(onCallbackQuery ? { onCallbackQuery } : {}),
@@ -820,6 +967,7 @@ export async function maybeStartTelegramConnectionBridge(
           poll.stop();
           await poll.finished;
         },
+        nudge: () => poll.nudge(),
       });
     },
     // Remote approval exists only when BOTH the gate seam and the paired-owner
@@ -1063,6 +1211,17 @@ async function drainOpenChannels(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+/**
+ * Ask the running activation, if any, to poll Telegram now — the machine woke
+ * from sleep or came back online. Returns whether there was one to ask; with
+ * none it does nothing, so a wake can never start a bridge the owner stopped.
+ */
+export function nudgeTelegramBridgeServer(): boolean {
+  if (activeBridge === null) return false;
+  activeBridge.ingress.nudge();
+  return true;
 }
 
 /**
