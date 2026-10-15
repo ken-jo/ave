@@ -199,7 +199,7 @@ function TokenCostBadgeImpl({
           ) : (
             <>
               <span>🪙 {formatTokens(headlineTokens)}</span>
-              {cost === null && <span className="text-muted-foreground">{t("tokenCostBadge.pricingUnknownBadge")}</span>}
+              {cost === null && <span className="text-muted-foreground">{t("tokenCostBadge.pricingUnknownLabel")}</span>}
             </>
           )}
           {cost !== null && <span className="text-[8px] opacity-50">⇅</span>}
