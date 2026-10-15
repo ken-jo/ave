@@ -24,7 +24,14 @@ const log = createLogger("auto-updater");
 const _require = createRequire(import.meta.url);
 
 export interface AutoUpdaterDeps {
-  mainWindow: BrowserWindow;
+  /**
+   * Every open main window, read on each broadcast. Update state is app-wide,
+   * and several main windows may be open; the window open at boot may be
+   * closed while others stay, so no window is captured.
+   */
+  getWindows: () => BrowserWindow[];
+  /** The window the install confirmation is parented to — the one in use — or null. */
+  getDialogParent: () => BrowserWindow | null;
   auditLogger: AuditLogger;
   /** Settings accessor — re-read on every tick so user can toggle at runtime. */
   isEnabled: () => boolean;
@@ -123,7 +130,7 @@ function canSelfInstall(): boolean {
  * finishes their work, quits, and follows the guide there since the app can't
  * self-install an unsigned macOS build.
  */
-const UPDATE_GUIDE_URL = "https://former-site.invalid";
+const UPDATE_GUIDE_URL = "https://ave.agent-connector.ai";
 
 export function createAutoUpdater(deps: AutoUpdaterDeps): {
   start: () => void;
@@ -166,11 +173,13 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
 
   const broadcast = (state: UpdateState): void => {
     lastState = state;
-    if (deps.mainWindow.isDestroyed()) return;
-    try {
-      deps.mainWindow.webContents.send("ave:update:state", state);
-    } catch (err) {
-      log.warn("state broadcast failed: %s", (err as Error).message);
+    for (const win of deps.getWindows()) {
+      try {
+        if (win.isDestroyed()) continue;
+        win.webContents.send("ave:update:state", state);
+      } catch (err) {
+        log.warn("state broadcast failed: %s", (err as Error).message);
+      }
     }
   };
 
@@ -429,7 +438,8 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
       if (typeof electron.dialog?.showMessageBox !== "function") {
         return { confirmed: false };
       }
-      const result = await electron.dialog.showMessageBox(deps.mainWindow, {
+      const parent = deps.getDialogParent();
+      const result = await electron.dialog.showMessageBox(parent && !parent.isDestroyed() ? parent : undefined, {
         type: "question",
         buttons: [t("common.cancel"), t("mainDialog.restart")],
         defaultId: 1,

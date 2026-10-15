@@ -7,7 +7,8 @@ import {
   type ModelCatalogLicense,
   type ModelCatalogProvenance,
 } from "../../shared/model-catalog/types.js";
-import { modelCatalogSha256, sha256Hex } from "./document.js";
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
+import { modelCatalogSha256 } from "./document.js";
 
 /** What the generator knows about where its input came from; the rest of the provenance is computed. */
 export type ModelCatalogSource = Omit<ModelCatalogProvenance, "source" | "inputSha256" | "schemaVersion">;

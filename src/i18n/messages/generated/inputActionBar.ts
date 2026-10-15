@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/InputActionBar.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/InputActionBar.tsx.
 export const en = {
   "inputActionBar.attachEnabled": "Attach file/image (up to 5)",
   "inputActionBar.attachDisabledNoApiKey": "Attach disabled — available after setting API key",

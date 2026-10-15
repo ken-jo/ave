@@ -39,6 +39,7 @@ import {
   isSourceRef,
   type SourceAuth,
 } from "./official.js";
+import { isRecord } from "../../shared/is-record.js";
 
 export interface PackageKey {
   kind: PackageKind;
@@ -120,10 +121,6 @@ class PolicyShapeError extends Error {}
 
 function fail(path: string, message: string): never {
   throw new PolicyShapeError(`marketplaces${path}: ${message}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function record(value: unknown, path: string, keys: ReadonlySet<string>): Record<string, unknown> {

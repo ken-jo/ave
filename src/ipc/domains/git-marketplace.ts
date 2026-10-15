@@ -91,6 +91,7 @@ import { aveHome } from "../../shared/ave-home.js";
 import { packageUpdateSkipKey, putSkippedPluginUpdate, readSkippedPluginUpdates } from "../../shared/skipped-plugin-updates.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
+import { broadcastToAppWindows } from "../window-fanout.js";
 import { legacyContentSettings, type InstalledContentRuntime } from "./marketplace-content.js";
 import { pluginLifecycleServices } from "./plugins.js";
 
@@ -702,10 +703,7 @@ async function skipVersion(deps: IpcDeps, key: { kind: string; name: string }, v
 
 /** Every window gets `payload` with its strings scrubbed: what the marketplace tells the renderer crosses only scrubbed (§18.8). */
 function broadcastTo(deps: IpcDeps, channel: string, payload?: unknown): void {
-  const scrubbed = scrubMarketplaceStrings(payload);
-  for (const window of deps.getAppWindows?.() ?? [deps.getMainWindow()]) {
-    if (window && !window.isDestroyed()) window.webContents.send(channel, scrubbed);
-  }
+  broadcastToAppWindows(deps, channel, scrubMarketplaceStrings(payload));
 }
 
 export interface GitMarketplaceRegistration {

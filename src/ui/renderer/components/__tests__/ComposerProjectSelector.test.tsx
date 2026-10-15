@@ -96,7 +96,7 @@ describe("ComposerProjectSelector", () => {
     }
   });
 
-  it("opens a downward (side=bottom) menu listing only real (non-default) projects", async () => {
+  it("opens an upward (side=top) menu listing only real (non-default) projects", async () => {
     const restore = installWorkspaceMock();
     try {
       const { getByTestId, getAllByTestId, queryAllByTestId } = render(<Harness />);
@@ -104,7 +104,7 @@ describe("ComposerProjectSelector", () => {
       await waitFor(() => {
         const menu = getByTestId("composer-project-selector-menu");
         expect(menu).toBeTruthy();
-        expect(menu.getAttribute("data-side")).toBe("bottom");
+        expect(menu.getAttribute("data-side")).toBe("top");
       });
       // The default binding (PROJECTS[0]) is never a pickable list entry.
       const items = getAllByTestId("composer-project-selector-item");

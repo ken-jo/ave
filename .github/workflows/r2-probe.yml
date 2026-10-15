@@ -1,0 +1,87 @@
+name: R2 Probe
+
+# Manual check that the R2 release channel's credentials can still write,
+# list and delete in the release bucket, without building or publishing a
+# release. It uses the same four secrets as build-installers.yml publish-r2
+# and touches only one object under `_ci-probe/`, which it deletes again.
+# Dispatch only: it must never run on push, pull request or tag.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r2-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Write, list and delete one object in the R2 release bucket
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Round-trip a probe object under _ci-probe/
+        shell: bash
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          PROBE_KEY: _ci-probe/${{ github.run_id }}-${{ github.run_attempt }}.txt
+        run: |
+          set -euo pipefail
+          for name in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
+            if [ -z "${!name:-}" ]; then
+              echo "$name is not set" >&2
+              exit 1
+            fi
+          done
+
+          # The same S3-compatible client settings scripts/upload-release-r2.mjs
+          # uses. The endpoint carries the account id, so it is never printed.
+          export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+          export AWS_DEFAULT_REGION=auto
+          export AWS_EC2_METADATA_DISABLED=true
+          export AWS_PAGER=""
+          export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+          export AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          bucket="$(printf '%s' "$R2_BUCKET" | tr -d '[:space:]')"
+          r2() { aws s3api "$@" --bucket "$bucket" --endpoint-url "$endpoint" --output json; }
+
+          # Prints how many listed keys equal the probe key. A failed listing
+          # fails the step instead of reading as "not listed".
+          count_listed() {
+            local out
+            out="$(r2 list-objects-v2 --prefix "$PROBE_KEY")" || exit 1
+            if [ -z "$out" ]; then echo 0; return; fi
+            jq --raw-output --arg key "$PROBE_KEY" '[.Contents[]?.Key | select(. == $key)] | length' <<<"$out"
+          }
+
+          aws --version
+          printf 'r2 probe %s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/r2-probe.txt"
+
+          # Remove the object even when a later step fails, so a failed probe
+          # leaves nothing behind in the release bucket.
+          trap 'r2 delete-object --key "$PROBE_KEY" >/dev/null 2>&1 || true' EXIT
+
+          r2 put-object --key "$PROBE_KEY" --body "$RUNNER_TEMP/r2-probe.txt" \
+            --content-type text/plain >/dev/null
+          echo "put $PROBE_KEY"
+
+          found="$(count_listed)"
+          if [ "$found" != "1" ]; then
+            echo "$PROBE_KEY was listed $found time(s) after upload, expected 1" >&2
+            exit 1
+          fi
+          echo "listed $PROBE_KEY"
+
+          r2 delete-object --key "$PROBE_KEY" >/dev/null
+          found="$(count_listed)"
+          if [ "$found" != "0" ]; then
+            echo "$PROBE_KEY is still listed after delete" >&2
+            exit 1
+          fi
+          echo "deleted $PROBE_KEY"

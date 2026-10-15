@@ -121,6 +121,25 @@ export function useWorkflowTools(api: AveApi, options: WorkflowToolsOptions = {}
         prev.some((p) => p.id === req.id) ? prev : [...prev, req],
       );
     });
+    // Questions sent before this renderer subscribed — the window that drew
+    // them closed, or this one reloaded. Subscribed first, fetched second, so
+    // nothing falls between the two; one that arrived both ways is kept once.
+    // Parked questions were asked first, so they go ahead.
+    let alive = true;
+    void api.listPendingAskUserQuestions?.().then(
+      (parked) => {
+        if (!alive || !Array.isArray(parked)) return;
+        const mine = parked.filter((req) => !drawsOrOwns || drawsOrOwns(req.sessionId));
+        if (mine.length === 0) return;
+        setAskQuestions((prev) => [
+          ...mine.filter((req) => !prev.some((p) => p.id === req.id)),
+          ...prev,
+        ]);
+      },
+      () => {
+        // No snapshot: live requests still arrive on the subscription above.
+      },
+    );
     const unsubSpawn = api.onAgentSpawnEvent?.((event) => {
       // Narrower than the question above, deliberately: a question addressed to
       // a session no tile holds is ADOPTED by the focused tile, because a card
@@ -257,6 +276,7 @@ export function useWorkflowTools(api: AveApi, options: WorkflowToolsOptions = {}
       setAskQuestions((prev) => prev.filter((q) => q.id !== requestId));
     });
     return () => {
+      alive = false;
       unsubAsk?.();
       unsubSpawn?.();
       unsubSkill?.();

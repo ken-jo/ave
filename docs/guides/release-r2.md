@@ -58,6 +58,10 @@ Website links: `https://downloads.agent-connector.ai/latest/mac-arm64.dmg`,
    ```
 
    The job fails, naming the missing secret, when any of the four is unset.
+   To check the secrets before a tag build, dispatch the **R2 Probe**
+   workflow (`.github/workflows/r2-probe.yml`, manual dispatch only). It
+   uploads one small object under `_ci-probe/`, confirms it is listed, deletes
+   it, and confirms it is gone; nothing outside `_ci-probe/` is touched.
 5. Do not add a Cache Rule that caches everything on this host: the feed and
    the `latest/` aliases rely on their `no-cache` origin header.
 

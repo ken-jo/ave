@@ -3,6 +3,7 @@
 
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { isComposingKeyEvent } from "../utils/ime-key-event.js";
 import { Button } from "../../../components/ui/button.js";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card.js";
 import { Textarea } from "../../../components/ui/textarea.js";
@@ -519,21 +520,6 @@ function KeyboardHint({
   );
 }
 
-function isComposingKeyEvent(e: React.KeyboardEvent<HTMLElement>) {
-  const reactEvent = e as React.KeyboardEvent<HTMLElement> & {
-    isComposing?: boolean;
-  };
-  const nativeEvent = e.nativeEvent as KeyboardEvent & {
-    isComposing?: boolean;
-    keyCode?: number;
-  };
-  return Boolean(
-    reactEvent.isComposing ||
-      nativeEvent.isComposing ||
-      nativeEvent.keyCode === 229 ||
-      e.key === "Process",
-  );
-}
 
 function isTextEditingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;

@@ -25,6 +25,7 @@ import type {
 import { isAppVisible } from "./tool-visibility.js";
 import { pathToFileURL } from "node:url";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { raceWithTimeout } from "../../shared/abortable-deadline.js";
 
 /**
  * #885 v6 — the app-visible method names a manifest declares: the normalized
@@ -112,14 +113,9 @@ export async function runPluginImportWithTimeout<T>(
   timeoutMs: number = TOOL_TIMEOUT_POLICY.pluginImportMs,
 ): Promise<T> {
   const operation = Promise.resolve().then(importer);
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new PluginImportTimeoutError(timeoutMs)), timeoutMs);
-  });
   try {
-    return await Promise.race([operation, timeout]);
+    return await raceWithTimeout(operation, timeoutMs, () => new PluginImportTimeoutError(timeoutMs));
   } finally {
-    if (timer) clearTimeout(timer);
     void operation.catch(() => undefined);
   }
 }

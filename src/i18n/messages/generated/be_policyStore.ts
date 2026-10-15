@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/permissions/policy-store.ts. Do not edit by hand.
+// i18n fragment. Source: src/permissions/policy-store.ts.
 export const en = {
   "be_policyStore.managedPolicyUserCannotChange": "IT-managed policy cannot be changed by the user.",
 } as const;

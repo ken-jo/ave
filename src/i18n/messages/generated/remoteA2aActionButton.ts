@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/RemoteA2AActionButton.tsx. Do not edit by hand.
+// i18n fragment. Source: src/ui/renderer/components/RemoteA2AActionButton.tsx.
 export const en = {
   "remoteA2aActionButton.ready": "Ready for a direct send",
   "remoteA2aActionButton.authRequired": "Authentication required remotely · complete it out of band",

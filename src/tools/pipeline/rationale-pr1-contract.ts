@@ -1,4 +1,4 @@
-import { canonicalStringify } from "../../permissions/user-approval-store.js";
+import { canonicalJsonEqual } from "../../shared/canonical-json.js";
 import type { ReviewerDispatchOutcome } from "../../permissions/permission-manager.js";
 import type { RiskVerdict } from "../../permissions/reviewer/risk-classifier.js";
 import { maxVerdict } from "../../permissions/reviewer/risk-classifier.js";
@@ -7,7 +7,6 @@ import {
   RATIONALE_RESPONSE_SCHEMA,
   RATIONALE_RESPONSE_TOOL,
   assertRationaleCanonicalJson,
-  cloneRationaleCanonicalJson,
   normalizeRationaleRiskVerdict,
   parseRationaleResponse,
   verifyRationaleRequiredControl,
@@ -15,6 +14,8 @@ import {
   type RationaleResponse,
   type HostAnchorRoundReservationReceipt,
   type TriggeringBatchDisposition,
+  sealRationaleCanonicalJson,
+  assertExactOwnKeys,
 } from "./rationale-control.js";
 import { isRecord } from "../../shared/is-record.js";
 
@@ -62,26 +63,10 @@ const SCOPE_ALIGNMENTS: readonly Exclude<ReviewerScopeAlignment, "unknown">[] = 
 ];
 
 
-function exact(value: object, expected: readonly string[], label: string): void {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  if (actual.length !== wanted.length || actual.some((v, i) => v !== wanted[i])) {
-    throw new TypeError(label + " contains unexpected or missing fields");
-  }
-}
-
 function text(value: unknown, label: string, max = 256): asserts value is string {
   if (typeof value !== "string" || !value.trim() || value.length > max) {
     throw new TypeError(label + " exceeds its bounded text contract");
   }
-}
-
-function seal<T>(value: T, label: string): T {
-  return cloneRationaleCanonicalJson(value, label) as T;
-}
-
-function equal(a: unknown, b: unknown): boolean {
-  return canonicalStringify(a) === canonicalStringify(b);
 }
 
 function boundedStrings(value: unknown, label: string): readonly string[] {
@@ -99,7 +84,7 @@ function boundedStrings(value: unknown, label: string): readonly string[] {
     text(item, label + "[" + i + "]", 160);
     result.push(item);
   }
-  return seal(result, label);
+  return sealRationaleCanonicalJson(result, label);
 }
 
 export interface RationaleExecutorControlOutcome {
@@ -120,12 +105,12 @@ export function createRationaleExecutorControlOutcome(
   if (!verifyRationaleRequiredControl(control, { now })) {
     throw new Error("invalid or expired rationale control");
   }
-  return seal({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
+  return sealRationaleCanonicalJson({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     channel: "executor-control", outcome: "rationale-required", control,
-    triggeringBatchDisposition: seal(
+    triggeringBatchDisposition: sealRationaleCanonicalJson(
       control.triggeringBatchDisposition, "triggeringBatchDisposition",
     ),
-    anchorRoundReservation: seal(
+    anchorRoundReservation: sealRationaleCanonicalJson(
       control.anchorRoundReservation, "anchorRoundReservation",
     ),
     transcriptVisibility: "hidden", ordinaryToolResult: null,
@@ -150,7 +135,7 @@ export function createRationaleOnlyRoundContract(
   if (!verifyRationaleRequiredControl(control, { now })) {
     throw new Error("invalid or expired rationale control");
   }
-  return seal({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
+  return sealRationaleCanonicalJson({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     ticketId: control.ticketId, actionDigest: control.action.actionDigest, round: 1,
     anchorRoundBudget: control.anchor.rationaleRoundBudget,
     schemas: [RATIONALE_RESPONSE_SCHEMA], requiredToolName: RATIONALE_RESPONSE_TOOL,
@@ -187,7 +172,7 @@ function batchResult(
   value: Omit<RationaleOnlyBatchDecision,
     "contractVersion" | "batchKind" | "ticketId" | "actionDigest">,
 ): RationaleOnlyBatchDecision {
-  return seal({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
+  return sealRationaleCanonicalJson({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     batchKind: "rationale-only-followup",
     ticketId: control.ticketId, actionDigest: control.action.actionDigest, ...value },
     "RationaleOnlyBatchDecision");
@@ -200,11 +185,11 @@ export function evaluateRationaleOnlyBatch(
     throw new Error("invalid or expired rationale control");
   }
   assertRationaleCanonicalJson(calls, "RationaleRoundCall[]");
-  const normalized = seal(calls, "RationaleRoundCall[]");
+  const normalized = sealRationaleCanonicalJson(calls, "RationaleRoundCall[]");
   const seen = new Set<string>();
   for (const call of normalized) {
     if (!isRecord(call)) throw new TypeError("RationaleRoundCall must be an object");
-    exact(call, ["id", "name", "input"], "RationaleRoundCall");
+    assertExactOwnKeys(call, ["id", "name", "input"], "RationaleRoundCall");
     text(call.id, "call.id"); text(call.name, "call.name");
     if (seen.has(call.id)) throw new TypeError("duplicate rationale call id");
     seen.add(call.id);
@@ -241,7 +226,7 @@ export function validateRationaleOnlyBatchDecision(
     if (!verifyRationaleRequiredControl(control, { now })) return false;
     assertRationaleCanonicalJson(value, "RationaleOnlyBatchDecision");
     if (!isRecord(value)) return false;
-    exact(value, ["contractVersion", "batchKind", "ticketId", "actionDigest", "accepted",
+    assertExactOwnKeys(value, ["contractVersion", "batchKind", "ticketId", "actionDigest", "accepted",
       "response", "rejectedCallIds", "cancelledRationaleOnlySiblingCallIds",
       "generationOutcome", "reason", "ticketCreationAllowed", "sideEffectsAllowed"],
     "RationaleOnlyBatchDecision");
@@ -269,7 +254,7 @@ export function validateRationaleOnlyBatchDecision(
         value.ticketCreationAllowed === true &&
         value.rejectedCallIds.length === 0 &&
         value.cancelledRationaleOnlySiblingCallIds.length === 0 &&
-        parsed !== null && equal(parsed, value.response);
+        parsed !== null && canonicalJsonEqual(parsed, value.response);
     }
     if (value.accepted !== false ||
         value.ticketCreationAllowed !== false ||
@@ -364,14 +349,14 @@ export function createReviewerScopeReevaluation(input: {
   const scopeAlignment = input.outcome === "fresh" ? input.scopeAlignment! : "unknown";
   const scopeReasons = input.outcome === "fresh"
     ? boundedStrings(input.scopeReasons, "scopeReasons")
-    : seal(["reviewer-" + input.outcome], "scopeReasons");
+    : sealRationaleCanonicalJson(["reviewer-" + input.outcome], "scopeReasons");
   const reevaluatedVerdict = input.outcome === "fresh"
     ? normalizeRationaleRiskVerdict(input.reevaluatedVerdict!, "reevaluatedVerdict")
     : initial;
   const effectiveVerdict = normalizeRationaleRiskVerdict(
     maxVerdict(initial, reevaluatedVerdict), "effectiveVerdict",
   );
-  return seal({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
+  return sealRationaleCanonicalJson({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     ticketId: input.control.ticketId, anchorId: input.control.anchor.anchorId,
     actionDigest: input.control.action.actionDigest, round: 1,
     ticketNamespace: "rationale-ticket/" + input.control.ticketId,
@@ -388,7 +373,7 @@ export function validateReviewerScopeReevaluation(
     if (!verifyRationaleRequiredControl(control, { now })) return false;
     assertRationaleCanonicalJson(value, "ReviewerScopeReevaluation");
     if (!isRecord(value)) return false;
-    exact(value, ["contractVersion", "ticketId", "anchorId", "actionDigest", "round",
+    assertExactOwnKeys(value, ["contractVersion", "ticketId", "anchorId", "actionDigest", "round",
       "ticketNamespace", "cachePolicy", "baseCacheWrite", "outcome",
       "scopeAlignment", "scopeReasons", "reevaluatedVerdict", "effectiveVerdict",
       "modalFallbackRequired"], "ReviewerScopeReevaluation");
@@ -400,7 +385,7 @@ export function validateReviewerScopeReevaluation(
     const outcome = value.outcome as ReviewerReevaluationOutcome;
     if (outcome !== "fresh" &&
       !REVIEWER_REEVALUATION_FAILURE_OUTCOMES.includes(outcome as never)) return false;
-    if (!equal(boundedStrings(value.scopeReasons, "scopeReasons"), value.scopeReasons)) return false;
+    if (!canonicalJsonEqual(boundedStrings(value.scopeReasons, "scopeReasons"), value.scopeReasons)) return false;
     const reevaluated = normalizeRationaleRiskVerdict(
       value.reevaluatedVerdict as RiskVerdict, "reevaluatedVerdict",
     );
@@ -408,12 +393,12 @@ export function validateReviewerScopeReevaluation(
       value.effectiveVerdict as RiskVerdict, "effectiveVerdict",
     );
     const initial = normalizeRationaleRiskVerdict(control.initialVerdict, "initialVerdict");
-    if (!equal(effective, maxVerdict(initial, reevaluated))) return false;
+    if (!canonicalJsonEqual(effective, maxVerdict(initial, reevaluated))) return false;
     return outcome === "fresh"
       ? SCOPE_ALIGNMENTS.includes(value.scopeAlignment as never) &&
           value.modalFallbackRequired === false
       : value.scopeAlignment === "unknown" && value.modalFallbackRequired === true &&
-          equal(reevaluated, initial);
+          canonicalJsonEqual(reevaluated, initial);
   } catch {
     return false;
   }

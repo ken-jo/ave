@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/SuggestedRepliesGhost.tsx. Do not edit by hand.
+// i18n fragment. Extracted from src/ui/renderer/components/SuggestedRepliesGhost.tsx, which no longer exists.
 export const en = {
   "suggestedRepliesGhost.tabToFill": "Tab to fill",
 } as const;

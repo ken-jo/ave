@@ -220,8 +220,11 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // Filesystem reach: workspace roots, attachment picking, file preview.
   ["workspace", CHANNELS.workspace.listRoots, []],
   ["workspace", CHANNELS.workspace.listDir, [{ path: "/" }]],
+  ["workspace", CHANNELS.workspace.searchFiles, ["src"]],
   ["attach", CHANNELS.attach.openFile, [{}]],
   ["attach", CHANNELS.attach.readImage, ["/x"]],
+  ["attach", CHANNELS.attach.registerDrop, [["/x"]]],
+  ["attach", CHANNELS.attach.redeemDrop, ["token"]],
   ["preview", CHANNELS.preview.readFile, ["/x"]],
   // Usage and cost history.
   ["usage", CHANNELS.usage.range, [{}]],

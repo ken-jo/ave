@@ -44,14 +44,17 @@ canonical wrapper command above for both full and targeted tests.
 
 Use the smallest affected checks while iterating. The pre-push hook logs the
 tier it picked and why. A source change on a branch push takes the fast tier:
-typecheck, the duplicate-helper scan, the lock suites, the changed test files,
-and `vitest related` for the changed modules. Each source module must have
-related test files; empty discovery selects full checks and a zero-test run
-fails closed. The full `bun run test` and
-`bun run build` run once before merge on the exact main + PR merged tree, and
-CI runs full checks. The hook keeps the full gate for
+typecheck, the duplicate-helper scan, the lock suites whose trigger paths
+changed, the changed test files, the recorded readers of a changed test-read
+document, and `vitest related` for the changed modules, narrowed to direct
+importers when a shared module reaches over 150 test files. Each source module
+must have related test files; empty discovery selects full checks and a
+zero-test run fails closed. A new sub-branch is measured from the closest live
+tip of the default or an `integration/*` branch. The full `bun run test` and
+`bun run build` run once before merge on the merged tree, and
+CI runs full checks. The hook keeps the full gate for pushes to `integration/*`,
 non-fast-forward pushes, deleted modules, documentation consumed by runtime,
-tests, build, or workflows, declaration files, generated catalogs, runtime
+tests, build, or workflows without a recorded reader set, declaration files, generated catalogs, runtime
 entries, non-module assets, mode changes, and global inputs (`package.json`, `bun.lock`,
 compiler, Vitest and build configs, Vitest setup files, `scripts/`,
 `.github/`), including earlier commits in the push; `AVE_PREPUSH_FULL=1`

@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/tools/ask-user-question.ts. Do not edit by hand.
+// i18n fragment. Source: src/tools/ask-user-question.ts.
 export const en = {
   "be_askUserQuestion.toolDescription":
     "Ask the user 1–4 related questions grouped into a single card and wait for answers. " +

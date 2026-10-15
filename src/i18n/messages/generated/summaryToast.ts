@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/SummaryToast.tsx. Do not edit by hand.
+// i18n fragment. Extracted from src/ui/renderer/components/SummaryToast.tsx, which no longer exists.
 export const en = {
   "summaryToast.previousSummary": "Previous Summary",
 } as const;

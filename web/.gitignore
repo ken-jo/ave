@@ -14,3 +14,4 @@ preview-*.png
 # TS build cache
 tsconfig.tsbuildinfo
 *.tsbuildinfo
+.wrangler

@@ -1,4 +1,5 @@
 import type { BootHost } from "./host-runtime.js";
+import type { AppServices } from "./types.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 /**
  * BootContext — the accumulator threaded through the boot pipeline (C18).
@@ -200,18 +201,7 @@ export class BootContext {
   declare pluginBundleLifecycle: PluginBundleLifecycle | undefined;
   declare pluginOperationGrants: PluginOperationGrantCoordinator;
   declare pluginOperationIdentityProvider: PluginOperationIdentityProvider;
-  declare requestPluginOperationGrant: (request: {
-    pluginId: string;
-    toolName: string;
-    input: Record<string, unknown>;
-    appSessionId: string;
-    origin?: "ui" | "mcp-app";
-    expectedGenerationId?: string;
-  }) => Promise<{
-    operationGrantToken: string;
-    grantId: string;
-    expiresAt: number;
-  }>;
+  declare requestPluginOperationGrant: AppServices["requestPluginOperationGrant"];
   declare revokePluginOperationGeneration: (pluginId: string, generationId: string,
   ) => void;
   declare revokePluginOperationSession: (appSessionId: string) => void;
@@ -240,9 +230,12 @@ export class BootContext {
   declare workBoardReporter: WorkBoardReporter;
 
   // ── Plugin IPC bridges (mutable disposers) ─────────────────────────────────
+  /** Disposes every main window's plugin event bridge. */
   declare disposePluginEventBridge: () => void;
-  declare pluginEventBridgeWindow: BrowserWindow | null;
-  declare replacePluginEventBridge: (win: BrowserWindow | null) => void;
+  /** Bridges plugin events to one more main window (several may be open). */
+  declare addPluginEventBridgeWindow: (win: BrowserWindow | null) => void;
+  /** Re-registers every open window's bridge after the plugin event set changed. */
+  declare refreshPluginEventBridges: () => void;
 
   // ── MCP ────────────────────────────────────────────────────────────────────
   declare mcpGovernance: McpGovernance;
@@ -354,8 +347,8 @@ const BOOT_CONTEXT_FIELDS = [
   "workBoardEngine",
   "workBoardReporter",
   "disposePluginEventBridge",
-  "pluginEventBridgeWindow",
-  "replacePluginEventBridge",
+  "addPluginEventBridgeWindow",
+  "refreshPluginEventBridges",
   "mcpGovernance",
   "mcpManager",
   "pluginLoopbackManager",

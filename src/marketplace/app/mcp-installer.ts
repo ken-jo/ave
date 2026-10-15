@@ -37,6 +37,7 @@ import { isSourcePin } from "../sources/source-tree.js";
 import type { InstalledRecord, McpInstallerPort } from "./ports.js";
 import { mcpConsent } from "../updates/consent.js";
 import { parseConsentFingerprint, type ConsentFingerprint } from "../updates/consent-record.js";
+import { isRecord } from "../../shared/is-record.js";
 
 interface McpOrigin {
   sourceId: string;
@@ -71,10 +72,6 @@ interface RecordFile {
 const SOURCE_ORIGINS = new Set<SourceOrigin>(["official", "managed", "custom", "direct"]);
 const RECORD_KEYS = new Set(["name", "version", "runtime", "hasFiles", "origin", "consent"]);
 const ORIGIN_KEYS = new Set(["sourceId", "sourceOrigin", "commit", "packagePath", "from", "filesDigest", "installedAt"]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function parseRecords(text: string, path: string): McpRecord[] {
   const fail = (why: string): never => {

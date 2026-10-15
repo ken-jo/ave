@@ -1,4 +1,4 @@
-import { canonicalStringify } from "../../permissions/user-approval-store.js";
+import { canonicalJsonEqual } from "../../shared/canonical-json.js";
 import type { RiskVerdict } from "../../permissions/reviewer/risk-classifier.js";
 import { maxVerdict } from "../../permissions/reviewer/risk-classifier.js";
 import { redactHomePathsInText } from "../../audit/dlp-filter.js";
@@ -11,7 +11,6 @@ import {
 import {
   RATIONALE_CONTROL_CONTRACT_VERSION,
   assertRationaleCanonicalJson,
-  cloneRationaleCanonicalJson,
   normalizeRationaleRiskVerdict,
   parseRationaleResponse,
   sanitizeDisplayText,
@@ -21,6 +20,8 @@ import {
   type HostRationaleEligibilityContext,
   type RationaleRequiredControl,
   type RationaleResponse,
+  sealRationaleCanonicalJson,
+  assertExactOwnKeys,
 } from "./rationale-control.js";
 import {
   REVIEWER_REEVALUATION_FAILURE_OUTCOMES,
@@ -46,22 +47,6 @@ import {
 } from "./rationale-ticket-lifecycle.js";
 import { isRecord } from "../../shared/is-record.js";
 import { UUID_PATTERN } from "../../shared/uuid.js";
-
-function seal<T>(value: T, label: string): T {
-  return cloneRationaleCanonicalJson(value, label) as T;
-}
-
-function equal(a: unknown, b: unknown): boolean {
-  return canonicalStringify(a) === canonicalStringify(b);
-}
-
-function exact(value: object, expected: readonly string[], label: string): void {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  if (actual.length !== wanted.length || actual.some((v, i) => v !== wanted[i])) {
-    throw new TypeError(label + " contains unexpected or missing fields");
-  }
-}
 
 export interface RationaleUiAuditProjection {
   contractVersion: typeof RATIONALE_CONTROL_CONTRACT_VERSION;
@@ -172,7 +157,7 @@ function isBoundedProjectionList(
 
 function normalizedProjectionVerdict(value: unknown, label: string): RiskVerdict {
   const normalized = normalizeRationaleRiskVerdict(value as RiskVerdict, label);
-  if (!equal(normalized, value)) {
+  if (!canonicalJsonEqual(normalized, value)) {
     throw new TypeError(label + " is not canonical");
   }
   return normalized;
@@ -184,7 +169,7 @@ export function validateRationaleUiAuditProjection(
   try {
     assertRationaleCanonicalJson(value, "RationaleUiAuditProjection");
     if (!isRecord(value)) return false;
-    exact(value, [
+    assertExactOwnKeys(value, [
       "contractVersion", "projection", "ticketId", "anchorId", "actionDigest",
       "round", "reasonCode", "toolName", "canonicalTargets", "requestedEffects",
       "affectedResources", "requiredAuthority", "reviewerOutcome",
@@ -248,7 +233,7 @@ export function validateRationaleUiAuditProjection(
     ) {
       return false;
     }
-    if (!equal(effective, maxVerdict(initial, reevaluated))) return false;
+    if (!canonicalJsonEqual(effective, maxVerdict(initial, reevaluated))) return false;
 
     if (value.rationaleStatus === "ready") {
       const readyOk = value.generationOutcome === "accepted-rationale" &&
@@ -281,8 +266,8 @@ export function validateRationaleUiAuditProjection(
       value.modalFallbackRequired === true &&
       value.suggestion === null &&
       value.autoApproved === false &&
-      equal(reevaluated, initial) &&
-      equal(effective, initial);
+      canonicalJsonEqual(reevaluated, initial) &&
+      canonicalJsonEqual(effective, initial);
   } catch {
     return false;
   }
@@ -301,12 +286,12 @@ function projectUiList(
 ): readonly string[] {
   const projected = values.map((value, index) =>
     projectUiText(value, maxLength, label + "[" + index + "]"));
-  return seal(projected, label);
+  return sealRationaleCanonicalJson(projected, label);
 }
 
 function projectUiVerdict(value: RiskVerdict, label: string): RiskVerdict {
   const normalized = normalizeRationaleRiskVerdict(value, label);
-  return seal({
+  return sealRationaleCanonicalJson({
     level: normalized.level,
     reason: projectUiText(normalized.reason, 500, label + ".reason"),
   }, label);
@@ -354,8 +339,8 @@ export function createRationaleUiAuditProjection(input: {
   }
 
   let suggestion: string | null = null;
-  let reevaluatedVerdict = seal(input.control.initialVerdict, "reevaluatedVerdict");
-  let effectiveVerdict = seal(input.control.initialVerdict, "effectiveVerdict");
+  let reevaluatedVerdict = sealRationaleCanonicalJson(input.control.initialVerdict, "reevaluatedVerdict");
+  let effectiveVerdict = sealRationaleCanonicalJson(input.control.initialVerdict, "effectiveVerdict");
   let scopeAlignment: ReviewerScopeAlignment = "unknown";
   let scopeReasons: readonly string[] = ["rationale-generation-" + generationOutcome];
   let modalFallbackRequired = true;
@@ -366,7 +351,7 @@ export function createRationaleUiAuditProjection(input: {
       throw new Error("ready rationale requires fresh reviewer reevaluation");
     }
     const parsed = parseRationaleResponse(input.response, input.control, now);
-    if (!parsed || !equal(parsed, input.response)) {
+    if (!parsed || !canonicalJsonEqual(parsed, input.response)) {
       throw new Error("ready projection requires sealed rationale response");
     }
     suggestion = projectUiText(parsed.suggestion, 500, "suggestion");
@@ -399,7 +384,7 @@ export function createRationaleUiAuditProjection(input: {
   const initialVerdict = projectUiVerdict(input.control.initialVerdict, "initialVerdict");
   reevaluatedVerdict = projectUiVerdict(reevaluatedVerdict, "reevaluatedVerdict");
   effectiveVerdict = projectUiVerdict(effectiveVerdict, "effectiveVerdict");
-  return seal({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
+  return sealRationaleCanonicalJson({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     projection: "rationale-ui-audit", ticketId: input.control.ticketId,
     anchorId: input.control.anchor.anchorId,
     actionDigest: input.control.action.actionDigest, round: 1,
@@ -543,7 +528,7 @@ export function createSealedRationaleResumeRequest(input: {
     now, currentEligibilityContext: input.currentEligibilityContext,
   })) throw new Error("invalid, expired, or stale rationale control");
   if (!verifyActionIdentity(input.currentActionIdentity) ||
-      !equal(input.currentActionIdentity, input.control.action)) {
+      !canonicalJsonEqual(input.currentActionIdentity, input.control.action)) {
     throw new Error("current ActionIdentity does not match sealed action");
   }
   if (input.reevaluation !== null &&
@@ -591,16 +576,16 @@ export function createSealedRationaleResumeRequest(input: {
     }
     response = null;
   }
-  return seal({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
+  return sealRationaleCanonicalJson({ contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     kind: "sealed-rationale-resume", ticketId: input.control.ticketId,
     actionDigest: input.control.action.actionDigest,
     invocationDigest: input.control.invocationDigest,
     authorizationReceiptId: input.hostConsumedAllowOnceReceipt.receiptId,
-    control: seal(input.control, "control"), response,
+    control: sealRationaleCanonicalJson(input.control, "control"), response,
     rationaleStatus: input.rationaleStatus, generationOutcome,
     reevaluation: input.reevaluation,
-    ticket: input.ticket, currentActionIdentity: seal(input.currentActionIdentity, "currentActionIdentity"),
-    currentEligibilityContext: seal(input.currentEligibilityContext, "currentEligibilityContext"),
+    ticket: input.ticket, currentActionIdentity: sealRationaleCanonicalJson(input.currentActionIdentity, "currentActionIdentity"),
+    currentEligibilityContext: sealRationaleCanonicalJson(input.currentEligibilityContext, "currentEligibilityContext"),
     securitySuffixVersion: RATIONALE_SECURITY_SUFFIX_VERSION,
     securitySuffix: RATIONALE_SECURITY_SUFFIX,
     executionEntryPoint: "tool-executor-security-suffix", directToolExecute: "forbidden",
@@ -617,7 +602,7 @@ export function validateSealedRationaleResumeRequest(
   try {
     assertRationaleCanonicalJson(request, "SealedRationaleResumeRequest");
     if (!isRecord(request)) return false;
-    exact(request, ["contractVersion", "kind", "ticketId", "actionDigest",
+    assertExactOwnKeys(request, ["contractVersion", "kind", "ticketId", "actionDigest",
       "invocationDigest", "authorizationReceiptId", "control", "response", "rationaleStatus",
       "generationOutcome", "reevaluation", "ticket", "currentActionIdentity",
       "currentEligibilityContext", "securitySuffixVersion", "securitySuffix",
@@ -650,10 +635,10 @@ export function validateSealedRationaleResumeRequest(
       request.executionEntryPoint !== "tool-executor-security-suffix" ||
       request.securitySuffixVersion !== RATIONALE_SECURITY_SUFFIX_VERSION ||
       request.directToolExecute !== "forbidden" ||
-      !verifyActionIdentity(currentActionIdentity) || !equal(currentActionIdentity, control.action) ||
-      !equal(request.currentActionIdentity, currentActionIdentity) ||
-      !equal(request.currentEligibilityContext, currentEligibilityContext) ||
-      !equal(request.securitySuffix, RATIONALE_SECURITY_SUFFIX) ||
+      !verifyActionIdentity(currentActionIdentity) || !canonicalJsonEqual(currentActionIdentity, control.action) ||
+      !canonicalJsonEqual(request.currentActionIdentity, currentActionIdentity) ||
+      !canonicalJsonEqual(request.currentEligibilityContext, currentEligibilityContext) ||
+      !canonicalJsonEqual(request.securitySuffix, RATIONALE_SECURITY_SUFFIX) ||
       (reevaluation !== null &&
         !validateReviewerScopeReevaluation(reevaluation, control, now))) return false;
     if (request.rationaleStatus === "failed") {
@@ -668,7 +653,7 @@ export function validateSealedRationaleResumeRequest(
         reevaluation === null || reevaluation.outcome !== "fresh" ||
         reevaluation.modalFallbackRequired !== false) return false;
     const response = parseRationaleResponse(request.response, control, now);
-    return response !== null && equal(response, request.response);
+    return response !== null && canonicalJsonEqual(response, request.response);
   } catch {
     return false;
   }
@@ -729,10 +714,10 @@ export function createRationaleExecutionAuthorityEntry(input: {
     startLease: input.hostInvocationStartLease,
     now,
   });
-  if (!equal(expectedStartedInvocationAudit, input.startedInvocationAudit)) {
+  if (!canonicalJsonEqual(expectedStartedInvocationAudit, input.startedInvocationAudit)) {
     throw new Error("started invocation audit does not match committed start");
   }
-  return seal({
+  return sealRationaleCanonicalJson({
     contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
     kind: "rationale-execution-authority-entry",
     ticketId: control.ticketId,

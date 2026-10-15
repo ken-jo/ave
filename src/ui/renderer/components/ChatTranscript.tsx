@@ -1,8 +1,9 @@
 import type React from "react";
-import type { RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { ScrollArea } from "../../../components/ui/scroll-area.js";
 import { SkillBadge, type SkillBadgeProps } from "./SkillBadge.js";
+import { TranscriptLogContext } from "./transcript-log-context.js";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 
 export interface ChatTranscriptProps {
@@ -15,6 +16,10 @@ export interface ChatTranscriptProps {
   suggestedRepliesActive: boolean;
   transcriptEntries: React.ReactNode;
   chatEndRef: RefObject<HTMLDivElement | null>;
+  /** A turn is streaming into this transcript. */
+  streaming?: boolean;
+  /** Shown in place of the transcript on an empty conversation (suggested tasks). */
+  emptyState?: React.ReactNode;
 }
 
 /**
@@ -33,10 +38,36 @@ export function ChatTranscript({
   suggestedRepliesActive,
   transcriptEntries,
   chatEndRef,
+  emptyState,
+  streaming = false,
 }: ChatTranscriptProps) {
   const { t } = useTranslation();
+  // Screen readers: the transcript is an ARIA log (implicitly polite-live), and
+  // `aria-busy` holds announcements while tokens stream so a reply is not read
+  // out fragment by fragment. The end of a turn is announced once, from a
+  // separate status node, on the streaming → idle edge.
+  const wasStreamingRef = useRef(streaming);
+  const [completionNotice, setCompletionNotice] = useState("");
+  useEffect(() => {
+    if (wasStreamingRef.current && !streaming) setCompletionNotice(t("chatView.responseComplete"));
+    else if (streaming) setCompletionNotice("");
+    wasStreamingRef.current = streaming;
+  }, [streaming, t]);
   return (
-    <ScrollArea type="always" className="ave-chat-scroll h-full min-h-0 min-w-0 max-w-full" viewportRef={scrollViewportRef}><div className={`min-w-0 overflow-x-hidden space-y-4 py-5 ${readingColumnClass}`}>
+    <>
+    {/* Outside the log on purpose: a live region nested in another live
+        region is double-read or swallowed depending on the screen reader. */}
+    <div className="sr-only" role="status" data-testid="chat-transcript-status">
+      {completionNotice}
+    </div>
+    <ScrollArea type="always" className="ave-chat-scroll h-full min-h-0 min-w-0 max-w-full" viewportRef={scrollViewportRef}><div
+      className={`min-w-0 overflow-x-hidden space-y-4 py-5 ${readingColumnClass}`}
+      role="log"
+      aria-label={t("chatView.transcriptLabel")}
+      aria-busy={streaming}
+      data-testid="chat-transcript-log"
+    >
+      <TranscriptLogContext.Provider value>
       {/* Workflow tools (S1+S2): skill badges + ask-user inline.
           SessionTasksPanel is intentionally NOT here — it sits above the input
           cluster (see below the ScrollArea) so it stays visible regardless of
@@ -58,15 +89,15 @@ export function ChatTranscript({
           {t("chatView.emptyState")}
         </div>
       )}
-      {/* No-key state is NOT surfaced here any more. A card in this column
-          claimed `min-h-[min(12rem,36vh)]`, which forced ChatView to shrink the
-          centered composer's lift to make room — the composer never sat
-          optically centered on an empty conversation. The affordance now lives
-          in the composer's reserved top strip as `ComposerApiKeyChip`, an
-          absolutely-positioned chip + overlay popover that adds zero layout
-          height and keeps both of the card's destinations (settings / marketplace). */}
+      {/* No-key state is NOT surfaced here: the affordance lives in the
+          composer's reserved top strip as `ComposerApiKeyChip`, an
+          absolutely-positioned chip + overlay popover that keeps both of the
+          retired card's destinations (settings / marketplace). */}
+      {visibleEntries.length === 0 ? emptyState : null}
       {transcriptEntries}
       <div ref={chatEndRef} />
+      </TranscriptLogContext.Provider>
     </div></ScrollArea>
+    </>
   );
 }

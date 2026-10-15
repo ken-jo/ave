@@ -7,7 +7,7 @@
  * drop the shell's screen and scrollback).
  */
 import "../../../../../test/renderer/setup.js";
-import { act, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PtyTerminalView } from "../PtyTerminalView.js";
 import { ThemeProvider } from "../../theme/ThemeProvider.js";
@@ -16,20 +16,36 @@ import { applyInstalledContent, resetInstalledContentForTests } from "../../inst
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { installedTheme, installedThemeContent, NO_LANGUAGE_BRIDGE } from "../../../../../test/renderer/installed-theme.js";
 
-const { terminals } = vi.hoisted(() => ({ terminals: [] as Array<{ options: { theme?: unknown } }> }));
+interface FakeTerminal {
+  options: { theme?: unknown };
+  oscHandlers: Map<number, (data: string) => boolean>;
+  dataHandler: ((data: string) => void) | null;
+}
+const { terminals } = vi.hoisted(() => ({ terminals: [] as FakeTerminal[] }));
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     options: { theme?: unknown };
     cols = 80;
     rows = 24;
+    oscHandlers = new Map<number, (data: string) => boolean>();
+    dataHandler: ((data: string) => void) | null = null;
+    parser = {
+      registerOscHandler: (ident: number, handler: (data: string) => boolean) => {
+        this.oscHandlers.set(ident, handler);
+        return { dispose: () => this.oscHandlers.delete(ident) };
+      },
+    };
     constructor(options: { theme?: unknown }) {
       this.options = { ...options };
       terminals.push(this);
     }
     loadAddon() {}
     open() {}
-    onData() { return { dispose() {} }; }
+    onData(handler: (data: string) => void) {
+      this.dataHandler = handler;
+      return { dispose: () => { this.dataHandler = null; } };
+    }
     write() {}
     dispose() {}
   },
@@ -49,6 +65,8 @@ function terminalApi() {
     resize: vi.fn(async () => undefined),
     onData: vi.fn(() => () => {}),
     onExit: vi.fn(() => () => {}),
+    listBlocks: vi.fn(async () => ({ ok: true as const, integrated: true, blocks: [] as unknown[] })),
+    getBlock: vi.fn(async () => ({ ok: false as const, error: "block-not-found" })),
   };
 }
 
@@ -61,7 +79,7 @@ describe("PtyTerminalView theme", () => {
 
     render(
       <ThemeProvider api={api as never} initialBundleId="harbor">
-        <PtyTerminalView api={ave as never} tabId="tab-1" />
+        <PtyTerminalView api={ave as never} tabId="tab-1" tabLabel="Terminal 1" />
       </ThemeProvider>,
     );
     await waitFor(() => expect(terminals).toHaveLength(1));
@@ -75,5 +93,82 @@ describe("PtyTerminalView theme", () => {
     // The same terminal, re-tinted: the shell and its scrollback are untouched.
     expect(terminals).toHaveLength(1);
     expect(ave.terminal.spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PtyTerminalView command blocks", () => {
+  const summary = (id: number, command: string, exitCode: number | null, status: "done" | "running" = "done") => ({
+    id, command, cwd: "/repo", exitCode, startedAt: 1_000, endedAt: status === "done" ? 2_000 : null,
+    status, source: "osc133", outputChars: 4, truncated: false,
+  });
+
+  function renderView(onAttachText?: (text: string) => boolean) {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.listBlocks.mockResolvedValue({
+      ok: true,
+      integrated: true,
+      blocks: [summary(2, "npm test", 1), summary(1, "git status", 0)],
+    });
+    terminal.getBlock.mockImplementation((async (_tabId: string, blockId: number) => ({
+      ok: true,
+      block: { ...summary(blockId, blockId === 2 ? "npm test" : "git status", blockId === 2 ? 1 : 0), output: "out\n" },
+    })) as never);
+    const ave = { ...api, terminal };
+    render(
+      <PtyTerminalView
+        api={ave as never}
+        tabId="terminal:1"
+        tabLabel="Terminal 1"
+        {...(onAttachText ? { onAttachText } : {})}
+      />,
+    );
+    return terminal;
+  }
+
+  it("re-lists blocks when the shell reports a command boundary", async () => {
+    const terminal = renderView();
+    await waitFor(() => expect(terminal.listBlocks).toHaveBeenCalledTimes(1));
+    const handler = terminals[0]!.oscHandlers.get(133)!;
+    // Prompt-end markers do not end a block; the finish marker does.
+    let handled = true;
+    act(() => { handled = handler("B"); });
+    expect(handled).toBe(false);
+    expect(terminal.listBlocks).toHaveBeenCalledTimes(1);
+    act(() => { handler("D;0"); });
+    await waitFor(() => expect(terminal.listBlocks).toHaveBeenCalledTimes(2));
+    expect(terminal.listBlocks).toHaveBeenLastCalledWith("terminal:1");
+  });
+
+  it("attaches the latest block to chat as a fenced block naming the tab", async () => {
+    const onAttachText = vi.fn(() => true);
+    const terminal = renderView(onAttachText);
+    fireEvent.click(await screen.findByTestId("terminal-blocks-attach-last"));
+    await waitFor(() => expect(onAttachText).toHaveBeenCalledTimes(1));
+    expect(terminal.getBlock).toHaveBeenCalledWith("terminal:1", 2);
+    const text = (onAttachText.mock.calls[0] as unknown as [string])[0];
+    expect(text).toContain("Terminal 1 · terminal:1 · #2");
+    expect(text).toContain("$ npm test\nout");
+    expect(text.split("\n")[1]).toBe("```console");
+  });
+
+  it("lists blocks, filters them by command, and attaches the selected one", async () => {
+    const onAttachText = vi.fn(() => true);
+    renderView(onAttachText);
+    fireEvent.click(await screen.findByTestId("terminal-blocks-toggle"));
+    await waitFor(() => expect(screen.getAllByTestId("terminal-block-row")).toHaveLength(2));
+    fireEvent.change(screen.getByTestId("terminal-blocks-search"), { target: { value: "GIT" } });
+    const rows = screen.getAllByTestId("terminal-block-row");
+    expect(rows).toHaveLength(1);
+    fireEvent.click(rows[0]!);
+    fireEvent.click(screen.getByTestId("terminal-block-attach"));
+    await waitFor(() => expect(onAttachText).toHaveBeenCalledTimes(1));
+    expect((onAttachText.mock.calls[0] as unknown as [string])[0]).toContain("$ git status");
+  });
+
+  it("says so when the composer is full", async () => {
+    renderView(() => false);
+    fireEvent.click(await screen.findByTestId("terminal-blocks-attach-last"));
+    expect(await screen.findByRole("status")).toBeTruthy();
   });
 });

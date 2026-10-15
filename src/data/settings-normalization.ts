@@ -118,6 +118,7 @@ import type {
   WebViewPreferredFlow,
   WebViewSettings,
 } from "./settings-store.js";
+import { isRecord } from "../shared/is-record.js";
 
 const log = createLogger("settings");
 
@@ -287,10 +288,6 @@ export function withoutMirroredMarketplaceProviderPresetEndpoint(
   return { ...llm, vendors };
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 /**
  * Rewrite renamed built-in vendor ids in settings exactly as they were read
  * from disk, before any normalization runs.
@@ -311,9 +308,9 @@ export function withRenamedLlmVendorIds(
   // rather than renamed, so the new id's row wins.
   const renameRows = (rows: unknown[], idField: string, modelField: string): unknown[] => {
     const rowKey = (id: unknown, row: Record<string, unknown>) => `${String(id)}\u0000${String(row[modelField])}`;
-    const present = new Set(rows.filter(isPlainRecord).map((row) => rowKey(row[idField], row)));
+    const present = new Set(rows.filter(isRecord).map((row) => rowKey(row[idField], row)));
     return rows.flatMap((row) => {
-      if (!isPlainRecord(row)) return [row];
+      if (!isRecord(row)) return [row];
       const to = renamedId(row[idField]);
       if (to === row[idField]) return [row];
       return present.has(rowKey(to, row)) ? [] : [{ ...row, [idField]: to }];
@@ -328,10 +325,10 @@ export function withRenamedLlmVendorIds(
     );
   const next: Record<string, any> = { ...stored };
 
-  if (isPlainRecord(stored.llm)) {
+  if (isRecord(stored.llm)) {
     const llm: Record<string, unknown> = { ...stored.llm };
     if (llm.provider !== undefined) llm.provider = renamedId(llm.provider);
-    if (isPlainRecord(llm.vendors)) {
+    if (isRecord(llm.vendors)) {
       const vendors = { ...llm.vendors };
       for (const [from, to] of Object.entries(renames)) {
         if (!Object.hasOwn(vendors, from)) continue;
@@ -346,12 +343,12 @@ export function withRenamedLlmVendorIds(
     if (Array.isArray(llm.pricingOverrides)) {
       llm.pricingOverrides = renameRows(llm.pricingOverrides, "vendor", "model");
     }
-    if (isPlainRecord(llm.modelListCache)) {
+    if (isRecord(llm.modelListCache)) {
       const cache: Record<string, unknown> = {};
       const renamed: Array<[string, Record<string, unknown>]> = [];
       for (const [key, entry] of Object.entries(llm.modelListCache)) {
-        const to = isPlainRecord(entry) ? renamedId(entry.vendor) : undefined;
-        if (isPlainRecord(entry) && typeof to === "string" && to !== entry.vendor) {
+        const to = isRecord(entry) ? renamedId(entry.vendor) : undefined;
+        if (isRecord(entry) && typeof to === "string" && to !== entry.vendor) {
           renamed.push([cacheKeyOf(entry, to), { ...entry, vendor: to }]);
         } else {
           cache[key] = entry;
@@ -359,7 +356,7 @@ export function withRenamedLlmVendorIds(
       }
       const present = new Set(
         Object.values(cache)
-          .filter(isPlainRecord)
+          .filter(isRecord)
           .filter((entry) => typeof entry.vendor === "string")
           .map((entry) => cacheKeyOf(entry, entry.vendor as string)),
       );
@@ -371,7 +368,7 @@ export function withRenamedLlmVendorIds(
     next.llm = llm;
   }
 
-  if (isPlainRecord(stored.marketplace) && Array.isArray(stored.marketplace.installedProviderIds)) {
+  if (isRecord(stored.marketplace) && Array.isArray(stored.marketplace.installedProviderIds)) {
     next.marketplace = {
       ...stored.marketplace,
       installedProviderIds: [...new Set(stored.marketplace.installedProviderIds.map(renamedId))],

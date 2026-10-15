@@ -55,7 +55,7 @@ function projection(files: readonly AgentPluginFile[]): AgentPluginFile[] {
     ["name", "version", "description", "author"].filter((key) => manifest[key] !== undefined).map((key) => [key, manifest[key]]),
   )) }];
   for (const file of files) {
-    const prompt = /^xyz\.ave\/prompts\/([a-z][a-z0-9-]*)\.md$/u.exec(file.path);
+    const prompt = /^ai\.agent-connector\.ave\/prompts\/([a-z][a-z0-9-]*)\.md$/u.exec(file.path);
     if (prompt) {
       const text = file.data.toString("utf8");
       const front = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/u.exec(text);
@@ -66,7 +66,7 @@ function projection(files: readonly AgentPluginFile[]): AgentPluginFile[] {
         projected.push({ path: `commands/${prompt[1]}.md`, data: Buffer.from(`${header}${text.slice(front?.[0].length ?? 0).replaceAll("{args}", "$ARGUMENTS")}`) });
       }
     }
-    const agent = /^xyz\.ave\/agents\/([a-z][a-z0-9-]*)\/AGENTS\.md$/u.exec(file.path);
+    const agent = /^ai\.agent-connector\.ave\/agents\/([a-z][a-z0-9-]*)\/AGENTS\.md$/u.exec(file.path);
     if (agent) projected.push({ path: `agents/${agent[1]}.md`, data: Buffer.from(file.data) });
   }
   const mcp = map.get("mcp.json");

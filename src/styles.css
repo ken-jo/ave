@@ -481,7 +481,7 @@
  *  No combinatorial overlays — one selector, one outcome.
  *
  *  Built-in bundles are registered in src/shared/theme-bundles.ts, with
- *  Cherry Blossom as the default light shell. CSS block order keeps the
+ *  moonstone (`DEFAULT_BUNDLE_ID`) as the default light shell. CSS block order keeps the
  *  pre-hydration default near the end for easy comparison with its fallback.
  *
  *  Token tiers:
@@ -1444,6 +1444,38 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     word-break: break-word;
+  }
+
+  /* Syntax highlighting (MarkdownCodeBlock → lowlight `hljs-*` spans).
+     Colour only — no padding, weight or display — so a block that gains its
+     spans after the grammar chunk loads does not move. Every hue is a bundle
+     token mixed toward --code-fg: the token carries the hue per theme, and the
+     mix pulls it toward the code panel's own foreground so contrast against
+     --code-bg holds in light and dark shells alike. Unlayered for the same
+     cascade reason as the rules above. */
+  .ave-prose pre code :is(.hljs-keyword, .hljs-selector-tag, .hljs-doctag, .hljs-meta .hljs-keyword) {
+    color: color-mix(in oklab, hsl(var(--info)) 80%, hsl(var(--code-fg)));
+  }
+  .ave-prose pre code :is(.hljs-string, .hljs-regexp, .hljs-addition, .hljs-template-tag, .hljs-meta .hljs-string) {
+    color: color-mix(in oklab, hsl(var(--success)) 80%, hsl(var(--code-fg)));
+  }
+  .ave-prose pre code :is(.hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet, .hljs-link) {
+    color: color-mix(in oklab, hsl(var(--action-branch)) 75%, hsl(var(--code-fg)));
+  }
+  .ave-prose pre code :is(.hljs-title, .hljs-section, .hljs-selector-id, .hljs-selector-class) {
+    color: color-mix(in oklab, hsl(var(--action-view)) 80%, hsl(var(--code-fg)));
+  }
+  .ave-prose pre code :is(.hljs-type, .hljs-built_in, .hljs-class .hljs-title, .hljs-name, .hljs-attr, .hljs-attribute, .hljs-variable.language_) {
+    color: color-mix(in oklab, hsl(var(--link-fg)) 65%, hsl(var(--code-fg)));
+  }
+  .ave-prose pre code :is(.hljs-comment, .hljs-quote, .hljs-meta) {
+    color: hsl(var(--muted-foreground));
+  }
+  .ave-prose pre code .hljs-comment {
+    font-style: italic;
+  }
+  .ave-prose pre code .hljs-deletion {
+    color: color-mix(in oklab, hsl(var(--destructive)) 80%, hsl(var(--code-fg)));
   }
 
   /* Radix ScrollArea inserts an internal `display: table; min-width: 100%`
