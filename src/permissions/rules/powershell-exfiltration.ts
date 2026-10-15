@@ -73,7 +73,9 @@ import {
   powerShellCommandsWithEffect,
   powerShellCommandSpellings,
   type PowerShellExpressionKind,
+  type PowerShellPathBinding,
 } from "./powershell-command-policy.js";
+import { PowerShellFileProvenance } from "./powershell-file-provenance.js";
 import { hiddenCodeReason, isNetworkProgram, refusedShellPrefix, type ShellCommandInput } from "./shell-prefix-policy.js";
 import {
   MULTI_PURPOSE_NETWORK,
@@ -206,8 +208,17 @@ class Lexer {
         tokens.push(this.parseHereString(next));
         continue;
       }
-      if (char === "'") { tokens.push(this.parseSingleQuoted()); continue; }
-      if (char === "\"") { tokens.push(this.parseDoubleQuoted()); continue; }
+      if (char === "'" || char === "\"") {
+        // Argument-mode quote concatenation must not split one runtime path or
+        // command name into independently bound operands.
+        const previous = src[this.index - 1];
+        if (previous && !/[\s;|&(){},:=+<>]/.test(previous)) throw new PsUnreadable("unsupported adjacent string fragment");
+        const token = char === "'" ? this.parseSingleQuoted() : this.parseDoubleQuoted();
+        const following = src[this.index];
+        if (following && !/[\s;|&(){},=+\-<>]/.test(following)) throw new PsUnreadable("unsupported adjacent string fragment");
+        tokens.push(token);
+        continue;
+      }
       tokens.push(this.parseBareword());
     }
     if (closer !== undefined) throw new PsUnreadable("unterminated group");
@@ -416,7 +427,8 @@ function toPipeline(stages: PsCommand[], budget: PowerShellAnalysisBudget): PsPi
 
 const HTTP_CMDLETS = new Set(["invoke-webrequest", "invoke-restmethod"]);
 /** Names that are also native programs (`curl.exe`, PowerShell 7's `curl`). */
-const NATIVE_ALIASED = new Set(["curl", "wget"]);
+const NATIVE_ALIASED = new Set([...HTTP_CMDLETS].flatMap((name) => POWERSHELL_COMMAND_POLICIES[name]!.aliases)
+  .filter((alias) => POWERSHELL_COMMAND_POLICIES[`${alias}.exe`]?.native));
 const OTHER_NETWORK_CMDLETS = powerShellCommandsWithEffect("network");
 const COPY_CMDLETS = new Set(["copy-item"]);
 const FILE_READERS = new Set([
@@ -586,6 +598,8 @@ interface Context {
   scopeOpaque: boolean;
   launched: boolean;
   literalBoundary: boolean;
+  files: PowerShellFileProvenance;
+  pathData: Set<string>;
   /** Positively modeled property expressions inside a dispatch block. */
   memberReads: Set<PsCommand>;
   budget: PowerShellAnalysisBudget;
@@ -749,6 +763,154 @@ function collectValues(pipelines: readonly PsPipeline[], ctx: Context): void {
   }
 }
 
+/** A non-filesystem provider is distinct from an opaque filesystem operand. */
+function filePath(tokens: readonly PsToken[], ctx: Context): string | undefined | null {
+  const path = providerPath(evaluateValue(tokens, ctx), ctx);
+  return path.state === "opaque" ? undefined : path.provider === "filesystem" ? normalizePaths(path.path) : null;
+}
+
+function pathBinding(bound: BoundArguments, role: PowerShellPathBinding | undefined, source: PowerShellPathBinding | undefined): PsToken[] {
+  if (!role) return [];
+  for (const parameter of role.parameters) {
+    const value = bound.named.get(parameter);
+    if (value) return value;
+  }
+  if (role.position === undefined) return [];
+  const sourceNamed = role.position > 0 && source?.parameters.some((parameter) => bound.named.has(parameter));
+  const token = bound.positional.at(role.position - Number(sourceNamed ?? false));
+  return token ? [token] : [];
+}
+
+/** Resolve path roles now; apply the write only after its arguments and command. */
+function materializationPlan(stage: PsCommand, ctx: Context): (() => void) | undefined {
+  const { name, args } = headOf(stage, ctx);
+  if (name === undefined) return;
+  const policy = POWERSHELL_COMMAND_POLICIES[name];
+  if (!policy && !/^[\[$@]/.test(stage.tokens[0]?.kind === "word" ? stage.tokens[0].text : "$")) {
+    // Unknown native argv has no proven read-only role. Retain possible output
+    // paths so a later file invocation cannot claim that its input is untouched.
+    const paths: Array<string | undefined> = [];
+    for (let index = 0; index < args.length; index += 1) {
+      ctx.budget.spend();
+      const token = args[index]!;
+      if (token.kind === "word" && !token.quoted && /^[\w-]+=/.test(token.text)) {
+        const path = token.text.slice(token.text.indexOf("=") + 1);
+        paths.push(filePath([word(path, path, false, [])], ctx) ?? undefined);
+      } else if (token.kind === "word" && !token.quoted && /^[-/][a-z]/i.test(token.text)) {
+        const binding = argumentBinding(args, index);
+        paths.push(binding.state === "bound" ? filePath([binding.value], ctx) ?? undefined : undefined);
+      } else {
+        const path = filePath([token], ctx);
+        if (path !== null) paths.push(path);
+      }
+    }
+    return paths.length ? () => { for (const path of paths) ctx.files.record(path); } : undefined;
+  }
+  const effect = policy?.materializes;
+  const destination = effect?.destination ?? (policy?.destination?.kind === undefined ? policy?.destination : undefined)
+    ?? (policy?.effects.includes("provider-write") ? { parameters: ["path", "literalpath"], position: 0 } : undefined);
+  if (!effect && !destination && !/^export-/.test(name)) return;
+  const expanded = expandSplats(args, ctx);
+  if (expanded === null) return () => ctx.files.record(undefined);
+  const bound = effect?.native ? { state: "known" as const, named: new Map<string, PsToken[]>(), positional: expanded }
+    : bindArguments(expanded, policy?.parameters ?? [], ctx);
+  if (bound.state === "opaque" || expanded.some((token) => token.kind === "word" && !token.quoted && token.text === ",")
+    || (effect?.native && expanded.some((token) => token.kind === "word" && /^[-/][a-z]/i.test(token.text)))) {
+    return () => ctx.files.record(undefined);
+  }
+  const sourceTokens = pathBinding(bound, effect?.source, undefined);
+  const source = sourceTokens.length ? filePath(sourceTokens, ctx) : undefined;
+  const targetTokens = pathBinding(bound, destination, effect?.source);
+  if (targetTokens.length === 0 && effect?.optional) return;
+  let target = targetTokens.length ? filePath(targetTokens, ctx) : undefined;
+  if (source) ctx.pathData.add(source);
+  if (target) ctx.pathData.add(target);
+  if (target === null) return;
+  if (effect?.kind === "tree" && targetTokens.length === 0 && source) target = source.slice(0, source.length - posix.extname(source).length);
+  if (effect?.kind === "rename" && target && source && !/^(?:[a-z]:|\/)/i.test(target)) target = posix.join(posix.dirname(source), target);
+  if (effect?.kind === "new" && bound.named.has("name")) {
+    const leaf = filePath(bound.named.get("name")!, ctx);
+    if (leaf) ctx.pathData.add(leaf);
+    target = target !== undefined && leaf ? posix.join(target, leaf) : undefined;
+  }
+  const itemType = bound.named.get("itemtype");
+  const directory = effect?.kind === "new" && itemType !== undefined && /^directory$/i.test(evaluateValue(itemType, ctx).text);
+  const tree = effect?.kind === "tree" || (effect?.kind === "copy" && (bound.named.has("recurse") || !source || !posix.extname(source)));
+  return () => {
+    ctx.files.record(target, { source: source ?? undefined, directory, tree });
+    if (effect?.kind === "copy" && target && source) {
+      // A literal destination can already be a directory; retain both bindings.
+      ctx.files.record(posix.join(target, posix.basename(source)), { source });
+    }
+  };
+}
+
+/** File-backed execution cannot inherit the benign spelling of a newly written leaf. */
+function fileExecutionSignal(stage: PsCommand, feeder: PsCommand | undefined, ctx: Context, probe: boolean, pathData: boolean): string | null {
+  const { name, args, label } = headOf(stage, ctx);
+  if (name === undefined) return null;
+  if (probe && args.length === 0 && stage.tokens.length === 1
+    && (pathData || /^[a-z][a-z\d+.-]*:\/\//i.test(name) || ctx.files.fileType(name) === "document")) return null;
+  const materialized = (path: string): string | null => {
+    const file = ctx.files.lookup(path);
+    return file ? `PowerShell hidden code (materialized file${file.catalogue ? `, catalogue ${file.catalogue}` : ""})` : null;
+  };
+  if (name === "invoke-item") {
+    const expanded = expandSplats(args, ctx);
+    const bound = expanded === null ? undefined : bindArguments(expanded, POWERSHELL_COMMAND_POLICIES[name]!.parameters, ctx);
+    if (bound?.state !== "known") return "PowerShell hidden code (opaque file association binding)";
+    if (!knownAncillaryValues(bound, new Set(["path", "literalpath"]), ctx)) return "PowerShell hidden code (opaque file association option)";
+    const named = [...(bound.named.get("path") ?? []), ...(bound.named.get("literalpath") ?? [])];
+    if (named.length && bound.positional.length) return "PowerShell hidden code (ambiguous file association binding)";
+    const paths = named.length ? named : bound.positional;
+    if (!paths.length) return feeder ? "PowerShell hidden code (opaque associated pipeline item)" : null;
+    for (const token of paths) {
+      const path = filePath([token], ctx);
+      if (!path || /[*?\[\]]/.test(path)) return "PowerShell hidden code (opaque file association target)";
+      const file = ctx.files.lookup(path);
+      if (file?.catalogue) return materialized(path);
+      if (ctx.files.isDirectory(path) || ctx.files.fileType(path) === "document") continue;
+      return materialized(path) ?? "PowerShell hidden code (opaque associated file payload)";
+    }
+    return null;
+  }
+  const first = stage.tokens[0];
+  if (first?.kind !== "word" || first.quoted || /^[\[$@]/.test(first.text)) return null;
+  const policy = POWERSHELL_COMMAND_POLICIES[name];
+  if (policy?.executable) {
+    const expanded = expandSplats(args, ctx);
+    const bound = expanded === null ? undefined : bindArguments(expanded, policy.parameters, ctx);
+    if (bound?.state !== "known") return "PowerShell hidden code (opaque executable binding)";
+    const target = filePath(pathBinding(bound, policy.executable, undefined), ctx);
+    if (target) {
+      const targetSignal = materialized(target);
+      if (targetSignal) return targetSignal;
+    }
+  }
+  // A spelling can resolve to a native executable on an edition without its
+  // cmdlet alias. Preserve the raw leaf before canonical command resolution.
+  if (label && NATIVE_ALIASED.has(label)) {
+    const aliasSignal = materialized(label);
+    if (aliasSignal) return aliasSignal;
+  }
+  if (!policy || policy.native || policy.materializes?.native) {
+    const signal = materialized(name);
+    if (signal) return signal;
+    // Bare, untouched script names retain the existing script policy. Explicit
+    // paths and call operators remain governed by embedded-code inspection.
+    const type = ctx.files.fileType(name);
+    if (!policy && !isPowerShell(name) && posix.extname(name) && (type === "opaque" || (!probe && type === undefined))) return "PowerShell hidden code (opaque executable file payload)";
+    for (const token of args) {
+      const path = filePath([token], ctx);
+      if (path) {
+        const argumentSignal = materialized(path);
+        if (argumentSignal) return argumentSignal;
+      }
+    }
+  }
+  return null;
+}
+
 function allPipelines(pipelines: readonly PsPipeline[], budget: PowerShellAnalysisBudget): PsPipeline[] {
   const out: PsPipeline[] = [];
   const visit = (list: readonly PsPipeline[]): void => {
@@ -765,6 +927,23 @@ function allPipelines(pipelines: readonly PsPipeline[], budget: PowerShellAnalys
   };
   visit(pipelines);
   return out;
+}
+
+/** Argument subexpressions precede their consumer; later writes cannot bless an earlier launch. */
+function* executionStages(pipelines: readonly PsPipeline[], budget: PowerShellAnalysisBudget, files: PowerShellFileProvenance): Generator<{ stage: PsCommand; feeder: PsCommand | undefined; mutatingBlocks: PsGroup[] }> {
+  for (const pipeline of pipelines) for (const [index, stage] of pipeline.stages.entries()) {
+    budget.spend();
+    const mutatingBlocks: PsGroup[] = [];
+    for (const token of stage.tokens) {
+      budget.spend();
+      const before = files.revision;
+      if (token.kind === "group") {
+        yield* executionStages(token.body, budget, files);
+        if (token.open === "{" && files.revision !== before) mutatingBlocks.push(token);
+      } else for (const body of token.nested) yield* executionStages(body, budget, files);
+    }
+    yield { stage, feeder: pipeline.stages[index - 1], mutatingBlocks };
+  }
 }
 
 function referencesTainted(text: string, ctx: Context): boolean {
@@ -907,8 +1086,9 @@ function senderSignal(cmd: PsCommand, fedByPipeline: boolean, ctx: Context): str
       if (carries) return `${head.label ?? name} request built from file data`;
       if (fedByPipeline) return `${head.label ?? name} request body from the pipeline`;
     }
-    if (NATIVE_ALIASED.has(bare) || (isNetworkProgram([bare]) && !HTTP_CMDLETS.has(name))) {
-      const argv = bashArgv(bare, args, ctx);
+    const nativeName = head.label && NATIVE_ALIASED.has(head.label) ? head.label : bare;
+    if (NATIVE_ALIASED.has(nativeName) || (isNetworkProgram([bare]) && !HTTP_CMDLETS.has(name))) {
+      const argv = bashArgv(nativeName, args, ctx);
       // Only a short, entirely quoted argv reaches this parser; reserve its scan work.
       ctx.budget.spend(argv.length * 4, argv.length);
       const native = shellExfiltrationSignal(argv, ctx.cwd);
@@ -1383,6 +1563,9 @@ function embeddedCode(cmd: PsCommand, feeder: PsCommand | undefined, ctx: Contex
   if (call?.kind === "word" && (call.text === "&" || call.text === ".")
     && !(target?.kind === "group" && target.open === "{") && (target === undefined || literalCode([target], ctx) === null)) return { state: "opaque" };
   const { name, args } = headOf(cmd, ctx);
+  // Complete associated-file binding and the known inert default actions are
+  // owned by fileExecutionSignal; no file content is treated as known code.
+  if (name === "invoke-item") return { state: "none" };
   if (name !== undefined && POWERSHELL_COMMAND_POLICIES[name]?.native) return nativeCode(name, args, ctx);
   if (hasNativeLauncher(cmd, ctx)) return { state: "opaque" };
   if (name !== undefined && /[\\/]/.test(name)) return { state: "opaque" };
@@ -1669,57 +1852,64 @@ export function _inspectPowerShellForTest(input: ShellCommandInput, cwd?: string
   return { ...signals, steps: budget.steps, chars: budget.chars, exhausted: budget.exhausted, limits: POWERSHELL_ANALYSIS_LIMITS };
 }
 
-function inspectPowerShell(input: ShellCommandInput, cwd: string | undefined, budget: PowerShellAnalysisBudget, launched = false, probe = false): FrameSignals {
+function inspectPowerShell(input: ShellCommandInput, cwd: string | undefined, budget: PowerShellAnalysisBudget, launched = false, probe = false, files = new PowerShellFileProvenance(budget, cwd), pathData = false): FrameSignals {
   const command = typeof input === "string" ? input : input.command;
   budget.enter(command);
-  try { return inspectFrame(command, cwd, budget, launched, probe); } finally { budget.leave(); }
+  try { return inspectFrame(command, cwd, budget, launched, probe, files, pathData); } finally { budget.leave(); }
 }
 
 /** Every literal argument is probed independently of the receiving command's policy. */
-function inspectArgumentCode(pipelines: readonly PsPipeline[], ctx: Context): FloorSignals {
+function inspectArgumentCode(stage: PsCommand, ctx: Context, scanned: string | undefined): FloorSignals {
   let sensitive: string | null = null;
   let exfiltration: string | null = null;
   const seen = new Set<string>();
-  for (const pipeline of allPipelines(pipelines, ctx.budget)) for (const stage of pipeline.stages) {
-    const { name, args } = headOf(stage, ctx);
-    const candidates = args.filter((token) => token.kind === "word" ? token.quoted : token.open !== "{" && token.open !== "@{").map((token) => [token]);
-    const first = stage.tokens[0];
-    if (name === undefined && stage.tokens.length > 1 && (first?.kind === "group" || first?.quoted)) candidates.push(stage.tokens);
-    for (const tokens of candidates) {
-      ctx.budget.spend();
-      const value = evaluateValue(tokens, ctx);
-      // Literal fragments keep their effects even when interpolation is opaque.
-      // An unknown receiver cannot establish a data role for a computed argument.
-      if (value.state === "opaque" && name !== undefined && !POWERSHELL_COMMAND_POLICIES[name]
-        && !hasMemberInvocation(stage) && tokens.some((token) => token.kind === "group")) {
-        ctx.literalBoundary = true;
-        exfiltration ??= "PowerShell hidden code (opaque command argument)";
-      }
-      if (value.shape !== "scalar" || seen.has(value.text)) continue;
-      seen.add(value.text);
-      const nested = inspectPowerShell(value.text, ctx.cwd, ctx.budget, false, true);
-      if (!nested.boundary) continue;
+  const { name, args } = headOf(stage, ctx);
+  let candidates = args.filter((token) => token.kind === "word" ? token.quoted : token.open !== "{" && token.open !== "@{").map((token) => [token]);
+  const first = stage.tokens[0];
+  if (name === undefined && stage.tokens.length > 1 && (first?.kind === "group" || first?.quoted)) {
+    const expression = evaluateValue(stage.tokens, ctx);
+    // Resolved fragments are data within one value, not independent commands.
+    // Opaque expressions retain their literal pieces and their complete value.
+    if (expression.state === "known" && expression.shape === "scalar") candidates = [stage.tokens];
+    else candidates.push(stage.tokens);
+  }
+  for (const tokens of candidates) {
+    ctx.budget.spend();
+    const value = evaluateValue(tokens, ctx);
+    // Literal fragments keep their effects even when interpolation is opaque.
+    // An unknown receiver cannot establish a data role for a computed argument.
+    if (value.state === "opaque" && name !== undefined && !POWERSHELL_COMMAND_POLICIES[name]
+      && !hasMemberInvocation(stage) && tokens.some((token) => token.kind === "group")) {
       ctx.literalBoundary = true;
-      sensitive ??= nested.sensitive;
-      exfiltration ??= nested.exfiltration;
+      exfiltration ??= "PowerShell hidden code (opaque command argument)";
     }
+    if (value.shape !== "scalar" || value.text === scanned || seen.has(value.text)) continue;
+    seen.add(value.text);
+    const nested = inspectPowerShell(value.text, ctx.cwd, ctx.budget, false, true, ctx.files.fork(), ctx.pathData.has(normalizePaths(value.text)));
+    if (!nested.boundary) continue;
+    ctx.literalBoundary = true;
+    sensitive ??= nested.sensitive;
+    exfiltration ??= nested.exfiltration;
   }
   return { sensitive, exfiltration };
 }
 
-function inspectFrame(command: string, cwd: string | undefined, budget: PowerShellAnalysisBudget, launched: boolean, probe: boolean): FrameSignals {
+function inspectFrame(command: string, cwd: string | undefined, budget: PowerShellAnalysisBudget, launched: boolean, probe: boolean, files: PowerShellFileProvenance, pathData: boolean): FrameSignals {
   const pipelines = lex(command, budget);
   let sensitive: string | null = null;
   const networkText = DOTNET_NETWORK.test(command);
   if (pipelines === null) {
     // A malformed data string has no parsed executable form. Code-looking strings
     // retain an opaque boundary even when their dialect cannot be parsed here.
-    const boundary = !probe || ARGUMENT_CODE_HINT.test(normalizeDashes(command));
+    budget.spend(1, command.length * 3);
+    const hint = normalizeDashes(command).replace(/`\r?\n/g, "").replace(/`(.)/gs, "$1").replace(/["']/g, "");
+    const first = hint.trim().split(/\s+/, 1)[0]!;
+    const boundary = !probe || ARGUMENT_CODE_HINT.test(hint) || (!pathData && (files.lookup(first) !== undefined || files.fileType(first) === "opaque"));
     if (!boundary) return { sensitive: null, exfiltration: null, boundary: false };
     return { sensitive, boundary, exfiltration: UNREADABLE_FALLBACK.test(normalizeDashes(command))
       ? "PowerShell file upload (unparsed)" : "PowerShell hidden code (unparsed)" };
   }
-  const ctx: Context = { cwd, tainted: new Set(), splats: new Map(), values: new Map(), vocabularyOpaque: false, scopeOpaque: false, launched, literalBoundary: false, memberReads: new Set(), budget };
+  const ctx: Context = { cwd, tainted: new Set(), splats: new Map(), values: new Map(), vocabularyOpaque: false, scopeOpaque: false, launched, literalBoundary: false, files, pathData: new Set(), memberReads: new Set(), budget };
   collectSplats(pipelines, ctx);
   collectValues(pipelines, ctx);
   invalidateVariableMutations(pipelines, ctx);
@@ -1733,28 +1923,48 @@ function inspectFrame(command: string, cwd: string | undefined, budget: PowerShe
     return name !== undefined && POWERSHELL_COMMAND_POLICIES[name]?.effects.includes("file-write")
       && args.some((token) => token.kind === "word" && !token.quoted && /^\/[a-z-]+(?::.*)?$/i.test(token.text));
   }))) exfiltration ??= "PowerShell hidden code (opaque native output binding)";
-  const argumentsCode = inspectArgumentCode(pipelines, ctx);
-  sensitive ??= argumentsCode.sensitive;
-  const boundary = sensitive !== null || exfiltration !== null || argumentsCode.exfiltration !== null || executableBoundary(pipelines, ctx);
-  const candidate = boundary || allPipelines(pipelines, ctx.budget).some((pipeline) => pipeline.stages.some((stage) => {
+  const incomingBoundary = sensitive !== null || exfiltration !== null || executableBoundary(pipelines, ctx);
+  const candidate = incomingBoundary || allPipelines(pipelines, ctx.budget).some((pipeline) => pipeline.stages.some((stage) => {
     const { name } = headOf(stage, ctx);
     const policy = name === undefined ? undefined : POWERSHELL_COMMAND_POLICIES[name];
     return (name !== undefined && isReaderCommand(name)) || policy?.effects.includes("dispatch");
   }));
-  if (probe && !candidate) return { sensitive: null, exfiltration: null, boundary: false };
-  for (const pipeline of allPipelines(pipelines, ctx.budget)) for (let index = 0; index < pipeline.stages.length; index += 1) {
-    const code = embeddedCode(pipeline.stages[index]!, pipeline.stages[index - 1], ctx);
-    if (code.state === "none") continue;
-    if (code.state === "opaque") {
-      exfiltration ??= sensitive ? `${sensitive.replace(/^sensitive path argument/, "sensitive path")} with hidden code` : "PowerShell hidden code (runtime script)";
-      continue;
+  let argumentExfiltration: string | null = null;
+  for (const { stage, feeder, mutatingBlocks } of executionStages(pipelines, budget, ctx.files)) {
+    const materialize = materializationPlan(stage, ctx);
+    const fileSignal = fileExecutionSignal(stage, feeder, ctx, probe, pathData);
+    exfiltration ??= fileSignal;
+    const { name } = headOf(stage, ctx);
+    if (name !== undefined && POWERSHELL_COMMAND_POLICIES[name]?.effects.includes("dispatch")) {
+      // Repeated dispatch can execute an earlier command after this body's writes.
+      // Literal destinations saturate in one pass; opaque destinations taint all.
+      for (const block of mutatingBlocks) {
+        const repeated = inspectPowerShell(block.raw.slice(1, -1), cwd, budget, true, false, ctx.files);
+        sensitive ??= repeated.sensitive;
+        exfiltration ??= repeated.exfiltration;
+      }
     }
-    const nested = inspectPowerShell(code.text, cwd, budget, true);
-    sensitive ??= nested.sensitive;
-    exfiltration ??= nested.exfiltration;
-    if (code.opaque) exfiltration ??= "PowerShell hidden code (opaque native command grammar)";
+    let scanned: string | undefined;
+    if (!probe || candidate || fileSignal !== null) {
+      const code = embeddedCode(stage, feeder, ctx);
+      if (code.state === "opaque") {
+        exfiltration ??= sensitive ? `${sensitive.replace(/^sensitive path argument/, "sensitive path")} with hidden code` : "PowerShell hidden code (runtime script)";
+      } else if (code.state === "literal") {
+        scanned = code.text;
+        const nested = inspectPowerShell(code.text, cwd, budget, true, false, ctx.files);
+        sensitive ??= nested.sensitive;
+        exfiltration ??= nested.exfiltration;
+        if (code.opaque) exfiltration ??= "PowerShell hidden code (opaque native command grammar)";
+      }
+    }
+    const argumentsCode = inspectArgumentCode(stage, ctx, scanned);
+    sensitive ??= argumentsCode.sensitive;
+    argumentExfiltration ??= argumentsCode.exfiltration;
+    materialize?.();
   }
-  exfiltration ??= argumentsCode.exfiltration;
+  exfiltration ??= argumentExfiltration;
+  const boundary = incomingBoundary || sensitive !== null || exfiltration !== null || ctx.literalBoundary;
+  if (probe && !candidate && !boundary) return { sensitive: null, exfiltration: null, boundary: false };
   exfiltration ??= closedWorldSignal(pipelines, ctx, sensitive !== null);
   if (sensitive && !exfiltration) {
     const detail = sensitive.replace(/^sensitive path argument/, "sensitive path");

