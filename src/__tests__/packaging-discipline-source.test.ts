@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 import { readRepoFile } from "./test-helpers.js";
 import { jobRunCommands, workflowJobs } from "./support/workflow-source.js";
 
@@ -392,12 +393,41 @@ describe("installer smoke and packaging discipline", () => {
     expect(r2.slice(0, uploadAt)).not.toContain("secrets.");
   });
 
-  it("runs the R2 credential probe only by manual dispatch and only under _ci-probe/", () => {
+  it("confines every release-bucket secret reader to the release environment", () => {
+    let readers = 0;
+    for (const name of workflowFileNames()) {
+      const { jobs, ...settings } = parseYaml(readRepoFile(`.github/workflows/${name}`)) as {
+        jobs: Record<string, { environment?: string | { name: string } }>;
+      };
+      for (const [id, job] of Object.entries(jobs)) {
+        // Include workflow-level settings so inherited secrets need the same boundary.
+        if (!/\bsecrets\s*\.\s*R2_[A-Za-z0-9_]+\b/u.test(JSON.stringify([settings, job]))) continue;
+        readers += 1;
+        const environment = typeof job.environment === "string" ? job.environment : job.environment?.name;
+        expect(environment, `${name}:${id} reads a release-bucket secret`).toBe("release");
+      }
+    }
+    expect(readers).toBeGreaterThan(0);
+  });
+
+  it("runs contract probes only from main while retaining protected tag publication", () => {
+    const jobs = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
+    const contract = jobs.get("publish-contract");
+    if (contract === undefined) throw new Error("build-installers.yml has no publish-contract job");
+    expect(contract).toMatch(/^ {4}if: github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main' && inputs\.contract_probe == 'true'\)$/mu);
+    expect(contract).toContain("if: github.event_name == 'push'");
+    expect(contract).toContain('if [ "$REF_PROTECTED" != "true" ]; then');
+    expect(contract).toContain('if [ "$tag_object_type" != "tag" ]');
+    expect(contract).toContain('if [ "$target_type" != "commit" ] || [ "$target_sha" != "$EXPECTED_SOURCE_SHA" ]; then');
+  });
+
+  it("runs the R2 credential probe only by manual dispatch from main and only under _ci-probe/", () => {
     const workflow = readRepoFile(".github/workflows/r2-probe.yml");
     const trigger = workflow.slice(workflow.indexOf("\non:"), workflow.indexOf("\npermissions:"));
     // The probe writes to the live release bucket, so no repository event may
     // start it: only an operator's dispatch.
     expect(trigger.trim()).toBe("on:\n  workflow_dispatch:");
+    expect(workflowJobs(workflow).get("probe")).toMatch(/^ {4}if: github\.ref == 'refs\/heads\/main'$/mu);
     expect(workflow).toMatch(/^ {2}contents: read$/mu);
     expect(workflow).not.toContain("continue-on-error");
     expect(workflow).not.toMatch(/set -[a-z]*x/u);

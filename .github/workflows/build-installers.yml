@@ -13,9 +13,9 @@ on:
           - "false"
       # Proves the contract bundle pipeline (build, keyless signature, R2
       # write-once upload) under _ci-probe/contract/ and deletes it again,
-      # without building installers. See publish-contract.
+      # only from main, without building installers. See publish-contract.
       contract_probe:
-        description: Only build, sign, upload and delete a probe contract bundle
+        description: Build, sign, upload and delete a probe contract bundle (main only)
         required: false
         default: "false"
         type: choice
@@ -566,6 +566,7 @@ jobs:
     needs: [release-profile, installers]
     if: github.event_name == 'push'
     runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
+    environment: release
     permissions:
       contents: read
     steps:
@@ -667,16 +668,17 @@ jobs:
   # marketplace refuses any other identity. Objects under a tag are
   # write-once (scripts/upload-contract-bundle-r2.mjs).
   #
-  # A tag push publishes to contract/<tag>/. A workflow_dispatch with
-  # contract_probe=true runs the same steps under _ci-probe/contract/<run>/,
+  # A tag push publishes to contract/<tag>/. A workflow_dispatch from main
+  # with contract_probe=true runs the steps under _ci-probe/contract/<run>/,
   # proves a rerun keeps the published signature, and deletes the probe; its
-  # certificate names the dispatched branch instead of a tag. It needs only
+  # certificate names main instead of a tag. It needs only
   # release-profile, so the installer matrix never holds it back.
   publish-contract:
     name: Publish the signed contract bundle
     needs: release-profile
-    if: github.event_name == 'push' || inputs.contract_probe == 'true'
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.contract_probe == 'true')
     runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
+    environment: release
     # id-token: write is the keyless signing identity; no other job has it.
     permissions:
       contents: read
@@ -791,6 +793,7 @@ jobs:
           set -euo pipefail
           # GITHUB_WORKFLOW_REF is owner/repo/.github/workflows/<file>@<ref>,
           # the certificate SAN Fulcio issues for this job.
+          # The release environment changes OIDC sub, not this workflow ref.
           identity="https://github.com/${GITHUB_WORKFLOW_REF}"
           if [ "$EVENT_NAME" = "push" ]; then
             expected="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/build-installers.yml@refs/tags/${GITHUB_REF_NAME}"
