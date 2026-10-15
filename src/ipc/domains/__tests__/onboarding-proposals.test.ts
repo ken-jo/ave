@@ -142,6 +142,9 @@ describe("ave:onboarding:proposals:list-pending", () => {
         action: { kind: "composer", prompt: "Start recording the meeting" },
       },
     });
+    // Onboarding stays inline where the user is: it names no conversation, so
+    // it is not addressed to the Suggestions conversation.
+    expect(staged[0]).not.toHaveProperty("originSessionId");
   });
 
   it("ignores a plugin that is not loaded and active", async () => {

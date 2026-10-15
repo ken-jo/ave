@@ -54,6 +54,8 @@ function setup() {
     readTiles: vi.fn(() => []),
   };
   const onNavigateToSettings = vi.fn();
+  const onSuggestionStaged = vi.fn();
+  const queueAdd = vi.fn();
 
   const hook = renderHook(() =>
     useRoutineOverlay({
@@ -62,7 +64,9 @@ function setup() {
       locale: "en",
       registry: registry as never,
       onNavigateToSettings,
+      onSuggestionStaged,
     }));
+  hook.result.current.addFireRef.current = queueAdd;
 
   return {
     hook,
@@ -71,11 +75,22 @@ function setup() {
     ask,
     insertImportedTriggerEntry,
     onNavigateToSettings,
+    onSuggestionStaged,
+    queueAdd,
     show: (item: OverlayItem) => act(() => showOverlay?.(item)),
   };
 }
 
 describe("useRoutineOverlay — onboarding proposal answers", () => {
+  it("keeps a proposal inline where the user is, not in the Suggestions conversation", () => {
+    const s = setup();
+    const item = proposalItem({ kind: "composer", prompt: "Start recording the meeting" });
+    s.show(item);
+    expect(s.queueAdd).toHaveBeenCalledWith(item);
+    expect((s.queueAdd.mock.calls[0]![0] as OverlayItem).originSessionId).toBeUndefined();
+    expect(s.onSuggestionStaged).not.toHaveBeenCalled();
+  });
+
   it("prefills the card's tile composer on an accepted composer action", async () => {
     const s = setup();
     s.show(proposalItem({ kind: "composer", prompt: "Start recording the meeting" }));

@@ -7,6 +7,7 @@ import { Button } from "../../../components/ui/button.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 import { useTranslation } from "../../../i18n/react.js";
+import { sessionDisplayTitle } from "../../../shared/suggestions-session.js";
 import { ChatContextProvider, type ChatContextValue } from "../context/ChatContext.js";
 import { ChatView } from "../ChatView.js";
 import { chatGroupApi } from "./PaneFrame.js";
@@ -366,7 +367,7 @@ export function ChatGroupSession({
   const handleAskRef = useRef<HandleAskRefFn>(async () => { /* populated below */ });
 
   const {
-    currentSessionId, currentSessionKind, currentSessionTitle, currentSessionProject,
+    currentSessionId, currentSessionKind, currentSessionTitle: storedSessionTitle, currentSessionProject,
     refreshSessionId, handleLoadSession: sessionLoad, handleFork: sessionFork,
   } = useCurrentSession(api, {
     applyInitialSession,
@@ -380,6 +381,9 @@ export function ChatGroupSession({
     onChatNewRefused: reportChatNewRefused,
     focusSessionHolder: env.focusChatGroup,
   });
+  // The Suggestions conversation is named from the catalog by its id, in the
+  // language in use now — never by a stored title.
+  const currentSessionTitle = sessionDisplayTitle(currentSessionId, storedSessionTitle, t);
   // Written at commit, not in render: a render may be thrown away, and the
   // frame listener (subscribed in an effect) must not read a session this
   // tile never showed. Layout timing keeps it ahead of any IPC callback.
