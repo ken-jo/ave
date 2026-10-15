@@ -1310,7 +1310,7 @@ export function BrowserWorkspace({
             {displayedTarget?.kind === "html" ? (
               <BrowserDocumentViewer target={displayedTarget} />
             ) : displayedTarget?.kind === "url" ? (
-              <UrlDocumentViewer api={api} target={displayedTarget} showHeader={false} />
+              <UrlDocumentViewer api={api} target={displayedTarget} showHeader={false} surfaceTabId={tabId} />
             ) : (
               <div className="p-4 text-xs text-muted-foreground">{t("chatPreviewRail.noBrowserTargets")}</div>
             )}

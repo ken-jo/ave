@@ -30,6 +30,7 @@ import { StarredView } from "./components/StarredView.js";
 import { SettingsInlineView } from "./SettingsInlineView.js";
 import { PageShell } from "./components/PageShell.js";
 import type { ConversationRowActions, ProjectRowActions } from "./components/Sidebar.js";
+import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
 import { PaneGutter, PANE_HOME, PaneFrame, areaStyle, chatGroupApi, useChatGroups, type PaneSplitAxis } from "./components/PaneFrame.js";
 import type { DropTarget } from "./components/pane-drop.js";
 import { useSessionList, useTurnAttention, type SessionSummary } from "./hooks/use-sessions.js";
@@ -2342,6 +2343,10 @@ export function App() {
               onDismiss={onTourDismiss}
             />
             <DevConsoleToggle />
+            {/* Every browser tab's page, laid over wherever the tab is shown
+                (see WebSurfaceLayer). Portaled to <body>: no ancestor here may
+                capture its fixed positioning or its stacking. */}
+            <WebSurfaceLayer />
           </OverlayContextProvider>
           </ApprovalSurfaceProvider>
         </TooltipProvider>

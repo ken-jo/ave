@@ -11,6 +11,7 @@ import { approvalSurfaceStub, deferred } from "../../../../../test/renderer/help
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../../shared/side-browser.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
+import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { PaneFrame } from "../PaneFrame.js";
 import { emptyToolActivity } from "../../../../../test/renderer/helpers.js";
 import type { ToolActivityState } from "../ToolActivity.js";
@@ -72,6 +73,9 @@ function withPanelProviders(ui: ReactElement) {
     <TooltipProvider>
       <ApprovalSurfaceProvider value={approvalSurfaceStub()}>
         {ui}
+        {/* The window's browser guests live in this layer (portaled to body),
+            not inside the panel — as in the app. */}
+        <WebSurfaceLayer />
       </ApprovalSurfaceProvider>
     </TooltipProvider>
   );
@@ -582,7 +586,10 @@ describe("ChatSidePanel", () => {
     const addressInput = screen.getByTestId("chat-side-panel-browser-address") as HTMLInputElement;
     fireEvent.change(addressInput, { target: { value: "google.com" } });
     fireEvent.click(screen.getByTestId("chat-side-panel-browser-go"));
-    const manualWebview = container.querySelector('[data-testid="chat-side-panel-browser-webview"]');
+    // The page is a web surface: the panel draws its slot, the window's layer
+    // draws the guest.
+    expect(container.querySelector('[data-testid="web-surface-slot"]')).not.toBeNull();
+    const manualWebview = document.querySelector('[data-testid="chat-side-panel-browser-webview"]');
     expect(manualWebview).not.toBeNull();
     expect(manualWebview?.getAttribute("src")).toBe("https://google.com/");
 
@@ -593,7 +600,9 @@ describe("ChatSidePanel", () => {
     // a page, not asked for by the turn.
     expect(rows[0]!.textContent).toContain("결과에서");
     fireEvent.click(rows[0]!);
-    const webview = container.querySelector('[data-testid="chat-side-panel-browser-webview"]');
+    const webview = document.querySelector('[data-testid="chat-side-panel-browser-webview"]');
+    // The same guest, navigated — not a second one.
+    expect(webview).toBe(manualWebview);
     expect(webview?.getAttribute("src")).toBe("https://example.com/docs");
     expect(webview?.getAttribute("partition")).toBe(AVE_SIDE_BROWSER_PARTITION);
     expect(webview?.getAttribute("webpreferences")).toContain("javascript=yes");

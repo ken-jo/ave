@@ -496,7 +496,7 @@ function ContentTabView({
   }, [content, tab.id, t]);
   if (!content) return null;
   if (browserTarget) {
-    return <UrlDocumentViewer api={api} target={browserTarget} />;
+    return <UrlDocumentViewer api={api} target={browserTarget} surfaceTabId={tab.id} />;
   }
   const target = content.source === "preview" ? targetById.get(content.targetId) : undefined;
   if (!target) {

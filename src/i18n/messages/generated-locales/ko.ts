@@ -175,6 +175,7 @@ import { ko as ko_useStatusBarVendor } from "../generated/useStatusBarVendor.js"
 import { ko as ko_userMessageEditor } from "../generated/userMessageEditor.js";
 import { ko as ko_viewModeBanner } from "../generated/viewModeBanner.js";
 import { ko as ko_viewPathNav } from "../generated/viewPathNav.js";
+import { ko as ko_webSurface } from "../generated/webSurface.js";
 import { ko as ko_webTab } from "../generated/webTab.js";
 import { ko as ko_workBoard } from "../generated/workBoard.js";
 import { ko as ko_workGroup } from "../generated/workGroup.js";
@@ -356,6 +357,7 @@ export const koMessages: Record<string, string> = {
   ...ko_userMessageEditor,
   ...ko_viewModeBanner,
   ...ko_viewPathNav,
+  ...ko_webSurface,
   ...ko_webTab,
   ...ko_workBoard,
   ...ko_workGroup,

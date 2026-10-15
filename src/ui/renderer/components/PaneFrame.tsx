@@ -30,6 +30,7 @@ import {
   type DropTarget,
 } from "./pane-drop.js";
 import { FloatingRightLane } from "./FloatingRightLane.js";
+import { registerWebSurfaceOccluder } from "../preview/web-surfaces.js";
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import { AXIS_OF,
   closeLeaf,
@@ -299,6 +300,19 @@ export function usePaneActions(actions: PaneAction[]): void {
     // drawing a control for content that is no longer there.
     return () => publish([]);
   }, [publish, actions]);
+}
+
+/**
+ * Content that must stay visible over a web page in this pane. A page is drawn
+ * above the pane by the surface layer, so the settle cards (the conversation's
+ * pending approvals and questions) are cut out of it rather than covered.
+ * `display: contents` keeps the wrapper out of layout: the cards still position
+ * themselves against the body.
+ */
+function WebSurfaceOccluder({ children }: { children: ReactNode }) {
+  const [element, setElement] = useState<HTMLDivElement | null>(null);
+  useEffect(() => (element ? registerWebSurfaceOccluder(element) : undefined), [element]);
+  return <div ref={setElement} className="contents" data-web-surface-occluder="settle">{children}</div>;
 }
 
 /** The frame every pane is drawn in. The chrome lives here and only here. */
@@ -603,7 +617,7 @@ export function PaneFrame({
             {/* The settle slot is the body's own bottom edge: its occupants
                 position themselves against this `relative` body exactly as
                 they do against the conversation column. */}
-            {settle}
+            {settle !== undefined ? <WebSurfaceOccluder>{settle}</WebSurfaceOccluder> : null}
           </div>
         </PaneBodyActionsContext.Provider>
       </PanePanelSlotContext.Provider>

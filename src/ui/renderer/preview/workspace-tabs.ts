@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeBrowserNavigationUrl } from "./url-safety.js";
+import { publishLiveWebTabs, withdrawLiveWebTabs } from "./web-surfaces.js";
 
 /**
  * Workspace-tab store — the state that ChatSidePanel used to hold in
@@ -186,6 +187,16 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     activity: 1,
     "side-chat": 1,
   });
+
+  // The browser tabs this store holds keep their guests alive in the window's
+  // web-surface layer; a tab that leaves the store (closed, pruned, replaced by
+  // other content) lets its guest go.
+  const [liveSource] = useState(() => Symbol("workspace-tabs"));
+  const liveBrowserKey = state.tabs.filter((tab) => tab.kind === "browser").map((tab) => tab.id).join("\n");
+  useEffect(() => {
+    publishLiveWebTabs(liveSource, new Set(liveBrowserKey ? liveBrowserKey.split("\n") : []));
+  }, [liveSource, liveBrowserKey]);
+  useEffect(() => () => withdrawLiveWebTabs(liveSource), [liveSource]);
 
   const setActiveTabId = useCallback((id: string) => {
     setState((prev) => (prev.activeTabId === id ? prev : { ...prev, activeTabId: id }));
