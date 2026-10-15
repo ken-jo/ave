@@ -31,10 +31,12 @@ import { SettingsInlineView } from "./SettingsInlineView.js";
 import { PageShell } from "./components/PageShell.js";
 import type { ConversationRowActions, ProjectRowActions } from "./components/Sidebar.js";
 import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
+import { SurfacePane } from "./components/MainSurfacePanels.js";
+import { SURFACE_KIND_OF_VIEW, useMainSurfaces } from "./preview/main-surfaces.js";
 import { PaneGutter, PANE_HOME, PaneFrame, areaStyle, chatGroupApi, useChatGroups, type PaneSplitAxis } from "./components/PaneFrame.js";
 import type { DropTarget } from "./components/pane-drop.js";
 import { useSessionList, useTurnAttention, type SessionSummary } from "./hooks/use-sessions.js";
-import { parseInlineViewKey, type InlineViewKey, type PluginViewKey } from "../../shared/view-key.js";
+import { isInstanceViewKey, parseInlineViewKey, type InlineViewKey, type InstanceViewKey, type PluginViewKey } from "../../shared/view-key.js";
 import { CONTENT_TITLE_INSET, SHELL_GUTTER, collapsedBandLeadClearance } from "../../shared/shell-geometry.js";
 import { DeferredQueueDialog } from "./dialogs/DeferredQueueDialog.js";
 import { SpotlightTour } from "./components/SpotlightTour.js";
@@ -230,6 +232,9 @@ export function App() {
   // The tiled chat groups — the geometry. See `useChatGroups` and
   // docs/design/tiled-chat-groups.md.
   const chatGroups = useChatGroups(appMode);
+  // The terminals and web pages that live in the main area as panes. See
+  // `preview/main-surfaces.ts`; which pane shows one is that pane's content.
+  const mainSurfaces = useMainSurfaces();
 
   /**
    * The conversation the WINDOW is talking about.
@@ -609,9 +614,25 @@ export function App() {
   // persistence; what it no longer owns is the value. With one focused pane
   // `contentById[focusedId].view` and the old window-wide `activeView` are the
   // same string, which is why the router below is untouched.
+  /**
+   * Put a terminal or a web page in `paneId`. A bare `terminal`/`web` names a
+   * kind of place, not one place, so it resolves to an instance: a main-area
+   * surface of that kind no pane is showing (closing a pane or routing it
+   * elsewhere leaves its surface running, and this is how it is reached
+   * again), else a new one. `fresh` always makes a new one.
+   */
+  const showInstanceView = useCallback((paneId: string, view: InstanceViewKey, fresh = false) => {
+    const kind = SURFACE_KIND_OF_VIEW[view];
+    const shown = new Set(Object.values(chatGroups.contentById).map((content) => content.surface));
+    const unshown = fresh
+      ? undefined
+      : [...mainSurfaces.surfaces].reverse().find((surface) => surface.kind === kind && !shown.has(surface.tabId));
+    const surface = unshown ?? mainSurfaces.create(kind);
+    chatGroups.setPaneContent(paneId, { view, surface: surface.tabId });
+  }, [chatGroups, mainSurfaces]);
   const activeViewPane = useMemo(() => ({
     view: chatGroups.contentById[chatGroups.focusedId]?.view ?? "home",
-    navigate: (next: InlineViewKey) => chatGroups.setPaneContent(
+    navigate: (next: InlineViewKey) => {
       // A navigation the new-pane gesture asked for goes into the pane that
       // gesture just made, which `focusedId` cannot yet name: the pane is
       // created and filled inside one event, and React has not re-rendered in
@@ -619,10 +640,16 @@ export function App() {
       // `openViewInNewPane`), so nothing later can be captured by it — and it
       // has to be honoured, or the two moves would land as two locations and
       // the visit history would record a stop at a pane's blank conversation.
-      newPaneTargetRef.current ?? chatGroups.focusedId,
-      { view: next },
-    ),
-  }), [chatGroups.contentById, chatGroups.focusedId, chatGroups.setPaneContent]);
+      const paneId = newPaneTargetRef.current ?? chatGroups.focusedId;
+      if (isInstanceViewKey(next)) {
+        // A new pane asked for this view: it gets a new instance, not a
+        // running one moved out of wherever the user left it.
+        showInstanceView(paneId, next, newPaneTargetRef.current !== null);
+        return;
+      }
+      chatGroups.setPaneContent(paneId, { view: next });
+    },
+  }), [chatGroups.contentById, chatGroups.focusedId, chatGroups.setPaneContent, showInstanceView]);
   const { activeView, setActiveView, restoresApplied: activeViewRestoresApplied } =
     useActiveView(api, loadedPluginViewKeys, activeViewPane);
   // The location has two halves and each restores itself, so the history needs
@@ -633,16 +660,25 @@ export function App() {
   // the unit visit history records. Settings is one view key but several
   // places, so the tab belongs in the location or the path would say
   // "Settings" while the user is on Permissions.
-  const location = useMemo(
-    () => toViewLocation(activeView, settingsTab),
-    [activeView, settingsTab],
-  );
+  // An instance view's location names its surface, so walking back onto a
+  // terminal returns to THAT terminal rather than to a terminal.
+  const focusedSurface = chatGroups.contentById[chatGroups.focusedId]?.surface;
+  const location = useMemo(() => {
+    const base = toViewLocation(activeView, settingsTab);
+    return isInstanceViewKey(activeView) && focusedSurface ? { ...base, surface: focusedSurface } : base;
+  }, [activeView, settingsTab, focusedSurface]);
   // Applying a history entry sets BOTH halves, so replaying a settings entry
   // lands on the page it was recorded on rather than the tab last opened.
   const navigateToLocation = useCallback((to: ViewLocation) => {
     if (to.view === "settings") setSettingsTab(to.settingsTab ?? "llm");
+    // A surface still running is shown again; one closed since is gone, and
+    // the entry resolves like its bare view.
+    if (to.surface && mainSurfaces.surfaces.some((surface) => surface.tabId === to.surface)) {
+      chatGroups.setPaneContent(chatGroups.focusedId, to);
+      return;
+    }
     setActiveView(to.view);
-  }, [setSettingsTab, setActiveView]);
+  }, [setSettingsTab, setActiveView, mainSurfaces.surfaces, chatGroups]);
   // The section a deep link named, held only until the panel has landed on it.
   // Kept OUT of `ViewLocation` deliberately: a location is a place the user can
   // return to, and this is an event — recording it would replay the scroll and
@@ -1412,9 +1448,10 @@ export function App() {
         setActiveView: handleViewSelect,
         openSettings: onOpenSettings,
         handleNewChat,
+        openNewSurface: (view) => showInstanceView(chatGroupsRef.current.focusedId, view, true),
         pluginViews,
       }),
-    [pluginViews, handleNewChat, handleViewSelect, onOpenSettings],
+    [pluginViews, handleNewChat, handleViewSelect, onOpenSettings, showInstanceView],
   );
 
   const onNewChat = useCallback(() => { void handleNewChat(); }, [handleNewChat]);
@@ -1783,6 +1820,35 @@ export function App() {
           project={activeProject ?? defaultWorkspaceProject}
           focusItemId={workBoardFocusItemId}
           onFocusConsumed={() => setWorkBoardFocusItemId(null)}
+        />
+      ));
+    }
+
+    if (view === "terminal" || view === "web") {
+      const surfaceId = chatGroups.contentById[paneId]?.surface;
+      const surface = mainSurfaces.surfaces.find((each) => each.tabId === surfaceId);
+      if (!surface) {
+        // The location names a surface this window no longer has. Say so,
+        // with the one control that leaves.
+        return viewPane(view, (
+          <p className="text-sm text-muted-foreground" data-testid="surface-pane-gone">{t("mainPanels.surfaceGone")}</p>
+        ));
+      }
+      const name = `${t(BUILTIN_LABEL_KEYS[view])} ${surface.ordinal}`;
+      // Closing a terminal or web pane closes the surface — the shell is
+      // ended, the page let go — and gives the pane back its conversation.
+      const closeSurface = () => {
+        closePane();
+        mainSurfaces.close(surface.tabId);
+        if (surface.kind === "terminal") void api.terminal?.kill(surface.tabId);
+      };
+      return paneShell(view, (
+        <SurfacePane
+          api={api}
+          surface={surface}
+          paneId={paneId}
+          frame={{ ...asTile, onClose: closeSurface, closeLabel: routedCloseLabel(name) }}
+          onNavigate={mainSurfaces.setUrl}
         />
       ));
     }

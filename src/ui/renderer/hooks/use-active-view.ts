@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AveApi } from "../types.js";
-import { parseInlineViewKey, type InlineViewKey } from "../../../shared/view-key.js";
+import { isInstanceViewKey, parseInlineViewKey, type InlineViewKey } from "../../../shared/view-key.js";
 
 /**
  * Where the window's location actually LIVES: the focused pane's content.
@@ -177,6 +177,10 @@ export function useActiveView(
         const parsed = parseInlineViewKey(stored);
         // Unparseable, or a key with no inline form: stay home, silently.
         if (!parsed) return;
+        // A terminal or web page does not outlive the app: its surface is gone,
+        // and opening a fresh one in its place would claim a restore that did
+        // not happen. Stay home.
+        if (isInstanceViewKey(parsed.key)) return;
         if (parsed.kind === "plugin") {
           setPendingPluginView(parsed.key);
           return;

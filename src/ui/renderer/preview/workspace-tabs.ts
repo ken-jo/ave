@@ -157,7 +157,7 @@ const EMPTY_STATE: WorkspaceState = { tabs: [], activeTabId: null, browserUrlByT
  */
 let nextWindowTabId = 1;
 
-function mintTabId(kind: WorkspaceTabKind): string {
+export function mintTabId(kind: WorkspaceTabKind): string {
   return `${kind}:${nextWindowTabId++}`;
 }
 

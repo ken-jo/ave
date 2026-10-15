@@ -610,6 +610,21 @@ describe("useChatGroups pane content", () => {
     expect(result.current.focusedId).toBe("group-2");
   });
 
+  it("holds each terminal or web surface in one pane, while two panes may each show one", () => {
+    const { result } = renderHook(() => useChatGroups("work"));
+    act(() => result.current.split("main", "row"));
+    act(() => result.current.setPaneContent("main", { view: "terminal", surface: "terminal:1" }));
+    act(() => result.current.focus("group-2"));
+    // Another terminal is another place: both panes show one.
+    act(() => result.current.setPaneContent("group-2", { view: "terminal", surface: "terminal:2" }));
+    expect(result.current.contentById["group-2"]).toEqual({ view: "terminal", surface: "terminal:2" });
+    expect(result.current.focusedId).toBe("group-2");
+    // The SAME terminal is not opened twice: its pane is focused instead.
+    act(() => result.current.setPaneContent("group-2", { view: "terminal", surface: "terminal:1" }));
+    expect(result.current.focusedId).toBe("main");
+    expect(result.current.contentById["group-2"]).toEqual({ view: "terminal", surface: "terminal:2" });
+  });
+
   it("focuses the pane a plugin is already open in rather than opening a second guest", () => {
     // The plugin case is the one with a cost beyond redundancy: two panes on
     // one `plugin:<id>:<viewId>` are two <webview> guests in the SAME session

@@ -101,6 +101,7 @@ import { ko as ko_htmlPreview } from "../generated/htmlPreview.js";
 import { ko as ko_inputActionBar } from "../generated/inputActionBar.js";
 import { ko as ko_lazyCalendar } from "../generated/lazyCalendar.js";
 import { ko as ko_llmTab } from "../generated/llmTab.js";
+import { ko as ko_mainPanels } from "../generated/mainPanels.js";
 import { ko as ko_mainToolbar } from "../generated/mainToolbar.js";
 import { ko as ko_marketplaceAnnouncementBanner } from "../generated/marketplaceAnnouncementBanner.js";
 import { ko as ko_marketplaceTab } from "../generated/marketplaceTab.js";
@@ -283,6 +284,7 @@ export const koMessages: Record<string, string> = {
   ...ko_inputActionBar,
   ...ko_lazyCalendar,
   ...ko_llmTab,
+  ...ko_mainPanels,
   ...ko_mainToolbar,
   ...ko_marketplaceAnnouncementBanner,
   ...ko_marketplaceTab,
