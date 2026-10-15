@@ -74,7 +74,7 @@ export function isSafeMainBundleManifestPath(path) {
  * the profile is read at boot (`shared/main-layout.ts`, one parser for both processes),
  * so it is initial too, together with the terminal tab-id scope the parser checks ids
  * against (`shared/tab-id.ts`), and main-window closing a closed window's terminals; with
- * them the measurement is entry 423_380, initial 5_399_455, total 9_041_481, and the
+ * them the measurement is entry 423_380, initial 5_399_503, total 9_041_529, and the
  * initial ceiling moves to 5_400_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({

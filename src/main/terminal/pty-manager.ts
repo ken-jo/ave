@@ -94,7 +94,7 @@ export type SpawnTerminalResult =
   | { ok: true; tabId: string; replayed: boolean }
   | {
       ok: false;
-      reason: "not-shell-contained" | "bad-request" | "spawn-failed" | "too-many-terminals";
+      reason: "not-shell-contained" | "bad-request" | "spawn-failed" | "too-many-terminals" | "still-closing";
       message: string;
     };
 
@@ -237,8 +237,11 @@ export function spawnTerminal(options: SpawnTerminalOptions): Promise<SpawnTermi
 
 /**
  * {@link spawnTerminal} with one deadline for every wait on a closing shell
- * under this id: a cancelled spawn can leave a closing session behind it, and
- * waiting for that one must not start a second full wait.
+ * under this id. A cancelled in-flight spawn registers no session (it
+ * re-checks cancellation after every await, and nothing between the last
+ * check and registering the session is async), so the wait after it finds
+ * nothing closing today; the shared deadline keeps the whole spawn inside
+ * one bound should that ever change.
  */
 function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): Promise<SpawnTerminalResult> {
   const tabId = typeof options.tabId === "string" ? options.tabId : "";
@@ -270,17 +273,19 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
   // replaying the dying one would attach the tab to a shell about to exit.
   // The wait is held under its window, so the window closing (or the tab
   // closing) during it cancels it rather than starting a shell for no one.
-  const retiring = retiringTerminal(tabId, deadline);
-  if (retiring) {
+  const closing = closingUnder(tabId);
+  if (closing) {
     const waiter = addSpawnWaiter(tabId, ownerWindowId);
-    return Promise.race([retiring, waiter.cancelledSignal]).then((outcome) => {
+    return waitOutClosing(closing, deadline, waiter.cancelledSignal).then((outcome) => {
       removeSpawnWaiter(tabId, waiter);
       if (outcome === "cancelled" || waiter.cancelled) {
         return { ok: false, reason: "spawn-failed", message: "terminal spawn cancelled" } as const;
       }
-      return outcome
+      // Its own reason, not a cwd refusal: the renderer must not answer it by
+      // starting somewhere else.
+      return outcome === "gone"
         ? spawnTerminalBefore(options, deadline)
-        : { ok: false, reason: "spawn-failed", message: "the previous shell for this tab is still closing" } as const;
+        : { ok: false, reason: "still-closing", message: "the previous shell for this tab is still closing" } as const;
     });
   }
 
@@ -626,22 +631,31 @@ function removeSpawnWaiter(tabId: string, waiter: TerminalSpawnWaiter): void {
 }
 
 /**
- * Resolves `true` once the closing shell or cancelled spawn under `tabId` is
- * gone, `false` if it outlives `deadline`; `null` when nothing under that id
- * is closing.
+ * Settles once the closing shell or cancelled spawn under `tabId` is gone;
+ * `null` when nothing under that id is closing.
  */
-function retiringTerminal(tabId: string, deadline: number): Promise<boolean> | null {
+function closingUnder(tabId: string): Promise<unknown> | null {
   const session = sessions.get(tabId);
+  if (session && session.closing && !session.exited) return session.gone;
   const inFlight = terminalSpawnsInFlight.get(tabId);
-  let settled: Promise<unknown> | null = null;
-  if (session && session.closing && !session.exited) settled = session.gone;
-  else if (inFlight && inFlight.cancelled) settled = inFlight.promise.catch(() => undefined);
-  if (!settled) return null;
+  if (inFlight && inFlight.cancelled) return inFlight.promise.catch(() => undefined);
+  return null;
+}
+
+/**
+ * Wait for `closing` until `deadline`, or until the waiter is cancelled; the
+ * deadline timer is cleared however the wait ends.
+ */
+function waitOutClosing(
+  closing: Promise<unknown>,
+  deadline: number,
+  cancelled: Promise<"cancelled">,
+): Promise<"gone" | "timeout" | "cancelled"> {
   const remaining = deadline - Date.now();
-  if (remaining <= 0) return Promise.resolve(false);
+  if (remaining <= 0) return Promise.resolve("timeout");
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const timeout = new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), remaining); });
-  return Promise.race([settled.then(() => true), timeout]).finally(() => {
+  const timeout = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), remaining); });
+  return Promise.race([closing.then(() => "gone" as const), timeout, cancelled]).finally(() => {
     if (timer !== null) clearTimeout(timer);
   });
 }

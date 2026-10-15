@@ -583,6 +583,23 @@ describe("pty-manager window close (close, then reopen and restore)", () => {
     expect(terminalOwnedBy("terminal:0000000a-4", 5)).toBe(true);
   });
 
+  it("clears the wait's deadline timer when the wait is cancelled", async () => {
+    vi.useFakeTimers();
+    try {
+      expect((await spawnTerminal({ tabId: "terminal:0000000a-6", ownerWindowId: 1 })).ok).toBe(true);
+      killTerminalsOwnedBy(1);
+      // The old shell's SIGKILL escalation timer.
+      const before = vi.getTimerCount();
+      const waiting = spawnTerminal({ tabId: "terminal:0000000a-6", ownerWindowId: 3 });
+      expect(vi.getTimerCount()).toBe(before + 1);
+      killTerminalsOwnedBy(3);
+      expect(await waiting).toEqual({ ok: false, reason: "spawn-failed", message: "terminal spawn cancelled" });
+      expect(vi.getTimerCount()).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("bounds the whole wait by one deadline, also behind a cancelled spawn that is slow to settle", async () => {
     vi.useFakeTimers();
     try {
@@ -602,7 +619,7 @@ describe("pty-manager window close (close, then reopen and restore)", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(await restored).toEqual({
         ok: false,
-        reason: "spawn-failed",
+        reason: "still-closing",
         message: "the previous shell for this tab is still closing",
       });
       releaseWrap();
@@ -622,7 +639,7 @@ describe("pty-manager window close (close, then reopen and restore)", () => {
       await vi.advanceTimersByTimeAsync(5_000);
       expect(await restored).toEqual({
         ok: false,
-        reason: "spawn-failed",
+        reason: "still-closing",
         message: "the previous shell for this tab is still closing",
       });
     } finally {

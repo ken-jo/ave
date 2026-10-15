@@ -269,4 +269,14 @@ describe("PtyTerminalView working directory", () => {
     expect(terminals[0]!.written.join("")).toContain("[starting in the workspace root: terminal cwd must be within the workspace root]");
     expect(terminals[0]!.written.join("")).not.toContain("[terminal unavailable]");
   });
+
+  it("keeps the remembered directory when the old shell under its id is still closing: it says so and starts nowhere else", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.spawn.mockResolvedValueOnce({ ok: false, reason: "still-closing", message: "the previous shell for this tab is still closing" } as never);
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:13" tabLabel="Terminal 13" initialCwd="/repo/app" />);
+    await waitFor(() => expect(terminals[0]!.written.join("")).toContain("[terminal unavailable] the previous shell for this tab is still closing"));
+    expect(terminal.spawn).toHaveBeenCalledTimes(1);
+    expect(terminals[0]!.written.join("")).not.toContain("[starting in the workspace root");
+  });
 });
