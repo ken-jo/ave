@@ -185,6 +185,8 @@ test.describe("chat layout overflow", () => {
       env: buildIsolatedElectronEnv({
         HOME: tempHome,
         USERPROFILE: tempHome,
+        // The seeded sessions above live here; name it rather than rely on HOME.
+        AVE_HOME: resolve(tempHome, ".ave"),
         AVE_DEV: "1",
         AVE_E2E: "1",
         AVE_MAIN_ENTRY: MAIN_ENTRY,

@@ -61,11 +61,13 @@ export function launchElectron(options: Parameters<typeof electron.launch>[0]): 
   return electron.launch({ ...options, args: [...E2E_CHROMIUM_SWITCHES, ...(options?.args ?? [])] });
 }
 
-export function buildIsolatedElectronEnv(overrides: LaunchEnv): LaunchEnv {
-  return {
-    ...safeProcessEnv(),
-    ...overrides,
-  };
+/** The allow-listed parent env plus `overrides`; an `undefined` override removes the key. */
+export function buildIsolatedElectronEnv(overrides: LaunchEnv): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries({ ...safeProcessEnv(), ...overrides })) {
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 export function buildE2eBaseSettings(onboardingCompleted = true, locale: "ko" | "en" = "ko",
