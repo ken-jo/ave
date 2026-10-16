@@ -65,7 +65,8 @@ describe("htmlToMarkdown", () => {
       if (growth === undefined) continue;
       expect(growth, `${JSON.stringify(unit)}: ${smallMs.toFixed(1)} ms at ${SMALL}, ${largeMs.toFixed(1)} ms at ${LARGE}`).toBeLessThan(MAX_GROWTH);
     }
-  });
+    // The judgement reads CPU time, so load cannot move it; the wall time spent collecting that CPU time can.
+  }, 180_000);
 
   it("keeps parsing quoted attributes that contain > and <", () => {
     expect(htmlToMarkdown('<p><a href="https://e.com/?q=a>b" title="x<y">link</a></p>').markdown)

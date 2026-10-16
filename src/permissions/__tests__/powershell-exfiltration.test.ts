@@ -540,7 +540,8 @@ describe("opaque command text requires approval", () => {
     }
     // The repeated-assignment family spends about 0.2 s at the cap, so the judgement is never skipped wholesale.
     expect(judged).toBeGreaterThan(0);
-  }, 60_000);
+    // The judgement reads CPU time, so load cannot move it; the wall time spent collecting that CPU time can.
+  }, 180_000);
 });
 
 type Floor = "exfiltration" | "sensitive" | null;
