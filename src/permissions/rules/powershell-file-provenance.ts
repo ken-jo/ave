@@ -66,14 +66,6 @@ export class PowerShellFileProvenance {
     return POWERSHELL_FILE_TYPES[posix.extname(this.path(text))];
   }
 
-  /** Normalize a potential runner with the existing path rules and executable suffix table. */
-  executableStem(text: string): string {
-    const name = posix.basename(this.path(text));
-    const extension = posix.extname(name);
-    const type = POWERSHELL_FILE_TYPES[extension];
-    return type === "opaque" || type === "script" ? name.slice(0, -extension.length) : name;
-  }
-
   isDirectory(text: string): boolean {
     this.budget.spend();
     return /[\\/]$/.test(text) || /^(?:\.{1,2}|[a-z]:[\\/])$/i.test(text);
@@ -143,10 +135,10 @@ export class PowerShellFileProvenance {
     if (!this.opaqueEffects) { this.opaqueEffects = true; this.revision += 1; }
   }
 
-  /** Discovery need not name its inputs; package scripts can interpret any file type. */
-  hasExecutableWrites(includeDocuments = false): boolean {
+  /** Script discovery need not name its executable inputs. */
+  hasExecutableWrites(): boolean {
     this.budget.spend();
-    if (this.opaque || this.unknownLeaves || (includeDocuments && this.paths.size !== 0)) return true;
+    if (this.opaque || this.unknownLeaves) return true;
     for (const path of this.paths.keys()) if (this.fileType(path) !== "document") return true;
     return false;
   }

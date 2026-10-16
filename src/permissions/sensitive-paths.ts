@@ -34,7 +34,7 @@
  */
 import { realpathSync } from "node:fs";
 import { isAbsolute, resolve as pathResolve, relative as pathRelative } from "node:path";
-import { globMatch } from "../lib/glob-matcher.js";
+import { globMatch, globToRegExp } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
 import type { PathEffect } from "./allowed-directories.js";
@@ -543,41 +543,53 @@ export function getConfiguredSessionReadPolicy(): {
  * still apply, including credentials placed inside the readable namespace.
  */
 export function isSensitivePath(absPath: string, effect: PathEffect = "write"): string | null {
-  if (!absPath) return null;
-  const candidates = policyMatchPaths(absPath);
-  const sessionRoot = effect === "read" ? getConfiguredSessionReadRoot() : undefined;
-  const canReadSession = sessionRoot !== undefined && isConfiguredSessionReadPath(absPath)
-    && !policyMatchPaths(pathRelative(caseFoldForMatch(sessionRoot), absPath)).some((candidate) =>
-      [...READ_ONLY_NAMESPACE_PATTERNS].some((pattern) => globMatch(candidate, pattern)));
-  for (const keyPath of getRuntimeSensitiveKeyPaths()) {
-    const normalizedKey = caseFoldForMatch(foldCanonicalPathSeparators(keyPath));
-    if (candidates.includes(normalizedKey)) return "runtime-secret-key";
-  }
-  for (const candidate of candidates) {
-    for (const pattern of SENSITIVE_PATH_PATTERNS) {
-      if (canReadSession && READ_ONLY_NAMESPACE_PATTERNS.has(pattern)) continue;
-      if (globMatch(candidate, pattern, CASE_INSENSITIVE_PATTERNS.has(pattern) ? { caseInsensitive: true } : {})) {
-        return pattern;
-      }
-    }
-  }
-  // A custom AVE_HOME need not contain a `.ave` segment. Use the same table
-  // as the OS deny floor, retaining literal comparisons for paths containing
-  // glob syntax and the frozen-canonical form of the caller's candidate.
-  const home = canonicalizePathForMatch(aveHome());
-  for (const entry of SENSITIVE_PATH_ENTRIES) {
-    if (entry.anchor !== "ave-home") continue;
-    if (canReadSession && entry.access === "read-only") continue;
-    const base = caseFoldForMatch(canonicalizePathForMatch(pathResolve(home, ...entry.segments)));
+  return absPath ? createSensitivePathMatcher(effect)(absPath) : null;
+}
+
+/** Snapshot policy roots and compiled globs once for one permission decision. */
+export function createSensitivePathMatcher(effect: PathEffect = "write"): (absPath: string) => string | null {
+  const platformCaseInsensitive = process.platform === "darwin" || process.platform === "win32";
+  const patterns = SENSITIVE_PATH_PATTERNS.map((pattern) => ({
+    pattern,
+    expression: globToRegExp(pattern, { caseInsensitive: CASE_INSENSITIVE_PATTERNS.has(pattern) || platformCaseInsensitive }),
+    readOnly: READ_ONLY_NAMESPACE_PATTERNS.has(pattern),
+  }));
+  let roots: { session?: string; keys: readonly string[] } | undefined;
+  let applicationPaths: { entry: SensitiveEntry; base: string }[] | undefined;
+  return (absPath) => {
+    if (!absPath) return null;
+    const candidates = policyMatchPaths(absPath);
+    roots ??= {
+      session: effect === "read" ? getConfiguredSessionReadRoot() : undefined,
+      keys: getRuntimeSensitiveKeyPaths().map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),
+    };
+    const sessionRoot = roots.session === undefined ? undefined : caseFoldForMatch(roots.session);
+    const foldedPath = caseFoldForMatch(absPath);
+    const canReadSession = sessionRoot !== undefined
+      && (foldedPath === sessionRoot || foldedPath.startsWith(`${sessionRoot}/`))
+      && !policyMatchPaths(pathRelative(sessionRoot, absPath)).some((candidate) =>
+        patterns.some(({ expression, readOnly }) => readOnly && expression.test(candidate)));
+    if (roots.keys.some((path) => candidates.includes(path))) return "runtime-secret-key";
     for (const candidate of candidates) {
-      if (candidate === base ||
-          (entry.kind === "dir" && candidate.startsWith(`${base}/`)) ||
-          (entry.rotations && candidate.startsWith(`${base}.`))) {
-        return `ave-home:${entry.segments.join("/")}`;
+      for (const { pattern, expression, readOnly } of patterns) {
+        if (!(canReadSession && readOnly) && expression.test(candidate)) return pattern;
       }
     }
-  }
-  return null;
+    // A relocated application root need not contain a literal namespace segment.
+    if (applicationPaths === undefined) {
+      const home = canonicalizePathForMatch(aveHome());
+      applicationPaths = SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor === "ave-home").map((entry) => ({
+        entry, base: caseFoldForMatch(canonicalizePathForMatch(pathResolve(home, ...entry.segments))),
+      }));
+    }
+    for (const { entry, base } of applicationPaths) {
+      if (canReadSession && entry.access === "read-only") continue;
+      if (candidates.some((candidate) => candidate === base
+        || (entry.kind === "dir" && candidate.startsWith(`${base}/`))
+        || (entry.rotations && candidate.startsWith(`${base}.`)))) return `ave-home:${entry.segments.join("/")}`;
+    }
+    return null;
+  };
 }
 
 // ─── Internal glob matcher ──────────────────────────

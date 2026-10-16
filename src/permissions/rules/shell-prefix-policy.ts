@@ -8,13 +8,13 @@
  */
 
 import { analyzeShell, staticShellWord, type ShellAnalysis, type ShellCommand, type ShellWord } from "../../shared/shell-analysis.js";
+import { POWERSHELL_FILE_TYPES } from "./powershell-file-provenance.js";
 
 /** Programs that run arbitrary code given any argument (prefix of 1 token is refused). */
 const SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "mksh", "yash", "fish", "csh", "tcsh", "pwsh", "powershell", "cmd", "busybox"];
 /**
- * Interpreters: every invocation runs code the matcher cannot read (a script
- * file, a module, stdin, a here-document or an inline string), so they are
- * refused at every length except `bun`/`deno` task verbs (`bun run build`).
+ * Interpreters run code the matcher cannot read. Runners retain their own
+ * complete prefixes so an explicit rule can name the intended invocation.
  */
 const INTERPRETERS = [
   "python", "python2", "python3", "pypy", "pypy3", "ipython", "node", "nodejs", "deno", "bun", "tsx", "ts-node",
@@ -42,91 +42,13 @@ const WRAPPERS = [
  */
 const STRING_JOINING_WRAPPERS = new Set(["watch", "parallel", "sg"]);
 const DASH_C_WRAPPERS = new Set(["su", "script", "flock", "runuser"]);
-interface RunnerDataOptions {
-  flags?: readonly string[];
-  values?: readonly string[];
-  packages?: readonly string[];
-  optionalValues?: readonly string[];
-}
-
-interface PackageRunnerPolicy extends RunnerDataOptions {
-  prefixRunner?: boolean;
-  command?: true | readonly string[];
-  packageCommands?: readonly string[];
-  delegate?: boolean;
-  code?: readonly string[];
-  codeVerbs?: readonly string[];
-  taskArguments?: readonly string[];
-  scriptVerbs?: readonly string[];
-  blockedVerbs?: readonly string[];
-  packageSources?: readonly string[];
-  configGetters?: readonly string[];
-  implicitFiles?: Readonly<Record<string, string>>;
-  tasks?: ReadonlySet<string>;
-  commandDelimiter?: boolean;
-  taskOptions?: Readonly<Record<string, RunnerDataOptions>>;
-}
-
-const CALL_OPTIONS = ["-c", "--call", "--shell-mode"];
-const TASK_FLAGS = ["--silent", "--quiet", "--offline", "--ignore-scripts", "--frozen-lockfile"];
-const CONFIG_SOURCE_OPTIONS = new Set(["config", "userconfig", "globalconfig", "importmap", "nodeoptions", "require", "preload", "import", "scriptshell"]);
-// Default URL: https://docs.npmjs.com/cli/v11/using-npm/config#registry
-const DEFAULT_PACKAGE_REGISTRY = /^https:\/\/registry\.npmjs\.org\/?$/i;
-const READ_ONLY_PACKAGE_VERBS = new Set(["view", "info", "outdated", "ls", "search"]);
-const INSTALL_SAVE_FLAGS = ["--save", "--legacy-peer-deps", "-g", "--global", "--save-dev", "-D", "--save-exact", "-E", "--no-save"];
-// Boolean options never bind the next operand:
-// https://docs.npmjs.com/cli/v11/commands/npm-install
-// https://pnpm.io/cli/add, https://classic.yarnpkg.com/lang/en/docs/cli/add/
-// https://bun.com/docs/pm/cli/add, https://bun.com/docs/pm/cli/install
-const NPM_INSTALL_OPTIONS = { flags: [...INSTALL_SAVE_FLAGS, "--save-prod", "-P", "--save-peer", "--save-optional", "-O", "--save-bundle", "-B", "--package-lock", "--no-package-lock", "--package-lock-only"] };
-const PNPM_INSTALL_OPTIONS = { flags: ["--no-frozen-lockfile", "--save-dev", "-D", "--save-prod", "-P", "--save-peer", "--save-optional", "-O", "--save-exact", "-E", "--global", "-g"] };
-const YARN_TASK_OPTIONS = { add: { flags: ["--dev", "-D", "--peer", "-P", "--optional", "-O", "--exact", "-E"] }, install: { flags: ["--immutable"] } };
-const BUN_INSTALL_OPTIONS = { flags: [...INSTALL_SAVE_FLAGS, "--dev", "--development", "-d", "--optional", "--peer", "--exact"] };
-const CONFIG_GETTERS = ["get", "list", "ls"];
-const PACKAGE_SOURCE_VERBS = ["install", "i", "add"];
-const BUN_PACKAGE_SOURCE_VERBS = [...PACKAGE_SOURCE_VERBS, "a"];
-// Install families and aliases: https://docs.npmjs.com/cli/v11/commands/npm-install
-// https://docs.npmjs.com/cli/v11/commands/npm-install-test
-// https://docs.npmjs.com/cli/v11/commands/npm-ci
-// https://docs.npmjs.com/cli/v11/commands/npm-install-ci-test
-const NPM_PACKAGE_SOURCE_VERBS = [...PACKAGE_SOURCE_VERBS, "in", "ins", "inst", "insta", "instal", "isnt", "isnta", "isntal", "isntall",
-  "install-test", "it", "ci", "clean-install", "ic", "install-clean", "isntall-clean", "install-ci-test", "cit", "clean-install-test", "sit", "install-clean-test"];
-// Source commands: https://pnpm.io/cli/install, https://pnpm.io/cli/add,
-// https://yarnpkg.com/cli/install, https://yarnpkg.com/cli/add,
-// https://bun.com/docs/pm/cli/install, https://bun.com/docs/pm/cli/add (also `bun --help`).
-const REMOTE_CODE_SOURCE = /^(?:(?:https?|file|data|blob|ftp|ftps|ssh|git(?:\+[a-z\d+.-]+)?):|[\\/]{2})/i;
-const REGISTRY_SPECIFIER = /^(?:npm|jsr):/i;
-const DENO_TASK_VERBS = new Set(["task", "test", "fmt", "lint", "check", "info", "doc", "bench", "cache", "types", "completions", "upgrade", "compile", "install", "add"]);
-/** Data bindings belong to each runner; source scans also inspect forwarded argv. */
-// Directory bindings: https://docs.npmjs.com/cli/v11/using-npm/config#cache,
-// https://pnpm.io/settings/store, https://pnpm.io/settings/node-modules,
-// https://bun.com/docs/pm/cli/install#general-configuration,
-// https://classic.yarnpkg.com/lang/en/docs/cli/cache/#toc-change-the-cache-path-for-yarn
-// Executed package operands: https://docs.npmjs.com/cli/v11/commands/npm-exec,
-// https://pnpm.io/cli/dlx, https://yarnpkg.com/cli/dlx, https://bun.com/docs/pm/bunx
-const PACKAGE_RUNNER_POLICIES: Readonly<Record<string, PackageRunnerPolicy>> = {
-  npx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["-y", "--yes", "--no", "--no-install"], packages: ["-p", "--package"] },
-  bunx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["--bun", "--no-install"], packages: ["-p", "--package"] },
-  pnpx: { prefixRunner: true, command: true, code: CALL_OPTIONS, flags: ["-s", "--silent"], packages: ["--package"] },
-  uvx: { prefixRunner: true, command: true, flags: ["--offline", "--no-cache", "-q", "--quiet"], packages: ["--from", "--with"] },
-  pipx: { prefixRunner: true, command: ["run"], packageCommands: ["run"], code: ["--path"], codeVerbs: ["runpip"], packages: ["--spec"] },
-  corepack: { prefixRunner: true, delegate: true, taskOptions: { prepare: { flags: ["--activate"] } } },
-  yarnpkg: { prefixRunner: true, command: ["dlx"], packageCommands: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: TASK_FLAGS, values: ["--cwd", "--cache-folder"], packageSources: PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS, taskOptions: YARN_TASK_OPTIONS },
-  deno: { prefixRunner: true, code: ["-e", "--eval"], codeVerbs: ["eval"], taskArguments: ["task"], scriptVerbs: ["run"], tasks: DENO_TASK_VERBS, flags: ["--quiet", "--watch"],
-    implicitFiles: { "--env-file": ".env" }, // https://docs.deno.com/runtime/reference/env_variables/#env-file
-    blockedVerbs: ["init", "serve", "publish", "outdated", "remove", "repl"], packageSources: ["install", "cache", "add"],
-    taskOptions: { test: { flags: ["-A"] }, run: { flags: ["-A"], optionalValues: ["--allow-", "--deny-"] }, task: { values: ["--cwd"] }, install: { flags: ["-g", "--global", "--entrypoint"] } } },
-  npm: { command: ["exec", "x"], packageCommands: ["exec", "x"], code: CALL_OPTIONS, codeVerbs: ["explore"], commandDelimiter: true, packages: ["--package"], values: ["--prefix", "-w", "--workspace", "--cache"], flags: TASK_FLAGS, packageSources: NPM_PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS,
-    taskOptions: { ...Object.fromEntries(NPM_PACKAGE_SOURCE_VERBS.map((verb) => [verb, NPM_INSTALL_OPTIONS])), ci: { ...NPM_INSTALL_OPTIONS, values: ["--omit"] }, init: { flags: ["-y"] }, run: { flags: ["--if-present"] }, publish: { values: ["--access"] } } },
-  pnpm: { command: ["exec", "dlx", "x"], packageCommands: ["dlx"], code: CALL_OPTIONS, flags: [...TASK_FLAGS, "--recursive", "-r"], packages: ["--package"], values: ["--filter", "-C", "--dir", "--store-dir", "--modules-dir", "--virtual-store-dir"], packageSources: PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS,
-    taskOptions: { install: PNPM_INSTALL_OPTIONS, i: PNPM_INSTALL_OPTIONS, add: PNPM_INSTALL_OPTIONS, run: { flags: ["--parallel"] } } },
-  yarn: { command: ["dlx"], packageCommands: ["dlx"], code: CALL_OPTIONS, codeVerbs: ["exec", "node"], flags: TASK_FLAGS, values: ["--cwd", "--cache-folder"], packageSources: PACKAGE_SOURCE_VERBS, configGetters: CONFIG_GETTERS,
-    taskOptions: YARN_TASK_OPTIONS },
-  bun: { command: ["x"], packageCommands: ["x"], code: ["-e", "--eval", "-p", "--print", "--preload"], codeVerbs: ["exec", "repl"], taskArguments: ["run"], flags: TASK_FLAGS, values: ["--cwd"], packageSources: BUN_PACKAGE_SOURCE_VERBS,
-    taskOptions: { ...Object.fromEntries(BUN_PACKAGE_SOURCE_VERBS.map((verb) => [verb, BUN_INSTALL_OPTIONS])), run: { flags: ["--hot", "--bail"] }, build: { values: ["--outdir"] }, test: { flags: ["--coverage", "--watch"] } } },
+/** Runner identities and literal prefixes that can introduce another command. */
+const RUNNER_COMMAND_PREFIXES: Readonly<Record<string, true | readonly string[]>> = {
+  npx: true, bunx: true, pnpx: true, uvx: true, corepack: true,
+  pipx: ["run"], yarn: ["dlx", "exec", "node"], yarnpkg: ["dlx", "exec", "node"],
+  pnpm: ["dlx", "exec", "x"], npm: ["exec", "x"], bun: ["x", "exec"], deno: ["run", "eval"],
 };
-/** Package and project task runners: a 1-token prefix cannot constrain their execution. */
-const PACKAGE_RUNNERS = Object.keys(PACKAGE_RUNNER_POLICIES).filter((name) => PACKAGE_RUNNER_POLICIES[name]!.prefixRunner);
+const PACKAGE_RUNNERS = Object.keys(RUNNER_COMMAND_PREFIXES);
 
 /**
  * Arity table (opencode-style): how many leading tokens a suggestion keeps.
@@ -150,6 +72,14 @@ function programName(token: string): string {
   return base.replace(/\.exe$/i, "").replace(/^(python[23]?)\.\d+$/, "$1");
 }
 
+/** Runner shims share the executable and script suffix vocabulary. */
+function runnerName(token: string): string {
+  const base = (token.split(/[\\/]/).pop() ?? token).toLowerCase().replace(/[ .]+$/, "");
+  const extension = /\.[^.]+$/.exec(base)?.[0] ?? "";
+  const type = POWERSHELL_FILE_TYPES[extension];
+  return type === "opaque" || type === "script" ? base.slice(0, -extension.length) : base;
+}
+
 export type RefusedPrefixReason =
   | "empty"
   | "config-writer"
@@ -158,6 +88,16 @@ export type RefusedPrefixReason =
   | "wrapper"
   | "package-runner"
   | "multi-verb-tool";
+
+/** An option leaves the command boundary unknown until a literal delimiter. */
+function literalCommandAfterPrefix(tokens: readonly string[], start: number): number | undefined {
+  const token = tokens[start];
+  if (token === undefined || token.length === 0) return undefined;
+  if (!token.startsWith("-")) return start;
+  const delimiter = tokens.indexOf("--", start);
+  const command = delimiter < 0 ? undefined : tokens[delimiter + 1];
+  return command !== undefined && command.length > 0 && !command.startsWith("-") ? delimiter + 1 : undefined;
+}
 
 /**
  * The single refused-prefix check. `tokens` is the static prefix of a
@@ -169,24 +109,30 @@ export function refusedShellPrefix(tokens: readonly string[]): RefusedPrefixReas
   const program = programName(tokens[0]!);
   if (WRAPPER_SET.has(program)) return "wrapper";
   if (SHELL_SET.has(program)) return "shell";
+  const runner = runnerName(tokens[0]!);
+  if (RUNNER_SET.has(runner)) {
+    const commandPrefix = RUNNER_COMMAND_PREFIXES[runner]!;
+    const commandIndex = literalCommandAfterPrefix(tokens, 1);
+    if (commandIndex === undefined) return "package-runner";
+    const command = tokens[commandIndex]!;
+    // A delegate specifier does not prove its delegated command boundary.
+    if (runner === "corepack" && command.includes("@")) return "package-runner";
+    if (runner === "corepack" && RUNNER_SET.has(runnerName(command))) return refusedShellPrefix(tokens.slice(commandIndex));
+    if (commandPrefix !== true && commandPrefix.includes(command)
+      && literalCommandAfterPrefix(tokens, commandIndex + 1) === undefined) return "package-runner";
+    return null;
+  }
   if (INTERPRETER_SET.has(program)) {
-    // `bun` is both an interpreter and a multi-verb tool: `bun run <script>`
-    // and `bun test` are ordinary; `bun x`/`bun -e`/`bun file.ts` are not.
-    if (program === "bun" && tokens[1] === "x") return "package-runner";
     // Any other interpreter prefix runs code the rules cannot read
     // (`node scripts/build.mjs`, `python -m x`), so it never persists.
-    if (!isTaskRunnerVerb(program, tokens.slice(1))) return "interpreter";
+    return "interpreter";
   }
-  if (RUNNER_SET.has(program) && tokens.length === 1) return "package-runner";
   if (MULTI_VERB_TOOLS.has(program) && tokens.length === 1) return "multi-verb-tool";
   // `git -c …`, `docker --host …`: an option before the verb re-targets the tool.
   if (MULTI_VERB_TOOLS.has(program) && tokens[1]!.startsWith("-")) return "multi-verb-tool";
-  if ((program === "npm" || program === "pnpm" || program === "yarn") && (tokens[1] === "exec" || tokens[1] === "dlx" || tokens[1] === "x")) {
-    return "package-runner";
-  }
   // `git config` writes settings that run code later (`core.fsmonitor`,
-  // `core.pager`, aliases); `npm config` / `yarn config` likewise.
-  if ((program === "git" || program === "npm" || program === "pnpm" || program === "yarn") && tokens[1] === "config") {
+  // `core.pager`, aliases).
+  if (program === "git" && tokens[1] === "config") {
     return "config-writer";
   }
   return null;
@@ -259,10 +205,6 @@ const GLOBAL_VALUE_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   git: new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--exec-path"]),
   docker: new Set(["-H", "--host", "--context", "-c", "--config", "-l", "--log-level", "--tlscacert", "--tlscert", "--tlskey"]),
   kubectl: new Set(["-n", "--namespace", "--context", "--cluster", "--user", "-s", "--server", "--kubeconfig", "--token"]),
-  npm: new Set(["--prefix", "-w", "--workspace", "-C"]),
-  pnpm: new Set(["-C", "--dir", "-w", "--filter", "-F"]),
-  yarn: new Set(["--cwd"]),
-  bun: new Set(["--cwd", "--config", "-c"]),
 };
 
 /**
@@ -325,7 +267,6 @@ export const SHELL_PREFIX_POLICY = Object.freeze({
   interpreters: Object.freeze([...INTERPRETERS]),
   wrappers: Object.freeze([...WRAPPERS]),
   packageRunners: Object.freeze([...PACKAGE_RUNNERS]),
-  packageTaskPrograms: Object.freeze(Object.keys(PACKAGE_RUNNER_POLICIES)),
   arity: ARITY,
 });
 
@@ -342,24 +283,6 @@ export function isShellWrapperProgram(token: string): boolean {
 
 /** Arguments that make a shell or interpreter print and exit without running code. */
 const INFO_ONLY_ARGS = new Set(["--version", "--help"]);
-/** `bun <verb>` / `deno <verb>` that run project tasks, not a code argument. */
-const BUN_TASK_VERBS = new Set([
-  "run", "test", "install", "i", "add", "a", "remove", "rm", "update", "outdated", "build", "pm", "link",
-  "unlink", "init", "upgrade", "audit", "info", "publish", "patch", "why",
-]);
-const SCRIPT_FILE_ARG = /[\\/]|\.(?:[cm]?[jt]sx?|sh|py|rb|pl|php|lua)$/i;
-const FILE_OPERAND_INTERPRETERS = new Set(["node", "nodejs", "tsx", "ts-node"]);
-
-function isTaskRunnerVerb(program: string, rest: readonly (string | undefined)[]): boolean {
-  const verb = rest[0];
-  if (verb === undefined) return false;
-  if (program === "deno") return DENO_TASK_VERBS.has(verb);
-  if (program !== "bun" || !BUN_TASK_VERBS.has(verb)) return false;
-  if (verb !== "run" || rest.length < 2) return true;
-  // `bun run build` runs a package.json script; `bun run ./x.ts` runs a file.
-  const target = rest[1];
-  return target !== undefined && !target.startsWith("-") && !SCRIPT_FILE_ARG.test(target);
-}
 
 /**
  * Variables whose value is a command, a code path or a config that runs one
@@ -606,8 +529,9 @@ function sshFamilyEffect(program: string, args: readonly (string | undefined)[])
 export function shellOptionEffect(argv: readonly (string | undefined)[]): ShellOptionEffect | null {
   const head = argv[0];
   if (head === undefined) return null;
+  if (RUNNER_SET.has(runnerName(head))) return null;
   const program = programName(head);
-  const args = argv.slice(1);
+  const args = argv.slice(1, opaqueRunnerReason(argv) ? wrapperPrefixLength(argv) : argv.length);
   let effect: ShellOptionEffect | null = null;
   switch (program) {
     case "sed": case "gsed": effect = sedEffect(args); break;
@@ -749,222 +673,32 @@ function subscriptedNameReason(program: string, args: readonly (string | undefin
   return null;
 }
 
-interface PackageRunnerInvocation {
-  // Data binds argv, including project tasks; it does not prove task contents.
-  // Scripts retain interpreter visibility, unknown options ask normally, and
-  // opaque sources force the floor. Blocked forms hide rule visibility without
-  // proving a code source. None defers to intrinsic program handling.
-  kind: "none" | "data" | "script" | "unknown" | "blocked" | "opaque";
-  reason: string | null;
-  ordinaryAsk?: string;
-  readOnlyConfig?: boolean;
-  fileInputs?: readonly string[];
-  commandIndex?: number;
-  program?: string;
-  task?: boolean;
-  scriptPath?: string;
+/**
+ * A runner always needs ordinary approval unless a rule or grant covers its
+ * raw argv. Its option spellings and sources do not establish execution facts.
+ */
+export function opaqueRunnerReason(argv: readonly (string | undefined)[]): string | null {
+  const head = argv[wrapperPrefixLength(argv)];
+  return head !== undefined && RUNNER_SET.has(runnerName(head)) ? "opaque runner prefix" : null;
 }
 
-function isLocalScriptOperand(value: string | undefined): value is string {
-  return !!value && !value.startsWith("-") && !REMOTE_CODE_SOURCE.test(value) && !REGISTRY_SPECIFIER.test(value)
-    && !/^(?:\/dev\/(?:stdin|fd\/\d+)|con(?:in\$)?)$/i.test(value);
-}
-
-// Repository shorthand grammar: https://docs.npmjs.com/cli/v11/commands/npm-install#description
-function packageSource(value: string): string {
-  return value.replace(/^(?:(?:npm|jsr):)?(?:@[^/@:\s]+\/)?[^/@:\s]+@/i, "");
-}
-
-function isRemotePackageSource(value: string): boolean {
-  const source = packageSource(value);
-  return [value, source].some((candidate) => REMOTE_CODE_SOURCE.test(candidate)
-    || /^(?:git@[^:]+:|(?:github|gitlab|bitbucket):)/i.test(candidate)
-    || /^[^@./~:\s\\][^@/:\s\\]*\/[^@/:\s\\#]+(?:#.*)?$/.test(candidate));
-}
-
-/** Decode attached and separated values without changing the value's spelling. */
-function runnerOptionBinding(argv: readonly (string | undefined)[], index: number) {
-  const token = argv[index] ?? "";
-  const equals = token.indexOf("=");
-  const attached = equals !== -1;
-  return { flag: attached ? token.slice(0, equals) : token, attached,
-    value: attached ? token.slice(equals + 1) : argv[index + 1], next: index + (attached ? 1 : 2) };
-}
-
-/** Unknown options add an ordinary ask independently of script and source visibility. */
-export function packageRunnerInvocation(argv: readonly (string | undefined)[]): PackageRunnerInvocation {
-  const nameAt = (index: number): string => programName(argv[index] ?? "").replace(/^(?!@)([^@]+)@[^@]+$/, "$1");
-  if (!Object.hasOwn(PACKAGE_RUNNER_POLICIES, nameAt(0))) return { kind: "none", reason: null };
-  const fileInputs: string[] = [];
-  const opaque = (reason: string): PackageRunnerInvocation => ({ kind: "opaque", reason: `package runner ${reason}`, ...(fileInputs.length ? { fileInputs } : {}) });
-  if (argv.length > 1024) return opaque("analysis budget exceeded");
-  let chars = 0;
-  let unresolved = false;
-  for (const arg of argv) {
-    unresolved ||= arg === undefined;
-    chars += arg?.length ?? 0;
-    if (chars > 65_536) return opaque("analysis budget exceeded");
-  }
-  let start = 0;
-  let unknown: string | undefined;
-  let binding: string | undefined;
-  for (let depth = 0; depth < 16; depth += 1) {
-    const program = nameAt(start);
-    const policy = Object.hasOwn(PACKAGE_RUNNER_POLICIES, program) ? PACKAGE_RUNNER_POLICIES[program] : undefined;
-    let registry: string | undefined;
-    let readOnlyRegistry = false;
-    const command = (): PackageRunnerInvocation => {
-      const ordinaryAsk = unknown ?? (readOnlyRegistry ? undefined : registry);
-      return { kind: unresolved ? "opaque" : binding ? "blocked" : ordinaryAsk ? "unknown" : "data",
-        reason: unresolved ? "package runner has an unresolved argument" : binding ?? ordinaryAsk ?? null,
-        ...(ordinaryAsk ? { ordinaryAsk } : {}),
-        ...(fileInputs.length ? { fileInputs } : {}),
-        ...(start ? { commandIndex: start, program } : {}) };
-    };
-    if (!policy) {
-      if (!argv[start] || /[\s;&|`$<>()]/.test(argv[start]!)) return opaque("has an opaque command operand");
-      const inner = [program, ...argv.slice(start + 1)];
-      if (INTERPRETER_SET.has(program) && inner.slice(1).some((arg) => arg !== undefined && !arg.startsWith("--")
-        && (arg === "-" || (!arg.startsWith("-") && !isLocalScriptOperand(arg))))) return opaque("has a remote or stdin interpreter source");
-      const intrinsic = WRAPPER_SET.has(program) ? "launches a wrapper" : hiddenCodeAt(inner, 0);
-      const effect = shellOptionEffect(inner);
-      const info = inner.length === 2 && /^(?:--version|--help|-v|-h)$/.test(inner[1]!);
-      const forwarded = command();
-      const reason = intrinsic ?? (effect?.kind === "exec" ? effect.reason : null)
-        ?? (NETWORK_PROGRAMS.has(program) && !info ? "package runner launches a network-capable command" : null);
-      const script = FILE_OPERAND_INTERPRETERS.has(program) && isLocalScriptOperand(inner[1]) && intrinsic === `code passed to ${program}`;
-      return reason ? { ...forwarded, kind: script ? "script" : "opaque", reason, ...(script ? { scriptPath: inner[1] } : {}) } : forwarded;
-    }
-    // Configuration and code sources win over unknown options elsewhere. A
-    // task delimiter ends runner-owned options, but not remote source checks.
-    for (let scan = start + 1; scan < argv.length && argv[scan] !== "--"; scan += 1) {
-      const bound = runnerOptionBinding(argv, scan);
-      const flag = bound.flag.replace(/[\u2013-\u2015]/g, "-");
-      if (!flag.startsWith("-")) continue;
-      if (!bound.attached && policy.implicitFiles?.[flag]) fileInputs.push(policy.implicitFiles[flag]!);
-      const key = flag.replace(/[-_.]/g, "").toLowerCase();
-      if (CONFIG_SOURCE_OPTIONS.has(key) || key.startsWith("config")) return opaque("contains a configuration source");
-      if (policy.code?.some((code) => flag === code || (code.length === 2 && flag.startsWith(code)))
-        || /^(?:-c|-e|--call|--eval|--print|--shell-mode)$/.test(flag)) return opaque("contains inline code");
-    }
-    if (program === "deno" && argv.slice(start + 1).some((arg) => arg === "-"
-      || (arg !== undefined && REMOTE_CODE_SOURCE.test(arg.startsWith("-") && arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : arg)))) return opaque("has a remote or stdin source");
-    const rest = argv.slice(start + 1);
-    if (rest.length === 0) return INTERPRETER_SET.has(program) ? { kind: "none", reason: null } : command();
-    if (rest.every((arg) => /^(?:--version|--help|-v|-h)$/.test(arg!))) return { ...command(), task: true };
-    let index = start + 1;
-    let delimited = false;
-    const isFlag = (flag: string, data?: RunnerDataOptions): boolean => !!(policy.flags?.includes(flag) || data?.flags?.includes(flag) || data?.optionalValues?.some((prefix) => flag.startsWith(prefix)));
-    const takesValue = (flag: string, data?: RunnerDataOptions): boolean => flag === "--registry" || !!(policy.values?.includes(flag) || policy.packages?.includes(flag) || data?.values?.includes(flag));
-    const option = (data?: RunnerDataOptions): string | null => {
-      const { flag, value, attached, next } = runnerOptionBinding(argv, index);
-      if ((policy.flags?.includes(flag) || data?.flags?.includes(flag)) && !attached) { index += 1; return null; }
-      if (takesValue(flag, data)) {
-        if (!value || value.startsWith("-")) return "has an opaque option value";
-        if (flag === "--registry") registry = DEFAULT_PACKAGE_REGISTRY.test(value) ? undefined : "package runner uses a custom registry";
-        if (policy.packages?.includes(flag) && !/^file:/i.test(packageSource(value)) && isRemotePackageSource(value)) return "has a remote package source";
-        index = next;
-        return null;
-      }
-      if (data?.optionalValues?.some((prefix) => flag.startsWith(prefix))) { index += 1; return null; }
-      unknown ??= `package runner has an unknown option (${flag})`;
-      index += 1;
-      return null;
-    };
-    const leadingOptions = (data?: RunnerDataOptions): string | null => {
-      while (index < argv.length) {
-        if (argv[index] === undefined) return "has an unresolved argument";
-        if (!argv[index]!.startsWith("-")) break;
-        if (argv[index] === "--") { delimited = true; index += 1; break; }
-        const reason = option(data);
-        if (reason) return reason;
-      }
-      return null;
-    };
-    const leading = leadingOptions();
-    if (leading) return opaque(leading);
-    const verb = argv[index];
-    if (verb === undefined) return opaque("has no command operand");
-    const data = policy.taskOptions?.[verb];
-    // Only modeled value bindings consume a following token. Unknown options
-    // leave later operands eligible for package-source checks.
-    const positionalOperands = (from: number, firstOnly = false, knownBindingsOnly = false): string[] => {
-      const operands: string[] = [];
-      let positional = delimited;
-      for (let scan = from; scan < argv.length; scan += 1) {
-        const arg = argv[scan];
-        if (arg === undefined) continue;
-        if (!positional && arg === "--") { positional = true; continue; }
-        if (!positional && arg.startsWith("-")) {
-          const bound = runnerOptionBinding(argv, scan);
-          if (knownBindingsOnly && !takesValue(bound.flag, data) && !isFlag(bound.flag, data)) return [];
-          if (!bound.attached && takesValue(bound.flag, data) && argv[scan + 1] !== undefined && !argv[scan + 1]!.startsWith("-")) scan += 1;
-          continue;
-        }
-        operands.push(arg);
-        if (firstOnly) break;
-      }
-      return operands;
-    };
-    const readOnlyConfig = verb === "config" && policy.configGetters?.includes(positionalOperands(index + 1, true, true)[0] ?? "") && !unresolved;
-    readOnlyRegistry = policy.command !== true && (READ_ONLY_PACKAGE_VERBS.has(verb) || !!readOnlyConfig);
-    if (program === "deno" && !policy.packageSources?.includes(verb) && !policy.taskArguments?.includes(verb)
-      && argv.slice(index + 1).some((arg) => arg !== undefined && REGISTRY_SPECIFIER.test(arg))) return opaque("has a registry code source");
-    if (policy.codeVerbs?.includes(verb)) return opaque("contains inline code");
-    if (policy.delegate && Object.hasOwn(PACKAGE_RUNNER_POLICIES, nameAt(index))) { unknown ??= registry; start = index; continue; }
-    if (policy.command === true || policy.command?.includes(verb)) {
-      if ((policy.command === true || policy.packageCommands?.includes(verb)) && positionalOperands(policy.command === true ? start + 1 : index + 1).some(isRemotePackageSource)) return opaque("has a remote package source");
-      if (policy.command !== true) {
-        index += 1;
-        const leading = leadingOptions();
-        if (leading) return opaque(leading);
-      }
-      if (index >= argv.length) return opaque("has no command operand");
-      if (policy.commandDelimiter && !delimited) binding ??= "package runner has an unmodeled command binding";
-      unknown ??= registry;
-      start = index;
-      continue;
-    }
-    if (policy.packageSources?.includes(verb) && positionalOperands(index + 1).some(isRemotePackageSource)) return opaque("has a remote package source");
-    if (policy.scriptVerbs?.includes(verb)) {
-      index += 1;
-      const leading = leadingOptions(data);
-      if (leading) return opaque(leading);
-      if (!isLocalScriptOperand(argv[index])) return opaque("has an opaque script source");
-      const result = command();
-      return result.kind === "opaque" ? result : { ...result, kind: "script", reason: `code passed to ${program}`, scriptPath: argv[index] };
-    }
-    if (policy.blockedVerbs?.includes(verb)) binding ??= "package runner has an unmodeled execution form";
-    else if (policy.tasks && !policy.tasks.has(verb)) return opaque("has an unmodeled execution form");
-    let task: boolean | undefined;
-    let scriptPath: string | undefined;
-    if (policy.taskArguments?.includes(verb)) {
-      index += 1;
-      const leading = leadingOptions(data);
-      if (leading) return opaque(leading);
-      if (index >= argv.length) return opaque("has no task operand");
-      if (SCRIPT_FILE_ARG.test(argv[index]!) && !isLocalScriptOperand(argv[index])) return opaque("has a remote or stdin task source");
-      task = !SCRIPT_FILE_ARG.test(argv[index]!);
-      if (!task) scriptPath = argv[index];
-    }
-    // Only table entries establish data bindings. Unknown options retain an
-    // ordinary ask and cannot clear a separately recognized code source.
-    for (index += 1; !delimited && index < argv.length;) {
-      if (argv[index] === undefined) return opaque("has an unresolved argument");
-      if (argv[index] === "--") break;
-      if (!argv[index]!.startsWith("-")) { index += 1; continue; }
-      const reason = option(data);
-      if (reason) return opaque(reason);
-    }
-    if (INTERPRETER_SET.has(program) && SCRIPT_FILE_ARG.test(verb) && !isLocalScriptOperand(verb)) return opaque("has a remote interpreter source");
-    const result = command();
-    const taskForm = task ?? (!INTERPRETER_SET.has(program) || isTaskRunnerVerb(program, [verb]));
-    if (!scriptPath && !taskForm && !binding && isLocalScriptOperand(verb)) scriptPath = verb;
-    if (scriptPath && result.kind !== "opaque") return { ...result, kind: "script", reason: `code passed to ${program}`, scriptPath };
-    return { ...result, task: taskForm,
-      ...(readOnlyConfig ? { readOnlyConfig: true } : {}) };
-  }
-  return opaque("analysis budget exceeded");
+/**
+ * Literal downstream command candidates for sink inspection only. Unknown
+ * options can bind any later operand, so no candidate proves an argv boundary.
+ * Rules must retain the complete runner prefix and must not use this list.
+ */
+export function runnerCommandIndexes(argv: readonly (string | undefined)[]): readonly number[] {
+  const start = wrapperPrefixLength(argv);
+  const head = argv[start];
+  if (head === undefined) return [];
+  const runner = runnerName(head);
+  if (!RUNNER_SET.has(runner)) return [];
+  const prefixes = RUNNER_COMMAND_PREFIXES[runner]!;
+  const prefixEnd = prefixes === true ? start : argv.findIndex((token, index) =>
+    index > start && token !== undefined && prefixes.includes(token));
+  if (prefixEnd < 0) return [];
+  return argv.flatMap((token, index) =>
+    index > prefixEnd && token !== undefined && !token.startsWith("-") ? [index] : []);
 }
 
 function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): string | null {
@@ -972,9 +706,7 @@ function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): str
   if (head === undefined) return null;
   const program = programName(head);
   const args = argv.slice(start + 1);
-  const runner = packageRunnerInvocation(argv.slice(start));
-  if (runner.kind !== "unknown" && runner.reason) return runner.reason;
-  if (runner.task) return null;
+  if (RUNNER_SET.has(runnerName(head))) return null;
   if (WRAPPER_SET.has(program)) {
     if (program === "eval") return args.length > 0 ? "code passed to eval" : null;
     if (program === "source" || program === ".") return args.length > 0 ? `script passed to ${program}` : null;
@@ -989,7 +721,6 @@ function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): str
   }
   if (SHELL_SET.has(program) || INTERPRETER_SET.has(program)) {
     if (args.length > 0 && args.every((arg) => arg !== undefined && INFO_ONLY_ARGS.has(arg))) return null;
-    if (isTaskRunnerVerb(program, args)) return null;
     if (args.length === 0) return `${program} reads code from stdin`;
     return `code passed to ${program}`;
   }
@@ -1092,9 +823,12 @@ export function arithmeticEvaluationReason(cmd: ShellCommand): string | null {
 export function hiddenCodeReason(argv: readonly (string | undefined)[]): string | null {
   const inner = wrapperPrefixLength(argv);
   if (inner > 0 && inner < argv.length && argv[inner] === undefined) return "dynamic program name behind a wrapper";
-  const starts = argv[0] !== undefined && WRAPPER_SET.has(programName(argv[0])) ? argv.map((_, index) => index) : [0];
+  const wrapperStarts = argv[0] !== undefined && WRAPPER_SET.has(programName(argv[0])) ? argv.map((_, index) => index) : [0];
+  const runner = opaqueRunnerReason(argv) !== null;
+  const visibleArgv = runner ? argv.slice(0, inner + 1) : argv;
+  const starts = runner ? wrapperStarts.filter((start) => start <= inner) : wrapperStarts;
   for (const start of starts) {
-    const reason = hiddenCodeAt(argv, start);
+    const reason = hiddenCodeAt(visibleArgv, start);
     if (reason) return reason;
   }
   return null;

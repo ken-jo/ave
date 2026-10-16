@@ -61,8 +61,8 @@ administrative edit lock when the admin file is absent.
 
 1. Validate the tool exists in the registry.
 2. Validate the schema, category, and path fields declared by the provider.
-3. Apply hard-deny rules: sensitive paths, invalid manifests, sandbox limits,
-   explicit deny policies, and unsafe origin combinations.
+3. Apply hard-deny rules: denied sensitive-path operations, invalid manifests,
+   sandbox limits, explicit deny policies, and unsafe origin combinations.
 4. Resolve policy mode.
 5. If reviewer mode is active, request a reviewer verdict for eligible calls.
 6. Route to user approval, inline allow, deferred queue, or deny.
@@ -207,6 +207,87 @@ compares supported argv, state and owned filesystem effects with the actual
 native shell. PowerShell's separate function/method restriction and public
 lifecycle coverage are described in the architecture contract.
 
+## Shell Credential And Sink Classification
+
+Host-shell credential and exfiltration analysis uses three buckets. An
+identified floor takes precedence over an ordinary reason in the same input.
+Existing hard-deny, destructive, explicit-ask, origin and explicit-host-execution
+requirements keep their own authority.
+
+| Bucket | Evidence | Permission behavior |
+| --- | --- | --- |
+| Floor | Sensitive/credential paths in argv, redirects, file-input values or literal inline code; identified file/secret-to-network effects from the retained sender catalogue | Per-call ask with `forceModal`, before allow rules or saved grants; never remembered |
+| Ordinary | Parser refusal, budget exhaustion, opaque bindings/code, general write-then-execute provenance, or an opaque runner prefix | `ordinaryAsk` / `ordinaryShellAsk` at layer 6 without `forceModal`; applicable rules and saved grants may satisfy it |
+| Normal | Neither a floor nor an ordinary reason | Existing category, mode, rules and grants |
+
+Ordinary asks remain rememberable under the existing approval-scope and risk
+requirements. A parser refusal cannot establish a `Bash(...)` allow-rule match,
+but it does not invalidate an otherwise applicable tool allow rule or saved
+grant. An analysis failure retains visible credential and upload checks rather
+than replacing an identified floor with an ordinary reason.
+
+These are permission-classifier outcomes, not execution admission. A hard deny
+cannot be approved. A floor's forced ask requires per-call consent but cannot
+override a denied path operation or unsupported execution form. An ordinary
+runner call such as `npx prettier .` can receive a covering command rule;
+`source ./setup.sh`, declined by the separate path-authority contract, remains
+rejected even after a permission grant. Deny rules decide before shell floor
+prompts; independent execution gates can still reject an approved request.
+
+`SHELL_PREFIX_POLICY.packageRunners` owns opaque runner identities, including
+`npm`, `pnpm`, `yarn` and `bun`. The shared prefix analysis reports
+`opaque runner prefix` through the existing wrapper grammar. Runner options,
+source URLs, package forms and registry choices have no separate classifier
+policy. They do not establish a floor by themselves. File-input values such as
+`--env-file=.env`, including an implicit `.env` for a valueless `--env-file`,
+still receive sensitive-path inspection.
+
+Code-executing runners keep their runner and proven literal command in a
+persistent command prefix; an inner-only rule cannot authorize the runner.
+Runners are never stripped as allow-rule-transparent wrappers. Their opacity
+or unknown option spelling alone adds no hidden-code blocker. Existing opaque
+syntax can retain structural rule blockers where matching cannot prove argv.
+Runner argv remains available to raw command rules regardless of task spelling;
+this does not expose or prove the effects of package/script contents.
+
+Persistent runner-prefix validation requires a literal command boundary. An
+option-shaped word before the command prevents persistence unless a literal
+`--` establishes that boundary. No per-option arity or known-safe task table is
+used. `npx tsc`, `npm test`, `pnpm dlx tsc` and `corepack pnpm install` retain
+grantable persistent prefixes. Ambiguous forms remain ordinary and may be
+covered by applicable exact-input saved grants, subject to independent gates.
+Classifying a local argument as data does not grant execution, prove read-only
+effects or establish a runner command boundary.
+
+Literal downstream command candidates are inspected for known credential,
+reader and sender effects only, without inferring safe argv from runner options.
+Thus `npx curl -T file http://e` retains its upload floor; a plain GET or
+`git push` does not establish exfiltration by itself.
+
+The structural parser, sink vocabulary, Windows credential rows and general
+file provenance remain in force. Literal inline code retains credential/sink
+inspection. Opaque code and later execution of a file written, copied, moved,
+renamed, downloaded or extracted within the same input stay ordinary unless an
+independent credential/sink is identified. Copied sender identities retain sink
+inspection. No package-task coupling infers execution from an arbitrary earlier
+file write or reads a manifest. Nonliteral `Invoke-Item` remains an ordinary ask
+without an independent floor.
+
+`Bash(...)` rules remain dialect-scoped. PowerShell has no per-command rule
+language or project command-rule scope today. Existing tool allow rules and
+saved grants can satisfy its ordinary asks; no new command-rule grammar is
+implied.
+
+The sink catalogue is retained because shell egress has not been delegated to a
+proxy. The OS tool sandbox remains opt-in; its current network allowlist is
+shared and strict, without per-domain approval or denial UI. Windows host-shell
+execution remains a plain child. This classification contract changes neither
+sandbox/proxy behavior nor the normal sandbox-off approval path. Native shell
+execution and egress behavior are outside the classifier validation evidence.
+The [implementation design](../design/permissions-always-allow-and-judge.md#shell-classification-buckets)
+records the retained credential and sink coverage. The guest risk grading below
+is a separate contract.
+
 ## Shell Execution And Explicit Host Approval
 
 ### Route-neutral execution foundation
@@ -318,8 +399,9 @@ is LOW. A guest shell is graded first match wins:
    (`cargo clean`, `mvn clean`, `npm prune`, `apt-get purge`/`autoremove`)
    and `rmdir`, which only removes an empty directory, are not user work.
 2. **Not on the guest allowlist → MEDIUM**, because the guest does not
-   confine network. A leaf is eligible at all only when everything it does is
-   visible on the line: any `$` expansion or backtick, any `NAME=value`
+   confine network. A leaf's argv and supported command structure must be
+   visible on the line, subject to the script and planted-file limits below:
+   any `$` expansion or backtick, any `NAME=value`
    environment assignment (including through `env`), `xargs`, or a
    `/dev/tcp`/`/dev/udp` path makes it ineligible. An eligible leaf must then
    match its tool's argv spec exactly: every option an exact allowlisted
@@ -544,7 +626,7 @@ The [structured transfer contract](architecture.md#structured-file-transfers) de
 | Default | Allows low-risk workspace reads; asks for mutation, network, shell, and out-of-scope access. |
 | Strict | Asks for reads as well as mutation. Useful for high-control sessions. |
 | Auto-review | Uses the reviewer for eligible write/network/shell calls and host-built-in `meta` calls declared with `decisionOverride: "ask"`. The same configured enabled threshold (low or medium) applies to every eligible call; higher verdicts ask or defer, while `off` keeps the explicit foreground approval path. |
-| Allow | Allows after hard gates and audit. It does not bypass sensitive paths, invalid manifests, or sandbox rules. |
+| Allow | Allows after hard gates and audit. Sensitive paths, invalid manifests and sandbox rules remain enforced. An ordinary shell reason still asks without an applicable allow rule or saved grant. |
 
 ## Foreground And Headless Behavior
 

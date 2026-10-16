@@ -90,9 +90,14 @@ const OPAQUE_DESTINATIONS = [
   "robocopy . UnknownProvider::out notes.txt", "Export-Custom UnknownProvider::out",
 ];
 
-describe("dispatch and remote-write floors", () => {
+describe("dispatch approval and remote-write floors", () => {
   it.each(DISPATCH)("requires approval for dispatch or opaque effects: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).not.toBeNull();
+    const result = inspectPowerShellCommand(command, CWD);
+    if (command.includes(PAYLOAD) || command.includes("~/.ssh/config")) {
+      expect(result.exfiltration ?? result.sensitive).not.toBeNull();
+    } else {
+      expect(result).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
+    }
   });
 
   it.each(REMOTE_WRITES)("identifies a UNC upload: %s", (command) => {
@@ -100,11 +105,13 @@ describe("dispatch and remote-write floors", () => {
   });
 
   it.each(OPAQUE_DESTINATIONS)("requires approval for an unresolved destination: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).not.toBeNull();
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
-  it.each(BENIGN)("allows ordinary local work: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual({ sensitive: null, exfiltration: null });
+  it.each(BENIGN)("separates ordinary local work from opaque execution: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toEqual(command === "npm test" || command === "python script.py"
+      ? expect.objectContaining({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) })
+      : { sensitive: null, exfiltration: null });
   });
 
   it("gives every understood command an explicit effect", () => {
@@ -115,7 +122,7 @@ describe("dispatch and remote-write floors", () => {
 
   it("bounds repeated dispatch arguments with the shared work counter", () => {
     const result = _inspectPowerShellForTest(`Get-ChildItem | % -MemberName InvokeScript -ArgumentList ${"'a',".repeat(3000)}'b'`, CWD);
-    expect(result.exfiltration).not.toBeNull();
+    expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
     expect(result.exhausted).toBe(true);
     expect(result.steps).toBeLessThanOrEqual(result.limits.steps);
     expect(result.chars).toBeLessThanOrEqual(result.limits.chars);

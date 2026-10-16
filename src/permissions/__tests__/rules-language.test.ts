@@ -104,7 +104,6 @@ describe("refused prefixes (single shared list)", () => {
     // A script-file prefix runs code the rules cannot read.
     [["python", "scripts/gen.py"], "interpreter"],
     [["node", "scripts/build.mjs"], "interpreter"],
-    [["bun", "run", "./x.ts"], "interpreter"],
     [["unbuffer"], "wrapper"],
     [["env"], "wrapper"],
     [["env", "FOO=1", "ls"], "wrapper"],
@@ -122,7 +121,12 @@ describe("refused prefixes (single shared list)", () => {
     [["bun", "x"], "package-runner"],
     [["git"], "multi-verb-tool"],
     [["git", "-c"], "multi-verb-tool"],
-    [["npm"], "multi-verb-tool"],
+    [["npm"], "package-runner"],
+    [["pnpm", "exec"], "package-runner"],
+    [["yarn", "dlx"], "package-runner"],
+    [["deno", "run"], "package-runner"],
+    [["corepack", "pnpm"], "package-runner"],
+    [["corepack", "pnpm", "dlx"], "package-runner"],
   ])("refuses %j (%s)", (tokens, reason) => {
     expect(refusedShellPrefix(tokens as string[])).toBe(reason);
   });
@@ -135,6 +139,13 @@ describe("refused prefixes (single shared list)", () => {
     [["deno", "task", "build"]],
     [["ls"]],
     [["npx", "prettier"]],
+    [["npm", "exec", "prettier"]],
+    [["pnpm", "exec", "vitest"]],
+    [["yarn", "dlx", "prettier"]],
+    [["bun", "exec", "echo"]],
+    [["bun", "run", "./x.ts"]],
+    [["deno", "run", "main.ts"]],
+    [["corepack", "pnpm", "dlx", "prettier"]],
   ])("accepts %j", (tokens) => {
     expect(refusedShellPrefix(tokens as string[])).toBeNull();
   });
@@ -178,6 +189,40 @@ describe("AST shell matcher", () => {
     const set = rules({ allow: ["Bash(npm test)"] });
     expect(evaluateShellRules("npm test", set).decision).toBe("allow");
     expect(evaluateShellRules("npm test -- foo", set).decision).toBeNull();
+  });
+
+  it.each([
+    ["npx prettier --write src", "Bash(npx prettier *)"],
+    ["npm exec prettier --write src", "Bash(npm exec prettier *)"],
+    ["pnpm dlx prettier --write src", "Bash(pnpm dlx prettier *)"],
+    ["bun exec echo hello", "Bash(bun exec echo *)"],
+    ["deno run main.ts", "Bash(deno run main.ts *)"],
+    ["corepack pnpm dlx prettier src", "Bash(corepack pnpm dlx prettier *)"],
+    ["npx --future value -- prettier src", "Bash(npx --future value -- prettier *)"],
+  ])("a full raw runner prefix can cover %j", (command, pattern) => {
+    expect(analyzeShellForRules(command)).toMatchObject({ ok: true, hidden: [], ordinaryAsk: "opaque runner prefix", allowBlockers: [] });
+    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: [pattern] })).decision).toBe("allow");
+    expect(evaluateShellRules(command, rules({ allow: ["Bash(prettier *)", "Bash(echo *)"] })).decision).toBeNull();
+  });
+
+  it("runner options and opaque inner code do not hide the raw command", () => {
+    const command = "npx --config project.json -- node script.mjs --output build";
+    expect(analyzeShellForRules(command)).toMatchObject({
+      ok: true, hidden: [], ordinaryAsk: "opaque runner prefix", allowBlockers: [],
+      commands: [{ argv: ["npx", "--config", "project.json", "--", "node", "script.mjs", "--output", "build"], allowBlockers: [] }],
+    });
+    expect(evaluateShellRules(command, rules({ allow: ["Bash(npx --config project.json -- node *)"] })).decision).toBe("allow");
+  });
+
+  it("runner prefixes stay visible to explicit deny and ask rules", () => {
+    expect(evaluateShellRules("npx prettier src", rules({ deny: ["Bash(npx prettier *)"] }))).toMatchObject({ decision: "deny", pattern: "Bash(npx prettier *)" });
+    expect(evaluateShellRules("npm exec prettier src", rules({ ask: ["Bash(npm exec *)"] }))).toMatchObject({ decision: "ask", pattern: "Bash(npm exec *)" });
+    expect(evaluateShellRules("npx prettier src", rules({ deny: ["Bash(prettier *)"] })).decision).toBeNull();
+  });
+
+  it("keeps existing nonrunner and wrapper allow-rule behavior", () => {
+    expect(evaluateShellRules("git status", rules({ allow: ["Bash(git *)"] })).decision).toBe("allow");
+    expect(evaluateShellRules("env A=1 npm test", rules({ allow: ["Bash(env A=1 npm *)"] })).decision).toBe("allow");
   });
 
   it("requires every subcommand of a compound command to be covered", () => {
@@ -344,9 +389,6 @@ describe("security review: code the matcher cannot read is hidden from deny and 
     "python3 -m http.server",
     "perl x.pl",
     "node build.mjs",
-    "deno run x.ts",
-    "bun ./x.ts",
-    "bun run ./x.ts",
     "trap 'rm -rf x' EXIT",
     "hash -p /bin/rm r; r x",
     "alias r=rm; r x",

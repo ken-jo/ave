@@ -89,7 +89,7 @@ const MATERIALIZED = [
 
 describe("file execution provenance", () => {
   it.each(ASSOCIATED_TYPES)("requires approval for an associated executable type: %s", (extension) => {
-    expect(inspectPowerShellCommand(`Invoke-Item payload.${extension}`, CWD).exfiltration).not.toBeNull();
+    expect(inspectPowerShellCommand(`Invoke-Item payload.${extension}`, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
   it.each([
@@ -98,11 +98,19 @@ describe("file execution provenance", () => {
     "payload.bat", "payload.exe", "payload.unknown", "payload.com",
     "Invoke-Item 'p.bat. '", "Invoke-Item 'p.txt:code'",
   ])("requires approval for opaque file execution: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).not.toBeNull();
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
   it.each(MATERIALIZED)("requires approval when execution can reach a materialized file: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).not.toBeNull();
+    const result = inspectPowerShellCommand(command, CWD);
+    if (command.startsWith("curl -T") || command.startsWith("wget --post-file")) {
+      expect(result.exfiltration).not.toBeNull();
+    } else {
+      expect(result).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
+      if (command === "Set-Content build.ps1 'Get-Date'; build.ps1") {
+        expect(result.ordinaryAsk).toMatch(/materialized.*file/);
+      }
+    }
   });
 
   it.each([
@@ -112,7 +120,9 @@ describe("file execution provenance", () => {
     String.raw`Copy-Item C:\Windows\System32\curl.exe tmp.txt; Rename-Item tmp.txt git; git status`,
     String.raw`Copy-Item C:\Windows\System32\curl.exe tools; cpi tools\curl.exe git; git status`,
   ])("retains copied executable identity: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).toMatch(/materialized.*curl\.exe/);
+    const result = inspectPowerShellCommand(command, CWD);
+    if (command.includes(" -T ")) expect(result.exfiltration).toMatch(/curl upload of a file/);
+    else expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.stringMatching(/materialized.*curl\.exe/) });
   });
 
   it.each([
@@ -133,7 +143,9 @@ describe("file execution provenance", () => {
     "Write-Host (('a','b') -join ',')", "Get-Content notes.txt | Select-String TODO",
     'iwr https://x.invalid -Headers @{ Authorization = "Bearer $env:TOKEN" }',
   ])("preserves ordinary file and development work: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual({ sensitive: null, exfiltration: null });
+    expect(inspectPowerShellCommand(command, CWD)).toEqual(/(?:^|; )(?:npm\b|python script\.py|build\.ps1$)/.test(command)
+      ? expect.objectContaining({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) })
+      : { sensitive: null, exfiltration: null });
   });
 
   it.each([
@@ -159,7 +171,9 @@ describe("file execution provenance", () => {
     "Write-Host 'literal & punctuation'",
     "Write-Host @'\nhello\nworld\n'@",
   ])("keeps data operands and switches out of execution provenance: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual({ sensitive: null, exfiltration: null });
+    expect(inspectPowerShellCommand(command, CWD)).toEqual(/; (?:python script\.py|node script\.js)/.test(command)
+      ? expect.objectContaining({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) })
+      : { sensitive: null, exfiltration: null });
   });
 
   it.each([
@@ -182,7 +196,9 @@ describe("file execution provenance", () => {
     "$p = @{ Uri = 'https://x.invalid' }; Write-Output hello | Tee-Object -Variable p; iwr @p",
     "$p = @{ Uri = 'https://x.invalid' }; Write-Output hello | tee -Variable:p; iwr @p",
   ])("retains execution and destination uncertainty: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).not.toBeNull();
+    const result = inspectPowerShellCommand(command, CWD);
+    if (command.includes("host\\share")) expect(result.exfiltration).not.toBeNull();
+    else expect(result).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
   it.each([
@@ -221,22 +237,22 @@ describe("file execution provenance", () => {
         "Set-Location elsewhere; Invoke-Item ProjectDocs",
         "pwsh -WorkingDirectory elsewhere -Command 'Invoke-Item ProjectDocs'",
         "Unknown-Runner 'Invoke-Item ProjectDocs'",
-      ]) expect(inspectPowerShellCommand(command, root).exfiltration).not.toBeNull();
+      ]) expect(inspectPowerShellCommand(command, root)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
       const repeated = _inspectPowerShellForTest("Invoke-Item ProjectDocs; ".repeat(40), root);
-      expect(repeated.exfiltration).not.toBeNull();
+      expect(repeated).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
       expect(repeated.exhausted).toBe(true);
       expect(repeated.steps).toBeLessThanOrEqual(repeated.limits.steps);
     });
   });
 
-  it("preserves the existing explicit script-path floor", () => {
-    expect(inspectPowerShellCommand("./build.ps1", CWD).exfiltration).not.toBeNull();
+  it("asks ordinarily for an explicit script path", () => {
+    expect(inspectPowerShellCommand("./build.ps1", CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
   it("bounds provenance work with the shared counter", () => {
     const command = "Copy-Item a b; ".repeat(300) + "b";
     const result = _inspectPowerShellForTest(command, CWD);
-    expect(result.exfiltration).not.toBeNull();
+    expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
     expect(result.exhausted).toBe(true);
     expect(result.steps).toBeLessThanOrEqual(result.limits.steps);
   });

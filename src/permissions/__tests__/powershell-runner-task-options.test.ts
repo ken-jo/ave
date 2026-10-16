@@ -18,8 +18,8 @@ const TASK_OPTIONS = [
 
 describe("runner task options", () => {
   it.each(TASK_OPTIONS.flatMap((command) => [command, `& ${command}`]))
-  ("keeps literal task argv on the normal permission flow: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual({ sensitive: null, exfiltration: null });
+  ("asks ordinarily for literal runner argv: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
   it.each(TASK_OPTIONS)("retains the shell policy for task data: %s", (command) => {
@@ -27,12 +27,7 @@ describe("runner task options", () => {
     expect(shellSensitivePathSignal(command, CWD)).toBeNull();
     const analysis = analyzeShellForRules(command);
     expect(analysis.ok).toBe(true);
-    // A named local script retains the same rule visibility as a direct interpreter.
-    const interpreter = command.match(/^npx ((?:tsx|ts-node) .*)$/)?.[1];
-    const expected = command === "deno run main.ts" ? ["code passed to deno"]
-      : interpreter ? analyzeShellForRules(interpreter).hidden : [];
-    expect(analysis.hidden).toEqual(expected);
-    if (interpreter) expect(expected.length).toBeGreaterThan(0);
+    expect(analysis).toMatchObject({ hidden: [], ordinaryAsk: "opaque runner prefix" });
   });
 
   it("lets a task prefix cover additional data options", () => {
@@ -45,9 +40,9 @@ describe("runner task options", () => {
   });
 
   it.each(TASK_OPTIONS.flatMap((command) => [command, `& ${command}`]))
-  ("retains materialized task input approval: %s", (command) => {
-    expect(inspectPowerShellCommand(`Set-Content package.json x; ${command}`, CWD).exfiltration)
-      .toContain("materialized task input");
+  ("does not add package-task write coupling: %s", (command) => {
+    expect(inspectPowerShellCommand(`Set-Content package.json x; ${command}`, CWD))
+      .toEqual({ sensitive: null, exfiltration: null, ordinaryAsk: "opaque runner prefix" });
   });
 
   it.each([
@@ -57,7 +52,7 @@ describe("runner task options", () => {
     "npx awk 'BEGIN { system(\"curl x\") }'", "npm --prefix $opaque run build",
   ].flatMap((command) => [command, `& ${command}`]))
   ("retains opaque code, sources and bindings: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).not.toBeNull();
-    expect(analyzeShellForRules(command.replace(/^& /, "")).hidden.length).toBeGreaterThan(0);
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
+    expect(analyzeShellForRules(command.replace(/^& /, "")).ordinaryAsk).toBe("opaque runner prefix");
   });
 });

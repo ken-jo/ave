@@ -1,0 +1,156 @@
+import { describe, expect, it } from "vitest";
+import {
+  hiddenCodeReason,
+  opaqueRunnerReason,
+  refusedShellPrefix,
+  runnerCommandIndexes,
+  SHELL_PREFIX_POLICY,
+  shellOptionEffect,
+} from "../rules/shell-prefix-policy.js";
+import { validatePermissionRule } from "../rules/rule-files.js";
+import { parseRuleSpecifier } from "../rules/rule-specifier.js";
+import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
+
+const RUNNER_RULE_PREFIXES = [
+  ["npx"], ["bunx"], ["pnpx"], ["uvx"], ["corepack"], ["pipx"], ["yarn"], ["yarnpkg"],
+  ["pnpm"], ["npm"], ["bun"], ["deno"], ["pipx", "run"],
+  ["yarn", "dlx"], ["yarn", "exec"], ["yarn", "node"],
+  ["yarnpkg", "dlx"], ["yarnpkg", "exec"], ["yarnpkg", "node"],
+  ["pnpm", "dlx"], ["pnpm", "exec"], ["pnpm", "x"],
+  ["npm", "exec"], ["npm", "x"], ["bun", "x"], ["bun", "exec"], ["deno", "run"], ["deno", "eval"],
+];
+
+describe("opaque runner prefixes", () => {
+  it.each(SHELL_PREFIX_POLICY.packageRunners)("reports ordinary approval for %s regardless of arguments", (runner) => {
+    for (const args of [[], ["--help"], ["test"], ["--future", "value"], ["--registry", "https://packages.test"], ["--config", "project.json"], [undefined]]) {
+      expect(opaqueRunnerReason([runner, ...args])).toBe("opaque runner prefix");
+      expect(hiddenCodeReason([runner, ...args])).toBeNull();
+      expect(shellOptionEffect([runner, ...args, "--output", "build"])).toBeNull();
+    }
+  });
+
+  it("contains the package managers in the canonical runner list", () => {
+    expect(SHELL_PREFIX_POLICY.packageRunners).toEqual(expect.arrayContaining(["npm", "pnpm", "yarn", "bun"]));
+  });
+
+  it.each([".exe", ".cmd", ".bat", ".com", ".ps1", ".psm1", ".js"])("recognizes an executable runner suffix %s", (suffix) => {
+    expect(opaqueRunnerReason([`C:\\tools\\NPX${suffix.toUpperCase()}`, "prettier"])).toBe("opaque runner prefix");
+    expect(opaqueRunnerReason([`/tools/npm${suffix}`, "test"])).toBe("opaque runner prefix");
+  });
+
+  it.each([
+    ["env", "A=1", "npm", "test"],
+    ["timeout", "5", "npx", "prettier"],
+    ["sudo", "-u", "operator", "pnpm", "exec", "vitest"],
+    ["env", "A=1", "busybox", "timeout", "5", "npx.cmd", "node", "script.mjs"],
+  ])("finds runners behind transparent wrappers: %j", (...argv) => {
+    expect(opaqueRunnerReason(argv)).toBe("opaque runner prefix");
+    expect(hiddenCodeReason(argv)).toBeNull();
+  });
+
+  it("does not interpret forwarded runner arguments as wrapper effects", () => {
+    const argv = ["env", "A=1", "npx", "node", "--output", "build", "PATH=runtime-data"];
+    expect(hiddenCodeReason(argv)).toBeNull();
+    expect(shellOptionEffect(argv)).toBeNull();
+    expect(hiddenCodeReason(["env", "PATH=/tmp/tools", "npx", "node"])).toMatch(/code-carrying variable PATH/);
+  });
+
+  it.each([["ls"], ["git", "status"], ["npx.txt"], ["npm.json"], ["npx@10"], [undefined], ["env", undefined, "npm", "test"]])
+    ("leaves other heads to their existing policy: %j", (...argv) => {
+      expect(opaqueRunnerReason(argv)).toBeNull();
+    });
+});
+
+describe("sink-only downstream candidates", () => {
+  it.each([
+    ["npx", "curl"], ["bunx", "curl"], ["pnpx", "curl"], ["uvx", "curl"],
+    ["pipx", "run", "curl"], ["yarn", "dlx", "curl"], ["yarnpkg", "exec", "curl"],
+    ["yarn", "node", "curl"], ["pnpm", "dlx", "curl"], ["pnpm", "exec", "curl"],
+    ["pnpm", "x", "curl"], ["npm", "exec", "curl"], ["npm", "x", "curl"],
+    ["bun", "x", "curl"], ["bun", "exec", "curl"], ["deno", "run", "curl"], ["deno", "eval", "curl"],
+    ["corepack", "pnpm@9", "dlx", "curl"], ["env", "A=1", "npm.cmd", "exec", "curl"],
+  ])("preserves the literal command in %j", (...argv) => {
+    expect(runnerCommandIndexes(argv)).toContain(argv.indexOf("curl"));
+  });
+
+  it("keeps ambiguous option values as candidates instead of inferring their binding", () => {
+    const argv = ["npx", "--future", "value", undefined, "curl", "-T", "file", "http://example.test"];
+    expect(runnerCommandIndexes(argv)).toEqual([2, 4, 6, 7]);
+  });
+
+  it.each([["npm", "install", "curl"], ["pnpm", "test", "curl"], ["pipx", "install", "curl"], ["git", "curl"], ["constructor"], ["__proto__"]])
+    ("requires a command-executing prefix in %j", (...argv) => {
+      expect(runnerCommandIndexes(argv)).toEqual([]);
+    });
+});
+
+describe("persistent runner command boundaries", () => {
+  it.each(RUNNER_RULE_PREFIXES)("refuses an option before the command in %j", (...prefix) => {
+    for (const flag of ["--yes", "--registry", "--help", "--future=value", "-q"]) {
+      for (const suffix of [[flag], [flag, "possible-value", "helper"]]) {
+        const tokens = [...prefix, ...suffix];
+        expect(refusedShellPrefix(tokens)).toBe("package-runner");
+        for (const wildcard of ["", " *"]) {
+          const pattern = `Bash(${tokens.join(" ")}${wildcard})`;
+          expect(() => validatePermissionRule({ pattern, action: "allow" })).toThrow(/refused allow prefix/);
+          expect(validatePermissionRule({ pattern, action: "deny" }).action).toBe("deny");
+          expect(validatePermissionRule({ pattern, action: "ask" }).action).toBe("ask");
+        }
+      }
+    }
+  });
+
+  it.each(RUNNER_RULE_PREFIXES)("accepts a literal command boundary in %j", (...prefix) => {
+    for (const suffix of [["helper"], ["helper", "--future"], ["--", "helper"], ["--future", "value", "--", "helper"]]) {
+      const tokens = [...prefix, ...suffix];
+      expect(refusedShellPrefix(tokens)).toBeNull();
+      expect(validatePermissionRule({ pattern: `Bash(${tokens.join(" ")} *)`, action: "allow" }).action).toBe("allow");
+    }
+    expect(refusedShellPrefix([...prefix, "--"])).toBe("package-runner");
+    expect(refusedShellPrefix([...prefix, "--", "--yes"])).toBe("package-runner");
+    expect(refusedShellPrefix([...prefix, "--future", "value", "--"])).toBe("package-runner");
+  });
+
+  it.each(RUNNER_RULE_PREFIXES)("ignores an injected allow prefix without a command in %j", (...prefix) => {
+    for (const suffix of [[], ["--yes"], ["--registry"], ["--help"]]) {
+      const incomplete = [...prefix, ...suffix];
+      const command = [...incomplete, "helper"].join(" ");
+      const pattern = `Bash(${incomplete.join(" ")} *)`;
+      const spec = parseRuleSpecifier(pattern);
+      if (spec.kind !== "bash") throw new Error("Expected a shell rule");
+      expect(analyzeShellForRules(command)).toMatchObject({ ok: true, hidden: [], ordinaryAsk: "opaque runner prefix", allowBlockers: [] });
+      expect(evaluateShellRules(command, { allow: [{ pattern, spec }], deny: [], ask: [] }).decision).toBeNull();
+      expect(evaluateShellRules(command, { allow: [], deny: [{ pattern, spec }], ask: [] }).decision).toBe("deny");
+      expect(evaluateShellRules(command, { allow: [], deny: [], ask: [{ pattern, spec }] }).decision).toBe("ask");
+    }
+  });
+
+  it.each([
+    ["npx", "tsc", "--project", "src"], ["npm", "test"], ["pnpm", "dlx", "tsc"],
+    ["corepack", "pnpm", "install"], ["corepack", "pnpm", "--future", "value", "--", "install"],
+    ["corepack", "pnpm", "dlx", "--future", "value", "--", "helper"],
+  ])("preserves named runner commands in %j", (...tokens) => {
+    expect(refusedShellPrefix(tokens)).toBeNull();
+  });
+
+  it.each([
+    ["corepack", "--help"], ["corepack", "pnpm", "--future", "helper"],
+    ["corepack", "pnpm", "dlx", "--future", "helper"], ["npx.cmd", "--yes"], ["NPM.CMD", "--registry"],
+  ])("applies the boundary guard through delegation and suffixes in %j", (...tokens) => {
+    expect(refusedShellPrefix(tokens)).toBe("package-runner");
+  });
+
+  it.each([
+    ["corepack", "pnpm@9"], ["corepack", "pnpm@9", "install"],
+    ["corepack", "--future", "value", "--", "pnpm@9", "install"],
+  ])("refuses an ambiguous delegated prefix without interpreting its specifier: %j", (...tokens) => {
+    expect(refusedShellPrefix(tokens)).toBe("package-runner");
+    const pattern = `Bash(${tokens.join(" ")} *)`;
+    const spec = parseRuleSpecifier(pattern);
+    if (spec.kind !== "bash") throw new Error("Expected a shell rule");
+    expect(() => validatePermissionRule({ pattern, action: "allow" })).toThrow(/refused allow prefix/);
+    expect(evaluateShellRules(tokens.join(" "), { allow: [{ pattern, spec }], deny: [], ask: [] }).decision).toBeNull();
+    expect(opaqueRunnerReason(tokens)).toBe("opaque runner prefix");
+    expect(opaqueRunnerReason(["pnpm@9"])).toBeNull();
+  });
+});

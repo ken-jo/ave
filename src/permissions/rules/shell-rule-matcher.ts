@@ -31,7 +31,7 @@ import {
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { RuleSpecifier } from "./rule-specifier.js";
-import { shellExfiltrationSignal, shellSensitivePathSignal } from "./shell-exfiltration.js";
+import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk } from "./shell-exfiltration.js";
 import {
   arithmeticEvaluationReason,
   asParsedShellCommand,
@@ -40,8 +40,8 @@ import {
   type ShellCommandInput,
   codeCarryingVariable,
   hiddenCodeReason,
-  packageRunnerInvocation,
-  wrapperPrefixLength,
+  opaqueRunnerReason,
+  refusedShellPrefix,
   isShellWrapperProgram,
   shellOptionEffect,
   stripGlobalOptions,
@@ -63,7 +63,7 @@ export type ShellRuleShape =
       commands: readonly ShellRuleCommand[];
       /** Reasons commands may be invisible to deny/ask matching. */
       hidden: readonly string[];
-      /** Unknown runner options ask normally but remain visible and rule-coverable. */
+      /** Caller applies this at category fallback; matching rules or saved grants may satisfy it. */
       ordinaryAsk?: string;
       /** Whole-input reasons no allow rule can apply. */
       allowBlockers: readonly string[];
@@ -74,12 +74,12 @@ function baseProgram(token: string): string {
   return (token.split(/[\\/]/).pop() ?? token).replace(/\.exe$/i, "").replace(/^(python[23]?)\.\d+$/, "$1");
 }
 
-export function analyzeShellForRules(input: ShellCommandInput): ShellRuleShape {
+export function analyzeShellForRules(input: ShellCommandInput, cwd?: string): ShellRuleShape {
   const parsed = asParsedShellCommand(input);
-  return shellFact(parsed, "rule-shape", () => shapeOf(parsed));
+  return shellFact(parsed, `rule-shape\0${cwd ?? ""}`, () => shapeOf(parsed, cwd));
 }
 
-function shapeOf(parsed: ParsedShellCommand): ShellRuleShape {
+function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRuleShape {
   // A broken parser runtime is an internal failure the matcher cannot
   // reason around; report it as unparseable (asks, never allows).
   if (parsed.parserError !== undefined) return { ok: false, reason: `shell parser failed: ${errorMessage(parsed.parserError)}` };
@@ -146,8 +146,7 @@ function shapeOf(parsed: ParsedShellCommand): ShellRuleShape {
         }
         if (statement.assignments.length > 0) blockers.push("command-scoped environment assignment");
         const argv = statement.words.map((word) => staticShellWord(word));
-        const runner = packageRunnerInvocation(argv.slice(wrapperPrefixLength(argv)));
-        ordinaryAsk ??= runner.ordinaryAsk;
+        ordinaryAsk ??= opaqueRunnerReason(argv) ?? undefined;
         if (argv[0] === undefined) {
           hidden.push("dynamic program name");
           blockers.push("dynamic program name");
@@ -223,6 +222,8 @@ function shapeOf(parsed: ParsedShellCommand): ShellRuleShape {
   };
 
   visit(analysis.program);
+  ordinaryAsk ??= hidden[0];
+  ordinaryAsk ??= shellScanOrdinaryAsk(parsed, cwd) ?? undefined;
   return { ok: true, commands, hidden, ...(ordinaryAsk ? { ordinaryAsk } : {}), allowBlockers: globalBlockers };
 }
 
@@ -284,7 +285,7 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   const command = parsed.command;
   const hasRestrictions = rules.deny.length > 0 || rules.ask.length > 0;
   if (!hasRestrictions && rules.allow.length === 0) return { decision: null, reason: "no shell rules" };
-  const shape = analyzeShellForRules(parsed);
+  const shape = analyzeShellForRules(parsed, cwd);
 
   if (hasRestrictions) {
     // deny > ask: a deny rule that matches a visible command wins even when
@@ -319,10 +320,15 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   if (exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${exfiltration}` };
   const sensitive = shellSensitivePathSignal(parsed, cwd);
   if (sensitive) return { decision: null, reason: `sensitive path (floor): ${sensitive}` };
+  const incomplete = shellScanOrdinaryAsk(parsed, cwd);
+  if (incomplete) return { decision: null, reason: incomplete };
   const patterns: string[] = [];
+  // Stored runner rules still need a literal command boundary.
+  const allowRules = rules.allow.filter((candidate) =>
+    opaqueRunnerReason(candidate.spec.tokens.slice(0, 1)) === null || refusedShellPrefix(candidate.spec.tokens) === null);
   for (const cmd of shape.commands) {
     if (cmd.allowBlockers.length > 0) return { decision: null, reason: cmd.allowBlockers[0]! };
-    const rule = rules.allow.find((candidate) => matchesBashRuleExact(candidate.spec, cmd.argv));
+    const rule = allowRules.find((candidate) => matchesBashRuleExact(candidate.spec, cmd.argv));
     if (!rule) return { decision: null, reason: "a subcommand is not covered by any allow rule" };
     if (!patterns.includes(rule.pattern)) patterns.push(rule.pattern);
   }

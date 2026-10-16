@@ -1480,8 +1480,8 @@ export class PermissionManager {
     const shellRuleEvaluation = shellSubject
       ? evaluateShellSubject(shellSubject, this.rules, projectRules)
       : undefined;
-    const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject) : undefined;
-    const ordinaryShellAsk = powerShellSignals?.ordinaryAsk ?? (shellShape?.ok ? shellShape.ordinaryAsk : undefined);
+    const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject, ruleSubject?.cwd) : undefined;
+    const ordinaryShellAsk = powerShellSignals?.ordinaryAsk ?? (shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason);
     // Credential-exfiltration floor: never remembered, never auto-allowed, in
     // any mode, for every host shell (rules/shell-exfiltration.ts,
     // rules/powershell-exfiltration.ts).
