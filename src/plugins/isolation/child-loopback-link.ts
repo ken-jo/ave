@@ -2,7 +2,7 @@
  * The Windows sandboxed plugin child's protocol channel: one authenticated
  * loopback TCP connection instead of the child's stdin and stdout.
  *
- * WHY NOT STDIO. ASRT 0.0.76's `srt-win exec` starts the target as the
+ * WHY NOT STDIO. ASRT 0.0.79's `srt-win exec` starts the target as the
  * `srt-sandbox` account through a two-hop runner that relays the target's
  * stdout but no stdin: `echo hi | srt-win exec -- cmd /c more` prints nothing
  * (measured on a provisioned Windows 11 host, 2026-10-10). The plugin protocol

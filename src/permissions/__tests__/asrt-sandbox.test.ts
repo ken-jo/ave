@@ -1121,7 +1121,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       denyRead: [join(FAKE_AVE_HOME, "secrets")],
     });
     const occurrences = dupConfig.filesystem.denyRead.filter(
-      (p: string) => p === join(FAKE_AVE_HOME, "secrets"),
+      (p) => p === join(FAKE_AVE_HOME, "secrets"),
     ).length;
     expect(occurrences).toBe(1);
   });
@@ -1144,7 +1144,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
     const dup = join(homedir(), ".config");
     const dupConfig = buildSandboxConfig({ allowedDomains: [], denyWrite: [dup] });
-    expect(dupConfig.filesystem.denyWrite.filter((p: string) => p === dup)).toHaveLength(1);
+    expect(dupConfig.filesystem.denyWrite.filter((p) => p === dup)).toHaveLength(1);
   });
 
   it("default-OFF: computing the deny-list / config does NOT activate the sandbox gate", () => {

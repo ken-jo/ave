@@ -109,7 +109,7 @@ Key IPC domains live under `src/ipc/domains/*.ts`. Representative channels inclu
 ## Development Requirements
 
 - Bun.
-- Node.js `>=22.4`.
+- Node.js `>=22.12`.
 
 Clone and install:
 
@@ -211,7 +211,7 @@ The packaged app includes the `ave://` deep link protocol and the target-specifi
 - Injecting safe GPU fallback flags unless `AVE_KEEP_GPU=1` is set.
 - Defaulting `PYTHONIOENCODING=utf-8` and `LANG/LC_ALL=en_US.UTF-8` to avoid cp949 mojibake in Korean or emoji logs.
 
-Node.js `>=22.4` must still be installed because `scripts/run-electron.mjs` calls the system `node` CLI.
+Node.js `>=22.12` must still be installed because `scripts/run-electron.mjs` calls the system `node` CLI.
 
 Recommended flow:
 
