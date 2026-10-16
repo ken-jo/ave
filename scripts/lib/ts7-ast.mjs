@@ -74,8 +74,19 @@ export function parseSourceFiles(paths) {
  * share one isolated virtual filesystem and one short-lived compiler session.
  */
 export function parseSourceTexts(texts) {
+  return withParsedSourceTexts(texts, (sources) => sources);
+}
+
+/**
+ * Inspect isolated source ASTs while compiler binding queries remain available.
+ * The resolver maps each requested identifier to its sole declaring AST node;
+ * missing or merged symbols have no proven declaration. Import aliases retain
+ * their local import declaration rather than resolving to the exported symbol.
+ * Binding queries must finish before the callback returns and the session closes.
+ */
+export function withParsedSourceTexts(texts, inspect) {
   const sourceFiles = new Map();
-  if (texts.size === 0) return sourceFiles;
+  if (texts.size === 0) return inspect(sourceFiles, () => new Map());
   const wireByInput = new Map([...texts.keys()].map((path) => [path, toWirePath(resolve(tmpdir(), "ave-source-inputs", path))]));
   const files = Object.fromEntries([...texts].map(([path, text]) => [wireByInput.get(path), text]));
   const filesystem = createVirtualFileSystem(files);
@@ -87,13 +98,24 @@ export function parseSourceTexts(texts) {
   try {
     const snapshot = api.updateSnapshot({ openFiles: [...wireByInput.values()] });
     const projects = snapshot.getProjects();
+    const projectsByInput = new Map();
     for (const [input, wirePath] of wireByInput) {
       const project = snapshot.getDefaultProjectForFile(wirePath) ?? projects.find((candidate) => candidate.program.getSourceFile(wirePath));
       const sourceFile = project?.program.getSourceFile(wirePath);
-      if (sourceFile && project.program.getSyntacticDiagnostics(wirePath).length === 0) sourceFiles.set(input, sourceFile);
+      if (sourceFile && project.program.getSyntacticDiagnostics(wirePath).length === 0) {
+        sourceFiles.set(input, sourceFile);
+        projectsByInput.set(input, project);
+      }
     }
+    return inspect(sourceFiles, (path, identifiers) => {
+      const project = projectsByInput.get(path);
+      if (!project) throw new Error("Source binding context is unavailable");
+      const symbols = identifiers.length > 0 ? project.checker.getSymbolAtLocation(identifiers) : [];
+      if (symbols.length !== identifiers.length) throw new Error("Source binding resolution is incomplete");
+      return new Map(identifiers.map((identifier, index) => [identifier,
+        symbols[index]?.declarations.length === 1 ? symbols[index].declarations[0].resolve(project) : undefined]));
+    });
   } finally {
     api.close();
   }
-  return sourceFiles;
 }

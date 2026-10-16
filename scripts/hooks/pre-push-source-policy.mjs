@@ -16,7 +16,7 @@
 
 import { posix } from "node:path";
 import * as ast from "typescript/unstable/ast";
-import { parseSourceTexts } from "../lib/ts7-ast.mjs";
+import { parseSourceTexts, withParsedSourceTexts } from "../lib/ts7-ast.mjs";
 import { createMessageConsumerReader } from "./pre-push-message-consumers.mjs";
 
 import {
@@ -528,7 +528,8 @@ export function readMessageCatalogEntries(text, relativePath) {
  * computed key this scan cannot see, so it keeps the full checks. Runtime
  * references require a resolved named import and a literal-key call matching
  * the export's signature, or the same call through a direct useTranslation()
- * destructure. Every other runtime reference and unresolved key table keeps
+ * destructure. Each callee must resolve to its proven declaring binding in the
+ * compiler's lexical scope. Other runtime references and unresolved key tables keep
  * full checks even when another file names every changed namespace.
  * Unsupported catalog modules and unreadable or unparseable consumers keep
  * full checks too.
@@ -552,9 +553,6 @@ export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, re
     }
   }
 
-  const named = new Set();
-  const testFiles = new Set();
-  const consumerModules = new Set();
   const texts = new Map();
   for (const path of trackedFiles) {
     if (!scannedModulePath.test(path) || path.startsWith(MESSAGE_CATALOG_DIRECTORY)) continue;
@@ -562,13 +560,19 @@ export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, re
     if (typeof text !== "string") return { reason: `${path} could not be read for message consumers; full checks required` };
     texts.set(path, text);
   }
-  let sources;
   try {
-    sources = changedNamespaces.size > 0 ? parseSourceTexts(texts) : new Map();
+    return withParsedSourceTexts(changedNamespaces.size > 0 ? texts : new Map(), (sources, resolveDeclarations) =>
+      selectParsedMessageConsumers(texts, sources, resolveDeclarations, changedNamespaces, trackedFiles));
   } catch {
-    return { reason: "message consumers could not be parsed; full checks required" };
+    return { reason: "message consumers could not be analyzed; full checks required" };
   }
-  const readConsumers = createMessageConsumerReader(sources, trackedFiles);
+}
+
+function selectParsedMessageConsumers(texts, sources, resolveDeclarations, changedNamespaces, trackedFiles) {
+  const named = new Set();
+  const testFiles = new Set();
+  const consumerModules = new Set();
+  const readConsumers = createMessageConsumerReader(sources, trackedFiles, resolveDeclarations);
   for (const [path, text] of texts) {
     const isI18nSuite = path.startsWith(I18N_SUITE_DIRECTORY) && isCollectedVitestFile(path);
     const source = sources.get(path);

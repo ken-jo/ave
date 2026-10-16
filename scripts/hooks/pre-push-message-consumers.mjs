@@ -52,11 +52,12 @@ function hasJsx(node) {
  * Build a positive proof for catalog consumers. Only named imports from a
  * resolved runtime module and the t binding of a direct context destructure
  * can acquire a callable signature. Every reference to those bindings must
- * then be a literal-key call; an unclassified reference invalidates the proof.
+ * then resolve to that exact declaring node and be a literal-key call; an
+ * unclassified reference invalidates the proof.
  * Other calls need a direct local function or a resolved non-runtime named
  * import. Indirect calls and member access cannot establish callable identity.
  */
-export function createMessageConsumerReader(sources, trackedFiles) {
+export function createMessageConsumerReader(sources, trackedFiles, resolveDeclarations) {
   const tracked = new Set(trackedFiles);
   const runtimeNames = new Set(Object.values(KEY_CALL_SIGNATURES).flatMap(Object.keys));
   for (const [path, source] of sources) {
@@ -145,12 +146,13 @@ export function createMessageConsumerReader(sources, trackedFiles) {
   return function readMessageConsumers(path, namespaces) {
     const source = sources.get(path);
     const named = new Set();
-    if (!source) return { named, unresolved: true };
+    if (!source || typeof resolveDeclarations !== "function") return { named, unresolved: true };
     // Lowering JSX inserts runtime imports and calls absent from this AST.
     // No JSX runtime is certified here; JSX and any @jsx text require full.
     if (typeof source.text !== "string" || /@jsx/i.test(source.text) || hasJsx(source)) return { named, unresolved: true };
     const approved = new Set();
     const bindings = new Map();
+    const bindingNames = new Set();
     const parents = new Map();
     const nodes = [];
     let unresolved = false;
@@ -164,10 +166,19 @@ export function createMessageConsumerReader(sources, trackedFiles) {
       node.forEachChild((child) => collect(child, node));
     }
     collect(source, undefined);
+    const declarations = resolveDeclarations(path, nodes.filter(ast.isIdentifier));
+
+    function signatureForReference(identifier) {
+      return ast.isIdentifier(identifier) ? bindings.get(declarations.get(identifier)) : undefined;
+    }
 
     function register(identifier, signature) {
-      if (bindings.has(identifier.text)) { unresolved = true; return; }
-      bindings.set(identifier.text, signature);
+      const declaration = declarations.get(identifier);
+      // Names only expand rejection for reused or unknown references. They
+      // never grant a signature; approval belongs to this declaring AST node.
+      if (!declaration || declaration.name !== identifier || bindingNames.has(identifier.text)) { unresolved = true; return; }
+      bindings.set(declaration, signature);
+      bindingNames.add(identifier.text);
       approved.add(identifier);
     }
 
@@ -206,7 +217,7 @@ export function createMessageConsumerReader(sources, trackedFiles) {
     }
 
     for (const node of nodes) {
-      if (!ast.isCallExpression(node) || !ast.isIdentifier(node.expression) || !bindings.get(node.expression.text)?.factory) continue;
+      if (!ast.isCallExpression(node) || !ast.isIdentifier(node.expression) || !signatureForReference(node.expression)?.factory) continue;
       const declaration = parents.get(node);
       const list = declaration && parents.get(declaration);
       const statement = list && parents.get(list);
@@ -232,11 +243,11 @@ export function createMessageConsumerReader(sources, trackedFiles) {
         for (const namespace of namespaces) if (node.text === namespace || node.text.startsWith(`${namespace}.`)) named.add(namespace);
       }
       if ((ast.isIdentifier(node) || isStaticString(node)) &&
-          (runtimeNames.has(node.text) || ast.isIdentifier(node) && bindings.has(node.text)) && !approved.has(node)) {
+          (runtimeNames.has(node.text) || ast.isIdentifier(node) && bindingNames.has(node.text)) && !approved.has(node)) {
         // A spelled property in an object literal defines a name, not a value
         // reference. Member accesses and shorthand properties get no exception.
         if (parent && ast.isPropertyAssignment(parent) && parent.name === node) continue;
-        const signature = bindings.get(node.text);
+        const signature = signatureForReference(node);
         if (!ast.isIdentifier(node) || !signature || signature.factory || !parent || !ast.isCallExpression(parent) || parent.expression !== node ||
             parent.questionDotToken || parent.typeArguments || parent.arguments.some(ast.isSpreadElement) || !signature.ordinary &&
             (parent.arguments.length <= signature.key ||
@@ -245,7 +256,7 @@ export function createMessageConsumerReader(sources, trackedFiles) {
       }
       // Calls and value transfers need a proven binding. A member, reflective
       // lookup or dynamically loaded namespace cannot acquire that proof.
-      if (ast.isCallExpression(node) && (!ast.isIdentifier(node.expression) || !bindings.has(node.expression.text))) unresolved = true;
+      if (ast.isCallExpression(node) && (!ast.isIdentifier(node.expression) || !signatureForReference(node.expression))) unresolved = true;
       if (ast.isPropertyAccessExpression(node) || ast.isElementAccessExpression(node) || ast.isComputedPropertyName(node) ||
           ast.isNewExpression(node) || ast.isTaggedTemplateExpression(node) || ast.isDecorator(node) || ast.isWithStatement(node)) unresolved = true;
       if (ast.isExportDeclaration(node) && !node.isTypeOnly) unresolved = true;

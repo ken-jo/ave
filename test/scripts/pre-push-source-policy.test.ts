@@ -754,6 +754,50 @@ describe("pre-push message catalog selection", () => {
     });
   });
 
+  const scopedAliasConsumer = 'import { useTranslation } from "../i18n/react.js"; ' +
+    'export function preview() { const { t: render } = useTranslation(); return render("other.label"); } ' +
+    'export function message(ns: string) { return render("en", `${ns}.title`); }';
+
+  it("keeps full checks when an ambient callable differs from an inner proven alias", () => {
+    const tree = new Map(fixtureTree);
+    tree.set("src/shared/ambient.d.ts", 'declare function render(locale: string, key: string): string;');
+    tree.set("src/ui/dynamic.ts", scopedAliasConsumer);
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+      reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
+    });
+  });
+
+  it("keeps full checks for a proven alias referenced outside its declaring scope", () => {
+    const tree = new Map(fixtureTree);
+    tree.set("src/ui/dynamic.ts", scopedAliasConsumer);
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+      reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
+    });
+  });
+
+  it.each([
+    ["parameter", 'import { t as render } from "../i18n/runtime.js"; export const other = render("other.label"); export function message(render: (locale: string, key: string) => string, ns: string) { return render("en", `${ns}.title`); }'],
+    ["block binding", 'import { t as render } from "../i18n/runtime.js"; export const other = render("other.label"); export function message(ns: string) { const render = (locale: string, key: string) => key; return render("en", `${ns}.title`); }'],
+    ["factory", 'import { useTranslation as useText } from "../i18n/react.js"; export function preview() { const { t } = useText(); return t("other.label"); } export function message(useText: () => { t: (locale: string, key: string) => string }, ns: string) { const { t: render } = useText(); return render("en", `${ns}.title`); }'],
+    ["ordinary helper", 'function render(value: string) { return value; } export const other = render("other.label"); export function message(render: (locale: string, key: string) => string, ns: string) { return render("en", `${ns}.title`); }'],
+  ])("keeps full checks when a %s shadows a proven binding", (_kind, source) => {
+    const tree = new Map(fixtureTree);
+    tree.set("src/ui/dynamic.ts", source!);
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+      reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
+    });
+  });
+
+  it.each([
+    'import { useTranslation } from "../i18n/react.js"; export function label() { const { t: render } = useTranslation(); return render("panel.title"); }',
+    'import { useTranslation } from "../i18n/react.js"; const { t: render } = useTranslation(); export function label() { return render("panel.title"); }',
+  ])("allows a nested call that resolves to the proven declaration: %s", (source) => {
+    const tree = new Map([["src/ui/literal.ts", source]]);
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+      namespaces: ["panel"], testFiles: [], consumerModules: ["src/ui/literal.ts"],
+    });
+  });
+
   it("keeps full checks for a canonical barrel's runtime re-exports", () => {
     const tree = new Map(fixtureTree);
     tree.set("src/i18n/index.ts", 'export { t } from "./runtime.js";');
