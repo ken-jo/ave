@@ -45,7 +45,7 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 afterAll(() => rmSync(TEST_HOME, { recursive: true, force: true }));
 
-const shell = (command: string) => ({ ruleSubject: { kind: "shell" as const, command } });
+const shell = (command: string) => ({ ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command } });
 
 describe("Store A (user-global permissions.json)", () => {
   it("fails clearly on corrupt JSON and never overwrites the file", async () => {

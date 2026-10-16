@@ -23,7 +23,7 @@ import {
   resolveReviewerSandboxCapability,
 } from "../permissions/sandbox-capability.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
-import { isCanonicalBashTool } from "./shell-tools.js";
+import { isCanonicalBashTool, isCanonicalPowerShellTool } from "./shell-tools.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import {
   isRemoteControllerAuthorityCurrent,
@@ -404,16 +404,24 @@ export async function authorizeToolInvocation(
     // (mode==="allow" → no prompt, meta included) remains single-sourced in
     // PermissionManager.
     //
-    // Issue #28 — the canonical shell tool carries its command as the rule
-    // subject so `Bash(...)` deny/ask/allow rules (user-global and this
-    // project's file in Ave home) can match it. The project rules are loaded
-    // here because the decision itself is synchronous.
+    // Issue #28 — every canonical host shell carries its command as the rule
+    // subject, so the exfiltration and sensitive-path floors read it whatever
+    // the shell. `dialect` keeps the languages apart: `Bash(...)` deny/ask/
+    // allow rules (user-global and this project's file in Ave home) match
+    // bash only, and PowerShell has no rule language, so it gets no project
+    // rule scope either (project glob rules would otherwise start applying to
+    // `powershell` by name). The project rules are loaded here because the
+    // decision itself is synchronous.
     // Project rules follow the directory the command will actually run in
     // (the tool's own cwd resolution); `projectRulesLocation` realpaths it
     // and walks up to the repository root.
-    const shellRuleSubject = isCanonicalBashTool(tool) && typeof finalInput.command === "string"
+    const shellDialect = isCanonicalBashTool(tool)
+      ? "bash" as const
+      : isCanonicalPowerShellTool(tool) ? "powershell" as const : undefined;
+    const shellRuleSubject = shellDialect !== undefined && typeof finalInput.command === "string"
       ? {
           kind: "shell" as const,
+          dialect: shellDialect,
           command: finalInput.command,
           cwd: resolveHostShellWorkingDirectory(
             executionCwd,
@@ -421,8 +429,9 @@ export async function authorizeToolInvocation(
           ),
         }
       : undefined;
-    if (services.permissionManager && shellRuleSubject) {
-      await services.permissionManager.ensureProjectRulesLoaded(shellRuleSubject.cwd);
+    const projectRulesCwd = shellRuleSubject?.dialect === "bash" ? shellRuleSubject.cwd : undefined;
+    if (services.permissionManager && projectRulesCwd !== undefined) {
+      await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
     permissionResult = services.permissionManager
       ? services.permissionManager.checkDetailed(
@@ -433,7 +442,8 @@ export async function authorizeToolInvocation(
           {
             ...invocationPermissionContext,
             decisionOverride: metaOverride,
-            ...(shellRuleSubject ? { ruleSubject: shellRuleSubject, projectRulesCwd: shellRuleSubject.cwd } : {}),
+            ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
+            ...(projectRulesCwd !== undefined ? { projectRulesCwd } : {}),
           },
         )
       : {
