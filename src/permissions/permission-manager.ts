@@ -60,6 +60,11 @@ import {
 import { isPathAllowedForEffect, type PathEffect } from "./allowed-directories.js";
 import { errorMessage } from "../shared/error-message.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
+import {
+  captureShellWorkingDirectoryIdentity,
+  matchesShellWorkingDirectoryIdentity,
+  type ShellWorkingDirectoryIdentity,
+} from "./shell-working-directory-identity.js";
 
 export type PermissionDecision = "allow" | "deny" | "ask";
 
@@ -296,6 +301,8 @@ export interface PermissionCheckContext {
    * (PowerShell has no rule language, so no rule ever matches it).
    */
   ruleSubject?: { kind: "shell"; dialect: ShellRuleDialect; command: string; cwd?: string };
+  /** Host-owned execution intent; only explicit host decisions can authorize a host permit. */
+  hostShellExecutionPlan?: HostShellExecutionPlan;
   /**
    * Issue #28 — project whose per-project rule file applies. The caller must
    * have awaited {@link PermissionManager.ensureProjectRulesLoaded} for it.
@@ -497,6 +504,20 @@ export interface ShellAllowRuleSubject {
   readonly cwd: string;
 }
 
+export interface ShellAllowRuleAuthorization extends ShellAllowRuleSubject {
+  readonly issuer: PermissionManager;
+  readonly policyEpoch: string;
+  readonly cwdIdentity: ShellWorkingDirectoryIdentity;
+}
+
+/** Remains live only under the issuing manager's policy and physical directory. */
+export function isShellAllowRuleAuthorizationCurrent(
+  authorization: ShellAllowRuleAuthorization,
+): boolean {
+  return authorization.issuer.getPolicyEpoch() === authorization.policyEpoch &&
+    matchesShellWorkingDirectoryIdentity(authorization.cwd, authorization.cwdIdentity);
+}
+
 // Layer-3 allow-rule decisions for a host shell, keyed on the exact result
 // object `checkDetailed` returned. An explicit unsandboxed shell request may be
 // authorized by a matching allow rule (design I3); this is the host-issued,
@@ -504,14 +525,18 @@ export interface ShellAllowRuleSubject {
 // layer: 3 }` lookalike is not in this map and authorizes nothing.
 const issuedShellAllowRuleDecisions = new WeakMap<
   PermissionCheckResult,
-  ShellAllowRuleSubject
+  ShellAllowRuleAuthorization
 >();
 
 /** True when `result` is a live layer-3 allow-rule decision issued by `checkDetailed`. */
 export function isIssuedShellAllowRuleDecision(
   result: PermissionCheckResult | undefined,
+  issuer?: PermissionManager,
 ): boolean {
-  return result !== undefined && issuedShellAllowRuleDecisions.has(result);
+  const authorization = result === undefined ? undefined : issuedShellAllowRuleDecisions.get(result);
+  return authorization !== undefined &&
+    (issuer === undefined || authorization.issuer === issuer) &&
+    isShellAllowRuleAuthorizationCurrent(authorization);
 }
 
 /**
@@ -521,15 +546,18 @@ export function isIssuedShellAllowRuleDecision(
 export function consumeIssuedShellAllowRuleDecision(
   result: PermissionCheckResult | undefined,
   expected: ShellAllowRuleSubject,
-): boolean {
-  if (result === undefined) return false;
+  issuer: PermissionManager | undefined,
+): ShellAllowRuleAuthorization | undefined {
+  if (result === undefined) return undefined;
   const actual = issuedShellAllowRuleDecisions.get(result);
-  if (actual === undefined) return false;
+  if (actual === undefined) return undefined;
   issuedShellAllowRuleDecisions.delete(result);
-  return actual.toolName === expected.toolName &&
+  return actual.issuer === issuer &&
+    isShellAllowRuleAuthorizationCurrent(actual) &&
+    actual.toolName === expected.toolName &&
     actual.dialect === expected.dialect &&
     actual.command === expected.command &&
-    actual.cwd === expected.cwd;
+    actual.cwd === expected.cwd ? actual : undefined;
 }
 
 export class PermissionManager {
@@ -988,11 +1016,11 @@ export class PermissionManager {
 
   /** Monotonic host policy identity for sealed rationale revalidation. */
   getPolicyEpoch(): string {
-    return `${this.policyGeneration}:${this.mode}:${this.interactiveAutoApprove}`;
+    return `${this.policyGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}:${this.interactiveAutoApprove}`;
   }
 
   setRules(rules: PermissionRule[]): void {
-    this.rules = [...rules];
+    this.rules = rules.map((rule) => ({ ...rule }));
     this.policyGeneration += 1;
   }
 
@@ -1098,6 +1126,7 @@ export class PermissionManager {
     );
     if (!exists) {
       this.rules.unshift({ pattern, action: "deny" });
+      this.policyGeneration += 1;
     }
     // Persistent file.
     await updatePermissionsFile(this.permissionsFilePath, (file) => {
@@ -1357,6 +1386,7 @@ export class PermissionManager {
       this.policyGeneration += 1;
       return;
     }
+    this.policyGeneration += 1;
     this.rulesLoadError = undefined;
     if (!file) return;
 
@@ -1408,7 +1438,6 @@ export class PermissionManager {
         if (surviving) surviving.tier = merged;
       }
     }
-    this.policyGeneration += 1;
   }
 
   /**
@@ -1504,11 +1533,18 @@ export class PermissionManager {
 
     // Issue #28 — project scope and the shell subject are resolved once.
     // Precedence across both scopes is deny > ask > allow.
-    const projectRuleState = context.projectRulesCwd === undefined
+    const requestedRuleSubject = context.ruleSubject;
+    const cwdIdentity = context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined
+      ? captureShellWorkingDirectoryIdentity(requestedRuleSubject.cwd)
+      : undefined;
+    const ruleSubject = requestedRuleSubject !== undefined && cwdIdentity !== undefined
+      ? { ...requestedRuleSubject, cwd: cwdIdentity.realpath } : requestedRuleSubject;
+    const projectRulesCwd = context.projectRulesCwd === requestedRuleSubject?.cwd && cwdIdentity !== undefined
+      ? cwdIdentity.realpath : context.projectRulesCwd;
+    const projectRuleState = projectRulesCwd === undefined
       ? undefined
-      : this.projectRuleScopes.stateFor(context.projectRulesCwd);
+      : this.projectRuleScopes.stateFor(projectRulesCwd);
     const projectRules = projectRuleState?.ok ? projectRuleState.rules : [];
-    const ruleSubject = context.ruleSubject;
     if (ruleSubject !== undefined && ruleSubject.dialect !== "bash" && ruleSubject.dialect !== "powershell") {
       throw new Error(`shell rule subject has no known dialect: ${String((ruleSubject as { dialect?: unknown }).dialect)}`);
     }
@@ -1808,14 +1844,18 @@ export class PermissionManager {
     if (
       result.decision === "allow" &&
       result.layer === 3 &&
-      ruleSubject !== undefined &&
-      ruleSubject.cwd !== undefined
+      context.hostShellExecutionPlan?.executionRequest === "host" &&
+      requestedRuleSubject?.cwd !== undefined &&
+      cwdIdentity !== undefined
     ) {
       issuedShellAllowRuleDecisions.set(result, Object.freeze({
         toolName,
-        dialect: ruleSubject.dialect,
-        command: ruleSubject.command,
-        cwd: ruleSubject.cwd,
+        dialect: requestedRuleSubject.dialect,
+        command: requestedRuleSubject.command,
+        cwd: requestedRuleSubject.cwd,
+        cwdIdentity,
+        issuer: this,
+        policyEpoch: this.getPolicyEpoch(),
       }));
     }
     return result;

@@ -520,6 +520,15 @@ decision for the same command and resolved cwd — and is consumed once before
 spawn. Changed commands, cwd, plans or request fields and replayed permits or
 rule decisions fail closed.
 
+An allow-rule proof is issued only for an explicit host execution plan. It
+belongs to the issuing PermissionManager and its policy epoch, including the
+project-rule revision. Rule, mode and relevant settings changes revoke
+outstanding proofs and permits. The proof also captures the cwd's physical
+realpath, device and inode during evaluation. Both proof consumption and the
+permit check immediately before spawn require the same policy epoch and physical
+directory. A changed identity or epoch rejects execution with an error.
+Rejected authority requires normal authorization again.
+
 A sandbox that is requested but unavailable (missing `bwrap` or `socat`, or a
 start failure) is not a one-shot route. The shell runs as a plain child under
 the normal rules, exactly like sandbox-off, while its plan keeps

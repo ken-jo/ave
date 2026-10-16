@@ -449,6 +449,7 @@ export async function authorizeToolInvocation(
             ...invocationPermissionContext,
             decisionOverride: metaOverride,
             ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
+            ...(hostShellExecutionPlan ? { hostShellExecutionPlan } : {}),
             ...(projectRulesCwd !== undefined ? { projectRulesCwd } : {}),
           },
         )
@@ -475,7 +476,7 @@ export async function authorizeToolInvocation(
       hostShellExecutionPlan?.executionRequest === "host" &&
       remoteControllerOrigin === undefined &&
       invocationPermissionContext.headless !== true &&
-      isIssuedShellAllowRuleDecision(permissionResult);
+      isIssuedShellAllowRuleDecision(permissionResult, services.permissionManager);
     if (explicitHostAllowRule) hostShellAllowRuleDecision = permissionResult;
     if (
       hostShellRequiresExplicitApproval &&

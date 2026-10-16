@@ -16,7 +16,7 @@
  * rule-approved explicit host run also proves the spawn-side permit check.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -74,6 +74,7 @@ async function run(input: {
   mode?: "default" | "allow";
   cwd?: string;
   pm?: PermissionManager;
+  beforeExecute?: (pm: PermissionManager) => void | Promise<void>;
 }) {
   arrangeSubstrate(input.substrate);
   const pm = input.pm ?? new PermissionManager(join(dir, "permissions.json"));
@@ -83,7 +84,14 @@ async function run(input: {
   }
   const check = vi.spyOn(pm, "checkDetailed");
   const tool = new BashTool();
+  const executeTool = tool.execute.bind(tool);
   const execute = vi.spyOn(tool, "execute");
+  if (input.beforeExecute) {
+    execute.mockImplementation(async (...args) => {
+      await input.beforeExecute!(pm);
+      return executeTool(...args);
+    });
+  }
   const registry = new ToolRegistry();
   registry.register(tool);
   const cards: ApprovalRequest[] = [];
@@ -145,6 +153,44 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(result.is_error).toBeUndefined();
     expect(result.content).toContain("in-subdir");
+  });
+
+  it("rejects a symlinked cwd retargeted after rule authorization and permit minting", async () => {
+    const first = join(dir, "first");
+    const second = join(dir, "second");
+    for (const project of [first, second]) mkdirSync(join(project, ".git"), { recursive: true });
+    const current = join(dir, "current");
+    symlinkSync(first, current, "junction");
+    const pm = new PermissionManager(join(dir, "permissions.json"));
+    await pm.addRulePersist({ pattern: "Bash(touch *)", action: "allow" }, { kind: "project", projectCwd: first });
+    await pm.addRulePersist({ pattern: "Bash(touch *)", action: "deny" }, { kind: "project", projectCwd: second });
+
+    const { result, cards, execute } = await run({
+      substrate: "sandbox-active", rules: [], command: "touch marker",
+      executionMode: "host", answer: "deny-once", cwd: "current", pm,
+      beforeExecute: () => {
+        unlinkSync(current);
+        symlinkSync(second, current, "junction");
+      },
+    });
+    expect(cards).toHaveLength(0);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(result.is_error).toBe(true);
+    expect(result.content).toMatch(/working directory.*changed/i);
+    expect(existsSync(join(first, "marker"))).toBe(false);
+    expect(existsSync(join(second, "marker"))).toBe(false);
+  });
+
+  it("rejects a minted rule permit when the allow rule is revoked before spawn", async () => {
+    const { result, cards, execute } = await run({
+      substrate: "sandbox-active", rules: PRINTF_ALLOW, command: "printf revoked",
+      executionMode: "host", answer: "deny-once",
+      beforeExecute: (pm) => pm.removeRulePersist(PRINTF_ALLOW[0]!, { kind: "user" }),
+    });
+    expect(cards).toHaveLength(0);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(result.is_error).toBe(true);
+    expect(result.content).toMatch(/policy.*changed|revoked/i);
   });
 
   // The research names the hazard: a remembered approval given for a

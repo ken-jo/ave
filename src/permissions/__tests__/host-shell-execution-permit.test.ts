@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
   ApprovalGate,
   type ApprovalDecision,
@@ -12,6 +16,7 @@ import {
 } from "../host-shell-execution-permit.js";
 import {
   PermissionManager,
+  consumeIssuedShellAllowRuleDecision,
   isIssuedShellAllowRuleDecision,
   type PermissionCheckResult,
 } from "../permission-manager.js";
@@ -192,6 +197,16 @@ describe("Windows partial-shell execution permit", () => {
 });
 
 describe("explicit host execution permit from a matching allow rule (design I3)", () => {
+  let directory: string;
+  let pm: PermissionManager;
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), "ave-rule-permit-"));
+    mkdirSync(join(directory, "subdir"));
+    pm = new PermissionManager(join(directory, "permissions.json"));
+    pm.setRules([{ pattern: "Bash(echo *)", action: "allow" }]);
+  });
+  afterEach(() => cleanupTmpDir(directory));
+
   function explicitHostPlan() {
     return buildHostShellExecutionPlan({
       platform: "linux",
@@ -209,8 +224,8 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
 
   function hostBinding(plan = explicitHostPlan(), overrides: Partial<HostShellExecutionPermitBinding> = {}) {
     return makeBinding(plan, {
-      executionCwd: "/repo",
-      resolvedCwd: "/repo/subdir",
+      executionCwd: directory,
+      resolvedCwd: join(directory, "subdir"),
       executionMode: plan.executionRequest,
       justification: plan.executionRequest === "host" ? "Retry outside the sandbox" : undefined,
       allowedDirectories: Object.freeze([]),
@@ -218,11 +233,10 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     });
   }
 
-  function ruleDecision(command = "echo one-shot", cwd = "/repo/subdir"): PermissionCheckResult {
-    const pm = new PermissionManager("/tmp/nonexistent-permissions.json");
-    pm.setRules([{ pattern: "Bash(echo *)", action: "allow" }]);
+  function ruleDecision(command = "echo one-shot", cwd = join(directory, "subdir")): PermissionCheckResult {
     const result = pm.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command, cwd },
+      hostShellExecutionPlan: explicitHostPlan(),
     });
     expect(result).toMatchObject({ decision: "allow", layer: 3 });
     expect(isIssuedShellAllowRuleDecision(result)).toBe(true);
@@ -233,12 +247,12 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     const binding = hostBinding();
     const decision = ruleDecision();
     const permit = mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, binding,
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
     });
     expect(permit).toBeDefined();
     expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(true);
     expect(mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, binding,
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
     })).toBeUndefined();
   });
 
@@ -247,19 +261,19 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     const lookalike: PermissionCheckResult = { decision: "allow", reason: "forged", layer: 3 };
     expect(isIssuedShellAllowRuleDecision(lookalike)).toBe(false);
     expect(mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: lookalike, binding,
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: lookalike, permissionManager: pm, binding,
     })).toBeUndefined();
     expect(mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision("echo other"), binding,
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision("echo other"), permissionManager: pm, binding,
     })).toBeUndefined();
     expect(mintHostShellExecutionPermit({
-      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision("echo one-shot", "/repo"), binding,
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision("echo one-shot", directory), permissionManager: pm, binding,
     })).toBeUndefined();
     // The Windows Plan B is allow-once only: a rule never authorizes it.
     const planB = windowsPlan();
     const planBBinding = hostBinding(planB);
     expect(mintHostShellExecutionPermit({
-      plan: planB, approvalDecision: undefined, allowRuleDecision: ruleDecision(), binding: planBBinding,
+      plan: planB, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding: planBBinding,
     })).toBeUndefined();
   });
 
@@ -278,5 +292,113 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     });
     expect(modeAllow.decision).toBe("allow");
     expect(isIssuedShellAllowRuleDecision(modeAllow)).toBe(false);
+  });
+
+  it.each(["remove allow", "add deny"])("invalidates outstanding decisions and minted permits after %s", (change) => {
+    const cwd = directory;
+    const binding = hostBinding(undefined, { requestedCwd: undefined, executionCwd: cwd, resolvedCwd: cwd });
+    const issue = () => pm.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd },
+      hostShellExecutionPlan: binding.plan,
+    });
+    const outstanding = issue();
+    const mintable = issue();
+    const permit = mintHostShellExecutionPermit({
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: mintable, permissionManager: pm, binding,
+    });
+    expect(permit).toBeDefined();
+
+    pm.setRules(change === "remove allow" ? [] : [
+      { pattern: "Bash(echo *)", action: "allow" },
+      { pattern: "Bash(echo *)", action: "deny" },
+    ]);
+    expect(consumeIssuedShellAllowRuleDecision(outstanding, {
+      toolName: "bash", dialect: "bash", command: binding.command, cwd,
+    }, pm)).toBeUndefined();
+    expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(false);
+    expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(false);
+  });
+
+  it("rejects a sandboxed-attempt rule decision for host minting", () => {
+    const cwd = directory;
+    const binding = hostBinding(undefined, { requestedCwd: undefined, executionCwd: cwd, resolvedCwd: cwd });
+    const sandboxedPlan = buildHostShellExecutionPlan({
+      platform: "linux", requestedSandbox: true,
+      activeCapability: {
+        kind: "asrt", confidence: "verified", platform: "linux", reason: "fixture full sandbox",
+        confines: { filesystem: true, process: true, network: true },
+      },
+    });
+    expect(sandboxedPlan).toMatchObject({ mode: "asrt", executionRequest: "default" });
+    const decision = pm.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd },
+      hostShellExecutionPlan: sandboxedPlan,
+    });
+    expect(decision).toMatchObject({ decision: "allow", layer: 3 });
+    expect(isIssuedShellAllowRuleDecision(decision, pm)).toBe(false);
+    expect(mintHostShellExecutionPermit({
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
+    })).toBeUndefined();
+  });
+
+  it("burns a decision presented to another permission manager", () => {
+    const binding = hostBinding();
+    const decision = ruleDecision();
+    const other = new PermissionManager(join(directory, "other-permissions.json"));
+    other.setRules([{ pattern: "Bash(echo *)", action: "allow" }]);
+    expect(mintHostShellExecutionPermit({
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: other, binding,
+    })).toBeUndefined();
+    expect(mintHostShellExecutionPermit({
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
+    })).toBeUndefined();
+  });
+
+  it.each(["before minting", "before spawning"])("rejects physical directory replacement %s even at the same realpath", (when) => {
+    const binding = hostBinding();
+    const decision = ruleDecision();
+    const mint = () => mintHostShellExecutionPermit({
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
+    });
+    const permit = when === "before spawning" ? mint() : undefined;
+    if (when === "before spawning") expect(permit).toBeDefined();
+    renameSync(binding.resolvedCwd, join(directory, "original"));
+    mkdirSync(binding.resolvedCwd);
+    if (when === "before minting") expect(mint()).toBeUndefined();
+    else expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(false);
+  });
+
+  it("rejects a symlink retargeted between issue and consumption", () => {
+    const cwd = join(directory, "current");
+    symlinkSync(join(directory, "subdir"), cwd, "junction");
+    const decision = ruleDecision("echo one-shot", cwd);
+    unlinkSync(cwd);
+    symlinkSync(directory, cwd, "junction");
+    expect(consumeIssuedShellAllowRuleDecision(decision, {
+      toolName: "bash", dialect: "bash", command: "echo one-shot", cwd,
+    }, pm)).toBeUndefined();
+  });
+
+  it("revokes outstanding decisions and permits when project rules reload", async () => {
+    const binding = hostBinding();
+    const outstanding = ruleDecision();
+    const permit = mintHostShellExecutionPermit({
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+    });
+    expect(permit).toBeDefined();
+    const other = new PermissionManager(join(directory, "permissions.json"));
+    await other.addRulePersist({ pattern: "Bash(echo *)", action: "deny" }, {
+      kind: "project", projectCwd: binding.resolvedCwd,
+    });
+    await pm.ensureProjectRulesLoaded(binding.resolvedCwd);
+    expect(consumeIssuedShellAllowRuleDecision(outstanding, {
+      toolName: "bash", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd,
+    }, pm)).toBeUndefined();
+    expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(false);
+    const reevaluated = pm.checkDetailed("bash", "builtin", "shell", null, {
+      hostShellExecutionPlan: binding.plan, projectRulesCwd: binding.resolvedCwd,
+      ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd },
+    });
+    expect(reevaluated).toMatchObject({ decision: "deny", layer: 1 });
   });
 });

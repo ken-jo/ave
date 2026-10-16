@@ -1524,7 +1524,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       });
       if (!permitAccepted) {
         return {
-          output: "spawn failed: this host shell execution requires a one-shot host approval permit.",
+          output: "spawn failed: this host shell execution requires a one-shot host approval permit. The working directory or permission policy changed, or the permit is invalid or revoked. Request authorization again.",
           isError: true,
           metadata: { sandboxed: false, isolation: "none" },
         };
@@ -2727,7 +2727,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       });
       if (!permitAccepted) {
         return {
-          output: "PowerShell spawn failed: this host shell execution requires a one-shot host approval permit.",
+          output: "PowerShell spawn failed: this host shell execution requires a one-shot host approval permit. The working directory or permission policy changed, or the permit is invalid or revoked. Request authorization again.",
           isError: true,
           metadata: { sandboxed: false, isolation: "none" },
         };

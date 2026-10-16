@@ -630,6 +630,7 @@ export async function executeAuthorizedToolInvocation(
           plan: hostShellExecutionPlan,
           approvalDecision: hostShellApprovalDecision,
           allowRuleDecision: hostShellAllowRuleDecision,
+          permissionManager: services.permissionManager,
           binding: hostShellExecutionPermitBinding,
         })
       : undefined;

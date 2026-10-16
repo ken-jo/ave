@@ -36,8 +36,13 @@ async function fileStamp(filePath: string): Promise<FileStamp> {
 export class ProjectRuleScopes {
   private readonly states = new Map<string, ProjectRuleState>();
   private readonly stamps = new Map<string, FileStamp>();
+  private revision = 0;
 
   constructor(private readonly baseDir: string) {}
+
+  getRevision(): number {
+    return this.revision;
+  }
 
   /**
    * Load the rule file of the project `projectCwd` belongs to, re-reading it
@@ -65,6 +70,7 @@ export class ProjectRuleScopes {
       state = { ok: false, projectRoot: location.projectRoot, error };
     }
     this.states.set(location.identity, state);
+    this.revision += 1;
     this.stamps.set(location.identity, stamp);
     return state;
   }
@@ -92,6 +98,7 @@ export class ProjectRuleScopes {
       }
     });
     this.states.set(location.identity, { ok: true, projectRoot: location.projectRoot, rules: Object.freeze([...file.rules]) });
+    this.revision += 1;
     this.stamps.set(location.identity, await fileStamp(location.filePath));
   }
 
@@ -101,6 +108,7 @@ export class ProjectRuleScopes {
       current.rules = current.rules.filter((r) => !(r.pattern === pattern && r.action === action));
     });
     this.states.set(location.identity, { ok: true, projectRoot: location.projectRoot, rules: Object.freeze([...file.rules]) });
+    this.revision += 1;
     this.stamps.set(location.identity, await fileStamp(location.filePath));
   }
 }

@@ -20,7 +20,10 @@ import {
 } from "./approval-gate.js";
 import {
   consumeIssuedShellAllowRuleDecision,
+  isShellAllowRuleAuthorizationCurrent,
   type PermissionCheckResult,
+  type PermissionManager,
+  type ShellAllowRuleAuthorization,
 } from "./permission-manager.js";
 
 export type HostShellToolName = "bash" | "powershell";
@@ -55,6 +58,7 @@ export interface HostShellExecutionPermit {
 
 interface PermitRecord extends HostShellExecutionPermitBinding {
   readonly plan: HostShellExecutionPlan;
+  readonly allowRuleAuthorization: ShellAllowRuleAuthorization | undefined;
 }
 
 const permits = new WeakMap<HostShellExecutionPermit, PermitRecord>();
@@ -128,7 +132,7 @@ export function buildHostShellExecutionPermitBinding(input: {
  *   - for an explicit host request only (`executionRequest: "host"`), the
  *     PermissionManager's own layer-3 allow-rule decision for this exact shell
  *     command and working directory (design I3: a matching allow rule approves
- *     an unsandboxed retry, as in Claude Code and Codex). The Windows Plan B
+ *     an unsandboxed retry). The Windows Plan B
  *     never accepts a rule.
  *
  * Calling this public helper with a structural decision, an unrelated approval
@@ -138,6 +142,7 @@ export function mintHostShellExecutionPermit(input: {
   plan: HostShellExecutionPlan;
   approvalDecision: ApprovalDecision | undefined;
   allowRuleDecision?: PermissionCheckResult | undefined;
+  permissionManager?: PermissionManager | undefined;
   binding: HostShellExecutionPermitBinding;
 }): HostShellExecutionPermit | undefined {
   // The public TypeScript surface declares these fields as required, but
@@ -145,18 +150,18 @@ export function mintHostShellExecutionPermit(input: {
   // compiled caller. Treat any incomplete input as an unauthorised request
   // instead of throwing before the fail-closed decision.
   if (input.binding === undefined) return undefined;
+  let allowRuleAuthorization: ShellAllowRuleAuthorization | undefined;
   if (input.approvalDecision === undefined) {
     if (input.allowRuleDecision === undefined) return undefined;
     // Burn the rule proof before any plan check, so a mismatch cannot be
     // probed or replayed.
-    if (
-      !consumeIssuedShellAllowRuleDecision(input.allowRuleDecision, {
-        toolName: input.binding.toolName,
-        dialect: input.binding.toolName,
-        command: input.binding.command,
-        cwd: input.binding.resolvedCwd,
-      })
-    ) return undefined;
+    allowRuleAuthorization = consumeIssuedShellAllowRuleDecision(input.allowRuleDecision, {
+      toolName: input.binding.toolName,
+      dialect: input.binding.toolName,
+      command: input.binding.command,
+      cwd: input.binding.resolvedCwd,
+    }, input.permissionManager);
+    if (allowRuleAuthorization === undefined) return undefined;
     if (input.plan.executionRequest !== "host") return undefined;
   } else if (
     !consumeHostApprovedOneShotExecutionBinding(
@@ -172,7 +177,7 @@ export function mintHostShellExecutionPermit(input: {
     input.binding.planIdentity !== input.plan.identity
   ) return undefined;
   const permit = Object.freeze({}) as HostShellExecutionPermit;
-  permits.set(permit, Object.freeze({ ...input.binding, plan: input.plan }));
+  permits.set(permit, Object.freeze({ ...input.binding, plan: input.plan, allowRuleAuthorization }));
   return permit;
 }
 
@@ -200,6 +205,7 @@ export function consumeHostShellExecutionPermit(input: {
   if (record === undefined) return false;
   permits.delete(input.permit);
   return (
+    (record.allowRuleAuthorization === undefined || isShellAllowRuleAuthorizationCurrent(record.allowRuleAuthorization)) &&
     record.plan === input.plan &&
     record.toolName === input.toolName &&
     record.toolUseId === input.toolUseId &&
