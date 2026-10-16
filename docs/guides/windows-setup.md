@@ -8,7 +8,7 @@ The general setup is in [Getting started](./getting-started.md). This page cover
 
 | Tool | Version | Check |
 |---|---|---|
-| Node.js | `>=22.4` (from `package.json` `engines`) | `node -v` |
+| Node.js | `>=22.12` (from `package.json` `engines`) | `node -v` |
 | Bun | Current release | `bun -v` |
 | Git | Any recent release | `git --version` |
 

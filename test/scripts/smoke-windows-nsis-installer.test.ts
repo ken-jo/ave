@@ -1659,11 +1659,13 @@ describe("Windows NSIS installer smoke contracts", () => {
     // install stamped — 0.0.73 added ambient write-deny stamps on the stock
     // world-writable system dirs, which `uninstall` removes (and `--keep-user`
     // deliberately keeps, a flag this installer does not pass). Verified for
-    // 0.0.76: its srt-win.exe is built from the same `vendor/srt-win-src` tree
-    // as 0.0.75 (upstream tree c2099dd at both tags; the binaries differ only
-    // by rustc toolchain). Bump this only together with that check.
+    // 0.0.79: its srt-win.exe is built from the same Rust sources as 0.0.75 and
+    // 0.0.76 (upstream `vendor/srt-win-src/src` e29778f, `Cargo.toml` 8493e7d and
+    // `Cargo.lock` aa84cda at all three tags; between 0.0.76 and 0.0.79 only the
+    // `ci/` smoke scripts changed and the build gained `--locked`, so the
+    // binaries differ only by toolchain). Bump this only together with that check.
     expect(packageJson.dependencies?.["@anthropic-ai/sandbox-runtime"]).toBe(
-      "0.0.76",
+      "0.0.79",
     );
     expect(packageJson.build?.nsis?.deleteAppDataOnUninstall).toBe(false);
   });

@@ -57,7 +57,7 @@
 필수:
 
 - Bun
-- Node.js `>=22.4`
+- Node.js `>=22.12`
 
 ```bash
 git clone <repo-url>
