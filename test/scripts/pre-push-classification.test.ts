@@ -313,6 +313,17 @@ describe("pre-push classification precedence", () => {
         testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/ui/__tests__/panel-copy.test.tsx"],
         consumerModules: ["src/ui/panel.tsx"],
       });
+      // Keep the literal consumer in the same pushed tree. Its presence must
+      // not hide a second consumer whose namespace is computed at runtime.
+      write("src/ui/dynamic.ts", 'export const title = (ns: string) => t(`${ns}.title`);\n');
+      git(["add", "src/ui/dynamic.ts"]);
+      git(["commit", "-qm", "add computed consumer"]);
+      const messageCatalog = select(repo, [{ ...modified(fragment), baseSha: base, localSha: git(["rev-parse", "HEAD"]) }]);
+      const result = classify([modified(fragment)], { messageCatalog });
+      expect(result).toEqual({
+        docsOnly: false,
+        reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
+      });
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

@@ -15,6 +15,8 @@
 // that names a changed key (selectMessageCatalogChecks).
 
 import { posix } from "node:path";
+import * as ast from "typescript/unstable/ast";
+import { parseSourceTexts } from "../lib/ts7-ast.mjs";
 
 import {
   classifyDocumentationChanges,
@@ -406,93 +408,173 @@ export function selectFastSourceChecks(changes) {
 export const MESSAGE_CATALOG_CHECK_SCRIPTS = Object.freeze(["check:i18n-catalog", "check:i18n-barrels"]);
 const I18N_SUITE_DIRECTORY = "src/i18n/__tests__/";
 const scannedModulePath = /^(?:src|test)\/(?:[^/]+\/)*[^/]+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
-const catalogWord = /[A-Za-z_$][\w$]*/y;
+const isStaticString = (node) => node !== undefined && (ast.isStringLiteral(node) || ast.isNoSubstitutionTemplateLiteral(node));
 
-// Tokens of a catalog module: strings, words and the punctuation a catalog
-// declaration uses. Anything else (a spread, a call, a computed key, an
-// interpolated template) returns null.
-function tokenizeMessageCatalog(text) {
-  const tokens = [];
-  let index = 0;
-  while (index < text.length) {
-    const char = text[index];
-    if (/\s/.test(char)) {
-      index += 1;
-    } else if (text.startsWith("//", index)) {
-      const end = text.indexOf("\n", index);
-      index = end === -1 ? text.length : end;
-    } else if (text.startsWith("/*", index)) {
-      const end = text.indexOf("*/", index + 2);
-      if (end === -1) return null;
-      index = end + 2;
-    } else if (char === '"' || char === "'" || char === "`") {
-      let end = index + 1;
-      while (end < text.length && text[end] !== char) {
-        if (text[end] === "\\") end += 1;
-        else if (char !== "`" && text[end] === "\n") return null;
-        else if (char === "`" && text[end] === "$" && text[end + 1] === "{") return null;
-        end += 1;
-      }
-      if (end >= text.length) return null;
-      tokens.push({ type: "string", value: text.slice(index + 1, end) });
-      index = end + 1;
-    } else if (text.startsWith("...", index)) {
-      return null;
-    } else if ("{}:;,<>=.+".includes(char)) {
-      tokens.push({ type: "punct", value: char });
-      index += 1;
-    } else {
-      catalogWord.lastIndex = index;
-      const word = catalogWord.exec(text);
-      if (!word) return null;
-      tokens.push({ type: "word", value: word[0] });
-      index += word[0].length;
-    }
+function readCatalogString(node) {
+  if (isStaticString(node)) return node.text;
+  if (node && ast.isBinaryExpression(node) && node.operatorToken.kind === ast.SyntaxKind.PlusToken) {
+    const left = readCatalogString(node.left);
+    const right = readCatalogString(node.right);
+    if (left !== null && right !== null) return left + right;
   }
-  return tokens;
+  return null;
 }
 
-const isPunct = (token, value) => token?.type === "punct" && token.value === value;
+function isExported(node) {
+  return node.modifiers?.length === 1 && node.modifiers[0].kind === ast.SyntaxKind.ExportKeyword;
+}
+
+function isEnglishKeyType(node) {
+  return node && ast.isTypeOperatorNode(node) && node.operator === ast.SyntaxKind.KeyOfKeyword &&
+    ast.isTypeQueryNode(node.type) && ast.isIdentifier(node.type.exprName) && node.type.exprName.text === "en" &&
+    !node.type.typeArguments;
+}
+
+function isTranslationType(node, seed) {
+  if (!node || !ast.isTypeReferenceNode(node) || !ast.isIdentifier(node.typeName) || node.typeName.text !== "Record") return false;
+  const args = node.typeArguments;
+  return args?.length === 2 && args[1].kind === ast.SyntaxKind.StringKeyword &&
+    (seed ? ast.isTypeReferenceNode(args[0]) && ast.isIdentifier(args[0].typeName) &&
+      args[0].typeName.text === "SeedMessageKey" && !args[0].typeArguments : isEnglishKeyType(args[0]));
+}
 
 /**
- * Read a message catalog module (a seed or a generated fragment) as a map of
- * key -> its string values in declaration order (English, then the
- * translation). Returns null for any other shape: object literals must hold
- * only `"key": "value"` entries, where a value is a string, a template
- * without interpolation, or a `+` concatenation of those.
+ * Validate the entire seed or fragment module, then read key -> locale values.
+ * Only the shipped declarations, type-only seed scaffolding and static string
+ * properties are accepted. Unknown syntax or a different binding layout keeps
+ * the full tier; declaration order must never stand in for locale identity.
  */
-export function readMessageCatalogEntries(text) {
-  if (typeof text !== "string") return null;
-  const tokens = tokenizeMessageCatalog(text);
-  if (tokens === null) return null;
+export function readMessageCatalogEntries(text, relativePath) {
+  if (typeof text !== "string" || /[\u2028\u2029]/u.test(text)) return null;
+  const parsePath = relativePath ?? "catalog.ts";
+  let source;
+  try {
+    source = parseSourceTexts(new Map([[parsePath, text]])).get(parsePath);
+  } catch {
+    return null;
+  }
+  if (!source) return null;
+  const fragment = relativePath === undefined
+    ? source.statements.filter(ast.isVariableStatement).length === 2
+    : messageCatalogFragmentPath.test(relativePath) && !isMessageCatalogBarrel(relativePath);
+  const locale = relativePath === undefined
+    ? source.statements[0] && ast.isImportDeclaration(source.statements[0]) ? "ko" : "en"
+    : posix.basename(relativePath, ".ts");
+  if (!fragment && relativePath !== undefined &&
+      (!messageCatalogSeedPath.test(relativePath) || !["en", "ko"].includes(locale))) return null;
+  const statements = [...source.statements];
+  if (!fragment && locale === "ko") {
+    const statement = statements.shift();
+    const clause = statement && ast.isImportDeclaration(statement) && statement.importClause;
+    const bindings = clause && clause.namedBindings;
+    if (!clause?.isTypeOnly || clause.name || !bindings || !ast.isNamedImports(bindings) || bindings.elements.length !== 1 ||
+        bindings.elements[0].name.text !== "SeedMessageKey" || bindings.elements[0].propertyName ||
+        !ast.isStringLiteral(statement.moduleSpecifier) || statement.moduleSpecifier.text !== "./en.js" || statement.attributes) return null;
+  }
   const entries = new Map();
-  let bodies = 0;
-  for (let index = 0; index < tokens.length; index += 1) {
-    if (!isPunct(tokens[index], "{") || !isPunct(tokens[index - 1], "=")) continue;
-    bodies += 1;
-    index += 1;
-    while (!isPunct(tokens[index], "}")) {
-      const [key, colon, first] = tokens.slice(index, index + 3);
-      if (key?.type !== "string" || !isPunct(colon, ":") || first?.type !== "string") return null;
-      let value = first.value;
-      index += 3;
-      while (isPunct(tokens[index], "+")) {
-        if (tokens[index + 1]?.type !== "string") return null;
-        value += tokens[index + 1].value;
-        index += 2;
-      }
-      entries.set(key.value, [...(entries.get(key.value) ?? []), value]);
-      if (isPunct(tokens[index], ",")) index += 1;
+  for (const binding of fragment ? ["en", "ko"] : [locale]) {
+    const statement = statements.shift();
+    if (!statement || !ast.isVariableStatement(statement) || !isExported(statement) ||
+        statement.declarationList.flags !== ast.NodeFlags.Const || statement.declarationList.declarations.length !== 1) return null;
+    const declaration = statement.declarationList.declarations[0];
+    if (!ast.isIdentifier(declaration.name) || declaration.name.text !== binding || declaration.exclamationToken ||
+        (binding === "en" ? declaration.type !== undefined :
+          declaration.type === undefined ? !fragment : !isTranslationType(declaration.type, !fragment))) return null;
+    let body = declaration.initializer;
+    if (body && ast.isAsExpression(body)) {
+      if (!ast.isTypeReferenceNode(body.type) || !ast.isIdentifier(body.type.typeName) ||
+          body.type.typeName.text !== "const" || body.type.typeArguments) return null;
+      body = body.expression;
+    }
+    if (!body || !ast.isObjectLiteralExpression(body)) return null;
+    const keys = new Set();
+    for (const property of body.properties) {
+      if (!ast.isPropertyAssignment(property) || !ast.isStringLiteral(property.name)) return null;
+      const key = property.name.text;
+      const value = readCatalogString(property.initializer);
+      if (value === null || keys.has(key)) return null;
+      keys.add(key);
+      const values = entries.get(key) ?? {};
+      values[binding] = value;
+      entries.set(key, values);
     }
   }
-  return bodies > 0 ? entries : null;
+  if (!fragment && locale === "en" && statements.length === 1) {
+    const statement = statements.shift();
+    if (!ast.isTypeAliasDeclaration(statement) || !isExported(statement) || statement.name.text !== "SeedMessageKey" ||
+        statement.typeParameters || !isEnglishKeyType(statement.type)) return null;
+  }
+  if (fragment && [...entries.values()].some((values) => !("en" in values) || !("ko" in values))) return null;
+  return statements.length === 0 ? entries : null;
 }
 
-// The literal prefixes that name a key's namespace in source text.
-function namespaceNeedles(key) {
-  const dot = key.indexOf(".");
-  const stem = dot > 0 ? key.slice(0, dot + 1) : key;
-  return ['"', "'", "`"].map((quote) => `${quote}${stem}${dot > 0 ? "" : quote}`);
+function readMessageConsumers(source, namespaces) {
+  const named = new Set();
+  let unresolved = false;
+  const translationNames = new Set(["t"]);
+  const keyName = /keys?(?:(?:_?table)|(?:_?map))?$/i;
+  const isExpressionWrapper = (node) => node && (ast.isParenthesizedExpression(node) || ast.isAsExpression(node) ||
+    ast.isNonNullExpression(node) || ast.isSatisfiesExpression(node) || ast.isTypeAssertion(node));
+  function isTranslationExpression(node) {
+    while (isExpressionWrapper(node)) node = node.expression;
+    return node && (ast.isIdentifier(node) && translationNames.has(node.text) ||
+      ast.isPropertyAccessExpression(node) && node.name.text === "t" ||
+      ast.isElementAccessExpression(node) && isStaticString(node.argumentExpression) && node.argumentExpression.text === "t");
+  }
+  function collectTranslationNames(node) {
+    if (ast.isImportSpecifier(node) && (node.propertyName ?? node.name).text === "t") translationNames.add(node.name.text);
+    if (ast.isBindingElement(node) && node.propertyName &&
+        (ast.isIdentifier(node.propertyName) || isStaticString(node.propertyName)) && node.propertyName.text === "t" &&
+        ast.isIdentifier(node.name)) translationNames.add(node.name.text);
+    node.forEachChild(collectTranslationNames);
+  }
+  collectTranslationNames(source);
+  function visit(node, parent) {
+    if (isStaticString(node)) {
+      for (const namespace of namespaces) {
+        if (node.text === namespace || node.text.startsWith(`${namespace}.`)) named.add(namespace);
+      }
+    }
+    if (ast.isCallExpression(node)) {
+      if (isTranslationExpression(node.expression) && !isStaticString(node.arguments[0])) unresolved = true;
+    }
+    // A property named t can also be extracted by an assignment pattern;
+    // that syntax is a property assignment, not a declaration binding.
+    if (ast.isPropertyAssignment(node) || ast.isBindingElement(node)) {
+      const property = ast.isBindingElement(node) ? node.propertyName : node.name;
+      if (property) {
+        const key = ast.isComputedPropertyName(property) ? property.expression : property;
+        if ((ast.isIdentifier(key) || isStaticString(key)) && key.text === "t" ||
+            ast.isComputedPropertyName(property) && !isStaticString(key)) unresolved = true;
+      }
+    }
+    // Only a directly inspected call can prove which key a translator uses.
+    // Every other reference may escape through an alias, callback or member.
+    if (isTranslationExpression(node) && parent) {
+      const directCall = ast.isCallExpression(parent) && parent.expression === node;
+      const wrapped = isExpressionWrapper(parent) && parent.expression === node;
+      const declarationName = parent.name === node && !ast.isShorthandPropertyAssignment(parent) && !ast.isExportSpecifier(parent);
+      const importBinding = ast.isImportSpecifier(parent) || ast.isBindingElement(parent) && parent.propertyName === node;
+      if (!directCall && !wrapped && !declarationName && !importBinding) unresolved = true;
+    }
+    if ((ast.isVariableDeclaration(node) || ast.isPropertyAssignment(node)) &&
+        (ast.isIdentifier(node.name) || isStaticString(node.name)) && keyName.test(node.name.text)) {
+      const initializer = node.initializer;
+      const literalTable = (value) => {
+        if (!value) return false;
+        if (isStaticString(value)) return true;
+        if (ast.isAsExpression(value) || ast.isSatisfiesExpression(value)) return literalTable(value.expression);
+        if (ast.isArrayLiteralExpression(value)) return value.elements.every(literalTable);
+        if (ast.isObjectLiteralExpression(value)) return value.properties.every((property) =>
+          ast.isPropertyAssignment(property) && !ast.isComputedPropertyName(property.name) && literalTable(property.initializer));
+        return false;
+      };
+      if (!literalTable(initializer)) unresolved = true;
+    }
+    node.forEachChild((child) => visit(child, node));
+  }
+  visit(source);
+  return { named, unresolved };
 }
 
 /**
@@ -506,41 +588,62 @@ function namespaceNeedles(key) {
  * A key whose text changed in any locale, or that was added or removed,
  * names a namespace (the part before its first dot). The selection is every
  * Vitest file and module under src/ or test/ that names a changed namespace
- * as a string prefix (`t("ns.key")`, a key table, `` `ns.${id}` ``), every
+ * as a static string (`t("ns.key")` or a literal key table), every
  * one outside src/i18n that reads the catalog itself (it mentions
  * `i18n/messages`), and the i18n suites. Modules go to `vitest related`, so
  * their tests run. A namespace no file names may be reached through a
- * computed key this scan cannot see, so it keeps the full checks, as does a
- * catalog module whose shape the key reader does not accept.
+ * computed key this scan cannot see, so it keeps the full checks. Any dynamic
+ * t() argument or unresolved key table also keeps full checks, even when a
+ * different file literally names every changed namespace. Unsupported catalog
+ * modules and unreadable or unparseable consumers keep full checks too.
  *
  * Returns { namespaces, testFiles, consumerModules } or { reason }.
  */
 export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, readTrackedFile }) {
-  const needles = new Map();
+  const changedNamespaces = new Set();
   for (const entry of entries) {
     if (!isMessageCatalogPath(entry?.path)) return { reason: `${entry?.path} is not a message catalog file` };
     if (isMessageCatalogBarrel(entry.path)) continue;
-    const after = readMessageCatalogEntries(readBlob(entry.localSha, entry.path));
-    const before = entry.status === "A" ? new Map() : readMessageCatalogEntries(readBlob(entry.baseSha, entry.path));
+    const after = readMessageCatalogEntries(readBlob(entry.localSha, entry.path), entry.path);
+    const before = entry.status === "A" ? new Map() : readMessageCatalogEntries(readBlob(entry.baseSha, entry.path), entry.path);
     if (after === null || before === null) {
       return { reason: `${entry.path} has a shape the message key reader does not accept; full checks required` };
     }
     for (const key of new Set([...before.keys(), ...after.keys()])) {
       if (JSON.stringify(before.get(key)) === JSON.stringify(after.get(key))) continue;
       const dot = key.indexOf(".");
-      needles.set(dot > 0 ? key.slice(0, dot) : key, namespaceNeedles(key));
+      changedNamespaces.add(dot > 0 ? key.slice(0, dot) : key);
     }
   }
 
   const named = new Set();
   const testFiles = new Set();
   const consumerModules = new Set();
+  const texts = new Map();
   for (const path of trackedFiles) {
     if (!scannedModulePath.test(path) || path.startsWith(MESSAGE_CATALOG_DIRECTORY)) continue;
-    const isI18nSuite = path.startsWith(I18N_SUITE_DIRECTORY) && isCollectedVitestFile(path);
     const text = readTrackedFile(path);
     if (typeof text !== "string") return { reason: `${path} could not be read for message consumers; full checks required` };
-    const namespaces = [...needles].filter(([, list]) => list.some((needle) => text.includes(needle))).map(([namespace]) => namespace);
+    texts.set(path, text);
+  }
+  let sources;
+  try {
+    sources = changedNamespaces.size > 0 ? parseSourceTexts(texts) : new Map();
+  } catch {
+    return { reason: "message consumers could not be parsed; full checks required" };
+  }
+  for (const [path, text] of texts) {
+    const isI18nSuite = path.startsWith(I18N_SUITE_DIRECTORY) && isCollectedVitestFile(path);
+    const source = sources.get(path);
+    if (changedNamespaces.size > 0 && !source) return { reason: `${path} could not be parsed for message consumers; full checks required` };
+    let consumers;
+    try {
+      consumers = source ? readMessageConsumers(source, changedNamespaces) : { named: [], unresolved: false };
+    } catch {
+      return { reason: `${path} has an unsupported message consumer shape; full checks required` };
+    }
+    if (consumers.unresolved) return { reason: `${path} has an unresolved dynamic message consumer; full checks required` };
+    const namespaces = [...consumers.named];
     for (const namespace of namespaces) named.add(namespace);
     const readsCatalog = !path.startsWith("src/i18n/") && text.includes("i18n/messages");
     if (!isI18nSuite && namespaces.length === 0 && !readsCatalog) continue;
@@ -551,7 +654,7 @@ export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, re
     else if (!safeCliPath.test(path) || !isCanonicalGitPath(path)) return { reason: `${path} is not a safe command-line path` };
     else consumerModules.add(path);
   }
-  const unnamed = [...needles.keys()].filter((namespace) => !named.has(namespace)).sort();
+  const unnamed = [...changedNamespaces].filter((namespace) => !named.has(namespace)).sort();
   if (unnamed.length > 0) {
     return { reason: `no source file names message namespace ${unnamed.join(", ")}; a computed key may reach it, full checks required` };
   }
@@ -561,5 +664,5 @@ export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, re
   if (argumentChars > MAX_FAST_ARGUMENT_CHARS) {
     return { reason: "message consumer arguments exceed the safe command limit; full checks required" };
   }
-  return { namespaces: [...needles.keys()].sort(), testFiles: sortedTests, consumerModules: sortedModules };
+  return { namespaces: [...changedNamespaces].sort(), testFiles: sortedTests, consumerModules: sortedModules };
 }

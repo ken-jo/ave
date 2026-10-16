@@ -9,12 +9,11 @@
 // or shortens a check, and a run that cannot get its turn before the timeout
 // fails the push instead of passing it.
 //
-// A lock is a directory created with mkdir (atomic on every platform) holding
-// owner.json ({ pid, token, createdAt }). A lock whose owner PID is no longer
-// running, or that never recorded an owner within ORPHANED_LOCK_GRACE_MS, is
-// stale and reclaimed. Reclaiming runs under a short-lived `<lock>.reaper`
-// directory and re-reads the owner token inside it, so two waiters that both
-// saw the same dead owner cannot remove the lock the first of them acquired.
+// Ownership is prepared in a private directory, then published by renaming
+// that nonempty directory into place atomically. The owner filename carries
+// its unique generation. Release and stale recovery unlink only that filename
+// and use non-recursive rmdir: a delayed remover cannot delete a successor's
+// owner file or its nonempty directory. No separate reaper lock is needed.
 //
 // Settings (environment):
 //   AVE_PREPUSH_LOCK_DIR        directory for the lock files (default: /tmp,
@@ -24,11 +23,12 @@
 //   AVE_PREPUSH_FAST_SLOTS      concurrent fast-tier runs per host (default 4)
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const OWNER_FILE = "owner.json";
+const ownerFilename = (token) => `owner-${token}.json`;
+const OWNER_FILENAME = /^owner-([A-Za-z0-9-]{1,128})\.json$/;
 const ORPHANED_LOCK_GRACE_MS = 10_000;
 const DEFAULT_TIMEOUT_S = 3600;
 const DEFAULT_FAST_SLOTS = 4;
@@ -68,15 +68,21 @@ function isProcessAlive(pid) {
 }
 
 function readOwner(lockPath) {
+  let token;
   try {
-    const owner = JSON.parse(readFileSync(join(lockPath, OWNER_FILE), "utf8"));
-    if (Number.isInteger(owner?.pid) && owner.pid > 0 && typeof owner.token === "string" && SAFE_TOKEN.test(owner.token)) {
+    const files = readdirSync(lockPath);
+    if (files.length === 0) return { state: "absent" };
+    if (files.length !== 1) return { state: "malformed" };
+    token = OWNER_FILENAME.exec(files[0])?.[1];
+    if (!token) return { state: "malformed" };
+    const owner = JSON.parse(readFileSync(join(lockPath, ownerFilename(token)), "utf8"));
+    if (Number.isInteger(owner?.pid) && owner.pid > 0 && owner.token === token && SAFE_TOKEN.test(owner.token)) {
       return { state: "valid", pid: owner.pid, token: owner.token };
     }
-    return { state: "malformed" };
+    return { state: "malformed", token };
   } catch (error) {
     if (error?.code === "ENOENT") return { state: "absent" };
-    if (error instanceof SyntaxError) return { state: "malformed" };
+    if (error instanceof SyntaxError) return { state: "malformed", token };
     throw error;
   }
 }
@@ -90,68 +96,51 @@ function lockAgeMs(lockPath, now) {
   }
 }
 
-// A lock is stale when its recorded owner is gone, or when it recorded no
-// readable owner long after it was created (the creator died in between).
+// A lock is stale when its recorded owner is gone. Malformed metadata gets a
+// grace period; recovery can only remove its generation-specific filename.
 function isStale(owner, ageMs) {
   if (owner.state === "valid") return !isProcessAlive(owner.pid);
+  // Published generations are never empty. rmdir can safely recover an empty
+  // path even if a contender has already replaced it with a nonempty holder.
+  if (owner.state === "absent") return true;
   return ageMs !== null && ageMs >= ORPHANED_LOCK_GRACE_MS;
 }
 
 function createOwnedDirectory(path, token, now) {
-  mkdirSync(path);
+  const pending = `${path}.pending-${token}`;
+  mkdirSync(pending);
   try {
-    writeFileSync(join(path, OWNER_FILE), JSON.stringify({
+    writeFileSync(join(pending, ownerFilename(token)), JSON.stringify({
       pid: process.pid,
       token,
       createdAt: new Date(now()).toISOString(),
     }), { encoding: "utf8", flag: "wx" });
-  } catch (error) {
-    rmSync(path, { recursive: true, force: true });
-    throw error;
+    renameSync(pending, path);
+  } finally {
+    // Only the private, unpublished generation is ever recursively removed.
+    rmSync(pending, { recursive: true, force: true });
   }
 }
 
-// Remove a stale lock whose owner token (or absent owner) the caller saw.
-// Returns true when the caller should retry acquiring at once.
-function reclaimStaleLock(lockPath, seen, now) {
-  const reaperPath = `${lockPath}.reaper`;
-  const token = randomUUID();
-  try {
-    createOwnedDirectory(reaperPath, token, now);
-  } catch (error) {
-    if (error?.code !== "EEXIST") throw error;
-    // Another waiter is reclaiming. A reaper whose owner died mid-reclaim is
-    // moved aside under a unique name first, so only one waiter removes it.
-    const reaperOwner = readOwner(reaperPath);
-    if (isStale(reaperOwner, lockAgeMs(reaperPath, now))) {
-      const aside = `${reaperPath}.stale-${token}`;
-      try {
-        renameSync(reaperPath, aside);
-        rmSync(aside, { recursive: true, force: true });
-      } catch (renameError) {
-        if (renameError?.code !== "ENOENT") throw renameError;
-      }
+// The filename is a generation-specific removal capability. Even if this
+// process pauses after unlink, rmdir refuses a nonempty successor directory.
+function removeGeneration(lockPath, token) {
+  if (token !== undefined) {
+    try {
+      unlinkSync(join(lockPath, ownerFilename(token)));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
     }
-    return false;
   }
   try {
-    const current = readOwner(lockPath);
-    const sameOwner = seen.state === "valid"
-      ? current.state === "valid" && current.token === seen.token
-      : current.state !== "valid";
-    if (!sameOwner || !isStale(current, lockAgeMs(lockPath, now))) return true;
-    rmSync(lockPath, { recursive: true, force: true });
-    return true;
-  } finally {
-    const reaperOwner = readOwner(reaperPath);
-    if (reaperOwner.state === "valid" && reaperOwner.token === token) {
-      rmSync(reaperPath, { recursive: true, force: true });
-    }
+    rmdirSync(lockPath);
+  } catch (error) {
+    if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error?.code)) throw error;
   }
 }
 
 // One non-blocking attempt on one lock path: a release function, or the
-// holder seen ({ pid } or { pid: null } while the holder is still writing).
+// holder seen ({ pid } or { pid: null } for unknown ownership).
 function tryAcquire(lockPath, now) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const token = randomUUID();
@@ -160,11 +149,11 @@ function tryAcquire(lockPath, now) {
       return {
         release() {
           const owner = readOwner(lockPath);
-          if (owner.state === "valid" && owner.token === token) rmSync(lockPath, { recursive: true, force: true });
+          if (owner.state === "valid" && owner.token === token) removeGeneration(lockPath, token);
         },
       };
     } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
+      if (!["EEXIST", "ENOTEMPTY"].includes(error?.code)) throw error;
     }
     const owner = readOwner(lockPath);
     const ageMs = lockAgeMs(lockPath, now);
@@ -174,14 +163,15 @@ function tryAcquire(lockPath, now) {
       `[checks] reclaiming stale host lock ${lockPath} ` +
         (owner.state === "valid" ? `(owner PID ${owner.pid} is not running)` : "(no owner was recorded)")
     );
-    if (!reclaimStaleLock(lockPath, owner, now)) return { holderPid: null };
+    removeGeneration(lockPath, owner.token);
   }
   return { holderPid: null };
 }
 
 /**
- * Run `callback` while holding one of `slots` host-wide locks named `name`
- * (slots = 1 is an exclusive lock). Waits, printing who holds the lock, and
+ * Run synchronous `callback` while holding one of `slots` host-wide locks named `name`
+ * (omitting slots uses one exclusive lock; specifying slots uses indexed
+ * pool paths even for one slot). Waits, printing who holds the lock, and
  * throws once `timeoutMs` passes without a turn. The lock is released when
  * the callback returns or throws; a killed process leaves a lock that the
  * next waiter reclaims by PID liveness.
@@ -203,7 +193,7 @@ export function withHostLock(options, callback) {
   if (!Number.isSafeInteger(slots) || slots < 1) throw new Error(`[PRE_PUSH_HOST_LOCK] invalid slot count ${slots}`);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error(`[PRE_PUSH_HOST_LOCK] invalid timeout ${timeoutMs}`);
   mkdirSync(directory, { recursive: true });
-  const paths = slots === 1
+  const paths = options.slots === undefined
     ? [join(directory, `ave-prepush-${name}.lock`)]
     : Array.from({ length: slots }, (_, slot) => join(directory, `ave-prepush-${name}-${slot}.lock`));
 

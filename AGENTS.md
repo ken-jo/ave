@@ -294,8 +294,9 @@ Pre-push picks one tier and logs it with the reason
   `integration/*` branches, noncanonical paths, consumed documentation
   without a recorded reader set, deletions of modules,
   non-module assets, mode changes, declaration files, message namespaces no
-  source file names literally, runtime entry files, modules with no related
-  test files, and global inputs (`package.json`, `bun.lock`, compiler, Vitest
+  source file names literally, unresolved message consumers or catalog module
+  shapes, runtime entry files, modules with no related test files, and global
+  inputs (`package.json`, `bun.lock`, compiler, Vitest
   and build configs, Vitest setup files, the message loader
   `src/i18n/messages/index.ts`, `scripts/`, `.github/`), including earlier
   commits in the push. A full run holds one host-wide lock (in `/tmp`, or

@@ -18,6 +18,9 @@
  * each script's `typescript/unstable/ast` guard/enum imports) needs updating.
  */
 import { API } from "typescript/unstable/sync";
+import { createVirtualFileSystem } from "typescript/unstable/fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 
 /** Normalize an OS path to the forward-slash form the compiler service expects. */
 function toWirePath(path) {
@@ -58,6 +61,36 @@ export function parseSourceFiles(paths) {
     for (const [input, wirePath] of wireByInput) {
       const sourceFile = resolveSourceFile(snapshot, projects, wirePath);
       if (sourceFile) sourceFiles.set(input, sourceFile);
+    }
+  } finally {
+    api.close();
+  }
+  return sourceFiles;
+}
+
+/**
+ * Parse supplied source bytes without reading a checkout or executing code.
+ * Results retain the caller's names; syntax errors are omitted. All inputs
+ * share one isolated virtual filesystem and one short-lived compiler session.
+ */
+export function parseSourceTexts(texts) {
+  const sourceFiles = new Map();
+  if (texts.size === 0) return sourceFiles;
+  const wireByInput = new Map([...texts.keys()].map((path) => [path, toWirePath(resolve(tmpdir(), "ave-source-inputs", path))]));
+  const files = Object.fromEntries([...texts].map(([path, text]) => [wireByInput.get(path), text]));
+  const filesystem = createVirtualFileSystem(files);
+  const api = new API({ fs: {
+    ...filesystem,
+    readFile: (path) => filesystem.readFile(path) ?? null,
+    getAccessibleEntries: (path) => filesystem.getAccessibleEntries(path) ?? { files: [], directories: [] },
+  } });
+  try {
+    const snapshot = api.updateSnapshot({ openFiles: [...wireByInput.values()] });
+    const projects = snapshot.getProjects();
+    for (const [input, wirePath] of wireByInput) {
+      const project = snapshot.getDefaultProjectForFile(wirePath) ?? projects.find((candidate) => candidate.program.getSourceFile(wirePath));
+      const sourceFile = project?.program.getSourceFile(wirePath);
+      if (sourceFile && project.program.getSyntacticDiagnostics(wirePath).length === 0) sourceFiles.set(input, sourceFile);
     }
   } finally {
     api.close();

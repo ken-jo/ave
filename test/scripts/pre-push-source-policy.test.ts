@@ -417,18 +417,18 @@ describe("pre-push message catalog selection", () => {
   it("reads every key of the real catalog, and nothing the runtime does not load", () => {
     const keys = new Set<string>();
     for (const path of catalogFiles()) {
-      const entries = readMessageCatalogEntries(readFileSync(resolve(root, path), "utf8"));
+      const entries = readMessageCatalogEntries(readFileSync(resolve(root, path), "utf8"), path);
       expect(entries, path).not.toBeNull();
       for (const key of entries!.keys()) keys.add(key);
     }
     expect([...keys].sort()).toEqual(Object.keys(messages.en).sort());
     // The barrels carry no keys; the barrel check proves they match the fragments.
     expect(readMessageCatalogEntries(readFileSync(resolve(root, MESSAGES, "generated/index.ts"), "utf8"))).toBeNull();
-  });
+  }, 30_000);
 
   it("refuses catalog shapes whose keys it cannot read", () => {
     expect(readMessageCatalogEntries('export const en = { "a.b": "x" + "y", "a.c": `z` } as const;')).toEqual(
-      new Map([["a.b", ["xy"]], ["a.c", ["z"]]]),
+      new Map([["a.b", { en: "xy" }], ["a.c", { en: "z" }]]),
     );
     for (const text of [
       'export const en = { ...base, "a.b": "x" };',
@@ -437,6 +437,12 @@ describe("pre-push message catalog selection", () => {
       'export const en = { "a.b": label("x") };',
       'export const en = { "a.b": "unterminated };',
       "export const en = 1;",
+      'export const en = { "a.b": "x", "a.b": "y" } as const;',
+      'export const en = { "a.b": "x" } as const; en["a.b"] = "y";',
+      'export const en = { "a.b": "x" } as const; export { en as ko };',
+      'export let en = { "a.b": "x" } as const;',
+      'const en = { "a.b": "x" } as const;',
+      'import "./mutate.js"; export const en = { "a.b": "x" } as const;',
       null,
     ]) {
       expect(readMessageCatalogEntries(text), String(text)).toBeNull();
@@ -448,7 +454,7 @@ describe("pre-push message catalog selection", () => {
     'export const ko: Record<keyof typeof en, string> = {\n  "panel.title": "패널",\n  "other.label": "기타",\n};\n';
   const fixtureTree = new Map<string, string>([
     ["src/ui/panel.tsx", 'export const title = () => t("panel.title");'],
-    ["src/ui/panel-kinds.ts", "export const key = (kind: string) => t(`panel.${kind}`);"],
+    ["src/ui/panel-kinds.ts", 'export const keys = { title: "panel.title" } as const;'],
     ["src/ui/other.tsx", 'export const label = () => t("other.label");'],
     ["src/marketplace/language-check.ts", 'import { messages } from "../i18n/messages/index.js";'],
     ["src/ui/__tests__/panel-copy.test.tsx", 'expect(t("panel.title")).toBe("패널");'],
@@ -501,50 +507,147 @@ describe("pre-push message catalog selection", () => {
     });
   });
 
-  // The proof that the selection is sound on the real tree: for every key of
-  // these catalog files, each source module and each Vitest file that passes
-  // that key to t() literally (the same scan as used-keys-exist) is selected
-  // when the key changes. Leaving any of them out fails here.
+  // These inputs and expected decisions are specified independently of both
+  // the catalog reader and the consumer scanner. A literal sibling must never
+  // turn unresolved coverage into a fast selection.
   it.each([
-    "generated/shellExecution.ts",
-    "generated/statusBar.ts",
-    "generated/awayAuthority.ts",
-    "generated/llmTab.ts",
-    "en.ts",
-  ])("selects every literal t() consumer of a changed key in %s", (name) => {
-    const path = `${MESSAGES}/${name}`;
-    const text = readFileSync(resolve(root, path), "utf8");
-    const keys = new Set(readMessageCatalogEntries(text)!.keys());
-    const selection = selectMessageCatalogChecks([{ ...added(path), baseSha: "base", localSha: "local" }], {
-      readBlob: () => text, trackedFiles: tracked, readTrackedFile: readTracked,
+    'export const title = (ns: string) => t(`${ns}.title`);',
+    'export const title = (kind: string) => t(`panel.${kind}`);',
+    'export const title = (key: string) => t(key);',
+    'export const title = (key: string) => t?.(key);',
+    'export const title = (key: string) => i18n.t(key);',
+    'export const title = (key: string) => i18n["t"](key);',
+    'import { t as translate } from "../i18n/index.js"; export const title = (key: string) => translate(key);',
+    'const translate = t; export const title = (key: string) => translate(key);',
+    'const translate = (t); export const title = (key: string) => translate(key);',
+    'const translate = i18n.t; export const title = (key: string) => translate(key);',
+    'const translate = i18n["t"]; export const title = (key: string) => translate(key);',
+    'const translate = enabled ? t : other; export const title = (key: string) => translate(key);',
+    'const translate = t.bind(null); export const title = (key: string) => translate(key);',
+    'const { t: translate } = i18n; export const title = (key: string) => translate(key);',
+    'let translate; ({ t: translate } = i18n); export const title = (key: string) => translate(key);',
+    'let translate; ({ ["t"]: translate } = i18n); export const title = (key: string) => translate(key);',
+    'const { ["t"]: translate } = i18n; export const title = (key: string) => translate(key);',
+    'export const dictionary = { translate: i18n.t };',
+    'export const dictionary = { t };',
+    'export const translator = () => t;',
+    'export { t as translate };',
+    'export const labels = keys.map(t);',
+    'export const labels = keys.map(i18n.t);',
+    'export const title = () => t("panel." + "title");',
+    'export const title = () => t();',
+    'export const keys = { title: `${namespace}.title` };',
+    'export const MESSAGE_KEYS = [namespace + ".title"];',
+    'export const keys = { ...sharedKeys };',
+    'export const keys = makeKeys(namespace);',
+    'export const titleKeys = { title: `${namespace}.title` };',
+  ])("keeps full checks for an unresolved consumer alongside a literal consumer: %s", (text) => {
+    const tree = new Map(fixtureTree);
+    tree.set("src/ui/dynamic.ts", text);
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+      reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
     });
-    expect(selection.reason).toBeUndefined();
-    const selected = new Set([...selection.testFiles!, ...selection.consumerModules!]);
-    const literalKey = /\bt\(\s*"([a-zA-Z][\w]*(?:\.[\w-]+)+)"/g;
-    const consumers = tracked.filter((file) => /\.(?:ts|tsx)$/.test(file) && !file.startsWith(`${MESSAGES}/`) &&
-      !file.split("/").includes("e2e") &&
-      [...readTracked(file).matchAll(literalKey)].some((match) => keys.has(match[1]!)));
-    expect(consumers.length, `${name} has literal consumers`).toBeGreaterThan(0);
-    expect(consumers.filter((file) => !selected.has(file))).toEqual([]);
   });
 
-  it("selects the host-execution approval surface and its test for a shell execution wording change", () => {
+  it.each(["src/ui/__tests__/dynamic.test.ts", "test/e2e/dynamic.spec.ts", "src/i18n/dynamic.ts"])(
+    "does not ignore unresolved consumers in %s", (path) => {
+      const tree = new Map(fixtureTree);
+      tree.set(path, 't(`${namespace}.title`);');
+      expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree).reason).toBe(
+        `${path} has an unresolved dynamic message consumer; full checks required`,
+      );
+    },
+  );
+
+  it("decodes literal key escapes and excludes t() text inside comments and strings", () => {
+    const tree = new Map([
+      ["src/ui/panel.ts", String.raw`const label = t("\u0070anel.title"); // t(dynamic)`],
+      ["src/ui/example.ts", 'const example = "t(dynamic)";'],
+    ]);
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+      namespaces: ["panel"], testFiles: [], consumerModules: ["src/ui/panel.ts"],
+    });
+  });
+
+  it("keeps full checks for unreadable or unparseable consumers", () => {
+    const tree = new Map(fixtureTree);
+    tree.set("src/ui/invalid.ts", 't("panel.title"');
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree).reason).toBe(
+      "src/ui/invalid.ts could not be parsed for message consumers; full checks required",
+    );
+  });
+
+  it("compares values by their locale bindings, including decoded escapes", () => {
+    expect(readMessageCatalogEntries(fragment("Panel"), `${MESSAGES}/generated/panel.ts`)?.get("panel.title"))
+      .toEqual({ en: "Panel", ko: "패널" });
+    expect(readMessageCatalogEntries(fragment("Panel"))?.get("panel.title")).toEqual({ en: "Panel", ko: "패널" });
+    const before = fragment("Panel");
+    const after = before.replace('"Panel"', String.raw`"\u0050anel"`);
+    expect(after).not.toBe(before);
+    expect(selectFixture(before, after).namespaces).toEqual([]);
+    const changed = after.replace(String.raw`\u0050anel`, String.raw`\u0050anel heading`);
+    expect(selectFixture(before, changed).namespaces).toEqual(["panel"]);
+  });
+
+  it("keeps full checks when the real fragment's locale bindings are swapped", () => {
+    const before = readFileSync(resolve(root, MESSAGES, "generated/be_hookRunner.ts"), "utf8");
+    const after = before.replace("const en =", "const ko =").replace("const ko:", "const en:");
+    expect(after).not.toBe(before);
+    expect(selectFixture(before, after)).toEqual({
+      reason: `${MESSAGES}/generated/panel.ts has a shape the message key reader does not accept; full checks required`,
+    });
+  });
+
+  it.each(["\u2028", "\u2029", "\r"])("handles a line comment terminated by %j conservatively", (terminator) => {
+    const before = fragment("Panel").replace('"panel.title": "Panel",', `// comment${terminator}"panel.title": "Panel",`);
+    const after = before.replace('"Panel"', '"Panel heading"');
+    const selection = selectFixture(before, after);
+    if (terminator === "\r") expect(selection.namespaces).toEqual(["panel"]);
+    else expect(selection.reason).toBe(`${MESSAGES}/generated/panel.ts has a shape the message key reader does not accept; full checks required`);
+  });
+
+  it.each([
+    (text: string) => `${text}en["panel.title"] = "replacement";`,
+    (text: string) => `${text}export { en as extra };`,
+    (text: string) => text.replace("export const en", "export let en"),
+    (text: string) => text.replace("keyof typeof en", "keyof typeof other"),
+    (text: string) => text.replace('"panel.title": "패널",', ""),
+    (text: string) => text.replace('"panel.title": "Panel",', '"panel.title": "Panel", "panel.title": "duplicate",'),
+  ])("validates the whole fragment before selecting checks", (change) => {
+    expect(selectFixture(fragment("Panel"), change(fragment("Panel"))).reason).toBe(
+      `${MESSAGES}/generated/panel.ts has a shape the message key reader does not accept; full checks required`,
+    );
+  });
+
+  it("keeps full checks on the real tree when any dynamic consumer remains unresolved", () => {
+    const path = `${MESSAGES}/generated/shellExecution.ts`;
+    const after = readFileSync(resolve(root, path), "utf8");
+    const before = after.replace(/("shellExecution\.cwd": ")[^"]*"/, '$1old"');
+    const selection = selectMessageCatalogChecks([{ ...modified(path), baseSha: "base", localSha: "local" }], {
+      readBlob: (sha) => sha === "base" ? before : after, trackedFiles: tracked, readTrackedFile: readTracked,
+    });
+    expect(selection.reason).toMatch(/unresolved dynamic message consumer; full checks required$/);
+    expect(selection.testFiles).toBeUndefined();
+    expect(selection.consumerModules).toBeUndefined();
+  }, 30_000);
+
+  it("keeps a shell execution wording change on full checks when its approval surface uses dynamic keys", () => {
     const path = `${MESSAGES}/generated/shellExecution.ts`;
     const after = readFileSync(resolve(root, path), "utf8");
     const before = after.replace(/("shellExecution\.cwd": ")[^"]*"/, '$1old"');
     expect(before).not.toBe(after);
     const selection = selectMessageCatalogChecks([{ ...modified(path), baseSha: "base", localSha: "local" }], {
-      readBlob: (sha) => (sha === "base" ? before : after), trackedFiles: tracked, readTrackedFile: readTracked,
+      readBlob: (sha) => (sha === "base" ? before : after),
+      trackedFiles: [
+        "src/shared/shell-execution-environment.ts",
+        "src/ui/renderer/components/ToolApprovalContent.tsx",
+        "src/ui/renderer/components/__tests__/ToolApprovalContent-host-execution.test.tsx",
+        "src/i18n/__tests__/used-keys-exist.test.ts",
+      ],
+      readTrackedFile: readTracked,
     });
-    expect(selection.namespaces).toEqual(["shellExecution"]);
-    expect(selection.consumerModules).toEqual(expect.arrayContaining([
-      "src/shared/shell-execution-environment.ts",
-      "src/ui/renderer/components/ToolApprovalContent.tsx",
-    ]));
-    expect(selection.testFiles).toEqual(expect.arrayContaining([
-      "src/i18n/__tests__/used-keys-exist.test.ts",
-      "src/ui/renderer/components/__tests__/ToolApprovalContent-host-execution.test.tsx",
-    ]));
-    expect(selection.testFiles!.some((file) => file.includes("/e2e/"))).toBe(false);
+    expect(selection).toEqual({
+      reason: "src/ui/renderer/components/ToolApprovalContent.tsx has an unresolved dynamic message consumer; full checks required",
+    });
   });
 });

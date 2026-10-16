@@ -7,7 +7,7 @@
  * a run that cannot get its turn fails instead of passing.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -28,21 +28,49 @@ afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-// A process that holds the named lock until `release` appears.
-function holder(directory: string, name: string, slots = 1) {
+interface LockPause {
+  operation: "mkdirSync" | "writeFileSync" | "unlinkSync";
+  pathPrefix: string;
+  after?: boolean;
+  fail?: boolean;
+}
+
+// A process that holds the named lock until `release` appears. Filesystem
+// barriers pause actual syscalls in the child, without changing the lock API.
+function holder(directory: string, name: string, slots?: number, pause?: LockPause) {
   const script = join(directory, `holder-${Math.random().toString(36).slice(2)}.mjs`);
   writeFileSync(script, `
-import { existsSync, writeFileSync } from "node:fs";
-import { withHostLock } from ${JSON.stringify(LOCK_MODULE)};
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 const [directory, name, slots, marker, release] = process.argv.slice(2);
-withHostLock({ name, label: name, directory, timeoutMs: 60_000, slots: Number(slots), pollMs: 50 }, () => {
-  writeFileSync(marker, "held");
-  while (!existsSync(release)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+const pause = ${JSON.stringify(pause ?? null)};
+const write = fs.writeFileSync;
+function waitForFile(path) {
+  while (!fs.existsSync(path)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+}
+if (pause) {
+  const original = fs[pause.operation];
+  let paused = false;
+  fs[pause.operation] = function(path, ...args) {
+    if (paused || !String(path).startsWith(pause.pathPrefix)) return original(path, ...args);
+    paused = true;
+    const result = pause.after ? original(path, ...args) : undefined;
+    write(marker + ".paused", String(path));
+    waitForFile(marker + ".resume");
+    if (pause.fail) throw Object.assign(new Error("owner write failed"), { code: "EIO" });
+    return pause.after ? result : original(path, ...args);
+  };
+  syncBuiltinESMExports();
+}
+const { withHostLock } = await import(${JSON.stringify(LOCK_MODULE)});
+withHostLock({ name, label: name, directory, timeoutMs: 60_000, ...(slots ? {slots: Number(slots)} : {}), pollMs: 50 }, () => {
+  write(marker, "held");
+  waitForFile(release);
 });
 `);
   const marker = `${script}.held`;
   const release = `${script}.release`;
-  const child = spawn(process.execPath, [script, directory, name, String(slots), marker, release], { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [script, directory, name, slots === undefined ? "" : String(slots), marker, release], { stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (chunk) => { output += chunk; });
   child.stderr.on("data", (chunk) => { output += chunk; });
@@ -50,9 +78,13 @@ withHostLock({ name, label: name, directory, timeoutMs: 60_000, slots: Number(sl
   return {
     pid: child.pid!,
     held: () => existsSync(marker),
+    paused: () => existsSync(`${marker}.paused`),
+    pausedPath: () => readFileSync(`${marker}.paused`, "utf8"),
+    resume: () => writeFileSync(`${marker}.resume`, "go"),
     release: () => writeFileSync(release, "go"),
     output: () => output,
     exited,
+    kill: () => child.kill("SIGKILL"),
   };
 }
 
@@ -101,7 +133,7 @@ describe("pre-push host lock", () => {
     const lock = join(directory, "ave-prepush-full.lock");
     mkdirSync(lock);
     const pid = deadPid();
-    writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid, token: "dead-owner", createdAt: new Date().toISOString() }));
+    writeFileSync(join(lock, "owner-dead-owner.json"), JSON.stringify({ pid, token: "dead-owner", createdAt: new Date().toISOString() }));
     const log: string[] = [];
     let ran = false;
     withHostLock({ name: "full", label: "full-tier", directory, timeoutMs: 1000, log: (line) => log.push(line) }, () => {
@@ -113,10 +145,11 @@ describe("pre-push host lock", () => {
     expect(existsSync(lock)).toBe(false);
   });
 
-  it("reclaims a lock that never recorded an owner once the grace period passed, and not before", () => {
+  it("reclaims malformed ownership once the grace period passed, and not before", () => {
     const directory = lockDirectory();
     const lock = join(directory, "ave-prepush-full.lock");
     mkdirSync(lock);
+    writeFileSync(join(lock, "owner-incomplete.json"), "{");
     expect(() => withHostLock({ name: "full", label: "full-tier", directory, timeoutMs: 300, pollMs: 50, log: () => {} }, () => "ran"))
       .toThrow("[PRE_PUSH_HOST_LOCK_TIMEOUT]");
     const old = new Date(Date.now() - 60_000);
@@ -124,11 +157,17 @@ describe("pre-push host lock", () => {
     expect(withHostLock({ name: "full", label: "full-tier", directory, timeoutMs: 300, pollMs: 50 }, () => "ran")).toBe("ran");
   });
 
+  it("can atomically replace an empty directory because ownership is never published empty", () => {
+    const directory = lockDirectory();
+    mkdirSync(join(directory, "ave-prepush-full.lock"));
+    expect(withHostLock({ name: "full", label: "full-tier", directory, timeoutMs: 300 }, () => "ran")).toBe("ran");
+  });
+
   it("fails clearly at the timeout while a live process holds the lock, without running the checks", () => {
     const directory = lockDirectory();
     const lock = join(directory, "ave-prepush-full.lock");
     mkdirSync(lock);
-    writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, token: "live-owner", createdAt: new Date().toISOString() }));
+    writeFileSync(join(lock, "owner-live-owner.json"), JSON.stringify({ pid: process.pid, token: "live-owner", createdAt: new Date().toISOString() }));
     const log: string[] = [];
     let ran = false;
     expect(() => withHostLock(
@@ -138,7 +177,7 @@ describe("pre-push host lock", () => {
     expect(ran).toBe(false);
     expect(log[0]).toContain(`waiting for the full-tier host lock held by PID ${process.pid}`);
     // The live owner's lock is left alone.
-    expect(existsSync(join(lock, "owner.json"))).toBe(true);
+    expect(existsSync(join(lock, "owner-live-owner.json"))).toBe(true);
   });
 
   it("lets fast runs share slots and makes the next one wait when all are taken", async () => {
@@ -157,6 +196,122 @@ describe("pre-push host lock", () => {
     expect(withHostLock({ name: "fast", label: "fast-tier", directory, timeoutMs: 5000, slots: 2, pollMs: 50 }, () => "ran")).toBe("ran");
     second.release();
     expect(await second.exited).toBe(0);
+  }, 30_000);
+
+  it("publishes only complete ownership and preserves a live winner when a paused creator resumes", async () => {
+    const directory = lockDirectory();
+    const lock = join(directory, "ave-prepush-full.lock");
+    const first = holder(directory, "full", undefined, { operation: "mkdirSync", pathPrefix: lock, after: true });
+    let second: ReturnType<typeof holder> | undefined;
+    try {
+      await waitFor(first.paused, "the paused creator");
+      expect(first.pausedPath()).toContain(".pending-");
+      expect(existsSync(lock)).toBe(false);
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(first.pausedPath(), old, old);
+      second = holder(directory, "full");
+      await waitFor(second.held, "the winner while initialization is paused");
+      const winner = readdirSync(lock);
+      expect(winner).toHaveLength(1);
+      expect(JSON.parse(readFileSync(join(lock, winner[0]!), "utf8")).pid).toBe(second.pid);
+      first.resume();
+      await waitFor(() => first.output().includes("waiting for the full host lock"), "the resumed creator to wait");
+      expect(first.held()).toBe(false);
+      expect(readdirSync(lock)).toEqual(winner);
+      expect(() => withHostLock({ name: "full", label: "full", directory, timeoutMs: 100, pollMs: 25, log: () => {} }, () => {
+        throw new Error("checks overlapped");
+      })).toThrow("PRE_PUSH_HOST_LOCK_TIMEOUT");
+      second.release();
+      expect(await second.exited).toBe(0);
+      await waitFor(first.held, "the original creator after the winner releases");
+      first.release();
+      expect(await first.exited).toBe(0);
+      expect(readdirSync(directory).some((name) => name.includes(".pending-") || name.endsWith(".lock"))).toBe(false);
+    } finally {
+      first.kill();
+      second?.kill();
+      await Promise.all([first.exited, second?.exited]);
+    }
+  }, 30_000);
+
+  it("cleans only private initialization after an owner write fails while another process holds the lock", async () => {
+    const directory = lockDirectory();
+    const lock = join(directory, "ave-prepush-full.lock");
+    const first = holder(directory, "full", undefined, { operation: "writeFileSync", pathPrefix: `${lock}.pending-`, fail: true });
+    let second: ReturnType<typeof holder> | undefined;
+    try {
+      await waitFor(first.paused, "the paused owner write");
+      second = holder(directory, "full");
+      await waitFor(second.held, "the initialized holder");
+      const winner = readdirSync(lock);
+      first.resume();
+      expect(await first.exited).toBe(1);
+      expect(first.output()).toContain("owner write failed");
+      expect(readdirSync(lock)).toEqual(winner);
+      expect(JSON.parse(readFileSync(join(lock, winner[0]!), "utf8")).pid).toBe(second.pid);
+      second.release();
+      expect(await second.exited).toBe(0);
+    } finally {
+      first.kill();
+      second?.kill();
+      await Promise.all([first.exited, second?.exited]);
+    }
+  }, 30_000);
+
+  it.each([false, true])("competing reapers preserve a replacement when paused after unlink=%s", async (after) => {
+    const directory = lockDirectory();
+    const lock = join(directory, "ave-prepush-full.lock");
+    mkdirSync(lock);
+    const staleOwner = join(lock, "owner-dead-owner.json");
+    writeFileSync(staleOwner, JSON.stringify({ pid: deadPid(), token: "dead-owner" }));
+    const first = holder(directory, "full", undefined, { operation: "unlinkSync", pathPrefix: staleOwner, after });
+    let second: ReturnType<typeof holder> | undefined;
+    try {
+      await waitFor(first.paused, "the first reaper's removal boundary");
+      second = holder(directory, "full");
+      await waitFor(second.held, "the competing reaper's live replacement");
+      const winner = readdirSync(lock);
+      first.resume();
+      await waitFor(() => first.output().includes("waiting for the full host lock"), "the delayed reaper to wait");
+      expect(first.held()).toBe(false);
+      expect(readdirSync(lock)).toEqual(winner);
+      expect(JSON.parse(readFileSync(join(lock, winner[0]!), "utf8")).pid).toBe(second.pid);
+      second.release();
+      expect(await second.exited).toBe(0);
+      await waitFor(first.held, "the delayed reaper after release");
+      first.release();
+      expect(await first.exited).toBe(0);
+      expect(existsSync(lock)).toBe(false);
+    } finally {
+      first.kill();
+      second?.kill();
+      await Promise.all([first.exited, second?.exited]);
+    }
+  }, 30_000);
+
+  it.each([1, 4])("shares the indexed first fast slot when the holder has %s slots", async (slots) => {
+    const directory = lockDirectory();
+    const first = holder(directory, "fast", slots);
+    try {
+      await waitFor(first.held, "the first fast slot");
+      expect(existsSync(join(directory, "ave-prepush-fast-0.lock"))).toBe(true);
+      expect(existsSync(join(directory, "ave-prepush-fast.lock"))).toBe(false);
+      let ran = false;
+      expect(() => withHostLock({ name: "fast", label: "fast", directory, slots: 1, timeoutMs: 100, pollMs: 25, log: () => {} }, () => {
+        ran = true;
+      })).toThrow("PRE_PUSH_HOST_LOCK_TIMEOUT");
+      expect(ran).toBe(false);
+      if (slots === 1) {
+        withHostLock({ name: "fast", label: "fast", directory, slots: 4, timeoutMs: 100 }, () => {
+          expect(existsSync(join(directory, "ave-prepush-fast-1.lock"))).toBe(true);
+        });
+      }
+      first.release();
+      expect(await first.exited).toBe(0);
+    } finally {
+      first.kill();
+      await first.exited;
+    }
   }, 30_000);
 
   it("reads its settings from the environment and refuses a malformed timeout", () => {

@@ -171,7 +171,7 @@ describe("pre-push checkout binding", () => {
       expect(existsSync(lock)).toBe(false);
       // Held by a live process: the push waits, then fails; it never passes.
       mkdirSync(lock, { recursive: true });
-      writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, token: "fixture-holder", createdAt: new Date().toISOString() }));
+      writeFileSync(join(lock, "owner-fixture-holder.json"), JSON.stringify({ pid: process.pid, token: "fixture-holder", createdAt: new Date().toISOString() }));
       const held = f.pushInput(tagPush, { AVE_PREPUSH_LOCK_TIMEOUT_S: "1" });
       expect(held.status).toBe(1);
       expect(held.stdout).toContain(FULL_TIER_FOR_TAGS);
