@@ -201,7 +201,7 @@ old server's announcement endpoint.
    been out for one release cycle.
 4. Stop the old server, its web UI and its deployment; remove its secrets and
    runners.
-5. Archive the `agent-marketplace` and `marketplace-whitelist` repositories,
+5. Archive the `former_org/agent-marketplace` server and `marketplace-whitelist` repositories,
    `ave-plugin-sdk`, and the plugin repositories whose source moved into the
    official repository in 0.5 (`ave-plugin-meeting`, `ave-plugin-local-indexer`,
    `ave-plugin-mail`, `ave-plugin-assistant`, `ave-plugin-template`).

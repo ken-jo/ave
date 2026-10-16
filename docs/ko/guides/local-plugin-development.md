@@ -259,9 +259,9 @@ cd ..
 **(2) 옛 dev 디렉토리 + 환경변수 정리**
 
 ```bash
-# 레거시 정리 — 앱의 이전 이름(Ave) 시절 레이아웃에서 옮겨 온 경우에만:
+# 레거시 정리 — 예전 `.ave-dev` 레이아웃에서 옮겨 온 경우에만:
 # 그때의 .ave-dev 디렉토리 잔재 제거 (있을 경우)
-rm -rf /path/to/former_org/ave/.ave-dev/plugins
+rm -rf /path/to/ave/.ave-dev/plugins
 
 # 셸 rc 에서 오래된 AVE_PLUGINS_DIR 제거
 grep -n "AVE_PLUGINS_DIR" ~/.zshrc ~/.bashrc 2>/dev/null
@@ -302,7 +302,7 @@ bun run dev
 | 이전 키 모듈을 찾을 수 없음 | 오래된 코드가 폐기된 키 소유 모델을 참조 중입니다. 해당 import를 제거하고 앱 릴리스 태그의 계약 파일로 갱신합니다. |
 | `bun install --frozen-lockfile` 실패 | bun.lock 갱신 필요 → `bun install` (frozen 없이) 후 커밋 |
 | 플러그인이 안 보임 | Settings → Plugin Config → 개발자 도구에서 빌드 폴더를 다시 설치하고 `bun run plugins:list`로 조회 |
-| 두 위치에서 플러그인 충돌 (레거시 레이아웃에서 옮겨 온 경우) | 이전 이름(Ave) 시절의 `.ave-dev` 잔재를 삭제한 뒤 Settings에서 빌드 폴더를 다시 설치. registry는 직접 편집하지 않음 |
+| 두 위치에서 플러그인 충돌 (레거시 레이아웃에서 옮겨 온 경우) | 예전 레이아웃의 `.ave-dev` 잔재를 삭제한 뒤 Settings에서 빌드 폴더를 다시 설치. registry는 직접 편집하지 않음 |
 | `installSource: "dev-link"` 이 registry 에 남아 있음 (구 `bun run dev:link` 잔재) | 부팅 시 `local-dev`로 rewrite되고 경고가 출력됨. receipt 검증을 통과하도록 Settings에서 빌드 폴더를 다시 설치 |
 | 설치 무결성 검증 실패 (dev) | Settings → Plugin Config → 개발자 도구에서 현재 빌드 폴더를 다시 설치해 receipt를 재생성. 검증 우회 env는 없음 |
 | sideload 패널이 안 보임 | `AVE_DEV=1` 환경변수 적용 확인. packaged 빌드는 dev 패널 비활성 |

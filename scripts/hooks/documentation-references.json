@@ -36,13 +36,8 @@
     "docs/architecture/hook-runtime-expansion-design.md",
     "docs/architecture/mcp-alignment-design.md",
     "docs/architecture/permission-policy-design.md",
-    "docs/architecture/proposals/plugin-declared-category-legacy-removal.md",
     "docs/architecture/proposals/suggested-replies-ghost-text.md",
-    "docs/architecture/proposals/tailnet-observer-config-surface.md",
     "docs/blueprints/composer-redesign-message-queue.md",
-    "docs/blueprints/mcp-app-per-resource-capabilities.md",
-    "docs/blueprints/memory-governance-p1-consolidation.md",
-    "docs/blueprints/multi-source-git-marketplace.md",
     "docs/blueprints/plugin-process-isolation.md",
     "docs/design/model-capability-catalog.md",
     "docs/design/plugin-alerts.md",
@@ -87,9 +82,6 @@
       "test/scripts/repository-identity.test.ts"
     ],
     "web/THIRD_PARTY_NOTICES.md": [
-      "test/scripts/repository-identity.test.ts"
-    ],
-    "web/infra/docs-redirect/index.html": [
       "test/scripts/repository-identity.test.ts"
     ]
   }

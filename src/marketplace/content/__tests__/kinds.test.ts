@@ -3,7 +3,6 @@ import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js
 import { contentFileProblem } from "../rules.js";
 import type { SourceOrigin } from "../../sources/registry.js";
 import { parseContent, translatableKeys, type ContentFile, type DataContentKind } from "../kinds.js";
-import { LEGACY_EXTENSION_NAMESPACE } from "../../../shared/legacy-product-name.js";
 
 const json = (path: string, value: unknown): ContentFile => ({ path, data: Buffer.from(JSON.stringify(value)) });
 const ENGLISH = {
@@ -65,9 +64,10 @@ describe("content file rules (design §5.4)", () => {
     }
   });
 
-  it("names the renamed agent-plugin package folder instead of treating it as an unknown directory", () => {
-    expect(contentFileProblem("agent-plugin", `${LEGACY_EXTENSION_NAMESPACE}/prompts/draft.md`))
-      .toBe(`${LEGACY_EXTENSION_NAMESPACE}/ was renamed to ai.agent-connector.ave/; move ${LEGACY_EXTENSION_NAMESPACE}/prompts/draft.md there`);
+  it("refuses an agent-plugin folder named for an extension namespace Ave does not own", () => {
+    expect(contentFileProblem("agent-plugin", "ai.agent-connector.ave/prompts/draft.md")).toBeNull();
+    expect(contentFileProblem("agent-plugin", "xyz.example/prompts/draft.md"))
+      .toBe("a agent-plugin package holds plugin.json, mcp.json, skills/, server/, ai.agent-connector.ave/, and package notes only: xyz.example/prompts/draft.md");
   });
 
   it("allows each kind's layout and nothing else", () => {

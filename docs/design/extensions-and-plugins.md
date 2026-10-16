@@ -11,8 +11,8 @@ An extension for app 0.14.0 or later declares
 `schemas/plugin-host-protocol/3/protocol.schema.json`, and a package is published
 with an `ave-package.json` descriptor; the user data folder is `~/.ave`. A protocol `2`
 package (the protocol-2 wire of apps 0.12–0.13) is refused before activation. The
-`ai.agent-connector.ave` manifest key and package directory (Ave's domain reversed) replace
-the legacy key (`LEGACY_EXTENSION_NAMESPACE` in `src/shared/legacy-product-name.ts`) with no alias. Where §6.3-6.4 below say
+`ai.agent-connector.ave` manifest key and package directory (Ave's domain reversed) are the
+only ones Ave reads; any other extension namespace is another vendor's data. Where §6.3-6.4 below say
 `hostProtocol: "2"`, they record the 0.12.0 Lease wave, not the current rule.
 
 Status: design, decided by owner direction of 2026-09-27 and the owner decisions
@@ -288,14 +288,14 @@ the same namespace. The complete root contract after this design:
      why it can be written at all.
    The two vocabularies stay distinct on purpose: `type` is the portable word,
    `transport` the host's, and neither is relabelled.
-6. **Unknown top-level fields are reported and ignored; unknown `extensions`
-   namespaces are ignored without validation** (Agent Plugins §5.2, §8.1, §11.3). The
-   host writes one diagnostic per unknown field per load, as the protocol design applies
+6. **Unknown top-level fields and unknown `extensions` namespaces are reported and
+   ignored; a namespace is never validated** (Agent Plugins §5.2, §8.1, §11.3). The
+   host writes one diagnostic per unknown field or namespace per load, as the protocol design applies
    the same rule to the wire (protocol design §3.3). **The package tree is checked by
    kind after classification**: a plugin tree is held to the content rules of §5.2
    (size, count, allowed files; no executable outside a skill's `scripts/` and a
-   server's package-local files) and an unsupported component directory is ignored with
-   a diagnostic naming it (§2.2); an extension tree is the artifact the receipts cover,
+   server's package-local files) and a file in an unsupported component directory is
+   rejected, naming the file (§2.2); an extension tree is the artifact the receipts cover,
    and a `ai.agent-connector.ave/` directory inside an extension is ignored with a diagnostic because
    an extension declares its contributions explicitly (§1.1).
 7. **`${PLUGIN_ROOT}` and `${PLUGIN_DATA}`** are expanded in `mcp.json` `args`, `env`
@@ -323,13 +323,13 @@ own namespace loads in Ave with that namespace ignored.
 | Routine templates | `ai.agent-connector.ave/routines.json` | `{ "version": 1, "templates": [{ id, title, description, trigger: "schedule" \| "shutdown", schedule?, execution: "llm-session" \| "notification-only", prePrompt?, notificationTitle?, notificationBody?, suggestedScope?: { pluginIds: string[] } }] }` — the `AddRoutineInput` fields (`src/shared/routines-types.ts:147-170`) minus anything runtime-owned, with `id` matching `^[a-z][a-z0-9-]{0,62}$` and at most 8 templates. A template is a prefilled form, never a record (§3.4) | slice C |
 | Hooks | `ai.agent-connector.ave/hooks.json` | the host's `hooks.json` shape (`src/hooks/hook-config.ts:49-70`): event keys from the closed set (`:91-110`), `command` in argv form only, optional `matcher`, `timeoutMs` clamped to `DEFAULT_HOOK_TIMEOUT_MS` (`src/hooks/script-hook-types.ts:261`); paths in the placeholder grammar of §3.3 | slice E |
 
-Everything else a package may contain is ignored with a diagnostic, never executed
-(Agent Plugins §11.3). The rejections that are explicit because an author will look for
+Everything else a package may contain is rejected by the content rules, naming the
+file, and never executed (`src/marketplace/content/rules.ts`). The rejections that are explicit because an author will look for
 them:
 
 | Not supported | Why |
 |---|---|
-| language-server declarations, output styles, workflows, monitors, `bin/` executables, plugin `settings.json`, `user_config` | Ave has no feature they would attach to; `bin/` and `user_config` would add an ambient executable path and a secret channel outside the host's stores. Ignored with a diagnostic naming the file |
+| language-server declarations, output styles, workflows, monitors, `bin/` executables, plugin `settings.json`, `user_config` | Ave has no feature they would attach to; `bin/` and `user_config` would add an ambient executable path and a secret channel outside the host's stores. Rejected, naming the file |
 | themes inside a plugin | themes are their own kind with their own token contract (marketplace design §5.5); a theme travels as a `theme` package |
 | a second manifest location (`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`) | the loader reads the specification's root `plugin.json` only (Agent Plugins §5.1). A package that has only a client-specific manifest is handled by the importer (§2.4), which produces a root manifest the user reviews |
 | hook types other than `command` (HTTP, MCP-tool, prompt, agent hooks) | the host's hook runner spawns argv (`src/hooks/hook-config.ts:64-66`); the other types would each be a new network or model surface. Rejected by name in the hooks parse diagnostics |

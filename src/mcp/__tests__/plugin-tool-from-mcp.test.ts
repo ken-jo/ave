@@ -16,7 +16,9 @@ import { describe, it, expect, vi } from "vitest";
 import { mcpToolToPluginTool } from "../plugin-tool-from-mcp.js";
 import { manifestToolsToMcpTools } from "../plugin-server-projection.js";
 import type { PluginManifest } from "../../plugins/types.js";
-import { LEGACY_META_PREFIX } from "../../shared/legacy-product-name.js";
+
+/** A `_meta` vendor prefix the host does not own; it must never be read as `ave/*`. */
+const UNKNOWN_META_PREFIX = "xyz.example/";
 
 const PLUGIN_ID = "com.example.files";
 
@@ -177,23 +179,23 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
     }
   });
 
-  it("IGNORES the legacy reverse-DNS pathFields wire key — the dual-read was removed (fail-closed)", () => {
-    // The `_meta` namespace rename removed the transitional legacy read. A wire
-    // carrying ONLY the legacy key yields NO pathFields — the security-bearing
-    // extraction is not silently sourced from the old key (that would be fail-open).
-    const legacy = mcpToolToPluginTool(
+  it("IGNORES pathFields under an unknown vendor _meta prefix (fail-closed)", () => {
+    // A wire carrying pathFields ONLY under another vendor's prefix yields NO
+    // pathFields — the security-bearing extraction is never sourced from a key
+    // the host does not own (that would be fail-open).
+    const unknown = mcpToolToPluginTool(
       PLUGIN_ID,
       {
-        name: "legacy_read",
+        name: "unknown_read",
         inputSchema: { type: "object", properties: { path: { type: "string" } } },
-        _meta: { ui: { visibility: ["model"] }, [`${LEGACY_META_PREFIX}pathFields`]: ["path"] },
+        _meta: { ui: { visibility: ["model"] }, [`${UNKNOWN_META_PREFIX}pathFields`]: ["path"] },
       },
       invoke,
     );
-    expect(legacy.pathFields).toBeUndefined();
+    expect(unknown.pathFields).toBeUndefined();
   });
 
-  it("reads pathFields from the new ave/pathFields wire key (and ignores a stray legacy key)", () => {
+  it("reads pathFields from the ave/pathFields wire key (and ignores a stray unknown-vendor key)", () => {
     const tool = mcpToolToPluginTool(
       PLUGIN_ID,
       {
@@ -202,7 +204,7 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
         _meta: {
           ui: { visibility: ["model"] },
           "ave/pathFields": ["new"],
-          [`${LEGACY_META_PREFIX}pathFields`]: ["old"],
+          [`${UNKNOWN_META_PREFIX}pathFields`]: ["other"],
         },
       },
       invoke,

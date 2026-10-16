@@ -1,11 +1,8 @@
 # Changelog
 
-> Ave is the former name of Ave; this file is a historical record, and each entry keeps the names used when it was released.
-
 ## v0.14.0 — 2026-10-16
 
-- **Ave는 새 앱이며, 설치된 Ave는 업데이트되지 않습니다.** Ave는 Ave의 설정과 데이터
-  (`~/.ave`)를 읽지 않고 빈 상태로 시작합니다. Ave의 웹사이트는 `ave.agent-connector.ai`,
+- **Ave의 웹사이트와 배포 주소.** Ave의 웹사이트는 `ave.agent-connector.ai`,
   다운로드와 업데이트는 `downloads.agent-connector.ai`입니다.
 
 - **Ave의 식별자와 경로.** 앱 ID는 `ai.agent-connector.ave`, 데이터 폴더는 `~/.ave`, 환경
@@ -14,7 +11,7 @@
 - **익스텐션 작성자는 호스트 프로토콜 3으로 옮겨야 합니다.** 프로토콜 3은 `ave/*` 와이어를
   쓰며, Ave는 프로토콜 3만 지원합니다. 앱 릴리스 태그에서 계약(`contract/`)을 다시
   벤더링하고 매니페스트에 `requires.hostProtocol: "3"`과 `requires.minAppVersion: "0.14.0"`을
-  선언한 뒤 다시 게시하세요. 프로토콜 2(`ave/*`)로 만든 익스텐션은 시작 전에 거부됩니다.
+  선언한 뒤 다시 게시하세요. 프로토콜 2로 만든 익스텐션은 시작 전에 거부됩니다.
   이 버전의 프로토콜 스키마는 `schemas/plugin-host-protocol/3/v0.14.0/protocol.schema.json`으로
   게시됩니다.
 
@@ -30,8 +27,8 @@
   `ai.agent-connector.ave/` 폴더 아래에 둡니다. 스킬 패키지의 `$schema`는
   `https://ave.agent-connector.ai/schemas/skill/1/skill.schema.json`이고, 매니페스트와
   마켓플레이스 스키마는 `https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json`,
-  `https://ave.agent-connector.ai/schemas/marketplace/2/…`로 게시됩니다. 이전 이름
-  (`ai.agent-connector.ave`, `sdk.former-site.invalid`)은 인식하지 않습니다.
+  `https://ave.agent-connector.ai/schemas/marketplace/2/…`로 게시됩니다. 이전 주소
+  (`sdk.former-site.invalid`)는 인식하지 않습니다.
 
 - **모든 익스텐션이 각자의 프로세스에서 실행됩니다.** 마켓플레이스, 사용자 지정 소스, 폴더,
   직접 설치 등 설치 경로와 관계없이 같습니다. `hostFetch`를 거치지 않고 네트워크에 접근하던
@@ -944,7 +941,7 @@ v0.6.3 에서 플러그인 하나였던 격리 대상이 이번 릴리즈에서 
 ### 플러그인 매니페스트 — Agent Plugins 1.0.0
 
 - **`plugin.json` 이 표준 문서 형식이 되었습니다** (#2273). 최상위에는 표준이
-  정한 필드만 남고, Ave 고유 필드는 `extensions["xyz.retiredname-namespace"]` 아래로
+  정한 필드만 남고, Ave 고유 필드는 `extensions["ai.agent-connector.ave"]` 아래로
   이동했습니다. 호스트는 디스크의 문서를 검증한 뒤 내부 형태로 투영하므로
   매니페스트를 읽는 기존 코드는 그대로입니다.
 - **표준 메타데이터 문자열에 상한을 둡니다** (#2274). `author`/`homepage`/

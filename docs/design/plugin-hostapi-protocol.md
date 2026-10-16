@@ -14,7 +14,7 @@ travels in `_meta["ave/invocation"]`. Its schema and generated client are
 `schemas/plugin-host-protocol/3/protocol-client.ts`; the golden fixtures live under
 `src/plugins/isolation/__tests__/fixtures/host-protocol/3/`. An extension for app
 0.14.0 or later declares `extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
-`requires.minAppVersion: "0.14.0"`; a protocol `2` package (the `ave/*` wire served
+`requires.minAppVersion: "0.14.0"`; a protocol `2` package (the wire served
 by apps 0.12–0.13) is refused before activation and must be re-vendored from an Ave
 release tag. Where a step or decision below says `hostProtocol: "2"`, `…/2/…` or
 names an `ave-plugin-*` repository, it records that step at its pinned commit and
@@ -1529,11 +1529,10 @@ the site deploys on every `web/**` merge, so the copy must travel with the tag, 
 of it (decision 6). The `$id` is that tagged URL and is never reassigned: an additive
 change within protocol `1` (§3.3) ships in a new app tag and therefore under a new `$id`
 (Agent Plugins conformance, "Never reassign a published canonical schema identifier",
-[checklist](https://agent-plugins.org/client-implementers/conformance)). Protocols 1 and 2
-were published under the Ave site's origin (`https://former-site.invalid/schemas/…`); their files keep
-that `$id` byte for byte and ave.agent-connector.ai serves them at the same paths. Protocol 3
-onward carries the Ave origin.
-`.../plugin-host-protocol/1/protocol.schema.json` is a documented moving alias to the
+[checklist](https://agent-plugins.org/client-implementers/conformance)). The site
+publishes only protocols the host serves (protocol 3, under the Ave origin); the
+schemas of retired protocols 1 and 2 are no longer published.
+`.../plugin-host-protocol/<protocol>/protocol.schema.json` is a documented moving alias to the
 newest tag's copy, for editors; a plugin pins the tag through `contract/sources.json`,
 never the alias.
 
@@ -4665,7 +4664,7 @@ Verified on 2026-10-03, each with the source that proves it.
     `TODO.md` records, not a defect in the job.
 11. **The old server and its publication path.** `marketplace.former-site.invalid` is
     `former_org/agent-marketplace` (FastAPI, Docker Compose + Nginx under `deploy/`,
-    on the owner's own Cloudflare and server; not archived, last push 2026-09-19). Plugin
+    on the owner's own Cloudflare and server; not archived at the time, last push 2026-09-19). Plugin
     repositories publish to it through `former_org/.github/workflows/marketplace-publish.yml`
     (siblings `plugin-ci.yml`, `validate-plugin-manifest.yml`). Nothing under `src/` or
     `web/` in ave names the host any more (grep 2026-10-03); the app has read only git

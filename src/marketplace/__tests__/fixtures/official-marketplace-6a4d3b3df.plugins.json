@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "name": "ave",
-  "displayName": "Ave Official",
-  "description": "Official Ave marketplace index.",
+  "displayName": "Official",
+  "description": "Official marketplace index.",
   "owner": {
-    "name": "Ave"
+    "name": "Official"
   },
   "packages": [
     {
@@ -41,7 +41,7 @@
       "kind": "plugin",
       "name": "local-indexer",
       "path": "plugins/local-indexer",
-      "displayName": "Ave Local Indexer",
+      "displayName": "Local Indexer",
       "description": "Local Indexer 문서 파일 자동 인덱싱 및 문서 검색 플러그인. 폴더 감시(chokidar), PDF/Markdown 파싱, 한국어 형태소 분석(kiwi), FTS5 기반 검색. 인덱스 위치: 플러그인 데이터 디렉터리의 index/",
       "latest": "0.6.7",
       "versions": [
@@ -428,7 +428,7 @@
       "kind": "plugin",
       "name": "meeting",
       "path": "plugins/meeting",
-      "displayName": "Ave Meeting",
+      "displayName": "Meeting",
       "description": "회의 녹음·음성 전사(STT)·요약 생성 플러그인. 녹음 시작/중지, 실시간 오디오 청크 전사(OpenAI Whisper), AI 요약·하이라이트·액션 아이템 자동 추출. 액션 아이템은 meeting.summary.created 이벤트의 actionItems 페이로드로 broadcast 되며, 요약은 로컬 SessionStore(JSON)에 영속화. MS Teams·Zoom 등 회의 후처리 지원.",
       "latest": "0.8.5",
       "versions": [
@@ -836,8 +836,8 @@
       "kind": "plugin",
       "name": "sampleassistant",
       "path": "plugins/sampleassistant",
-      "displayName": "Ave Sample Assistant",
-      "description": "사용자가 요청하기 전에 먼저 제안하는 Ave 의 능동 업무 도우미. 다른 플러그인들과 신호를 주고받아 업무 흐름에 필요한 보조를 적시에 제공합니다.",
+      "displayName": "Sample Assistant",
+      "description": "사용자가 요청하기 전에 먼저 제안하는 능동 업무 도우미. 다른 플러그인들과 신호를 주고받아 업무 흐름에 필요한 보조를 적시에 제공합니다.",
       "latest": "0.11.3",
       "versions": [
         {
