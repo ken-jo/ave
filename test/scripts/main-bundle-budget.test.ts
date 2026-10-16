@@ -8,6 +8,7 @@ import {
   assertMainBundleBudget,
   createMainBundleManifest,
   formatMainBundleBudget,
+  formatMainBundleSummary,
   findUnexpectedMainBundleRootScripts,
   isSafeMainBundleManifestPath,
 } from "../../scripts/lib/main-bundle-budget.mjs";
@@ -156,6 +157,87 @@ describe("main bundle budget", () => {
       { ...measurement, hasRequiredAsyncBoundary: false },
       { entryBytes: 100, initialBytes: 150, totalBytes: 400 },
     )).toThrow(/required boot entry has no async bundle boundary/);
+  });
+
+  it("passes at each ceiling and fails one byte over it, independently", () => {
+    const measurement = analyzeMainBundleMetafile(syntheticMetafile, {
+      entryPoint: "/repo/src/main.ts",
+      requiredAsyncEntryPoint: "/repo/src/boot.ts",
+    });
+    const atLimit = { entryBytes: 100, initialBytes: 150, totalBytes: 400 };
+    expect(() => assertMainBundleBudget(measurement, atLimit)).not.toThrow();
+    for (const key of ["entryBytes", "initialBytes", "totalBytes"] as const) {
+      expect(() => assertMainBundleBudget(measurement, { ...atLimit, [key]: atLimit[key] - 1 }))
+        .toThrow(new RegExp(`${key} ${atLimit[key]} exceeds ${atLimit[key] - 1}[\\s\\S]*raise the ceiling in scripts/lib/main-bundle-budget\\.mjs`));
+    }
+  });
+
+  it("fails when a ceiling itself is missing or not a positive integer", () => {
+    const measurement = analyzeMainBundleMetafile(syntheticMetafile, {
+      entryPoint: "/repo/src/main.ts",
+      requiredAsyncEntryPoint: "/repo/src/boot.ts",
+    });
+    const budgets = { entryBytes: 1_000, initialBytes: 1_000, totalBytes: 1_000 };
+    for (const bad of [undefined, Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5, "1000"]) {
+      expect(() => assertMainBundleBudget(measurement, { ...budgets, totalBytes: bad }))
+        .toThrow(/budget totalBytes is not a positive integer/);
+    }
+    expect(() => assertMainBundleBudget(measurement, undefined))
+      .toThrow(/budget entryBytes is not a positive integer/);
+  });
+
+  it("catches a constant-total move of lazy code into the startup graph", () => {
+    const measurement = analyzeMainBundleMetafile(syntheticMetafile, {
+      entryPoint: "/repo/src/main.ts",
+      requiredAsyncEntryPoint: "/repo/src/boot.ts",
+    });
+    const budgets = { entryBytes: 1_000, initialBytes: 200, totalBytes: 400 };
+    expect(() => assertMainBundleBudget(measurement, budgets)).not.toThrow();
+    expect(() => assertMainBundleBudget(
+      { ...measurement, initialBytes: 250, asyncBytes: 150 },
+      budgets,
+    )).toThrow(/initialBytes 250 exceeds 200/);
+  });
+
+  it("summarizes measurement, ceiling and headroom for the CI job summary", () => {
+    const measurement = analyzeMainBundleMetafile(syntheticMetafile, {
+      entryPoint: "/repo/src/main.ts",
+      requiredAsyncEntryPoint: "/repo/src/boot.ts",
+    });
+    const summary = formatMainBundleSummary(measurement, {
+      entryBytes: 200,
+      initialBytes: 1_500,
+      totalBytes: 1_600,
+    });
+    expect(summary).toContain("| entry | 100 | 200 | 50.0% |");
+    expect(summary).toContain("| initial | 150 | 1,500 | 90.0% |");
+    expect(summary).toContain("| total | 400 | 1,600 | 75.0% |");
+    expect(summary).toContain("| async (lazy) | 250 | — | — |");
+  });
+
+  it("summarizes an exceeded or invalid ceiling without throwing", () => {
+    const measurement = analyzeMainBundleMetafile(syntheticMetafile, {
+      entryPoint: "/repo/src/main.ts",
+      requiredAsyncEntryPoint: "/repo/src/boot.ts",
+    });
+    const summary = formatMainBundleSummary(measurement, {
+      entryBytes: 80,
+      initialBytes: 150,
+    });
+    expect(summary).toContain("| entry | 100 | 80 | -25.0% |");
+    expect(summary).toContain("| initial | 150 | 150 | 0.0% |");
+    expect(summary).toContain("| total | 400 | invalid | invalid |");
+  });
+
+  it("reports a structural failure and an invalid ceiling in one error", () => {
+    const measurement = analyzeMainBundleMetafile(syntheticMetafile, {
+      entryPoint: "/repo/src/main.ts",
+      requiredAsyncEntryPoint: "/repo/src/boot.ts",
+    });
+    expect(() => assertMainBundleBudget(
+      { ...measurement, hasRequiredAsyncBoundary: false },
+      { entryBytes: 1_000, initialBytes: 1_000 },
+    )).toThrow(/required boot entry has no async bundle boundary[\s\S]*budget totalBytes is not a positive integer/);
   });
 
   it("rejects a static boot edge even when an unrelated dynamic import remains", () => {

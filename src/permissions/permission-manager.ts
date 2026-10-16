@@ -11,6 +11,8 @@ import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rules
 import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
 import { isRuleSpecifier } from "./rules/rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
+import { inspectPowerShellCommand } from "./rules/powershell-exfiltration.js";
+import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { parseShellCommand } from "./rules/shell-prefix-policy.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
@@ -60,6 +62,9 @@ import { errorMessage } from "../shared/error-message.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 
 export type PermissionDecision = "allow" | "deny" | "ask";
+
+/** Which host shell's language a shell rule subject is written in. */
+type ShellRuleDialect = "bash" | "powershell";
 
 
 // This deliberately names one host-owned operation instead of weakening the
@@ -284,11 +289,13 @@ export interface PermissionCheckContext {
    */
   decisionOverride?: "ask" | "always-allow-with-audit";
   /**
-   * Issue #28 — host-built subject for rules-language specifiers. Set by the
-   * tool pipeline for the canonical shell tool only; `Bash(...)` rules never
-   * match a call without it.
+   * Issue #28 — host-built subject for rules-language specifiers and the
+   * shell floors. Set by the tool pipeline for the canonical host shells.
+   * `dialect` selects the reading: both dialects get the exfiltration and
+   * sensitive-path floors; only `bash` is matched by `Bash(...)` rules
+   * (PowerShell has no rule language, so no rule ever matches it).
    */
-  ruleSubject?: { kind: "shell"; command: string; cwd?: string };
+  ruleSubject?: { kind: "shell"; dialect: ShellRuleDialect; command: string; cwd?: string };
   /**
    * Issue #28 — project whose per-project rule file applies. The caller must
    * have awaited {@link PermissionManager.ensureProjectRulesLoaded} for it.
@@ -1458,23 +1465,40 @@ export class PermissionManager {
       ? undefined
       : this.projectRuleScopes.stateFor(context.projectRulesCwd);
     const projectRules = projectRuleState?.ok ? projectRuleState.rules : [];
-    // One parse of the shell subject feeds the matcher and both floors.
-    const shellSubject = context.ruleSubject?.kind === "shell"
-      ? { command: parseShellCommand(context.ruleSubject.command), cwd: context.ruleSubject.cwd }
+    const ruleSubject = context.ruleSubject;
+    if (ruleSubject !== undefined && ruleSubject.dialect !== "bash" && ruleSubject.dialect !== "powershell") {
+      throw new Error(`shell rule subject has no known dialect: ${String((ruleSubject as { dialect?: unknown }).dialect)}`);
+    }
+    // The matcher shares the native shell parse; the other dialect owns a
+    // bounded analysis shared by both of its floors before any other parser.
+    const parsedSubject = ruleSubject?.dialect === "bash" ? parseShellCommand(ruleSubject.command) : undefined;
+    const powerShellSignals = ruleSubject?.dialect === "powershell" ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd) : undefined;
+    const shellSubject = ruleSubject?.dialect === "bash"
+      ? { command: parsedSubject!, cwd: ruleSubject.cwd }
       : undefined;
+    // `Bash(...)` rules match bash only; PowerShell has no rule language.
     const shellRuleEvaluation = shellSubject
       ? evaluateShellSubject(shellSubject, this.rules, projectRules)
       : undefined;
+    const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject, ruleSubject?.cwd) : undefined;
+    const ordinaryShellAsk = powerShellSignals?.ordinaryAsk ?? (shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason);
     // Credential-exfiltration floor: never remembered, never auto-allowed, in
-    // any mode (rules/shell-exfiltration.ts).
+    // any mode, for every host shell (rules/shell-exfiltration.ts,
+    // rules/powershell-exfiltration.ts).
     const shellExfiltration = shellSubject
       ? shellExfiltrationSignal(shellSubject.command, shellSubject.cwd)
-      : null;
+      : ruleSubject?.dialect === "powershell"
+        ? powerShellSignals!.exfiltration
+        : null;
     // Sensitive-path floor for shell arguments (same normalization as the
     // exfiltration scan): `cat ~/.ssh/id_rsa` is never auto-allowed.
-    const shellSensitivePath = shellSubject && !shellExfiltration
-      ? shellSensitivePathSignal(shellSubject.command, shellSubject.cwd)
-      : null;
+    const shellSensitivePath = shellExfiltration !== null
+      ? null
+      : shellSubject
+        ? shellSensitivePathSignal(shellSubject.command, shellSubject.cwd)
+        : ruleSubject?.dialect === "powershell"
+          ? powerShellSignals!.sensitive
+          : null;
 
     // 1. Deny rules (highest priority, immutable)
     for (const rule of this.rules) {
@@ -1628,7 +1652,9 @@ export class PermissionManager {
     }
 
     if (context.headless === true && isMutating && context.ownerUnattended !== true) {
-      return this.categoryBasedDecision(trust, resolvedCategory, context);
+      const category = this.categoryBasedDecision(trust, resolvedCategory, context);
+      return ordinaryShellAsk && category.decision === "allow"
+        ? { decision: "ask", reason: ordinaryShellAsk, layer: 6 } : category;
     }
 
     // 3. Allow rules
@@ -1682,6 +1708,7 @@ export class PermissionManager {
     // 6. Category × Source × Trust via registry descriptor
     if (result === undefined) {
       result = this.categoryBasedDecision(trust, resolvedCategory, context);
+      if (ordinaryShellAsk && result.decision === "allow") result = { decision: "ask", reason: ordinaryShellAsk, layer: 6 };
     }
 
     // Permission policy V1 SOT — per-invocation `decisionOverride="ask"` gate.

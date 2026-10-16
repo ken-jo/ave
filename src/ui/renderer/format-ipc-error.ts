@@ -46,6 +46,10 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "managed": "formatIpcError.managed",
   "durable-mode-denied": "formatIpcError.durableModeDenied",
   "one-shot-not-recordable": "formatIpcError.durableModeDenied",
+  "session-only-scope": "formatIpcError.sessionOnlyScope",
+  // ── Browser tabs (agent browser tools) ──
+  "bad-request": "formatIpcError.invalidRequest",
+  "no-such-tab": "formatIpcError.notFound",
   "a2a-remote-disabled": "formatIpcError.remoteA2aDisabled",
   "a2a-remote-start-failed": "formatIpcError.remoteA2aStartFailed",
   "tailnet-sharing-disabled": "formatIpcError.tailnetSharingDisabled",
@@ -210,6 +214,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
 
   // ── Deferred queue lifecycle ──
   "not-found": "formatIpcError.notFound",
+  // A terminal tab driven from a window other than the one that started its shell.
+  "not-owner": "formatIpcError.notOwner",
   "no-such-request": "formatIpcError.noSuchRequest",
   "not-registered": "formatIpcError.notRegistered",
   "already-resolved": "formatIpcError.alreadyResolved",

@@ -1,6 +1,7 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactElement } from "react";
 import { cn } from "../../../lib/utils.js";
 import {
+  ArrowRight,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
@@ -19,6 +20,7 @@ import { Input } from "../../../components/ui/input.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
+import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
 import type { AveApi } from "../types.js";
 import { isFileChangeOperation, type ChatPreviewTarget, type WorkspaceFileItem } from "../preview/preview-targets.js";
 import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
@@ -1141,51 +1143,94 @@ export function PreviewWorkspace({
   );
 }
 
+/**
+ * The pages this conversation went to, latest first, with a search over them.
+ *
+ * Not part of a browser tab: a browser tab is an address row and its page,
+ * nothing else (owner rule). This list is where the conversation's pages are
+ * FOUND — the side panel's empty landing — and picking one opens it in a tab.
+ */
+export function VisitedSites({
+  api,
+  targets,
+  onOpen,
+}: {
+  api: AveApi;
+  targets: ChatPreviewTarget[];
+  /** Open the picked page (a url or an html document) in a tab. */
+  onOpen: (target: ChatPreviewTarget) => void;
+}) {
+  const { t } = useTranslation();
+  const [query, setQuery] = useState("");
+  const visitedTargets = useMemo(
+    () => targets
+      .filter((target) => matchesQuery(query, target.title, target.subtitle, target.sourceLabel, target.kind === "url" ? target.url : undefined))
+      // Latest first: the page the conversation went to most recently is the
+      // one the viewer most likely wants back.
+      .sort((left, right) => right.createdOrder - left.createdOrder),
+    [targets, query],
+  );
+  return (
+    <div className="flex min-h-0 flex-col" data-testid="chat-side-panel-browser-visited">
+      <SearchInput query={query} setQuery={setQuery} placeholder={t("chatPreviewRail.searchPlaceholder")} />
+      <div className="min-h-0 flex-1 overflow-auto p-2">
+        <h3 className="mb-1 px-2 text-[11px] font-semibold uppercase text-muted-foreground">
+          {t("chatPreviewRail.browserVisited")}
+        </h3>
+        {visitedTargets.length > 0 ? (
+          <TargetRows
+            targets={visitedTargets}
+            rowTestId="chat-side-panel-browser-row"
+            onSelect={(id) => {
+              const target = visitedTargets.find((each) => each.id === id);
+              if (target) onOpen(target);
+            }}
+            onOpenUrlInSystemApp={(url) => {
+              const safe = normalizeBrowserNavigationUrl(url);
+              if (safe) void api.openExternalUrl(safe);
+            }}
+          />
+        ) : (
+          <EmptyState>{t("chatPreviewRail.noBrowserTargets")}</EmptyState>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A browser CONTAINER tab: its address row and its page. The page is the one
+ * typed into the address row, else the conversation's latest page; the list
+ * of the conversation's pages lives on the panel's landing (`VisitedSites`).
+ */
 export function BrowserWorkspace({
   api,
   tabId,
   targets,
-  selectedId,
-  onSelect,
   manualUrl,
   onManualUrlChange,
 }: {
   api: AveApi;
   tabId: string;
   targets: ChatPreviewTarget[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
   manualUrl: string | null;
   onManualUrlChange: (tabId: string, url: string | null) => void;
 }) {
   const { t } = useTranslation();
-  const [query, setQuery] = useState("");
   const [addressDraft, setAddressDraft] = useState("");
   const [addressError, setAddressError] = useState<string | null>(null);
-  const { topPercent, setTopPercent, commitTopPercent } = useVerticalSplit(api, "sidePanelSplitBrowserPercent");
-  const filteredTargets = useMemo(
-    () => targets.filter((target) => matchesQuery(query, target.title, target.subtitle, target.sourceLabel, target.kind === "url" ? target.url : undefined)),
-    [targets, query],
-  );
-  // The visited list reads latest first: the page the conversation went to most
-  // recently is the one the viewer most likely wants back.
-  const visitedTargets = useMemo(
-    () => [...filteredTargets].sort((left, right) => right.createdOrder - left.createdOrder),
-    [filteredTargets],
-  );
-  const selectedTarget = useMemo(
-    () => filteredTargets.find((target) => target.id === selectedId) ?? filteredTargets[0] ?? null,
-    [filteredTargets, selectedId],
+  const latestTarget = useMemo(
+    () => targets.reduce<ChatPreviewTarget | null>(
+      (latest, target) => (latest === null || target.createdOrder > latest.createdOrder ? target : latest),
+      null,
+    ),
+    [targets],
   );
 
   useEffect(() => {
-    if (selectedTarget && selectedTarget.id !== selectedId) onSelect(selectedTarget.id);
-  }, [onSelect, selectedId, selectedTarget]);
-
-  useEffect(() => {
-    setAddressDraft(manualUrl ?? (selectedTarget?.kind === "url" ? selectedTarget.url : ""));
+    setAddressDraft(manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : ""));
     setAddressError(null);
-  }, [manualUrl, selectedTarget, tabId]);
+  }, [manualUrl, latestTarget, tabId]);
 
   const manualTarget = useMemo<Extract<ChatPreviewTarget, { kind: "url" }> | null>(() => {
     if (!manualUrl) return null;
@@ -1206,7 +1251,8 @@ export function BrowserWorkspace({
       origin: "address",
     };
   }, [manualUrl, t, tabId]);
-  const displayedTarget = manualTarget ?? selectedTarget;
+  const displayedTarget = manualTarget ?? latestTarget;
+  const shownUrl = displayedTarget?.kind === "url" ? displayedTarget.url : null;
 
   const submitAddress = () => {
     const normalized = normalizeBrowserNavigationUrl(addressDraft);
@@ -1216,7 +1262,7 @@ export function BrowserWorkspace({
     }
     setAddressDraft(normalized);
     setAddressError(null);
-    onManualUrlChange(tabId, normalized);
+    void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, normalized));
   };
 
   return (
@@ -1254,10 +1300,30 @@ export function BrowserWorkspace({
               aria-label={t("chatPreviewRail.browserGo")}
               data-testid="chat-side-panel-browser-go"
             >
-              <ExternalLink className="h-3.5 w-3.5" />
+              <ArrowRight className="h-3.5 w-3.5" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>{t("chatPreviewRail.browserGo")}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 shrink-0"
+              aria-label={t("chatPreviewRail.openUrl")}
+              data-testid="chat-side-panel-browser-open-external"
+              disabled={!shownUrl}
+              onClick={() => {
+                const safe = shownUrl ? normalizeBrowserNavigationUrl(shownUrl) : null;
+                if (safe) void api.openExternalUrl(safe);
+              }}
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{t("chatPreviewRail.openUrl")}</TooltipContent>
         </Tooltip>
       </form>
       {addressError ? (
@@ -1265,58 +1331,15 @@ export function BrowserWorkspace({
           {addressError}
         </div>
       ) : null}
-      {/*
-        The pages this conversation went to, over the page it is looking at —
-        the same list-over-viewer split the file and sub-agent tabs use. A row
-        opens its page in the viewer below; right-click offers the system
-        browser, as the activity rows do.
-      */}
-      <VerticalSplitLayout
-        topPercent={topPercent}
-        onDragChange={setTopPercent}
-        onCommit={commitTopPercent}
-        ariaLabel={t("chatPreviewRail.resizeBrowserPanels")}
-        testId="chat-side-panel-browser-split-layout"
-        separatorTestId="chat-side-panel-browser-splitter"
-        top={
-          <div className="flex min-h-0 flex-col" data-testid="chat-side-panel-browser-visited">
-            <SearchInput query={query} setQuery={setQuery} placeholder={t("chatPreviewRail.searchPlaceholder")} />
-            <div className="min-h-0 flex-1 overflow-auto p-2">
-              <h3 className="mb-1 px-2 text-[11px] font-semibold uppercase text-muted-foreground">
-                {t("chatPreviewRail.browserVisited")}
-              </h3>
-              {visitedTargets.length > 0 ? (
-                <TargetRows
-                  targets={visitedTargets}
-                  selectedId={manualTarget ? undefined : selectedTarget?.id}
-                  rowTestId="chat-side-panel-browser-row"
-                  onSelect={(id) => {
-                    onManualUrlChange(tabId, null);
-                    onSelect(id);
-                  }}
-                  onOpenUrlInSystemApp={(url) => {
-                    const safe = normalizeBrowserNavigationUrl(url);
-                    if (safe) void api.openExternalUrl(safe);
-                  }}
-                />
-              ) : (
-                <EmptyState>{t("chatPreviewRail.noBrowserTargets")}</EmptyState>
-              )}
-            </div>
-          </div>
-        }
-        bottom={
-          <div className="h-full min-h-0 w-full min-w-0 overflow-hidden">
-            {displayedTarget?.kind === "html" ? (
-              <BrowserDocumentViewer target={displayedTarget} />
-            ) : displayedTarget?.kind === "url" ? (
-              <UrlDocumentViewer api={api} target={displayedTarget} showHeader={false} />
-            ) : (
-              <div className="p-4 text-xs text-muted-foreground">{t("chatPreviewRail.noBrowserTargets")}</div>
-            )}
-          </div>
-        }
-      />
+      <div className="min-h-0 w-full min-w-0 flex-1 overflow-hidden">
+        {displayedTarget?.kind === "html" ? (
+          <BrowserDocumentViewer target={displayedTarget} />
+        ) : displayedTarget?.kind === "url" ? (
+          <UrlDocumentViewer api={api} target={displayedTarget} showHeader={false} surfaceTabId={tabId} browserTab={{ tabId }} />
+        ) : (
+          <div className="p-4 text-xs text-muted-foreground" data-testid="chat-side-panel-browser-blank">{t("mainPanels.webEmpty")}</div>
+        )}
+      </div>
     </div>
   );
 }

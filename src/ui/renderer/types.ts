@@ -9,6 +9,13 @@ import type {
 } from "../../contract/app-contract.js";
 import type { ChatStreamEvent, ChatEntry } from "../../lib/chat-stream-state.js";
 import type { AgentSpawnEvent } from "../../shared/subagent-events.js";
+import type {
+  ActiveWorkspaceSurface,
+  BrowserTabBindRequest,
+  BrowserTabBindResult,
+  BrowserTabControlState,
+  BrowserTabOpRequest,
+} from "../../shared/browser-surface.js";
 import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
 import type { RoutineRunRow, SessionFamily, SessionListKindFilter, SessionListRow } from "../../shared/session-lookup.js";
 import type { McpResourceSummary, McpResourceTemplateSummary, McpServerConfig, McpServerConfigDto, McpServerState, McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
@@ -573,6 +580,19 @@ export type AveApi = {
   setWebApiKey: (provider: string, k: string) => Promise<{ ok: true }>;
   hasWebApiKey: (provider: string) => Promise<boolean>;
   deleteWebApiKey: (provider: string) => Promise<{ ok: true }>;
+  /**
+   * Browser tabs for the agent browser tools (shared/browser-surface.ts):
+   * bind a tab id to its guest <webview> after attach, revoke control on stop or user navigation,
+   * and main's tab-op / agent-control events. Optional for test fixtures.
+   */
+  browserTabs?: {
+    bindTab: (request: BrowserTabBindRequest) => Promise<BrowserTabBindResult>;
+    stop: (tabId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+    onTabOp: (handler: (request: BrowserTabOpRequest) => void) => () => void;
+    onControl: (handler: (state: BrowserTabControlState) => void) => () => void;
+  };
+  /** Report the browser/terminal tab the user is looking at (a hint for agent tools). */
+  setActiveSurface?: (surface: ActiveWorkspaceSurface | null) => Promise<{ ok: true } | { ok: false; error: string }>;
   /**
    * Interactive PTY terminal (#1444, workspace rail). `spawn` is idempotent per
    * tab (a remount replays the scrollback rather than starting a fresh shell);

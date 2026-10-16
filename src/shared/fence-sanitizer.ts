@@ -15,6 +15,8 @@
  *     body is the converted page; the URL and status sit outside in the tool's JSON)
  *   · `<terminal-output trust="untrusted-terminal-data">` — `terminal_read`'s result:
  *     commands and output from the user's terminal, which any program can print into
+ *   · `<browser-content trust="untrusted-web-data">` — what the browser tools read from
+ *     a page: its accessibility snapshot, title and URL, all authored by the site
  *
  * The fence IS the labelling mechanism, so a body that can emit its own closing tag
  * defeats it: everything the author writes after that tag appears, to the model, to sit
@@ -46,7 +48,8 @@ export type FenceTag =
   | "compact-focus"
   | "mcp-resource"
   | "web-content"
-  | "terminal-output";
+  | "terminal-output"
+  | "browser-content";
 
 /**
  * Neutralize any closing tag for `tag` inside app/plugin-authored `text`, so the body

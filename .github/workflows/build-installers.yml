@@ -11,6 +11,17 @@ on:
         options:
           - "true"
           - "false"
+      # Proves the contract bundle pipeline (build, keyless signature, R2
+      # write-once upload) under _ci-probe/contract/ and deletes it again,
+      # only from main, without building installers. See publish-contract.
+      contract_probe:
+        description: Build, sign, upload and delete a probe contract bundle (main only)
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
   push:
     tags:
       - "v*.*.*"
@@ -99,6 +110,7 @@ jobs:
   installers:
     name: ${{ matrix.name }}
     needs: release-profile
+    if: github.event_name == 'push' || inputs.contract_probe != 'true'
     # Matrix builds only produce workflow artifacts. The atomic publisher owns
     # the sole contents:write permission in its separate job.
     permissions:
@@ -167,40 +179,12 @@ jobs:
             echo "Checkout HEAD does not equal immutable event source SHA" >&2
             exit 1
           fi
-      # setup-bun has no install-directory input: it installs into
-      # os.homedir()/.bun/bin, which on a self-hosted runner would replace the
-      # owner's own bun. os.homedir() reads HOME (POSIX) and USERPROFILE
-      # (Windows), so this step alone sees a home under RUNNER_TEMP, which the
-      # runner empties at the start and end of every job. setup-bun adds that
-      # bin directory to the job PATH. The version comes from .bun-version.
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
+      # the owner's own bun home on a self-hosted runner; on Windows it is a
+      # checksum-verified release download (see the action).
+      - uses: ./.github/actions/setup-bun
         with:
           bun-version-file: .bun-version
-        env:
-          HOME: ${{ runner.temp }}/bun-home
-          USERPROFILE: ${{ runner.temp }}/bun-home
-      - name: Verify bun is the job-local pinned build
-        shell: bash
-        env:
-          BUN_HOME: ${{ runner.temp }}/bun-home
-        run: |
-          set -euo pipefail
-          expected="$(tr -d '[:space:]' < .bun-version)"
-          actual="$(bun --version)"
-          if [ "$actual" != "$expected" ]; then
-            echo "bun $actual on PATH, expected $expected from .bun-version" >&2
-            exit 1
-          fi
-          # Git Bash on Windows reports PATH entries in /c/... form.
-          home="$(cygpath -u "$BUN_HOME" 2>/dev/null || printf '%s' "$BUN_HOME")"
-          bun_path="$(command -v bun)"
-          case "$bun_path" in
-            "$home"/*) ;;
-            *)
-              echo "bun on PATH is $bun_path, not the job-local install under $home" >&2
-              exit 1
-              ;;
-          esac
       - name: Restore package manager and installer caches
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -554,6 +538,7 @@ jobs:
     needs: [release-profile, installers]
     if: github.event_name == 'push'
     runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
+    environment: release
     permissions:
       contents: read
     steps:
@@ -642,3 +627,239 @@ jobs:
           set -euo pipefail
           aws --version
           node scripts/upload-release-r2.mjs --dir release-staging --tag "$RELEASE_TAG"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # publish-contract — the contract bundle under contract/<tag>/.
+  #
+  # The public marketplace verifies plugins only against what this job
+  # publishes, never against an Ave checkout: the plugin contract source, the
+  # manifest and host-protocol schemas, and the checker and agent-plugin
+  # component extractor bundled with Bun (scripts/build-contract-bundle.mjs),
+  # with bundle.json and SHA256SUMS. SHA256SUMS is signed keyless through
+  # GitHub OIDC; the certificate names this workflow at the tag ref, and the
+  # marketplace refuses any other identity. Objects under a tag are
+  # write-once (scripts/upload-contract-bundle-r2.mjs).
+  #
+  # A tag push publishes to contract/<tag>/. A workflow_dispatch from main
+  # with contract_probe=true runs the steps under _ci-probe/contract/<run>/,
+  # proves a rerun keeps the published signature, and deletes the probe; its
+  # certificate names main instead of a tag. It needs only
+  # release-profile, so the installer matrix never holds it back.
+  publish-contract:
+    name: Publish the signed contract bundle
+    needs: release-profile
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.contract_probe == 'true')
+    runs-on: ${{ fromJSON(vars.AVE_LINUX_RUNNER) }}
+    environment: release
+    # id-token: write is the keyless signing identity; no other job has it.
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          clean: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Verify exact source head
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual_head="$(git rev-parse HEAD)"
+          if [ "$actual_head" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "Checkout HEAD does not equal immutable event source SHA" >&2
+            exit 1
+          fi
+      - name: Verify package.json repository is this repository
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          node scripts/check-release-repository.mjs
+      - name: Verify protected annotated tag still resolves to event SHA
+        if: github.event_name == 'push'
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+          EXPECTED_TAG: ${{ github.ref_name }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_PROTECTED" != "true" ]; then
+            echo "Public tag releases require an active immutable v* tag ruleset" >&2
+            exit 1
+          fi
+
+          tag_ref="$(curl --fail --silent --show-error --retry 3 \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/tags/${EXPECTED_TAG}")"
+          tag_object_type="$(jq --raw-output '.object.type // empty' <<<"$tag_ref")"
+          tag_object_sha="$(jq --raw-output '.object.sha // empty' <<<"$tag_ref")"
+          if [ "$tag_object_type" != "tag" ] || [[ ! "$tag_object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Public release tag must remain an annotated tag" >&2
+            exit 1
+          fi
+
+          tag_object="$(curl --fail --silent --show-error --retry 3 \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}")"
+          target_type="$(jq --raw-output '.object.type // empty' <<<"$tag_object")"
+          target_sha="$(jq --raw-output '.object.sha // empty' <<<"$tag_object")"
+          if [ "$target_type" != "commit" ] || [ "$target_sha" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "Annotated tag does not resolve to the immutable event source SHA" >&2
+            exit 1
+          fi
+      # The bundled checker's bytes depend on the Bun version, so this job uses
+      # the .bun-version build like the installers, through the shared setup-bun
+      # action (which installs it under a home in RUNNER_TEMP).
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version-file: .bun-version
+      # bun, cosign (its Sigstore trust cache) and the AWS CLI resolve the home
+      # directory; on a self-hosted runner that is the owner's own.
+      - name: Isolate home and temp directories in the runner temp
+        run: node .github/scripts/isolate-job-home.mjs
+      - name: Verify bun is the job-local pinned build
+        env:
+          BUN_HOME: ${{ runner.temp }}/bun-home
+        run: |
+          set -euo pipefail
+          expected="$(tr -d '[:space:]' < .bun-version)"
+          actual="$(bun --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "bun $actual on PATH, expected $expected from .bun-version" >&2
+            exit 1
+          fi
+          case "$(command -v bun)" in
+            "$BUN_HOME"/*) ;;
+            *)
+              echo "bun on PATH is $(command -v bun), not the job-local install under $BUN_HOME" >&2
+              exit 1
+              ;;
+          esac
+      # Bundling reads the sources and node_modules only; install scripts
+      # (native rebuilds, the uv runtime, protocol and hook registration) are
+      # not part of the bundle and must not touch a self-hosted runner.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Choose the bundle target
+        id: target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          # GITHUB_WORKFLOW_REF is owner/repo/.github/workflows/<file>@<ref>,
+          # the certificate SAN Fulcio issues for this job.
+          # The release environment changes OIDC sub, not this workflow ref.
+          identity="https://github.com/${GITHUB_WORKFLOW_REF}"
+          if [ "$EVENT_NAME" = "push" ]; then
+            expected="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/build-installers.yml@refs/tags/${GITHUB_REF_NAME}"
+            if [ "$GITHUB_REF" != "refs/tags/${GITHUB_REF_NAME}" ] || [ "$identity" != "$expected" ]; then
+              echo "Signing identity $identity is not $expected" >&2
+              exit 1
+            fi
+            tag="$GITHUB_REF_NAME"
+            prefix="contract/${tag}/"
+          else
+            tag="ci-probe-${RUN_KEY}"
+            prefix="_ci-probe/contract/${RUN_KEY}/"
+          fi
+          {
+            echo "identity=$identity"
+            echo "tag=$tag"
+            echo "prefix=$prefix"
+            echo "dir=$RUNNER_TEMP/contract-bundle"
+          } >> "$GITHUB_OUTPUT"
+          echo "contract bundle $tag -> $prefix signed as $identity"
+      - name: Build the contract bundle
+        env:
+          BUNDLE_DIR: ${{ steps.target.outputs.dir }}
+          BUNDLE_TAG: ${{ steps.target.outputs.tag }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/build-contract-bundle.mjs --out "$BUNDLE_DIR" --tag "$BUNDLE_TAG" --commit "$EXPECTED_SOURCE_SHA"
+          (cd "$BUNDLE_DIR" && sha256sum --check --strict SHA256SUMS)
+      - name: Provide cosign
+        run: bash .github/scripts/install-cosign.sh
+      - name: Sign SHA256SUMS keyless
+        env:
+          BUNDLE_DIR: ${{ steps.target.outputs.dir }}
+          IDENTITY: ${{ steps.target.outputs.identity }}
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes --bundle "$BUNDLE_DIR/SHA256SUMS.sigstore.json" "$BUNDLE_DIR/SHA256SUMS"
+          cosign verify-blob --bundle "$BUNDLE_DIR/SHA256SUMS.sigstore.json" \
+            --certificate-identity "$IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$BUNDLE_DIR/SHA256SUMS"
+      # Self-hosted runners carry no AWS CLI. The script installs the official
+      # build after checking its signature, with no secret in scope.
+      - name: Provide the AWS CLI
+        run: bash .github/scripts/install-aws-cli.sh
+      - name: Upload the contract bundle to R2
+        env:
+          BUNDLE_DIR: ${{ steps.target.outputs.dir }}
+          PREFIX: ${{ steps.target.outputs.prefix }}
+          IDENTITY: ${{ steps.target.outputs.identity }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          aws --version
+          node scripts/upload-contract-bundle-r2.mjs --dir "$BUNDLE_DIR" --prefix "$PREFIX" --identity "$IDENTITY"
+      # A rerun of a tag signs again, so its signature bytes differ from the
+      # published ones. The probe proves that path: a fresh signature over the
+      # same SHA256SUMS must leave every object in place.
+      - name: Probe a rerun against the published bundle
+        if: github.event_name != 'push'
+        env:
+          BUNDLE_DIR: ${{ steps.target.outputs.dir }}
+          PREFIX: ${{ steps.target.outputs.prefix }}
+          IDENTITY: ${{ steps.target.outputs.identity }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          rerun="$RUNNER_TEMP/contract-bundle-rerun"
+          rm -rf "$rerun"
+          cp -R "$BUNDLE_DIR" "$rerun"
+          rm "$rerun/SHA256SUMS.sigstore.json"
+          cosign sign-blob --yes --bundle "$rerun/SHA256SUMS.sigstore.json" "$rerun/SHA256SUMS"
+          if cmp -s "$rerun/SHA256SUMS.sigstore.json" "$BUNDLE_DIR/SHA256SUMS.sigstore.json"; then
+            echo "A second signature has the same bytes; the rerun path is not exercised" >&2
+            exit 1
+          fi
+          node scripts/upload-contract-bundle-r2.mjs --dir "$rerun" --prefix "$PREFIX" --identity "$IDENTITY" | tee "$RUNNER_TEMP/rerun.log"
+          grep -q 'keep .*SHA256SUMS.sigstore.json (the published signature verifies' "$RUNNER_TEMP/rerun.log"
+      - name: Delete the probe bundle
+        if: always() && github.event_name != 'push' && steps.target.outputs.prefix != ''
+        env:
+          PREFIX: ${{ steps.target.outputs.prefix }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "No AWS CLI; nothing was uploaded under $PREFIX"
+            exit 0
+          fi
+          node scripts/upload-contract-bundle-r2.mjs --delete --prefix "$PREFIX"

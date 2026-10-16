@@ -74,6 +74,7 @@ import {
   type ShortcutSettingsPatch,
 } from "../shared/shortcuts.js";
 import { createLogger } from "../lib/logger.js";
+import type { MainLayoutSnapshot } from "../shared/main-layout.js";
 import { SecretDocumentStore, type SecretDocumentIdentity, type SecretEncryption, type SecretPolicy } from "./secret-document-store.js";
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
 import {
@@ -102,6 +103,7 @@ import {
   normalizeAlertSettings,
   normalizeRetiredPluginConfigs,
   isActiveViewKey,
+  normalizeMainLayout,
   isCloseBehavior,
   normalizeTelemetry,
   normalizeHomeDocs,
@@ -880,14 +882,14 @@ export interface SystemSettings {
   /**
    * Persisted TOP-pane percent of the workspace-rail vertical (list↕viewer)
    * split, one field per tab kind whose body is a list-over-viewer layout
-   * (file-browser / preview / subagent / browser). Clamped to the
+   * (file-browser / preview / subagent). A browser tab is its address row and
+   * page only, so it has no split. Clamped to the
    * [SIDE_PANEL_SPLIT_MIN_PERCENT, SIDE_PANEL_SPLIT_MAX_PERCENT] pane range at
    * drag time in the renderer. Default 45.
    */
   sidePanelSplitFilePercent?: number;
   sidePanelSplitPreviewPercent?: number;
   sidePanelSplitSubagentPercent?: number;
-  sidePanelSplitBrowserPercent?: number;
   /**
    * Persisted active sidebar tab ("chats" = the plain ungrouped conversation
    * list, "projects" = named-project groups). Durable UI preference, same
@@ -907,6 +909,14 @@ export interface SystemSettings {
    * key against the views it actually loaded before navigating there.
    */
   activeView?: InlineViewKey;
+  /**
+   * The main window's pane layout when it last changed — panes, which show a
+   * terminal or web page, open side panels, and terminal/browser side tabs
+   * with their last directory or address — restored at launch. Absent until
+   * the layout first changes. SoT for the shape and its rules:
+   * `../shared/main-layout.js`; a value that breaks any rule is refused whole.
+   */
+  mainLayout?: MainLayoutSnapshot;
   /**
    * Which settings tab the panel was on, so restoring into `activeView:
    * "settings"` lands on the page the user left rather than the default one.
@@ -1664,6 +1674,11 @@ export class SettingsService {
       }
       acceptField(next, "sidebarActiveTab", partial.system.sidebarActiveTab, isSidebarTab, "system", PATCHED_FIELD);
       acceptField(next, "activeView", partial.system.activeView, isActiveViewKey, "system", PATCHED_FIELD);
+      // The reason only is logged on refusal (`normalizeMainLayout`): the value
+      // holds page addresses that may carry tokens. A refused patch keeps the
+      // saved layout.
+      const patchedLayout = normalizeMainLayout(partial.system.mainLayout);
+      if (patchedLayout) next.mainLayout = patchedLayout;
       const rawSettingsTab = partial.system.settingsTab;
       if (rawSettingsTab !== undefined) {
         // `normalizeSettingsTab` folds retired ids onto their replacements and

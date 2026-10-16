@@ -22,7 +22,7 @@
  *
  * Error contract (project CLAUDE.md): kebab-case English `reason` / `error`.
  */
-import { BrowserWindow, ipcMain } from "electron";
+import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { fanOutToAllWindows } from "../window-fanout.js";
@@ -33,9 +33,10 @@ import {
   writeTerminal,
   resizeTerminal,
   killTerminal,
+  terminalOwnedBy,
   type SpawnTerminalResult,
 } from "../../main/terminal/pty-manager.js";
-import { getTerminalBlockTracker } from "../../main/terminal/terminal-blocks.js";
+import { getTerminalBlockTracker, getWindowTerminalBlockTracker } from "../../main/terminal/terminal-blocks.js";
 import type { TerminalBlock, TerminalBlockSummary } from "../../shared/terminal-blocks.js";
 import type { IpcDeps } from "../types.js";
 
@@ -49,16 +50,33 @@ function asNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : NaN;
 }
 
+/** A window reads only its own terminals' blocks; a windowless caller reads any. */
+function blockTrackerFor(tabId: string, windowId: number | null) {
+  return windowId === null ? getTerminalBlockTracker(tabId) : getWindowTerminalBlockTracker(tabId, windowId);
+}
+
 export function registerTerminalHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
 
-  // Wire the main→renderer output sink ONCE. pty-manager stays electron-free;
-  // this fans each data/exit event out to every app window via safe-send.
-  setTerminalEmitter((event, payload) => {
+  // Wire the main→renderer output sink ONCE. pty-manager stays electron-free.
+  // A terminal's output goes to the window that owns it, never to the others:
+  // another window showing it would be a second view of one shell, and its
+  // attention watcher would raise a second OS notice for the same alert. A
+  // terminal no window owns (spawned windowless) goes to every app window.
+  setTerminalEmitter((event, payload, ownerWindowId) => {
     const channel = event === "data" ? CHANNELS.terminal.data : CHANNELS.terminal.exit;
-    const targets = deps.getAppWindows?.() ?? [deps.getMainWindow()];
+    const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
+    const targets = ownerWindowId === null
+      ? windows
+      : windows.filter((win) => win !== null && win !== undefined && !win.isDestroyed() && win.id === ownerWindowId);
     fanOutToAllWindows(targets, channel, payload, { logger: log });
   });
+
+  /** The app window an IPC call came from, as terminal ownership names it. */
+  const senderWindowId = (e: IpcMainInvokeEvent): number | null => {
+    const owner = BrowserWindow.fromWebContents(e.sender);
+    return owner && !owner.isDestroyed() ? owner.id : null;
+  };
 
   ipcMain.handle(
     CHANNELS.terminal.spawn,
@@ -74,10 +92,9 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       if (!tabId) {
         return { ok: false, reason: "bad-request", message: "tabId must be a non-empty string" };
       }
-      const owner = BrowserWindow.fromWebContents(e.sender);
       return spawnTerminal({
         tabId,
-        ownerWindowId: owner && !owner.isDestroyed() ? owner.id : null,
+        ownerWindowId: senderWindowId(e),
         ...(typeof payload?.cwd === "string" ? { cwd: payload.cwd } : {}),
         ...(typeof payload?.cols === "number" ? { cols: payload.cols } : {}),
         ...(typeof payload?.rows === "number" ? { rows: payload.rows } : {}),
@@ -98,6 +115,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       const tabId = asString(payload?.tabId);
       const data = asString(payload?.data);
       if (!tabId) return { ok: false, error: "invalid-params" };
+      if (!terminalOwnedBy(tabId, senderWindowId(e))) return { ok: false, error: "not-owner" };
       writeTerminal(tabId, data);
       return { ok: true };
     },
@@ -115,6 +133,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       }
       const tabId = asString(payload?.tabId);
       if (!tabId) return { ok: false, error: "invalid-params" };
+      if (!terminalOwnedBy(tabId, senderWindowId(e))) return { ok: false, error: "not-owner" };
       resizeTerminal(tabId, asNumber(payload?.cols), asNumber(payload?.rows));
       return { ok: true };
     },
@@ -132,6 +151,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       }
       const tabId = asString(payload?.tabId);
       if (!tabId) return { ok: false, error: "invalid-params" };
+      if (!terminalOwnedBy(tabId, senderWindowId(e))) return { ok: false, error: "not-owner" };
       killTerminal(tabId);
       return { ok: true };
     },
@@ -156,7 +176,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       }
       const tabId = asString(payload?.tabId);
       if (!tabId) return { ok: false, error: "invalid-params" };
-      const tracker = getTerminalBlockTracker(tabId);
+      const tracker = blockTrackerFor(tabId, senderWindowId(e));
       if (!tracker) return { ok: true, integrated: false, blocks: [] };
       return { ok: true, integrated: tracker.isIntegrated(), blocks: tracker.list() };
     },
@@ -175,7 +195,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       const tabId = asString(payload?.tabId);
       const blockId = asNumber(payload?.blockId);
       if (!tabId || !Number.isInteger(blockId)) return { ok: false, error: "invalid-params" };
-      const block = getTerminalBlockTracker(tabId)?.get(blockId) ?? null;
+      const block = blockTrackerFor(tabId, senderWindowId(e))?.get(blockId) ?? null;
       if (!block) return { ok: false, error: "block-not-found" };
       return { ok: true, block };
     },

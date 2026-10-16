@@ -29,7 +29,6 @@ const {
   installSideBrowserPartitionPolicy,
   isSideBrowserContents,
   isSideBrowserPopupUrlAllowed,
-  takePendingSideBrowserSrc,
 } = await import("../side-browser-webview.js");
 
 function event() {
@@ -44,7 +43,6 @@ describe("side browser webview attach policy", () => {
       nodeIntegration: true,
       sandbox: false,
     };
-    const enqueueAllowedSrc = vi.fn();
 
     const result = configureSideBrowserWebviewAttach({
       event: attachEvent,
@@ -53,12 +51,10 @@ describe("side browser webview attach policy", () => {
         partition: AVE_SIDE_BROWSER_PARTITION,
         src: "https://example.com/docs",
       },
-      enqueueAllowedSrc,
     });
 
     expect(result).toBe("accepted");
     expect(attachEvent.preventDefault).not.toHaveBeenCalled();
-    expect(enqueueAllowedSrc).toHaveBeenCalledWith("https://example.com/docs");
     expect(prefs.preload).toBeUndefined();
     expect(prefs.nodeIntegration).toBe(false);
     expect(prefs.contextIsolation).toBe(true);
@@ -67,28 +63,44 @@ describe("side browser webview attach policy", () => {
     expect(prefs.partition).toBe(AVE_SIDE_BROWSER_PARTITION);
   });
 
-  it("blocks non-http side-browser navigations", () => {
+  it.each([
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "about:blank#script",
+    "about:blank?script=1",
+    "about:srcdoc",
+  ])("blocks non-http side-browser attachment to %s", (src) => {
     const attachEvent = event();
-    const enqueueAllowedSrc = vi.fn();
 
     const result = configureSideBrowserWebviewAttach({
       event: attachEvent,
       webPreferences: {},
       params: {
         partition: AVE_SIDE_BROWSER_PARTITION,
-        src: "javascript:alert(1)",
+        src,
       },
-      enqueueAllowedSrc,
     });
 
     expect(result).toBe("blocked");
     expect(attachEvent.preventDefault).toHaveBeenCalledOnce();
-    expect(enqueueAllowedSrc).not.toHaveBeenCalled();
+  });
+
+  it("accepts the exact blank document for a guarded tab bootstrap", () => {
+    const attachEvent = event();
+    const prefs: Record<string, unknown> = { preload: "untrusted.js", nodeIntegration: true };
+
+    expect(configureSideBrowserWebviewAttach({
+      event: attachEvent,
+      webPreferences: prefs,
+      params: { partition: AVE_SIDE_BROWSER_PARTITION, src: "about:blank" },
+    })).toBe("accepted");
+    expect(attachEvent.preventDefault).not.toHaveBeenCalled();
+    expect(prefs).toMatchObject({ nodeIntegration: false, contextIsolation: true, sandbox: true });
+    expect(prefs.preload).toBeUndefined();
   });
 
   it("blocks credentialed side-browser URLs", () => {
     const attachEvent = event();
-    const enqueueAllowedSrc = vi.fn();
 
     const result = configureSideBrowserWebviewAttach({
       event: attachEvent,
@@ -97,18 +109,15 @@ describe("side browser webview attach policy", () => {
         partition: AVE_SIDE_BROWSER_PARTITION,
         src: "https://user:pass@example.com/docs",
       },
-      enqueueAllowedSrc,
     });
 
     expect(result).toBe("blocked");
     expect(attachEvent.preventDefault).toHaveBeenCalledOnce();
-    expect(enqueueAllowedSrc).not.toHaveBeenCalled();
   });
 
   it("ignores unrelated webviews", () => {
     const attachEvent = event();
     const prefs: Record<string, unknown> = { nodeIntegration: true };
-    const enqueueAllowedSrc = vi.fn();
 
     const result = configureSideBrowserWebviewAttach({
       event: attachEvent,
@@ -119,22 +128,11 @@ describe("side browser webview attach policy", () => {
         partition: "ave-mcp-app:676974687562",
         src: "data:text/html,ok",
       },
-      enqueueAllowedSrc,
     });
 
     expect(result).toBe("ignored");
     expect(attachEvent.preventDefault).not.toHaveBeenCalled();
-    expect(enqueueAllowedSrc).not.toHaveBeenCalled();
     expect(prefs.nodeIntegration).toBe(true);
-  });
-
-  it("matches attached guests by URL instead of blindly shifting the pending queue", () => {
-    const pending = ["https://example.com/docs", "https://google.com/"];
-
-    expect(takePendingSideBrowserSrc(pending, "https://unrelated.example/")).toBeNull();
-    expect(pending).toEqual(["https://example.com/docs", "https://google.com/"]);
-    expect(takePendingSideBrowserSrc(pending, "https://google.com/")).toBe("https://google.com/");
-    expect(pending).toEqual(["https://example.com/docs"]);
   });
 
   it("installs a browser-like UA, a narrow permission allow-list without fullscreen, and a download policy", () => {
@@ -167,11 +165,12 @@ describe("side browser webview attach policy", () => {
     }
   });
 
-  it("allows only http(s) and about:blank popups", () => {
+  it("allows only concrete http(s) popup URLs", () => {
     expect(isSideBrowserPopupUrlAllowed("https://accounts.google.com/o/oauth2/auth")).toBe(true);
     expect(isSideBrowserPopupUrlAllowed("http://example.com/")).toBe(true);
-    expect(isSideBrowserPopupUrlAllowed("about:blank")).toBe(true);
     for (const blocked of [
+      "about:blank",
+      "",
       "file:///etc/passwd",
       "javascript:alert(1)",
       "data:text/html,x",
@@ -207,12 +206,20 @@ describe("side browser webview attach policy", () => {
     return { isDestroyed: () => destroyed, destroy: () => { destroyed = true; } };
   }
 
+  it("denies ambiguous blank popup requests before creating a window", () => {
+    const guest = fakeContents(electronMock.sideBrowserSession);
+    attachSideBrowserWebview(guest as never, fakeOwner() as never);
+
+    expect(guest.open("about:blank")).toEqual({ action: "deny" });
+  });
+
   it("lets the guest open hardened popup windows and guards each popup recursively", () => {
     const owner = fakeOwner();
     const guest = fakeContents(electronMock.sideBrowserSession);
     attachSideBrowserWebview(guest as never, owner as never);
 
     expect(guest.open("javascript:alert(1)")).toEqual({ action: "deny" });
+    expect(guest.open("data:text/html,<script>alert(1)</script>")).toEqual({ action: "deny" });
     const allowed = guest.open("https://accounts.google.com/signin");
     expect(allowed.action).toBe("allow");
     const prefs = allowed.overrideBrowserWindowOptions?.webPreferences ?? {};

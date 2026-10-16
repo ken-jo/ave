@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import {
   BUILTIN_VIEWS,
   isInlineViewKey,
+  isInstanceViewKey,
   parseInlineViewKey,
   parseViewKey,
   pluginViewKey,
@@ -127,5 +128,18 @@ describe("parseInlineViewKey", () => {
 
   it("returns null for anything unparseable", () => {
     expect(parseInlineViewKey("hom")).toBeNull();
+  });
+});
+
+describe("isInstanceViewKey", () => {
+  it("names the views a pane shows an instance of, and only those", () => {
+    expect(isInstanceViewKey("terminal")).toBe(true);
+    expect(isInstanceViewKey("web")).toBe(true);
+    for (const key of ["home", "settings", "work-board", "plugin:a:b", "terminal:1"]) {
+      expect(isInstanceViewKey(key)).toBe(false);
+    }
+    // They are inline places all the same: a pane can be AT one.
+    expect(isInlineViewKey("terminal")).toBe(true);
+    expect(isInlineViewKey("web")).toBe(true);
   });
 });

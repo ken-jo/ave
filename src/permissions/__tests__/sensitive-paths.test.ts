@@ -5,12 +5,13 @@
  * canonicalizePathForMatch (frozen-canonical + bounded walk-up), and
  * caseFoldForMatch.
  */
-import { afterEach, describe, it, expect } from "vitest";
-import { symlinkSync } from "node:fs";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { realpathSync, symlinkSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   SENSITIVE_PATH_PATTERNS,
   isSensitivePath,
+  createSensitivePathMatcher,
   policyMatchPaths,
   canonicalizePathForMatch,
   caseFoldForMatch,
@@ -19,6 +20,19 @@ import {
 import { PermissionTestResources } from "./test-resources.js";
 
 const resources = new PermissionTestResources();
+
+describe("per-decision sensitive matcher", () => {
+  it("reuses configured filesystem roots after the first match", () => {
+    const match = createSensitivePathMatcher("read");
+    expect(match("/work/project/ordinary")).toBeNull();
+    const canonical = vi.spyOn(realpathSync, "native");
+    try {
+      for (let index = 0; index < 1024; index += 1) expect(match(`/work/project/x${index}`)).toBeNull();
+      expect(canonical).not.toHaveBeenCalled();
+      expect(match("/work/project/.env")).not.toBeNull();
+    } finally { canonical.mockRestore(); }
+  });
+});
 
 afterEach(async () => {
   await resources.cleanup();

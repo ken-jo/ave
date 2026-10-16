@@ -1136,7 +1136,7 @@ describe("Sidebar nav groups", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
     expect(trigger.getAttribute("aria-controls")).toBe("sidebar-group-features-menu");
     const rows = Array.from(menu.querySelectorAll('[role="menuitem"]')).map((row) => row.getAttribute("data-testid"));
-    expect(rows).toEqual(["toolbar-work-board", "sidebar-routines", "sidebar-starred"]);
+    expect(rows).toEqual(["toolbar-work-board", "sidebar-routines", "sidebar-starred", "sidebar-terminal", "sidebar-web"]);
     expect(getByTestId("sidebar-routines").getAttribute("aria-current")).toBe("page");
 
     fireEvent.click(getByTestId("toolbar-work-board"));
@@ -1155,11 +1155,11 @@ describe("Sidebar nav groups", () => {
     fireEvent.keyDown(menu, { key: "ArrowDown" });
     expect(document.activeElement).toBe(getByTestId("sidebar-routines"));
     fireEvent.keyDown(menu, { key: "End" });
-    expect(document.activeElement).toBe(getByTestId("sidebar-starred"));
+    expect(document.activeElement).toBe(getByTestId("sidebar-web"));
     fireEvent.keyDown(menu, { key: "ArrowDown" });
     expect(document.activeElement).toBe(getByTestId("toolbar-work-board"));
     fireEvent.keyDown(menu, { key: "ArrowUp" });
-    expect(document.activeElement).toBe(getByTestId("sidebar-starred"));
+    expect(document.activeElement).toBe(getByTestId("sidebar-web"));
 
     fireEvent.keyDown(menu, { key: "Escape" });
     await waitFor(() => expect(queryByTestId("sidebar-group-features-menu")).toBeNull());

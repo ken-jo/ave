@@ -1,5 +1,9 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeBrowserNavigationUrl } from "./url-safety.js";
+import { publishLiveWebTabs, withdrawLiveWebTabs } from "./web-surfaces.js";
+import { parseTabId } from "../../../shared/tab-id.js";
+import { isBrowserBlankBootstrap } from "../../../shared/browser-tools.js";
+import { forgetActiveSurface } from "./active-surface.js";
 
 /**
  * Workspace-tab store — the state that ChatSidePanel used to hold in
@@ -67,6 +71,11 @@ export interface WorkspaceTab {
   mode: WorkspaceTabMode;
   /** `null` = launcher container tab (always pinned); non-null = content tab. */
   content: WorkspaceTabContentRef | null;
+  /**
+   * Set on a browser tab opened for the agent's `browser_tab_new`: main's
+   * request id, echoed on the tab's bind so main can tell the agent opened it.
+   */
+  agentRequestId?: string;
 }
 
 export interface WorkspaceTabsStore {
@@ -115,6 +124,25 @@ export interface WorkspaceTabsStore {
   closeContainerTab: (kind: WorkspaceTabKind) => void;
   /** Set (or clear, with `null`) the manually-typed address for a browser tab. */
   setBrowserTabUrl: (tabId: string, url: string | null) => void;
+  /**
+   * Hand a tab out to the main area. The tab leaves this store WITHOUT being
+   * closed: its PTY or page lives on under the same id wherever it lands.
+   */
+  releaseTab: (id: string) => WorkspaceTab | undefined;
+  /**
+   * Take in a tab that moved here (from the main area), as a pinned container
+   * tab with its id and number unchanged, and make it the active one. A browser
+   * tab's page keeps its address through `url`.
+   */
+  adoptTab: (tab: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => void;
+  /** Whether this store holds `id` now (read from the latest state, not a render). */
+  hasTab: (id: string) => boolean;
+  /**
+   * Open a NEW pinned browser tab for the agent (`browser_tab_new`) and
+   * activate it. Never reuses a tab showing the same url: the agent gets a tab
+   * of its own. Returns the new tab's id, or null for an unsafe url.
+   */
+  openAgentBrowserTab: (url: string, agentRequestId: string) => string | null;
 }
 
 function contentKey(ref: WorkspaceTabContentRef): string {
@@ -146,6 +174,34 @@ interface WorkspaceState {
 
 const EMPTY_STATE: WorkspaceState = { tabs: [], activeTabId: null, browserUrlByTab: {} };
 
+/**
+ * Tab ids are minted from ONE counter per renderer (= per window), not per
+ * store. Every chat group mounts its own store, but main keys live resources
+ * by tab id across the whole window — the PTY map in `pty-manager.ts` is
+ * global — so a per-store counter let a second group's `terminal:1` attach to
+ * the first group's shell. Window-unique ids also let a tab move between the
+ * side panel and the main area without being renamed.
+ */
+let nextWindowTabId = 1;
+// Unique to this renderer — this window, this launch (`shared/tab-id.ts`).
+const WINDOW_TAB_SCOPE = Array.from(crypto.getRandomValues(new Uint8Array(4)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+export function mintTabId(kind: WorkspaceTabKind): string {
+  return `${kind}:${WINDOW_TAB_SCOPE}-${nextWindowTabId++}`;
+}
+
+/**
+ * Tabs restored from a saved layout keep their ids. Ids from another scope
+ * (an earlier launch) cannot meet this one's; one from this scope moves the
+ * counter past it, so a tab minted afterwards cannot take it.
+ */
+export function reserveTabIds(ids: Iterable<string>): void {
+  for (const id of ids) {
+    const parsed = parseTabId(id);
+    if (parsed && parsed.scope === WINDOW_TAB_SCOPE && parsed.n >= nextWindowTabId) nextWindowTabId = parsed.n + 1;
+  }
+}
+
 function withTabClosed(prev: WorkspaceState, id: string): WorkspaceState {
   const closingIndex = prev.tabs.findIndex((tab) => tab.id === id);
   if (closingIndex < 0) return prev;
@@ -163,7 +219,22 @@ function withTabClosed(prev: WorkspaceState, id: string): WorkspaceState {
 
 export function useWorkspaceTabs(): WorkspaceTabsStore {
   const [state, setState] = useState<WorkspaceState>(EMPTY_STATE);
-  const nextIdRef = useRef(1);
+  // The committed state, for `releaseTab`, which must answer in the same event.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const previousTabsRef = useRef(state.tabs);
+  const releasedTabIdsRef = useRef(new Set<string>());
+  // Retire surfaces from committed lists, including batched closes and
+  // replacements. A release transfers the surface to another store.
+  useEffect(() => {
+    const nextKinds = new Map(state.tabs.map((tab) => [tab.id, tab.kind]));
+    for (const tab of previousTabsRef.current) {
+      if ((tab.kind === "browser" || tab.kind === "terminal") && nextKinds.get(tab.id) !== tab.kind) {
+        if (!releasedTabIdsRef.current.delete(tab.id)) forgetActiveSurface(tab.id);
+      }
+    }
+    previousTabsRef.current = state.tabs;
+  }, [state.tabs]);
   const nextOrdinalRef = useRef<Record<WorkspaceTabKind, number>>({
     "file-browser": 1,
     preview: 1,
@@ -174,6 +245,16 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     "side-chat": 1,
   });
 
+  // The browser tabs this store holds keep their guests alive in the window's
+  // web-surface layer; a tab that leaves the store (closed, pruned, replaced by
+  // other content) lets its guest go.
+  const [liveSource] = useState(() => Symbol("workspace-tabs"));
+  const liveBrowserKey = state.tabs.filter((tab) => tab.kind === "browser").map((tab) => tab.id).join("\n");
+  useEffect(() => {
+    publishLiveWebTabs(liveSource, new Set(liveBrowserKey ? liveBrowserKey.split("\n") : []));
+  }, [liveSource, liveBrowserKey]);
+  useEffect(() => () => withdrawLiveWebTabs(liveSource), [liveSource]);
+
   const setActiveTabId = useCallback((id: string) => {
     setState((prev) => (prev.activeTabId === id ? prev : { ...prev, activeTabId: id }));
   }, []);
@@ -181,7 +262,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
   const addTab = useCallback((kind: WorkspaceTabKind) => {
     setState((prev) => {
       const ordinal = nextOrdinalRef.current[kind]++;
-      const id = `${kind}:${nextIdRef.current++}`;
+      const id = mintTabId(kind);
       const tab: WorkspaceTab = { id, kind, ordinal, mode: "pinned", content: null };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -194,7 +275,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
         return prev.activeTabId === existing.id ? prev : { ...prev, activeTabId: existing.id };
       }
       const ordinal = nextOrdinalRef.current[kind]++;
-      const id = `${kind}:${nextIdRef.current++}`;
+      const id = mintTabId(kind);
       const tab: WorkspaceTab = { id, kind, ordinal, mode: "pinned", content: null };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -225,7 +306,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
         };
       }
       // R3: no ephemeral slot — append a new ephemeral content tab.
-      const id = `${kind}:${nextIdRef.current++}`;
+      const id = mintTabId(kind);
       const tab: WorkspaceTab = { id, kind, ordinal: 0, mode: "ephemeral", content };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -247,7 +328,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
         };
       }
       // R4: append a new pinned content tab; leave the ephemeral slot alone.
-      const id = `${kind}:${nextIdRef.current++}`;
+      const id = mintTabId(kind);
       const tab: WorkspaceTab = { id, kind, ordinal: 0, mode: "pinned", content };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };
     });
@@ -295,6 +376,19 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     });
   }, []);
 
+  const openAgentBrowserTab = useCallback((rawUrl: string, agentRequestId: string): string | null => {
+    const content: WorkspaceTabContentRef | null = isBrowserBlankBootstrap(rawUrl, agentRequestId)
+      ? { source: "browser", url: rawUrl }
+      : normalizeContentRef({ source: "browser", url: rawUrl });
+    if (!content) return null;
+    // The id is taken here, outside the updater: an updater runs at flush
+    // time, and the caller needs the id now.
+    const id = mintTabId("browser");
+    const tab: WorkspaceTab = { id, kind: "browser", ordinal: 0, mode: "pinned", content, agentRequestId };
+    setState((prev) => ({ ...prev, tabs: [...prev.tabs, tab], activeTabId: id }));
+    return id;
+  }, []);
+
   const setBrowserTabUrl = useCallback((tabId: string, url: string | null) => {
     setState((prev) => {
       if (url == null) {
@@ -304,6 +398,31 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
         return { ...prev, browserUrlByTab };
       }
       return { ...prev, browserUrlByTab: { ...prev.browserUrlByTab, [tabId]: url } };
+    });
+  }, []);
+
+  const releaseTab = useCallback((id: string) => {
+    const tab = stateRef.current.tabs.find((each) => each.id === id);
+    if (!tab) return undefined;
+    releasedTabIdsRef.current.add(id);
+    setState((prev) => withTabClosed(prev, id));
+    return tab;
+  }, []);
+
+  const hasTab = useCallback((id: string) => stateRef.current.tabs.some((tab) => tab.id === id), []);
+
+  const adoptTab = useCallback((incoming: Pick<WorkspaceTab, "id" | "kind" | "ordinal">, url: string | null) => {
+    releasedTabIdsRef.current.delete(incoming.id);
+    // A tab that keeps its number here must not see a later tab of its kind take it again.
+    if (nextOrdinalRef.current[incoming.kind] <= incoming.ordinal) nextOrdinalRef.current[incoming.kind] = incoming.ordinal + 1;
+    setState((prev) => {
+      if (prev.tabs.some((tab) => tab.id === incoming.id)) return { ...prev, activeTabId: incoming.id };
+      const tab: WorkspaceTab = { id: incoming.id, kind: incoming.kind, ordinal: incoming.ordinal, mode: "pinned", content: null };
+      return {
+        tabs: [...prev.tabs, tab],
+        activeTabId: tab.id,
+        browserUrlByTab: url ? { ...prev.browserUrlByTab, [tab.id]: url } : prev.browserUrlByTab,
+      };
     });
   }, []);
 
@@ -322,7 +441,11 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
       closeTab,
       closeContainerTab,
       setBrowserTabUrl,
+      releaseTab,
+      adoptTab,
+      hasTab,
+      openAgentBrowserTab,
     }),
-    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl],
+    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl, releaseTab, adoptTab, hasTab, openAgentBrowserTab],
   );
 }

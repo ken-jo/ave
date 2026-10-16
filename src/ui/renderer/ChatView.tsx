@@ -31,6 +31,13 @@ import type { ProjectIdentity } from "../../shared/project-identity.js";
 import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
 import { collectChatPreviewModel } from "./preview/preview-targets.js";
 import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
+import { isMovableTabKind, registerSideTabsSink, type MovableTabKind } from "./preview/surface-moves.js";
+import { emitMainLayoutChange, takeRestoredSideTabs, terminalCwd } from "./preview/main-layout-restore.js";
+import { forgetActiveSurface } from "./preview/active-surface.js";
+import { savedSurfaceOf } from "./preview/main-layout-snapshot.js";
+import { webSurfaceLocation } from "./preview/web-surfaces.js";
+import { attachToComposer, registerComposerTarget } from "./preview/composer-targets.js";
+import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
 import { SIDE_PANEL_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { normalizeBrowserNavigationUrl } from "./preview/url-safety.js";
 import { createPortal } from "react-dom";
@@ -132,6 +139,11 @@ export interface ChatViewProps {
   sidePanelOpen?: boolean;
   onSidePanelOpenChange: (open: boolean) => void;
   /**
+   * The tile this view belongs to. Its side panel's tabs are what the main
+   * area moves terminals and pages into and out of (`surface-moves.ts`).
+   */
+  chatGroupId?: string;
+  /**
    * A stored side chat a sidebar row asked THIS tile to show. Addressed to one
    * tile because the panel that draws it is one conversation's own column.
    */
@@ -160,7 +172,7 @@ export interface ChatViewProps {
 
 const SIDE_PANEL_LAYOUT_TRANSITION_MS = 300;
 
-export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, appMode = "work", onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, sidePanelOpen = false, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, blogLayout = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError }: ChatViewProps) {
+export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, appMode = "work", onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, sidePanelOpen = false, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, blogLayout = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -254,6 +266,50 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // them on every such transition. ChatView stays mounted across those, so the
   // store lives here — tab state now survives. See preview/workspace-tabs.ts.
   const workspaceTabs = useWorkspaceTabs();
+  // The main area reaches this tile's side-panel tabs through the sink: a
+  // terminal or page moved here from a pane lands in these tabs.
+  const { adoptTab, releaseTab, hasTab, setActiveTabId: selectWorkspaceTab } = workspaceTabs;
+  const openSidePanelRef = useRef(onSidePanelOpenChange);
+  openSidePanelRef.current = onSidePanelOpenChange;
+  // What the saved layout records of these tabs: the terminals and pages, with
+  // a terminal's last directory and a page's last address.
+  const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab });
+  savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab };
+  useEffect(() => {
+    if (chatGroupId === undefined) return undefined;
+    const unregister = registerSideTabsSink(chatGroupId, {
+      adopt: adoptTab,
+      release: releaseTab,
+      open: () => openSidePanelRef.current(true),
+      activate: (tabId) => {
+        if (!hasTab(tabId)) return false;
+        selectWorkspaceTab(tabId);
+        openSidePanelRef.current(true);
+        return true;
+      },
+      snapshot: () => {
+        const { tabs, browserUrlByTab } = savedTabsRef.current;
+        return tabs.filter((tab) => isMovableTabKind(tab.kind)).map((tab) => savedSurfaceOf(
+          { tabId: tab.id, kind: tab.kind as MovableTabKind, ordinal: tab.ordinal },
+          tab.kind === "terminal" ? terminalCwd(tab.id) : null,
+          tab.kind === "browser" ? webSurfaceLocation(tab.id) ?? browserUrlByTab[tab.id] ?? null : null,
+        ));
+      },
+    });
+    // Tabs a restored layout gave this pane, if its restore came first.
+    for (const tab of takeRestoredSideTabs(chatGroupId)) adoptTab({ id: tab.tabId, kind: tab.kind, ordinal: tab.ordinal }, tab.url);
+    return () => {
+      unregister();
+      // The group is going: a terminal or page of its side panel can no
+      // longer be what the side chat acts on.
+      for (const tab of savedTabsRef.current.tabs) if (isMovableTabKind(tab.kind)) forgetActiveSurface(tab.id);
+    };
+  }, [chatGroupId, adoptTab, releaseTab, hasTab, selectWorkspaceTab]);
+  // A tab opened, closed, moved or re-pointed is a layout change to save.
+  const savedTabsKey = workspaceTabs.tabs.filter((tab) => isMovableTabKind(tab.kind)).map((tab) => `${tab.id}=${workspaceTabs.browserUrlByTab[tab.id] ?? ""}`).join("|");
+  useEffect(() => {
+    emitMainLayoutChange();
+  }, [savedTabsKey]);
   const seenSubAgentSpawnKeysRef = useRef<Set<string>>(new Set());
   // Docked side-panel width — durable shell preference (settings round-trip),
   // owned next to the tab store so it survives ChatSidePanel unmount.
@@ -286,7 +342,10 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // panel therefore keeps it mounted — hidden — while a side-chat tab exists:
   // unmounting it released the claim and dropped a question the host was
   // still waiting on, so the gate sat out its deadline with nothing to answer.
-  const sideChatKeepsPanel = workspaceTabs.tabs.some((tab) => tab.kind === "side-chat" && !tab.content);
+  // Likewise a browser tab the agent opened: its page is the agent's working
+  // state, and unmounting the panel would destroy it mid-task.
+  const sideChatKeepsPanel = workspaceTabs.tabs.some((tab) =>
+    (tab.kind === "side-chat" && !tab.content) || tab.agentRequestId !== undefined);
   // Always start collapsed so an initially-open persisted panel never paints
   // expanded before the opening transition lifecycle begins.
   const [dockedPanelExpanded, setDockedPanelExpanded] = useState(false);
@@ -456,6 +515,27 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // changes with every tab switch and the panel callback's with every render
   // of the window, and keying the effect on either re-ran it after the user
   // moved to another tab or closed the panel, snapping both straight back.
+  // The agent browser tools' tab operations (agent-browser-bridge.ts): this
+  // view's store carries out the ones routed to it. Read through refs so the
+  // registration is made once, not on every tab switch.
+  const browserTabHostRef = useRef({ workspaceTabs, currentSessionId, onSidePanelOpenChange });
+  useLayoutEffect(() => {
+    browserTabHostRef.current = { workspaceTabs, currentSessionId, onSidePanelOpenChange };
+  }, [workspaceTabs, currentSessionId, onSidePanelOpenChange]);
+  useEffect(() => registerBrowserTabHost(api, {
+    sessionId: () => browserTabHostRef.current.currentSessionId ?? null,
+    hasTab: (tabId) => browserTabHostRef.current.workspaceTabs.tabs.some((tab) => tab.id === tabId),
+    openAgentTab: (url, requestId) => {
+      const { workspaceTabs: store, onSidePanelOpenChange: openPanel } = browserTabHostRef.current;
+      if (store.openAgentBrowserTab(url, requestId) !== null) openPanel(true);
+    },
+    selectTab: (tabId) => {
+      browserTabHostRef.current.workspaceTabs.setActiveTabId(tabId);
+      browserTabHostRef.current.onSidePanelOpenChange(true);
+    },
+    closeTab: (tabId) => browserTabHostRef.current.workspaceTabs.closeTab(tabId),
+  }), [api]);
+
   const sideChatOpenNonce = sideChatOpenRequest?.nonce;
   const openSideChatTabRef = useRef<() => void>(() => {});
   useLayoutEffect(() => {
@@ -637,6 +717,30 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     onImageAttachmentLimitExceeded: emitImageAttachmentLimitExceeded,
     onPastedTextClipped: emitPastedTextClipped,
   });
+
+  // This conversation's composer, as a place a terminal block can be attached
+  // to (see `preview/composer-targets.ts`). Read through refs so the
+  // registration is made once per group.
+  const attachPastedTextRef = useRef(attachPastedText);
+  attachPastedTextRef.current = attachPastedText;
+  const conversationHiddenRef = useRef(hidden);
+  conversationHiddenRef.current = hidden;
+  useEffect(() => {
+    if (chatGroupId === undefined) return undefined;
+    return registerComposerTarget({
+      groupId: chatGroupId,
+      kind: "conversation",
+      attach: (text) => attachPastedTextRef.current(text),
+      available: () => !conversationHiddenRef.current,
+      element: () => chatViewRootRef.current?.querySelector<HTMLElement>('[data-composer-surface="main"]') ?? null,
+    });
+  }, [chatGroupId]);
+  // A terminal in this group's side panel attaches to whichever of the
+  // group's composers was used last — the side chat or this conversation.
+  const attachFromSidePanel = useCallback(
+    (text: string) => (chatGroupId === undefined ? attachPastedText(text) : attachToComposer(text, { fromGroup: chatGroupId })),
+    [chatGroupId, attachPastedText],
+  );
 
   // Token progress ring — square, hover=percent, click=detail. The former
   // sibling cost badge is gone: the cost/amount now lives INSIDE the ring's
@@ -973,6 +1077,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         >
           <ChatSidePanel
             api={api}
+            {...(chatGroupId !== undefined ? { chatGroupId } : {})}
             sessionId={currentSessionId}
             targets={previewModel.targets}
             files={previewModel.files}
@@ -994,7 +1099,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
             onOpenActivityItem={routeActivityItem}
             onOpenActivityItemPinned={routeActivityItemPinned}
             onOpenActivityItemInSystemApp={openActivityItemInSystemApp}
-            onAttachText={attachPastedText}
+            onAttachText={attachFromSidePanel}
             className="relative flex shrink-0"
           />
         </div>

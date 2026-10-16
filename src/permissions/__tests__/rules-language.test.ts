@@ -104,7 +104,6 @@ describe("refused prefixes (single shared list)", () => {
     // A script-file prefix runs code the rules cannot read.
     [["python", "scripts/gen.py"], "interpreter"],
     [["node", "scripts/build.mjs"], "interpreter"],
-    [["bun", "run", "./x.ts"], "interpreter"],
     [["unbuffer"], "wrapper"],
     [["env"], "wrapper"],
     [["env", "FOO=1", "ls"], "wrapper"],
@@ -122,7 +121,12 @@ describe("refused prefixes (single shared list)", () => {
     [["bun", "x"], "package-runner"],
     [["git"], "multi-verb-tool"],
     [["git", "-c"], "multi-verb-tool"],
-    [["npm"], "multi-verb-tool"],
+    [["npm"], "package-runner"],
+    [["pnpm", "exec"], "package-runner"],
+    [["yarn", "dlx"], "package-runner"],
+    [["deno", "run"], "package-runner"],
+    [["corepack", "pnpm"], "package-runner"],
+    [["corepack", "pnpm", "dlx"], "package-runner"],
   ])("refuses %j (%s)", (tokens, reason) => {
     expect(refusedShellPrefix(tokens as string[])).toBe(reason);
   });
@@ -135,6 +139,13 @@ describe("refused prefixes (single shared list)", () => {
     [["deno", "task", "build"]],
     [["ls"]],
     [["npx", "prettier"]],
+    [["npm", "exec", "prettier"]],
+    [["pnpm", "exec", "vitest"]],
+    [["yarn", "dlx", "prettier"]],
+    [["bun", "exec", "echo"]],
+    [["bun", "run", "./x.ts"]],
+    [["deno", "run", "main.ts"]],
+    [["corepack", "pnpm", "dlx", "prettier"]],
   ])("accepts %j", (tokens) => {
     expect(refusedShellPrefix(tokens as string[])).toBeNull();
   });
@@ -178,6 +189,89 @@ describe("AST shell matcher", () => {
     const set = rules({ allow: ["Bash(npm test)"] });
     expect(evaluateShellRules("npm test", set).decision).toBe("allow");
     expect(evaluateShellRules("npm test -- foo", set).decision).toBeNull();
+  });
+
+  it.each([
+    ["npx prettier --write src", "Bash(npx prettier *)"],
+    ["npm exec prettier --write src", "Bash(npm exec prettier *)"],
+    ["pnpm dlx prettier --write src", "Bash(pnpm dlx prettier *)"],
+    ["bun exec echo hello", "Bash(bun exec echo *)"],
+    ["deno run main.ts", "Bash(deno run main.ts *)"],
+    ["corepack pnpm dlx prettier src", "Bash(corepack pnpm dlx prettier *)"],
+    ["npx --future value -- prettier src", "Bash(npx --future value -- prettier *)"],
+  ])("a full raw runner prefix can cover %j", (command, pattern) => {
+    expect(analyzeShellForRules(command)).toMatchObject({ ok: true, hidden: [], ordinaryAsk: "opaque runner prefix", allowBlockers: [] });
+    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: [pattern] })).decision).toBe("allow");
+    expect(evaluateShellRules(command, rules({ allow: ["Bash(prettier *)", "Bash(echo *)"] })).decision).toBeNull();
+  });
+
+  it("runner options and opaque inner code do not hide the raw command", () => {
+    const command = "npx --config project.json -- node script.mjs --output build";
+    expect(analyzeShellForRules(command)).toMatchObject({
+      ok: true, hidden: [], ordinaryAsk: "opaque runner prefix", allowBlockers: [],
+      commands: [{ argv: ["npx", "--config", "project.json", "--", "node", "script.mjs", "--output", "build"], allowBlockers: [] }],
+    });
+    expect(evaluateShellRules(command, rules({ allow: ["Bash(npx --config project.json -- node *)"] })).decision).toBe("allow");
+  });
+
+  it("runner prefixes stay visible to explicit deny and ask rules", () => {
+    expect(evaluateShellRules("npx prettier src", rules({ deny: ["Bash(npx prettier *)"] }))).toMatchObject({ decision: "deny", pattern: "Bash(npx prettier *)" });
+    expect(evaluateShellRules("npm exec prettier src", rules({ ask: ["Bash(npm exec *)"] }))).toMatchObject({ decision: "ask", pattern: "Bash(npm exec *)" });
+    expect(evaluateShellRules("npx prettier src", rules({ deny: ["Bash(prettier *)"] })).decision).toBeNull();
+  });
+
+  it("keeps existing nonrunner and wrapper allow-rule behavior", () => {
+    expect(evaluateShellRules("git status", rules({ allow: ["Bash(git *)"] })).decision).toBe("allow");
+    expect(evaluateShellRules("env A=1 npm test", rules({ allow: ["Bash(env A=1 npm *)"] })).decision).toBe("allow");
+  });
+
+  it.each([
+    ["python -c 'print(1)'", "python"],
+    ["perl -e 'print 1'", "perl"],
+    ["node -e 'console.log(1)'", "node"],
+    ["node x.js", "node"],
+    ["python x.py", "python"],
+    ["bash -c ls", "bash"],
+    ["pwsh -c Get-Date", "pwsh"],
+    ["GIT_SSH_COMMAND='ssh -v' git status", "git"],
+    ["env PATH=/tmp/tools git status", "env"],
+    ["export PAGER=cat", "export"],
+  ])("keeps static hidden code as rule visibility without ordinary approval: %s", (command, program) => {
+    const shape = analyzeShellForRules(command);
+    expect(shape).toMatchObject({ ok: true });
+    if (!shape.ok) throw new Error("Expected a parsed shell command");
+    expect(shape.hidden.length).toBeGreaterThan(0);
+    expect(shape.ordinaryAsk).toBeUndefined();
+    expect(evaluateShellRules(command, rules({ allow: [`Bash(${program} *)`] })).decision).toBeNull();
+    for (const restriction of [{ deny: ["Bash(rm *)"] }, { ask: ["Bash(rm *)"] }]) {
+      expect(evaluateShellRules(command, rules(restriction))).toMatchObject({ decision: "ask", pattern: null });
+    }
+  });
+
+  it.each([
+    "$COMMAND arg",
+    "env $COMMAND arg",
+    "python -c \"$CODE\"",
+    "node \"$SCRIPT\"",
+    "GIT_SSH_COMMAND=\"$COMMAND\" git status",
+    "env PATH=\"$RUNTIME_PATH\" git status",
+    "export PAGER=\"$COMMAND\"",
+    "echo $((count))",
+    "case x in x) echo hi;; esac",
+    "echo 'unterminated",
+  ])("retains ordinary approval for unresolved bindings or analysis: %s", (command) => {
+    const shape = analyzeShellForRules(command);
+    if (shape.ok) expect(shape.ordinaryAsk).toEqual(expect.any(String));
+    else expect(shape.reason).toEqual(expect.any(String));
+  });
+
+  it.each([
+    ["npx@10 helper", "Bash(npx@10 helper *)"],
+    ["npm@10 exec helper", "Bash(npm@10 exec helper *)"],
+  ])("keeps versioned runner prefixes ordinary and grantable: %s", (command, pattern) => {
+    expect(analyzeShellForRules(command)).toMatchObject({ ok: true, hidden: [], ordinaryAsk: "opaque runner prefix" });
+    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBe("allow");
+    expect(evaluateShellRules(command, rules({ allow: ["Bash(helper *)"] })).decision).toBeNull();
   });
 
   it("requires every subcommand of a compound command to be covered", () => {
@@ -344,9 +438,6 @@ describe("security review: code the matcher cannot read is hidden from deny and 
     "python3 -m http.server",
     "perl x.pl",
     "node build.mjs",
-    "deno run x.ts",
-    "bun ./x.ts",
-    "bun run ./x.ts",
     "trap 'rm -rf x' EXIT",
     "hash -p /bin/rm r; r x",
     "alias r=rm; r x",

@@ -20,12 +20,13 @@
  *
  * This file is only an entry point and runs unconditionally.
  */
-import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { createReadStream, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { awsRunner, put, putVersioned } from "./lib/r2-objects.mjs";
 import { missingSecrets, planR2Upload } from "./lib/release-channel.mjs";
+
+const TAG = "[upload-release-r2]";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -44,66 +45,6 @@ function parseArgs(argv) {
   if (options.dir === undefined) throw new Error("[upload-release-r2] --dir is required");
   if (options.tag === undefined) throw new Error("[upload-release-r2] --tag is required");
   return options;
-}
-
-function md5(path) {
-  return new Promise((resolvePromise, reject) => {
-    const hash = createHash("md5");
-    createReadStream(path).on("error", reject).on("data", (chunk) => hash.update(chunk))
-      .on("end", () => resolvePromise(hash.digest("hex")));
-  });
-}
-
-function awsRunner(env) {
-  const endpoint = `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
-  const childEnv = {
-    PATH: env.PATH ?? "",
-    HOME: env.HOME ?? "",
-    AWS_ACCESS_KEY_ID: env.R2_ACCESS_KEY_ID,
-    AWS_SECRET_ACCESS_KEY: env.R2_SECRET_ACCESS_KEY,
-    AWS_DEFAULT_REGION: "auto",
-    AWS_EC2_METADATA_DISABLED: "true",
-    AWS_PAGER: "",
-    // Send checksums only where an operation requires them. R2's compat table
-    // lists CRC32/CRC32C/SHA as composite-only, and AWS CLI v2.23+ adds a
-    // default CRC32 to every single-part put. TLS and the feed's sha512 carry
-    // integrity here.
-    AWS_REQUEST_CHECKSUM_CALCULATION: "when_required",
-    AWS_RESPONSE_CHECKSUM_VALIDATION: "when_required",
-  };
-  return (args) => {
-    const result = spawnSync("aws", ["s3api", ...args, "--endpoint-url", endpoint, "--output", "json"], {
-      env: childEnv,
-      encoding: "utf8",
-    });
-    if (result.error) throw new Error(`[upload-release-r2] cannot run the AWS CLI: ${result.error.message}`);
-    return result;
-  };
-}
-
-async function putVersioned(aws, bucket, operation, path) {
-  const head = aws(["head-object", "--bucket", bucket, "--key", operation.key]);
-  if (head.status === 0) {
-    const etag = JSON.parse(head.stdout).ETag?.replaceAll('"', "");
-    if (etag !== (await md5(path))) {
-      throw new Error(`[upload-release-r2] ${operation.key} already exists with different bytes; a released version is never replaced`);
-    }
-    console.log(`[upload-release-r2] keep ${operation.key} (identical object already uploaded)`);
-    return;
-  }
-  if (!/\b(?:404|Not Found|NoSuchKey)\b/u.test(head.stderr)) {
-    throw new Error(`[upload-release-r2] head-object ${operation.key} failed: ${head.stderr.trim()}`);
-  }
-  put(aws, bucket, operation, path, ["--if-none-match", "*"]);
-}
-
-function put(aws, bucket, operation, path, extra = []) {
-  const result = aws([
-    "put-object", "--bucket", bucket, "--key", operation.key, "--body", path,
-    "--content-type", operation.contentType, "--cache-control", operation.cacheControl, ...extra,
-  ]);
-  if (result.status !== 0) throw new Error(`[upload-release-r2] put-object ${operation.key} failed: ${result.stderr.trim()}`);
-  console.log(`[upload-release-r2] put ${operation.key}`);
 }
 
 function copy(aws, bucket, operation) {
@@ -137,12 +78,12 @@ async function main() {
   if (missing.length > 0) {
     throw new Error(`[upload-release-r2] missing required secret(s): ${missing.join(", ")}`);
   }
-  const aws = awsRunner(process.env);
+  const aws = awsRunner(process.env, TAG);
   const bucket = process.env.R2_BUCKET.trim();
   for (const operation of plan.operations) {
     if (operation.action === "copy") copy(aws, bucket, operation);
-    else if (operation.immutable) await putVersioned(aws, bucket, operation, join(dir, operation.source));
-    else put(aws, bucket, operation, join(dir, operation.source));
+    else if (operation.immutable) await putVersioned(aws, bucket, operation, join(dir, operation.source), TAG);
+    else put(aws, bucket, operation, join(dir, operation.source), TAG);
   }
   console.log(`[upload-release-r2] ${plan.operations.length} objects published; feed ${plan.channel.feedUrl}/latest.yml`);
 }

@@ -100,6 +100,18 @@ function withSeededMessageIds(messages: unknown[]): unknown[] {
 type AgentSpawnEvent = SharedAgentSpawnEvent<ChatEntry>;
 
 type ApiOverrides = {
+  /**
+   * Give the double a terminal surface (`api.terminal`). Off by default: most
+   * suites never open a terminal, and the app treats an absent surface as "no
+   * terminal here". A suite that turns it on also mocks xterm.
+   */
+  terminal?: boolean;
+  /**
+   * Give the double the agent browser surface (`api.browserTabs`) and the
+   * active-surface report (`api.setActiveSurface`). A test drives main's side
+   * with `emitBrowserTabOp` / `emitBrowserControl` below.
+   */
+  browserTabs?: boolean;
   settings?: unknown;
   /** Override the settings RPC itself when a renderer test needs to control its timing. */
   getSettings?: () => Promise<unknown>;
@@ -195,6 +207,58 @@ export const DEFAULT_APP_INFO = {
   arch: "x64",
   userDataPath: "/tmp/ave-test-user-data",
 };
+
+/**
+ * The terminal surface: every shell spawns, and output reaches the app through
+ * the `onData` listeners the app registered — a test drives them with
+ * `emitTerminalData` below.
+ */
+function makeTerminalDouble() {
+  const dataListeners = new Set<(payload: { tabId: string; chunk: string }) => void>();
+  return {
+    spawn: vi.fn(async ({ tabId }: { tabId: string }) => ({ ok: true, tabId, replayed: false })),
+    input: vi.fn(async () => ({ ok: true })),
+    resize: vi.fn(async () => ({ ok: true })),
+    kill: vi.fn(async () => ({ ok: true })),
+    onData: vi.fn((listener: (payload: { tabId: string; chunk: string }) => void) => {
+      dataListeners.add(listener);
+      return () => { dataListeners.delete(listener); };
+    }),
+    onExit: vi.fn(() => () => {}),
+    listBlocks: vi.fn(async () => ({ ok: true, blocks: [], integrated: false })),
+    getBlock: vi.fn(async () => ({ ok: false, message: "no block" })),
+    /** Not part of the surface: what the main process's PTY output would do. */
+    emitTerminalData: (tabId: string, chunk: string) => {
+      for (const listener of [...dataListeners]) listener({ tabId, chunk });
+    },
+  };
+}
+
+/** The agent browser surface: main's tab operations and control state reach the app through these. */
+function makeBrowserTabsDouble() {
+  const opListeners = new Set<(request: unknown) => void>();
+  const controlListeners = new Set<(state: { agentControlledTabIds: string[] }) => void>();
+  return {
+    bindTab: vi.fn(async () => ({ ok: true as const })),
+    stop: vi.fn(async () => ({ ok: true as const })),
+    onTabOp: vi.fn((listener: (request: unknown) => void) => {
+      opListeners.add(listener);
+      return () => { opListeners.delete(listener); };
+    }),
+    onControl: vi.fn((listener: (state: { agentControlledTabIds: string[] }) => void) => {
+      controlListeners.add(listener);
+      return () => { controlListeners.delete(listener); };
+    }),
+    /** Not part of the surface: an `ave:browser:tab-op` from main. */
+    emitBrowserTabOp: (request: unknown) => {
+      for (const listener of [...opListeners]) listener(request);
+    },
+    /** Not part of the surface: an `ave:browser:control` from main. */
+    emitBrowserControl: (agentControlledTabIds: string[]) => {
+      for (const listener of [...controlListeners]) listener({ agentControlledTabIds });
+    },
+  };
+}
 
 export function makeMockAveApi(overrides: ApiOverrides = {}): {
   api: MockAveApi;
@@ -307,6 +371,10 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   const sessionGoalHandlers = new Set<(payload: unknown) => void>();
 
   const api: MockAveApi = {
+    ...(overrides.terminal ? { terminal: makeTerminalDouble() } : {}),
+    ...(overrides.browserTabs
+      ? { browserTabs: makeBrowserTabsDouble(), setActiveSurface: vi.fn(async () => ({ ok: true as const })) }
+      : {}),
     notifyPluginTheme: vi.fn(async () => ({ ok: true })),
     remoteA2a: {
       targets: vi.fn(async () => ({ ok: false, error: "a2a-remote-disabled" })),
