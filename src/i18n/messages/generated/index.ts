@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 180
+ * Fragments: 184
  */
 import { en as en_agentBrowser } from "./agentBrowser.js";
 import { en as en_alerts } from "./alerts.js";
@@ -112,6 +112,7 @@ import { en as en_htmlPreview } from "./htmlPreview.js";
 import { en as en_inputActionBar } from "./inputActionBar.js";
 import { en as en_lazyCalendar } from "./lazyCalendar.js";
 import { en as en_llmTab } from "./llmTab.js";
+import { en as en_mainPanels } from "./mainPanels.js";
 import { en as en_mainToolbar } from "./mainToolbar.js";
 import { en as en_marketplaceAnnouncementBanner } from "./marketplaceAnnouncementBanner.js";
 import { en as en_marketplaceTab } from "./marketplaceTab.js";
@@ -137,6 +138,7 @@ import { en as en_pluginPerfTab } from "./pluginPerfTab.js";
 import { en as en_pluginUninstallDialog } from "./pluginUninstallDialog.js";
 import { en as en_pluginUpdatesPill } from "./pluginUpdatesPill.js";
 import { en as en_privacyTab } from "./privacyTab.js";
+import { en as en_ptyTerminal } from "./ptyTerminal.js";
 import { en as en_reasoningCard } from "./reasoningCard.js";
 import { en as en_remoteA2aActionButton } from "./remoteA2aActionButton.js";
 import { en as en_remoteSurfacesTab } from "./remoteSurfacesTab.js";
@@ -149,6 +151,7 @@ import { en as en_sessionResumeDivider } from "./sessionResumeDivider.js";
 import { en as en_sessionTasksPanel } from "./sessionTasksPanel.js";
 import { en as en_settingsContent } from "./settingsContent.js";
 import { en as en_shellExecution } from "./shellExecution.js";
+import { en as en_sideChatTarget } from "./sideChatTarget.js";
 import { en as en_sidebar } from "./sidebar.js";
 import { en as en_skillBadge } from "./skillBadge.js";
 import { en as en_slashPicker } from "./slashPicker.js";
@@ -185,6 +188,7 @@ import { en as en_useStatusBarVendor } from "./useStatusBarVendor.js";
 import { en as en_userMessageEditor } from "./userMessageEditor.js";
 import { en as en_viewModeBanner } from "./viewModeBanner.js";
 import { en as en_viewPathNav } from "./viewPathNav.js";
+import { en as en_webSurface } from "./webSurface.js";
 import { en as en_webTab } from "./webTab.js";
 import { en as en_workBoard } from "./workBoard.js";
 import { en as en_workGroup } from "./workGroup.js";
@@ -294,6 +298,7 @@ export const generatedEn: Record<string, string> = {
   ...en_inputActionBar,
   ...en_lazyCalendar,
   ...en_llmTab,
+  ...en_mainPanels,
   ...en_mainToolbar,
   ...en_marketplaceAnnouncementBanner,
   ...en_marketplaceTab,
@@ -319,6 +324,7 @@ export const generatedEn: Record<string, string> = {
   ...en_pluginUninstallDialog,
   ...en_pluginUpdatesPill,
   ...en_privacyTab,
+  ...en_ptyTerminal,
   ...en_reasoningCard,
   ...en_remoteA2aActionButton,
   ...en_remoteSurfacesTab,
@@ -331,6 +337,7 @@ export const generatedEn: Record<string, string> = {
   ...en_sessionTasksPanel,
   ...en_settingsContent,
   ...en_shellExecution,
+  ...en_sideChatTarget,
   ...en_sidebar,
   ...en_skillBadge,
   ...en_slashPicker,
@@ -367,6 +374,7 @@ export const generatedEn: Record<string, string> = {
   ...en_userMessageEditor,
   ...en_viewModeBanner,
   ...en_viewPathNav,
+  ...en_webSurface,
   ...en_webTab,
   ...en_workBoard,
   ...en_workGroup,

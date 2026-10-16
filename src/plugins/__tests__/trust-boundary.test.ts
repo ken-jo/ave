@@ -145,11 +145,11 @@ describe("Phase 1 — plugin trust boundary", () => {
       expect(runtime.listPluginIds()).not.toContain("tb-rogue");
     });
 
-    // Symlink creation on Windows requires admin or developer mode. Skip
-    // there — the other branches still exercise the realpath containment
-    // check via a real on-disk path.
-    const symlinkSkip = process.platform === "win32";
-    it.skipIf(symlinkSkip)(
+    // A directory symlink on Windows needs admin or Developer Mode, but a
+    // directory junction does not, and realpath resolves it the same way, so
+    // the link is a junction there; the type is ignored on POSIX, where it
+    // stays a directory symlink.
+    it(
       "rejects a symlink under pluginsRoot that points outside the trust root",
       async () => {
         // Real plugin lives at testDir/outside/p-evil/plugin.json — outside
@@ -160,7 +160,7 @@ describe("Phase 1 — plugin trust boundary", () => {
         // directory. Without realpath defeat, this would naively pass the
         // containment check.
         const linkDir = join(pluginsRoot, "p-evil");
-        await symlink(realDir, linkDir, "dir");
+        await symlink(realDir, linkDir, "junction");
         const linkedManifest = join(linkDir, "plugin.json");
         // Sanity check both paths resolve to the same file before runtime.
         expect(realManifest).not.toEqual(linkedManifest);

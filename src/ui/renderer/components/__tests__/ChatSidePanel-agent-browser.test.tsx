@@ -11,13 +11,23 @@ import { approvalSurfaceStub, emptyToolActivity } from "../../../../../test/rend
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
 import { UrlDocumentViewer } from "../ChatSidePanelPreview.js";
+import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
+import { clearActiveSurface, useReportActiveSurface } from "../../preview/active-surface.js";
+
+/** The window's active-surface report to main, mounted once as App mounts it. */
+function ActiveSurfaceReport({ api }: { api: AveApi }) {
+  useReportActiveSurface(api);
+  return null;
+}
 import { useWorkspaceTabs, type WorkspaceTabsStore } from "../../preview/workspace-tabs.js";
 import { __resetBrowserTabBridgeForTest, registerBrowserTabHost } from "../../preview/agent-browser-bridge.js";
 
 /**
  * The side panel's half of the agent browser: page tabs stay mounted when
  * hidden, the agent's tabs carry the control badge with a working stop, and
- * the panel reports the tab the user is looking at.
+ * the panel reports the tab the user is looking at. A tab's page is a web
+ * surface: its guest lives in the window's `WebSurfaceLayer` (mounted here as
+ * App mounts it), which binds it to the tab and records where it navigates.
  */
 function makeApi() {
   let controlHandler: ((state: BrowserTabControlState) => void) | null = null;
@@ -65,6 +75,8 @@ function Harness({ api }: { api: AveApi }) {
           onClose={vi.fn()}
           activity={emptyToolActivity()}
         />
+        <WebSurfaceLayer api={api} />
+        <ActiveSurfaceReport api={api} />
       </ApprovalSurfaceProvider>
     </TooltipProvider>
   );
@@ -72,10 +84,26 @@ function Harness({ api }: { api: AveApi }) {
 
 afterEach(() => {
   store = null;
+  clearActiveSurface();
   __resetBrowserTabBridgeForTest();
 });
 
 describe("ChatSidePanel agent browser", () => {
+  it("revokes control before side-panel address navigation without a badge report", async () => {
+    const { api } = makeApi();
+    render(<Harness api={api} />);
+    act(() => store!.adoptTab({ id: "browser:restored", kind: "browser", ordinal: 1 }, "https://a.example/"));
+    expect(screen.queryByTestId("agent-browser-control-badge")).toBeNull();
+    const address = screen.getByTestId("chat-side-panel-browser-address");
+    await act(async () => {
+      fireEvent.change(address, { target: { value: "https://a.example/user-chosen" } });
+      fireEvent.submit(address.closest("form")!);
+    });
+    expect(api.browserTabs!.stop).toHaveBeenCalledWith("browser:restored");
+    expect(store!.browserUrlByTab["browser:restored"]).toBe("https://a.example/user-chosen");
+    expect(screen.getByTestId("chat-side-panel-browser-webview")).toHaveAttribute("src", "https://a.example/user-chosen");
+  });
+
   it("binds a request-bound blank guest and keeps it mounted after navigation and tab switches", async () => {
     const { api } = makeApi();
     render(<Harness api={api} />);
@@ -206,6 +234,10 @@ describe("ChatSidePanel agent browser", () => {
     act(() => emitControl({ agentControlledTabIds: [agentTabId!] }));
     const badge = screen.getByTestId("agent-browser-control-badge");
     expect(hosts[0]).toContainElement(badge);
+    // The tab row says so too, on the agent's tab only.
+    const marks = screen.getAllByTestId("chat-side-panel-tab-agent-controlled");
+    expect(marks).toHaveLength(1);
+    expect(marks[0]!.closest("[data-tab-id]")).toHaveAttribute("data-tab-id", agentTabId);
     fireEvent.click(screen.getByTestId("agent-browser-control-stop"));
     expect(api.browserTabs!.stop).toHaveBeenCalledWith(agentTabId);
     unregister();

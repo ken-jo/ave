@@ -170,11 +170,11 @@ test.describe("usage dashboard token cost e2e", () => {
 
         await expect(claudeRow).toContainText("claude");
         await expect(claudeRow).not.toContainText(
-          t("tokenCostBadge.pricingUnknownBadge"),
+          t("tokenCostBadge.pricingUnknownLabel"),
         );
         await expect(openaiRow).toContainText("openai");
         await expect(openaiRow).not.toContainText(
-          t("tokenCostBadge.pricingUnknownBadge"),
+          t("tokenCostBadge.pricingUnknownLabel"),
         );
 
         await expect(unknownRow).toContainText("unknown");

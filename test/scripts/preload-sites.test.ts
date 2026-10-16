@@ -108,6 +108,9 @@ const WEBVIEW_SITES: Record<string, string | null> = {
   "src/floating-dock-window.js": "pluginPreload",
   "src/ui/renderer/components/McpAppView.tsx": "mcpAppPreload",
   "src/ui/renderer/components/ChatSidePanelPreview.tsx": null,
+  // Browser tab pages, mounted once per window in the web-surface layer: the
+  // same side-browser partition and sandboxed request as the preview's guest.
+  "src/ui/renderer/components/WebSurfaceLayer.tsx": null,
   "src/main/link-window-service.ts": null,
   "src/main/auth-window-service.ts": null,
 };
@@ -1101,6 +1104,7 @@ describe("preload sites follow the preload table", () => {
       "webview src/plugin-ui-host.tsx pluginPreload",
       "webview src/ui/renderer/components/ChatSidePanelPreview.tsx null",
       "webview src/ui/renderer/components/McpAppView.tsx mcpAppPreload",
+      "webview src/ui/renderer/components/WebSurfaceLayer.tsx null",
     ]);
     expect(Object.keys(WEBVIEW_SITES).filter((file) => !real.sites.some((site) => site.file === file && site.kind.endsWith("webview")))).toEqual([]);
   });

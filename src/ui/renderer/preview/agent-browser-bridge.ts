@@ -6,7 +6,9 @@
  * module subscribes ONCE and routes each operation to exactly one store:
  *   · select / close → the store that holds the tab;
  *   · new            → the store of the chat the tab is opened for
- *                      (`sessionId`), else the first store registered.
+ *                      (`sessionId`), else the first store registered that
+ *                      opens agent tabs (the main area's web panels do
+ *                      not: an agent's new tab goes beside its chat).
  * It also mirrors main's agent-control state for the "Agent is controlling
  * this tab" badge. Main resolves the agent's request only when it observes
  * the result (a bind, the guest gone, the tab shown), so a dropped or
@@ -20,7 +22,8 @@ export interface BrowserTabHost {
   /** The conversation this host's chat view shows, or null. */
   sessionId: () => string | null;
   hasTab: (tabId: string) => boolean;
-  openAgentTab: (url: string, requestId: string) => void;
+  /** Absent for a host that holds tabs but does not open the agent's new ones. */
+  openAgentTab?: (url: string, requestId: string) => void;
   selectTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
 }
@@ -29,6 +32,18 @@ const hosts: BrowserTabHost[] = [];
 let unsubscribe: (() => void) | null = null;
 let controlled: ReadonlySet<string> = new Set();
 const controlListeners = new Set<() => void>();
+
+/** Main revokes ownership before any user navigation, including while the badge mirror is empty. */
+export async function navigateBrowserTabAsUser(api: AveApi, tabId: string, navigate: () => void): Promise<void> {
+  let stopped;
+  try {
+    stopped = await api.browserTabs?.stop(tabId);
+  } catch {
+    // An unconfirmed takeover must not navigate under the agent's authority.
+    return;
+  }
+  if (stopped?.ok) navigate();
+}
 
 function isWebview(element: Element): boolean {
   return element.tagName === "WEBVIEW";
@@ -78,9 +93,10 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
     return;
   }
   if (request.op === "new") {
-    const host = candidates.find((candidate) => request.sessionId !== undefined && candidate.sessionId() === request.sessionId)
-      ?? candidates[0];
-    host?.openAgentTab(request.url, request.requestId);
+    const openers = candidates.filter((candidate) => candidate.openAgentTab !== undefined);
+    const host = openers.find((candidate) => request.sessionId !== undefined && candidate.sessionId() === request.sessionId)
+      ?? openers[0];
+    host?.openAgentTab?.(request.url, request.requestId);
     return;
   }
   const host = candidates.find((candidate) => candidate.hasTab(request.tabId));
@@ -126,6 +142,84 @@ export function registerBrowserTabHost(api: AveApi, host: BrowserTabHost): () =>
 function subscribeControl(listener: () => void): () => void {
   controlListeners.add(listener);
   return () => controlListeners.delete(listener);
+}
+
+/** Bind retries while main has not yet seen the guest attach. */
+const BIND_RETRY_LIMIT = 20;
+const BIND_RETRY_MS = 100;
+
+/**
+ * Bind the guest of `webview` to `tabId` in main (`ave:browser:bind-tab`) on
+ * every attach, and now if it is already attached, so the agent browser tools
+ * can reach the tab's page. `requestId` marks a tab opened for the agent.
+ * Returns the cleanup. The page's did-attach can reach the renderer before
+ * main has seen the guest attach (main's did-attach-webview); main answers
+ * guest-not-live until then, so the bind is retried shortly. And at
+ * did-attach the element cannot name its guest yet (measured: Electron's
+ * `getWebContentsId()` throws until the guest's first dom-ready), so the
+ * first dom-ready of each guest binds it too.
+ */
+export function bindGuestToTab(
+  api: AveApi,
+  webview: HTMLElement,
+  tabId: string,
+  requestId: string | undefined,
+): () => void {
+  const browserTabs = api.browserTabs;
+  if (!browserTabs) return () => undefined;
+  let cancelled = false;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  /** The latest requested guest, pending or accepted; rejection allows another dom-ready attempt. */
+  let sentFor: number | undefined;
+  let bindSequence = 0;
+  const guestId = (): number | undefined => {
+    try {
+      const id = (webview as HTMLElement & { getWebContentsId?: () => number }).getWebContentsId?.();
+      return typeof id === "number" ? id : undefined;
+    } catch {
+      // Not attached, or not yet ready to name its guest: a later event binds it.
+      return undefined;
+    }
+  };
+  const onAttach = (attempt = 0) => {
+    if (cancelled) return;
+    const webContentsId = guestId();
+    if (webContentsId === undefined) return;
+    if (retry !== undefined) {
+      clearTimeout(retry);
+      retry = undefined;
+    }
+    const sequence = ++bindSequence;
+    sentFor = webContentsId;
+    void browserTabs.bindTab({
+      tabId,
+      webContentsId,
+      ...(requestId === undefined ? {} : { requestId }),
+    }).then((result) => {
+      if (cancelled || sequence !== bindSequence || result.ok) return;
+      sentFor = undefined;
+      if (result.error === "guest-not-live" && attempt < BIND_RETRY_LIMIT) {
+        retry = setTimeout(() => onAttach(attempt + 1), BIND_RETRY_MS);
+      }
+    }, () => {
+      if (!cancelled && sequence === bindSequence) sentFor = undefined;
+    });
+  };
+  const onAttachEvent = () => onAttach();
+  const onReady = () => {
+    const webContentsId = guestId();
+    if (webContentsId !== undefined && webContentsId !== sentFor) onAttach();
+  };
+  webview.addEventListener("did-attach", onAttachEvent);
+  webview.addEventListener("dom-ready", onReady);
+  // Already attached (the tab id or request changed on a live guest).
+  onAttach();
+  return () => {
+    cancelled = true;
+    if (retry !== undefined) clearTimeout(retry);
+    webview.removeEventListener("did-attach", onAttachEvent);
+    webview.removeEventListener("dom-ready", onReady);
+  };
 }
 
 /** The window's tab ids the agent controls (badge + stop button). */

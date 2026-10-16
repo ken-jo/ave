@@ -6,7 +6,7 @@
 // provided by Electron at runtime, must share a singleton across plugins, or
 // need real node_modules paths at runtime.
 import { build, context } from "esbuild";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,7 @@ import {
   assertMainBundleBudget,
   createMainBundleManifest,
   formatMainBundleBudget,
+  formatMainBundleSummary,
 } from "./lib/main-bundle-budget.mjs";
 import { assertHeadlessBundleBoundary, HEADLESS_CHILD_ENTRY_POINTS } from "./lib/headless-bundle-boundary.mjs";
 import { readBuildSourceIdentity } from "./lib/build-source-identity.mjs";
@@ -137,6 +138,14 @@ if (watchMode) {
     entryPoint: resolve(repoRoot, "src", "main.ts"),
     requiredAsyncEntryPoint: resolve(repoRoot, "src", "desktop-boot.ts"),
   });
+  // CI shows the measurement on the job summary, also when a ceiling is exceeded.
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    appendFileSync(
+      process.env.GITHUB_STEP_SUMMARY,
+      formatMainBundleSummary(bundleMeasurement, MAIN_BUNDLE_BUDGETS),
+      "utf8",
+    );
+  }
   assertMainBundleBudget(bundleMeasurement, MAIN_BUNDLE_BUDGETS);
   const bundleManifest = createMainBundleManifest(result.metafile, {
     outdir,

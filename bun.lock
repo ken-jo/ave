@@ -106,6 +106,9 @@
     "better-sqlite3",
     "node-pty",
   ],
+  "patchedDependencies": {
+    "@anthropic-ai/sandbox-runtime@0.0.76": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.76.patch",
+  },
   "packages": {
     "7zip-bin": ["7zip-bin@5.2.0", "", {}, "sha512-ukTPVhqG4jNzMro2qA9HSCSSVJN3aN7tlb+hfqYCt3ER0yWroeA2VR38MNrOHLQ/cVj+DaIMad0kFCtWWowh/A=="],
 

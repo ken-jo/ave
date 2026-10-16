@@ -87,7 +87,7 @@ The approval surface renders the capability card (`tool-approval-sandbox`) from 
 | Path | Where |
 |---|---|
 | Shell tools | `src/tools/shell-tools.ts` (`wrapToolCommand`) |
-| Integrated terminal | `src/main/terminal/pty-manager.ts` (`wrapWorkerCommand`) |
+| Integrated terminal | `src/main/terminal/pty-manager.ts` (`wrapWorkerCommand`; on macOS `wrapTerminalCommand`, which grants `file-ioctl` on the shell's own pty slave only, through the trampoline in `terminal-tty-handoff.ts`) |
 | MCP stdio servers | `src/mcp/mcp-client.ts` |
 | Out-of-process plugins | `src/plugins/isolation/out-of-process-plugin.ts` through `spawnConfinedChild` |
 | Bundled hook and server processes | `src/sandbox/wrap-bundled-command.ts`, used by `src/hooks/script-hook-runner.ts` and the MCP client |

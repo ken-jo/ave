@@ -107,6 +107,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number }>();
   private readonly tabs = new Map<string, BrowserTabRecord<G>>();
   private readonly handleByWindowTab = new Map<string, string>();
+  // A takeover before bind must also prevent a pending new-tab request from granting ownership later.
+  private readonly userOwnedTabs = new Set<string>();
   private readonly activeSurface = new Map<number, ActiveWorkspaceSurface>();
   private readonly pending = new Map<string, PendingTabOp>();
   private nextAttachment = 0;
@@ -145,6 +147,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (!entry || entry.guest.isDestroyed()) return { ok: false, error: "guest-not-live" };
     if (entry.windowId !== senderWindowId) return { ok: false, error: "guest-not-hosted" };
     const key = windowTabKey(senderWindowId, request.tabId);
+    const takenOver = this.userOwnedTabs.has(key);
     let handle = this.handleByWindowTab.get(key);
     let tab = handle === undefined ? undefined : this.tabs.get(handle);
     const pendingNew = request.requestId === undefined ? undefined : this.pending.get(request.requestId);
@@ -154,7 +157,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         return { ok: false, error: "guest-not-hosted" };
       }
       if (entry.guest.getURL() === "") return { ok: false, error: "guest-not-live" };
-      if (entry.guest.getURL() !== "about:blank") return { ok: false, error: "guest-not-hosted" };
+      // A taken-over bootstrap may already show the user's page; it receives no agent authority.
+      if (!takenOver && entry.guest.getURL() !== "about:blank") return { ok: false, error: "guest-not-hosted" };
     }
     if (!tab) {
       handle = `tab-${this.nextHandle++}`;
@@ -188,21 +192,23 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     tab.guest = entry.guest;
     if (pendingNew && pendingNew.windowId === senderWindowId && pendingNew.request.op === "new") {
-      tab.opener = "agent";
-      tab.agentOrigin = browserOrigin(pendingNew.request.url);
+      tab.opener = takenOver ? "user" : "agent";
+      tab.agentOrigin = takenOver ? null : browserOrigin(pendingNew.request.url);
       this.pending.delete(request.requestId!);
-      pendingNew.settle({ ok: true, tabId: tab.handle });
+      pendingNew.settle(takenOver ? { ok: false, error: "aborted" } : { ok: true, tabId: tab.handle });
     }
     this.settleSelectIfShown(senderWindowId);
     this.broadcastControl(senderWindowId);
     return { ok: true };
   }
 
-  /** The badge's stop: cancel the tab's pending actions and give it to the user. */
+  /** Stop or user navigation: revoke authority even before the tab's first bind. */
   stop(senderWindowId: number, rendererTabId: string): boolean {
-    const handle = this.handleByWindowTab.get(windowTabKey(senderWindowId, rendererTabId));
+    const key = windowTabKey(senderWindowId, rendererTabId);
+    this.userOwnedTabs.add(key);
+    const handle = this.handleByWindowTab.get(key);
     const tab = handle === undefined ? undefined : this.tabs.get(handle);
-    if (!tab) return false;
+    if (!tab) return true;
     tab.opener = "user";
     tab.agentOrigin = null;
     tab.actions.abort(new Error("the user stopped the agent in this tab"));
@@ -429,6 +435,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.attached.clear();
     this.tabs.clear();
     this.handleByWindowTab.clear();
+    this.userOwnedTabs.clear();
     this.activeSurface.clear();
     this.pending.clear();
     this.injectedTouches.clear();

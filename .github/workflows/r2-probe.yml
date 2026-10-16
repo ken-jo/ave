@@ -2,9 +2,9 @@ name: R2 Probe
 
 # Manual check that the R2 release channel's credentials can still write,
 # list and delete in the release bucket, without building or publishing a
-# release. It uses the same four secrets as build-installers.yml publish-r2
+# release. It uses the release environment's four secrets, as publish-r2 does,
 # and touches only one object under `_ci-probe/`, which it deletes again.
-# Dispatch only: it must never run on push, pull request or tag.
+# Dispatch from main only: it must never run on push, pull request or tag.
 on:
   workflow_dispatch:
 
@@ -18,6 +18,8 @@ concurrency:
 jobs:
   probe:
     name: Write, list and delete one object in the R2 release bucket
+    if: github.ref == 'refs/heads/main'
+    environment: release
     # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
     # ["self-hosted","Linux","ARM64","ave"], or a hosted label such as
     # "ubuntu-24.04-arm" to opt into a GitHub-hosted runner explicitly). Unset

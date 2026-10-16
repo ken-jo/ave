@@ -47,21 +47,51 @@ Website links: `https://downloads.agent-connector.ai/latest/mac-arm64.dmg`,
 3. R2 → Manage API tokens → Create an **Account API token** with permission
    **Object Read & Write**, applied to this bucket only. Record the Access Key
    ID and Secret Access Key; the secret is shown once.
-4. Add the repository secrets (values are pasted at the prompt, never typed
-   into a command line or a file):
+4. In the repository's environment settings, create or open `release` and allow
+   deployments only from branch `main` and tags `v*`. Add its four environment
+   secrets (values are pasted at the prompt, never typed into a command line or
+   a file):
 
    ```bash
-   gh secret set R2_ACCOUNT_ID -R ken-jo/ave
-   gh secret set R2_ACCESS_KEY_ID -R ken-jo/ave
-   gh secret set R2_SECRET_ACCESS_KEY -R ken-jo/ave
-   gh secret set R2_BUCKET -R ken-jo/ave
+   gh secret set R2_ACCOUNT_ID -R ken-jo/ave --env release
+   gh secret set R2_ACCESS_KEY_ID -R ken-jo/ave --env release
+   gh secret set R2_SECRET_ACCESS_KEY -R ken-jo/ave --env release
+   gh secret set R2_BUCKET -R ken-jo/ave --env release
    ```
 
+   Verify that all four names are present in the environment:
+
+   ```bash
+   gh secret list -R ken-jo/ave --env release
+   ```
+
+   Only after all four are present, delete their repository-level copies (these
+   commands deliberately omit `--env`):
+
+   ```bash
+   gh secret delete R2_ACCOUNT_ID -R ken-jo/ave
+   gh secret delete R2_ACCESS_KEY_ID -R ken-jo/ave
+   gh secret delete R2_SECRET_ACCESS_KEY -R ken-jo/ave
+   gh secret delete R2_BUCKET -R ken-jo/ave
+   ```
+
+   Confirm that none of the four names remains in the repository-level list:
+
+   ```bash
+   gh secret list -R ken-jo/ave
+   ```
+
+   Every job reading these secrets must use `environment: release`.
    The job fails, naming the missing secret, when any of the four is unset.
-   To check the secrets before a tag build, dispatch the **R2 Probe**
-   workflow (`.github/workflows/r2-probe.yml`, manual dispatch only). It
+   To check the secrets before a tag build, manually dispatch the **R2 Probe**
+   workflow (`.github/workflows/r2-probe.yml`) from `main` only. It
    uploads one small object under `_ci-probe/`, confirms it is listed, deletes
    it, and confirms it is gone; nothing outside `_ci-probe/` is touched.
+   The contract bundle probe also requires a `main` dispatch of
+   `build-installers.yml` with `contract_probe=true`; it builds, signs, uploads,
+   checks signature reuse and deletes its `_ci-probe/contract/<run>/` bundle
+   without building installers. Both probes skip other refs, including tags;
+   tag pushes retain the protected annotated-tag validation for publication.
 5. Do not add a Cache Rule that caches everything on this host: the feed and
    the `latest/` aliases rely on their `no-cache` origin header.
 
