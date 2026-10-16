@@ -315,8 +315,11 @@ describe.each(["darwin", "linux", "win32"] as const)(
       childProcessMock.execFileSync.mockReset();
     });
 
+    // Design I3: a requested-but-unavailable sandbox follows the normal rules
+    // (the permission layer is the authority), so the tool spawns without a
+    // one-shot permit and records the fallback plan on its result.
     it.each(SHELLS)(
-      "runs $label once with a generic permit and rejects its replay",
+      "runs $label as a permitless plain child and records the fallback plan",
       async ({ toolName, create, input, expectedSpawnCount }) => {
         const plan = issueRequestedUnavailable(platform);
         expect(plan).toMatchObject({
@@ -324,24 +327,13 @@ describe.each(["darwin", "linux", "win32"] as const)(
           requestedSandbox: true,
           mode: "plain",
           fallbackReason: "requested-sandbox-unavailable",
-          requiresExplicitUserApproval: true,
+          requiresExplicitUserApproval: false,
         });
         const toolUseId = `${toolName}-requested-unavailable-${platform}`;
-        const baseContext = {
-          cwd: process.cwd(),
-          extraAllowedDirectories: [] as const,
-        };
-        const permit = await mintOneShotPermit({
-          plan,
-          toolName,
-          toolUseId,
-          rawInput: input,
-          context: baseContext,
-        });
         const context: ToolExecutionContext = {
-          ...baseContext,
+          cwd: process.cwd(),
+          extraAllowedDirectories: [],
           hostShellExecutionPlan: plan,
-          hostShellExecutionPermit: permit,
           metadata: { toolUseId },
         };
 
@@ -351,16 +343,10 @@ describe.each(["darwin", "linux", "win32"] as const)(
           isError: false,
           metadata: { sandboxed: false, isolation: "none" },
         });
+        expect(first.metadata?.sandboxExecutionPlan).toBe(
+          getHostShellExecutionPlanAuditProjection(plan),
+        );
         expect(childProcessMock.spawn).toHaveBeenCalledTimes(expectedSpawnCount);
-
-        const spawnCountAfterFirst = childProcessMock.spawn.mock.calls.length;
-        const replay = await create().execute(input, context);
-        expect(replay).toMatchObject({
-          isError: true,
-          metadata: { sandboxed: false, isolation: "none" },
-        });
-        expect(replay.output).toContain("one-shot host approval permit");
-        expect(childProcessMock.spawn).toHaveBeenCalledTimes(spawnCountAfterFirst + (toolName === "powershell" ? 1 : 0));
       },
     );
   },

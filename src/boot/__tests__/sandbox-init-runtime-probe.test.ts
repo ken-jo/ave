@@ -108,7 +108,7 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
       requestedSandbox: true,
       mode: "plain",
       fallbackReason: "requested-sandbox-unavailable",
-      requiresExplicitUserApproval: true,
+      requiresExplicitUserApproval: false,
       capability: { kind: "none" },
     });
   });

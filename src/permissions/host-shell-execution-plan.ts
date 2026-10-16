@@ -39,7 +39,13 @@ export interface HostShellExecutionPlan {
   /** Honest capability of the child selected by this plan. */
   readonly capability: SandboxCapability;
   readonly fallbackReason: HostShellFallbackReason;
-  /** True whenever this plain shell requires a fresh one-shot approval. */
+  /**
+   * True whenever this plain shell needs a per-invocation host authorization
+   * before spawn: an explicit unsandboxed request (a matching allow rule or a
+   * fresh allow-once approval) or the Windows partial-ASRT Plan B (allow-once
+   * only). A requested-but-unavailable sandbox is not one of them: it follows
+   * the normal rules and only records its `fallbackReason`.
+   */
   readonly requiresExplicitUserApproval: boolean;
   /** Stable identity for audit/cache consumers; contains no command or raw path. */
   readonly identity: string;
@@ -229,9 +235,14 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  // A requested sandbox that is unavailable yields an honest plain child on
-  // every platform. It must carry an opaque, exact-action allow-once permit;
-  // explicit sandbox-off remains the normal plain-shell policy path below.
+  // A requested sandbox that is unavailable (missing bwrap/socat, start
+  // failure) yields an honest plain child on every platform. Like the
+  // reference hosts (Claude Code, Codex), it warns and continues under the
+  // normal permission rules — the same policy path as explicit sandbox-off,
+  // floor and deny rules included — so it needs no one-shot permit. The
+  // fallback reason stays on the plan so the approval card, the tool result
+  // and audit can say the sandbox was unavailable (design I3, owner
+  // 2026-10-16).
   if (requestedSandbox && input.activeCapability.kind === "none") {
     const fallbackReason: HostShellFallbackReason = "requested-sandbox-unavailable";
     const capability = noneCapability(
@@ -246,7 +257,7 @@ export function buildHostShellExecutionPlan(input: {
       mode: "plain" as const,
       capability,
       fallbackReason,
-      requiresExplicitUserApproval: true,
+      requiresExplicitUserApproval: false,
       identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
     });
   }
@@ -333,8 +344,9 @@ export function buildHostShellExecutionPlan(input: {
 
 
 /**
- * Host-owned hard gate for explicit host requests and requested-sandbox
- * fallbacks. Every such plain child needs the same opaque allow-once permit.
+ * Host-owned hard gate for explicit host requests and the Windows partial-ASRT
+ * Plan B. Every such plain child needs the same opaque one-shot permit; only an
+ * explicit host request may also receive it from a matching allow rule.
  */
 export function requiresExplicitHostShellApproval(plan: HostShellExecutionPlan): boolean {
   return plan.mode === "plain" &&

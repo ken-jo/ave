@@ -1246,6 +1246,7 @@ export async function runToolInvocation(
       | HostShellExecutionPermitBinding
       | undefined;
     let hostShellApprovalDecision: ApprovalDecision | undefined;
+    let hostShellAllowRuleDecision: PermissionCheckResult | undefined;
     const makeEvaluationContext = (input: {
       pathFields: readonly string[];
       targetFilePaths?: readonly string[];
@@ -2196,6 +2197,7 @@ export async function runToolInvocation(
     }
     permissionResult = authorization.permissionResult;
     hostShellApprovalDecision = authorization.hostShellApprovalDecision;
+    hostShellAllowRuleDecision = authorization.hostShellAllowRuleDecision;
 
     if (brokeredFileRouteSelected &&
         (canonicalFileTool !== undefined || canonicalBrokerLifecycleTool !== undefined)) {
@@ -2278,6 +2280,7 @@ export async function runToolInvocation(
       abortSignal,
       hostShellExecutionPermitBinding,
       hostShellApprovalDecision,
+      hostShellAllowRuleDecision,
       hostShellExecutionPlan,
       hostShellRequiresExplicitApproval,
       executionRouteGrant,

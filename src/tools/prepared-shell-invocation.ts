@@ -117,11 +117,13 @@ export function preparedShellCommand(handle: PreparedShellInvocation): Readonly<
  * caller strips from stderr; the plain argv and no probe when the command
  * cannot change directory. Background shells use {@link preparedShellCommand}.
  */
-export function preparedShellCwdProbe(handle: PreparedShellInvocation): Readonly<{
+export function preparedShellCwdProbe(handle: PreparedShellInvocation, prelude?: string): Readonly<{
   argv: readonly string[]; probe?: ShellCwdProbe;
 }> {
   const state = stateOf(handle);
-  return Object.freeze({ argv: state.probedArgv, probe: state.cwdProbe });
+  const argv = prelude === undefined ? state.probedArgv
+    : Object.freeze(state.shell.shellArgs(prelude + (state.cwdProbe?.script ?? state.identity.command)));
+  return Object.freeze({ argv, probe: state.cwdProbe });
 }
 
 /**

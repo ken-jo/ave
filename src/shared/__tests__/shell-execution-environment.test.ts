@@ -36,6 +36,17 @@ describe("shell execution environment", () => {
     expect(shellExecutionEnvironmentLines(fallback)).not.toContain(t("shellExecution.temporaryHome"));
   });
 
+  it("warns that a requested sandbox is unavailable, and only then", () => {
+    const fallback = buildHostShellExecutionPlan({
+      platform: "linux", requestedSandbox: true,
+      activeCapability: { reason: "Fixture sandbox unavailable", kind: "none", confidence: "verified", platform: "linux" },
+    });
+    expect(shellExecutionEnvironmentLines(fallback)[0]).toBe(t("shellExecution.sandboxUnavailable"));
+    expect(shellExecutionEnvironmentPrompt(fallback, true)).toContain(t("shellExecution.sandboxUnavailable"));
+    expect(shellExecutionEnvironmentLines(plan(false))).not.toContain(t("shellExecution.sandboxUnavailable"));
+    expect(shellExecutionEnvironmentLines(plan(true))).not.toContain(t("shellExecution.sandboxUnavailable"));
+  });
+
   it("does not promise an interactive approval surface to a headless turn", () => {
     const prompt = shellExecutionEnvironmentPrompt(plan(true), false);
     expect(prompt).toContain(t("shellExecution.noInteractiveApproval"));

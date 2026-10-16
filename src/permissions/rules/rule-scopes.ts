@@ -8,6 +8,9 @@
  * never loaded is an internal contract violation and throws.
  */
 import { stat } from "node:fs/promises";
+import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, type PersistedPolicyVersion } from "../persisted-policy-version.js";
+import { canonicalStringify } from "../../shared/canonical-json.js";
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { isRuleSpecifier, parseRuleSpecifier } from "./rule-specifier.js";
@@ -36,8 +39,22 @@ async function fileStamp(filePath: string): Promise<FileStamp> {
 export class ProjectRuleScopes {
   private readonly states = new Map<string, ProjectRuleState>();
   private readonly stamps = new Map<string, FileStamp>();
+  private readonly policyVersions = new Map<string, PersistedPolicyVersion | undefined>();
+  private revision = 0;
 
   constructor(private readonly baseDir: string) {}
+
+  getRevision(): number {
+    return this.revision;
+  }
+
+  policyVersionFor(projectCwd: string): PersistedPolicyVersion | undefined {
+    const location = projectRulesLocation(this.baseDir, projectCwd);
+    if (this.policyVersions.has(location.identity)) return this.policyVersions.get(location.identity);
+    const version = capturePersistedPolicyVersion(location.filePath);
+    // A present store must have been evaluated, never merely fingerprinted.
+    return version?.digest === null ? version : undefined;
+  }
 
   /**
    * Load the rule file of the project `projectCwd` belongs to, re-reading it
@@ -55,9 +72,12 @@ export class ProjectRuleScopes {
   async reload(projectCwd: string): Promise<ProjectRuleState> {
     const location = projectRulesLocation(this.baseDir, projectCwd);
     const stamp = await fileStamp(location.filePath);
+    const policyVersion = capturePersistedPolicyVersion(location.filePath);
     let state: ProjectRuleState;
+    let loadedPolicy = false;
     try {
       const file = await readProjectRulesFile(location);
+      loadedPolicy = policyVersion?.contentsDigest === sha256Hex(canonicalStringify(file));
       state = { ok: true, projectRoot: location.projectRoot, rules: Object.freeze([...(file?.rules ?? [])]) };
     } catch (error) {
       if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
@@ -65,6 +85,8 @@ export class ProjectRuleScopes {
       state = { ok: false, projectRoot: location.projectRoot, error };
     }
     this.states.set(location.identity, state);
+    this.policyVersions.set(location.identity, loadedPolicy && policyVersion !== undefined && isPersistedPolicyVersionCurrent(policyVersion) ? policyVersion : undefined);
+    this.revision += 1;
     this.stamps.set(location.identity, stamp);
     return state;
   }
@@ -92,6 +114,8 @@ export class ProjectRuleScopes {
       }
     });
     this.states.set(location.identity, { ok: true, projectRoot: location.projectRoot, rules: Object.freeze([...file.rules]) });
+    this.policyVersions.set(location.identity, persistedPolicyVersionForContent(location.filePath, `${JSON.stringify(file, null, 2)}\n`));
+    this.revision += 1;
     this.stamps.set(location.identity, await fileStamp(location.filePath));
   }
 
@@ -101,6 +125,8 @@ export class ProjectRuleScopes {
       current.rules = current.rules.filter((r) => !(r.pattern === pattern && r.action === action));
     });
     this.states.set(location.identity, { ok: true, projectRoot: location.projectRoot, rules: Object.freeze([...file.rules]) });
+    this.policyVersions.set(location.identity, persistedPolicyVersionForContent(location.filePath, `${JSON.stringify(file, null, 2)}\n`));
+    this.revision += 1;
     this.stamps.set(location.identity, await fileStamp(location.filePath));
   }
 }
