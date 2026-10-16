@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseAgentPluginManifest, validatePluginManifestShape } from "../agent-plugin-manifest.js";
 import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with { type: "json" };
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
+
+const warn = vi.fn();
+vi.mock("../../lib/logger.js", () => ({
+  createLogger: () => ({ warn: (...args: unknown[]) => warn(...args) }),
+}));
 
 /** An extension namespace Ave does not own: another vendor's data, never Ave fields. */
 const UNKNOWN_NAMESPACE = "xyz.example";
@@ -67,6 +72,15 @@ describe("agent-plugin manifest branches", () => {
     expect(parseAgentPluginManifest(unknownOnly)).toMatchObject(MARKET);
     // A malformed Ave block beside an unknown namespace is still refused.
     const both = JSON.stringify({ ...MARKET, extensions: { "ai.agent-connector.ave": { entry: null, tools: [] }, [UNKNOWN_NAMESPACE]: { displayName: "Writer" } } });
-    expect(() => validatePluginManifestShape(both)).toThrow();
+    expect(() => validatePluginManifestShape(both)).toThrow("plugin.json /extensions/ai.agent-connector.ave/entry: must be string");
+  });
+
+  it("reports each unknown extensions namespace as it reports an unknown top-level field, and never the Ave one", () => {
+    warn.mockClear();
+    validatePluginManifestShape(JSON.stringify({ ...MARKET, extensions: { "ai.agent-connector.ave": { displayName: "Writer" }, [UNKNOWN_NAMESPACE]: {} } }));
+    expect(warn.mock.calls).toEqual([[`plugin.json: ignoring unknown extensions namespace ${UNKNOWN_NAMESPACE}`]]);
+    warn.mockClear();
+    validatePluginManifestShape(JSON.stringify(namespace({ displayName: "Writer" })));
+    expect(warn).not.toHaveBeenCalled();
   });
 });

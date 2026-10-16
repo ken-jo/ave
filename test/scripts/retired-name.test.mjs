@@ -8,6 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -34,6 +35,13 @@ function fixture(tracked, untracked = {}) {
   write(untracked);
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
+
+// The name itself, pinned without spelling it: a changed code point fails here
+// even though every other test builds its controls from the constant.
+test("pins the retired name by its sha256 and length", () => {
+  assert.equal(RETIRED_NAME.length, 4);
+  assert.equal(createHash("sha256").update(RETIRED_NAME).digest("hex"), "7899e2167ac27be58f7f4ed7adc44d7e2502353cc470275c3ad031f61145acb0");
+});
 
 test("flags the name in any tracked file, docs included, with its lines", () => {
   const f = fixture({

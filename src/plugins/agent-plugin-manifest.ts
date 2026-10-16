@@ -31,6 +31,14 @@ export function validatePluginManifestShape(bytes: Buffer | string): Record<stri
   const document = value as Record<string, unknown>;
   const foreign = foreignManifestTopLevelFields(document);
   for (const key of foreign) log.warn(`plugin.json: ignoring unknown top-level field ${key}`);
+  // Agent Plugins assigns no semantics to another vendor's namespace: report it
+  // like an unknown top-level field, then leave it unread and unvalidated.
+  const extensions = document.extensions;
+  if (extensions && typeof extensions === "object" && !Array.isArray(extensions)) {
+    for (const key of Object.keys(extensions)) {
+      if (key !== AVE_EXTENSION_NAMESPACE) log.warn(`plugin.json: ignoring unknown extensions namespace ${key}`);
+    }
+  }
   const known = Object.fromEntries(Object.entries(document).filter(([key]) => !foreign.includes(key)));
   const validate = manifestValidator();
   if (!validate(known)) {
