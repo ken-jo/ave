@@ -393,6 +393,19 @@ describe("documentation impact policy", () => {
     expect(hook).toContain("mergeMarkers.test(stagedContent)");
   });
 
+  it("flags real conflict markers but not a Markdown heading underline", () => {
+    const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
+    const literal = /const mergeMarkers = \/(.+)\/m;/.exec(hook)?.[1];
+    expect(literal).toBeDefined();
+    const mergeMarkers = new RegExp(literal!, "m");
+    expect(mergeMarkers.test("a\n<<<<<<< HEAD\nb\n")).toBe(true);
+    expect(mergeMarkers.test("a\n=======\nb\n")).toBe(true);
+    expect(mergeMarkers.test("a\r\n=======\r\nb\r\n")).toBe(true);
+    expect(mergeMarkers.test("a\n>>>>>>> branch\n")).toBe(true);
+    expect(mergeMarkers.test("PCRE2 License\n=============\n")).toBe(false);
+    expect(mergeMarkers.test("text with ======= inside\n")).toBe(false);
+  });
+
   it("removes hook Git context before full and targeted test runners", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
     expect(hook).toContain('scriptName === "test" ? withoutGitContext() : process.env');

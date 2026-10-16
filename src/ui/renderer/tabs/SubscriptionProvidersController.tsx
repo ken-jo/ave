@@ -103,6 +103,7 @@ function projectStatus(
     canOpenLoginBrowser: status.canOpenVerificationUrl,
     models: state.models,
     capabilities: status.capabilities,
+    version: status.version,
     errorCode: state.errorCode,
   };
 }
@@ -379,6 +380,8 @@ export function useSubscriptionProviders(api: AveApi) {
         loginMethods: descriptor.loginMethods,
         supportsRuntimeSelection: descriptor.requiresExecutable,
         supportsLogout: descriptor.supportsManagedLogout,
+        ...(descriptor.minimumVersion ? { minimumVersion: descriptor.minimumVersion } : {}),
+        ...(descriptor.installGuidance ? { installGuidance: descriptor.installGuidance } : {}),
       },
       status: projectStatus(states[descriptor.id]),
       busyAction: states[descriptor.id].busyAction,

@@ -280,7 +280,7 @@ Shell leaf 의 read/write 판정은 risk classifier 의 verb table (`permissions
 | `read_file` | `read` | `["path"]` | UTF-8 bounded file read |
 | `list_files` | `read` | `["path"]` | Depth/limit bounded directory listing |
 | `glob_files` | `read` | `["path"]` | Path-pattern search; does not inspect file content |
-| `grep_files` | `read` | `["path"]` | ripgrep content search (bundled Codex `codex-path/rg`): include glob / type, content·files_with_matches·count modes, context lines, multiline, limit/offset paging; sensitive result paths dropped |
+| `grep_files` | `read` | `["path"]` | ripgrep content search (pinned `@vscode/ripgrep-<platform>-<arch>/bin/rg`): include glob / type, content·files_with_matches·count modes, context lines, multiline, limit/offset paging; sensitive result paths dropped |
 | `write_file` | `write` | `["path"]` | Full-file create/overwrite only |
 | `edit_file` | `write` | `["path"]` | Exact text replace; ambiguous matches fail unless explicit |
 | `multi_edit` | `write` | `["path"]` | Ordered exact replacements in one file; atomic preflight |

@@ -797,7 +797,10 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
 // Staged safety scan (merge markers, TLS-verification bypass)
 // ---------------------------------------------------------------------------
 
-const mergeMarkers = /^(<<<<<<< |=======|>>>>>>> )/m;
+// Git writes the separator as exactly seven `=` on their own line. A longer
+// run of `=` is a Markdown setext heading underline (upstream licence texts
+// shipped verbatim use them), not a conflict.
+const mergeMarkers = /^(<<<<<<< |=======\r?$|>>>>>>> )/m;
 
 function getStagedFiles(repoRoot) {
   const output = capture(

@@ -1,0 +1,1383 @@
+{
+ "$schema": "http://json-schema.org/draft-07/schema#",
+ "title": "ServerNotification",
+ "oneOf": [
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "error"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/started"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/status/changed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/archived"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/deleted"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/unarchived"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/closed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/reverted"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "skills/changed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/name/updated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/goal/updated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/goal/cleared"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/queue/changed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "project/changed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/project/updated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/environment/connected"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/environment/disconnected"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/settings/updated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/tokenUsage/updated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "turn/started"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "hook/started"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "turn/completed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "hook/completed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "turn/diff/updated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "turn/plan/updated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/started"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/autoApprovalReview/started"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/autoApprovalReview/completed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "autoApprovalReview/strictReviewRequired"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/completed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/agentMessage/delta"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/plan/delta"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "command/exec/outputDelta"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "process/outputDelta"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "process/exited"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/commandExecution/outputDelta"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/commandExecution/terminalInteraction"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/fileChange/outputDelta"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/fileChange/patchUpdated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "serverRequest/resolved"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/mcpToolCall/progress"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "mcpServer/oauthLogin/completed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "mcpServer/startupStatus/updated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "mcpServer/event/stream/notification"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "account/updated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "account/rateLimits/updated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "app/list/updated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "remoteControl/status/changed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "externalAgentConfig/import/progress"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "externalAgentConfig/import/completed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "fs/changed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/reasoning/summaryTextDelta"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/reasoning/summaryPartAdded"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/reasoning/textDelta"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/compacted"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "model/rerouted"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "model/verification"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "modelProvider/authRecoveryStarted"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "modelProvider/authRecoveryCompleted"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "turn/moderationMetadata"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "model/safetyBuffering/updated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "warning"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "guardianWarning"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "deprecationNotice"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "configWarning"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "fuzzyFileSearch/sessionUpdated"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "fuzzyFileSearch/sessionCompleted"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/realtime/started"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/realtime/itemAdded"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/realtime/item/started"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/realtime/item/transcript/delta"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/realtime/item/completed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/realtime/transcript/delta"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/realtime/transcript/done"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/realtime/outputAudio/delta"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/realtime/sdp"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/realtime/error"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "thread/realtime/closed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "windows/worldWritableWarning"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "windowsSandbox/setupCompleted"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "account/login/completed"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  }
+ ]
+}

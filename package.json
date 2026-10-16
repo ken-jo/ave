@@ -126,11 +126,11 @@
     "@anthropic-ai/sandbox-runtime": "0.0.76",
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.30.0",
-    "@openai/codex": "0.153.4",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
     "@opentelemetry/resources": "^2.11.0",
     "@opentelemetry/sdk-trace-node": "^2.11.0",
+    "@vscode/ripgrep": "1.18.0",
     "adm-zip": "^0.6.0",
     "ai": "~7.0.93",
     "ajv": "^8.18.0",
@@ -264,7 +264,7 @@
     ],
     "asarUnpack": [
       "node_modules/@anthropic-ai/sandbox-runtime/vendor/**",
-      "node_modules/@openai/codex*/**",
+      "node_modules/@vscode/ripgrep*/**",
       "node_modules/node-pty/**",
       "node_modules/better-sqlite3/**",
       "node_modules/sharp/**",
@@ -321,6 +321,10 @@
       {
         "from": "resources/licenses/models.dev",
         "to": "licenses/models.dev"
+      },
+      {
+        "from": "resources/licenses/ripgrep",
+        "to": "licenses/ripgrep"
       },
       {
         "from": "resources/AGENTS.md",
