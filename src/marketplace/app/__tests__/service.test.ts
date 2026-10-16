@@ -44,6 +44,7 @@ import { emptyUpdateHistory, type UpdateHistory } from "../../updates/history.js
 import type { SyncProgressView } from "../../../shared/git-marketplace.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
+import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
 
 
 /** The preview's id; a confirmation step here is a test failure. */
@@ -167,13 +168,7 @@ describe("MarketplaceService", () => {
     const policy = "check" in load ? load : policySource(load);
     const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = join(root, "marketplaces");
-    // Without a stand-in, the official source would be the live public repository,
-    // so a test's outcome would follow whatever it publishes. The default points at
-    // a repository the local fixture server does not have: unreachable, every run.
-    const registry = await SourceRegistry.open({
-      root: marketplaces, policy, now: () => now,
-      official: official ?? { ...OFFICIAL_MARKETPLACE, url: server.url("official-unpublished") },
-    });
+    const registry = await SourceRegistry.open({ root: marketplaces, policy, now: () => now, official: official ?? UNREACHABLE_OFFICIAL });
     // Exactly as the IPC domain wires them, with counters for the broadcasts.
     const events = marketplaceEvents(shutdown.signal, {
       syncProgress: (item) => {

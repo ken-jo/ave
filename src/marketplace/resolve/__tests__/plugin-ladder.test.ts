@@ -32,6 +32,7 @@ import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import type { ExpectedPlugin } from "../manifest-rules.js";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { gitAccess } from "../../sources/source-tree.js";
+import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
 
 /** Every expected input the ladder hands the manifest rules, observed rather than replaced. */
 const checkedAgainst = vi.hoisted(() => [] as unknown[]);
@@ -132,7 +133,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     const policy = policySource({});
     const gate = new NetworkGate({ policy, allowLoopback: true, transport: loopbackTransport });
     const marketplaces = mkdtempSync(join(root, "marketplaces-"));
-    const registry = await SourceRegistry.open({ root: marketplaces, policy });
+    const registry = await SourceRegistry.open({ root: marketplaces, policy, official: UNREACHABLE_OFFICIAL });
     await registry.add({ id: "acme", origin, url: server.url(name), auth: { kind: "none" } });
     const syncer = new SourceSyncer({
       folders: nodeFolders(),
