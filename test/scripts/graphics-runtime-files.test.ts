@@ -60,6 +60,10 @@ function createPackage(platform: keyof typeof RUNTIME_FILES) {
   }
   putFile(join(modules, "better-sqlite3", "prebuilds", `${platform}-x64.node`));
   writeImageRuntimePackage(modules, platform);
+  const ripgrep = join(modules, "@vscode", `ripgrep-${platform}-x64`);
+  putFile(join(ripgrep, "package.json"), JSON.stringify({ name: `@vscode/ripgrep-${platform}-x64` }));
+  putFile(join(ripgrep, "bin", platform === "win32" ? "rg.exe" : "rg"));
+  chmodSync(join(ripgrep, "bin", platform === "win32" ? "rg.exe" : "rg"), 0o755);
   for (const file of RUNTIME_FILES[platform]) putFile(join(libraryDirectory, file), file);
   return {
     libraryDirectory,

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, sep } from "node:path";
+import { dirname, join } from "node:path";
+import { preferAsarUnpackedPath } from "./asar-unpacked-path.js";
 
 const require = createRequire(import.meta.url);
 
@@ -12,11 +13,9 @@ interface CodexPlatformTarget {
 
 /**
  * The pinned `@openai/codex` package installs exactly one of these optional
- * platform packages. Each carries `vendor/<triple>/bin/codex[.exe]` and the
- * ripgrep build Codex itself runs, `vendor/<triple>/codex-path/rg[.exe]`.
- * Both live under `node_modules/@openai/codex*`, which package.json already
- * lists in `asarUnpack`, so packaged builds execute them from
- * `app.asar.unpacked`.
+ * platform packages. Each carries `vendor/<triple>/bin/codex[.exe]` under
+ * `node_modules/@openai/codex*`, which package.json lists in `asarUnpack`, so
+ * packaged builds execute it from `app.asar.unpacked`.
  */
 const PLATFORM_TARGETS: Partial<Record<NodeJS.Platform, Partial<Record<NodeJS.Architecture, CodexPlatformTarget>>>> = {
   darwin: {
@@ -34,11 +33,10 @@ const PLATFORM_TARGETS: Partial<Record<NodeJS.Platform, Partial<Record<NodeJS.Ar
 };
 
 /** Which vendored executable of the platform package to resolve. */
-export type CodexVendorExecutable = "codex" | "rg";
+export type CodexVendorExecutable = "codex";
 
 const VENDOR_DIRECTORY: Record<CodexVendorExecutable, string> = {
   codex: "bin",
-  rg: "codex-path",
 };
 
 /**
@@ -70,11 +68,4 @@ export function resolveCodexVendorExecutable(
   const resolved = preferAsarUnpackedPath(packagedPath);
   if (!existsSync(resolved)) throw unavailable();
   return resolved;
-}
-
-function preferAsarUnpackedPath(candidate: string): string {
-  const asarSegment = `${sep}app.asar${sep}`;
-  if (!candidate.includes(asarSegment)) return candidate;
-  const unpacked = candidate.replace(asarSegment, `${sep}app.asar.unpacked${sep}`);
-  return existsSync(unpacked) ? unpacked : candidate;
 }

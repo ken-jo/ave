@@ -263,16 +263,18 @@ const ARCH_SELECTED_RUNTIME_PACKAGES = [
   (arch) => `@img/sharp-linux-${arch}`,
   (arch) => `@img/sharp-libvips-linux-${arch}`,
   (arch) => `@openai/codex-linux-${arch}`,
+  (arch) => `@vscode/ripgrep-linux-${arch}`,
 ];
 
 /**
  * Make node_modules hold the target arch's runtime natives, after `build` has
  * used the host's own toolchain (esbuild, tailwind, webpack natives).
  *
- * - sharp/@img and @openai/codex select their binary package by cpu: a
- *   reinstall with bun's `--cpu/--os` installs the target's from the same
- *   frozen lockfile. `--ignore-scripts` keeps every install script from
- *   executing a target-arch binary or compiling a host-arch one.
+ * - sharp/@img, @openai/codex and @vscode/ripgrep select their binary
+ *   package by cpu: a reinstall with bun's `--cpu/--os` installs the
+ *   target's from the same frozen lockfile. `--ignore-scripts` keeps every
+ *   install script from executing a target-arch binary or compiling a
+ *   host-arch one.
  * - better-sqlite3 ships `prebuilds/linux-x64.node` and loads it by
  *   process.arch; afterPack keeps only the packed arch's file.
  * - node-pty ships no Linux prebuild and loads `build/Release/pty.node`

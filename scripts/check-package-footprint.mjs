@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { gunzipSync } from "node:zlib";
 import { assertImageRuntimeFiles } from "./lib/image-runtime-files.cjs";
+import { assertRipgrepRuntimeFiles } from "./lib/ripgrep-runtime-files.cjs";
 
 const { assertGraphicsRuntimeFiles } = createRequire(import.meta.url)(
   "./lib/graphics-runtime-files.cjs",
@@ -469,6 +470,7 @@ assertSandboxRuntimeFiles(
 
 const [imagePlatform, imageArch] = resolveBetterSqlitePrebuildTarget().split("-");
 assertImageRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
+assertRipgrepRuntimeFiles(resolve(unpackedDir, "node_modules"), imagePlatform, imageArch);
 
 process.stdout.write(
   [
