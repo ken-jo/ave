@@ -289,17 +289,27 @@ Pre-push picks one tier and logs it with the reason
   duplicate-helper scan, the lock suites whose trigger paths changed, the
   changed test files, the recorded readers of a changed test-read document,
   and `vitest related` for the changed modules (narrowed to direct importers
-  when a shared module reaches over 150 test files). No full `bun run test`,
-  no build. A new sub-branch is measured from the closest live tip of the
-  default or an `integration/*` branch, so only its own commits count.
+  when a shared module reaches over 150 test files). A message catalog change
+  (`src/i18n/messages/` seeds, fragments and barrels) adds
+  `check:i18n-catalog`, `check:i18n-barrels`, the `src/i18n/__tests__`
+  suites, and the tests and modules that name a changed key's namespace.
+  No full `bun run test`, no build. A new sub-branch is measured from the
+  closest live tip of the default or an `integration/*` branch, so only its
+  own commits count. Fast runs share `AVE_PREPUSH_FAST_SLOTS` (default 4)
+  host slots.
 - full: `bun run typecheck`, full `bun run test`, `bun run build`, and
   `check:gate-core`, for non-fast-forward updates, the default branch and
   `integration/*` branches, noncanonical paths, consumed documentation
   without a recorded reader set, deletions of modules,
-  non-module assets, mode changes, declaration files, generated catalogs,
-  runtime entry files, modules with no related test files, and global inputs
-  (`package.json`, `bun.lock`, compiler, Vitest and build configs, Vitest setup
-  files, `scripts/`, `.github/`), including earlier commits in the push.
+  non-module assets, mode changes, declaration files, message namespaces no
+  source file names literally, unresolved message consumers or catalog module
+  shapes, runtime entry files, modules with no related test files, and global
+  inputs (`package.json`, `bun.lock`, compiler, Vitest
+  and build configs, Vitest setup files, the message loader
+  `src/i18n/messages/index.ts`, `scripts/`, `.github/`), including earlier
+  commits in the push. A full run holds one host-wide lock (in `/tmp`, or
+  `AVE_PREPUSH_LOCK_DIR`), so two never run at once; a waiting push names the
+  holder's PID and fails after `AVE_PREPUSH_LOCK_TIMEOUT_S` (default 3600).
   `AVE_PREPUSH_FULL=1`
   forces it for one push; `AVE_HOOKS_SKIP=1` still skips the hook.
 
