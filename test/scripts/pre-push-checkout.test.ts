@@ -8,6 +8,7 @@ import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 const HOOK = resolve("scripts/hooks/run-local-checks.mjs");
 const NULL_SHA = "0".repeat(40);
 const NOTES = "docs/notes/checkout.md";
+const FULL_TIER_FOR_TAGS = "[checks] tier=full pre-push: running typecheck, full test, build, and gate-core (non-branch updates require full checks)";
 
 function fixture() {
   const repo = mkdtempSync(join(tmpdir(), "pre-push-checkout-"));
@@ -81,16 +82,76 @@ describe("pre-push checkout binding", () => {
     } finally { f.cleanup(); }
   });
 
-  it("explains that an annotated tag object cannot be checked out as HEAD", () => {
+  it("passes an annotated tag whose peeled commit is HEAD", () => {
     const f = fixture();
     try {
       f.git(["tag", "-am", "fixture release", "fixture-release"]);
       const tag = f.git(["rev-parse", "refs/tags/fixture-release"]);
-      const result = f.push("refs/tags/fixture-release", tag, "refs/tags/fixture-release");
+      expect(tag).not.toBe(f.head);
+      f.git(["checkout", "-q", "--detach", "fixture-release^{commit}"]);
+      const result = f.pushInput(`refs/tags/fixture-release ${tag} refs/tags/fixture-release ${NULL_SHA}\n`);
+      // The checkout binding passed: tag pushes are classified onto the full
+      // tier, which this fixture cannot complete (it has no Electron runtime).
+      expect(result.stderr).not.toMatch(/PRE_PUSH_[A-Z_]+/);
+      expect(result.stdout).toContain(FULL_TIER_FOR_TAGS);
+    } finally { f.cleanup(); }
+  });
+
+  it("refuses an annotated tag whose peeled commit is not HEAD and says to check out that commit", () => {
+    const f = fixture();
+    try {
+      f.git(["tag", "-am", "fixture release", "fixture-release", f.base]);
+      const tag = f.git(["rev-parse", "refs/tags/fixture-release"]);
+      const result = f.pushInput(`refs/tags/fixture-release ${tag} refs/tags/fixture-release ${NULL_SHA}\n`);
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("annotated tag object");
-      expect(result.stderr).toContain(`git checkout --detach ${tag}^{commit}`);
+      expect(result.stderr).toContain("PRE_PUSH_CHECKOUT_MISMATCH");
+      expect(result.stderr).toContain(`validates the commit it peels to (${f.base})`);
+      expect(result.stderr).toContain(`git checkout --detach ${tag}^{commit}, then push the tag`);
       expect(f.checked()).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
+  it.each([
+    ["a tree", (f: ReturnType<typeof fixture>) => f.git(["rev-parse", "HEAD^{tree}"])],
+    ["a nested tag of a tree", (f: ReturnType<typeof fixture>) => {
+      f.git(["tag", "-am", "inner tree tag", "inner-tree-tag", "HEAD^{tree}"]);
+      return f.git(["rev-parse", "refs/tags/inner-tree-tag"]);
+    }],
+  ])("refuses an annotated tag of %s", (_label, target) => {
+    const f = fixture();
+    try {
+      f.git(["tag", "-am", "non-commit tag", "non-commit-tag", target(f)]);
+      const tag = f.git(["rev-parse", "refs/tags/non-commit-tag"]);
+      const result = f.pushInput(`refs/tags/non-commit-tag ${tag} refs/tags/non-commit-tag ${NULL_SHA}\n`);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("PRE_PUSH_REF_NOT_COMMIT");
+      expect(result.stderr).toContain(`${tag} is an annotated tag that does not peel to a commit`);
+      expect(f.checked()).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
+  it("refuses a lightweight tag of a tree", () => {
+    const f = fixture();
+    try {
+      const tree = f.git(["rev-parse", "HEAD^{tree}"]);
+      const result = f.pushInput(`refs/tags/tree-tag ${tree} refs/tags/tree-tag ${NULL_SHA}\n`);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("PRE_PUSH_REF_NOT_COMMIT");
+      expect(result.stderr).toContain(`${tree} is a tree`);
+      expect(f.checked()).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
+  it("keeps lightweight tags bound to HEAD", () => {
+    const f = fixture();
+    try {
+      f.git(["tag", "fixture-light"]);
+      const passed = f.pushInput(`refs/tags/fixture-light ${f.head} refs/tags/fixture-light ${NULL_SHA}\n`);
+      expect(passed.stderr).not.toMatch(/PRE_PUSH_[A-Z_]+/);
+      expect(passed.stdout).toContain(FULL_TIER_FOR_TAGS);
+      const refused = f.pushInput(`refs/tags/old-light ${f.base} refs/tags/old-light ${NULL_SHA}\n`);
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toContain(`git checkout --detach ${f.base}`);
     } finally { f.cleanup(); }
   });
 

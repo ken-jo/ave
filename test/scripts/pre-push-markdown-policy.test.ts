@@ -373,7 +373,7 @@ describe("documentation impact policy", () => {
     expect(hook).toContain('run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot)');
     const dispatch = hook.slice(hook.indexOf('if (stage === "pre-commit")'));
     expect(dispatch.indexOf("runStagedSafetyChecks(repoRoot)")).toBeLessThan(
-      dispatch.indexOf("classifyPrePushChanges(repoRoot, prePushUpdates, remoteLocation)"),
+      dispatch.indexOf("classifyPrePushChanges(repoRoot, withPushedCommits(prePushUpdates, pushCheckout.commitByLocalSha), remoteLocation)"),
     );
     expect(hook).toContain('run(commands.git, ["diff", "--cached", "--check"], repoRoot)');
     expect(hook).toContain("mergeMarkers.test(stagedContent)");

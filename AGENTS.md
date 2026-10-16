@@ -299,8 +299,10 @@ Every non-deletion ref update must name the checked-out `HEAD`. The tracked
 working tree and index must be clean before and after checks; otherwise the
 hook refuses and names the commit to check out. Push different commits
 separately. Deletion-only updates have no commit tree and skip code checks.
-Annotated tag objects cannot equal `HEAD`; push a branch or lightweight tag
-from their commit instead. Clear assume-unchanged and skip-worktree index
+An annotated tag is pushed by checking out its commit
+(`git checkout --detach <tag>^{commit}`) and pushing the tag; the hook
+validates the peeled commit. A tag that does not peel to a commit is refused.
+Clear assume-unchanged and skip-worktree index
 flags so every tracked file can be verified in a complete checkout.
 
 The full suite and build run once before merge on the exact main + PR merged
