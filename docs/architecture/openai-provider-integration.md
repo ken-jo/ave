@@ -77,19 +77,29 @@ starts it:
    immediately before every probe and app-server spawn.
 
 `src/main/codex-native-spawn.ts` preserves loader rejection as a start
-failure. POSIX subscription startup requires a host runtime exposing
+failure. Linux subscription startup requires a host runtime exposing
 `process.execve`; the [native host guide](../guides/native-server.md#build-the-artifact)
 states the feature-specific runtime prerequisite. Ave trusts its host installation
 as the source of the bootstrap runtime; CLI candidate admission rules apply to
 discovered or configured CLI paths and their private copies.
-Ave starts a new host runtime process with a static bootstrap, passes the private
+On Linux, Ave starts a new host runtime process with a static bootstrap, passes the private
 CLI path and arguments as data, and replaces that process through `process.execve`.
 The bootstrap removes its launch-only environment before replacement. A missing API or
 catchable bootstrap failure exits with status 126. A rejected syscall can
 instead terminate the child with another nonzero status or signal; both are
-start failures. Ave's launcher never passes the candidate CLI to `execvp`,
-so an `ENOEXEC` rejection cannot trigger its shell fallback. Windows starts
-the native executable directly through `CreateProcess`.
+start failures.
+
+The desktop's [minimum macOS version](../../package.json#L366) is 13. On that
+supported system range, Ave starts the absolute artifact path directly through
+`posix_spawn`, avoiding replacement of an extra host runtime process. The current
+embedded runtime uses libuv 1.52.1; its [explicit-path spawn route](https://github.com/libuv/libuv/blob/v1.52.1/src/unix/process.c#L704-L712)
+returns loader errors directly. The [legacy fork route](https://github.com/libuv/libuv/blob/v1.52.1/src/unix/process.c#L872-L898)
+requires an unavailable spawn operation; working-directory changes are supported
+on the minimum system version. Account changes and detached sessions are
+rejected because they can select that legacy route. Every production caller uses
+the current account and session. Windows starts the artifact directly through
+`CreateProcess`. These supported CLI launch routes never pass a CLI candidate to
+`execvp`, so `ENOEXEC` cannot trigger a shell fallback.
 
 The in-memory compatibility cache identifies the CLI and copied helper by
 their SHA-256 content hashes. Changed bytes are checked again even if file

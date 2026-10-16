@@ -1,4 +1,5 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
+import { posix } from "node:path";
 import { spawnManaged } from "./managed-child-processes.js";
 
 const NATIVE_EXEC_BOOTSTRAP = [
@@ -14,7 +15,7 @@ const NATIVE_EXEC_BOOTSTRAP = [
 ].join("\n");
 
 /**
- * Execute a qualified artifact through the trusted application host installation.
+ * Execute a qualified artifact without invoking a shell when the loader rejects it.
  * Callers supply a complete native environment; omission means an empty one.
  */
 export function spawnCodexNative(
@@ -23,8 +24,15 @@ export function spawnCodexNative(
   options: SpawnOptions,
   label: string,
 ): ChildProcess {
-  if (process.platform === "win32") {
-    return spawnManaged(command, args, { ...options, shell: false }, { label });
+  if (process.platform === "darwin") {
+    // Supported systems use explicit-path native spawning. Account changes and
+    // detached sessions can select a legacy fork path, so reject those options.
+    if (!posix.isAbsolute(command) || options.uid !== undefined || options.gid !== undefined || options.detached) {
+      throw new Error("Native launch requires an absolute path and the current account session");
+    }
+  }
+  if (process.platform === "win32" || process.platform === "darwin") {
+    return spawnManaged(command, args, { ...options, shell: false, env: options.env ?? {} }, { label });
   }
   // A new bootstrap process uses the trusted application host installation.
   // Replacement retains the managed PID, process group and standard streams.

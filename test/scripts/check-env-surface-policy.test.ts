@@ -173,6 +173,10 @@ describe("env-surface policy", () => {
       ["pending", over["pending"] ?? []],
     ] as ReadonlyArray<readonly [string, readonly string[]]>);
 
+  it("classifies access-rule query paths as host-to-child protocol data", () => {
+    expect(BUCKETS.find(([bucket]) => bucket === "internal")?.[1]).toContain("AVE_EXECUTABLE_ACL_PATHS");
+  });
+
   it("derives the development bucket from the packaged scrub inventory", () => {
     expect(DEVELOPMENT).toEqual(
       ACTIVE_DEVELOPMENT_ENV_VARS.filter((name) => name.startsWith("AVE_")),
