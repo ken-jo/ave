@@ -7,8 +7,12 @@
  * code points below so that this gate does not spell it either.
  *
  * Every tracked file is scanned (binary files excepted), documentation included.
- * The match needs a non-letter before the name, so words that merely contain the
- * letters never match. ALLOWLIST is empty and should stay that way; an entry
+ * The name matches in any case after a non-letter (`_X_HOME`, `@x/plugin`), and
+ * inside an identifier after a lower-case letter or digit when written
+ * Capitalized or in capitals (`defineXPluginConfig`, `sourceX`). Words that
+ * merely contain the letters (an `l` that ends one camelCase part before a
+ * `Vis…` part, or a capital before the name) never match. The pattern is pinned
+ * by sha256 in the self-test. ALLOWLIST is empty and should stay that way; an entry
  * that no longer matches any file is stale and fails as well, so the list can
  * only shrink. Run standalone with `node scripts/check-retired-name.mjs`; the
  * scanner is exported so `test/scripts/retired-name.test.mjs` can exercise it.
@@ -22,7 +26,18 @@ import { withoutGitContext } from "./lib/git-process-environment.mjs";
 /** Retired internal product name; see the private workspace. Lower case. */
 export const RETIRED_NAME = String.fromCodePoint(0x6c, 0x76, 0x69, 0x73);
 
-export const RETIRED_NAME_PATTERN = new RegExp(`(?<![A-Za-z])${RETIRED_NAME}`, "i");
+const ANY_CASE = [...RETIRED_NAME].map((letter) => `[${letter}${letter.toUpperCase()}]`).join("");
+const CAPITALIZED = RETIRED_NAME[0].toUpperCase() + RETIRED_NAME.slice(1);
+const CAPITALS = RETIRED_NAME.toUpperCase();
+
+/**
+ * Case-sensitive on purpose: a case-insensitive camelCase branch would match
+ * an `l` that ends one word part before a capitalized `Vis…` part.
+ */
+export const RETIRED_NAME_PATTERN = new RegExp(
+  `(?<![A-Za-z])${ANY_CASE}|(?<=[a-z0-9])${CAPITALIZED}|(?<=[a-z0-9])${CAPITALS}`,
+  "u",
+);
 
 /**
  * Where the name may stay: `[path, reason]`. An entry ending in `/` covers
