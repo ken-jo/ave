@@ -9,6 +9,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, normalize, resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -488,11 +489,80 @@ describe("pre-push message catalog selection", () => {
     expect(selectFixture(fragment("Panel"), fragment("Panel").replace('"패널"', '"패널 제목"')).namespaces).toEqual(["panel"]);
     // An added fragment changes every key it declares.
     expect(selectFixture(null, fragment("Panel")).namespaces).toEqual(["other", "panel"]);
-    // Nothing changed but formatting: only the catalog readers and suites.
+    // A source edit with no attributable value change keeps the full tier.
     expect(selectFixture(fragment("Panel"), `// reflowed\n${fragment("Panel")}`)).toEqual({
-      namespaces: [],
-      testFiles: ["src/i18n/__tests__/i18n.test.ts"],
-      consumerModules: ["src/marketplace/language-check.ts"],
+      reason: `${MESSAGES}/generated/panel.ts has changes outside attributable message values; full checks required`,
+    });
+  });
+
+  const orderedFragment = 'export const en = { "panel.title": "Panel", "other.label": "Other" };\n' +
+    'export const ko = { "panel.title": "패널", "other.label": "기타" };\n';
+  const reorderedFragment = orderedFragment.replace('"panel.title": "Panel", "other.label": "Other"',
+    '"other.label": "Other", "panel.title": "Panel"');
+
+  it("keeps full checks when a catalog reorder changes an order exported through an i18n helper", () => {
+    const order = (text: string) => runInNewContext(`${text.replaceAll("export const ", "const ")}; Object.keys(en);`);
+    expect(order(orderedFragment)).toEqual(["panel.title", "other.label"]);
+    expect(order(reorderedFragment)).toEqual(["other.label", "panel.title"]);
+    const tree = new Map(fixtureTree);
+    tree.set("src/i18n/message-order.ts", 'import { en } from "./messages/generated/panel.js"; export const messageOrder = Object.keys(en);');
+    tree.set("src/ui/__tests__/message-order.test.ts", 'import { messageOrder } from "../../i18n/message-order.js"; export const actual = messageOrder;');
+    expect(selectFixture(orderedFragment, reorderedFragment, tree)).toEqual({
+      reason: `${MESSAGES}/generated/panel.ts has changes outside attributable message values; full checks required`,
+    });
+  });
+
+  it.each([
+    ["english value", "generated/panel.ts", fragment("Panel"), fragment("Panel heading"), ["panel"]],
+    ["translated value", "generated/panel.ts", fragment("Panel"), fragment("Panel").replace('"패널"', '"패널 제목"'), ["panel"]],
+    ["literal whitespace", "generated/panel.ts", fragment("Panel"), fragment(" Panel "), ["panel"]],
+    ["literal newline", "generated/panel.ts", fragment("Panel"), fragment("Panel\n"), ["panel"]],
+    ["multibyte values", "generated/panel.ts", fragment("🧪 패널"), fragment("🧪 패널 제목", "Other heading"), ["other", "panel"]],
+    ["equivalent escape", "generated/panel.ts", fragment("Panel"), fragment("Panel").replace('"Panel"', String.raw`"\u0050anel"`), null],
+    ["equivalent escape with another value", "generated/panel.ts", fragment("Panel"), fragment("Panel", "Other heading").replace('"Panel"', String.raw`"\u0050anel"`), null],
+    ["added comment", "generated/panel.ts", fragment("Panel"), `// catalog note\n${fragment("Panel")}`, null],
+    ["comment with value", "generated/panel.ts", fragment("Panel"), `// catalog note\n${fragment("Panel heading")}`, null],
+    ["source whitespace", "generated/panel.ts", fragment("Panel"), `${fragment("Panel")}\n`, null],
+    ["english reorder", "generated/panel.ts", orderedFragment, reorderedFragment, null],
+    ["english reorder with value", "generated/panel.ts", orderedFragment, reorderedFragment.replace('"Panel"', '"Panel heading"'), null],
+    ["translated reorder", "generated/panel.ts", orderedFragment, orderedFragment.replace('"panel.title": "패널", "other.label": "기타"', '"other.label": "기타", "panel.title": "패널"'), null],
+    ["translated reorder with value", "generated/panel.ts", orderedFragment, orderedFragment.replace('"panel.title": "패널", "other.label": "기타"', '"other.label": "기타", "panel.title": "패널 제목"'), null],
+    ["new fragment", "generated/panel.ts", null, fragment("Panel"), ["other", "panel"]],
+    ["empty fragment", "generated/panel.ts", null, "export const en = {}; export const ko = {};", null],
+    ["seed comment", "en.ts", 'export const en = { "panel.title": "Panel" };', '// catalog note\nexport const en = { "panel.title": "Panel" };', null],
+    ["barrel comment", "generated/index.ts", 'export { en } from "./panel.js";', '// catalog note\nexport { en } from "./panel.js";', null],
+    ["locale barrel comment", "generated-locales/ko.ts", 'export { ko } from "../generated/panel.js";', '// catalog note\nexport { ko } from "../generated/panel.js";', null],
+  ] as const)("never returns an empty fast namespace selection for a changed catalog: %s", (_kind, name, before, after, expected) => {
+    expect(after).not.toBe(before);
+    const path = `${MESSAGES}/${name}`;
+    const selection = selectMessageCatalogChecks([
+      { ...(before === null ? added : modified)(path), baseSha: "base", localSha: "local" },
+    ], {
+      readBlob: (sha) => sha === "base" ? before : after,
+      trackedFiles: [...runtimeTree.keys(), ...fixtureTree.keys()],
+      readTrackedFile: (path) => fixtureTree.get(path) ?? runtimeTree.get(path) ?? null,
+    });
+    expect(selection.namespaces).not.toEqual([]);
+    if (expected === null) expect(selection.reason).toMatch(/full checks required$/);
+    else {
+      expect(selection.reason).toBeUndefined();
+      expect(selection.namespaces).toEqual(expected);
+    }
+  });
+
+  it.each([false, true])("keeps full checks for an unattributed file beside an attributed value edit (reverse=%j)", (reverse) => {
+    const valuePath = `${MESSAGES}/generated/panel.ts`;
+    const unassignedPath = `${MESSAGES}/generated/other.ts`;
+    const changes = [valuePath, unassignedPath].map((path) => ({ ...modified(path), baseSha: "base", localSha: "local" }));
+    if (reverse) changes.reverse();
+    expect(selectMessageCatalogChecks(changes, {
+      readBlob: (sha, path) => path === valuePath
+        ? fragment(sha === "base" ? "Panel" : "Panel heading")
+        : `${sha === "base" ? "" : "// catalog note\n"}${fragment("Panel")}`,
+      trackedFiles: [...runtimeTree.keys(), ...fixtureTree.keys()],
+      readTrackedFile: (path) => fixtureTree.get(path) ?? runtimeTree.get(path) ?? null,
+    })).toEqual({
+      reason: `${unassignedPath} has changes outside attributable message values; full checks required`,
     });
   });
 
@@ -888,7 +958,9 @@ describe("pre-push message catalog selection", () => {
     const before = fragment("Panel");
     const after = before.replace('"Panel"', String.raw`"\u0050anel"`);
     expect(after).not.toBe(before);
-    expect(selectFixture(before, after).namespaces).toEqual([]);
+    expect(selectFixture(before, after)).toEqual({
+      reason: `${MESSAGES}/generated/panel.ts has changes outside attributable message values; full checks required`,
+    });
     const changed = after.replace(String.raw`\u0050anel`, String.raw`\u0050anel heading`);
     expect(selectFixture(before, changed).namespaces).toEqual(["panel"]);
   });

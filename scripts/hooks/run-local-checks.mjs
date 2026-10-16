@@ -735,7 +735,7 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
     // The safety ceiling applies before the narrower comment and test tiers.
     const fastSelection = selectFastSourceChecks(changedEntries);
     if (!fastSelection.eligible) return { docsOnly: false, reason: fastSelection.reason };
-    if (commentOnlyEligible) {
+    if (commentOnlyEligible && fastSelection.messageCatalogEntries.length === 0) {
       const commentSelection = selectCommentOnlyAveAppFiles(
         changedEntries,
         (objectId, relativePath) => getGitBlob(repoRoot, objectId, relativePath)

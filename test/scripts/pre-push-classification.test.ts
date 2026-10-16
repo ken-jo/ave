@@ -102,6 +102,19 @@ describe("pre-push classification precedence", () => {
     expect(result.fastSource).not.toBe(true);
   });
 
+  it.each([
+    "src/i18n/messages/en.ts",
+    "src/i18n/messages/ko.ts",
+    "src/i18n/messages/generated/panel.ts",
+    "src/i18n/messages/generated/index.ts",
+    "src/i18n/messages/generated-locales/ko.ts",
+  ])("keeps catalog attribution ahead of the comment-only tier: %s", (path) => {
+    expect(classify([modified(path)], {
+      commentOnly: true,
+      messageCatalog: { reason: "catalog edit requires full checks" },
+    })).toEqual({ docsOnly: false, reason: "catalog edit requires full checks" });
+  });
+
   it("does not let a mode change take the test-only tier", () => {
     const result = classify([{ ...modified("test/example.test.ts"), oldMode: "100755" }]);
     expect(result.testOnly).not.toBe(true);

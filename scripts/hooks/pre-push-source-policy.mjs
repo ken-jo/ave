@@ -440,12 +440,19 @@ function isTranslationType(node, seed) {
 }
 
 /**
- * Validate the entire seed or fragment module, then read key -> locale values.
+ * Read key -> locale values from a fully validated seed or fragment module.
+ */
+export function readMessageCatalogEntries(text, relativePath) {
+  return readMessageCatalogModule(text, relativePath)?.entries ?? null;
+}
+
+/**
+ * Preserve each locale's property order and the source ranges of its values.
  * Only the shipped declarations, type-only seed scaffolding and static string
  * properties are accepted. Unknown syntax or a different binding layout keeps
  * the full tier; declaration order must never stand in for locale identity.
  */
-export function readMessageCatalogEntries(text, relativePath) {
+function readMessageCatalogModule(text, relativePath) {
   if (typeof text !== "string" || /[\u2028\u2029]/u.test(text)) return null;
   const parsePath = relativePath ?? "catalog.ts";
   let source;
@@ -473,6 +480,7 @@ export function readMessageCatalogEntries(text, relativePath) {
         !ast.isStringLiteral(statement.moduleSpecifier) || statement.moduleSpecifier.text !== "./en.js" || statement.attributes) return null;
   }
   const entries = new Map();
+  const orderedEntries = [];
   for (const binding of fragment ? ["en", "ko"] : [locale]) {
     const statement = statements.shift();
     if (!statement || !ast.isVariableStatement(statement) || !isExported(statement) ||
@@ -498,6 +506,7 @@ export function readMessageCatalogEntries(text, relativePath) {
       const values = entries.get(key) ?? {};
       values[binding] = value;
       entries.set(key, values);
+      orderedEntries.push({ binding, key, value, start: property.initializer.getStart(source), end: property.initializer.end });
     }
   }
   if (!fragment && locale === "en" && statements.length === 1) {
@@ -506,7 +515,34 @@ export function readMessageCatalogEntries(text, relativePath) {
         statement.typeParameters || !isEnglishKeyType(statement.type)) return null;
   }
   if (fragment && [...entries.values()].some((values) => !("en" in values) || !("ko" in values))) return null;
-  return statements.length === 0 ? entries : null;
+  return statements.length === 0 ? { entries, orderedEntries } : null;
+}
+
+function readCatalogValueChanges(beforeText, afterText, before, after) {
+  if (before === null) return new Set(after.entries.keys());
+  if (before.orderedEntries.length !== after.orderedEntries.length) return null;
+  const changedKeys = new Set();
+  const beforeParts = [];
+  const afterParts = [];
+  let beforeEnd = 0;
+  let afterEnd = 0;
+  for (let index = 0; index < before.orderedEntries.length; index += 1) {
+    const previous = before.orderedEntries[index];
+    const next = after.orderedEntries[index];
+    // Property order is observable independently for every locale binding.
+    if (previous.binding !== next.binding || previous.key !== next.key) return null;
+    if (previous.value === next.value) continue;
+    changedKeys.add(next.key);
+    beforeParts.push(beforeText.slice(beforeEnd, previous.start));
+    afterParts.push(afterText.slice(afterEnd, next.start));
+    beforeEnd = previous.end;
+    afterEnd = next.end;
+  }
+  beforeParts.push(beforeText.slice(beforeEnd));
+  afterParts.push(afterText.slice(afterEnd));
+  // Only changed static value initializers may differ. Preserve all remaining
+  // source, including comments, trivia, unchanged literals and scaffolding.
+  return JSON.stringify(beforeParts) === JSON.stringify(afterParts) ? changedKeys : null;
 }
 
 
@@ -518,9 +554,11 @@ export function readMessageCatalogEntries(text, relativePath) {
  * returns a file's text at a commit (or null), `trackedFiles` lists the
  * pushed tree's paths, and `readTrackedFile(path)` returns one's text.
  *
- * A key whose text changed in any locale, or that was added or removed,
- * names a namespace (the part before its first dot). The selection is every
- * Vitest file and module under src/ or test/ that names a changed namespace
+ * An existing module must keep each locale's key order and identical source
+ * outside changed static value initializers. A new module names every key it
+ * declares. Each changed key names a namespace (the part before its first dot).
+ * Structural edits and changes without attributable values keep full checks.
+ * The selection is every Vitest file and module under src/ or test/ that names a changed namespace
  * as a static string (`t("ns.key")` or a literal key table), every
  * one outside src/i18n that reads the catalog itself (it mentions
  * `i18n/messages`), and the i18n suites. Modules go to `vitest related`, so
@@ -540,18 +578,30 @@ export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, re
   const changedNamespaces = new Set();
   for (const entry of entries) {
     if (!isMessageCatalogPath(entry?.path)) return { reason: `${entry?.path} is not a message catalog file` };
-    if (isMessageCatalogBarrel(entry.path)) continue;
-    const after = readMessageCatalogEntries(readBlob(entry.localSha, entry.path), entry.path);
-    const before = entry.status === "A" ? new Map() : readMessageCatalogEntries(readBlob(entry.baseSha, entry.path), entry.path);
-    if (after === null || before === null) {
+    if (isMessageCatalogBarrel(entry.path)) {
+      return { reason: `${entry.path} changes catalog assembly without attributable message values; full checks required` };
+    }
+    const afterText = readBlob(entry.localSha, entry.path);
+    const beforeText = entry.status === "A" ? null : readBlob(entry.baseSha, entry.path);
+    const after = readMessageCatalogModule(afterText, entry.path);
+    const before = entry.status === "A" ? null : readMessageCatalogModule(beforeText, entry.path);
+    if (after === null || entry.status !== "A" && before === null) {
       return { reason: `${entry.path} has a shape the message key reader does not accept; full checks required` };
     }
-    for (const key of new Set([...before.keys(), ...after.keys()])) {
-      if (JSON.stringify(before.get(key)) === JSON.stringify(after.get(key))) continue;
+    const changedKeys = readCatalogValueChanges(beforeText, afterText, before, after);
+    if (changedKeys === null) {
+      return { reason: `${entry.path} has changes outside attributable message values; full checks required` };
+    }
+    if (changedKeys.size === 0) {
+      return { reason: `${entry.path} has no attributable message value change; full checks required` };
+    }
+    for (const key of changedKeys) {
       const dot = key.indexOf(".");
+      if (key.length === 0 || dot === 0) return { reason: `${entry.path} has no attributable message namespace; full checks required` };
       changedNamespaces.add(dot > 0 ? key.slice(0, dot) : key);
     }
   }
+  if (changedNamespaces.size === 0) return { reason: "no changed message namespace could be attributed; full checks required" };
 
   const texts = new Map();
   for (const path of trackedFiles) {
@@ -561,7 +611,7 @@ export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, re
     texts.set(path, text);
   }
   try {
-    return withParsedSourceTexts(changedNamespaces.size > 0 ? texts : new Map(), (sources, resolveDeclarations) =>
+    return withParsedSourceTexts(texts, (sources, resolveDeclarations) =>
       selectParsedMessageConsumers(texts, sources, resolveDeclarations, changedNamespaces, trackedFiles));
   } catch {
     return { reason: "message consumers could not be analyzed; full checks required" };
@@ -576,10 +626,10 @@ function selectParsedMessageConsumers(texts, sources, resolveDeclarations, chang
   for (const [path, text] of texts) {
     const isI18nSuite = path.startsWith(I18N_SUITE_DIRECTORY) && isCollectedVitestFile(path);
     const source = sources.get(path);
-    if (changedNamespaces.size > 0 && !source) return { reason: `${path} could not be parsed for message consumers; full checks required` };
+    if (!source) return { reason: `${path} could not be parsed for message consumers; full checks required` };
     let consumers;
     try {
-      consumers = source ? readConsumers(path, changedNamespaces) : { named: [], unresolved: false };
+      consumers = readConsumers(path, changedNamespaces);
     } catch {
       return { reason: `${path} has an unsupported message consumer shape; full checks required` };
     }
