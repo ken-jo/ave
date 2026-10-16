@@ -291,11 +291,12 @@ describe("pre-push classification precedence", () => {
         `export const en = {\n  "panel.title": ${JSON.stringify(english)},\n  "other.label": "Other",\n} as const;\n` +
         'export const ko: Record<keyof typeof en, string> = {\n  "panel.title": "패널",\n  "other.label": "기타",\n};\n';
       write(fragment, catalog("Panel"));
-      write("src/ui/panel.tsx", 'export const title = () => t("panel.title");\n');
-      write("src/ui/other.tsx", 'export const label = () => t("other.label");\n');
-      write("src/ui/__tests__/panel-copy.test.tsx", 'it("names", () => expect(t("panel.title")).toBe("패널"));\n');
-      write("src/i18n/__tests__/i18n.test.ts", 'it("loads", () => {});\n');
-      write("test/e2e/panel.spec.ts", 'test("panel", () => page.getByText(t("panel.title")));\n');
+      write("src/i18n/runtime.ts", 'export function t(key: string, vars?: unknown) { return key; }\n');
+      write("src/ui/panel.tsx", 'import { t } from "../i18n/runtime.js"; export const title = () => t("panel.title");\n');
+      write("src/ui/other.tsx", 'import { t } from "../i18n/runtime.js"; export const label = () => t("other.label");\n');
+      write("src/ui/__tests__/panel-copy.test.tsx", 'import { t } from "../../i18n/runtime.js"; export const actual = t("panel.title");\n');
+      write("src/i18n/__tests__/i18n.test.ts", 'export const suiteName = "i18n";\n');
+      write("test/e2e/panel.spec.ts", 'import { t } from "../../src/i18n/runtime.js"; export const expected = t("panel.title");\n');
       git(["add", "."]);
       git(["commit", "-qm", "initial fixture"]);
       const base = git(["rev-parse", "HEAD"]);
