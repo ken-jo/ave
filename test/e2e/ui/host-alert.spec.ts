@@ -1,10 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { _electron as electron, type ElectronApplication } from "playwright";
+import type { ElectronApplication } from "playwright";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AveApi } from "../../../src/ui/renderer/types.js";
-import { MAIN_ENTRY, buildE2eBaseSettings, buildIsolatedElectronEnv } from "./seeded-electron.js";
+import { MAIN_ENTRY, buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron.js";
 
 test("host deadline cards use built-in presentation and service-owned Settings", async ({}, testInfo) => {
   const root = mkdtempSync(join(tmpdir(), "ave-host-alert-"));
@@ -36,7 +36,7 @@ test("host deadline cards use built-in presentation and service-owned Settings",
     writeFileSync(join(featureHome, "sessions", ".active-session.json"), JSON.stringify({
       mainActiveMode: "resume", mainActiveSessionId: sessionId, updatedAt: now,
     }));
-    app = await electron.launch({
+    app = await launchElectron({
       args: [MAIN_ENTRY, `--user-data-dir=${userData}`, "--no-sandbox"],
       env: Object.fromEntries(Object.entries(buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home, AVE_HOME: featureHome,
         AVE_DEV: "1", AVE_E2E: "1", NODE_ENV: "test" })).filter((entry): entry is [string, string] => typeof entry[1] === "string")),

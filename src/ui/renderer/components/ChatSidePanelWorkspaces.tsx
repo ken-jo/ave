@@ -40,10 +40,10 @@ import {
 } from "./ChatSidePanelLayout.js";
 import {
   BrowserDocumentViewer,
-  DetailHeader,
   EmptyState,
   FileTreeRows,
-  PreviewBody,
+  PreviewDetail,
+  previewFillsPanel,
   UrlDocumentViewer,
   buildFileTree,
   fileBasename,
@@ -940,6 +940,8 @@ export function FileBrowserWorkspace({
       canOpenExternal: false,
     };
   }, [fsPath]);
+  // The target the bottom pane shows (a directory pick wins over the session row).
+  const detailTarget = fsTarget ?? selectedFileTarget;
 
   useEffect(() => {
     if (selectedFile?.previewTargetId && selectedFile.previewTargetId !== selectedId) {
@@ -1067,17 +1069,11 @@ export function FileBrowserWorkspace({
           </div>
         }
         bottom={
-          <div className="min-h-0 p-3">
+          <div className={detailTarget && previewFillsPanel(detailTarget) ? "flex min-h-full flex-col p-3" : "min-h-0 p-3"}>
             {fsTarget ? (
-              <div className="space-y-3">
-                <DetailHeader target={fsTarget} />
-                <PreviewBody api={api} sessionId={sessionId} target={fsTarget} />
-              </div>
+              <PreviewDetail api={api} sessionId={sessionId} target={fsTarget} />
             ) : selectedFileTarget ? (
-              <div className="space-y-3">
-                <DetailHeader target={selectedFileTarget} />
-                <PreviewBody api={api} sessionId={sessionId} target={selectedFileTarget} />
-              </div>
+              <PreviewDetail api={api} sessionId={sessionId} target={selectedFileTarget} />
             ) : selectedFile ? (
               <div className="space-y-3">
                 <div className="flex min-w-0 items-center gap-2">

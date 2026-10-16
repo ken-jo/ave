@@ -1515,6 +1515,9 @@
   --rdg-selection-color: hsl(var(--ring));
   --rdg-font-size: 11px;
   font-family: var(--font-mono, ui-monospace, monospace);
+  /* The grid is the preview's only scroller: a wheel that reaches its end
+     stops here instead of scrolling the side panel behind it. */
+  overscroll-behavior: contain;
 }
 .ave-table-grid .ave-table-grid-rownum {
   color: hsl(var(--muted-foreground));

@@ -173,7 +173,7 @@ function TextBlock({ text }: { text: string }) {
   );
 }
 
-export function DetailHeader({ target }: { target: ChatPreviewTarget }) {
+function DetailHeader({ target }: { target: ChatPreviewTarget }) {
   return (
     <div className="min-w-0">
       <div className="flex min-w-0 items-center gap-2">
@@ -184,6 +184,36 @@ export function DetailHeader({ target }: { target: ChatPreviewTarget }) {
         <Badge variant="outline" className="px-1 py-0 text-[10px]">{target.kind}</Badge>
         <span className="truncate">{target.subtitle ?? target.sourceLabel}</span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * True when the target's body is a table grid, which is its own scroll
+ * container and must take the panel's remaining height instead of making the
+ * panel scroll around it. Inline text always renders as text. Hosts switch to
+ * a flex column only for these targets; every other preview keeps the block
+ * layout it had before (its `h-full` viewers depend on it).
+ */
+export function previewFillsPanel(target: ChatPreviewTarget): boolean {
+  return target.kind === "file" && !target.inlineText && resolveFilePreviewRoute(target.path).kind === "table";
+}
+
+/**
+ * Header + body of the selected preview target. For a table target the host
+ * is a flex column at least as tall as its scroll area (see
+ * {@link previewFillsPanel}): the body flexes into the remaining height and
+ * the grid alone scrolls, so the host has nothing left to scroll. Any other
+ * target renders exactly as before, as a block the host scrolls.
+ */
+export function PreviewDetail({ api, sessionId, target }: { api: AveApi; sessionId?: string; target: ChatPreviewTarget }) {
+  return (
+    <div
+      className={previewFillsPanel(target) ? "flex min-h-0 flex-1 flex-col gap-3" : "space-y-3"}
+      data-testid="chat-side-panel-preview-detail"
+    >
+      <DetailHeader target={target} />
+      <PreviewBody api={api} sessionId={sessionId} target={target} />
     </div>
   );
 }
@@ -288,7 +318,10 @@ function FilePreviewBody({ target }: { target: Extract<ChatPreviewTarget, { kind
     ?? (state.phase === "ok" ? state.content : target.path);
 
   return (
-    <div className="space-y-3" data-testid="chat-side-panel-file-preview">
+    <div
+      className={route === "table" ? "flex min-h-0 flex-1 flex-col gap-3" : "space-y-3"}
+      data-testid="chat-side-panel-file-preview"
+    >
       <div className="rounded-md border bg-muted/(--opacity-muted) px-3 py-2 font-mono text-[11px] [overflow-wrap:anywhere]">
         {target.path}
       </div>
