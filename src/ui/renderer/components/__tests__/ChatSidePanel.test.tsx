@@ -238,7 +238,7 @@ describe("ChatSidePanel", () => {
     previousWindowAve = (window as unknown as { ave?: unknown }).ave;
     vi.spyOn(window, "getSelection").mockReturnValue(null);
     // File-browser tabs mount ProjectRootsBrowser (workspace.*) and
-    // FilePreviewBody (preview.readFile); provide sane default stubs so the
+    // FilePreviewBody (preview.readFile / readDocument); provide sane default stubs so the
     // panel renders without a real preload bridge.
     const ave = {
       ui: {
@@ -253,6 +253,7 @@ describe("ChatSidePanel", () => {
       attach: { openExternal: vi.fn(async () => ({ ok: true })) },
       preview: {
         readFile: vi.fn(async () => ({ ok: true, content: "# preview", path: "/tmp/x.md", truncated: false })),
+        readDocument: vi.fn(async () => ({ ok: false, error: "unsupported-format", message: "stub" })),
       },
       workspace: {
         listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),

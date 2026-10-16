@@ -34,7 +34,8 @@ import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
 import { useCopyFlash } from "../hooks/use-copy-flash.js";
 import { incompleteToolStatusLabelKey } from "../utils/tool-status-label.js";
 import { errorMessage } from "../../../shared/error-message.js";
-import { PreviewContent } from "../preview/preview-renderers.js";
+import { PreviewContent, resolveFilePreviewRoute } from "../preview/preview-renderers.js";
+import { TableDocumentPreview } from "../preview/table-document-preview.js";
 import { FileEditDiff } from "./FileEditDiff.js";
 import { ToolPayloadBlock } from "./ToolPayloadBlock.js";
 import { McpAppView } from "./McpAppView.js";
@@ -247,10 +248,13 @@ function FilePreviewBody({ target }: { target: Extract<ChatPreviewTarget, { kind
     | { phase: "ok"; content: string; path: string; truncated: boolean }
     | { phase: "error"; code: PreviewReadError }
   >({ phase: "idle" });
+  // Inline text always renders as text; a table document is parsed in main by
+  // its own IPC (TableDocumentPreview), so the text read is skipped for it.
+  const route = target.inlineText ? "text" : resolveFilePreviewRoute(target.path).kind;
 
   useEffect(() => {
     // Inline text (e.g. an indexer search-hit snippet) needs no IPC read.
-    if (target.inlineText) {
+    if (target.inlineText || route === "table") {
       setState({ phase: "idle" });
       return;
     }
@@ -278,7 +282,7 @@ function FilePreviewBody({ target }: { target: Extract<ChatPreviewTarget, { kind
     return () => {
       cancelled = true;
     };
-  }, [target.path, target.inlineText]);
+  }, [target.path, target.inlineText, route]);
 
   const copyValue = target.inlineText
     ?? (state.phase === "ok" ? state.content : target.path);
@@ -290,6 +294,8 @@ function FilePreviewBody({ target }: { target: Extract<ChatPreviewTarget, { kind
       </div>
       {target.inlineText ? (
         <PreviewContent descriptor={{ text: target.inlineText, path: target.path }} />
+      ) : route === "table" ? (
+        <TableDocumentPreview key={target.path} path={target.path} />
       ) : state.phase === "loading" ? (
         <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-file-loading">
           {t("chatPreviewRail.filePreviewLoading")}
@@ -771,6 +777,8 @@ export function fileIcon(name: string): LucideIcon {
     case ".csv":
     case ".tsv":
     case ".xlsx":
+    case ".xls":
+    case ".ods":
       return Table;
     case ".html":
     case ".htm":

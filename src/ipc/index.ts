@@ -32,7 +32,7 @@
  *   work-board    ave:work-board:* (CRUD, lifecycle, run, run-transcript,
  *                 generate-report)
  *   attach        ave:attach:*
- *   preview       ave:preview:read-file
+ *   preview       ave:preview:read-file, ave:preview:read-document
  *   workspace     ave:workspace:*
  *   ui            ave:ui:*
  *   terminal      ave:terminal:*

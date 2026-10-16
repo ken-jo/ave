@@ -15,6 +15,7 @@ export const MAIN_BUNDLE_ROOT_FILES = Object.freeze([
   // process executes it (`spawnConfinedPluginChild` runs it directly; a module
   // buried inside main.js has no path to be run from). See build-main-esbuild.
   "plugin-child-main.js",
+  "preview-document-child-main.js",
 ]);
 
 const MAIN_BUNDLE_CHUNK_PATH = /^chunks\/[a-zA-Z0-9_-]+\.js$/;
