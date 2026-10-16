@@ -54,7 +54,6 @@ function unpackedApp(root: string, arch: keyof typeof EM): string {
   const modules = join(app, "resources/app.asar.unpacked/node_modules");
   write(join(modules, "node-pty/build/Release/pty.node"), elf(EM[arch]));
   write(join(modules, `better-sqlite3/prebuilds/linux-${arch}.node`), elf(EM[arch]));
-  write(join(modules, `@openai/codex-linux-${arch}/vendor/bin/codex`), elf(EM[arch], 2), 0o755);
   write(join(modules, `@vscode/ripgrep-linux-${arch}/bin/rg`), elf(EM[arch], 3), 0o755);
   write(join(modules, "node-pty/lib/index.js"), "module.exports = {};");
   write(join(app, `resources/uv/linux-${arch}/uv.gz`), gzipSync(elf(EM[arch], 2)));
@@ -114,8 +113,8 @@ describe("Linux package architecture audit", () => {
     unpackedApp(root, "x64");
     const { violations, checked } = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
     expect(violations).toEqual([]);
-    // main binary, crashpad, libffmpeg, two addons, codex, rg, and the inflated uv
-    expect(checked).toHaveLength(8);
+    // main binary, crashpad, libffmpeg, two addons, rg, and the inflated uv
+    expect(checked).toHaveLength(7);
   });
 
   it("fails an arm64 native addon inside an x64 package", () => {

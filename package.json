@@ -125,7 +125,6 @@
     "@anthropic-ai/sandbox-runtime": "0.0.76",
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.30.0",
-    "@openai/codex": "0.153.4",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
     "@opentelemetry/resources": "^2.11.0",
@@ -264,7 +263,6 @@
     ],
     "asarUnpack": [
       "node_modules/@anthropic-ai/sandbox-runtime/vendor/**",
-      "node_modules/@openai/codex*/**",
       "node_modules/@vscode/ripgrep*/**",
       "node_modules/node-pty/**",
       "node_modules/better-sqlite3/**",

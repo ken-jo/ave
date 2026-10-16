@@ -80,7 +80,6 @@ import { ko as ko_chatTab } from "../generated/chatTab.js";
 import { ko as ko_chatView } from "../generated/chatView.js";
 import { ko as ko_checkpointDivider } from "../generated/checkpointDivider.js";
 import { ko as ko_clipboardPaste } from "../generated/clipboardPaste.js";
-import { ko as ko_codexSubscriptionCard } from "../generated/codexSubscriptionCard.js";
 import { ko as ko_commandActions } from "../generated/commandActions.js";
 import { ko as ko_compactedToolResult } from "../generated/compactedToolResult.js";
 import { ko as ko_composer } from "../generated/composer.js";
@@ -266,7 +265,6 @@ export const koMessages: Record<string, string> = {
   ...ko_chatView,
   ...ko_checkpointDivider,
   ...ko_clipboardPaste,
-  ...ko_codexSubscriptionCard,
   ...ko_commandActions,
   ...ko_compactedToolResult,
   ...ko_composer,
