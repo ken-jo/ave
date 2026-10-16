@@ -16,7 +16,7 @@
  * rule-approved explicit host run also proves the spawn-side permit check.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -70,13 +70,17 @@ async function run(input: {
   rules: PermissionRule[];
   command: string;
   executionMode: "default" | "host";
-  answer: "allow-once" | "deny-once";
+  answer: "allow-once" | "allow-always" | "deny-once";
   mode?: "default" | "allow";
+  cwd?: string;
+  pm?: PermissionManager;
 }) {
   arrangeSubstrate(input.substrate);
-  const pm = new PermissionManager(join(dir, "permissions.json"));
-  pm.setMode(input.mode ?? "default");
-  pm.setRules(input.rules);
+  const pm = input.pm ?? new PermissionManager(join(dir, "permissions.json"));
+  if (input.pm === undefined) {
+    pm.setMode(input.mode ?? "default");
+    pm.setRules(input.rules);
+  }
   const check = vi.spyOn(pm, "checkDetailed");
   const tool = new BashTool();
   const execute = vi.spyOn(tool, "execute");
@@ -96,14 +100,19 @@ async function run(input: {
   });
   gate = new ApprovalGate({ isDestroyed: () => false, send } as never);
   const executor = new ToolExecutor(registry, undefined, pm, undefined, gate);
-  const toolInput = input.executionMode === "host"
-    ? { command: input.command, executionMode: "host", justification: "Retry outside the OS sandbox", timeoutSeconds: 10 }
-    : { command: input.command, timeoutSeconds: 10 };
+  const toolInput = {
+    command: input.command,
+    timeoutSeconds: 10,
+    ...(input.executionMode === "host"
+      ? { executionMode: "host", justification: "Retry outside the OS sandbox" }
+      : {}),
+    ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+  };
   const [result] = await runWithToolExecutionCwd(dir, () => executor.executeAll(
     [{ id: `unsandboxed-${input.substrate}-${input.executionMode}`, name: "bash", input: toolInput }],
     { sessionId: "unsandboxed-rules", permissionContext: userPermissionContext() },
   ));
-  return { result: result!, cards, execute, decision: check.mock.results[0]?.value };
+  return { result: result!, cards, execute, decision: check.mock.results[0]?.value, pm };
 }
 
 const PRINTF_ALLOW: PermissionRule[] = [{ pattern: "Bash(printf *)", action: "allow" }];
@@ -124,6 +133,47 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
       executionRequest: "host", mode: "plain", requiresExplicitUserApproval: true,
       capability: { kind: "none" },
     });
+  });
+
+  it("binds the rule approval to the resolved working directory of a relative cwd", async () => {
+    mkdirSync(join(dir, "sub"));
+    const { result, cards, execute } = await run({
+      substrate: "sandbox-active", rules: PRINTF_ALLOW, command: "printf in-subdir",
+      executionMode: "host", answer: "deny-once", cwd: "sub",
+    });
+    expect(cards).toHaveLength(0);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(result.is_error).toBeUndefined();
+    expect(result.content).toContain("in-subdir");
+  });
+
+  // The research names the hazard: a remembered approval given for a
+  // sandboxed/default run must not silently cover the unsandboxed retry. Only
+  // an allow rule may (I3). The remembered-approval key carries the sealed plan,
+  // and the explicit-host gate never consults approval memory.
+  it("keeps a default run's remembered approval apart from the unsandboxed retry", async () => {
+    const first = await run({
+      substrate: "sandbox-off", rules: [], command: "printf granted",
+      executionMode: "default", answer: "allow-always",
+    });
+    expect(first.cards).toHaveLength(1);
+    // An ordinary card leaves every choice open (no allowedChoices limit).
+    expect(first.cards[0]?.allowedChoices).toBeUndefined();
+    expect(first.result.content).toContain("granted");
+
+    const retry = await run({
+      substrate: "sandbox-off", rules: [], command: "printf granted",
+      executionMode: "host", answer: "deny-once", pm: first.pm,
+    });
+    expect(retry.cards).toHaveLength(1);
+    expect(retry.cards[0]).toMatchObject({
+      allowedChoices: ["allow-once", "deny-once"],
+      executionPlan: { executionRequest: "host", requiresExplicitUserApproval: true },
+    });
+    expect(retry.cards[0]?.approvalCacheKey).toBeDefined();
+    expect(retry.cards[0]?.approvalCacheKey).not.toBe(first.cards[0]?.approvalCacheKey);
+    expect(retry.execute).not.toHaveBeenCalled();
+    expect(retry.result.is_error).toBe(true);
   });
 
   it("asks with the host-execution plan when no rule matches, and runs after allow-once", async () => {
