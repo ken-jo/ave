@@ -15,7 +15,7 @@
  * Not in PUBLIC_CHANNELS → external surfaces (local-api / cli / sdk) can never
  * reach it (fail-closed). Frame-guarded via validateHostRendererSender.
  */
-import { ipcMain } from "electron";
+import { ipcMain, type WebContents, type WebFrameMain } from "electron";
 import { promises as fs } from "node:fs";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { redactFsPath } from "../../audit/dlp-filter.js";
@@ -33,7 +33,9 @@ import { errorMessage } from "../../shared/error-message.js";
 import { TableDocumentError } from "../../tools/table-document-error.js";
 import { readPreviewDocumentInput } from "../../tools/preview-document-input.js";
 import { acquireParseSlot } from "../../tools/preview-document-process.js";
+import { DOCUMENT_PARSE_MESSAGES } from "../../tools/preview-document-protocol.js";
 import {
+  PREVIEW_DOCUMENT_LIMITS,
   previewDocumentFormatOf,
   type PreviewReadDocumentResult,
 } from "../../shared/preview-document.js";
@@ -74,6 +76,30 @@ function currentReadScope(): { cwd: string; extraAllowed: string[] } {
   const cwd = process.cwd();
   const additional = readPermissionSettings().permissions.additionalDirectories;
   return { cwd, extraAllowed: buildRuntimeAllowedDirectories(additional) };
+}
+
+function observeDocumentOwner(sender: WebContents, frame: WebFrameMain, abort: () => void): () => void {
+  const hasLostFrame = (): boolean => sender.isDestroyed() || frame.isDestroyed() || frame.detached;
+  const checkFrame = (): void => { if (hasLostFrame()) abort(); };
+  const handleNavigation = (
+    _event: unknown, _url: string, _status: number, _statusText: string,
+    isMainFrame: boolean, processId: number, routingId: number,
+  ): void => {
+    if (hasLostFrame() || (isMainFrame && sender.mainFrame === frame)
+      || (frame.processId === processId && frame.routingId === routingId)) abort();
+  };
+  sender.on("destroyed", abort);
+  sender.on("render-process-gone", abort);
+  sender.on("did-frame-navigate", handleNavigation);
+  // Detached frames expose state without a corresponding lifecycle event.
+  const timer = setInterval(checkFrame, PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
+  timer.unref();
+  return () => {
+    clearInterval(timer);
+    sender.removeListener("destroyed", abort);
+    sender.removeListener("render-process-gone", abort);
+    sender.removeListener("did-frame-navigate", handleNavigation);
+  };
 }
 
 export function registerPreviewHandlers(deps: IpcDeps): void {
@@ -179,35 +205,45 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           || !Number.isSafeInteger(frame.processId) || !Number.isSafeInteger(frame.routingId)) {
           throw new TableDocumentError("read-failed", "Document sender identity is unavailable.");
         }
-        const slot = await acquireParseSlot(`${e.sender.id}:${frame.processId}:${frame.routingId}`);
+        const ownerKey = `${e.sender.id}:${frame.processId}:${frame.routingId}`;
+        const controller = new AbortController();
+        const abort = (): void => controller.abort(new TableDocumentError("superseded", DOCUMENT_PARSE_MESSAGES.superseded));
+        const stopObserving = observeDocumentOwner(e.sender, frame, abort);
+        controller.signal.addEventListener("abort", stopObserving, { once: true });
         try {
-          const bytes = await readPreviewDocumentInput(resolved, slot.signal);
-          let document;
+          if (e.sender.isDestroyed() || frame.isDestroyed() || frame.detached) abort();
+          const slot = await acquireParseSlot(ownerKey, controller);
+          let inputBytes: number | undefined;
           try {
-            document = await slot.parse(bytes, format, sheetIndex);
+            if (e.sender.isDestroyed() || frame.isDestroyed() || frame.detached) abort();
+            slot.signal.throwIfAborted();
+            const bytes = await readPreviewDocumentInput(resolved, slot.signal);
+            inputBytes = bytes.length;
+            const document = await slot.parse(bytes, format, sheetIndex);
+            auditLogger.log({
+              timestamp: new Date().toISOString(),
+              sessionId: "preview-read",
+              type: "info",
+              input: JSON.stringify({
+                channel: CHANNELS.preview.readDocument,
+                path: redactFsPath(resolved),
+                bytes: bytes.length,
+                sheetIndex,
+              }),
+            });
+            return { ok: true, path: resolved, bytes: bytes.length, document };
           } catch (err) {
+            slot.signal.throwIfAborted();
             if (err instanceof TableDocumentError) {
-              return { ok: false, error: err.code, path: resolved, bytes: bytes.length, message: err.message };
+              return { ok: false, error: err.code, path: resolved, bytes: err.bytes ?? inputBytes, message: err.message };
             }
             throw err;
+          } finally {
+            slot.release();
           }
-          auditLogger.log({
-            timestamp: new Date().toISOString(),
-            sessionId: "preview-read",
-            type: "info",
-            input: JSON.stringify({
-              channel: CHANNELS.preview.readDocument,
-              path: redactFsPath(resolved),
-              bytes: bytes.length,
-              sheetIndex,
-            }),
-          });
-          return { ok: true, path: resolved, bytes: bytes.length, document };
-        } catch (err) {
-          slot.signal.throwIfAborted();
-          throw err;
         } finally {
-          slot.release();
+          controller.signal.removeEventListener("abort", stopObserving);
+          stopObserving();
         }
       } catch (err) {
         if (err instanceof TableDocumentError) {

@@ -45,13 +45,14 @@ function releaseRequest(request: ParseRequest): void {
 }
 
 /** Admit before reading. A replacement waits for the old read and child to finish. */
-export async function acquireParseSlot(owner: string): Promise<DocumentParseSlot> {
+export async function acquireParseSlot(owner: string, controller = new AbortController()): Promise<DocumentParseSlot> {
   if (typeof owner !== "string" || owner.length === 0) throw documentError("read-failed");
+  if (controller.signal.aborted) throw documentError("superseded");
   const previous = requests.get(owner);
   let finish!: () => void;
   const finished = new Promise<void>((resolve) => { finish = resolve; });
   const request: ParseRequest = {
-    owner, controller: new AbortController(), finished, finish,
+    owner, controller, finished, finish,
     admitted: false, released: false, running: false,
   };
   requests.set(owner, request);

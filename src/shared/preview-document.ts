@@ -47,6 +47,8 @@ export interface PreviewDocumentLimits {
   maxOldSpaceMb: number;
   maxResponseBytes: number;
   maxConcurrentParses: number;
+  frameCheckIntervalMs: number;
+  busyRetryDelaysMs: readonly number[];
   maxOdsExpandedRows: number;
   maxOdsExpandedCells: number;
   delimitedChunkChars: number;
@@ -80,6 +82,10 @@ export const PREVIEW_DOCUMENT_LIMITS: Readonly<PreviewDocumentLimits> = Object.f
   /** Serialized child response; larger grids are refused. */
   maxResponseBytes: 4 * 1024 * 1024,
   maxConcurrentParses: 1,
+  /** Observe frame detachment while a document request is active. */
+  frameCheckIntervalMs: 100,
+  /** Automatic retries after the initial busy response. */
+  busyRetryDelaysMs: Object.freeze([250, 500, 1_000]),
   /** Refuse excessive ODF expansion before either workbook pass. */
   maxOdsExpandedRows: 100_000,
   maxOdsExpandedCells: 2_000_000,

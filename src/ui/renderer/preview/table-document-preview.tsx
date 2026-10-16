@@ -106,19 +106,31 @@ export function TableDocumentPreview({ path }: { path: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     setState({ phase: "loading" });
-    void window.ave.preview
-      .readDocument(path, sheetIndex)
-      .then((result) => {
-        if (cancelled) return;
-        if (result.ok) setState({ phase: "ok", document: result.document });
-        else if (result.error !== "superseded") setState({ phase: "error", code: result.error });
-      })
-      .catch(() => {
-        if (!cancelled) setState({ phase: "error", code: "read-failed" });
-      });
+    const read = (attempt: number): void => {
+      void window.ave.preview
+        .readDocument(path, sheetIndex)
+        .then((result) => {
+          if (cancelled) return;
+          if (!result.ok && result.error === "busy") {
+            const delay = PREVIEW_DOCUMENT_LIMITS.busyRetryDelaysMs[attempt];
+            if (delay !== undefined) {
+              retryTimer = setTimeout(() => { retryTimer = undefined; read(attempt + 1); }, delay);
+              return;
+            }
+          }
+          if (result.ok) setState({ phase: "ok", document: result.document });
+          else if (result.error !== "superseded") setState({ phase: "error", code: result.error });
+        })
+        .catch(() => {
+          if (!cancelled) setState({ phase: "error", code: "read-failed" });
+        });
+    };
+    read(0);
     return () => {
       cancelled = true;
+      clearTimeout(retryTimer);
     };
   }, [path, sheetIndex]);
 

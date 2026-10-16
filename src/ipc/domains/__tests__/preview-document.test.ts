@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { mkdtempSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
@@ -10,6 +11,7 @@ import { buildPreviewDocumentRuntime } from "../../../__tests__/support/preview-
 import { cyclicWorkbook } from "../../../__tests__/support/table-document-fixtures.js";
 import * as documentInput from "../../../tools/preview-document-input.js";
 import { getManagedChildProcessCount } from "../../../main/managed-child-processes.js";
+import * as managedChildren from "../../../main/managed-child-processes.js";
 
 const { handlers, additionalDirectories, childRuntime } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -48,11 +50,19 @@ const dirLinkType = process.platform === "win32" ? "junction" : "dir";
 let root: string;
 let outside: string;
 
-async function readDocument(frame: string, path: unknown, sheetIndex: unknown = 0, senderId = 1, routingId = 0) {
+function documentEvent(url: string, senderId = 1, routingId = 0) {
+  const frame = { url, processId: senderId, routingId, detached: false, isDestroyed: (): boolean => false };
+  const sender = Object.assign(new EventEmitter(), { id: senderId, mainFrame: frame, isDestroyed: (): boolean => false });
+  return { sender, senderFrame: frame };
+}
+
+async function readFromSender(event: ReturnType<typeof documentEvent>, path: unknown, sheetIndex: unknown = 0) {
   const handler = handlers.get(CHANNELS.preview.readDocument)!;
-  return (await handler({
-    sender: { id: senderId }, senderFrame: { url: frame, processId: senderId, routingId },
-  }, path, sheetIndex)) as PreviewReadDocumentResult;
+  return (await handler(event, path, sheetIndex)) as PreviewReadDocumentResult;
+}
+
+async function readDocument(frame: string, path: unknown, sheetIndex: unknown = 0, senderId = 1, routingId = 0) {
+  return readFromSender(documentEvent(frame, senderId, routingId), path, sheetIndex);
 }
 
 beforeAll(async () => {
@@ -93,6 +103,87 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("preview:read-document handler", () => {
+  it("aborts a destroyed sender and frees the slot without waiting for the parse deadline", async () => {
+    const event = documentEvent(OK_FRAME);
+    const unrelated = vi.fn();
+    event.sender.on("destroyed", unrelated);
+    const pending = readFromSender(event, join(root, "data", "cyclic.xls"));
+    await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(1));
+    const started = performance.now();
+    event.sender.isDestroyed = () => true;
+    event.sender.emit("destroyed");
+    const result = await pending;
+    expect(result).toMatchObject({ ok: false, error: "superseded" });
+    expect(performance.now() - started).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs / 2);
+    expect(getManagedChildProcessCount()).toBe(0);
+    expect(await readDocument(OK_FRAME, join(root, "data", "people.csv"), 0, 2)).toMatchObject({ ok: true });
+    expect(event.sender.listenerCount("destroyed")).toBe(1);
+    expect(unrelated).toHaveBeenCalledOnce();
+  });
+
+  it.each(["detached", "destroyed", "navigated", "crashed"])("aborts an owner whose frame is %s", async (departure) => {
+    const event = documentEvent(OK_FRAME);
+    const pending = readFromSender(event, join(root, "data", "cyclic.xls"));
+    await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(1));
+    const started = performance.now();
+    if (departure === "detached") event.senderFrame.detached = true;
+    else if (departure === "destroyed") event.senderFrame.isDestroyed = () => true;
+    else if (departure === "crashed") event.sender.emit("render-process-gone", {}, { reason: "crashed" });
+    else event.sender.emit("did-frame-navigate", {}, "file:///app/next.html", 200, "OK", true, 2, 10);
+    expect(await pending).toMatchObject({ ok: false, error: "superseded" });
+    expect(performance.now() - started).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs / 2);
+    expect(getManagedChildProcessCount()).toBe(0);
+    expect(event.sender.eventNames()).toEqual([]);
+  });
+
+  it("keeps a live owner during attempted or unrelated frame navigation", async () => {
+    const event = documentEvent(OK_FRAME);
+    const stopped = vi.spyOn(managedChildren, "forceKillManagedChildProcess");
+    const pending = readFromSender(event, join(root, "data", "cyclic.xls"));
+    await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(1));
+    event.sender.emit("did-start-navigation", { frame: event.senderFrame, isSameDocument: false });
+    event.sender.emit("did-frame-navigate", {}, "file:///app/other.html", 200, "OK", false, 99, 99);
+    const stoppedForUnrelatedNavigation = stopped.mock.calls.length;
+    event.sender.emit("did-frame-navigate", {}, "file:///app/next.html", 200, "OK", true, 1, 0);
+    expect(await pending).toMatchObject({ ok: false, error: "superseded" });
+    expect(stoppedForUnrelatedNavigation).toBe(0);
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(event.sender.eventNames()).toEqual([]);
+  });
+
+  it.each(["people.csv", "broken.csv", "missing.csv"])("removes owner listeners after reading %s", async (name) => {
+    const event = documentEvent(OK_FRAME);
+    await readFromSender(event, join(root, "data", name));
+    expect(event.sender.eventNames()).toEqual([]);
+  });
+
+  it.each(["navigated", "detached"])("cancels a %s document while its replacement request is waiting for admission", async (departure) => {
+    const read = documentInput.readPreviewDocumentInput;
+    const event = documentEvent(OK_FRAME);
+    let entered!: () => void;
+    let resume!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const spy = vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementationOnce(async (...args) => {
+      const bytes = await read(...args);
+      entered();
+      await gate;
+      args[1]?.throwIfAborted();
+      return bytes;
+    });
+    const previous = readFromSender(event, join(root, "data", "people.csv"));
+    await reading;
+    const replacement = readFromSender(event, join(root, "data", "book.xlsx"));
+    if (departure === "detached") event.senderFrame.detached = true;
+    else event.sender.emit("did-frame-navigate", {}, "file:///app/next.html", 200, "OK", true, 1, 0);
+    resume();
+    const results = await Promise.all([previous, replacement]);
+    expect(results.every((result) => !result.ok && result.error === "superseded")).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(event.sender.eventNames()).toEqual([]);
+    expect(getManagedChildProcessCount()).toBe(0);
+  });
+
   it("admits only one full-size input buffer before concurrent reads", async () => {
     const buffers = new Set<Buffer>();
     let peak = 0;

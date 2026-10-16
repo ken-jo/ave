@@ -115,6 +115,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   (window as unknown as { ave?: unknown }).ave = previousAve;
 });
 
@@ -171,12 +172,57 @@ describe("file preview routing", () => {
     expect(error.textContent).not.toContain("private parser diagnostic");
   });
 
-  it("shows contention as busy without suggesting a smaller document", async () => {
+  it("retries a busy preview and displays the next successful result", async () => {
+    vi.useFakeTimers();
     readDocument.mockResolvedValueOnce({ ok: false, error: "busy", message: "private busy detail" });
-    render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
-    const error = await screen.findByTestId("chat-side-panel-file-error");
+    await act(async () => { render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />); });
+    expect(screen.queryByTestId("chat-side-panel-file-error")).toBeNull();
+    expect(readDocument).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(readDocument).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("chat-side-panel-table-preview")).toBeTruthy();
+    expect(screen.queryByTestId("chat-side-panel-file-error")).toBeNull();
+  });
+
+  it("shows busy only after all bounded retries are exhausted", async () => {
+    vi.useFakeTimers();
+    readDocument.mockResolvedValue({ ok: false, error: "busy", message: "private busy detail" });
+    await act(async () => { render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />); });
+    expect(readDocument).toHaveBeenCalledTimes(1);
+    for (const [index, delay] of [250, 500, 1_000].entries()) {
+      expect(screen.queryByTestId("chat-side-panel-file-error")).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(delay - 1); });
+      expect(readDocument).toHaveBeenCalledTimes(index + 1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(readDocument).toHaveBeenCalledTimes(index + 2);
+    }
+    const error = screen.getByTestId("chat-side-panel-file-error");
     expect(error.textContent).toMatch(/Try again shortly|잠시 후 다시/);
     expect(error.textContent).not.toMatch(/smaller|더 작은|private busy/);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(readDocument).toHaveBeenCalledTimes(4);
+  });
+
+  it("clears a pending busy retry when the preview unmounts", async () => {
+    vi.useFakeTimers();
+    readDocument.mockResolvedValue({ ok: false, error: "busy", message: "busy" });
+    let view!: ReturnType<typeof render>;
+    await act(async () => { view = render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />); });
+    await act(async () => { view.unmount(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(readDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards the old path's busy retry when another file opens", async () => {
+    vi.useFakeTimers();
+    readDocument.mockResolvedValueOnce({ ok: false, error: "busy", message: "busy" });
+    let view!: ReturnType<typeof render>;
+    await act(async () => { view = render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />); });
+    await act(async () => { view.rerender(<PreviewBody api={{} as never} target={fileTarget("/w/next.xlsx")} />); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(readDocument).toHaveBeenCalledTimes(2);
+    expect(readDocument).toHaveBeenLastCalledWith("/w/next.xlsx", 0);
+    expect(screen.queryByTestId("chat-side-panel-file-error")).toBeNull();
   });
 
   it("ignores a superseded response without showing an error", async () => {
