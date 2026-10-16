@@ -16,6 +16,21 @@ const RIPGREP_PLATFORM_PACKAGES = Object.freeze({
   "win32-arm64": "@vscode/ripgrep-win32-arm64",
 });
 
+/**
+ * Notices shipped under `resources/licenses/ripgrep` (extraResources
+ * `licenses/ripgrep`): ripgrep under its MIT option with the dual-licence
+ * statement and the Unlicense, the statically linked PCRE2, and the
+ * @vscode/ripgrep wrapper.
+ */
+const RIPGREP_LICENSE_NOTICES = Object.freeze([
+  "README.txt",
+  "COPYING",
+  "LICENSE-MIT",
+  "UNLICENSE",
+  "PCRE2-LICENCE.txt",
+  "VSCODE-RIPGREP-LICENSE",
+]);
+
 /** Require the packed target's own ripgrep binary in the unpacked node_modules tree. */
 function assertRipgrepRuntimeFiles(nodeModules, platform, arch) {
   const target = `${platform}-${arch}`;
@@ -44,4 +59,4 @@ function assertRipgrepRuntimeFiles(nodeModules, platform, arch) {
   return binary;
 }
 
-module.exports = { assertRipgrepRuntimeFiles };
+module.exports = { assertRipgrepRuntimeFiles, RIPGREP_LICENSE_NOTICES };

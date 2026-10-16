@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { gunzipSync } from "node:zlib";
 import { assertImageRuntimeFiles } from "./lib/image-runtime-files.cjs";
-import { assertRipgrepRuntimeFiles } from "./lib/ripgrep-runtime-files.cjs";
+import { assertRipgrepRuntimeFiles, RIPGREP_LICENSE_NOTICES } from "./lib/ripgrep-runtime-files.cjs";
 
 const { assertGraphicsRuntimeFiles } = createRequire(import.meta.url)(
   "./lib/graphics-runtime-files.cjs",
@@ -442,6 +442,12 @@ if (!existsSync(uvLicense)) fail(`uv license notice missing: ${uvLicense}`);
 // The bundled model catalog is models.dev data (MIT); its notice ships beside it.
 const modelCatalogLicense = resolve(resourcesDir, "licenses", "models.dev", "LICENSE-MIT");
 if (!existsSync(modelCatalogLicense)) fail(`models.dev license notice missing: ${modelCatalogLicense}`);
+// The packaged rg binary: ripgrep (MIT option), its statically linked PCRE2,
+// and the @vscode/ripgrep wrapper each need their notice beside it.
+for (const notice of RIPGREP_LICENSE_NOTICES) {
+  const path = resolve(resourcesDir, "licenses", "ripgrep", notice);
+  if (!existsSync(path)) fail(`ripgrep license notice missing: ${path}`);
+}
 
 const localeCount = isMacAppPackage() ? validateMacElectronLocales() : validatePakElectronLocales();
 

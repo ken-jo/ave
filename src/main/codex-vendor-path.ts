@@ -66,6 +66,6 @@ export function resolveCodexVendorExecutable(
     `${executable}${target.executableSuffix}`,
   );
   const resolved = preferAsarUnpackedPath(packagedPath);
-  if (!existsSync(resolved)) throw unavailable();
+  if (resolved === null || !existsSync(resolved)) throw unavailable();
   return resolved;
 }

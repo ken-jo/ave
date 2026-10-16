@@ -324,6 +324,10 @@
         "to": "licenses/models.dev"
       },
       {
+        "from": "resources/licenses/ripgrep",
+        "to": "licenses/ripgrep"
+      },
+      {
         "from": "resources/AGENTS.md",
         "to": "AGENTS.md"
       },
