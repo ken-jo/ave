@@ -517,6 +517,20 @@ describe("pre-push message catalog selection", () => {
     'export const title = (key: string) => t?.(key);',
     'export const title = (key: string) => i18n.t(key);',
     'export const title = (key: string) => i18n["t"](key);',
+    'const member = "t"; export const title = (ns: string) => useTranslation()[member](`${ns}.title`);',
+    'export const title = (locale: string, expression: string) => translate(locale, expression);',
+    'export const title = (ns: string) => translate("en", `${ns}.title`);',
+    'const context = useTranslation(); export const title = (member: string, ns: string) => context[member](`${ns}.title`);',
+    'const { [member]: render } = useTranslation(); export const title = (ns: string) => render(`${ns}.title`);',
+    'import { useTranslation as useText } from "../i18n/react.js"; const member = "t"; export const title = () => useText()[member](expression);',
+    'import { translate as render } from "../i18n/index.js"; export const title = () => render(locale, expression);',
+    'import * as text from "../i18n/index.js"; export const title = () => text[member](locale, expression);',
+    'export const render = translate;',
+    'export const useText = useTranslation;',
+    'const text = await import("../i18n/index.js"); text[member](expression);',
+    'const text = await import(modulePath); text[member](expression);',
+    'const text = require("../i18n/index.js"); text[member](expression);',
+    'export * from "../i18n/index.js";',
     'import { t as translate } from "../i18n/index.js"; export const title = (key: string) => translate(key);',
     'const translate = t; export const title = (key: string) => translate(key);',
     'const translate = (t); export const title = (key: string) => translate(key);',
@@ -546,6 +560,21 @@ describe("pre-push message catalog selection", () => {
     tree.set("src/ui/dynamic.ts", text);
     expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
       reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
+    });
+  });
+
+  it.each([
+    'export const title = () => translate(locale, "panel.title");',
+    'export const title = () => useTranslation().t("panel.title");',
+    'export const title = () => useTranslation()["t"]("panel.title");',
+    'import { useTranslation as useText } from "../i18n/react.js"; export const title = () => useText().t("panel.title");',
+    'import { translate as render } from "../i18n/index.js"; export const title = () => render(locale, "panel.title");',
+    'import { t as render } from "../i18n/index.js"; export const title = () => render("panel.title");',
+    'import * as text from "../i18n/index.js"; export const title = () => text.translate(locale, "panel.title");',
+  ])("recognizes a proven literal-key call: %s", (text) => {
+    const tree = new Map([["src/ui/literal.ts", text]]);
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+      namespaces: ["panel"], testFiles: [], consumerModules: ["src/ui/literal.ts"],
     });
   });
 

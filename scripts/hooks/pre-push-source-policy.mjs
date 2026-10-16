@@ -511,24 +511,49 @@ export function readMessageCatalogEntries(text, relativePath) {
 function readMessageConsumers(source, namespaces) {
   const named = new Set();
   let unresolved = false;
-  const translationNames = new Set(["t"]);
+  const translationBindings = new Map([["t", 0], ["translate", 1], ["useTranslation", "factory"]]);
+  const isTranslationModule = (name) => /(?:^|\/)i18n(?:[/.]|$)/.test(name);
   const keyName = /keys?(?:(?:_?table)|(?:_?map))?$/i;
   const isExpressionWrapper = (node) => node && (ast.isParenthesizedExpression(node) || ast.isAsExpression(node) ||
     ast.isNonNullExpression(node) || ast.isSatisfiesExpression(node) || ast.isTypeAssertion(node));
-  function isTranslationExpression(node) {
+  const referenceKind = (name) => name === "t" ? 0 : name === "translate" ? 1 : name === "useTranslation" ? "factory" : undefined;
+  function translationReference(node) {
     while (isExpressionWrapper(node)) node = node.expression;
-    return node && (ast.isIdentifier(node) && translationNames.has(node.text) ||
-      ast.isPropertyAccessExpression(node) && node.name.text === "t" ||
-      ast.isElementAccessExpression(node) && isStaticString(node.argumentExpression) && node.argumentExpression.text === "t");
+    if (!node) return undefined;
+    if (ast.isIdentifier(node)) return translationBindings.get(node.text);
+    if (ast.isCallExpression(node) && translationReference(node.expression) === "factory") return "context";
+    if (ast.isPropertyAccessExpression(node) || ast.isElementAccessExpression(node)) {
+      const property = ast.isPropertyAccessExpression(node) ? node.name : node.argumentExpression;
+      const member = property && (ast.isIdentifier(property) && ast.isPropertyAccessExpression(node) || isStaticString(property))
+        ? property.text : undefined;
+      const receiver = translationReference(node.expression);
+      // Only the known t member of a fresh context has a proven signature.
+      // Computed access and every other use of that result remain unresolved.
+      if (receiver === "context") return member === "t" ? 0 : "unresolved";
+      if (receiver === "namespace") return referenceKind(member) ?? "unresolved";
+      if (receiver !== undefined) return "unresolved";
+      return referenceKind(member);
+    }
+    return undefined;
   }
-  function collectTranslationNames(node) {
-    if (ast.isImportSpecifier(node) && (node.propertyName ?? node.name).text === "t") translationNames.add(node.name.text);
+  function collectTranslationBindings(node) {
+    if (ast.isImportDeclaration(node) && ast.isStringLiteral(node.moduleSpecifier) &&
+        isTranslationModule(node.moduleSpecifier.text)) {
+      const bindings = node.importClause?.namedBindings;
+      if (bindings && ast.isNamespaceImport(bindings)) translationBindings.set(bindings.name.text, "namespace");
+    }
+    if (ast.isImportSpecifier(node)) {
+      const kind = referenceKind((node.propertyName ?? node.name).text);
+      if (kind !== undefined) translationBindings.set(node.name.text, kind);
+    }
     if (ast.isBindingElement(node) && node.propertyName &&
-        (ast.isIdentifier(node.propertyName) || isStaticString(node.propertyName)) && node.propertyName.text === "t" &&
-        ast.isIdentifier(node.name)) translationNames.add(node.name.text);
-    node.forEachChild(collectTranslationNames);
+        (ast.isIdentifier(node.propertyName) || isStaticString(node.propertyName)) && ast.isIdentifier(node.name)) {
+      const kind = referenceKind(node.propertyName.text);
+      if (kind !== undefined) translationBindings.set(node.name.text, kind);
+    }
+    node.forEachChild(collectTranslationBindings);
   }
-  collectTranslationNames(source);
+  collectTranslationBindings(source);
   function visit(node, parent) {
     if (isStaticString(node)) {
       for (const namespace of namespaces) {
@@ -536,26 +561,42 @@ function readMessageConsumers(source, namespaces) {
       }
     }
     if (ast.isCallExpression(node)) {
-      if (isTranslationExpression(node.expression) && !isStaticString(node.arguments[0])) unresolved = true;
+      const importsNamespace = node.expression.kind === ast.SyntaxKind.ImportKeyword ||
+        ast.isIdentifier(node.expression) && node.expression.text === "require";
+      if (importsNamespace && (!isStaticString(node.arguments[0]) || isTranslationModule(node.arguments[0].text))) {
+        unresolved = true;
+      }
+      const kind = translationReference(node.expression);
+      if (kind === "unresolved" || typeof kind === "number" && !isStaticString(node.arguments[kind])) unresolved = true;
     }
-    // A property named t can also be extracted by an assignment pattern;
+    if (ast.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier &&
+        isStaticString(node.moduleSpecifier) && isTranslationModule(node.moduleSpecifier.text)) unresolved = true;
+    // A translator can also be extracted by an assignment pattern;
     // that syntax is a property assignment, not a declaration binding.
     if (ast.isPropertyAssignment(node) || ast.isBindingElement(node)) {
       const property = ast.isBindingElement(node) ? node.propertyName : node.name;
       if (property) {
         const key = ast.isComputedPropertyName(property) ? property.expression : property;
-        if ((ast.isIdentifier(key) || isStaticString(key)) && key.text === "t" ||
+        if ((ast.isIdentifier(key) || isStaticString(key)) && referenceKind(key.text) !== undefined ||
             ast.isComputedPropertyName(property) && !isStaticString(key)) unresolved = true;
       }
     }
     // Only a directly inspected call can prove which key a translator uses.
     // Every other reference may escape through an alias, callback or member.
-    if (isTranslationExpression(node) && parent) {
-      const directCall = ast.isCallExpression(parent) && parent.expression === node;
+    const kind = translationReference(node);
+    if (kind !== undefined && parent) {
+      const directCall = ast.isCallExpression(parent) && parent.expression === node &&
+        (typeof kind === "number" || kind === "factory");
+      const contextMember = kind === "context" &&
+        (ast.isPropertyAccessExpression(parent) || ast.isElementAccessExpression(parent)) &&
+        parent.expression === node && translationReference(parent) === 0;
+      const namespaceMember = kind === "namespace" &&
+        (ast.isPropertyAccessExpression(parent) || ast.isElementAccessExpression(parent)) && parent.expression === node &&
+        [0, 1, "factory"].includes(translationReference(parent));
       const wrapped = isExpressionWrapper(parent) && parent.expression === node;
       const declarationName = parent.name === node && !ast.isShorthandPropertyAssignment(parent) && !ast.isExportSpecifier(parent);
       const importBinding = ast.isImportSpecifier(parent) || ast.isBindingElement(parent) && parent.propertyName === node;
-      if (!directCall && !wrapped && !declarationName && !importBinding) unresolved = true;
+      if (!directCall && !contextMember && !namespaceMember && !wrapped && !declarationName && !importBinding) unresolved = true;
     }
     if ((ast.isVariableDeclaration(node) || ast.isPropertyAssignment(node)) &&
         (ast.isIdentifier(node.name) || isStaticString(node.name)) && keyName.test(node.name.text)) {
@@ -593,9 +634,10 @@ function readMessageConsumers(source, namespaces) {
  * `i18n/messages`), and the i18n suites. Modules go to `vitest related`, so
  * their tests run. A namespace no file names may be reached through a
  * computed key this scan cannot see, so it keeps the full checks. Any dynamic
- * t() argument or unresolved key table also keeps full checks, even when a
- * different file literally names every changed namespace. Unsupported catalog
- * modules and unreadable or unparseable consumers keep full checks too.
+ * key argument, unclassified translator reference or unresolved key table also
+ * keeps full checks even when another file names every changed namespace.
+ * Unsupported catalog modules and unreadable or unparseable consumers keep
+ * full checks too.
  *
  * Returns { namespaces, testFiles, consumerModules } or { reason }.
  */

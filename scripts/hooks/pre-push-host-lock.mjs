@@ -115,7 +115,15 @@ function createOwnedDirectory(path, token, now) {
       token,
       createdAt: new Date(now()).toISOString(),
     }), { encoding: "utf8", flag: "wx" });
-    renameSync(pending, path);
+    try {
+      renameSync(pending, path);
+      return { published: true };
+    } catch (error) {
+      // An existing destination can reject directory publication with any of
+      // these errnos. Inspect ownership before retrying or taking another slot.
+      if (["EPERM", "EEXIST", "ENOTEMPTY"].includes(error?.code)) return { published: false };
+      throw error;
+    }
   } finally {
     // Only the private, unpublished generation is ever recursively removed.
     rmSync(pending, { recursive: true, force: true });
@@ -144,19 +152,19 @@ function removeGeneration(lockPath, token) {
 function tryAcquire(lockPath, now) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const token = randomUUID();
-    try {
-      createOwnedDirectory(lockPath, token, now);
+    const { published } = createOwnedDirectory(lockPath, token, now);
+    if (published) {
       return {
         release() {
           const owner = readOwner(lockPath);
           if (owner.state === "valid" && owner.token === token) removeGeneration(lockPath, token);
         },
       };
-    } catch (error) {
-      if (!["EEXIST", "ENOTEMPTY"].includes(error?.code)) throw error;
     }
     const owner = readOwner(lockPath);
     const ageMs = lockAgeMs(lockPath, now);
+    // The destination may disappear before inspection. Retry admission, and
+    // still refuse at the timeout if publication keeps failing without an owner.
     if (ageMs === null) continue;
     if (!isStale(owner, ageMs)) return { holderPid: owner.state === "valid" ? owner.pid : null };
     console.log(

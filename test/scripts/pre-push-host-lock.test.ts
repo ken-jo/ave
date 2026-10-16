@@ -101,6 +101,61 @@ function deadPid() {
   return Number(result.stdout);
 }
 
+// Inject publication errnos at the actual filesystem boundary in an isolated
+// process. Model destinations that reject replacement even when empty:
+// recovery must inspect ownership before removing a generation and retrying.
+function publicationProbe(directory: string, mode: "full" | "pool" | "empty" | "write" | "absent" | "vanished", errno: string) {
+  const script = join(directory, "publication-probe.mjs");
+  writeFileSync(script, `
+import fs from "node:fs";
+import { join } from "node:path";
+import { syncBuiltinESMExports } from "node:module";
+const [directory, mode, errno] = process.argv.slice(2);
+const name = mode === "pool" ? "fast" : "full";
+const lock = join(directory, mode === "pool" ? "ave-prepush-fast-0.lock" : "ave-prepush-full.lock");
+const ownerFile = join(lock, "owner-occupied-owner.json");
+if (mode !== "absent" && mode !== "vanished") fs.mkdirSync(lock);
+if (mode !== "empty" && mode !== "absent" && mode !== "vanished") {
+  fs.writeFileSync(ownerFile, JSON.stringify({ pid: process.pid, token: "occupied-owner" }));
+}
+const rename = fs.renameSync;
+const write = fs.writeFileSync;
+let denied = 0;
+fs.renameSync = (source, destination) => {
+  if (fs.existsSync(destination) || mode === "absent" || mode === "vanished" && denied === 0) {
+    denied += 1;
+    throw Object.assign(new Error("publication " + errno), { code: errno });
+  }
+  return rename(source, destination);
+};
+if (mode === "write") fs.writeFileSync = (path, ...args) => {
+  if (String(path).includes(".pending-")) throw Object.assign(new Error("initialization " + errno), { code: errno });
+  return write(path, ...args);
+};
+syncBuiltinESMExports();
+const { withHostLock } = await import(${JSON.stringify(LOCK_MODULE)});
+let ran = 0;
+let during = [];
+let failure;
+const logs = [];
+try {
+  withHostLock({ name, label: name, directory, timeoutMs: 40, pollMs: 5,
+    ...(mode === "pool" ? { slots: 2 } : {}), log: (line) => logs.push(line) }, () => {
+    ran += 1;
+    during = fs.readdirSync(directory).filter((name) => name.endsWith(".lock"));
+  });
+} catch (error) { failure = error; }
+process.stdout.write(JSON.stringify({ ran, denied, during, logs, pid: process.pid,
+  code: failure?.code ?? null, error: failure?.message ?? null,
+  ownerPreserved: fs.existsSync(ownerFile),
+  remaining: fs.readdirSync(directory).filter((name) => name.endsWith(".lock") || name.includes(".pending-")),
+}) + "\\n");
+`);
+  const result = spawnSync(process.execPath, [script, directory, mode, errno], { encoding: "utf8", timeout: 10_000 });
+  expect(result.status, result.stderr || result.error?.message).toBe(0);
+  return JSON.parse(result.stdout.trim().split("\n").at(-1)!);
+}
+
 describe("pre-push host lock", () => {
   it("makes a second full run wait for the first, says who holds it, and releases both", async () => {
     const directory = lockDirectory();
@@ -197,6 +252,52 @@ describe("pre-push host lock", () => {
     second.release();
     expect(await second.exited).toBe(0);
   }, 30_000);
+
+  it.each(["EPERM", "EEXIST", "ENOTEMPTY"])("waits for an occupied full lock after publish rename returns %s", (errno) => {
+    const report = publicationProbe(lockDirectory(), "full", errno);
+    expect(report).toMatchObject({ ran: 0, ownerPreserved: true, remaining: ["ave-prepush-full.lock"] });
+    expect(report.error).toContain("PRE_PUSH_HOST_LOCK_TIMEOUT");
+    expect(report.logs[0]).toContain(`held by PID ${report.pid}`);
+    expect(report.denied).toBeGreaterThan(1);
+  });
+
+  it.each(["EPERM", "EEXIST", "ENOTEMPTY"])("tries the next fast slot after occupied-slot publication returns %s", (errno) => {
+    const report = publicationProbe(lockDirectory(), "pool", errno);
+    expect(report).toMatchObject({
+      ran: 1, denied: 1, error: null, ownerPreserved: true,
+      during: ["ave-prepush-fast-0.lock", "ave-prepush-fast-1.lock"], remaining: ["ave-prepush-fast-0.lock"],
+    });
+  });
+
+  it.each(["EPERM", "EEXIST", "ENOTEMPTY"])("inspects and reclaims an empty destination after publication returns %s", (errno) => {
+    const report = publicationProbe(lockDirectory(), "empty", errno);
+    expect(report).toMatchObject({ ran: 1, denied: 1, error: null, remaining: [] });
+  });
+
+  it.each(["EPERM", "EEXIST", "ENOTEMPTY"])("does not treat a private owner-write %s as publication contention", (errno) => {
+    const report = publicationProbe(lockDirectory(), "write", errno);
+    expect(report).toMatchObject({ ran: 0, denied: 0, code: errno, ownerPreserved: true, remaining: ["ave-prepush-full.lock"] });
+    expect(report.error).toBe(`initialization ${errno}`);
+  });
+
+  it.each(["EPERM", "EEXIST", "ENOTEMPTY"])("retries %s when the destination vanished before owner inspection", (errno) => {
+    const report = publicationProbe(lockDirectory(), "vanished", errno);
+    expect(report).toMatchObject({ ran: 1, denied: 1, error: null, remaining: [] });
+  });
+
+  it.each(["EPERM", "EEXIST", "ENOTEMPTY"])("times out without running checks when %s persists with no destination", (errno) => {
+    const report = publicationProbe(lockDirectory(), "absent", errno);
+    expect(report).toMatchObject({ ran: 0, ownerPreserved: false, remaining: [] });
+    expect(report.error).toContain("PRE_PUSH_HOST_LOCK_TIMEOUT");
+    expect(report.logs[0]).toContain("unknown PID");
+    expect(report.denied).toBeGreaterThan(3);
+  });
+
+  it("propagates publication errors outside the contention errno set", () => {
+    const report = publicationProbe(lockDirectory(), "full", "EIO");
+    expect(report).toMatchObject({ ran: 0, denied: 1, code: "EIO", ownerPreserved: true, remaining: ["ave-prepush-full.lock"] });
+    expect(report.error).toBe("publication EIO");
+  });
 
   it("publishes only complete ownership and preserves a live winner when a paused creator resumes", async () => {
     const directory = lockDirectory();
