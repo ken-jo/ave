@@ -120,11 +120,16 @@ function deniedReadCodes(): readonly string[] {
  * for a headless host. A job that requires the measurement runs the case and
  * lets a helper that cannot start fail it.
  */
-function electronControlLauncher(): { readonly command: string; readonly prefix: readonly string[] } | undefined {
-  if (process.platform !== "linux" || process.env.DISPLAY) return { command: process.execPath, prefix: [] };
+function electronControlLauncher():
+  | { readonly command: string; readonly prefix: (scratchDir: string) => readonly string[] }
+  | undefined {
+  if (process.platform !== "linux" || process.env.DISPLAY) return { command: process.execPath, prefix: () => [] };
   try {
     execFileSync("xvfb-run", ["--help"], { stdio: "ignore" });
-    return { command: "xvfb-run", prefix: ["-a", process.execPath] };
+    // Without `-f`, xvfb-run keeps its auth cookie in its own `mktemp -d`
+    // directory, which a SIGKILLed run leaves behind; `-f` puts the cookie in
+    // the control's scratch directory, which the harness removes.
+    return { command: "xvfb-run", prefix: (scratchDir) => ["-a", "-f", join(scratchDir, "Xauthority"), process.execPath] };
   } catch {
     return undefined;
   }
@@ -389,8 +394,13 @@ interface ControlExit {
   readonly signal: NodeJS.Signals | null;
   /** Whether the harness had to kill it after the grace period. */
   readonly reaped: boolean;
-  /** A process of its group still alive after it ended, if any (POSIX). */
+  /** A process of its group still alive after it ended (POSIX only). */
   readonly survivor: boolean;
+  /**
+   * Descendants alive at reap time that had left its process group, so the
+   * group kill could not reach them: `ps` rows, empty when none (POSIX only).
+   */
+  readonly escaped: readonly string[];
   /** Its stderr, and where it was stuck if it had to be reaped. */
   readonly diagnostics: string;
 }
@@ -439,6 +449,34 @@ function controlGroupAlive(pid: number): boolean {
     const [pgid, stat] = row.trim().split(/\s+/);
     return pgid === String(pid) && stat !== undefined && !stat.startsWith("Z");
   });
+}
+
+/**
+ * The live descendants of the control (by `ppid`, from one `ps` snapshot) that
+ * are not in its process group: a group kill cannot reach them, so they are
+ * what a "no helper outlives it" claim has to rule out (POSIX).
+ */
+function controlDescendantsOutsideGroup(pid: number): { readonly pid: number; readonly row: string }[] {
+  const rows = execFileSync("/bin/ps", ["-Ao", "pid=,ppid=,pgid=,stat=,command="], { encoding: "utf-8" })
+    .split("\n")
+    .map((row) => {
+      const [own, parent, pgid, stat] = row.trim().split(/\s+/);
+      return { pid: Number(own), ppid: Number(parent), pgid: Number(pgid), stat: stat ?? "", row: row.trim().slice(0, 240) };
+    })
+    .filter((entry) => Number.isInteger(entry.pid) && entry.pid > 0);
+  const descendants = new Set([pid]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const entry of rows) {
+      if (descendants.has(entry.ppid) && !descendants.has(entry.pid)) {
+        descendants.add(entry.pid);
+        grew = true;
+      }
+    }
+  }
+  return rows
+    .filter((entry) => entry.pid !== pid && descendants.has(entry.pid) && entry.pgid !== pid && !entry.stat.startsWith("Z"))
+    .map(({ pid: own, row }) => ({ pid: own, row }));
 }
 
 /**
@@ -496,7 +534,7 @@ async function runElectronControl(): Promise<ControlRun> {
   const child = spawn(
     launcher.command,
     [
-      ...launcher.prefix,
+      ...launcher.prefix(userData),
       join(FIXTURE_SOURCE, "control-electron-main.cjs"),
       // `--no-sandbox`: Chromium's own renderer sandbox is not what this
       // control measures, and on a Linux host that restricts unprivileged
@@ -569,15 +607,36 @@ async function runElectronControl(): Promise<ControlRun> {
   const exited = (async (): Promise<ControlExit> => {
     let diagnostics = "";
     let reaped = false;
+    let escaped: readonly string[] = [];
     const grace = setTimeout(() => {
       if (pid === undefined) return;
       reaped = true;
       diagnostics = controlDiagnostics(pid, userData);
-      killControl(child, group);
+      if (group) {
+        // Taken while the control is still alive, so its helpers still name it
+        // as their parent; any that left its group would survive the group kill.
+        const outside = controlDescendantsOutsideGroup(pid);
+        escaped = outside.map((entry) => entry.row);
+        killControl(child, group);
+        for (const entry of outside) {
+          try {
+            process.kill(entry.pid, "SIGKILL");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          }
+        }
+      } else {
+        killControl(child, group);
+      }
     }, CONTROL_EXIT_GRACE_MS);
     const end = await ended;
     clearTimeout(grace);
-    // A helper that outlived its main process is a finding, then reaped too.
+    // The main process is reaped, so its pid — and with it the pgid `afterAll`
+    // would signal — may be recycled from here on.
+    liveControl = undefined;
+    // A helper that outlived its main process is a finding, then reaped too. A
+    // pgid with a live member cannot be recycled, so the group kill below only
+    // ever reaches this control's own group.
     let survivor = false;
     if (pid !== undefined && group) {
       const settle = Date.now() + 2_000;
@@ -588,16 +647,16 @@ async function runElectronControl(): Promise<ControlRun> {
         killControl(child, group);
       }
     }
-    liveControl = undefined;
     rmSync(userData, { recursive: true, force: true });
     if (end instanceof Error) {
-      return { code: null, signal: null, reaped, survivor, diagnostics: `${String(end)}\n${diagnostics}` };
+      return { code: null, signal: null, reaped, survivor, escaped, diagnostics: `${String(end)}\n${diagnostics}` };
     }
     return {
       code: end.code,
       signal: end.signal,
       reaped,
       survivor,
+      escaped,
       diagnostics: `stderr: ${err.slice(-2_000)}\n\n${diagnostics}`,
     };
   })();
@@ -650,7 +709,9 @@ describe("the controls, which must hold before any escape is asserted", () => {
   );
 
   it.runIf(ELECTRON_CONTROL_RUNS)(
-    "the Electron control ends after reporting, and none of its helpers outlives it",
+    process.platform === "win32"
+      ? "the Electron control ends after reporting (helper survival not observable: Windows has no process group)"
+      : "the Electron control ends after reporting, and none of its helpers outlives it",
     async () => {
       expect(controlExit, "the Electron control did not start").toBeDefined();
       const exit = await controlExit!;
@@ -668,7 +729,12 @@ describe("the controls, which must hold before any escape is asserted", () => {
         code: exit.code,
         signal: exit.signal,
       });
-      expect(exit.survivor, `a helper of the Electron control outlived it:\n${exit.diagnostics}`).toBe(false);
+      // On Windows nothing below is measured (see the title); `survivor` and
+      // `escaped` stay at their unmeasured defaults there, so they are not asserted.
+      if (process.platform !== "win32") {
+        expect(exit.survivor, `a helper of the Electron control outlived it:\n${exit.diagnostics}`).toBe(false);
+        expect(exit.escaped, `a helper had left the control's process group, out of the group kill's reach:\n${exit.diagnostics}`).toEqual([]);
+      }
     },
     CONTROL_EXIT_GRACE_MS + 60_000,
   );
