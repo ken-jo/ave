@@ -1069,7 +1069,7 @@ export const createPlugin: RuntimePluginFactory = async (context) => {
 
 ### 플러그인 계약 벤더링 (현행)
 
-이전 이름의 플러그인 SDK 패키지와 저장소는 은퇴(archive)했다. 호스트가 계약을 소유한다. `src/plugins/public-contract.ts` (공개 타입·JSDoc), `schemas/plugin-manifest.schema.json` (매니페스트 스키마), `schemas/plugin-host-protocol/2/protocol.schema.json` (호스트 프로토콜 2 스키마) 가 정본이다. 매니페스트 스키마는 호스트가 앱 안의 이 파일을 직접 읽는다.
+`@ave/plugin-sdk` 패키지와 플러그인 SDK 저장소는 은퇴(archive)했다. 호스트가 계약을 소유한다. `src/plugins/public-contract.ts` (공개 타입·JSDoc), `schemas/plugin-manifest.schema.json` (매니페스트 스키마), `schemas/plugin-host-protocol/2/protocol.schema.json` (호스트 프로토콜 2 스키마) 가 정본이다. 매니페스트 스키마는 호스트가 앱 안의 이 파일을 직접 읽는다.
 
 플러그인 저장소는 세 파일을 **앱 릴리스 태그**에서 수정 없이 `contract/` 로 복사하고, `contract/sources.json` 에 출처 저장소·태그·파일별 sha256 을 기록한다. 공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 는 루트 `contract/` 를 `@ave/plugin-contract` 패키지로 두고, `plugins/<name>/source/` 의 각 플러그인이 `file:` 의존성으로 참조한다. 복사본은 손으로 고치지 않고 `bun run contract:sync -- contract --ref <앱 태그> --app <ave 체크아웃>` 으로 새 태그를 동기화하며, `bun run contract:check` 가 기록된 해시와 대조한다.
 

@@ -154,13 +154,13 @@ describe("host protocol web mirror", () => {
     );
   });
 
-  it("keeps a retired protocol's published schema only byte-identical", () => {
+  it("rejects a schema of a protocol the manifest does not record, published or not", () => {
     const { root, base } = fixture();
-    const published = readFileSync(join(mirrorBase, "1/v0.11.0/protocol.schema.json"));
-    put(root, `${base}/1/v0.11.0/protocol.schema.json`, published.toString("utf8"));
     expect(checkProtocolMirror(root)).toContain("3 copies");
-    put(root, `${base}/1/v0.11.0/protocol.schema.json`, `${published.toString("utf8")} `);
-    expect(() => checkProtocolMirror(root)).toThrow("retired 1/v0.11.0/protocol.schema.json differs from its published sha256");
+    put(root, `${base}/1/v0.11.0/protocol.schema.json`, `${JSON.stringify({
+      $id: hostProtocolSchemaId("1/v0.11.0/protocol.schema.json"),
+    })}\n`);
+    expect(() => checkProtocolMirror(root)).toThrow("unrecorded copy 1/v0.11.0/protocol.schema.json");
   });
 });
 

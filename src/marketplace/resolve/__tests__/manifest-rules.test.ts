@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { PluginAuthority } from "../../catalog/types.js";
 import { isMarketplaceError } from "../../errors.js";
 import { assertGitInstallManifest, expectedPluginOf, gitInstallManifestMismatches, PLUGIN_AUTHORITY_FIELDS, type ExpectedPlugin } from "../manifest-rules.js";
-import { LEGACY_EXTENSION_NAMESPACE } from "../../../shared/legacy-product-name.js";
+
+/** An extension namespace Ave does not own: another vendor's data, never Ave fields. */
+const UNKNOWN_NAMESPACE = "xyz.example";
 
 const authority = (): PluginAuthority => ({
   capabilities: ["llm.chat"],
@@ -88,13 +90,12 @@ describe("git-install manifest rules (design §5.3)", () => {
     expect(gitInstallManifestMismatches({ name: "alpha", version: "1.2.0" }, expected())).toEqual(['extensions["ai.agent-connector.ave"] is missing']);
   });
 
-  it("names the renamed extension key on its own and beside the current one", () => {
-    const renamed = `extensions.${LEGACY_EXTENSION_NAMESPACE} was renamed to extensions.ai.agent-connector.ave; update the manifest`;
+  it("never reads Ave fields from an unknown extension namespace, and leaves one beside the Ave block alone", () => {
     const current = manifest();
-    const legacyOnly = { ...current, extensions: { [LEGACY_EXTENSION_NAMESPACE]: (current.extensions as Record<string, unknown>)["ai.agent-connector.ave"] } };
-    const both = { ...current, extensions: { ...(current.extensions as Record<string, unknown>), [LEGACY_EXTENSION_NAMESPACE]: {} } };
-    expect(gitInstallManifestMismatches(legacyOnly, expected())).toEqual([renamed]);
-    expect(gitInstallManifestMismatches(both, expected())).toEqual([renamed]);
+    const unknownOnly = { ...current, extensions: { [UNKNOWN_NAMESPACE]: (current.extensions as Record<string, unknown>)["ai.agent-connector.ave"] } };
+    const both = { ...current, extensions: { ...(current.extensions as Record<string, unknown>), [UNKNOWN_NAMESPACE]: {} } };
+    expect(gitInstallManifestMismatches(unknownOnly, expected())).toEqual(['extensions["ai.agent-connector.ave"] is missing']);
+    expect(gitInstallManifestMismatches(both, expected())).toEqual([]);
   });
 
   it("throws MANIFEST_MISMATCH naming every problem", () => {

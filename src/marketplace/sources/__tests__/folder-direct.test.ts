@@ -10,7 +10,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeVolume, TEST_FOLDER_LIMITS } from "../../__tests__/fixtures/folder-fs.js";
 import { folderService } from "../../__tests__/fixtures/folder-service.js";
 import { FIXTURE_POLICY_PATH, policyLoad, policySource } from "../../__tests__/fixtures/policy.js";
-import { LEGACY_EXTENSION_NAMESPACE } from "../../../shared/legacy-product-name.js";
+
+/** An extension namespace Ave does not own: another vendor's data, never Ave fields. */
+const UNKNOWN_NAMESPACE = "xyz.example";
 
 const SKILL = (body: string) => `---\nname: note\ndescription: A note skill\n---\n${body}\n`;
 
@@ -92,21 +94,17 @@ describe("allowDirectInstall: false (§12)", () => {
   });
 });
 
-describe("a direct agent plugin under the renamed extension key", () => {
-  it("is refused at the preview naming both keys, for the manifest key and for the package folder", async () => {
-    const top = { $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "legacy", version: "1.0.0", description: "A legacy bundle" };
+describe("a direct agent plugin with a folder for an extension namespace Ave does not own", () => {
+  it("is refused at the preview by the package layout rule", async () => {
+    const top = { $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "other", version: "1.0.0", description: "Another vendor's bundle" };
     const fs = new FakeVolume("linux")
-      .file("/opt/legacy/plugin.json", JSON.stringify({ ...top, extensions: { [LEGACY_EXTENSION_NAMESPACE]: { displayName: "Legacy" } } }))
-      .file("/opt/moved/plugin.json", JSON.stringify(top))
-      .file(`/opt/moved/${LEGACY_EXTENSION_NAMESPACE}/routines.json`, JSON.stringify({ version: 1, templates: [] }));
+      .file("/opt/other/plugin.json", JSON.stringify({ ...top, extensions: { [UNKNOWN_NAMESPACE]: { displayName: "Other" } } }))
+      .file(`/opt/other/${UNKNOWN_NAMESPACE}/routines.json`, JSON.stringify({ version: 1, templates: [] }));
     const harness = await folderService({ root, folders: { fs, platform: "linux", limits: TEST_FOLDER_LIMITS } });
     try {
-      const key = harness.service.previewSource({ input: "/opt/legacy", auth: "none" });
-      await expect(key).rejects.toMatchObject({ code: "SOURCE_INDEX_INVALID" });
-      await expect(key).rejects.toThrow(`extensions.${LEGACY_EXTENSION_NAMESPACE} was renamed to extensions.ai.agent-connector.ave; update the manifest`);
-      const folder = harness.service.previewSource({ input: "/opt/moved", auth: "none" });
+      const folder = harness.service.previewSource({ input: "/opt/other", auth: "none" });
       await expect(folder).rejects.toMatchObject({ code: "SOURCE_INDEX_INVALID" });
-      await expect(folder).rejects.toThrow(`${LEGACY_EXTENSION_NAMESPACE}/ was renamed to ai.agent-connector.ave/; move ${LEGACY_EXTENSION_NAMESPACE}/routines.json there`);
+      await expect(folder).rejects.toThrow(`only: ${UNKNOWN_NAMESPACE}/routines.json`);
     } finally {
       harness.service.close();
     }

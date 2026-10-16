@@ -25,7 +25,9 @@ import {
   setActiveSandboxCapability,
 } from "../../permissions/sandbox-capability.js";
 import { testLoopbackHost } from "./plugin-mcp-test-helpers.js";
-import { LEGACY_META_PREFIX } from "../../shared/legacy-product-name.js";
+
+/** A `_meta` vendor prefix the host does not own; it must never be read as `ave/*`. */
+const UNKNOWN_META_PREFIX = "xyz.example/";
 
 // #885 v6 — the loopback consumes the NORMALIZED pure `Tool[]` (manifest == wire).
 const MANIFEST: PluginManifest = {
@@ -186,13 +188,13 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
     expect(registry.findByName("notes_read")?.operationPolicy).toEqual(policy);
   });
 
-  it("IGNORES the legacy reverse-DNS rawResult — the dual-read was removed alongside the _meta rename", async () => {
-    // rawResult is a DATA channel (not a security field), but the legacy read was
-    // removed in the same sweep for consistency: a plugin emitting ONLY the legacy
-    // key now surfaces NO metadata.rawResult (it must emit the new `ave/rawResult`).
+  it("IGNORES a rawResult under an unknown vendor _meta prefix — only ave/rawResult is read", async () => {
+    // rawResult is a DATA channel (not a security field). The host reads it from
+    // `ave/rawResult` alone: a plugin emitting it ONLY under another vendor's
+    // prefix surfaces NO metadata.rawResult.
     const delegate: PluginToolDelegate = vi.fn(async () => ({
       content: [{ type: "text", text: "ok" }],
-      _meta: { [`${LEGACY_META_PREFIX}rawResult`]: { note: "structured" } },
+      _meta: { [`${UNKNOWN_META_PREFIX}rawResult`]: { note: "structured" } },
     }));
     const registry = new ToolRegistry();
     const host = testLoopbackHost(MANIFEST, delegate, registry);
@@ -202,12 +204,12 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
     expect(result.metadata).toBeUndefined();
   });
 
-  it("reads the new ave/rawResult (and ignores a stray legacy key)", async () => {
+  it("reads ave/rawResult (and ignores a stray unknown-vendor key)", async () => {
     const delegate: PluginToolDelegate = vi.fn(async () => ({
       content: [{ type: "text", text: "ok" }],
       _meta: {
         "ave/rawResult": { from: "new" },
-        [`${LEGACY_META_PREFIX}rawResult`]: { from: "legacy" },
+        [`${UNKNOWN_META_PREFIX}rawResult`]: { from: "unknown" },
       },
     }));
     const registry = new ToolRegistry();

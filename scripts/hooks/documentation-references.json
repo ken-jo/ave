@@ -83,9 +83,6 @@
     ],
     "web/THIRD_PARTY_NOTICES.md": [
       "test/scripts/repository-identity.test.ts"
-    ],
-    "web/infra/docs-redirect/index.html": [
-      "test/scripts/repository-identity.test.ts"
     ]
   }
 }

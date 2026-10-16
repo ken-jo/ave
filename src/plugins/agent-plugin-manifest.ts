@@ -4,7 +4,7 @@ import { isPackageName } from "../marketplace/catalog/types.js";
 import { createLogger } from "../lib/logger.js";
 import { parseStrictJson } from "../marketplace/catalog/strict-json.js";
 import { resolveAddFormats, resolveAjv } from "./config-schema.js";
-import { AGENT_PLUGINS_SCHEMA_URL, AVE_EXTENSION_NAMESPACE, foreignManifestTopLevelFields, renamedExtensionNamespaceProblem, type AgentPluginPackageManifest } from "./public-contract.js";
+import { AGENT_PLUGINS_SCHEMA_URL, AVE_EXTENSION_NAMESPACE, foreignManifestTopLevelFields, type AgentPluginPackageManifest } from "./public-contract.js";
 
 const log = createLogger("agent-plugin-manifest");
 let compiledManifestValidator: ValidateFunction | undefined;
@@ -29,10 +29,16 @@ export function validatePluginManifestShape(bytes: Buffer | string): Record<stri
   const value: unknown = parseStrictJson(Buffer.isBuffer(bytes) ? bytes.toString("utf8") : bytes);
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("plugin.json must be an object");
   const document = value as Record<string, unknown>;
-  const renamed = renamedExtensionNamespaceProblem(document);
-  if (renamed) throw new Error(`plugin.json ${renamed}`);
   const foreign = foreignManifestTopLevelFields(document);
   for (const key of foreign) log.warn(`plugin.json: ignoring unknown top-level field ${key}`);
+  // Agent Plugins assigns no semantics to another vendor's namespace: report it
+  // like an unknown top-level field, then leave it unread and unvalidated.
+  const extensions = document.extensions;
+  if (extensions && typeof extensions === "object" && !Array.isArray(extensions)) {
+    for (const key of Object.keys(extensions)) {
+      if (key !== AVE_EXTENSION_NAMESPACE) log.warn(`plugin.json: ignoring unknown extensions namespace ${key}`);
+    }
+  }
   const known = Object.fromEntries(Object.entries(document).filter(([key]) => !foreign.includes(key)));
   const validate = manifestValidator();
   if (!validate(known)) {

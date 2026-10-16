@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryManager } from "../memory-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { LEGACY_AGENTS_DOCUMENT } from "../../shared/legacy-product-name.js";
 
 let dir: string;
 let mm: MemoryManager;
@@ -101,16 +100,16 @@ describe("MemoryManager AGENTS.md and MEMORY.md layout", () => {
     expect(existsSync(join(dir, "memories", "old-note.md"))).toBe(true);
   });
 
-  it("does not adopt the legacy-name agents document", () => {
+  it("adopts only AGENTS.md as the agents document, never another vendor's file", () => {
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, LEGACY_AGENTS_DOCUMENT), "# Pre-rename notes", "utf-8");
+    writeFileSync(join(dir, "EXAMPLE.md"), "# Other vendor notes", "utf-8");
 
     const fresh = new MemoryManager({ aveDir: dir });
     fresh.load();
 
-    expect(existsSync(join(dir, LEGACY_AGENTS_DOCUMENT))).toBe(true);
-    expect(fresh.getAgentsMd()).not.toContain("Pre-rename notes");
+    expect(existsSync(join(dir, "EXAMPLE.md"))).toBe(true);
+    expect(fresh.getAgentsMd()).not.toContain("Other vendor notes");
   });
 
   it("updates MEMORY.md when saving a memory and injects it via getMemoryIndex", async () => {

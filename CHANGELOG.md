@@ -1,11 +1,8 @@
 # Changelog
 
-> This file is a historical record. Entries from before the rename describe identifiers that carried the app's former name in neutral words; the few the app still recognises are in `src/shared/legacy-product-name.ts`.
-
 ## v0.14.0 — 2026-10-16
 
-- **Ave는 새 앱이며, 설치된 이전 이름의 앱은 업데이트되지 않습니다.** Ave는 이전 앱의 설정과 데이터
-  (이전 이름의 데이터 폴더)를 읽지 않고 빈 상태로 시작합니다. Ave의 웹사이트는 `ave.agent-connector.ai`,
+- **Ave의 웹사이트와 배포 주소.** Ave의 웹사이트는 `ave.agent-connector.ai`,
   다운로드와 업데이트는 `downloads.agent-connector.ai`입니다.
 
 - **Ave의 식별자와 경로.** 앱 ID는 `ai.agent-connector.ave`, 데이터 폴더는 `~/.ave`, 환경
@@ -14,7 +11,7 @@
 - **익스텐션 작성자는 호스트 프로토콜 3으로 옮겨야 합니다.** 프로토콜 3은 `ave/*` 와이어를
   쓰며, Ave는 프로토콜 3만 지원합니다. 앱 릴리스 태그에서 계약(`contract/`)을 다시
   벤더링하고 매니페스트에 `requires.hostProtocol: "3"`과 `requires.minAppVersion: "0.14.0"`을
-  선언한 뒤 다시 게시하세요. 프로토콜 2(이전 이름의 와이어)로 만든 익스텐션은 시작 전에 거부됩니다.
+  선언한 뒤 다시 게시하세요. 프로토콜 2로 만든 익스텐션은 시작 전에 거부됩니다.
   이 버전의 프로토콜 스키마는 `schemas/plugin-host-protocol/3/v0.14.0/protocol.schema.json`으로
   게시됩니다.
 
@@ -30,8 +27,8 @@
   `ai.agent-connector.ave/` 폴더 아래에 둡니다. 스킬 패키지의 `$schema`는
   `https://ave.agent-connector.ai/schemas/skill/1/skill.schema.json`이고, 매니페스트와
   마켓플레이스 스키마는 `https://ave.agent-connector.ai/schemas/plugin/3/plugin.schema.json`,
-  `https://ave.agent-connector.ai/schemas/marketplace/2/…`로 게시됩니다. 이전 이름
-  (이전 확장 네임스페이스, 이전 사이트 도메인의 SDK 스키마 주소)은 인식하지 않습니다.
+  `https://ave.agent-connector.ai/schemas/marketplace/2/…`로 게시됩니다. 이전 주소
+  (`sdk.former-site.invalid`)는 인식하지 않습니다.
 
 - **모든 익스텐션이 각자의 프로세스에서 실행됩니다.** 마켓플레이스, 사용자 지정 소스, 폴더,
   직접 설치 등 설치 경로와 관계없이 같습니다. `hostFetch`를 거치지 않고 네트워크에 접근하던
@@ -194,7 +191,7 @@
 
 - **읽기 금지 경로를 모든 샌드박스 실행에 같은 규칙으로 적용합니다.** Linux에서 읽기 금지
   경로 아래에 쓰기 권한이 주어지면 그 아래 전체를 다시 읽을 수 있던 문제를 고쳤습니다.
-  `--user-data-dir`, 이전 이름의 사용자 데이터 폴더 환경변수, `XDG_CONFIG_HOME`으로 옮긴 사용자 데이터 폴더도
+  `--user-data-dir`, `AVE_USER_DATA_DIR`, `XDG_CONFIG_HOME`으로 옮긴 사용자 데이터 폴더도
   모든 플랫폼에서 보호하고, 설정한 읽기 금지 경로가 익스텐션·훅·MCP 서버·터미널에도
   적용됩니다. Debian과 Ubuntu에서 셸 명령 출력이 저장되지 않던 문제도 고쳤습니다.
 
@@ -230,7 +227,7 @@
   글꼴·모델 프로바이더 프리셋·메신저 연결을 종류와 출처별로 찾아 설치합니다. 원하는 git 주소를
   마켓플레이스로 추가하면 여러 출처가 한 목록에 함께 나타나고, 설치할 때마다 출처와 요구 권한을
   확인한 뒤 진행합니다. 마켓플레이스에 올라가 있지 않은 git 폴더도 그 주소로 바로 설치할 수
-  있으며, 이전 이름 링크 스킴의 `install/…` 과 `marketplace/add?url=…` 링크는 설치 확인 화면이나 추가
+  있으며, `ave://install/…` 과 `ave://marketplace/add?url=…` 링크는 설치 확인 화면이나 추가
   화면을 여는 데서 멈춥니다. 웹사이트의 마켓플레이스 링크는 사이트 안의 사용 안내로 이어집니다.
 
 - **이전 버전에서 설치한 항목은 그대로 이어집니다.** 첫 실행 때 이미 설치된 플러그인은 공식
@@ -285,7 +282,7 @@
   최소 설치 환경에서도 앱이 바로 실행됩니다.
 
 - **명령줄에서 한 번의 대화를 실행할 수 있습니다.** `--exec` 로 창 없이 한 턴을 실행하고 결과를
-  JSON 으로 받으며, 이전 이름의 텔레메트리 환경변수로 턴·도구 실행 추적을 OpenTelemetry 로 내보낼 수 있습니다.
+  JSON 으로 받으며, `AVE_TELEMETRY` 로 턴·도구 실행 추적을 OpenTelemetry 로 내보낼 수 있습니다.
 
 - **플러그인은 버전별 호스트 프로토콜로 통신합니다.** 플러그인과 앱 사이의 메시지는
   줄 단위 JSON-RPC 형식으로 주고받고, 플러그인은 시작할 때 필요한 기능이 있는지 확인합니다.
@@ -531,19 +528,19 @@
   곧 상단 바의 같은 줄에 같은 모양으로 들어갑니다. 알릴 내용이 없으면 아무것도
   그리지 않으므로, 평소 상단 바 모습은 이전과 같습니다.
 
-- **데이터 폴더 문서 업그레이드를 설정에서 처리합니다.** 배포본 문서가 바뀌면 그동안은
+- **`~/.ave` 문서 업그레이드를 설정에서 처리합니다.** 배포본 문서가 바뀌면 그동안은
   `AGENTS.md.new` 안내 파일이 생기고 부팅 알림이 한 번 뜰 뿐, 답하려면 디렉토리를
   열어 손으로 비교해야 했습니다. 이제 설정 > 역할의 AGENTS.md 섹션이 밀린 안내를
   목록으로 보여 주고, 항목마다 **차이 보기 / 배포본 적용 / 내 것 유지**를 고를 수
   있습니다. 스킬·프롬프트 문서의 안내는 경로만 함께 보여 줍니다.
 - **"항상 최신 내용 유지"를 켜면 배포본을 따라가면서 내 내용이 남습니다.** 배포본을
-  적용할 때 사용자가 쓴 내용이 데이터 폴더의 `agents.custom.md` 로 옮겨지고, `AGENTS.md`
+  적용할 때 사용자가 쓴 내용이 `~/.ave/agents.custom.md` 로 옮겨지고, `AGENTS.md`
   는 배포본이 됩니다. 매 턴 시스템 프롬프트가 `AGENTS.md` 다음에
   `agents.custom.md` 를 읽으므로 두 내용이 어긋나면 사용자가 쓴 쪽을 따릅니다.
   이때부터 설정의 편집기는 `agents.custom.md` 를 편집하고 배포본은 읽기 전용으로
   나란히 보입니다.
 - **갱신하기 — 모델이 두 문서를 합쳐 줍니다.** 배포본과 사용자가 쓴 내용을 모델에게
-  넘겨 하나로 합치고, 결과를 데이터 폴더의 `AGENTS.md.merged` 에 먼저 씁니다. 확인한 뒤
+  넘겨 하나로 합치고, 결과를 `~/.ave/AGENTS.md.merged` 에 먼저 씁니다. 확인한 뒤
   **적용**을 눌러야 실제 문서에 반영되며, 병합을 기다리는 동안 문서가 바뀌었으면
   덮어쓰지 않고 알려 줍니다.
 
@@ -595,7 +592,7 @@ v0.9.0 을 잇는 패치입니다. 한동안 꺼져 있던 **유휴 시간 작�
   문서 검색·목록·본문 도구를 없앴습니다. 같은 일을 local-indexer 플러그인의
   `index_search`, `index_documents`, `index_get_document` 가 합니다.
 - **문서 업그레이드 안내 파일이 버전당 하나만 남습니다** (#2395). 사용자가
-  고친 데이터 폴더의 `AGENTS.md` 와 배포본이 다를 때 내려 두는 `AGENTS.md.new`
+  고친 `~/.ave/AGENTS.md` 와 배포본이 다를 때 내려 두는 `AGENTS.md.new`
   안내 파일이, 빌드가 바뀔 때마다 날짜 붙은 사본을 하나씩 더 만들어 수백 개까지
   쌓일 수 있었습니다. 이제 같은 배포본은 한 번만 안내하고, 이미 배포됐던 내용과
   똑같은 예전 사본은 치웁니다.
@@ -944,7 +941,7 @@ v0.6.3 에서 플러그인 하나였던 격리 대상이 이번 릴리즈에서 
 ### 플러그인 매니페스트 — Agent Plugins 1.0.0
 
 - **`plugin.json` 이 표준 문서 형식이 되었습니다** (#2273). 최상위에는 표준이
-  정한 필드만 남고, 앱 고유 필드는 이전 확장 네임스페이스의 `extensions[...]` 아래로
+  정한 필드만 남고, Ave 고유 필드는 `extensions["ai.agent-connector.ave"]` 아래로
   이동했습니다. 호스트는 디스크의 문서를 검증한 뒤 내부 형태로 투영하므로
   매니페스트를 읽는 기존 코드는 그대로입니다.
 - **표준 메타데이터 문자열에 상한을 둡니다** (#2274). `author`/`homepage`/
@@ -1127,7 +1124,7 @@ Hardens local state and plugin lifecycle recovery, self-heals Electron native-mo
 
 ### Plugins and onboarding
 
-- **Plugins can declare their first post-tour task.** The host validates bounded localized copy and mandatory priority, orders proposals deterministically, and surfaces rejected plugin declarations as retryable UI errors instead of inventing fallback content. Plugins using this field require app `>= 0.5.7`.
+- **Plugins can declare their first post-tour task.** The host validates bounded localized copy and mandatory priority, orders proposals deterministically, and surfaces rejected plugin declarations as retryable UI errors instead of inventing fallback content. Plugins using this field require `ave >= 0.5.7`.
 - **Plugin views stay inline in chat mode.** Opening a plugin panel no longer detaches it from the active conversation layout.
 
 ### Tools and runtime
@@ -1160,7 +1157,7 @@ Adds self-hosted model discovery, completes the reviewer negotiation flow, and t
 ### Downloads and packaging
 
 - **Smaller Windows installer (~27 MB).** Removed the unused WebGPU DirectX shader compilers (`dxcompiler.dll`, `dxil.dll`) from the Windows package — the app disables hardware acceleration and renders without them.
-- **Versioned release assets only.** Assets are published under the former-name prefix followed by `<version>-*`; the download site resolves the latest version dynamically instead of via static former-name `latest-*` aliases.
+- **Versioned release assets only.** Assets are published as `Ave-<version>-*`; the download site resolves the latest version dynamically instead of via static `Ave-latest-*` aliases.
 
 ### Build
 
@@ -1210,13 +1207,13 @@ Hardening release for marketplace recovery, permission review, Windows shell saf
 - **File-ACL grant (root-cause fix).** The sandbox runs its egress probe / tool runner AS the low-privilege `srt-sandbox` user, which cannot read/execute `srt-win.exe` (or the ASRT package files) under a path whose ACL does not grant it — the real cause of the `CreateProcessWithLogonW(srt-sandbox)` `0x80070005` access-denied observed on a per-user / workspace checkout (not a logon-right or GPO issue). `customInstall` now also runs `icacls … /grant "sandbox-runtime-users:(OI)(CI)(RX)" /T /C` on the packaged ASRT dir so the sandbox actually initializes, not just provisions. Dev/workspace checkouts that hit this apply the same grant manually — see README → "ASRT sandbox access denied".
 - **⚠️ Cannot be fully verified in CI** — the install-time provisioning + ACL grant need a real elevated Windows install run.
 
-### Plugin contract — the transitional former-name reverse-DNS `_meta` legacy read is removed (fail-closed + Doctor-repaired)
+### Plugin contract — the transitional `xyz.ave/*` `_meta` legacy read is removed (fail-closed + Doctor-repaired)
 
-- **Removed the legacy dual-read AND the schema property (fail-closed, never fail-open).** The `_meta` vendor-namespace rename (former-name reverse-DNS prefix → former-name vendor prefix, #1601) shipped a transitional dual-read + `observeLegacyMetaKey` telemetry so the removal could be timed by evidence. Both are now deleted: the three read fallbacks (`plugin-server-projection.ts` forward reverse-DNS `pathFields`, `plugin-tool-from-mcp.ts` reverse reverse-DNS `pathFields`, `plugin-mcp-host.ts` reverse-DNS `rawResult`), the `legacy-meta-telemetry.ts` module, and the schema's reverse-DNS `pathFields` property. Because tool `_meta` is `additionalProperties:false`, dropping the property makes an installed pre-rename manifest **fail schema validation** — it is rejected loudly, NOT silently accepted with its security-bearing `pathFields` ignored (that would be fail-open: the permission gate would stop seeing the plugin's filesystem effects). The reverse-DNS `pathFields` key drives host-side filesystem-path extraction for the permission gate, so the terminal state must be broken-until-repaired, never silently-ungated.
-- **Recovery is update-first via the existing Plugin Doctor / managed bootstrap.** A legacy-manifest rejection classifies as the reinstall-fixable `manifest-validation-error` kind. The only plugin that ever used the legacy key — `local-indexer` — is `installPolicy:"admin"` (managed), so the boot-time managed bootstrap (`ensureManagedInstalled` → `restartAll`) proactively auto-updates it to the migrated marketplace version (v0.5.24, former-name vendor-prefixed `pathFields`) within the same boot, with no user click and no broken window. The host install path is a clean artifact replace, so "update in place" and "uninstall + reinstall" are the same operation; the sole terminal fallback (when a plugin cannot be auto-migrated) is the surfaced Doctor remove-recommendation on the failed plugin card.
+- **Removed the legacy dual-read AND the schema property (fail-closed, never fail-open).** The `_meta` vendor-namespace rename (`xyz.ave/* → ave/*`, #1601) shipped a transitional dual-read + `observeLegacyMetaKey` telemetry so the removal could be timed by evidence. Both are now deleted: the three read fallbacks (`plugin-server-projection.ts` forward `xyz.ave/pathFields`, `plugin-tool-from-mcp.ts` reverse `xyz.ave/pathFields`, `plugin-mcp-host.ts` `xyz.ave/rawResult`), the `legacy-meta-telemetry.ts` module, and the schema's `xyz.ave/pathFields` property. Because tool `_meta` is `additionalProperties:false`, dropping the property makes an installed pre-rename manifest **fail schema validation** — it is rejected loudly, NOT silently accepted with its security-bearing `pathFields` ignored (that would be fail-open: the permission gate would stop seeing the plugin's filesystem effects). `xyz.ave/pathFields` drives host-side filesystem-path extraction for the permission gate, so the terminal state must be broken-until-repaired, never silently-ungated.
+- **Recovery is update-first via the existing Plugin Doctor / managed bootstrap.** A legacy-manifest rejection classifies as the reinstall-fixable `manifest-validation-error` kind. The only plugin that ever used the legacy key — `local-indexer` — is `installPolicy:"admin"` (managed), so the boot-time managed bootstrap (`ensureManagedInstalled` → `restartAll`) proactively auto-updates it to the migrated marketplace version (v0.5.24, `ave/pathFields`) within the same boot, with no user click and no broken window. The host install path is a clean artifact replace, so "update in place" and "uninstall + reinstall" are the same operation; the sole terminal fallback (when a plugin cannot be auto-migrated) is the surfaced Doctor remove-recommendation on the failed plugin card.
 - **A Doctor banner is only green for a usable runtime.** A finished diagnostic with an unresolved catalog-grant mismatch or another non-runnable state remains failed/not-runnable instead of presenting a false success.
-- **`local-indexer` was republished as v0.5.24 first** (with the former-name vendor-prefixed `pathFields`), verified published to the marketplace, so the Doctor/managed-bootstrap reinstall target exists before this removal ships.
-- **Companion PRs required** (orchestrator): the former plugin SDK package's mirror + the marketplace schema still carry the legacy alias and must drop it separately.
+- **`local-indexer` was republished as v0.5.24 first** (with `ave/pathFields`), verified published to the marketplace, so the Doctor/managed-bootstrap reinstall target exists before this removal ships.
+- **Companion PRs required** (orchestrator): the `@ave/plugin-sdk` mirror + the marketplace schema still carry the legacy alias and must drop it separately.
 
 ## v0.5.2 — 2026-07-12
 
@@ -1227,12 +1224,12 @@ Completes the MCP Apps program and renames the vendor `_meta` namespace. A patch
 - **A plugin can now ship an interactive `ui://` card.** #1593 delivered the host render path for external MCP servers; the plugin arm did not exist (`readUiResource` resolved only against external servers, and the loopback delegate never lifted a handler's `_meta.ui` onto the wire). Both are built: a plugin declares a card in `plugin.json`'s `uiResources[]` ("declared policy, served content" — the manifest declares the `ui://` uri + its CSP, the plugin serves the bytes from `RuntimePlugin.readUiResource`), and returns `_meta.ui.resourceUri` from a tool to trigger it. Author guide: `docs/guides/mcp-app-authoring.md`.
 - **The full app→host handler surface is wired** from one handlers-table SoT (`mcp-app-bridge.ts`): `oncalltool`, `onmessage`, `onopenlink`, `onsizechange`, `onrequestdisplaymode` (`inline` / `fullscreen` / in-page `pip`), `ondownloadfile`, `onupdatemodelcontext`, plus the sandbox/read-resource handshake. A capability cannot be advertised without its handler.
 - **A card is not privileged.** An app-initiated tool call takes the same `inspectHostRisk` → reviewer → approval → audit path a model call takes; the app can never name a different server; a card cannot wake the model (a `ui/message` with no active turn raises a user-gated staging card, matching VS Code). `_meta.ui.visibility: ["app"]` tools are registered so their card call runs governed, and are hidden from the model at one exposure boundary — including from the model's own execution path. A card cannot invoke the plugin's manifest auth trio (`loginTool` spawns a credentialed window).
-- **`HostContext`** carries theme / locale / timeZone / displayMode to the card as the standard `McpUiStyleVariableKey` vocabulary — no former-name CSS variable leaks.
+- **`HostContext`** carries theme / locale / timeZone / displayMode to the card as the standard `McpUiStyleVariableKey` vocabulary — no `--ave-*` key leaks.
 
 ### Plugin contract — `_meta` vendor namespace rename (#1601)
 
-- **`_meta` key prefix: former-name reverse-DNS → former-name vendor prefix** — the reverse-DNS prefix didn't match the real domain (the old site domain); the sole app-proprietary `_meta` key is now the former-name vendor-prefixed `pathFields`, a plain vendor prefix (same style as OpenAI's `openai/*` `_meta` keys). The host's forward (write) projection emits only the new key. The reverse (read) path is transitionally dual-read: it prefers the vendor prefix and falls back to the legacy reverse-DNS prefix so already-published out-of-process plugins and the SDK keep working unmigrated.
-- **Follow-up required, and its removal gate is observable, not a date** — the former plugin SDK package and published plugin manifests still emit the reverse-DNS prefix and need a separate migration. The removal gate is NOT "the rename is done": an installed plugin's manifest is a file on the user's disk that keeps saying the reverse-DNS prefix until *that* user updates *that* plugin, and the host cannot observe roll-forward directly. So each legacy read is instrumented (`observeLegacyMetaKey`, once per plugin+key per process): the forward-projection hit reports an **installed manifest** that has not rolled forward (the gate for the schema's legacy property), and the two wire-read hits report an **out-of-process plugin** still emitting the old key (a population that does not exist in production yet). Ship one instrumented release; delete the fallback — and the schema property — only when that warning has gone quiet across the installed base, not on a schedule.
+- **`_meta` key prefix `xyz.ave/*` → `ave/*`** — the reverse-DNS prefix didn't match the real domain (former-site.invalid); the sole Ave-proprietary `_meta` key is now `_meta["ave/pathFields"]`, a plain vendor prefix (same style as OpenAI's `openai/*` `_meta` keys). The host's forward (write) projection emits only the new key. The reverse (read) path is transitionally dual-read: it prefers `ave/*` and falls back to the legacy `xyz.ave/*` so already-published out-of-process plugins and the SDK keep working unmigrated.
+- **Follow-up required, and its removal gate is observable, not a date** — `@ave/plugin-sdk` and published plugin manifests still emit `xyz.ave/*` and need a separate migration. The removal gate is NOT "the rename is done": an installed plugin's manifest is a file on the user's disk that keeps saying `xyz.ave/*` until *that* user updates *that* plugin, and the host cannot observe roll-forward directly. So each legacy read is instrumented (`observeLegacyMetaKey`, once per plugin+key per process): the forward-projection hit reports an **installed manifest** that has not rolled forward (the gate for the schema's legacy property), and the two wire-read hits report an **out-of-process plugin** still emitting the old key (a population that does not exist in production yet). Ship one instrumented release; delete the fallback — and the schema property — only when that warning has gone quiet across the installed base, not on a schedule.
 
 ## v0.5.1 — 2026-07-10
 
@@ -1240,9 +1237,9 @@ Follow-up to the v0.5.0 Plugin Contract v6 release: the legacy manifest readers 
 
 ### Plugin contract — legacy readers removed (#1572)
 
-- **`normalizeManifest` is now a pure-form materializer, not a legacy compiler** — the old `tools[]` (name strings) + `toolSchemas` + `uiActions` reader is deleted. A manifest declares tools only as pure MCP `Tool[]`; `normalizeManifest` just materializes an absent `_meta.ui.visibility` to the safe `["model","app"]` default and rejects an explicit empty visibility. A pre-v6 manifest now fails closed at load with an actionable message to upgrade to v6 of the former plugin SDK package, which names the offending tool index, instead of being silently compiled forward.
+- **`normalizeManifest` is now a pure-form materializer, not a legacy compiler** — the old `tools[]` (name strings) + `toolSchemas` + `uiActions` reader is deleted. A manifest declares tools only as pure MCP `Tool[]`; `normalizeManifest` just materializes an absent `_meta.ui.visibility` to the safe `["model","app"]` default and rejects an explicit empty visibility. A pre-v6 manifest now fails closed at load with an actionable "upgrade to `@ave/plugin-sdk` v6" message that names the offending tool index, instead of being silently compiled forward.
 - **Why this is safe ahead of the planned `0.6.0` window** — the v0.5.0 note deferred this removal until every installed plugin had migrated. The new Plugin Doctor (below) makes that time-gate unnecessary: a plugin that fails to load on the pure-v6 reader is diagnosed and auto-reinstalled from the marketplace at its latest (v6) version, so there is no broken-plugin window to wait out.
-- **Vocabulary sweep** — the `uiActions` / `toolSchemas` terms are gone from code, error strings, and documentation. Per-tool surface visibility lives only in `_meta.ui.visibility` (SEP-1865) and the sole app-proprietary key is the former-name vendor-prefixed `pathFields`.
+- **Vocabulary sweep** — the `uiActions` / `toolSchemas` terms are gone from code, error strings, and documentation. Per-tool surface visibility lives only in `_meta.ui.visibility` (SEP-1865) and the sole Ave-proprietary key is `_meta["ave/pathFields"]`.
 
 ### Plugin Doctor — cause-aware auto-repair (#1573)
 
@@ -1260,7 +1257,7 @@ Follow-up to the v0.5.0 Plugin Contract v6 release: the legacy manifest readers 
 
 ### Plugin contract
 
-- **Pure MCP `Tool[]` manifest** (former plugin SDK package v6.0.0; host PR #1562, #1563, #1564) — a manifest declares tools as `{name, title?, description?, inputSchema, outputSchema?, icons?, _meta?}`. Per-tool surface visibility is `_meta.ui.visibility: Array<"model"|"app">` (SEP-1865); the one app-proprietary key is the former-name vendor-prefixed `pathFields`. `normalizeManifest` is the single legacy-shape reader — it compiles the old `tools[]` + `toolSchemas` + `uiActions` triple into pure `Tool[]`, materializes an absent visibility to the safe `["model","app"]` default, and rejects an explicit empty visibility.
+- **Pure MCP `Tool[]` manifest** (`@ave/plugin-sdk` v6.0.0; host PR #1562, #1563, #1564) — a manifest declares tools as `{name, title?, description?, inputSchema, outputSchema?, icons?, _meta?}`. Per-tool surface visibility is `_meta.ui.visibility: Array<"model"|"app">` (SEP-1865); the one Ave-proprietary key is `_meta["ave/pathFields"]`. `normalizeManifest` is the single legacy-shape reader — it compiles the old `tools[]` + `toolSchemas` + `uiActions` triple into pure `Tool[]`, materializes an absent visibility to the safe `["model","app"]` default, and rejects an explicit empty visibility.
 - **Host-derived governance** (PR #1564) — tool ownership, `writesToOwnSandbox`, and model-vs-app routing are computed by the host from the manifest, never read from a plugin self-claim; the ownership map is built from model-visible tools only, so the auth trio can never widen access control.
 - **First-party plugins republished** on the pure v6 shape, with per-surface set-equality proven against each plugin's legacy manifest.
 
@@ -1299,7 +1296,7 @@ Marketplace asset platform, the desktop-gaps program (E1–E7), sub-agent lifecy
 
 - **E1 — keyless value experience** (PR #1508, #1530) — public-build embedded-key guard, Ollama fallback (localhost probe + login chip), endpoint-unreachable UX, keyless LLM readiness.
 - **E2 — diagnostics bundle + production logs** (PR #1503, #1510) — rotating file log sink, dual DLP chokepoint, deny-by-default settings allowlist, opt-in crash dumps, an AuditTab diagnostics section, and log rotation / total-size caps.
-- **E3 — conversation import + FTS search** (PR #1509) — whitelist-validated `chat:import` (former-name IPC channel prefix), SQLite FTS5 trigram + 2-character CJK `LIKE` hybrid, and a better-sqlite3 packaging guard.
+- **E3 — conversation import + FTS search** (PR #1509) — whitelist-validated `ave:chat:import`, SQLite FTS5 trigram + 2-character CJK `LIKE` hybrid, and a better-sqlite3 packaging guard.
 - **E4 — global shortcuts + launch-at-startup** (PR #1506), including a hidden-window deep-link fix.
 - **E5 — plugin update e2e + partial-failure UX** (PR #1504).
 - **E7 — onboarding look & feel** (PR #1507) plus the no-key composer lift (PR #1541).
@@ -1318,8 +1315,8 @@ Marketplace asset platform, the desktop-gaps program (E1–E7), sub-agent lifecy
 
 ### Plugins / SDK
 
-- **SDK manifest schema is the only host validator** (PR #1547) — the former plugin SDK package is now pinned at `v5.22.0` (PR #1549), aligned across every plugin repo.
-- **Windows plugin install/update no longer fails with `EPERM`** (PR #1549) — the atomic install directory swap retries transient Windows lock contention, and a locked previous install is no longer misread as a first install. Fixes issue 154 of the archived meeting plugin repo.
+- **SDK manifest schema is the only host validator** (PR #1547) — `@ave/plugin-sdk` is now pinned at `v5.22.0` (PR #1549), aligned across every plugin repo.
+- **Windows plugin install/update no longer fails with `EPERM`** (PR #1549) — the atomic install directory swap retries transient Windows lock contention, and a locked previous install is no longer misread as a first install. Fixes `ave-plugin-meeting#154`.
 - **Plugin Doctor** (PR #1495, #1544) — actionable manifest Doctor failures.
 
 ### Security
@@ -1441,17 +1438,17 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 - Local Windows (`pwsh`): `bun install --frozen-lockfile`, `bun run typecheck`, `bun run test` (557 files / 7090 pass / 31 skipped), `bun run build`, `bun run check:test-quality` 통과.
 - PR #1399 pre-push hook: `typecheck`, 전체 `test`, `build` 우회 없이 통과.
 - Remote main (`d2463003`): CI / CodeQL green.
-- PR #1324: CDP runtime + visual verification 완료 (이전 이름의 `window` API 객체 노출, `#root` 렌더링, slash picker root/2-depth screenshots, preload SharedArrayBuffer/API 객체 initialization error 없음).
+- PR #1324: CDP runtime + visual verification 완료 (`window.aveApi` 노출, `#root` 렌더링, slash picker root/2-depth screenshots, preload SharedArrayBuffer/aveApi initialization error 없음).
 
 ## v0.4.1 — 2026-06-26
 
-전부 **default-OFF** 인 OS 샌드박스 인프라 릴리즈 — 이전 이름의 샌드박스 환경변수(또는 features.osToolSandbox)를 켜기 전에는 런타임 동작이 v0.4.0 과 동일하다.
+전부 **default-OFF** 인 OS 샌드박스 인프라 릴리즈 — `AVE_SANDBOX_ENABLED`(또는 features.osToolSandbox)를 켜기 전에는 런타임 동작이 v0.4.0 과 동일하다.
 
 ### OS 샌드박스 — ASRT 마이그레이션
 
 - **`@anthropic-ai/sandbox-runtime`(ASRT)로 교체** (PR #1355, #1356, #1357, #1358) — 구 per-OS 샌드박스 러너(`sandbox-exec-runner`/`bwrap-runner`)를 제거하고 호스트 도구·워커 spawn 을 ASRT 로 재배선했다. macOS Seatbelt / Linux bwrap(full FS+network+process) / Windows srt-win(network-only). strict-union egress enforcement(`strictAllowlist` + 로드된 플러그인 매니페스트 allow-list 의 union), parentProxy 직결 차단, 호스트 secret-dir read deny-floor.
 - **동적 endpoint + 외부 MCP 워커 egress** (PR #1363, #1364) — 신뢰설정의 Azure/임베딩 endpoint hostname 을 egress union 에 live-feed; 외부 MCP stdio 서버를 ASRT 로 래핑(crash-시 cleanup 포함).
-- **secret-dir read deny-list 중앙화** (PR #1365) — 데이터 폴더의 `secrets`/`~/.ssh`/`~/.aws` 등을 boot config + 워커 wrap 에 일관 적용.
+- **secret-dir read deny-list 중앙화** (PR #1365) — `~/.ave/secrets`/`~/.ssh`/`~/.aws` 등을 boot config + 워커 wrap 에 일관 적용.
 - **substrate-aware reviewer relaxation** (PR #1359, #1360) — per-category relaxation 이 `confines`(fs/process/network) 를 읽어, 비-샌드박스 워커로의 relaxation 누수를 차단.
 
 ### Windows 샌드박스
@@ -1513,11 +1510,11 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### 플러그인 / 마켓플레이스
 
-- **마켓플레이스 공지 배너 및 marquee 표시** (PR #1259) — Marketplace `GET /api/v1/announcements` 응답을 main-process poller 가 `marketplace:announcements` IPC (이전 이름의 채널 접두어) 로 renderer 에 전달하고, dismiss 상태를 `settings.marketplace.dismissedAnnouncementIds` 에 저장해 재시작 후에도 숨김을 유지한다. 긴 공지/업데이트 배너 텍스트는 `MarqueeText` 로 overflow 시에만 자동 스크롤하고 reduced-motion 변경 시 정적 표시로 복귀한다.
+- **마켓플레이스 공지 배너 및 marquee 표시** (PR #1259) — Marketplace `GET /api/v1/announcements` 응답을 main-process poller 가 `ave:marketplace:announcements` IPC 로 renderer 에 전달하고, dismiss 상태를 `settings.marketplace.dismissedAnnouncementIds` 에 저장해 재시작 후에도 숨김을 유지한다. 긴 공지/업데이트 배너 텍스트는 `MarqueeText` 로 overflow 시에만 자동 스크롤하고 reduced-motion 변경 시 정적 표시로 복귀한다.
 
 ### 설정 / IPC 경계
 
-- **hostResolverMap 변경 경로 고정** (PR #1259) — generic `settings:update` (이전 이름의 채널 접두어) 는 이제 `llm.hostResolverMap` 패치를 `host-map-requires-apply-host-map` 으로 거부한다. relaunch-sensitive host map 변경은 dedicated `SETTINGS.applyHostMap` IPC 만 사용해야 한다.
+- **hostResolverMap 변경 경로 고정** (PR #1259) — generic `ave:settings:update` 는 이제 `llm.hostResolverMap` 패치를 `host-map-requires-apply-host-map` 으로 거부한다. relaunch-sensitive host map 변경은 dedicated `SETTINGS.applyHostMap` IPC 만 사용해야 한다.
 
 ### 검증
 
@@ -1529,9 +1526,9 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### 데모 자동 활성화 (zero-input)
 
-- **빌드 임베디드 활성화 키** (PR #1237, #1239, #1242) — 내부 배포 빌드에 AES-256-GCM 암호문 형태의 데모 활성화 키를 임베드해, fresh install 에서 데모 칩 클릭만으로 키 입력(붙여넣기) 없이 즉시 활성화된다. CI 빌드는 이전 이름의 데모 활성화 repo secret 으로 키를 주입하며, secret 이 없는 빌드(포크/외부)는 기존 수동 붙여넣기 흐름을 유지한다.
+- **빌드 임베디드 활성화 키** (PR #1237, #1239, #1242) — 내부 배포 빌드에 AES-256-GCM 암호문 형태의 데모 활성화 키를 임베드해, fresh install 에서 데모 칩 클릭만으로 키 입력(붙여넣기) 없이 즉시 활성화된다. CI 빌드는 `AVE_EMBED_DEMO_ACTIVATION` repo secret 으로 키를 주입하며, secret 이 없는 빌드(포크/외부)는 기존 수동 붙여넣기 흐름을 유지한다.
 - **재시작 없는 첫 활성화** (PR #1242) — boot 시 임베디드 키를 복호화해 `process.env` 에 hydrate 하고 Chromium `host-resolver-rules` 를 같은 부팅에 설치해, 기존의 "첫 활성화 후 재시작" 단계를 제거했다.
-- **로그아웃 sentinel** (PR #1242) — 명시적 데모 로그아웃(`demo:clear`, 이전 이름의 채널 접두어) 시 sentinel 파일을 fail-safe 순서(쓰기 우선)로 기록해, 임베디드 키 빌드가 다음 부팅에서 로그아웃 상태를 되살리지 않는다.
+- **로그아웃 sentinel** (PR #1242) — 명시적 데모 로그아웃(`ave:demo:clear`) 시 sentinel 파일을 fail-safe 순서(쓰기 우선)로 기록해, 임베디드 키 빌드가 다음 부팅에서 로그아웃 상태를 되살리지 않는다.
 
 ### Settings / 로그인 UX
 
@@ -1583,8 +1580,8 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### 앱 업데이트
 
-- **앱 업데이트 적용 재시작 경로 복구** — `quitAndInstall()` 가 먼저 BrowserWindow 를 닫고 앱 종료로 이어지는 Electron updater 계약을 앱의 close-to-tray / async before-quit / plugin before-quit 핸들러가 `preventDefault()` 로 가로막아 다운로드 완료 후 재시작 설치가 진행되지 않던 문제를 수정했다. 업데이트 설치 의도를 main process 에 표시하고, 해당 경우에는 창 닫기와 종료 이벤트를 updater 가 소유하도록 둔다.
-- **업데이트 설치 IPC 경계 보강** — `update:install-now` (이전 이름의 채널 접두어) 가 실제 재시작/설치 경로가 되었으므로 host renderer sender 를 main process 에서 검증하고, native 확인 dialog 도 같은 IPC handler 안에서 소유해 renderer 나 plugin shell 이 확인 단계를 건너뛰어 설치를 강제하지 못하게 했다.
+- **앱 업데이트 적용 재시작 경로 복구** — `quitAndInstall()` 가 먼저 BrowserWindow 를 닫고 앱 종료로 이어지는 Electron updater 계약을 Ave 의 close-to-tray / async before-quit / plugin before-quit 핸들러가 `preventDefault()` 로 가로막아 다운로드 완료 후 재시작 설치가 진행되지 않던 문제를 수정했다. 업데이트 설치 의도를 main process 에 표시하고, 해당 경우에는 창 닫기와 종료 이벤트를 updater 가 소유하도록 둔다.
+- **업데이트 설치 IPC 경계 보강** — `ave:update:install-now` 가 실제 재시작/설치 경로가 되었으므로 host renderer sender 를 main process 에서 검증하고, native 확인 dialog 도 같은 IPC handler 안에서 소유해 renderer 나 plugin shell 이 확인 단계를 건너뛰어 설치를 강제하지 못하게 했다.
 - **업데이트 배지 IPC race 방어** — renderer 의 초기 `getAppUpdateState()` snapshot 이 더 늦게 도착해 live update push 를 덮어쓰지 못하게 하고, install IPC 가 실패하거나 앱이 종료되지 않는 경우에는 local click gate 를 해제해 재시도 가능하게 했다.
 
 ### 검증
@@ -1654,7 +1651,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### 개발 도구
 
-- **dev 전용 system-prompt per-source 크기 계측** (PR #1175) — 이전 이름의 dev 프롬프트 덤프 환경변수로 12-source 프롬프트의 소스별 토큰 크기를 측정한다.
+- **dev 전용 system-prompt per-source 크기 계측** (PR #1175) — `AVE_DEV_PROMPT_SOURCE_DUMP` 로 12-source 프롬프트의 소스별 토큰 크기를 측정한다.
 
 ### 검증
 
@@ -1669,11 +1666,11 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 - **Tool-level deferral 기본 경로 정착** (PR #1147) — plugin activation 을 catalog scope 로 유지하고, provider-visible tool schema 는 keyword preload / `tool_search` promotion / carry-forward / 고정 allowlist 로만 노출한다. broad promotion 은 scoring/top-N 으로 제한해 TPM burst 와 불필요한 tool schema 노출을 줄였다.
 - **Tool provenance source-aware 정렬** (PR #1153) — `builtin`, `plugin:<id>`, `mcp:<id>` 출처를 ToolRegistry, prompt catalog, execution metadata, IPC, trace/audit, ToolGroupCard UI까지 유지한다. cross-owner tool-name collision 은 fail-closed 처리하고, builtin tool inventory 질문에서는 직전 plugin/MCP carry-forward 를 reset 해 plugin tool 이 builtin 처럼 답변되는 경로를 차단했다.
-- **OpenAI/Azure Responses `tool_search` wire alias 정렬** (PR #1149/#1150) — 앱 내부 `tool_search` 와 provider built-in `tool_search_call` 충돌을 이전 이름 접두어의 `tool_search` wire alias 로 분리하고, persisted history / tool result / display text 는 사용자에게 다시 `tool_search` 로 복원한다.
+- **OpenAI/Azure Responses `tool_search` wire alias 정렬** (PR #1149/#1150) — Ave 내부 `tool_search` 와 provider built-in `tool_search_call` 충돌을 `ave_tool_search` wire alias 로 분리하고, persisted history / tool result / display text 는 사용자에게 다시 `tool_search` 로 복원한다.
 
 ### UX / 컨텍스트
 
-- **Persona prompt store 전환** (PR #1148) — main composer assistant-context 버튼을 Persona 전용으로 정리하고, role/persona prompts 를 file-backed 데이터 폴더의 `prompts/*.md` + seeded resources SOT 로 이동했다.
+- **Persona prompt store 전환** (PR #1148) — main composer assistant-context 버튼을 Persona 전용으로 정리하고, role/persona prompts 를 file-backed `~/.ave/prompts/*.md` + seeded resources SOT 로 이동했다.
 - **Session TO-DO turn boundary 정렬** (PR #1152) — 세션 TO-DO 를 current-turn transient plan 으로 고정해 새 사용자 턴 시작 시 이전 plan 이 남지 않도록 하고, live push race 와 badge 상태를 정리했다.
 - **Chat streaming scroll jitter 수정** (PR #1151) — streaming 중 bottom-follow 를 rAF coalesced immediate pin 으로 통합해 긴 응답에서 smooth scroll 반복으로 viewport 가 흔들리는 문제를 제거했다.
 
@@ -1721,7 +1718,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### 개발 / 패키징
 
-- **Dev/start launch SOT 통합** (PR #1081/#1089) — `bun run dev`, `bun run start`, packaged smoke, Windows NSIS smoke 가 같은 Electron launch env/arg helper 를 사용한다. `.env.demo`, Windows-safe GPU flags, `--no-sandbox`, `--user-data-dir`, UTF-8 env, 이전 이름의 Windows no-sandbox 환경변수 정책이 한 경로에서 적용된다.
+- **Dev/start launch SOT 통합** (PR #1081/#1089) — `bun run dev`, `bun run start`, packaged smoke, Windows NSIS smoke 가 같은 Electron launch env/arg helper 를 사용한다. `.env.demo`, Windows-safe GPU flags, `--no-sandbox`, `--user-data-dir`, UTF-8 env, `AVE_WIN_NO_SANDBOX` 정책이 한 경로에서 적용된다.
 - **Package footprint guard 정렬** (PR #1089) — runtime script packaging checks 를 `BUILD_ASSETS` SOT 에서 파생해 dev/build/watch 자산 목록과 drift 나지 않도록 했다.
 - **Sequential status toast 안정화** (PR #1081) — install/update toast burst 에서 뒤쪽 toast 가 앞쪽 toast 만료 시간 때문에 즉시 사라지는 queue expiry 문제를 수정했다.
 
@@ -1744,12 +1741,12 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### 배포
 
-- `latest` release 에 Windows/macOS/Linux versioned installer 와 stable former-name `latest-*` alias asset 을 함께 포함한다.
+- `latest` release 에 Windows/macOS/Linux versioned installer 와 stable `Ave-latest-*` alias asset 을 함께 포함한다.
 
 ### 검증
 
 - PR #1080: focused desktop packaging Vitest 6 pass, `bun run typecheck`, `bun run build`, remote CI success.
-- Build Installers run `26239492691`: Windows NSIS smoke verified `/S /KEEP_APP_DATA` and full `/S` uninstall both remove the install directory; full uninstall removes the app's user data paths.
+- Build Installers run `26239492691`: Windows NSIS smoke verified `/S /KEEP_APP_DATA` and full `/S` uninstall both remove the install directory; full uninstall removes Ave user data paths.
 
 ---
 
@@ -1762,7 +1759,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### 안정성 / 패키징
 
-- **Windows NSIS installer smoke 추가** (PR #1075/#1076) — Build Installers Windows job 이 `win-unpacked` 실행뿐 아니라 setup.exe silent install, installed app executable launch, silent uninstall 을 검증한다.
+- **Windows NSIS installer smoke 추가** (PR #1075/#1076) — Build Installers Windows job 이 `win-unpacked` 실행뿐 아니라 setup.exe silent install, installed `Ave.exe` launch, silent uninstall 을 검증한다.
 - **Windows update uninstall 데이터 보존** (PR #1075) — update uninstall 경로의 `${isUpdated}` / `/KEEP_APP_DATA` / `--updated` 신호를 custom NSIS uninstall hook 이 존중해 사용자 데이터를 보존한다.
 - **Windows smoke cleanup race 안정화** (PR #1076) — Chromium temp cleanup EBUSY 와 NSIS uninstall 완료 직후 파일 제거 race 를 smoke 실패로 오인하지 않도록 외부 cleanup 경계를 기다리거나 best-effort 로 처리한다.
 
@@ -1778,7 +1775,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### 개선
 
-- **Local Indexer update lifecycle 정렬** (PR #1073) — Marketplace update button 과 이전 이름 링크 스킴 install path 가 공통 lifecycle helper 를 사용한다. catalog/runtime 에서 기존 설치 상태를 확인한 뒤 artifact patch 전에 실행 중인 플러그인을 먼저 중지하고, install/start 실패 시 기존 runtime 또는 이전 artifact 로 복구한다.
+- **Local Indexer update lifecycle 정렬** (PR #1073) — Marketplace update button 과 `ave://` install path 가 공통 lifecycle helper 를 사용한다. catalog/runtime 에서 기존 설치 상태를 확인한 뒤 artifact patch 전에 실행 중인 플러그인을 먼저 중지하고, install/start 실패 시 기존 runtime 또는 이전 artifact 로 복구한다.
 - **마켓플레이스 플러그인 업데이트 확인 주기 단축** (PR #1073) — 기본 update check interval 을 6시간에서 10분으로 낮춰 managed plugin 업데이트가 더 빨리 노출되도록 했다.
 - **플러그인 준비 상태 표시 보강** (PR #1071) — host-managed Python 플러그인의 `preparing` 단계가 설정 패널, 플러그인 목록, 메인 플러그인 그리드에 유지 표시된다. Local Indexer 처럼 로드 전 준비 중인 플러그인도 placeholder 상태로 드러난다.
 - **Azure Foundry reasoning 노출** (PR #1072) — Azure Foundry 응답의 reasoning/thinking 정보를 visible transcript 흐름에 맞춰 표시한다.
@@ -1803,7 +1800,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 ### 신규 기능
 
 - **render_html 전용 preview window** (PR #1063) — 채팅 inline webview 대신 별도 sandboxed BrowserWindow 에서 HTML 결과를 열도록 전환. 저장 세션 replay 는 inert launcher 로 유지하고, 새로 완료된 `render_html` 결과만 1회 자동 open.
-- **preview window 내부 JavaScript 제어** (PR #1066) — JavaScript 허용/차단 토글을 채팅 카드가 아니라 실제 preview window toolbar 로 이동. preview shell 은 앱 theme token 을 주입하고, tool description 도 `hsl(var(--background))` / `foreground` / `primary` / `muted` / `border` 기반 디자인을 권장하도록 정렬.
+- **preview window 내부 JavaScript 제어** (PR #1066) — JavaScript 허용/차단 토글을 채팅 카드가 아니라 실제 preview window toolbar 로 이동. preview shell 은 Ave theme token 을 주입하고, tool description 도 `hsl(var(--background))` / `foreground` / `primary` / `muted` / `border` 기반 디자인을 권장하도록 정렬.
 
 ### 개선
 
@@ -1813,7 +1810,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### 보안 / 안정성
 
-- `render_html` preview 는 기존 이전 이름 접두어의 `render-html` network-deny partition, CSP-first document, isolated renderer boundary 를 유지.
+- `render_html` preview 는 기존 `ave-render-html` network-deny partition, CSP-first document, isolated renderer boundary 를 유지.
 - preview IPC / preload / renderer 회귀 테스트로 arbitrary HTML 이 Node, app preload API, unrestricted network 에 접근하지 못하도록 고정.
 - stale `fix/html-render-open-window*` 로컬 worktree/branch 는 최신 main 의 #1063/#1066 구현보다 오래된 축소판임을 확인하고 제거했다.
 
@@ -1860,7 +1857,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 ### 신규 기능
 
 - **Onboarding UX 전체 재설계** (PR #1044) — 4 단계 forced-choice + memory-first flow + ping-aware welcome.
-  - **ScenarioShowcase**: 시연 footer 의 "이런 식으로 동작해요" 라인 제거. 버튼은 로그인하고 앱을 시작하는 버튼과 `뒤로가기`. 4 카드 grid 에서 skip/건너뛰기 제거 — 사용자가 *반드시 카드 선택*.
+  - **ScenarioShowcase**: 시연 footer 의 "이런 식으로 동작해요" 라인 제거. 버튼 `로그인하에 Ave 시작하기` / `뒤로가기`. 4 카드 grid 에서 skip/건너뛰기 제거 — 사용자가 *반드시 카드 선택*.
   - **LoginModalConversational**: 1/2/3 chip 화면의 취소 + Esc/outside dismissal 제거 (forced choice). 데모 자격증명 (chip 1) 클릭 시 *fullscreen 새 page* 로 transition — 상단 `← 뒤로가기` + 활성코드 입력 + 모든 취소 버튼 제거.
   - **Chain restructure**: `welcome` stage 폐지, `personalized_welcome` 신설 (memory 다음, tour 이전). MemorySeedDialog 가 LoginModal 직후 바로 등장 → PersonalizedWelcome → tour 순서.
   - **PersonalizedWelcome** (신규 component): 호칭/자기소개 반영 인사 + `api.pingAiProvider()` 로 LLM 연결 확인 + latency 표시. 확인 버튼만 (skip 없음).
@@ -1869,7 +1866,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### Internal
 
-- **Demo activation: 이전 이름의 데모 활성 환경변수 폐기** (PR #1040). `captureDemoCredentials()` 가 이전 이름의 `DEMO_KEY_<VENDOR>` 환경변수 존재만으로 demo 활성을 판정 — activation code (수동 발급) 자체가 유일한 gate. master gate env var 가 누락된 `.env.demo` 가 demo activation 후에도 `isDemoEnabled()=false` 로 떨어지면서 onboarding chain 이 skip → ChatView empty-state 로 떨어지던 SOT divergence 해소. `whitelist-registry` 의 demo snapshot 분기도 `useDemoSnapshot` 옵션만 read — env fallback 제거.
+- **Demo activation: `AVE_DEMO_ENABLED` 환경변수 폐기** (PR #1040). `captureDemoCredentials()` 가 `AVE_DEMO_KEY_<VENDOR>` 의 존재만으로 demo 활성을 판정 — activation code (수동 발급) 자체가 유일한 gate. master gate env var 가 누락된 `.env.demo` 가 demo activation 후에도 `isDemoEnabled()=false` 로 떨어지면서 onboarding chain 이 skip → ChatView empty-state 로 떨어지던 SOT divergence 해소. `whitelist-registry` 의 demo snapshot 분기도 `useDemoSnapshot` 옵션만 read — env fallback 제거.
 - **Release process 문서화** (PR #1037). `docs/development/release-process.md` SOT + `CLAUDE.md` 의 Release Process section. branch+PR flow / partial asset recovery / intentional limits (Mac arm64 only, electron-builder publish race).
 
 ### 사용자 영향
@@ -1885,7 +1882,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 - **loginMockup IPC 일관 error handling** — Step 2/3 (`llm-key-issuing`/`sandbox-preparing`) 의 unhandled throw 가 IPC reject 로 leak 되어 "로그인 처리 중 오류" 발생하던 회귀 해소. 모든 step 의 try/catch 일관 + 결정적 error code 반환.
 - **First-activation host-resolver race** — packaged build 에서 첫 activation 시 Chromium net stack 이 frozen (command-line frozen after `app.whenReady()`). activation 성공 후 자동 `app.relaunch()` 추가 — 다음 boot 의 `loadPersistedDemoActivationSync()` + `applyDemoHostResolverRules()` 시점 매핑 활성.
-- **Main process console logging 강화** — 앱 로그 폴더의 `main.log` (macOS `~/Library/Logs/<앱 이름>/`, Windows `%APPDATA%\<앱 이름>\logs\`) 에 stack trace 기록. 진단 가능.
+- **Main process console logging 강화** — `~/Library/Logs/Ave/main.log` (macOS) / `%APPDATA%\Ave\logs\main.log` (Windows) 에 stack trace 기록. 진단 가능.
 - 새 error code: `llm-key-issuing-failed` / `reviewer-rewire-failed` / `endpoint-unreachable` / `requires-relaunch` — 사용자 친화 한국어 메시지 매핑.
 
 ### Internal
@@ -1957,10 +1954,10 @@ could continue calling the upstream provider after the user revoked access.
   This is INTENTIONAL — kiosk / trade-show machines run the bundled snapshot
   for the lifetime of the signed app binary, so a short expiry would brick
   long offline deployments.
-- Production catalog (the whitelist repo, since archived) uses
+- Production catalog (live `former_org/marketplace-whitelist` repo) uses
   a rolling 90-day expiry and is fetched + verified at boot via
   `whitelist-fetcher.ts`. The demo path is gated behind
-  the former-name demo-enabled env var so production builds never load the demo snapshot.
+  `AVE_DEMO_ENABLED=1` so production builds never load the demo snapshot.
 - Comment header added near the demo-snapshot loader in
   `src/plugins/whitelist/whitelist-registry.ts` documenting the policy.
 

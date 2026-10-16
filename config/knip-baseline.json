@@ -928,11 +928,6 @@
       "name": "src/ui/renderer/components/AveLogo.tsx"
     },
     {
-      "type": "files",
-      "file": "web/infra/edge-router/worker.js",
-      "name": "web/infra/edge-router/worker.js"
-    },
-    {
       "type": "types",
       "file": "src/agents/agent-registry.ts",
       "name": "AgentRegistryEntry"

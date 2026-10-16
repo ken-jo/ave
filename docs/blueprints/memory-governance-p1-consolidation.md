@@ -1,7 +1,5 @@
 # Memory Governance P1 — Long-term Memory Consolidation
 
-> Historical record: written under the app's former name. Identifiers that carried that name are described in neutral words below; other names and paths are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
-
 ## Decision
 
 `user-preferences.md` remains the compact, always-applicable profile for
