@@ -1529,11 +1529,10 @@ the site deploys on every `web/**` merge, so the copy must travel with the tag, 
 of it (decision 6). The `$id` is that tagged URL and is never reassigned: an additive
 change within protocol `1` (§3.3) ships in a new app tag and therefore under a new `$id`
 (Agent Plugins conformance, "Never reassign a published canonical schema identifier",
-[checklist](https://agent-plugins.org/client-implementers/conformance)). Protocols 1 and 2
-were published under the old site domain's origin (each file's `$id` records it); their files keep
-that `$id` byte for byte and ave.agent-connector.ai serves them at the same paths. Protocol 3
-onward carries the Ave origin.
-`.../plugin-host-protocol/1/protocol.schema.json` is a documented moving alias to the
+[checklist](https://agent-plugins.org/client-implementers/conformance)). The site
+publishes only protocols the host serves (protocol 3, under the Ave origin); the
+schemas of retired protocols 1 and 2 are no longer published.
+`.../plugin-host-protocol/<protocol>/protocol.schema.json` is a documented moving alias to the
 newest tag's copy, for editors; a plugin pins the tag through `contract/sources.json`,
 never the alias.
 
