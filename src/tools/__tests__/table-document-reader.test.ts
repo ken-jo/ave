@@ -167,6 +167,15 @@ describe("workbooks", () => {
     expect(offset.sheet).toMatchObject({ firstRow: 2, firstColumn: 2, rows: [["c3", "d3"]] });
   });
 
+  it.each(["ods", "biff8"] as const)("reports row truncation with the true total for %s", (bookType) => {
+    const rows = Array.from({ length: 20 }, (_, r) => [`r${r}`, r]);
+    const format = bookType === "ods" ? "ods" : "xls";
+    const doc = parseTableDocument(workbook({ S: rows, T: [["x"]] }, bookType), format, 0, limits({ maxRows: 5 }));
+    expect(doc.sheet.rows).toHaveLength(5);
+    expect(doc.sheet).toMatchObject({ totalRows: 20, rowsTruncated: true });
+    expect(doc.sheetNames).toEqual(["S", "T"]);
+  });
+
   it("returns an empty grid for an empty sheet", () => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([]), "Empty");
