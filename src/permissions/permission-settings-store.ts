@@ -38,6 +38,7 @@ import {
 } from "../shared/parent-adjudication-bounds.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
+import { DEFAULT_PERMISSION_REVIEWER_MODEL } from "../shared/permission-reviewer-framework.js";
 
 const log = createLogger("permission-settings");
 
@@ -195,7 +196,7 @@ export interface ReviewerParentAdjudicationBlock {
  * Permission policy P3 — `permissions.reviewer` block. Provider/model remain
  * persisted for legacy command compatibility; runtime LLM reviewer wiring now
  * follows the active chat LLM provider/model when available.
- * Defaults: provider="openai", model="gpt-4o-mini",
+ * Defaults: provider="openai", model=DEFAULT_PERMISSION_REVIEWER_MODEL,
  * fallbackOnError="deny", interactive.autoApprove="medium".
  */
 export interface ReviewerSettingsBlock {
@@ -334,7 +335,7 @@ const DEFAULT_REVIEWER: ReviewerSettingsBlock = {
   // classifier.
   mode: "llm",
   provider: "openai",
-  model: "gpt-4o-mini",
+  model: DEFAULT_PERMISSION_REVIEWER_MODEL,
   fallbackOnError: "deny",
   interactive: { autoApprove: "medium" },
   // Tier 2 mirrors the interactive threshold: the parent may decide exactly

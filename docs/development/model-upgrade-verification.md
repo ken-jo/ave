@@ -15,7 +15,7 @@ procedure adds a live check before merge.
 |---|---|---|
 | Context window, prompt cap, output limit, input modalities, reasoning levels, pricing, deprecation status | Bundled catalog `src/core/model-catalog/bundled-snapshot.json`, generated from committed input in `scripts/model-catalog/` | `bun run generate:model-catalog -- --fetch` |
 | Vendor to catalog provider mapping | `CATALOG_PROVIDERS_BY_VENDOR` in `src/shared/model-catalog/provider-map.ts` | Hand edit; exhaustive over `LLMVendor`, so a new vendor fails typecheck until mapped |
-| Request shape the catalog does not state (the 1M context beta header, interleaved numeric thinking) | `CLAUDE_REQUEST_SHAPES` and `claudeBetaHeaders` in `src/shared/model-host-policy.ts` | Hand edit |
+| Request shape the catalog does not state (interleaved numeric thinking; 1M needs no header on any model that has it) | `CLAUDE_REQUEST_SHAPES` and `claudeBetaHeaders` in `src/shared/model-host-policy.ts` | Hand edit |
 | Wire choice (Responses API vs Chat Completions) | `usesOpenAIResponsesWire` in `src/engine/llm/reasoning-plan.ts`: Azure always Responses; OpenAI Responses when the catalog says the model reasons | Catalog (no hand edit) |
 | Host fallbacks (128K window, output limit, TPM defaults) | `src/shared/model-host-policy.ts` | Hand edit |
 | Default model per vendor | `DEFAULT_MODEL` behind `LLM_VENDOR_DEFAULTS` in `src/shared/llm-vendor-defaults.ts` | Hand edit; a vendor with a catalog provider must default to a catalog chat model (test) |
@@ -56,7 +56,7 @@ model id and the exact headers the adapter will send
 curl https://api.anthropic.com/v1/messages \
   -H "x-api-key: $ANTHROPIC_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
-  -H "anthropic-beta: <value of CONTEXT_1M_BETA, if the row sets context1MBeta>" \
+  -H "anthropic-beta: <claudeBetaHeaders output, if any>" \
   -H "content-type: application/json" \
   -d '{"model":"<MODEL_ID>","max_tokens":50,"messages":[{"role":"user","content":"reply with just OK"}]}'
 ```
@@ -73,9 +73,9 @@ Routes without beta headers need only the `200` check. For the `openrouter`
 vendor route, `bun run smoke:llm` runs `test/smoke/live-model.smoke.test.ts`
 with the key stored in Settings (local machine only; it decrypts a secret).
 
-### 3. Large-context check (1M-window rows only)
+### 3. Large-context check (1M-window models only)
 
-A header being accepted is not proof that the large window is delivered.
+The catalog stating a 1M window is not proof that the route delivers it.
 Confirm one of:
 
 - In the app, select the model and build a conversation past 250K input tokens

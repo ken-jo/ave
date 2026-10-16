@@ -126,26 +126,22 @@ describe("model-complexity-map", () => {
     // would silently shift the user's sub-agent model.
     it("claude tiers: haiku=low, sonnet=mid, opus=high", () => {
       expect(MODEL_COMPLEXITY_MAP.claude).toEqual({
-        low: "claude-haiku-4-5",
-        mid: "claude-sonnet-4-6",
-        high: "claude-opus-4-6",
+        low: "claude-haiku-5-5",
+        mid: "claude-sonnet-5-5",
+        high: "claude-opus-5-5",
       });
     });
 
-    it("openai tiers: nano=low, mini=mid, full=high", () => {
-      expect(MODEL_COMPLEXITY_MAP.openai).toEqual({
-        low: "gpt-5.4-nano",
-        mid: "gpt-5.4-mini",
-        high: "gpt-5.4",
-      });
+    it("openai and azure tiers: luna=low, sol=mid, astra=high", () => {
+      const tiers = { low: "gpt-6-luna", mid: "gpt-6.1-sol", high: "gpt-6-astra" };
+      expect(MODEL_COMPLEXITY_MAP.openai).toEqual(tiers);
+      expect(MODEL_COMPLEXITY_MAP["azure-foundry"]).toEqual(tiers);
     });
 
-    it("gemini tiers: flash-lite=low, flash=mid, pro=high", () => {
-      expect(MODEL_COMPLEXITY_MAP.gemini).toEqual({
-        low: "gemini-2.5-flash-lite",
-        mid: "gemini-2.5-flash",
-        high: "gemini-2.5-pro",
-      });
+    it("gemini and vertex tiers: flash-lite=low, flash=mid and high", () => {
+      const tiers = { low: "gemini-3.5-flash-lite", mid: "gemini-3.8-flash", high: "gemini-3.8-flash" };
+      expect(MODEL_COMPLEXITY_MAP.gemini).toEqual(tiers);
+      expect(MODEL_COMPLEXITY_MAP["vertex-ai"]).toEqual(tiers);
     });
   });
 });

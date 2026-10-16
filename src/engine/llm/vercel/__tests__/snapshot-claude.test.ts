@@ -489,16 +489,15 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
         effort: "high",
       },
     });
-    // Adaptive thinking interleaves automatically; only the context opt-in stays.
-    expect(callArg.headers).toEqual({
-      "anthropic-beta": "context-1m-2025-08-07",
-    });
+    // Adaptive thinking interleaves automatically, and 1M is the default
+    // window with no beta header (Anthropic context-windows page).
+    expect(callArg.headers).toBeUndefined();
 
     vi.doUnmock("ai");
     vi.doUnmock("@ai-sdk/anthropic");
   });
 
-  it("claude-3.x — no `context-1m-2025-08-07` header (not a 1M-beta model in the request-shape table)", async () => {
+  it("claude-3.x — no beta header", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -630,11 +629,8 @@ describe("VercelUnifiedProvider claude — adapter wiring (mocked streamText)", 
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(callArg.providerOptions).toBeUndefined();
-    // 1M beta still applies — thinking off, but the request-shape table says
-    // this model's 1M window needs the header, so the adapter opts in.
-    expect(callArg.headers).toEqual({
-      "anthropic-beta": "context-1m-2025-08-07",
-    });
+    // 1M is the default window for this model; no beta header is sent.
+    expect(callArg.headers).toBeUndefined();
 
     vi.doUnmock("ai");
     vi.doUnmock("@ai-sdk/anthropic");

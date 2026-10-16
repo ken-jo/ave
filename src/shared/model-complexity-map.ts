@@ -84,30 +84,35 @@ export function isModelComplexityLevel(
 const EXPLICIT_MODEL_COMPLEXITY_MAP: Partial<
   Record<LLMVendor, Readonly<Record<ModelComplexityLevel, string>>>
 > = {
+  // Tiers follow each vendor's own current line-up (2026-10): Anthropic's
+  // Haiku/Sonnet/Opus 5.5; OpenAI's models page names gpt-6-luna "most
+  // efficient", gpt-6.1-sol "balanced" and gpt-6-astra the flagship; Google
+  // recommends 3.5 Flash-Lite and 3.8 Flash for new projects and has no newer
+  // Pro in the catalog, so Flash serves both upper tiers.
   claude: Object.freeze({
-    low: "claude-haiku-4-5",
-    mid: "claude-sonnet-4-6",
-    high: "claude-opus-4-6",
+    low: "claude-haiku-5-5",
+    mid: "claude-sonnet-5-5",
+    high: "claude-opus-5-5",
   }),
   openai: Object.freeze({
-    low: "gpt-5.4-nano",
-    mid: "gpt-5.4-mini",
-    high: "gpt-5.4",
+    low: "gpt-6-luna",
+    mid: "gpt-6.1-sol",
+    high: "gpt-6-astra",
   }),
   gemini: Object.freeze({
-    low: "gemini-2.5-flash-lite",
-    mid: "gemini-2.5-flash",
-    high: "gemini-2.5-pro",
+    low: "gemini-3.5-flash-lite",
+    mid: "gemini-3.8-flash",
+    high: "gemini-3.8-flash",
   }),
   "azure-foundry": Object.freeze({
-    low: "gpt-5.4-nano",
-    mid: "gpt-5.4-mini",
-    high: "gpt-5.4",
+    low: "gpt-6-luna",
+    mid: "gpt-6.1-sol",
+    high: "gpt-6-astra",
   }),
   "vertex-ai": Object.freeze({
-    low: "gemini-3.1-flash-lite",
-    mid: "gemini-3.5-flash",
-    high: "gemini-3.1-pro-preview",
+    low: "gemini-3.5-flash-lite",
+    mid: "gemini-3.8-flash",
+    high: "gemini-3.8-flash",
   }),
   // Custom OpenAI-compatible endpoints are endpoint-defined and handshake-only:
   // there is no static catalog to map tiers against (see

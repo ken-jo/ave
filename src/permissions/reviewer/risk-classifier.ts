@@ -3,7 +3,7 @@
  *
  * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 5,
  * §11 v2.1 binding decisions (default `provider="openai"`,
- * `model="gpt-4o-mini"`; `fallbackOnError ∈ {deny, rule}`; default fail-closed;
+ * `model=DEFAULT_PERMISSION_REVIEWER_MODEL`; `fallbackOnError ∈ {deny, rule}`; default fail-closed;
  * verdict
  * composition `final = max(rule, llm)`; DLP filter on classifier input).
  *
@@ -34,7 +34,7 @@ import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../../tools/type
 import { isIP } from "node:net";
 import { maskSensitiveData, scrubSecretsForLLM } from "../../audit/dlp-filter.js";
 import { isGloballyRoutableAddress } from "../../core/network-guard.js";
-import { PERMISSION_REVIEWER_SYSTEM_PROMPT } from "../../shared/permission-reviewer-framework.js";
+import { DEFAULT_PERMISSION_REVIEWER_MODEL, PERMISSION_REVIEWER_SYSTEM_PROMPT } from "../../shared/permission-reviewer-framework.js";
 import { selectDeclaredPathValues } from "../../shared/dotted-field-value.js";
 import { extractShellCommands } from "../../shared/shell-command-fields.js";
 import { stripCommandPath, tokenizeShell, type ShellLeaf } from "../../shared/shell-tokenizer.js";
@@ -2642,7 +2642,7 @@ export interface ReviewerSettings {
   mode: ReviewerMode;
   /** Required when mode === "llm". */
   provider?: LlmReviewerProvider;
-  /** Required when mode === "llm". Defaults to "gpt-4o-mini" per v2.1. */
+  /** Required when mode === "llm". Defaults to DEFAULT_PERMISSION_REVIEWER_MODEL. */
   model?: string;
   /** Defaults to "deny" so reviewer provider failures fail closed. */
   fallbackOnError?: FallbackOnError;
@@ -2678,7 +2678,7 @@ export function createRiskClassifier(settings: ReviewerSettings): RiskClassifier
       }
       return new LlmRiskClassifier(
         settings.provider,
-        settings.model ?? "gpt-4o-mini",
+        settings.model ?? DEFAULT_PERMISSION_REVIEWER_MODEL,
         fb,
         settings.telemetry,
       );

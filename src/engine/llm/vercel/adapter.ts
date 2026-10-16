@@ -570,10 +570,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         }
         // Beta header set: comma-joined per Anthropic's API convention. We
         // gather them in an array and emit one `anthropic-beta` value.
-        const betas = claudeBetaHeaders({
-          context1MBeta: claudeShape?.context1MBeta === true,
-          interleavedThinking: interleavedNumericThinking,
-        });
+        const betas = claudeBetaHeaders({ interleavedThinking: interleavedNumericThinking });
         if (betas.length > 0) {
           headers = { "anthropic-beta": betas.join(",") };
         }

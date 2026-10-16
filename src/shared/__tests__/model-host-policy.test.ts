@@ -8,27 +8,16 @@ import {
   MAX_CREDIBLE_CONTEXT_WINDOW,
 } from "../model-host-policy.js";
 
-describe("request shape — Claude 1M beta header", () => {
+describe("request shape — Claude 1M window", () => {
   it.each([
     "claude-sonnet-4-6",
     "claude-opus-4-6",
-    "Claude-Sonnet-4-6",
     "claude-sonnet-4-6-20260217",
-    "claude-opus-4-6-latest",
-  ])("%s needs the context-1m beta header", (model) => {
-    expect(claudeRequestShape(model).context1MBeta).toBe(true);
-  });
-
-  it.each([
-    "claude-sonnet-4-5",
-    "claude-opus-4-7",
     "claude-opus-5-5",
-    "claude-sonnet-5",
-    "claude-3-5-sonnet-20241022",
-    "claude-haiku-4-5",
-    "claude-sonnet-4-20250514",
-  ])("%s does not", (model) => {
-    expect(claudeRequestShape(model).context1MBeta).toBe(false);
+    "claude-sonnet-4-5",
+  ])("%s asks for no context-1m beta header (1M is the default where a model has it)", (model) => {
+    expect(claudeRequestShape(model)).not.toHaveProperty("context1MBeta");
+    expect(claudeBetaHeaders({ interleavedThinking: false })).toEqual([]);
   });
 });
 
@@ -62,12 +51,9 @@ describe("request shape — interleaved numeric thinking", () => {
 });
 
 describe("request shape — beta header values", () => {
-  it("joins the 1M opt-in before interleaved thinking", () => {
-    expect(claudeBetaHeaders({ context1MBeta: true, interleavedThinking: true }))
-      .toEqual(["context-1m-2025-08-07", "interleaved-thinking-2025-05-14"]);
-    expect(claudeBetaHeaders({ context1MBeta: false, interleavedThinking: true }))
-      .toEqual(["interleaved-thinking-2025-05-14"]);
-    expect(claudeBetaHeaders({ context1MBeta: false, interleavedThinking: false })).toEqual([]);
+  it("carries interleaved thinking only when the request asks for it", () => {
+    expect(claudeBetaHeaders({ interleavedThinking: true })).toEqual(["interleaved-thinking-2025-05-14"]);
+    expect(claudeBetaHeaders({ interleavedThinking: false })).toEqual([]);
   });
 });
 
