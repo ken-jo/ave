@@ -16,12 +16,17 @@ export const DOCUMENT_PARSE_MESSAGES: Readonly<Record<ParseError, string>> = Obj
   encrypted: "Encrypted documents cannot be previewed.",
   "unsupported-encoding": "Document encoding is not supported.",
   "corrupt-document": "Document is malformed or has the wrong container type.",
+  busy: "Another document preview is active. Try again shortly.",
+  superseded: "A newer document preview replaced this request.",
   "parse-limit": "Document parsing exceeded its resource budget.",
   "read-failed": "Document parser failed its internal contract.",
 });
 
-export function isDocumentParseError(value: unknown): value is ParseError {
-  return typeof value === "string" && Object.hasOwn(DOCUMENT_PARSE_MESSAGES, value);
+export const DOCUMENT_PARSE_READY = "ave-document-ready\n";
+
+export function isDocumentParseError(value: unknown): value is Exclude<ParseError, "busy" | "superseded"> {
+  return typeof value === "string" && value !== "busy" && value !== "superseded"
+    && Object.hasOwn(DOCUMENT_PARSE_MESSAGES, value);
 }
 
 const DOCUMENT_FIELDS = ["format", "sheetNames", "totalSheets", "sheetsTruncated", "sheet"] as const;

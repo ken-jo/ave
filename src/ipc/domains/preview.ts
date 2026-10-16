@@ -32,6 +32,7 @@ import { buildRuntimeAllowedDirectories } from "../../permissions/allowed-direct
 import { errorMessage } from "../../shared/error-message.js";
 import { TableDocumentError } from "../../tools/table-document-error.js";
 import { readPreviewDocumentInput } from "../../tools/preview-document-input.js";
+import { acquireParseSlot } from "../../tools/preview-document-process.js";
 import {
   previewDocumentFormatOf,
   type PreviewReadDocumentResult,
@@ -173,29 +174,41 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
       }
 
       try {
-        const bytes = await readPreviewDocumentInput(resolved);
-        const { parseTableDocumentIsolated } = await import("../../tools/preview-document-process.js");
-        let document;
-        try {
-          document = await parseTableDocumentIsolated(bytes, format, sheetIndex);
-        } catch (err) {
-          if (err instanceof TableDocumentError) {
-            return { ok: false, error: err.code, path: resolved, bytes: bytes.length, message: err.message };
-          }
-          throw err;
+        const frame = e.senderFrame;
+        if (!frame || !Number.isSafeInteger(e.sender?.id)
+          || !Number.isSafeInteger(frame.processId) || !Number.isSafeInteger(frame.routingId)) {
+          throw new TableDocumentError("read-failed", "Document sender identity is unavailable.");
         }
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "preview-read",
-          type: "info",
-          input: JSON.stringify({
-            channel: CHANNELS.preview.readDocument,
-            path: redactFsPath(resolved),
-            bytes: bytes.length,
-            sheetIndex,
-          }),
-        });
-        return { ok: true, path: resolved, bytes: bytes.length, document };
+        const slot = await acquireParseSlot(`${e.sender.id}:${frame.processId}:${frame.routingId}`);
+        try {
+          const bytes = await readPreviewDocumentInput(resolved, slot.signal);
+          let document;
+          try {
+            document = await slot.parse(bytes, format, sheetIndex);
+          } catch (err) {
+            if (err instanceof TableDocumentError) {
+              return { ok: false, error: err.code, path: resolved, bytes: bytes.length, message: err.message };
+            }
+            throw err;
+          }
+          auditLogger.log({
+            timestamp: new Date().toISOString(),
+            sessionId: "preview-read",
+            type: "info",
+            input: JSON.stringify({
+              channel: CHANNELS.preview.readDocument,
+              path: redactFsPath(resolved),
+              bytes: bytes.length,
+              sheetIndex,
+            }),
+          });
+          return { ok: true, path: resolved, bytes: bytes.length, document };
+        } catch (err) {
+          slot.signal.throwIfAborted();
+          throw err;
+        } finally {
+          slot.release();
+        }
       } catch (err) {
         if (err instanceof TableDocumentError) {
           return { ok: false, error: err.code, path: resolved, bytes: err.bytes, message: err.message };

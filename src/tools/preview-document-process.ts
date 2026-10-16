@@ -11,40 +11,92 @@ import {
 } from "../shared/preview-document.js";
 import { isRecord } from "../shared/is-record.js";
 import { TableDocumentError } from "./table-document-error.js";
-import { DOCUMENT_PARSE_MESSAGES, isDocumentParseError, readDocumentResponse } from "./preview-document-protocol.js";
+import { DOCUMENT_PARSE_MESSAGES, DOCUMENT_PARSE_READY, isDocumentParseError, readDocumentResponse } from "./preview-document-protocol.js";
 
 let activeParses = 0;
+const requests = new Map<string, ParseRequest>();
 
-/** Run only admitted bytes in a disposable, heap-limited child. No in-process path. */
-export async function parseTableDocumentIsolated(
-  bytes: Buffer,
-  format: PreviewDocumentFormat,
-  sheetIndex: number,
-): Promise<PreviewTableDocument> {
-  if (!Buffer.isBuffer(bytes) || previewDocumentFormatOf(`input.${format}`) !== format) {
-    throw new TableDocumentError("read-failed", DOCUMENT_PARSE_MESSAGES["read-failed"]);
-  }
-  if (bytes.length > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) {
-    throw new TableDocumentError("too-large", DOCUMENT_PARSE_MESSAGES["too-large"]);
-  }
-  if (!Number.isSafeInteger(sheetIndex) || sheetIndex < 0) {
-    throw new TableDocumentError("sheet-not-found", DOCUMENT_PARSE_MESSAGES["sheet-not-found"]);
-  }
-  if (activeParses >= PREVIEW_DOCUMENT_LIMITS.maxConcurrentParses) {
-    throw new TableDocumentError("parse-limit", DOCUMENT_PARSE_MESSAGES["parse-limit"]);
-  }
-  activeParses += 1;
+interface ParseRequest {
+  owner: string;
+  controller: AbortController;
+  finished: Promise<void>;
+  finish: () => void;
+  admitted: boolean;
+  released: boolean;
+  running: boolean;
+}
+
+export interface DocumentParseSlot {
+  readonly signal: AbortSignal;
+  parse(bytes: Buffer, format: PreviewDocumentFormat, sheetIndex: number): Promise<PreviewTableDocument>;
+  release(): void;
+}
+
+function documentError(code: keyof typeof DOCUMENT_PARSE_MESSAGES): TableDocumentError {
+  return new TableDocumentError(code, DOCUMENT_PARSE_MESSAGES[code]);
+}
+
+function releaseRequest(request: ParseRequest): void {
+  if (request.released) throw documentError("read-failed");
+  request.released = true;
+  if (request.admitted) activeParses -= 1;
+  if (requests.get(request.owner) === request) requests.delete(request.owner);
+  request.finish();
+}
+
+/** Admit before reading. A replacement waits for the old read and child to finish. */
+export async function acquireParseSlot(owner: string): Promise<DocumentParseSlot> {
+  if (typeof owner !== "string" || owner.length === 0) throw documentError("read-failed");
+  const previous = requests.get(owner);
+  let finish!: () => void;
+  const finished = new Promise<void>((resolve) => { finish = resolve; });
+  const request: ParseRequest = {
+    owner, controller: new AbortController(), finished, finish,
+    admitted: false, released: false, running: false,
+  };
+  requests.set(owner, request);
+  previous?.controller.abort(documentError("superseded"));
+  const signal = request.controller.signal;
   try {
-    return await runChild(bytes, format, sheetIndex);
+    if (previous) await previous.finished;
+    signal.throwIfAborted();
+    if (activeParses >= PREVIEW_DOCUMENT_LIMITS.maxConcurrentParses) throw documentError("busy");
+    request.admitted = true;
+    activeParses += 1;
+    return {
+      signal,
+      async parse(bytes, format, sheetIndex) {
+        if (request.released || request.running) throw documentError("read-failed");
+        signal.throwIfAborted();
+        if (!Buffer.isBuffer(bytes) || previewDocumentFormatOf(`input.${format}`) !== format) throw documentError("read-failed");
+        if (bytes.length > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) throw documentError("too-large");
+        if (!Number.isSafeInteger(sheetIndex) || sheetIndex < 0) throw documentError("sheet-not-found");
+        request.running = true;
+        try {
+          const document = await runChild(bytes, format, sheetIndex, signal);
+          signal.throwIfAborted();
+          return document;
+        } catch (error) {
+          signal.throwIfAborted();
+          if (error instanceof TableDocumentError) throw error;
+          throw documentError("read-failed");
+        } finally {
+          request.running = false;
+        }
+      },
+      release() {
+        if (request.running) throw documentError("read-failed");
+        releaseRequest(request);
+      },
+    };
   } catch (error) {
-    if (error instanceof TableDocumentError) throw error;
-    throw new TableDocumentError("read-failed", DOCUMENT_PARSE_MESSAGES["read-failed"]);
-  } finally {
-    activeParses -= 1;
+    releaseRequest(request);
+    throw error;
   }
 }
 
-function runChild(bytes: Buffer, format: PreviewDocumentFormat, sheetIndex: number): Promise<PreviewTableDocument> {
+/** Parse admitted bytes in a bounded and killable child; native memory is not capped. */
+function runChild(bytes: Buffer, format: PreviewDocumentFormat, sheetIndex: number, signal: AbortSignal): Promise<PreviewTableDocument> {
   // Resolve from the runtime asset root: this module may live in a split chunk.
   const entryPath = join(mainDir, "preview-document-child-main.js");
   if (!statSync(entryPath).isFile()) throw new TableDocumentError("read-failed", DOCUMENT_PARSE_MESSAGES["read-failed"]);
@@ -60,17 +112,37 @@ function runChild(bytes: Buffer, format: PreviewDocumentFormat, sheetIndex: numb
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
+    const readyMarker = Buffer.from(DOCUMENT_PARSE_READY);
+    let readyBytes = 0;
+    let ready = false;
+    let parseTimer: ReturnType<typeof setTimeout> | undefined;
     let failure: TableDocumentError | undefined;
-    const stop = (code: "parse-limit" | "read-failed"): void => {
-      failure ??= new TableDocumentError(code, DOCUMENT_PARSE_MESSAGES[code]);
+    const stop = (code: "parse-limit" | "read-failed" | "superseded"): void => {
+      failure ??= documentError(code);
       forceKillManagedChildProcess(child, "document-preview-stop");
     };
-    const timer = setTimeout(() => stop("parse-limit"), PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs);
+    const handleAbort = (): void => stop("superseded");
+    const startupTimer = setTimeout(() => stop("read-failed"), PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs);
+    signal.addEventListener("abort", handleAbort, { once: true });
     child.stdout!.on("data", (chunk: Buffer) => {
       if (failure) return;
+      if (!ready) {
+        const count = Math.min(chunk.length, readyMarker.length - readyBytes);
+        if (!chunk.subarray(0, count).equals(readyMarker.subarray(readyBytes, readyBytes + count))) {
+          stop("read-failed");
+          return;
+        }
+        readyBytes += count;
+        chunk = chunk.subarray(count);
+        if (readyBytes !== readyMarker.length) return;
+        ready = true;
+        clearTimeout(startupTimer);
+        parseTimer = setTimeout(() => stop("parse-limit"), PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs);
+        child.stdin!.end(bytes);
+      }
       total += chunk.length;
       if (total > PREVIEW_DOCUMENT_LIMITS.maxResponseBytes) stop("parse-limit");
-      else chunks.push(chunk);
+      else if (chunk.length > 0) chunks.push(chunk);
     });
     // Never retain fatal diagnostics: they can include source text or dump paths.
     child.stderr!.resume();
@@ -79,11 +151,13 @@ function runChild(bytes: Buffer, format: PreviewDocumentFormat, sheetIndex: numb
       if (child.pid) stop("read-failed");
     });
     child.stdin!.on("error", () => stop("read-failed"));
-    child.once("close", (code, signal) => {
-      clearTimeout(timer);
+    child.once("close", (code, exitSignal) => {
+      clearTimeout(startupTimer);
+      clearTimeout(parseTimer);
+      signal.removeEventListener("abort", handleAbort);
       if (failure) { reject(failure); return; }
-      if (signal || code !== 0) {
-        reject(new TableDocumentError("parse-limit", DOCUMENT_PARSE_MESSAGES["parse-limit"]));
+      if (!ready || exitSignal || code !== 0) {
+        reject(documentError(ready ? "parse-limit" : "read-failed"));
         return;
       }
       try {
@@ -101,6 +175,6 @@ function runChild(bytes: Buffer, format: PreviewDocumentFormat, sheetIndex: numb
         reject(new TableDocumentError("read-failed", DOCUMENT_PARSE_MESSAGES["read-failed"]));
       }
     });
-    child.stdin!.end(bytes);
+    if (signal.aborted) handleAbort();
   });
 }

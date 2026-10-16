@@ -4,7 +4,7 @@ import {
 } from "../shared/preview-document.js";
 import { parseTableDocument } from "./table-document-reader.js";
 import { TableDocumentError } from "./table-document-error.js";
-import { isDocumentParseError, readDocumentResponse } from "./preview-document-protocol.js";
+import { DOCUMENT_PARSE_READY, isDocumentParseError, readDocumentResponse } from "./preview-document-protocol.js";
 
 async function readInput(length: number): Promise<Buffer> {
   const input = Buffer.allocUnsafe(length);
@@ -30,6 +30,7 @@ try {
       || length > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) {
     throw new Error("Invalid document parse request.");
   }
+  process.stdout.write(DOCUMENT_PARSE_READY);
   const document = readDocumentResponse(await parseTableDocument(await readInput(length), format, sheetIndex));
   const response = JSON.stringify({ ok: true, document });
   if (Buffer.byteLength(response) > PREVIEW_DOCUMENT_LIMITS.maxResponseBytes) {

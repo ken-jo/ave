@@ -24,7 +24,7 @@ const LazyTableDocumentGrid = lazy(() =>
 );
 
 /** Map a read-document error code to its user message key. */
-export function tableErrorKey(code: PreviewDocumentError): string {
+export function tableErrorKey(code: Exclude<PreviewDocumentError, "superseded">): string {
   switch (code) {
     case "path-not-allowed":
     case "sensitive-path":
@@ -39,6 +39,8 @@ export function tableErrorKey(code: PreviewDocumentError): string {
       return "chatPreviewRail.tableErrorCorrupt";
     case "parse-limit":
       return "chatPreviewRail.tableErrorParseLimit";
+    case "busy":
+      return "chatPreviewRail.tableErrorBusy";
     case "encrypted":
       return "chatPreviewRail.tableErrorEncrypted";
     case "unsupported-encoding":
@@ -57,7 +59,7 @@ export function tableErrorKey(code: PreviewDocumentError): string {
 type LoadState =
   | { phase: "loading" }
   | { phase: "ok"; document: PreviewTableDocument }
-  | { phase: "error"; code: PreviewDocumentError };
+  | { phase: "error"; code: Exclude<PreviewDocumentError, "superseded"> };
 
 function TruncationNotices({ document }: { document: PreviewTableDocument }) {
   const { t } = useTranslation();
@@ -109,7 +111,8 @@ export function TableDocumentPreview({ path }: { path: string }) {
       .readDocument(path, sheetIndex)
       .then((result) => {
         if (cancelled) return;
-        setState(result.ok ? { phase: "ok", document: result.document } : { phase: "error", code: result.error });
+        if (result.ok) setState({ phase: "ok", document: result.document });
+        else if (result.error !== "superseded") setState({ phase: "error", code: result.error });
       })
       .catch(() => {
         if (!cancelled) setState({ phase: "error", code: "read-failed" });

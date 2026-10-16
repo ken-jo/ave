@@ -42,6 +42,7 @@ export interface PreviewDocumentLimits {
   maxReturnedCells: number;
   maxCellChars: number;
   maxSheets: number;
+  startupTimeoutMs: number;
   parseTimeoutMs: number;
   maxOldSpaceMb: number;
   maxResponseBytes: number;
@@ -70,7 +71,9 @@ export const PREVIEW_DOCUMENT_LIMITS: Readonly<PreviewDocumentLimits> = Object.f
   maxCellChars: 2_000,
   /** Sheets listed as tabs. */
   maxSheets: 100,
-  /** Total child lifetime, including startup and transport. */
+  /** Child startup through the ready marker, before any source is sent. */
+  startupTimeoutMs: 5_000,
+  /** Parsing and response transport after the child is ready. */
   parseTimeoutMs: 3_000,
   /** Child managed old-space limit; native buffers are bounded separately. */
   maxOldSpaceMb: 256,
@@ -125,6 +128,8 @@ export type PreviewDocumentError =
   | "encrypted"
   | "unsupported-encoding"
   | "corrupt-document"
+  | "busy"
+  | "superseded"
   | "parse-limit"
   | "read-failed";
 

@@ -42,6 +42,7 @@ describe("tableErrorKey", () => {
     expect(tableErrorKey("unsupported-encoding")).toBe("chatPreviewRail.tableErrorEncoding");
     expect(tableErrorKey("encrypted")).toBe("chatPreviewRail.tableErrorEncrypted");
     expect(tableErrorKey("parse-limit")).toBe("chatPreviewRail.tableErrorParseLimit");
+    expect(tableErrorKey("busy")).toBe("chatPreviewRail.tableErrorBusy");
   });
 });
 
@@ -168,6 +169,21 @@ describe("file preview routing", () => {
     const error = await screen.findByTestId("chat-side-panel-file-error");
     expect(error.textContent).toMatch(/time or memory|시간이나 메모리/);
     expect(error.textContent).not.toContain("private parser diagnostic");
+  });
+
+  it("shows contention as busy without suggesting a smaller document", async () => {
+    readDocument.mockResolvedValueOnce({ ok: false, error: "busy", message: "private busy detail" });
+    render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
+    const error = await screen.findByTestId("chat-side-panel-file-error");
+    expect(error.textContent).toMatch(/Try again shortly|잠시 후 다시/);
+    expect(error.textContent).not.toMatch(/smaller|더 작은|private busy/);
+  });
+
+  it("ignores a superseded response without showing an error", async () => {
+    readDocument.mockResolvedValueOnce({ ok: false, error: "superseded", message: "superseded detail" });
+    render(<PreviewBody api={{} as never} target={fileTarget("/w/book.xlsx")} />);
+    await waitFor(() => expect(readDocument).toHaveResolved());
+    expect(screen.queryByTestId("chat-side-panel-file-error")).toBeNull();
   });
 
   it("keeps markdown on the text readFile path", async () => {

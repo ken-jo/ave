@@ -52,6 +52,12 @@ test("table previews show bounded counts, late source rows and explicit parser r
     await expect(ctx.page.getByTestId("chat-side-panel-table-grid")).toContainText("late value");
     await expect(ctx.page.getByTestId("chat-side-panel-table-grid")).toContainText("10001");
 
+    await file("cyclic.xls").click();
+    await expect(ctx.page.getByTestId("chat-side-panel-table-loading")).toBeVisible();
+    await file("records.csv").click();
+    await expect(ctx.page.getByTestId("chat-side-panel-table-grid")).toBeVisible();
+    await expect(preview).toContainText("최소");
+
     await file("broken.csv").click();
     await expect(ctx.page.getByTestId("chat-side-panel-file-error")).toContainText("손상");
 

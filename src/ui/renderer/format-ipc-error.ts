@@ -174,6 +174,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "archive-too-large": "formatIpcError.archiveTooLarge",
   "corrupt-document": "formatIpcError.corruptDocument",
   "parse-limit": "chatPreviewRail.tableErrorParseLimit",
+  "busy": "chatPreviewRail.tableErrorBusy",
   "encrypted": "formatIpcError.encryptedDocument",
   "unsupported-encoding": "formatIpcError.unsupportedEncoding",
   // Workspace pick-root acknowledgement token (workspace.ts): the one-time ack

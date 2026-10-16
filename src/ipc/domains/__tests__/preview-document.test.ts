@@ -1,14 +1,15 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import AdmZip from "adm-zip";
 import * as XLSX from "xlsx";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
-import { makeAppIpcFrameInvoker } from "./test-helpers.js";
 import { PREVIEW_DOCUMENT_LIMITS, type PreviewReadDocumentResult } from "../../../shared/preview-document.js";
 import { buildPreviewDocumentRuntime } from "../../../__tests__/support/preview-document-runtime.js";
 import { cyclicWorkbook } from "../../../__tests__/support/table-document-fixtures.js";
+import * as documentInput from "../../../tools/preview-document-input.js";
+import { getManagedChildProcessCount } from "../../../main/managed-child-processes.js";
 
 const { handlers, additionalDirectories, childRuntime } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -40,7 +41,6 @@ import { CHANNELS } from "../../../contract/app-contract.js";
 
 const auditLog = vi.fn();
 const deps = { auditLogger: { log: auditLog } } as never;
-const invoke = makeAppIpcFrameInvoker(handlers);
 const OK_FRAME = "file:///app/index.html";
 const EVIL_FRAME = "https://evil.example.com/x";
 const dirLinkType = process.platform === "win32" ? "junction" : "dir";
@@ -48,8 +48,11 @@ const dirLinkType = process.platform === "win32" ? "junction" : "dir";
 let root: string;
 let outside: string;
 
-async function readDocument(frame: string, path: unknown, sheetIndex: unknown = 0) {
-  return (await invoke(CHANNELS.preview.readDocument, frame, path, sheetIndex)) as PreviewReadDocumentResult;
+async function readDocument(frame: string, path: unknown, sheetIndex: unknown = 0, senderId = 1, routingId = 0) {
+  const handler = handlers.get(CHANNELS.preview.readDocument)!;
+  return (await handler({
+    sender: { id: senderId }, senderFrame: { url: frame, processId: senderId, routingId },
+  }, path, sheetIndex)) as PreviewReadDocumentResult;
 }
 
 beforeAll(async () => {
@@ -87,7 +90,103 @@ beforeEach(() => {
   auditLog.mockClear();
 });
 
+afterEach(() => { vi.restoreAllMocks(); });
+
 describe("preview:read-document handler", () => {
+  it("admits only one full-size input buffer before concurrent reads", async () => {
+    const buffers = new Set<Buffer>();
+    let peak = 0;
+    let resume!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const read = vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementation(async () => {
+      const buffer = Buffer.allocUnsafe(PREVIEW_DOCUMENT_LIMITS.maxFileBytes);
+      buffers.add(buffer);
+      peak = Math.max(peak, buffers.size);
+      await gate;
+      buffers.delete(buffer);
+      throw new Error("Read held for admission check.");
+    });
+    const calls = Array.from({ length: 20 }, (_, index) =>
+      readDocument(OK_FRAME, join(root, "data", "people.csv"), 0, index + 1));
+    try {
+      await vi.waitFor(() => expect(read).toHaveBeenCalled());
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(peak).toBe(1);
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally {
+      resume();
+      await Promise.all(calls);
+    }
+  });
+
+  it("supersedes an older parse for the same frame before loading the latest sheet", async () => {
+    const read = documentInput.readPreviewDocumentInput;
+    const childrenAtRead: number[] = [];
+    vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementation((...args) => {
+      childrenAtRead.push(getManagedChildProcessCount());
+      return read(...args);
+    });
+    const previous = readDocument(OK_FRAME, join(root, "data", "cyclic.xls"));
+    await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(1));
+    const latest = readDocument(OK_FRAME, join(root, "data", "book.xlsx"), 1);
+    const [oldResult, newResult] = await Promise.all([previous, latest]);
+    expect(oldResult).toMatchObject({ ok: false, error: "superseded" });
+    expect(newResult).toMatchObject({ ok: true, document: { sheet: { name: "Notes" } } });
+    expect(childrenAtRead).toEqual([0, 0]);
+    expect(getManagedChildProcessCount()).toBe(0);
+  });
+
+  it("keeps only the latest same-frame request while an older read unwinds", async () => {
+    const read = documentInput.readPreviewDocumentInput;
+    let entered!: () => void;
+    let resume!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const spy = vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementationOnce(async (path, signal) => {
+      const bytes = await read(path, signal);
+      entered();
+      await gate;
+      signal?.throwIfAborted();
+      return bytes;
+    });
+    const previous = readDocument(OK_FRAME, join(root, "data", "people.csv"));
+    await reading;
+    const replacements = Array.from({ length: 20 }, () => readDocument(OK_FRAME, join(root, "data", "book.xlsx"), 1));
+    let results: PreviewReadDocumentResult[];
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      resume();
+      results = await Promise.all([previous, ...replacements]);
+    }
+    expect(results.slice(0, -1).every((result) => !result.ok && result.error === "superseded")).toBe(true);
+    expect(results.at(-1)).toMatchObject({ ok: true, document: { sheet: { name: "Notes" } } });
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports another frame as busy without reading or superseding its owner", async () => {
+    const read = vi.spyOn(documentInput, "readPreviewDocumentInput");
+    const previous = readDocument(OK_FRAME, join(root, "data", "cyclic.xls"));
+    await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(1));
+    const otherFrame = await readDocument(OK_FRAME, join(root, "data", "people.csv"), 0, 1, 1);
+    const readsWhileBusy = read.mock.calls.length;
+    const latest = readDocument(OK_FRAME, join(root, "data", "people.csv"));
+    const [oldResult, newResult] = await Promise.all([previous, latest]);
+    expect(otherFrame).toMatchObject({ ok: false, error: "busy" });
+    expect(readsWhileBusy).toBe(1);
+    expect(oldResult).toMatchObject({ ok: false, error: "superseded" });
+    expect(newResult).toMatchObject({ ok: true });
+  });
+
+  it("fails clearly if an admitted frame lacks its runtime identity", async () => {
+    const read = vi.spyOn(documentInput, "readPreviewDocumentInput");
+    const handler = handlers.get(CHANNELS.preview.readDocument)!;
+    expect(await handler({ senderFrame: { url: OK_FRAME } }, join(root, "data", "people.csv"), 0))
+      .toMatchObject({ ok: false, error: "read-failed" });
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it("returns a parsed table for a CSV inside the allow-list, never raw bytes", async () => {
     const res = await readDocument(OK_FRAME, join(root, "data", "people.csv"));
     if (!res.ok) throw new Error(`expected ok, got ${res.error}`);

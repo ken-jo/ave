@@ -7,13 +7,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { buildPreviewDocumentRuntime } from "../../__tests__/support/preview-document-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { cyclicWorkbook, offsetWorkbook } from "../../__tests__/support/table-document-fixtures.js";
-import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
+import { PREVIEW_DOCUMENT_LIMITS, type PreviewDocumentFormat } from "../../shared/preview-document.js";
 import { asarCliPath } from "../../../test/scripts/gate-script-runner.js";
 
 const { runtime } = vi.hoisted(() => ({ runtime: { mainDir: "" } }));
 vi.mock("../../main/main-paths.js", () => ({ get mainDir() { return runtime.mainDir; } }));
 
-import { parseTableDocumentIsolated } from "../preview-document-process.js";
+import { acquireParseSlot } from "../preview-document-process.js";
+import { DOCUMENT_PARSE_READY } from "../preview-document-protocol.js";
 import * as managedChildren from "../../main/managed-child-processes.js";
 
 const { getManagedChildProcessCount } = managedChildren;
@@ -21,6 +22,16 @@ const { getManagedChildProcessCount } = managedChildren;
 let bundleDir: string;
 let entry: string;
 let original: string;
+let ownerId = 0;
+
+async function parseTableDocumentIsolated(bytes: Buffer, format: PreviewDocumentFormat, sheetIndex: number) {
+  const slot = await acquireParseSlot(`document-test:${++ownerId}`);
+  try {
+    return await slot.parse(bytes, format, sheetIndex);
+  } finally {
+    slot.release();
+  }
+}
 
 beforeAll(async () => {
   bundleDir = await buildPreviewDocumentRuntime();
@@ -41,7 +52,7 @@ afterAll(async () => {
 });
 
 function childProgram(body: string): void {
-  writeFileSync(entry, `for await (const chunk of process.stdin) { /* Drain admitted bytes. */ }\n${body}`);
+  writeFileSync(entry, `process.stdout.write(${JSON.stringify(DOCUMENT_PARSE_READY)});\nfor await (const chunk of process.stdin) { /* Drain admitted bytes. */ }\n${body}`);
 }
 
 async function runProbe(program: string): Promise<Record<string, number>> {
@@ -89,10 +100,11 @@ describe("isolated table parsing", () => {
       .toEqual([["still", "responsive"]]);
   });
 
-  it("refuses concurrent parsers rather than multiplying the resource allowance", async () => {
+  it("reports a different sender's occupied slot as busy", async () => {
     const pending = parseTableDocumentIsolated(cyclicWorkbook(), "xls", 0);
-    await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", 0)).rejects.toMatchObject({ code: "parse-limit" });
+    const refused = await parseTableDocumentIsolated(Buffer.from("a"), "csv", 0).catch((error: unknown) => error);
     await expect(pending).rejects.toMatchObject({ code: "parse-limit" });
+    expect(refused).toMatchObject({ code: "busy" });
   });
 
   it("reports heap exhaustion clearly without retaining fatal diagnostics", async () => {
@@ -167,6 +179,8 @@ describe("isolated table parsing", () => {
     "process.stdout.write('not-json')",
     "process.stdout.write(JSON.stringify({ok:true}))",
     "process.stdout.write(JSON.stringify({ok:false,error:'unauthorized'}))",
+    "process.stdout.write(JSON.stringify({ok:false,error:'busy'}))",
+    "process.stdout.write(JSON.stringify({ok:false,error:'superseded'}))",
     "process.stdout.write(JSON.stringify({ok:false,error:'corrupt-document',extra:1}))",
     "process.stdout.write(JSON.stringify({ok:true,document:{format:'csv',sheet:{rows:[['x']]}}}))",
   ])("refuses malformed child output: %s", async (body) => {
@@ -192,6 +206,58 @@ describe("isolated table parsing", () => {
     runtime.mainDir = join(bundleDir, "missing");
     await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", 0)).rejects.toMatchObject({ code: "read-failed" });
     expect(getManagedChildProcessCount()).toBe(0);
+  });
+
+  it("reports a missing imported chunk as a startup failure", async () => {
+    writeFileSync(entry, "import './missing-document-chunk.js';");
+    await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", 0)).rejects.toMatchObject({ code: "read-failed" });
+    expect(getManagedChildProcessCount()).toBe(0);
+  });
+
+  it("allows startup beyond the parse deadline and starts parsing after ready", async () => {
+    writeFileSync(entry, `
+      await new Promise(resolve => setTimeout(resolve, ${PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs + 150}));
+      await import('./preview-document-child-main.mjs');
+    `);
+    const started = performance.now();
+    const document = await parseTableDocumentIsolated(Buffer.from("a,b"), "csv", 0);
+    expect(document.sheet.rows).toEqual([["a", "b"]]);
+    expect(performance.now() - started).toBeGreaterThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs);
+    expect(getManagedChildProcessCount()).toBe(0);
+  }, PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs + 2_000);
+
+  it("kills a child that never becomes ready with a startup error", async () => {
+    writeFileSync(entry, "for (;;) {}");
+    const started = performance.now();
+    await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", 0)).rejects.toMatchObject({ code: "read-failed" });
+    expect(performance.now() - started).toBeGreaterThanOrEqual(PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs);
+    expect(performance.now() - started).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs + 2_000);
+    expect(getManagedChildProcessCount()).toBe(0);
+  }, PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs + 2_000);
+
+  it("recognizes a ready marker split across stdout chunks", async () => {
+    const expected = await parseTableDocumentIsolated(Buffer.from("a"), "csv", 0);
+    writeFileSync(entry, `
+      for (const character of ${JSON.stringify(DOCUMENT_PARSE_READY)}) {
+        process.stdout.write(character);
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      for await (const chunk of process.stdin) {}
+      process.stdout.write(${JSON.stringify(JSON.stringify({ ok: true, document: expected }))});
+    `);
+    expect(await parseTableDocumentIsolated(Buffer.from("a"), "csv", 0)).toEqual(expected);
+  });
+
+  it("classifies abnormal exit after ready as a parsing resource error", async () => {
+    childProgram("process.exit(1);");
+    await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", 0)).rejects.toMatchObject({ code: "parse-limit" });
+  });
+
+  it("refuses parsing through a released slot", async () => {
+    const slot = await acquireParseSlot("released-document");
+    slot.release();
+    await expect(slot.parse(Buffer.from("a"), "csv", 0)).rejects.toMatchObject({ code: "read-failed" });
+    expect(() => slot.release()).toThrow("internal contract");
   });
 
   it("loads the child and its split chunks from the packaged archive", async () => {

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { FileHandle } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
+import { TableDocumentError } from "../table-document-error.js";
 
 const file = vi.hoisted(() => ({ open: vi.fn() }));
 vi.mock("node:fs/promises", () => ({ open: file.open }));
@@ -34,6 +35,22 @@ afterEach(() => {
 });
 
 describe("bounded document input", () => {
+  it("closes a superseded read before allocating its input buffer", async () => {
+    const controller = new AbortController();
+    onOpened = (handle) => {
+      const stat = handle.stat.bind(handle);
+      vi.spyOn(handle, "stat").mockImplementationOnce(async () => {
+        const info = await stat();
+        controller.abort(new TableDocumentError("superseded", "Request was replaced."));
+        return info;
+      });
+      vi.spyOn(handle, "read");
+    };
+    await expect(readPreviewDocumentInput(path, controller.signal)).rejects.toMatchObject({ code: "superseded" });
+    expect(opened?.read).not.toHaveBeenCalled();
+    expect(opened?.fd).toBe(-1);
+  });
+
   it("reads the opened descriptor when the checked pathname is replaced", async () => {
     onOpened = (handle) => {
       const stat = handle.stat.bind(handle);
