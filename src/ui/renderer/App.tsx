@@ -1149,6 +1149,7 @@ export function App() {
     refresh: refreshLlmSettings,
     settingsLoaded,
     toggleThinking,
+    activeChatModel,
   } = settings;
   const {
     activeSubscriptionRuntime,
@@ -1180,11 +1181,12 @@ export function App() {
   );
   const subscriptionUnavailableProvider = subscriptionRuntimePolicy.unavailableProvider;
   const subscriptionPendingProvider = subscriptionRuntimePolicy.pendingProvider;
-  // Whether any chat model is configured — a selected subscription runtime, or
-  // an API vendor that names a model. Unknown until the settings snapshot
-  // lands, so the sidebar does not alert on the pre-load defaults.
-  const chatModelConfigured = settingsLoaded
-    ? subscriptionRuntimeSelected || llmModel.length > 0
+  // Whether any chat model is configured — main's `activeChatModel`, which is
+  // "none" for a route with no credential behind it even though its vendor
+  // block names a default id. Unknown until the settings snapshot lands, so
+  // the sidebar does not alert on the pre-load defaults.
+  const chatModelConfigured = settingsLoaded && activeChatModel
+    ? activeChatModel.kind !== "none"
     : null;
   const subscriptionImageAttachmentProvider = subscriptionRuntimePolicy.imageAttachmentProvider;
   const subscriptionFileAttachmentProvider = subscriptionRuntimePolicy.fileAttachmentProvider;
@@ -1734,7 +1736,7 @@ export function App() {
     // not a safe authority for a setting a selected subscription runtime does
     // not expose. Keep this control fail-closed with send/attachment UX.
     chatReasoningAvailable: settingsLoaded && activeSubscriptionRuntime === null,
-    effectiveLlmReady, chatReadyWithoutApiKey, checkApiKey,
+    effectiveLlmReady, chatReadyWithoutApiKey, activeChatModel, checkApiKey,
     // The route's effective output limit — what the engine sends, not an
     // assumed 4,096 — so the output estimate is the most a reply may cost.
     onOpenSettings,
@@ -1772,7 +1774,7 @@ export function App() {
     subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
     subscriptionUnavailableProvider, subscriptionPendingProvider,
     apiUsageProjectionAvailable, activeSubscriptionRuntime,
-    effectiveLlmReady, chatReadyWithoutApiKey, checkApiKey, onOpenSettings, llmOutputTokenLimit,
+    effectiveLlmReady, chatReadyWithoutApiKey, activeChatModel, checkApiKey, onOpenSettings, llmOutputTokenLimit,
     rolePresets, activePreset, activePresetId, setActivePresetId,
     enableThinkingChat, toggleThinking, processingDisplayLevel, refreshSessions, focusChatGroup, sessions,
     sideChatOpenRequest,
