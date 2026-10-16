@@ -194,10 +194,13 @@ export function assertMainBundleBudget(measurement, budgets) {
  * per ceiling, plus the lazy (async) share that has no ceiling of its own.
  */
 export function formatMainBundleSummary(measurement, budgets) {
-  const bytes = (value) => value.toLocaleString("en-US");
+  const bytes = (value) => (Number.isFinite(value) ? value.toLocaleString("en-US") : "invalid");
   const rows = MAIN_BUNDLE_BUDGET_KEYS.map((key) => {
-    const headroom = (1 - (measurement[key] / budgets[key])) * 100;
-    return `| ${key.replace(/Bytes$/, "")} | ${bytes(measurement[key])} | ${bytes(budgets[key])} | ${headroom.toFixed(1)}% |`;
+    const ceiling = budgets?.[key];
+    const headroom = Number.isSafeInteger(ceiling) && ceiling > 0
+      ? `${((1 - (measurement[key] / ceiling)) * 100).toFixed(1)}%`
+      : "invalid";
+    return `| ${key.replace(/Bytes$/, "")} | ${bytes(measurement[key])} | ${bytes(ceiling)} | ${headroom} |`;
   });
   return [
     "### Main bundle budget",

@@ -215,6 +215,31 @@ describe("main bundle budget", () => {
     expect(summary).toContain("| async (lazy) | 250 | — | — |");
   });
 
+  it("summarizes an exceeded or invalid ceiling without throwing", () => {
+    const measurement = analyzeMainBundleMetafile(syntheticMetafile, {
+      entryPoint: "/repo/src/main.ts",
+      requiredAsyncEntryPoint: "/repo/src/boot.ts",
+    });
+    const summary = formatMainBundleSummary(measurement, {
+      entryBytes: 80,
+      initialBytes: 150,
+    });
+    expect(summary).toContain("| entry | 100 | 80 | -25.0% |");
+    expect(summary).toContain("| initial | 150 | 150 | 0.0% |");
+    expect(summary).toContain("| total | 400 | invalid | invalid |");
+  });
+
+  it("reports a structural failure and an invalid ceiling in one error", () => {
+    const measurement = analyzeMainBundleMetafile(syntheticMetafile, {
+      entryPoint: "/repo/src/main.ts",
+      requiredAsyncEntryPoint: "/repo/src/boot.ts",
+    });
+    expect(() => assertMainBundleBudget(
+      { ...measurement, hasRequiredAsyncBoundary: false },
+      { entryBytes: 1_000, initialBytes: 1_000 },
+    )).toThrow(/required boot entry has no async bundle boundary[\s\S]*budget totalBytes is not a positive integer/);
+  });
+
   it("rejects a static boot edge even when an unrelated dynamic import remains", () => {
     const metafile = structuredClone(syntheticMetafile);
     metafile.outputs["/repo/dist/main.js"].imports = [
