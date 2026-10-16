@@ -618,10 +618,20 @@ function providerOptionsForPresets(
  *
  * This is the renderer's half of `STANDARD_MODEL_LIST_BASE_URLS` in
  * `engine/llm/model-list.ts`: main resolves the URL, this decides that asking
- * is worthwhile. Kept as one set so the two questions the tab asks about these
- * vendors — "sync it?" and "may a static seed stand in?" — cannot disagree.
+ * is worthwhile.
  */
 const STANDARD_CATALOGUE_ENDPOINT_VENDORS: ReadonlySet<string> = new Set([
+  "openai",
+  "claude",
+  "gemini",
+]);
+
+/**
+ * Of those, the vendors whose list is the endpoint's word alone: until their
+ * `/models` answers, no catalog list stands in. Claude and Gemini offer the
+ * catalog's models until their listing arrives, then the listing.
+ */
+const ENDPOINT_ONLY_CATALOGUE_VENDORS: ReadonlySet<string> = new Set([
   "openai",
 ]);
 
@@ -629,8 +639,8 @@ const STANDARD_CATALOGUE_ENDPOINT_VENDORS: ReadonlySet<string> = new Set([
  * Whether this provider has a model list worth asking its endpoint for.
  *
  * The two contract questions come FIRST, before any address is considered:
- * may the host fetch this provider's list at all, and is that list the
- * endpoint's word rather than ours. An address is not a catalogue — Azure AI
+ * may the host fetch this provider's list at all, and does this provider have
+ * an endpoint list at all. An address is not a catalogue — Azure AI
  * Foundry's `baseUrl` names one deployment while its models are the curated
  * table here — so letting a configured endpoint short-circuit these made a
  * card fetch a list it does not read, and paint itself red when the fetch
@@ -644,9 +654,9 @@ function shouldSyncModelList(
 ): boolean {
   if (!vendorId) return false;
   if (!modelDiscoveryPolicyAllowsFetch(modelDiscoveryPolicy)) return false;
+  if (STANDARD_CATALOGUE_ENDPOINT_VENDORS.has(vendorId)) return true;
   if (!usesEndpointModelCatalogue(vendorId)) return false;
-  if (baseUrl?.trim()) return true;
-  return STANDARD_CATALOGUE_ENDPOINT_VENDORS.has(vendorId);
+  return Boolean(baseUrl?.trim());
 }
 
 /**
@@ -663,14 +673,14 @@ function isOpenAICompatibleFamilyVendor(vendorId: string): boolean {
  * Whether this vendor's catalogue is the endpoint's word rather than ours.
  *
  * Two kinds qualify: the openai-compatible family, whose catalogue is defined
- * by whatever endpoint it points at, and the vendors with a fixed, known
- * `/models` endpoint. For both, a bundled list of model ids is a guess about
- * someone else's inventory, so it must never stand in for the answer — a
- * failed handshake has to READ as a failed handshake, not as a short catalogue.
+ * by whatever endpoint it points at, and {@link ENDPOINT_ONLY_CATALOGUE_VENDORS}.
+ * For both, a bundled list of model ids is a guess about someone else's
+ * inventory, so it must never stand in for the answer — a failed handshake has
+ * to READ as a failed handshake, not as a short catalogue.
  */
 function usesEndpointModelCatalogue(vendorId: string): boolean {
   return isOpenAICompatibleFamilyVendor(vendorId)
-    || STANDARD_CATALOGUE_ENDPOINT_VENDORS.has(vendorId);
+    || ENDPOINT_ONLY_CATALOGUE_VENDORS.has(vendorId);
 }
 
 /**

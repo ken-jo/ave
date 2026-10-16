@@ -1249,7 +1249,7 @@ describe("LlmTab model chooser is the whole switch", () => {
       .toHaveTextContent(/키|key|Schlüssel|clave|clé|キー|密钥/i);
     // The chooser is populated — by the provider that CAN answer, only.
     const offered = await chooserModelIds();
-    expect(offered).toContain("gemini-2.5-flash");
+    expect(offered).toContain("gemini-3.8-flash");
     expect(offered.some((id) => id.startsWith("claude"))).toBe(false);
   });
 
@@ -2457,7 +2457,8 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     expect(screen.getByTestId("llm-tab:connection-refresh:openai-compatible")).toBeInTheDocument();
     // A curated list has no endpoint to ask, so there is nothing to offer.
     expect(screen.queryByTestId("llm-tab:connection-refresh:azure-foundry")).toBeNull();
-    expect(screen.queryByTestId("llm-tab:connection-refresh:claude")).toBeNull();
+    // Anthropic's /v1/models is fixed and known, so a keyed Claude card can ask it.
+    expect(screen.getByTestId("llm-tab:connection-refresh:claude")).toBeInTheDocument();
   });
 
   it("asks a row again once its credential is replaced", async () => {

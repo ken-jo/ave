@@ -1346,3 +1346,93 @@ describe("refreshRouteModelList — the catalogue a headless run can reach", () 
     expect(patch).not.toHaveBeenCalled();
   });
 });
+
+describe("Anthropic and Gemini /models — the vendors' own paged listings", () => {
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+
+  it("asks Anthropic with x-api-key and anthropic-version, following has_more by last_id", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      return url.searchParams.get("after_id") === "claude-sonnet-5-5"
+        ? json({ data: [{ id: "claude-haiku-5-5", type: "model" }], has_more: false, first_id: "claude-haiku-5-5", last_id: "claude-haiku-5-5" })
+        : json({ data: [{ id: "claude-opus-5-5", type: "model" }, { id: "claude-sonnet-5-5", type: "model" }], has_more: true, first_id: "claude-opus-5-5", last_id: "claude-sonnet-5-5" });
+    });
+    const result = await listLlmModelsFromSettings(
+      makeSettingsService({ provider: "claude", baseUrl: "https://api.anthropic.com/v1", secret: "fixture-anthropic-key" }) as never,
+      { vendor: "claude" },
+      guardedFetchOptions(fetchImpl),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      endpoint: "https://api.anthropic.com/v1/models",
+      models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
+      complete: true,
+    });
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://api.anthropic.com/v1/models?limit=1000",
+      "https://api.anthropic.com/v1/models?limit=1000&after_id=claude-sonnet-5-5",
+    ]);
+    const headers = fetchImpl.mock.calls[0]![1]!.headers as Record<string, string>;
+    expect(headers).toMatchObject({ "x-api-key": "fixture-anthropic-key", "anthropic-version": "2023-06-01" });
+    expect(headers).not.toHaveProperty("Authorization");
+  });
+
+  it("asks Gemini with x-goog-api-key, keeps only generateContent models, and strips models/", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      return url.searchParams.get("pageToken") === "page-2"
+        ? json({ models: [{ name: "models/gemini-3.5-flash-lite", baseModelId: "gemini-3.5-flash-lite", supportedGenerationMethods: ["generateContent", "countTokens"] }] })
+        : json({
+          models: [
+            { name: "models/gemini-3.8-flash", baseModelId: "gemini-3.8-flash", supportedGenerationMethods: ["generateContent"] },
+            { name: "models/text-embedding-005", supportedGenerationMethods: ["embedContent"] },
+          ],
+          nextPageToken: "page-2",
+        });
+    });
+    const result = await listLlmModelsFromSettings(
+      makeSettingsService({ provider: "gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", secret: "fixture-gemini-key" }) as never,
+      { vendor: "gemini" },
+      guardedFetchOptions(fetchImpl),
+    );
+    expect(result).toMatchObject({ ok: true, models: ["gemini-3.8-flash", "gemini-3.5-flash-lite"], complete: true });
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+      "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&pageToken=page-2",
+    ]);
+    const headers = fetchImpl.mock.calls[0]![1]!.headers as Record<string, string>;
+    expect(headers).toMatchObject({ "x-goog-api-key": "fixture-gemini-key" });
+    expect(headers).not.toHaveProperty("Authorization");
+  });
+
+  it("is not complete when the page cap stops a list that is still paging", async () => {
+    let page = 0;
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      page += 1;
+      return json({ data: [{ id: `claude-fixture-${page}` }], has_more: true, last_id: `claude-fixture-${page}` });
+    });
+    const result = await listLlmModelsFromSettings(
+      makeSettingsService({ provider: "claude", baseUrl: "https://api.anthropic.com/v1", secret: "fixture-anthropic-key" }) as never,
+      { vendor: "claude" },
+      guardedFetchOptions(fetchImpl),
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(10);
+    expect(result).toMatchObject({ ok: true });
+    expect(result).not.toHaveProperty("complete");
+  });
+
+  it("refuses a page that says has_more without saying where the next one starts", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => json({ data: [{ id: "claude-opus-5-5" }], has_more: true }));
+    const result = await listLlmModelsFromSettings(
+      makeSettingsService({ provider: "claude", baseUrl: "https://api.anthropic.com/v1", secret: "fixture-anthropic-key" }) as never,
+      { vendor: "claude" },
+      guardedFetchOptions(fetchImpl),
+    );
+    expect(result).toMatchObject({ ok: false, error: "invalid-model-list-response" });
+  });
+
+  it("resolves Claude and Gemini to their vendors' own /models with no address saved", () => {
+    expect(isDefaultModelListEndpoint(undefined, "claude", "https://api.anthropic.com/v1/models")).toBe(true);
+    expect(isDefaultModelListEndpoint(undefined, "gemini", "https://generativelanguage.googleapis.com/v1beta/models")).toBe(true);
+  });
+});
