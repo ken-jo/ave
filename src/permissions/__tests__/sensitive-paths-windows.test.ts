@@ -15,7 +15,7 @@ import { SENSITIVE_PATH_ENTRIES, isSensitivePath } from "../sensitive-paths.js";
 import { getDefaultSensitiveReadDenyPaths } from "../asrt-sandbox.js";
 import { powerShellExfiltrationSignal, powerShellSensitivePathSignal } from "../rules/powershell-exfiltration.js";
 
-const PROFILE = "C:/Users/someone";
+const PROFILE = "C:/Users/owner";
 
 const WINDOWS_SECRETS: string[] = [
   `${PROFILE}/AppData/Roaming/Microsoft/Credentials/DFBE70A7E5CC19A398EBF1B96859CE5D`,
@@ -29,9 +29,9 @@ const WINDOWS_SECRETS: string[] = [
   `${PROFILE}/AppData/Local/Google/Chrome/User Data/Default/Login Data`,
   `${PROFILE}/AppData/Local/Microsoft/Edge/User Data/Profile 1/Login Data`,
   // Lower-case spellings are the same file on Windows.
-  `c:/users/someone/appdata/roaming/microsoft/credentials/x`,
-  `c:/users/someone/appdata/local/microsoft/powershell/secretmanagement/localstore/storefile`,
-  `c:/users/someone/appdata/local/google/chrome/user data/default/login data`,
+  `c:/users/owner/appdata/roaming/microsoft/credentials/x`,
+  `c:/users/owner/appdata/local/microsoft/powershell/secretmanagement/localstore/storefile`,
+  `c:/users/owner/appdata/local/google/chrome/user data/default/login data`,
 ];
 
 /** Windows forms of stores the POSIX rows already cover (one source of truth). */

