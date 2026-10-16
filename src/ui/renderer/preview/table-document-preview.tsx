@@ -1,0 +1,181 @@
+/**
+ * Side-panel preview for table documents (csv/tsv/xlsx/xls/ods).
+ *
+ * Main parses the file (`window.ave.preview.readDocument`) under the same read
+ * guard as text previews and returns one sheet as a bounded grid of display
+ * strings; this component shows the sheet tabs, the truncation notices and the
+ * lazily-loaded virtualized grid. Every cap the reader applied is stated to the
+ * user — nothing is cut silently.
+ */
+import { Suspense, lazy, useEffect, useState } from "react";
+import { Badge } from "../../../components/ui/badge.js";
+import { useTranslation } from "../../../i18n/react.js";
+import { resolveIpcErrorKey } from "../format-ipc-error.js";
+import {
+  PREVIEW_DOCUMENT_LIMITS,
+  type PreviewDocumentError,
+  type PreviewTableDocument,
+} from "../../../shared/preview-document.js";
+
+const LazyTableDocumentGrid = lazy(() =>
+  import(/* webpackChunkName: "table-document-grid" */ "./table-document-grid.js").then((mod) => ({
+    default: mod.TableDocumentGrid,
+  })),
+);
+
+/** Map a read-document error code to its user message key. */
+export function tableErrorKey(code: PreviewDocumentError): string {
+  switch (code) {
+    case "path-not-allowed":
+    case "sensitive-path":
+      return resolveIpcErrorKey(code) ?? "chatPreviewRail.fileErrorGeneric";
+    case "not-a-file":
+      return "chatPreviewRail.fileErrorGlob";
+    case "too-large":
+      return "chatPreviewRail.tableErrorTooLarge";
+    case "archive-too-large":
+      return "chatPreviewRail.tableErrorArchiveTooLarge";
+    case "corrupt-document":
+      return "chatPreviewRail.tableErrorCorrupt";
+    case "encrypted":
+      return "chatPreviewRail.tableErrorEncrypted";
+    case "unsupported-encoding":
+      return "chatPreviewRail.tableErrorEncoding";
+    case "sheet-not-found":
+      return "chatPreviewRail.tableErrorSheetNotFound";
+    case "unsupported-format":
+      return "chatPreviewRail.tableErrorUnsupported";
+    case "read-failed":
+      return "chatPreviewRail.fileErrorNotFound";
+    case "unauthorized":
+      return "chatPreviewRail.fileErrorGeneric";
+  }
+}
+
+type LoadState =
+  | { phase: "loading" }
+  | { phase: "ok"; document: PreviewTableDocument }
+  | { phase: "error"; code: PreviewDocumentError };
+
+function TruncationNotices({ document }: { document: PreviewTableDocument }) {
+  const { t } = useTranslation();
+  const { sheet } = document;
+  const notices: string[] = [];
+  if (document.sheetsTruncated) {
+    notices.push(t("chatPreviewRail.tableSheetsTruncated", {
+      shown: document.sheetNames.length,
+      total: document.totalSheets,
+    }));
+  }
+  if (sheet.rowsTruncated) {
+    notices.push(t("chatPreviewRail.tableRowsTruncated", { shown: sheet.rows.length, total: sheet.totalRows }));
+  }
+  if (sheet.columnsTruncated) {
+    notices.push(t("chatPreviewRail.tableColumnsTruncated", {
+      shown: sheet.rows[0]?.length ?? 0,
+      total: sheet.totalColumns,
+    }));
+  }
+  if (sheet.cellsTruncated) {
+    notices.push(t("chatPreviewRail.tableCellsTruncated", { chars: PREVIEW_DOCUMENT_LIMITS.maxCellChars }));
+  }
+  if (notices.length === 0) return null;
+  return (
+    <div
+      role="status"
+      className="space-y-0.5 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-2 py-1.5 text-[11px] text-foreground"
+      data-testid="chat-side-panel-table-truncated"
+    >
+      {notices.map((notice) => <div key={notice}>{notice}</div>)}
+    </div>
+  );
+}
+
+/** Callers key this by `path` so a new file starts on its first sheet. */
+export function TableDocumentPreview({ path }: { path: string }) {
+  const { t } = useTranslation();
+  const [sheetIndex, setSheetIndex] = useState(0);
+  const [state, setState] = useState<LoadState>({ phase: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ phase: "loading" });
+    void window.ave.preview
+      .readDocument(path, sheetIndex)
+      .then((result) => {
+        if (cancelled) return;
+        setState(result.ok ? { phase: "ok", document: result.document } : { phase: "error", code: result.error });
+      })
+      .catch(() => {
+        if (!cancelled) setState({ phase: "error", code: "read-failed" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, sheetIndex]);
+
+  if (state.phase === "error") {
+    return (
+      <div className="text-[11px] text-destructive" data-testid="chat-side-panel-file-error">
+        {t(tableErrorKey(state.code), { mb: PREVIEW_DOCUMENT_LIMITS.maxFileBytes / (1024 * 1024) })}
+      </div>
+    );
+  }
+
+  const loading = (
+    <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-table-loading">
+      {t("chatPreviewRail.tableLoading")}
+    </div>
+  );
+  if (state.phase === "loading") return loading;
+
+  const { document } = state;
+  const { sheet } = document;
+  return (
+    <div className="min-w-0 space-y-2" data-testid="chat-side-panel-table-preview">
+      {document.sheetNames.length > 1 ? (
+        <div
+          role="tablist"
+          aria-label={t("chatPreviewRail.tableSheetsLabel")}
+          className="flex min-w-0 gap-1 overflow-x-auto pb-1"
+        >
+          {document.sheetNames.map((name, index) => (
+            <button
+              key={`${index}:${name}`}
+              type="button"
+              role="tab"
+              aria-selected={index === sheet.index}
+              onClick={() => setSheetIndex(index)}
+              className={
+                index === sheet.index
+                  ? "shrink-0 rounded-md border bg-accent px-2 py-0.5 text-[11px] font-medium text-foreground"
+                  : "shrink-0 rounded-md border border-transparent px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/(--opacity-strong) hover:text-foreground"
+              }
+              data-testid="chat-side-panel-table-sheet-tab"
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline" className="px-1 py-0 text-[10px] uppercase">
+          {document.format}
+        </Badge>
+        <span className="text-[11px] text-muted-foreground">
+          {t("chatPreviewRail.tableSummary", { rows: sheet.totalRows, columns: sheet.totalColumns })}
+        </span>
+      </div>
+      <TruncationNotices document={document} />
+      {sheet.rows.length === 0 ? (
+        <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-table-empty">
+          {t("chatPreviewRail.tableEmpty")}
+        </div>
+      ) : (
+        <Suspense fallback={loading}>
+          <LazyTableDocumentGrid sheet={sheet} label={t("chatPreviewRail.tableGridLabel", { name: sheet.name })} />
+        </Suspense>
+      )}
+    </div>
+  );
+}

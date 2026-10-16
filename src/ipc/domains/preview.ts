@@ -1,8 +1,10 @@
 /**
- * Preview file-read domain IPC handler.
- * Covers: ave:preview:read-file
+ * Preview file-read domain IPC handlers.
+ * Covers: ave:preview:read-file, ave:preview:read-document
  *
- * Renderer reaches this via window.ave.preview.readFile(path).
+ * Renderer reaches these via window.ave.preview.readFile(path) and
+ * window.ave.preview.readDocument(path, sheetIndex). readDocument runs the SAME
+ * guard and returns a parsed, bounded table (never the file bytes).
  *
  * SECURITY INVARIANT: the set of files this handler will read for preview is
  * EXACTLY the set the builtin `read_file` tool reads without approval — the
@@ -28,6 +30,11 @@ import {
 import { readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { buildRuntimeAllowedDirectories } from "../../permissions/allowed-directories.js";
 import { errorMessage } from "../../shared/error-message.js";
+import {
+  PREVIEW_DOCUMENT_LIMITS,
+  previewDocumentFormatOf,
+  type PreviewReadDocumentResult,
+} from "../../shared/preview-document.js";
 
 /** Line window read per preview request — matches read_file's default cap. */
 const PREVIEW_LINE_LIMIT = 5_000;
@@ -136,6 +143,76 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           path: resolved,
           message: errorMessage(err),
         };
+      }
+    },
+  );
+  ipcMain.handle(
+    CHANNELS.preview.readDocument,
+    async (e, rawPath: unknown, sheetIndex: unknown): Promise<PreviewReadDocumentResult> => {
+      if (!validateHostRendererSender(e)) {
+        auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);
+        return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
+      }
+      if (typeof rawPath !== "string" || rawPath.length === 0) {
+        return { ok: false, error: "not-a-file", message: "path must be a non-empty string" };
+      }
+      if (typeof sheetIndex !== "number" || !Number.isSafeInteger(sheetIndex) || sheetIndex < 0) {
+        return { ok: false, error: "sheet-not-found", message: "sheetIndex must be a non-negative integer" };
+      }
+
+      const { cwd, extraAllowed } = currentReadScope();
+      const verdict = assertReadableFilePath(rawPath, cwd, extraAllowed);
+      if (!verdict.ok) {
+        return { ok: false, error: verdict.error, message: `read guard rejected: ${verdict.error}` };
+      }
+      const resolved = verdict.resolved;
+      const format = previewDocumentFormatOf(resolved);
+      if (!format) {
+        return { ok: false, error: "unsupported-format", path: resolved, message: "not a table document" };
+      }
+
+      try {
+        const stat = await fs.stat(resolved);
+        if (!stat.isFile()) {
+          return { ok: false, error: "not-a-file", path: resolved, message: "not a regular file" };
+        }
+        if (stat.size > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) {
+          return {
+            ok: false,
+            error: "too-large",
+            path: resolved,
+            bytes: stat.size,
+            message: `file ${stat.size} bytes exceeds ${PREVIEW_DOCUMENT_LIMITS.maxFileBytes}`,
+          };
+        }
+        const bytes = await fs.readFile(resolved);
+        // SheetJS + Papa Parse load on first use, outside the startup graph.
+        const { parseTableDocument, TableDocumentError } = await import(
+          "../../tools/table-document-reader.js"
+        );
+        let document;
+        try {
+          document = parseTableDocument(bytes, format, sheetIndex);
+        } catch (err) {
+          if (err instanceof TableDocumentError) {
+            return { ok: false, error: err.code, path: resolved, bytes: bytes.length, message: err.message };
+          }
+          throw err;
+        }
+        auditLogger.log({
+          timestamp: new Date().toISOString(),
+          sessionId: "preview-read",
+          type: "info",
+          input: JSON.stringify({
+            channel: CHANNELS.preview.readDocument,
+            path: redactFsPath(resolved),
+            bytes: bytes.length,
+            sheetIndex,
+          }),
+        });
+        return { ok: true, path: resolved, bytes: bytes.length, document };
+      } catch (err) {
+        return { ok: false, error: "read-failed", path: resolved, message: errorMessage(err) };
       }
     },
   );

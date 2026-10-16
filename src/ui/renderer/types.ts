@@ -129,6 +129,7 @@ import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../../pe
 import type { PermissionRule } from "../../permissions/permission-manager.js";
 import type { ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource } from "../../permissions/permission-settings-store.js";
 import type { TerminalBlock, TerminalBlockSummary } from "../../shared/terminal-blocks.js";
+import type { PreviewReadDocumentResult } from "../../shared/preview-document.js";
 export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule, ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource };
 
 export type PluginUiExtension = PluginUiExtensionView;
@@ -2006,6 +2007,11 @@ export interface AvePreviewApi {
       | "read-failed";
     message?: string;
   }>;
+  /**
+   * Table document (csv/tsv/xlsx/xls/ods) parsed in main under the same guard
+   * as `readFile`; returns one sheet as a bounded grid of display strings.
+   */
+  readDocument: (path: string, sheetIndex: number) => Promise<PreviewReadDocumentResult>;
 }
 
 /**

@@ -17,6 +17,11 @@
  * Tailwind-built stylesheet here rather than via a TSX `import "…/xterm.css"`. */
 @import "@xterm/xterm/css/xterm.css";
 
+/* react-data-grid base stylesheet (side-panel table preview). Same reason as
+ * xterm above: no css-loader, so the grid's layout CSS joins this stylesheet.
+ * Its colours are re-bound to Ave tokens by `.ave-table-grid` at the end. */
+@import "react-data-grid/lib/styles.css";
+
 @plugin "@tailwindcss/typography";
 
 @source "./**/*.{ts,tsx,html}";
@@ -1493,3 +1498,26 @@
   .ave-chat-scroll [data-radix-scroll-area-viewport] {
     scrollbar-gutter: stable;
   }
+
+/* ─── ave-table-grid — side-panel table preview (react-data-grid) ─────────
+   Unlayered on purpose: react-data-grid declares its defaults inside
+   `@layer rdg`, so these token bindings win without specificity games. */
+.ave-table-grid {
+  --rdg-color: hsl(var(--foreground));
+  --rdg-border-color: hsl(var(--border));
+  --rdg-summary-border-color: hsl(var(--border));
+  --rdg-background-color: hsl(var(--card));
+  --rdg-header-background-color: hsl(var(--muted));
+  --rdg-header-draggable-background-color: hsl(var(--accent));
+  --rdg-row-hover-background-color: hsl(var(--accent));
+  --rdg-row-selected-background-color: hsl(var(--accent));
+  --rdg-row-selected-hover-background-color: hsl(var(--accent));
+  --rdg-selection-color: hsl(var(--ring));
+  --rdg-font-size: 11px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.ave-table-grid .ave-table-grid-rownum {
+  color: hsl(var(--muted-foreground));
+  background-color: hsl(var(--muted));
+  text-align: end;
+}
