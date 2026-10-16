@@ -4,7 +4,7 @@
 - Scope: upgrade Ave sub-agents from "tool-call-level" (pull-only child→parent) to A2A-protocol-based messaging — child→parent push, sibling↔sibling messaging — while preserving every existing security invariant.
 - Protocol baseline: **A2A v1.0.0** (Linux Foundation, a2a-protocol.org). Complementary to MCP (MCP = agent↔tool, A2A = agent↔agent); coexists with the ext-apps adoption track.
 - Roadmap anchor: concretizes the Agent Hub vision item "A2A Runtime — 에이전트 간 비동기 위임·합의·결과 전달" (docs/ko/architecture/architecture.md Phase 5-6, previously ❌ 미구현).
-- Former name: Ave is the former name of Ave; the `github.com/former_org/…` links below are a historical record of repositories archived under that name.
+- Former name: the evidence links below point to repositories archived under the app's former name; the link text names them neutrally.
 
 ## Decision record (locked 2026-07-11)
 
@@ -198,7 +198,7 @@ following boundary; it does not reopen ph3's loopback listener contract.
   depth-1 creation hard-stop. Any delegation-depth change requires a separate
   policy decision and regression/security review after routing exists.
 - **Merge evidence (2026-07-15):** the P4-0 contract landed in
-  [`ave#1636`](https://github.com/former_org/ave/pull/1636) as merge
+  [archived app repo #1636](https://github.com/former_org/ave/pull/1636) as merge
   commit
   [`6a7a777873e04e968d3338bb723fba404e26c928`](https://github.com/former_org/ave/commit/6a7a777873e04e968d3338bb723fba404e26c928),
   and the P4-1 admission core landed in

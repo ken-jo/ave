@@ -1,6 +1,6 @@
 # Plugin Declared-Category Legacy Removal
 
-> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+> Historical record: written under the app's former name. Identifiers that carried that name are described in neutral words below; other names and paths are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
 
 > Status: **Proposal** (issue #2112, part 1 of 3). Inventory reflects the code
 > as of this branch; source files and tests are authoritative when this prose
@@ -23,7 +23,7 @@ The declared category is meanwhile already dead at its source:
 - A first-party plugin tool registers at the write-equivalent baseline
   unconditionally — `src/mcp/plugin-tool-from-mcp.ts:157` hardcodes
   `category = "write"` and `isReadOnly: () => false`, ignoring any
-  `_meta["ave/category"]` on the wire (completed for the out-of-process
+  the former-name vendor `_meta` category key on the wire (completed for the out-of-process
   stdio path by #1582; the 0.5.x contract-v6 final report recording this
   was removed from the docs and is in git history).
 - An external MCP tool registers as `"network"`
@@ -117,7 +117,7 @@ document inventories all of it and proposes a staged removal.
   shadow), `src/tools/invocation-execution.ts:893` (effect shadow, plugin/MCP
   only, `hostObservable:false` for external MCP).
 - Sink: `src/audit/audit-logger.ts:599` `getPermissionShadowLogFile` →
-  `~/.ave/audit/<date>.permission-shadow.jsonl`, the dedicated plain
+  `audit/<date>.permission-shadow.jsonl` under the former-name data folder, the dedicated plain
   (non-HMAC) shadow channel; wired in
   `src/tools/executor-implementation.ts:161`.
 - Tests: `src/permissions/__tests__/risk-shadow-log.test.ts`,
