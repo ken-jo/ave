@@ -7,6 +7,7 @@ import {
   runnerCodeContext,
   SHELL_PREFIX_POLICY,
   shellOptionEffect,
+  wrapperPrefixLength,
 } from "../rules/shell-prefix-policy.js";
 import { validatePermissionRule } from "../rules/rule-files.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
@@ -20,6 +21,49 @@ const RUNNER_RULE_PREFIXES = [
   ["pnpm", "dlx"], ["pnpm", "exec"], ["pnpm", "x"],
   ["npm", "exec"], ["npm", "x"], ["bun", "x"], ["bun", "exec"], ["deno", "run"], ["deno", "eval"],
 ];
+
+describe("wrapper command boundaries", () => {
+  it.each([
+    { argv: ["chrt", "1", "curl"], index: 2 },
+    { argv: ["chrt", "--deadline", "-T1000", "-D", "5000", "0", "curl"], index: 6 },
+    { argv: ["chrt", "--idle", "curl"], index: 2 },
+    { argv: ["flock", "-w", "1", "build.lock", "curl"], index: 4 },
+    { argv: ["wsl", "-d", "Linux", "--exec", "curl"], index: 4 },
+    { argv: ["wsl", "-dLinux", "--", "curl"], index: 3 },
+    { argv: ["taskset", "--cpu-list", "0-1", "curl"], index: 3 },
+    { argv: ["taskset", "-c", "0", ",", "1", "curl"], index: 5 },
+    { argv: ["setsid", "-fw", "curl"], index: 2 },
+    { argv: ["unbuffer", "-p", "curl"], index: 2 },
+    { argv: ["script", "session.log", "--", "curl"], index: 3 },
+    { argv: ["script", "--", "curl"], index: 2 },
+    { argv: ["runuser", "-uoperator", "--", "curl"], index: 3 },
+    { argv: ["systemd-run", "--unit", "send", "-pType=exec", "curl"], index: 4 },
+    { argv: ["firejail", "--name=send", "--", "curl"], index: 3 },
+    { argv: ["proot", "-R", "/rootfs", "-b", "/tmp:/mnt", "curl"], index: 5 },
+    { argv: ["chroot", "--userspec=developer", "/rootfs", "curl"], index: 3 },
+    { argv: ["env", "MODE=1", "chrt", "-r", "1", "flock", "build.lock", "wsl", "-e", "curl"], index: 9 },
+  ])("locates the inner command in $argv", ({ argv, index }) => {
+    expect(wrapperPrefixLength(argv)).toBe(index);
+    expect(refusedShellPrefix(argv.slice(0, index))).toBe("wrapper");
+  });
+
+  it("retains setup option arity through unresolved values", () => {
+    expect(wrapperPrefixLength(["sudo", "-u", undefined, "curl"])).toBe(3);
+  });
+
+  it("limits assignments to wrappers that establish an environment", () => {
+    expect(wrapperPrefixLength(["env", "--", "MODE=1", "curl"])).toBe(3);
+    expect(wrapperPrefixLength(["sudo", "MODE=1", "curl"])).toBe(2);
+    expect(wrapperPrefixLength(["setsid", "--", "MODE=1", "curl"])).toBe(2);
+  });
+
+  it.each([
+    ["chrt", "-p", "123"], ["taskset", "-pc", "0", "123"],
+    ["flock", "9"], ["wsl", "--list"], ["script", "session.log"], ["proot", "--version"],
+  ])("does not invent a command for %j", (...argv) => {
+    expect(wrapperPrefixLength(argv)).toBe(argv.length);
+  });
+});
 
 describe("opaque runner prefixes", () => {
   it.each(SHELL_PREFIX_POLICY.packageRunners)("reports ordinary approval for %s regardless of arguments", (runner) => {

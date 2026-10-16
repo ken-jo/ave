@@ -78,7 +78,7 @@ import {
   type PowerShellPathBinding,
 } from "./powershell-command-policy.js";
 import { PowerShellFileProvenance } from "./powershell-file-provenance.js";
-import { hiddenCodeReason, isNetworkProgram, opaqueRunnerReason, refusedShellPrefix, runnerCodeContext, runnerCommandIndexes, SHELL_PREFIX_POLICY, wrapperPrefixLength, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { hiddenCodeReason, isNetworkProgram, opaqueRunnerReason, refusedShellPrefix, runnerCodeContext, runnerCommandIndexes, SHELL_PREFIX_POLICY, wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import {
   MULTI_PURPOSE_NETWORK,
   sensitivePathInArgumentText,
@@ -1152,7 +1152,12 @@ function wrappedCommand(cmd: PsCommand, ctx: Context): PsCommand | undefined {
   if (name === undefined) return undefined;
   const args = expandSplats(original, ctx) ?? original;
   const argv = [name, ...nativeArguments(args, ctx)];
-  const length = wrapperPrefixLength(argv);
+  const { index: length, code } = wrapperCommand(argv);
+  if (code) {
+    if (code.text === undefined) return undefined;
+    // Native wrapper strings use shell syntax, never cmdlet/member meanings.
+    return nativeCommandView("sh", [word("-c", "-c", false, []), word(`'${code.text.replace(/'/g, "''")}'`, code.text, true, [])]);
+  }
   const target = argv[length];
   return length > 0 && target !== undefined ? nativeCommandView(target, args.slice(length)) : undefined;
 }

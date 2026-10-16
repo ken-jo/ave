@@ -64,6 +64,7 @@ import {
   hiddenCodeReason,
   isNetworkProgram,
   opaqueRunnerReason,
+  wrapperCommand,
   runnerCommandIndexes,
   wrapperPrefixLength,
 } from "./shell-prefix-policy.js";
@@ -406,6 +407,11 @@ function senderSignal(cmd: ShellCommand, feeders: readonly ShellCommand[], ctx: 
     if (signal) return signal;
   }
   const argv = cmd.words.map(wordText);
+  const code = wrapperCommand(argv).code?.text;
+  if (code !== undefined && ctx.depth < RECURSION_LIMIT) {
+    const nested = signalFor(code, { ...ctx, depth: ctx.depth + 1, tainted: new Set(ctx.tainted) });
+    if (nested) return nested;
+  }
   if (opaqueRunnerReason(argv) && ctx.depth < RECURSION_LIMIT) {
     // Literal code arguments retain structural sink inspection without
     // interpreting which runner option, if any, binds the argument.

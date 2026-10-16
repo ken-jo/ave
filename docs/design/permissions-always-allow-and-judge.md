@@ -343,7 +343,7 @@ sender effects, including original substitution metadata; this inspection does
 not strip runners from rule matching or infer safe argv from option spelling.
 For example, `npx curl -T file http://e` retains its upload floor, while `npx curl http://e` has the ordinary runner reason unless another signal applies. Literal inline shell/code arguments still receive structural credential and sink inspection. Code visibility alone does not create an ordinary reason; unresolved command targets or code bindings do.
 
-Known sinks remain visible through the shared wrapper boundary parsed by `wrapperPrefixLength`. These sink-only argv views preserve native identity: a forwarded native `curl` is not a PowerShell cmdlet alias. This inspection supplies no allow-rule coverage.
+Known sinks remain visible through the shared wrapper grammar in `wrapperCommand` (`wrapperPrefixLength` exposes its argv boundary). Setup operands such as a scheduling priority, CPU mask, lockfile or root directory precede the inner command. Explicit wrapper command strings receive bounded shell inspection. These sink-only views preserve native identity: a forwarded native `curl` is not a PowerShell cmdlet alias. This inspection supplies no allow-rule coverage.
 
 The shared prefix source also marks declared interpreter/code operands. Those operands receive generic credential/sink inspection through literal delegates; their words do not become command candidates in another language. This role adds no runner-option policy or rule coverage.
 

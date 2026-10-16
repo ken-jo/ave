@@ -112,19 +112,19 @@ const INNER_UPLOADS = [
 
 describe("shared runner decisions", () => {
   it("preserves the original command corpus and complete bucket annotations", () => {
-    expect(RUNNER_DECISIONS).toHaveLength(1698);
+    expect(RUNNER_DECISIONS).toHaveLength(1832);
     const commands = RUNNER_DECISIONS.map((row) => row.command);
     expect(createHash("sha256").update(JSON.stringify(commands.slice(0, 1377))).digest("hex"))
       .toBe("657e677ea8f9968de15dd2907d42abab7ac9958d2815126449ee9037c4e2b68b");
     // The complete command identity was collected independently of this table.
-    expect(new Set(commands).size).toBe(1698);
+    expect(new Set(commands).size).toBe(1832);
     expect(createHash("sha256").update(JSON.stringify([...commands].sort())).digest("hex"))
-      .toBe("3f28c4d41078c73c1a6ed2f985cf47e6d7896647f5a17c3a71676ca9bc621fa5");
+      .toBe("1d89458b8be8a36f53b8d7cd04fc81079750b30bcb30d4b1d0c17837e6f116f7");
     for (const dialect of DIALECTS) {
       const expectations = RUNNER_DECISIONS.map((row) => row.dialects?.[dialect] ?? row);
       const counts = dialect === "bash"
-        ? { floor: 96, ordinary: 1554, normal: 48 }
-        : { floor: 123, ordinary: 1552, normal: 23 };
+        ? { floor: 190, ordinary: 1574, normal: 68 }
+        : { floor: 217, ordinary: 1554, normal: 61 };
       for (const bucket of ["floor", "ordinary", "normal"] as const) {
         expect(expectations.filter((row) => row.bucket === bucket)).toHaveLength(counts[bucket]);
       }
