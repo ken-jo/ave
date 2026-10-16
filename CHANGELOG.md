@@ -1213,9 +1213,9 @@ Hardening release for marketplace recovery, permission review, Windows shell saf
 ### Plugin contract — the transitional former-name reverse-DNS `_meta` legacy read is removed (fail-closed + Doctor-repaired)
 
 - **Removed the legacy dual-read AND the schema property (fail-closed, never fail-open).** The `_meta` vendor-namespace rename (former-name reverse-DNS prefix → former-name vendor prefix, #1601) shipped a transitional dual-read + `observeLegacyMetaKey` telemetry so the removal could be timed by evidence. Both are now deleted: the three read fallbacks (`plugin-server-projection.ts` forward reverse-DNS `pathFields`, `plugin-tool-from-mcp.ts` reverse reverse-DNS `pathFields`, `plugin-mcp-host.ts` reverse-DNS `rawResult`), the `legacy-meta-telemetry.ts` module, and the schema's reverse-DNS `pathFields` property. Because tool `_meta` is `additionalProperties:false`, dropping the property makes an installed pre-rename manifest **fail schema validation** — it is rejected loudly, NOT silently accepted with its security-bearing `pathFields` ignored (that would be fail-open: the permission gate would stop seeing the plugin's filesystem effects). The reverse-DNS `pathFields` key drives host-side filesystem-path extraction for the permission gate, so the terminal state must be broken-until-repaired, never silently-ungated.
-- **Recovery is update-first via the existing Plugin Doctor / managed bootstrap.** A legacy-manifest rejection classifies as the reinstall-fixable `manifest-validation-error` kind. The only plugin that ever used the legacy key — `local-indexer` — is `installPolicy:"admin"` (managed), so the boot-time managed bootstrap (`ensureManagedInstalled` → `restartAll`) proactively auto-updates it to the migrated marketplace version (v0.5.24, vendor-prefixed `pathFields`) within the same boot, with no user click and no broken window. The host install path is a clean artifact replace, so "update in place" and "uninstall + reinstall" are the same operation; the sole terminal fallback (when a plugin cannot be auto-migrated) is the surfaced Doctor remove-recommendation on the failed plugin card.
+- **Recovery is update-first via the existing Plugin Doctor / managed bootstrap.** A legacy-manifest rejection classifies as the reinstall-fixable `manifest-validation-error` kind. The only plugin that ever used the legacy key — `local-indexer` — is `installPolicy:"admin"` (managed), so the boot-time managed bootstrap (`ensureManagedInstalled` → `restartAll`) proactively auto-updates it to the migrated marketplace version (v0.5.24, former-name vendor-prefixed `pathFields`) within the same boot, with no user click and no broken window. The host install path is a clean artifact replace, so "update in place" and "uninstall + reinstall" are the same operation; the sole terminal fallback (when a plugin cannot be auto-migrated) is the surfaced Doctor remove-recommendation on the failed plugin card.
 - **A Doctor banner is only green for a usable runtime.** A finished diagnostic with an unresolved catalog-grant mismatch or another non-runnable state remains failed/not-runnable instead of presenting a false success.
-- **`local-indexer` was republished as v0.5.24 first** (with the vendor-prefixed `pathFields`), verified published to the marketplace, so the Doctor/managed-bootstrap reinstall target exists before this removal ships.
+- **`local-indexer` was republished as v0.5.24 first** (with the former-name vendor-prefixed `pathFields`), verified published to the marketplace, so the Doctor/managed-bootstrap reinstall target exists before this removal ships.
 - **Companion PRs required** (orchestrator): the former plugin SDK package's mirror + the marketplace schema still carry the legacy alias and must drop it separately.
 
 ## v0.5.2 — 2026-07-12
@@ -1231,7 +1231,7 @@ Completes the MCP Apps program and renames the vendor `_meta` namespace. A patch
 
 ### Plugin contract — `_meta` vendor namespace rename (#1601)
 
-- **`_meta` key prefix: former-name reverse-DNS → former-name vendor prefix** — the reverse-DNS prefix didn't match the real domain (the old site domain); the sole app-proprietary `_meta` key is now the vendor-prefixed `pathFields`, a plain vendor prefix (same style as OpenAI's `openai/*` `_meta` keys). The host's forward (write) projection emits only the new key. The reverse (read) path is transitionally dual-read: it prefers the vendor prefix and falls back to the legacy reverse-DNS prefix so already-published out-of-process plugins and the SDK keep working unmigrated.
+- **`_meta` key prefix: former-name reverse-DNS → former-name vendor prefix** — the reverse-DNS prefix didn't match the real domain (the old site domain); the sole app-proprietary `_meta` key is now the former-name vendor-prefixed `pathFields`, a plain vendor prefix (same style as OpenAI's `openai/*` `_meta` keys). The host's forward (write) projection emits only the new key. The reverse (read) path is transitionally dual-read: it prefers the vendor prefix and falls back to the legacy reverse-DNS prefix so already-published out-of-process plugins and the SDK keep working unmigrated.
 - **Follow-up required, and its removal gate is observable, not a date** — the former plugin SDK package and published plugin manifests still emit the reverse-DNS prefix and need a separate migration. The removal gate is NOT "the rename is done": an installed plugin's manifest is a file on the user's disk that keeps saying the reverse-DNS prefix until *that* user updates *that* plugin, and the host cannot observe roll-forward directly. So each legacy read is instrumented (`observeLegacyMetaKey`, once per plugin+key per process): the forward-projection hit reports an **installed manifest** that has not rolled forward (the gate for the schema's legacy property), and the two wire-read hits report an **out-of-process plugin** still emitting the old key (a population that does not exist in production yet). Ship one instrumented release; delete the fallback — and the schema property — only when that warning has gone quiet across the installed base, not on a schedule.
 
 ## v0.5.1 — 2026-07-10
@@ -1240,9 +1240,9 @@ Follow-up to the v0.5.0 Plugin Contract v6 release: the legacy manifest readers 
 
 ### Plugin contract — legacy readers removed (#1572)
 
-- **`normalizeManifest` is now a pure-form materializer, not a legacy compiler** — the old `tools[]` (name strings) + `toolSchemas` + `uiActions` reader is deleted. A manifest declares tools only as pure MCP `Tool[]`; `normalizeManifest` just materializes an absent `_meta.ui.visibility` to the safe `["model","app"]` default and rejects an explicit empty visibility. A pre-v6 manifest now fails closed at load with an actionable "upgrade to the plugin SDK v6" message (naming the former SDK package) that names the offending tool index, instead of being silently compiled forward.
+- **`normalizeManifest` is now a pure-form materializer, not a legacy compiler** — the old `tools[]` (name strings) + `toolSchemas` + `uiActions` reader is deleted. A manifest declares tools only as pure MCP `Tool[]`; `normalizeManifest` just materializes an absent `_meta.ui.visibility` to the safe `["model","app"]` default and rejects an explicit empty visibility. A pre-v6 manifest now fails closed at load with an actionable message to upgrade to v6 of the former plugin SDK package, which names the offending tool index, instead of being silently compiled forward.
 - **Why this is safe ahead of the planned `0.6.0` window** — the v0.5.0 note deferred this removal until every installed plugin had migrated. The new Plugin Doctor (below) makes that time-gate unnecessary: a plugin that fails to load on the pure-v6 reader is diagnosed and auto-reinstalled from the marketplace at its latest (v6) version, so there is no broken-plugin window to wait out.
-- **Vocabulary sweep** — the `uiActions` / `toolSchemas` terms are gone from code, error strings, and documentation. Per-tool surface visibility lives only in `_meta.ui.visibility` (SEP-1865) and the sole app-proprietary key is the vendor-prefixed `pathFields`.
+- **Vocabulary sweep** — the `uiActions` / `toolSchemas` terms are gone from code, error strings, and documentation. Per-tool surface visibility lives only in `_meta.ui.visibility` (SEP-1865) and the sole app-proprietary key is the former-name vendor-prefixed `pathFields`.
 
 ### Plugin Doctor — cause-aware auto-repair (#1573)
 
@@ -1260,7 +1260,7 @@ Follow-up to the v0.5.0 Plugin Contract v6 release: the legacy manifest readers 
 
 ### Plugin contract
 
-- **Pure MCP `Tool[]` manifest** (former plugin SDK package v6.0.0; host PR #1562, #1563, #1564) — a manifest declares tools as `{name, title?, description?, inputSchema, outputSchema?, icons?, _meta?}`. Per-tool surface visibility is `_meta.ui.visibility: Array<"model"|"app">` (SEP-1865); the one app-proprietary key is the vendor-prefixed `pathFields`. `normalizeManifest` is the single legacy-shape reader — it compiles the old `tools[]` + `toolSchemas` + `uiActions` triple into pure `Tool[]`, materializes an absent visibility to the safe `["model","app"]` default, and rejects an explicit empty visibility.
+- **Pure MCP `Tool[]` manifest** (former plugin SDK package v6.0.0; host PR #1562, #1563, #1564) — a manifest declares tools as `{name, title?, description?, inputSchema, outputSchema?, icons?, _meta?}`. Per-tool surface visibility is `_meta.ui.visibility: Array<"model"|"app">` (SEP-1865); the one app-proprietary key is the former-name vendor-prefixed `pathFields`. `normalizeManifest` is the single legacy-shape reader — it compiles the old `tools[]` + `toolSchemas` + `uiActions` triple into pure `Tool[]`, materializes an absent visibility to the safe `["model","app"]` default, and rejects an explicit empty visibility.
 - **Host-derived governance** (PR #1564) — tool ownership, `writesToOwnSandbox`, and model-vs-app routing are computed by the host from the manifest, never read from a plugin self-claim; the ownership map is built from model-visible tools only, so the auth trio can never widen access control.
 - **First-party plugins republished** on the pure v6 shape, with per-surface set-equality proven against each plugin's legacy manifest.
 
@@ -1860,7 +1860,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 ### 신규 기능
 
 - **Onboarding UX 전체 재설계** (PR #1044) — 4 단계 forced-choice + memory-first flow + ping-aware welcome.
-  - **ScenarioShowcase**: 시연 footer 의 "이런 식으로 동작해요" 라인 제거. 버튼 `로그인하에 Ave 시작하기` / `뒤로가기`. 4 카드 grid 에서 skip/건너뛰기 제거 — 사용자가 *반드시 카드 선택*.
+  - **ScenarioShowcase**: 시연 footer 의 "이런 식으로 동작해요" 라인 제거. 버튼은 로그인하고 앱을 시작하는 버튼과 `뒤로가기`. 4 카드 grid 에서 skip/건너뛰기 제거 — 사용자가 *반드시 카드 선택*.
   - **LoginModalConversational**: 1/2/3 chip 화면의 취소 + Esc/outside dismissal 제거 (forced choice). 데모 자격증명 (chip 1) 클릭 시 *fullscreen 새 page* 로 transition — 상단 `← 뒤로가기` + 활성코드 입력 + 모든 취소 버튼 제거.
   - **Chain restructure**: `welcome` stage 폐지, `personalized_welcome` 신설 (memory 다음, tour 이전). MemorySeedDialog 가 LoginModal 직후 바로 등장 → PersonalizedWelcome → tour 순서.
   - **PersonalizedWelcome** (신규 component): 호칭/자기소개 반영 인사 + `api.pingAiProvider()` 로 LLM 연결 확인 + latency 표시. 확인 버튼만 (skip 없음).
@@ -1957,7 +1957,7 @@ could continue calling the upstream provider after the user revoked access.
   This is INTENTIONAL — kiosk / trade-show machines run the bundled snapshot
   for the lifetime of the signed app binary, so a short expiry would brick
   long offline deployments.
-- Production catalog (the live, now archived whitelist repo) uses
+- Production catalog (the whitelist repo, since archived) uses
   a rolling 90-day expiry and is fetched + verified at boot via
   `whitelist-fetcher.ts`. The demo path is gated behind
   the former-name demo-enabled env var so production builds never load the demo snapshot.

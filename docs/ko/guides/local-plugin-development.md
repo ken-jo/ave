@@ -259,9 +259,12 @@ cd ..
 **(2) 옛 dev 디렉토리 + 환경변수 정리**
 
 ```bash
-# 레거시 정리 — 앱의 이전 이름 시절 레이아웃에서 옮겨 온 경우에만:
-# 예전 앱 저장소 체크아웃 안의 숨김 dev 폴더(이전 이름 + `-dev`)의 plugins/ 가
-# 남아 있으면 지운다. 지금의 레이아웃은 그 폴더를 쓰지 않는다.
+# 레거시 정리 — 앱의 이전 이름 시절 레이아웃에서 옮겨 온 경우에만.
+# 지금의 레이아웃은 아래 폴더를 쓰지 않는다. 예전 앱 저장소 체크아웃 최상위의
+# 숨김 dev 폴더(이전 이름 + `-dev`)를 찾는다:
+find /path/to/old-app-checkout -maxdepth 1 -type d -name '.*-dev' -print
+# 출력된 경로가 그 폴더 하나인지 확인한 뒤, 그 경로의 plugins/ 만 지운다:
+# rm -rf <출력된 경로>/plugins
 
 # 셸 rc 에서 오래된 AVE_PLUGINS_DIR 제거
 grep -n "AVE_PLUGINS_DIR" ~/.zshrc ~/.bashrc 2>/dev/null
