@@ -29,6 +29,7 @@ import {
 } from "./test-helpers.js";
 import { revocationRegistry } from "../revocation/revocation-registry.js";
 import { isReinstallFixableFailureKind } from "../../shared/plugin-install-failure.js";
+import { LEGACY_META_PREFIX } from "../../shared/legacy-product-name.js";
 
 async function writeProcessEntry(fixture: TestPluginRuntimeFixture): Promise<string> {
   const { manifestPath } = await writeTestPlugin(fixture, { id: "process-kit", tools: [] });
@@ -101,10 +102,10 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     expect(card?.installFailureMessage).toMatch(/schema validation failed/);
   });
 
-  it("classifies an installed legacy-`_meta` (xyz.ave/pathFields) manifest as reinstall-fixable (fail-closed → Doctor-repairable)", async () => {
+  it("classifies an installed legacy reverse-DNS pathFields `_meta` manifest as reinstall-fixable (fail-closed → Doctor-repairable)", async () => {
     // The load-bearing safety-net test for the `_meta` vendor-namespace rename.
     // An installed plugin whose on-disk manifest still carries the removed legacy
-    // key `xyz.ave/pathFields` must FAIL to load (fail-closed — the schema's
+    // reverse-DNS `pathFields` key (`LEGACY_META_PREFIX`) must FAIL to load (fail-closed — the schema's
     // `_meta` is additionalProperties:false, so the key is rejected, never silently
     // accepted-but-ungated), and that failure must classify as the reinstall-fixable
     // `manifest-validation-error` kind so the Plugin Doctor auto-repairs it by
@@ -124,7 +125,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
             inputSchema: { type: "object", properties: { path: { type: "string" } } },
             // Cast: the legacy key is no longer part of the `_meta` type; it is
             // forced on to reproduce a pre-rename installed manifest on disk.
-            _meta: { ui: { visibility: ["model"] }, "xyz.ave/pathFields": ["path"] } as never,
+            _meta: { ui: { visibility: ["model"] }, [`${LEGACY_META_PREFIX}pathFields`]: ["path"] } as never,
           },
         ],
       },
@@ -139,7 +140,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     expect(card?.installFailureKind).toBe("manifest-validation-error");
     expect(card?.installFailureMessage).toMatch(/schema validation failed/);
     // The rejection is specifically about the removed legacy key.
-    expect(card?.installFailureMessage).toContain("xyz.ave/pathFields");
+    expect(card?.installFailureMessage).toContain(`${LEGACY_META_PREFIX}pathFields`);
   });
 
   it("classifies a too-new minAppVersion as NOT reinstall-fixable", async () => {

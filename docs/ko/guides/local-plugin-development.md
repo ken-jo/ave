@@ -52,7 +52,7 @@ bun run dev
 
 ## 2. 플러그인 스캐폴드
 
-공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace)의 `templates/extension/`에서 시작합니다. 예전 `ave-plugin-template` 저장소는 보관(archive)되었습니다.
+공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace)의 `templates/extension/`에서 시작합니다. 예전 플러그인 템플릿 저장소는 보관(archive)되었습니다.
 
 ```bash
 # agent-marketplace 체크아웃에서
@@ -85,7 +85,7 @@ bun run test
 
 **이 검사에는 `AVE_DEV` 등의 우회 env 가 없습니다.** 다음은 **모두 거부**됩니다:
 
-- `../ave-plugin-foo/plugin.json` 같은 형제-레포 절대경로
+- `../plugin-foo/plugin.json` 같은 형제-레포 절대경로
 - 형제 레포를 `~/.ave/plugins/foo` 로 symlink 한 것 — `realpathSync` 가 원본 경로를 반환해서 검사에 걸림
 
 거부 시 호스트 콘솔에 `[plugin-runtime] ignoring untrusted registry manifest path for <id>: <path>` 가 출력되고, 해당 플러그인은 **조용히 빠집니다** (앱은 정상 부팅).
@@ -214,7 +214,7 @@ watch 빌드가 `dist/*.js` 를 갱신하면 호스트 watcher 가 디바운스 
 | 증상 | 원인 / 해결 |
 |------|-------------|
 | 부팅 후 플러그인이 안 보이고 `[plugin-runtime] ignoring untrusted registry manifest path for <id>` 로그 | manifest 가 trust-root 밖. §3-1의 Settings 로컬 폴더 설치 또는 [local-marketplace-testing.md](./local-marketplace-testing.md)의 로컬 git 마켓플레이스를 사용합니다. symlink도 안 됩니다 (`realpathSync` 검사). |
-| `bun run plugins:list` 결과가 기대와 다름 | CLI와 Electron 모두 `~/.ave/plugins/`를 플러그인 루트로 사용합니다. 오래된 `.ave-dev` 잔재를 제거한 뒤 Settings 로컬 폴더 설치를 다시 실행하세요. registry는 직접 편집하지 않습니다. |
+| `bun run plugins:list` 결과가 기대와 다름 | CLI와 Electron 모두 `~/.ave/plugins/`를 플러그인 루트로 사용합니다. Settings 로컬 폴더 설치를 다시 실행하세요. registry는 직접 편집하지 않습니다. |
 | `[manifest:<id>] schema validation failed (<jsonpath>): ...` | AJV 검증 실패. `plugin.json`의 해당 필드를 확인하고, 앱 릴리스 태그에서 가져온 `contract/plugin-manifest.schema.json`으로 검증합니다. |
 | `MANIFEST_MISMATCH` 또는 아티팩트 sha256 불일치 (마켓플레이스 설치에서) | 설명자의 `minAppVersion`·`authority`와 스테이징한 `plugin.json`이 같은지, release/archive 의 `sha256` 고정이 실제 바이트와 같은지 확인합니다. dev 우회 토글은 없습니다. |
 | Hot-reload 가 안 됨 | (a) `AVE_DEV_RELOAD=1` 누락 (`bun run start` 는 자동 세팅 X — `bun run dev` 거나 직접 export). (b) `dist/` 가 watch 가능 위치인지 확인 (네트워크 드라이브 등에서는 fs.watch 부정확). (c) plugin.json 자체를 바꿨다면 호스트 재시작 필수. |
@@ -224,7 +224,7 @@ watch 빌드가 `dist/*.js` 를 갱신하면 호스트 watcher 가 디바운스 
 
 ## 7. 기존 dev 환경에서 단일 루트(`~/.ave/plugins/`)로 마이그레이션
 
-> **대상**: 이전 세대 dev 환경에서 `AVE_PLUGINS_DIR` 환경변수, `ave/.ave-dev/plugins/`, `bun run dev:link` 등을 사용하던 기존 Ave 개발자.
+> **대상**: 이전 세대 dev 환경에서 `AVE_PLUGINS_DIR` 환경변수, `bun run dev:link` 등을 사용하던 기존 Ave 개발자.
 > **목표**: 충돌 없이 새 단일 루트 + 호스트 Settings 로컬 폴더 설치 워크플로우로 전환.
 
 ### 7-1. 무엇이 바뀌었나
@@ -232,7 +232,6 @@ watch 빌드가 `dist/*.js` 를 갱신하면 호스트 watcher 가 디바운스 
 | 변경 전 (deprecated) | 변경 후 (canonical) |
 |---|---|
 | `AVE_PLUGINS_DIR` 가 dev runner 에서 자동 세팅 | dev runner 는 `AVE_PLUGINS_DIR` 를 더 이상 사용하지 않음 — 런타임은 항상 `~/.ave/plugins/` 사용 |
-| `ave/.ave-dev/plugins/` 에 sibling repo 별 등록 | 단일 루트 `~/.ave/plugins/` + Settings 로컬 폴더 설치로 호스트 소유 경로 통일 |
 | 마켓플레이스 서명 키: SDK 또는 플러그인 패키지가 키 소유 | 서명 키 없음 — git 마켓플레이스 스냅숏의 커밋과 sha256 고정이 신뢰 근거 |
 | 외부 개발자 sideload: 수동 파일 복사만 | UI: Settings → Plugin Config → "로컬 폴더에서 설치" 버튼 |
 
@@ -241,7 +240,7 @@ watch 빌드가 `dist/*.js` 를 갱신하면 호스트 watcher 가 디바운스 
 **(1) 모든 레포 최신화 + 서브모듈 동기화**
 
 ```bash
-cd /path/to/former_org
+cd /path/to/workspace
 
 # ave: 작업 중이면 stash 후 pull
 cd ave
@@ -251,7 +250,7 @@ git pull origin main
 bun install                                # bun.lock 동기화
 git stash pop  # 필요 시
 
-# 공식 플러그인 소스 최신화 — 개별 ave-plugin-* 저장소가 아니라
+# 공식 플러그인 소스 최신화 — 예전 개별 플러그인 저장소가 아니라
 # 공식 마켓플레이스 모노레포 ken-jo/agent-marketplace 의 plugins/<name>/source/
 cd ..
 (cd agent-marketplace && git checkout main && git pull origin main)
@@ -260,7 +259,8 @@ cd ..
 **(2) 옛 dev 디렉토리 + 환경변수 정리**
 
 ```bash
-# .ave-dev 디렉토리 잔재 제거 (있을 경우)
+# 레거시 정리 — 앱의 이전 이름(Ave) 시절 레이아웃에서 옮겨 온 경우에만:
+# 그때의 .ave-dev 디렉토리 잔재 제거 (있을 경우)
 rm -rf /path/to/former_org/ave/.ave-dev/plugins
 
 # 셸 rc 에서 오래된 AVE_PLUGINS_DIR 제거
@@ -302,7 +302,7 @@ bun run dev
 | 이전 키 모듈을 찾을 수 없음 | 오래된 코드가 폐기된 키 소유 모델을 참조 중입니다. 해당 import를 제거하고 앱 릴리스 태그의 계약 파일로 갱신합니다. |
 | `bun install --frozen-lockfile` 실패 | bun.lock 갱신 필요 → `bun install` (frozen 없이) 후 커밋 |
 | 플러그인이 안 보임 | Settings → Plugin Config → 개발자 도구에서 빌드 폴더를 다시 설치하고 `bun run plugins:list`로 조회 |
-| 두 위치에서 플러그인 충돌 | `.ave-dev` 잔재를 삭제한 뒤 Settings에서 빌드 폴더를 다시 설치. registry는 직접 편집하지 않음 |
+| 두 위치에서 플러그인 충돌 (레거시 레이아웃에서 옮겨 온 경우) | 이전 이름(Ave) 시절의 `.ave-dev` 잔재를 삭제한 뒤 Settings에서 빌드 폴더를 다시 설치. registry는 직접 편집하지 않음 |
 | `installSource: "dev-link"` 이 registry 에 남아 있음 (구 `bun run dev:link` 잔재) | 부팅 시 `local-dev`로 rewrite되고 경고가 출력됨. receipt 검증을 통과하도록 Settings에서 빌드 폴더를 다시 설치 |
 | 설치 무결성 검증 실패 (dev) | Settings → Plugin Config → 개발자 도구에서 현재 빌드 폴더를 다시 설치해 receipt를 재생성. 검증 우회 env는 없음 |
 | sideload 패널이 안 보임 | `AVE_DEV=1` 환경변수 적용 확인. packaged 빌드는 dev 패널 비활성 |

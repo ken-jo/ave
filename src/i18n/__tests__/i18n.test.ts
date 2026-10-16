@@ -23,11 +23,12 @@ import {
 } from "../messages/index.js";
 import { interpolate, translate } from "../translate.js";
 import { getLocale, setLocale, t } from "../runtime.js";
+import { LEGACY_I18N_SENTINEL } from "../../shared/legacy-product-name.js";
 
 const PLACEHOLDER_RE = /\{[A-Za-z0-9_.-]+\}/g;
 const TAG_RE = /<\/?[A-Za-z][A-Za-z0-9_-]*(?:\s+[^<>]*)?>/g;
 const SLASH_COMMAND_RE = /\/(?:new|sessions|load|compact|remember|memory|vendor|tools|permission|help|clear|command)\b/g;
-const SENTINEL_LEAK_RE = /AVEKEEP\s*\d+/i;
+const SENTINEL_LEAK_RE = new RegExp(`${LEGACY_I18N_SENTINEL}\\s*\\d+`, "i");
 
 function sortedMatches(value: string, pattern: RegExp): string[] {
   return value.match(pattern)?.sort() ?? [];

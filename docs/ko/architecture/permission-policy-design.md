@@ -925,7 +925,7 @@ PR #664 + PR #860 ratified.
 - Path canonicalization (security MAJOR-3): both the sensitive-path hard-block (Layer 0) and the sandbox-write LOW rule (Layer 5) canonicalize via the shared `canonicalizePathForMatch()` helper before any prefix compare. Closes the `..` / NFD / mixed-case (darwin/win32) / trailing-slash / duplicate-slash bypass vectors.
 - Consumer drift fix: every reviewer-mode consumer (slash command, IPC, settings store, classifier factory, audit log) updated to the 4-mode set. No silent default-substitution at write time (only at read time for hand-edited files).
 
-**Spec ref updates:** §3 Layer 5 — explicit 4-mode table + migration shim block. §10 — this v2.3 changelog row. SDK manifest schema bump (`v1.0.x` adds `writesToOwnSandbox`) sibling PR opened on `ave-plugin-sdk`.
+**Spec ref updates:** §3 Layer 5 — explicit 4-mode table + migration shim block. §10 — this v2.3 changelog row. SDK manifest schema bump (`v1.0.x` adds `writesToOwnSandbox`) sibling PR opened on the plugin SDK repository (since archived).
 
 **Out-of-scope (deferred to follow-up issues, see PR #860 description for links):**
 

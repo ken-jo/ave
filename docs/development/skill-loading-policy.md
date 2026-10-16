@@ -4,8 +4,7 @@
 > the skill-side twin of `docs/development/tool-loading-policy.md` and complements
 > `docs/architecture/architecture.md` §4.5/§6.4. Where the tool policy governs
 > *callable* schemas, this governs *instruction* bytes. Callable routing lives in
-> Tools only; Skills never invoke a Tool (keyword routing was retired in SDK v12,
-> ave-plugin-sdk#229).
+> Tools only; Skills never invoke a Tool (keyword routing was retired in SDK v12).
 
 ## Decision
 

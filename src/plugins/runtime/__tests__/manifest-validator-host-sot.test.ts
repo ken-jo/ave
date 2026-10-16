@@ -25,6 +25,7 @@ import manifestSchema from "../../../../schemas/plugin-manifest.schema.json" wit
 import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
 import { MAX_PLUGIN_ONBOARDING_HIGHLIGHTS } from "../../public-contract.js";
 import { TOOL_NAME_PATTERN, isValidToolName } from "../../../tools/types.js";
+import { LEGACY_META_PREFIX } from "../../../shared/legacy-product-name.js";
 
 const CRLF_GUARD_PATTERN = "[\\r\\n]";
 
@@ -405,8 +406,8 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     expect(validator(manifestWithOnboarding({ highlights: tooMany }))).toBe(false);
   });
 
-    it("REJECTS a tool _meta carrying the legacy xyz.ave/pathFields key (fail-closed — the dual-read was removed)", async () => {
-    // The `_meta` vendor namespace rename (`xyz.ave/* → ave/*`) removed the
+    it("REJECTS a tool _meta carrying the legacy reverse-DNS pathFields key (fail-closed — the dual-read was removed)", async () => {
+    // The `_meta` vendor namespace rename (`LEGACY_META_PREFIX` keys → `ave/*`) removed the
     // transitional dual-read AND the schema's legacy property. Because tool `_meta`
     // is `additionalProperties:false`, a manifest still declaring the legacy key is
     // now REJECTED at the load-time schema gate — it is NOT silently accepted with
@@ -431,7 +432,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
           },
           _meta: {
             ui: { visibility: ["model"] },
-            "xyz.ave/pathFields": ["path"],
+            [`${LEGACY_META_PREFIX}pathFields`]: ["path"],
           },
         },
       ],
@@ -444,7 +445,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         expect.objectContaining({
           keyword: "additionalProperties",
           params: expect.objectContaining({
-            additionalProperty: "xyz.ave/pathFields",
+            additionalProperty: `${LEGACY_META_PREFIX}pathFields`,
           }),
         }),
       ]),

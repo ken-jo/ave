@@ -20,6 +20,7 @@ import { isIP } from "node:net";
 import { classifyAddress } from "../../core/network-guard.js";
 import { isLLMVendor, LLM_VENDOR_MODEL_OPTIONS, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { LlmModelListCache } from "../../shared/llm-model-list.js";
+import { LEGACY_ENV_PREFIX } from "../../shared/legacy-product-name.js";
 import { isDefaultModelListEndpoint } from "../../engine/llm/model-list.js";
 import type { JudgeCategory } from "./judge-contract.js";
 
@@ -137,11 +138,12 @@ function isLoopbackHost(hostname: string): boolean {
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /**
- * Never forwarded to an external judge: Ave / Electron runtime variables and
- * well-known credential names.
+ * Never forwarded to an external judge: Ave / Electron runtime variables, the
+ * legacy-name runtime variables, and well-known credential names.
  */
 const REFUSED_ENV_NAMES: readonly RegExp[] = [
-  /^(AVE|RETIREDNAME|ELECTRON)_/i,
+  /^(AVE|ELECTRON)_/i,
+  new RegExp(`^${LEGACY_ENV_PREFIX}`, "i"),
   /_(API_KEY|TOKEN|SECRET|PASSWORD)$/i,
   /^AWS_/i,
   /^GITHUB_TOKEN$/i,

@@ -5,7 +5,7 @@
   "description": "Host protocol golden fixture: the hostApi surface the sampleassistant plugin reaches, beside its own lifecycle and access declarations.",
   "extensions": {
     "ai.agent-connector.ave": {
-      "displayName": "Ave Sample Assistant",
+      "displayName": "Sample Assistant",
       "entry": "entry.mjs",
       "capabilities": [
         "host:overlay",

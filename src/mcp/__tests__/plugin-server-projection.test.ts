@@ -4,6 +4,7 @@ import {
   manifestToolsToMcpTools,
 } from "../plugin-server-projection.js";
 import type { PluginManifest } from "../../plugins/types.js";
+import { LEGACY_META_PREFIX } from "../../shared/legacy-product-name.js";
 
 // #885 v6 — the projection reads the NORMALIZED pure `Tool[]` (manifest == wire)
 // and projects ALL of them: a server's tools/list is its tools, and the audience of
@@ -133,7 +134,7 @@ describe("plugin-server-projection — normalized Tool[] → MCP tools/list (#88
     expect(projected._meta["ave/operationPolicy"]).toEqual(policy);
   });
 
-  it("no longer reads a legacy xyz.ave/pathFields manifest — the dual-read is removed (fail-closed)", () => {
+  it("no longer reads a legacy reverse-DNS pathFields manifest — the dual-read is removed (fail-closed)", () => {
     // The `_meta` namespace rename removed the transitional legacy read. A tool that
     // (illegally, post-rename) carries ONLY the legacy key contributes NO
     // pathFields to the wire — the forward projection reads only `ave/pathFields`.
@@ -154,13 +155,13 @@ describe("plugin-server-projection — normalized Tool[] → MCP tools/list (#88
           inputSchema: { type: "object", properties: { path: { type: "string" } } },
           // Cast: the legacy key is no longer part of the `_meta` type; this
           // fixture forces it on to prove the reader ignores it.
-          _meta: { ui: { visibility: ["model"] }, "xyz.ave/pathFields": ["path"] } as never,
+          _meta: { ui: { visibility: ["model"] }, [`${LEGACY_META_PREFIX}pathFields`]: ["path"] } as never,
         },
       ],
     };
     const tool = manifestToolsToMcpTools(legacyManifest)[0];
     expect(tool._meta["ave/pathFields"]).toBeUndefined();
-    expect((tool._meta as Record<string, unknown>)["xyz.ave/pathFields"]).toBeUndefined();
+    expect((tool._meta as Record<string, unknown>)[`${LEGACY_META_PREFIX}pathFields`]).toBeUndefined();
   });
 
 });
