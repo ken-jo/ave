@@ -103,6 +103,30 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("preview:read-document handler", () => {
+  it.each(["completion", "abort"])("clears the owner watch interval on %s", async (outcome) => {
+    const clearTimer = globalThis.clearInterval;
+    const intervals = vi.spyOn(globalThis, "setInterval");
+    const cleared = vi.spyOn(globalThis, "clearInterval");
+    const watchTimers = (): ReturnType<typeof setInterval>[] => intervals.mock.calls.flatMap(([, delay], index) =>
+      delay === PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs ? [intervals.mock.results[index]!.value] : []);
+    try {
+      const event = documentEvent(OK_FRAME);
+      const pending = readFromSender(event, join(root, "data", outcome === "abort" ? "cyclic.xls" : "people.csv"));
+      if (outcome === "abort") {
+        await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(1));
+        event.sender.emit("destroyed");
+      }
+      const result = await pending;
+      if (outcome === "abort") expect(result).toMatchObject({ ok: false, error: "superseded" });
+      else expect(result).toMatchObject({ ok: true });
+      const timers = watchTimers();
+      expect(timers).toHaveLength(1);
+      expect(cleared).toHaveBeenCalledWith(timers[0]);
+    } finally {
+      for (const timer of watchTimers()) clearTimer(timer);
+    }
+  });
+
   it("aborts a destroyed sender and frees the slot without waiting for the parse deadline", async () => {
     const event = documentEvent(OK_FRAME);
     const unrelated = vi.fn();
