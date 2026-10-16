@@ -51,6 +51,12 @@ describe("htmlToMarkdown", () => {
 
   it("stays linear on tags that never close", () => {
     // The growth of CPU time from 37.5 KB to 600 KB is judged, not a wall-clock cap that a loaded runner can breach.
+    // Linear code reads 15-18 against the bound of 64. The ratio catches a super-linear term only once that term
+    // dominates the cost at 600 KB: at this spread, a quadratic term must cost about four times the linear work
+    // there. A smaller quadratic slips through. A rescan of index/1024 characters per position read 28-62 and
+    // passed, while index/64 read 106 and failed. A wider spread does not help, because the geometric-mean bound
+    // rises faster than the quadratic share. A bound nearer 18 would trade away the noise margin. Going larger
+    // than 600 KB would multiply the cost of every run.
     const SMALL = 37_500;
     const LARGE = 16 * SMALL;
     const MAX_GROWTH = linearGrowthBound(LARGE / SMALL);

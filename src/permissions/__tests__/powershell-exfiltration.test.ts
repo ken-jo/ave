@@ -500,13 +500,17 @@ describe("opaque command text requires approval", () => {
     // The step budget caps how many steps run; this caps what one step costs, so the work it does not count cannot
     // grow with the input. Each family is read at 512 characters and at the 8 KiB input cap, and the CPU time per
     // counted step is compared, not judged against a wall-clock cap: a shared CI runner took 1.4 s for work that
-    // takes 0.1 s on a workstation. A step whose own cost is linear in the input (a rescan per token) grows its
-    // cost sixteenfold over the sixteenfold input; the bound is the geometric mean of that and of a constant cost.
-    // Total work, not per-step cost, is the wrong ratio here: the budget saturates at the cap, so a step whose cost
-    // is linear in the input still reads as at most sixteenfold total growth, as linear code would.
+    // takes 0.1 s on a workstation. Total work is the wrong ratio here: the budget saturates at the cap, so a step
+    // whose cost is linear in the input still reads as at most sixteenfold total growth, as linear code would.
+    // The ratio is not a pure per-step cost either. It compares a small side dominated by a fixed cost (~28 ms for
+    // the repeated-assignment family) with a large side saturated at the 16 384-step cap. Measured: the
+    // repeated-assignment family reads 2.45-2.57 idle and up to 2.93 at a load average of 139 (40 runs), while
+    // a per-step rescan of the whole input injected into `spend` reads 15.7-17.5. The bound 6 sits near their
+    // geometric mean, about twice either side. A smaller SMALL was rejected: at 128 characters the same injection
+    // read only 4.0-4.9 against that spread's bound of 8, because the fixed cost swamps the small side.
     const SMALL = 512;
     const LARGE = POWERSHELL_INPUT_CAP;
-    const MAX_STEP_COST_GROWTH = Math.sqrt(LARGE / SMALL);
+    const MAX_STEP_COST_GROWTH = 6;
     const fill = (head: string, unit: string, tail: string, size: number) =>
       `${head}${unit.repeat(Math.floor((size - head.length - tail.length) / unit.length))}${tail}`;
     const familiesAt = (size: number) => [
