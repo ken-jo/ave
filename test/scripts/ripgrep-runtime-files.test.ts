@@ -1,14 +1,15 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { RIPGREP_PLATFORM_PACKAGES } from "../../src/tools/ripgrep-executable.js";
 
-const { assertRipgrepRuntimeFiles } = createRequire(import.meta.url)(
+const { assertRipgrepRuntimeFiles, RIPGREP_LICENSE_NOTICES } = createRequire(import.meta.url)(
   "../../scripts/lib/ripgrep-runtime-files.cjs",
 ) as {
   assertRipgrepRuntimeFiles(nodeModules: string, platform: string, arch: string): string;
+  RIPGREP_LICENSE_NOTICES: readonly string[];
 };
 
 const repoRoot = resolve(__dirname, "../..");
@@ -79,5 +80,27 @@ describe("ripgrep ships for every release target", () => {
       expect(() => assertRipgrepRuntimeFiles(nodeModulesWith("linux", "x64", "rg", 0o644), "linux", "x64")).toThrow("not executable");
     }
     expect(() => assertRipgrepRuntimeFiles(nodeModulesWith("linux", "x64", "rg"), "linux", "ia32")).toThrow("unsupported ripgrep target");
+  });
+
+  it("ships the ripgrep, PCRE2 and wrapper notices beside the binary and checks them in the footprint gate", () => {
+    const noticeDir = join(repoRoot, "resources", "licenses", "ripgrep");
+    expect(readdirSync(noticeDir).sort()).toEqual([...RIPGREP_LICENSE_NOTICES].sort());
+    const manifest = JSON.parse(read("package.json"));
+    expect(manifest.build.extraResources).toContainEqual({ from: "resources/licenses/ripgrep", to: "licenses/ripgrep" });
+    const footprint = read("scripts/check-package-footprint.mjs");
+    expect(footprint).toContain("for (const notice of RIPGREP_LICENSE_NOTICES)");
+    expect(footprint).toContain('resolve(resourcesDir, "licenses", "ripgrep", notice)');
+
+    // The notices name the versions that actually ship.
+    const pinned = manifest.dependencies["@vscode/ripgrep"] as string;
+    const readme = read("resources/licenses/ripgrep/README.txt");
+    expect(readme).toContain(`@vscode/ripgrep ${pinned}`);
+    expect(readme).toMatch(/ripgrep 15\.0\.0/);
+    expect(readme).toMatch(/PCRE2\s+10\.45/);
+    expect(read("resources/licenses/ripgrep/COPYING")).toContain("dual-licensed under the Unlicense and MIT");
+    expect(read("resources/licenses/ripgrep/LICENSE-MIT")).toContain("Permission is hereby granted, free of charge");
+    expect(read("resources/licenses/ripgrep/UNLICENSE")).toContain("This is free and unencumbered software");
+    expect(read("resources/licenses/ripgrep/PCRE2-LICENCE.txt")).toContain("BSD-3-Clause WITH PCRE2-exception");
+    expect(read("resources/licenses/ripgrep/VSCODE-RIPGREP-LICENSE")).toContain("Permission is hereby granted, free of charge");
   });
 });

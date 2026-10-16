@@ -47,6 +47,6 @@ export function resolvePinnedRipgrepExecutable(
   }
   const binary = join(dirname(packageJson), "bin", platform === "win32" ? "rg.exe" : "rg");
   const resolved = preferAsarUnpackedPath(binary);
-  if (!existsSync(resolved)) throw unavailable();
+  if (resolved === null || !existsSync(resolved)) throw unavailable();
   return resolved;
 }

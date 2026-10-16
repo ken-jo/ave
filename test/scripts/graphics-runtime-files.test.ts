@@ -64,6 +64,9 @@ function createPackage(platform: keyof typeof RUNTIME_FILES) {
   putFile(join(ripgrep, "package.json"), JSON.stringify({ name: `@vscode/ripgrep-${platform}-x64` }));
   putFile(join(ripgrep, "bin", platform === "win32" ? "rg.exe" : "rg"));
   chmodSync(join(ripgrep, "bin", platform === "win32" ? "rg.exe" : "rg"), 0o755);
+  for (const notice of ["README.txt", "COPYING", "LICENSE-MIT", "UNLICENSE", "PCRE2-LICENCE.txt", "VSCODE-RIPGREP-LICENSE"]) {
+    putFile(join(resources, "licenses", "ripgrep", notice));
+  }
   for (const file of RUNTIME_FILES[platform]) putFile(join(libraryDirectory, file), file);
   return {
     libraryDirectory,
