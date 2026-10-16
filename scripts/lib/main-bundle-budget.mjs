@@ -40,69 +40,26 @@ export function isSafeMainBundleManifestPath(path) {
 }
 
 /**
- * A growth ratchet, not a target. `entryBytes` and `initialBytes` are the ones that cost
- * the user startup time; `totalBytes` bounds how much the main process can grow overall.
+ * Tripwires, not a ratchet. `entryBytes` and `initialBytes` are what the user pays for at
+ * launch; `totalBytes` bounds every emitted main output, lazy chunks included. They sit far
+ * above the measurement on purpose so that ordinary feature growth never moves them; they
+ * fire on a bundling mistake (a boot split undone, a dependency inlined twice), not on a
+ * feature. The structural boot-boundary checks in `assertMainBundleBudget` are the
+ * contract and stay exact. Do not record measurements here: the build prints them, and CI
+ * writes them with each ceiling's headroom to the job summary.
  *
- * Last measured on `main`: entry 1_464_068, initial 5_049_267, total 10_984_203 — i.e.
- * `totalBytes` had 15_797 bytes of headroom, which the MCP resource-template work then
- * spent (+20_980 total, of which only +8_474 is initial). Raised once here rather than
- * trimming, because the growth is functionality reaching main, not weight: the startup
- * numbers still sit ~200 KB and ~240 KB under their own ceilings. Record the new
- * measurement here whenever this line moves, so the next bump argues against a number
- * instead of against a feeling. The chat-turn progress lifecycle is a main-process
- * feature for sub-agent transcript snapshots. Its latest measurement is entry 313_848,
- * initial 5_253_957, total 9_160_964; the initial ceiling therefore moves to 5_255_000
- * rather than hiding the functionality behind a build-only workaround. The built-in
- * search, web and memory tools are registered with the tool registry at boot, so their
- * definitions sit in the initial graph; with them the measurement is entry 416_271,
- * initial 5_273_794, total 8_909_524, and the initial ceiling moves to 5_275_000.
- * Joined with main's terminal blocks (terminal_read registers at boot too), the
- * measurement is entry 415_595, initial 5_297_263, total 8_937_183, and the initial
- * ceiling moves to 5_300_000. Joined again with main after skills-on-demand, chat-ux and
- * release-ci, the measurement is entry 419_912, initial 5_313_199, total 8_951_548, and
- * the initial ceiling moves to 5_315_000.
- * Remote-connection joined with that main measures entry 423_044, initial 5_326_014,
- * total 8_967_523, and the initial ceiling moves to 5_330_000. Permission rules (rule
- * files, scopes, the shell prefix/exfiltration matchers) and approval-memory identity are
- * consulted by the permission manager on every tool call, so they belong in the initial
- * graph; with the permissions category joined with that `main` the measurement is entry
- * 423_073, initial 5_389_392, total 9_031_357, and the initial ceiling moves to 5_390_000.
- * The terminal's own-tty wrap (`wrapTerminalCommand`, the handoff root) lives in the
- * boot-time sandbox module; the handoff itself is loaded on spawn. Measured on that
- * `main`: entry 423_113, initial 5_390_708, total 9_035_522; the initial ceiling moves to
- * 5_395_000.
- * The main-area terminal and web panels add renderer strings to the one i18n catalog main
- * also imports (that catalog is shared by design), plus the `terminal`/`web` view keys;
- * with them the measurement is entry 423_073, initial 5_390_727, and the initial ceiling
- * moves to 5_395_000. The saved main-window layout is checked by the settings store when
- * the profile is read at boot (`shared/main-layout.ts`, one parser for both processes),
- * so it is initial too, together with the terminal tab-id scope the parser checks ids
- * against (`shared/tab-id.ts`), and main-window closing a closed window's terminals; with
- * them the measurement is entry 423_380, initial 5_399_503, total 9_041_529, and the
- * initial ceiling moves to 5_400_000.
- * The agent browser tools keep their schemas, execute bodies and CDP page actions out of
- * the initial graph (desktop-boot and dynamic imports); what joins it is what boot wires
- * eagerly: the browser tab registry and its IPC domain, guest tracking on did-attach, the
- * tools' en/ko catalog fragments (the catalog barrel imports every fragment) and the
- * approval card's browser-scope strings. Measured entry 425_021, initial 5_410_703,
- * total 9_079_452; the initial ceiling moves to 5_412_000.
- * Concrete browser document authority, input attribution and navigation
- * provenance remain in the initial registry graph. Measured entry 425_021,
- * initial 5_413_433, total 9_091_289; the ceiling moves from 5_412_000 to
- * 5_415_000 to cover that functionality.
- * The terminal own-tty wrap joined with that `main` measures entry 425_096,
- * initial 5_415_405, total 9_097_784; the initial ceiling moves to 5_420_000.
- * The main-area panels joined with that main (the browser agent tools beside the
- * panels' layout parser, terminal ownership and window-close cleanup) measure entry
- * 425_328, initial 5_423_655, total 9_102_793; the initial ceiling moves to 5_425_000.
- * The terminal own-tty wrap joined with that `main` measures entry 425_403,
- * initial 5_425_510, total 9_107_949; the initial ceiling moves to 5_430_000.
+ * Owner policy 2026-10-16: initial 8_000_000 and total 14_000_000 (from 5_430_000 and
+ * 11_050_000, which were raised a few kilobytes per merge and re-conflicted on every
+ * category merge). Measured then: entry 425_403, initial 5_426_065, total 9_108_501.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_430_000,
-  totalBytes: 11_050_000,
+  initialBytes: 8_000_000,
+  totalBytes: 14_000_000,
 });
+
+const MAIN_BUNDLE_BUDGET_KEYS = Object.freeze(["entryBytes", "initialBytes", "totalBytes"]);
+const MAIN_BUNDLE_BUDGET_SOURCE = "scripts/lib/main-bundle-budget.mjs";
 
 function normalizedPath(path) {
   return normalize(path).replaceAll("\\", "/");
@@ -208,16 +165,52 @@ export function assertMainBundleBudget(measurement, budgets) {
   if (measurement.requiredAsyncEntryIsInitial) {
     failures.push("required boot entry remains statically reachable from main");
   }
-  for (const key of ["entryBytes", "initialBytes", "totalBytes"]) {
-    if (!Number.isFinite(measurement[key]) || measurement[key] < 0) {
+  let exceeded = false;
+  for (const key of MAIN_BUNDLE_BUDGET_KEYS) {
+    if (!Number.isSafeInteger(budgets?.[key]) || budgets[key] <= 0) {
+      failures.push(`budget ${key} is not a positive integer`);
+    } else if (!Number.isFinite(measurement[key]) || measurement[key] < 0) {
       failures.push(`${key} is not a non-negative finite number`);
     } else if (measurement[key] > budgets[key]) {
       failures.push(`${key} ${measurement[key]} exceeds ${budgets[key]}`);
+      exceeded = true;
     }
+  }
+  if (exceeded) {
+    failures.push(
+      "these ceilings are tripwires far above normal growth: first look for a module that "
+        + "belongs behind a dynamic import (startup code) or a dependency bundled twice; "
+        + `if the growth is intended, raise the ceiling in ${MAIN_BUNDLE_BUDGET_SOURCE} `
+        + "with the owner's approval",
+    );
   }
   if (failures.length > 0) {
     throw new Error(`main bundle budget failed:\n${failures.map((failure) => `- ${failure}`).join("\n")}`);
   }
+}
+
+/**
+ * The job-summary table CI shows for every main build: measurement, ceiling and headroom
+ * per ceiling, plus the lazy (async) share that has no ceiling of its own.
+ */
+export function formatMainBundleSummary(measurement, budgets) {
+  const bytes = (value) => (Number.isFinite(value) ? value.toLocaleString("en-US") : "invalid");
+  const rows = MAIN_BUNDLE_BUDGET_KEYS.map((key) => {
+    const ceiling = budgets?.[key];
+    const headroom = Number.isSafeInteger(ceiling) && ceiling > 0
+      ? `${((1 - (measurement[key] / ceiling)) * 100).toFixed(1)}%`
+      : "invalid";
+    return `| ${key.replace(/Bytes$/, "")} | ${bytes(measurement[key])} | ${bytes(ceiling)} | ${headroom} |`;
+  });
+  return [
+    "### Main bundle budget",
+    "",
+    "| Part | Measured bytes | Ceiling | Headroom |",
+    "|---|---:|---:|---:|",
+    ...rows,
+    `| async (lazy) | ${bytes(measurement.asyncBytes)} | — | — |`,
+    "",
+  ].join("\n");
 }
 
 export function formatMainBundleBudget(measurement) {
