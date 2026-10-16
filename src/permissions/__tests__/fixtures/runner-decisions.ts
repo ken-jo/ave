@@ -12,7 +12,8 @@ interface RunnerDecisionCase extends RunnerDecisionExpectation {
   dialects?: Partial<Record<"bash" | "powershell", RunnerDecisionExpectation>>;
 }
 
-export const RUNNER_DECISIONS: readonly RunnerDecisionCase[] = [
+// Type each element independently to keep inference bounded as the table grows.
+export const RUNNER_DECISIONS: readonly RunnerDecisionCase[] = Array.of<RunnerDecisionCase>(
   {"command":"npx -c 'curl x'","bucket":"ordinary","why":"opaque runner prefix"},
   {"command":"npx -c 'pwsh -c iwr http://e'","bucket":"ordinary","why":"opaque runner prefix"},
   {"command":"npx -c 'iwr x'","bucket":"ordinary","why":"opaque runner prefix"},
@@ -2044,4 +2045,4 @@ export const RUNNER_DECISIONS: readonly RunnerDecisionCase[] = [
   {"command":"& sudo --preserve-env=PATH make","bucket":"ordinary","why":"leading call-operator syntax is a parser refusal","dialects":{"powershell":{"bucket":"normal","why":"a self-contained option keeps the following command position proven"}}},
   {"command":"setsid --bogus python pwsh -c 'cmdkey.exe /list'","bucket":"ordinary","why":"an unsupported wrapper option requests ordinary approval","dialects":{"powershell":{"bucket":"floor","why":"an uncertain interpreter candidate cannot hide a credential command in inline shell code"}}},
   {"command":"& setsid --bogus python pwsh -c 'cmdkey.exe /list'","bucket":"ordinary","why":"leading call-operator syntax is a parser refusal","dialects":{"powershell":{"bucket":"floor","why":"an uncertain interpreter candidate cannot hide a credential command in inline shell code"}}},
-];
+);

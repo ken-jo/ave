@@ -106,7 +106,9 @@ describe("package runner shims and dispatchers", () => {
   it.each(Object.entries(TASK_ARGUMENTS).flatMap(([runner, args]) => [`${runner} ${args}`, `& ${runner} ${args}`]))
   ("asks ordinarily for literal runner tasks: %s", (command) => {
     expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
-    expect(analyzeShellForRules(command.replace(/^& /, "")).hidden).toEqual([]);
+    const shape = analyzeShellForRules(command.replace(/^& /, ""));
+    expect(shape.ok).toBe(true);
+    if (shape.ok) expect(shape.hidden).toEqual([]);
   });
 
   it.each(Object.entries(TASK_ARGUMENTS).flatMap(([runner, args]) =>

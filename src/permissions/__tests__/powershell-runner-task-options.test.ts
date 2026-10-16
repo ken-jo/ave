@@ -53,6 +53,8 @@ describe("runner task options", () => {
   ].flatMap((command) => [command, `& ${command}`]))
   ("retains opaque code, sources and bindings: %s", (command) => {
     expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
-    expect(analyzeShellForRules(command.replace(/^& /, "")).ordinaryAsk).toBe("opaque runner prefix");
+    const shape = analyzeShellForRules(command.replace(/^& /, ""));
+    expect(shape.ok).toBe(true);
+    if (shape.ok) expect(shape.ordinaryAsk).toBe("opaque runner prefix");
   });
 });
