@@ -8,7 +8,9 @@ import {
   isLLMVendor,
   LLM_VENDORS,
   LLM_VENDOR_DEFAULTS,
-  LLM_VENDOR_MODEL_OPTIONS,
+  OPENAI_COMPATIBLE_PRESET_VENDOR_IDS,
+  OPENAI_COMPATIBLE_VENDOR_PRESETS,
+  llmVendorModelOptions,
   MARKETPLACE_ELIGIBLE_LLM_VENDOR_IDS,
   canUseLlmVendorWithoutApiKey,
   freshAllVendorBlocks,
@@ -31,6 +33,7 @@ import {
   RETIRED_LLM_VENDOR_IDS,
 } from "../llm-vendor-defaults.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../model-host-policy.js";
+import { CATALOG_PROVIDERS_BY_VENDOR } from "../model-catalog/provider-map.js";
 
 describe("isLLMVendor", () => {
   it("accepts every member of LLM_VENDORS", () => {
@@ -239,7 +242,7 @@ describe("LLM vendor defaults", () => {
   });
 
   it("offers the OpenRouter free router as an explicit selectable model", () => {
-    expect(LLM_VENDOR_MODEL_OPTIONS.openrouter).toContain("openrouter/free");
+    expect(llmVendorModelOptions("openrouter")).toContain("openrouter/free");
   });
 
   it("marks only local or OpenAI-compatible endpoints as API-key optional", () => {
@@ -295,16 +298,19 @@ describe("LLM vendor defaults", () => {
     expect(canUseLlmVendorWithoutApiKey("openrouter", { baseUrl: "https://openrouter.ai/api/v1" })).toBe(false);
   });
 
-  it("does not offer gpt-4o in user-selectable LLM model options", () => {
+  it("never starts a vendor on gpt-4o", () => {
+    // Whether gpt-4o is offered is the catalog's call: OpenAI announced its
+    // shutdown on 2026-10-14 (for 2027-01-14), after the bundled snapshot was
+    // fetched, so the openai list offers it until a refreshed catalog marks
+    // it deprecated — the test below then keeps it out. No default may be it.
     for (const v of LLM_VENDORS) {
-      expect(LLM_VENDOR_MODEL_OPTIONS[v]).not.toContain("gpt-4o");
       expect(LLM_VENDOR_DEFAULTS[v].model).not.toBe("gpt-4o");
     }
   });
 
   it("ships no default or curated model the active catalog deprecates (design §6.1)", () => {
     const retired = LLM_VENDORS.flatMap((vendor) =>
-      [LLM_VENDOR_DEFAULTS[vendor].model, ...LLM_VENDOR_MODEL_OPTIONS[vendor]]
+      [LLM_VENDOR_DEFAULTS[vendor].model, ...llmVendorModelOptions(vendor)]
         .filter((model) => model && resolveModelRetirement({ vendor, model }) !== undefined)
         .map((model) => `${vendor}/${model}`));
     expect(retired).toEqual([]);
@@ -317,8 +323,8 @@ describe("LLM vendor defaults", () => {
     expect(getLlmVendorSettings({ "azure-foundry": { model: "gpt-4o" } } as never, "azure-foundry").model).toBe("gpt-4o");
   });
 
-  it("uses gemini-2.5-flash as the Gemini default model", () => {
-    expect(LLM_VENDOR_DEFAULTS.gemini.model).toBe("gemini-2.5-flash");
+  it("uses gemini-3.8-flash as the Gemini default model", () => {
+    expect(LLM_VENDOR_DEFAULTS.gemini.model).toBe("gemini-3.8-flash");
   });
 
   it("enables thinking by default for every provider", () => {
@@ -330,7 +336,7 @@ describe("LLM vendor defaults", () => {
   it("freshVendorBlocks() preserves the default-visible thinking-enabled blocks", () => {
     const blocks = freshVendorBlocks();
     expect(blocks.openai.model).toBe("gpt-5.4-mini");
-    expect(blocks.gemini.model).toBe("gemini-2.5-flash");
+    expect(blocks.gemini.model).toBe("gemini-3.8-flash");
     expect(blocks.groq).toBeUndefined();
     for (const v of DEFAULT_VISIBLE_LLM_VENDOR_IDS) {
       expect(blocks[v].enableThinking).toBe(true);
@@ -388,9 +394,50 @@ describe("LLM vendor defaults", () => {
     expect(getLlmVendorSettings(freshVendorBlocks(), "openai-compatible").catalogModel).toBeUndefined();
   });
 
-  it("includes each provider's default model in its dropdown options", () => {
+  it("offers what the catalog lists for a vendor it describes, not a hand-written seed", () => {
+    // The seeds stopped at gpt-5.4, claude-*-4-6 and gemini-2.x while the
+    // bundled catalog already listed the next generations.
+    expect(llmVendorModelOptions("openai")).toEqual(expect.arrayContaining(["gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna"]));
+    expect(llmVendorModelOptions("claude")).toEqual(expect.arrayContaining(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]));
+    expect(llmVendorModelOptions("gemini")).toEqual(expect.arrayContaining(["gemini-3.8-flash", "gemini-3.5-flash-lite"]));
+    expect(llmVendorModelOptions("moonshot")).toEqual(expect.arrayContaining(["kimi-k3"]));
+  });
+
+  it("keeps hand-picked options only for a preset no catalog provider describes", () => {
+    const declaresWithCatalog: string[] = [];
+    const missingWithoutCatalog: string[] = [];
+    for (const vendor of OPENAI_COMPATIBLE_PRESET_VENDOR_IDS) {
+      const handPicked = OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].modelOptions;
+      if (CATALOG_PROVIDERS_BY_VENDOR[vendor].length > 0) {
+        if (handPicked !== undefined) declaresWithCatalog.push(vendor);
+      } else if (!handPicked || handPicked.length === 0) {
+        missingWithoutCatalog.push(vendor);
+      }
+    }
+    expect(declaresWithCatalog).toEqual([]);
+    expect(missingWithoutCatalog).toEqual([]);
+    expect(llmVendorModelOptions("ollama")).toEqual(OPENAI_COMPATIBLE_VENDOR_PRESETS.ollama.modelOptions);
+    expect(llmVendorModelOptions("openai-compatible")).toEqual([]);
+  });
+
+  it("starts each vendor the catalog describes on a chat model the catalog lists for it", () => {
+    // Doubao's default could not be checked against Volcengine's own model
+    // list (the page does not render outside a browser session) and the
+    // catalog does not carry it. It is kept and reported, and exempted here by
+    // name; any other default missing from the catalog fails.
+    const unverified = new Set(["doubao"]);
+    const missing = LLM_VENDORS
+      .filter((vendor) => CATALOG_PROVIDERS_BY_VENDOR[vendor].length > 0 && !unverified.has(vendor))
+      .filter((vendor) => !llmVendorModelOptions(vendor).includes(LLM_VENDOR_DEFAULTS[vendor].model))
+      .map((vendor) => `${vendor}/${LLM_VENDOR_DEFAULTS[vendor].model}`);
+    expect(missing).toEqual([]);
+    expect(llmVendorModelOptions("doubao")).not.toContain(LLM_VENDOR_DEFAULTS.doubao.model);
+  });
+
+  it("includes each hand-picked provider's default model in its dropdown options", () => {
     for (const v of LLM_VENDORS) {
-      const options = LLM_VENDOR_MODEL_OPTIONS[v];
+      if (CATALOG_PROVIDERS_BY_VENDOR[v].length > 0) continue;
+      const options = llmVendorModelOptions(v);
       const defaultModel = LLM_VENDOR_DEFAULTS[v].model;
       // Handshake-only providers (openai-compatible) ship no static catalog and
       // no default model — the list is fetched live from the endpoint's /models

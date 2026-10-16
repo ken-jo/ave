@@ -25,7 +25,7 @@
  *     legacy alias — and the caller is required to log "parent-model
  *     fallback used" so the audit trail captures the gap.
  *   - All known tiers must resolve to a model that also appears in
- *     `LLM_VENDOR_MODEL_OPTIONS[vendor]` for that vendor — verified by
+ *     `llmVendorModelOptions(vendor)` for that vendor — verified by
  *     the unit test under `__tests__/`.
  *
  * Cline-scale provider expansion note:
@@ -42,8 +42,8 @@
  */
 import {
   LLM_VENDOR_DEFAULTS,
-  LLM_VENDOR_MODEL_OPTIONS,
   LLM_VENDORS,
+  llmVendorModelOptions,
   type LLMVendor,
 } from "./llm-vendor-defaults.js";
 
@@ -71,7 +71,7 @@ export function isModelComplexityLevel(
 
 /**
  * Vendor × tier → model ID. Each cell MUST also appear in
- * `LLM_VENDOR_MODEL_OPTIONS[vendor]` (enforced by unit test).
+ * `llmVendorModelOptions(vendor)` (enforced by unit test).
  *
  * Picking rationale per vendor:
  *   - low: fastest / cheapest tier suitable for narrow lookups and
@@ -111,7 +111,7 @@ const EXPLICIT_MODEL_COMPLEXITY_MAP: Partial<
   }),
   // Custom OpenAI-compatible endpoints are endpoint-defined and handshake-only:
   // there is no static catalog to map tiers against (see
-  // LLM_VENDOR_MODEL_OPTIONS["openai-compatible"] === []). Deliberately absent
+  // llmVendorModelOptions("openai-compatible") is empty). Deliberately absent
   // here → `defaultComplexityMapForVendor` yields the empty default model →
   // `resolveModelForComplexity` returns null → the sub-agent runs on the
   // parent loop's active (user-selected) model. Never send a fabricated tier id.
@@ -156,7 +156,7 @@ export function resolveModelForComplexity(
 
 /**
  * Verify every tier in the map points at a model also listed in
- * `LLM_VENDOR_MODEL_OPTIONS[vendor]`. Called from the unit test; kept
+ * `llmVendorModelOptions(vendor)`. Called from the unit test; kept
  * in the source file so a future contributor adding a new vendor or
  * tier can quickly assert their addition stays self-consistent.
  *
@@ -177,7 +177,7 @@ export function findOrphanedComplexityModels(): Array<{
   for (const [vendor, tiers] of Object.entries(MODEL_COMPLEXITY_MAP) as Array<
     [LLMVendor, Record<ModelComplexityLevel, string>]
   >) {
-    const options = LLM_VENDOR_MODEL_OPTIONS[vendor];
+    const options = llmVendorModelOptions(vendor);
     for (const level of MODEL_COMPLEXITY_LEVELS) {
       const model = tiers[level];
       // Handshake-only vendors (openai-compatible) have no static catalog and

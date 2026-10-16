@@ -1,5 +1,6 @@
 import type { SettingsService } from "../../data/settings-store.js";
 import type {
+  LlmModelListCache,
   LlmModelListEntry,
   LlmModelListPricing,
   LlmModelListRequest,
@@ -133,6 +134,27 @@ export function isDefaultModelListEndpoint(
 ): boolean {
   const base = vendorModelListBaseUrl(vendors, vendor);
   return base ? sameModelListEndpoint(endpoint, base) : false;
+}
+
+/**
+ * The model ids the vendor's own `/models` answer named for the endpoint its
+ * route reaches ({@link isDefaultModelListEndpoint}), from the saved model-list
+ * cache. Empty when no handshake for that endpoint is cached.
+ */
+export function cachedLiveModelIds(
+  llm: {
+    readonly vendors?: ModelListVendorBlocks;
+    readonly modelListCache?: LlmModelListCache;
+  },
+  vendor: LLMVendor,
+): string[] {
+  const ids = new Set<string>();
+  for (const entry of Object.values(llm.modelListCache ?? {})) {
+    if (entry.vendor !== vendor) continue;
+    if (!isDefaultModelListEndpoint(llm.vendors, vendor, entry.endpoint)) continue;
+    for (const model of entry.models) ids.add(model);
+  }
+  return [...ids];
 }
 
 function resolveModelListBaseUrl(

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  cachedLiveModelIds,
   isDefaultModelListEndpoint,
   listLlmModelsFromSettings,
   modelListEndpointFromBaseUrl,
@@ -11,7 +12,7 @@ import {
   resetModelListProbeStateForTesting,
 } from "../model-list.js";
 import { NetworkGuardError } from "../../../core/network-guard.js";
-import { llmModelListCacheKey, MAX_CACHED_LLM_MODEL_IDS } from "../../../shared/llm-model-list.js";
+import { llmModelListCacheKey, MAX_CACHED_LLM_MODEL_IDS, type LlmModelListCacheEntry } from "../../../shared/llm-model-list.js";
 import { llmRouteCatalogAddress, resolveContextWindowForRoute } from "../../../shared/context-budget.js";
 import { freshAllVendorBlocks } from "../../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../../shared/marketplace-package-assets.js";
@@ -1090,6 +1091,24 @@ describe("isDefaultModelListEndpoint — the endpoint a vendor's route resolves 
     expect(isDefaultModelListEndpoint({ openrouter: { baseUrl: "   " } }, "openrouter", "https://openrouter.ai/api/v1/models")).toBe(false);
     // ...while a vendor with a standard catalogue address still reaches it.
     expect(isDefaultModelListEndpoint({ openai: { baseUrl: "   " } }, "openai", "https://api.openai.com/v1/models")).toBe(true);
+  });
+});
+
+describe("cachedLiveModelIds — what the route's own /models answer named", () => {
+  const entry = (vendor: string, endpoint: string, models: string[]): LlmModelListCacheEntry => ({
+    vendor, endpoint, models, complete: true, fetchedAt: "2026-10-16T00:00:00.000Z",
+  });
+
+  it("reads only the vendor's listing for the endpoint its route reaches", () => {
+    const modelListCache = {
+      a: entry("openai", "https://api.openai.com/v1/models", ["ft:gpt-6-luna:acme::abc123", "gpt-6-luna"]),
+      b: entry("openai", "https://proxy.example.test/v1/models", ["proxy-only"]),
+      c: entry("openrouter", "https://openrouter.ai/api/v1/models", ["openrouter/free"]),
+    };
+    expect(cachedLiveModelIds({ modelListCache }, "openai")).toEqual(["ft:gpt-6-luna:acme::abc123", "gpt-6-luna"]);
+    expect(cachedLiveModelIds({ vendors: { openai: { baseUrl: "https://proxy.example.test/v1" } }, modelListCache }, "openai"))
+      .toEqual(["proxy-only"]);
+    expect(cachedLiveModelIds({}, "openai")).toEqual([]);
   });
 });
 

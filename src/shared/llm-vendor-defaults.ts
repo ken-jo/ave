@@ -7,6 +7,7 @@
  * Pure, browser-safe — no Electron / Node imports.
  */
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "./model-host-policy.js";
+import { catalogChatModelIds, vendorHasCatalogProvider } from "./model-catalog/vendor-models.js";
 
 export const OPENAI_COMPATIBLE_PRESET_VENDOR_IDS = [
   "openrouter",
@@ -52,8 +53,19 @@ export interface OpenAICompatibleVendorPreset {
   label: string;
   apiKeyPlaceholder: string;
   baseUrl: string;
+  /**
+   * The model a newly connected route starts on. For a vendor with a catalog
+   * provider it must be a chat model the catalog lists for that vendor
+   * (`llm-vendor-defaults.test.ts` pins it).
+   */
   defaultModel: string;
-  modelOptions: readonly string[];
+  /**
+   * Hand-picked choices, only for a vendor no catalog provider describes (a
+   * local runtime, a self-hosted gateway, an endpoint the catalog does not
+   * list). A vendor with a catalog provider offers what the catalog says it
+   * serves ({@link llmVendorModelOptions}) and must not declare this.
+   */
+  modelOptions?: readonly string[];
   /**
    * The endpoint routes to models other providers serve. Its `/models` answer
    * says what this gateway forwards today, not whether the model's own vendor
@@ -71,7 +83,6 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     apiKeyPlaceholder: "sk-or-...",
     baseUrl: "https://openrouter.ai/api/v1",
     defaultModel: "anthropic/claude-sonnet-4.6",
-    modelOptions: ["anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "openrouter/free"],
     gateway: true,
   },
   deepseek: {
@@ -79,49 +90,42 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     apiKeyPlaceholder: "sk-...",
     baseUrl: "https://api.deepseek.com/v1",
     defaultModel: "deepseek-flash",
-    modelOptions: ["deepseek-flash", "deepseek-chat", "deepseek-reasoner"],
   },
   xai: {
     label: "xAI",
     apiKeyPlaceholder: "xai-...",
     baseUrl: "https://api.x.ai/v1",
     defaultModel: "grok-4.20-0309-non-reasoning",
-    modelOptions: ["grok-4.20-0309-non-reasoning", "grok-4"],
   },
   together: {
     label: "Together AI",
     apiKeyPlaceholder: "tog_...",
     baseUrl: "https://api.together.xyz/v1",
     defaultModel: "Qwen/Qwen3.6-Plus",
-    modelOptions: ["Qwen/Qwen3.6-Plus", "meta-llama/Llama-3.3-70B-Instruct-Turbo"],
   },
   fireworks: {
     label: "Fireworks AI",
     apiKeyPlaceholder: "fw_...",
     baseUrl: "https://api.fireworks.ai/inference/v1",
-    defaultModel: "accounts/fireworks/models/kimi-k2p6",
-    modelOptions: ["accounts/fireworks/models/kimi-k2p6"],
+    defaultModel: "accounts/fireworks/models/glm-5p3-flash",
   },
   groq: {
     label: "Groq",
     apiKeyPlaceholder: "gsk_...",
     baseUrl: "https://api.groq.com/openai/v1",
-    defaultModel: "moonshotai/kimi-k2-instruct-0905",
-    modelOptions: ["moonshotai/kimi-k2-instruct-0905", "llama-3.3-70b-versatile"],
+    defaultModel: "openai/gpt-oss-120b",
   },
   poolside: {
     label: "Poolside",
     apiKeyPlaceholder: "ps_...",
     baseUrl: "https://inference.poolside.ai/v1",
     defaultModel: "poolside/laguna-m.1",
-    modelOptions: ["poolside/laguna-m.1"],
   },
   cerebras: {
     label: "Cerebras",
     apiKeyPlaceholder: "csk-...",
     baseUrl: "https://api.cerebras.ai/v1",
-    defaultModel: "zai-glm-4.7",
-    modelOptions: ["zai-glm-4.7", "llama3.1-8b"],
+    defaultModel: "gpt-oss-120b",
   },
   sambanova: {
     label: "SambaNova",
@@ -135,21 +139,18 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     apiKeyPlaceholder: "nebius_...",
     baseUrl: "https://api.tokenfactory.nebius.com/v1",
     defaultModel: "nvidia/nemotron-3-super-120b-a12b",
-    modelOptions: ["nvidia/nemotron-3-super-120b-a12b"],
   },
   baseten: {
     label: "Baseten",
     apiKeyPlaceholder: "baseten_...",
     baseUrl: "https://inference.baseten.co/v1",
     defaultModel: "deepseek-ai/DeepSeek-V4.1-Flash",
-    modelOptions: ["deepseek-ai/DeepSeek-V4.1-Flash"],
   },
   requesty: {
     label: "Requesty",
     apiKeyPlaceholder: "rq_...",
     baseUrl: "https://router.requesty.ai/v1",
-    defaultModel: "openai/gpt-5.4",
-    modelOptions: ["openai/gpt-5.4", "anthropic/claude-sonnet-4.6"],
+    defaultModel: "gpt-6-luna",
     gateway: true,
   },
   litellm: {
@@ -165,7 +166,6 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     apiKeyPlaceholder: "hf_...",
     baseUrl: "https://router.huggingface.co/v1",
     defaultModel: "MiniMaxAI/MiniMax-M2.5",
-    modelOptions: ["MiniMaxAI/MiniMax-M2.5"],
     gateway: true,
   },
   "vercel-ai-gateway": {
@@ -173,7 +173,6 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     apiKeyPlaceholder: "vck_...",
     baseUrl: "https://ai-gateway.vercel.sh/v1",
     defaultModel: "alibaba/qwen3.6-plus",
-    modelOptions: ["alibaba/qwen3.6-plus", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4"],
     gateway: true,
   },
   "vercel-v0": {
@@ -188,7 +187,6 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     apiKeyPlaceholder: "sk-...",
     baseUrl: "https://api.aihubmix.com/v1",
     defaultModel: "gpt-5.4-mini",
-    modelOptions: ["gpt-5.4-mini", "claude-sonnet-4-6"],
     gateway: true,
   },
   hicap: {
@@ -216,22 +214,19 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     label: "W&B by CoreWeave",
     apiKeyPlaceholder: "wandb_...",
     baseUrl: "https://api.inference.wandb.ai/v1",
-    defaultModel: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
-    modelOptions: ["nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8"],
+    defaultModel: "deepseek-ai/DeepSeek-V4.1-Flash",
   },
   xiaomi: {
     label: "Xiaomi",
     apiKeyPlaceholder: "mi_...",
     baseUrl: "https://api.xiaomimimo.com/v1",
     defaultModel: "mimo-v2.6-flash",
-    modelOptions: ["mimo-v2.6-flash"],
   },
   kilo: {
     label: "Kilo Gateway",
     apiKeyPlaceholder: "kilo_...",
     baseUrl: "https://api.kilo.ai/api/gateway",
-    defaultModel: "gpt-5.4",
-    modelOptions: ["gpt-5.4", "claude-sonnet-4-6"],
+    defaultModel: "openai/gpt-5.4",
     gateway: true,
   },
   zai: {
@@ -239,49 +234,42 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
     apiKeyPlaceholder: "zhipu_...",
     baseUrl: "https://api.z.ai/api/paas/v4",
     defaultModel: "glm-5v-turbo",
-    modelOptions: ["glm-5v-turbo", "glm-4.7"],
   },
   "zai-coding-plan": {
     label: "Z.AI Coding Plan",
     apiKeyPlaceholder: "zhipu_...",
     baseUrl: "https://api.z.ai/api/coding/paas/v4",
     defaultModel: "glm-5.2",
-    modelOptions: ["glm-5.2"],
   },
   qwen: {
     label: "Alibaba Qwen",
     apiKeyPlaceholder: "sk-...",
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    defaultModel: "qwen-plus-latest",
-    modelOptions: ["qwen-plus-latest", "qwen3-max", "qwen3-coder-plus"],
+    defaultModel: "qwen3.7-plus",
   },
   "qwen-code": {
     label: "Alibaba Qwen Code",
     apiKeyPlaceholder: "sk-...",
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     defaultModel: "qwen3-coder-plus",
-    modelOptions: ["qwen3-coder-plus", "qwen-plus-latest"],
   },
   doubao: {
     label: "Doubao",
     apiKeyPlaceholder: "ark_...",
     baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
     defaultModel: "doubao-1-5-pro-256k-250115",
-    modelOptions: ["doubao-1-5-pro-256k-250115"],
   },
   mistral: {
     label: "Mistral",
     apiKeyPlaceholder: "mistral_...",
     baseUrl: "https://api.mistral.ai/v1",
     defaultModel: "mistral-medium-latest",
-    modelOptions: ["mistral-medium-latest", "codestral-latest"],
   },
   moonshot: {
     label: "Moonshot",
     apiKeyPlaceholder: "sk-...",
     baseUrl: "https://api.moonshot.ai/v1",
-    defaultModel: "kimi-k2-0905-preview",
-    modelOptions: ["kimi-k2-0905-preview"],
+    defaultModel: "kimi-k3",
   },
   asksage: {
     label: "AskSage",
@@ -814,7 +802,9 @@ export type LLMVendorSettingsMap = Partial<
 const CORE_DEFAULT_MODEL = {
   claude: "claude-sonnet-4-6",
   openai: "gpt-5.4-mini",
-  gemini: "gemini-2.5-flash",
+  // ai.google.dev limits the Gemini 2.5 models to existing users and points
+  // new projects at 3.8 Flash.
+  gemini: "gemini-3.8-flash",
   "azure-foundry": "gpt-5.4-mini",
   // The catalog marks Vertex's Gemini 2.5 models deprecated (design
   // `model-capability-catalog.md` §6.1), so they are not offered there.
@@ -838,82 +828,51 @@ const DEFAULT_MODEL: Record<LLMVendor, string> = Object.freeze({
   ),
 } as Record<LLMVendor, string>);
 
-const CORE_VENDOR_MODEL_OPTIONS = {
-    claude: [
-      "claude-sonnet-4-6",
-      "claude-opus-4-6",
-      "claude-haiku-4-5",
-      "claude-sonnet-4-5",
-      "claude-opus-4-5",
-    ],
-    openai: [
-      "gpt-5.4-mini",
-      "gpt-5.4",
-      "gpt-5.4-nano",
-      "gpt-5.4-pro",
-      "gpt-4.1",
-      "gpt-4.1-mini",
-      "o3",
-    ],
-    gemini: [
-      "gemini-2.5-flash",
-      "gemini-2.5-pro",
-      "gemini-2.5-flash-lite",
-      "gemini-2.0-flash",
-      "gemini-2.0-flash-lite",
-    ],
-    "azure-foundry": [
-      "gpt-5.4-mini",
-      "gpt-5.4",
-      "gpt-5.4-nano",
-      "gpt-4.1",
-      "gpt-4.1-mini",
-    ],
-    "vertex-ai": [
-      "gemini-3.5-flash",
-      "gemini-3.1-pro-preview",
-      "gemini-2.0-flash",
-      "gemini-3.1-flash-lite",
-    ],
-    // Self-hosted OpenAI-compatible endpoints (vLLM / SGLang / llama.cpp …),
-    // including a LiteLLM gateway that fronts several backends behind one /v1
-    // and routes by model id. Endpoint-defined and heterogeneous, so there is
-    // NO static catalog: the dropdown is populated live from the user's /models
-    // handshake (LlmTab `modelOptionsFor` is handshake-only for this vendor).
-    // A hardcoded seed here previously rendered Ave-cluster models before any
-    // endpoint was entered and pre-selected a fabricated default id.
-    "openai-compatible": [],
-  } as const;
-
-const PRESET_VENDOR_MODEL_OPTIONS = Object.fromEntries(
-  OPENAI_COMPATIBLE_PRESET_VENDOR_IDS.map((vendor) => [
-    vendor,
-    OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].modelOptions,
-  ]),
-) as Record<OpenAICompatiblePresetVendor, readonly string[]>;
-
-export const LLM_VENDOR_MODEL_OPTIONS: Readonly<Record<LLMVendor, readonly string[]>> =
-  Object.freeze({
-    ...CORE_VENDOR_MODEL_OPTIONS,
-    ...PRESET_VENDOR_MODEL_OPTIONS,
-  }) as unknown as Readonly<Record<LLMVendor, readonly string[]>>;
+/**
+ * The model choices a vendor offers before any live `/models` answer.
+ *
+ * A vendor with a catalog provider offers the chat models the active catalog
+ * lists for it (`catalogChatModelIds`), newest first. Every core vendor has
+ * one except `openai-compatible`: a self-hosted endpoint (vLLM, SGLang,
+ * llama.cpp, a LiteLLM gateway) whose models only its own `/models` handshake
+ * can name, so it offers nothing until that answer arrives — a seed here once
+ * pre-selected a fabricated id for arbitrary endpoints. A preset vendor with
+ * no catalog provider offers its hand-picked `modelOptions`.
+ *
+ * Read at call time, never at module load: the catalog is installed per
+ * process (`model-catalog/active.ts`), and a copy frozen at import would
+ * predate it.
+ */
+export function llmVendorModelOptions(vendor: LLMVendor): readonly string[] {
+  if (vendorHasCatalogProvider(vendor)) return catalogChatModelIds(vendor);
+  if (vendor === "openai-compatible") return [];
+  if (!isOpenAICompatiblePresetVendor(vendor)) {
+    throw new Error(`LLM vendor ${vendor} has no catalog provider and no hand-picked model options`);
+  }
+  const handPicked = OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].modelOptions;
+  if (!handPicked) {
+    throw new Error(`LLM preset ${vendor} has no catalog provider and declares no modelOptions`);
+  }
+  return handPicked;
+}
 
 /**
- * True when `model` is a selectable model ID for `vendor` per
- * {@link LLM_VENDOR_MODEL_OPTIONS} (the authoritative option list the
- * settings UI offers — there is no other way to provision a model for a
- * vendor). Used by `SubAgentRunner.resolveSubAgentModel` to validate an
- * agent profile's explicit `model:` frontmatter before applying it as a
- * child `modelOverride`, so an unavailable ID falls back to the parent
- * model instead of hard-failing the sub-agent on a non-retryable
- * provider model-not-found.
+ * True when `model` is a model the active `vendor` can serve: one
+ * {@link llmVendorModelOptions} offers, or one the vendor's own `/models`
+ * answer named (`liveModels`, the model-list cache for the endpoint the route
+ * reaches). Used by `SubAgentRunner.resolveSubAgentModel` to validate an agent
+ * profile's explicit `model:` frontmatter before applying it as a child
+ * `modelOverride`, so an unavailable ID falls back to the parent model
+ * instead of hard-failing the sub-agent on a non-retryable provider
+ * model-not-found.
  */
 export function isModelAvailableForVendor(
   vendor: string,
   model: string,
+  liveModels: readonly string[],
 ): boolean {
   if (!isLLMVendor(vendor)) return false;
-  return LLM_VENDOR_MODEL_OPTIONS[vendor].includes(model);
+  return liveModels.includes(model) || llmVendorModelOptions(vendor).includes(model);
 }
 
 function defaultBlock(vendor: LLMVendor): LLMVendorSettings {
