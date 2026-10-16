@@ -1,6 +1,6 @@
 # Per-resource card capabilities — what reviving `permissions` opens up
 
-> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+> Historical record: written under the app's former name (see `src/shared/legacy-product-name.ts`); names and paths below are given as Ave's (data folder `~/.ave`, environment variables `AVE_*`).
 
 - Status: **design note, not yet implemented.** Written while wiring the spec's `_meta.ui.permissions` (PR #1600), because that work exposes a declaration channel we have nothing plugged into yet.
 - Related: [`docs/guides/mcp-app-authoring.md`](../guides/mcp-app-authoring.md) (the author-facing contract).
@@ -64,7 +64,7 @@ The per-invocation gates stay exactly as they are. Declaration decides *whether 
 
 ## Upstream
 
-This is a **spec gap, not a Ave gap**: the spec defines per-resource `permissions` for *browser* features (camera / microphone / geolocation / clipboardWrite) but gives a resource no way to declare which *host* capabilities it needs — even though `AppBridge` is constructed with capabilities per card. The consequence is that every conformant host hands every card the full set.
+This is a **spec gap, not an Ave gap**: the spec defines per-resource `permissions` for *browser* features (camera / microphone / geolocation / clipboardWrite) but gives a resource no way to declare which *host* capabilities it needs — even though `AppBridge` is constructed with capabilities per card. The consequence is that every conformant host hands every card the full set.
 
 Proposal to upstream (archived in the contribution backlog, to be submitted per the usual fix-first-then-issue order): extend the existing per-resource declaration with a host-capability axis, so a host can advertise `declared ∩ supported`. Our implementation would be the reference: the handlers-table seam makes it a filter, not a framework.
 

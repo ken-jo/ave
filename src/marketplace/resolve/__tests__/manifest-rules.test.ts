@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PluginAuthority } from "../../catalog/types.js";
 import { isMarketplaceError } from "../../errors.js";
 import { assertGitInstallManifest, expectedPluginOf, gitInstallManifestMismatches, PLUGIN_AUTHORITY_FIELDS, type ExpectedPlugin } from "../manifest-rules.js";
+import { LEGACY_EXTENSION_NAMESPACE } from "../../../shared/legacy-product-name.js";
 
 const authority = (): PluginAuthority => ({
   capabilities: ["llm.chat"],
@@ -88,10 +89,10 @@ describe("git-install manifest rules (design §5.3)", () => {
   });
 
   it("names the renamed extension key on its own and beside the current one", () => {
-    const renamed = "extensions.ai.agent-connector.ave was renamed to extensions.ai.agent-connector.ave; update the manifest";
+    const renamed = `extensions.${LEGACY_EXTENSION_NAMESPACE} was renamed to extensions.ai.agent-connector.ave; update the manifest`;
     const current = manifest();
-    const legacyOnly = { ...current, extensions: { "xyz.retiredname-namespace": (current.extensions as Record<string, unknown>)["ai.agent-connector.ave"] } };
-    const both = { ...current, extensions: { ...(current.extensions as Record<string, unknown>), "xyz.retiredname-namespace": {} } };
+    const legacyOnly = { ...current, extensions: { [LEGACY_EXTENSION_NAMESPACE]: (current.extensions as Record<string, unknown>)["ai.agent-connector.ave"] } };
+    const both = { ...current, extensions: { ...(current.extensions as Record<string, unknown>), [LEGACY_EXTENSION_NAMESPACE]: {} } };
     expect(gitInstallManifestMismatches(legacyOnly, expected())).toEqual([renamed]);
     expect(gitInstallManifestMismatches(both, expected())).toEqual([renamed]);
   });

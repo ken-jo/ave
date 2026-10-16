@@ -1,6 +1,6 @@
 # Tailnet Observer Configuration Surface Redesign
 
-> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+> Historical record: written under the app's former name (see `src/shared/legacy-product-name.ts`); names and paths below are given as Ave's (data folder `~/.ave`, environment variables `AVE_*`).
 
 > Status: **Implemented** (issue #2112, part 3 of 3): the host-owned config file
 > under the environment layer, the Settings section and guided setup ship in

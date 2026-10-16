@@ -1,6 +1,6 @@
 # Plugin HostApi as a versioned protocol
 
-Plugin names such as `mail`, `portal`, `assistant` and `ave-plugin-repo` in this
+Plugin names such as `mail`, `portal`, `assistant` and `repo` in this
 record are generic stand-ins for plugins that are no longer part of this project.
 
 The code packages described here are called extensions in user-facing copy.
@@ -14,10 +14,10 @@ travels in `_meta["ave/invocation"]`. Its schema and generated client are
 `schemas/plugin-host-protocol/3/protocol-client.ts`; the golden fixtures live under
 `src/plugins/isolation/__tests__/fixtures/host-protocol/3/`. An extension for app
 0.14.0 or later declares `extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
-`requires.minAppVersion: "0.14.0"`; a protocol `2` package (the `ave/*` wire served
+`requires.minAppVersion: "0.14.0"`; a protocol `2` package (the protocol-2 wire served
 by apps 0.12–0.13) is refused before activation and must be re-vendored from an Ave
 release tag. Where a step or decision below says `hostProtocol: "2"`, `…/2/…` or
-names an `ave-plugin-*` repository, it records that step at its pinned commit and
+names an archived per-plugin repository, it records that step at its pinned commit and
 is not the current rule.
 
 Status: design, decided; the wire step (§9.4) is implemented on `main`; the Lease step
@@ -25,7 +25,7 @@ Status: design, decided; the wire step (§9.4) is implemented on `main`; the Lea
 of independent review, and shipped as v0.12.0; the Publication step has its
 implementation plan in §9.7 (2026-09-28, decisions 27-47) and targets 0.13.0; Admission
 (§9.8, decisions 48-62) and the move to protocol `3` on the `ave/*` wire target 0.14.0. It follows
-the retirement of the `ave-plugin-sdk` repository: a plugin repository now vendors the
+the retirement of the plugin SDK repository: a plugin repository now vendors the
 contract (`public-contract.ts` and the manifest schema) from ave at a release tag and
 holds the copy to a recorded sha256 (`docs/design/multi-source-git-marketplace.md` §5.6;
 the official repository's `contract/sources.json` and `tools/vendor.mjs`). This document
@@ -44,8 +44,8 @@ main after the multi-source git marketplace merged); claims about the official m
 repository name its commit `6a4d3b3df`. Claims about other hosts cite their official
 documentation. The Lease amendment (§2.2, §3.2, §3.6, §4.1, §6.1, §6.3-6.4, §7, §9.1-9.3,
 §9.5, decisions 8-20) cites ave at `f1a8d191e` (main, 2026-09-27, after the wire
-step), the official repository at `6a4d3b3`, `ave-plugin-portal` at `2f17388` and
-`ave-plugin-repo` at `d71fb95`; a citation in those sections without a repository name is
+step), the official repository at `6a4d3b3`, the archived `portal` repository at `2f17388` and
+the archived `repo` repository at `d71fb95`; a citation in those sections without a repository name is
 ave at `f1a8d191e`. The Publication plan (§9.7, and the §2.1, §6.1, §6.2, §10.2
 and §13 lines it amends) cites ave at `c73f59580` (main, 2026-09-28) and the
 official repository at `6a4d3b3`.
@@ -305,7 +305,7 @@ weakening the envelope. `local-indexer` ships exactly the four declarations abov
 no other plugin gains a grant: `meeting`'s managed FFmpeg lives under its data
 directory (official repository at `6a4d3b3`,
 `plugins/meeting/source/src/ffmpegRuntime.ts:350-386`), `portal`'s native worker asks
-for empty read and write sets (`ave-plugin-portal` at `2f17388`, `src/nativeAdClient.ts:655-663`:
+for empty read and write sets (the archived `portal` repository at `2f17388`, `src/nativeAdClient.ts:655-663`:
 `allowReadPaths: []`, `allowWritePaths: []` on its `spawnWorker` call), and `git`'s
 external `dataDirectory` is an Admission
 prerequisite, not a Lease grant (§9.2 item 7).
@@ -908,7 +908,7 @@ and the document says which members those are.
   before the read (§4.1.6). The entitlement rows themselves stay, because the same gate
   decides the resolver's `lease` operation (§4.1.6, decision 17).
 - `getAuthPartitionCookies` — values cross (`public-contract.ts:195-202`). Used only by
-  `portal` (`ave-plugin-portal` at `2f17388`: the reader is bound at
+  `portal` (the archived `portal` repository at `2f17388`: the reader is bound at
   `src/sessionVault.ts:35-40` and invoked at `:65`) to drive a browser context whose
   requests the host cannot issue, **and** to read the partition's `user_id` and
   `refresh_token` cookies for the service's token refresh, which it then sends as a JSON
@@ -1309,7 +1309,7 @@ record, not by the request union, and every record the host can hold has a row
 - **No lease:** the plugin's own headers pass as today. `mail`'s OAuth `Bearer`
   (official repository at `6a4d3b3`, `plugins/mail/source/src/email/graphClient.ts:82`,
   `src/calendar/calendarClient.ts:35`, through `src/http/runtime-http.ts:102-107`),
-  `portal`'s cookie-authenticated calls (`ave-plugin-portal` at `2f17388`,
+  `portal`'s cookie-authenticated calls (the archived `portal` repository at `2f17388`,
   `src/hostTransport.ts:45-52`), `meeting` and `local-indexer` in plugin-owned-key mode
   and `meeting`'s unauthenticated FFmpeg download
   (`plugins/meeting/source/src/ffmpegRuntime.ts:371`) are all no-lease requests and
@@ -1530,7 +1530,7 @@ of it (decision 6). The `$id` is that tagged URL and is never reassigned: an add
 change within protocol `1` (§3.3) ships in a new app tag and therefore under a new `$id`
 (Agent Plugins conformance, "Never reassign a published canonical schema identifier",
 [checklist](https://agent-plugins.org/client-implementers/conformance)). Protocols 1 and 2
-were published under the Ave site's origin (`https://former-site.invalid/schemas/…`); their files keep
+were published under the app's former site origin (recorded in each file's `$id`); their files keep
 that `$id` byte for byte and ave.agent-connector.ai serves them at the same paths. Protocol 3
 onward carries the Ave origin.
 `.../plugin-host-protocol/1/protocol.schema.json` is a documented moving alias to the
@@ -1982,7 +1982,7 @@ its evidence.
 | Wire (§9.4) | reverse channel becomes JSON-RPC `ave/host/*`; `construct` negotiation; newline framing; identity fields off the wire; schema generator + parity gate | golden-fixture conformance suite passes against the JS reference runtime for all five plugins | **none** — the reference runtime is host-shipped |
 | Lease (protocol `2`, app release X = 0.12.0; decisions 8-26) | credential lease: `bearer()` removed, `ResolveApiKeyResult` union, `HostFetchInit.auth` forwarded to the one factory path, host lease registry with linearised issuance and epoch fencing, audience and scheme binding by normalized source, credential-header clearing per hop including `api-key`, cookie composition, the four closed error codes, raw exposure under `secrets:raw-api-key` with receipt-bound consent, the operation rule that refuses host-provider-key export through `getSecret` and the removal of the official plugins' fallbacks (§4.1); catalog format 2 (§6.4); `sandbox` manifest block through schema, runtime, marketplace authority, descriptor/index, review, receipts and the re-vendored checker, replacing `PLUGIN_ENVELOPE_GRANTS` with the global exclusions preserved (§2.2, §6.3); protocol-aware catalog selection and the pre-activation refusal of undeclared or unserved protocols on both arms (§3.2, §6.4); dispatcher budgets (§7.4); `FormData` serialisation in the reference runtime and the 15 MiB effective STT body (§8); schema regeneration at the final version and the web mirror (§6.1); the protocol schema joins the vendored set (§6.3) | host: the gates of §9.6 per slice, then once at publication; plugins: `meeting` both STT paths in host-key and plugin-key modes through the real child encoder with abort, release and revoke; `local-indexer` startup, warm-up, scan, query outside a scan, caption, key switch and restart through the real broker with the worker holding tokens only and a synthetic marker proving no shared key leaves main on argv, env or any normal frame, lease counts returning to baseline; lease-failure paths of both plugins proven not to reach `getSecret`, a raw resolve or a socket; old `meeting`/`local-indexer` bundles refused before activation on X; the packaged upgrade matrix of §6.4 including downgrade and offline; `mail`, `portal`, plugin-key STT/indexer and the FFmpeg download unchanged; measured budgets (§7.4) | **announced boundary, not a runtime flag-day**: every code plugin republishes with `requires.hostProtocol: "2"` and `minAppVersion` X; `resolveApiKey` callers (`meeting`, `local-indexer`) migrate to the lease; `local-indexer` manifest carries its four `sandbox` declarations; publication order in §9.5 |
 | Publication (app release 0.13.0; §9.7, decisions 27-47) | TS protocol client vendored with the contract (§6.2, §6.3); validate CLI; `process` entry runtime under a process-confining sandbox, its pinned-artifact admission, and its place in the descriptor and index (no new field: `platforms` and the pinned rungs, §9.7 P4) | validate CLI passes for every tracked official source (`plugins/*/source` after the candidate wave retires `assistant`'s, §9.7 E2′), `templates/extension` (the former `templates/plugin`), the portal and repository plugins with the app not running; a non-JS smoke plugin (Python: a stock MCP server library plus a JSON-RPC library for the Ave peer channel) passes conformance | none for existing plugins; the schema vendoring, `hostProtocol` in the descriptor/index and the official plugins' declarations moved into Lease (§6.4) |
-| Admission (app release 0.14.0; §9.8, decisions 48-62) | out-of-process by default for every install and every source (decision 3): the routing function has no input, the census `OUT_OF_PROCESS_PLUGIN_IDS` / `isOutOfProcessPlugin` is deleted and the in-process import call leaves main (§9.8 A1); the arm and the confinement (`PluginConfinementReport`: the spawn's wrap outcome, or `not-spawned`) on the Doctor's plugin report; `git`, `hello-world`, `templates/extension`, `portal` onto the path; adversarial fixture (§9.8 A2); plugins outside the official index distributed through another marketplace source, never the official index (decision 48); the official-URL switch when the repository is public (O1); the old server's retirement sequence (P7) | fixture attempts the four escapes (blueprint §9 Stage 9) under the real wrap and is denied on each, with control cases, after being built against the validate CLI; the routing matrix routes every `entry` manifest to `child` for every source kind, rung, install source and platform, and admits or refuses a `process` manifest explicitly; a refused prepared activation reports as a `PACKAGE_INCOMPATIBLE` (`host_protocol`) update failure and a refused restart through the config-save reply and the card's `lastAttemptRefusal`, both with the boot/add audit event and the running generation untouched; `allPluginsAreOutOfProcess`, fed by the registry's `arm`, is true, and a test routes every manifest of the official index to `child`; `git` 0.3.0: no `fetch` call site outside its bound `hostFetch`, its `networkAccess` in the manifest, its cache under a `sandbox.write` `userChosenDirectory` grant and the `~` refusal tested (planned; not started; awaiting owner go-ahead, decision 49) | `git` **prerequisites (decision 22)**: its direct `fetch` for GitLab/GitHub with cookie and token headers (`ave-plugin-repo` at `d71fb95`, `src/hostPlugin.ts:797-806`) and for plugin LLM calls (`:920-932`) move to `hostFetch` with `networkAccess` declarations; its optional external `dataDirectory`, expanded from `~` today (`:824-834`) and written under (`:1140`), becomes a `sandbox.write` `userChosenDirectory` grant on `configKey: "dataDirectory"` that requires a normalised absolute path and refuses `~`. These are not Lease work; the earlier "all mediated" claim is withdrawn (§9.2 item 7). No other plugin changes: a protocol-2 `entry` plugin gets the same `PluginHostApi` in its own process |
+| Admission (app release 0.14.0; §9.8, decisions 48-62) | out-of-process by default for every install and every source (decision 3): the routing function has no input, the census `OUT_OF_PROCESS_PLUGIN_IDS` / `isOutOfProcessPlugin` is deleted and the in-process import call leaves main (§9.8 A1); the arm and the confinement (`PluginConfinementReport`: the spawn's wrap outcome, or `not-spawned`) on the Doctor's plugin report; `git`, `hello-world`, `templates/extension`, `portal` onto the path; adversarial fixture (§9.8 A2); plugins outside the official index distributed through another marketplace source, never the official index (decision 48); the official-URL switch when the repository is public (O1); the old server's retirement sequence (P7) | fixture attempts the four escapes (blueprint §9 Stage 9) under the real wrap and is denied on each, with control cases, after being built against the validate CLI; the routing matrix routes every `entry` manifest to `child` for every source kind, rung, install source and platform, and admits or refuses a `process` manifest explicitly; a refused prepared activation reports as a `PACKAGE_INCOMPATIBLE` (`host_protocol`) update failure and a refused restart through the config-save reply and the card's `lastAttemptRefusal`, both with the boot/add audit event and the running generation untouched; `allPluginsAreOutOfProcess`, fed by the registry's `arm`, is true, and a test routes every manifest of the official index to `child`; `git` 0.3.0: no `fetch` call site outside its bound `hostFetch`, its `networkAccess` in the manifest, its cache under a `sandbox.write` `userChosenDirectory` grant and the `~` refusal tested (planned; not started; awaiting owner go-ahead, decision 49) | `git` **prerequisites (decision 22)**: its direct `fetch` for GitLab/GitHub with cookie and token headers (the archived `repo` repository at `d71fb95`, `src/hostPlugin.ts:797-806`) and for plugin LLM calls (`:920-932`) move to `hostFetch` with `networkAccess` declarations; its optional external `dataDirectory`, expanded from `~` today (`:824-834`) and written under (`:1140`), becomes a `sandbox.write` `userChosenDirectory` grant on `configKey: "dataDirectory"` that requires a normalised absolute path and refuses `~`. These are not Lease work; the earlier "all mediated" claim is withdrawn (§9.2 item 7). No other plugin changes: a protocol-2 `entry` plugin gets the same `PluginHostApi` in its own process |
 | Loader removal | remove the retained in-process factory function (`importInProcessPluginFactory`, §9.8 A1) and narrow the arm union | `plugin-loader.ts` exports no in-process factory path; `importPluginFactory`'s only importer is `plugin-child-main.ts`; `PluginLoadArm` has one member; condition and boundary as §9.3 restated by §9.8 (0.16.0 at the latest) | none |
 
 Dual-run period: from the wire step until Admission, both loaders coexist as a
@@ -2024,7 +2024,7 @@ their own repositories at a pinned commit.
    marketplace admission
    path end to end.
 6. `portal` — `openAuthWindow` ×5, `getAuthPartitionCookies`,
-   `spawnWorker` ×3 (`ave-plugin-portal` at `2f17388`, `src/nativeAdClient.ts:91-96`), `probePrivateHost`;
+   `spawnWorker` ×3 (the archived `portal` repository at `2f17388`, `src/nativeAdClient.ts:91-96`), `probePrivateHost`;
    the largest surface and the one the blueprint records as "three unrelated problems"
    (blueprint `:1061`). Its `hostFetch` is bound once (`src/hostTransport.ts:45-52`); besides the
    browser-driving use, the partition's `user_id`/`refresh_token` cookies are read from
@@ -2034,7 +2034,7 @@ their own repositories at a pinned commit.
    index, so an install reaches it as a custom source or as a policy
    `additional` (managed) source; admission does not depend on which (decision 3).
    Last, so its cadence is decoupled.
-7. `git` — not yet isolated; `openAuthWindow` ×4 (`ave-plugin-repo` at `d71fb95`,
+7. `git` — not yet isolated; `openAuthWindow` ×4 (the archived `repo` repository at `d71fb95`,
    `src/hostPlugin.ts:2194-2349`), `getSecret`, `callLlm`, `openExternalUrl`,
    `clearAuthPartition`. **It is not fully mediated**: it calls global `fetch` directly
    for GitLab/GitHub pages with the partition cookie header and a GitHub token
@@ -4508,7 +4508,7 @@ host side of retiring the old marketplace server (marketplace design §16; the "
 item of `TODO.md`). Every citation in this section is
 ave at `c4c9689d2` (main, 2026-10-02: after **#2616**, the last marketplace §18
 slice; after the `v0.13.0` tag at `ca6e3aa77`, #2605) unless a repository is named;
-`ave-plugin-repo` is cited at its `origin/main` `d71fb9553` (unchanged since §9.2 cited
+the archived `repo` repository is cited at its `origin/main` `d71fb9553` (unchanged since §9.2 cited
 `d71fb95`), the official repository
 `ken-jo/agent-marketplace` at its `main`, `6a4d3b3df` (still private; the remote has
 only `main`, so the candidate wave of §9.7 fact 6 is unpublished), and the blueprint at
@@ -4609,7 +4609,7 @@ Verified on 2026-10-03, each with the source that proves it.
    `fetchTextAllowHttp` (`:792-817`; `fetchText` `:784`, `fetchJson` `:819`), which sends a
    `Cookie` built by `cookieHeaderFor` (`:768-782`) from the in-memory `githubCookies` /
    `gitlabCookies` the plugin harvests itself from `openAuthWindow` (`:2194`, `:2251-2259`,
-   `:2306`, `:2349-2358`; partitions `persist:plugin-auth:ave-plugin-repo:github` `:47` and
+   `:2306`, `:2349-2358`; partitions `persist:plugin-auth:repo:github` `:47` and
    a GitLab one at `:51`) and `Authorization: Bearer <githubApiToken>` from
    `githubApiAuthorizationHeader` (`:573-577`, reading its own namespace through
    `getSecret`, `:566`); and `:927` inside `callPluginLlm` (`:897-965`; `api-key` or
@@ -4619,7 +4619,7 @@ Verified on 2026-10-03, each with the source that proves it.
    (`:824-834`) expands `~` with `os.homedir()` (`:828`) and refuses a non-absolute result
    (`:831`); the cache writes under it with `mkdir`/`writeFile` at `:1140`, `:1155`,
    `:1161`, `:1172` (`saveGitDataCache` `:1129`; readers `:1084`, `:1196`). The manifest
-   (`plugin.json`, `name: ave-plugin-repo`, `0.2.1`) declares `requires: { minAppVersion:
+   (`plugin.json`, `name: repo`, `0.2.1`) declares `requires: { minAppVersion:
    "0.7.0" }` with **no** `hostProtocol`, no `networkAccess`, no `sandbox`, `auth` with
    `partitionDomains` naming a GitLab host, and `configSchema.properties.dataDirectory`
    (`type: "string"`, default `""`, "Absolute directory where Ave Git stores …"); it still
@@ -4628,7 +4628,7 @@ Verified on 2026-10-03, each with the source that proves it.
    tests are `scripts/*.test.mjs` under `bun test`; CI is `.github/workflows/ci.yml`
    (contract check, encoding and reduced-motion gates, `check:manifest`, typecheck, test,
    build, `check-artifact`), and `publish.yml` / `release-dispatch.yml` publish **to the
-   old server** through `former_org/.github`'s `marketplace-publish.yml` on a
+   old server** through the former organization's `.github` repository's `marketplace-publish.yml` on a
    `main` push that changes `plugin.json` (`release-dispatch.yml`, "push to main touching
    plugin.json → … → repository_dispatch(publish-marketplace)"). `contract/sources.json`
    pins two files and `tools/vendor.mjs` only copies (`:76-83`, `:106-113`). Draft PR #27
@@ -4663,15 +4663,15 @@ Verified on 2026-10-03, each with the source that proves it.
     for 'https://github.com'": anonymous access to a repository the API reports as
     `visibility: public` returns 404 (`curl` 2026-10-03), which is the organization flag
     `TODO.md` records, not a defect in the job.
-11. **The old server and its publication path.** `marketplace.former-site.invalid` is
-    `former_org/agent-marketplace` (FastAPI, Docker Compose + Nginx under `deploy/`,
+11. **The old server and its publication path.** The old marketplace hostname is
+    served by the old marketplace server repository (FastAPI, Docker Compose + Nginx under `deploy/`,
     on the owner's own Cloudflare and server; not archived, last push 2026-09-19). Plugin
-    repositories publish to it through `former_org/.github/workflows/marketplace-publish.yml`
+    repositories publish to it through the former organization's `.github/workflows/marketplace-publish.yml`
     (siblings `plugin-ci.yml`, `validate-plugin-manifest.yml`). Nothing under `src/` or
     `web/` in ave names the host any more (grep 2026-10-03); the app has read only git
     sources since #2550–#2558 (marketplace design §16.2, §16.4).
 12. **How an installed package reaches a new source, as built.** A registry entry that
-    matches no official package — the old server's `portal` and `ave-plugin-repo` installs
+    matches no official package — the old server's `portal` and `repo` installs
     — keeps running as "source unknown — no updates", with the one-time boot notice "<name>
     is no longer managed by Ave. Your organization can keep it up to date by registering
     its marketplace" (marketplace design §16.3, recorded in
@@ -5429,7 +5429,7 @@ run; its daily job is red only at the ave clone); (2) the mirror promotion of `2
 `2/v0.13.0` (`node scripts/sync-plugin-host-protocol-mirror.mjs --publish 2/v0.12.0`,
 then `2/v0.13.0`; decision 39 makes the order irrelevant to the alias) in a `web/**`
 PR, after each release's draft is published — which needs the tag builds
-(`build-installers.yml`) and so **GitHub Actions on `former_org`**. The daily
+(`build-installers.yml`) and so **GitHub Actions on the former organization**. The daily
 `published` job of the official repository stays as it is: it is correct, a
 repository-scoped `GITHUB_TOKEN` cannot read another organization's repository, adding a
 personal token would put a credential into a workflow to work around a platform flag,
@@ -5466,14 +5466,14 @@ after the plugin-side releases (decision 60):
 
 | # | Step | Kind | Where | Blocked by |
 |---|---|---|---|---|
-| 1 | Public release of the app built on the git marketplace (0.14.0 or the first public build after it) | owner (release) | ave draft → published | GitHub Actions on `former_org` (tag builds) |
+| 1 | Public release of the app built on the git marketplace (0.14.0 or the first public build after it) | owner (release) | ave draft → published | GitHub Actions on the former organization (tag builds) |
 | 2 | Notice: the server's own announcements feed (marketplace design §16.1 "announcements → service endpoint"), and the 0.14.0 release notes; **fourteen days** before step 6, by the same rule §9.3 applies to a protocol boundary | owner (date) | server, release notes | — |
-| 3 | `former_org/.github`: delete `marketplace-publish.yml`; `plugin-ci.yml` and `validate-plugin-manifest.yml` follow the archive wave in `TODO.md` | code | `.github` repository | nothing (a workflow file can be deleted without Actions) |
+| 3 | The former organization's `.github` repository: delete `marketplace-publish.yml`; `plugin-ci.yml` and `validate-plugin-manifest.yml` follow the archive wave in `TODO.md` | code | `.github` repository | nothing (a workflow file can be deleted without Actions) |
 | 4 | Plugin repositories delete their GitHub publish workflows; the monorepo-moved repositories are archived in the wave | code / owner | plugin repositories | owner go-ahead (decision 49) |
 | 5 | ave: nothing to delete (fact 11); `web/app/docs/marketplace/authors/page.tsx` is rewritten for `marketplace.json` with `schemaVersion: 2` and the `{ url, sha256 }` pin, with a custom-source layout as the example (fact 13) | code | ave `web/**` (deploys on merge) | nothing |
 | 6 | Stop the server: `docker compose down` in `deploy/` with the volumes kept (`deploy_pgdata`, `deploy_mkt_storage`) until step 8 | owner | the server host | step 2's date |
-| 7 | Cloudflare: remove the `marketplace.former-site.invalid` route/DNS record; the hostname answers nothing rather than a stale catalog | owner | Cloudflare | step 6 |
-| 8 | Archive `former_org/agent-marketplace`, `marketplace-whitelist`, `ave-plugin-sdk` and the five moved plugin repositories; export the server's final catalog and package rows to `project-history/` first | owner | GitHub, `project-history/` | one release cycle after step 1 (`TODO.md`, the SDK retirement item) |
+| 7 | Cloudflare: remove the old marketplace hostname's route/DNS record; the hostname answers nothing rather than a stale catalog | owner | Cloudflare | step 6 |
+| 8 | Archive the old marketplace server repository, `marketplace-whitelist`, the plugin SDK repository and the five moved plugin repositories; export the server's final catalog and package rows to `project-history/` first | owner | GitHub, `project-history/` | one release cycle after step 1 (`TODO.md`, the SDK retirement item) |
 
 Nothing in P7 depends on the organization flag except step 1 (tag builds) and, through
 it, the public date of step 2; steps 3 and 5 are code that can merge now; step 4's
@@ -5702,7 +5702,7 @@ What Ave should not adopt, and why:
 | 2 | `resolveApiKey` stops exporting the raw key on its default path: `bearer()` leaves the contract, the default result is an opaque `ApiKeyLease`, `hostFetch` gains `init.auth = { lease }`, and a host provider key crosses **through `resolveApiKey`** only under `capabilities: ["secrets:raw-api-key"]` with receipt-bound consent (§4.1.1, §4.1.6). The guarantee is scoped to `resolveApiKey`; own-namespace `getSecret`, `portal`'s partition-cookie export and `readEncrypted` plaintext are the inventoried exceptions (§4.1). | The credential attaches at the egress chokepoint the way partition cookies already do; the capability makes the exception visible to the user and countable by the host. Neither official consumer needs it: `meeting`'s STT egress goes through `hostFetch`, and `local-indexer`'s worker traffic already reaches `hostFetch` through its JS broker, which gains lease attachment (decision 10). The earlier text that said `local-indexer` "forwards the bearer itself" was stale at `6a4d3b3`. |
 | 3 | Out-of-process admission is decided the same way on every platform and for every install source — official, managed, custom, direct, local development, and origin-less legacy entries (`legacy-plugins.ts:90-93`). A code plugin loads out of process under the confinement the host chose for itself: `features.osToolSandbox`, off by default on every platform (`sandbox-gate.ts:20-21`); while it is off the child is spawned unwrapped (`out-of-process-plugin.ts:13-21`). What admission promises is the process boundary — separate heap, no Electron, own crash domain, one structural chokepoint — not OS confinement; OS confinement is whatever the substrate publishes (`architecture.md:1017-1020`): filesystem, process and network on macOS and Linux, filesystem and network on Windows. Only a non-JS `process` entry requires a wrap whose `confines` includes `process`, so it never loads on Windows and does not load anywhere with the sandbox off (§2.2). The Doctor's plugin report names, per plugin, the confinement it runs under. | An earlier draft refused custom and direct code plugins on Windows and admitted official and managed ones. Rejected on evidence: `origin.sourceOrigin` alone is not evidence, because the registry file is user-writable and `src/plugins/registry.ts:300-311` checks only shape, legacy migration binds `official` by plugin id with `artifactSha256: null` (`legacy-plugins.ts:95-124`), and a removed `additional` source leaves `managed` behind, so a sound version would need the host-secret evidence chain (`grants.ts:87-106`); it would grant the official and managed sources a privilege the marketplace design forbids (§10: the badge is the only thing the official source grants; §10.5); it would refuse `portal` and `git` on Windows, since neither is in the official index (`marketplace.json` at `6a4d3b3df` lists `hello-world`, `local-indexer`, `meeting`, `mail`, `assistant`) while `portal` already runs out of process there (`out-of-process-plugins.ts:857`); and its rationale was false by default on every platform, because with the sandbox off macOS and Linux run a custom plugin without process confinement too. |
 | 4 | A non-JS `process` entry is in the manifest schema from protocol `1` (`schemas/plugin-manifest.schema.json:1121`). Its runtime and a **narrow** marketplace admission — a sha256-pinned `release` or `archive` artifact recorded in the receipt, a live sandbox whose `confines` includes processes, never Windows, `minAppVersion ≥ 0.13.0` — ship in Publication (0.13.0, §9.7 P3-P4). Out-of-process-by-default admission for every install and the adversarial fixture stay in the Admission step. | The protocol is language-neutral from its first published version. The earlier wording deferred all marketplace admission for `process` to the Admission step, which contradicts the Publication scope (§9.1, §2.1's pinned-artifact rule); what the adversarial fixture must precede is admission of unpinned or unconfined code, and that stays refused on every path (decision 35). |
-| 5 | The deprecation owner of the in-process loader is the organization owner role of `former_org` (the repository's sole maintainer) — a role, recorded as such in `TODO.md` when the wire step starts; ave has no `CODEOWNERS` file. | AGENTS.md requires a named owner and a removal condition for any coexistence (§9.3). |
+| 5 | The deprecation owner of the in-process loader is the owner role of `ken-jo` (the repository's sole maintainer) — a role, recorded as such in `TODO.md` when the wire step starts; ave has no `CODEOWNERS` file. | AGENTS.md requires a named owner and a removal condition for any coexistence (§9.3). |
 | 6 | The protocol schema is canonical in the ave tree at a release tag and vendored like the rest of the contract (§6.3); its `$id` carries the app tag; ave.agent-connector.ai mirrors every copy `mirror.json` records from `web/public/schemas/` (published, candidate or orphan, each frozen against its own hash, §6.1), with `/1/protocol.schema.json` as a documented moving alias for editors. The validate CLI is a `tools/vendor/` bundle built from an ave entry (§10.2). | A release tag plus a sha256 in `contract/sources.json` is what the contract already pins; `tools/vendor.mjs` already holds bundles built from ave entries with a recorded bun version (`vendor.mjs:5-11`); release assets would be a second publication of the same bytes. The tag in `$id` is what keeps an additive revision (§3.3) from changing the bytes behind one identifier, since the site deploys on every `web/**` merge, not on tags. |
 | 7 | Per-plugin resource limits on macOS are deferred: crash containment ships first, and the conformance suite records RSS and startup time per plugin. | No number exists to size an `RLIMIT` against. |
 | 8 | **Release target (owner, 2026-09-27).** Lease ships in **0.12.0** (X). v0.11.0 ships first with its current scope (wire and alerts). Official plugins publish their alerts versions first and bump again for Lease, with no combined bump; a published artifact is never rewritten (§9.5). | Lease is a protocol boundary with its own notice, replacement and matrix gates; folding it into a release whose scope is already fixed would either skip those gates or reopen that release. The version number itself is not the gate. |

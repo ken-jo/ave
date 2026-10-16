@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+import { LEGACY_ENV_PREFIX } from "../../../src/shared/legacy-product-name.js";
 import { buildLlmSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 
 test("keeps a requested blank tab mounted through its first navigation", async () => {
@@ -27,7 +28,7 @@ test("keeps a requested blank tab mounted through its first navigation", async (
       settings: buildLlmSettings(),
       historyRows: [{ role: "user", content: "Browser tab fixture", createdAt: Date.now() }],
       sessionTitle: "Browser tab fixture",
-      launchEnv: { AVE_HOME: legacyHome },
+      launchEnv: { [`${LEGACY_ENV_PREFIX}HOME`]: legacyHome },
       launchArgs: ["--remote-debugging-port=9245", "--disable-gpu"],
     });
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();

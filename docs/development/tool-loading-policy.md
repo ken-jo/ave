@@ -6,7 +6,7 @@
 > §9, §14 and the implementation design in
 > `docs/development/tool-level-deferral-design.md`.
 >
-> Keyword routing was **retired** in SDK v12 (2026-07-24, ave-plugin-sdk#229).
+> Keyword routing was **retired** in SDK v12 (2026-07-24).
 > `manifest.keywords` is hard-rejected at manifest load
 > (`src/plugins/runtime/manifest-validation.ts`); no keyword path promotes a
 > Tool, and the only callable surface is manifest `Tool` objects. Bundled

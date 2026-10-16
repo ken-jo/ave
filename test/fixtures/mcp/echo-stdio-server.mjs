@@ -4,7 +4,12 @@
  * newline-delimited stdin/stdout — NO project imports, so it runs as a real
  * `node` subprocess without a build step. Mirrors what a real spawned plugin
  * (StdioServerLoop + PluginMcpServer) would do.
+ *
+ * argv[2] is the legacy `_meta` vendor prefix (`LEGACY_META_PREFIX`), passed by
+ * the test so the old name lives only in `src/shared/legacy-product-name.ts`.
  */
+const legacyMetaPrefix = process.argv[2];
+if (!legacyMetaPrefix) throw new Error("echo-stdio-server: missing legacy _meta prefix argument");
 let buffer = Buffer.alloc(0);
 
 function write(message) {
@@ -46,10 +51,10 @@ function handle(req) {
               // default-strict "write" baseline. Kept to prove the reverse
               // projection does NOT honor a wire-declared category.
               // transitional: also intentionally uses the LEGACY reverse-DNS
-              // `xyz.ave/*` prefix — this fixture stands in for an out-of-process
+              // `_meta` prefix — this fixture stands in for an out-of-process
               // plugin that has not yet migrated to `ave/*`, proving the host
               // still tolerates (and ignores) legacy `_meta` from a real subprocess.
-              _meta: { "xyz.ave/category": "read", "xyz.ave/version": "1.0.0" },
+              _meta: { [`${legacyMetaPrefix}category`]: "read", [`${legacyMetaPrefix}version`]: "1.0.0" },
             },
           ],
         },
