@@ -100,11 +100,13 @@ export function isSafeMainBundleManifestPath(path) {
  * The owner set the initial ceiling to 8_000_000 on 2026-10-16: features keep reaching
  * main, and raising it a few kilobytes per merge made every category merge re-measure
  * and re-conflict on this line. Last measured before the change: initial 5_426_065.
+ * The total ceiling moved with it, from 11_050_000 to 14_000_000 (owner, same day): initial
+ * is part of total, so total would otherwise stop growth near initial 7_370_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
   initialBytes: 8_000_000,
-  totalBytes: 11_050_000,
+  totalBytes: 14_000_000,
 });
 
 function normalizedPath(path) {
