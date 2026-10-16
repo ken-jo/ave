@@ -153,12 +153,14 @@ export function TableDocumentPreview({ path }: { path: string }) {
   const { sheet } = document;
   const prefixOnly = (document.format === "csv" || document.format === "tsv") && sheet.rowsTruncated;
   return (
-    <div className="min-w-0 space-y-2" data-testid="chat-side-panel-table-preview">
+    // Flex column down to the grid: the grid takes the height the panel has
+    // left and is the only scroll container (see PreviewDetail).
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2" data-testid="chat-side-panel-table-preview">
       {document.sheetNames.length > 1 ? (
         <div
           role="tablist"
           aria-label={t("chatPreviewRail.tableSheetsLabel")}
-          className="flex min-w-0 gap-1 overflow-x-auto pb-1"
+          className="flex min-w-0 shrink-0 gap-1 overflow-x-auto pb-1"
         >
           {document.sheetNames.map((name, index) => (
             <button

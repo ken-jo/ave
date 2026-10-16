@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreviewBody } from "../../components/ChatSidePanelPreview.js";
 import { resolveFilePreviewRoute } from "../preview-renderers.js";
-import { columnLetters } from "../table-document-grid.js";
+import { columnLetters, tableGridBlockStyle } from "../table-document-grid.js";
 import { tableErrorKey } from "../table-document-preview.js";
 import type { ChatPreviewTarget } from "../preview-targets.js";
 import type { PreviewReadDocumentResult, PreviewTableDocument } from "../../../../shared/preview-document.js";
@@ -31,6 +31,18 @@ describe("columnLetters", () => {
   it("labels columns like a spreadsheet", () => {
     expect([0, 1, 25, 26, 27, 51, 52, 701, 702].map(columnLetters))
       .toEqual(["A", "B", "Z", "AA", "AB", "AZ", "BA", "ZZ", "AAA"]);
+  });
+});
+
+describe("tableGridBlockStyle", () => {
+  it("takes the panel's remaining height instead of a fixed viewport share", () => {
+    // header 26 + 5000 rows x 24 + 2px border; shrinks down to header + two rows.
+    expect(tableGridBlockStyle(5000)).toEqual({ flex: "1 1 0", minBlockSize: "76px", maxBlockSize: "120028px" });
+  });
+
+  it("never grows past its rows, so a short sheet shows no scrollbar", () => {
+    expect(tableGridBlockStyle(5)).toEqual({ flex: "1 1 0", minBlockSize: "76px", maxBlockSize: "148px" });
+    expect(tableGridBlockStyle(1)).toEqual({ flex: "1 1 0", minBlockSize: "52px", maxBlockSize: "52px" });
   });
 });
 

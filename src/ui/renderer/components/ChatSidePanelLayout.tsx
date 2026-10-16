@@ -7,9 +7,8 @@ import { useVerticalSplit } from "../hooks/use-vertical-split.js";
 import { useNativeContextMenu, type NativeContextMenuHandlers } from "../hooks/use-native-context-menu.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
 import {
-  DetailHeader,
   EmptyState,
-  PreviewBody,
+  PreviewDetail,
   statusTone,
   targetIcon,
 } from "./ChatSidePanelPreview.js";
@@ -142,12 +141,9 @@ export function ListDetailWorkspace({
           </div>
         }
         bottom={
-          <div className="min-h-0 p-3">
+          <div className="flex min-h-full flex-col p-3">
             {selectedTarget ? (
-              <div className="space-y-3">
-                <DetailHeader target={selectedTarget} />
-                <PreviewBody api={api} sessionId={sessionId} target={selectedTarget} />
-              </div>
+              <PreviewDetail api={api} sessionId={sessionId} target={selectedTarget} />
             ) : (
               <div className="text-xs text-muted-foreground">{emptyText}</div>
             )}

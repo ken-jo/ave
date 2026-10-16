@@ -1,10 +1,26 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../../../src/shared/preview-document.js";
 import { cyclicWorkbook, offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
+
+/**
+ * The grid is the only vertical scroller between itself and the side panel:
+ * every `overflow: auto|scroll` ancestor up to the panel fits its content.
+ */
+async function gridScrollState(page: Page): Promise<{ gridScrolls: boolean; outerScrollers: string[] }> {
+  return page.getByTestId("chat-side-panel-table-grid").evaluate((grid) => {
+    const outerScrollers: string[] = [];
+    for (let e = grid.parentElement; e && e.dataset.testid !== "chat-side-panel"; e = e.parentElement) {
+      if (/(auto|scroll)/.test(getComputedStyle(e).overflowY) && e.scrollHeight > e.clientHeight + 1) {
+        outerScrollers.push(`${e.dataset.testid ?? e.className} ${e.clientHeight}/${e.scrollHeight}`);
+      }
+    }
+    return { gridScrolls: grid.scrollHeight > grid.clientHeight + 1, outerScrollers };
+  });
+}
 
 test("table previews show bounded counts, late source rows and explicit parser refusals", async () => {
   expect(builtMainExists(), "Build the app before checking table previews").toBe(true);
@@ -44,6 +60,8 @@ test("table previews show bounded counts, late source rows and explicit parser r
     await expect(preview).toContainText("최소");
     await expect(ctx.page.getByTestId("chat-side-panel-table-truncated")).toContainText("검사하지 않았습니다");
     await expect(ctx.page.getByTestId("chat-side-panel-table-grid")).toBeVisible();
+    // A long sheet scrolls inside the grid only; the panel around it does not.
+    expect(await gridScrollState(ctx.page)).toEqual({ gridScrolls: true, outerScrollers: [] });
     const boundedScreenshot = test.info().outputPath("bounded-table.png");
     await ctx.page.screenshot({ path: boundedScreenshot });
     await test.info().attach("bounded-table.png", { contentType: "image/png", path: boundedScreenshot });
@@ -51,6 +69,8 @@ test("table previews show bounded counts, late source rows and explicit parser r
     await file("offset.xlsx").click();
     await expect(ctx.page.getByTestId("chat-side-panel-table-grid")).toContainText("late value");
     await expect(ctx.page.getByTestId("chat-side-panel-table-grid")).toContainText("10001");
+    // Two rows fit, so nothing scrolls at all.
+    expect(await gridScrollState(ctx.page)).toEqual({ gridScrolls: false, outerScrollers: [] });
 
     await file("cyclic.xls").click();
     await expect(ctx.page.getByTestId("chat-side-panel-table-loading")).toBeVisible();
