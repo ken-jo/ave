@@ -30,8 +30,9 @@ import {
 import { readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { buildRuntimeAllowedDirectories } from "../../permissions/allowed-directories.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { TableDocumentError } from "../../tools/table-document-error.js";
+import { readPreviewDocumentInput } from "../../tools/preview-document-input.js";
 import {
-  PREVIEW_DOCUMENT_LIMITS,
   previewDocumentFormatOf,
   type PreviewReadDocumentResult,
 } from "../../shared/preview-document.js";
@@ -172,27 +173,11 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
       }
 
       try {
-        const stat = await fs.stat(resolved);
-        if (!stat.isFile()) {
-          return { ok: false, error: "not-a-file", path: resolved, message: "not a regular file" };
-        }
-        if (stat.size > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) {
-          return {
-            ok: false,
-            error: "too-large",
-            path: resolved,
-            bytes: stat.size,
-            message: `file ${stat.size} bytes exceeds ${PREVIEW_DOCUMENT_LIMITS.maxFileBytes}`,
-          };
-        }
-        const bytes = await fs.readFile(resolved);
-        // SheetJS + Papa Parse load on first use, outside the startup graph.
-        const { parseTableDocument, TableDocumentError } = await import(
-          "../../tools/table-document-reader.js"
-        );
+        const bytes = await readPreviewDocumentInput(resolved);
+        const { parseTableDocumentIsolated } = await import("../../tools/preview-document-process.js");
         let document;
         try {
-          document = parseTableDocument(bytes, format, sheetIndex);
+          document = await parseTableDocumentIsolated(bytes, format, sheetIndex);
         } catch (err) {
           if (err instanceof TableDocumentError) {
             return { ok: false, error: err.code, path: resolved, bytes: bytes.length, message: err.message };
@@ -212,6 +197,9 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         });
         return { ok: true, path: resolved, bytes: bytes.length, document };
       } catch (err) {
+        if (err instanceof TableDocumentError) {
+          return { ok: false, error: err.code, path: resolved, bytes: err.bytes, message: err.message };
+        }
         return { ok: false, error: "read-failed", path: resolved, message: errorMessage(err) };
       }
     },

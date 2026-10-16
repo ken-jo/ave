@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreviewBody } from "../../components/ChatSidePanelPreview.js";
 import { resolveFilePreviewRoute } from "../preview-renderers.js";
@@ -41,6 +41,7 @@ describe("tableErrorKey", () => {
     expect(tableErrorKey("too-large")).toBe("chatPreviewRail.tableErrorTooLarge");
     expect(tableErrorKey("unsupported-encoding")).toBe("chatPreviewRail.tableErrorEncoding");
     expect(tableErrorKey("encrypted")).toBe("chatPreviewRail.tableErrorEncrypted");
+    expect(tableErrorKey("parse-limit")).toBe("chatPreviewRail.tableErrorParseLimit");
   });
 });
 
@@ -112,6 +113,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   (window as unknown as { ave?: unknown }).ave = previousAve;
 });
 
@@ -146,6 +148,26 @@ describe("file preview routing", () => {
     const error = await screen.findByTestId("chat-side-panel-file-error");
     expect(error.textContent).not.toBe("");
     expect(error.textContent).not.toContain("chatPreviewRail.");
+  });
+
+  it("labels truncated delimited counts as lower bounds", async () => {
+    const response = workbookResult(0);
+    if (!response.ok) throw new Error("Expected a document fixture");
+    response.document.format = "csv";
+    readDocument.mockResolvedValueOnce(response);
+    render(<PreviewBody api={{} as never} target={fileTarget("/w/records.csv")} />);
+    const summary = await screen.findByTestId("chat-side-panel-table-preview");
+    expect(summary.textContent).toMatch(/At least|최소/);
+    expect((await screen.findByTestId("chat-side-panel-table-truncated")).textContent)
+      .toMatch(/not inspected|검사하지 않았/);
+  });
+
+  it("localizes a resource refusal without exposing child diagnostics", async () => {
+    readDocument.mockResolvedValueOnce({ ok: false, error: "parse-limit", message: "private parser diagnostic" });
+    render(<PreviewBody api={{} as never} target={fileTarget("/w/cyclic.xls")} />);
+    const error = await screen.findByTestId("chat-side-panel-file-error");
+    expect(error.textContent).toMatch(/time or memory|시간이나 메모리/);
+    expect(error.textContent).not.toContain("private parser diagnostic");
   });
 
   it("keeps markdown on the text readFile path", async () => {

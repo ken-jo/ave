@@ -64,6 +64,10 @@ retains ownership of request projection and attachment limits.
 
 ## Process Boundaries
 
+Local table previews parse admitted bytes in a disposable child with heap,
+deadline and output limits. The [table preview contract](table-document-preview.md)
+owns container checks, expansion refusals and bounded display windows.
+
 Host service bootstrap accepts `BootHost` (`src/boot/host-runtime.ts`) for
 user-data and resource paths, packaged mode, encryption, network fetches, and
 shutdown. Desktop capabilities are optional and required explicitly by

@@ -1,7 +1,7 @@
 /**
  * Side-panel preview for table documents (csv/tsv/xlsx/xls/ods).
  *
- * Main parses the file (`window.ave.preview.readDocument`) under the same read
+ * The host reads the file (`window.ave.preview.readDocument`) under the same read
  * guard as text previews and returns one sheet as a bounded grid of display
  * strings; this component shows the sheet tabs, the truncation notices and the
  * lazily-loaded virtualized grid. Every cap the reader applied is stated to the
@@ -37,6 +37,8 @@ export function tableErrorKey(code: PreviewDocumentError): string {
       return "chatPreviewRail.tableErrorArchiveTooLarge";
     case "corrupt-document":
       return "chatPreviewRail.tableErrorCorrupt";
+    case "parse-limit":
+      return "chatPreviewRail.tableErrorParseLimit";
     case "encrypted":
       return "chatPreviewRail.tableErrorEncrypted";
     case "unsupported-encoding":
@@ -60,6 +62,7 @@ type LoadState =
 function TruncationNotices({ document }: { document: PreviewTableDocument }) {
   const { t } = useTranslation();
   const { sheet } = document;
+  const prefixOnly = (document.format === "csv" || document.format === "tsv") && sheet.rowsTruncated;
   const notices: string[] = [];
   if (document.sheetsTruncated) {
     notices.push(t("chatPreviewRail.tableSheetsTruncated", {
@@ -68,10 +71,12 @@ function TruncationNotices({ document }: { document: PreviewTableDocument }) {
     }));
   }
   if (sheet.rowsTruncated) {
-    notices.push(t("chatPreviewRail.tableRowsTruncated", { shown: sheet.rows.length, total: sheet.totalRows }));
+    notices.push(t(prefixOnly ? "chatPreviewRail.tablePrefixRowsTruncated" : "chatPreviewRail.tableRowsTruncated", {
+      shown: sheet.rows.length, total: sheet.totalRows,
+    }));
   }
   if (sheet.columnsTruncated) {
-    notices.push(t("chatPreviewRail.tableColumnsTruncated", {
+    notices.push(t(prefixOnly ? "chatPreviewRail.tablePrefixColumnsTruncated" : "chatPreviewRail.tableColumnsTruncated", {
       shown: sheet.rows[0]?.length ?? 0,
       total: sheet.totalColumns,
     }));
@@ -131,6 +136,7 @@ export function TableDocumentPreview({ path }: { path: string }) {
 
   const { document } = state;
   const { sheet } = document;
+  const prefixOnly = (document.format === "csv" || document.format === "tsv") && sheet.rowsTruncated;
   return (
     <div className="min-w-0 space-y-2" data-testid="chat-side-panel-table-preview">
       {document.sheetNames.length > 1 ? (
@@ -163,7 +169,9 @@ export function TableDocumentPreview({ path }: { path: string }) {
           {document.format}
         </Badge>
         <span className="text-[11px] text-muted-foreground">
-          {t("chatPreviewRail.tableSummary", { rows: sheet.totalRows, columns: sheet.totalColumns })}
+          {t(prefixOnly ? "chatPreviewRail.tablePrefixSummary" : "chatPreviewRail.tableSummary", {
+            rows: sheet.totalRows, columns: sheet.totalColumns,
+          })}
         </span>
       </div>
       <TruncationNotices document={document} />

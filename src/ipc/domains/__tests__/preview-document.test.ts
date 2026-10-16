@@ -7,10 +7,18 @@ import * as XLSX from "xlsx";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { makeAppIpcFrameInvoker } from "./test-helpers.js";
 import { PREVIEW_DOCUMENT_LIMITS, type PreviewReadDocumentResult } from "../../../shared/preview-document.js";
+import { buildPreviewDocumentRuntime } from "../../../__tests__/support/preview-document-runtime.js";
+import { cyclicWorkbook } from "../../../__tests__/support/table-document-fixtures.js";
 
-const { handlers, additionalDirectories } = vi.hoisted(() => ({
+const { handlers, additionalDirectories, childRuntime } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   additionalDirectories: { value: [] as string[] },
+  childRuntime: { mainDir: "" },
+}));
+
+vi.mock("../../../main/main-paths.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../main/main-paths.js")>(),
+  get mainDir() { return childRuntime.mainDir; },
 }));
 
 vi.mock("electron", () => ({
@@ -44,7 +52,8 @@ async function readDocument(frame: string, path: unknown, sheetIndex: unknown = 
   return (await invoke(CHANNELS.preview.readDocument, frame, path, sheetIndex)) as PreviewReadDocumentResult;
 }
 
-beforeAll(() => {
+beforeAll(async () => {
+  childRuntime.mainDir = await buildPreviewDocumentRuntime();
   root = mkdtempSync(join(tmpdir(), "ave-preview-doc-"));
   outside = mkdtempSync(join(tmpdir(), "ave-preview-doc-outside-"));
   mkdirSync(join(root, "data"), { recursive: true });
@@ -57,6 +66,8 @@ beforeAll(() => {
   bomb.addFile("xl/sharedStrings.xml", Buffer.alloc(8 * 1024 * 1024, 0x41));
   writeFileSync(join(root, "data", "bomb.xlsx"), bomb.toBuffer());
   writeFileSync(join(root, "data", "broken.xlsx"), "this is not a workbook");
+  writeFileSync(join(root, "data", "cyclic.xls"), cyclicWorkbook());
+  writeFileSync(join(root, "data", "broken.csv"), 'a,b\n"unterminated,2');
   writeFileSync(join(root, "notes.txt"), "plain");
   writeFileSync(join(root, "data", "huge.csv"), "");
   truncateSync(join(root, "data", "huge.csv"), PREVIEW_DOCUMENT_LIMITS.maxFileBytes + 1);
@@ -68,6 +79,7 @@ beforeAll(() => {
 afterAll(async () => {
   await cleanupTmpDir(root);
   await cleanupTmpDir(outside);
+  await cleanupTmpDir(childRuntime.mainDir);
 });
 
 beforeEach(() => {
@@ -130,5 +142,25 @@ describe("preview:read-document handler", () => {
   it("refuses a zip bomb and a corrupt workbook with distinct codes", async () => {
     expect(await readDocument(OK_FRAME, join(root, "data", "bomb.xlsx"))).toMatchObject({ ok: false, error: "archive-too-large" });
     expect(await readDocument(OK_FRAME, join(root, "data", "broken.xlsx"))).toMatchObject({ ok: false, error: "corrupt-document" });
+  });
+
+  it("maps fatal delimited errors through the private document channel", async () => {
+    expect(await readDocument(OK_FRAME, join(root, "data", "broken.csv")))
+      .toMatchObject({ ok: false, error: "corrupt-document" });
+  });
+
+  it("keeps the host responsive and reaps a cyclic document at the deadline", async () => {
+    let ticks = 0;
+    const pulse = setInterval(() => { ticks += 1; }, 20);
+    const started = performance.now();
+    try {
+      expect(await readDocument(OK_FRAME, join(root, "data", "cyclic.xls")))
+        .toMatchObject({ ok: false, error: "parse-limit" });
+    } finally {
+      clearInterval(pulse);
+    }
+    expect(ticks).toBeGreaterThan(10);
+    expect(performance.now() - started).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs + 2_000);
+    expect(await readDocument(OK_FRAME, join(root, "data", "people.csv"))).toMatchObject({ ok: true });
   });
 });

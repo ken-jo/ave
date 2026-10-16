@@ -1,9 +1,9 @@
 /**
  * Table-document preview contract (CSV / TSV / XLSX / XLS / ODS), shared by the
- * main-process reader (`src/tools/table-document-reader.ts`), the
+ * isolated reader (`src/tools/table-document-reader.ts`), the
  * `ave:preview:read-document` IPC handler, and the side-panel renderer.
  *
- * The renderer never receives document bytes: main parses and returns a
+ * The renderer never receives document bytes: a child parses and returns a
  * bounded grid of display strings. The limits below are the ONE place each cap
  * is written, so the banner the renderer shows quotes the same number the
  * reader enforced.
@@ -39,8 +39,16 @@ export interface PreviewDocumentLimits {
   ratioCheckMinBytes: number;
   maxRows: number;
   maxColumns: number;
+  maxReturnedCells: number;
   maxCellChars: number;
   maxSheets: number;
+  parseTimeoutMs: number;
+  maxOldSpaceMb: number;
+  maxResponseBytes: number;
+  maxConcurrentParses: number;
+  maxOdsExpandedRows: number;
+  maxOdsExpandedCells: number;
+  delimitedChunkChars: number;
 }
 
 export const PREVIEW_DOCUMENT_LIMITS: Readonly<PreviewDocumentLimits> = Object.freeze({
@@ -56,10 +64,24 @@ export const PREVIEW_DOCUMENT_LIMITS: Readonly<PreviewDocumentLimits> = Object.f
   /** Rows / columns of one sheet returned to the renderer. */
   maxRows: 10_000,
   maxColumns: 200,
+  /** Total returned cells, bounding the host's result object graph. */
+  maxReturnedCells: 100_000,
   /** Characters kept per cell. */
   maxCellChars: 2_000,
   /** Sheets listed as tabs. */
   maxSheets: 100,
+  /** Total child lifetime, including startup and transport. */
+  parseTimeoutMs: 3_000,
+  /** Child managed old-space limit; native buffers are bounded separately. */
+  maxOldSpaceMb: 256,
+  /** Serialized child response; larger grids are refused. */
+  maxResponseBytes: 4 * 1024 * 1024,
+  maxConcurrentParses: 1,
+  /** Refuse excessive ODF expansion before either workbook pass. */
+  maxOdsExpandedRows: 100_000,
+  maxOdsExpandedCells: 2_000_000,
+  /** Bound delimiter/line detection and eager per-chunk record splitting. */
+  delimitedChunkChars: 64 * 1024,
 });
 
 /** One sheet's bounded grid. Every cell is a display string. */
@@ -71,7 +93,7 @@ export interface PreviewTableSheet {
   /** 0-based row/column of `rows[0][0]` in the source sheet (for A1 labels). */
   firstRow: number;
   firstColumn: number;
-  /** Size of the source sheet's used range, before any cap. */
+  /** Used-range size; truncated delimited input reports an inspected lower bound. */
   totalRows: number;
   totalColumns: number;
   rowsTruncated: boolean;
@@ -103,6 +125,7 @@ export type PreviewDocumentError =
   | "encrypted"
   | "unsupported-encoding"
   | "corrupt-document"
+  | "parse-limit"
   | "read-failed";
 
 export type PreviewReadDocumentResult =

@@ -1,0 +1,308 @@
+import type { PreviewDocumentLimits } from "../shared/preview-document.js";
+import { TableDocumentError } from "./table-document-error.js";
+import { verifyZipInflateLimits } from "./zip-inflate-guard.js";
+
+const CFB_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] as const;
+const ODS_MIMETYPE = "application/vnd.oasis.opendocument.spreadsheet";
+const WORKBOOK_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
+const WORKSHEET_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
+const OFFICE_DOCUMENT_RELATIONSHIP_TYPES = new Set([
+  "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
+  "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument",
+]);
+const WORKSHEET_RELATIONSHIP_TYPES = new Set([
+  "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet",
+  "http://purl.oclc.org/ooxml/officeDocument/relationships/worksheet",
+]);
+const PACKAGE_PARTS = new Set([
+  "[Content_Types].xml", "_rels/.rels", "xl/workbook.xml", "xl/_rels/workbook.xml.rels",
+  "mimetype", "META-INF/manifest.xml", "content.xml",
+]);
+
+interface XmlTag {
+  name: string;
+  localName: string;
+  closing: boolean;
+  selfClosing: boolean;
+  attributes: ReadonlyMap<string, string>;
+}
+
+interface PackageRelationship {
+  id: string;
+  type: string;
+  target: string;
+  internal: boolean;
+}
+
+function refuse(message: string): never {
+  throw new TableDocumentError("corrupt-document", message);
+}
+
+/** Scans tags without expanding entities or allocating any document objects. */
+function scanXml(bytes: Buffer, onTag: (tag: XmlTag) => void): void {
+  let xml: string;
+  try {
+    xml = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return refuse("Package XML is not valid UTF-8");
+  }
+  if (xml.includes("\0")) refuse("Package XML contains unsupported encoding bytes");
+  let offset = 0;
+  const stack: string[] = [];
+  while ((offset = xml.indexOf("<", offset)) >= 0) {
+    if (xml.startsWith("<!--", offset)) {
+      const end = xml.indexOf("-->", offset + 4);
+      if (end < 0) refuse("Unterminated XML comment");
+      offset = end + 3;
+      continue;
+    }
+    if (xml.startsWith("<?", offset)) {
+      const end = xml.indexOf("?>", offset + 2);
+      if (end < 0 || xml.slice(offset + 2, end).includes("<")) refuse("Invalid XML processing instruction");
+      const declaration = xml.slice(offset, end);
+      const encoding = /\bencoding\s*=\s*["']([^"']+)["']/i.exec(declaration)?.[1];
+      if (encoding && !/^utf-?8$/i.test(encoding)) refuse("Package XML encoding is unsupported");
+      offset = end + 2;
+      continue;
+    }
+    // Text sections and declarations can expose a different tag stream to a
+    // permissive decoder, so this boundary accepts ordinary XML tags only.
+    if (xml.startsWith("<!", offset)) refuse("Package XML declarations and text sections are unsupported");
+    let end = offset + 1;
+    let quote = "";
+    for (; end < xml.length; end += 1) {
+      const character = xml[end]!;
+      if (character === "<") refuse("Invalid XML tag contents");
+      if (quote) {
+        if (character === quote) quote = "";
+      } else if (character === '"' || character === "'") quote = character;
+      else if (character === ">") break;
+    }
+    if (end === xml.length || quote) refuse("Unterminated XML tag");
+    const body = xml.slice(offset + 1, end);
+    const match = /^(\/?)([A-Za-z_][\w.:-]*)([\s\S]*?)(\/?)\s*$/.exec(body);
+    if (!match) refuse("Invalid XML tag name");
+    const name = match[2]!;
+    const localName = name.slice(name.lastIndexOf(":") + 1);
+    const closing = match[1] === "/";
+    const selfClosing = match[4] === "/";
+    const attributes = new Map<string, string>();
+    const remainder = match[3]!;
+    const attributePattern = /\s+([A-Za-z_][\w.:-]*)\s*=\s*("[^"<]*"|'[^'<]*')/gy;
+    let position = 0;
+    while (position < remainder.length) {
+      if (!remainder.slice(position).trim()) break;
+      attributePattern.lastIndex = position;
+      const attribute = attributePattern.exec(remainder);
+      if (!attribute) refuse("Invalid XML attribute");
+      const key = attribute[1]!;
+      // Attribute namespaces do not separate expansion controls for the
+      // decoder; reject duplicate effective names before inspecting values.
+      const effectiveName = key.slice(key.lastIndexOf(":") + 1).toLowerCase();
+      if (attributes.has(effectiveName)) refuse("Duplicate XML attribute name");
+      attributes.set(effectiveName, attribute[2]!.slice(1, -1));
+      position = attributePattern.lastIndex;
+    }
+    if (closing) {
+      if (selfClosing || attributes.size > 0 || stack.pop() !== name) refuse("Unbalanced XML tags");
+    } else if (!selfClosing) stack.push(name);
+    onTag({ name, localName, closing, selfClosing, attributes });
+    offset = end + 1;
+  }
+  if (stack.length > 0) refuse("Unclosed XML tags");
+}
+
+function requiredPart(parts: ReadonlyMap<string, Buffer>, name: string): Buffer {
+  const bytes = parts.get(name);
+  if (!bytes) refuse(`Missing package part: ${name}`);
+  return bytes;
+}
+
+function validateXmlRoot(bytes: Buffer, expected: string): void {
+  let root: string | undefined;
+  scanXml(bytes, (tag) => { if (root === undefined) root = tag.localName; });
+  if (root !== expected) refuse(`Invalid package XML root: ${expected}`);
+}
+
+function scanRelationships(bytes: Buffer, onRelationship: (relationship: PackageRelationship) => void): void {
+  validateXmlRoot(bytes, "Relationships");
+  const ids = new Set<string>();
+  scanXml(bytes, (tag) => {
+    if (tag.closing || tag.localName !== "Relationship") return;
+    const id = tag.attributes.get("id");
+    const type = tag.attributes.get("type");
+    const target = tag.attributes.get("target");
+    const mode = tag.attributes.get("targetmode") ?? "Internal";
+    if (!id || !type || !target || ids.has(id) || (mode !== "Internal" && mode !== "External")) {
+      refuse("Invalid or duplicate package relationship");
+    }
+    ids.add(id);
+    onRelationship({ id, type, target, internal: mode === "Internal" });
+  });
+}
+
+function validateXlsx(parts: ReadonlyMap<string, Buffer>, names: ReadonlySet<string>): void {
+  const lowerNames = new Set([...names].map((name) => name.toLowerCase()));
+  if (["meta-inf/manifest.xml", "objectdata.xml", "index/document.iwa"].some((name) => lowerNames.has(name))) {
+    refuse("Package declares conflicting document families");
+  }
+  const contentTypes = new Map<string, string>();
+  const typeBytes = requiredPart(parts, "[Content_Types].xml");
+  validateXmlRoot(typeBytes, "Types");
+  scanXml(typeBytes, (tag) => {
+    if (!tag.closing && tag.localName === "Override") {
+      const path = tag.attributes.get("partname");
+      const type = tag.attributes.get("contenttype");
+      if (!path || !type || contentTypes.has(path)) refuse("Invalid or duplicate content type declaration");
+      if (type.includes(".main") && /spreadsheetml|ms-excel/.test(type)
+        && (path !== "/xl/workbook.xml" || type !== WORKBOOK_CONTENT_TYPE)) {
+        refuse("Package declares an unsupported workbook family");
+      }
+      contentTypes.set(path, type);
+    }
+  });
+  if (contentTypes.get("/xl/workbook.xml") !== WORKBOOK_CONTENT_TYPE) refuse("Package does not declare a spreadsheet workbook");
+  const rootRelationships = requiredPart(parts, "_rels/.rels");
+  let workbookLinked = false;
+  scanRelationships(rootRelationships, (relationship) => {
+    if (OFFICE_DOCUMENT_RELATIONSHIP_TYPES.has(relationship.type)
+      && /^\/?xl\/workbook\.xml$/.test(relationship.target)
+      && relationship.internal) workbookLinked = true;
+  });
+  if (!workbookLinked) refuse("Package workbook relationship is missing");
+
+  const workbook = requiredPart(parts, "xl/workbook.xml");
+  validateXmlRoot(workbook, "workbook");
+  const sheetIds = new Set<string>();
+  scanXml(workbook, (tag) => {
+    if (!tag.closing && tag.localName === "sheet") {
+      const id = tag.attributes.get("id");
+      if (!id || sheetIds.has(id)) refuse("Invalid workbook sheet relationship");
+      sheetIds.add(id);
+    }
+  });
+  const relationships = requiredPart(parts, "xl/_rels/workbook.xml.rels");
+  const linked = new Set<string>();
+  scanRelationships(relationships, (relationship) => {
+    if (!WORKSHEET_RELATIONSHIP_TYPES.has(relationship.type)) return;
+    if (!relationship.internal) refuse("Invalid worksheet relationship");
+    const path = relationship.target.startsWith("/") ? relationship.target.slice(1) : `xl/${relationship.target}`;
+    if (!/^xl\/worksheets\/[^/]+\.xml$/.test(path) || !names.has(path)
+      || contentTypes.get(`/${path}`) !== WORKSHEET_CONTENT_TYPE) {
+      refuse("Worksheet package part is missing or ambiguous");
+    }
+    linked.add(relationship.id);
+  });
+  if (sheetIds.size === 0 || [...sheetIds].some((id) => !linked.has(id))) refuse("Workbook has no complete worksheet relationships");
+}
+
+function repeatCount(tag: XmlTag, attribute: string, cap: number): number {
+  const raw = tag.attributes.get(attribute);
+  if (raw === undefined) return 1;
+  if (!/^[0-9]+$/.test(raw)) refuse(`Invalid document repeat count: ${attribute}`);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value > cap) {
+    throw new TableDocumentError("archive-too-large", `Expanded document ${attribute} exceeds ${cap}`);
+  }
+  if (value < 1) refuse(`Invalid document repeat count: ${attribute}`);
+  return value;
+}
+
+function verifyOdsExpansion(content: Buffer, limits: Readonly<PreviewDocumentLimits>): void {
+  let totalRows = 0;
+  let totalCells = 0;
+  let rowRepeat = 0;
+  let rowColumns = 0;
+  let inTable = false;
+  let root: string | undefined;
+  scanXml(content, (tag) => {
+    root ??= tag.localName;
+    const normalized = tag.localName.replace(/_.*$/, "");
+    if (normalized !== tag.localName
+      && ["table", "table-row", "table-cell", "covered-table-cell"].includes(normalized)) {
+      refuse("Unsupported spreadsheet element alias");
+    }
+    if (["工作表", "行", "数据"].includes(tag.localName)) refuse("Unsupported spreadsheet element alias");
+    for (const key of tag.attributes.keys()) {
+      if (/^number-(?:rows|columns)-repeated_/.test(key)) refuse("Unsupported document repeat attribute alias");
+    }
+    if (tag.localName === "table") {
+      if (tag.closing) {
+        if (!inTable || rowRepeat > 0) refuse("Unbalanced spreadsheet table");
+        inTable = false;
+      } else if (!tag.selfClosing) {
+        if (inTable) refuse("Nested spreadsheet tables are unsupported");
+        inTable = true;
+      }
+    } else if (tag.localName === "table-row") {
+      if (!inTable) refuse("Spreadsheet row is outside a table");
+      if (tag.closing) {
+        if (rowRepeat === 0) refuse("Unbalanced spreadsheet row");
+        rowRepeat = 0;
+      } else {
+        if (rowRepeat > 0) refuse("Nested spreadsheet rows are unsupported");
+        const rows = repeatCount(tag, "number-rows-repeated", limits.maxOdsExpandedRows);
+        totalRows += rows;
+        if (totalRows > limits.maxOdsExpandedRows) {
+          throw new TableDocumentError("archive-too-large", `Expanded document rows exceed ${limits.maxOdsExpandedRows}`);
+        }
+        rowRepeat = tag.selfClosing ? 0 : rows;
+        rowColumns = 0;
+      }
+    } else if ((tag.localName === "table-cell" || tag.localName === "covered-table-cell") && !tag.closing) {
+      if (!inTable || rowRepeat === 0) refuse("Spreadsheet cell is outside a row");
+      const columns = repeatCount(tag, "number-columns-repeated", limits.maxOdsExpandedCells);
+      rowColumns += columns;
+      const cells = rowRepeat * columns;
+      totalCells += cells;
+      if (!Number.isSafeInteger(cells) || !Number.isSafeInteger(totalCells)
+        || rowColumns > limits.maxOdsExpandedCells || totalCells > limits.maxOdsExpandedCells) {
+        throw new TableDocumentError("archive-too-large", `Expanded document cells exceed ${limits.maxOdsExpandedCells}`);
+      }
+    } else if (tag.localName === "table-column" && !tag.closing) {
+      repeatCount(tag, "number-columns-repeated", limits.maxOdsExpandedCells);
+    }
+  });
+  if (root !== "document-content" || inTable || rowRepeat > 0) refuse("Invalid spreadsheet content document");
+}
+
+function validateOds(parts: ReadonlyMap<string, Buffer>, limits: Readonly<PreviewDocumentLimits>): void {
+  if (parts.has("[Content_Types].xml")) refuse("Package declares conflicting document families");
+  if (requiredPart(parts, "mimetype").toString("utf8") !== ODS_MIMETYPE) refuse("Package mimetype is not a spreadsheet");
+  const manifest = requiredPart(parts, "META-INF/manifest.xml");
+  validateXmlRoot(manifest, "manifest");
+  let spreadsheetDeclared = false;
+  let contentDeclared = false;
+  scanXml(manifest, (tag) => {
+    if (tag.localName === "encryption-data") throw new TableDocumentError("encrypted", "Package contains encrypted parts");
+    if (tag.closing || tag.localName !== "file-entry") return;
+    if (tag.attributes.get("full-path") === "/" && tag.attributes.get("media-type") === ODS_MIMETYPE) spreadsheetDeclared = true;
+    if (tag.attributes.get("full-path") === "content.xml" && tag.attributes.get("media-type") === "text/xml") contentDeclared = true;
+  });
+  if (!spreadsheetDeclared || !contentDeclared) refuse("Spreadsheet manifest parts are missing");
+  verifyOdsExpansion(requiredPart(parts, "content.xml"), limits);
+}
+
+/** Accepts the declared document family and returns only checked container bytes. */
+export function prepareWorkbookContainer(
+  bytes: Buffer,
+  format: "xlsx" | "xls" | "ods",
+  limits: Readonly<PreviewDocumentLimits>,
+): Buffer {
+  if (format === "xls") {
+    if (!CFB_MAGIC.every((byte, index) => bytes[index] === byte)) refuse("Document is not a compound binary workbook");
+    return bytes;
+  }
+  const parts = new Map<string, Buffer>();
+  const verdict = verifyZipInflateLimits(bytes, limits, (name, data) => {
+    if (PACKAGE_PARTS.has(name)) parts.set(name, data);
+  });
+  if (!verdict.ok) {
+    if (verdict.reason === "encrypted") throw new TableDocumentError("encrypted", verdict.detail);
+    if (verdict.reason === "corrupt") refuse(verdict.detail);
+    throw new TableDocumentError("archive-too-large", `${verdict.reason}: ${verdict.detail}`);
+  }
+  if (format === "xlsx") validateXlsx(parts, new Set(verdict.entryNames));
+  else validateOds(parts, limits);
+  return verdict.canonicalBytes;
+}
