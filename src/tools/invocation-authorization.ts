@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
 import type { ToolCategory, ToolSource, TrustLevel } from "./types.js";
 import {
+  isIssuedShellAllowRuleDecision,
   isReviewerAutoDecisionOutcome,
   isTailnetControllerP1BlockedTool,
   type PermissionCheckResult,
@@ -158,6 +159,8 @@ export interface AuthorizedInvocation {
   outcome: "authorized";
   permissionResult: PermissionCheckResult | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
+  /** Host-issued allow-rule decision that authorized an explicit host shell. */
+  hostShellAllowRuleDecision: PermissionCheckResult | undefined;
 }
 
 export async function authorizeToolInvocation(
@@ -206,6 +209,9 @@ export async function authorizeToolInvocation(
     pluginOperationPrincipal,
   } = context;
   let { permissionResult, hostShellApprovalDecision } = context;
+  // The PermissionManager's own layer-3 allow-rule decision that authorized an
+  // explicit host request, carried by identity to the permit mint.
+  let hostShellAllowRuleDecision: PermissionCheckResult | undefined;
 
   const returnAuthorizationRequired = async (
     blockedPermission: PermissionCheckResult,
@@ -455,13 +461,26 @@ export async function authorizeToolInvocation(
     if (!permissionResult) {
       throw new Error("Permission evaluation returned no result");
     }
-    // Every requested-sandbox plain-shell fallback is a host-owned hard gate.
+    // Explicit host requests and the Windows Plan B are a host-owned hard gate.
     // It runs before reviewer and approval-memory paths: a plain child has no
-    // OS isolation, so neither an auto reviewer nor any durable approval may
-    // silently authorize it. Existing deny decisions still win unchanged.
+    // OS isolation, so neither an auto reviewer, a durable approval, nor the
+    // allow-all mode may silently authorize it. Existing deny decisions still
+    // win unchanged. The one exception is the reference behaviour for an
+    // explicit unsandboxed request (design I3, owner 2026-10-16): a matching
+    // allow rule approves it, as in Claude Code and Codex. Only a host-issued
+    // layer-3 rule decision qualifies — the floor (credential paths, sink
+    // catalogue) and ask rules return a forced-modal ask before any allow
+    // lane, so they still reach the modal below.
+    const explicitHostAllowRule =
+      hostShellExecutionPlan?.executionRequest === "host" &&
+      remoteControllerOrigin === undefined &&
+      invocationPermissionContext.headless !== true &&
+      isIssuedShellAllowRuleDecision(permissionResult);
+    if (explicitHostAllowRule) hostShellAllowRuleDecision = permissionResult;
     if (
       hostShellRequiresExplicitApproval &&
-      permissionResult.decision !== "deny"
+      permissionResult.decision !== "deny" &&
+      !explicitHostAllowRule
     ) {
       const executionReason = hostShellExecutionPlan?.executionRequest === "host"
         ? "explicit host execution"
@@ -2005,5 +2024,10 @@ export async function authorizeToolInvocation(
     outcome: "authorized",
     permissionResult,
     hostShellApprovalDecision,
+    // Only while no later lane replaced the rule decision: a reviewer, hook or
+    // approval that rewrote it owns the outcome instead.
+    hostShellAllowRuleDecision: permissionResult === hostShellAllowRuleDecision
+      ? hostShellAllowRuleDecision
+      : undefined,
   };
 }

@@ -154,6 +154,7 @@ export interface ExecutionStageContext {
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
+  hostShellAllowRuleDecision: PermissionCheckResult | undefined;
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
@@ -203,6 +204,7 @@ export async function executeAuthorizedToolInvocation(
     abortSignal,
     hostShellExecutionPermitBinding,
     hostShellApprovalDecision,
+    hostShellAllowRuleDecision,
     hostShellExecutionPlan,
     executionRouteGrant,
     finalizeExecutionRouteGrant,
@@ -618,13 +620,16 @@ export async function executeAuthorizedToolInvocation(
     // ── Step 6: Execute ─────────────────────────────
   // Mint only after all permission, hook, rate-limit, and audit gates passed.
   // The permit is private host state, binds this exact final shell action,
-  // and is consumed once by the plain requested-sandbox fallback spawn path.
+  // and is consumed once by the plain explicit-host / Plan-B spawn path. Its
+  // authority is either the user's allow-once receipt or, for an explicit host
+  // request only, the matching allow-rule decision (design I3).
   const hostShellExecutionPermit =
     hostShellExecutionPlan !== undefined &&
     hostShellExecutionPermitBinding !== undefined
       ? mintHostShellExecutionPermit({
           plan: hostShellExecutionPlan,
           approvalDecision: hostShellApprovalDecision,
+          allowRuleDecision: hostShellAllowRuleDecision,
           binding: hostShellExecutionPermitBinding,
         })
       : undefined;
@@ -633,7 +638,7 @@ export async function executeAuthorizedToolInvocation(
     hostShellExecutionPermit === undefined
   ) {
     const msg =
-      "Requested-sandbox shell execution blocked: no host-verified allow-once receipt was available for this action.";
+      "Unsandboxed shell execution blocked: no host-verified allow-once receipt or matching allow rule was available for this action.";
     const durationMs = Date.now() - startTime;
     emitToolStart(callbacks, toolUse.name, finalInput, meta);
     callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);

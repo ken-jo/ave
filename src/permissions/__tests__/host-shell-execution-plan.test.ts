@@ -74,13 +74,17 @@ describe("host shell execution plan", () => {
         requestedSandbox: true,
         mode: "plain",
         fallbackReason: "requested-sandbox-unavailable",
-        requiresExplicitUserApproval: true,
+        // Design I3: an unavailable sandbox warns and continues under the
+        // normal rules, so it needs no one-shot permit. The fallback reason
+        // and the separate identity keep it distinct from sandbox-off.
+        requiresExplicitUserApproval: false,
         capability: {
           kind: "none",
           confines: { filesystem: false, process: false, network: false },
         },
       });
-      expect(requiresExplicitHostShellApproval(requested)).toBe(true);
+      expect(requiresExplicitHostShellApproval(requested)).toBe(false);
+      expect(requested.identity).not.toBe(off.identity);
       expect(off).toMatchObject({
         requestedSandbox: false,
         mode: "plain",

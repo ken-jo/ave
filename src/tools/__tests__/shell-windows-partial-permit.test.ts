@@ -73,21 +73,28 @@ describe("builtin shell — Windows partial Plan-B permit", () => {
     expect(result.output).toContain("was not issued by the host");
   });
 
+  // Design I3: a requested-but-unavailable sandbox follows the normal rules
+  // and needs no permit; the explicit host request is the remaining
+  // non-Windows one-shot route, and its spawn boundary still refuses a call
+  // that carries neither an allow-once receipt nor a rule-minted permit.
   it.each(["darwin", "linux", "win32"] as const)(
-    "rejects permit-less direct Bash/PowerShell calls for requested-unavailable %s",
+    "rejects permit-less direct Bash/PowerShell calls for an explicit host request on %s",
     async (platform) => {
       requestedSandboxUnavailable(platform);
-      const plan = getHostShellExecutionPlan();
+      const plan = getHostShellExecutionPlan("host");
       expect(plan).toMatchObject({
         platform,
-        requestedSandbox: true,
+        executionRequest: "host",
         mode: "plain",
-        fallbackReason: "requested-sandbox-unavailable",
+        fallbackReason: "none",
         requiresExplicitUserApproval: true,
       });
 
       for (const shell of SHELLS) {
-        const result = await shell.create().execute(shell.input, context(plan));
+        const result = await shell.create().execute(
+          { ...shell.input, executionMode: "host", justification: "Direct call without a permit" },
+          context(plan),
+        );
         expect(result.isError).toBe(true);
         expect(result.output).toContain("one-shot host approval permit");
       }

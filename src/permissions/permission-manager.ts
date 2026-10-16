@@ -489,6 +489,49 @@ function sameReviewerSandboxCacheState(
 // Tracked in follow-up issue for "LLM caller retry wiring" with
 // max 2 retry / counter scope / args-change-reset contract.
 
+/** The shell action a layer-3 allow-rule decision was evaluated for. */
+export interface ShellAllowRuleSubject {
+  readonly toolName: string;
+  readonly dialect: ShellRuleDialect;
+  readonly command: string;
+  readonly cwd: string;
+}
+
+// Layer-3 allow-rule decisions for a host shell, keyed on the exact result
+// object `checkDetailed` returned. An explicit unsandboxed shell request may be
+// authorized by a matching allow rule (design I3); this is the host-issued,
+// object-identity proof of that match. A structural `{ decision: "allow",
+// layer: 3 }` lookalike is not in this map and authorizes nothing.
+const issuedShellAllowRuleDecisions = new WeakMap<
+  PermissionCheckResult,
+  ShellAllowRuleSubject
+>();
+
+/** True when `result` is a live layer-3 allow-rule decision issued by `checkDetailed`. */
+export function isIssuedShellAllowRuleDecision(
+  result: PermissionCheckResult | undefined,
+): boolean {
+  return result !== undefined && issuedShellAllowRuleDecisions.has(result);
+}
+
+/**
+ * Verify and burn the allow-rule proof for one shell action. Delete before
+ * comparison so a mismatched or replayed attempt cannot probe or reuse it.
+ */
+export function consumeIssuedShellAllowRuleDecision(
+  result: PermissionCheckResult | undefined,
+  expected: ShellAllowRuleSubject,
+): boolean {
+  if (result === undefined) return false;
+  const actual = issuedShellAllowRuleDecisions.get(result);
+  if (actual === undefined) return false;
+  issuedShellAllowRuleDecisions.delete(result);
+  return actual.toolName === expected.toolName &&
+    actual.dialect === expected.dialect &&
+    actual.command === expected.command &&
+    actual.cwd === expected.cwd;
+}
+
 export class PermissionManager {
   private rules: PermissionRule[] = [];
   /** Set when permissions.json is corrupt: non-read decisions fail closed to a visible ask. */
@@ -1758,6 +1801,23 @@ export class PermissionManager {
       };
     }
 
+    // Record the host-shell action a layer-3 allow rule matched. Every floor,
+    // deny and ask rule has already returned above, so this result is the
+    // rule lane itself; the record lets an explicit unsandboxed request be
+    // authorized by the same rule without a prompt (design I3).
+    if (
+      result.decision === "allow" &&
+      result.layer === 3 &&
+      ruleSubject !== undefined &&
+      ruleSubject.cwd !== undefined
+    ) {
+      issuedShellAllowRuleDecisions.set(result, Object.freeze({
+        toolName,
+        dialect: ruleSubject.dialect,
+        command: ruleSubject.command,
+        cwd: ruleSubject.cwd,
+      }));
+    }
     return result;
   }
 

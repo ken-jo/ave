@@ -500,18 +500,33 @@ Bash and PowerShell accept `executionMode: "default" | "host"` and an optional
 requires a nonblank justification and foreground execution. The host selects
 the final plan after input hooks and before environment capture and path
 analysis. Outside an operator-attested guest, host mode selects plain execution
-without OS confinement and requires a fresh exact-action `allow-once`, including
-in allow mode or when sandboxing was already disabled. Sensitive-path,
-directory, command and dynamic-syntax checks remain mandatory on that route.
+without OS confinement. Following the reference hosts (Claude Code, Codex), a
+user allow rule that matches the command approves it without a prompt;
+otherwise it requires a fresh exact-action `allow-once`, including in allow mode
+or when sandboxing was already disabled. Deny rules still deny, and the shell
+floor (credential paths and the sink catalogue) and ask rules still force the
+per-call modal over any allow rule. Sensitive-path, directory, command and
+dynamic-syntax checks remain mandatory on that route.
 
-Only a response from the verified local desktop renderer can authorize this
-explicit request. The approval displays the exact command, cwd and justification
-and states that the command runs once as the current user without the OS sandbox.
-Headless and remote-controller requests are denied before approval. Automatic,
-remembered, plugin, platform and parent-agent decisions cannot authorize host
-mode. The signed approval receipt binds the final action; an opaque permit is
-consumed once before spawn. Changed commands, cwd, plans or request fields and
-replayed permits fail closed. The parser and plan in
+Without a matching allow rule, only a response from the verified local desktop
+renderer can authorize this explicit request. The approval displays the exact
+command, cwd and justification and states that the command runs once as the
+current user without the OS sandbox. Headless and remote-controller requests are
+denied before approval or rule evaluation. Automatic, remembered, allow-mode,
+plugin, platform and parent-agent decisions cannot authorize host mode. The
+opaque permit is minted from one of two host-issued, action-bound proofs — the
+signed approval receipt, or the PermissionManager's own layer-3 allow-rule
+decision for the same command and resolved cwd — and is consumed once before
+spawn. Changed commands, cwd, plans or request fields and replayed permits or
+rule decisions fail closed.
+
+A sandbox that is requested but unavailable (missing `bwrap` or `socat`, or a
+start failure) is not a one-shot route. The shell runs as a plain child under
+the normal rules, exactly like sandbox-off, while its plan keeps
+`fallbackReason: "requested-sandbox-unavailable"`: the approval card, the
+model's shell-environment description and the tool result say the sandbox is
+unavailable. The Windows partial-ASRT plan (`windows-partial-shell-acl-unsafe`)
+keeps its allow-once permit until its own routing change. The parser and plan in
 [host-shell-execution-plan.ts](../../src/permissions/host-shell-execution-plan.ts),
 the [approval gate](../../src/permissions/approval-gate.ts) and
 [execution permit](../../src/permissions/host-shell-execution-permit.ts) own this

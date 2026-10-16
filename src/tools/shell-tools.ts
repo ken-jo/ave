@@ -1499,8 +1499,9 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     }
 
 
-    // Explicit host requests and sandbox fallbacks both select a plain host child.
-    // Its opaque permit exists only after an allow-once approval for this exact
+    // Explicit host requests and the Windows Plan B select a plain host child.
+    // Its opaque permit exists only after an allow-once approval (or, for an
+    // explicit host request, a matching allow rule) for this exact
     // command/cwd/tool-use tuple and is consumed before spawn.
     if (!disposableExecution && requiresExplicitHostShellApproval(hostShellPlan)) {
       const permitAccepted = consumeHostShellExecutionPermit({
@@ -1569,9 +1570,11 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     // sandbox is a process-global singleton (cleanupAfterCommand), so a
     // backgrounded ASRT command running concurrently with the next tool would
     // corrupt the shared sandbox state; background execution is therefore
-    // confined to the unsandboxed plain path, and the requested-sandbox
-    // approval-fallback (requiresExplicitUserApproval) is excluded so a
-    // one-shot-approved command cannot outlive its approval.
+    // confined to the unsandboxed plain path, and the one-shot-permit routes
+    // (explicit host, Windows Plan B: requiresExplicitUserApproval) are
+    // excluded so a one-shot-approved command cannot outlive its approval. A
+    // requested-but-unavailable sandbox follows the normal rules and may
+    // background like sandbox-off.
     if (
       input.run_in_background === true &&
       (!hostShellPlan.requiresExplicitUserApproval || disposableExecution)
@@ -1595,7 +1598,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         input.run_in_background === true,
       );
     }
-    if (!hostShellPlan.requiresExplicitUserApproval) {
+    if (!recordsUnsandboxedExecutionPlan(hostShellPlan)) {
       return withBackgroundUnavailable(plainResult, input.run_in_background === true);
     }
     return withBackgroundUnavailable(
@@ -1614,6 +1617,16 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       disposePreparedShellInvocation(prepared);
     }
   }
+}
+
+/**
+ * A plain child that ran without the OS isolation the user asked for, or by
+ * explicit request, carries its public plan projection in the result so the
+ * chat and audit can name why ("sandbox unavailable", "explicit host"). An
+ * ordinary sandbox-off run does not: the user chose it.
+ */
+function recordsUnsandboxedExecutionPlan(plan: HostShellExecutionPlan): boolean {
+  return plan.requiresExplicitUserApproval || plan.fallbackReason !== "none";
 }
 
 function withoutReportedCwd(result: SpawnResult): SpawnResult {
@@ -2689,8 +2702,9 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     ) {
       return { output: commandPathViolation.reason, isError: true };
     }
-    // Explicit host requests and sandbox fallbacks both select a plain host child.
-    // Its opaque permit exists only after an allow-once approval for this exact
+    // Explicit host requests and the Windows Plan B select a plain host child.
+    // Its opaque permit exists only after an allow-once approval (or, for an
+    // explicit host request, a matching allow rule) for this exact
     // command/cwd/tool-use tuple and is consumed before spawn.
     if (!disposableExecution && requiresExplicitHostShellApproval(hostShellPlan)) {
       const permitAccepted = consumeHostShellExecutionPermit({
@@ -2753,7 +2767,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata),
     );
     if (disposableExecution) return withDisposableExecutionMetadata(plainResult);
-    if (!hostShellPlan.requiresExplicitUserApproval) return plainResult;
+    if (!recordsUnsandboxedExecutionPlan(hostShellPlan)) return plainResult;
     return {
       ...plainResult,
       metadata: {

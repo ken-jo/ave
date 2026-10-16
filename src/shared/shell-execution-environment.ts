@@ -2,12 +2,17 @@ import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-
 import { t } from "../i18n/runtime.js";
 
 type ShellEnvironmentPlan = Pick<HostShellExecutionPlanAuditProjection,
-  "platform" | "mode" | "capability" | "requiresExplicitUserApproval">;
+  "platform" | "mode" | "capability" | "requiresExplicitUserApproval" | "fallbackReason">;
 
 /** Public descriptions of the selected child, never the host's environment values. */
 export function shellExecutionEnvironmentLines(plan: ShellEnvironmentPlan): readonly string[] {
   if (plan.mode === "blocked") return [t("shellExecution.blocked")];
   return [
+    // A requested sandbox that could not start runs under the normal rules
+    // (design I3); say so wherever the plan is shown instead of failing closed.
+    ...(plan.fallbackReason === "requested-sandbox-unavailable"
+      ? [t("shellExecution.sandboxUnavailable")]
+      : []),
     t("shellExecution.location", { platform: plan.platform }),
     plan.mode === "asrt" ? t("shellExecution.temporaryHome") : t("shellExecution.hostHome"),
     plan.mode === "asrt" ? t("shellExecution.isolatedAuthentication") : t("shellExecution.hostAuthentication"),

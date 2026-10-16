@@ -591,7 +591,10 @@ describe("ToolExecutor authorization-required control", () => {
     expect(deferredQueue.listPending()).toHaveLength(1);
   });
 
-  it("returns host authorization for a requested-sandbox plain fallback", async () => {
+  it("returns ordinary authorization, carrying the fallback reason, for a requested-sandbox plain fallback", async () => {
+    // Design I3: an unavailable sandbox follows the normal rules, so an ask
+    // without an approval surface is the ordinary tool control, not the
+    // host-execution one. The plan still says why the shell is uncontained.
     setSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "none",
@@ -628,11 +631,60 @@ describe("ToolExecutor authorization-required control", () => {
     expect(requestAndWait).not.toHaveBeenCalled();
     expect(result.content).not.toContain("secret-command");
     expect(authorizationRequiredStateOf(result.authorizationRequired)).toMatchObject({
+      kind: "tool",
+      toolName: "bash",
+      reason: "approval-surface-unavailable",
+      executionPlan: {
+        fallbackReason: "requested-sandbox-unavailable",
+        requiresExplicitUserApproval: false,
+      },
+    });
+  });
+
+  it("returns host authorization for an explicit host request", async () => {
+    setSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability({
+      kind: "asrt",
+      confidence: "verified",
+      platform: process.platform,
+      reason: "fixture full sandbox",
+      confines: { filesystem: true, process: true, network: true },
+    });
+    const registry = new ToolRegistry();
+    const bash = new BashTool();
+    const execute = vi.spyOn(bash, "execute");
+    registry.register(bash);
+    const requestAndWait = vi.fn();
+    const executor = new ToolExecutor(
+      registry,
+      undefined,
+      askingPermissionManager(),
+      undefined,
+      { requestAndWait } as never,
+    );
+
+    const [result] = await executor.executeAll(
+      [{
+        id: "explicit-host",
+        name: "bash",
+        input: { command: "printf secret-command", executionMode: "host", justification: "Retry outside the sandbox", timeoutSeconds: 1 },
+      }],
+      {
+        sessionId: "explicit-host-authorization",
+        permissionContext: userPermissionContext({ approvalSurface: "unavailable" }),
+      },
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(result.content).not.toContain("secret-command");
+    expect(authorizationRequiredStateOf(result.authorizationRequired)).toMatchObject({
       kind: "host-execution",
       toolName: "bash",
       reason: "host-execution-authorization-required",
       executionPlan: {
-        fallbackReason: "requested-sandbox-unavailable",
+        executionRequest: "host",
+        fallbackReason: "none",
         requiresExplicitUserApproval: true,
       },
     });

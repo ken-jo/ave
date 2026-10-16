@@ -1,5 +1,5 @@
 /**
- * One-shot execution permit for explicit host requests and sandbox fallbacks.
+ * One-shot execution permit for explicit host requests and the Windows Plan B.
  *
  * The execution plan says which substrate is honest for a shell invocation;
  * it is not itself proof that the user approved that invocation. This module
@@ -18,6 +18,10 @@ import {
   consumeHostApprovedOneShotExecutionBinding,
   type ApprovalDecision,
 } from "./approval-gate.js";
+import {
+  consumeIssuedShellAllowRuleDecision,
+  type PermissionCheckResult,
+} from "./permission-manager.js";
 
 export type HostShellToolName = "bash" | "powershell";
 
@@ -118,26 +122,43 @@ export function buildHostShellExecutionPermitBinding(input: {
 }
 
 /**
- * Minted only after ApprovalGate consumes its HMAC-verified allow-once receipt.
- * Calling this public helper with a structural decision or an unrelated approval
- * fails closed; the receipt is private to ApprovalGate and action-bound.
+ * Minted only after one of two host-issued, action-bound proofs is consumed:
+ *
+ *   - ApprovalGate's HMAC-verified allow-once receipt for this binding; or
+ *   - for an explicit host request only (`executionRequest: "host"`), the
+ *     PermissionManager's own layer-3 allow-rule decision for this exact shell
+ *     command and working directory (design I3: a matching allow rule approves
+ *     an unsandboxed retry, as in Claude Code and Codex). The Windows Plan B
+ *     never accepts a rule.
+ *
+ * Calling this public helper with a structural decision, an unrelated approval
+ * or a rule decision for another action fails closed.
  */
 export function mintHostShellExecutionPermit(input: {
   plan: HostShellExecutionPlan;
   approvalDecision: ApprovalDecision | undefined;
+  allowRuleDecision?: PermissionCheckResult | undefined;
   binding: HostShellExecutionPermitBinding;
 }): HostShellExecutionPermit | undefined {
   // The public TypeScript surface declares these fields as required, but
   // module consumers can still arrive through untyped JavaScript or a stale
   // compiled caller. Treat any incomplete input as an unauthorised request
   // instead of throwing before the fail-closed decision.
-  if (
-    input.approvalDecision === undefined ||
-    input.binding === undefined
-  ) {
-    return undefined;
-  }
-  if (
+  if (input.binding === undefined) return undefined;
+  if (input.approvalDecision === undefined) {
+    if (input.allowRuleDecision === undefined) return undefined;
+    // Burn the rule proof before any plan check, so a mismatch cannot be
+    // probed or replayed.
+    if (
+      !consumeIssuedShellAllowRuleDecision(input.allowRuleDecision, {
+        toolName: input.binding.toolName,
+        dialect: input.binding.toolName,
+        command: input.binding.command,
+        cwd: input.binding.resolvedCwd,
+      })
+    ) return undefined;
+    if (input.plan.executionRequest !== "host") return undefined;
+  } else if (
     !consumeHostApprovedOneShotExecutionBinding(
       input.approvalDecision,
       input.binding,

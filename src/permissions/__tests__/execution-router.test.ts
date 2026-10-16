@@ -792,14 +792,25 @@ describe("execution router", () => {
   });
 
   it("does not issue a grant for approval, analysis, or blocked decisions", () => {
-    const fallback = issuedUnavailableFallback();
+    const explicitHost = issuedAsrt("host");
     const approvalPlan = buildExecutionPlan({
-      legacyPlan: fallback,
+      legacyPlan: explicitHost,
       effect: effect(),
       capability: capability(["host"], getSandboxGeneration()),
     });
     expect(approvalPlan.decision).toBe("approval-required");
     expect(() => issueExecutionGrant(approvalPlan, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("requires another decision");
+  });
+
+  it("selects the host route for a requested-but-unavailable sandbox and keeps its fallback reason", () => {
+    // Design I3: an unavailable sandbox warns and continues under the normal
+    // permission rules; the route records why it is uncontained.
+    const fallback = issuedUnavailableFallback();
+    expect(buildExecutionPlan({
+      legacyPlan: fallback,
+      effect: effect(),
+      capability: capability(["host"], getSandboxGeneration()),
+    })).toMatchObject({ decision: "selected", route: "host", fallback: "requested-sandbox-unavailable" });
   });
 
   it.each([
