@@ -6,6 +6,7 @@
  * the tests `vitest related` finds. Inputs the import graph cannot show keep
  * the full checks.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, normalize, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -15,11 +16,15 @@ import {
   boundRelatedTests,
   FULL_CHECK_GLOBAL_INPUT_FILES,
   isFullCheckGlobalInput,
+  isMessageCatalogPath,
   AVE_APP_LOCK_SUITES,
+  readMessageCatalogEntries,
   RELATED_TEST_BOUND,
   selectFastSourceChecks,
+  selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "../../scripts/hooks/pre-push-source-policy.mjs";
+import { messages } from "../../src/i18n/messages/index.js";
 
 const root = resolve(import.meta.dirname, "../..");
 
@@ -135,8 +140,9 @@ describe("pre-push fast source tier", () => {
     "src/shared/ave-home-test-guard.ts",
     "src/shared/ambient.d.ts",
     "src/shared/ambient.d.mts",
-    "src/i18n/messages/generated/statusBar.ts",
-    "src/i18n/messages/generated-locales/ko.ts",
+    "src/i18n/messages/index.ts",
+    "src/i18n/messages/catalog-helpers.ts",
+    "src/i18n/messages/generated/nested/fragment.ts",
     "src/preload.ts",
     "src/floating-dock-preload.ts",
     "src/plugins/isolation/plugin-child-main.ts",
@@ -359,5 +365,186 @@ describe("pre-push fast source tier", () => {
         expect(AVE_APP_LOCK_SUITE_TRIGGERS[suite]!.some((trigger) => path.startsWith(trigger)), `${suite} on ${path}`).toBe(true);
       }
     }
+  });
+});
+
+/**
+ * Message catalog changes used to be global inputs: every test reaches the
+ * catalog through t(), so `vitest related` on a fragment returns most of the
+ * suite and nearly every UI change took the full tier. They are selected by
+ * key instead: the modules and tests that name a changed key's namespace.
+ */
+describe("pre-push message catalog selection", () => {
+  const MESSAGES = "src/i18n/messages";
+  const tracked = execFileSync("git", ["-C", root, "ls-files", "-z", "--", "src", "test"], { encoding: "utf8" })
+    .split("\0").filter(Boolean);
+  const texts = new Map<string, string>();
+  const readTracked = (path: string) => {
+    if (!texts.has(path)) texts.set(path, readFileSync(resolve(root, path), "utf8"));
+    return texts.get(path)!;
+  };
+  const catalogFiles = () => [
+    "en.ts",
+    "ko.ts",
+    ...readdirSync(resolve(root, MESSAGES, "generated")).filter((name) => name !== "index.ts").map((name) => `generated/${name}`),
+  ].map((name) => `${MESSAGES}/${name}`);
+
+  it("takes catalog data on the fast tier and leaves the loader and unknown files global", () => {
+    for (const path of [
+      `${MESSAGES}/en.ts`, `${MESSAGES}/ko.ts`, `${MESSAGES}/generated/shellExecution.ts`,
+      `${MESSAGES}/generated/index.ts`, `${MESSAGES}/generated-locales/ko.ts`,
+    ]) {
+      expect(isMessageCatalogPath(path), path).toBe(true);
+      expect(isFullCheckGlobalInput(path), path).toBe(false);
+    }
+    expect(isFullCheckGlobalInput(`${MESSAGES}/index.ts`)).toBe(true);
+    const changes = [
+      modified(`${MESSAGES}/generated/shellExecution.ts`),
+      added(`${MESSAGES}/generated/newSurface.ts`),
+      modified(`${MESSAGES}/generated/index.ts`),
+      modified(`${MESSAGES}/generated-locales/ko.ts`),
+      modified(`${MESSAGES}/ko.ts`),
+    ];
+    const result = selectFastSourceChecks(changes);
+    expect(result).toMatchObject({ eligible: true, testFiles: [], relatedFiles: [] });
+    expect(result.messageCatalogEntries).toEqual(changes);
+    expect(result.reason).toBe("0 source module(s) and 0 test file(s) changed, with 5 message catalog file(s)");
+    // Removing a fragment leaves keys behind that the new tree cannot show.
+    expect(selectFastSourceChecks([deleted(`${MESSAGES}/generated/shellExecution.ts`)]).eligible).toBe(false);
+    expect(selectFastSourceChecks([{ ...modified(`${MESSAGES}/en.ts`), newMode: "100755" }]).eligible).toBe(false);
+  });
+
+  it("reads every key of the real catalog, and nothing the runtime does not load", () => {
+    const keys = new Set<string>();
+    for (const path of catalogFiles()) {
+      const entries = readMessageCatalogEntries(readFileSync(resolve(root, path), "utf8"));
+      expect(entries, path).not.toBeNull();
+      for (const key of entries!.keys()) keys.add(key);
+    }
+    expect([...keys].sort()).toEqual(Object.keys(messages.en).sort());
+    // The barrels carry no keys; the barrel check proves they match the fragments.
+    expect(readMessageCatalogEntries(readFileSync(resolve(root, MESSAGES, "generated/index.ts"), "utf8"))).toBeNull();
+  });
+
+  it("refuses catalog shapes whose keys it cannot read", () => {
+    expect(readMessageCatalogEntries('export const en = { "a.b": "x" + "y", "a.c": `z` } as const;')).toEqual(
+      new Map([["a.b", ["xy"]], ["a.c", ["z"]]]),
+    );
+    for (const text of [
+      'export const en = { ...base, "a.b": "x" };',
+      'export const en = { ["a." + id]: "x" };',
+      'export const en = { "a.b": `x ${name}` };',
+      'export const en = { "a.b": label("x") };',
+      'export const en = { "a.b": "unterminated };',
+      "export const en = 1;",
+      null,
+    ]) {
+      expect(readMessageCatalogEntries(text), String(text)).toBeNull();
+    }
+  });
+
+  const fragment = (title: string, other = "Other") =>
+    `export const en = {\n  "panel.title": ${JSON.stringify(title)},\n  "other.label": ${JSON.stringify(other)},\n} as const;\n` +
+    'export const ko: Record<keyof typeof en, string> = {\n  "panel.title": "패널",\n  "other.label": "기타",\n};\n';
+  const fixtureTree = new Map<string, string>([
+    ["src/ui/panel.tsx", 'export const title = () => t("panel.title");'],
+    ["src/ui/panel-kinds.ts", "export const key = (kind: string) => t(`panel.${kind}`);"],
+    ["src/ui/other.tsx", 'export const label = () => t("other.label");'],
+    ["src/marketplace/language-check.ts", 'import { messages } from "../i18n/messages/index.js";'],
+    ["src/ui/__tests__/panel-copy.test.tsx", 'expect(t("panel.title")).toBe("패널");'],
+    ["src/ui/__tests__/other.test.tsx", 'expect(t("other.label")).toBe("기타");'],
+    ["src/i18n/__tests__/i18n.test.ts", "it(\"loads\", () => {});"],
+    ["src/i18n/translate.ts", 'import { messages } from "./messages/index.js";'],
+    ["test/e2e/panel.spec.ts", 'page.getByText(t("panel.title"));'],
+    ["docs/panel.md", '"panel.title"'],
+  ]);
+  const selectFixture = (before: string | null, after: string, tree = fixtureTree) =>
+    selectMessageCatalogChecks(
+      [{ ...(before === null ? added : modified)(`${MESSAGES}/generated/panel.ts`), baseSha: "base", localSha: "local" }],
+      {
+        readBlob: (sha, path) => (path === `${MESSAGES}/generated/panel.ts` ? (sha === "base" ? before : after) : null),
+        trackedFiles: [...tree.keys()],
+        readTrackedFile: (path) => tree.get(path) ?? null,
+      },
+    );
+
+  it("selects the modules and tests that name a changed namespace, the catalog readers and the i18n suites", () => {
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"))).toEqual({
+      namespaces: ["panel"],
+      testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/ui/__tests__/panel-copy.test.tsx"],
+      consumerModules: ["src/marketplace/language-check.ts", "src/ui/panel-kinds.ts", "src/ui/panel.tsx"],
+    });
+    // A translation-only change selects the same way.
+    expect(selectFixture(fragment("Panel"), fragment("Panel").replace('"패널"', '"패널 제목"')).namespaces).toEqual(["panel"]);
+    // An added fragment changes every key it declares.
+    expect(selectFixture(null, fragment("Panel")).namespaces).toEqual(["other", "panel"]);
+    // Nothing changed but formatting: only the catalog readers and suites.
+    expect(selectFixture(fragment("Panel"), `// reflowed\n${fragment("Panel")}`)).toEqual({
+      namespaces: [],
+      testFiles: ["src/i18n/__tests__/i18n.test.ts"],
+      consumerModules: ["src/marketplace/language-check.ts"],
+    });
+  });
+
+  it("keeps the full checks when a changed namespace has no literal consumer or a consumer is a global input", () => {
+    const unnamed = new Map([...fixtureTree].filter(([path]) => !["src/ui/panel.tsx", "src/ui/panel-kinds.ts",
+      "src/ui/__tests__/panel-copy.test.tsx", "test/e2e/panel.spec.ts"].includes(path)));
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), unnamed)).toEqual({
+      reason: "no source file names message namespace panel; a computed key may reach it, full checks required",
+    });
+    const preload = new Map([...fixtureTree, ["src/panel-preload.ts", 'const title = t("panel.title");']]);
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), preload)).toEqual({
+      reason: "src/panel-preload.ts names a changed message namespace and is a global test or build input",
+    });
+    expect(selectFixture("export const en = { ...base };", fragment("Panel heading"))).toEqual({
+      reason: `${MESSAGES}/generated/panel.ts has a shape the message key reader does not accept; full checks required`,
+    });
+  });
+
+  // The proof that the selection is sound on the real tree: for every key of
+  // these catalog files, each source module and each Vitest file that passes
+  // that key to t() literally (the same scan as used-keys-exist) is selected
+  // when the key changes. Leaving any of them out fails here.
+  it.each([
+    "generated/shellExecution.ts",
+    "generated/statusBar.ts",
+    "generated/awayAuthority.ts",
+    "generated/llmTab.ts",
+    "en.ts",
+  ])("selects every literal t() consumer of a changed key in %s", (name) => {
+    const path = `${MESSAGES}/${name}`;
+    const text = readFileSync(resolve(root, path), "utf8");
+    const keys = new Set(readMessageCatalogEntries(text)!.keys());
+    const selection = selectMessageCatalogChecks([{ ...added(path), baseSha: "base", localSha: "local" }], {
+      readBlob: () => text, trackedFiles: tracked, readTrackedFile: readTracked,
+    });
+    expect(selection.reason).toBeUndefined();
+    const selected = new Set([...selection.testFiles!, ...selection.consumerModules!]);
+    const literalKey = /\bt\(\s*"([a-zA-Z][\w]*(?:\.[\w-]+)+)"/g;
+    const consumers = tracked.filter((file) => /\.(?:ts|tsx)$/.test(file) && !file.startsWith(`${MESSAGES}/`) &&
+      !file.split("/").includes("e2e") &&
+      [...readTracked(file).matchAll(literalKey)].some((match) => keys.has(match[1]!)));
+    expect(consumers.length, `${name} has literal consumers`).toBeGreaterThan(0);
+    expect(consumers.filter((file) => !selected.has(file))).toEqual([]);
+  });
+
+  it("selects the host-execution approval surface and its test for a shell execution wording change", () => {
+    const path = `${MESSAGES}/generated/shellExecution.ts`;
+    const after = readFileSync(resolve(root, path), "utf8");
+    const before = after.replace(/("shellExecution\.cwd": ")[^"]*"/, '$1old"');
+    expect(before).not.toBe(after);
+    const selection = selectMessageCatalogChecks([{ ...modified(path), baseSha: "base", localSha: "local" }], {
+      readBlob: (sha) => (sha === "base" ? before : after), trackedFiles: tracked, readTrackedFile: readTracked,
+    });
+    expect(selection.namespaces).toEqual(["shellExecution"]);
+    expect(selection.consumerModules).toEqual(expect.arrayContaining([
+      "src/shared/shell-execution-environment.ts",
+      "src/ui/renderer/components/ToolApprovalContent.tsx",
+    ]));
+    expect(selection.testFiles).toEqual(expect.arrayContaining([
+      "src/i18n/__tests__/used-keys-exist.test.ts",
+      "src/ui/renderer/components/__tests__/ToolApprovalContent-host-execution.test.tsx",
+    ]));
+    expect(selection.testFiles!.some((file) => file.includes("/e2e/"))).toBe(false);
   });
 });

@@ -7,7 +7,11 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { classifyDocumentationChanges, isCanonicalGitPath } from "../../scripts/hooks/pre-push-markdown-policy.mjs";
 import { isIntegrationBranchRef } from "../../scripts/hooks/pre-push-ref-updates.mjs";
-import { selectFastSourceChecks, selectTriggeredLockSuites } from "../../scripts/hooks/pre-push-source-policy.mjs";
+import {
+  selectFastSourceChecks,
+  selectMessageCatalogChecks,
+  selectTriggeredLockSuites,
+} from "../../scripts/hooks/pre-push-source-policy.mjs";
 import { selectTargetedAveAppVitestFiles } from "../../scripts/hooks/pre-push-test-policy.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 
@@ -23,6 +27,7 @@ interface ClassificationOptions {
   fastForward?: boolean;
   commentOnly?: boolean;
   historyReason?: string;
+  messageCatalog?: { reason?: string; namespaces?: string[]; testFiles?: string[]; consumerModules?: string[] };
 }
 
 // Execute the classifier's actual function with controlled Git and blob reads.
@@ -43,6 +48,8 @@ function classify(entries: ReturnType<typeof modified>[], options: Classificatio
     selectTargetedAveAppVitestFiles,
     selectCommentOnlyAveAppFiles: () => ({ eligible: options.commentOnly === true, files: [] }),
     getGitBlob: () => "",
+    getMessageCatalogSelection: (_root: string, entries: { path: string }[]) =>
+      options.messageCatalog ?? { reason: `unexpected catalog selection for ${entries.map(({ path }) => path).join(", ")}` },
   });
   return classifyChanges("/fixture", { complete: true, updates: [{ ...update, ...options.update }] }, "origin", "/remote");
 }
@@ -207,5 +214,107 @@ describe("pre-push classification precedence", () => {
       expect(historyReason(repo, published, git(["rev-parse", "HEAD"])))
         .toContain("package.json is a global test or build input in pushed history");
     } finally { rmSync(repo, { recursive: true, force: true }); }
+  });
+
+  it("takes a message-only push on the fast tier with its consumers instead of the full suite", () => {
+    const result = classify([modified("src/i18n/messages/generated/shellExecution.ts")], {
+      update: { localRef: "refs/heads/feat/copy", remoteRef: "refs/heads/feat/copy", remoteSha: "0".repeat(40) },
+      messageCatalog: {
+        namespaces: ["shellExecution"],
+        testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/shared/__tests__/shell-execution-environment.test.ts"],
+        consumerModules: ["src/shared/shell-execution-environment.ts"],
+      },
+    });
+    expect(result).toMatchObject({
+      fastSource: true,
+      relatedFiles: [],
+      testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/shared/__tests__/shell-execution-environment.test.ts"],
+      messageCatalog: {
+        files: ["src/i18n/messages/generated/shellExecution.ts"],
+        namespaces: ["shellExecution"],
+        consumerModules: ["src/shared/shell-execution-environment.ts"],
+      },
+    });
+    expect(result.lockSuites).toEqual([]);
+  });
+
+  it("keeps a message change with a test change off the test-only tier, so the catalog checks still run", () => {
+    const result = classify([modified("src/i18n/messages/generated/shellExecution.ts"), modified("test/example.test.ts")], {
+      messageCatalog: { namespaces: ["shellExecution"], testFiles: ["src/i18n/__tests__/i18n.test.ts"], consumerModules: [] },
+    });
+    expect(result.testOnly).not.toBe(true);
+    expect(result).toMatchObject({
+      fastSource: true,
+      testFiles: ["src/i18n/__tests__/i18n.test.ts", "test/example.test.ts"],
+      messageCatalog: { files: ["src/i18n/messages/generated/shellExecution.ts"] },
+    });
+  });
+
+  it("does not hand a changed consumer to discovery twice", () => {
+    const result = classify([modified("src/shared/shell-execution-environment.ts"), modified("src/i18n/messages/generated/shellExecution.ts")], {
+      messageCatalog: { namespaces: ["shellExecution"], testFiles: [], consumerModules: ["src/shared/shell-execution-environment.ts", "src/ui/panel.tsx"] },
+    });
+    expect(result.relatedFiles).toEqual(["src/shared/shell-execution-environment.ts"]);
+    expect(result.messageCatalog.consumerModules).toEqual(["src/ui/panel.tsx"]);
+  });
+
+  it("keeps the full checks when the message selection cannot be made", () => {
+    const result = classify([modified("src/i18n/messages/generated/shellExecution.ts")], {
+      messageCatalog: { reason: "no source file names message namespace shellExecution; a computed key may reach it, full checks required" },
+    });
+    expect(result.fastSource).not.toBe(true);
+    expect(result.reason).toContain("computed key");
+  });
+
+  it.each(["src/i18n/messages/index.ts", "src/i18n/testing/vitest-ambient-intl.ts"])(
+    "keeps the catalog loader and the Vitest setup file global: %s", (path) => {
+      const result = classify([modified(path)]);
+      expect(result.fastSource).not.toBe(true);
+      expect(result.reason).toBe(`${path} is a global test or build input`);
+    },
+  );
+
+  it("selects message consumers from the pushed blobs and the checked-out tree of a real repository", () => {
+    const repo = mkdtempSync(join(tmpdir(), "pre-push-messages-"));
+    const env = gitFixtureEnv(repo);
+    const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
+    const write = (path: string, text: string) => {
+      mkdirSync(join(repo, path, ".."), { recursive: true });
+      writeFileSync(join(repo, path), text);
+    };
+    try {
+      git(["init", "-q"]);
+      git(["config", "user.name", "Fixture"]);
+      git(["config", "user.email", "fixture@example.invalid"]);
+      const fragment = "src/i18n/messages/generated/panel.ts";
+      const catalog = (english: string) =>
+        `export const en = {\n  "panel.title": ${JSON.stringify(english)},\n  "other.label": "Other",\n} as const;\n` +
+        'export const ko: Record<keyof typeof en, string> = {\n  "panel.title": "패널",\n  "other.label": "기타",\n};\n';
+      write(fragment, catalog("Panel"));
+      write("src/ui/panel.tsx", 'export const title = () => t("panel.title");\n');
+      write("src/ui/other.tsx", 'export const label = () => t("other.label");\n');
+      write("src/ui/__tests__/panel-copy.test.tsx", 'it("names", () => expect(t("panel.title")).toBe("패널"));\n');
+      write("src/i18n/__tests__/i18n.test.ts", 'it("loads", () => {});\n');
+      write("test/e2e/panel.spec.ts", 'test("panel", () => page.getByText(t("panel.title")));\n');
+      git(["add", "."]);
+      git(["commit", "-qm", "initial fixture"]);
+      const base = git(["rev-parse", "HEAD"]);
+      write(fragment, catalog("Panel heading"));
+      git(["commit", "-qam", "reword the panel title"]);
+      const local = git(["rev-parse", "HEAD"]);
+      const start = source.indexOf("function decodeUtf8Strict(");
+      const end = source.indexOf("function classifyPrePushChanges(");
+      const select = runInNewContext(`${source.slice(start, end)}; getMessageCatalogSelection`, {
+        commands: { git: "git" }, TextDecoder, Buffer, join, readFileSync, selectMessageCatalogChecks,
+        spawnSync: (command: string, args: string[], options: object) => spawnSync(command, args, { ...options, env }),
+      });
+      expect(select(repo, [{ ...modified(fragment), baseSha: base, localSha: local }])).toEqual({
+        namespaces: ["panel"],
+        testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/ui/__tests__/panel-copy.test.tsx"],
+        consumerModules: ["src/ui/panel.tsx"],
+      });
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

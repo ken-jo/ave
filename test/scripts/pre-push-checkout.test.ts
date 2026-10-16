@@ -12,8 +12,10 @@ const FULL_TIER_FOR_TAGS = "[checks] tier=full pre-push: running typecheck, full
 
 function fixture() {
   const repo = mkdtempSync(join(tmpdir(), "pre-push-checkout-"));
-  const env: NodeJS.ProcessEnv = { ...gitFixtureEnv(repo), AVE_HOME: join(repo, "runtime") };
+  // The full tier takes a host lock; the fixture keeps it out of the shared one.
+  const env: NodeJS.ProcessEnv = { ...gitFixtureEnv(repo), AVE_HOME: join(repo, "runtime"), AVE_PREPUSH_LOCK_DIR: join(repo, "locks") };
   delete env.AVE_PREPUSH_FULL;
+  delete env.AVE_PREPUSH_LOCK_TIMEOUT_S;
   const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
   git(["init", "-q"]);
   git(["config", "user.name", "Fixture"]);
@@ -34,9 +36,9 @@ function fixture() {
   writeFileSync(join(repo, NOTES), "Updated notes.\n");
   git(["commit", "-qam", "update notes"]);
   const head = git(["rev-parse", "HEAD"]);
-  const pushInput = (input: string) =>
+  const pushInput = (input: string, extraEnv: NodeJS.ProcessEnv = {}) =>
     spawnSync("node", [HOOK, "--repo", repo, "--stage", "pre-push"], {
-      env, encoding: "utf8", input, timeout: 15_000,
+      env: { ...env, ...extraEnv }, encoding: "utf8", input, timeout: 15_000,
     });
   const push = (localRef = "refs/heads/topic", localSha = head, remoteRef = "refs/heads/topic") =>
     pushInput(`${localRef} ${localSha} ${remoteRef} ${base}\n`);
@@ -152,6 +154,37 @@ describe("pre-push checkout binding", () => {
       const refused = f.pushInput(`refs/tags/old-light ${f.base} refs/tags/old-light ${NULL_SHA}\n`);
       expect(refused.status).toBe(1);
       expect(refused.stderr).toContain(`git checkout --detach ${f.base}`);
+    } finally { f.cleanup(); }
+  });
+
+  it("runs the full tier under the host lock and fails the push when the lock stays held past the timeout", () => {
+    const f = fixture();
+    try {
+      f.git(["tag", "fixture-light"]);
+      const lock = join(f.repo, "locks", "ave-prepush-full.lock");
+      const tagPush = `refs/tags/fixture-light ${f.head} refs/tags/fixture-light ${NULL_SHA}\n`;
+      // Free lock: the full tier takes it and releases it whatever the checks do.
+      const free = f.pushInput(tagPush);
+      expect(free.stdout).toContain(FULL_TIER_FOR_TAGS);
+      expect(free.stdout).not.toContain("waiting for the full-tier host lock");
+      expect(existsSync(join(f.repo, "locks"))).toBe(true);
+      expect(existsSync(lock)).toBe(false);
+      // Held by a live process: the push waits, then fails; it never passes.
+      mkdirSync(lock, { recursive: true });
+      writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, token: "fixture-holder", createdAt: new Date().toISOString() }));
+      const held = f.pushInput(tagPush, { AVE_PREPUSH_LOCK_TIMEOUT_S: "1" });
+      expect(held.status).toBe(1);
+      expect(held.stdout).toContain(FULL_TIER_FOR_TAGS);
+      expect(held.stdout).toContain(`waiting for the full-tier host lock held by PID ${process.pid}`);
+      expect(held.stderr).toContain("[PRE_PUSH_HOST_LOCK_TIMEOUT]");
+      expect(held.stderr).toContain("no checks ran and the push is refused");
+      // AVE_PREPUSH_FULL=1 forces the full tier and therefore the same lock.
+      const forced = f.pushInput(`refs/heads/topic ${f.head} refs/heads/topic ${f.base}\n`,
+        { AVE_PREPUSH_FULL: "1", AVE_PREPUSH_LOCK_TIMEOUT_S: "1" });
+      expect(forced.status).toBe(1);
+      expect(forced.stdout).toContain("tier=full pre-push");
+      expect(forced.stderr).toContain("[PRE_PUSH_HOST_LOCK_TIMEOUT]");
+      expect(f.checked()).toBe(false);
     } finally { f.cleanup(); }
   });
 
