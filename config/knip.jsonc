@@ -114,6 +114,7 @@
     "@openai/codex",
     "@sentry/electron",
     "@types/better-sqlite3",
+    "@vscode/ripgrep",
     "better-sqlite3",
     "electron-builder",
     "electron-updater",

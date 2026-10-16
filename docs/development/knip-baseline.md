@@ -59,6 +59,9 @@ desktop workflows analyze the declarations without requiring `web/node_modules`.
 - `@openai/codex` supplies the platform-native App Server executable resolved
   dynamically by `src/main/codex-app-server-client.ts`; it is unpacked with the
   packaged application rather than imported into the JavaScript bundle.
+- `@vscode/ripgrep` pulls in the per-platform package whose `bin/rg` is
+  resolved by path in `src/tools/ripgrep-executable.ts`; the wrapper module is
+  never imported.
 - `better-sqlite3` is rebuilt in `postinstall`, staged by
   `scripts/packaged-runtime-assets.mjs`, guarded by package footprint tests, and
   kept external by `scripts/build-main-esbuild.mjs`.
