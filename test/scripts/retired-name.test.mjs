@@ -18,6 +18,7 @@ import { ALLOWLIST, RETIRED_NAME, RETIRED_NAME_PATTERN, scanRetiredName } from "
 
 const lower = RETIRED_NAME;
 const upper = RETIRED_NAME.toUpperCase();
+const capitalized = upper[0] + lower.slice(1);
 
 /** A repository whose index tracks `tracked`; `untracked` files are written but never added. */
 function fixture(tracked, untracked = {}) {
@@ -41,6 +42,12 @@ function fixture(tracked, untracked = {}) {
 test("pins the retired name by its sha256 and length", () => {
   assert.equal(RETIRED_NAME.length, 4);
   assert.equal(createHash("sha256").update(RETIRED_NAME).digest("hex"), "7899e2167ac27be58f7f4ed7adc44d7e2502353cc470275c3ad031f61145acb0");
+});
+
+// The pattern is pinned too, so a loosened branch or a stray `i` flag fails here.
+test("pins the pattern by the sha256 of its source and its flags", () => {
+  assert.equal(RETIRED_NAME_PATTERN.flags, "u");
+  assert.equal(createHash("sha256").update(RETIRED_NAME_PATTERN.source).digest("hex"), "7b780cc632a81f66abba9aa6caf3a574890604a17bf2959f3a8c9ba7d84a8c44");
 });
 
 test("flags the name in any tracked file, docs included, with its lines", () => {
@@ -81,14 +88,28 @@ test("flags the name in a tracked path even when the content is clean, binary fi
 });
 
 test("does not match words that only contain the letters", () => {
-  const f = fixture({ "src/b.ts": "const modelVisible = true; // Vision, devisable, ELVISH\n" });
+  const f = fixture({ "src/b.ts": "const modelVisible = true; // Vision, devisable, ELVISH, callVisitor\n" });
   try {
     assert.deepEqual(scanRetiredName(f.root, []), { offenders: [], stale: [] });
   } finally {
     f.cleanup();
   }
-  for (const word of ["modelVisible", "Vision", "ELVIS"]) assert.equal(RETIRED_NAME_PATTERN.test(word), false, word);
-  for (const word of [upper, `${lower}-app`, `${upper}KEEP`, `_${upper}_HOME`]) assert.equal(RETIRED_NAME_PATTERN.test(word), true, word);
+  for (const word of ["modelVisible", "modelVision", "modelVisionEnabled", "toolVisibility", "Vision", "Elvis", "ELVIS", "visible", "callVisitor"]) {
+    assert.equal(RETIRED_NAME_PATTERN.test(word), false, word);
+  }
+  for (const word of [upper, `${lower}-app`, `${upper}KEEP`, `@${lower}/plugin`, `_${upper}_HOME`]) assert.equal(RETIRED_NAME_PATTERN.test(word), true, word);
+});
+
+test("matches the name inside a camelCase identifier, Capitalized or in capitals", () => {
+  for (const word of [`define${capitalized}PluginConfig`, `managed${capitalized}`, `source${upper}`, `v2${upper}_HOME`, `const x = new ${capitalized}Host();`]) {
+    assert.equal(RETIRED_NAME_PATTERN.test(word), true, word);
+  }
+  const f = fixture({ "src/c.ts": `export default define${capitalized}PluginConfig([]);\nconst ok = modelVision;\nconst y = source${upper};\n` });
+  try {
+    assert.deepEqual(scanRetiredName(f.root, []), { offenders: [{ path: "src/c.ts", inPath: false, lines: [1, 3] }], stale: [] });
+  } finally {
+    f.cleanup();
+  }
 });
 
 test("ignores untracked files and binary content", () => {
