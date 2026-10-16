@@ -26,6 +26,7 @@ import {
   type PreviewTableDocument,
   type PreviewTableSheet,
 } from "../shared/preview-document.js";
+import { errorMessage } from "../shared/error-message.js";
 import { hasZipMagic, verifyZipInflateLimits } from "./zip-inflate-guard.js";
 
 // Legacy .xls stores text in Windows code pages (cp949, cp1252, …).
@@ -121,7 +122,7 @@ function parseDelimited(
 }
 
 function workbookError(err: unknown): TableDocumentError {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = errorMessage(err);
   if (/password|encrypt/i.test(message)) return new TableDocumentError("encrypted", message);
   return new TableDocumentError("corrupt-document", message);
 }
