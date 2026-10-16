@@ -48,6 +48,7 @@ class LazyVercelProvider implements LLMProvider {
             {
               vertexProject: cfg.vertexProject,
               vertexLocation: cfg.vertexLocation,
+              ...(cfg.openaiWire ? { openaiWire: cfg.openaiWire } : {}),
             },
           ] as const;
           return cfg.providerMetadata

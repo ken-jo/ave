@@ -285,6 +285,12 @@ export interface VercelProviderExtras {
   vertexProject?: string;
   /** Vertex AI — GCP region (default "us-central1"). */
   vertexLocation?: string;
+  /**
+   * Pins the `openai` slot to the Responses wire for every model. A connection
+   * whose route accepts only `POST /v1/responses` sets it, so a model id
+   * outside the known Responses families can never select Chat Completions.
+   */
+  openaiWire?: "responses";
 }
 
 export class VercelUnifiedProvider implements LLMProvider {
@@ -333,7 +339,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         yield { type: "error", error: "Model does not support image input", code: "image-input-unsupported", classification: "model" };
         return;
       }
-      const useOpenAIResponsesAliases = usesOpenAIResponsesWire(slot, params.model);
+      const useOpenAIResponsesAliases = this.usesResponsesWire(params.model);
       // Only this slot's provider caches up to explicit breakpoints; the
       // `openai` / `azure-foundry` slots cache automatically, keyed by
       // `promptCacheKey` below.
@@ -689,6 +695,11 @@ export class VercelUnifiedProvider implements LLMProvider {
     }
   }
 
+  private usesResponsesWire(modelId: string): boolean {
+    return (this.vendorSlot === "openai" && this.extras.openaiWire === "responses")
+      || usesOpenAIResponsesWire(this.vendorSlot, modelId);
+  }
+
   private resolveModel(
     modelId: string,
     _hasTools: boolean,
@@ -736,7 +747,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       // Responses API for reasoning families (gpt-5.x / o-series); Chat
       // Completions for legacy gpt-4.x. This matches the Vercel SDK's
       // documented routing and avoids silent 400s on tool turns.
-      return usesOpenAIResponsesWire(slot, modelId)
+      return this.usesResponsesWire(modelId)
         ? openai.responses(modelId)
         : openai.chat(modelId);
     }

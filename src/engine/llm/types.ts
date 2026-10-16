@@ -656,6 +656,8 @@ export interface ProviderConfig {
   vertexProject?: string;
   /** Vertex AI — GCP region (default "us-central1"). */
   vertexLocation?: string;
+  /** Pins vendor="openai" to the Responses wire regardless of model family. */
+  openaiWire?: "responses";
   /**
    * Marketplace/provider-package metadata selected at settings time. Runtime
    * adapters can use this to honor catalog-owned base URLs, auth policy,
