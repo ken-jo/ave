@@ -12,6 +12,12 @@ vi.mock("../managed-child-processes.js", () => ({ spawnManaged: vi.fn() }));
 
 const HOST = process.platform;
 const HOST_EXEC_PATH = process.execPath;
+// Copies standard input to both standard output and standard error. Node gives
+// a child socket pairs, not pipes, for "pipe" stdio; on Linux reopening one by
+// path (`tee /dev/stderr` -> /proc/self/fd/2) fails with ENXIO, so the program
+// must write to the inherited descriptor. GNU sed writes `w /dev/stderr` to
+// descriptor 2; the macOS sed opens /dev/stderr, which duplicates it.
+const BOTH_STREAMS = { command: "/usr/bin/sed", args: ["-n", "-e", "p", "-e", "w /dev/stderr"] } as const;
 const roots: string[] = [];
 
 afterEach(() => {
@@ -262,7 +268,7 @@ describe.skipIf(HOST === "win32" || (HOST !== "darwin" && typeof process.execve 
 
   it("drains both output streams while delivering a large input", async () => {
     const input = "request body\n".repeat(12_000);
-    const result = await runPlan(spawnPlan("/usr/bin/tee", ["/dev/stderr"], { env: {} }), input);
+    const result = await runPlan(spawnPlan(BOTH_STREAMS.command, BOTH_STREAMS.args, { env: {} }), input);
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
     expect(result.stdout).toBe(input);
@@ -278,7 +284,7 @@ describe.skipIf(HOST === "win32" || (HOST !== "darwin" && typeof process.execve 
       timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs, killSignal: "SIGKILL",
     };
     const input = "request body\n".repeat(12_000);
-    const delivered = await runChild(() => spawnCodexNative("/usr/bin/tee", ["/dev/stderr"], options, "native-io"), input);
+    const delivered = await runChild(() => spawnCodexNative(BOTH_STREAMS.command, BOTH_STREAMS.args, options, "native-io"), input);
     expect(delivered.error).toBeUndefined();
     expect(delivered.status).toBe(0);
     expect(delivered.stdout).toBe(input);
