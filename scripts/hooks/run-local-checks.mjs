@@ -373,7 +373,7 @@ function runPushCheckoutChecks(repoRoot, parsedUpdates) {
   }
   if (nonCommits.length > 0) {
     throw new Error([
-      "[PRE_PUSH_TAG_NOT_COMMIT] refusing a ref update that has no commit tree to check.",
+      "[PRE_PUSH_REF_NOT_COMMIT] refusing a ref update that has no commit tree to check.",
       ...nonCommits,
       "Push a branch, a lightweight tag of a commit, or an annotated tag of a commit.",
     ].join("\n"));
@@ -412,9 +412,12 @@ function runPushCheckoutChecks(repoRoot, parsedUpdates) {
   return { treeRequired: true, commitByLocalSha };
 }
 
-// Downstream checks diff, walk and fast-forward-test commits, so an update
-// that pushes an annotated tag object is checked through its peeled commit.
-// The tag object sha stays only in `localTagSha` for the ref update itself.
+// Replaces an annotated tag object's sha with its peeled commit (keeping the
+// tag sha in `localTagSha`) before classification. Today this changes no
+// result: classifyPrePushChanges sends every non-refs/heads update, which
+// includes every tag push, to the full tier before any diff or rev-list, so
+// no tag sha reaches those commands. It keeps that invariant if a future
+// classifier change lets a tag update reach the commit-range checks.
 function withPushedCommits(parsedUpdates, commitByLocalSha) {
   return {
     ...parsedUpdates,

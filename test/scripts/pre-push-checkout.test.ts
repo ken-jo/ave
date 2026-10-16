@@ -124,7 +124,7 @@ describe("pre-push checkout binding", () => {
       const tag = f.git(["rev-parse", "refs/tags/non-commit-tag"]);
       const result = f.pushInput(`refs/tags/non-commit-tag ${tag} refs/tags/non-commit-tag ${NULL_SHA}\n`);
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("PRE_PUSH_TAG_NOT_COMMIT");
+      expect(result.stderr).toContain("PRE_PUSH_REF_NOT_COMMIT");
       expect(result.stderr).toContain(`${tag} is an annotated tag that does not peel to a commit`);
       expect(f.checked()).toBe(false);
     } finally { f.cleanup(); }
@@ -136,7 +136,7 @@ describe("pre-push checkout binding", () => {
       const tree = f.git(["rev-parse", "HEAD^{tree}"]);
       const result = f.pushInput(`refs/tags/tree-tag ${tree} refs/tags/tree-tag ${NULL_SHA}\n`);
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("PRE_PUSH_TAG_NOT_COMMIT");
+      expect(result.stderr).toContain("PRE_PUSH_REF_NOT_COMMIT");
       expect(result.stderr).toContain(`${tree} is a tree`);
       expect(f.checked()).toBe(false);
     } finally { f.cleanup(); }
