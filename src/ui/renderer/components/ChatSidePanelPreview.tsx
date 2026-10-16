@@ -191,18 +191,20 @@ function DetailHeader({ target }: { target: ChatPreviewTarget }) {
 /**
  * True when the target's body is a table grid, which is its own scroll
  * container and must take the panel's remaining height instead of making the
- * panel scroll around it. Inline text always renders as text.
+ * panel scroll around it. Inline text always renders as text. Hosts switch to
+ * a flex column only for these targets; every other preview keeps the block
+ * layout it had before (its `h-full` viewers depend on it).
  */
-function previewFillsPanel(target: ChatPreviewTarget): boolean {
+export function previewFillsPanel(target: ChatPreviewTarget): boolean {
   return target.kind === "file" && !target.inlineText && resolveFilePreviewRoute(target.path).kind === "table";
 }
 
 /**
- * Header + body of the selected preview target. Every side-panel host renders
- * it as a child of a flex column (`flex flex-col`, at least as tall as the
- * host's scroll area). A text body keeps its natural height, so the host
- * scrolls it as before; a table body flexes into the remaining height and the
- * grid alone scrolls — the host has nothing left to scroll.
+ * Header + body of the selected preview target. For a table target the host
+ * is a flex column at least as tall as its scroll area (see
+ * {@link previewFillsPanel}): the body flexes into the remaining height and
+ * the grid alone scrolls, so the host has nothing left to scroll. Any other
+ * target renders exactly as before, as a block the host scrolls.
  */
 export function PreviewDetail({ api, sessionId, target }: { api: AveApi; sessionId?: string; target: ChatPreviewTarget }) {
   return (

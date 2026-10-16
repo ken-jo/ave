@@ -9,6 +9,7 @@ import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
 import {
   EmptyState,
   PreviewDetail,
+  previewFillsPanel,
   statusTone,
   targetIcon,
 } from "./ChatSidePanelPreview.js";
@@ -141,7 +142,7 @@ export function ListDetailWorkspace({
           </div>
         }
         bottom={
-          <div className="flex min-h-full flex-col p-3">
+          <div className={selectedTarget && previewFillsPanel(selectedTarget) ? "flex min-h-full flex-col p-3" : "min-h-0 p-3"}>
             {selectedTarget ? (
               <PreviewDetail api={api} sessionId={sessionId} target={selectedTarget} />
             ) : (

@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreviewBody } from "../../components/ChatSidePanelPreview.js";
 import { resolveFilePreviewRoute } from "../preview-renderers.js";
-import { columnLetters, tableGridBlockStyle } from "../table-document-grid.js";
+import { columnLetters, horizontalScrollbarBlockPx, tableGridBlockStyle } from "../table-document-grid.js";
 import { tableErrorKey } from "../table-document-preview.js";
 import type { ChatPreviewTarget } from "../preview-targets.js";
 import type { PreviewReadDocumentResult, PreviewTableDocument } from "../../../../shared/preview-document.js";
@@ -37,12 +37,36 @@ describe("columnLetters", () => {
 describe("tableGridBlockStyle", () => {
   it("takes the panel's remaining height instead of a fixed viewport share", () => {
     // header 26 + 5000 rows x 24 + 2px border; shrinks down to header + two rows.
-    expect(tableGridBlockStyle(5000)).toEqual({ flex: "1 1 0", minBlockSize: "76px", maxBlockSize: "120028px" });
+    expect(tableGridBlockStyle(5000, 0)).toEqual({ flex: "1 1 0", minBlockSize: "76px", maxBlockSize: "120028px" });
   });
 
   it("never grows past its rows, so a short sheet shows no scrollbar", () => {
-    expect(tableGridBlockStyle(5)).toEqual({ flex: "1 1 0", minBlockSize: "76px", maxBlockSize: "148px" });
-    expect(tableGridBlockStyle(1)).toEqual({ flex: "1 1 0", minBlockSize: "52px", maxBlockSize: "52px" });
+    expect(tableGridBlockStyle(5, 0)).toEqual({ flex: "1 1 0", minBlockSize: "76px", maxBlockSize: "148px" });
+    expect(tableGridBlockStyle(1, 0)).toEqual({ flex: "1 1 0", minBlockSize: "52px", maxBlockSize: "52px" });
+  });
+
+  it("makes room for a wide sheet's classic horizontal scrollbar on both bounds", () => {
+    expect(tableGridBlockStyle(5, 10)).toEqual({ flex: "1 1 0", minBlockSize: "86px", maxBlockSize: "158px" });
+    // One row stays visible above the bar instead of hiding behind it.
+    expect(tableGridBlockStyle(1, 15)).toEqual({ flex: "1 1 0", minBlockSize: "67px", maxBlockSize: "67px" });
+  });
+});
+
+describe("horizontalScrollbarBlockPx", () => {
+  function box(offsetHeight: number, clientHeight: number, border: string): HTMLElement {
+    const element = document.createElement("div");
+    element.style.borderTopWidth = border;
+    element.style.borderBottomWidth = border;
+    element.style.borderStyle = "solid";
+    Object.defineProperty(element, "offsetHeight", { value: offsetHeight });
+    Object.defineProperty(element, "clientHeight", { value: clientHeight });
+    document.body.append(element);
+    return element;
+  }
+
+  it("is the bar's height when the columns overflow and 0 when they fit", () => {
+    expect(horizontalScrollbarBlockPx(box(60, 48, "1px"))).toBe(10);
+    expect(horizontalScrollbarBlockPx(box(60, 58, "1px"))).toBe(0);
   });
 });
 

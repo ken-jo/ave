@@ -57,6 +57,7 @@ import {
   FILE_TARGET_KINDS,
   TAB_DRAG_THRESHOLD_PX,
   PreviewDetail,
+  previewFillsPanel,
   UrlDocumentViewer,
   tabIcon,
 } from "./ChatSidePanelPreview.js";
@@ -522,7 +523,11 @@ function ContentTabView({
     );
   }
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-auto p-3" data-testid="chat-side-panel-content-view" data-tab-id={tab.id}>
+    <div
+      className={previewFillsPanel(target) ? "flex h-full min-h-0 flex-col overflow-auto p-3" : "h-full min-h-0 overflow-auto p-3"}
+      data-testid="chat-side-panel-content-view"
+      data-tab-id={tab.id}
+    >
       <PreviewDetail api={api} sessionId={sessionId} target={target} />
     </div>
   );
