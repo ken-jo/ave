@@ -1,6 +1,6 @@
 # Tailnet Observer Configuration Surface Redesign
 
-> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+> Historical record: written under the app's former name. Identifiers that carried that name are described in neutral words below; other names and paths are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
 
 > Status: **Implemented** (issue #2112, part 3 of 3): the host-owned config file
 > under the environment layer, the Settings section and guided setup ship in
@@ -18,15 +18,15 @@ shared conversation projection — is configured exclusively through boot
 environment variables. The single resolver is `resolveTailnetObserverConfig`
 (`src/main/tailnet-surface-server.ts:69-114`):
 
-| Env var | Meaning | Validation |
+| Env var (`<former prefix>` is the former-name env prefix) | Meaning | Validation |
 |---|---|---|
-| `AVE_TAILNET_OBSERVER` | enable (`"1"`) | anything else → observer OFF |
-| `AVE_TAILNET_OBSERVER_CAP` | expected app-capability key (required when ON) | `isCapabilityKey` (length ≤ 512, no control chars, no proto-pollution keys); missing/invalid → throw `tailnet-observer-capability-missing-or-invalid` |
-| `AVE_TAILNET_OBSERVER_PORT` | listener port | `parseFixedPort`; default `DEFAULT_TAILNET_OBSERVER_PORT` = 46173 |
-| `AVE_TAILNET_CONTROLLER` | enable controller commands | must be `"1"` if set, else throw |
-| `AVE_TAILNET_PAIRED_SHARING` | enable P2 paired sharing | must be `"1"` if set, else throw |
-| `AVE_TAILNET_WEB` | enable web surface | requires paired sharing; else throw |
-| `AVE_TAILNET_WEB_ORIGIN` | web origin | `isTailnetWebOrigin`; missing/invalid → throw |
+| `<former prefix>_TAILNET_OBSERVER` | enable (`"1"`) | anything else → observer OFF |
+| `<former prefix>_TAILNET_OBSERVER_CAP` | expected app-capability key (required when ON) | `isCapabilityKey` (length ≤ 512, no control chars, no proto-pollution keys); missing/invalid → throw `tailnet-observer-capability-missing-or-invalid` |
+| `<former prefix>_TAILNET_OBSERVER_PORT` | listener port | `parseFixedPort`; default `DEFAULT_TAILNET_OBSERVER_PORT` = 46173 |
+| `<former prefix>_TAILNET_CONTROLLER` | enable controller commands | must be `"1"` if set, else throw |
+| `<former prefix>_TAILNET_PAIRED_SHARING` | enable P2 paired sharing | must be `"1"` if set, else throw |
+| `<former prefix>_TAILNET_WEB` | enable web surface | requires paired sharing; else throw |
+| `<former prefix>_TAILNET_WEB_ORIGIN` | web origin | `isTailnetWebOrigin`; missing/invalid → throw |
 
 Seven env vars, one resolver, two read sites:
 
@@ -75,7 +75,7 @@ invariant, not merely move the values into the ordinary settings store.
 Persist the observer configuration as a host-owned file under the storage
 chokepoint: `openFeatureNamespace("tailnet")`
 (`src/main/storage/feature-namespace.ts`; `0o700` dir / `0o600` file per the
-repository contract) → `~/.ave/tailnet/observer.json`. The schema mirrors
+repository contract) → `tailnet/observer.json` under the former-name data folder. The schema mirrors
 `TailnetObserverConfig` exactly: `{enabled, port, expectedAppCapability,
 controllerEnabled, pairedSharingEnabled, webOrigin?}`. The file is read and
 validated by the main process only, with the *same* validators the env path

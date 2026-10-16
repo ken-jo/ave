@@ -1,6 +1,6 @@
 # Per-resource card capabilities — what reviving `permissions` opens up
 
-> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+> Historical record: written under the app's former name. Identifiers that carried that name are described in neutral words below; other names and paths are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
 
 - Status: **design note, not yet implemented.** Written while wiring the spec's `_meta.ui.permissions` (PR #1600), because that work exposes a declaration channel we have nothing plugged into yet.
 - Related: [`docs/guides/mcp-app-authoring.md`](../guides/mcp-app-authoring.md) (the author-facing contract).
@@ -58,13 +58,13 @@ The per-invocation gates stay exactly as they are. Declaration decides *whether 
 ### Details worth deciding before building
 
 - **Default when a resource declares nothing.** Today's behavior is "everything". The honest default is **nothing** (a card that declares no capability is display-only), which is a breaking change for exactly zero cards — none ship yet. Take the strict default now; it will never be this cheap again.
-- **Notification vs. conversation.** `message` currently covers both intents (`ave/notification` meta routes to the popup; plain text reaches the turn). Those are very different powers — a status card may want to notify and have no business speaking into the conversation. Splitting them is the first thing a per-card declaration makes expressible.
+- **Notification vs. conversation.** `message` currently covers both intents (the former-name vendor `notification` meta key routes to the popup; plain text reaches the turn). Those are very different powers — a status card may want to notify and have no business speaking into the conversation. Splitting them is the first thing a per-card declaration makes expressible.
 - **`openLinks`** is cheap to grant and rarely dangerous (http(s)-only, opens in the user's browser); it may not be worth declaring. Do not add ceremony where there is no power.
-- **External servers** have no manifest, so their declaration rides `_meta.ui`. Until the spec adopts a field, that means a vendor key (`ave/*`) — which is the upstream candidate below, and the reason to propose it rather than quietly ship a proprietary one.
+- **External servers** have no manifest, so their declaration rides `_meta.ui`. Until the spec adopts a field, that means a vendor key (then the former-name vendor prefix) — which is the upstream candidate below, and the reason to propose it rather than quietly ship a proprietary one.
 
 ## Upstream
 
-This is a **spec gap, not a Ave gap**: the spec defines per-resource `permissions` for *browser* features (camera / microphone / geolocation / clipboardWrite) but gives a resource no way to declare which *host* capabilities it needs — even though `AppBridge` is constructed with capabilities per card. The consequence is that every conformant host hands every card the full set.
+This is a **spec gap, not an Ave gap**: the spec defines per-resource `permissions` for *browser* features (camera / microphone / geolocation / clipboardWrite) but gives a resource no way to declare which *host* capabilities it needs — even though `AppBridge` is constructed with capabilities per card. The consequence is that every conformant host hands every card the full set.
 
 Proposal to upstream (archived in the contribution backlog, to be submitted per the usual fix-first-then-issue order): extend the existing per-resource declaration with a host-capability axis, so a host can advertise `declared ∩ supported`. Our implementation would be the reference: the handlers-table seam makes it a filter, not a framework.
 
