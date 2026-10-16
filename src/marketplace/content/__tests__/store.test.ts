@@ -29,6 +29,7 @@ import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { gitAccess } from "../../sources/source-tree.js";
 import { agentPluginComponentDigests } from "../../../plugins/contribution-approval-digest.js";
+import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
@@ -108,7 +109,7 @@ describe("content package store", () => {
     const policy = policySource({});
     const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = mkdtempSync(join(root, "marketplaces-"));
-    const registry = await SourceRegistry.open({ root: marketplaces, policy });
+    const registry = await SourceRegistry.open({ root: marketplaces, policy, official: UNREACHABLE_OFFICIAL });
     await registry.add({ id: sourceId, origin: "custom", url: server.url(repoName), auth: { kind: "none" } });
     const syncer = new SourceSyncer({ registry, gate, runner: git.runner, root: marketplaces, now: () => new Date(AT), retainedCommits: async () => new Set(), folders: nodeFolders() });
     return syncer;

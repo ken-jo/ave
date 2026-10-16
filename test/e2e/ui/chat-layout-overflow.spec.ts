@@ -6,6 +6,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
+import { makeTestT } from "./i18n.js";
+
+const t = makeTestT("ko");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../..");
@@ -185,6 +188,8 @@ test.describe("chat layout overflow", () => {
       env: buildIsolatedElectronEnv({
         HOME: tempHome,
         USERPROFILE: tempHome,
+        // The seeded sessions above live here; name it rather than rely on HOME.
+        AVE_HOME: resolve(tempHome, ".ave"),
         AVE_DEV: "1",
         AVE_E2E: "1",
         AVE_MAIN_ENTRY: MAIN_ENTRY,
@@ -216,13 +221,16 @@ test.describe("chat layout overflow", () => {
 
   test("historical WorkGroup tools do not clip chat horizontally", async () => {
     await page.setViewportSize({ width: 560, height: 900 });
-    const workGroup = page.locator("[data-testid=\"work-group\"]").filter({ hasText: /단계/ }).first();
+    // A cleanly completed historical turn collapses into one "work complete"
+    // group with no step count (8810dec73); expanding it shows the tool rows.
+    const workGroup = page.locator("[data-testid=\"work-group\"]").filter({ hasText: t("workGroup.completed") });
+    await expect(workGroup).toHaveCount(1);
     await workGroup.waitFor({
       state: "visible",
       timeout: 15_000,
     });
     await workGroup.locator("button").first().click();
-    await page.waitForTimeout(100);
+    await expect(workGroup).toContainText("agent_hub_list_approval_requests");
     const buttons = await workGroup.locator("button").count();
     for (let i = 1; i < buttons; i++) {
       await workGroup.locator("button").nth(i).click();
