@@ -1056,6 +1056,8 @@ if (stage === "pre-commit") {
     checkPushedDocumentation(repoRoot, classification.pushedEntries);
     run(commands.node, ["--test", "test/scripts/check-asrt-version-claims.test.mjs"], repoRoot);
     run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot);
+    run(commands.node, ["--test", "test/scripts/legacy-product-name.test.mjs"], repoRoot);
+    run(commands.node, ["scripts/check-legacy-product-name.mjs"], repoRoot);
     console.log(
       `[checks] tier=docs-only pre-push: skipping lint/typecheck/test/build (${classification.reason})`
     );
@@ -1100,6 +1102,8 @@ if (stage === "pre-commit") {
       checkPushedDocumentation(repoRoot, classification.documentationEntries);
       run(commands.node, ["--test", "test/scripts/check-asrt-version-claims.test.mjs"], repoRoot);
       run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot);
+      run(commands.node, ["--test", "test/scripts/legacy-product-name.test.mjs"], repoRoot);
+      run(commands.node, ["scripts/check-legacy-product-name.mjs"], repoRoot);
     }
     runAppFastSourceChecks(
       repoRoot,

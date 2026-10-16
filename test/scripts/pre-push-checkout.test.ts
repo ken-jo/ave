@@ -28,6 +28,9 @@ function fixture() {
     'import { test } from "node:test"; test("fixture check", () => {});\n');
   writeFileSync(join(repo, "scripts/check-asrt-version-claims.mjs"),
     'import { writeFileSync } from "node:fs"; writeFileSync("checks-ran", "yes");\n');
+  writeFileSync(join(repo, "test/scripts/legacy-product-name.test.mjs"),
+    'import { test } from "node:test"; test("fixture check", () => {});\n');
+  writeFileSync(join(repo, "scripts/check-legacy-product-name.mjs"), "");
   git(["add", "."]);
   git(["commit", "-qm", "initial fixture"]);
   const base = git(["rev-parse", "HEAD"]);

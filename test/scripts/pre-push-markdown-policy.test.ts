@@ -123,9 +123,12 @@ describe("documentation impact policy", () => {
     const tracked = git("ls-files", "-z").split("\0").filter(Boolean);
     const trackedSet = new Set(tracked);
     const packaged = new Set(packagedDocumentInputs(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")), root));
-    // The hook's own policy suites name documents as fixtures, not reads.
+    // The hook's own policy suites name documents as fixtures, not reads. The
+    // legacy-name gate names its allowlisted paths, and it runs on every
+    // documentation change in every tier, so it needs no reader entry.
     const codeFiles = tracked.filter((file) => /^(?:src|test|scripts|config)\//.test(file) && /\.(?:[cm]?[jt]sx?|json)$/.test(file) &&
-      file !== "scripts/hooks/documentation-references.json" && !/^test\/scripts\/pre-push-[^/]+\.test\.ts$/.test(file));
+      file !== "scripts/hooks/documentation-references.json" && file !== "scripts/check-legacy-product-name.mjs" &&
+      !/^test\/scripts\/pre-push-[^/]+\.test\.ts$/.test(file));
     const identitySuite = "test/scripts/repository-identity.test.ts";
     const identitySource = readFileSync(resolve(root, identitySuite), "utf8");
     const notCheckedBlock = identitySource.slice(identitySource.indexOf("const NOT_CHECKED"), identitySource.indexOf("function matchesEntry"));

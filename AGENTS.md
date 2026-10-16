@@ -93,6 +93,11 @@ Apply these conventions to hand-written `src/` code. Generated files and vendore
 primitives keep their generator or upstream conventions. Follow the framework's
 conventions in `web/`; do not rename unrelated code during another task.
 
+Ave is the app's former name; do not use it in new code, docs, or fixtures. The
+literals the app still needs to reject or ignore old artifacts live only in
+`src/shared/legacy-product-name.ts`, and `check:legacy-product-name` (part of
+`check:gate-core`) fails on the name anywhere outside that module and its allowlist.
+
 ### Casing by kind
 
 - Types, interfaces, classes, components, contexts, schemas, and constructor
