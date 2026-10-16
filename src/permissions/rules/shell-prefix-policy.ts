@@ -149,7 +149,9 @@ export function refusedShellPrefix(tokens: readonly string[]): RefusedPrefixReas
  */
 interface WrapperGrammar {
   flags?: readonly string[];
+  flagPattern?: RegExp;
   values?: readonly string[];
+  alternateFlags?: readonly string[];
   code?: readonly string[];
   operand?: true | RegExp;
   separator?: ",";
@@ -166,7 +168,8 @@ const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
   doas: { flags: ["-L", "-n", "-s"], values: ["-u", "-C"] },
   env: { flags: ["-i", "-0", "-v", "--ignore-environment", "--null", "--debug"], values: ["-u", "-C", "--unset", "--chdir"], assignments: true },
   timeout: { flags: ["-v", "--verbose", "--foreground", "--preserve-status"], values: ["-s", "-k", "--signal", "--kill-after"], operand: /^\d+(?:\.\d+)?[smhd]?$/ },
-  nice: { values: ["-n", "--adjustment"] },
+  // https://www.gnu.org/software/coreutils/manual/html_node/nice-invocation.html: -N adjustment.
+  nice: { flagPattern: /^-[+-]?\d+$/, values: ["-n", "--adjustment"] },
   ionice: { flags: ["-t", "--ignore"], values: ["-c", "-n", "-p", "--class", "--classdata"] },
   watch: { flags: ["-b", "-c", "-d", "-e", "-g", "-p", "-t", "-w", "-x", "--beep", "--color", "--differences", "--errexit", "--chgexit", "--precise", "--no-title", "--watch", "--exec"], values: ["-n", "--interval"] },
   stdbuf: { values: ["-i", "-o", "-e"] },
@@ -181,8 +184,9 @@ const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
   // https://manpages.debian.org/trixie/expect/unbuffer.1.en.html: optional -p then argv.
   unbuffer: { flags: ["-p"] },
   // https://man7.org/linux/man-pages/man1/script.1.html: optional log file, -c text or -- argv.
-  // https://raw.githubusercontent.com/apple-oss-distributions/shell_cmds/main/script/script.1: -t time, -F flush; file then argv.
-  script: { flags: ["-a", "-d", "-e", "-f", "-F", "-k", "-q", "-r", "-w", "--append", "--return", "--flush", "--force", "--quiet"], values: ["-t", "-E", "-B", "-I", "-O", "-T", "-m", "-o", "--echo", "--log-io", "--log-in", "--log-out", "--log-timing", "--logging-format", "--output-limit"], code: ["-c", "--command"], operand: true, optionsAfterOperand: true, boundary: ["--"] },
+  // https://raw.githubusercontent.com/freebsd/freebsd-src/main/usr.bin/script/script.1: recording setup operands, file then argv.
+  // https://raw.githubusercontent.com/apple-oss-distributions/shell_cmds/main/script/script.1: alternate -F flush arity stays visible to floor scans.
+  script: { flags: ["-a", "-d", "-e", "-f", "-k", "-q", "-r", "-w", "--append", "--return", "--flush", "--force", "--quiet"], values: ["-t", "-F", "-E", "-B", "-I", "-O", "-T", "-m", "-o", "--echo", "--log-io", "--log-in", "--log-out", "--log-timing", "--logging-format", "--output-limit"], alternateFlags: ["-F"], code: ["-c", "--command"], operand: true, optionsAfterOperand: true, boundary: ["--"] },
   // https://man7.org/linux/man-pages/man1/su.1.html: optional user and -c text (in either order).
   su: { flags: ["-", "-l", "-m", "-p", "-f", "-P", "-T", "--login", "--preserve-environment", "--fast", "--pty", "--no-pty"], values: ["-s", "-g", "-G", "-w", "--shell", "--group", "--supp-group", "--whitelist-environment"], code: ["-c", "--command", "--session-command"], operand: true, optionsAfterOperand: true },
   // https://man7.org/linux/man-pages/man1/runuser.1.html: -u user -- argv, or su-compatible -c.
@@ -190,7 +194,7 @@ const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
   // https://man7.org/linux/man-pages/man1/systemd-run.1.html: service options then argv.
   "systemd-run": { flags: ["--scope", "--user", "--system", "--no-block", "--wait", "--pipe", "--pty", "--collect", "--quiet", "-q", "-P", "-t", "-G", "-d", "--same-dir", "--send-sighup", "--slice-inherit", "--remain-after-exit", "-S", "--shell", "-v", "--verbose", "--on-clock-change", "--on-timezone-change", "--no-ask-password", "--no-pager"], values: ["-C", "--capsule", "-u", "-p", "-E", "-H", "-M", "--unit", "--property", "--description", "--slice", "--service-type", "--uid", "--gid", "--nice", "--working-directory", "--root-directory", "--setenv", "--host", "--machine", "--on-active", "--on-boot", "--on-startup", "--on-unit-active", "--on-unit-inactive", "--on-calendar", "--path-property", "--socket-property", "--timer-property"] },
   // https://manpages.debian.org/trixie/firejail/firejail.1.en.html: --option=value then argv.
-  firejail: { flags: ["--noprofile", "--quiet", "--debug", "--noroot", "--nonewprivs", "--private"], values: ["--profile", "--name"] },
+  firejail: { flagPattern: /^--[\w-]+$/, values: ["--profile", "--name"] },
   // https://github.com/proot-me/proot/blob/master/doc/proot/manual.rst: setup options then argv.
   proot: { flags: ["-0", "--root-id", "-n", "--netcoop"], values: ["-r", "-R", "-S", "-b", "-m", "-q", "-w", "-v", "-k", "-i", "-p", "--rootfs", "--bind", "--mount", "--qemu", "--pwd", "--cwd", "--verbose", "--kernel-release", "--change-id", "--port"] },
   // https://man7.org/linux/man-pages/man1/chroot.1.html: new root then argv.
@@ -201,18 +205,32 @@ const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
 
 /**
  * The inner argv boundary or a wrapper's explicit shell-command payload.
- * Dynamic command words stop inspection; setup values retain proven arity.
+ * Uncertain positions retain floor-only candidates, never an allow-rule boundary.
+ * Setup values retain proven arity.
  * At most sixteen wrappers are followed.
  */
-export function wrapperCommand(argv: readonly (string | undefined)[]): { index: number; code?: { text: string | undefined }; ordinaryAsk?: string } {
+export function wrapperCommand(argv: readonly (string | undefined)[]): { index: number; code?: { text: string | undefined }; ordinaryAsk?: string; candidates?: number[] } {
   let index = 0;
   let ordinaryAsk: string | undefined;
-  const finish = (at: number, code?: { text: string | undefined }) => ({ index: at, ...(code ? { code } : {}), ...(ordinaryAsk ? { ordinaryAsk } : {}) });
+  let candidateFrom: number | undefined;
+  const finish = (at: number, code?: { text: string | undefined }) => ({
+    index: at,
+    ...(code ? { code } : {}),
+    ...(ordinaryAsk ? { ordinaryAsk } : {}),
+    ...(candidateFrom === undefined ? {} : { candidates: Array.from({ length: argv.length - candidateFrom }, (_, offset) => candidateFrom! + offset) }),
+  });
+  const inspectTail = (from: number) => {
+    candidateFrom = Math.min(candidateFrom ?? from, from);
+  };
+  const uncertain = (from: number) => {
+    inspectTail(from);
+    return finish(argv.length);
+  };
   for (let guard = 0; guard < 16 && index < argv.length; guard += 1) {
     const head = argv[index];
     if (head === undefined) {
       ordinaryAsk ??= "opaque wrapper command binding";
-      return finish(index);
+      return uncertain(index + 1);
     }
     const program = programName(head);
     // `eval` / `source` / `.` run a string or file: they are code carriers,
@@ -225,12 +243,13 @@ export function wrapperCommand(argv: readonly (string | undefined)[]): { index: 
     let options = true;
     let shell = grammar.shell;
     let payload: { index: number; text: string | undefined } | undefined;
+    let operandIndex: number | undefined;
     while (index < argv.length) {
       const token = argv[index];
       if (token === undefined) {
         ordinaryAsk ??= payload ? "opaque wrapper argument binding" : "opaque wrapper command binding";
         if (payload) { index += 1; operand = undefined; continue; }
-        return finish(index);
+        return uncertain(index + 1);
       }
       if (options && token === "--") {
         index += 1;
@@ -240,34 +259,37 @@ export function wrapperCommand(argv: readonly (string | undefined)[]): { index: 
       }
       if (options && token === "-" && grammar.flags?.includes(token)) { index += 1; continue; }
       if (options && token.startsWith("-") && token !== "-") {
+        if (grammar.flagPattern?.test(token) && !grammar.values?.includes(token) && !grammar.code?.includes(token)) { index += 1; continue; }
         const long = token.startsWith("--");
         const flags = long ? [token.split("=")[0]!] : [...token.slice(1)].map((letter) => `-${letter}`);
         let width = 1;
         for (const [at, flag] of flags.entries()) {
           if (declared && long && token.includes("=") && !grammar.values?.includes(flag) && !grammar.code?.includes(flag)) {
-            ordinaryAsk ??= "unsupported wrapper option binding";
-            return finish(argv.length);
+            break;
           }
           if ((token === flag && (flag === "--help" || flag === "--version")) || grammar.noCommand?.includes(flag)) return finish(argv.length);
           if (grammar.boundary?.includes(flag)) { options = false; shell = undefined; break; }
           if (grammar.direct?.includes(flag)) operand = undefined;
           const code = grammar.code?.includes(flag);
           if (!code && !grammar.values?.includes(flag)) {
-            if (declared && (!grammar.flags?.includes(flag) || (long && token.includes("=")))) {
+            if (declared && !grammar.flags?.includes(flag)) {
               ordinaryAsk ??= "unsupported wrapper option";
-              return finish(argv.length);
+              // A setup operand is provisional when the remaining grammar is
+              // unknown. Keep it and every later word visible to floor scans.
+              return uncertain(Math.min(operandIndex ?? index + 1, payload?.index ?? index + 1));
             }
             continue;
           }
           const attached = long ? (token.includes("=") ? token.slice(token.indexOf("=") + 1) : undefined)
             : (at + 2 < token.length ? token.slice(at + 2) : undefined);
           const valueIndex = attached === undefined ? index + 1 : index;
+          if (attached === undefined && grammar.alternateFlags?.includes(flag)) inspectTail(Math.min(valueIndex + 1, argv.length));
           const text = attached ?? argv[valueIndex];
           if (text === undefined) ordinaryAsk ??= code ? "opaque wrapper code binding" : "opaque wrapper option binding";
           if (code) {
             if (payload) {
               ordinaryAsk ??= "ambiguous wrapper code binding";
-              return finish(argv.length);
+              return uncertain(payload.index);
             }
             payload = { index: valueIndex, text };
           }
@@ -278,6 +300,7 @@ export function wrapperCommand(argv: readonly (string | undefined)[]): { index: 
         continue;
       }
       if (operand && (operand === true || operand.test(token))) {
+        operandIndex = index;
         index += 1;
         // A native list operand can occupy several structural-parser tokens.
         while (grammar.separator && argv[index] === grammar.separator && argv[index + 1] !== undefined
@@ -299,7 +322,10 @@ export function wrapperCommand(argv: readonly (string | undefined)[]): { index: 
     }
   }
   const next = argv[index];
-  if (index < argv.length && (next === undefined || WRAPPER_SET.has(programName(next)))) ordinaryAsk ??= "wrapper analysis limit exceeded";
+  if (index < argv.length && (next === undefined || WRAPPER_SET.has(programName(next)))) {
+    ordinaryAsk ??= "wrapper analysis limit exceeded";
+    return uncertain(index);
+  }
   return finish(index);
 }
 

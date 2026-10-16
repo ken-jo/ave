@@ -66,7 +66,6 @@ import {
   opaqueRunnerReason,
   wrapperCommand,
   runnerCommandIndexes,
-  wrapperPrefixLength,
 } from "./shell-prefix-policy.js";
 
 const PATH_READERS = new Set([
@@ -164,7 +163,8 @@ interface Context {
 function* commandCandidates(words: readonly ShellWord[]): Generator<{ words: readonly ShellWord[]; name: string }> {
   const argv = words.map(wordText);
   const seen = new Set<string>();
-  for (const index of new Set([wrapperPrefixLength(argv), ...runnerCommandIndexes(argv)])) {
+  const wrapper = wrapperCommand(argv);
+  for (const index of new Set([wrapper.index, ...(wrapper.candidates ?? []), ...runnerCommandIndexes(argv)])) {
     const name = program(argv[index]);
     if (!name || seen.has(name)) continue;
     seen.add(name);
@@ -407,15 +407,16 @@ function senderSignal(cmd: ShellCommand, feeders: readonly ShellCommand[], ctx: 
     if (signal) return signal;
   }
   const argv = cmd.words.map(wordText);
-  const code = wrapperCommand(argv).code?.text;
+  const wrapper = wrapperCommand(argv);
+  const code = wrapper.code?.text;
   if (code !== undefined && ctx.depth < RECURSION_LIMIT) {
     const nested = signalFor(code, { ...ctx, depth: ctx.depth + 1, tainted: new Set(ctx.tainted) });
     if (nested) return nested;
   }
-  if (opaqueRunnerReason(argv) && ctx.depth < RECURSION_LIMIT) {
+  if ((wrapper.candidates || opaqueRunnerReason(argv)) && ctx.depth < RECURSION_LIMIT) {
     // Literal code arguments retain structural sink inspection without
     // interpreting which runner option, if any, binds the argument.
-    for (const word of cmd.words.slice(wrapperPrefixLength(argv) + 1)) {
+    for (const word of cmd.words.slice(wrapper.candidates?.[0] ?? wrapper.index + 1)) {
       const text = wordText(word);
       if (text === undefined || !/[\s;&|<>]/.test(text)) continue;
       const code = text.startsWith("-") && text.includes("=") ? text.slice(text.indexOf("=") + 1) : text;

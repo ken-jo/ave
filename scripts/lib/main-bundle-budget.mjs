@@ -77,26 +77,10 @@ export function isSafeMainBundleManifestPath(path) {
  * provenance remain in the initial registry graph. Measured entry 425_021,
  * initial 5_413_433, total 9_091_289; the ceiling moves from 5_412_000 to
  * 5_415_000 to cover that functionality.
- * The PowerShell shell floors (bounded command analysis, file execution provenance,
- * native launchers, remote output sinks and credential-store rows) are read by the
- * permission manager on every PowerShell call, so they join the initial graph too:
- * entry 423_073, initial 5_470_098, total 9_112_063; the initial ceiling remains 5_475_000.
- * Merged with the browser tools: entry 425_021, initial 5_494_317, total 9_173_400; ceiling 5_495_000.
- * Shared runner argument analysis: entry 425_021, initial 5_498_372, total 9_177_455; ceiling 5_500_000.
- * Runner task-data options: entry 425_021, initial 5_499_048, total 9_178_131; ceiling 5_500_000.
- * Runner option roles and ordinary asks: entry 425_021, initial 5_501_684, total 9_180_767; ceiling 5_505_000.
- * Runner source roles and wrapper asks: entry 425_021, initial 5_503_162, total 9_182_245; ceiling 5_505_000.
- * Package source aliases and implicit file inputs: entry 425_021, initial 5_504_377, total 9_183_460; ceiling 5_505_000.
- * Proven package operands and registry choices: entry 425_021, initial 5_505_213, total 9_184_296; ceiling 5_510_000.
- * Modeled option arity and package operands: entry 425_021, initial 5_505_721, total 9_184_804; ceiling 5_510_000.
- * Opaque runner prefixes and bounded path scans: entry 425_021, initial 5_499_690, total 9_178_773; ceiling 5_500_000.
- * Credential/sender invocation views and declared interpreter roles: entry 425_021, initial 5_506_409, total 9_185_492; ceiling 5_510_000.
- * Shared wrapper command boundaries: entry 425_021, initial 5_508_989, total 9_188_072; ceiling 5_510_000.
- * Wrapper option bindings and shell-joined tails: entry 425_021, initial 5_511_957, total 9_191_040; ceiling 5_515_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_515_000,
+  initialBytes: 5_415_000,
   totalBytes: 11_050_000,
 });
 

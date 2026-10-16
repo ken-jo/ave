@@ -1162,24 +1162,28 @@ function wrappedCommand(cmd: PsCommand, ctx: Context): PsCommand | undefined {
   return length > 0 && target !== undefined ? nativeCommandView(target, args.slice(length)) : undefined;
 }
 
-/** Only sink inspection follows runners; rule visibility retains their full argv. */
-function* invocationViews(cmd: PsCommand, ctx: Context): Generator<PsCommand> {
+/** Uncertain positions widen only floor inspection, never language classification. */
+function* invocationViews(cmd: PsCommand, ctx: Context, floorCandidates = false): Generator<PsCommand> {
   ctx.budget.spend();
   yield cmd;
   const wrapped = wrappedCommand(cmd, ctx);
-  if (wrapped) yield* invocationViews(wrapped, ctx);
+  if (wrapped) yield* invocationViews(wrapped, ctx, floorCandidates);
   const { name, args: original } = headOf(cmd, ctx);
   if (name === undefined) return;
   const args = expandSplats(original, ctx) ?? original;
   const argv = [name, ...nativeArguments(args, ctx)];
+  for (const index of floorCandidates ? wrapperCommand(argv).candidates ?? [] : []) {
+    const target = argv[index];
+    if (target !== undefined) yield* invocationViews(nativeCommandView(target, args.slice(index)), ctx, floorCandidates);
+  }
   const code = runnerCodeContext(argv);
   if (code) {
-    yield* invocationViews(nativeCommandView(code.interpreter, args.slice(code.operandIndex - 1)), ctx);
+    yield* invocationViews(nativeCommandView(code.interpreter, args.slice(code.operandIndex - 1)), ctx, floorCandidates);
     return;
   }
   for (const index of runnerCommandIndexes(argv)) {
     const target = argv[index];
-    if (target !== undefined) yield* invocationViews(nativeCommandView(target, args.slice(index)), ctx);
+    if (target !== undefined) yield* invocationViews(nativeCommandView(target, args.slice(index)), ctx, floorCandidates);
   }
 }
 
@@ -1192,7 +1196,7 @@ function unwrapCommand(cmd: PsCommand, ctx: Context): PsCommand {
 }
 
 function credentialCommandSignal(cmd: PsCommand, ctx: Context): string | null {
-  for (const view of invocationViews(cmd, ctx)) {
+  for (const view of invocationViews(cmd, ctx, true)) {
     const { name, args } = headOf(view, ctx);
     const credential = name === undefined ? undefined : POWERSHELL_COMMAND_POLICIES[name]?.credential;
     if (credential === true || credential?.test(nativeArguments(args, ctx).join(" "))) return `sensitive credential store (${name})`;
@@ -1201,7 +1205,7 @@ function credentialCommandSignal(cmd: PsCommand, ctx: Context): string | null {
 }
 
 function senderSignal(cmd: PsCommand, fedByPipeline: boolean, ctx: Context, fileInput = false): string | null {
-  for (const view of invocationViews(cmd, ctx)) {
+  for (const view of invocationViews(cmd, ctx, true)) {
     const signal = senderCommandSignal(view, fedByPipeline, ctx, fileInput);
     if (signal) return signal;
   }

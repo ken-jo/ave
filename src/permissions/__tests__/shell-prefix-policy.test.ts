@@ -48,9 +48,9 @@ describe("wrapper command boundaries", () => {
     expect(wrapperCommand(["su", "-c", "echo ready", "root", "--future-wrapper"]).ordinaryAsk).toMatch(/unsupported wrapper option/);
   });
 
-  it.each([["wsl", "--exec=other"], ["wsl", "--list=other"], ["su", "--login=other"]])
-    ("retains unsupported option bindings in %j", (...argv) => {
-      expect(wrapperCommand(argv).ordinaryAsk).toMatch(/unsupported wrapper option binding/);
+  it.each([["wsl", "--exec=other"], ["wsl", "--list=other"], ["su", "--login=other"], ["sudo", "--preserve-env=PATH", "make"], ["sudo", "--future=value", "make"]])
+    ("retains self-contained option bindings in %j", (...argv) => {
+      expect(wrapperCommand(argv).ordinaryAsk).toBeUndefined();
     });
 
   it("makes wrapper depth exhaustion ordinary", () => {
@@ -60,11 +60,12 @@ describe("wrapper command boundaries", () => {
   it.each([
     ["xargs"], ["sudo"], ["doas"], ["env"], ["timeout"], ["nice"], ["ionice"], ["watch"], ["stdbuf"],
     ["chrt"], ["flock"], ["taskset"], ["setsid"], ["unbuffer"], ["script"], ["su"], ["runuser"],
-    ["systemd-run"], ["firejail"], ["proot"], ["chroot"], ["wsl"],
+    ["systemd-run"], ["proot"], ["chroot"], ["wsl"],
   ])("makes an unsupported wrapper option ordinary for %s", (wrapper) => {
     const argv = [wrapper, "--future-wrapper", "value", "git", "status"];
     expect(wrapperCommand(argv).ordinaryAsk).toMatch(/unsupported wrapper option/);
     expect(wrapperPrefixLength(argv)).toBe(argv.length);
+    expect(wrapperCommand(argv)).toMatchObject({ candidates: [2, 3, 4] });
     const shape = analyzeShellForRules(argv.join(" "));
     expect(shape).toMatchObject({ ok: true, ordinaryAsk: expect.stringMatching(/unsupported wrapper option/), hidden: [], allowBlockers: [] });
     if (shape.ok) expect(shape.commands[0]?.allowBlockers).toEqual([]);
@@ -72,7 +73,10 @@ describe("wrapper command boundaries", () => {
 
   it.each([
     { argv: ["script", "-t", "0", "/dev/null", "curl"], index: 4 },
-    { argv: ["script", "-F", "session.log", "curl"], index: 3 },
+    { argv: ["script", "-F", "pipe", "/dev/null", "curl"], index: 4 },
+    { argv: ["nice", "-5", "make"], index: 2 },
+    { argv: ["firejail", "--net=none", "firefox"], index: 2 },
+    { argv: ["firejail", "--future-flag", "firefox"], index: 2 },
     { argv: ["systemd-run", "-C", "cap", "curl"], index: 3 },
     { argv: ["systemd-run", "--capsule=cap", "curl"], index: 2 },
     { argv: ["firejail", "--profile", "x", "curl"], index: 3 },
