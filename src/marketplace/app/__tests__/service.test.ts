@@ -167,7 +167,13 @@ describe("MarketplaceService", () => {
     const policy = "check" in load ? load : policySource(load);
     const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = join(root, "marketplaces");
-    const registry = await SourceRegistry.open({ root: marketplaces, policy, now: () => now, ...(official ? { official } : {}) });
+    // Without a stand-in, the official source would be the live public repository,
+    // so a test's outcome would follow whatever it publishes. The default points at
+    // a repository the local fixture server does not have: unreachable, every run.
+    const registry = await SourceRegistry.open({
+      root: marketplaces, policy, now: () => now,
+      official: official ?? { ...OFFICIAL_MARKETPLACE, url: server.url("official-unpublished") },
+    });
     // Exactly as the IPC domain wires them, with counters for the broadcasts.
     const events = marketplaceEvents(shutdown.signal, {
       syncProgress: (item) => {
