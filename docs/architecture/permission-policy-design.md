@@ -531,12 +531,21 @@ project rule stores; another writer's change or a read error revokes authority
 without requiring a cache reload. A changed identity or version rejects
 execution with an error. Rejected authority requires normal authorization again.
 
+Persisted policy mutations in this host and the final execution grant share a
+serial queue: a queued deny is durable before validation can grant the waiting
+child. Final validation and the grant run synchronously. Uncoordinated external
+edits that land after final validation are honoured from the next command.
+
 Permit-bearing shells spawn with the bound physical realpath. On macOS and
 Linux, a host-authored prelude checks the child's physical cwd and device/inode
-before the user command. A mismatch exits with reserved code 197, which the
-host maps to the same revocation error. Native Windows shell routes use the
-physical spawn path but lack a child-side identity check; directory
-rename/replacement after the host check remains a limitation on that platform.
+before the user command, then waits for the host's final policy grant on a
+private pipe. The prelude reports guard failure through that pipe and closes it
+before user code runs. The host maps guard failure to the revocation error;
+ordinary command output and exit status, including 197, remain intact. Native
+Windows shell routes use the physical spawn path but lack a child-side identity
+check; directory rename/replacement after the host check remains a limitation
+on that platform. Their final policy validation and native spawn share the same
+serial queue.
 
 A sandbox that is requested but unavailable (missing `bwrap` or `socat`, or a
 start failure) is not a one-shot route. The shell runs as a plain child under

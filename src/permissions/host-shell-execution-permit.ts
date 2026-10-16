@@ -22,10 +22,12 @@ import {
 import {
   consumeIssuedShellAllowRuleDecision,
   isShellAllowRuleAuthorizationCurrent,
+  isShellAllowRulePolicyCurrent,
   type PermissionCheckResult,
   type PermissionManager,
   type ShellAllowRuleAuthorization,
 } from "./permission-manager.js";
+import { withShellPolicyHandoff, type ShellPolicyHandoff } from "./shell-policy-handoff.js";
 
 export type HostShellToolName = "bash" | "powershell";
 
@@ -70,6 +72,7 @@ export interface HostShellSpawnAuthorization {
 }
 
 const permits = new WeakMap<HostShellExecutionPermit, PermitRecord>();
+const pendingHandoffs = new WeakMap<HostShellSpawnAuthorization, PermitRecord>();
 
 // Preserve the permit module's public API while moving the runtime parser to a
 // neutral dependency shared with ApprovalGate.
@@ -214,7 +217,7 @@ export function consumeHostShellExecutionPermitForSpawn(input: {
   const record = permits.get(input.permit);
   if (record === undefined) return undefined;
   permits.delete(input.permit);
-  return (
+  const valid = (
     (record.allowRuleAuthorization === undefined || isShellAllowRuleAuthorizationCurrent(record.allowRuleAuthorization)) &&
     matchesShellWorkingDirectoryIdentity(record.resolvedCwd, record.cwdIdentity) &&
     record.plan === input.plan &&
@@ -233,7 +236,30 @@ export function consumeHostShellExecutionPermitForSpawn(input: {
     record.allowedDirectories.every(
       (directory, index) => directory === input.allowedDirectories[index],
     )
-  ) ? Object.freeze({ cwdIdentity: record.cwdIdentity }) : undefined;
+  );
+  if (!valid) return undefined;
+  const authorization = Object.freeze({ cwdIdentity: record.cwdIdentity });
+  pendingHandoffs.set(authorization, record);
+  return authorization;
+}
+
+/** Burn the spawn authority again at the final, serialized execution handoff. */
+export function withHostShellExecutionHandoff<T>(
+  authorization: HostShellSpawnAuthorization,
+  handoff: ShellPolicyHandoff<T>,
+): Promise<T | undefined> {
+  const record = pendingHandoffs.get(authorization);
+  pendingHandoffs.delete(authorization);
+  return withShellPolicyHandoff(() => {
+    if (record === undefined ||
+      (record.allowRuleAuthorization !== undefined && !isShellAllowRulePolicyCurrent(record.allowRuleAuthorization)) ||
+      !matchesShellWorkingDirectoryIdentity(record.cwdIdentity.realpath, record.cwdIdentity)) return undefined;
+    // This host's persisted policy mutations share this queue. Uncoordinated
+    // external edits after this final validation apply from the next command.
+    // The synchronous handoff grants the waiting child (or spawns it on platforms
+    // without a child guard); it must never await between validation and grant.
+    return handoff();
+  });
 }
 
 export function consumeHostShellExecutionPermit(

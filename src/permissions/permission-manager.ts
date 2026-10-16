@@ -513,12 +513,18 @@ export interface ShellAllowRuleAuthorization extends ShellAllowRuleSubject {
   readonly persistedPolicyVersions: readonly PersistedPolicyVersion[];
 }
 
+export function isShellAllowRulePolicyCurrent(
+  authorization: ShellAllowRuleAuthorization,
+): boolean {
+  return authorization.issuer.getPolicyEpoch() === authorization.policyEpoch &&
+    authorization.persistedPolicyVersions.every(isPersistedPolicyVersionCurrent);
+}
+
 /** Remains live only under the issuing manager's policy and physical directory. */
 export function isShellAllowRuleAuthorizationCurrent(
   authorization: ShellAllowRuleAuthorization,
 ): boolean {
-  return authorization.issuer.getPolicyEpoch() === authorization.policyEpoch &&
-    authorization.persistedPolicyVersions.every(isPersistedPolicyVersionCurrent) &&
+  return isShellAllowRulePolicyCurrent(authorization) &&
     matchesShellWorkingDirectoryIdentity(authorization.cwd, authorization.cwdIdentity);
 }
 

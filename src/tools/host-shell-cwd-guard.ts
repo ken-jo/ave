@@ -3,7 +3,7 @@ import { shellQuote } from "../lib/shell-resolver.js";
 
 export const HOST_SHELL_CWD_REVOKED_EXIT_CODE = 197;
 
-/** Host-authored prelude: inspect the child's inherited cwd before any user command. */
+/** Inspect the inherited cwd, then await the host's final policy grant on fd 3. */
 export function hostShellWorkingDirectoryPrelude(
   identity: ShellWorkingDirectoryIdentity,
   dialect: "bash" | "powershell",
@@ -20,12 +20,22 @@ export function hostShellWorkingDirectoryPrelude(
     // A suffix preserves trailing newlines that command substitution would strip.
     return `if [ "$(/bin/pwd -P; printf .)" != ${shellQuote(identity.realpath + "\n.")} ] || ` +
       `[ "$(/usr/bin/stat ${statArgs.map(shellQuote).join(" ")} 2>/dev/null)" != ${shellQuote(expected)} ]; ` +
-      `then exit ${HOST_SHELL_CWD_REVOKED_EXIT_CODE}; fi; `;
+      `then printf C >&3; exec 3>&- 3<&-; exit ${HOST_SHELL_CWD_REVOKED_EXIT_CODE}; fi; ` +
+      `if ! printf R >&3; then exec 3>&- 3<&-; exit ${HOST_SHELL_CWD_REVOKED_EXIT_CODE}; fi; ` +
+      `IFS= read -r -n 1 aveHostHandoff <&3; exec 3>&- 3<&-; ` +
+      `if [ "$aveHostHandoff" != G ]; then unset aveHostHandoff; exit ${HOST_SHELL_CWD_REVOKED_EXIT_CODE}; fi; ` +
+      `unset aveHostHandoff; `;
   }
   const quote = (value: string): string => `'${value.replace(/'/g, "''")}'`;
-  return `try { $aveCwdPath = [System.IO.Directory]::GetCurrentDirectory() } catch { exit ${HOST_SHELL_CWD_REVOKED_EXIT_CODE} }; ` +
+  return `$aveHostControl = $null; try { ` +
+    `$aveHostHandle = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new([IntPtr]3, $true); ` +
+    `$aveHostControl = [System.IO.FileStream]::new($aveHostHandle, [System.IO.FileAccess]::ReadWrite, 1, $false); ` +
+    `$aveCwdPath = [System.IO.Directory]::GetCurrentDirectory(); ` +
     `$aveCwdIdentity = & /usr/bin/stat ${statArgs.map(quote).join(" ")}; ` +
     `if ($LASTEXITCODE -ne 0 -or $aveCwdPath -cne ${quote(identity.realpath)} -or ` +
-    `$aveCwdIdentity -cne ${quote(expected)}) { exit ${HOST_SHELL_CWD_REVOKED_EXIT_CODE} }; ` +
-    `Remove-Variable aveCwdPath, aveCwdIdentity; `;
+    `$aveCwdIdentity -cne ${quote(expected)}) { $aveHostControl.WriteByte(67); $aveHostControl.Flush(); exit ${HOST_SHELL_CWD_REVOKED_EXIT_CODE} }; ` +
+    `$aveHostControl.WriteByte(82); $aveHostControl.Flush(); $aveHostGrant = $aveHostControl.ReadByte() ` +
+    `} catch { exit ${HOST_SHELL_CWD_REVOKED_EXIT_CODE} } finally { if ($null -ne $aveHostControl) { $aveHostControl.Dispose() } }; ` +
+    `if ($aveHostGrant -ne 71) { exit ${HOST_SHELL_CWD_REVOKED_EXIT_CODE} }; ` +
+    `Remove-Variable aveHostControl, aveHostHandle, aveHostGrant, aveCwdPath, aveCwdIdentity; `;
 }

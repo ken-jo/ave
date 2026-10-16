@@ -9,9 +9,12 @@ import {
   type ApprovalRequest,
 } from "../approval-gate.js";
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { updatePermissionsFile } from "../permissions-store.js";
 import {
   consumeHostShellExecutionPermit,
+  consumeHostShellExecutionPermitForSpawn,
   mintHostShellExecutionPermit,
+  withHostShellExecutionHandoff,
   type HostShellExecutionPermitBinding,
 } from "../host-shell-execution-permit.js";
 import {
@@ -340,6 +343,86 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     expect(mintHostShellExecutionPermit({
       plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
     })).toBeUndefined();
+  });
+
+  it("only grants a consumed spawn authority once and rejects a structural copy", async () => {
+    const binding = hostBinding();
+    const permit = mintHostShellExecutionPermit({
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+    });
+    const authority = consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))!;
+    expect(authority).toBeDefined();
+    const handoff = vi.fn(() => true);
+    expect(await withHostShellExecutionHandoff({ ...authority }, handoff)).toBeUndefined();
+    expect(handoff).not.toHaveBeenCalled();
+    expect(await withHostShellExecutionHandoff(authority, handoff)).toBe(true);
+    expect(await withHostShellExecutionHandoff(authority, handoff)).toBeUndefined();
+    expect(handoff).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["project", "user"] as const)("waits for a queued %s deny before the final grant", async (scope) => {
+    const binding = hostBinding();
+    const permit = mintHostShellExecutionPermit({
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+    });
+    const authority = consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))!;
+    expect(authority).toBeDefined();
+    const writer = new PermissionManager(join(directory, "permissions.json"));
+    const persisted = writer.addRulePersist({ pattern: "Bash(echo *)", action: "deny" }, scope === "project"
+      ? { kind: "project", projectCwd: binding.resolvedCwd } : { kind: "user" });
+    const handoff = vi.fn(() => true);
+    expect(await withHostShellExecutionHandoff(authority, handoff)).toBeUndefined();
+    await persisted;
+    expect(handoff).not.toHaveBeenCalled();
+  });
+
+  it("does not grant execution while an in-process policy mutation is still writing", async () => {
+    const binding = hostBinding();
+    await pm.addRulePersist({ pattern: "Bash(echo *)", action: "allow" }, { kind: "user" });
+    const permit = mintHostShellExecutionPermit({
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+    });
+    const authority = consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))!;
+    expect(authority).toBeDefined();
+    let resume!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>((resolve) => { resume = resolve; });
+    const writing = new Promise<void>((resolve) => { entered = resolve; });
+    const persisted = updatePermissionsFile(join(directory, "permissions.json"), async (file) => {
+      file.rules.unshift({ pattern: "Bash(echo *)", action: "deny" });
+      entered();
+      await blocked;
+    });
+    await writing;
+    const handoff = vi.fn(() => true);
+    const granted = withHostShellExecutionHandoff(authority, handoff);
+    try {
+      await Promise.resolve();
+      expect(handoff).not.toHaveBeenCalled();
+    } finally { resume(); }
+    await persisted;
+    expect(await granted).toBeUndefined();
+    expect(handoff).not.toHaveBeenCalled();
+  });
+
+  it("honours an uncoordinated edit after final validation from the next execution handoff", async () => {
+    const binding = hostBinding();
+    const prepare = () => consumeHostShellExecutionPermitForSpawn(permitInput(binding, mintHostShellExecutionPermit({
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+    })))!;
+    const current = prepare();
+    const next = prepare();
+    expect(current).toBeDefined();
+    expect(next).toBeDefined();
+    expect(await withHostShellExecutionHandoff(current, () => {
+      writeFileSync(join(directory, "permissions.json"), JSON.stringify({
+        version: 1, rules: [{ pattern: "Bash(echo *)", action: "deny" }], mode: "default", updatedAt: new Date().toISOString(),
+      }));
+      return true;
+    })).toBe(true);
+    const handoff = vi.fn(() => true);
+    expect(await withHostShellExecutionHandoff(next, handoff)).toBeUndefined();
+    expect(handoff).not.toHaveBeenCalled();
   });
 
   it("burns a decision presented to another permission manager", () => {
