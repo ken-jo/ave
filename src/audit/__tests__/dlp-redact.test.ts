@@ -14,6 +14,7 @@ import {
   scrubSecretsForLLM,
 } from "../dlp-filter.js";
 import { CREDENTIAL_FORMAT_PREFIXES, holdsCredential, reservedPrefixIn, scrubDiagnosticSecrets, scrubDiagnosticSecretsStrict, type CredentialIssuer } from "../../shared/dlp.js";
+import { linearGrowthBound, measureCpuGrowth } from "../../__tests__/support/cpu-growth.js";
 import { fixtureSecret } from "./secret-fixtures.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
 
@@ -929,42 +930,14 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
   });
 
   it("scrubs 64 KiB of adversarial text in linear time", () => {
-    // Each family is scrubbed at 4 KiB and at 64 KiB, and the growth is judged, not a wall-clock bound: linear work
-    // grows sixteenfold over the sixteenfold input, quadratic work 256-fold, and backtracking far more. The time is the
-    // thread's CPU time, which a loaded host does not charge while the thread waits to run: on wall time a long pass is
-    // preempted in proportion to the load while a short one fits a time slice, and linear code then read as 270-fold
-    // growth at a load of 28.
+    // Each family is scrubbed at 4 KiB and at 64 KiB, and the growth is judged in CPU time, not a wall-clock bound:
+    // linear work grows sixteenfold over the sixteenfold input, quadratic work 256-fold, and backtracking far more.
     const SMALL = 4 * 1024;
     const LARGE = 16 * SMALL;
     // The geometric mean of linear (16) and quadratic (256) growth: four times either way.
-    const MAX_GROWTH = 64;
-    // A 64 KiB pass under this is fast whatever its growth: a ratio between runs of a few hundred microseconds
-    // measures timer and JIT noise. The quadratic key regex took seconds here.
-    const FAST_ENOUGH_MS = 5;
-    // Linux charges a thread's CPU time in whole scheduler ticks (4 ms at 250 Hz), so a single 4 KiB pass reads
-    // 0 ms and the ratio becomes Infinity. The 4 KiB pass is therefore repeated until the sample has spent at least
-    // this long and read as a per-pass mean, so a tick is a small fraction of it.
-    const MIN_SAMPLE_MS = 20;
-    const timed = (scrub: (text: string) => string, input: string, minSampleMs: number) => {
-      const started = process.threadCpuUsage();
-      let passes = 0;
-      let spentMs = 0;
-      do {
-        scrub(input);
-        passes += 1;
-        const spent = process.threadCpuUsage(started);
-        spentMs = (spent.user + spent.system) / 1000;
-      } while (spentMs < minSampleMs);
-      return spentMs / passes;
-    };
-    const fastestPair = (scrub: (text: string) => string, smallInput: string, largeInput: string) => {
-      // The fastest of five single 64 KiB passes, so a collection or a migration to a slower core that lands on one
-      // is dropped; one reading under FAST_ENOUGH_MS already settles that the family is fast, and nothing else is read.
-      let largeMs = Number.POSITIVE_INFINITY;
-      for (let run = 0; run < 5 && largeMs >= FAST_ENOUGH_MS; run++) largeMs = Math.min(largeMs, timed(scrub, largeInput, 0));
-      if (largeMs < FAST_ENOUGH_MS) return { smallMs: Number.NaN, largeMs };
-      return { smallMs: timed(scrub, smallInput, MIN_SAMPLE_MS), largeMs };
-    };
+    const MAX_GROWTH = linearGrowthBound(LARGE / SMALL);
+    // The quadratic key regex took seconds here; a 64 KiB pass under 5 ms is fast whatever its growth.
+    const growthOptions = { fastEnoughMs: 5, minSampleMs: 20 };
     const familiesAt = (size: number) => {
       const fill = (unit: string, tail = "") => unit.repeat(Math.ceil(size / unit.length)).slice(0, size - tail.length) + tail;
       return [
@@ -996,9 +969,9 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     expect(large.map((input) => input.length)).toEqual(small.map((input) => input.length - SMALL + LARGE));
     for (const [index, input] of large.entries()) {
       for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {
-        const { smallMs, largeMs } = fastestPair(scrub, small[index], input);
-        if (largeMs < FAST_ENOUGH_MS) continue;
-        expect(largeMs / smallMs, `${input.slice(0, 24)}: ${smallMs.toFixed(1)} ms at 4 KiB, ${largeMs.toFixed(1)} ms at 64 KiB`).toBeLessThan(MAX_GROWTH);
+        const { smallMs, largeMs, growth } = measureCpuGrowth(() => scrub(small[index]), () => scrub(input), growthOptions);
+        if (growth === undefined) continue;
+        expect(growth,`${input.slice(0, 24)}: ${smallMs.toFixed(1)} ms at 4 KiB, ${largeMs.toFixed(1)} ms at 64 KiB`).toBeLessThan(MAX_GROWTH);
       }
     }
     // The judgement reads CPU time, so load cannot move it; the wall time spent collecting that CPU time can. On the
