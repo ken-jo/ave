@@ -1005,6 +1005,9 @@ describe("pre-push message catalog selection", () => {
     expect(selection.reason).toMatch(/unresolved dynamic message consumer; full checks required$/);
     expect(selection.testFiles).toBeUndefined();
     expect(selection.consumerModules).toBeUndefined();
+    // Parses every tracked src/test module (~3,200) through the TS7 compiler
+    // service, as the hook does on a real push: about 2s locally, several times
+    // that on a loaded CI runner.
   }, 30_000);
 
   it("keeps a shell execution wording change on full checks when its approval surface uses dynamic keys", () => {
