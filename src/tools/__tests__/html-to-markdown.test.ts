@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { linearGrowthBound, measureCpuGrowth } from "../../__tests__/support/cpu-growth.js";
 import { decodeHtmlEntities, htmlToMarkdown } from "../html-to-markdown.js";
 
 const md = (html: string, base = "https://example.test/dir/page.html") => htmlToMarkdown(html, base).markdown;
@@ -49,12 +50,20 @@ describe("htmlToMarkdown", () => {
   });
 
   it("stays linear on tags that never close", () => {
+    // The growth of CPU time from 37.5 KB to 600 KB is judged, not a wall-clock cap that a loaded runner can breach.
+    const SMALL = 37_500;
+    const LARGE = 16 * SMALL;
+    const MAX_GROWTH = linearGrowthBound(LARGE / SMALL);
     for (const unit of ["<a ", "<a \"", "<a '\"<b ", "<a\t"]) {
-      const html = unit.repeat(Math.ceil(600_000 / unit.length));
-      const started = performance.now();
-      const result = htmlToMarkdown(html);
-      expect(performance.now() - started).toBeLessThan(1_500);
-      expect(result.markdown.length).toBeGreaterThan(0);
+      const small = unit.repeat(Math.ceil(SMALL / unit.length));
+      const html = unit.repeat(Math.ceil(LARGE / unit.length));
+      expect(htmlToMarkdown(html).markdown.length).toBeGreaterThan(0);
+      const { smallMs, largeMs, growth } = measureCpuGrowth(() => htmlToMarkdown(small), () => htmlToMarkdown(html), {
+        fastEnoughMs: 5,
+        minSampleMs: 20,
+      });
+      if (growth === undefined) continue;
+      expect(growth, `${JSON.stringify(unit)}: ${smallMs.toFixed(1)} ms at ${SMALL}, ${largeMs.toFixed(1)} ms at ${LARGE}`).toBeLessThan(MAX_GROWTH);
     }
   });
 
