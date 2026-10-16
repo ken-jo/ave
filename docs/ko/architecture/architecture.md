@@ -3998,7 +3998,7 @@ graph TB
 
     subgraph "Plugin Development Kit PDK"
         SDK["Ave Plugin SDK"]
-        CLI_TOOL["plugin-cli<br/>(scaffold·build·test·publish)"]
+        CLI_TOOL["Plugin CLI (계획, 미구현)<br/>(scaffold·build·test·publish)"]
         TEMPLATE["Project Templates"]
         SANDBOX["Sandbox Environment"]
         DOC["API Reference + 구축 스펙"]
@@ -4022,7 +4022,7 @@ flowchart LR
     subgraph "사업부 플러그인 구축 프로세스"
         direction TB
         S1["1. 스펙 확인<br/>(Plugin Spec Registry 참고)"]
-        S2["2. Scaffold<br/>(plugin-cli init)"]
+        S2["2. Scaffold<br/>(templates/extension/ 에서 시작)"]
         S3["3. API Connector 구현<br/>(사업부 시스템 REST/gRPC)"]
         S4["4. Skill 정의<br/>(트리거 키워드 + 실행 로직)"]
         S5["5. UI 컴포넌트<br/>(React, Slot 기반 — 선택)"]

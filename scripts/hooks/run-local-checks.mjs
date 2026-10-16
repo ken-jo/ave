@@ -1000,6 +1000,13 @@ function getFastSourceRelatedSelection(dir, relatedFiles) {
   });
 }
 
+// The former-name gate scans the tracked tree in well under a second, so every
+// pre-push tier runs it; the full tier gets it through `check:gate-core`.
+function runLegacyProductNameGate(repoRoot) {
+  run(commands.node, ["--test", "test/scripts/legacy-product-name.test.mjs"], repoRoot);
+  run(commands.node, ["scripts/check-legacy-product-name.mjs"], repoRoot);
+}
+
 function runAppCommentOnlyChecks(dir) {
   runAppTypecheckGate(dir, "comment-only checks");
 }
@@ -1056,8 +1063,7 @@ if (stage === "pre-commit") {
     checkPushedDocumentation(repoRoot, classification.pushedEntries);
     run(commands.node, ["--test", "test/scripts/check-asrt-version-claims.test.mjs"], repoRoot);
     run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot);
-    run(commands.node, ["--test", "test/scripts/legacy-product-name.test.mjs"], repoRoot);
-    run(commands.node, ["scripts/check-legacy-product-name.mjs"], repoRoot);
+    runLegacyProductNameGate(repoRoot);
     console.log(
       `[checks] tier=docs-only pre-push: skipping lint/typecheck/test/build (${classification.reason})`
     );
@@ -1065,6 +1071,7 @@ if (stage === "pre-commit") {
     console.log(
       `[checks] tier=comment-only pre-push: running typecheck; skipping full test/build (${classification.reason})`
     );
+    runLegacyProductNameGate(repoRoot);
     runAppCommentOnlyChecks(repoRoot);
   } else if (classification.testOnly) {
     const testCodeFileCount =
@@ -1074,6 +1081,7 @@ if (stage === "pre-commit") {
         `${testCodeFileCount} targeted Vitest code file(s); skipping full test/build ` +
         `(${classification.reason})`
     );
+    runLegacyProductNameGate(repoRoot);
     runAppTargetedVitestChecks(
       repoRoot,
       classification.testFiles,
@@ -1102,9 +1110,8 @@ if (stage === "pre-commit") {
       checkPushedDocumentation(repoRoot, classification.documentationEntries);
       run(commands.node, ["--test", "test/scripts/check-asrt-version-claims.test.mjs"], repoRoot);
       run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot);
-      run(commands.node, ["--test", "test/scripts/legacy-product-name.test.mjs"], repoRoot);
-      run(commands.node, ["scripts/check-legacy-product-name.mjs"], repoRoot);
     }
+    runLegacyProductNameGate(repoRoot);
     runAppFastSourceChecks(
       repoRoot,
       lockSuites.map(({ suite }) => suite),

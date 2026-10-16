@@ -1,6 +1,6 @@
 # Extensions and plugins
 
-Plugin names such as `mail`, `portal`, `assistant` and `repo` in this
+Plugin names such as `mail`, `portal` and `assistant` in this
 record are generic stand-ins for plugins that are no longer part of this project.
 
 **Current contract.** The app is Ave and serves host protocol `"3"` only, the `ave/*`

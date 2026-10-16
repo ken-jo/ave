@@ -105,7 +105,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
   it("classifies an installed legacy reverse-DNS pathFields `_meta` manifest as reinstall-fixable (fail-closed → Doctor-repairable)", async () => {
     // The load-bearing safety-net test for the `_meta` vendor-namespace rename.
     // An installed plugin whose on-disk manifest still carries the removed legacy
-    // key `${LEGACY_META_PREFIX}pathFields` must FAIL to load (fail-closed — the schema's
+    // reverse-DNS `pathFields` key (`LEGACY_META_PREFIX`) must FAIL to load (fail-closed — the schema's
     // `_meta` is additionalProperties:false, so the key is rejected, never silently
     // accepted-but-ungated), and that failure must classify as the reinstall-fixable
     // `manifest-validation-error` kind so the Plugin Doctor auto-repairs it by

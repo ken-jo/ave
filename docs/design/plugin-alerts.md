@@ -1,6 +1,6 @@
 # Plugin alerts — a host delivery contract, declared per kind
 
-Plugin names such as `mail`, `portal`, `assistant` and `repo` in this
+Plugin names such as `mail`, `portal` and `assistant` in this
 record are generic stand-ins for plugins that are no longer part of this project.
 
 The code packages described here are called extensions in user-facing copy.

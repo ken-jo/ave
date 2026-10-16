@@ -407,7 +407,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
   });
 
     it("REJECTS a tool _meta carrying the legacy reverse-DNS pathFields key (fail-closed — the dual-read was removed)", async () => {
-    // The `_meta` vendor namespace rename (`LEGACY_META_PREFIX* → ave/*`) removed the
+    // The `_meta` vendor namespace rename (`LEGACY_META_PREFIX` keys → `ave/*`) removed the
     // transitional dual-read AND the schema's legacy property. Because tool `_meta`
     // is `additionalProperties:false`, a manifest still declaring the legacy key is
     // now REJECTED at the load-time schema gate — it is NOT silently accepted with

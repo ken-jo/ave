@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { LLM_VENDOR_MODEL_OPTIONS } from "../../../shared/llm-vendor-defaults.js";
-import { LEGACY_ENV_PREFIX } from "../../../shared/legacy-product-name.js";
 import { JudgeCircuitBreaker } from "../judge-breaker.js";
 import { createJudgeChain, type CreateJudgeDeps } from "../create-judge.js";
 import {
@@ -192,7 +191,7 @@ describe("external stage env", () => {
       env: ["JEV_MODEL"],
     });
     expect(() => validateJudgeSettings(stage({ command: ["/opt/jev/bin/jev"], env: ["BAD-NAME"] }))).toThrow(JudgeSettingsError);
-    for (const name of ["AVE_HOME", "OPENAI_API_KEY", "MY_SERVICE_TOKEN", "DB_PASSWORD", "APP_SECRET", "AWS_PROFILE", "GITHUB_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_ORG", `${LEGACY_ENV_PREFIX}HOME`, "ELECTRON_RUN_AS_NODE"]) {
+    for (const name of ["AVE_HOME", "OPENAI_API_KEY", "MY_SERVICE_TOKEN", "DB_PASSWORD", "APP_SECRET", "AWS_PROFILE", "GITHUB_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_ORG", "RETIREDNAME_HOME", "ELECTRON_RUN_AS_NODE"]) {
       expect(() => validateJudgeSettings(stage({ command: ["/opt/jev/bin/jev"], env: [name] }))).toThrow(/credential/);
     }
     expect(() => validateJudgeSettings(stage({ url: "https://judge.example.test/", env: ["X"] }))).toThrow(/command transport/);

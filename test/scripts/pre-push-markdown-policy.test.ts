@@ -124,8 +124,10 @@ describe("documentation impact policy", () => {
     const trackedSet = new Set(tracked);
     const packaged = new Set(packagedDocumentInputs(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")), root));
     // The hook's own policy suites name documents as fixtures, not reads. The
-    // legacy-name gate names its allowlisted paths, and it runs on every
-    // documentation change in every tier, so it needs no reader entry.
+    // former-name gate names its allowlisted paths (web/DEPLOY.md among them)
+    // as exemptions, and it scans the whole tracked tree in every pre-push tier
+    // and in CI, so a change to one of those documents is checked whatever
+    // reader set the document records; the gate needs no reader entry.
     const codeFiles = tracked.filter((file) => /^(?:src|test|scripts|config)\//.test(file) && /\.(?:[cm]?[jt]sx?|json)$/.test(file) &&
       file !== "scripts/hooks/documentation-references.json" && file !== "scripts/check-legacy-product-name.mjs" &&
       !/^test\/scripts\/pre-push-[^/]+\.test\.ts$/.test(file));
@@ -367,6 +369,19 @@ describe("documentation impact policy", () => {
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
+  });
+
+  it("runs the former-name gate in every pre-push tier and in gate-core", () => {
+    const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
+    const dispatch = hook.slice(hook.indexOf("if (classification.alreadyOnRemote)"));
+    for (const tier of ["classification.docsOnly", "classification.commentOnly", "classification.testOnly", "classification.fastSource"]) {
+      const start = dispatch.indexOf(`} else if (${tier}) {`);
+      expect(start, tier).toBeGreaterThan(0);
+      const branch = dispatch.slice(start + 1, dispatch.indexOf("} else", start + 1));
+      expect(branch, tier).toContain("runLegacyProductNameGate(repoRoot);");
+    }
+    const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as { scripts: Record<string, string> };
+    expect(manifest.scripts["check:gate-core"]).toContain("check:legacy-product-name");
   });
 
   it("keeps push safety checks ahead of the shared documentation policy", () => {

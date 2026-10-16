@@ -1,6 +1,6 @@
 # Memory Governance P1 — Long-term Memory Consolidation
 
-> Historical record: written under the app's former name (see `src/shared/legacy-product-name.ts`); names and paths below are given as Ave's (data folder `~/.ave`, environment variables `AVE_*`).
+> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
 
 ## Decision
 
