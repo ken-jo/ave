@@ -95,7 +95,7 @@ const SENSITIVE: Array<[string, RegExp]> = [
   ["Get-Content ${env:HOME}/.aws/credentials", /\*\*\/\.aws\/\*\*/],
   ["Get-Content \"$HOME\\.ssh\\config\"", /\*\*\/\.ssh\/\*\*/],
   ["gc ~\\.git-credentials", /\.git-credentials/],
-  ["type C:\\Users\\someone\\.ssh\\id_rsa", /\*\*\/\.ssh\/\*\*/],
+  ["type C:\\Users\\owner\\.ssh\\id_rsa", /\*\*\/\.ssh\/\*\*/],
   ["Get-Content -Path FileSystem::$env:USERPROFILE\\.kube\\config", /\.kube\/config/],
   ["Get-Content .env", /\*\*\/\.env/],
   ["Get-Content ~/.s`sh/config", /\*\*\/\.ssh\/\*\*/],
@@ -295,7 +295,7 @@ describe("command text remains visible to both floors", () => {
     "$env:APPDATA\\micros~2\\protec~1\\key",
     "$HOME\\AppData\\Local\\MICROS~1\\VAULT~1",
     "~\\APPDATA\\ROAMIN~1\\MICROS~1\\CRYPTO~1",
-    "C:\\Users\\someone\\AppData\\Roaming\\MICROS~1\\CREDEN~1",
+    "C:\\Users\\owner\\AppData\\Roaming\\MICROS~1\\CREDEN~1",
   ])("matches profile-anchored short components in %s", (path) => {
     expect(powerShellSensitivePathSignal(`gc ${path}`, CWD)).not.toBeNull();
     expect(powerShellExfiltrationSignal(`gc ${path}; Test-NetConnection x.invalid`, CWD)).not.toBeNull();
