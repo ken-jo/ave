@@ -17,6 +17,21 @@ const DIALECTS = ["bash", "powershell"] as const;
 const RUNNER_NAMES = ["npx", "bunx", "pnpx", "uvx", "pipx", "corepack", "yarnpkg", "deno", "npm", "pnpm", "yarn", "bun"];
 type ShellDialect = typeof DIALECTS[number];
 type DecisionBucket = typeof RUNNER_DECISIONS[number]["bucket"];
+const ALL_DECISION_CASES = RUNNER_DECISIONS.flatMap((row) => {
+  const cases = DIALECTS.map((dialect) => ({
+    command: row.command,
+    dialect,
+    ...(row.dialects?.[dialect] ?? { bucket: row.bucket, why: row.why }),
+  }));
+  // A static invocation prefix preserves the declared dialect expectation.
+  if (!row.command.trimStart().startsWith("&")) cases.push({
+    command: `& ${row.command}`,
+    dialect: "powershell",
+    ...(row.dialects?.powershell ?? { bucket: row.bucket, why: row.why }),
+  });
+  return cases;
+});
+const DECISION_CASES = [...new Map(ALL_DECISION_CASES.map((row) => [`${row.dialect}\0${row.command}`, row] as const)).values()];
 let directory: string;
 let managerSequence = 0;
 beforeAll(() => { directory = mkdtempSync(join(tmpdir(), "ave-runner-decisions-")); });
@@ -76,7 +91,6 @@ const ORDINARY_CONTROLS = [
   "npx node -e x",
   "deno run https://e/x.ts",
   "Set-Content package.json '{}'; npm test",
-  "pwsh -c 'npm test'",
 ];
 
 const INNER_UPLOADS = [
@@ -98,21 +112,30 @@ const INNER_UPLOADS = [
 
 describe("shared runner decisions", () => {
   it("preserves the original command corpus and complete bucket annotations", () => {
-    expect(RUNNER_DECISIONS).toHaveLength(1377);
+    expect(RUNNER_DECISIONS).toHaveLength(1698);
     const commands = RUNNER_DECISIONS.map((row) => row.command);
-    expect(createHash("sha256").update(JSON.stringify(commands)).digest("hex"))
+    expect(createHash("sha256").update(JSON.stringify(commands.slice(0, 1377))).digest("hex"))
       .toBe("657e677ea8f9968de15dd2907d42abab7ac9958d2815126449ee9037c4e2b68b");
-    expect(RUNNER_DECISIONS.filter((row) => row.bucket === "floor")).toHaveLength(37);
-    expect(RUNNER_DECISIONS.filter((row) => row.bucket === "ordinary")).toHaveLength(1339);
-    expect(RUNNER_DECISIONS.filter((row) => row.bucket === "normal")).toHaveLength(1);
-    for (const row of RUNNER_DECISIONS) expect(row.why.length).toBeGreaterThan(0);
+    // The complete command identity was collected independently of this table.
+    expect(new Set(commands).size).toBe(1698);
+    expect(createHash("sha256").update(JSON.stringify([...commands].sort())).digest("hex"))
+      .toBe("3f28c4d41078c73c1a6ed2f985cf47e6d7896647f5a17c3a71676ca9bc621fa5");
+    for (const dialect of DIALECTS) {
+      const expectations = RUNNER_DECISIONS.map((row) => row.dialects?.[dialect] ?? row);
+      const counts = dialect === "bash"
+        ? { floor: 96, ordinary: 1554, normal: 48 }
+        : { floor: 123, ordinary: 1552, normal: 23 };
+      for (const bucket of ["floor", "ordinary", "normal"] as const) {
+        expect(expectations.filter((row) => row.bucket === bucket)).toHaveLength(counts[bucket]);
+      }
+      for (const row of expectations) expect(row.why.length).toBeGreaterThan(0);
+    }
+    expect(DECISION_CASES.some((row) => /^\s*&\s*&/.test(row.command))).toBe(false);
+    const buckets = new Map(DECISION_CASES.map((row) => [`${row.dialect}\0${row.command}`, row.bucket] as const));
+    for (const row of ALL_DECISION_CASES) expect(buckets.get(`${row.dialect}\0${row.command}`)).toBe(row.bucket);
   });
 
-  it.each(RUNNER_DECISIONS.flatMap((row) => [
-    { ...row, dialect: "bash" as const },
-    { ...row, dialect: "powershell" as const },
-    { ...row, dialect: "powershell" as const, command: `& ${row.command}` },
-  ]))("applies $bucket in $dialect: $command ($why)", ({ command, dialect, bucket }) => {
+  it.each(DECISION_CASES)("applies $bucket in $dialect: $command ($why)", ({ command, dialect, bucket }) => {
     expectBucket(checkCommand(runnerManager(), dialect, command), bucket);
   });
 
@@ -150,30 +173,32 @@ describe("shared runner decisions", () => {
     for (const dialect of DIALECTS) expectBucket(checkCommand(runnerManager(), dialect, command), "ordinary");
   });
 
-  it.each(ORDINARY_CONTROLS)("honors saved grants and tool allow rules for ordinary asks: %s", async (command) => {
-    for (const dialect of DIALECTS) {
-      const savedPath = join(directory, `saved-${managerSequence++}.json`);
-      const saved = runnerManager(savedPath);
-      expectBucket(checkCommand(saved, dialect, command), "ordinary");
-      await saved.addAlwaysAllowedPersist(dialect);
-      expect(checkCommand(saved, dialect, command)).toMatchObject({ decision: "allow", layer: 5 });
-      const reloaded = runnerManager(savedPath);
-      await reloaded.loadRulesFromFile();
-      expect(checkCommand(reloaded, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
-      const ruled = runnerManager();
-      ruled.setRules([{ pattern: dialect, action: "allow" }]);
-      expect(checkCommand(ruled, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
-    }
+  it.each([
+    ...ORDINARY_CONTROLS.flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect, bucket: "ordinary" as const }))),
+    { command: "pwsh -c 'npm test'", dialect: "bash" as const, bucket: "normal" as const },
+    { command: "pwsh -c 'npm test'", dialect: "powershell" as const, bucket: "ordinary" as const },
+  ])("honors saved grants and tool allow rules in $dialect: $command ($bucket)", async ({ command, dialect, bucket }) => {
+    const savedPath = join(directory, `saved-${managerSequence++}.json`);
+    const saved = runnerManager(savedPath);
+    expectBucket(checkCommand(saved, dialect, command), bucket);
+    await saved.addAlwaysAllowedPersist(dialect);
+    expect(checkCommand(saved, dialect, command)).toMatchObject({ decision: "allow", layer: 5 });
+    const reloaded = runnerManager(savedPath);
+    await reloaded.loadRulesFromFile();
+    expect(checkCommand(reloaded, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
+    const ruled = runnerManager();
+    ruled.setRules([{ pattern: dialect, action: "allow" }]);
+    expect(checkCommand(ruled, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
   });
 
-  it.each([...RUNNER_DECISIONS.filter((row) => row.bucket === "floor").map((row) => row.command), ...INNER_UPLOADS, "npx rsync -a . remote:/x"])
-  ("keeps a credential or sink floor above saved grants and allow rules: %s", async (command) => {
-    for (const dialect of DIALECTS) {
-      const manager = runnerManager();
-      await manager.addAlwaysAllowedPersist(dialect);
-      manager.setRules([{ pattern: dialect, action: "allow" }]);
-      expectBucket(checkCommand(manager, dialect, command), "floor");
-    }
+  it.each([
+    ...DECISION_CASES.filter((row) => row.bucket === "floor"),
+    ...[...INNER_UPLOADS, "npx rsync -a . remote:/x"].flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect }))),
+  ])("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", async ({ command, dialect }) => {
+    const manager = runnerManager();
+    await manager.addAlwaysAllowedPersist(dialect);
+    manager.setRules([{ pattern: dialect, action: "allow" }]);
+    expectBucket(checkCommand(manager, dialect, command), "floor");
   });
 
   it.each(INNER_UPLOADS)("retains the actual inner upload reason: %s", (command) => {

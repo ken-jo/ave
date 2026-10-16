@@ -236,7 +236,9 @@ blockers without becoming a credential/sink floor:
 - options that run a command: `find -exec`, `sed` `e` / `s///e` / `-f`, `rg --pre`, `tar --to-command`/`-I`/`--use-compress-program`, `less +!`, `git -c`/`--ext-diff`/`--textconv`/`-O`/`--upload-pack`, `man -P`, `rsync -e`, `ssh -o ProxyCommand`, `fd -x`, …;
 - unsupported syntax.
 
-A deny rule that matches a visible command decides first. Otherwise, when any deny or ask `Bash(...)` rule exists and the command contains hidden code, the decision is a forced ask, even in `allow` mode. Hidden code is never covered by an allow rule. Options that write (`sed -i`/`w`, `tar -x`, `less -o`, `--output`, `find -delete`) also keep an allow rule from matching.
+A deny rule that matches a visible command decides first. Otherwise, when any deny or ask `Bash(...)` rule exists and the command contains hidden code, the decision is a per-call `forceModal` ask before allow rules and saved grants, even in `allow` mode. Hidden code is never covered by an allow rule. Options that write (`sed -i`/`w`, `tar -x`, `less -o`, `--output`, `find -delete`) also keep an allow rule from matching.
+
+Hidden code alone adds no `ordinaryAsk`. Without explicit restrictions, credential/sink evidence, opaque bindings or retained file-execution provenance, statically bound direct interpreter forms such as `python -c`, `perl -e`, `node -e`, `node x.js`, `python x.py`, `bash -c ls` and `pwsh -c Get-Date` follow normal handling in allow mode. Their rule-visibility limits do not prove that their contents are read-only.
 
 An opaque runner prefix alone is not hidden code for rule matching. Runner
 argv remains available to raw command rules regardless of task or subcommand
@@ -257,8 +259,8 @@ destructive, explicit-ask and one-shot requirements retain their own authority.
 
 | Bucket | Signal | Decision without another controlling rule |
 |---|---|---|
-| Floor | Sensitive/credential paths or identified file/secret-to-network effects from the retained sink catalogue | Per-call ask with `forceModal`; no saved approval, allow rule or mode bypass |
-| Ordinary | Parser refusal, analysis-budget exhaustion, opaque bindings/code, general write-then-execute provenance, or an opaque runner prefix | `ordinaryAsk` / `ordinaryShellAsk` at layer 6; no `forceModal`; applicable rules and saved grants may cover it |
+| Floor | Sensitive/credential paths or retained credential-store, certificate-export and transport/sink catalogue effects | Per-call ask with `forceModal`; no saved approval, allow rule or mode bypass |
+| Ordinary | Parser refusal, analysis-budget exhaustion, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | `ordinaryAsk` / `ordinaryShellAsk` at layer 6; no `forceModal`; applicable rules and saved grants may cover it |
 | Normal | No credential/sink floor or ordinary reason | Existing category, mode, rules and grants |
 
 An ordinary ask remains rememberable under the existing approval-scope and risk
@@ -331,13 +333,7 @@ do not establish this floor by themselves.
 
 ### Opaque runner prefixes
 
-`SHELL_PREFIX_POLICY.packageRunners` is the canonical runner-identity source,
-including `npm`, `pnpm`, `yarn` and `bun`. `opaqueRunnerReason` returns
-`opaque runner prefix` through the existing wrapper grammar, including supported
-executable/script suffix spellings. A runner receives an ordinary ask without
-an applicable rule or grant. No runner option allowlist, source classification,
-registry policy or package-task model assigns its bucket. An unknown option,
-remote package operand or registry choice alone is not a credential/sink floor.
+`SHELL_PREFIX_POLICY.packageRunners` is the canonical runner-identity source, including `npm`, `pnpm`, `yarn` and `bun`. `opaqueRunnerReason` returns `opaque runner prefix` through the shared `SHELL_PREFIX_POLICY.wrappers` grammar, including versioned runner spellings and supported executable/script suffixes. A runner receives an ordinary ask without an applicable rule or grant. No runner option allowlist, source classification, registry policy or package-task model assigns its bucket. An unknown option, remote package operand or registry choice alone is not a credential/sink floor.
 
 Code-executing runners are never allow-rule-transparent wrappers. A persistent
 command prefix includes the runner and proven literal command, with a literal
@@ -345,10 +341,11 @@ command prefix includes the runner and proven literal command, with a literal
 command candidates are inspected only to retain known credential, reader and
 sender effects, including original substitution metadata; this inspection does
 not strip runners from rule matching or infer safe argv from option spelling.
-For example, `npx curl -T file http://e` retains its upload floor, while
-`npx curl http://e` has the ordinary runner reason unless another signal applies.
-Literal inline shell/code arguments still receive structural credential and
-sink inspection. Mere opacity in that code stays ordinary.
+For example, `npx curl -T file http://e` retains its upload floor, while `npx curl http://e` has the ordinary runner reason unless another signal applies. Literal inline shell/code arguments still receive structural credential and sink inspection. Code visibility alone does not create an ordinary reason; unresolved command targets or code bindings do.
+
+Known sinks remain visible through the shared wrapper boundary parsed by `wrapperPrefixLength`. These sink-only argv views preserve native identity: a forwarded native `curl` is not a PowerShell cmdlet alias. This inspection supplies no allow-rule coverage.
+
+The shared prefix source also marks declared interpreter/code operands. Those operands receive generic credential/sink inspection through literal delegates; their words do not become command candidates in another language. This role adds no runner-option policy or rule coverage.
 
 ### PowerShell analysis and general provenance
 
@@ -358,6 +355,7 @@ canonical host-shell tools a shell rule subject with a `dialect`; an unknown
 dialect is a contract violation. The PowerShell reading includes the shared
 credential/sink reading of visible text plus a PowerShell-aware pass:
 
+- PowerShell script blocks and `pwsh`/`powershell` inline command text use this catalogue. Other interpreter code uses generic credential/sink inspection with literal text and inline readers/senders retained. A `print` expression in `python` or `perl` does not acquire the PowerShell printer-port sink meaning.
 - Cmdlets and aliases include `Invoke-WebRequest`/`iwr`,
   `Invoke-RestMethod`/`irm`, and `curl`/`wget`, their aliases in Windows PowerShell
   5.1. Analysis retains parameter-name prefixes (`-InF`), `(…)`/`$(…)`/`{…}`/
@@ -368,20 +366,14 @@ credential/sink reading of visible text plus a PowerShell-aware pass:
   `Send-MailMessage -Attachments`, `Copy-Item -ToSession`,
   `WebClient.UploadFile`, `.NET` upload methods given file data, other network
   cmdlets (`Resolve-DnsName`, `Test-NetConnection`, …) given file data.
-  Unresolved splats retain an ordinary reason; independently visible upload
-  arguments still receive sink inspection.
+  Static and opaque transport splats retain the catalogue's credential/sink floors; unresolved non-transport bindings remain ordinary. Independently visible upload arguments still receive sink inspection.
+- Catalogue credential-store commands and certificate exports retain their floors, including `cmdkey`, `vaultcmd`, `Get-Secret`, `Get-StoredCredential` and `Export-PfxCertificate`. Catalogued native transfer/downloader effects remain covered, including `bitsadmin.exe`, `certutil.exe`, `certreq.exe` and `desktopimgdownldr.exe`. Known credential/sink effects remain visible in process-launcher argument payloads, executed job script blocks and background commands.
 - File-data sources retain `Get-Content`/`gc`/`cat`/`type`, `Select-String`,
   `Import-Clixml`, `Get-Item`, `[IO.File]::Read*`, `Get-Secret`,
   `Get-StoredCredential`, `cmdkey`, `env:` listings, and variables assigned
   from them. Path normalization retains `$env:USERPROFILE`, `$env:HOME`,
   `${env:…}`, `$HOME`, `~\`, backslashes, backtick escapes and `FileSystem::`.
-- Native switches belong to the native program. Literal local data remains
-  data. This argument role does not prove read-only effects, grant execution or
-  establish a runner command boundary. Opaque interpreter bindings,
-  script/module loading and unmodeled code
-  stay ordinary unless a credential or sink is identified; none establishes
-  read-only script contents. Arguments after a literal script-file operand or
-  a modeled module retain the existing script policy.
+- Native switches belong to the native program. Literal local data remains data. This argument role does not prove read-only effects, grant execution or establish a runner command boundary. Opaque interpreter bindings retain an ordinary reason; statically bound direct inline or script-file code does not create one by itself. Neither proves read-only script contents. Arguments after a literal script-file operand or a modeled module retain the existing script policy.
 - Local write destinations and contents have distinct bindings. Values written
   to a known local file remain data, including unresolved values and quoted
   command examples. Executed subexpressions retain their checks. Unknown

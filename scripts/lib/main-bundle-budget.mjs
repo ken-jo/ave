@@ -90,10 +90,11 @@ export function isSafeMainBundleManifestPath(path) {
  * Proven package operands and registry choices: entry 425_021, initial 5_505_213, total 9_184_296; ceiling 5_510_000.
  * Modeled option arity and package operands: entry 425_021, initial 5_505_721, total 9_184_804; ceiling 5_510_000.
  * Opaque runner prefixes and bounded path scans: entry 425_021, initial 5_499_690, total 9_178_773; ceiling 5_500_000.
+ * Credential/sender invocation views and declared interpreter roles: entry 425_021, initial 5_506_409, total 9_185_492; ceiling 5_510_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_500_000,
+  initialBytes: 5_510_000,
   totalBytes: 11_050_000,
 });
 

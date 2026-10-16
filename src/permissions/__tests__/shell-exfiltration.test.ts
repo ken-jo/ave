@@ -12,7 +12,7 @@ vi.mock("../../shared/shell-analysis.js", async (importOriginal) => {
   return { ...original, analyzeShell: vi.fn(original.analyzeShell) };
 });
 import { homedir } from "node:os";
-import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk } from "../rules/shell-exfiltration.js";
+import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk, sensitivePathInArgumentText } from "../rules/shell-exfiltration.js";
 import { RuleBasedRiskClassifier, type ToolInvocationContext } from "../reviewer/risk-classifier.js";
 import { evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
@@ -501,6 +501,60 @@ describe("security review: a sensitive path in any shell argument is a floor", (
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("path sources in colon destination bindings", () => {
+  it.each([
+    "~/.ssh:/x",
+    "/home/operator/.ssh:/x",
+    "./.ssh:/x:ro",
+    ".env:/x",
+    "--source=~/.ssh:/x",
+    "-v=~/.ssh:/x",
+    "-v~/.ssh:/x",
+    "-v/home/operator/.ssh:/x",
+    "file:///home/operator/.ssh:/x",
+    "--source=file:///home/operator/.ssh:/x",
+    "C:\\Users\\operator\\.ssh:\\x",
+    "C:\\Users\\operator\\.ssh:C:\\x",
+    "--source=C:\\Users\\operator\\.ssh:C:\\x",
+    "-vC:\\Users\\operator\\.ssh:C:\\x",
+  ])("retains a credential source in %s", (argument) => {
+    expect(sensitivePathInArgumentText(argument, CWD)).not.toBeNull();
+    const command = `bind-tool '${argument}'`;
+    expect(shellSensitivePathSignal(command, CWD)).not.toBeNull();
+    expect(shellScanOrdinaryAsk(command, CWD)).toBeNull();
+  });
+
+  it("retains a separated native mount source", () => {
+    expect(shellSensitivePathSignal("docker run -v ~/.ssh:/x img", CWD)).toMatch(/\.ssh/);
+  });
+
+  it.each([
+    "/work/data:/x",
+    "./data:/x:ro",
+    "-v/work/data:/x",
+    "-v=./data:/x",
+    "--source=/work/data:/x",
+    "C:\\Users\\operator\\Documents:C:\\docs",
+    "-vC:\\Users\\operator\\Documents:C:\\docs",
+    "~/.ssh.md:/x",
+    "https://example.test/.ssh:/x",
+    "https://operator@example.test/.ssh:/x",
+    "https://example.test/path?source=~/.ssh:/x",
+    "--source=https://example.test/.ssh:/x",
+    "--source=https://operator@example.test/.ssh:/x",
+    "--source=https://example.test/path?source=~/.ssh:/x",
+    "-vhttps://example.test/.ssh:/x",
+    "-vhttps://example.test/path?source=~/.ssh:/x",
+    "ftp://example.test/.ssh:/x",
+  ])("leaves an ordinary mapping or URL unchanged: %s", (argument) => {
+    expect(sensitivePathInArgumentText(argument, CWD)).toBeNull();
+    const command = `bind-tool '${argument}'`;
+    expect(shellSensitivePathSignal(command, CWD)).toBeNull();
+    expect(shellExfiltrationSignal(command, CWD)).toBeNull();
+    expect(shellScanOrdinaryAsk(command, CWD)).toBeNull();
   });
 });
 

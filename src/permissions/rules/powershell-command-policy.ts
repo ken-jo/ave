@@ -30,6 +30,9 @@ export interface PowerShellCommandPolicy {
   };
   /** Native payload grammar; all other catalogue forms remain opaque. */
   native?: "opaque" | "cmd" | "wmic" | "dotnet";
+  /** Credential-store access and explicit native transfer forms remain floors. */
+  credential?: true | RegExp;
+  sink?: RegExp;
   /** Literal property reads understood for this command's output objects. */
   members?: readonly string[];
 }
@@ -69,16 +72,17 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "bash.exe": nativePolicy(["launcher"]),
   "bcp.exe": nativePolicy(["network"]),
   "bginfo.exe": nativePolicy(["launcher"]),
-  "bitsadmin.exe": nativePolicy(["launcher", "network"]),
+  "bitsadmin.exe": { ...nativePolicy(["launcher", "network"]), sink: /\/upload(?:\s|$)/i },
   "cdb.exe": nativePolicy(["launcher"]),
   "certoc.exe": nativePolicy(["launcher", "network"]),
   "certreq.exe": nativePolicy(["network"]),
-  "certutil.exe": { ...nativePolicy(["read", "network"]), materializes: { kind: "file", native: true, destination: { parameters: [], position: -1 } } },
+  "certutil.exe": { ...nativePolicy(["read", "network"]), sink: /-urlcache(?:\s|$)/i, materializes: { kind: "file", native: true, destination: { parameters: [], position: -1 } } },
   "change.exe": nativePolicy(["launcher"]),
   "cl_invocation.ps1": nativePolicy(["launcher"]),
   "cl_loadassembly.ps1": nativePolicy(["launcher"]),
   "cl_mutexverifiers.ps1": nativePolicy(["launcher"]),
   "cmd.exe": nativePolicy(["launcher", "network"], "cmd"),
+  "cmdkey.exe": { ...nativePolicy(["read"]), credential: true },
   "cmdl32.exe": nativePolicy(["network"]),
   "cmstp.exe": nativePolicy(["launcher"]),
   "configsecuritypolicy.exe": nativePolicy(["network"]),
@@ -194,7 +198,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "remote.exe": nativePolicy(["launcher"]),
   "replace.exe": nativePolicy(["network"]),
   "reset.exe": nativePolicy(["launcher"]),
-  "rundll32.exe": nativePolicy(["launcher"]),
+  "rundll32.exe": { ...nativePolicy(["launcher"]), credential: /\bkeymgr\.dll\s*,\s*krshowkeymgr\b/i },
   "runexehelper.exe": nativePolicy(["launcher"]),
   "runonce.exe": nativePolicy(["launcher"]),
   "runscripthelper.exe": nativePolicy(["launcher"]),
@@ -241,6 +245,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "wab.exe": nativePolicy(["launcher"]),
   "wbemtest.exe": nativePolicy(["launcher"]),
   "wfmformat.exe": nativePolicy(["launcher"]),
+  "vaultcmd.exe": { ...nativePolicy(["read"]), credential: true },
   "wget.exe": nativePolicy(["network"]),
   "windbg.exe": nativePolicy(["launcher"]),
   "winfile.exe": nativePolicy(["launcher"]),
@@ -271,8 +276,8 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "import-clixml": { aliases: [], effects: ["read"], parameters: ["path", "literalpath", "skip", "first"] },
   "import-csv": { aliases: ["ipcsv"], effects: ["read"], parameters: ["path", "literalpath", "delimiter", "header", "encoding", "useculture?"] },
   "format-hex": { aliases: ["fhx"], effects: ["read"], parameters: ["path", "literalpath", "inputobject", "encoding", "count", "offset"] },
-  "get-secret": { aliases: [], effects: ["read"], parameters: ["name", "vault", "asplaintext?"] },
-  "get-storedcredential": { aliases: [], effects: ["read"], parameters: ["target", "ascredentialobject?"] },
+  "get-secret": { aliases: [], effects: ["read"], credential: true, parameters: ["name", "vault", "asplaintext?"] },
+  "get-storedcredential": { aliases: [], effects: ["read"], credential: true, parameters: ["target", "ascredentialobject?"] },
   "get-variable": { aliases: ["gv"], effects: ["variable-read"], parameters: ["name", "scope", "valueonly?", "include", "exclude"] },
   "set-variable": { aliases: ["sv", "set"], effects: ["variable-write"], parameters: VARIABLE_PARAMETERS },
   "new-variable": { aliases: ["nv"], effects: ["variable-write"], parameters: VARIABLE_PARAMETERS },
@@ -289,6 +294,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "add-content": { aliases: ["ac"], effects: ["provider-write", "file-write"], content: CONTENT_VALUE, destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
   "out-file": { aliases: [], effects: ["file-write"], content: INPUT_OBJECT, destination: { parameters: ["filepath", "literalpath"], position: 0 }, parameters: ["filepath", "literalpath", "inputobject", "encoding", "append?", "force?", "noclobber?", "width", "nonewline?"] },
   "out-printer": { aliases: ["lp"], effects: ["network", "file-write"], destination: { parameters: ["name"], position: 0, kind: "printer" }, parameters: ["name", "inputobject"] },
+  "export-pfxcertificate": { aliases: [], effects: ["read", "file-write"], credential: true, parameters: ["cert", "filepath", "password", "chainoption", "cryptoprotectto*", "force?", "noclobber?"] },
   "export-csv": { aliases: ["epcsv"], effects: ["file-write"], destination: CONTENT_DESTINATION, parameters: ["path", "literalpath", "inputobject", "delimiter", "encoding", "append?", "force?", "noclobber?", "notypeinformation?", "useculture?"] },
   "export-clixml": { aliases: [], effects: ["file-write"], destination: CONTENT_DESTINATION, parameters: ["path", "literalpath", "inputobject", "depth", "encoding", "force?", "noclobber?"] },
   "export-alias": { aliases: ["epal"], effects: ["file-write"], destination: CONTENT_DESTINATION, parameters: ["path", "literalpath", "name", "scope", "description", "as", "append?", "force?", "noclobber?"] },

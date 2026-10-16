@@ -45,6 +45,7 @@ import {
   isShellWrapperProgram,
   shellOptionEffect,
   stripGlobalOptions,
+  wrapperPrefixLength,
 } from "./shell-prefix-policy.js";
 
 type BashRuleSpecifier = Extract<RuleSpecifier, { kind: "bash" }>;
@@ -103,6 +104,7 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
           break;
         case "unknown":
           hidden.push(part.reason);
+          ordinaryAsk ??= part.reason;
           globalBlockers.push(part.reason);
           break;
         default:
@@ -131,11 +133,16 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
         const arithmetic = arithmeticEvaluationReason(statement);
         if (arithmetic) {
           hidden.push(arithmetic);
+          ordinaryAsk ??= arithmetic;
           blockers.push(arithmetic);
         }
         for (const assignment of statement.assignments) {
           // `GIT_SSH_COMMAND='rm x' git fetch`, `PATH=/tmp/x; git status`.
-          if (codeCarryingVariable(assignment.name)) hidden.push(`code-carrying variable ${assignment.name}`);
+          if (codeCarryingVariable(assignment.name)) {
+            const reason = `code-carrying variable ${assignment.name}`;
+            hidden.push(reason);
+            if (staticShellWord(assignment.value) === undefined) ordinaryAsk ??= reason;
+          }
         }
         if (statement.words.length === 0) {
           // Assignment-only statements change the environment of every later
@@ -149,6 +156,7 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
         ordinaryAsk ??= opaqueRunnerReason(argv) ?? undefined;
         if (argv[0] === undefined) {
           hidden.push("dynamic program name");
+          ordinaryAsk ??= "dynamic program name";
           blockers.push("dynamic program name");
         } else {
           // `bash -c "rm …"`, `echo … | bash`, `bash <<<…`, `node x.js`,
@@ -159,7 +167,12 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
           if (hiddenCode) {
             hidden.push(hiddenCode);
             blockers.push(hiddenCode);
+            // A static code source stays a rule-visibility blocker. An
+            // unresolved binding still needs ordinary approval.
+            if (argv.includes(undefined)) ordinaryAsk ??= hiddenCode;
           }
+          const inner = wrapperPrefixLength(argv);
+          if (inner > 0 && inner < argv.length && argv[inner] === undefined) ordinaryAsk ??= "dynamic program name behind a wrapper";
           const effect = shellOptionEffect(argv);
           if (effect) blockers.push(effect.reason);
         }
@@ -210,19 +223,20 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
         return;
       case "unsupported":
         hidden.push(statement.reason);
+        ordinaryAsk ??= statement.reason;
         globalBlockers.push(statement.reason);
         return;
       default: {
         const exhaustive: never = statement;
         void exhaustive;
         hidden.push("unknown shell statement");
+        ordinaryAsk ??= "unknown shell statement";
         globalBlockers.push("unknown shell statement");
       }
     }
   };
 
   visit(analysis.program);
-  ordinaryAsk ??= hidden[0];
   ordinaryAsk ??= shellScanOrdinaryAsk(parsed, cwd) ?? undefined;
   return { ok: true, commands, hidden, ...(ordinaryAsk ? { ordinaryAsk } : {}), allowBlockers: globalBlockers };
 }

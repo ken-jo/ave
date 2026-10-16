@@ -80,6 +80,7 @@ describe("shell floors cover powershell in allow mode", () => {
     "Test-Path src", "Write-Host (('a','b') -join ',')",
     "Get-Content notes.txt | Select-String TODO",
     "Set-Clipboard 'hello'",
+    "python script.py", "python -c 'print(1)'", "node -e 'console.log(1)'", "bash -c 'ls'",
     "Invoke-Item p.txt", "ii p.md", "Invoke-Item p.png", "Invoke-Item ./docs/",
   ])("benign powershell %s keeps the allow-mode decision", async (command) => {
     const { decision, execute } = await run("powershell", command);
@@ -103,7 +104,7 @@ describe("shell floors cover powershell in allow mode", () => {
     "gc $env:APPDATA\\MICROS~1\\CREDEN~1",
   ])("forces approval before executing %s", async (command) => {
     const blocked = await run("powershell", command);
-    if (command === "pwsh -enc !!!" || command.includes("$p.InFile")) {
+    if (command === "pwsh -enc !!!") {
       expect(blocked.decision).toMatchObject({ decision: "ask", layer: 6 });
       expect(blocked.decision.forceModal).toBeUndefined();
     } else {
@@ -148,7 +149,7 @@ describe("shell floors cover powershell in allow mode", () => {
     const { decision, execute } = await run("powershell", command);
     const hasFloorEvidence = command.includes("-InFile notes.txt -Method Post") || command.includes("host\\share")
       || command.includes("Out-Printer") || command.includes("LPT1:")
-      || command.startsWith("Send-MailMessage") || command.includes("c.exe -T");
+      || command.startsWith("Send-MailMessage") || command.includes("c.exe -T") || command.includes("iwr @p");
     if (hasFloorEvidence) expect(decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     else {
       expect(decision).toMatchObject({ decision: "ask", layer: 6 });
@@ -158,7 +159,7 @@ describe("shell floors cover powershell in allow mode", () => {
   });
 
   it.each([
-    "npm test", "npx helper", "pwsh -enc !!!", "iex $code", "python script.py",
+    "npm test", "npx helper", "pwsh -enc !!!", "iex $code",
     "Set-Content build.ps1 Get-Date; build.ps1",
   ])("reuses saved grants for ordinary shell approval: %s", async (command) => {
     const pending = await run("powershell", command);

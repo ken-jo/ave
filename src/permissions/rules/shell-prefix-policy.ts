@@ -43,12 +43,17 @@ const WRAPPERS = [
 const STRING_JOINING_WRAPPERS = new Set(["watch", "parallel", "sg"]);
 const DASH_C_WRAPPERS = new Set(["su", "script", "flock", "runuser"]);
 /** Runner identities and literal prefixes that can introduce another command. */
-const RUNNER_COMMAND_PREFIXES: Readonly<Record<string, true | readonly string[]>> = {
+type RunnerCommandPrefix = string | readonly [verb: string, interpreter: string];
+const RUNNER_COMMAND_PREFIXES: Readonly<Record<string, true | readonly RunnerCommandPrefix[]>> = {
   npx: true, bunx: true, pnpx: true, uvx: true, corepack: true,
-  pipx: ["run"], yarn: ["dlx", "exec", "node"], yarnpkg: ["dlx", "exec", "node"],
-  pnpm: ["dlx", "exec", "x"], npm: ["exec", "x"], bun: ["x", "exec"], deno: ["run", "eval"],
+  pipx: ["run"], yarn: ["dlx", "exec", ["node", "node"]], yarnpkg: ["dlx", "exec", ["node", "node"]],
+  pnpm: ["dlx", "exec", "x"], npm: ["exec", "x"], bun: ["x", "exec"], deno: [["run", "deno"], ["eval", "deno"]],
 };
 const PACKAGE_RUNNERS = Object.keys(RUNNER_COMMAND_PREFIXES);
+
+function runnerHasPrefix(prefixes: readonly RunnerCommandPrefix[], token: string | undefined): boolean {
+  return token !== undefined && prefixes.some((prefix) => (typeof prefix === "string" ? prefix : prefix[0]) === token);
+}
 
 /**
  * Arity table (opencode-style): how many leading tokens a suggestion keeps.
@@ -72,12 +77,13 @@ function programName(token: string): string {
   return base.replace(/\.exe$/i, "").replace(/^(python[23]?)\.\d+$/, "$1");
 }
 
-/** Runner shims share the executable and script suffix vocabulary. */
+/** Runner shims share the executable/script suffixes and retain versioned identity. */
 function runnerName(token: string): string {
   const base = (token.split(/[\\/]/).pop() ?? token).toLowerCase().replace(/[ .]+$/, "");
   const extension = /\.[^.]+$/.exec(base)?.[0] ?? "";
   const type = POWERSHELL_FILE_TYPES[extension];
-  return type === "opaque" || type === "script" ? base.slice(0, -extension.length) : base;
+  const name = type === "opaque" || type === "script" ? base.slice(0, -extension.length) : base;
+  return name.replace(/@[^@]+$/, "");
 }
 
 export type RefusedPrefixReason =
@@ -90,7 +96,7 @@ export type RefusedPrefixReason =
   | "multi-verb-tool";
 
 /** An option leaves the command boundary unknown until a literal delimiter. */
-function literalCommandAfterPrefix(tokens: readonly string[], start: number): number | undefined {
+function literalCommandAfterPrefix(tokens: readonly (string | undefined)[], start: number): number | undefined {
   const token = tokens[start];
   if (token === undefined || token.length === 0) return undefined;
   if (!token.startsWith("-")) return start;
@@ -118,7 +124,7 @@ export function refusedShellPrefix(tokens: readonly string[]): RefusedPrefixReas
     // A delegate specifier does not prove its delegated command boundary.
     if (runner === "corepack" && command.includes("@")) return "package-runner";
     if (runner === "corepack" && RUNNER_SET.has(runnerName(command))) return refusedShellPrefix(tokens.slice(commandIndex));
-    if (commandPrefix !== true && commandPrefix.includes(command)
+    if (commandPrefix !== true && runnerHasPrefix(commandPrefix, command)
       && literalCommandAfterPrefix(tokens, commandIndex + 1) === undefined) return "package-runner";
     return null;
   }
@@ -683,22 +689,61 @@ export function opaqueRunnerReason(argv: readonly (string | undefined)[]): strin
 }
 
 /**
- * Literal downstream command candidates for sink inspection only. Unknown
- * options can bind any later operand, so no candidate proves an argv boundary.
+ * Downstream command views for sink inspection only. Literal boundaries keep
+ * delegated runner identities; opaque options retain conservative candidates.
  * Rules must retain the complete runner prefix and must not use this list.
  */
 export function runnerCommandIndexes(argv: readonly (string | undefined)[]): readonly number[] {
-  const start = wrapperPrefixLength(argv);
+  let start = wrapperPrefixLength(argv);
   const head = argv[start];
-  if (head === undefined) return [];
-  const runner = runnerName(head);
-  if (!RUNNER_SET.has(runner)) return [];
-  const prefixes = RUNNER_COMMAND_PREFIXES[runner]!;
+  if (head === undefined || !RUNNER_SET.has(runnerName(head))) return [];
+  const prefixes = RUNNER_COMMAND_PREFIXES[runnerName(head)]!;
   const prefixEnd = prefixes === true ? start : argv.findIndex((token, index) =>
-    index > start && token !== undefined && prefixes.includes(token));
+    index > start && runnerHasPrefix(prefixes, token));
   if (prefixEnd < 0) return [];
-  return argv.flatMap((token, index) =>
+  const candidates = argv.flatMap((token, index) =>
     index > prefixEnd && token !== undefined && !token.startsWith("-") ? [index] : []);
+  while (start < argv.length) {
+    const head = argv[start];
+    if (head === undefined || !RUNNER_SET.has(runnerName(head))) break;
+    const prefixes = RUNNER_COMMAND_PREFIXES[runnerName(head)]!;
+    const literal = literalCommandAfterPrefix(argv, start + 1);
+    const command = prefixes === true ? literal
+      : literal !== undefined && runnerHasPrefix(prefixes, argv[literal]) ? literalCommandAfterPrefix(argv, literal + 1) : undefined;
+    if (command === undefined) break;
+    start = command;
+    if (WRAPPER_SET.has(programName(argv[start]!))) {
+      const wrapped = wrapperPrefixLength(argv.slice(start));
+      if (wrapped > 0) start += wrapped;
+    }
+    const target = argv[start];
+    if (target === undefined) break;
+    const program = programName(target);
+    // A proved non-runner interpreter owns its code arguments. Those words
+    // cannot also acquire another language's command catalogue meanings.
+    if (!RUNNER_SET.has(runnerName(target)) && (INTERPRETER_SET.has(program)
+      || (SHELL_SET.has(program) && !["pwsh", "powershell", "cmd"].includes(program)))) return candidates.filter((index) => index <= start);
+  }
+  return candidates;
+}
+
+/** Script/code prefixes declare a language without interpreting runner options. */
+export function runnerCodeContext(argv: readonly (string | undefined)[]): { interpreter: string; operandIndex: number } | undefined {
+  let start = wrapperPrefixLength(argv);
+  while (start < argv.length) {
+    const head = argv[start];
+    if (head === undefined) break;
+    const prefixes = RUNNER_COMMAND_PREFIXES[runnerName(head)];
+    if (prefixes === undefined) break;
+    const index = literalCommandAfterPrefix(argv, start + 1);
+    if (index === undefined) break;
+    const prefix = prefixes === true ? undefined : prefixes.find((value) => (typeof value === "string" ? value : value[0]) === argv[index]);
+    if (prefix !== undefined && typeof prefix !== "string") return { interpreter: prefix[1], operandIndex: index + 1 };
+    const command = prefixes === true ? index : prefix !== undefined ? literalCommandAfterPrefix(argv, index + 1) : undefined;
+    if (command === undefined) break;
+    start = command + wrapperPrefixLength(argv.slice(command));
+  }
+  return undefined;
 }
 
 function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): string | null {

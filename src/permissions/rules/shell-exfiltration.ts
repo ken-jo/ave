@@ -487,6 +487,7 @@ const BRACE_EXPANSION_LIMIT = 64;
 const NETWORK_DEVICE = /\/dev\/(?:tcp|udp)\//;
 /** Fallback for unparseable input: a network program name as a word. */
 const NETWORK_WORD = /(?:^|[\s;&|(`$])(?:curl|wget|ssh|scp|sftp|rsync|openssl|nc|ncat|netcat|socat|telnet|nslookup|dig|host|gh|aws|gcloud|az|http|https|ftp)(?=\s|$)/;
+const NON_FILE_URL = /^(?!file:)[a-z][a-z0-9+.-]*:\/\//i;
 
 let sensitiveNameCache: readonly string[] | undefined;
 /** Every literal path segment of the sensitive-path table (`.ssh`, `.aws`, `id_rsa`, `.env`, …). */
@@ -597,17 +598,30 @@ function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolea
   return null;
 }
 
-/** Paths an argument can name: the word, an `=value`, an `@file`, a `FILE:` address, a `file://` URL. */
+/** Paths an argument can name, including attached values and a source before a destination separator. */
 function argumentCandidates(glob: string): string[] {
-  if (glob.startsWith("-") && !glob.includes("=") && !glob.includes("@")) return [];
-  const candidates = [glob];
   const equals = glob.indexOf("=");
+  // URL user-info and query values are not separate local file bindings.
+  if (NON_FILE_URL.test(glob.replace(/^-[A-Za-z]/, ""))
+    || (equals >= 0 && NON_FILE_URL.test(glob.slice(equals + 1)))) return [];
+  const attachedPath = /^-[A-Za-z](?=[~./\\]|[A-Za-z]:[\\/])/.test(glob) ? glob.slice(2) : undefined;
+  if (glob.startsWith("-") && !glob.includes("=") && !glob.includes("@") && attachedPath === undefined) return [];
+  const candidates = [glob];
+  if (attachedPath !== undefined) candidates.push(attachedPath);
   if (equals >= 0) candidates.push(glob.slice(equals + 1));
   const at = glob.indexOf("@");
   if (at >= 0) candidates.push(glob.slice(at + 1));
   return candidates
     .map((text) => text.replace(/^(?:<|(?:FILE|OPEN|GOPEN):)/i, "").replace(/^file:\/\//i, ""))
-    .filter((text) => text.length > 0 && text !== "-" && !/^[a-z][a-z0-9+.-]*:\/\//i.test(text));
+    .filter((text) => text.length > 0 && text !== "-" && !/^[a-z][a-z0-9+.-]*:\/\//i.test(text))
+    .flatMap((text) => {
+      // A drive prefix belongs to the source; its next colon binds a
+      // destination. Protocol-only prefixes never prove a source path.
+      const separator = text.indexOf(":", /^[a-z]:[\\/]/i.test(text) ? 2 : 0);
+      const source = separator > 0 ? text.slice(0, separator) : "";
+      return !text.startsWith("-") && separator < text.length - 1 && /[\\/]|^[.~]/.test(source)
+        ? [text, source] : [text];
+    });
 }
 
 /** Bash brace expansion (`~/.{ssh,aws}/x`); a range (`{1..9}`) becomes a wildcard. */

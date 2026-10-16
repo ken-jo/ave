@@ -4,6 +4,7 @@ import {
   opaqueRunnerReason,
   refusedShellPrefix,
   runnerCommandIndexes,
+  runnerCodeContext,
   SHELL_PREFIX_POLICY,
   shellOptionEffect,
 } from "../rules/shell-prefix-policy.js";
@@ -38,6 +39,20 @@ describe("opaque runner prefixes", () => {
     expect(opaqueRunnerReason([`/tools/npm${suffix}`, "test"])).toBe("opaque runner prefix");
   });
 
+  it.each(SHELL_PREFIX_POLICY.packageRunners)("retains runner identity for versioned %s", (runner) => {
+    for (const version of ["10", "10.2.3"]) {
+      for (const suffix of ["", ".cmd", ".exe"]) {
+        const head = `${runner}@${version}${suffix}`;
+        expect(opaqueRunnerReason([head, "helper"])).toBe("opaque runner prefix");
+        expect(opaqueRunnerReason(["env", "A=1", head, "helper"])).toBe("opaque runner prefix");
+        expect(hiddenCodeReason([head, "helper"])).toBeNull();
+        expect(refusedShellPrefix([head])).toBe("package-runner");
+        expect(refusedShellPrefix([head, "--future", "helper"])).toBe("package-runner");
+        expect(refusedShellPrefix([head, "--future", "value", "--", "helper"])).toBeNull();
+      }
+    }
+  });
+
   it.each([
     ["env", "A=1", "npm", "test"],
     ["timeout", "5", "npx", "prettier"],
@@ -55,7 +70,7 @@ describe("opaque runner prefixes", () => {
     expect(hiddenCodeReason(["env", "PATH=/tmp/tools", "npx", "node"])).toMatch(/code-carrying variable PATH/);
   });
 
-  it.each([["ls"], ["git", "status"], ["npx.txt"], ["npm.json"], ["npx@10"], [undefined], ["env", undefined, "npm", "test"]])
+  it.each([["ls"], ["git", "status"], ["npx.txt"], ["npm.json"], ["npx@"], [undefined], ["env", undefined, "npm", "test"]])
     ("leaves other heads to their existing policy: %j", (...argv) => {
       expect(opaqueRunnerReason(argv)).toBeNull();
     });
@@ -63,12 +78,33 @@ describe("opaque runner prefixes", () => {
 
 describe("sink-only downstream candidates", () => {
   it.each([
+    { argv: ["deno", "eval", "print(1)"], context: { interpreter: "deno", operandIndex: 2 } },
+    { argv: ["yarn", "node", "-e", "print(1)"], context: { interpreter: "node", operandIndex: 2 } },
+    { argv: ["npx", "deno", "eval", "print(1)"], context: { interpreter: "deno", operandIndex: 3 } },
+    { argv: ["corepack", "yarn", "node", "-e", "print(1)"], context: { interpreter: "node", operandIndex: 3 } },
+    { argv: ["npx", "--package", "deno", "curl"], context: undefined },
+    { argv: ["bun", "x", "curl", "-T", "file"], context: undefined },
+  ])("keeps declared code inputs distinct from native command candidates: $argv", ({ argv, context }) => {
+    expect(runnerCodeContext(argv)).toEqual(context);
+  });
+
+  it.each([
+    { argv: ["npx", "python", "-c", "print(1)"], indexes: [1] },
+    { argv: ["pnpm", "exec", "python", "-c", "print(1)"], indexes: [2] },
+    { argv: ["npm", "exec", "--", "python", "-c", "print(1)"], indexes: [3] },
+    { argv: ["corepack", "pnpm", "exec", "python", "-c", "print(1)"], indexes: [1, 2, 3] },
+  ])("keeps later argv behind the proved command boundary: $argv", ({ argv, indexes }) => {
+    expect(runnerCommandIndexes(argv)).toEqual(indexes);
+  });
+
+  it.each([
     ["npx", "curl"], ["bunx", "curl"], ["pnpx", "curl"], ["uvx", "curl"],
     ["pipx", "run", "curl"], ["yarn", "dlx", "curl"], ["yarnpkg", "exec", "curl"],
     ["yarn", "node", "curl"], ["pnpm", "dlx", "curl"], ["pnpm", "exec", "curl"],
     ["pnpm", "x", "curl"], ["npm", "exec", "curl"], ["npm", "x", "curl"],
     ["bun", "x", "curl"], ["bun", "exec", "curl"], ["deno", "run", "curl"], ["deno", "eval", "curl"],
     ["corepack", "pnpm@9", "dlx", "curl"], ["env", "A=1", "npm.cmd", "exec", "curl"],
+    ["npx@10", "curl"], ["npm@10", "exec", "curl"], ["env", "A=1", "npm@10.cmd", "exec", "curl"],
   ])("preserves the literal command in %j", (...argv) => {
     expect(runnerCommandIndexes(argv)).toContain(argv.indexOf("curl"));
   });
@@ -151,6 +187,6 @@ describe("persistent runner command boundaries", () => {
     expect(() => validatePermissionRule({ pattern, action: "allow" })).toThrow(/refused allow prefix/);
     expect(evaluateShellRules(tokens.join(" "), { allow: [{ pattern, spec }], deny: [], ask: [] }).decision).toBeNull();
     expect(opaqueRunnerReason(tokens)).toBe("opaque runner prefix");
-    expect(opaqueRunnerReason(["pnpm@9"])).toBeNull();
+    expect(opaqueRunnerReason(["pnpm@9"])).toBe("opaque runner prefix");
   });
 });

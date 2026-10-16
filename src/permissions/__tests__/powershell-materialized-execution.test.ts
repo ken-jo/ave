@@ -143,7 +143,7 @@ describe("file execution provenance", () => {
     "Write-Host (('a','b') -join ',')", "Get-Content notes.txt | Select-String TODO",
     'iwr https://x.invalid -Headers @{ Authorization = "Bearer $env:TOKEN" }',
   ])("preserves ordinary file and development work: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual(/(?:^|; )(?:npm\b|python script\.py|build\.ps1$)/.test(command)
+    expect(inspectPowerShellCommand(command, CWD)).toEqual(/(?:^|; )(?:npm\b|build\.ps1$)/.test(command)
       ? expect.objectContaining({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) })
       : { sensitive: null, exfiltration: null });
   });
@@ -171,9 +171,7 @@ describe("file execution provenance", () => {
     "Write-Host 'literal & punctuation'",
     "Write-Host @'\nhello\nworld\n'@",
   ])("keeps data operands and switches out of execution provenance: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual(/; (?:python script\.py|node script\.js)/.test(command)
-      ? expect.objectContaining({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) })
-      : { sensitive: null, exfiltration: null });
+    expect(inspectPowerShellCommand(command, CWD)).toEqual({ sensitive: null, exfiltration: null });
   });
 
   it.each([
@@ -197,7 +195,8 @@ describe("file execution provenance", () => {
     "$p = @{ Uri = 'https://x.invalid' }; Write-Output hello | tee -Variable:p; iwr @p",
   ])("retains execution and destination uncertainty: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (command.includes("host\\share")) expect(result.exfiltration).not.toBeNull();
+    if (command.includes("iwr @p")) expect(result.exfiltration).toMatch(/splatted from a variable the floor cannot read/);
+    else if (command.includes("host\\share")) expect(result.exfiltration).not.toBeNull();
     else expect(result).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 

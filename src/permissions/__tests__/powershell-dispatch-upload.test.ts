@@ -91,9 +91,11 @@ const OPAQUE_DESTINATIONS = [
 ];
 
 describe("dispatch approval and remote-write floors", () => {
-  it.each(DISPATCH)("requires approval for dispatch or opaque effects: %s", (command) => {
+  it.each(DISPATCH)("classifies dispatch, static code and opaque effects: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (command.includes(PAYLOAD) || command.includes("~/.ssh/config")) {
+    if (command === "bash script.sh") {
+      expect(result).toEqual({ sensitive: null, exfiltration: null });
+    } else if (command.includes(PAYLOAD) || command.includes("~/.ssh/config")) {
       expect(result.exfiltration ?? result.sensitive).not.toBeNull();
     } else {
       expect(result).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
@@ -109,7 +111,7 @@ describe("dispatch approval and remote-write floors", () => {
   });
 
   it.each(BENIGN)("separates ordinary local work from opaque execution: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual(command === "npm test" || command === "python script.py"
+    expect(inspectPowerShellCommand(command, CWD)).toEqual(command === "npm test"
       ? expect.objectContaining({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) })
       : { sensitive: null, exfiltration: null });
   });

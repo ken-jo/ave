@@ -80,11 +80,12 @@ const OUTPUTS = [
 ];
 
 describe("launcher payload and outbound-output floors", () => {
-  it.each(LAUNCHERS)("requires approval for launcher or transport payloads: %s", (command) => {
+  it.each(LAUNCHERS)("classifies launcher and transport payloads: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
     const hasFloorEvidence = command.includes(PAYLOAD) || command.includes("host\\share")
-      || /^(?:curl\.exe|wget\.exe|scp|sftp|ftp|tftp)\b/.test(command);
-    if (hasFloorEvidence) expect(result.exfiltration).not.toBeNull();
+      || /^(?:curl\.exe|wget\.exe|scp|sftp|ftp|tftp|certutil(?:\.exe)? -urlcache)\b/.test(command);
+    if (command === "certutil -encode notes.txt encoded.txt") expect(result).toEqual({ sensitive: null, exfiltration: null });
+    else if (hasFloorEvidence) expect(result.exfiltration).not.toBeNull();
     else expect(result).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
