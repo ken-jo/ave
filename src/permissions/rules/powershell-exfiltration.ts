@@ -1645,7 +1645,7 @@ function nativeInvocation(name: string, args: readonly PsToken[], ctx: Context) 
   const script = prefix === "interpreter" && args.length > 0 && values.every((value) => value !== undefined)
     && argv[1] !== "-" && !argv[1]!.startsWith("-") && reason?.startsWith("code passed to ");
   return { prefix, reason, values, scriptPath: script ? argv[1] : undefined,
-    ordinaryAsk: opaqueRunnerReason(argv) ?? undefined };
+    ordinaryAsk: wrapperCommand(argv).ordinaryAsk ?? opaqueRunnerReason(argv) ?? undefined };
 }
 
 /** Static native interpreter text has its own language, not cmdlet semantics. */

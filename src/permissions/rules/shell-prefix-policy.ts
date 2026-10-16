@@ -148,6 +148,7 @@ export function refusedShellPrefix(tokens: readonly string[]): RefusedPrefixReas
  * A command view widens inspection and restrictions, never allow coverage.
  */
 interface WrapperGrammar {
+  flags?: readonly string[];
   values?: readonly string[];
   code?: readonly string[];
   operand?: true | RegExp;
@@ -160,41 +161,42 @@ interface WrapperGrammar {
   shell?: true;
 }
 const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
-  xargs: { values: ["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "--arg-file", "--delimiter", "--max-args", "--max-procs", "--replace"] },
-  sudo: { values: ["-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U", "-D", "--user", "--group"], assignments: true },
-  doas: { values: ["-u", "-C"] },
-  env: { values: ["-u", "-C", "--unset", "--chdir"], assignments: true },
-  timeout: { values: ["-s", "-k", "--signal", "--kill-after"], operand: /^\d+(?:\.\d+)?[smhd]?$/ },
+  xargs: { flags: ["-0", "-r", "-t", "-x", "-p", "--null", "--no-run-if-empty", "--verbose", "--exit", "--interactive"], values: ["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "--arg-file", "--delimiter", "--max-args", "--max-procs", "--replace"] },
+  sudo: { flags: ["-A", "-b", "-B", "-E", "-H", "-i", "-k", "-K", "-n", "-P", "-S", "-s", "-v", "-e", "-l", "--askpass", "--background", "--bell", "--preserve-env", "--set-home", "--login", "--reset-timestamp", "--remove-timestamp", "--non-interactive", "--preserve-groups", "--stdin", "--shell", "--validate", "--edit", "--list"], values: ["-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U", "-D", "--user", "--group"], assignments: true },
+  doas: { flags: ["-L", "-n", "-s"], values: ["-u", "-C"] },
+  env: { flags: ["-i", "-0", "-v", "--ignore-environment", "--null", "--debug"], values: ["-u", "-C", "--unset", "--chdir"], assignments: true },
+  timeout: { flags: ["-v", "--verbose", "--foreground", "--preserve-status"], values: ["-s", "-k", "--signal", "--kill-after"], operand: /^\d+(?:\.\d+)?[smhd]?$/ },
   nice: { values: ["-n", "--adjustment"] },
-  ionice: { values: ["-c", "-n", "-p", "--class", "--classdata"] },
-  watch: { values: ["-n", "-d", "--interval"] },
+  ionice: { flags: ["-t", "--ignore"], values: ["-c", "-n", "-p", "--class", "--classdata"] },
+  watch: { flags: ["-b", "-c", "-d", "-e", "-g", "-p", "-t", "-w", "-x", "--beep", "--color", "--differences", "--errexit", "--chgexit", "--precise", "--no-title", "--watch", "--exec"], values: ["-n", "--interval"] },
   stdbuf: { values: ["-i", "-o", "-e"] },
   // https://man7.org/linux/man-pages/man1/chrt.1.html: optional numeric priority; -p targets a PID.
-  chrt: { values: ["-T", "-P", "-D", "-U", "-X", "--sched-runtime", "--sched-period", "--sched-deadline", "--clamp-min", "--clamp-max"], operand: /^\d+$/, noCommand: ["-p", "--pid", "-m", "--max"] },
+  chrt: { flags: ["-a", "-b", "-d", "-e", "-f", "-i", "-o", "-r", "-R", "-v", "--all-tasks", "--batch", "--deadline", "--ext", "--fifo", "--idle", "--other", "--rr", "--reset-on-fork", "--verbose"], values: ["-T", "-P", "-D", "-U", "-X", "--sched-runtime", "--sched-period", "--sched-deadline", "--clamp-min", "--clamp-max"], operand: /^\d+$/, noCommand: ["-p", "--pid", "-m", "--max"] },
   // https://man7.org/linux/man-pages/man1/flock.1.html: lockfile then argv or -c command.
-  flock: { values: ["-w", "-E", "--wait", "--timeout", "--conflict-exit-code", "--start", "--length"], code: ["-c", "--command"], operand: true, optionsAfterOperand: true },
+  flock: { flags: ["-e", "-x", "-n", "-o", "-s", "-u", "-F", "--exclusive", "--nonblock", "--close", "--shared", "--unlock", "--no-fork", "--fcntl", "--verbose"], values: ["-w", "-E", "--wait", "--timeout", "--conflict-exit-code", "--start", "--length"], code: ["-c", "--command"], operand: true, optionsAfterOperand: true },
   // https://man7.org/linux/man-pages/man1/taskset.1.html: mask/CPU list then argv; -p never launches.
-  taskset: { operand: /^(?:0x)?[\da-f,:\-]+$/i, separator: ",", noCommand: ["-p", "--pid"] },
+  taskset: { flags: ["-a", "-c", "--all-tasks", "--cpu-list"], operand: /^(?:0x)?[\da-f,:\-]+$/i, separator: ",", noCommand: ["-p", "--pid"] },
   // https://man7.org/linux/man-pages/man1/setsid.1.html: boolean options then argv.
-  setsid: {},
+  setsid: { flags: ["-c", "-f", "-w", "--ctty", "--fork", "--wait"] },
   // https://manpages.debian.org/trixie/expect/unbuffer.1.en.html: optional -p then argv.
-  unbuffer: {},
+  unbuffer: { flags: ["-p"] },
   // https://man7.org/linux/man-pages/man1/script.1.html: optional log file, -c text or -- argv.
-  script: { values: ["-E", "-B", "-I", "-O", "-T", "-m", "-o", "--echo", "--log-io", "--log-in", "--log-out", "--log-timing", "--logging-format", "--output-limit"], code: ["-c", "--command"], operand: true, optionsAfterOperand: true, boundary: ["--"] },
+  // https://raw.githubusercontent.com/apple-oss-distributions/shell_cmds/main/script/script.1: -t time, -F flush; file then argv.
+  script: { flags: ["-a", "-d", "-e", "-f", "-F", "-k", "-q", "-r", "-w", "--append", "--return", "--flush", "--force", "--quiet"], values: ["-t", "-E", "-B", "-I", "-O", "-T", "-m", "-o", "--echo", "--log-io", "--log-in", "--log-out", "--log-timing", "--logging-format", "--output-limit"], code: ["-c", "--command"], operand: true, optionsAfterOperand: true, boundary: ["--"] },
   // https://man7.org/linux/man-pages/man1/su.1.html: optional user and -c text (in either order).
-  su: { values: ["-s", "-g", "-G", "-w", "--shell", "--group", "--supp-group", "--whitelist-environment"], code: ["-c", "--command", "--session-command"], operand: true, optionsAfterOperand: true },
+  su: { flags: ["-", "-l", "-m", "-p", "-f", "-P", "-T", "--login", "--preserve-environment", "--fast", "--pty", "--no-pty"], values: ["-s", "-g", "-G", "-w", "--shell", "--group", "--supp-group", "--whitelist-environment"], code: ["-c", "--command", "--session-command"], operand: true, optionsAfterOperand: true },
   // https://man7.org/linux/man-pages/man1/runuser.1.html: -u user -- argv, or su-compatible -c.
-  runuser: { values: ["-u", "-g", "-G", "-s", "-w", "--user", "--group", "--supp-group", "--shell", "--whitelist-environment"], code: ["-c", "--command", "--session-command"], operand: true, optionsAfterOperand: true, direct: ["-u", "--user"] },
+  runuser: { flags: ["-", "-l", "-m", "-p", "-P", "-T", "--login", "--preserve-environment", "--pty", "--no-pty"], values: ["-u", "-g", "-G", "-s", "-w", "--user", "--group", "--supp-group", "--shell", "--whitelist-environment"], code: ["-c", "--command", "--session-command"], operand: true, optionsAfterOperand: true, direct: ["-u", "--user"] },
   // https://man7.org/linux/man-pages/man1/systemd-run.1.html: service options then argv.
-  "systemd-run": { values: ["-u", "-p", "-E", "-H", "-M", "--unit", "--property", "--description", "--slice", "--service-type", "--uid", "--gid", "--nice", "--working-directory", "--root-directory", "--setenv", "--host", "--machine", "--on-active", "--on-boot", "--on-startup", "--on-unit-active", "--on-unit-inactive", "--on-calendar", "--path-property", "--socket-property", "--timer-property"] },
+  "systemd-run": { flags: ["--scope", "--user", "--system", "--no-block", "--wait", "--pipe", "--pty", "--collect", "--quiet", "-q", "-P", "-t", "-G", "-d", "--same-dir", "--send-sighup", "--slice-inherit", "--remain-after-exit", "-S", "--shell", "-v", "--verbose", "--on-clock-change", "--on-timezone-change", "--no-ask-password", "--no-pager"], values: ["-C", "--capsule", "-u", "-p", "-E", "-H", "-M", "--unit", "--property", "--description", "--slice", "--service-type", "--uid", "--gid", "--nice", "--working-directory", "--root-directory", "--setenv", "--host", "--machine", "--on-active", "--on-boot", "--on-startup", "--on-unit-active", "--on-unit-inactive", "--on-calendar", "--path-property", "--socket-property", "--timer-property"] },
   // https://manpages.debian.org/trixie/firejail/firejail.1.en.html: --option=value then argv.
-  firejail: {},
+  firejail: { flags: ["--noprofile", "--quiet", "--debug", "--noroot", "--nonewprivs", "--private"], values: ["--profile", "--name"] },
   // https://github.com/proot-me/proot/blob/master/doc/proot/manual.rst: setup options then argv.
-  proot: { values: ["-r", "-R", "-S", "-b", "-m", "-q", "-w", "-v", "-k", "-i", "-p", "--rootfs", "--bind", "--mount", "--qemu", "--pwd", "--cwd", "--verbose", "--kernel-release", "--change-id", "--port"] },
+  proot: { flags: ["-0", "--root-id", "-n", "--netcoop"], values: ["-r", "-R", "-S", "-b", "-m", "-q", "-w", "-v", "-k", "-i", "-p", "--rootfs", "--bind", "--mount", "--qemu", "--pwd", "--cwd", "--verbose", "--kernel-release", "--change-id", "--port"] },
   // https://man7.org/linux/man-pages/man1/chroot.1.html: new root then argv.
-  chroot: { values: ["--userspec", "--groups"], operand: true },
+  chroot: { flags: ["--skip-chdir"], values: ["--userspec", "--groups"], operand: true },
   // https://github.com/microsoft/WSL/blob/master/localization/strings/en-US/Resources.resw (MessageWslUsage).
-  wsl: { values: ["-d", "-u", "--distribution", "--distribution-id", "--user", "--cd", "--shell-type"], boundary: ["-e", "--exec"], shell: true },
+  wsl: { flags: ["--system"], values: ["-d", "-u", "--distribution", "--distribution-id", "--user", "--cd", "--shell-type"], boundary: ["-e", "--exec"], noCommand: ["-l", "--list", "--status", "--shutdown"], shell: true },
 };
 
 /**
@@ -202,43 +204,73 @@ const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
  * Dynamic command words stop inspection; setup values retain proven arity.
  * At most sixteen wrappers are followed.
  */
-export function wrapperCommand(argv: readonly (string | undefined)[]): { index: number; code?: { text: string | undefined } } {
+export function wrapperCommand(argv: readonly (string | undefined)[]): { index: number; code?: { text: string | undefined }; ordinaryAsk?: string } {
   let index = 0;
+  let ordinaryAsk: string | undefined;
+  const finish = (at: number, code?: { text: string | undefined }) => ({ index: at, ...(code ? { code } : {}), ...(ordinaryAsk ? { ordinaryAsk } : {}) });
   for (let guard = 0; guard < 16 && index < argv.length; guard += 1) {
     const head = argv[index];
-    if (head === undefined) return { index };
+    if (head === undefined) {
+      ordinaryAsk ??= "opaque wrapper command binding";
+      return finish(index);
+    }
     const program = programName(head);
     // `eval` / `source` / `.` run a string or file: they are code carriers,
     // not transparent wrappers.
-    if (!WRAPPER_SET.has(program) || program === "eval" || program === "source" || program === ".") return { index };
+    if (!WRAPPER_SET.has(program) || program === "eval" || program === "source" || program === ".") return finish(index);
     index += 1;
-    const grammar = WRAPPER_GRAMMAR[program] ?? {};
+    const declared = WRAPPER_GRAMMAR[program];
+    const grammar = declared ?? {};
     let operand = grammar.operand;
     let options = true;
     let shell = grammar.shell;
+    let payload: { index: number; text: string | undefined } | undefined;
     while (index < argv.length) {
       const token = argv[index];
-      if (token === undefined) return { index };
+      if (token === undefined) {
+        ordinaryAsk ??= payload ? "opaque wrapper argument binding" : "opaque wrapper command binding";
+        if (payload) { index += 1; operand = undefined; continue; }
+        return finish(index);
+      }
       if (options && token === "--") {
         index += 1;
         options = false;
         if (grammar.boundary?.includes(token)) operand = undefined;
         continue;
       }
+      if (options && token === "-" && grammar.flags?.includes(token)) { index += 1; continue; }
       if (options && token.startsWith("-") && token !== "-") {
         const long = token.startsWith("--");
         const flags = long ? [token.split("=")[0]!] : [...token.slice(1)].map((letter) => `-${letter}`);
         let width = 1;
         for (const [at, flag] of flags.entries()) {
-          if (grammar.noCommand?.includes(flag)) return { index: argv.length };
+          if (declared && long && token.includes("=") && !grammar.values?.includes(flag) && !grammar.code?.includes(flag)) {
+            ordinaryAsk ??= "unsupported wrapper option binding";
+            return finish(argv.length);
+          }
+          if ((token === flag && (flag === "--help" || flag === "--version")) || grammar.noCommand?.includes(flag)) return finish(argv.length);
           if (grammar.boundary?.includes(flag)) { options = false; shell = undefined; break; }
           if (grammar.direct?.includes(flag)) operand = undefined;
           const code = grammar.code?.includes(flag);
-          if (!code && !grammar.values?.includes(flag)) continue;
+          if (!code && !grammar.values?.includes(flag)) {
+            if (declared && (!grammar.flags?.includes(flag) || (long && token.includes("=")))) {
+              ordinaryAsk ??= "unsupported wrapper option";
+              return finish(argv.length);
+            }
+            continue;
+          }
           const attached = long ? (token.includes("=") ? token.slice(token.indexOf("=") + 1) : undefined)
             : (at + 2 < token.length ? token.slice(at + 2) : undefined);
           const valueIndex = attached === undefined ? index + 1 : index;
-          if (code) return { index: valueIndex, code: { text: attached ?? argv[valueIndex] } };
+          const text = attached ?? argv[valueIndex];
+          if (text === undefined) ordinaryAsk ??= code ? "opaque wrapper code binding" : "opaque wrapper option binding";
+          if (code) {
+            if (payload) {
+              ordinaryAsk ??= "ambiguous wrapper code binding";
+              return finish(argv.length);
+            }
+            payload = { index: valueIndex, text };
+          }
           width = attached === undefined ? 2 : 1;
           break;
         }
@@ -251,18 +283,24 @@ export function wrapperCommand(argv: readonly (string | undefined)[]): { index: 
         while (grammar.separator && argv[index] === grammar.separator && argv[index + 1] !== undefined
           && (operand === true || operand.test(argv[index + 1]!))) index += 2;
         operand = undefined;
-        if (grammar.optionsAfterOperand) continue;
+        if (grammar.optionsAfterOperand || payload) continue;
         break;
       }
       if (grammar.assignments && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) { index += 1; continue; }
+      if (payload) { index += 1; continue; }
       break;
     }
-    if (shell && /[\s;&|<>]/.test(argv[index] ?? "")) {
-      const tail = argv.slice(index);
-      return { index, code: { text: tail.every((token) => token !== undefined) ? tail.join(" ") : undefined } };
+    if (payload) return finish(payload.index, { text: payload.text });
+    const tail = shell ? argv.slice(index) : [];
+    if (shell && tail.some((token) => token === undefined || /[\s;&|<>$`\\(){}\[\]*?!~'"]/.test(token))) {
+      const text = tail.every((token) => token !== undefined) ? tail.join(" ") : undefined;
+      if (text === undefined) ordinaryAsk ??= "opaque wrapper code binding";
+      return finish(index, { text });
     }
   }
-  return { index };
+  const next = argv[index];
+  if (index < argv.length && (next === undefined || WRAPPER_SET.has(programName(next)))) ordinaryAsk ??= "wrapper analysis limit exceeded";
+  return finish(index);
 }
 
 /** Shared boundary for deny/ask matching, inline-code and sink inspection. */
@@ -930,8 +968,9 @@ export function arithmeticEvaluationReason(cmd: ShellCommand): string | null {
  * because wrapper option grammars differ too much to skip exactly.
  */
 export function hiddenCodeReason(argv: readonly (string | undefined)[]): string | null {
-  const inner = wrapperPrefixLength(argv);
-  if (inner > 0 && inner < argv.length && argv[inner] === undefined) return "dynamic program name behind a wrapper";
+  const wrapper = wrapperCommand(argv);
+  const inner = wrapper.index;
+  if (!wrapper.code && inner > 0 && inner < argv.length && argv[inner] === undefined) return "dynamic program name behind a wrapper";
   const wrapperStarts = argv[0] !== undefined && WRAPPER_SET.has(programName(argv[0])) ? argv.map((_, index) => index) : [0];
   const runner = opaqueRunnerReason(argv) !== null;
   const visibleArgv = runner ? argv.slice(0, inner + 1) : argv;

@@ -84,6 +84,10 @@ const RULE_CASES = [
 ];
 
 const ORDINARY_CONTROLS = [
+  "su --future-wrapper value git status",
+  "script --future-wrapper value git status",
+  "systemd-run --future-wrapper value git status",
+  "firejail --future-wrapper value git status",
   "npm test",
   "npm run build --future-task-flag",
   "npm install --registry=https://e plain-pkg",
@@ -112,19 +116,19 @@ const INNER_UPLOADS = [
 
 describe("shared runner decisions", () => {
   it("preserves the original command corpus and complete bucket annotations", () => {
-    expect(RUNNER_DECISIONS).toHaveLength(1832);
+    expect(RUNNER_DECISIONS).toHaveLength(1948);
     const commands = RUNNER_DECISIONS.map((row) => row.command);
     expect(createHash("sha256").update(JSON.stringify(commands.slice(0, 1377))).digest("hex"))
       .toBe("657e677ea8f9968de15dd2907d42abab7ac9958d2815126449ee9037c4e2b68b");
     // The complete command identity was collected independently of this table.
-    expect(new Set(commands).size).toBe(1832);
+    expect(new Set(commands).size).toBe(1948);
     expect(createHash("sha256").update(JSON.stringify([...commands].sort())).digest("hex"))
-      .toBe("1d89458b8be8a36f53b8d7cd04fc81079750b30bcb30d4b1d0c17837e6f116f7");
+      .toBe("cdc5158c2c99f8bcacba13fccc0562e78cfbad52e2072791a89a0242efb61c6c");
     for (const dialect of DIALECTS) {
       const expectations = RUNNER_DECISIONS.map((row) => row.dialects?.[dialect] ?? row);
       const counts = dialect === "bash"
-        ? { floor: 190, ordinary: 1574, normal: 68 }
-        : { floor: 217, ordinary: 1554, normal: 61 };
+        ? { floor: 241, ordinary: 1637, normal: 70 }
+        : { floor: 267, ordinary: 1614, normal: 67 };
       for (const bucket of ["floor", "ordinary", "normal"] as const) {
         expect(expectations.filter((row) => row.bucket === bucket)).toHaveLength(counts[bucket]);
       }

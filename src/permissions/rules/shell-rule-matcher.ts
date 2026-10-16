@@ -45,6 +45,7 @@ import {
   isShellWrapperProgram,
   shellOptionEffect,
   stripGlobalOptions,
+  wrapperCommand,
   wrapperPrefixLength,
 } from "./shell-prefix-policy.js";
 
@@ -153,7 +154,7 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
         }
         if (statement.assignments.length > 0) blockers.push("command-scoped environment assignment");
         const argv = statement.words.map((word) => staticShellWord(word));
-        ordinaryAsk ??= opaqueRunnerReason(argv) ?? undefined;
+        ordinaryAsk ??= wrapperCommand(argv).ordinaryAsk ?? opaqueRunnerReason(argv) ?? undefined;
         if (argv[0] === undefined) {
           hidden.push("dynamic program name");
           ordinaryAsk ??= "dynamic program name";

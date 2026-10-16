@@ -92,10 +92,11 @@ export function isSafeMainBundleManifestPath(path) {
  * Opaque runner prefixes and bounded path scans: entry 425_021, initial 5_499_690, total 9_178_773; ceiling 5_500_000.
  * Credential/sender invocation views and declared interpreter roles: entry 425_021, initial 5_506_409, total 9_185_492; ceiling 5_510_000.
  * Shared wrapper command boundaries: entry 425_021, initial 5_508_989, total 9_188_072; ceiling 5_510_000.
+ * Wrapper option bindings and shell-joined tails: entry 425_021, initial 5_511_957, total 9_191_040; ceiling 5_515_000.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_510_000,
+  initialBytes: 5_515_000,
   totalBytes: 11_050_000,
 });
 
