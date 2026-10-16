@@ -18,12 +18,34 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
+/**
+ * Playwright's Electron launcher is `_electron` (imported, destructured, or
+ * reached through the module namespace as `pw._electron`); any mention of the
+ * identifier outside the harness, or any `electron.launch(` call, is a launch
+ * that skips the harness's switches.
+ */
+const DIRECT_LAUNCH = /\b_electron\b|\b_?electron\.launch\(/;
+
 describe("e2e Electron launches", () => {
+  it.each([
+    ['import { _electron as electron } from "playwright";\nawait electron.launch({ args });'],
+    ['import { _electron } from "playwright";\nawait _electron.launch({ args });'],
+    ['import * as pw from "playwright";\nawait pw._electron.launch({ args });'],
+    ["const { _electron: electron } = await import('playwright');"],
+  ])("flags a direct launch: %s", (source) => {
+    expect(DIRECT_LAUNCH.test(source)).toBe(true);
+  });
+
+  it("does not flag the harness launcher or an app.evaluate callback", () => {
+    expect(DIRECT_LAUNCH.test('import { launchElectron } from "./seeded-electron.js";\nawait launchElectron({ args });')).toBe(false);
+    expect(DIRECT_LAUNCH.test("await app.evaluate((_main, cards) => cards.length, []);")).toBe(false);
+  });
+
   it("all go through the harness launcher", () => {
     const direct = SUITES.flatMap((suite) => sourceFiles(resolve(ROOT, suite)))
       .map((path) => relative(ROOT, path))
       .filter((path) => path !== HARNESS)
-      .filter((path) => /_electron\b[^,}]*\bas\b|\b_electron\s*:|\belectron\.launch\(/.test(readFileSync(path, "utf8")));
+      .filter((path) => DIRECT_LAUNCH.test(readFileSync(path, "utf8")));
     expect(direct).toEqual([]);
   });
 

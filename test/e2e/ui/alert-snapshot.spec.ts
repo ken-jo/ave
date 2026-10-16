@@ -1,6 +1,9 @@
 import { expect, test } from "@playwright/test";
 import { ALERTS, OVERLAY_V1 } from "../../../src/shared/ipc-channels.js";
 import type { AlertCard } from "../../../src/shared/alerts-types.js";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { SUGGESTIONS_SESSION_ID } from "../../../src/shared/suggestions-session.js";
 import { buildE2eBaseSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 
 test("an older alert snapshot cannot undo a live withdrawal or refresh", async ({}, testInfo) => {
@@ -13,10 +16,15 @@ test("an older alert snapshot cannot undo a live withdrawal or refresh", async (
       // Hold the response to exercise the supported cross-channel ordering deterministically.
       ipcMain.handle(channel, () => new Promise((resolve) => { state.resolveAlertSnapshot = resolve; }));
     }, ALERTS.listOpen);
+    // Alert cards belong to the Suggestions conversation. Main creates it before
+    // staging a real card; these cards are pushed straight to the renderer, so
+    // the test creates it and opens it.
+    writeFileSync(join(ctx.aveHome, "sessions", `${SUGGESTIONS_SESSION_ID}.jsonl`), "");
     await ctx.page.reload();
     await expect.poll(() => ctx.app.evaluate(() =>
       typeof (globalThis as unknown as { resolveAlertSnapshot?: unknown }).resolveAlertSnapshot,
     )).toBe("function");
+    await ctx.page.getByTestId(`sidebar-session-${SUGGESTIONS_SESSION_ID}`).click();
 
     const card = (id: string, title: string): AlertCard => ({
       id: `alert:${id}`,
@@ -39,7 +47,7 @@ test("an older alert snapshot cannot undo a live withdrawal or refresh", async (
     // Both pushes share a transport: seeing the second also observes the dismissal.
     await expect(ctx.page.getByText(refreshed.summary, { exact: true })).toBeVisible();
 
-    await ctx.app.evaluate((_electron, cards) => {
+    await ctx.app.evaluate((_main, cards) => {
       const state = globalThis as unknown as { resolveAlertSnapshot?: (cards: unknown[]) => void };
       if (!state.resolveAlertSnapshot) throw new Error("No pending alert snapshot");
       state.resolveAlertSnapshot(cards);

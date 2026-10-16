@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AveApi } from "../../../src/ui/renderer/types.js";
+import { SUGGESTIONS_SESSION_ID } from "../../../src/shared/suggestions-session.js";
 import { MAIN_ENTRY, buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron.js";
 
 test("host deadline cards use built-in presentation and service-owned Settings", async ({}, testInfo) => {
@@ -45,6 +46,16 @@ test("host deadline cards use built-in presentation and service-owned Settings",
     const page = await app.firstWindow();
     await expect(page.getByTestId("main-toolbar").first()).toBeVisible({ timeout: 60_000 });
     const card = page.getByTestId("routine-card");
+    // An alert card is a suggestion the user did not ask for: it belongs to the
+    // Suggestions conversation, never to the conversation the app resumed into.
+    const suggestionsRow = page.getByTestId(`sidebar-session-${SUGGESTIONS_SESSION_ID}`);
+    await expect(suggestionsRow).toBeVisible();
+    await suggestionsRow.click();
+    await expect(card).toContainText("Due soon: Prepare the weekly report");
+    await page.getByTestId(`sidebar-session-${sessionId}`).click();
+    await expect(page.getByTestId("user-message-bubble")).toContainText("Review my work");
+    await expect(card).toHaveCount(0);
+    await suggestionsRow.click();
     await expect(card).toContainText("Due soon: Prepare the weekly report");
     await expect(card).toContainText("Built-in notice");
     await expect(card.getByTestId("plugin-provenance-id")).toHaveCount(0);
