@@ -567,7 +567,7 @@ Phase 1에서 §4.4 Layer A·B 명세를 production 수준으로 끌어올리는
 | **PageIndex 통합** | `pageindex==0.2.8`은 검색 메서드가 없으므로 플러그인이 function calling 으로 트리와 페이지 본문을 도구 노출해 agentic 탐색을 직접 구현 |
 | **한국어 BM25** | `kiwipiepy 0.23.1` 형태소 추출 → `content_ko` 컬럼 → SQLite FTS5 `unicode61` 패턴으로 한국어 recall 보강 |
 | **벡터 검색** | OpenAI `text-embedding-3-small` → `lancedb` 로컬 ANN. 100 chunks / request, 400 RPM throttle, 지수 백오프 |
-| **Hybrid Ranker** | `ave-plugin-local-indexer/worker/local_indexer_search.py`가 BM25 / vector 결과를 RRF(k=60)로 결합 |
+| **Hybrid Ranker** | `agent-marketplace/plugins/local-indexer/source/worker/local_indexer_search.py`가 BM25 / vector 결과를 RRF(k=60)로 결합 |
 | **Idle-aware 인덱싱** | `ave/src/main/idle-scheduler.ts` 5-state 머신으로 유휴 시점에 우선순위 큐 처리 |
 | **검색 도구** | 플러그인 tool — `index_search`, `index_documents`, `index_get_document` |
 | **거버넌스 보강** | `ave/src/tools/invocation-runner.ts` Step 2.5 Bash AST pre-validator, `ave/src/main/audit-service.ts`, `ave/src/hooks/post-turn-hook-chain.ts` 연계 |
@@ -614,11 +614,11 @@ Phase 1에서 §4.4 Layer A·B 명세를 production 수준으로 끌어올리는
 | `지원` | hit | PASS |
 | `품의` | hit | PASS |
 
-구현 위치: `ave-plugin-local-indexer/worker/korean_tokenizer.py`
+구현 위치: `agent-marketplace/plugins/local-indexer/source/worker/korean_tokenizer.py`
 
 #### 4.4.3 Hybrid 검색 — RRF `k=60`
 
-구현은 `ave-plugin-local-indexer/worker/local_indexer_search.py`에 있다. worker 가 자신의 BM25 결과와 vector 결과를 Reciprocal Rank Fusion 으로 통합해 `index_search` 의 `hybrid` 모드로 반환한다.
+구현은 `agent-marketplace/plugins/local-indexer/source/worker/local_indexer_search.py`에 있다. worker 가 자신의 BM25 결과와 vector 결과를 Reciprocal Rank Fusion 으로 통합해 `index_search` 의 `hybrid` 모드로 반환한다.
 
 **RRF 공식:**
 
@@ -673,7 +673,7 @@ RESUME_DELAY ──── 90s elapsed ──→ RUNNING
 
 #### 4.4.5 LLM Agentic 검색 — 플러그인 소유 도구
 
-`pageindex==0.2.8`에 `search()` 메서드가 없으므로 local-indexer 플러그인이 도구를 노출해 LLM이 트리를 직접 탐색하도록 한다. 도구 정의는 `ave-plugin-local-indexer/src/hostPlugin.ts`에 있다.
+`pageindex==0.2.8`에 `search()` 메서드가 없으므로 local-indexer 플러그인이 도구를 노출해 LLM이 트리를 직접 탐색하도록 한다. 도구 정의는 `agent-marketplace/plugins/local-indexer/source/src/hostPlugin.ts`에 있다.
 
 | Tool | 동작 |
 | --------------------------------------- | ------------------------------------------------------------ |
@@ -2552,7 +2552,7 @@ main.ts:initialThemeArgs()
   late-binding `bridge.onEvent` 에 대한 보호. pull 이 정상이면 buffer 는
   단순히 redundant
 
-**Removed (ave#667, SDK v5.4.0)** — `ave-plugin-sdk` 의
+**Removed (SDK v5.4.0)** — 예전 플러그인 SDK 저장소의
 `ave-tokens-fallback` `<style>` / `_FALLBACK_CSS` / `fallback-dark.json` /
 `ave-tokens.css` artifact 4 종은 모두 제거되었다. `initialThemeArgs`
 (commit `1696f92`) 가 main BrowserWindow 에 primed token payload 를
@@ -3096,7 +3096,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 - **Windows (srt-win, fs+network partial)**: §6.3.9 와 동일 — 동일 gate,
   fs+network partial capability, win32-not-ready 시 non-bricking 신호
   (hard-throw 안 함).
-- **Plugin egress SOT**: `ave-plugin-local-indexer` 의 Python worker provider
+- **Plugin egress SOT**: local-indexer 플러그인의 Python worker provider
   egress 는 broker 가 host-side upstream 을 고정하고 `hostApi.hostFetch`
   (Tier A NetworkGuard) 로 호출한다. Python worker 없이 브라우저 SSO +
   사설망 HTTP/HTTPS endpoint 를 직접 다루는 플러그인은 예외이므로, 해당
@@ -3138,7 +3138,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
   "description": "회의 녹음·음성 전사(STT)·요약 생성 플러그인.",
   "extensions": {
     "ai.agent-connector.ave": {
-  "displayName": "Ave Meeting",
+  "displayName": "Meeting",
   "entry": "dist/hostPlugin.js",
   "startupTimeoutMs": 8000,
 
@@ -3777,12 +3777,12 @@ guard in agent-hub-panel-v3.tsx throws if host omits the namespaces.
 ### 10.0 Readiness Status: Work Board Pilot + Approval/DM POC (2026-05-02)
 
 **현재 구현 범위 (작동 상태):**
-- ✅ **개인 업무 일지 조회** (Read-only): `ave-agent-hub` Work Board API와 `agent-hub` bridge를 통해 사용자 자신의 일지·일정·할일 조회 가능
-- ✅ **팀 업무 요약 조회** (Read-only): `ave-agent-hub` Work Board API와 `agent-hub` bridge를 통해 팀원 일지 통계 조회 가능
-- ✅ **웹 대시보드**: `ave-agent-hub/web` Work Board 페이지로 live 데이터 소비 가능
+- ✅ **개인 업무 일지 조회** (Read-only): agent-hub 서버의 Work Board API와 `agent-hub` bridge를 통해 사용자 자신의 일지·일정·할일 조회 가능
+- ✅ **팀 업무 요약 조회** (Read-only): agent-hub 서버의 Work Board API와 `agent-hub` bridge를 통해 팀원 일지 통계 조회 가능
+- ✅ **웹 대시보드**: agent-hub 서버 `web/` 의 Work Board 페이지로 live 데이터 소비 가능
 - ✅ **플러그인 UI 패널**: 사이드바·detached 창에서 mock-free 실데이터 렌더링
-- ✅ **Direct Message POC**: `ave-agent-hub`의 기존 `/api/v1/messages` Direct 1:1 메시지 API를 `agent-hub` bridge가 호출
-- ✅ **First-class Approval POC**: `ave-agent-hub`의 `approval_requests` 테이블 + `pending → approved/rejected` 상태 전이를 `agent-hub` bridge가 호출
+- ✅ **Direct Message POC**: agent-hub 서버의 기존 `/api/v1/messages` Direct 1:1 메시지 API를 `agent-hub` bridge가 호출
+- ✅ **First-class Approval POC**: agent-hub 서버의 `approval_requests` 테이블 + `pending → approved/rejected` 상태 전이를 `agent-hub` bridge가 호출
 - ✅ **Approval notification/audit**: 승인 요청/결정은 Agent Hub backend에 저장되고 `notifications(kind=approval)` 및 `audit_log`에 기록됨
 - ~~✅ **Host Task 호환성**: `hostApi.addTask()` 호환 경로~~ **(2026-05-05 Phase 4 제거)** `addTask` + `TaskService` 전체 삭제. task 소유권 agent-hub 플러그인으로 완전 이전.
 
@@ -3829,7 +3829,7 @@ graph LR
 
 ### 10.0.3 Direction Update (2026-06-16): Host-Integrated Agentic Work Board
 
-**결정**: Work Board를 **server-backed plugin POC** (`ave-agent-hub` 서버 + `agent-hub` bridge) 에서 **호스트 1급 도메인 (host-integrated agentic work orchestrator)** 으로 전환한다. 이는 아래 §10.1 Roadmap 이 명시한 미구현 갭 — _"승인 후 실제 행위 실행은 아직 연결하지 않는다"_ — 을 실현하는 작업이다.
+**결정**: Work Board를 **server-backed plugin POC** (agent-hub 서버 + `agent-hub` bridge) 에서 **호스트 1급 도메인 (host-integrated agentic work orchestrator)** 으로 전환한다. 이는 아래 §10.1 Roadmap 이 명시한 미구현 갭 — _"승인 후 실제 행위 실행은 아직 연결하지 않는다"_ — 을 실현하는 작업이다.
 
 **Why host, not plugin (권한 모델 정합):**
 - agentic 오케스트레이터는 본질적으로 (a) 서브에이전트 spawn, (b) §8 ApprovalGate 구동, (c) **타 플러그인 툴(mail/calendar/meeting) 오케스트레이션** 이 필요하다.
@@ -3847,7 +3847,7 @@ graph LR
 
 **차용한 구성 요소:** Skills = agent profile, Memory = `~/.ave/work-board/memories/{USER,MEMORY}.md` (업무 흐름 학습), Crons = RoutinesScheduler 연동 예약 실행, Self-improvement = run 결과로 skill/memory 보정.
 
-**Supersedes:** `ave-agent-hub` 서버 + `agent-hub` 플러그인은 Work Board 기능에 대해 디커미션(서버 2026-06-15 셧다운). 저장소 `~/.ave/plugins/agent-hub/board.json` → `~/.ave/work-board/board.json` (부팅 1회 마이그레이션). `work_item.due_soon {itemId,title,notifiedAt}` 계약은 호스트가 계속 emit (구독 플러그인 소비 보존).
+**Supersedes:** agent-hub 서버 + `agent-hub` 플러그인은 Work Board 기능에 대해 디커미션(서버 2026-06-15 셧다운). 저장소 `~/.ave/plugins/agent-hub/board.json` → `~/.ave/work-board/board.json` (부팅 1회 마이그레이션). `work_item.due_soon {itemId,title,notifiedAt}` 계약은 호스트가 계속 emit (구독 플러그인 소비 보존).
 
 **Phased delivery:** P1 도메인 스켈레톤(`src/work-board/`, `~/.ave/work-board/`) + WorkItem 포팅 + 프로페셔널 칸반 UI(host renderer `activeView='work-board'`). P2 네이티브 plan→approve→execute 오케스트레이션. P3 Skills/Memory/일일·주간 reports + due_soon 계약. P4 플러그인 디커미션 + 데이터 마이그레이션 + 샘플 데이터.
 
@@ -3998,7 +3998,7 @@ graph TB
 
     subgraph "Plugin Development Kit PDK"
         SDK["Ave Plugin SDK"]
-        CLI_TOOL["ave-plugin-cli<br/>(scaffold·build·test·publish)"]
+        CLI_TOOL["Plugin CLI (계획, 미구현)<br/>(scaffold·build·test·publish)"]
         TEMPLATE["Project Templates"]
         SANDBOX["Sandbox Environment"]
         DOC["API Reference + 구축 스펙"]
@@ -4022,7 +4022,7 @@ flowchart LR
     subgraph "사업부 플러그인 구축 프로세스"
         direction TB
         S1["1. 스펙 확인<br/>(Plugin Spec Registry 참고)"]
-        S2["2. Scaffold<br/>(ave-plugin-cli init)"]
+        S2["2. Scaffold<br/>(templates/extension/ 에서 시작)"]
         S3["3. API Connector 구현<br/>(사업부 시스템 REST/gRPC)"]
         S4["4. Skill 정의<br/>(트리거 키워드 + 실행 로직)"]
         S5["5. UI 컴포넌트<br/>(React, Slot 기반 — 선택)"]
@@ -4750,7 +4750,7 @@ v4 §12 는 Use Case ↔ Architecture 매핑에 집중되어 있었다. v5 는 �
 v4 §14 배포·거버넌스 체계는 유지된다. v5 는 개발 조직 운영상의 다음을 덧붙인다.
 
 - **SDK public 분리**: `ave` 내부에 있던 플러그인 SDK 타입/유틸을 별도 공개 패키지(`@ave/plugin-sdk`) 로 분리 게시. 외부 사업부는 호스트 내부 코드에 의존하지 않고 SDK 만 사용.
-- **Plugin template repo**: `ave-plugin-template` repo 를 제공. manifest, CI workflow(§9.X), HostApi 계약 테스트, 기본 tool/event 네임스페이스가 사전 구성됨.
+- **Plugin template repo**: 플러그인 템플릿 repo 를 제공 (현재 `ken-jo/agent-marketplace` 의 `templates/extension/`). manifest, CI workflow(§9.X), HostApi 계약 테스트, 기본 tool/event 네임스페이스가 사전 구성됨.
 - **Drift-check nightly**: 야간 CI 가 `ave` 의 HostApi 타입 / manifest 스키마와 각 플러그인 repo 의 실제 사용 간 드리프트를 점검. 결과는 대시보드 + Slack 알림.
 - **Tag policy — manual**: 버전 태그(`vX.Y.Z`) 는 자동 생성하지 않는다. 릴리즈 책임자가 수동으로 태그를 부여하며, 태그 부여는 §7.X Marketplace 승인 상태와 일치해야 한다 (태그 O → `approved` 전제).
 

@@ -12,7 +12,7 @@ const SHA256 = /^[0-9a-f]{64}$/u;
  * Where Ave publishes its JSON Schemas: every schema `$id` the host owns is
  * this origin plus its path under `web/public/schemas/`, and the Ave site
  * serves the file at that URL. Protocols 1 and 2 were published under the
- * Ave site's origin and keep that `$id` byte for byte (RETIRED_COPIES); the
+ * app's former site origin and keep that `$id` byte for byte (RETIRED_COPIES); the
  * Ave site serves those files at the same paths.
  */
 const AVE_SCHEMA_ORIGIN = "https://ave.agent-connector.ai";

@@ -1,5 +1,7 @@
 # Changelog
 
+> Ave is the former name of Ave; this file is a historical record, and each entry keeps the names used when it was released.
+
 ## v0.14.0 — 2026-10-16
 
 - **Ave는 새 앱이며, 설치된 Ave는 업데이트되지 않습니다.** Ave는 Ave의 설정과 데이터

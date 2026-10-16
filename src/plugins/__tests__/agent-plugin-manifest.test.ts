@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseAgentPluginManifest, validatePluginManifestShape } from "../agent-plugin-manifest.js";
 import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with { type: "json" };
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
+import { LEGACY_EXTENSION_NAMESPACE } from "../../shared/legacy-product-name.js";
 
 const ROOT = { $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer-plugin" };
 const MARKET = { ...ROOT, version: "1.0.0", description: "Writing tools" };
@@ -55,9 +56,9 @@ describe("agent-plugin manifest branches", () => {
   });
 
   it("refuses the renamed extension key by name on its own and beside the current one, never reading it as an alias", () => {
-    const renamed = "plugin.json extensions.ai.agent-connector.ave was renamed to extensions.ai.agent-connector.ave; update the manifest";
-    const legacyOnly = JSON.stringify({ ...MARKET, extensions: { "xyz.retiredname-namespace": { displayName: "Writer" } } });
-    const both = JSON.stringify({ ...MARKET, extensions: { "ai.agent-connector.ave": { displayName: "Writer" }, "xyz.retiredname-namespace": { displayName: "Writer" } } });
+    const renamed = `plugin.json extensions.${LEGACY_EXTENSION_NAMESPACE} was renamed to extensions.ai.agent-connector.ave; update the manifest`;
+    const legacyOnly = JSON.stringify({ ...MARKET, extensions: { [LEGACY_EXTENSION_NAMESPACE]: { displayName: "Writer" } } });
+    const both = JSON.stringify({ ...MARKET, extensions: { "ai.agent-connector.ave": { displayName: "Writer" }, [LEGACY_EXTENSION_NAMESPACE]: { displayName: "Writer" } } });
     for (const bytes of [legacyOnly, both]) {
       expect(() => validatePluginManifestShape(bytes)).toThrow(renamed);
       expect(() => parseAgentPluginManifest(bytes)).toThrow(renamed);

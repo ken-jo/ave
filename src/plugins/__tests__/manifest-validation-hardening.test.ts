@@ -20,6 +20,7 @@ import {
 } from "./test-helpers.js";
 import { agentPluginsDocument, servedAgentPluginsDocument } from "./test-helpers.js";
 import { buildManifestValidator, parsePluginJson } from "../runtime/manifest-validation.js";
+import { LEGACY_EXTENSION_NAMESPACE } from "../../shared/legacy-product-name.js";
 
 describe("runtime manifest validation hardening", () => {
   let testDir: string;
@@ -409,8 +410,8 @@ describe("runtime manifest validation of a process entry", () => {
   });
 
   it.each([
-    ["on its own", (ave: unknown) => ({ "xyz.retiredname-namespace": ave })],
-    ["beside the current key", (ave: unknown) => ({ "ai.agent-connector.ave": ave, "xyz.retiredname-namespace": {} })],
+    ["on its own", (ave: unknown) => ({ [LEGACY_EXTENSION_NAMESPACE]: ave })],
+    ["beside the current key", (ave: unknown) => ({ "ai.agent-connector.ave": ave, [LEGACY_EXTENSION_NAMESPACE]: {} })],
   ])("refuses the renamed extension key %s, naming both keys", async (_name, extensions) => {
     const document = agentPluginsDocument({
       id: "process-kit", name: "Process Kit", version: "1.0.0", description: "A process entry fixture.",
@@ -419,7 +420,7 @@ describe("runtime manifest validation of a process entry", () => {
     const path = join(dir, "plugin.json");
     await writeFile(path, JSON.stringify({ ...document, extensions: extensions(document.extensions["ai.agent-connector.ave"]) }), "utf-8");
     await expect(parsePluginJson(path, await buildManifestValidator())).rejects.toThrow(
-      `Invalid plugin manifest 'process-kit' at 'extensions["xyz.retiredname-namespace"]' (${path}): extensions.ai.agent-connector.ave was renamed to extensions.ai.agent-connector.ave; update the manifest.`,
+      `Invalid plugin manifest 'process-kit' at 'extensions["${LEGACY_EXTENSION_NAMESPACE}"]' (${path}): extensions.${LEGACY_EXTENSION_NAMESPACE} was renamed to extensions.ai.agent-connector.ave; update the manifest.`,
     );
   });
 

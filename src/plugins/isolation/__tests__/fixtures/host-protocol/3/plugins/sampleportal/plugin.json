@@ -5,7 +5,7 @@
   "description": "Host protocol golden fixture: the hostApi surface the sampleportal plugin reaches, beside its own lifecycle and access declarations.",
   "extensions": {
     "ai.agent-connector.ave": {
-      "displayName": "Ave Portal",
+      "displayName": "Portal",
       "entry": "entry.mjs",
       "capabilities": [
         "external-auth-consumer",

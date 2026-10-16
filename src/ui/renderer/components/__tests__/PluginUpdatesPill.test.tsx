@@ -18,7 +18,7 @@ describe("PluginUpdatesPill", () => {
   it("shows the count in the band and the full list in the hover text", () => {
     renderPill({
       updates: [
-        update("plugin", "meeting", "Ave Meeting", "2.0.0"),
+        update("plugin", "meeting", "Meeting", "2.0.0"),
         update("skill", "calendar", "Calendar", "1.4.0"),
         update("theme", "dusk", "Dusk", "3.1.0"),
       ],
@@ -28,11 +28,11 @@ describe("PluginUpdatesPill", () => {
     expect(pill.textContent).toContain("업데이트 3개");
     const title = pill.getAttribute("title") ?? "";
     expect(title).toContain("3개 업데이트 가능");
-    expect(title).toContain("Ave Meeting → 2.0.0");
+    expect(title).toContain("Meeting → 2.0.0");
     expect(title).toContain("Calendar → 1.4.0");
     expect(title).toContain("Dusk → 3.1.0");
     fireEvent.focus(pill);
-    expect(screen.getByRole("tooltip").textContent).toContain("Ave Meeting → 2.0.0");
+    expect(screen.getByRole("tooltip").textContent).toContain("Meeting → 2.0.0");
   });
 
   it("counts only the updates that need the user (design §18.7.5)", () => {
@@ -76,7 +76,7 @@ describe("PluginUpdatesPill", () => {
 
   it("opens the review with the updates instead of installing them", () => {
     const onReview = vi.fn();
-    const updates = [update("plugin", "meeting", "Ave Meeting", "0.5.24")];
+    const updates = [update("plugin", "meeting", "Meeting", "0.5.24")];
     renderPill({ updates, onReview });
 
     screen.getByTestId("marketplace-update-action").click();
@@ -86,7 +86,7 @@ describe("PluginUpdatesPill", () => {
   });
 
   it("offers no skip when every update it counts is required, since a required update ignores skips", () => {
-    const required: PackageUpdateView = { ...update("plugin", "meeting", "Ave Meeting", "2.0.0"), state: "waiting", escalated: true, required: true };
+    const required: PackageUpdateView = { ...update("plugin", "meeting", "Meeting", "2.0.0"), state: "waiting", escalated: true, required: true };
     renderPill({ updates: [required] });
     expect(screen.getByTestId("marketplace-update-action")).toBeInTheDocument();
     expect(screen.queryByLabelText("이 업데이트를 다음 버전까지 건너뛰기")).toBeNull();
@@ -95,7 +95,7 @@ describe("PluginUpdatesPill", () => {
   it("uses the close control as a skip-until-next-version action", () => {
     const onSkip = vi.fn();
     const onReview = vi.fn();
-    renderPill({ updates: [update("plugin", "meeting", "Ave Meeting", "0.5.24")], onSkip, onReview });
+    renderPill({ updates: [update("plugin", "meeting", "Meeting", "0.5.24")], onSkip, onReview });
 
     screen.getByLabelText("이 업데이트를 다음 버전까지 건너뛰기").click();
 

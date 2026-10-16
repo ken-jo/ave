@@ -97,7 +97,7 @@ export type PluginMcpInvoke = (
 
 function readPathFields(meta: Record<string, unknown>): string[] | undefined {
   // Read the SOLE Ave-proprietary wire key, `ave/pathFields`. The legacy
-  // reverse-DNS `xyz.ave/pathFields` dual-read was removed: a first-party
+  // reverse-DNS `pathFields` dual-read was removed: a first-party
   // plugin's loopback forward projection only ever emits the new key, and an
   // installed manifest carrying the legacy key is rejected fail-closed by the
   // manifest schema before it can reach the wire (never accepted-but-ungated).

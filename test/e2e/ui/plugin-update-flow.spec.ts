@@ -29,7 +29,7 @@ type PackageUpdate = {
 
 const meeting: PackageUpdate = {
   key: { sourceId: 'ave', kind: 'plugin', name: 'meeting' },
-  displayName: 'Ave Meeting',
+  displayName: 'Meeting',
   from: '1.0.0',
   to: '1.1.0',
   state: 'manual',
@@ -60,7 +60,7 @@ test.describe('update pill → review (design §15.6)', () => {
     await injectUpdatesAvailable(app, [meeting, proofread]);
     await expect(pill(mainWindow)).toBeVisible({ timeout: 10_000 });
     // The band shows a count; the list is the hover text.
-    await expect(pill(mainWindow)).toHaveAttribute('title', /Ave Meeting → 1\.1\.0/);
+    await expect(pill(mainWindow)).toHaveAttribute('title', /Meeting → 1\.1\.0/);
     await expect(pill(mainWindow)).toHaveAttribute('title', /Proofread → 0\.3\.0/);
 
     await forceWideMainWindow(app);
@@ -90,7 +90,7 @@ test.describe('update pill → review (design §15.6)', () => {
   test('counts only the updates that need the user (design §18.7.5)', async ({ app, mainWindow }) => {
     await injectUpdatesAvailable(app, [meeting, { ...proofread, state: 'applied' }]);
     await expect(pill(mainWindow)).toBeVisible({ timeout: 10_000 });
-    await expect(pill(mainWindow)).toHaveAttribute('title', /Ave Meeting → 1\.1\.0/);
+    await expect(pill(mainWindow)).toHaveAttribute('title', /Meeting → 1\.1\.0/);
     await expect(pill(mainWindow)).not.toHaveAttribute('title', /Proofread/);
 
     await injectUpdatesAvailable(app, [{ ...meeting, state: 'waiting' }, { ...proofread, state: 'automatic' }]);

@@ -22,8 +22,8 @@ Ave app 은 sibling plugin repo 경로에 의존하지 않는다. 플러그인�
 폴더에서 설치**에서 `plugin.json`이 포함된 빌드 폴더를 선택한다.
 
 ```powershell
-mkdir former_org
-cd former_org
+mkdir ave-workspace
+cd ave-workspace
 
 git clone https://github.com/ken-jo/ave.git
 ```
@@ -31,7 +31,7 @@ git clone https://github.com/ken-jo/ave.git
 완성된 구조:
 
 ```
-former_org/
+ave-workspace/
 └── ave/                  ← host (여기서 빌드·실행)
 ```
 
@@ -184,9 +184,9 @@ $env:AVE_SKIP_CORP_CA = "1"
 연결되므로 source 의 `bun run build` 만 다시 실행하면 즉시 반영.
 plugin.json (manifest) 변경은 host 재시작 후 적용:
 ```powershell
-cd ..\ave-plugin-meeting
+cd ..\agent-marketplace\plugins\meeting\source
 bun run build
-cd ..\ave
+cd ..\..\..\..\ave
 bun run start
 ```
 
@@ -196,8 +196,7 @@ bun run start
 cd ave
 git pull --recurse-submodules
 
-cd ..\ave-plugin-local-indexer      ; git pull
-cd ..\ave-plugin-meeting        ; git pull
+cd ..\agent-marketplace ; git pull
 
 cd ..\ave
 bun install
