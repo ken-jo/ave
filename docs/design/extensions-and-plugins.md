@@ -11,8 +11,8 @@ An extension for app 0.14.0 or later declares
 `schemas/plugin-host-protocol/3/protocol.schema.json`, and a package is published
 with an `ave-package.json` descriptor; the user data folder is `~/.ave`. A protocol `2`
 package (the protocol-2 wire of apps 0.12–0.13) is refused before activation. The
-`ai.agent-connector.ave` manifest key and package directory (Ave's domain reversed) replace
-the legacy key (`LEGACY_EXTENSION_NAMESPACE` in `src/shared/legacy-product-name.ts`) with no alias. Where §6.3-6.4 below say
+`ai.agent-connector.ave` manifest key and package directory (Ave's domain reversed) are the
+only ones Ave reads; any other extension namespace is another vendor's data. Where §6.3-6.4 below say
 `hostProtocol: "2"`, they record the 0.12.0 Lease wave, not the current rule.
 
 Status: design, decided by owner direction of 2026-09-27 and the owner decisions

@@ -1,6 +1,6 @@
 # Changelog
 
-> This file is a historical record. Entries from before the rename describe identifiers that carried the app's former name in neutral words; the few the app still recognises are in `src/shared/legacy-product-name.ts`.
+> This file is a historical record. Entries from before the rename describe identifiers that carried the app's former name in neutral words.
 
 ## v0.14.0 — 2026-10-16
 

@@ -4,7 +4,9 @@ import {
   manifestToolsToMcpTools,
 } from "../plugin-server-projection.js";
 import type { PluginManifest } from "../../plugins/types.js";
-import { LEGACY_META_PREFIX } from "../../shared/legacy-product-name.js";
+
+/** A `_meta` vendor prefix the host does not own; it must never be read as `ave/*`. */
+const UNKNOWN_META_PREFIX = "xyz.example/";
 
 // #885 v6 — the projection reads the NORMALIZED pure `Tool[]` (manifest == wire)
 // and projects ALL of them: a server's tools/list is its tools, and the audience of
@@ -134,34 +136,34 @@ describe("plugin-server-projection — normalized Tool[] → MCP tools/list (#88
     expect(projected._meta["ave/operationPolicy"]).toEqual(policy);
   });
 
-  it("no longer reads a legacy reverse-DNS pathFields manifest — the dual-read is removed (fail-closed)", () => {
-    // The `_meta` namespace rename removed the transitional legacy read. A tool that
-    // (illegally, post-rename) carries ONLY the legacy key contributes NO
-    // pathFields to the wire — the forward projection reads only `ave/pathFields`.
+  it("never reads pathFields under an unknown vendor _meta prefix (fail-closed)", () => {
+    // A tool that (illegally) carries pathFields ONLY under another vendor's
+    // prefix contributes NO pathFields to the wire — the forward projection reads
+    // only `ave/pathFields`.
     // In production such a manifest never reaches this projection: the schema
     // (`_meta` additionalProperties:false) rejects it at load, so it fails-closed and
     // the Doctor auto-repairs it — it is never silently accepted with pathFields
     // dropped (that would be fail-open).
-    const legacyManifest: PluginManifest = {
-      id: "com.example.legacy",
-      name: "Legacy",
+    const unknownManifest: PluginManifest = {
+      id: "com.example.unknown",
+      name: "Unknown Vendor",
       version: "1.0.0",
       entry: "dist/index.js",
-      description: "legacy manifest",
+      description: "unknown vendor manifest",
       tools: [
         {
-          name: "legacy_export",
+          name: "unknown_export",
           description: "Export to a path",
           inputSchema: { type: "object", properties: { path: { type: "string" } } },
-          // Cast: the legacy key is no longer part of the `_meta` type; this
+          // Cast: an unknown vendor key is not part of the `_meta` type; this
           // fixture forces it on to prove the reader ignores it.
-          _meta: { ui: { visibility: ["model"] }, [`${LEGACY_META_PREFIX}pathFields`]: ["path"] } as never,
+          _meta: { ui: { visibility: ["model"] }, [`${UNKNOWN_META_PREFIX}pathFields`]: ["path"] } as never,
         },
       ],
     };
-    const tool = manifestToolsToMcpTools(legacyManifest)[0];
+    const tool = manifestToolsToMcpTools(unknownManifest)[0];
     expect(tool._meta["ave/pathFields"]).toBeUndefined();
-    expect((tool._meta as Record<string, unknown>)[`${LEGACY_META_PREFIX}pathFields`]).toBeUndefined();
+    expect((tool._meta as Record<string, unknown>)[`${UNKNOWN_META_PREFIX}pathFields`]).toBeUndefined();
   });
 
 });

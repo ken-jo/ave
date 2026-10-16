@@ -47,26 +47,6 @@ export const AGENT_PLUGINS_SCHEMA_URL =
 export const AVE_EXTENSION_NAMESPACE = "ai.agent-connector.ave";
 
 /**
- * The key {@link AVE_EXTENSION_NAMESPACE} had under the app's former name. It is not
- * an alias: read as a namespace, it would pass as another vendor's data and the
- * plugin would load with none of its Ave fields. Every manifest path refuses it
- * by name instead.
- */
-export const RENAMED_EXTENSION_NAMESPACE = "xyz.retiredname-namespace";
-
-/** The refusal every manifest path gives for {@link RENAMED_EXTENSION_NAMESPACE}. */
-export const RENAMED_EXTENSION_NAMESPACE_MESSAGE =
-  `extensions.${RENAMED_EXTENSION_NAMESPACE} was renamed to extensions.${AVE_EXTENSION_NAMESPACE}; update the manifest`;
-
-/** {@link RENAMED_EXTENSION_NAMESPACE_MESSAGE} when `document` still uses the old key, else null. */
-export function renamedExtensionNamespaceProblem(document: unknown): string | null {
-  if (!document || typeof document !== "object" || Array.isArray(document)) return null;
-  const extensions = (document as Record<string, unknown>).extensions;
-  if (!extensions || typeof extensions !== "object" || Array.isArray(extensions)) return null;
-  return Object.hasOwn(extensions, RENAMED_EXTENSION_NAMESPACE) ? RENAMED_EXTENSION_NAMESPACE_MESSAGE : null;
-}
-
-/**
  * The plugin id grammar: the manifest `name` rule of
  * `schemas/plugin-manifest.schema.json` (kebab-case, no `--`, 3–64
  * characters), which the host reads as `PluginManifest.id`. Every host

@@ -9,12 +9,11 @@ import { resolve } from "node:path";
 import { StdioChildTransport } from "../experimental/stdio-child-transport.js";
 import { PluginMcpHost } from "../plugin-mcp-host.js";
 import { ToolRegistry } from "../../tools/registry.js";
-import { LEGACY_META_PREFIX } from "../../shared/legacy-product-name.js";
 
 const FIXTURE = resolve(__dirname, "..", "..", "..", "test", "fixtures", "mcp", "echo-stdio-server.mjs");
 
 function makeHost(registry: ToolRegistry): PluginMcpHost {
-  const transport = new StdioChildTransport(process.execPath, [FIXTURE, LEGACY_META_PREFIX], {
+  const transport = new StdioChildTransport(process.execPath, [FIXTURE], {
     maxLineBytes: 1024 * 1024,
   });
   // The host registers tools under the plugin id namespace; "echo" stands in for
@@ -47,8 +46,8 @@ describe("StdioChildTransport — out-of-process plugin over a real subprocess",
     expect(tool?.source).toBe("plugin");
     // Completing #885 per-tool category removal (out-of-process/stdio residual):
     // the host IGNORES a plugin's wire-declared category — the fixture still SENDS
-    // "read" under the LEGACY `_meta` prefix (`LEGACY_META_PREFIX`; an unmigrated
-    // out-of-process plugin; see echo-stdio-server.mjs), but the reverse
+    // "read" under an unknown vendor `_meta` prefix (see echo-stdio-server.mjs),
+    // but the reverse
     // projection registers the default-strict "write" baseline just like the
     // in-process loopback path. Under `hostClassifiesRisk` (default ON, all
     // platforms) `inspectHostRisk` is the authoritative per-invocation classifier;

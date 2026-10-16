@@ -59,31 +59,3 @@ Cloudflare 대시보드 → Workers & Pages → `ave-web` → Deployments →
 npm run build
 npm run preview   # 정적 out/을 :3000에서 서빙
 ```
-
-## 옛 Ave 사이트 (`former-site.invalid`, Ave 아님)
-
-`former-site.invalid`는 옛 Ave 사이트로 남고 Ave의 홈이 아닙니다. 이 레포의 워크플로는 그곳에 배포하지
-않습니다. `infra/`는 그 사이트의 Cloudflare 설정 기록이며, 아래는 그 설정을 갱신할 때만 씁니다.
-
-### docs.former-site.invalid 리다이렉트 심
-
-레거시 docs 도메인은 구 프로젝트(`docs-former-site`)가 `infra/docs-redirect/`의
-`_redirects`로 `former-site.invalid/docs/*` 301을 반환합니다. 심을 갱신할 일이 있으면:
-
-```bash
-npx wrangler pages deploy infra/docs-redirect --project-name=docs-former-site --branch=main
-```
-
-### 엣지 라우터 (apex 트래픽)
-
-`former-site.invalid` DNS A/AAAA 레코드는 아직 구 GitHub Pages를 가리키지만, 존이 프록시
-상태이므로 `infra/edge-router/`의 Worker(`former-site-router`)가 `former-site.invalid/*`,
-`www.former-site.invalid/*` 라우트에서 요청을 가로채 Pages 프로젝트로 프록시합니다
-(www는 apex로 301). 갱신:
-
-```bash
-cd infra/edge-router && npx wrangler deploy
-```
-
-DNS를 CNAME `former-site.invalid`(Proxied)로 바꾸면 이 Worker는 삭제해도 됩니다
-(Pages 커스텀 도메인 바인딩은 이미 생성되어 있어 자동 활성화됨).

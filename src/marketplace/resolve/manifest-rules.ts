@@ -19,7 +19,7 @@
  * likewise needs at least the first app that serves it. The verified half is the rung
  * the receipt records, which the install transaction and the runtime read.
  */
-import { AVE_EXTENSION_NAMESPACE, flattenAgentPluginsManifest, renamedExtensionNamespaceProblem } from "../../plugins/public-contract.js";
+import { AVE_EXTENSION_NAMESPACE, flattenAgentPluginsManifest } from "../../plugins/public-contract.js";
 import { HOST_PROTOCOL_FIRST_APP_VERSION, isServedHostProtocolVersion } from "../../plugins/isolation/host-api-wire.js";
 import { hasProcessEntry, PROCESS_ENTRY_FIRST_APP_VERSION } from "../../plugins/process-entry.js";
 import { sandboxDeclarationProblem } from "../../plugins/sandbox-authority.js";
@@ -138,8 +138,6 @@ export function gitInstallManifestMismatches(document: unknown, expected: Expect
   if (document.version !== expected.version) {
     problems.push(`version is ${JSON.stringify(document.version)}, the descriptor says "${expected.version}"`);
   }
-  const renamed = renamedExtensionNamespaceProblem(document);
-  if (renamed) return [...problems, renamed];
   const extensions = document.extensions;
   const ave = isRecord(extensions) ? extensions[AVE_EXTENSION_NAMESPACE] : undefined;
   if (!isRecord(ave)) return [...problems, `extensions["${AVE_EXTENSION_NAMESPACE}"] is missing`];
