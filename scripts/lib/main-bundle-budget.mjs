@@ -97,10 +97,13 @@ export function isSafeMainBundleManifestPath(path) {
  * 425_328, initial 5_423_655, total 9_102_793; the initial ceiling moves to 5_425_000.
  * The terminal own-tty wrap joined with that `main` measures entry 425_403,
  * initial 5_425_510, total 9_107_949; the initial ceiling moves to 5_430_000.
+ * The owner set the initial ceiling to 8_000_000 on 2026-10-16: features keep reaching
+ * main, and raising it a few kilobytes per merge made every category merge re-measure
+ * and re-conflict on this line. Last measured before the change: initial 5_426_065.
  */
 export const MAIN_BUNDLE_BUDGETS = Object.freeze({
   entryBytes: 1_700_000,
-  initialBytes: 5_430_000,
+  initialBytes: 8_000_000,
   totalBytes: 11_050_000,
 });
 
