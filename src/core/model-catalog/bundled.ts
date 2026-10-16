@@ -19,8 +19,8 @@
  * so one run never sees two catalogs.
  *
  * The snapshot is imported dynamically so its roughly 1 MB of data lands in an
- * async chunk of the main bundle rather than the initial one, whose byte
- * budget it would exceed (`scripts/lib/main-bundle-budget.mjs`). Verified
+ * async chunk of the main bundle rather than the initial one, which every
+ * launch loads before the window can boot. Verified
  * before use: a snapshot that does not hash to its stated name is a build
  * defect and fails boot instead of resolving models against damaged data.
  */

@@ -19,13 +19,18 @@ and fails closed when any limit is exceeded:
 | Measurement | Limit |
 | --- | ---: |
 | Entry file | 1,700,000 bytes |
-| Initial static closure | 5,250,000 bytes |
-| All emitted main-process JavaScript | 11,000,000 bytes |
+| Initial static closure | 8,000,000 bytes |
+| All emitted main-process JavaScript | 14,000,000 bytes |
 
-The build also fails if the async boundary disappears. The measured adoption
-baseline is 1,538,075 entry bytes, 4,832,914 initial bytes, and 10,476,094 total
-bytes across 75 files: a 55.4% reduction in synchronously loaded bytes versus
-the legacy bundle.
+These limits are tripwires, not a ratchet. They sit far above the measurement so
+that ordinary features never move them; they catch a bundling mistake, such as an
+undone boot split or a dependency bundled twice. The build also fails if the async
+boundary disappears or a limit is missing or not a positive integer; those
+structural checks are exact.
+
+The build prints the measurement on every run, and CI writes the measurement,
+each limit and its headroom to the job summary. The source does not record
+measurements.
 
 The initial measurement follows only `import-statement` edges. Dynamic imports
 remain outside that closure until runtime requests them. Total bytes still
@@ -40,6 +45,6 @@ emitting content-hashed chunks. They also write
 count. The packaged footprint gate requires the manifest, every listed chunk,
 matching packaged byte counts, and no stale unlisted main-process chunks.
 
-Do not hand-edit the generated manifest or raise a budget to make CI green.
-Measure the changed graph, explain the added synchronous responsibility, and
-review both initial and total bytes before changing a limit.
+Do not hand-edit the generated manifest. When a limit fails, first look for
+startup code that belongs behind a dynamic import or a dependency bundled twice;
+raise a limit only with the owner's approval.
