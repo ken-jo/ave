@@ -159,6 +159,7 @@ function makeDeps() {
       }),
       replaceLlm: vi.fn(async (value: unknown) => value),
       getSecret: vi.fn(() => null),
+      hasStoredSecret: vi.fn(() => false),
       setSecret: vi.fn(async () => undefined),
       deleteSecret: vi.fn(async () => undefined),
     },

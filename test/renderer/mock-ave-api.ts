@@ -8,6 +8,8 @@
 import { vi, type Mock } from "vitest";
 import { MAIN_CHAT_GROUP_ID } from "../../src/contract/app-contract.js";
 import { fakeLlmSettings } from "../../src/shared/__tests__/fake-llm-settings.js";
+import { resolveActiveChatModel, type ActiveChatModelSettings } from "../../src/shared/active-chat-model.js";
+import { canUseLlmVendorWithoutApiKey, getLlmVendorSettings } from "../../src/shared/llm-vendor-defaults.js";
 import type { ChatEntry, ChatStreamEvent } from "../../src/lib/chat-stream-state.js";
 import type { AgentSpawnEvent as SharedAgentSpawnEvent } from "../../src/shared/subagent-events.js";
 import type { AppBootstrapStatus } from "../../src/shared/bootstrap-status.js";
@@ -302,6 +304,25 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   const history = overrides.history ?? { sessionId: currentSession, messages: [] };
   const historyBySession = overrides.historyBySession ?? {};
   const hasApiKey = overrides.hasApiKey ?? true;
+  // Main derives `activeChatModel` onto every snapshot it sends
+  // (`rendererSettingsSnapshot`); the mock does the same from its own key
+  // answer, unless a test hands one in explicitly.
+  const projectSnapshot = (value: unknown): unknown => {
+    const record = value as { llm?: Partial<ActiveChatModelSettings>; activeChatModel?: unknown };
+    if (record.activeChatModel !== undefined) return record;
+    // Many fixtures hand-write a partial `llm`; main's store would have
+    // normalized it, so fill what normalization fills before deriving.
+    const llm = {
+      ...MOCK_DEFAULT_SETTINGS.llm,
+      ...record.llm,
+      activeChatRuntime: record.llm?.activeChatRuntime ?? { kind: "api" as const },
+    } as ActiveChatModelSettings;
+    // Main's rule (`activeApiRouteConnected`): a stored key, or a route that
+    // runs without one.
+    const connected = hasApiKey
+      || canUseLlmVendorWithoutApiKey(llm.provider, getLlmVendorSettings(llm.vendors, llm.provider));
+    return { ...record, activeChatModel: resolveActiveChatModel(llm, connected) };
+  };
   const chatGroupApis = new Map<string, {
     chatGetHistory: ReturnType<typeof vi.fn>;
     chatGroupRelease: ReturnType<typeof vi.fn>;
@@ -412,11 +433,12 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       listPending: vi.fn(async () => ({ ok: true, pending: [] })),
       answer: vi.fn(async () => ({ ok: true, pending: [] })),
     } as unknown as Mock,
-    getSettings: vi.fn(overrides.getSettings ?? (async () => settings)),
+    getSettings: vi.fn(overrides.getSettings ?? (async () => projectSnapshot(settings))),
     updateSettings: vi.fn(async (p: unknown) => {
       settings = { ...(settings as object), ...(p as object) };
-      settingsUpdatedHandlers.forEach((handler) => handler(settings));
-      return settings;
+      const snapshot = projectSnapshot(settings);
+      settingsUpdatedHandlers.forEach((handler) => handler(snapshot));
+      return snapshot;
     }),
     // Nothing is env-forced by default: a test that cares about the forced
     // notice says so explicitly, and every other test gets the ordinary case
