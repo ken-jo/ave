@@ -10,7 +10,6 @@ import {
   type SubscriptionTransportDiagnosticError,
 } from "./subscription-transport-error-diagnostics.js";
 import { forceKillManagedChildProcess, spawnManaged } from "./managed-child-processes.js";
-import { resolveCodexVendorExecutable } from "./codex-vendor-path.js";
 import {
   assertSubscriptionPromptAttachments,
   SubscriptionAttachmentTransportError,
@@ -72,6 +71,21 @@ export type CodexSpawnAppServer = (
 export type CodexAppServerRequestId = string | number;
 
 /**
+ * Native features every app-server Ave spawns runs with disabled. Under
+ * `--strict-config` an unknown name stops the server from starting, so the
+ * user's CLI must know each one; `codex-user-runtime.ts` checks its
+ * `features list` before Ave relies on it.
+ */
+export const CODEX_DISABLED_FEATURES: readonly string[] = Object.freeze([
+  "plugins", "remote_control", "remote_plugin", "hooks",
+  "apps", "browser_use", "browser_use_external", "browser_use_full_cdp_access",
+  "code_mode", "computer_use", "goals", "image_generation", "multi_agent",
+  "shell_snapshot", "shell_tool", "shell_zsh_fork", "unified_exec",
+  "skill_mcp_dependency_install", "skill_search", "sleep_tool", "tool_suggest",
+  "view_image", "workspace_dependencies",
+]);
+
+/**
  * argv for every `codex app-server` Ave spawns. The subscription client
  * (`codex-app-server-client.ts`) and the conversation runtime below start the
  * same binary behind the same hardening boundary. Native execution and
@@ -91,14 +105,7 @@ export const CODEX_APP_SERVER_ARGV: readonly string[] = Object.freeze([
   "-c",
   'web_search="disabled"',
   "--strict-config",
-  ...[
-    "plugins", "remote_control", "remote_plugin", "hooks",
-    "apps", "browser_use", "browser_use_external", "browser_use_full_cdp_access",
-    "code_mode", "computer_use", "goals", "image_generation", "multi_agent",
-    "shell_snapshot", "shell_tool", "shell_zsh_fork", "unified_exec",
-    "skill_mcp_dependency_install", "skill_search", "sleep_tool", "tool_suggest",
-    "view_image", "workspace_dependencies",
-  ].flatMap((feature) => ["--disable", feature]),
+  ...CODEX_DISABLED_FEATURES.flatMap((feature) => ["--disable", feature]),
   "--listen",
   "stdio://",
 ]);
@@ -245,8 +252,11 @@ export interface CodexConversationRuntimeOptions {
   workspaceDir: string;
   /** Optional existing isolated temporary directory; defaults to runtimeHome. */
   runtimeTempDir?: string;
-  /** Test seam for the packaged Codex executable resolver. */
-  resolveExecutable?: () => string;
+  /**
+   * Resolves the user's verified `codex` executable (see
+   * `CodexUserRuntimeLocator`). There is no default: Ave ships no runtime.
+   */
+  resolveExecutable: () => Promise<string>;
   /** Test seam; production uses managed-child-processes. */
   spawn?: CodexSpawnAppServer;
   clientVersion?: string;
@@ -377,19 +387,7 @@ const PASSIVE_NATIVE_STREAM_ITEM_TYPES = new Set([
   "contextCompaction",
 ]);
 
-/**
- * Resolve the official package's native binary directly. We deliberately do
- * not execute a PATH-resolved `codex` shim or a shell command: the runtime is
- * pinned in package.json and every argv value below is host-owned.
- *
- * `unavailable` builds the caller's domain error so each Codex transport keeps
- * its own error union while sharing one resolution path.
- */
-export function resolveBundledCodexExecutable(unavailable: () => Error): string {
-  return resolveCodexVendorExecutable("codex", unavailable);
-}
-
-export function spawnPackagedCodex(
+export function spawnCodexAppServer(
   command: string,
   args: ReadonlyArray<string>,
   options: SpawnOptions,
@@ -735,7 +733,7 @@ function projectTurnTokenUsage(
  * App Server methods.
  */
 export class CodexConversationRuntime {
-  private readonly resolveExecutable: () => string;
+  private readonly resolveExecutable: () => Promise<string>;
   private readonly spawn: CodexSpawnAppServer;
   private readonly clientVersion: string;
   private readonly runtimeHome: string;
@@ -754,12 +752,9 @@ export class CodexConversationRuntime {
   private transportReader: JsonLineReader | null = null;
 
   constructor(options: CodexConversationRuntimeOptions) {
-    this.resolveExecutable = options.resolveExecutable
-      ?? (() => resolveBundledCodexExecutable(
-        () => new CodexConversationRuntimeError("codex-runtime-unavailable"),
-      ));
+    this.resolveExecutable = options.resolveExecutable;
     this.spawn = options.spawn
-      ?? ((command, args, options_) => spawnPackagedCodex(command, args, options_, "codex-conversation-runtime"));
+      ?? ((command, args, options_) => spawnCodexAppServer(command, args, options_, "codex-conversation-runtime"));
     this.clientVersion = options.clientVersion ?? getAveAppVersion();
     this.runtimeHome = options.runtimeHome;
     this.sqliteHome = options.sqliteHome;
@@ -1040,7 +1035,7 @@ export class CodexConversationRuntime {
   private async start(): Promise<void> {
     let executable: string;
     try {
-      executable = this.resolveExecutable();
+      executable = await this.resolveExecutable();
     } catch (error) {
       if (error instanceof CodexConversationRuntimeError) throw error;
       throw new CodexConversationRuntimeError("codex-runtime-unavailable");

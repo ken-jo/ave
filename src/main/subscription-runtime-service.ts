@@ -48,6 +48,12 @@ import {
   type ClaudeCodeSubscriptionStatus,
 } from "../shared/claude-code-subscription.js";
 import {
+  CodexExecutableConfigStore,
+  CodexUserRuntimeError,
+  CodexUserRuntimeLocator,
+  type CodexUserRuntimeErrorCode,
+} from "./codex-user-runtime.js";
+import {
   CodexConversationRuntime,
   CodexConversationRuntimeError,
   type CodexConversationRuntimeOptions,
@@ -399,7 +405,11 @@ interface CodexTextRuntimePaths {
   readonly sqliteHome: string;
   readonly workspaceDir: string;
   readonly runtimeTempDir: string;
+  readonly resolveExecutable: () => Promise<string>;
 }
+
+/** The part of the user-CLI locator the service drives; a seam for tests. */
+type CodexRuntimeLocator = Pick<CodexUserRuntimeLocator, "resolve" | "lastKnownVersion" | "choose" | "forget">;
 
 export interface SubscriptionRuntimeServiceCreateOptions {
   readonly namespace?: FeatureNamespaceHandle;
@@ -408,6 +418,8 @@ export interface SubscriptionRuntimeServiceCreateOptions {
     options: ConstructorParameters<typeof CodexAppServerClient>[0],
   ) => CodexAppServerClient;
   readonly codexClient?: CodexAppServerClient;
+  /** Test seam; production locates the user's own `codex` CLI. */
+  readonly codexRuntimeLocator?: CodexRuntimeLocator;
   readonly acpRegistry?: AcpSubscriptionRuntimeRegistry;
   readonly claudeCodeClient?: ClaudeCodeSubscriptionClient;
   readonly createCodexConversationRuntime?: (
@@ -483,7 +495,7 @@ function codexStatus(
     // Codex opens only allowlisted URLs as part of the managed login request;
     // the URL is intentionally never retained for a renderer re-open action.
     canOpenVerificationUrl: false,
-    version: null,
+    version: status.version,
     capabilities: verifiedRuntimeCapabilities("codex", safelyVerified && isConnectedAndReady(status)),
   };
 }
@@ -550,11 +562,35 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
+/** The renderer-safe meaning of a user-CLI resolution failure. */
+function codexRuntimeErrorCode(
+  code: CodexUserRuntimeErrorCode | "codex-runtime-not-configured",
+): SubscriptionRuntimeErrorCode {
+  switch (code) {
+    case "codex-runtime-not-installed":
+    case "codex-runtime-not-configured":
+      return "subscription-runtime-not-configured";
+    case "codex-runtime-version-unsupported":
+      return "subscription-runtime-version-unsupported";
+    case "codex-runtime-incompatible":
+      return "subscription-runtime-incompatible";
+    case "codex-runtime-invalid-executable":
+    case "codex-runtime-start-failed":
+      return "subscription-runtime-unavailable";
+  }
+}
+
 /** Maps every provider-specific failure to the stable renderer-safe union. */
 export function subscriptionRuntimeErrorCode(error: unknown): SubscriptionRuntimeErrorCode {
   if (error instanceof SubscriptionRuntimeServiceError) return error.code;
+  if (error instanceof CodexUserRuntimeError) return codexRuntimeErrorCode(error.code);
   if (error instanceof CodexAppServerError) {
     switch (error.code) {
+      case "codex-runtime-not-configured":
+      case "codex-runtime-invalid-executable":
+      case "codex-runtime-version-unsupported":
+      case "codex-runtime-incompatible":
+        return codexRuntimeErrorCode(error.code);
       case "codex-runtime-unavailable":
       case "codex-runtime-start-failed":
         return "subscription-runtime-unavailable";
@@ -1036,6 +1072,7 @@ export class SubscriptionRuntimeService {
 
   private constructor(
     private readonly codexClient: CodexAppServerClient,
+    private readonly codexRuntimeLocator: CodexRuntimeLocator,
     private readonly acpRegistry: AcpSubscriptionRuntimeRegistry,
     private readonly claudeCodeClient: ClaudeCodeSubscriptionClient,
     private readonly codexTextRuntimePaths: CodexTextRuntimePaths,
@@ -1079,6 +1116,13 @@ export class SubscriptionRuntimeService {
       namespace.childDir(claudeDirs.runtimeTempDir),
       ClaudeCodeSubscriptionConfigStore.create(namespace).getExecutable(),
     ]);
+    const codexRuntimeLocator: CodexRuntimeLocator = options.codexRuntimeLocator ?? new CodexUserRuntimeLocator({
+      configStore: new CodexExecutableConfigStore(namespace),
+      runtimeHome: codexHome,
+      sqliteHome: codexSqlite,
+      workspaceDir: loginWorkspace,
+      runtimeTempDir: loginTemp,
+    });
     const createCodexAppServerClient = options.createCodexAppServerClient
       ?? ((clientOptions: ConstructorParameters<typeof CodexAppServerClient>[0]) => new CodexAppServerClient(clientOptions));
     const codexClient = options.codexClient ?? createCodexAppServerClient({
@@ -1087,6 +1131,8 @@ export class SubscriptionRuntimeService {
       workspaceDir: loginWorkspace,
       runtimeTempDir: loginTemp,
       openExternal,
+      resolveRuntime: () => codexRuntimeLocator.resolve(),
+      lastKnownVersion: () => codexRuntimeLocator.lastKnownVersion(),
     });
     const claudeCodeClient = options.claudeCodeClient ?? new ClaudeCodeSubscriptionClient({
       runtimeHome: claudeHome,
@@ -1098,6 +1144,7 @@ export class SubscriptionRuntimeService {
     });
     return new SubscriptionRuntimeService(
       codexClient,
+      codexRuntimeLocator,
       registry,
       claudeCodeClient,
       Object.freeze({
@@ -1105,6 +1152,7 @@ export class SubscriptionRuntimeService {
         sqliteHome: codexSqlite,
         workspaceDir: textWorkspace,
         runtimeTempDir: textTemp,
+        resolveExecutable: async () => (await codexRuntimeLocator.resolve()).executable,
       }),
       options.createCodexConversationRuntime ?? ((runtimeOptions) => new CodexConversationRuntime(runtimeOptions)),
       options.createClaudeCodeConversationRuntime
@@ -1137,6 +1185,16 @@ export class SubscriptionRuntimeService {
     pickerPath: string,
   ): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
+    if (runtimeId === "codex") {
+      this.invalidateSafety(runtimeId);
+      await this.stopSessionsFor(runtimeId);
+      return this.withStableErrors(async () => {
+        await this.codexRuntimeLocator.choose(pickerPath);
+        // The running app-server is the previous binary; the next request starts the chosen one.
+        this.codexClient.stop();
+        return this.projectCodexStatus(await this.codexClient.getStatus());
+      });
+    }
     if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
       this.invalidateSafety(runtimeId);
       await this.stopSessionsFor(runtimeId);
@@ -1154,6 +1212,15 @@ export class SubscriptionRuntimeService {
 
   async forgetExecutable(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
+    if (runtimeId === "codex") {
+      this.invalidateSafety(runtimeId);
+      await this.stopSessionsFor(runtimeId);
+      return this.withStableErrors(async () => {
+        await this.codexRuntimeLocator.forget();
+        this.codexClient.stop();
+        return this.projectCodexStatus(await this.codexClient.getStatus());
+      });
+    }
     if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
       this.invalidateSafety(runtimeId);
       await this.stopSessionsFor(runtimeId);

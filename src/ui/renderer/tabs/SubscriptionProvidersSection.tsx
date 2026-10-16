@@ -7,6 +7,7 @@ import {
   type SubscriptionRuntimeCapabilities,
   type SubscriptionRuntimeErrorCode,
   type SubscriptionRuntimeId,
+  type SubscriptionRuntimeInstallGuidance,
   type SubscriptionRuntimeState,
 } from "../../../shared/subscription-runtime.js";
 
@@ -55,6 +56,10 @@ interface SubscriptionProviderDescriptor {
   /** Whether the provider requires an official local runtime selection. */
   supportsRuntimeSelection?: boolean;
   supportsLogout?: boolean;
+  /** The oldest runtime version Ave can run, when the runtime enforces one. */
+  minimumVersion?: string;
+  /** Official install instructions, shown while no runtime is found. */
+  installGuidance?: SubscriptionRuntimeInstallGuidance;
 }
 
 export interface SubscriptionProviderStatus {
@@ -70,6 +75,8 @@ export interface SubscriptionProviderStatus {
   /** Whether chat is host-verified. Only `chat` is read; the rest of the
    *  projection describes the Ave agent harness, not this provider. */
   capabilities?: Partial<SubscriptionProviderCapabilities>;
+  /** The version the resolved runtime reported, when it has been read. */
+  version?: string | null;
   errorCode?: SubscriptionProviderErrorCode | null;
 }
 
@@ -125,6 +132,8 @@ export const ERROR_MESSAGE_KEYS: Record<SubscriptionProviderErrorCode, string> =
   "subscription-provider-not-supported": "subscriptionProvidersSection.errorProviderNotSupported",
   "subscription-runtime-not-configured": "subscriptionProvidersSection.errorRuntimeNotConfigured",
   "subscription-runtime-unavailable": "subscriptionProvidersSection.errorRuntimeUnavailable",
+  "subscription-runtime-version-unsupported": "subscriptionProvidersSection.errorRuntimeVersionUnsupported",
+  "subscription-runtime-incompatible": "subscriptionProvidersSection.errorRuntimeIncompatible",
   "subscription-login-in-progress": "subscriptionProvidersSection.errorLoginInProgress",
   "subscription-login-failed": "subscriptionProvidersSection.errorLoginFailed",
   "subscription-verification-url-unavailable": "subscriptionProvidersSection.errorVerificationUrlUnavailable",
@@ -198,7 +207,57 @@ export function SubscriptionAuthControls({
           data-testid={`subscription-provider:${descriptor.id}:error`}
         >
           {t(ERROR_MESSAGE_KEYS[status.errorCode])}
+          {descriptor.minimumVersion && (status.errorCode === "subscription-runtime-version-unsupported"
+            || status.errorCode === "subscription-runtime-incompatible") ? (
+            <span className="mt-1 block" data-testid={`subscription-provider:${descriptor.id}:minimum-version`}>
+              {status.version
+                ? t("subscriptionProvidersSection.minimumVersionRequiredFound", {
+                  label: descriptor.label,
+                  minimumVersion: descriptor.minimumVersion,
+                  version: status.version,
+                })
+                : t("subscriptionProvidersSection.minimumVersionRequired", {
+                  label: descriptor.label,
+                  minimumVersion: descriptor.minimumVersion,
+                })}
+            </span>
+          ) : null}
         </p>
+      ) : null}
+
+      {needsRuntimeSelection && descriptor.installGuidance ? (
+        <div
+          className="space-y-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground"
+          data-testid={`subscription-provider:${descriptor.id}:install-guidance`}
+        >
+          <p>
+            {descriptor.minimumVersion
+              ? t("subscriptionProvidersSection.installGuidanceWithVersion", {
+                label: descriptor.label,
+                minimumVersion: descriptor.minimumVersion,
+              })
+              : t("subscriptionProvidersSection.installGuidance", { label: descriptor.label })}
+          </p>
+          <dl className="space-y-1">
+            {descriptor.installGuidance.commands.map((entry) => (
+              <div key={entry.label}>
+                <dt className="font-medium text-foreground">{entry.label}</dt>
+                <dd>
+                  <code className="block select-all break-all rounded bg-background px-2 py-1 font-mono text-foreground">
+                    {entry.command}
+                  </code>
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p>
+            {t("subscriptionProvidersSection.installGuidanceDocs")}{" "}
+            <code className="select-all break-all font-mono text-foreground">
+              {descriptor.installGuidance.documentationUrl}
+            </code>
+          </p>
+          <p>{t("subscriptionProvidersSection.installGuidanceAfter")}</p>
+        </div>
       ) : null}
 
       {pending ? (

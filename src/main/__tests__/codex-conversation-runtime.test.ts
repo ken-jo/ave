@@ -83,7 +83,7 @@ function createHarness(onMessage?: (message: JsonRecord, harness: Harness) => bo
     runtimeHome,
     sqliteHome,
     workspaceDir,
-    resolveExecutable: () => "C:\\approved\\codex.exe",
+    resolveExecutable: async () => "C:\\approved\\codex.exe",
     spawn,
     clientVersion: "test-version",
   });

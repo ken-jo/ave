@@ -2,7 +2,10 @@ import "../../../../../test/renderer/setup.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
-import type { SubscriptionRuntimeCapabilities } from "../../../../shared/subscription-runtime.js";
+import {
+  subscriptionRuntimeDescriptor,
+  type SubscriptionRuntimeCapabilities,
+} from "../../../../shared/subscription-runtime.js";
 import {
   SubscriptionAuthControls,
   type SubscriptionProviderView,
@@ -227,5 +230,67 @@ describe("SubscriptionAuthControls", () => {
 
     expect(screen.queryByTestId("subscription-provider:codex:device-code")).toBeNull();
     expect(document.body).not.toHaveTextContent("https://auth.example.test/secret-token");
+  });
+
+  it("shows the official install guidance while no Codex CLI is found, beside the explicit chooser", () => {
+    const codex = subscriptionRuntimeDescriptor("codex");
+    const configureRuntime = vi.fn();
+    render(
+      <SubscriptionProvidersSection
+        providers={[{
+          descriptor: {
+            id: "codex",
+            label: codex.label,
+            description: "",
+            loginMethods: codex.loginMethods,
+            supportsRuntimeSelection: codex.requiresExecutable,
+            minimumVersion: codex.minimumVersion!,
+            installGuidance: codex.installGuidance!,
+          },
+          status: { runtime: "not-configured", connection: "signed-out" },
+        }]}
+        actions={{ configureRuntime }}
+      />,
+    );
+
+    const guidance = screen.getByTestId("subscription-provider:codex:install-guidance");
+    expect(guidance).toHaveTextContent(`Codex CLI was not found. Install version ${codex.minimumVersion} or later`);
+    expect(guidance).toHaveTextContent("curl -fsSL https://chatgpt.com/codex/install.sh | sh");
+    expect(guidance).toHaveTextContent("npm install -g @openai/codex");
+    expect(guidance).toHaveTextContent("brew install --cask codex");
+    expect(guidance).toHaveTextContent("https://learn.chatgpt.com/docs/codex/cli");
+    fireEvent.click(screen.getByTestId("subscription-provider:codex:configure-runtime"));
+    expect(configureRuntime).toHaveBeenCalledWith("codex");
+    expect(screen.queryByTestId("subscription-provider:codex:login-browser")).toBeNull();
+  });
+
+  it("says which Codex CLI version is required when the found one is too old or incompatible", () => {
+    const codex = subscriptionRuntimeDescriptor("codex");
+    const view = (errorCode: "subscription-runtime-version-unsupported" | "subscription-runtime-incompatible", version: string | null): SubscriptionProviderView => ({
+      descriptor: {
+        id: "codex",
+        label: codex.label,
+        description: "",
+        loginMethods: codex.loginMethods,
+        supportsRuntimeSelection: true,
+        minimumVersion: codex.minimumVersion!,
+        installGuidance: codex.installGuidance!,
+      },
+      status: { runtime: "unavailable", connection: "unknown", version, errorCode },
+    });
+    const { rerender } = render(
+      <SubscriptionProvidersSection providers={[view("subscription-runtime-version-unsupported", "0.151.0")]} actions={{}} />,
+    );
+    expect(screen.getByTestId("subscription-provider:codex:error"))
+      .toHaveTextContent("The installed CLI is older than Ave supports.");
+    expect(screen.getByTestId("subscription-provider:codex:minimum-version"))
+      .toHaveTextContent(`Codex CLI ${codex.minimumVersion}+ required (found 0.151.0).`);
+    expect(screen.queryByTestId("subscription-provider:codex:install-guidance")).toBeNull();
+
+    rerender(<SubscriptionProvidersSection providers={[view("subscription-runtime-incompatible", null)]} actions={{}} />);
+    expect(screen.getByTestId("subscription-provider:codex:error"))
+      .toHaveTextContent("does not support everything Ave needs");
+    expect(screen.getByTestId("subscription-provider:codex:minimum-version"))
+      .toHaveTextContent(`Codex CLI ${codex.minimumVersion}+ required.`);
   });
 });

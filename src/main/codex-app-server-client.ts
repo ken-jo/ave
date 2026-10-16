@@ -17,9 +17,8 @@ import {
   hasCodexStdioStreams,
   isCodexAppServerRequestId,
   isCodexJsonRecord,
-  resolveBundledCodexExecutable,
   sanitizedCodexConversationEnvironment,
-  spawnPackagedCodex,
+  spawnCodexAppServer,
   validateCodexRuntimeDirectory,
   type CodexAppServerRequestId,
   type CodexJsonRecord,
@@ -27,6 +26,7 @@ import {
 } from "./codex-conversation-runtime.js";
 import { JsonLineReader } from "../lib/json-line-reader.js";
 import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
+import { CodexUserRuntimeError, type CodexResolvedRuntime } from "./codex-user-runtime.js";
 
 const MAX_MODEL_COUNT = 100;
 const MAX_PLAN_TYPE_LENGTH = 80;
@@ -53,8 +53,13 @@ export interface CodexAppServerClientOptions {
   workspaceDir: string;
   /** Existing isolated temporary directory; defaults to the isolated home. */
   runtimeTempDir?: string;
-  /** Test seam for the packaged Codex executable resolver. */
-  resolveExecutable?: () => string;
+  /**
+   * Resolves and qualifies the user's `codex` (see `CodexUserRuntimeLocator`).
+   * There is no default: Ave ships no runtime of its own.
+   */
+  resolveRuntime: () => Promise<CodexResolvedRuntime>;
+  /** The last version the resolver read, kept in the status projection. */
+  lastKnownVersion?: () => string | null;
   /** Test seam; production always uses managed-child-processes. */
   spawn?: CodexSpawnAppServer;
   clientVersion?: string;
@@ -103,6 +108,21 @@ function blankStatus(runtime: CodexSubscriptionStatus["runtime"]): CodexSubscrip
   return { ...CODEX_SUBSCRIPTION_SIGNED_OUT_STATUS, runtime };
 }
 
+/** The client error a failed resolution stands for; `not-installed` is a status, not an error. */
+function runtimeResolutionError(error: unknown): CodexAppServerError {
+  if (error instanceof CodexAppServerError) return error;
+  if (!(error instanceof CodexUserRuntimeError)) return new CodexAppServerError("codex-runtime-unavailable");
+  switch (error.code) {
+    case "codex-runtime-not-installed":
+      return new CodexAppServerError("codex-runtime-not-configured");
+    case "codex-runtime-invalid-executable":
+    case "codex-runtime-version-unsupported":
+    case "codex-runtime-incompatible":
+    case "codex-runtime-start-failed":
+      return new CodexAppServerError(error.code);
+  }
+}
+
 /**
  * Main-process adapter for the stable App Server account APIs.
  *
@@ -111,7 +131,8 @@ function blankStatus(runtime: CodexSubscriptionStatus["runtime"]): CodexSubscrip
  */
 export class CodexAppServerClient {
   private readonly openExternal: (url: string) => Promise<void> | void;
-  private readonly resolveExecutable: () => string;
+  private readonly resolveRuntime: () => Promise<CodexResolvedRuntime>;
+  private readonly lastKnownVersion: () => string | null;
   private readonly spawn: CodexSpawnAppServer;
   private readonly clientVersion: string;
   private readonly runtimeHome: string;
@@ -129,12 +150,10 @@ export class CodexAppServerClient {
   private loginLock: Promise<void> = Promise.resolve();
   constructor(options: CodexAppServerClientOptions) {
     this.openExternal = options.openExternal;
-    this.resolveExecutable = options.resolveExecutable
-      ?? (() => resolveBundledCodexExecutable(
-        () => new CodexAppServerError("codex-runtime-unavailable"),
-      ));
+    this.resolveRuntime = options.resolveRuntime;
+    this.lastKnownVersion = options.lastKnownVersion ?? (() => null);
     this.spawn = options.spawn
-      ?? ((command, args, options_) => spawnPackagedCodex(command, args, options_, "codex-app-server"));
+      ?? ((command, args, options_) => spawnCodexAppServer(command, args, options_, "codex-app-server"));
     this.clientVersion = options.clientVersion ?? getAveAppVersion();
     this.runtimeHome = options.runtimeHome;
     this.sqliteHome = options.sqliteHome;
@@ -143,7 +162,15 @@ export class CodexAppServerClient {
   }
 
   async getStatus(): Promise<CodexSubscriptionStatus> {
-    await this.ensureStarted();
+    try {
+      await this.ensureStarted();
+    } catch (error) {
+      // No CLI is a state the settings card explains, not a failure.
+      if (error instanceof CodexAppServerError && error.code === "codex-runtime-not-configured") {
+        return this.currentStatus();
+      }
+      throw error;
+    }
     const result = await this.request("account/read", { refreshToken: false });
     this.accountStatus = this.projectAccountStatus(result);
     if (this.accountStatus.connection === "connected") {
@@ -299,6 +326,7 @@ export class CodexAppServerClient {
       planType: connection === "connected" ? this.accountStatus.planType : null,
       pendingLogin,
       pendingDeviceCode,
+      version: this.lastKnownVersion(),
     };
   }
 
@@ -312,6 +340,7 @@ export class CodexAppServerClient {
         planType: boundedString(account.planType, MAX_PLAN_TYPE_LENGTH),
         pendingLogin: null,
         pendingDeviceCode: null,
+        version: null,
       };
     }
     return blankStatus("ready");
@@ -321,10 +350,13 @@ export class CodexAppServerClient {
     if (this.child && !this.child.killed) return;
     if (!this.startPromise) {
       this.startPromise = this.start().catch((error) => {
+        // A resolution failure set the runtime state; closing the transport must not reset it.
+        const runtime = this.accountStatus.runtime;
         this.startPromise = null;
         this.closeTransport(error instanceof CodexAppServerError
           ? error
           : new CodexAppServerError("codex-runtime-start-failed"));
+        if (runtime !== "ready") this.accountStatus = blankStatus(runtime);
         throw error;
       });
     }
@@ -334,11 +366,15 @@ export class CodexAppServerClient {
   private async start(): Promise<void> {
     let executable: string;
     try {
-      executable = this.resolveExecutable();
+      executable = (await this.resolveRuntime()).executable;
     } catch (error) {
-      if (error instanceof CodexAppServerError) throw error;
-      throw new CodexAppServerError("codex-runtime-unavailable");
+      const resolutionError = runtimeResolutionError(error);
+      this.accountStatus = blankStatus(
+        resolutionError.code === "codex-runtime-not-configured" ? "not-configured" : "unavailable",
+      );
+      throw resolutionError;
     }
+    this.accountStatus = blankStatus("ready");
 
     // Parent IPC owns secure namespace creation; validate the ready paths here
     // before passing them to the third-party runtime.
@@ -528,6 +564,7 @@ export class CodexAppServerClient {
           planType: boundedString(payload.planType, MAX_PLAN_TYPE_LENGTH),
           pendingLogin: null,
           pendingDeviceCode: null,
+          version: null,
         };
       } else {
         this.pendingLogin = null;

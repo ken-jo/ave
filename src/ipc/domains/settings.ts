@@ -84,10 +84,11 @@ function codexStatusFromSubscription(status: SubscriptionRuntimeStatus | undefin
       planType: null,
       pendingLogin: null,
       pendingDeviceCode: null,
+      version: null,
     };
   }
   return {
-    runtime: status.runtime === "unavailable" ? "unavailable" : "ready",
+    runtime: status.runtime === "unavailable" || status.runtime === "not-configured" ? status.runtime : "ready",
     connection: status.connection === "connected" || status.connection === "pending"
       ? status.connection
       : "signed-out",
@@ -96,6 +97,7 @@ function codexStatusFromSubscription(status: SubscriptionRuntimeStatus | undefin
       ? status.pendingLogin
       : null,
     pendingDeviceCode: status.pendingDeviceCode,
+    version: status.version,
   };
 }
 
@@ -123,8 +125,14 @@ function acpStatusFromSubscription(
 
 function legacyCodexErrorCode(code: SubscriptionRuntimeErrorCode): CodexSubscriptionErrorCode {
   switch (code) {
+    case "subscription-runtime-not-configured":
+      return "codex-runtime-not-configured";
     case "subscription-runtime-unavailable":
       return "codex-runtime-unavailable";
+    case "subscription-runtime-version-unsupported":
+      return "codex-runtime-version-unsupported";
+    case "subscription-runtime-incompatible":
+      return "codex-runtime-incompatible";
     case "subscription-login-in-progress":
       return "codex-login-in-progress";
     case "subscription-login-failed":
@@ -1144,7 +1152,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
     const selected = await dialog.showOpenDialog({
-      title: providerValue === "kimi-code" ? "Select Kimi Code executable" : "Select Grok Build executable",
+      title: `Select ${subscriptionRuntimeDescriptor(providerValue).label} executable`,
       properties: ["openFile", "dontAddToRecent"],
       ...(process.platform === "win32"
         ? { filters: [{ name: "Executable", extensions: ["exe"] }] }

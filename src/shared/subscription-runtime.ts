@@ -6,6 +6,7 @@
  * so treating one as an API vendor would leak the wrong settings, fallback,
  * pricing, and tool-execution assumptions into the application.
  */
+import { CODEX_CLI_MINIMUM_VERSION } from "./codex-subscription.js";
 import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "./safe-integer.js";
 
 const SUBSCRIPTION_RUNTIME_IDS = ["codex", "kimi-code", "grok-build", "claude-code"] as const;
@@ -239,6 +240,19 @@ export interface SubscriptionRuntimeDescriptor {
   supportsManagedLogout: boolean;
   /** Only surface a picker when the runtime supplies a trustworthy model list. */
   supportsModelSelection: boolean;
+  /** The oldest CLI version Ave can run, when the runtime enforces one. */
+  minimumVersion?: string;
+  /** Official install instructions shown while no runtime is found. */
+  installGuidance?: SubscriptionRuntimeInstallGuidance;
+}
+
+/**
+ * How the provider's own documentation says to install its CLI. Shown as
+ * text; Ave never runs these commands.
+ */
+export interface SubscriptionRuntimeInstallGuidance {
+  readonly documentationUrl: string;
+  readonly commands: readonly { readonly label: string; readonly command: string }[];
 }
 
 /**
@@ -321,10 +335,25 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
     id: "codex",
     label: "Codex",
     transport: "codex-app-server",
-    requiresExecutable: false,
+    // The user's own `codex` CLI: found on PATH or in an official install
+    // location, or chosen explicitly. Ave ships none.
+    requiresExecutable: true,
     loginMethods: ["browser", "device-code"],
     supportsManagedLogout: true,
     supportsModelSelection: true,
+    minimumVersion: CODEX_CLI_MINIMUM_VERSION,
+    installGuidance: Object.freeze({
+      documentationUrl: "https://learn.chatgpt.com/docs/codex/cli",
+      commands: Object.freeze([
+        Object.freeze({ label: "macOS / Linux", command: "curl -fsSL https://chatgpt.com/codex/install.sh | sh" }),
+        Object.freeze({
+          label: "Windows (PowerShell)",
+          command: "powershell -ExecutionPolicy ByPass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"",
+        }),
+        Object.freeze({ label: "npm", command: "npm install -g @openai/codex" }),
+        Object.freeze({ label: "Homebrew", command: "brew install --cask codex" }),
+      ]),
+    }),
   },
   {
     id: "kimi-code",
@@ -393,6 +422,8 @@ export type SubscriptionRuntimeErrorCode =
   | "subscription-provider-not-supported"
   | "subscription-runtime-not-configured"
   | "subscription-runtime-unavailable"
+  | "subscription-runtime-version-unsupported"
+  | "subscription-runtime-incompatible"
   | "subscription-login-in-progress"
   | "subscription-login-failed"
   | "subscription-verification-url-unavailable"

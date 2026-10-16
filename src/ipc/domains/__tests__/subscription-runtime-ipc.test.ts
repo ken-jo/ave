@@ -960,6 +960,36 @@ describe("common subscription runtime IPC", () => {
     expect(runtimeServiceMock.get).toHaveBeenCalled();
   });
 
+  it("lets the user choose and forget their own Codex CLI through the common runtime channels", async () => {
+    const deps = makeDeps();
+    const { dialog } = await import("electron");
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: ["/opt/tools/codex"] });
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    await expect(invoke("ave:settings:subscription:choose-runtime", "codex"))
+      .resolves.toMatchObject({ ok: true, status: { provider: "codex" } });
+    expect(dialog.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({ title: "Select Codex executable" }));
+    expect(runtime.chooseExecutable).toHaveBeenCalledWith("codex", "/opt/tools/codex");
+
+    await expect(invoke("ave:settings:subscription:forget-runtime", "codex"))
+      .resolves.toMatchObject({ ok: true, status: { provider: "codex" } });
+    expect(runtime.forgetExecutable).toHaveBeenCalledWith("codex");
+  });
+
+  it("maps a too-old or incompatible Codex CLI onto the legacy codes", async () => {
+    const deps = makeDeps();
+    runtime.getStatus.mockRejectedValueOnce({ code: "subscription-runtime-version-unsupported" });
+    runtime.getStatus.mockRejectedValueOnce({ code: "subscription-runtime-incompatible" });
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    await expect(invoke("ave:settings:codex-subscription:status"))
+      .resolves.toMatchObject({ ok: false, error: "codex-runtime-version-unsupported" });
+    await expect(invoke("ave:settings:codex-subscription:status"))
+      .resolves.toMatchObject({ ok: false, error: "codex-runtime-incompatible" });
+  });
+
   it("rejects invalid generic subscription inputs before the runtime service", async () => {
     const deps = makeDeps();
     const { registerSettingsHandlers } = await import("../settings.js");

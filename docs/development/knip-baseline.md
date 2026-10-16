@@ -56,9 +56,6 @@ desktop workflows analyze the declarations without requiring `web/node_modules`.
 
 ## Whitelisted Runtime And Packaging Usage
 
-- `@openai/codex` supplies the platform-native App Server executable resolved
-  dynamically by `src/main/codex-app-server-client.ts`; it is unpacked with the
-  packaged application rather than imported into the JavaScript bundle.
 - `@vscode/ripgrep` pulls in the per-platform package whose `bin/rg` is
   resolved by path in `src/tools/ripgrep-executable.ts`; the wrapper module is
   never imported.
