@@ -686,6 +686,64 @@ describe("pre-push message catalog selection", () => {
     });
   });
 
+  it("keeps full checks for a fragment with an unparsed custom runtime beside a literal consumer", () => {
+    const tree = new Map(fixtureTree);
+    tree.set("scripts/catalog-runtime/jsx-runtime.ts", 'import { t } from "../../src/i18n/runtime.js"; export const Fragment = "fragment"; export function jsx() { return t("panel.title"); } export function jsxs() { return t("panel.title"); }');
+    tree.set("src/ui/dynamic.tsx", '/** @jsxImportSource ../../scripts/catalog-runtime */\nexport const view = <>fixed</>;');
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+      reason: "src/ui/dynamic.tsx has an unresolved dynamic message consumer; full checks required",
+    });
+  });
+
+  it.each([
+    'export const view = <>fixed</>;',
+    'export const view = <></>;',
+    'export const view = <><>fixed</></>;',
+    'export const view = <section>fixed</section>;',
+    'export const view = <Section />;',
+    'export function View() { return <>fixed</>; }',
+    'export const view = () => (<>fixed</>);',
+  ])("keeps full checks for every JSX form beside a literal consumer: %s", (source) => {
+    const tree = new Map(fixtureTree);
+    tree.set("src/ui/dynamic.tsx", source);
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+      reason: "src/ui/dynamic.tsx has an unresolved dynamic message consumer; full checks required",
+    });
+  });
+
+  it.each([
+    '/** @jsxImportSource ../../scripts/catalog-runtime */',
+    '/** @jsx customFactory */',
+    '/** @jsxFrag CustomFragment */',
+    '/** @jsxRuntime automatic */',
+    '// @jsxImportSource ../../scripts/catalog-runtime\u2028',
+    '\uFEFF/** @jsx customFactory */',
+  ])("keeps full checks for a JSX override even without JSX syntax: %s", (pragma) => {
+    const tree = new Map(fixtureTree);
+    tree.set("src/ui/dynamic.tsx", `${pragma}\nexport const marker = "fixed";`);
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+      reason: "src/ui/dynamic.tsx has an unresolved dynamic message consumer; full checks required",
+    });
+  });
+
+  it("allows a JSX-looking string when the module has no JSX syntax or override", () => {
+    const tree = new Map(fixtureTree);
+    tree.set("src/ui/example.tsx", 'export const example = "<>fixed</>";');
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+      namespaces: ["panel"],
+      testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/ui/__tests__/panel-copy.test.tsx"],
+      consumerModules: ["src/marketplace/language-check.ts", "src/ui/panel-kinds.ts", "src/ui/panel.tsx"],
+    });
+  });
+
+  it("keeps full checks when a dynamic scope can replace a proven local callable", () => {
+    const tree = new Map(fixtureTree);
+    tree.set("src/ui/dynamic.cjs", 'function render(key) { return key; } with (scope) { render(dynamicKey); }');
+    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+      reason: "src/ui/dynamic.cjs has an unresolved dynamic message consumer; full checks required",
+    });
+  });
+
   it("proves a context binding through its declared interface and imported function type", () => {
     const tree = new Map([
       ["src/i18n/react.tsx", 'import type { TranslateFn as RenderFn } from "./translate.js"; export interface I18nContextValue { t: RenderFn; } export function useTranslation(): I18nContextValue { throw null; }'],

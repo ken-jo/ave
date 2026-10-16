@@ -42,6 +42,12 @@ function callableDeclarations(source) {
   });
 }
 
+function hasJsx(node) {
+  let found = ast.isJsxElement(node) || ast.isJsxSelfClosingElement(node) || ast.isJsxFragment(node);
+  if (!found) node.forEachChild((child) => { found ||= hasJsx(child); });
+  return found;
+}
+
 /**
  * Build a positive proof for catalog consumers. Only named imports from a
  * resolved runtime module and the t binding of a direct context destructure
@@ -140,6 +146,9 @@ export function createMessageConsumerReader(sources, trackedFiles) {
     const source = sources.get(path);
     const named = new Set();
     if (!source) return { named, unresolved: true };
+    // Lowering JSX inserts runtime imports and calls absent from this AST.
+    // No JSX runtime is certified here; JSX and any @jsx text require full.
+    if (typeof source.text !== "string" || /@jsx/i.test(source.text) || hasJsx(source)) return { named, unresolved: true };
     const approved = new Set();
     const bindings = new Map();
     const parents = new Map();
@@ -238,8 +247,7 @@ export function createMessageConsumerReader(sources, trackedFiles) {
       // lookup or dynamically loaded namespace cannot acquire that proof.
       if (ast.isCallExpression(node) && (!ast.isIdentifier(node.expression) || !bindings.has(node.expression.text))) unresolved = true;
       if (ast.isPropertyAccessExpression(node) || ast.isElementAccessExpression(node) || ast.isComputedPropertyName(node) ||
-          ast.isNewExpression(node) || ast.isTaggedTemplateExpression(node) || ast.isDecorator(node) ||
-          ast.isJsxOpeningElement(node) || ast.isJsxSelfClosingElement(node)) unresolved = true;
+          ast.isNewExpression(node) || ast.isTaggedTemplateExpression(node) || ast.isDecorator(node) || ast.isWithStatement(node)) unresolved = true;
       if (ast.isExportDeclaration(node) && !node.isTypeOnly) unresolved = true;
       if (ast.isImportEqualsDeclaration(node) && !node.isTypeOnly) unresolved = true;
       if ((ast.isVariableDeclaration(node) || ast.isPropertyAssignment(node)) &&
