@@ -244,6 +244,12 @@ export interface SubscriptionRuntimeDescriptor {
   minimumVersion?: string;
   /** Official install instructions shown while no runtime is found. */
   installGuidance?: SubscriptionRuntimeInstallGuidance;
+  /**
+   * No selected model runs the runtime's own default, and that is offered as
+   * an explicit choice labelled as the CLI's default rather than as a model
+   * name Ave would have to guess.
+   */
+  offersCliDefaultModel: boolean;
 }
 
 /**
@@ -354,6 +360,7 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
         Object.freeze({ label: "Homebrew", command: "brew install --cask codex" }),
       ]),
     }),
+    offersCliDefaultModel: false,
   },
   {
     id: "kimi-code",
@@ -363,6 +370,7 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
     loginMethods: ["device-code"],
     supportsManagedLogout: false,
     supportsModelSelection: false,
+    offersCliDefaultModel: false,
   },
   {
     id: "grok-build",
@@ -372,6 +380,7 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
     loginMethods: ["device-code"],
     supportsManagedLogout: true,
     supportsModelSelection: false,
+    offersCliDefaultModel: false,
   },
   {
     id: "claude-code",
@@ -380,7 +389,10 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
     requiresExecutable: true,
     loginMethods: ["browser"],
     supportsManagedLogout: true,
-    supportsModelSelection: false,
+    // The user's own CLI takes `--model` with an id from the catalog's
+    // Anthropic models; no selection leaves the CLI on its default.
+    supportsModelSelection: true,
+    offersCliDefaultModel: true,
   },
 ] as const;
 

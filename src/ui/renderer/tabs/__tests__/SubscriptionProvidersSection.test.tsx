@@ -298,3 +298,18 @@ describe("SubscriptionAuthControls", () => {
     expect(screen.queryByTestId("subscription-provider:codex:minimum-version")).toBeNull();
   });
 });
+
+describe("Claude Code card — whose subscription and whose credentials", () => {
+  it("says the user's own Claude subscription and installed CLI are used, and the credentials stay there", () => {
+    const claude: SubscriptionProviderView = {
+      descriptor: { id: "claude-code", label: "Claude Code", description: "", loginMethods: ["browser"], supportsLogout: true },
+      status: { runtime: "ready", connection: "connected", models: [], capabilities: runtimeCapabilities() },
+    };
+    render(<SubscriptionProvidersSection providers={[claude, connectedCodex()]} actions={{}} />);
+    expect(screen.getByTestId("subscription-provider:claude-code:billing-disclosure")).toHaveTextContent(
+      "Uses your own Claude subscription through the Claude Code CLI you installed; Ave never sees or stores your Claude credentials.",
+    );
+    // Only the runtime reached through the user's own CLI carries it.
+    expect(screen.queryByTestId("subscription-provider:codex:billing-disclosure")).toBeNull();
+  });
+});

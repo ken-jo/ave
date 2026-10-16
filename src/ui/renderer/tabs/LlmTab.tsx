@@ -72,6 +72,8 @@ import { ModelCatalogRefreshSection } from "./ModelCatalogRefreshSection.js";
 import { useTranslation, type I18nContextValue } from "../../../i18n/react.js";
 import {
   SUBSCRIPTION_RUNTIME_API_COUNTERPART,
+  isSubscriptionRuntimeId,
+  subscriptionRuntimeDescriptor,
   type SubscriptionRuntimeId,
 } from "../../../shared/subscription-runtime.js";
 import { useSubscriptionProviders } from "./SubscriptionProvidersController.js";
@@ -2395,6 +2397,18 @@ export function LlmTab(props: LlmTabProps) {
           fixed: true,
         });
         continue;
+      }
+      if (isSubscriptionRuntimeId(view.descriptor.id)
+        && subscriptionRuntimeDescriptor(view.descriptor.id).offersCliDefaultModel) {
+        // Choosing no model is a real choice here: the user's CLI runs its
+        // own default. It is named as that, never as a model id.
+        options.push({
+          value: unifiedValue(view.descriptor.id, ""),
+          providerId: view.descriptor.id,
+          providerLabel: view.descriptor.label,
+          vendorLabel: view.descriptor.label,
+          modelId: t("llmTab.cliDefaultModel"),
+        });
       }
       for (const model of models) {
         options.push({

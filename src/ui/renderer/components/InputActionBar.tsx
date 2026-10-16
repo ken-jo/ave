@@ -40,6 +40,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
+import { isSubscriptionRuntimeId, subscriptionRuntimeDescriptor } from "../../../shared/subscription-runtime.js";
 import type { PluginEntry } from "../types.js";
 import { SlashPicker } from "./SlashPicker.js";
 import { ReasoningLevelControl, useReasoningLevel } from "./ReasoningSlider.js";
@@ -780,8 +781,14 @@ function ModelQuickPicker({
             // it empty; the muted vendor column is then blank rather than
             // repeating the same label twice.
             const modelLessSubscription = subscriptionChoice !== null && subscriptionChoice.modelId === null;
-            const vendorText = modelLessSubscription ? "" : choice.vendorLabel;
-            const primaryText = modelLessSubscription ? choice.vendorLabel : (choice.modelId ?? "");
+            // A CLI that runs its own default when nothing is chosen (Claude
+            // Code) says so instead of leaving the model column to the label.
+            const cliDefault = modelLessSubscription && isSubscriptionRuntimeId(subscriptionChoice.provider)
+              && subscriptionRuntimeDescriptor(subscriptionChoice.provider).offersCliDefaultModel;
+            const vendorText = modelLessSubscription && !cliDefault ? "" : choice.vendorLabel;
+            const primaryText = cliDefault
+              ? t("llmTab.cliDefaultModel")
+              : modelLessSubscription ? choice.vendorLabel : (choice.modelId ?? "");
             return (
             <li key={key} role="option" aria-selected={choice.current}>
               <button

@@ -18,6 +18,11 @@ import { SubscriptionRuntimeService } from "../subscription-runtime-service.js";
 import type { CodexAppServerClient } from "../codex-app-server-client.js";
 import type { AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
 import type { ClaudeCodeSubscriptionClient } from "../claude-code-subscription-client.js";
+import type { ClaudeCodeConversationRuntimeOptions } from "../claude-code-conversation-runtime.js";
+import { claudeCodePrintArgs } from "../claude-code-stream.js";
+import { catalogChatModelIds } from "../../shared/model-catalog/vendor-models.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 
 function fakeCodexClient(): CodexAppServerClient {
@@ -57,7 +62,8 @@ describe("claude-code subscription contract", () => {
     expect(descriptor.requiresExecutable).toBe(true);
     expect(descriptor.loginMethods).toEqual(["browser"]);
     expect(descriptor.supportsManagedLogout).toBe(true);
-    expect(descriptor.supportsModelSelection).toBe(false);
+    expect(descriptor.supportsModelSelection).toBe(true);
+    expect(descriptor.offersCliDefaultModel).toBe(true);
     expect(SUBSCRIPTION_RUNTIME_DESCRIPTORS.some((entry) => entry.id === "claude-code")).toBe(true);
   });
 
@@ -126,5 +132,111 @@ describe("claude-code subscription contract", () => {
       tools: true,
       images: false,
     });
+  });
+});
+
+function connectedClaudeClient(): ClaudeCodeSubscriptionClient {
+  return {
+    getStatus: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
+    verify: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
+    getConfiguredExecutable: vi.fn(() => "/approved/claude"),
+    getRuntimePaths: vi.fn(() => ({
+      runtimeHome: "/isolated/claude-home",
+      workspaceDir: "/isolated/claude-workspace",
+      runtimeTempDir: "/isolated/claude-tmp",
+    })),
+    stop: vi.fn(async () => undefined),
+  } as unknown as ClaudeCodeSubscriptionClient;
+}
+
+async function claudeService() {
+  const opened: ClaudeCodeConversationRuntimeOptions[] = [];
+  const service = await SubscriptionRuntimeService.create(async () => undefined, {
+    namespace: namespace(),
+    codexClient: fakeCodexClient(),
+    acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
+    claudeCodeClient: connectedClaudeClient(),
+    createClaudeCodeConversationRuntime: (options) => {
+      opened.push(options);
+      return { provider: "claude-code", streamTurn: vi.fn(), stop: vi.fn(async () => undefined) } as never;
+    },
+  });
+  return { service, opened };
+}
+
+describe("Claude Code model choice — the user's CLI with --model", () => {
+  it("offers the catalog's Anthropic chat models, and nothing it would have to invent", async () => {
+    const { service } = await claudeService();
+    const { models } = await service.listModels("claude-code");
+    expect(models.map((model) => model.id)).toEqual(catalogChatModelIds("claude"));
+    expect(models.map((model) => model.id)).toEqual(expect.arrayContaining(["claude-opus-5-5", "claude-sonnet-5-5"]));
+    expect(models.some((model) => model.isDefault)).toBe(false);
+  });
+
+  it("passes a listed model to the CLI and leaves an unselected session on the CLI default", async () => {
+    const { service, opened } = await claudeService();
+    await service.openTextSession({ kind: "subscription", provider: "claude-code", model: "claude-sonnet-5-5" });
+    await service.openTextSession({ kind: "subscription", provider: "claude-code" });
+    expect(opened[0]!.model).toBe("claude-sonnet-5-5");
+    expect(opened[1]).not.toHaveProperty("model");
+  });
+
+  it("refuses a persisted model the catalog does not list", async () => {
+    const { service, opened } = await claudeService();
+    await expect(service.openTextSession({ kind: "subscription", provider: "claude-code", model: "claude-imaginary-9" }))
+      .rejects.toMatchObject({ code: "subscription-chat-unavailable" });
+    expect(opened).toHaveLength(0);
+  });
+
+  it("puts --model <id> on the print command only when a model was chosen, and only a plain id", () => {
+    const withModel = claudeCodePrintArgs("/tmp/mcp.json", [], "claude-sonnet-5-5");
+    expect(withModel.slice(withModel.indexOf("--model"), withModel.indexOf("--model") + 2)).toEqual(["--model", "claude-sonnet-5-5"]);
+    expect(claudeCodePrintArgs("/tmp/mcp.json", [])).not.toContain("--model");
+    expect(() => claudeCodePrintArgs("/tmp/mcp.json", [], "--dangerously-skip-permissions")).toThrow();
+    expect(() => claudeCodePrintArgs("/tmp/mcp.json", [], "claude sonnet")).toThrow();
+  });
+});
+
+describe("Claude subscription guarantees — the credentials stay the CLI's", () => {
+  const source = (file: string) => readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), "utf8");
+  const modules = ["claude-code-subscription-client.ts", "claude-code-conversation-runtime.ts", "claude-code-stream.ts"];
+
+  it("never reads Claude credentials: no credentials file, keychain entry, or token store is named", () => {
+    for (const file of modules) {
+      const text = source(file);
+      for (const forbidden of [
+        ".credentials.json", "Claude Code-credentials", "find-generic-password", "oauthAccount",
+        "accessToken", "refreshToken", "apiKeyHelper", "homedir(", "os.homedir",
+      ]) {
+        expect(text.includes(forbidden), `${file} names ${forbidden}`).toBe(false);
+      }
+    }
+  });
+
+  it("signs in only with `claude auth login`: no other login, token or key path is spawned", () => {
+    const text = modules.map(source).join("\n");
+    const argVectors = [...text.matchAll(/\[\s*"(auth|setup-token|login|--api-key|config)"[^\]]*\]/gu)].map((match) => match[0].replace(/\s+/gu, " "));
+    expect(new Set(argVectors)).toEqual(new Set(['["auth", "login"]', '["auth", "logout"]', '["auth", "status"]']));
+    expect(text).not.toMatch(/setup-token|--api-key|ANTHROPIC_API_KEY\s*[:=]|CLAUDE_CODE_OAUTH_TOKEN\s*[:=]/u);
+  });
+
+  it.each(["linux", "darwin", "win32"] as const)("drops every inherited ANTHROPIC_* and CLAUDE_* variable on %s", (platform) => {
+    const home = platform === "win32" ? "C:\\isolated\\claude-home" : "/isolated/claude-home";
+    const env = sanitizedClaudeCodeEnvironment(home, {
+      PATH: "/usr/bin",
+      ANTHROPIC_API_KEY: "fixture-key",
+      ANTHROPIC_AUTH_TOKEN: "fixture-token",
+      ANTHROPIC_BASE_URL: "https://proxy.example.test",
+      anthropic_model: "lowercase-variant",
+      CLAUDE_CODE_OAUTH_TOKEN: "fixture-oauth",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      CLAUDE_CONFIG_DIR: "/home/example/.claude",
+    }, platform, platform === "win32" ? "C:\\isolated\\claude-tmp" : "/isolated/claude-tmp");
+    const leaked = Object.keys(env).filter((key) => /^(ANTHROPIC_|CLAUDE_)/iu.test(key) && key !== "CLAUDE_CONFIG_DIR");
+    expect(leaked).toEqual([]);
+    // The one CLAUDE_ variable present is Ave's own: the isolated config dir,
+    // never the user's real one.
+    expect(env.CLAUDE_CONFIG_DIR).toBe(home);
+    expect(env.HOME).toBe(home);
   });
 });

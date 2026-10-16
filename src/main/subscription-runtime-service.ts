@@ -60,6 +60,7 @@ import {
   type CodexConversationTokenUsage,
 } from "./codex-conversation-runtime.js";
 import { SubscriptionToolBridge } from "./subscription-tool-bridge.js";
+import { catalogChatModelIds } from "../shared/model-catalog/vendor-models.js";
 import {
   AcpSubscriptionRuntimeClient,
   AcpSubscriptionRuntimeError,
@@ -1365,6 +1366,15 @@ export class SubscriptionRuntimeService {
   }> {
     this.assertRunning();
     return this.withStableErrors(async () => {
+      if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
+        // The user's own CLI takes any Anthropic model id with `--model`, so
+        // the choices are the catalog's Anthropic chat models, not a list Ave
+        // writes by hand. No choice is the CLI's own default.
+        return {
+          status: await this.getStatus(runtimeId),
+          models: catalogChatModelIds("claude").map((id) => ({ id, displayName: id, isDefault: false })),
+        };
+      }
       if (runtimeId !== "codex") return { status: await this.getStatus(runtimeId), models: [] };
       const result = await this.codexClient.listModels();
       return {
@@ -1413,13 +1423,13 @@ export class SubscriptionRuntimeService {
 
     let effectiveSelection = safeSelection;
     if (
-      safeSelection.provider === "codex"
+      (safeSelection.provider === "codex" || isClaudeCodeSubscriptionProviderId(safeSelection.provider))
       && (safeSelection.model !== undefined || safeFallbackSelection !== undefined)
     ) {
       // Persisted selections and transient sub-agent overrides bypass the
       // renderer IPC. Re-enumerate against the current subscription-scoped
       // catalog before forwarding either model ID.
-      const catalog = await this.listModels("codex");
+      const catalog = await this.listModels(safeSelection.provider);
       this.assertSafetyEpoch(effectiveSelection.provider, safetyEpoch);
       if (!catalog.status.capabilities.chat) {
         throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
@@ -1461,6 +1471,7 @@ export class SubscriptionRuntimeService {
             workspaceDir: paths.workspaceDir,
             runtimeTempDir: paths.runtimeTempDir,
             bridge,
+            ...(effectiveSelection.model !== undefined ? { model: effectiveSelection.model } : {}),
           });
           return await this.trackVerifiedSession(runtime, safetyEpoch);
         }

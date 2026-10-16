@@ -3011,3 +3011,29 @@ describe("LlmTab OpenAI model catalogue", () => {
       .toHaveAttribute("data-provider-sync-status", "ready");
   });
 });
+
+describe("LlmTab Claude Code models — the user's CLI, named honestly", () => {
+  it("offers the CLI default as its own choice beside the catalog's Claude models", async () => {
+    const useForChat = vi.fn();
+    installSubscription(
+      [codexView({
+        descriptor: { id: "claude-code", label: "Claude Code", description: "", loginMethods: ["browser"], supportsLogout: true },
+        status: {
+          runtime: "ready",
+          connection: "connected",
+          models: [{ id: "claude-sonnet-5-5", label: "claude-sonnet-5-5" }],
+        },
+      })],
+      { useForChat, useApiForChat: vi.fn() },
+    );
+    await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { vendor: "openai", model: "" });
+
+    const cliDefault = t("llmTab.cliDefaultModel");
+    expect(await chooserModelIds()).toEqual(expect.arrayContaining([cliDefault, "claude-sonnet-5-5"]));
+    expect(chooserGroupText(cliDefault)).toMatch(/Claude Code/);
+
+    pickChooserOption(cliDefault);
+    // No model is sent: the CLI runs its own default.
+    await waitFor(() => expect(useForChat).toHaveBeenCalledWith("claude-code", null));
+  });
+});
