@@ -13,11 +13,12 @@
  * run Electron tests is unaffected.
  */
 import { test, expect } from "@playwright/test";
-import { _electron as electron, ElectronApplication } from "playwright";
+import { ElectronApplication } from "playwright";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { launchElectron } from "../ui/seeded-electron.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST_MAIN = resolve(HERE, "../../../dist/src/main/main.js");
@@ -38,7 +39,7 @@ test.describe("initial window size", () => {
   test.beforeEach(async () => {
     tempHome = mkdtempSync(resolve(tmpdir(), "ave-e2e-home-"));
     userDataDir = mkdtempSync(resolve(tmpdir(), "ave-e2e-initial-size-"));
-    app = await electron.launch({
+    app = await launchElectron({
       args: [DIST_MAIN, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: {
         ...process.env,

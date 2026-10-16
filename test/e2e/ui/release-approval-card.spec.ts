@@ -11,7 +11,7 @@
  * tracks the focused scope — the property the whole design rests on.
  */
 import { test, expect } from "@playwright/test";
-import { _electron as electron, type ElectronApplication, type Page } from "playwright";
+import type { ElectronApplication, Page } from "playwright";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -20,6 +20,7 @@ import {
   builtMainExists,
   buildE2eBaseSettings,
   buildIsolatedElectronEnv,
+  launchElectron,
 } from "./seeded-electron.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 
@@ -78,7 +79,7 @@ test.describe("release check — docked approval card", () => {
       "utf-8",
     );
 
-    app = await electron.launch({
+    app = await launchElectron({
       // Isolate Chromium's profile before app startup. AVE_USER_DATA_DIR is
       // also passed for the app's own settings, but that environment variable
       // alone is too late to prevent Electron's process-singleton lock from

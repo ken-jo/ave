@@ -1,10 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { _electron as electron, type ElectronApplication, type Page } from "playwright";
+import { type ElectronApplication, type Page } from "playwright";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildE2eBaseSettings, buildIsolatedElectronEnv } from "./seeded-electron";
+import { buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -180,7 +180,7 @@ test.describe("chat layout overflow", () => {
       "utf-8",
     );
 
-    app = await electron.launch({
+    app = await launchElectron({
       args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({
         HOME: tempHome,
