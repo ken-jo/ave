@@ -130,20 +130,6 @@ function takesAdaptiveThinking(model: string): boolean {
 }
 
 /**
- * Whether a request goes over OpenAI's Responses API rather than Chat
- * Completions: every Azure Foundry request, and an OpenAI request for the
- * reasoning families (gpt-5.x, the o-series), which the Responses API serves
- * with reasoning summaries. A wire choice, not a statement that the model
- * reasons: whether a request carries `reasoning_effort` is the catalog's to say.
- */
-export function usesOpenAIResponsesWire(vendor: string, model: string): boolean {
-  if (vendor === "azure-foundry") return true;
-  if (vendor !== "openai") return false;
-  const id = model.toLowerCase();
-  return ["gpt-5", "o1", "o3", "o4"].some((family) => id.includes(family));
-}
-
-/**
  * The `anthropic-beta` values a Claude request carries, in this order: the 1M
  * window opt-in for a model that needs it, and interleaved thinking when this
  * request sends numeric thinking with tools to a generation that supports it.

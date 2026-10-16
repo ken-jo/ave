@@ -16,9 +16,10 @@ procedure adds a live check before merge.
 | Context window, prompt cap, output limit, input modalities, reasoning levels, pricing, deprecation status | Bundled catalog `src/core/model-catalog/bundled-snapshot.json`, generated from committed input in `scripts/model-catalog/` | `bun run generate:model-catalog -- --fetch` |
 | Vendor to catalog provider mapping | `CATALOG_PROVIDERS_BY_VENDOR` in `src/shared/model-catalog/provider-map.ts` | Hand edit; exhaustive over `LLMVendor`, so a new vendor fails typecheck until mapped |
 | Request shape the catalog does not state (the 1M context beta header, interleaved numeric thinking) | `CLAUDE_REQUEST_SHAPES` and `claudeBetaHeaders` in `src/shared/model-host-policy.ts` | Hand edit |
-| Wire choice (Responses API vs Chat Completions) | `usesOpenAIResponsesWire` in `src/shared/model-host-policy.ts` | Hand edit |
+| Wire choice (Responses API vs Chat Completions) | `usesOpenAIResponsesWire` in `src/engine/llm/reasoning-plan.ts`: Azure always Responses; OpenAI Responses when the catalog says the model reasons | Catalog (no hand edit) |
 | Host fallbacks (128K window, output limit, TPM defaults) | `src/shared/model-host-policy.ts` | Hand edit |
-| Default model per vendor | `DEFAULT_MODEL` behind `LLM_VENDOR_DEFAULTS` in `src/shared/llm-vendor-defaults.ts` | Hand edit |
+| Default model per vendor | `DEFAULT_MODEL` behind `LLM_VENDOR_DEFAULTS` in `src/shared/llm-vendor-defaults.ts` | Hand edit; a vendor with a catalog provider must default to a catalog chat model (test) |
+| Model choices per vendor | `llmVendorModelOptions` in `src/shared/llm-vendor-defaults.ts`: the catalog's chat models for mapped vendors, hand-picked `modelOptions` only for unmapped presets | Catalog |
 
 A model the catalog does not know still runs, on the host fallback: a 128K
 window, unknown price, no stated modalities (images refused). Resolution order

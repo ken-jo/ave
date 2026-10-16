@@ -29,7 +29,45 @@ import {
   type ResolvedReasoningSupport,
 } from "../../shared/context-budget.js";
 import { isOpenAICompatibleVendor, isSelfHostedVllmVendor, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
-import { claudeRequestShape, usesOpenAIResponsesWire } from "../../shared/model-host-policy.js";
+import { claudeRequestShape } from "../../shared/model-host-policy.js";
+import { activeModelCatalog } from "../../shared/model-catalog/active.js";
+import { resolveCatalogKey } from "../../shared/model-catalog/resolve.js";
+
+/**
+ * Whether a request goes over OpenAI's Responses API rather than Chat
+ * Completions: every Azure Foundry request, and an OpenAI request for a model
+ * that reasons. OpenAI's migration guide: "Starting with GPT-5.4, Chat
+ * Completions does not support tool calling with `reasoning_effort` values
+ * other than `none`", and its pro and codex models are served on Responses
+ * only — so whether the model reasons, not the id's spelling, picks the wire
+ * (a `gpt-5` substring sent every gpt-6 model to Chat Completions).
+ *
+ * `reasoning` is the route's resolved support (`resolveReasoningSupport`), in
+ * its order:
+ * - an endpoint report that names a control states the wire itself:
+ *   `reasoning` is the Responses parameter, `reasoning_effort` the Chat
+ *   Completions one;
+ * - a catalog answer (the entry the user named, or the id where the route
+ *   establishes it) says whether the model reasons.
+ * With neither — a custom endpoint, where the catalog does not establish the
+ * model's limits — the id's own catalog entry still picks the protocol: the
+ * wire is what the id selects at OpenAI's API, not a limit of this host. An id
+ * the catalog does not know goes over Chat Completions, the wire every OpenAI
+ * chat model answers.
+ */
+export function usesOpenAIResponsesWire(
+  vendor: string,
+  model: string,
+  reasoning: ResolvedReasoningSupport | undefined,
+): boolean {
+  if (vendor === "azure-foundry") return true;
+  if (vendor !== "openai") return false;
+  if (reasoning?.source === "endpoint-report" && reasoning.control !== undefined) {
+    return reasoning.control === "reasoning";
+  }
+  if (reasoning?.source === "model-catalog") return reasoning.supported;
+  return resolveCatalogKey(activeModelCatalog(), vendor, model)?.model.reasoning?.supported === true;
+}
 
 /**
  * Map Ave thinking budget (tokens) to OpenAI reasoning_effort.
@@ -127,7 +165,8 @@ export interface ReasoningPlan {
 
 /**
  * Whether this request must not carry `reasoning_effort`: Chat Completions
- * answers 400 when GPT-5.x gets it together with tools. The actual protocol
+ * answers 400 when a reasoning model (the catalog's flag) gets it together
+ * with tools. The actual protocol
  * selected by the adapter decides this; changing an endpoint does not change
  * that protocol. The responses wire has no such restriction.
  * One rule for the request and for the turn's record of it.
@@ -136,12 +175,10 @@ function chatCompletionsRejectsToolTurnEffort(params: {
   vendor: LLMVendor;
   model: string;
   hasTools: boolean;
-  baseUrl?: string;
-  catalogModel?: string;
+  reasoning: ResolvedReasoningSupport | undefined;
 }): boolean {
-  const identity = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl)?.id;
-  if (!params.hasTools || ![params.model, identity ?? ""].some((model) => model.toLowerCase().includes("gpt-5"))) return false;
-  return OPENAI_FAMILY.has(params.vendor) && !usesOpenAIResponsesWire(params.vendor, params.model);
+  if (!params.hasTools || params.reasoning?.supported !== true) return false;
+  return OPENAI_FAMILY.has(params.vendor) && !usesOpenAIResponsesWire(params.vendor, params.model, params.reasoning);
 }
 
 const OPENAI_FAMILY: ReadonlySet<LLMVendor> = new Set(["openai", "azure-foundry"]);
@@ -167,13 +204,30 @@ export function planReasoning(params: {
   request: { hasTools: boolean };
 }): ReasoningPlan | undefined {
   if (!params.enableThinking) return undefined;
-  const plan = planReasoningLevel(params);
+  const reasoning = routeReasoningSupport(params);
+  const plan = planReasoningLevel({ ...params, reasoning });
   if (plan?.kind === "openai-effort" && chatCompletionsRejectsToolTurnEffort({
-    vendor: params.vendor, model: params.model, baseUrl: params.baseUrl, catalogModel: params.catalogModel, ...params.request,
+    vendor: params.vendor, model: params.model, reasoning, ...params.request,
   })) {
     return { kind: "none", requestedEffort: plan.requestedEffort, source: plan.source, suppressed: "chat-completions-tool-turn" };
   }
   return plan;
+}
+
+/**
+ * One answer with the settings chooser: the user's named entry, then the
+ * endpoint's report, then the catalog where the route establishes the model.
+ */
+function routeReasoningSupport(params: {
+  vendor: LLMVendor; model: string; baseUrl?: string; catalogModel?: string;
+  reasoning?: ResolvedReasoningSupport;
+}): ResolvedReasoningSupport | undefined {
+  return params.reasoning ?? resolveReasoningSupport({
+    vendor: params.vendor,
+    model: params.model,
+    ...(params.catalogModel !== undefined ? { catalogModel: params.catalogModel } : {}),
+    ...(params.baseUrl !== undefined ? { baseUrl: params.baseUrl } : {}),
+  });
 }
 
 function planReasoningLevel(params: {
@@ -182,14 +236,7 @@ function planReasoningLevel(params: {
 }): ReasoningPlan | undefined {
   const entry = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl)?.model;
   const accepted = entry?.reasoning?.effort;
-  // One answer with the settings chooser: the user's named entry, then the
-  // endpoint's report, then the catalog where the route establishes the model.
-  const support = params.reasoning ?? resolveReasoningSupport({
-    vendor: params.vendor,
-    model: params.model,
-    ...(params.catalogModel !== undefined ? { catalogModel: params.catalogModel } : {}),
-    ...(params.baseUrl !== undefined ? { baseUrl: params.baseUrl } : {}),
-  });
+  const support = params.reasoning;
   if (support?.source === "model-catalog" && !support.supported) {
     return { kind: "none", source: "model-catalog" };
   }
@@ -199,7 +246,7 @@ function planReasoningLevel(params: {
       // The SDK sends `reasoningEffort` as `reasoning.effort` on the Responses
       // wire and as `reasoning_effort` on Chat Completions; the report has to
       // name that parameter.
-      const wireParameter = usesOpenAIResponsesWire(params.vendor, params.model) ? "reasoning" : "reasoning_effort";
+      const wireParameter = usesOpenAIResponsesWire(params.vendor, params.model, support) ? "reasoning" : "reasoning_effort";
       return support.control === wireParameter
         ? { kind: "openai-effort", requestedEffort, effort: reportedEffort(requestedEffort), source: "endpoint-report" }
         : { kind: "none", requestedEffort, source: "endpoint-report" };

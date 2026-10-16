@@ -255,21 +255,38 @@ describe("request fields the catalog decides", () => {
       .toEqual({ kind: "none", requestedEffort: "high", source: "host-fallback" });
   });
 
-  it("records the reasoning a GPT-5 tool turn on Chat Completions actually sends", async () => {
-    // An OpenAI id that names no Responses family goes over Chat Completions,
-    // which answers 400 to reasoning_effort with tools on GPT-5.x; the user's
-    // catalog declaration says this alias is GPT-5.4.
+  it("sends a declared alias over Responses with its effort, tools or not", async () => {
+    // The user's catalog declaration says this alias is GPT-5.4, a reasoning
+    // model: the declaration picks the Responses wire as well as the levels.
+    // (An id-spelling rule sent it over Chat Completions and dropped the effort
+    // on every tool turn.)
     const catalogModel = "openai/gpt-5.4";
     const model = "chat-alias-fixture";
+    for (const hasTools of [true, false]) {
+      expect(planReasoning({ vendor: "openai", model, catalogModel, enableThinking: true, budgetTokens: 16_000, request: { hasTools } }))
+        .toMatchObject({ kind: "openai-effort", effort: "high" });
+      const body = await sentBody("openai", model, { thinkingBudgetTokens: 16_000, tools: hasTools, catalogModel });
+      expect(body.input).toBeDefined();
+      expect(body.reasoning).toMatchObject({ effort: "high" });
+    }
+  });
+
+  it("records the reasoning a tool turn on Chat Completions actually sends", async () => {
+    // The endpoint's report names `reasoning_effort`, the Chat Completions
+    // parameter, for an id the catalog does not list: the request goes over
+    // Chat Completions, which answers 400 to reasoning_effort with tools.
+    const model = "chat-alias-fixture";
+    const reasoning = { supported: true as const, source: "endpoint-report" as const, control: "reasoning_effort" as const };
     const request = { hasTools: true };
-    const plan = planReasoning({ vendor: "openai", model, catalogModel, enableThinking: true, budgetTokens: 16_000, request });
+    const plan = planReasoning({ vendor: "openai", model, reasoning, enableThinking: true, budgetTokens: 16_000, request });
     expect(plan).toMatchObject({ kind: "none", requestedEffort: "high", suppressed: "chat-completions-tool-turn" });
-    const withTools = await sentBody("openai", model, { thinkingBudgetTokens: 16_000, tools: true, catalogModel });
+    const withTools = await sentBody("openai", model, { thinkingBudgetTokens: 16_000, tools: true, modelCapabilities: { reasoning } });
+    expect(withTools.messages).toBeDefined();
     expect(withTools.reasoning_effort).toBeUndefined();
     // Without tools the same route carries the effort, and the plan says so.
-    expect(planReasoning({ vendor: "openai", model, catalogModel, enableThinking: true, budgetTokens: 16_000, request: { ...request, hasTools: false } }))
+    expect(planReasoning({ vendor: "openai", model, reasoning, enableThinking: true, budgetTokens: 16_000, request: { hasTools: false } }))
       .toMatchObject({ kind: "openai-effort", effort: "high" });
-    expect((await sentBody("openai", model, { thinkingBudgetTokens: 16_000, catalogModel })).reasoning_effort).toBe("high");
+    expect((await sentBody("openai", model, { thinkingBudgetTokens: 16_000, modelCapabilities: { reasoning } })).reasoning_effort).toBe("high");
   });
 
   it("lowers an adaptive Claude effort to the nearest level the model accepts", async () => {
@@ -348,19 +365,25 @@ describe("reasoning an endpoint's /models report states (design §5.1)", () => {
     expect(body).not.toHaveProperty("reasoning_effort");
   });
 
-  it("sends an OpenAI-family effort only when the report names that wire's parameter", async () => {
-    // A custom endpoint does not establish the model; its report does.
+  it("sends an OpenAI-family effort over the wire whose parameter the report names", async () => {
+    // A custom endpoint does not establish the model; its report does, and the
+    // parameter it names is the wire: `reasoning_effort` is Chat Completions,
+    // `reasoning` is Responses.
     const chat = await sentBody("openai", "chat-alias-fixture", {
       baseUrl: "https://proxy.invalid/v1", thinkingBudgetTokens: 16_000, modelCapabilities: reported("reasoning_effort"),
     });
+    expect(chat.messages).toBeDefined();
     expect(chat.reasoning_effort).toBe("high");
-    const wrongParameter = await sentBody("openai", "chat-alias-fixture", {
+    const responses = await sentBody("openai", "chat-alias-fixture", {
       baseUrl: "https://proxy.invalid/v1", thinkingBudgetTokens: 16_000, modelCapabilities: reported("reasoning"),
     });
-    expect(wrongParameter).not.toHaveProperty("reasoning_effort");
+    expect(responses.input).toBeDefined();
+    expect(responses).not.toHaveProperty("reasoning_effort");
+    expect(responses.reasoning).toMatchObject({ effort: "high" });
+    // A report that names no control says the model reasons but not how to ask.
     expect(planReasoning({
       vendor: "openai", model: "chat-alias-fixture", baseUrl: "https://proxy.invalid/v1", enableThinking: true, budgetTokens: 16_000,
-      reasoning: reported("reasoning").reasoning, request: { hasTools: false },
+      reasoning: reported().reasoning, request: { hasTools: false },
     })).toEqual({ kind: "none", requestedEffort: "high", source: "endpoint-report" });
   });
 });
@@ -427,7 +450,7 @@ describe("the output limit a chat round records is the one it sends", () => {
     expect(body.reasoning).toMatchObject({ effort: plan?.effort });
   });
 
-  it("suppresses effort with tools on the chat wire for an explicitly identified deployment alias", async () => {
+  it("sends an explicitly identified deployment alias over Responses with its effort on a tool turn", async () => {
     const model = "deployment-alias";
     const catalogModel = "openai/gpt-5.4";
     const baseUrl = "https://gateway.invalid/v1";
@@ -444,9 +467,11 @@ describe("the output limit a chat round records is the one it sends", () => {
       llmSettings: round });
     expect(fetchResponse).toHaveBeenCalledOnce();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
-    expect(body.messages).toBeDefined();
-    expect(body.reasoning_effort).toBeUndefined();
-    expect(plan).toMatchObject({ kind: "none", requestedEffort: "high", suppressed: "chat-completions-tool-turn" });
+    // The declaration names a reasoning model, which OpenAI serves tool turns
+    // with effort only over Responses.
+    expect(body.input).toBeDefined();
+    expect(body.reasoning).toMatchObject({ effort: "high" });
+    expect(plan).toMatchObject({ kind: "openai-effort", effort: "high" });
   });
 
   async function roundBody(reported: number, outputTokenLimit: number) {
