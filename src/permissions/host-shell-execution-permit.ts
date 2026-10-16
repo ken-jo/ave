@@ -8,6 +8,7 @@
  */
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
+import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
 import {
   parseHostShellExecutionInput,
   requiresExplicitHostShellApproval,
@@ -27,6 +28,8 @@ import {
 } from "./permission-manager.js";
 
 export type HostShellToolName = "bash" | "powershell";
+
+export const HOST_SHELL_AUTHORIZATION_REVOKED_ERROR = "this host shell execution requires a one-shot host approval permit. The working directory or permission policy changed, or the permit is invalid or revoked. Request authorization again.";
 
 /**
  * Renderer-invisible action description attached to the approval pending entry.
@@ -59,6 +62,11 @@ export interface HostShellExecutionPermit {
 interface PermitRecord extends HostShellExecutionPermitBinding {
   readonly plan: HostShellExecutionPlan;
   readonly allowRuleAuthorization: ShellAllowRuleAuthorization | undefined;
+  readonly cwdIdentity: ShellWorkingDirectoryIdentity;
+}
+
+export interface HostShellSpawnAuthorization {
+  readonly cwdIdentity: ShellWorkingDirectoryIdentity;
 }
 
 const permits = new WeakMap<HostShellExecutionPermit, PermitRecord>();
@@ -176,8 +184,10 @@ export function mintHostShellExecutionPermit(input: {
     input.binding.plan !== input.plan ||
     input.binding.planIdentity !== input.plan.identity
   ) return undefined;
+  const cwdIdentity = allowRuleAuthorization?.cwdIdentity ?? captureShellWorkingDirectoryIdentity(input.binding.resolvedCwd);
+  if (cwdIdentity === undefined) return undefined;
   const permit = Object.freeze({}) as HostShellExecutionPermit;
-  permits.set(permit, Object.freeze({ ...input.binding, plan: input.plan, allowRuleAuthorization }));
+  permits.set(permit, Object.freeze({ ...input.binding, plan: input.plan, allowRuleAuthorization, cwdIdentity }));
   return permit;
 }
 
@@ -185,7 +195,7 @@ export function mintHostShellExecutionPermit(input: {
  * Verify and irreversibly consume the permit. Delete before comparison so a
  * mismatched/replayed attempt cannot probe or reuse an approved capability.
  */
-export function consumeHostShellExecutionPermit(input: {
+export function consumeHostShellExecutionPermitForSpawn(input: {
   permit: HostShellExecutionPermit | undefined;
   plan: HostShellExecutionPlan;
   toolName: HostShellToolName;
@@ -199,13 +209,14 @@ export function consumeHostShellExecutionPermit(input: {
   justification: string | undefined;
   runInBackground: boolean;
   allowedDirectories: readonly string[];
-}): boolean {
-  if (input.permit === undefined) return false;
+}): HostShellSpawnAuthorization | undefined {
+  if (input.permit === undefined) return undefined;
   const record = permits.get(input.permit);
-  if (record === undefined) return false;
+  if (record === undefined) return undefined;
   permits.delete(input.permit);
   return (
     (record.allowRuleAuthorization === undefined || isShellAllowRuleAuthorizationCurrent(record.allowRuleAuthorization)) &&
+    matchesShellWorkingDirectoryIdentity(record.resolvedCwd, record.cwdIdentity) &&
     record.plan === input.plan &&
     record.toolName === input.toolName &&
     record.toolUseId === input.toolUseId &&
@@ -222,5 +233,11 @@ export function consumeHostShellExecutionPermit(input: {
     record.allowedDirectories.every(
       (directory, index) => directory === input.allowedDirectories[index],
     )
-  );
+  ) ? Object.freeze({ cwdIdentity: record.cwdIdentity }) : undefined;
+}
+
+export function consumeHostShellExecutionPermit(
+  input: Parameters<typeof consumeHostShellExecutionPermitForSpawn>[0],
+): boolean {
+  return consumeHostShellExecutionPermitForSpawn(input) !== undefined;
 }

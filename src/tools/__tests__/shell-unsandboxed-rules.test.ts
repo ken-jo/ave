@@ -193,6 +193,23 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
     expect(result.content).toMatch(/policy.*changed|revoked/i);
   });
 
+  it.each(["project", "user"] as const)("rejects a minted permit after a second %s rule writer adds a deny without reloading", async (scope) => {
+    const { result, cards, execute } = await run({
+      substrate: "sandbox-active", rules: [{ pattern: "Bash(touch *)", action: "allow" }], command: "touch marker",
+      executionMode: "host", answer: "deny-once",
+      beforeExecute: async () => {
+        const other = new PermissionManager(join(dir, "permissions.json"));
+        await other.addRulePersist({ pattern: "Bash(touch *)", action: "deny" }, scope === "project"
+          ? { kind: "project", projectCwd: dir } : { kind: "user" });
+      },
+    });
+    expect(cards).toHaveLength(0);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(result.is_error).toBe(true);
+    expect(result.content).toMatch(/policy.*changed|revoked/i);
+    expect(existsSync(join(dir, "marker"))).toBe(false);
+  });
+
   // The research names the hazard: a remembered approval given for a
   // sandboxed/default run must not silently cover the unsandboxed retry. Only
   // an allow rule may (I3). The remembered-approval key carries the sealed plan,

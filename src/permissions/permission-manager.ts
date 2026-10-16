@@ -6,7 +6,7 @@ import { dirname, resolve } from "node:path";
 import type { DenyRule, ToolCategory, ToolSource, ToolTrustOrigin, TrustLevel } from "../tools/types.js";
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import { trustFromSource } from "../tools/types.js";
-import { readPermissionsFile, updatePermissionsFile } from "./permissions-store.js";
+import { readPermissionsFile, updatePermissionsFile, type PermissionsFile } from "./permissions-store.js";
 import { PermissionRulesFileCorruptError, validatePermissionRule } from "./rules/rule-files.js";
 import { ProjectRuleScopes, evaluateShellSubject } from "./rules/rule-scopes.js";
 import { isRuleSpecifier } from "./rules/rule-specifier.js";
@@ -60,6 +60,8 @@ import {
 import { isPathAllowedForEffect, type PathEffect } from "./allowed-directories.js";
 import { errorMessage } from "../shared/error-message.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
+import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, type PersistedPolicyVersion } from "./persisted-policy-version.js";
 import {
   captureShellWorkingDirectoryIdentity,
   matchesShellWorkingDirectoryIdentity,
@@ -508,6 +510,7 @@ export interface ShellAllowRuleAuthorization extends ShellAllowRuleSubject {
   readonly issuer: PermissionManager;
   readonly policyEpoch: string;
   readonly cwdIdentity: ShellWorkingDirectoryIdentity;
+  readonly persistedPolicyVersions: readonly PersistedPolicyVersion[];
 }
 
 /** Remains live only under the issuing manager's policy and physical directory. */
@@ -515,6 +518,7 @@ export function isShellAllowRuleAuthorizationCurrent(
   authorization: ShellAllowRuleAuthorization,
 ): boolean {
   return authorization.issuer.getPolicyEpoch() === authorization.policyEpoch &&
+    authorization.persistedPolicyVersions.every(isPersistedPolicyVersionCurrent) &&
     matchesShellWorkingDirectoryIdentity(authorization.cwd, authorization.cwdIdentity);
 }
 
@@ -577,6 +581,7 @@ export class PermissionManager {
   private toolModeOverrides = new Map<string, ExecutionMode>();
 
   private readonly permissionsFilePath: string;
+  private userRulesVersion: PersistedPolicyVersion | undefined;
   /** Permission policy P3 — reviewer agent dispatch components. Wired at boot. */
   private reviewerClassifier: RiskClassifier | null = null;
   private verdictCache: VerdictCache | null = null;
@@ -647,6 +652,8 @@ export class PermissionManager {
     this.permissionsFilePath =
       permissionsFilePath ?? resolve(aveHome(), "permissions.json");
     this.projectRuleScopes = new ProjectRuleScopes(dirname(this.permissionsFilePath));
+    const initialVersion = capturePersistedPolicyVersion(this.permissionsFilePath);
+    this.userRulesVersion = initialVersion?.digest === null ? initialVersion : undefined;
   }
 
   /**
@@ -1086,7 +1093,7 @@ export class PermissionManager {
       return;
     }
     // Persisted rule list: add or upgrade allow rules while preserving monotone tiers.
-    await updatePermissionsFile(this.permissionsFilePath, (file) => {
+    await this.updateRulesFile((file) => {
       const existing = file.rules.find(
         (r) => r.action === "allow" && r.pattern === pattern && !r.source,
       );
@@ -1129,7 +1136,7 @@ export class PermissionManager {
       this.policyGeneration += 1;
     }
     // Persistent file.
-    await updatePermissionsFile(this.permissionsFilePath, (file) => {
+    await this.updateRulesFile((file) => {
       const fileExists = file.rules.some(
         (r) => r.action === "deny" && r.pattern === pattern && !r.source,
       );
@@ -1166,7 +1173,7 @@ export class PermissionManager {
     if (scope.kind === "project") {
       await this.projectRuleScopes.addRule(scope.projectCwd, validated);
     } else {
-      await updatePermissionsFile(this.permissionsFilePath, (file) => {
+      await this.updateRulesFile((file) => {
         if (!file.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && !r.source)) {
           if (validated.action === "allow") file.rules.push(validated);
           else file.rules.unshift(validated);
@@ -1227,7 +1234,7 @@ export class PermissionManager {
     if (action === "allow") this.alwaysAllowed.delete(pattern);
     this.policyGeneration += 1;
     // Persistent file.
-    await updatePermissionsFile(this.permissionsFilePath, (file) => {
+    await this.updateRulesFile((file) => {
       file.rules = file.rules.filter(
         (r) => !(r.pattern === pattern && r.action === action && !r.source),
       );
@@ -1341,7 +1348,7 @@ export class PermissionManager {
     // pruned grants so in-memory state (rules + alwaysAllowed) is reconciled and
     // the caller can audit per-pattern tuples.
     const pruned: PrunedGrant[] = [];
-    await updatePermissionsFile(this.permissionsFilePath, (file) => {
+    await this.updateRulesFile((file) => {
       file.rules = file.rules.filter((r) => {
         if (r.action === "allow" && !r.source && isUnderRoot(r.pattern)) {
           pruned.push(describePrunedGrant(r.pattern, r.tier));
@@ -1373,6 +1380,7 @@ export class PermissionManager {
    * Missing file is a normal no-op.
    */
   async loadRulesFromFile(): Promise<void> {
+    const policyVersion = capturePersistedPolicyVersion(this.permissionsFilePath);
     let file: Awaited<ReturnType<typeof readPermissionsFile>>;
     try {
       file = await readPermissionsFile(this.permissionsFilePath);
@@ -1387,6 +1395,9 @@ export class PermissionManager {
       return;
     }
     this.policyGeneration += 1;
+    this.userRulesVersion = policyVersion !== undefined &&
+      policyVersion.contentsDigest === sha256Hex(canonicalStringify(file)) &&
+      isPersistedPolicyVersionCurrent(policyVersion) ? policyVersion : undefined;
     this.rulesLoadError = undefined;
     if (!file) return;
 
@@ -1455,11 +1466,29 @@ export class PermissionManager {
    * mode must not change either.
    */
   async setModePersist(mode: ExecutionMode): Promise<void> {
-    await updatePermissionsFile(this.permissionsFilePath, (file) => {
+    await this.updateRulesFile((file) => {
       file.mode = mode;
     });
     if (this.mode !== mode) this.policyGeneration += 1;
     this.mode = mode;
+  }
+
+  /** Retain the version actually written, never adopt another writer's unseen rules. */
+  private async updateRulesFile(mutator: Parameters<typeof updatePermissionsFile>[1]): Promise<void> {
+    const previous = this.userRulesVersion;
+    let written: PermissionsFile | undefined;
+    let knownPolicy = false;
+    await updatePermissionsFile(this.permissionsFilePath, async (file) => {
+      knownPolicy = previous !== undefined && (
+        previous.contentsDigest === sha256Hex(canonicalStringify(file)) ||
+        (previous.contentsDigest === sha256Hex("null") && file.rules.length === 0 && file.mode === "default")
+      );
+      await mutator(file);
+      written = file;
+    });
+    this.userRulesVersion = knownPolicy && written !== undefined
+      ? persistedPolicyVersionForContent(this.permissionsFilePath, `${JSON.stringify(written, null, 2)}\n`)
+      : undefined;
   }
 
   // ─── Decision (§4.1) ──────────────────────────────
@@ -1544,6 +1573,8 @@ export class PermissionManager {
     const projectRuleState = projectRulesCwd === undefined
       ? undefined
       : this.projectRuleScopes.stateFor(projectRulesCwd);
+    const projectPolicyVersion = cwdIdentity === undefined ? undefined
+      : this.projectRuleScopes.policyVersionFor(cwdIdentity.realpath);
     const projectRules = projectRuleState?.ok ? projectRuleState.rules : [];
     if (ruleSubject !== undefined && ruleSubject.dialect !== "bash" && ruleSubject.dialect !== "powershell") {
       throw new Error(`shell rule subject has no known dialect: ${String((ruleSubject as { dialect?: unknown }).dialect)}`);
@@ -1846,7 +1877,11 @@ export class PermissionManager {
       result.layer === 3 &&
       context.hostShellExecutionPlan?.executionRequest === "host" &&
       requestedRuleSubject?.cwd !== undefined &&
-      cwdIdentity !== undefined
+      cwdIdentity !== undefined &&
+      this.userRulesVersion !== undefined &&
+      projectPolicyVersion !== undefined &&
+      isPersistedPolicyVersionCurrent(this.userRulesVersion) &&
+      isPersistedPolicyVersionCurrent(projectPolicyVersion)
     ) {
       issuedShellAllowRuleDecisions.set(result, Object.freeze({
         toolName,
@@ -1856,6 +1891,7 @@ export class PermissionManager {
         cwdIdentity,
         issuer: this,
         policyEpoch: this.getPolicyEpoch(),
+        persistedPolicyVersions: Object.freeze([this.userRulesVersion, projectPolicyVersion]),
       }));
     }
     return result;

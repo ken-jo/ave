@@ -526,8 +526,17 @@ project-rule revision. Rule, mode and relevant settings changes revoke
 outstanding proofs and permits. The proof also captures the cwd's physical
 realpath, device and inode during evaluation. Both proof consumption and the
 permit check immediately before spawn require the same policy epoch and physical
-directory. A changed identity or epoch rejects execution with an error.
-Rejected authority requires normal authorization again.
+directory. The checks also re-read hashes of the persisted user and relevant
+project rule stores; another writer's change or a read error revokes authority
+without requiring a cache reload. A changed identity or version rejects
+execution with an error. Rejected authority requires normal authorization again.
+
+Permit-bearing shells spawn with the bound physical realpath. On macOS and
+Linux, a host-authored prelude checks the child's physical cwd and device/inode
+before the user command. A mismatch exits with reserved code 197, which the
+host maps to the same revocation error. Native Windows shell routes use the
+physical spawn path but lack a child-side identity check; directory
+rename/replacement after the host check remains a limitation on that platform.
 
 A sandbox that is requested but unavailable (missing `bwrap` or `socat`, or a
 start failure) is not a one-shot route. The shell runs as a plain child under

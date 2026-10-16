@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -45,9 +45,9 @@ function makeBinding(
     toolName: "bash",
     toolUseId: "tool-1",
     command: "echo one-shot",
-    requestedCwd: "subdir",
-    executionCwd: "C:/repo",
-    resolvedCwd: "C:/repo/subdir",
+    requestedCwd: undefined,
+    executionCwd: tmpdir(),
+    resolvedCwd: tmpdir(),
     timeoutSeconds: 30,
       executionMode: "default",
       justification: undefined,
@@ -224,6 +224,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
 
   function hostBinding(plan = explicitHostPlan(), overrides: Partial<HostShellExecutionPermitBinding> = {}) {
     return makeBinding(plan, {
+      requestedCwd: "subdir",
       executionCwd: directory,
       resolvedCwd: join(directory, "subdir"),
       executionMode: plan.executionRequest,
@@ -379,26 +380,87 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     }, pm)).toBeUndefined();
   });
 
-  it("revokes outstanding decisions and permits when project rules reload", async () => {
+  it.each(["project", "user"] as const)("revokes outstanding decisions and permits after another %s rule writer persists a deny without a reload", async (scope) => {
     const binding = hostBinding();
+    await pm.addRulePersist({ pattern: "Bash(echo *)", action: "allow" }, scope === "project"
+      ? { kind: "project", projectCwd: binding.resolvedCwd } : { kind: "user" });
     const outstanding = ruleDecision();
     const permit = mintHostShellExecutionPermit({
       plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     });
     expect(permit).toBeDefined();
     const other = new PermissionManager(join(directory, "permissions.json"));
-    await other.addRulePersist({ pattern: "Bash(echo *)", action: "deny" }, {
-      kind: "project", projectCwd: binding.resolvedCwd,
-    });
-    await pm.ensureProjectRulesLoaded(binding.resolvedCwd);
+    await other.addRulePersist({ pattern: "Bash(echo *)", action: "deny" }, scope === "project"
+      ? { kind: "project", projectCwd: binding.resolvedCwd } : { kind: "user" });
     expect(consumeIssuedShellAllowRuleDecision(outstanding, {
       toolName: "bash", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd,
     }, pm)).toBeUndefined();
     expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(false);
+    await pm.ensureProjectRulesLoaded(binding.resolvedCwd);
+    await pm.loadRulesFromFile();
     const reevaluated = pm.checkDetailed("bash", "builtin", "shell", null, {
       hostShellExecutionPlan: binding.plan, projectRulesCwd: binding.resolvedCwd,
       ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd },
     });
     expect(reevaluated).toMatchObject({ decision: "deny", layer: 1 });
+  });
+
+  it("does not issue fresh authority from a stale project cache after another writer adds a deny", async () => {
+    const binding = hostBinding();
+    await pm.ensureProjectRulesLoaded(binding.resolvedCwd);
+    const other = new PermissionManager(join(directory, "permissions.json"));
+    await other.addRulePersist({ pattern: "Bash(echo *)", action: "deny" }, { kind: "project", projectCwd: binding.resolvedCwd });
+    const decision = pm.checkDetailed("bash", "builtin", "shell", null, {
+      hostShellExecutionPlan: binding.plan, projectRulesCwd: binding.resolvedCwd,
+      ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd },
+    });
+    expect(isIssuedShellAllowRuleDecision(decision, pm)).toBe(false);
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding })).toBeUndefined();
+  });
+
+  it("does not bless unseen user denies when writing another rule", async () => {
+    const binding = hostBinding();
+    const other = new PermissionManager(join(directory, "permissions.json"));
+    await other.addRulePersist({ pattern: "Bash(echo *)", action: "deny" }, { kind: "user" });
+    await pm.addRulePersist({ pattern: "Bash(printf *)", action: "allow" }, { kind: "user" });
+    const decision = pm.checkDetailed("bash", "builtin", "shell", null, {
+      hostShellExecutionPlan: binding.plan,
+      ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd },
+    });
+    expect(isIssuedShellAllowRuleDecision(decision, pm)).toBe(false);
+  });
+
+  it.each(["unreadable", "malformed"])("revokes decisions and permits when the user store becomes %s", (failure) => {
+    const binding = hostBinding();
+    const outstanding = ruleDecision();
+    const permit = mintHostShellExecutionPermit({
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+    });
+    expect(permit).toBeDefined();
+    const filePath = join(directory, "permissions.json");
+    if (failure === "unreadable") mkdirSync(filePath);
+    else writeFileSync(filePath, "{invalid");
+    expect(consumeIssuedShellAllowRuleDecision(outstanding, {
+      toolName: "bash", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd,
+    }, pm)).toBeUndefined();
+    expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(false);
+  });
+
+  it.each(["project", "user"])("rejects a dangling intermediate component in the %s rule store", (scope) => {
+    if (scope === "user") {
+      pm = new PermissionManager(join(directory, "store", "permissions.json"));
+      pm.setRules([{ pattern: "Bash(echo *)", action: "allow" }]);
+    }
+    const binding = hostBinding();
+    const outstanding = ruleDecision();
+    const permit = mintHostShellExecutionPermit({
+      plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+    });
+    expect(permit).toBeDefined();
+    symlinkSync(join(directory, "missing-store"), join(directory, scope === "project" ? "permissions" : "store"), "junction");
+    expect(consumeIssuedShellAllowRuleDecision(outstanding, {
+      toolName: "bash", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd,
+    }, pm)).toBeUndefined();
+    expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(false);
   });
 });

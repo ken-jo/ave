@@ -72,9 +72,12 @@ import {
 } from "../permissions/execution-router.js";
 import {
   canonicalizeHostShellAllowedDirectories,
-  consumeHostShellExecutionPermit,
+  consumeHostShellExecutionPermitForSpawn,
+  HOST_SHELL_AUTHORIZATION_REVOKED_ERROR,
   resolveHostShellWorkingDirectory,
 } from "../permissions/host-shell-execution-permit.js";
+import type { ShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
+import { hostShellWorkingDirectoryPrelude, HOST_SHELL_CWD_REVOKED_EXIT_CODE } from "./host-shell-cwd-guard.js";
 import { deriveSandboxWritePaths } from "../permissions/sandbox-write-jail.js";
 import { resolveShellTimeoutMs, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
@@ -1503,8 +1506,9 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     // Its opaque permit exists only after an allow-once approval (or, for an
     // explicit host request, a matching allow rule) for this exact
     // command/cwd/tool-use tuple and is consumed before spawn.
+    let hostCwdIdentity: ShellWorkingDirectoryIdentity | undefined;
     if (!disposableExecution && requiresExplicitHostShellApproval(hostShellPlan)) {
-      const permitAccepted = consumeHostShellExecutionPermit({
+      const spawnAuthorization = consumeHostShellExecutionPermitForSpawn({
         permit: ctx.hostShellExecutionPermit,
         plan: hostShellPlan,
         toolName: "bash",
@@ -1522,13 +1526,14 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         runInBackground: input.run_in_background ?? false,
         allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
       });
-      if (!permitAccepted) {
+      if (spawnAuthorization === undefined) {
         return {
-          output: "spawn failed: this host shell execution requires a one-shot host approval permit. The working directory or permission policy changed, or the permit is invalid or revoked. Request authorization again.",
+          output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`,
           isError: true,
           metadata: { sandboxed: false, isolation: "none" },
         };
       }
+      hostCwdIdentity = spawnAuthorization.cwdIdentity;
     }
     if (!disposableExecution && hostShellPlan.mode === "blocked") {
       return {
@@ -1584,8 +1589,8 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     }
 
     const spawnedResult = await spawnWithTimeout(
-      input.command, resolvedCwd, input.timeoutSeconds, prepared, ctx.abortSignal,
-      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata),
+      input.command, hostCwdIdentity?.realpath ?? resolvedCwd, input.timeoutSeconds, prepared, ctx.abortSignal,
+      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata), hostCwdIdentity,
     );
     // A disposable route's directory belongs to its own lifecycle, not the
     // host session's.
@@ -2147,13 +2152,15 @@ async function spawnWithTimeout(
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
+  cwdIdentity?: ShellWorkingDirectoryIdentity,
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
   signal?.throwIfAborted();
   return await new Promise((resolve) => {
     const { shell, environment } = preparedShellCommand(prepared);
-    const { argv, probe } = preparedShellCwdProbe(prepared);
+    const prelude = cwdIdentity === undefined ? undefined : hostShellWorkingDirectoryPrelude(cwdIdentity, "bash", process.platform);
+    const { argv, probe } = preparedShellCwdProbe(prepared, prelude);
     assertManagedChildProcessAdmissionOpen("tool:bash");
     const child: PipedChild = spawn(shell.cmd, [...argv], {
       detached: process.platform !== "win32",
@@ -2192,7 +2199,8 @@ async function spawnWithTimeout(
         });
       } else {
         resolve({
-          output: formatted,
+          output: prelude !== undefined && code === HOST_SHELL_CWD_REVOKED_EXIT_CODE
+            ? `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}` : formatted,
           isError: lifetime.aborted || code !== 0,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
@@ -2706,8 +2714,9 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     // Its opaque permit exists only after an allow-once approval (or, for an
     // explicit host request, a matching allow rule) for this exact
     // command/cwd/tool-use tuple and is consumed before spawn.
+    let hostCwdIdentity: ShellWorkingDirectoryIdentity | undefined;
     if (!disposableExecution && requiresExplicitHostShellApproval(hostShellPlan)) {
-      const permitAccepted = consumeHostShellExecutionPermit({
+      const spawnAuthorization = consumeHostShellExecutionPermitForSpawn({
         permit: ctx.hostShellExecutionPermit,
         plan: hostShellPlan,
         toolName: "powershell",
@@ -2725,13 +2734,14 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         runInBackground: input.run_in_background ?? false,
         allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
       });
-      if (!permitAccepted) {
+      if (spawnAuthorization === undefined) {
         return {
-          output: "PowerShell spawn failed: this host shell execution requires a one-shot host approval permit. The working directory or permission policy changed, or the permit is invalid or revoked. Request authorization again.",
+          output: `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`,
           isError: true,
           metadata: { sandboxed: false, isolation: "none" },
         };
       }
+      hostCwdIdentity = spawnAuthorization.cwdIdentity;
     }
     // Native AST admission above also covers direct callers. It precedes the
     // one-shot permit consumption, so a refused command never spends approval.
@@ -2763,8 +2773,8 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     }
 
     const plainResult = await spawnPowerShell(
-      input.command, resolvedCwd, input.timeoutSeconds, ctx.abortSignal,
-      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata),
+      input.command, hostCwdIdentity?.realpath ?? resolvedCwd, input.timeoutSeconds, ctx.abortSignal,
+      captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata), hostCwdIdentity,
     );
     if (disposableExecution) return withDisposableExecutionMetadata(plainResult);
     if (!recordsUnsandboxedExecutionPlan(hostShellPlan)) return plainResult;
@@ -3227,14 +3237,16 @@ async function spawnPowerShell(
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
+  cwdIdentity?: ShellWorkingDirectoryIdentity,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   return new Promise((resolve) => {
     const executable = resolvePowerShellExecutable();
+    const prelude = cwdIdentity === undefined ? undefined : hostShellWorkingDirectoryPrelude(cwdIdentity, "powershell", process.platform);
     assertManagedChildProcessAdmissionOpen("tool:powershell");
     const child: PipedChild = spawn(
       executable,
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", (prelude ?? "") + command],
       {
         detached: process.platform !== "win32",
         cwd,
@@ -3264,7 +3276,8 @@ async function spawnPowerShell(
       resolve({
         output: lifetime.timedOut
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
-          : output,
+          : prelude !== undefined && code === HOST_SHELL_CWD_REVOKED_EXIT_CODE
+            ? `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}` : output,
         isError: lifetime.aborted || lifetime.timedOut || code !== 0,
         metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut },
       });
