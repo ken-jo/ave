@@ -266,7 +266,7 @@ describe("SubscriptionAuthControls", () => {
 
   it("says which Codex CLI version is required when the found one is too old or incompatible", () => {
     const codex = subscriptionRuntimeDescriptor("codex");
-    const view = (errorCode: "subscription-runtime-version-unsupported" | "subscription-runtime-incompatible", version: string | null): SubscriptionProviderView => ({
+    const view = (errorCode: "subscription-runtime-version-unsupported" | "subscription-runtime-incompatible" | "subscription-runtime-unsafe-location", version: string | null): SubscriptionProviderView => ({
       descriptor: {
         id: "codex",
         label: codex.label,
@@ -292,5 +292,9 @@ describe("SubscriptionAuthControls", () => {
       .toHaveTextContent("does not support everything Ave needs");
     expect(screen.getByTestId("subscription-provider:codex:minimum-version"))
       .toHaveTextContent(`Codex CLI ${codex.minimumVersion}+ required.`);
+    rerender(<SubscriptionProvidersSection providers={[view("subscription-runtime-unsafe-location", null)]} actions={{}} />);
+    expect(screen.getByTestId("subscription-provider:codex:error"))
+      .toHaveTextContent("must not be writable by other users");
+    expect(screen.queryByTestId("subscription-provider:codex:minimum-version")).toBeNull();
   });
 });

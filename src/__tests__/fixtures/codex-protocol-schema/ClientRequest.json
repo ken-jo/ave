@@ -433,6 +433,9 @@
       "deferLoading": {
        "type": "boolean"
       },
+      "description": {
+       "type": "string"
+      },
       "inputSchema": true,
       "name": {
        "type": "string"
@@ -463,6 +466,9 @@
       "deferLoading": {
        "type": "boolean"
       },
+      "description": {
+       "type": "string"
+      },
       "inputSchema": true,
       "name": {
        "type": "string"
@@ -486,6 +492,9 @@
     },
     {
      "properties": {
+      "description": {
+       "type": "string"
+      },
       "name": {
        "type": "string"
       },

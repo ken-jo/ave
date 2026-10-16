@@ -1,6 +1,6 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -30,6 +30,8 @@ import * as managedChildProcesses from "../managed-child-processes.js";
 import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeConversationLoopDeps } from "../../engine/__tests__/conversation-loop-test-helpers.js";
 import { createTracer, type TraceEntry } from "../../observability/conversation-trace.js";
+import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
+import type { CodexExecutableArtifact } from "../codex-executable-artifact.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 
 const imageRuntime = vi.hoisted(() => ({ directory: undefined as string | undefined }));
@@ -61,6 +63,7 @@ interface Harness {
   workspaceDir: string;
   spawnCalls: Array<{ command: string; args: ReadonlyArray<string>; options: SpawnOptions }>;
   messages: JsonRecord[];
+  artifact: CodexExecutableArtifact;
 }
 
 const harnesses: Harness[] = [];
@@ -68,12 +71,14 @@ const TEST_RUNTIME_PARENT = process.platform === "win32" ? "C:\\tmp" : tmpdir();
 
 function createHarness(onMessage?: (message: JsonRecord, harness: Harness) => boolean | void): Harness {
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-conversation-runtime-"));
+  normalizeFixtureAncestorPermissions(runtimeRoot);
   const runtimeHome = join(runtimeRoot, "home");
   const sqliteHome = join(runtimeRoot, "sqlite");
   const workspaceDir = join(runtimeRoot, "workspace");
   mkdirSync(runtimeHome);
   mkdirSync(sqliteHome);
   mkdirSync(workspaceDir);
+  const artifact = codexExecutableArtifactFixture(runtimeHome);
 
   const child = new FakeAppServerProcess();
   const spawnCalls: Harness["spawnCalls"] = [];
@@ -83,11 +88,11 @@ function createHarness(onMessage?: (message: JsonRecord, harness: Harness) => bo
     runtimeHome,
     sqliteHome,
     workspaceDir,
-    resolveExecutable: async () => "C:\\approved\\codex.exe",
+    resolveRuntime: async () => artifact,
     spawn,
     clientVersion: "test-version",
   });
-  const harness = { runtime, child, runtimeRoot, workspaceDir, spawnCalls, messages };
+  const harness = { runtime, child, runtimeRoot, workspaceDir, spawnCalls, messages, artifact };
   child.stdin.on("data", (chunk: Buffer | string) => {
     for (const line of String(chunk).split("\n")) {
       if (!line.trim()) continue;
@@ -296,6 +301,14 @@ describe("native RPC timeout context", () => {
 });
 
 describe("CodexConversationRuntime", () => {
+  it("refuses a qualified executable replaced before app-server spawn", async () => {
+    const harness = createHarness();
+    chmodSync(harness.artifact.executable, 0o700);
+    writeFileSync(harness.artifact.executable, "#!/bin/sh\necho substituted\n");
+    chmodSync(harness.artifact.executable, 0o500);
+    await expect(harness.runtime.verifyIsolation()).rejects.toMatchObject({ code: "codex-runtime-unavailable" });
+    expect(harness.spawnCalls).toEqual([]);
+  });
   it("rejects a non-string method envelope before it can consume a pending response", async () => {
     const harness = createHarness((message, current) => {
       if (message.method !== "initialize") return;
@@ -606,7 +619,7 @@ describe("CodexConversationRuntime", () => {
 
     expect(harness.spawnCalls).toHaveLength(1);
     expect(harness.spawnCalls[0]).toMatchObject({
-      command: "C:\\approved\\codex.exe",
+      command: harness.artifact.executable,
       options: {
         cwd: harness.workspaceDir,
         shell: false,
@@ -994,7 +1007,10 @@ describe("CodexConversationRuntime", () => {
       const writeStarted = new Promise<void>((resolve) => {
         signalWriteStarted = resolve;
       });
-      vi.spyOn(fs, "open").mockImplementation((async (path: string | Buffer | URL) => {
+      const open = fs.open.bind(fs);
+      vi.spyOn(fs, "open").mockImplementation((async (...args: Parameters<typeof fs.open>) => {
+        const path = args[0];
+        if (!String(path).includes("ave-subscription-image-")) return open(...args);
         stagedPath = String(path);
         writeFileSync(stagedPath, "staged", { mode: 0o600 });
         return {

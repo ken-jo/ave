@@ -981,6 +981,7 @@ describe("common subscription runtime IPC", () => {
     const deps = makeDeps();
     runtime.getStatus.mockRejectedValueOnce({ code: "subscription-runtime-version-unsupported" });
     runtime.getStatus.mockRejectedValueOnce({ code: "subscription-runtime-incompatible" });
+    runtime.getStatus.mockRejectedValueOnce({ code: "subscription-runtime-unsafe-location" });
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
 
@@ -988,6 +989,8 @@ describe("common subscription runtime IPC", () => {
       .resolves.toMatchObject({ ok: false, error: "codex-runtime-version-unsupported" });
     await expect(invoke("ave:settings:codex-subscription:status"))
       .resolves.toMatchObject({ ok: false, error: "codex-runtime-incompatible" });
+    await expect(invoke("ave:settings:codex-subscription:status"))
+      .resolves.toMatchObject({ ok: false, error: "codex-runtime-unsafe-location" });
   });
 
   it("rejects invalid generic subscription inputs before the runtime service", async () => {

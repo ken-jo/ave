@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,33 +17,28 @@ import {
 } from "../codex-user-runtime.js";
 import type { FeatureNamespaceHandle } from "../storage/feature-namespace.js";
 import { completeCodexSchemas } from "../../__tests__/support/codex-protocol-schemas.js";
+import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
+import { verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
 
 const HOST = process.platform;
 const NATIVE_NAME = HOST === "win32" ? "codex.exe" : "codex";
 
-function nativeHeader(platform: NodeJS.Platform): Buffer {
-  if (platform === "win32") return Buffer.from([0x4d, 0x5a, 0x90, 0x00]);
-  if (platform === "darwin") return Buffer.from([0xcf, 0xfa, 0xed, 0xfe]);
-  return Buffer.from([0x7f, 0x45, 0x4c, 0x46]);
-}
-
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  vi.restoreAllMocks();
 });
 
 function tempRoot(): string {
   // Resolution returns real paths; compare against the real temp root.
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-codex-user-runtime-")));
   roots.push(root);
+  normalizeFixtureAncestorPermissions(root);
   return root;
 }
 
 function writeNative(path: string): string {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, Buffer.concat([nativeHeader(HOST), Buffer.alloc(16)]));
-  chmodSync(path, 0o755);
-  return path;
+  return writeNativeExecutable(path);
 }
 
 function writeScript(path: string, body = "#!/bin/sh\necho hi\n"): string {
@@ -96,7 +91,7 @@ function writeNpmInstall(root: string, layout: "nested" | "hoisted"): { launcher
 }
 
 function mkdirAndReturn(path: string): string {
-  mkdirSync(path, { recursive: true });
+  mkdirSync(path, { recursive: true, mode: 0o700 });
   return path;
 }
 
@@ -142,6 +137,17 @@ describe("codex executable candidates", () => {
       homeDir: "/home/alice",
     })).toEqual(["/usr/local/bin/codex", "/home/alice/.local/bin/codex", "/opt/homebrew/bin/codex"]);
   });
+
+  it("requires drive-qualified or UNC Windows locations", async () => {
+    expect(codexExecutableCandidates({
+      platform: "win32",
+      env: { PATH: "\\tools;C:relative;C:\\safe;\\\\server\\share\\bin;\\\\?\\C:\\device", CODEX_INSTALL_DIR: "\\install", APPDATA: "\\profile" },
+      homeDir: "C:\\Users\\alice",
+    })).toEqual(["C:\\safe\\codex.exe", "C:\\safe\\codex.cmd", "\\\\server\\share\\bin\\codex.exe", "\\\\server\\share\\bin\\codex.cmd"]);
+    for (const path of ["\\tools\\codex.exe", "C:codex.exe", "\\\\?\\C:\\codex.exe"]) {
+      await expect(resolveCodexNativeExecutable(path, "win32")).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
+    }
+  });
 });
 
 describe("native executable resolution", () => {
@@ -178,6 +184,17 @@ describe("native executable resolution", () => {
   it("refuses relative paths and control characters", async () => {
     await expect(resolveCodexNativeExecutable("codex")).rejects.toBeInstanceOf(CodexUserRuntimeError);
     await expect(resolveCodexNativeExecutable("/tmp/co\u0000dex")).rejects.toBeInstanceOf(CodexUserRuntimeError);
+  });
+
+  it("routes a 64-bit universal executable to full copy validation", async () => {
+    const root = tempRoot();
+    const bytes = Buffer.alloc(8192);
+    bytes.writeUInt32BE(0xcafebabf, 0); bytes.writeUInt32BE(1, 4);
+    bytes.writeUInt32BE(process.arch === "arm64" ? 0x0100000c : 0x01000007, 8);
+    bytes.writeBigUInt64BE(4096n, 16); bytes.writeBigUInt64BE(4096n, 24); bytes.writeUInt32BE(12, 32);
+    nativeExecutableBytes("darwin").copy(bytes, 4096);
+    const native = writeNativeExecutable(join(root, "codex"), bytes);
+    await expect(resolveCodexNativeExecutable(native, "darwin")).resolves.toBe(native);
   });
 });
 
@@ -258,6 +275,7 @@ function locatorHarness(input: {
   realProbes?: boolean;
   env?: (root: string) => NodeJS.ProcessEnv;
   calls?: string[][];
+  run?: CodexProbeRunner;
 } = {}) {
   const root = tempRoot();
   const dirs = Object.fromEntries(["home", "sqlite", "workspace", "temp"].map((name) => [name, mkdirAndReturn(join(root, name))]));
@@ -265,10 +283,11 @@ function locatorHarness(input: {
   const locator = new CodexUserRuntimeLocator({
     configStore,
     runtimeHome: dirs.home!,
+    runtimeDirectory: mkdirAndReturn(join(dirs.home!, "runtime")),
     sqliteHome: dirs.sqlite!,
     workspaceDir: dirs.workspace!,
     runtimeTempDir: dirs.temp!,
-    ...(input.realProbes ? {} : { run: scriptedRunner(input.script ?? {}, input.calls) }),
+    ...(input.realProbes ? {} : { run: input.run ?? scriptedRunner(input.script ?? {}, input.calls) }),
     env: input.env?.(root) ?? { PATH: join(root, "path-bin") },
     homeDir: join(root, "user-home"),
   });
@@ -285,7 +304,15 @@ describe("CodexUserRuntimeLocator", () => {
     const calls: string[][] = [];
     const { root, locator, dirs } = locatorHarness({ calls });
     const native = writeNative(join(root, "path-bin", NATIVE_NAME));
-    await expect(locator.resolve()).resolves.toEqual({ executable: native, version: "0.153.4" });
+    const resolved = await locator.resolve();
+    expect(resolved.version).toBe("0.153.4");
+    expect(resolved.executable).not.toBe(native);
+    expect(resolved.executable.startsWith(join(dirs.home!, "runtime"))).toBe(true);
+    expect(readFileSync(resolved.executable)).toEqual(readFileSync(native));
+    if (HOST !== "win32") {
+      expect(statSync(dirname(resolved.executable)).mode & 0o777).toBe(0o700);
+      expect(statSync(resolved.executable).mode & 0o777).toBe(0o500);
+    }
     expect(locator.lastKnownVersion()).toBe("0.153.4");
     expect(calls.map((args) => args.slice(0, 2))).toEqual([
       ["--version"],
@@ -305,9 +332,157 @@ describe("CodexUserRuntimeLocator", () => {
     await locator.resolve();
     await locator.resolve();
     expect(calls.filter((args) => args[0] === "--version")).toHaveLength(1);
-    writeFileSync(native, Buffer.concat([nativeHeader(HOST), Buffer.alloc(64)]));
+    const replacement = nativeExecutableBytes(); replacement[replacement.length - 1] = 1;
+    writeFileSync(native, replacement);
     await locator.resolve();
     expect(calls.filter((args) => args[0] === "--version")).toHaveLength(2);
+  });
+
+  it("invalidates a same-size rewrite even when its modification time is restored", async () => {
+    const calls: string[][] = [];
+    const { root, locator } = locatorHarness({ calls });
+    const native = writeNative(join(root, "path-bin", NATIVE_NAME));
+    const before = statSync(native);
+    const first = await locator.resolve();
+    const bytes = readFileSync(native); bytes[bytes.length - 1] = 23;
+    writeFileSync(native, bytes); utimesSync(native, before.atime, before.mtime);
+    const second = await locator.resolve();
+    expect(calls).toHaveLength(6);
+    expect(second.contentHash).not.toBe(first.contentHash);
+    expect(readFileSync(first.executable)).not.toEqual(readFileSync(second.executable));
+  });
+
+  it("removes rejected copies while caching only the compatibility failure", async () => {
+    const calls: string[][] = [];
+    const { root, locator, dirs } = locatorHarness({ calls, script: { version: "0.151.0" } });
+    writeNative(join(root, "path-bin", NATIVE_NAME));
+    for (let count = 0; count < 3; count += 1) {
+      await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-version-unsupported" });
+      expect(readdirSync(join(dirs.home!, "runtime"))).toEqual([]);
+    }
+    expect(calls).toHaveLength(1);
+  });
+
+  it("shares one qualified copy concurrently and removes its own copies on disposal", async () => {
+    const calls: string[][] = [];
+    const { root, locator, dirs } = locatorHarness({ calls });
+    writeNative(join(root, "path-bin", NATIVE_NAME));
+    const resolved = await Promise.all([locator.resolve(), locator.resolve()]);
+    expect(resolved[0]!.executable).toBe(resolved[1]!.executable);
+    expect(calls).toHaveLength(3);
+    expect(readdirSync(join(dirs.home!, "runtime"))).toHaveLength(1);
+    await locator.dispose(); await locator.dispose();
+    expect(readdirSync(join(dirs.home!, "runtime"))).toEqual([]);
+    await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-start-failed" });
+  });
+
+  it("retains cleanup ownership after a removal error so disposal can retry", async () => {
+    const { root, locator, dirs } = locatorHarness();
+    writeNative(join(root, "path-bin", NATIVE_NAME));
+    const artifact = await locator.resolve();
+    const remove = fs.rm.bind(fs);
+    const failure = Object.assign(new Error("temporary cleanup failure"), { code: "EIO" });
+    let failed = false;
+    vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+      if (!failed && String(args[0]) === dirname(artifact.executable)) { failed = true; throw failure; }
+      return remove(...args);
+    });
+    await expect(locator.dispose()).rejects.toBe(failure);
+    expect(readdirSync(join(dirs.home!, "runtime"))).toHaveLength(1);
+    await locator.dispose();
+    expect(readdirSync(join(dirs.home!, "runtime"))).toEqual([]);
+  });
+
+  it("evicts a corrupted cached artifact and qualifies fresh source bytes on retry", async () => {
+    const calls: string[][] = [];
+    const { root, locator } = locatorHarness({ calls });
+    writeNative(join(root, "path-bin", NATIVE_NAME));
+    const first = await locator.resolve();
+    const bytes = readFileSync(first.executable); bytes[bytes.length - 1] = 9;
+    chmodSync(first.executable, 0o700); writeFileSync(first.executable, bytes); chmodSync(first.executable, 0o500);
+    await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
+    const next = await locator.resolve();
+    expect(next.executable).not.toBe(first.executable);
+    expect(next.contentHash).toBe(first.contentHash);
+    expect(calls).toHaveLength(6);
+  });
+
+  it("runs every probe against the same copy despite an injected source and ancestor replacement", async () => {
+    let source: string;
+    let original: Buffer;
+    const paths: string[] = [];
+    const base = scriptedRunner({});
+    const run: CodexProbeRunner = async (executable, args, options) => {
+      paths.push(executable);
+      expect(executable).not.toBe(source);
+      expect(readFileSync(executable)).toEqual(original);
+      expect(options.env.CODEX_HOME).toBe(dirname(dirname(dirname(executable))));
+      if (args[0] === "--version") {
+        renameSync(dirname(source), `${dirname(source)}-old`);
+        writeScript(source, "#!/bin/sh\necho replaced\n");
+      }
+      return base(executable, args, options);
+    };
+    const { root, locator } = locatorHarness({ run });
+    source = writeNative(join(root, "path-bin", NATIVE_NAME)); original = readFileSync(source);
+    const resolved = await locator.resolve();
+    expect(new Set(paths)).toEqual(new Set([resolved.executable]));
+    expect(paths).toHaveLength(3);
+    await expect(verifyCodexExecutableArtifact(resolved)).resolves.toBeUndefined();
+    expect(readFileSync(source, "utf8")).toContain("replaced");
+  });
+
+  it("rejects an injected text replacement between discovery and snapshot without probing", async () => {
+    const calls: string[][] = [];
+    const { root, locator } = locatorHarness({ calls });
+    const source = writeNative(join(root, "path-bin", NATIVE_NAME));
+    const open = fs.open.bind(fs);
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      if (args[0] === source && typeof args[1] === "number") writeScript(source, "\x7fELF\necho replaced\n");
+      return open(...args);
+    });
+    await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
+    expect(calls).toEqual([]);
+  });
+
+  it.each(["EACCES", "EIO"])("propagates %s from lstat instead of selecting a later PATH candidate", async (code) => {
+    const calls: string[][] = [];
+    const { root, locator } = locatorHarness({ calls,
+      env: (base) => ({ PATH: [join(base, "first"), join(base, "second")].join(HOST === "win32" ? ";" : ":") }),
+    });
+    const first = join(root, "first", NATIVE_NAME); writeNative(first); writeNative(join(root, "second", NATIVE_NAME));
+    const lstat = fs.lstat.bind(fs);
+    const failure = Object.assign(new Error("unreadable candidate"), { code });
+    vi.spyOn(fs, "lstat").mockImplementation((...args) => String(args[0]) === first ? Promise.reject(failure) : lstat(...args));
+    await expect(locator.resolve()).rejects.toBe(failure);
+    expect(calls).toEqual([]);
+  });
+
+  it.runIf(HOST !== "win32")("refuses a world-writable PATH directory and reports an unsafe configured location clearly", async () => {
+    const calls: string[][] = [];
+    const { root, locator, configStore } = locatorHarness({ calls });
+    const source = writeNative(join(root, "path-bin", NATIVE_NAME)); chmodSync(dirname(source), 0o777);
+    await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-unsafe-location" });
+    await configStore.setExecutable(source);
+    await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-unsafe-location", message: expect.stringMatching(/writable/i) });
+    await expect(locator.choose(source)).rejects.toMatchObject({ code: "codex-runtime-unsafe-location" });
+    expect(calls).toEqual([]);
+  });
+
+  it("copies the native companion and includes its bytes in compatibility-cache identity", async () => {
+    const calls: string[][] = [];
+    const { root, locator } = locatorHarness({ calls });
+    const source = writeNative(join(root, "path-bin", NATIVE_NAME));
+    const helper = writeNative(join(dirname(source), HOST === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host"));
+    const first = await locator.resolve();
+    expect(first.companion).not.toBeNull();
+    expect(dirname(first.companion!.executable)).toBe(dirname(first.executable));
+    expect(readFileSync(first.companion!.executable)).toEqual(readFileSync(helper));
+    const bytes = readFileSync(helper); bytes[bytes.length - 1] = 31; writeFileSync(helper, bytes);
+    const second = await locator.resolve();
+    expect(second.contentHash).toBe(first.contentHash);
+    expect(second.companion!.contentHash).not.toBe(first.companion!.contentHash);
+    expect(calls).toHaveLength(6);
   });
 
   it("refuses a version below the minimum and keeps the version it found", async () => {
@@ -361,12 +536,13 @@ describe("CodexUserRuntimeLocator", () => {
     const chosen = writeNative(join(root, "chosen", NATIVE_NAME));
     await locator.choose(chosen);
     await expect(configStore.getExecutable()).resolves.toBe(chosen);
-    await expect(locator.resolve()).resolves.toMatchObject({ executable: chosen });
+    const resolved = await locator.resolve();
+    expect(readFileSync(resolved.executable)).toEqual(readFileSync(chosen));
     rmSync(chosen);
     await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
     await locator.forget();
     await expect(configStore.getExecutable()).resolves.toBeNull();
-    await expect(locator.resolve()).resolves.toMatchObject({ executable: join(root, "path-bin", NATIVE_NAME) });
+    await expect(locator.resolve()).resolves.toMatchObject({ version: "0.153.4" });
   });
 
   it("refuses to remember a choice that is not a native CLI or its launcher", async () => {
@@ -386,11 +562,13 @@ describe("CodexUserRuntimeLocator", () => {
   });
 
   it("runs real probes without a shell and reads their output", async () => {
-    // The test runner's own native executable answers `--version` with a
-    // version line that is not the CLI's, so the real probe path ends in an
-    // invalid-executable verdict rather than a start failure.
-    const { locator } = locatorHarness({ realProbes: true });
-    await locator.choose(process.execPath);
+    // A system utility reports no CLI version, so a completed real probe
+    // yields an invalid-executable verdict rather than a start failure.
+    const { root, locator } = locatorHarness({ realProbes: true });
+    normalizeFixtureAncestorPermissions(process.execPath);
+    const native = join(root, NATIVE_NAME);
+    copyFileSync(HOST === "win32" ? process.execPath : "/usr/bin/true", native); chmodSync(native, 0o700);
+    await locator.choose(native);
     await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
   });
 });

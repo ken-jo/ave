@@ -405,11 +405,11 @@ interface CodexTextRuntimePaths {
   readonly sqliteHome: string;
   readonly workspaceDir: string;
   readonly runtimeTempDir: string;
-  readonly resolveExecutable: () => Promise<string>;
+  readonly resolveRuntime: CodexConversationRuntimeOptions["resolveRuntime"];
 }
 
 /** The part of the user-CLI locator the service drives; a seam for tests. */
-type CodexRuntimeLocator = Pick<CodexUserRuntimeLocator, "resolve" | "lastKnownVersion" | "choose" | "forget">;
+type CodexRuntimeLocator = Pick<CodexUserRuntimeLocator, "resolve" | "lastKnownVersion" | "choose" | "forget" | "dispose">;
 
 export interface SubscriptionRuntimeServiceCreateOptions {
   readonly namespace?: FeatureNamespaceHandle;
@@ -574,6 +574,8 @@ function codexRuntimeErrorCode(
       return "subscription-runtime-version-unsupported";
     case "codex-runtime-incompatible":
       return "subscription-runtime-incompatible";
+    case "codex-runtime-unsafe-location":
+      return "subscription-runtime-unsafe-location";
     case "codex-runtime-invalid-executable":
     case "codex-runtime-start-failed":
       return "subscription-runtime-unavailable";
@@ -588,6 +590,7 @@ export function subscriptionRuntimeErrorCode(error: unknown): SubscriptionRuntim
     switch (error.code) {
       case "codex-runtime-not-configured":
       case "codex-runtime-invalid-executable":
+      case "codex-runtime-unsafe-location":
       case "codex-runtime-version-unsupported":
       case "codex-runtime-incompatible":
         return codexRuntimeErrorCode(error.code);
@@ -1119,6 +1122,7 @@ export class SubscriptionRuntimeService {
     const codexRuntimeLocator: CodexRuntimeLocator = options.codexRuntimeLocator ?? new CodexUserRuntimeLocator({
       configStore: new CodexExecutableConfigStore(namespace),
       runtimeHome: codexHome,
+      runtimeDirectory: await namespace.childDir("codex-v3-home/runtime"),
       sqliteHome: codexSqlite,
       workspaceDir: loginWorkspace,
       runtimeTempDir: loginTemp,
@@ -1152,7 +1156,7 @@ export class SubscriptionRuntimeService {
         sqliteHome: codexSqlite,
         workspaceDir: textWorkspace,
         runtimeTempDir: textTemp,
-        resolveExecutable: async () => (await codexRuntimeLocator.resolve()).executable,
+        resolveRuntime: () => codexRuntimeLocator.resolve(),
       }),
       options.createCodexConversationRuntime ?? ((runtimeOptions) => new CodexConversationRuntime(runtimeOptions)),
       options.createClaudeCodeConversationRuntime
@@ -1504,6 +1508,7 @@ export class SubscriptionRuntimeService {
         this.acpRegistry.stopAll(),
         this.claudeCodeClient.stop(),
       ]);
+      await this.codexRuntimeLocator.dispose();
     })();
     return this.stopPromise;
   }

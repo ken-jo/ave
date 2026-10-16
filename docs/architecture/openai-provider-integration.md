@@ -37,28 +37,91 @@ Ave ships no app-server binary. `src/main/codex-user-runtime.ts` finds the
 starts it:
 
 1. **Location.** An explicit path chosen in settings wins and is never
-   replaced by discovery when it disappears. Otherwise each absolute PATH
-   entry is tried, then the official install locations: `$CODEX_INSTALL_DIR`,
-   `~/.local/bin` (the standalone installer), `/opt/homebrew/bin` and
-   `/usr/local/bin` (Homebrew), and on Windows
-   `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` and the npm shim directory. The
-   first `codex` found decides; an unusable one is reported, not skipped.
-2. **Native binary only.** A Mach-O, ELF or PE file is used as is. The npm
-   launcher script is followed to the native binary it would start; nothing
-   is run through a shell or an interpreter.
-3. **Version gate.** `codex --version` must report
+   replaced by discovery when it disappears. Otherwise each fully qualified
+   PATH entry is tried, then `$CODEX_INSTALL_DIR`, `~/.local/bin`,
+   `/opt/homebrew/bin` and `/usr/local/bin`; Windows also checks
+   `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` and `%APPDATA%\npm`. Windows
+   paths must name a drive root or a UNC share. Drive-relative, root-relative
+   and device-namespace paths are rejected. The first existing `codex`
+   decides; an unsafe or invalid candidate and filesystem inspection errors
+   are reported instead of continuing discovery.
+2. **Trusted source.** The selected file, its symlink route, canonical route
+   and every ancestor must prevent writes by other accounts. POSIX owners
+   must be root or the current account; Windows checks ownership against the
+   current account and trusted system principals, plus access-control rules.
+   The npm launcher is followed to its native executable without running a
+   shell or interpreter, and its route receives the same checks. An unsafe
+   location reports `codex-runtime-unsafe-location`; recovery is to install
+   or choose a CLI whose file and path meet these ownership and write rules.
+3. **Private artifact.** Ave copies the admitted executable into a random
+   private directory under its isolated runtime home. Exclusive creation,
+   no-follow opens where supported, pinned source handles and source
+   rechecks detect replacements during copying. Ave hashes the copied bytes
+   with SHA-256 and makes the file owner-readable and executable. Structural
+   validation runs on the copy and requires a complete Mach-O, ELF or PE
+   header for the current platform and architecture; a magic prefix alone
+   is insufficient. This does not prove the operating system's loader will
+   accept the file. Every compatibility probe also runs against the copy.
+4. **Version gate.** The copied `codex --version` must report
    `CODEX_CLI_MINIMUM_VERSION` (0.152.0) or later.
-4. **Protocol check.** `codex features list` must name every feature Ave
+5. **Protocol check.** `codex features list` must name every feature Ave
    disables at launch, and `codex app-server generate-json-schema
    --experimental` must describe every request, field, enum value,
    notification and server request Ave uses
-   (`src/main/codex-protocol-requirements.ts`).
+   (`src/main/codex-protocol-requirements.ts`). Required fields and their
+   types must coexist in the applicable union branch; fields from different
+   alternatives cannot collectively satisfy a request contract.
+6. **Launch identity.** Both account and conversation clients receive the
+   qualified artifact, including its digest and version. Its private
+   location, regular-file status, permissions and content hash are checked
+   immediately before every probe and app-server spawn.
 
-The verdict is cached per file identity, so an updated binary is checked
-again. A probe that cannot run is a start failure and is retried; it is never
-read as a compatibility verdict. The settings card shows the official install
-methods while no CLI is found, and "Codex CLI 0.152.0+ required" when the
-found one is too old or incompatible.
+`src/main/codex-native-spawn.ts` preserves loader rejection as a start
+failure. POSIX subscription startup requires a host runtime exposing
+`process.execve`; the [native host guide](../guides/native-server.md#build-the-artifact)
+states the feature-specific runtime prerequisite. Ave starts its trusted host
+runtime with a static bootstrap, passes the private CLI path and arguments
+as data, and replaces that process through `process.execve`. The bootstrap
+removes its launch-only environment before replacement. A missing API or
+catchable bootstrap failure exits with status 126. A rejected syscall can
+instead terminate the child with another nonzero status or signal; both are
+start failures. Ave's launcher never passes the candidate CLI to `execvp`,
+so an `ENOEXEC` rejection cannot trigger its shell fallback. Windows starts
+the native executable directly through `CreateProcess`.
+
+The in-memory compatibility cache identifies the CLI and copied helper by
+their SHA-256 content hashes. Changed bytes are checked again even if file
+size and timestamps are preserved. A probe that cannot run is a start failure
+and is retried; it is never read as a compatibility verdict. The settings
+card shows the install methods while no CLI is found, and "Codex CLI 0.152.0+
+required" when the found one is too old or incompatible. These checks do not
+defend against root or an arbitrary malicious process already running as the
+same user.
+
+Rejected snapshots are discarded even when their negative verdict is cached.
+Successful copies remain owned by their locator until its transports stop;
+disposal then removes only that locator's copies. A failed integrity check
+evicts the cached artifact, so the next request qualifies a fresh snapshot.
+Abrupt host termination can leave private copies, which a later host does not
+automatically reuse or remove across sessions.
+
+An installed `codex-code-mode-host` (`.exe` on Windows) receives the same
+source admission, native-header validation, private copy and digest checks.
+Package resources take precedence over the legacy sibling location; the
+qualified helper is placed beside the copied CLI under its expected name.
+The CLI alone can run the version, features and schema probes. The helper
+remains necessary for models whose metadata selects `code_mode_only`, which
+takes precedence over `--disable code_mode` in both
+[0.152.0](https://github.com/openai/codex/blob/rust-v0.152.0/codex-rs/core/src/tools/mod.rs#L68-L90)
+and [0.161.0](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/core/src/tools/mod.rs#L77-L102).
+A missing helper therefore does not invalidate every native executable;
+code-mode-only execution without it fails closed. Probe success does not
+establish support for those models. The package's `rg` serves thread search,
+and shell, sandbox and voice resources serve native execution or realtime
+paths outside Ave's governed request set.
+Startup's built-in command aliases point back to the private CLI rather
+than requiring another installed helper. Native execution denials and the
+host's dynamic-tool permission gates remain authoritative.
 
 The minimum was measured, not guessed: published versions from 0.140.0 to
 0.163.0 (every minor, with both patches either side of each boundary) were

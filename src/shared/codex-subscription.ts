@@ -46,6 +46,7 @@ export type CodexSubscriptionErrorCode =
   | "codex-runtime-start-failed"
   | "codex-runtime-not-configured"
   | "codex-runtime-invalid-executable"
+  | "codex-runtime-unsafe-location"
   | "codex-runtime-version-unsupported"
   | "codex-runtime-incompatible"
   | "codex-login-in-progress"

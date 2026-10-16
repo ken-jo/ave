@@ -27,10 +27,18 @@
  * 0.152.0 is the oldest version that passes both.
  */
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import { constants as fsConstants, promises as fs, type Stats } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { CODEX_CLI_MINIMUM_VERSION } from "../shared/codex-subscription.js";
+import {
+  CodexExecutableArtifactError,
+  copyCodexExecutableArtifact,
+  discardCodexExecutableArtifact,
+  verifyCodexExecutableArtifact,
+  type CodexExecutableArtifact,
+} from "./codex-executable-artifact.js";
+import { assertCodexExecutableLocation, CodexExecutableLocationError } from "./codex-executable-location.js";
 import {
   CODEX_SCHEMA_FILES,
   missingCodexProtocolRequirements,
@@ -40,7 +48,8 @@ import {
   sanitizedCodexConversationEnvironment,
   validateCodexRuntimeDirectory,
 } from "./codex-conversation-runtime.js";
-import { forceKillManagedChildProcess, spawnManaged } from "./managed-child-processes.js";
+import { forceKillManagedChildProcess } from "./managed-child-processes.js";
+import { assertCodexNativeHostLocation, spawnCodexNative } from "./codex-native-spawn.js";
 import {
   openFeatureNamespace,
   readJsonFileOrEmpty,
@@ -53,6 +62,7 @@ export type CodexUserRuntimeErrorCode =
   | "codex-runtime-not-installed"
   /** The chosen or first found `codex` is not a native executable Ave can run. */
   | "codex-runtime-invalid-executable"
+  | "codex-runtime-unsafe-location"
   | "codex-runtime-version-unsupported"
   /** The version is new enough but the protocol or features Ave needs are missing. */
   | "codex-runtime-incompatible"
@@ -72,8 +82,7 @@ export class CodexUserRuntimeError extends Error {
   }
 }
 
-export interface CodexResolvedRuntime {
-  readonly executable: string;
+export interface CodexResolvedRuntime extends CodexExecutableArtifact {
   readonly version: string;
 }
 
@@ -121,7 +130,15 @@ function usableDirectory(value: string | undefined, platform: NodeJS.Platform): 
   if (typeof value !== "string") return null;
   const trimmed = platform === "win32" ? value.trim().replace(/^"(.*)"$/, "$1") : value;
   if (!trimmed || trimmed.length > MAX_PATH_LENGTH || CONTROL_CHARACTERS.test(trimmed)) return null;
-  return pathApi(platform).isAbsolute(trimmed) ? trimmed : null;
+  return fullyQualifiedPath(trimmed, platform) ? trimmed : null;
+}
+
+function fullyQualifiedPath(value: string, platform: NodeJS.Platform): boolean {
+  if (platform !== "win32") return posix.isAbsolute(value);
+  // A rooted path without a drive inherits the process's current drive.
+  // Device namespaces are not ordinary filesystem executable locations.
+  if (/^[\\/]{2}[?.][\\/]/.test(value)) return false;
+  return /^[a-z]:[\\/]/i.test(value) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+(?:[\\/]|$)/.test(value);
 }
 
 function environmentValue(env: NodeJS.ProcessEnv, name: string, platform: NodeJS.Platform): string | undefined {
@@ -169,14 +186,15 @@ export function codexExecutableCandidates(discovery: CodexDiscoveryEnvironment):
   });
 }
 
-/** Native executable file headers: Mach-O (thin and fat), ELF, PE. */
+/** Routing hint only. Full native-format validation happens on the private copy. */
 function isNativeExecutableHeader(header: Buffer, platform: NodeJS.Platform): boolean {
   if (header.length < 4) return false;
   if (platform === "win32") return header[0] === 0x4d && header[1] === 0x5a;
   if (platform === "darwin") {
     const magic = header.readUInt32BE(0);
     return magic === 0xfeedfacf || magic === 0xcffaedfe || magic === 0xfeedface
-      || magic === 0xcefaedfe || magic === 0xcafebabe || magic === 0xbebafeca;
+      || magic === 0xcefaedfe || magic === 0xcafebabe || magic === 0xbebafeca
+      || magic === 0xcafebabf || magic === 0xbfbafeca;
   }
   return header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46;
 }
@@ -197,27 +215,32 @@ async function nativeExecutableAt(candidate: string, platform: NodeJS.Platform):
   let real: string;
   try {
     real = await fs.realpath(candidate);
+    await assertCodexExecutableLocation(candidate);
     const stat = await fs.stat(real);
     if (!stat.isFile()) return null;
     if (!isNativeExecutableHeader(await readHeader(real), platform)) return null;
     if (platform === "win32") {
-      if (!real.toLowerCase().endsWith(".exe") || real.startsWith("\\\\")) return null;
+      if (!real.toLowerCase().endsWith(".exe")) return null;
     } else {
       await fs.access(real, fsConstants.X_OK);
     }
-  } catch {
-    return null;
+  } catch (error) {
+    if (isAbsent(error)) return null;
+    throw error;
   }
   return real;
 }
 
 async function isLauncherPackageRoot(root: string): Promise<boolean> {
   try {
-    const parsed = JSON.parse(await fs.readFile(join(root, "package.json"), "utf8")) as unknown;
+    const manifest = join(root, "package.json");
+    await assertCodexExecutableLocation(manifest);
+    const parsed = JSON.parse(await fs.readFile(manifest, "utf8")) as unknown;
     return typeof parsed === "object" && parsed !== null
       && (parsed as { name?: unknown }).name === LAUNCHER_PACKAGE_NAME;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isAbsent(error) || error instanceof SyntaxError) return false;
+    throw error;
   }
 }
 
@@ -239,8 +262,9 @@ async function launcherPackageRoot(
     let real: string;
     try {
       real = await fs.realpath(candidate);
-    } catch {
-      return null;
+    } catch (error) {
+      if (isAbsent(error)) return null;
+      throw error;
     }
     if (paths.basename(real) !== "codex.js" || paths.basename(paths.dirname(real)) !== "bin") return null;
     root = paths.dirname(paths.dirname(real));
@@ -282,9 +306,21 @@ async function exists(path: string): Promise<boolean> {
   try {
     await fs.lstat(path);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isAbsent(error)) return false;
+    throw error;
   }
+}
+
+function isAbsent(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+function invalidExecutable(message?: string): CodexUserRuntimeError {
+  const error = new CodexUserRuntimeError("codex-runtime-invalid-executable");
+  if (message) error.message = message;
+  return error;
 }
 
 /**
@@ -299,16 +335,22 @@ export async function resolveCodexNativeExecutable(
 ): Promise<string | null> {
   if (
     !candidate || candidate.length > MAX_PATH_LENGTH || CONTROL_CHARACTERS.test(candidate)
-    || !pathApi(platform).isAbsolute(candidate)
+    || !fullyQualifiedPath(candidate, platform)
   ) {
     throw new CodexUserRuntimeError("codex-runtime-invalid-executable");
   }
   if (!await exists(candidate)) return null;
-  const native = await nativeExecutableAt(candidate, platform);
-  if (native) return native;
-  const root = await launcherPackageRoot(candidate, platform);
-  const launched = root ? await launcherNativeExecutable(root, platform, arch) : null;
-  if (launched) return launched;
+  try {
+    await assertCodexExecutableLocation(candidate);
+    const native = await nativeExecutableAt(candidate, platform);
+    if (native) return native;
+    const root = await launcherPackageRoot(candidate, platform);
+    const launched = root ? await launcherNativeExecutable(root, platform, arch) : null;
+    if (launched) return launched;
+  } catch (error) {
+    if (error instanceof CodexExecutableLocationError) throw unsafeLocation(error.message);
+    throw error;
+  }
   throw new CodexUserRuntimeError("codex-runtime-invalid-executable");
 }
 
@@ -364,7 +406,7 @@ type SpawnProbe = (command: string, args: readonly string[], options: SpawnOptio
 
 /** Run one bounded, shell-free probe command; stderr is discarded, never parsed. */
 function createCodexProbeRunner(
-  spawn: SpawnProbe = (command, args, options) => spawnManaged(command, args, options, { label: "codex-probe" }),
+  spawn: SpawnProbe = (command, args, options) => spawnCodexNative(command, args, options, "codex-probe"),
 ): CodexProbeRunner {
   return (executable, args, options) => new Promise((resolvePromise, rejectPromise) => {
     let settled = false;
@@ -449,6 +491,8 @@ export interface CodexUserRuntimeLocatorOptions {
   readonly configStore: CodexExecutableConfigStore;
   /** Ave's isolated runtime directories; probes run with the same environment as the app-server. */
   readonly runtimeHome: string;
+  /** Existing private runtime child directory, created by the feature namespace. */
+  readonly runtimeDirectory: string;
   readonly sqliteHome: string;
   readonly workspaceDir: string;
   readonly runtimeTempDir: string;
@@ -459,13 +503,9 @@ export interface CodexUserRuntimeLocatorOptions {
   readonly homeDir?: string;
 }
 
-function fileIdentity(path: string, stat: Stats): string {
-  return [path, stat.dev, stat.ino, stat.size, stat.mtimeMs].join("\u0000");
-}
-
 /**
- * Finds the user's `codex` and qualifies it once per file identity. A changed
- * binary (an update, a different choice) is probed again; a probe that could
+ * Finds the user's `codex` and qualifies a private copy once per content hash.
+ * Changed bytes are probed again; a probe that could
  * not run is not remembered, so the next request tries again.
  */
 export class CodexUserRuntimeLocator {
@@ -475,6 +515,8 @@ export class CodexUserRuntimeLocator {
   private readonly env: NodeJS.ProcessEnv;
   private readonly homeDir: string;
   private readonly verdicts = new Map<string, Promise<CodexResolvedRuntime>>();
+  private readonly artifacts = new Set<CodexExecutableArtifact>();
+  private disposed = false;
   private lastVersion: string | null = null;
 
   constructor(private readonly options: CodexUserRuntimeLocatorOptions) {
@@ -492,26 +534,35 @@ export class CodexUserRuntimeLocator {
 
   /** Resolve, qualify and return the binary Ave should start. */
   async resolve(): Promise<CodexResolvedRuntime> {
+    if (this.disposed) throw startFailed();
     const executable = await this.locate();
-    let stat: Stats;
-    try {
-      stat = await fs.stat(executable);
-    } catch {
-      throw new CodexUserRuntimeError("codex-runtime-invalid-executable");
-    }
-    const identity = fileIdentity(executable, stat);
+    const artifact = await this.snapshot(executable);
+    const identity = `${artifact.contentHash}:${artifact.companion?.contentHash ?? ""}`;
     let verdict = this.verdicts.get(identity);
     if (!verdict) {
-      verdict = this.qualify(executable);
-      this.verdicts.set(identity, verdict);
-      verdict.catch((error: unknown) => {
+      verdict = this.qualify(artifact).catch(async (error: unknown) => {
+        await this.discard(artifact);
         if (!(error instanceof CodexUserRuntimeError) || error.code === "codex-runtime-start-failed") {
           this.verdicts.delete(identity);
         }
+        throw error;
       });
+      this.verdicts.set(identity, verdict);
+    } else {
+      await this.discard(artifact);
     }
     try {
       const resolved = await verdict;
+      try {
+        await verifyCodexExecutableArtifact(resolved);
+      } catch (error) {
+        this.verdicts.delete(identity);
+        await this.discard(resolved);
+        if (error instanceof CodexExecutableLocationError) throw unsafeLocation(error.message);
+        if (error instanceof CodexExecutableArtifactError) throw invalidExecutable(error.message);
+        throw error;
+      }
+      if (this.disposed) throw startFailed();
       this.lastVersion = resolved.version;
       return resolved;
     } catch (error) {
@@ -527,6 +578,8 @@ export class CodexUserRuntimeLocator {
   async choose(pickerPath: string): Promise<void> {
     const native = await resolveCodexNativeExecutable(pickerPath, this.platform, this.arch);
     if (!native) throw new CodexUserRuntimeError("codex-runtime-invalid-executable");
+    const artifact = await this.snapshot(native);
+    await this.discard(artifact);
     await this.options.configStore.setExecutable(pickerPath);
     this.lastVersion = null;
   }
@@ -535,6 +588,19 @@ export class CodexUserRuntimeLocator {
   async forget(): Promise<void> {
     await this.options.configStore.setExecutable(null);
     this.lastVersion = null;
+  }
+
+  /** Release only this locator's copies after its transports have stopped. */
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    await Promise.allSettled(this.verdicts.values());
+    this.verdicts.clear();
+    await Promise.all([...this.artifacts].map((artifact) => this.discard(artifact)));
+  }
+
+  private async discard(artifact: CodexExecutableArtifact): Promise<void> {
+    await discardCodexExecutableArtifact(artifact);
+    this.artifacts.delete(artifact);
   }
 
   private async locate(): Promise<string> {
@@ -552,7 +618,26 @@ export class CodexUserRuntimeLocator {
     throw new CodexUserRuntimeError("codex-runtime-not-installed");
   }
 
-  private async qualify(executable: string): Promise<CodexResolvedRuntime> {
+  private async snapshot(executable: string): Promise<CodexExecutableArtifact> {
+    try {
+      if (this.disposed) throw startFailed();
+      const artifact = await copyCodexExecutableArtifact(executable, this.options.runtimeDirectory, this.platform, this.arch);
+      if (this.disposed) {
+        await discardCodexExecutableArtifact(artifact);
+        throw startFailed();
+      }
+      this.artifacts.add(artifact);
+      return artifact;
+    } catch (error) {
+      if (error instanceof CodexExecutableLocationError) throw unsafeLocation(error.message);
+      if (error instanceof CodexExecutableArtifactError) {
+        throw invalidExecutable(error.message);
+      }
+      throw error;
+    }
+  }
+
+  private async qualify(artifact: CodexExecutableArtifact): Promise<CodexResolvedRuntime> {
     const runtimeHome = validateCodexRuntimeDirectory(this.options.runtimeHome, startFailed);
     const sqliteHome = validateCodexRuntimeDirectory(this.options.sqliteHome, startFailed);
     const workspaceDir = validateCodexRuntimeDirectory(this.options.workspaceDir, startFailed);
@@ -561,8 +646,13 @@ export class CodexUserRuntimeLocator {
     const probe = async (args: readonly string[]): Promise<string> => {
       let result: CodexProbeResult;
       try {
-        result = await this.run(executable, args, { cwd: workspaceDir, env, timeoutMs: PROBE_TIMEOUT_MS });
-      } catch {
+        if (this.options.run === undefined) await assertCodexNativeHostLocation();
+        await verifyCodexExecutableArtifact(artifact);
+        result = await this.run(artifact.executable, args, { cwd: workspaceDir, env, timeoutMs: PROBE_TIMEOUT_MS });
+      } catch (error) {
+        if (error instanceof CodexExecutableArtifactError || error instanceof CodexExecutableLocationError) {
+          throw invalidExecutable(error.message);
+        }
         throw startFailed();
       }
       if (result.code !== 0) throw startFailed();
@@ -597,10 +687,16 @@ export class CodexUserRuntimeLocator {
     if (missing.length > 0) {
       throw new CodexUserRuntimeError("codex-runtime-incompatible", version, Object.freeze(missing));
     }
-    return Object.freeze({ executable, version });
+    return Object.freeze({ ...artifact, version });
   }
 }
 
 function startFailed(): CodexUserRuntimeError {
   return new CodexUserRuntimeError("codex-runtime-start-failed");
+}
+
+function unsafeLocation(message: string): CodexUserRuntimeError {
+  const error = new CodexUserRuntimeError("codex-runtime-unsafe-location");
+  error.message = message;
+  return error;
 }

@@ -1095,6 +1095,7 @@ describe("SubscriptionRuntimeService", () => {
       lastKnownVersion: vi.fn(() => "0.153.4"),
       choose: vi.fn(async () => undefined),
       forget: vi.fn(async () => undefined),
+      dispose: vi.fn(async () => undefined),
     };
     const codexClient = fakeCodexClient();
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
@@ -1113,10 +1114,15 @@ describe("SubscriptionRuntimeService", () => {
       expect(codexClient.stop).toHaveBeenCalledTimes(2);
     } finally {
       await service.stop();
+      expect(locator.dispose).toHaveBeenCalledOnce();
     }
   });
 
   it("gives each user-CLI failure its own renderer-safe code", () => {
+    expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-unsafe-location")))
+      .toBe("subscription-runtime-unsafe-location");
+    expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-unsafe-location")))
+      .toBe("subscription-runtime-unsafe-location");
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-not-installed")))
       .toBe("subscription-runtime-not-configured");
     expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-version-unsupported", "0.151.0")))

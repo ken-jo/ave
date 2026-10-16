@@ -1,5 +1,7 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { verifyCodexExecutableArtifact, type CodexExecutableArtifact } from "./codex-executable-artifact.js";
+import { assertCodexNativeHostLocation, spawnCodexNative } from "./codex-native-spawn.js";
 import { lstatSync, promises as fs } from "node:fs";
 import { isAbsolute, join, resolve, win32 } from "node:path";
 import { getAveAppVersion } from "../shared/app-version.js";
@@ -9,7 +11,7 @@ import {
   subscriptionTransportFailure,
   type SubscriptionTransportDiagnosticError,
 } from "./subscription-transport-error-diagnostics.js";
-import { forceKillManagedChildProcess, spawnManaged } from "./managed-child-processes.js";
+import { forceKillManagedChildProcess } from "./managed-child-processes.js";
 import {
   assertSubscriptionPromptAttachments,
   SubscriptionAttachmentTransportError,
@@ -256,7 +258,7 @@ export interface CodexConversationRuntimeOptions {
    * Resolves the user's verified `codex` executable (see
    * `CodexUserRuntimeLocator`). There is no default: Ave ships no runtime.
    */
-  resolveExecutable: () => Promise<string>;
+  resolveRuntime: () => Promise<CodexExecutableArtifact>;
   /** Test seam; production uses managed-child-processes. */
   spawn?: CodexSpawnAppServer;
   clientVersion?: string;
@@ -393,7 +395,7 @@ export function spawnCodexAppServer(
   options: SpawnOptions,
   label: string,
 ): ChildProcess {
-  return spawnManaged(command, args, options, { label });
+  return spawnCodexNative(command, args, options, label);
 }
 
 function blocksInheritedEnvironment(key: string): boolean {
@@ -733,8 +735,9 @@ function projectTurnTokenUsage(
  * App Server methods.
  */
 export class CodexConversationRuntime {
-  private readonly resolveExecutable: () => Promise<string>;
+  private readonly resolveRuntime: () => Promise<CodexExecutableArtifact>;
   private readonly spawn: CodexSpawnAppServer;
+  private readonly nativeHostSpawn: boolean;
   private readonly clientVersion: string;
   private readonly runtimeHome: string;
   private readonly sqliteHome: string;
@@ -752,9 +755,10 @@ export class CodexConversationRuntime {
   private transportReader: JsonLineReader | null = null;
 
   constructor(options: CodexConversationRuntimeOptions) {
-    this.resolveExecutable = options.resolveExecutable;
+    this.resolveRuntime = options.resolveRuntime;
     this.spawn = options.spawn
       ?? ((command, args, options_) => spawnCodexAppServer(command, args, options_, "codex-conversation-runtime"));
+    this.nativeHostSpawn = options.spawn === undefined;
     this.clientVersion = options.clientVersion ?? getAveAppVersion();
     this.runtimeHome = options.runtimeHome;
     this.sqliteHome = options.sqliteHome;
@@ -1033,9 +1037,9 @@ export class CodexConversationRuntime {
   }
 
   private async start(): Promise<void> {
-    let executable: string;
+    let runtime: CodexExecutableArtifact;
     try {
-      executable = await this.resolveExecutable();
+      runtime = await this.resolveRuntime();
     } catch (error) {
       if (error instanceof CodexConversationRuntimeError) throw error;
       throw new CodexConversationRuntimeError("codex-runtime-unavailable");
@@ -1049,8 +1053,14 @@ export class CodexConversationRuntime {
       : runtimeHome;
     let child: ChildProcess;
     try {
+      if (this.nativeHostSpawn) await assertCodexNativeHostLocation();
+      await verifyCodexExecutableArtifact(runtime);
+    } catch {
+      throw new CodexConversationRuntimeError("codex-runtime-unavailable");
+    }
+    try {
       child = this.spawn(
-        executable,
+        runtime.executable,
         CODEX_APP_SERVER_ARGV,
         {
           cwd: workspaceDir,

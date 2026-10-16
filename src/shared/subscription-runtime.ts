@@ -422,6 +422,7 @@ export type SubscriptionRuntimeErrorCode =
   | "subscription-provider-not-supported"
   | "subscription-runtime-not-configured"
   | "subscription-runtime-unavailable"
+  | "subscription-runtime-unsafe-location"
   | "subscription-runtime-version-unsupported"
   | "subscription-runtime-incompatible"
   | "subscription-login-in-progress"

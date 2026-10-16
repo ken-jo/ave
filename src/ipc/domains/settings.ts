@@ -129,6 +129,8 @@ function legacyCodexErrorCode(code: SubscriptionRuntimeErrorCode): CodexSubscrip
       return "codex-runtime-not-configured";
     case "subscription-runtime-unavailable":
       return "codex-runtime-unavailable";
+    case "subscription-runtime-unsafe-location":
+      return "codex-runtime-unsafe-location";
     case "subscription-runtime-version-unsupported":
       return "codex-runtime-version-unsupported";
     case "subscription-runtime-incompatible":
