@@ -24,7 +24,10 @@
 //                 the lock suites whose trigger paths changed, changed tests,
 //                 the recorded readers of changed test-read documents, and
 //                 `vitest related`, bounded for a shared module's fan-out
-//                 (see pre-push-source-policy.mjs)
+//                 (see pre-push-source-policy.mjs). A message catalog change
+//                 adds the i18n catalog and barrel checks, the i18n suites,
+//                 and the tests and modules that name a changed key's
+//                 namespace (selectMessageCatalogChecks)
 //   full          non-fast-forward or non-branch updates, the default
 //                 branch, integration/* branches, noncanonical paths, global
 //                 test/build inputs, test-read documents with no recorded
@@ -32,6 +35,13 @@
 //                 gate, `bun run test`, `bun run build`, `check:gate-core`
 // The full suite and build of a fast push run once at merge time, on the
 // merged tree, and in CI.
+//
+// Host admission (pre-push-host-lock.mjs): a full run holds one exclusive
+// host-wide lock, so two full suites never share a machine; a fast run holds
+// one of AVE_PREPUSH_FAST_SLOTS (default 4) shared slots. A waiting run
+// prints the holder's PID; one that waits past AVE_PREPUSH_LOCK_TIMEOUT_S
+// (default 3600) fails the push. A dead holder's lock is reclaimed by PID
+// liveness. The lock orders checks and never skips one.
 //
 // Multi-stage PRs: a sub-branch is cut from origin/integration/<category> and
 // merged into it by PR; the category branch reaches main through one PR whose
@@ -81,10 +91,13 @@ import { selectTargetedAveAppVitestFiles } from "./pre-push-test-policy.mjs";
 import {
   boundRelatedTests,
   getRelatedCoverageFullReason,
+  MESSAGE_CATALOG_CHECK_SCRIPTS,
   RELATED_TEST_BOUND,
   selectFastSourceChecks,
+  selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "./pre-push-source-policy.mjs";
+import { resolveHostLockSettings, withHostLock } from "./pre-push-host-lock.mjs";
 
 const isWindows = process.platform === "win32";
 
@@ -612,6 +625,30 @@ function getPushedHistoryFullReason(repoRoot, baseSha, localSha) {
   return null;
 }
 
+// The checks for the message catalog files of a fast push (see
+// selectMessageCatalogChecks). The pushed commit is the clean checked-out
+// HEAD (runPushCheckoutChecks), so the working tree is the pushed tree.
+function getMessageCatalogSelection(repoRoot, entries) {
+  const listing = spawnSync(commands.git, ["ls-files", "-z", "--", "src", "test"], {
+    cwd: repoRoot,
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const decoded = listing.error || listing.status !== 0 ? null : decodeUtf8Strict(listing.stdout);
+  if (decoded === null) return { reason: "tracked files could not be listed for message consumers; full checks required" };
+  return selectMessageCatalogChecks(entries, {
+    readBlob: (sha, relativePath) => getGitBlob(repoRoot, sha, relativePath),
+    trackedFiles: decoded.split("\0").filter(Boolean),
+    readTrackedFile: (relativePath) => {
+      try {
+        return readFileSync(join(repoRoot, relativePath), "utf8");
+      } catch {
+        return null;
+      }
+    },
+  });
+}
+
 function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
   if (!parsedUpdates.complete || parsedUpdates.updates.length === 0) {
     return { docsOnly: false, reason: "ref updates could not be classified" };
@@ -698,7 +735,7 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
     // The safety ceiling applies before the narrower comment and test tiers.
     const fastSelection = selectFastSourceChecks(changedEntries);
     if (!fastSelection.eligible) return { docsOnly: false, reason: fastSelection.reason };
-    if (commentOnlyEligible) {
+    if (commentOnlyEligible && fastSelection.messageCatalogEntries.length === 0) {
       const commentSelection = selectCommentOnlyAveAppFiles(
         changedEntries,
         (objectId, relativePath) => getGitBlob(repoRoot, objectId, relativePath)
@@ -725,12 +762,22 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
         };
       }
       if (fastSelection.eligible) {
+        let messageCatalog = null;
+        if (fastSelection.messageCatalogEntries.length > 0) {
+          messageCatalog = getMessageCatalogSelection(repoRoot, fastSelection.messageCatalogEntries);
+          if (messageCatalog.reason) return { docsOnly: false, reason: messageCatalog.reason };
+        }
         return {
           docsOnly: false,
           fastSource: true,
           lockSuites: selectTriggeredLockSuites([...changedFiles]),
-          testFiles: fastSelection.testFiles,
+          testFiles: [...new Set([...fastSelection.testFiles, ...(messageCatalog?.testFiles ?? [])])].sort(),
           relatedFiles: fastSelection.relatedFiles,
+          messageCatalog: messageCatalog && {
+            files: fastSelection.messageCatalogEntries.map(({ path }) => path),
+            namespaces: messageCatalog.namespaces,
+            consumerModules: messageCatalog.consumerModules.filter((path) => !fastSelection.relatedFiles.includes(path)),
+          },
           documentationEntries: fastSelection.documentationEntries,
           reason: fastSelection.reason,
         };
@@ -854,11 +901,19 @@ function runAppTypecheckGate(dir, checkLabel) {
   runPackageScripts(dir, APP_TYPECHECK_GATE_SCRIPTS, `ave ${checkLabel}`);
 }
 
+// The full tier holds the exclusive host lock for its whole run, so two full
+// suites never share a machine (see pre-push-host-lock.mjs); a waiting run
+// prints who holds the lock and fails the push at AVE_PREPUSH_LOCK_TIMEOUT_S.
 function runAppChecks(dir) {
   const bun = available(commands.bun);
   if (!bun) {
     throw new Error("bun is required for ave checks");
   }
+  const { directory, timeoutMs } = resolveHostLockSettings();
+  withHostLock({ name: "full", label: "full-tier", directory, timeoutMs }, () => runAppChecksHoldingLock(dir));
+}
+
+function runAppChecksHoldingLock(dir) {
   ensureAppTestRuntimeAbi(dir);
   runAppTypecheckGate(dir, "full checks");
   runPackageScripts(dir, ["test", "build"], "ave full checks");
@@ -930,11 +985,13 @@ function runVitestWithReport(bun, dir, vitestArgs, emptyMessage) {
 }
 
 // lockSuites: the suites whose trigger paths changed. relatedSelection: the
-// discovered related tests ({ tests, narrowed }); when nothing was narrowed
-// `vitest related` runs on the changed modules, otherwise the bounded list
-// runs explicitly. A Vitest call with no file arguments would run the whole
-// suite, so an empty list skips its run instead.
-function runAppFastSourceChecks(dir, lockSuites, testFiles, relatedFiles, relatedSelection) {
+// discovered related tests ({ tests, narrowed, sources }); when nothing was
+// narrowed `vitest related` runs on its sources (the changed modules and the
+// message consumers with tests), otherwise the bounded list runs explicitly.
+// A Vitest call with no file arguments would run the whole suite, so an empty
+// list skips its run instead. messageCatalog: the catalog checks run first.
+// The run holds one of AVE_PREPUSH_FAST_SLOTS shared host slots.
+function runAppFastSourceChecks(dir, lockSuites, testFiles, relatedSelection, messageCatalog) {
   const bun = available(commands.bun);
   if (!bun) {
     throw new Error("bun is required for fast ave source checks");
@@ -942,13 +999,19 @@ function runAppFastSourceChecks(dir, lockSuites, testFiles, relatedFiles, relate
   if (!hasPackageScript(dir, "check:test-duplicates")) {
     throw new Error("ave fast source checks require the check:test-duplicates script");
   }
-  for (const relativePath of [...lockSuites, ...testFiles, ...relatedFiles, ...relatedSelection.tests]) {
+  for (const relativePath of [...lockSuites, ...testFiles, ...relatedSelection.sources, ...relatedSelection.tests]) {
     if (!hasFile(join(dir, relativePath))) {
       throw new Error(`fast ave source check input is missing: ${relativePath}`);
     }
   }
+  const { directory, timeoutMs, fastSlots } = resolveHostLockSettings();
+  withHostLock({ name: "fast", label: "fast-tier", directory, timeoutMs, slots: fastSlots }, () =>
+    runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, relatedSelection, messageCatalog));
+}
 
+function runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, relatedSelection, messageCatalog) {
   runAppTypecheckGate(dir, "fast source checks");
+  if (messageCatalog) runPackageScripts(dir, MESSAGE_CATALOG_CHECK_SCRIPTS, "ave message catalog checks");
   run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
   ensureAppTestRuntimeAbi(dir);
   const direct = [...new Set([...lockSuites, ...testFiles])];
@@ -956,9 +1019,9 @@ function runAppFastSourceChecks(dir, lockSuites, testFiles, relatedFiles, relate
   if (directArgs.length > 0) {
     run(bun, ["run", "test:vitest", "--", "run", ...directArgs], dir, withoutGitContext());
   }
-  if (relatedFiles.length === 0) return;
+  if (relatedSelection.sources.length === 0) return;
   if (relatedSelection.narrowed.length === 0) {
-    const relatedArgs = relatedFiles.map((file) => `./${file}`);
+    const relatedArgs = relatedSelection.sources.map((file) => `./${file}`);
     runVitestWithReport(bun, dir, ["related", "--run", ...relatedArgs],
       "related tests ran zero tests; rerun with AVE_PREPUSH_FULL=1");
     return;
@@ -972,10 +1035,14 @@ function runAppFastSourceChecks(dir, lockSuites, testFiles, relatedFiles, relate
 }
 
 // Per-module related-test discovery, then the bound of pre-push-source-policy.
-// Returns { tests, narrowed } or { reason } (full checks).
-function getFastSourceRelatedSelection(dir, relatedFiles) {
-  if (relatedFiles.length === 0) return { tests: [], narrowed: [] };
-  const result = spawnSync(commands.node, [join(dir, "scripts/hooks/pre-push-related-tests.mjs"), ...relatedFiles], {
+// consumerModules are message consumers: unchanged modules that name a changed
+// message key; one with no related test file is reported and left out.
+// Returns { tests, narrowed, sources, untestedConsumers } or { reason } (full
+// checks); sources are the modules `vitest related` runs on.
+function getFastSourceRelatedSelection(dir, relatedFiles, consumerModules = []) {
+  const discovered = [...relatedFiles, ...consumerModules];
+  if (discovered.length === 0) return { tests: [], narrowed: [], sources: [], untestedConsumers: [] };
+  const result = spawnSync(commands.node, [join(dir, "scripts/hooks/pre-push-related-tests.mjs"), ...discovered], {
     cwd: dir,
     env: withoutGitContext(),
     encoding: "utf8",
@@ -989,15 +1056,22 @@ function getFastSourceRelatedSelection(dir, relatedFiles) {
   } catch {
     return { reason: "related test discovery returned an invalid report; full checks required" };
   }
-  const reason = getRelatedCoverageFullReason(relatedFiles, coverage);
+  const reason = getRelatedCoverageFullReason(relatedFiles, coverage, consumerModules);
   if (reason) return { reason };
-  return boundRelatedTests(coverage, (relativePath) => {
+  const tested = coverage.filter((record) => record.tests.length > 0);
+  const bounded = boundRelatedTests(tested, (relativePath) => {
     try {
       return readFileSync(join(dir, relativePath), "utf8");
     } catch {
       return null;
     }
   });
+  if (bounded.reason) return bounded;
+  return {
+    ...bounded,
+    sources: tested.map((record) => record.source),
+    untestedConsumers: coverage.filter((record) => record.tests.length === 0).map((record) => record.source),
+  };
 }
 
 function runAppCommentOnlyChecks(dir) {
@@ -1045,7 +1119,8 @@ if (stage === "pre-commit") {
         ? { docsOnly: false, reason: "AVE_PREPUSH_FULL=1 requested the full checks" }
         : classifyPrePushChanges(repoRoot, withPushedCommits(prePushUpdates, pushCheckout.commitByLocalSha), remoteLocation);
   if (classification.fastSource) {
-    const relatedSelection = getFastSourceRelatedSelection(repoRoot, classification.relatedFiles);
+    const consumerModules = classification.messageCatalog?.consumerModules ?? [];
+    const relatedSelection = getFastSourceRelatedSelection(repoRoot, classification.relatedFiles, consumerModules);
     classification = relatedSelection.reason
       ? { docsOnly: false, reason: relatedSelection.reason }
       : { ...classification, relatedSelection };
@@ -1078,14 +1153,24 @@ if (stage === "pre-commit") {
       classification.supportTestFiles
     );
   } else if (classification.fastSource) {
-    const { lockSuites, relatedSelection } = classification;
+    const { lockSuites, relatedSelection, messageCatalog } = classification;
     console.log(
       `[checks] tier=fast pre-push: running typecheck, duplicate-helper policy, ` +
-        `${lockSuites.length} triggered lock suite(s), ${classification.testFiles.length} changed or ` +
-        `document-reader test file(s), and Vitest related to ${classification.relatedFiles.length} module(s); ` +
+        (messageCatalog ? "the message catalog checks, " : "") +
+        `${lockSuites.length} triggered lock suite(s), ${classification.testFiles.length} changed, ` +
+        `document-reader or message-consumer test file(s), and Vitest related to ${relatedSelection.sources.length} module(s); ` +
         `skipping full test/build, which the category PR's CI runs on the merged tree ` +
         `(${classification.reason}; AVE_PREPUSH_FULL=1 runs the full checks)`
     );
+    if (messageCatalog) {
+      console.log(
+        `[checks] message catalog: ${messageCatalog.files.length} file(s) change namespace(s) ` +
+          `${messageCatalog.namespaces.join(", ") || "(none)"}; ${messageCatalog.consumerModules.length} consumer module(s)` +
+          (relatedSelection.untestedConsumers.length > 0
+            ? `, of which no Vitest file reaches ${relatedSelection.untestedConsumers.join(", ")}`
+            : "")
+      );
+    }
     for (const { suite, path } of lockSuites) {
       console.log(`[checks] lock suite ${suite}: triggered by ${path}`);
     }
@@ -1105,8 +1190,8 @@ if (stage === "pre-commit") {
       repoRoot,
       lockSuites.map(({ suite }) => suite),
       classification.testFiles,
-      classification.relatedFiles,
-      relatedSelection
+      relatedSelection,
+      messageCatalog
     );
   } else {
     console.log(
