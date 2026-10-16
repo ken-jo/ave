@@ -1,15 +1,13 @@
 import { spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { spawnManaged } from "../managed-child-processes.js";
-import { assertCodexExecutableLocation } from "../codex-executable-location.js";
-import { assertCodexNativeHostLocation, spawnCodexNative } from "../codex-native-spawn.js";
+import { spawnCodexNative } from "../codex-native-spawn.js";
 
 vi.mock("../managed-child-processes.js", () => ({ spawnManaged: vi.fn() }));
-vi.mock("../codex-executable-location.js", () => ({ assertCodexExecutableLocation: vi.fn() }));
 
 const HOST = process.platform;
 const HOST_EXEC_PATH = process.execPath;
@@ -51,30 +49,16 @@ function runPlan(plan: ReturnType<typeof spawnPlan>, input?: string) {
 }
 
 describe("native spawn boundary", () => {
-  it.each(["linux", "darwin"] as const)("admits the host's on-disk location on %s", async (platform) => {
-    vi.stubGlobal("process", { ...process, platform });
-    vi.mocked(assertCodexExecutableLocation).mockResolvedValue(undefined);
-    await expect(assertCodexNativeHostLocation()).resolves.toBeUndefined();
-    expect(assertCodexExecutableLocation).toHaveBeenCalledExactlyOnceWith(HOST_EXEC_PATH);
-    expect(spawnManaged).not.toHaveBeenCalled();
-  });
-
-  it("propagates host admission errors unchanged", async () => {
-    vi.stubGlobal("process", { ...process, platform: "linux" });
-    const error = Object.assign(new Error("Host location cannot be read"), { code: "EACCES" });
-    vi.mocked(assertCodexExecutableLocation).mockRejectedValue(error);
-    await expect(assertCodexNativeHostLocation()).rejects.toBe(error);
-  });
-
-  it("does not admit a host wrapper on the direct native platform", async () => {
-    vi.stubGlobal("process", { ...process, platform: "win32" });
-    await expect(assertCodexNativeHostLocation()).resolves.toBeUndefined();
-    expect(assertCodexExecutableLocation).not.toHaveBeenCalled();
-  });
-
-  it("keeps host admission separate from synchronous spawning", () => {
-    spawnPlan("/runtime/native", [], { env: {} });
-    expect(assertCodexExecutableLocation).not.toHaveBeenCalled();
+  it.runIf(HOST !== "win32")("uses the running host in a group-writable system application directory", () => {
+    const applications = join(tempRoot(), "Applications");
+    const hostDirectory = join(applications, "Ave.app", "Contents", "MacOS");
+    mkdirSync(hostDirectory, { recursive: true, mode: 0o700 });
+    chmodSync(applications, 0o775);
+    const execPath = join(hostDirectory, "Ave");
+    symlinkSync(HOST_EXEC_PATH, execPath);
+    vi.stubGlobal("process", { ...process, platform: "darwin", execPath });
+    expect(statSync(applications).mode & 0o777).toBe(0o775);
+    expect(spawnPlan("/runtime/native", [], { env: {} }).command).toBe(execPath);
   });
 
   it.each(["linux", "darwin"] as const)("replaces the trusted host process on %s", (platform) => {

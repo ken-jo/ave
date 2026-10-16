@@ -49,7 +49,7 @@ import {
   validateCodexRuntimeDirectory,
 } from "./codex-conversation-runtime.js";
 import { forceKillManagedChildProcess } from "./managed-child-processes.js";
-import { assertCodexNativeHostLocation, spawnCodexNative } from "./codex-native-spawn.js";
+import { spawnCodexNative } from "./codex-native-spawn.js";
 import {
   openFeatureNamespace,
   readJsonFileOrEmpty,
@@ -516,6 +516,7 @@ export class CodexUserRuntimeLocator {
   private readonly homeDir: string;
   private readonly verdicts = new Map<string, Promise<CodexResolvedRuntime>>();
   private readonly artifacts = new Set<CodexExecutableArtifact>();
+  private readonly pendingDiscards = new Set<CodexExecutableArtifact>();
   private disposed = false;
   private lastVersion: string | null = null;
 
@@ -541,9 +542,14 @@ export class CodexUserRuntimeLocator {
     let verdict = this.verdicts.get(identity);
     if (!verdict) {
       verdict = this.qualify(artifact).catch(async (error: unknown) => {
-        await this.discard(artifact);
-        if (!(error instanceof CodexUserRuntimeError) || error.code === "codex-runtime-start-failed") {
-          this.verdicts.delete(identity);
+        let discarded = false;
+        try {
+          await this.discard(artifact);
+          discarded = true;
+        } finally {
+          if (!discarded || !(error instanceof CodexUserRuntimeError) || error.code === "codex-runtime-start-failed") {
+            this.verdicts.delete(identity);
+          }
         }
         throw error;
       });
@@ -599,8 +605,10 @@ export class CodexUserRuntimeLocator {
   }
 
   private async discard(artifact: CodexExecutableArtifact): Promise<void> {
+    this.pendingDiscards.add(artifact);
     await discardCodexExecutableArtifact(artifact);
     this.artifacts.delete(artifact);
+    this.pendingDiscards.delete(artifact);
   }
 
   private async locate(): Promise<string> {
@@ -621,6 +629,7 @@ export class CodexUserRuntimeLocator {
   private async snapshot(executable: string): Promise<CodexExecutableArtifact> {
     try {
       if (this.disposed) throw startFailed();
+      for (const artifact of this.pendingDiscards) await this.discard(artifact);
       const artifact = await copyCodexExecutableArtifact(executable, this.options.runtimeDirectory, this.platform, this.arch);
       if (this.disposed) {
         await discardCodexExecutableArtifact(artifact);
@@ -646,7 +655,6 @@ export class CodexUserRuntimeLocator {
     const probe = async (args: readonly string[]): Promise<string> => {
       let result: CodexProbeResult;
       try {
-        if (this.options.run === undefined) await assertCodexNativeHostLocation();
         await verifyCodexExecutableArtifact(artifact);
         result = await this.run(artifact.executable, args, { cwd: workspaceDir, env, timeoutMs: PROBE_TIMEOUT_MS });
       } catch (error) {

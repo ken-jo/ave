@@ -79,10 +79,12 @@ starts it:
 `src/main/codex-native-spawn.ts` preserves loader rejection as a start
 failure. POSIX subscription startup requires a host runtime exposing
 `process.execve`; the [native host guide](../guides/native-server.md#build-the-artifact)
-states the feature-specific runtime prerequisite. Ave starts its trusted host
-runtime with a static bootstrap, passes the private CLI path and arguments
-as data, and replaces that process through `process.execve`. The bootstrap
-removes its launch-only environment before replacement. A missing API or
+states the feature-specific runtime prerequisite. Ave trusts its host installation
+as the source of the bootstrap runtime; CLI candidate admission rules apply to
+discovered or configured CLI paths and their private copies.
+Ave starts a new host runtime process with a static bootstrap, passes the private
+CLI path and arguments as data, and replaces that process through `process.execve`.
+The bootstrap removes its launch-only environment before replacement. A missing API or
 catchable bootstrap failure exits with status 126. A rejected syscall can
 instead terminate the child with another nonzero status or signal; both are
 start failures. Ave's launcher never passes the candidate CLI to `execvp`,
@@ -99,6 +101,10 @@ defend against root or an arbitrary malicious process already running as the
 same user.
 
 Rejected snapshots are discarded even when their negative verdict is cached.
+After a failed qualification, a cleanup failure evicts its verdict and retains
+ownership of the copy. Future snapshot requests retry pending removals first,
+keeping repeated removal failures from accumulating copies. Disposal can also
+retry those removals.
 Successful copies remain owned by their locator until its transports stop;
 disposal then removes only that locator's copies. A failed integrity check
 evicts the cached artifact, so the next request qualifies a fresh snapshot.
@@ -107,8 +113,10 @@ automatically reuse or remove across sessions.
 
 An installed `codex-code-mode-host` (`.exe` on Windows) receives the same
 source admission, native-header validation, private copy and digest checks.
-Package resources take precedence over the legacy sibling location; the
-qualified helper is placed beside the copied CLI under its expected name.
+For a `CodexCLI.app/Contents/MacOS/codex` entry point, `codex-resources/` sits
+beside the application bundle. Package resources take precedence over the legacy
+sibling location; the qualified helper is placed beside the copied CLI under its
+expected name.
 The CLI alone can run the version, features and schema probes. The helper
 remains necessary for models whose metadata selects `code_mode_only`, which
 takes precedence over `--disable code_mode` in both

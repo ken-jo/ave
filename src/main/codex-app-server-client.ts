@@ -28,7 +28,6 @@ import { JsonLineReader } from "../lib/json-line-reader.js";
 import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
 import { CodexUserRuntimeError, type CodexResolvedRuntime } from "./codex-user-runtime.js";
 import { verifyCodexExecutableArtifact } from "./codex-executable-artifact.js";
-import { assertCodexNativeHostLocation } from "./codex-native-spawn.js";
 
 const MAX_MODEL_COUNT = 100;
 const MAX_PLAN_TYPE_LENGTH = 80;
@@ -137,7 +136,6 @@ export class CodexAppServerClient {
   private readonly resolveRuntime: () => Promise<CodexResolvedRuntime>;
   private readonly lastKnownVersion: () => string | null;
   private readonly spawn: CodexSpawnAppServer;
-  private readonly nativeHostSpawn: boolean;
   private readonly clientVersion: string;
   private readonly runtimeHome: string;
   private readonly sqliteHome: string;
@@ -158,7 +156,6 @@ export class CodexAppServerClient {
     this.lastKnownVersion = options.lastKnownVersion ?? (() => null);
     this.spawn = options.spawn
       ?? ((command, args, options_) => spawnCodexAppServer(command, args, options_, "codex-app-server"));
-    this.nativeHostSpawn = options.spawn === undefined;
     this.clientVersion = options.clientVersion ?? getAveAppVersion();
     this.runtimeHome = options.runtimeHome;
     this.sqliteHome = options.sqliteHome;
@@ -389,7 +386,6 @@ export class CodexAppServerClient {
     const runtimeTempDir = validateRuntimeDirectory(this.runtimeTempDir);
     let child: ChildProcess;
     try {
-      if (this.nativeHostSpawn) await assertCodexNativeHostLocation();
       await verifyCodexExecutableArtifact(runtime);
     } catch {
       this.accountStatus = blankStatus("unavailable");

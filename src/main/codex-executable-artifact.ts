@@ -122,7 +122,7 @@ async function companionSource(source: string, platform: NodeJS.Platform): Promi
   const packageDirectory = basename(directory) === "bin" ? dirname(directory)
     : basename(directory) === "MacOS" && basename(dirname(directory)) === "Contents"
       && basename(dirname(dirname(directory))) === "CodexCLI.app"
-      ? dirname(dirname(dirname(dirname(directory)))) : directory;
+      ? dirname(dirname(dirname(directory))) : directory;
   const candidates = [join(packageDirectory, "codex-resources", name)];
   if (packageDirectory !== directory) candidates.push(join(packageDirectory, "bin", name));
   candidates.push(join(directory, name));

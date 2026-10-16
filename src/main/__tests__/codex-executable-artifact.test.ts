@@ -101,6 +101,19 @@ describe("private executable artifacts", () => {
     await expect(verifyCodexExecutableArtifact(artifact)).rejects.toThrow("Executable artifact changed");
   });
 
+  it("copies the resource companion beside the application bundle", async () => {
+    const { root, runtime } = fixture("darwin");
+    const packageDirectory = join(root, "bundle-package");
+    const source = writeNativeExecutable(join(packageDirectory, "CodexCLI.app", "Contents", "MacOS", "codex"), nativeExecutableBytes("darwin"));
+    const resourceBytes = nativeExecutableBytes("darwin"); resourceBytes[resourceBytes.length - 1] = 43;
+    const resource = writeNativeExecutable(join(packageDirectory, "codex-resources", "codex-code-mode-host"), resourceBytes);
+    writeNativeExecutable(join(root, "codex-resources", "codex-code-mode-host"), nativeExecutableBytes("darwin"));
+    const artifact = await copyCodexExecutableArtifact(source, runtime, "darwin");
+    expect(artifact.companion).not.toBeNull();
+    expect(readFileSync(artifact.companion!.executable)).toEqual(readFileSync(resource));
+    await expect(verifyCodexExecutableArtifact(artifact)).resolves.toBeUndefined();
+  });
+
   it("rejects a non-native companion without retaining an executable artifact", async () => {
     const { runtime, source } = fixture();
     const name = process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host";
