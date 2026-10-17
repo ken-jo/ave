@@ -56,6 +56,9 @@
 // Every non-deletion update must name HEAD (an annotated tag through the
 // commit it peels to) and the tracked checkout must be clean before and after
 // checks. Deletion-only pushes have no tree to check.
+// Every pushed commit must also share history with the remote's default
+// branch (pre-push-shared-history.mjs): a clone of the history replaced on
+// 2026-10-17 would otherwise upload the old objects under a new branch name.
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,6 +72,7 @@ import {
   selectBaseCandidates,
 } from "./pre-push-ref-updates.mjs";
 import { checkPushedDocumentation } from "./pre-push-document-safety.mjs";
+import { checkSharedHistory } from "./pre-push-shared-history.mjs";
 import { withoutGitContext } from "../lib/git-process-environment.mjs";
 import { basename, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
@@ -541,6 +545,22 @@ function findNewBranchBase(repoRoot, update, remoteLocation) {
       `(${chosen.sha.slice(0, 12)}, ${chosen.count} pushed commit(s))`
   );
   return { sha: chosen.sha };
+}
+
+function runSharedHistoryGuard(repoRoot, parsedUpdates, remote, remoteLocation) {
+  const verdict = checkSharedHistory({
+    updates: parsedUpdates.updates,
+    remoteName: remote,
+    remoteLocation,
+    git: gitRunner(repoRoot, 15_000),
+    fetchGit: gitRunner(repoRoot, 120_000),
+  });
+  if (verdict.kind === "refuse") throw new Error(verdict.message);
+  console.log(
+    verdict.kind === "ok"
+      ? `[checks] shared history: ${verdict.message}`
+      : `[checks] shared-history guard skipped: ${verdict.message}`
+  );
 }
 
 function isFastForwardUpdate(repoRoot, remoteSha, localSha) {
@@ -1092,13 +1112,14 @@ function runAppCommentOnlyChecks(dir) {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-const { stage, repo, remoteLocation } = parseArgs(process.argv.slice(2));
+const { stage, repo, remote, remoteLocation } = parseArgs(process.argv.slice(2));
 const repoRoot = resolve(repo);
 const prePushUpdates =
   stage === "pre-push" ? parsePrePushUpdates(readPrePushInput()) : null;
 let pushCheckout;
 if (stage === "pre-push") {
   runPushPolicyChecks(repoRoot, prePushUpdates);
+  runSharedHistoryGuard(repoRoot, prePushUpdates, remote, remoteLocation);
   pushCheckout = runPushCheckoutChecks(repoRoot, prePushUpdates);
 }
 
