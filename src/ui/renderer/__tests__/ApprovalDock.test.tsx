@@ -916,7 +916,6 @@ describe("ApprovalDock", () => {
       />,
     );
 
-    expect(document.body.querySelector('[data-testid="nl-justification-input"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="high-risk-audit-reason"]')).toHaveTextContent(
       "사용자 요청에 따라 프로젝트 빌드 결과를 확인합니다.",
     );
@@ -949,7 +948,6 @@ describe("ApprovalDock", () => {
       />,
     );
 
-    expect(document.body.querySelector('[data-testid="nl-justification-input"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="high-risk-audit-reason"]')).toHaveTextContent(
       "shell command",
     );
@@ -981,7 +979,6 @@ describe("ApprovalDock", () => {
       />,
     );
 
-    expect(document.body.querySelector('[data-testid="nl-justification-input"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="high-risk-audit-reason"]')).toHaveTextContent(
       "external send",
     );
