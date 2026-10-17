@@ -105,7 +105,7 @@ describe("PluginTelemetryClient", () => {
   });
 
   // 4. Batch interval — flush is called on timer
-  it("calls flush at the configured interval", () => {
+  it("calls flush at the configured interval", async () => {
     vi.useFakeTimers();
     const fetch = okFetch();
     const INTERVAL = 1000;
@@ -114,14 +114,16 @@ describe("PluginTelemetryClient", () => {
     );
     client.track("plugin_update", { slug: "com.example.foo", version: "1.0.0" });
     client.start();
-    vi.advanceTimersByTime(INTERVAL + 1);
-    // flush() is async — just confirm it was called by checking queue drains
-    // on next tick after timer fires. We spy on the method instead.
+    await vi.advanceTimersByTimeAsync(INTERVAL - 1);
+    expect(fetch).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(client.queueLength).toBe(0);
+    // stop() clears the interval: a later tick with a queued event sends nothing.
     client.stop();
-    // The timer fired — fetch should have been called (async resolved via fake timers).
-    // For synchronous assertion use queueLength — it's 1 until fetch resolves.
-    // Just assert start/stop doesn't throw and timer fires.
-    expect(true).toBe(true);
+    client.track("plugin_update", { slug: "com.example.foo", version: "1.0.1" });
+    await vi.advanceTimersByTimeAsync(INTERVAL * 3);
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   // 5. PII scrubber — paths and emails are stripped

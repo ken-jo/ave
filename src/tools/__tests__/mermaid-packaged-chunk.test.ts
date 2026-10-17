@@ -15,8 +15,12 @@ import { resolve } from "node:path";
 const scriptPath = resolve(process.cwd(), "scripts/check-package-footprint.mjs");
 const scriptSrc = readFileSync(scriptPath, "utf8");
 
-// Keep in lockstep with check-package-footprint.mjs LAZY_RENDERER_CHUNKS.
-const MERMAID_CHUNK_RE = /^\/dist\/src\/renderer\/chunks\/mermaid\.[0-9a-f]{8}\.js$/;
+// The script runs its checks at import time, so its pattern is read out of
+// the LAZY_RENDERER_CHUNKS entry rather than imported — the cases below then
+// exercise the regex the gate actually uses, not a copy of it.
+const MERMAID_ENTRY = /\{\s*name:\s*"mermaid",\s*pattern:\s*\/(.+?)\/([a-z]*)\s*\}/.exec(scriptSrc);
+if (!MERMAID_ENTRY) throw new Error("check-package-footprint.mjs has no mermaid LAZY_RENDERER_CHUNKS entry");
+const MERMAID_CHUNK_RE = new RegExp(MERMAID_ENTRY[1], MERMAID_ENTRY[2]);
 
 describe("packaged footprint mermaid chunk guard", () => {
   it("the footprint script still asserts the lazy mermaid chunk", () => {
