@@ -8,7 +8,7 @@ import { cleanupAsrtSandboxAfterCommand, getBuiltinShellSessionReadPolicy, initi
 import { spawnConfinedChild } from "../../permissions/confined-child.js";
 import { baseAllowedDirectories } from "../../permissions/base-allowed-directories.js";
 import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability } from "../../permissions/sandbox-capability.js";
-import { asrtCanInitialize } from "../../permissions/__tests__/test-helpers.js";
+import { sandboxCasesRun } from "../../plugins/isolation/__tests__/sandbox-cases.js";
 import { sessionStorePath } from "../../shared/session-store-path.js";
 import { BashTool, spawnWithSandbox } from "../shell-tools.js";
 import { prepareSandboxFixture } from "./support/prepared-shell.js";
@@ -24,9 +24,7 @@ let sessions: string;
  * confinement job asks for real sandbox cases (AVE_REQUIRE_SANDBOX_CASES=1).
  */
 async function requireSandbox(test: TestContext): Promise<void> {
-  if (await asrtCanInitialize()) return;
-  if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
-  test.skip("ASRT cannot initialize (sandbox dependencies missing)");
+  if (!(await sandboxCasesRun())) test.skip("ASRT cannot initialize (sandbox dependencies missing)");
 }
 let transcript: string;
 const CONTENT = "saved-session-native-fixture\n";
