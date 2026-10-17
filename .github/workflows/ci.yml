@@ -16,8 +16,11 @@ on:
   workflow_dispatch:
 concurrency:
   # The event is part of the group so the nightly run on main never cancels,
-  # and is never cancelled by, the full run of a push to main.
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # and is never cancelled by, the full run of a push to main. A push groups
+  # by its commit, so a second merge never cancels the first merge's full
+  # run: every merged commit gets its own green or red result. A pull
+  # request still cancels its own superseded run.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 jobs:
   build-and-test:
@@ -253,6 +256,10 @@ jobs:
 
   windows-permission-tests:
     name: Windows permission path tests
+    # A pull request into an integration/* category branch runs only
+    # build-and-test; this job runs for pull requests into main and every
+    # full-run event (push, tag, schedule, dispatch).
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # Runner from repo variable AVE_WINDOWS_RUNNER (JSON label array, e.g.
     # ["self-hosted","Windows","X64","ave-release"], or a hosted label such as
     # "\"windows-latest\"" — a quoted JSON string — to opt into a GitHub-hosted
@@ -405,6 +412,10 @@ jobs:
 
   macos-permission-tests:
     name: macOS permission path tests
+    # A pull request into an integration/* category branch runs only
+    # build-and-test; this job runs for pull requests into main and every
+    # full-run event (push, tag, schedule, dispatch).
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # Runner from repo variable AVE_MACOS_RUNNER (JSON label array, e.g.
     # ["self-hosted","macOS","ARM64","ave-release"], or a hosted label such as
     # "\"macos-15\"" — a quoted JSON string — to opt into a GitHub-hosted runner
@@ -526,6 +537,10 @@ jobs:
 
   linux-confinement-tests:
     name: Linux confinement path tests
+    # A pull request into an integration/* category branch runs only
+    # build-and-test; this job runs for pull requests into main and every
+    # full-run event (push, tag, schedule, dispatch).
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # The architecture of `build-and-test`, so the native-module cache key below
     # and ASRT's `arm64` seccomp filter both apply.
     # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.

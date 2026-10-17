@@ -66,11 +66,15 @@ export function loadsComputedImport(text) {
 
 const REPO_PATH_LITERAL = /["'`]((?:src|test|scripts|config|resources|docs)\/[^"'`\s$]*)["'`]/gu;
 const RELATIVE_PATH_LITERAL = /["'`](\.{1,2}\/[^"'`\s$]+)["'`]/gu;
+// A top-level directory joined onto the repository root (`join(root, "src")`),
+// the start of a tree scan: it names every path below it.
+const ROOTED_DIRECTORY_LITERAL = /\b(?:resolve|join)\(\s*[\w.]*(?:root|ROOT|Root|cwd\(\)|__dirname|dirname)[^)]*?["'`](src|test|scripts|config|resources|docs)\/?["'`]/gu;
 const MODULE_EXTENSION = /\.(?:tsx?|mts|cts|mjs|cjs|jsx?)$/u;
 
 /**
  * The repository paths a test names in string literals: repository-rooted
- * ("src/plugins/runtime/index.ts", "src/ui/renderer/") and relative to the
+ * ("src/plugins/runtime/index.ts", "src/ui/renderer/"), a top-level directory
+ * joined onto the root (`join(root, "src")` names "src/"), and relative to the
  * test ("../fixtures/x.json"). A test that names a path reads it, scans it or
  * pins it; `vitest related` sees none of that unless the test also imports
  * it.
@@ -78,6 +82,7 @@ const MODULE_EXTENSION = /\.(?:tsx?|mts|cts|mjs|cjs|jsx?)$/u;
 export function namedRepositoryPaths(testPath, text) {
   const paths = new Set();
   for (const [, literal] of text.matchAll(REPO_PATH_LITERAL)) paths.add(literal);
+  for (const [, directory] of text.matchAll(ROOTED_DIRECTORY_LITERAL)) paths.add(`${directory}/`);
   for (const [, literal] of text.matchAll(RELATIVE_PATH_LITERAL)) {
     paths.add(posix.normalize(posix.join(posix.dirname(testPath), literal)));
   }

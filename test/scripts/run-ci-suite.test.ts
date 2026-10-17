@@ -207,11 +207,14 @@ describe("paths a test names", () => {
       "scan('src/ui/renderer/')",
       'resolve(__dirname, "../fixtures/case.json")',
       "const dynamic = `src/${name}.ts`;",
+      'walk(join(repoRoot, "test"))',
+      'const fixtureHome = join(home, "src");',
     ].join("\n");
     expect(namedRepositoryPaths("src/a/__tests__/x.test.ts", text).sort()).toEqual([
       "src/a/fixtures/case.json",
       "src/plugins/runtime/index.ts",
       "src/ui/renderer/",
+      "test/",
     ]);
   });
 
