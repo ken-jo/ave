@@ -185,8 +185,18 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
+
+/**
+ * Fake only the timers the client arms itself — the list_changed refresh
+ * debounce and the listen re-open backoff — so a test can step past them in
+ * virtual time. Fetch stubs and SSE bodies settle on promises, not timers.
+ */
+function fakeClientTimers(): void {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+}
 
 // ─── 1. Discriminated union typing ──────────────────────────
 
@@ -1445,10 +1455,11 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       return new Response("unexpected", { status: 500 });
     });
 
+    fakeClientTimers();
     await client.connect();
-    // The listen request is fired-and-forgotten at connect; give its async
-    // send chain a beat to reach the fetch stub before scanning calls.
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    // The listen request is fired-and-forgotten at connect; let its async send
+    // chain reach the fetch stub before scanning calls.
+    await vi.advanceTimersByTimeAsync(150);
     for (const [, init] of fetchMock.mock.calls) {
       if (readRpcMethod(init as RequestInit) === "subscriptions/listen") {
         listenParams.push(readRpcParams(init as RequestInit)?.notifications);
@@ -1496,16 +1507,18 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       return new Response("unexpected", { status: 500 });
     });
 
+    fakeClientTimers();
     await client.connect();
     expect(client.getState().registeredTools).toEqual(["mcp_lsn2_a"]);
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    // Past the 500 ms refresh debounce, short of the 1 s listen re-open.
+    await vi.advanceTimersByTimeAsync(900);
     // The notification refreshed tools, and the ended stream left the
     // connection alive.
     expect(listCalls).toBe(2);
     expect(client.getState().registeredTools).toEqual(["mcp_lsn2_b"]);
     expect(client.getState().status).toBe("connected");
     await client.disconnect();
-  }, 10000);
+  });
 
   it("marks listen unsupported on -32601 and stops re-opening", async () => {
     let listenCalls = 0;
@@ -1523,14 +1536,15 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       return new Response("unexpected", { status: 500 });
     });
 
+    fakeClientTimers();
     await client.connect();
     // Past the first re-open backoff window (1s): an advertisement without an
     // implementation is remembered, not retried.
-    await new Promise((resolve) => setTimeout(resolve, 1300));
+    await vi.advanceTimersByTimeAsync(1300);
     expect(listenCalls).toBe(1);
     expect(client.getState().status).toBe("connected");
     await client.disconnect();
-  }, 10000);
+  });
 
   it("lifts image blocks out of a tool result instead of rendering their base64 as text", async () => {
     const pixels = Buffer.from("not really a png").toString("base64");
@@ -1956,17 +1970,18 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       return new Response("unexpected", { status: 500 });
     });
 
+    fakeClientTimers();
     await client.connect();
     expect(client.getState().registeredTools).toEqual(["mcp_lc_alpha"]);
 
     await client.callTool("alpha", {});
     // Debounce (500ms) + refresh round-trip.
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    await vi.advanceTimersByTimeAsync(900);
 
     expect(listCalls).toBe(2);
     expect(client.getState().registeredTools).toEqual(["mcp_lc_beta"]);
     await client.disconnect();
-  }, 10000);
+  });
 
   it("keeps the previous registration when a list_changed-driven refresh fails", async () => {
     const TOOL_V1 = {
@@ -1990,16 +2005,18 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       return new Response("unexpected", { status: 500 });
     });
 
+    fakeClientTimers();
     await client.connect();
     await client.callTool("alpha", {});
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    // Past the 500 ms refresh debounce.
+    await vi.advanceTimersByTimeAsync(900);
 
     // The notification is advisory: a failed re-fetch must not tear down
     // working tools.
     expect(listCalls).toBe(2);
     expect(client.getState().registeredTools).toEqual(["mcp_lcf_alpha"]);
     await client.disconnect();
-  }, 10000);
+  });
 
   it("fails closed on input_required when no MRTR resolver is wired (No-Fallback)", async () => {
     const { client } = rcHttpClient("ir", (method, id) => {
