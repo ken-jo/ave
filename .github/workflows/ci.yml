@@ -56,22 +56,28 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-
       # Cache the built node_modules (Electron dist + electron-rebuilt native
       # modules) keyed on os+arch+lockfile. On a hit, `bun install` restores the
       # ABI-correct binaries without re-downloading Electron or recompiling
       # better-sqlite3/node-pty. Exact-key only — a lockfile change (which pins
       # the Electron version) misses and rebuilds, so a stale ABI never leaks in.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      # Bun's download cache only feeds an install that has to fetch packages.
+      # After an exact node_modules hit `bun install` finds every package in
+      # place (2-3 s in every measured run), so restoring this cache there was
+      # ~45 s of download for nothing. It is restored, and saved, only when
+      # node_modules missed.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -132,8 +138,14 @@ jobs:
         # layer down, in an npm script instead of a workflow. This job calls the
         # composite's two halves separately, the duplicate scan last;
         # `check:test-quality` stays as the local one-shot README.md documents.
+        #
+        # Three workers, not the config's four: the self-hosted runners share
+        # one cgroup slice capped at three CPUs (CPUQuota=300%), where 80% of
+        # scheduling periods were throttled with four workers plus their
+        # subprocesses.
         env:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
+          AVE_VITEST_MAX_WORKERS: "3"
         run: bun run check:test-coverage
         working-directory: ave
       # Repository hygiene: manifests, baseline ledgers, and the self-tests of
@@ -287,17 +299,20 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
         run: node ave/.github/scripts/isolate-job-home.mjs
+      # node_modules first: the download cache is restored only on its miss
+      # (see build-and-test).
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        with:
-          path: .cache/bun
-          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -431,17 +446,20 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
         run: node ave/.github/scripts/isolate-job-home.mjs
+      # node_modules first: the download cache is restored only on its miss
+      # (see build-and-test).
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        with:
-          path: .cache/bun
-          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -559,17 +577,20 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
+      # node_modules first: the download cache is restored only on its miss
+      # (see build-and-test).
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave

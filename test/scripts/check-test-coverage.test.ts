@@ -216,6 +216,10 @@ describe("check-test-coverage", () => {
     expect(coverageGateScript).toContain('join("scripts", "run-vitest-under-electron.mjs")');
     expect(coverageGateScript).not.toContain("shell: true");
     expect(coverageGateScript).toContain("rmSync(reportsDir");
+    // The gate's own run still writes the summary it reads.
+    expect(coverageGateScript).toContain('"--coverage.reporter=json-summary"');
+    expect(vitestAnalysisConfig).toContain("maxWorkers: vitestMaxWorkers(process.env.AVE_VITEST_MAX_WORKERS)");
+    expect(vitestAnalysisConfig).toContain("const DEFAULT_MAX_WORKERS = 4;");
     expect(vitestRunner).toContain('ELECTRON_RUN_AS_NODE: "1"');
     // Fresh-process and worker tests verify initialization before test imports;
     // startup no longer depends on environment options the parent can disable.
