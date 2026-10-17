@@ -243,7 +243,6 @@ test.describe("chat preview rail", () => {
 
       const openButton = ctx.page.getByTestId(TEST_IDS.panePanelToggle);
       await expect(openButton).toBeVisible({ timeout: 20_000 });
-      await expect(ctx.page.getByTestId("chat-preview-open")).toHaveCount(0);
       await expect(ctx.page.getByTestId("chat-preview-rail")).toHaveCount(0);
       // No tool-activity control in the header: the activity lives in the panel.
       await expect(ctx.page.getByTestId("pane-header")).not.toContainText("도구 활동");
@@ -300,13 +299,12 @@ test.describe("chat preview rail", () => {
       await expect(ctx.page.getByRole("tab")).toHaveCount(tabCountBefore + 1);
       await expect(ctx.page.getByTestId("chat-side-panel-tab-browser")).toBeVisible();
       await expect(ctx.page.getByTestId("chat-side-panel-tab-actions")).toBeVisible();
-      // The visited-site list sits over the viewer, latest first.
-      const visited = ctx.page.getByTestId("chat-side-panel-browser-visited");
-      await expect(visited).toContainText("Artifact dashboard");
-      await expect(visited).toContainText(sideBrowserHost);
-      await expect(ctx.page.getByTestId("chat-side-panel-browser-viewer")).toBeVisible();
-      await expect(ctx.page.getByTestId("chat-side-panel-browser-frame")).toBeVisible();
-      await expect(ctx.page.frameLocator('[data-testid="chat-side-panel-browser-frame"]').getByText("Preview OK")).toBeVisible();
+      // A browser tab is its address row and the conversation's latest page —
+      // here the last URL the transcript mentions. The visited-site list is the
+      // empty panel's landing, not part of a tab.
+      await expect(ctx.page.getByTestId("chat-side-panel-browser-visited")).toHaveCount(0);
+      await expect(ctx.page.getByTestId("chat-side-panel-browser-address")).toHaveValue("https://search.example.test/ave-side-panel");
+      await expect(ctx.page.getByTestId("chat-side-panel-browser-webview")).toBeVisible();
       const browserProbe = await readCdpProbe(ctx.page);
       await test.info().attach("chat-side-panel-browser-cdp.png", {
         contentType: "image/png",
@@ -322,8 +320,6 @@ test.describe("chat preview rail", () => {
 
       // The narrow-screen drawer fallback is covered by workspace-rail-redesign.spec.ts;
       // this spec stays at a docked viewport to exercise the side-by-side geometry.
-      // Pick the fetched host from the visited list.
-      await ctx.page.getByTestId("chat-side-panel-browser-row").filter({ hasText: sideBrowserHost }).first().click();
       const browserWebview = ctx.page.getByTestId("chat-side-panel-browser-webview");
       await expect(browserWebview).toBeVisible();
       await expect(browserWebview).toHaveAttribute("src", sideBrowser.url);
