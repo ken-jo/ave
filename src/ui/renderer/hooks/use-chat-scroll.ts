@@ -109,7 +109,9 @@ export function useChatScroll({
   useLayoutEffect(() => {
     const viewport = scrollViewportRef.current;
     // A hidden tile's viewport has no size to restore into; the restore runs
-    // when it is shown again, which is why `hidden` is a dependency.
+    // when it is shown again, which is why `hidden` is a dependency. It restores
+    // the saved distance from the bottom (`bottomGap`), not `top`, so content
+    // appended while the tile was hidden shifts what comes back into view.
     if (hidden || !viewport || !currentSessionId) return;
     if (restoredSessionScrollRef.current === currentSessionId) return;
 
