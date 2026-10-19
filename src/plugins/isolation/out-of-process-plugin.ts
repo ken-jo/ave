@@ -29,6 +29,7 @@
  * why the five plugins that are not the pilot keep loading as they did.
  */
 import { mkdirSync, statSync } from "node:fs";
+import { sameFileIdentity, type FileIdentity } from "../../lib/file-identity.js";
 import type { Socket } from "node:net";
 import type { Readable, Writable } from "node:stream";
 import { ENV_NAME_RE } from "../../mcp/safe-names.js";
@@ -502,10 +503,10 @@ function resolveUserChosenDirectory(
 export function capturePluginSandboxGrant(path: string): {
   path: string;
   canonicalPath: string;
-  identity?: { dev: number; ino: number };
+  identity?: FileIdentity;
 } {
   const canonicalPath = caseFoldForMatch(canonicalizePathForMatch(path));
-  const entry = statSync(path, { throwIfNoEntry: false });
+  const entry = statSync(path, { bigint: true, throwIfNoEntry: false });
   return {
     path,
     canonicalPath,
@@ -521,8 +522,8 @@ export function isPluginSandboxGrantCovered(
 ): boolean {
   try {
     if (caseFoldForMatch(canonicalizePathForMatch(grant.path)) !== grant.canonicalPath) return false;
-    const entry = statSync(grant.path, { throwIfNoEntry: false });
-    if (grant.identity && (!entry || entry.dev !== grant.identity.dev || entry.ino !== grant.identity.ino)) return false;
+    const entry = statSync(grant.path, { bigint: true, throwIfNoEntry: false });
+    if (grant.identity && (!entry || !sameFileIdentity(entry, grant.identity))) return false;
     if (!grant.identity && entry) grant.identity = { dev: entry.dev, ino: entry.ino };
     return resolveUserChosenDirectory({
       pluginId: "sandbox-grant",

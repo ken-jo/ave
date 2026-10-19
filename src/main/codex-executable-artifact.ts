@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants, promises as fs, type Stats } from "node:fs";
+import { constants, promises as fs, type BigIntStats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   assertCodexPrivateRuntimeDirectory,
 } from "./codex-executable-location.js";
 import { isNativeExecutableFile } from "./native-executable-format.js";
+import { sameFileIdentity } from "../lib/file-identity.js";
 import { retryOnTransientFsLock } from "../lib/transient-fs-lock-retry.js";
 
 const COPY_BUFFER_BYTES = 64 * 1024;
@@ -36,17 +37,17 @@ function noFollow(): number {
   return constants.O_NOFOLLOW;
 }
 
-function unchanged(before: Stats, after: Stats): boolean {
-  return before.dev === after.dev && before.ino === after.ino && before.size === after.size
-    && before.ctimeMs === after.ctimeMs && before.mtimeMs === after.mtimeMs;
+function unchanged(before: BigIntStats, after: BigIntStats): boolean {
+  return sameFileIdentity(before, after) && before.size === after.size
+    && before.ctimeNs === after.ctimeNs && before.mtimeNs === after.mtimeNs;
 }
 
 async function openRegularFile(path: string): Promise<FileHandle> {
-  const before = await fs.lstat(path);
+  const before = await fs.lstat(path, { bigint: true });
   if (!before.isFile() || before.isSymbolicLink()) throw new CodexExecutableArtifactError();
   const handle = await fs.open(path, constants.O_RDONLY | noFollow());
   try {
-    const opened = await handle.stat();
+    const opened = await handle.stat({ bigint: true });
     if (!opened.isFile() || !unchanged(before, opened)) throw new CodexExecutableArtifactError("Executable changed while opening");
     return handle;
   } catch (error) {
@@ -56,7 +57,7 @@ async function openRegularFile(path: string): Promise<FileHandle> {
 }
 
 async function hashFile(handle: FileHandle): Promise<string> {
-  const before = await handle.stat();
+  const before = await handle.stat({ bigint: true });
   const hash = createHash("sha256");
   const buffer = Buffer.alloc(COPY_BUFFER_BYTES);
   let position = 0;
@@ -66,7 +67,7 @@ async function hashFile(handle: FileHandle): Promise<string> {
     hash.update(buffer.subarray(0, bytesRead));
     position += bytesRead;
   }
-  if (position !== before.size || !unchanged(before, await handle.stat())) {
+  if (BigInt(position) !== before.size || !unchanged(before, await handle.stat({ bigint: true }))) {
     throw new CodexExecutableArtifactError("Executable changed while hashing");
   }
   return hash.digest("hex");
@@ -81,7 +82,7 @@ async function copyNativeFile(
   await assertCodexExecutableLocation(source);
   const input = await openRegularFile(source);
   try {
-    const before = await input.stat();
+    const before = await input.stat({ bigint: true });
     const output = await fs.open(executable, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow(), 0o600);
     const hash = createHash("sha256");
     const buffer = Buffer.alloc(COPY_BUFFER_BYTES);
@@ -95,7 +96,7 @@ async function copyNativeFile(
         hash.update(chunk);
         position += bytesRead;
       }
-      if (position !== before.size || !unchanged(before, await input.stat())) {
+      if (BigInt(position) !== before.size || !unchanged(before, await input.stat({ bigint: true }))) {
         throw new CodexExecutableArtifactError("Executable changed while copying");
       }
       await output.sync();
@@ -180,8 +181,8 @@ export async function verifyCodexExecutableArtifact(artifact: CodexExecutableArt
     await assertCodexExecutableLocation(file.executable);
     const input = await openRegularFile(file.executable);
     try {
-      const stat = await input.stat();
-      if (stat.nlink !== 1 || (process.platform !== "win32" && (stat.mode & 0o777) !== 0o500)
+      const stat = await input.stat({ bigint: true });
+      if (stat.nlink !== 1n || (process.platform !== "win32" && (stat.mode & 0o777n) !== 0o500n)
         || await hashFile(input) !== file.contentHash) {
         throw new CodexExecutableArtifactError("Executable artifact changed");
       }
