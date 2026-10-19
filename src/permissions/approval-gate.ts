@@ -68,6 +68,7 @@ import {
 } from "./host-shell-execution-plan.js";
 import { errorMessage } from "../shared/error-message.js";
 import { isEgressGrantScope, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
+import { isTerminalTabId } from "../shared/tab-id.js";
 
 // ─── Args DLP masking ────────────────────────────────
 
@@ -212,8 +213,8 @@ export type ApprovalKind =
 
 /**
  * The egress-host ask's payload (`kind: "egress-host"`): a sandboxed shell
- * call wants to reach `host:port`, and the person picks how long an allow
- * lasts from `scopes`. Built by `egress-approval.ts`.
+ * call or workspace terminal tab wants to reach `host:port`, and the person
+ * picks how long an allow lasts from `scopes`. Built by `egress-approval.ts`.
  */
 interface EgressHostApproval {
   readonly host: string;
@@ -224,9 +225,16 @@ interface EgressHostApproval {
    * `local`: this machine or a private network (loopback, RFC 1918, ULA…).
    * `unverified`: the upstream proxy resolves the name; Ave could not check
    * the address. For both the card warns, and only Allow once / This
-   * conversation are offered.
+   * conversation (a terminal: This tab) are offered.
    */
   readonly network: "public" | "local" | "unverified";
+  /**
+   * Set when a workspace terminal tab asks: the card is that tab's banner,
+   * drawn in the window that owns the tab (never another one), and the
+   * request names no conversation. Its second scope is `tab`, a shell
+   * call's is `conversation`.
+   */
+  readonly terminalTabId?: string;
 }
 
 export interface ApprovalRequest {
@@ -919,6 +927,13 @@ function assertEgressHostRequestShape(req: ApprovalRequestInput): void {
   if (payload.network !== "public" && payload.scopes.some((scope) => scope === "workspace" || scope === "always")) {
     throw new Error("approval: a local, private or unverified destination is never offered a persistent scope");
   }
+  if (payload.terminalTabId !== undefined) {
+    if (!isTerminalTabId(payload.terminalTabId)) throw new Error("approval: terminalTabId is not a terminal tab id");
+    if (req.sessionId !== undefined) throw new Error("approval: a terminal tab's egress ask names no conversation");
+    if (payload.scopes.includes("conversation")) throw new Error("approval: a terminal tab is offered This tab, not This conversation");
+  } else if (payload.scopes.includes("tab")) {
+    throw new Error("approval: only a terminal tab's egress ask offers This tab");
+  }
   const choices = req.allowedChoices ?? [];
   if (choices.length !== 2 || !choices.includes("allow-once") || !choices.includes("deny-once")) {
     throw new Error("approval: an egress-host request offers exactly allow-once and deny-once");
@@ -1461,7 +1476,11 @@ function verifyApprovalIntegrity(
  * Resolved at request time, not bound at boot: several main windows may be
  * open, and the one open at boot may be closed while another stays.
  */
-export type ApprovalSurfaceResolver = (sessionId: string | undefined) => WebContents | null;
+export type ApprovalSurfaceResolver = (
+  sessionId: string | undefined,
+  /** Set for a workspace terminal tab's ask: the window that owns the tab, or null. */
+  terminalTabId?: string,
+) => WebContents | null;
 
 export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
@@ -1674,9 +1693,16 @@ export class ApprovalGate {
     }
   }
 
-  /** The live renderer that should draw `sessionId`'s card right now, or null. */
-  private liveSurfaceFor(sessionId: string | undefined): WebContents | null {
-    const surface = this.resolveSurface?.(sessionId) ?? null;
+  /**
+   * The live renderer that should draw this request's card right now, or
+   * null: the window showing its conversation, or for a terminal tab's ask
+   * the window that owns the tab.
+   */
+  private liveSurfaceFor(req: { readonly sessionId?: string; readonly egressHost?: EgressHostApproval }): WebContents | null {
+    const terminalTabId = req.egressHost?.terminalTabId;
+    const surface = (terminalTabId === undefined
+      ? this.resolveSurface?.(req.sessionId)
+      : this.resolveSurface?.(req.sessionId, terminalTabId)) ?? null;
     return surface && !surface.isDestroyed() ? surface : null;
   }
 
@@ -2438,7 +2464,7 @@ export class ApprovalGate {
     const executionPlanAudit = boundExecutionPlan ?? suppliedExecutionPlan;
     if (executionPlanAudit?.executionRequest === "host" &&
       (oneShotPermitBinding === undefined || remoteControllerOrigin !== undefined || remoteControllerAuthority !== undefined ||
-        this.liveSurfaceFor(req.sessionId) === null)) {
+        this.liveSurfaceFor(req) === null)) {
       return markHostApprovalRejectedDecision({
         requestId: req.id,
         choice: "deny-once",
@@ -2596,7 +2622,7 @@ export class ApprovalGate {
     }
 
     // §A2: webContents destruction check — deny once if no main window is open.
-    if (this.liveSurfaceFor(fullReq.sessionId) === null) {
+    if (this.liveSurfaceFor(fullReq) === null) {
       const headless = this.headlessDenied !== undefined;
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
@@ -2867,7 +2893,7 @@ export class ApprovalGate {
         this.notifyPendingSettled(fullReq.id, decision);
         const refetchers = this.refetchedBy.get(fullReq.id) ?? [];
         this.refetchedBy.delete(fullReq.id);
-        this.announceSettledToRenderer(fullReq.id, [sentTo, ...refetchers, this.liveSurfaceFor(fullReq.sessionId)]);
+        this.announceSettledToRenderer(fullReq.id, [sentTo, ...refetchers, this.liveSurfaceFor(fullReq)]);
         resolve(decision);
       };
       const timer = setTimeout(() => {
@@ -3033,7 +3059,7 @@ export class ApprovalGate {
       try {
         // Resolved now, not at boot: the window showing this session, else the
         // primary (or most recently focused) live main window.
-        const surface = this.liveSurfaceFor(fullReq.sessionId);
+        const surface = this.liveSurfaceFor(fullReq);
         if (!surface) throw new Error("Approval surface unavailable");
         sentTo = surface;
         surface.send(IPC_APPROVAL_REQUEST, maskedSignedReq);

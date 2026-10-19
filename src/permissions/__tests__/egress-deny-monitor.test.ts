@@ -71,15 +71,15 @@ function deny(store: SandboxViolationStore, line: string, key: string | undefine
 
 describe("egress invocation tokens", () => {
   it("mints 32 unguessable hex characters per invocation and forgets them on release", () => {
-    const a = invocation({ kind: "terminal", tabId: "tab_1" });
-    const b = invocation({ kind: "terminal", tabId: "tab_1" });
+    const a = invocation({ kind: "terminal", tabId: "tab_1", workspaceRoot: "/work/project" });
+    const b = invocation({ kind: "terminal", tabId: "tab_1", workspaceRoot: "/work/project" });
     expect(a.token).toMatch(new RegExp(`^[0-9a-f]{${EGRESS_INVOCATION_TOKEN_LENGTH}}$`));
     expect(a.token).not.toBe(b.token);
-    expect(egressInvocationOwner(a.token)).toEqual({ kind: "terminal", tabId: "tab_1" });
+    expect(egressInvocationOwner(a.token)).toEqual({ kind: "terminal", tabId: "tab_1", workspaceRoot: "/work/project" });
     a.release();
     a.release();
     expect(egressInvocationOwner(a.token)).toBeUndefined();
-    expect(egressInvocationOwner(b.token)).toEqual({ kind: "terminal", tabId: "tab_1" });
+    expect(egressInvocationOwner(b.token)).toEqual({ kind: "terminal", tabId: "tab_1", workspaceRoot: "/work/project" });
   });
 });
 
@@ -188,7 +188,7 @@ describe("startEgressDenyMonitor", () => {
 
   it("labels a terminal deny with the tab", async () => {
     const { store, rows } = await monitored();
-    const tab = invocation({ kind: "terminal", tabId: "term_7" });
+    const tab = invocation({ kind: "terminal", tabId: "term_7", workspaceRoot: "/work/project" });
     deny(store, "deny network-outbound github.com:22 (domain not allowed)", tab.token);
     expect(rows[0]!.invocation).toEqual({ kind: "terminal", tabId: "term_7" });
   });

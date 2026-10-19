@@ -20,6 +20,12 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
    * boot falls back to the window in use (`promptSurfaceResolver`).
    */
   findSessionSurface(sessionId: string | undefined): WebContents | null;
+  /**
+   * The open main window renderer that owns workspace terminal `tabId`, or
+   * null. A terminal tab's egress ask is drawn there and nowhere else: no
+   * fallback to the window in use, which may not show that tab.
+   */
+  findTerminalSurface(tabId: string): WebContents | null;
   getAuthPartition(partition: string): Session;
   installPluginPartition(pluginId: string, pluginRoot: string | undefined): void;
   revokePluginWebviews(pluginId: string, revokeSession: (sessionId: string) => void): void;
@@ -73,8 +79,9 @@ export function requireDesktopHost(host: Pick<BootHost, "desktop">): DesktopHost
 export function promptSurfaceResolver(
   host: Pick<BootHost, "desktop">,
   getMainWindow: () => Pick<BrowserWindow, "webContents"> | null,
-): (sessionId: string | undefined) => WebContents | null {
-  return (sessionId) => {
+): (sessionId: string | undefined, terminalTabId?: string) => WebContents | null {
+  return (sessionId, terminalTabId) => {
+    if (terminalTabId !== undefined) return host.desktop?.findTerminalSurface(terminalTabId) ?? null;
     const holder = host.desktop?.findSessionSurface(sessionId) ?? null;
     if (holder) return holder;
     // `getMainWindow` answers only live windows (`app-state.ts`).

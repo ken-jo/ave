@@ -6,7 +6,7 @@ import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import { EgressHostApprovalCard } from "../permissions/EgressHostApprovalCard.js";
 import { EgressGrantsList } from "../permissions/EgressGrantsList.js";
 import type { ApprovalRequest } from "../../types.js";
-import type { ConversationEgressGrant, ListedEgressGrant, PersistentEgressGrant } from "../../../../shared/egress-grant-scopes.js";
+import type { ConversationEgressGrant, ListedEgressGrant, PersistentEgressGrant, TabEgressGrant } from "../../../../shared/egress-grant-scopes.js";
 
 function egressRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
   return {
@@ -150,6 +150,27 @@ describe("EgressGrantsList", () => {
       fireEvent.click(screen.getByTestId("egress-grant-revoke"));
       await screen.findByTestId("egress-grants-empty");
       expect(egressGrantRevoke).toHaveBeenCalledWith({ scope: "conversation", host: "registry.npmjs.org", port: 443, sessionId: "session-7" });
+    } finally {
+      (window as { ave?: unknown }).ave = previous;
+    }
+  });
+
+  it("lists a terminal tab grant and revokes it by its tab", async () => {
+    const tabGrant: TabEgressGrant = {
+      scope: "tab", tabId: "terminal:0a1b2c3d-1", host: "github.com", port: 443, grantedAt: "2026-10-20T03:00:00.000Z",
+    };
+    let grants: TabEgressGrant[] = [tabGrant];
+    const egressGrantRevoke = vi.fn(async () => { grants = []; return { ok: true, removed: true, closed: 0 }; });
+    const previous = (window as { ave?: unknown }).ave;
+    (window as { ave?: unknown }).ave = { permission: { egressGrantsList: async () => ({ ok: true, grants }), egressGrantRevoke } };
+    try {
+      render(<EgressGrantsList />);
+      const row = await screen.findByTestId("egress-grant-row");
+      expect(row.textContent).toContain("github.com:443");
+      expect(row.textContent).toContain("Terminal tab terminal:0a1b2c3d-1 · until the tab closes");
+      fireEvent.click(screen.getByTestId("egress-grant-revoke"));
+      await screen.findByTestId("egress-grants-empty");
+      expect(egressGrantRevoke).toHaveBeenCalledWith({ scope: "tab", host: "github.com", port: 443, tabId: "terminal:0a1b2c3d-1" });
     } finally {
       (window as { ave?: unknown }).ave = previous;
     }

@@ -80,7 +80,9 @@ const killTerminalsOwnedBy = vi.fn((_ownerWindowId: number) => 0);
 vi.mock("../terminal/pty-manager.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../terminal/pty-manager.js")>()),
   killTerminalsOwnedBy: (ownerWindowId: number) => killTerminalsOwnedBy(ownerWindowId),
+  terminalOwnerWindowId: (tabId: string) => terminalOwners.get(tabId),
 }));
+const terminalOwners = new Map<string, number | null>();
 
 const appState = await import("../app-state.js");
 const { createWindow, getAppWindows, loadMainInterface, rendererIndexUrl } = await import("../main-window.js");
@@ -177,10 +179,52 @@ describe("main windows", () => {
 
   function promptSurface() {
     return promptSurfaceResolver(
-      { desktop: { findSessionSurface: appState.findSessionMainWindowContents } as never },
+      {
+        desktop: {
+          findSessionSurface: appState.findSessionMainWindowContents,
+          findTerminalSurface: appState.findTerminalMainWindowContents,
+        } as never,
+      },
       appState.getMainWindow,
     );
   }
+
+  it("draws a terminal tab's egress ask in the window that owns the tab, never in the focused one", async () => {
+    const { ApprovalGate } = await import("../../permissions/approval-gate.js");
+    const first = open();
+    const second = open();
+    first.emit("focus");
+    terminalOwners.set("terminal:0a1b2c3d-1", second.id);
+    const gate = new ApprovalGate(promptSurface());
+    const egressAsk = (id: string, tabId: string) => ({
+      id,
+      category: "tool" as const,
+      kind: "egress-host" as const,
+      toolName: "terminal",
+      args: { host: "github.com", port: 443, tabId },
+      reason: "terminal egress",
+      createdAt: Date.now(),
+      allowedChoices: ["allow-once" as const, "deny-once" as const],
+      durableApprovalRecordAllowed: false,
+      forceExplicit: true,
+      isReadOnly: false,
+      egressHost: { host: "github.com", port: 443, scopes: ["once" as const, "tab" as const], network: "public" as const, terminalTabId: tabId },
+    });
+    try {
+      const owned = gate.requestAndWait(egressAsk("egress-owned", "terminal:0a1b2c3d-1"));
+      expect(second.webContents.send).toHaveBeenCalledWith("ave:approval:request", expect.objectContaining({ id: "egress-owned" }));
+      expect(first.webContents.send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
+      // A tab no live window owns is denied, not shown somewhere else.
+      const orphan = await gate.requestAndWait(egressAsk("egress-orphan", "terminal:0a1b2c3d-9"));
+      expect(orphan.choice).toBe("deny-once");
+      expect(first.webContents.send).not.toHaveBeenCalledWith("ave:approval:request", expect.objectContaining({ id: "egress-orphan" }));
+      expect(second.webContents.send).not.toHaveBeenCalledWith("ave:approval:request", expect.objectContaining({ id: "egress-orphan" }));
+      gate.disposeAll();
+      await owned.catch(() => undefined);
+    } finally {
+      terminalOwners.clear();
+    }
+  });
 
   it("still delivers approvals after the first window closes while a second stays open", async () => {
     const { ApprovalGate } = await import("../../permissions/approval-gate.js");

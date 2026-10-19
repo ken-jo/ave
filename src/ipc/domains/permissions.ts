@@ -56,6 +56,7 @@ import {
   canonicalStringify,
 } from "../../permissions/user-approval-store.js";
 import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
+import { isTerminalTabId } from "../../shared/tab-id.js";
 import type {
   SandboxWindowsStatusInfo,
   SandboxWindowsInstallResult,
@@ -339,7 +340,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   // read-only, sender-frame-guarded — the shell egress grants that outlive a
-  // call (conversation, workspace, always), for Settings → Permissions → Network.
+  // call (conversation, terminal tab, workspace, always), for Settings →
+  // Permissions → Network.
   ipcMain.handle(PERMISSIONS.egressGrantsList, async (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantsList, e); return UNAUTHORIZED_FRAME; }
     const { listEgressGrants } = await import("../../permissions/egress-runtime.js");
@@ -357,9 +359,9 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
-    const { scope, host, port, workspaceRoot, sessionId } = body;
-    if (scope !== "conversation" && scope !== "workspace" && scope !== "always") {
-      return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be conversation, workspace or always" };
+    const { scope, host, port, workspaceRoot, sessionId, tabId } = body;
+    if (scope !== "conversation" && scope !== "tab" && scope !== "workspace" && scope !== "always") {
+      return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be conversation, tab, workspace or always" };
     }
     if (typeof host !== "string" || host.length === 0 || typeof port !== "number" || !Number.isInteger(port)) {
       return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: host and port are required" };
@@ -370,10 +372,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (scope === "conversation" ? typeof sessionId !== "string" || sessionId.length === 0 : sessionId !== undefined) {
       return { ok: false, error: "invalid-egress-grant-conversation", message: "revoke: a conversation grant names its sessionId, no other grant does" };
     }
+    if (scope === "tab" ? typeof tabId !== "string" || !isTerminalTabId(tabId) : tabId !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-tab", message: "revoke: a tab grant names its terminal tabId, no other grant does" };
+    }
     const { revokeEgressGrant } = await import("../../permissions/egress-runtime.js");
     try {
       const { removed, closed } = await revokeEgressGrant(
         scope === "conversation" ? { scope, sessionId: sessionId as string, host, port }
+        : scope === "tab" ? { scope, tabId: tabId as string, host, port }
         : scope === "workspace" ? { scope, workspaceRoot: workspaceRoot as string, host, port }
         : { scope, host, port },
       );

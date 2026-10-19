@@ -50,10 +50,16 @@ export interface ShellEgressContext {
   readonly approvalSurface: "interactive" | "unavailable";
 }
 
-/** One workspace terminal tab, for the life of the shell it runs. */
-interface TerminalEgressOwner {
+/**
+ * One workspace terminal tab, for the life of the shell it runs. A terminal is
+ * always in the foreground: the person who typed the command is at the tab, so
+ * an egress ask for it is drawn in the tab (design F).
+ */
+export interface TerminalEgressOwner {
   readonly kind: "terminal";
   readonly tabId: string;
+  /** The workspace root the tab's shell is anchored to: what "This workspace" keys on. */
+  readonly workspaceRoot: string;
 }
 
 /** What plugin-owned code a confined, non-interactive process runs. */
@@ -98,6 +104,8 @@ export interface EgressInvocation {
 
 /** What a release listener learns about the invocation that ended. */
 export interface EgressInvocationRelease {
+  /** Who the token belonged to. */
+  readonly owner: EgressInvocationOwner;
   /** The process group noted with `noteProcessGroup`, if any. */
   readonly processGroup: number | undefined;
 }
@@ -132,7 +140,7 @@ export function openEgressInvocation(owner: EgressInvocationOwner, options: Egre
       if (released) return;
       released = true;
       live.delete(token);
-      for (const listener of releaseListeners) listener(token, { processGroup });
+      for (const listener of releaseListeners) listener(token, { owner, processGroup });
     },
   };
 }

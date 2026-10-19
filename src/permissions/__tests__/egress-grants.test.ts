@@ -22,7 +22,7 @@ import { setWorkerEgressAllowlists, workerEgressAllowedDomains } from "../egress
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 const ALL = ["once", "conversation", "workspace", "always"] as const;
-const subject = { token: "1".repeat(32), sessionId: "session-1", workspaceRoot: "/work/project" };
+const subject = { token: "1".repeat(32), sessionId: "session-1", tabId: undefined, workspaceRoot: "/work/project" };
 const github = { host: "github.com", port: 443 };
 
 let dir: string;
@@ -60,7 +60,7 @@ describe("EgressGrantStore", () => {
         { scope: "always", host: "example.com", port: 443, grantedAt: "2026-10-19T01:02:04.000Z" },
       ],
     });
-    const elsewhere = { token: "4".repeat(32), sessionId: undefined, workspaceRoot: "/work/other" };
+    const elsewhere = { token: "4".repeat(32), sessionId: undefined, tabId: undefined, workspaceRoot: "/work/other" };
     expect(await store.matchingScope(elsewhere, { host: "pypi.org", port: 443 })).toBeUndefined();
     expect(await store.matchingScope(elsewhere, { host: "example.com", port: 443 })).toBe("always");
     expect(await store.matchingScope({ ...elsewhere, workspaceRoot: "/work/project/" }, { host: "pypi.org", port: 443 }))
@@ -152,6 +152,100 @@ describe("conversation grants and what a revoke closes", () => {
     expect([...tokens].sort()).toEqual([subject.token, other.token].sort());
     // The always grant's use is its own.
     expect((await store.revoke({ scope: "always", host: "github.com", port: 443 })).tokens).toEqual([subject.token]);
+  });
+});
+
+describe("terminal tab grants (design F)", () => {
+  const TAB = "terminal:0a1b2c3d-1";
+  const TERMINAL_LADDER = ["once", "tab", "workspace", "always"] as const;
+  const tabSubject = { token: "5".repeat(32), sessionId: undefined, tabId: TAB, workspaceRoot: "/work/project" };
+
+  it("records This tab for that tab only, never for a conversation, and lists it", async () => {
+    const store = new EgressGrantStore(file);
+    await store.grant("tab", TERMINAL_LADDER, tabSubject, github, new Date("2026-10-20T01:00:00.000Z"));
+    expect(await store.matchingScope({ ...tabSubject, token: "6".repeat(32) }, github)).toBe("tab");
+    expect(await store.matchingScope({ ...tabSubject, tabId: "terminal:0a1b2c3d-2" }, github)).toBeUndefined();
+    expect(await store.matchingScope(subject, github)).toBeUndefined();
+    expect(store.listTab()).toEqual([
+      { scope: "tab", tabId: TAB, host: "github.com", port: 443, grantedAt: "2026-10-20T01:00:00.000Z" },
+    ]);
+    expect(store.listConversation()).toEqual([]);
+  });
+
+  it("refuses This tab without a tab, and This conversation for a terminal", async () => {
+    const store = new EgressGrantStore(file);
+    await expect(store.grant("tab", TERMINAL_LADDER, { ...tabSubject, tabId: undefined }, github)).rejects.toThrow(/no terminal tab/u);
+    await expect(store.grant("conversation", TERMINAL_LADDER, tabSubject, github)).rejects.toThrow(/was not offered/u);
+    await expect(store.grant("tab", ALL, subject, github)).rejects.toThrow(/was not offered/u);
+  });
+
+  it("drops a tab's grants and their uses when the tab's shell ends, and revokes one on request", async () => {
+    const store = new EgressGrantStore(file);
+    await store.grant("tab", TERMINAL_LADDER, tabSubject, github);
+    await store.grant("tab", TERMINAL_LADDER, tabSubject, { host: "pypi.org", port: 443 });
+    await store.grant("tab", TERMINAL_LADDER, { ...tabSubject, tabId: "terminal:0a1b2c3d-2" }, github);
+    store.noteUse("tab", tabSubject, github);
+    expect((await store.revoke({ scope: "tab", tabId: TAB, host: "pypi.org", port: 443 })).removed).toBe(true);
+    expect(store.releaseTab(TAB).map((grant) => grant.host)).toEqual(["github.com"]);
+    expect(await store.matchingScope(tabSubject, github)).toBeUndefined();
+    expect(store.listTab().map((grant) => grant.tabId)).toEqual(["terminal:0a1b2c3d-2"]);
+    // The released tab's uses went with it: a later revoke names no live shell.
+    expect((await store.revoke({ scope: "tab", tabId: TAB, host: "github.com", port: 443 }))).toEqual({ removed: false, tokens: [] });
+  });
+
+  it("hands back the tab's shell when its grant is revoked", async () => {
+    const store = new EgressGrantStore(file);
+    await store.grant("tab", TERMINAL_LADDER, tabSubject, github);
+    store.noteUse("tab", tabSubject, github);
+    expect(await store.revoke({ scope: "tab", tabId: TAB, host: "github.com", port: 443 })).toEqual({ removed: true, tokens: [tabSubject.token] });
+  });
+
+  it("offers a terminal the tab ladder, capped like the shell's, and only in-memory scopes for a local destination", () => {
+    expect(egressGrantScopesFor("kernel-channel", "terminal")).toEqual(TERMINAL_LADDER);
+    expect(egressGrantScopesFor("shared", "terminal")).toEqual(["once", "tab"]);
+    expect(egressGrantScopesFor("kernel-channel", "shell")).toEqual(ALL);
+    expect(egressScopesForNetwork(TERMINAL_LADDER, "public")).toEqual(TERMINAL_LADDER);
+    expect(egressScopesForNetwork(TERMINAL_LADDER, "local")).toEqual(["once", "tab"]);
+    expect(egressScopesForNetwork(TERMINAL_LADDER, "unverified")).toEqual(["once", "tab"]);
+    expect(egressScopesForNetwork(TERMINAL_LADDER, "reserved")).toEqual([]);
+  });
+});
+
+describe("terminal tab grants in the running process (egress-runtime)", () => {
+  it("lists a tab grant beside the others and drops it when the tab's shell is released", async () => {
+    const { openEgressInvocation } = await import("../egress-invocations.js");
+    const { createEgressAskRuntimeCallback, listEgressGrants, revokeEgressGrant } = await import("../egress-runtime.js");
+    const tabId = "terminal:0a1b2c3d-7";
+    const shell = openEgressInvocation({ kind: "terminal", tabId, workspaceRoot: "/work/project" });
+    const requests: unknown[] = [];
+    const ask = createEgressAskRuntimeCallback({
+      approvalGate: {
+        requestAndWait: async (request) => {
+          requests.push(request);
+          return { requestId: request.id, choice: "allow-once", egressScope: "tab" };
+        },
+      },
+      shellAskEnabled: () => true,
+    });
+    try {
+      const context = { attributionKey: shell.token, identity: "listener" as const, addresses: ["140.82.112.3"], resolution: "pinned" as const };
+      expect(await ask({ host: "github.com", port: 443 }, context)).toBe(true);
+      expect(requests).toEqual([expect.objectContaining({
+        kind: "egress-host",
+        toolName: "terminal",
+        egressHost: expect.objectContaining({ host: "github.com", port: 443, terminalTabId: tabId, scopes: expect.arrayContaining(["once", "tab"]) }),
+      })]);
+      expect(requests[0]).not.toHaveProperty("sessionId");
+      expect((await listEgressGrants()).filter((grant) => grant.scope === "tab")).toEqual([
+        { scope: "tab", tabId, host: "github.com", port: 443, grantedAt: expect.any(String) },
+      ]);
+      // Revoking from Settings works on a tab grant too.
+      await ask({ host: "pypi.org", port: 443 }, { ...context, addresses: ["151.101.0.223"] });
+      expect((await revokeEgressGrant({ scope: "tab", tabId, host: "pypi.org", port: 443 })).removed).toBe(true);
+    } finally {
+      shell.release();
+    }
+    expect((await listEgressGrants()).filter((grant) => grant.scope === "tab")).toEqual([]);
   });
 });
 

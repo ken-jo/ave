@@ -220,7 +220,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           //     the configured model endpoints, nothing else, and is never asked;
           //   - a shell reaches what a grant covers, otherwise the person is
           //     asked on the approval dock (denied when nobody can answer);
-          //   - a terminal tab is denied until the tab banner lands (PR 5);
+          //   - a terminal tab reaches what a grant covers, otherwise the
+          //     person is asked in that tab's banner (denied after 120 s);
           //   - anything unattributed is denied.
           // A pre-allowed domain in ASRT config would let every shell reach it
           // without asking, which is why the per-extension lists live in the

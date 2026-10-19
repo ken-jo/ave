@@ -1,7 +1,8 @@
 /**
  * Settings → Permissions → Network: the hosts a sandboxed shell may reach
- * without asking because someone chose "This conversation", "This workspace"
- * or "Always" on an egress ask, each with a Revoke button. Revoking also
+ * without asking because someone chose "This conversation", "This tab" (a
+ * workspace terminal), "This workspace" or "Always" on an egress ask, each
+ * with a Revoke button. Revoking also
  * closes the connections that grant let through that are still open. "Allow
  * once" grants end with their call and are not listed. Plugin workers never
  * use these grants.
@@ -23,7 +24,9 @@ interface EgressGrantsListProps {
 }
 
 function grantKey(grant: ListedEgressGrant): string {
-  const owner = grant.scope === "conversation" ? grant.sessionId : grant.workspaceRoot ?? "";
+  const owner = grant.scope === "conversation" ? grant.sessionId
+    : grant.scope === "tab" ? grant.tabId
+    : grant.workspaceRoot ?? "";
   return `${grant.scope}\n${owner}\n${grant.host}\n${grant.port}`;
 }
 
@@ -74,7 +77,8 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
         host: g.host,
         port: g.port,
         ...(g.scope === "conversation" ? { sessionId: g.sessionId } : {}),
-        ...(g.scope !== "conversation" && g.workspaceRoot !== undefined ? { workspaceRoot: g.workspaceRoot } : {}),
+        ...(g.scope === "tab" ? { tabId: g.tabId } : {}),
+        ...((g.scope === "workspace" || g.scope === "always") && g.workspaceRoot !== undefined ? { workspaceRoot: g.workspaceRoot } : {}),
       })))(grant);
       const failed = failureMessage(result);
       if (failed !== undefined) setError(failed);
@@ -116,10 +120,15 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
                           conversation: grant.sessionId,
                           time: formatDateTime(grant.grantedAt),
                         })
-                      : translate("permissionsTab.networkGrantScopeWorkspace", {
-                          workspace: grant.workspaceRoot ?? "",
-                          time: formatDateTime(grant.grantedAt),
-                        })}
+                      : grant.scope === "tab"
+                        ? translate("permissionsTab.networkGrantScopeTab", {
+                            tab: grant.tabId,
+                            time: formatDateTime(grant.grantedAt),
+                          })
+                        : translate("permissionsTab.networkGrantScopeWorkspace", {
+                            workspace: grant.workspaceRoot ?? "",
+                            time: formatDateTime(grant.grantedAt),
+                          })}
                 </p>
               </div>
               <Button

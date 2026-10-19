@@ -1720,6 +1720,10 @@ describe("shell egress grants in Settings", () => {
       scope: "conversation", sessionId: "session-1", host: "pypi.org", port: 443, intent: USER_INTENT,
     })).toEqual({ ok: true });
     expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenLastCalledWith({ scope: "conversation", sessionId: "session-1", host: "pypi.org", port: 443 });
+    expect(await invoke(PERMISSIONS.egressGrantRevoke, {
+      scope: "tab", tabId: "terminal:0a1b2c3d-1", host: "pypi.org", port: 443, intent: USER_INTENT,
+    })).toEqual({ ok: true });
+    expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenLastCalledWith({ scope: "tab", tabId: "terminal:0a1b2c3d-1", host: "pypi.org", port: 443 });
     egressRuntimeMock.revokeEgressGrant.mockResolvedValueOnce({ removed: false, closed: 0 });
     expect(await invoke(PERMISSIONS.egressGrantRevoke, { scope: "always", host: "pypi.org", port: 443, intent: USER_INTENT }))
       .toMatchObject({ ok: false, error: "not-found" });
@@ -1738,6 +1742,9 @@ describe("shell egress grants in Settings", () => {
       [{ scope: "always", host: "pypi.org", port: "443" }, "invalid-egress-grant-destination"],
       [{ scope: "workspace", host: "pypi.org", port: 443 }, "invalid-egress-grant-workspace"],
       [{ scope: "always", workspaceRoot: "/w", host: "pypi.org", port: 443 }, "invalid-egress-grant-workspace"],
+      [{ scope: "tab", host: "pypi.org", port: 443 }, "invalid-egress-grant-tab"],
+      [{ scope: "tab", tabId: "browser:0a1b2c3d-1", host: "pypi.org", port: 443 }, "invalid-egress-grant-tab"],
+      [{ scope: "always", tabId: "terminal:0a1b2c3d-1", host: "pypi.org", port: 443 }, "invalid-egress-grant-tab"],
     ] as const) {
       expect(await invoke(PERMISSIONS.egressGrantRevoke, { ...payload, intent: USER_INTENT })).toMatchObject({ ok: false, error });
     }

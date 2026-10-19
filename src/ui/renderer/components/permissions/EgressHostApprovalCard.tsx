@@ -4,6 +4,11 @@
  * allows it for one of the scopes the host offered (Allow once, This
  * conversation, This workspace, Always). The answer is `allow-once` with the
  * picked scope, or `deny-once`; the host refuses any scope it did not offer.
+ *
+ * A workspace terminal tab's ask (`egressHost.terminalTabId`) is drawn in
+ * that tab's banner (`TerminalEgressBanner`); this card draws it only when no
+ * view of the tab is mounted, and then offers This tab in place of This
+ * conversation, as the host does.
  */
 import type { ReactElement } from "react";
 import { Button } from "../../../../components/ui/button.js";
@@ -12,12 +17,18 @@ import type { ApprovalChoice, ApprovalRequest } from "../../types.js";
 import type { EgressGrantScope } from "../../../../shared/egress-grant-scopes.js";
 import type { ApprovalDecisionExtras } from "../../hooks/use-approval.js";
 
-const SCOPE_LABEL_KEYS: Record<EgressGrantScope, string> = {
+export const EGRESS_SCOPE_LABEL_KEYS: Record<EgressGrantScope, string> = {
   once: "egressApprovalCard.allowOnce",
   conversation: "egressApprovalCard.allowConversation",
+  tab: "egressApprovalCard.allowTab",
   workspace: "egressApprovalCard.allowWorkspace",
   always: "egressApprovalCard.allowAlways",
 };
+
+/** `host:port`, an IPv6 host bracketed. */
+export function egressTargetLabel(host: string, port: number): string {
+  return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
+}
 
 const TOOL_LABELS: Record<string, string> = { bash: "Bash", powershell: "PowerShell" };
 
@@ -47,7 +58,8 @@ export function EgressHostApprovalCard({
       </div>
     );
   }
-  const target = payload.host.includes(":") ? `[${payload.host}]:${payload.port}` : `${payload.host}:${payload.port}`;
+  const target = egressTargetLabel(payload.host, payload.port);
+  const terminalTabId = payload.terminalTabId;
   return (
     <section
       className="flex min-w-0 flex-col gap-3 px-3 py-2 sm:px-4 sm:py-3"
@@ -59,23 +71,25 @@ export function EgressHostApprovalCard({
       <div className="min-w-0 space-y-1">
         <h3 className="text-sm font-semibold">{t("egressApprovalCard.title")}</h3>
         <p className="min-w-0 break-words text-xs text-muted-foreground">
-          {t("egressApprovalCard.body", { tool })}
+          {terminalTabId === undefined ? t("egressApprovalCard.body", { tool }) : t("egressApprovalCard.terminalBody")}
         </p>
         <code className="block min-w-0 break-all font-mono text-xs font-semibold" data-testid="egress-approval-target">
           {target}
         </code>
         {payload.network === "local" ? (
           <p role="note" className="min-w-0 break-words text-xs font-medium text-warning" data-testid="egress-approval-local-warning">
-            {t("egressApprovalCard.localWarning")}
+            {t(terminalTabId === undefined ? "egressApprovalCard.localWarning" : "egressApprovalCard.localWarningTab")}
           </p>
         ) : null}
         {payload.network === "unverified" ? (
           <p role="note" className="min-w-0 break-words text-xs font-medium text-warning" data-testid="egress-approval-unverified-warning">
-            {t("egressApprovalCard.unverifiedWarning")}
+            {t(terminalTabId === undefined ? "egressApprovalCard.unverifiedWarning" : "egressApprovalCard.unverifiedWarningTab")}
           </p>
         ) : null}
         <p className="min-w-0 break-words text-xs text-muted-foreground">
-          {t("egressApprovalCard.conversation", { conversation: conversationLabel })}
+          {terminalTabId === undefined
+            ? t("egressApprovalCard.conversation", { conversation: conversationLabel })
+            : t("egressApprovalCard.terminalTab", { tab: terminalTabId })}
         </p>
       </div>
       <div className="flex min-w-0 flex-wrap gap-2">
@@ -97,7 +111,7 @@ export function EgressHostApprovalCard({
             data-testid={`egress-approval-allow-${scope}`}
             onClick={() => onDecide("allow-once", undefined, { egressScope: scope })}
           >
-            {t(SCOPE_LABEL_KEYS[scope])}
+            {t(EGRESS_SCOPE_LABEL_KEYS[scope])}
           </Button>
         ))}
       </div>

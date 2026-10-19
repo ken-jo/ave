@@ -6,7 +6,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
 import { createApprovalGateEgressRequester, EGRESS_APPROVAL_DENY_REASONS } from "../egress-approval.js";
-import type { EgressApprovalRequest } from "../egress-ask.js";
+import type { EgressShellApprovalRequest, EgressTerminalApprovalRequest } from "../egress-ask.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 
 function makeWebContents() {
@@ -20,12 +20,25 @@ function makeGate() {
   return { wc, gate, auditLogger };
 }
 
-const egressRequest = (overrides: Partial<EgressApprovalRequest> = {}): EgressApprovalRequest => ({
+const egressRequest = (overrides: Partial<EgressShellApprovalRequest> = {}): EgressShellApprovalRequest => ({
+  origin: "shell",
   sessionId: "session-1",
   toolName: "bash",
   toolUseId: "toolu_1",
   destination: { host: "github.com", port: 443 },
   scopes: ["once", "conversation", "workspace", "always"],
+  network: "public",
+  abortSignal: undefined,
+  ...overrides,
+});
+
+const TAB = "terminal:0a1b2c3d-1";
+
+const terminalRequest = (overrides: Partial<EgressTerminalApprovalRequest> = {}): EgressTerminalApprovalRequest => ({
+  origin: "terminal",
+  tabId: TAB,
+  destination: { host: "github.com", port: 443 },
+  scopes: ["once", "tab", "workspace", "always"],
   network: "public",
   abortSignal: undefined,
   ...overrides,
@@ -178,5 +191,66 @@ describe("egress-host approval requests", () => {
       .rejects.toThrow(/never recorded/u);
     await expect(gate.requestAndWait({ ...base, kind: undefined }))
       .rejects.toThrow(/only valid on an egress-host request/u);
+    // This tab belongs to a terminal's ask, This conversation to a shell call's.
+    await expect(gate.requestAndWait({ ...base, egressHost: { host: "github.com", port: 443, scopes: ["once", "tab"], network: "public" } }))
+      .rejects.toThrow(/only a terminal tab's egress ask offers This tab/u);
+    await expect(gate.requestAndWait({
+      ...base, egressHost: { host: "github.com", port: 443, scopes: ["once", "conversation"], network: "public", terminalTabId: TAB },
+    })).rejects.toThrow(/offered This tab, not This conversation/u);
+    await expect(gate.requestAndWait({
+      ...base, egressHost: { host: "github.com", port: 443, scopes: ["once"], network: "public", terminalTabId: "browser:0a1b2c3d-1" },
+    })).rejects.toThrow(/not a terminal tab id/u);
+    await expect(gate.requestAndWait({
+      ...base, sessionId: "session-1", egressHost: { host: "github.com", port: 443, scopes: ["once"], network: "public", terminalTabId: TAB },
+    })).rejects.toThrow(/names no conversation/u);
+  });
+});
+
+describe("a workspace terminal tab's egress ask", () => {
+  function makeRoutedGate(terminalSurface: ReturnType<typeof makeWebContents> | null) {
+    const sessionSurface = makeWebContents();
+    const resolver = vi.fn((_sessionId: string | undefined, terminalTabId?: string) =>
+      (terminalTabId === undefined ? sessionSurface : terminalSurface) as never);
+    const gate = new ApprovalGate(resolver, undefined, 5_000, { log: vi.fn() } as never);
+    return { gate, resolver, sessionSurface };
+  }
+
+  it("goes to the window that owns the tab, names the tab and no conversation, and offers This tab", async () => {
+    const owner = makeWebContents();
+    const { gate, resolver, sessionSurface } = makeRoutedGate(owner);
+    const answer = createApprovalGateEgressRequester(gate)(terminalRequest());
+    const card = await cardSent(owner);
+    expect(card).toMatchObject({
+      kind: "egress-host",
+      toolName: "terminal",
+      args: { host: "github.com", port: 443, tabId: TAB },
+      egressHost: { host: "github.com", port: 443, scopes: ["once", "tab", "workspace", "always"], network: "public", terminalTabId: TAB },
+    });
+    expect(card.sessionId).toBeUndefined();
+    expect(resolver).toHaveBeenCalledWith(undefined, TAB);
+    expect(resolver.mock.calls.every(([, tabId]) => tabId === TAB)).toBe(true);
+    expect(sentApprovalCards(sessionSurface)).toEqual([]);
+    gate.resolveFromDesktopRenderer(card.id, {
+      requestId: card.id, choice: "allow-once", egressScope: "tab", nonce: card.nonce, hmac: card.hmac,
+    });
+    await expect(answer).resolves.toEqual({ allow: true, scope: "tab" });
+  });
+
+  it("is denied when no window owns the tab (never drawn in another window)", async () => {
+    const { gate, sessionSurface } = makeRoutedGate(null);
+    await expect(createApprovalGateEgressRequester(gate)(terminalRequest())).resolves.toEqual({
+      allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected,
+    });
+    expect(sentApprovalCards(sessionSurface)).toEqual([]);
+  });
+
+  it("ends when the banner's signal is aborted (timeout or tab close)", async () => {
+    const owner = makeWebContents();
+    const { gate } = makeRoutedGate(owner);
+    const controller = new AbortController();
+    const answer = createApprovalGateEgressRequester(gate)(terminalRequest({ abortSignal: controller.signal }));
+    await cardSent(owner);
+    controller.abort(new Error("terminal tab closed"));
+    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
   });
 });

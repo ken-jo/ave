@@ -220,6 +220,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-egress-grant-destination": "formatIpcError.invalidEgressGrantDestination",
   "invalid-egress-grant-workspace": "formatIpcError.invalidEgressGrantWorkspace",
   "invalid-egress-grant-conversation": "formatIpcError.invalidEgressGrantConversation",
+  "invalid-egress-grant-tab": "formatIpcError.invalidEgressGrantTab",
   // A terminal tab driven from a window other than the one that started its shell.
   "not-owner": "formatIpcError.notOwner",
   "no-such-request": "formatIpcError.noSuchRequest",

@@ -28,6 +28,7 @@ import type { AveApi } from "../types.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
+import { TerminalEgressBanner } from "./permissions/TerminalEgressBanner.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
@@ -291,6 +292,9 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, o
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
       data-testid="chat-side-panel-pty-terminal"
     >
+      {/* A connection this tab's shell opened to a host no grant covers waits
+          here for an answer (proxy-egress design F). */}
+      <TerminalEgressBanner tabId={tabId} />
       {api.terminal ? (
         <TerminalBlocksBar
           terminalApi={api.terminal}

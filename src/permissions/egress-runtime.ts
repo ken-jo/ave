@@ -26,21 +26,25 @@ let grantStore: EgressGrantStore | undefined;
 
 /**
  * The process's shell egress grant store (Settings lists and revokes through
- * it). Created on first use; its "Allow once" hosts go with their invocation.
+ * it). Created on first use; its "Allow once" hosts go with their invocation,
+ * and a terminal tab's "This tab" hosts with the tab's shell (the tab closed).
  */
 function egressGrantStore(): EgressGrantStore {
   if (grantStore === undefined) {
     const store = new EgressGrantStore();
-    onEgressInvocationReleased((token) => store.releaseToken(token));
+    onEgressInvocationReleased((token, { owner }) => {
+      store.releaseToken(token);
+      if (owner.kind === "terminal") store.releaseTab(owner.tabId);
+    });
     grantStore = store;
   }
   return grantStore;
 }
 
-/** Every grant Settings lists: this run's conversation grants, then the persistent ones. */
+/** Every grant Settings lists: this run's conversation and tab grants, then the persistent ones. */
 export async function listEgressGrants(): Promise<readonly ListedEgressGrant[]> {
   const store = egressGrantStore();
-  return [...store.listConversation(), ...(await store.listPersistent())];
+  return [...store.listConversation(), ...store.listTab(), ...(await store.listPersistent())];
 }
 
 /**

@@ -55,7 +55,7 @@ Configured at boot in `src/boot/steps/sandbox-init.ts` and built in `src/permiss
 
 - One shared config with `strictAllowlist: false` and an empty `allowedDomains`; the ask callback (`src/permissions/egress-ask.ts`) decides every connection by the invocation that opened it, identified by its own proxy listener (macOS port, Linux socket path), not by the proxy username.
 - A plugin worker reaches its own extension's `networkAccess.allowedDomains` plus the host names of configured model-provider endpoints (`computeDynamicEndpointHosts`), recomputed when plugins or provider settings change (`refreshSandboxNetworkConfig` → `setWorkerEgressAllowlists`); any other host is refused without asking.
-- A Bash or PowerShell call reaches a host a grant covers; otherwise the person is asked (Allow once, This conversation, This workspace, Always). A background call, asks turned off, or no approval surface is a refusal. The workspace terminal is refused until its tab banner lands.
+- A Bash or PowerShell call reaches a host a grant covers; otherwise the person is asked (Allow once, This conversation, This workspace, Always). A background call, asks turned off, or no approval surface is a refusal. A workspace terminal tab is asked in a banner in that tab (Allow once, This tab, This workspace, Always), denied after 120 s without an answer.
 - `normalizeUnionForAsrt` emits both `d` and `*.d` for each bare domain, so a worker reaches the same hosts as the host-fetch allow-list's dot-boundary match.
 - The upstream proxy is set explicitly. With no trusted proxy configured it is empty, so confined processes never inherit an ambient proxy from the environment.
 

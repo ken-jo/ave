@@ -257,7 +257,7 @@ export interface SandboxEgressDecisionAuditEntry {
   decision: "allow" | "deny";
   basis: EgressDecisionBasis;
   /** The grant scope that matched, or the one the person picked; null otherwise. */
-  scope: "once" | "conversation" | "workspace" | "always" | null;
+  scope: "once" | "conversation" | "tab" | "workspace" | "always" | null;
   /** Why a refusal happened; null for an allow. */
   reason: string | null;
 }
