@@ -54,9 +54,12 @@ function harness(opts: {
     setDismissed: (ids: number[]) => {
       dismissed = ids;
     },
+    // Real timers here: an interval would outlive the test and log after the
+    // worker closed (main CI 2026-10-19, "Closing rpc while onUserConsoleLog
+    // was pending"). Interval behavior is covered by the fake-timer cases.
     run: () =>
       wireAnnouncementCheck({
-        intervalMs: 1000,
+        intervalMs: 0,
         getMainWindow: () => mainWindow,
         settingsService,
         listAnnouncements,
@@ -162,7 +165,7 @@ describe("wireAnnouncementCheck", () => {
     const listAnnouncements = vi.fn(async () => [announcement(1)]);
 
     wireAnnouncementCheck({
-      intervalMs: 1000,
+      intervalMs: 0,
       getMainWindow: () => mainWindow,
       settingsService,
       listAnnouncements,
@@ -319,7 +322,7 @@ describe("wireAnnouncementCheck", () => {
     const listAnnouncements = vi.fn(async () => [announcement(1)]);
 
     wireAnnouncementCheck({
-      intervalMs: 1000,
+      intervalMs: 0,
       getMainWindow: () => mainWindow,
       settingsService,
       listAnnouncements,
@@ -345,7 +348,7 @@ describe("wireAnnouncementCheck", () => {
     const listAnnouncements = vi.fn(async () => [announcement(1), announcement(2)]);
 
     wireAnnouncementCheck({
-      intervalMs: 1000,
+      intervalMs: 0,
       getMainWindow: () => mainWindow,
       settingsService,
       listAnnouncements,
