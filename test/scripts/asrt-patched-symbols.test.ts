@@ -120,6 +120,12 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(steps).toMatch(
       /if \(getPlatform\(\) === 'windows' &&\s+runtimeConfig\.windows\?\.externalConfinement === 'embedder'\) \{[\s\S]*?\}\s+else if \(getPlatform\(\) === 'windows'\) \{\s+\/\/ Resolve once/u,
     );
+    // initialize() checks dependencies before those steps; that check must not
+    // demand srt-win either, or the proxy never starts where it is needed.
+    const deps = functionBody(manager, /\nfunction checkDependenciesCommon\(/u);
+    expect(deps).toMatch(
+      /else if \(platform === 'windows' &&\s+config\?\.windows\?\.externalConfinement === 'embedder'\) \{[\s\S]*?return \{ done: \{ errors, warnings \} \};\s+\}\s+else if \(platform === 'windows'\) \{\s+let srtWin;/u,
+    );
     const argv = functionBody(manager, /\nasync function wrapWithSandboxArgv\(/u);
     const refusal = argv.search(/config\?\.windows\?\.externalConfinement === 'embedder'\) \{\s+\/\/ Ave patch[^\n]*\n[^\n]*\n\s+throw new Error\('wrapWithSandboxArgv\(\) is unavailable/u);
     expect(refusal, "wrapWithSandboxArgv does not refuse under external confinement").toBeGreaterThanOrEqual(0);

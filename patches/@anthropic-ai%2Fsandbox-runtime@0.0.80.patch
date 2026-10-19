@@ -23,7 +23,8 @@ the installed package.
    on Windows without the srt-win account, its WFP fence or its session
    ACLs, for an embedder that confines its Windows children itself. Ave sets
    it only on a host where Microsoft Execution Containers carry the agent
-   shells and srt-win is not installed (proxy-egress PR 9). In that mode
+   shells and srt-win is not installed (proxy-egress PR 9). In that mode the
+   dependency check skips srt-win too (initialize() runs it first), and
    wrapWithSandboxArgv() throws rather than run srt-win unprovisioned. Drop
    it when upstream ships an MXC backend Ave adopts.
 
@@ -146,7 +147,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..fc7e15a055880253139097ca93dc9325
  /**
   * Interface for the sandbox manager API
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..5213faef167d9802a52292bec0a0b123187a7b45 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f2a907ac3c0515701101ea1e24bb945e34782fda 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -16,7 +16,7 @@ import * as fs from 'fs';
@@ -203,7 +204,20 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..5213faef167d9802a52292bec0a0b123
          // Resolve once (stats disk); captured module-level for wrap/reset.
          srtWinSpawn = resolveSrtWin(runtimeConfig.windows?.srtWin);
          const srtWin = srtWinSpawn;
-@@ -1515,6 +1531,9 @@ async function waitToWalk(signal) {
+@@ -992,6 +1008,12 @@ function checkDependenciesCommon(ripgrepConfig) {
+         errors.push(...linuxDeps.errors);
+         warnings.push(...linuxDeps.warnings);
+     }
++    else if (platform === 'windows' &&
++        config?.windows?.externalConfinement === 'embedder') {
++        // Ave patch: initialize() with external confinement runs only the
++        // proxy, so srt-win is neither resolved nor probed here.
++        return { done: { errors, warnings } };
++    }
+     else if (platform === 'windows') {
+         let srtWin;
+         try {
+@@ -1515,6 +1537,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -213,7 +227,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..5213faef167d9802a52292bec0a0b123
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1734,6 +1753,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1734,6 +1759,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -221,7 +235,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..5213faef167d9802a52292bec0a0b123
                  allowGitConfig: getAllowGitConfig(),
                  gitSafeDirectories,
                  enableWeakerNetworkIsolation: getEnableWeakerNetworkIsolation(),
-@@ -1821,7 +1841,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,7 +1847,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {

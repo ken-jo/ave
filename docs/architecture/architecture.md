@@ -1417,8 +1417,12 @@ run or at install.
 - **Boot plan** (`windows-sandbox-plan.ts`). MXC and srt-win are independent.
   With MXC, shells run in containers whether or not srt-win is installed;
   without srt-win, ASRT starts as the proxy only (`windows.externalConfinement`,
-  patch part 3), the process-wide capability confines nothing, and extensions
-  run unconfined with a boot warning. Without MXC, shells keep the approved
+  patch part 3, which also skips the srt-win dependency check `initialize()`
+  runs first), the process-wide capability confines nothing, and extensions
+  run unconfined with a boot warning. Measured on a host without srt-win: the
+  patched proxy starts, an srt-win wrap is refused, a container reaches an
+  allowed host through its listener and the proxy, and a refused host is
+  recorded under that invocation's token only. Without MXC, shells keep the approved
   host route. Without either, the gate degrades as before. The workspace
   terminal never runs in MXC (it is the user's surface, and MXC ends background
   descendants with the command), and reads only the process-wide capability.
@@ -1450,7 +1454,11 @@ run or at install.
   `-EncodedCommand`. Git Bash cannot start in a container: MSYS2 is denied the
   named-object directory it creates at startup (`0xC0000022`, in every
   session), so a sandboxed Bash command is refused with guidance to use the
-  PowerShell tool or an approved host run. .NET Framework's
+  PowerShell tool or an approved host run. Inside a container `cmd.exe`
+  answers "Access is denied" for an unquoted absolute program path
+  (`C:\Windows\System32\whoami.exe`, any casing) while the quoted path and a
+  bare name found on `PATH` run (measured); the PowerShell launch quotes its
+  path and is started by the launcher itself, not by `cmd.exe`. .NET Framework's
   `Invoke-WebRequest` ignores the injected `HTTP(S)_PROXY` variables and fails
   closed.
 - **Settings.** Permissions shows the substrate chosen for shells and
