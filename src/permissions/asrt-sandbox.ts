@@ -8,7 +8,7 @@ import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep, win32 as winPath } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
@@ -591,6 +591,14 @@ onEgressInvocationReleased((token, { processGroup }) => {
 let _baseTrustedSettings: TrustedSandboxSettings | undefined;
 
 /**
+ * Paths granted on Windows outside the session config, by
+ * {@link grantWindowsWorkerFilesystemAccess}, with how many live grants hold
+ * each. A per-exec deny beneath one must still reach srt-win
+ * ({@link windowsDenyTargets}).
+ */
+const _windowsLiveGrants = new Map<string, number>();
+
+/**
  * Live host-allocated socket DIRECTORIES currently registered for UDS access
  * (see the WORKER UDS header), each with the number of holders that registered
  * it. Each entry contributes a macOS `allowUnixSockets` `(subpath <dir>)`
@@ -908,25 +916,40 @@ export function buildPerCommandSandboxCustomConfig(
   // A per-command deny REPLACES the shared one, so the trusted custom denies
   // are restated here once for every wrap rather than by each composer.
   let hiddenSeccompHelper: string | undefined;
+  // What the wrap may be granted on Windows: per-exec grants are refused
+  // there (see above), so the session's and the live worker grants.
+  const windowsGrants = [
+    ...(filesystem.allowRead ?? _baseTrustedSettings?.allowRead ?? []),
+    ...(filesystem.allowWrite ?? _baseTrustedSettings?.allowWrite ?? []),
+    ..._windowsLiveGrants.keys(),
+  ];
   if (filesystem.denyRead !== undefined) {
     const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
     const denyRead = [...new Set([...filesystem.denyRead, ...pluginRoots, ...(_baseTrustedSettings?.denyRead ?? [])])];
     hiddenSeccompHelper = seccompHelperHiddenBy(denyRead);
-    fs.denyRead = asrtReadDenyPaths(
-      denyRead,
-      // The plugin roots are spelled exactly for the reason the private roots
-      // are: a wrap whose reads include an ancestor of one (a worker's or a
-      // bundled process's host temp directory, above a test `AVE_HOME`) would
-      // otherwise lose its own plugin directories to the re-emitted deny.
-      [...appOwnedSandboxPrivateRoots(), ...pluginRoots],
+    fs.denyRead = windowsDenyTargets(
+      asrtReadDenyPaths(
+        denyRead,
+        // The plugin roots are spelled exactly for the reason the private roots
+        // are: a wrap whose reads include an ancestor of one (a worker's or a
+        // bundled process's host temp directory, above a test `AVE_HOME`) would
+        // otherwise lose its own plugin directories to the re-emitted deny.
+        [...appOwnedSandboxPrivateRoots(), ...pluginRoots],
+      ),
+      _baseTrustedSettings?.userDataDir,
+      windowsGrants,
     );
   }
   if (filesystem.allowWrite !== undefined) fs.allowWrite = writeRootsOutsideReadDenies(filesystem.allowWrite, floor);
   if (filesystem.denyWrite !== undefined) {
-    fs.denyWrite = [
-      ...filesystem.denyWrite,
-      ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite ?? []) : []),
-    ];
+    fs.denyWrite = windowsDenyTargets(
+      [
+        ...filesystem.denyWrite,
+        ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite ?? []) : []),
+      ],
+      _baseTrustedSettings?.userDataDir,
+      windowsGrants,
+    );
   }
   if (filesystem.allowRead !== undefined || hiddenSeccompHelper !== undefined) {
     // A per-command allowRead REPLACES the shared one, so a wrap that only
@@ -1310,25 +1333,114 @@ function readDenyCoversPath(denied: string, canonicalPath: string): boolean {
   }
 }
 
-function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string): string[] {
+function foldPath(path: string): string {
+  const normalized = winPath.normalize(path).replace(/[\\/]+$/, "");
+  return (normalized.endsWith(":") ? `${normalized}\\` : normalized).toLowerCase();
+}
+
+/** True when `child` is `parent` or lies beneath it (Windows, case-insensitive). */
+function isWindowsPathAtOrUnder(child: string, parent: string): boolean {
+  const c = foldPath(child);
+  const p = foldPath(parent);
+  if (c === p) return true;
+  return c.startsWith(p.endsWith("\\") ? p : `${p}\\`);
+}
+
+function electronUserDataDir(userDataDir: string | undefined): string {
   const home = homedir();
-  const ave = aveHome();
-  // Electron userData dir — exact path when provided by a trusted caller;
-  // otherwise derived from os.homedir() + per-platform literal (NO `electron`
-  // import — keeps this module safe for any non-renderer context).
-  // FIX 1 (security MINOR): Linux base honors XDG_CONFIG_HOME, mirroring
-  // Electron's own resolution: `process.env.XDG_CONFIG_HOME || ~/.config`.
-  const electronUserData =
+  return (
     userDataDir ??
     (process.platform === "darwin"
       ? join(home, "Library", "Application Support", "Ave")
       : process.platform === "win32"
         ? join(home, "AppData", "Roaming", "Ave")
         : join(
-            // Linux: mirror Electron's XDG_CONFIG_HOME resolution.
+            // Linux: honor XDG_CONFIG_HOME.
             process.env.XDG_CONFIG_HOME ?? join(home, ".config"),
             "Ave",
-          ));
+          ))
+  );
+}
+
+const POSIX_CRON_DENIES = [
+  "/usr/lib/cron/tabs", // macOS user crontab spool
+  "/var/spool/cron/crontabs", // Linux (Debian/Ubuntu) user crontab spool
+  "/var/spool/cron", // Linux (RHEL/Fedora) user crontab spool
+  "/etc/cron.d", // system cron drop-in dir
+] as const;
+const POSIX_ASRT_TEMP_DENIES = ["/tmp/claude", "/private/tmp/claude"] as const;
+
+/** The directories among the write-persistence denies (see getDefaultSensitiveWriteDenyPaths). */
+function writePersistenceDirectories(): string[] {
+  const home = homedir();
+  return [
+    join(home, ".config"),
+    join(home, "Library", "LaunchAgents"),
+    dirname(dirname(getVendoredSrtWinExePath())),
+    join(home, ".npm", "_logs"),
+    join(home, ".claude", "debug"),
+  ];
+}
+
+/**
+ * The deny lists as `srt-win acl stamp` must receive them. srt-win creates a
+ * deny target that does not exist yet, so the deny lands on the exact path:
+ * an empty FILE, unless the path ends in a separator, then a directory. So on
+ * Windows:
+ *   - a directory row gets its trailing `\`. Without it `~/.ave/keys`,
+ *     `~/.config` or `~/.claude/debug` became 0-byte files (measured on
+ *     Windows 26300), and every later `mkdir` of them failed;
+ *   - a POSIX-rooted row (`/etc/shadow`, `/tmp/claude`, …) is dropped. It
+ *     resolves against the current drive, and srt-win materialized
+ *     `C:\etc\shadow`, `C:\var\spool\cron`, `C:\tmp\claude` and the like;
+ *   - a row in the user profile that no grant covers is dropped. The sandbox
+ *     user has no rights in the profile (its DACL is SYSTEM, Administrators
+ *     and the user), so such a deny takes nothing away. It made `acl stamp`
+ *     time out: srt-win also puts an inheritable `(D;OICI;FILE_DELETE_CHILD)`
+ *     on the row's parent, and Windows walks the parent's whole subtree to
+ *     apply it, once per row. Measured on Windows 26300: 25 ms under a small
+ *     folder, 5.2 s under a 75 000-entry one, 404 s (and 318 s to restore)
+ *     under the profile. A row outside the profile stays: other drives
+ *     commonly let Authenticated Users in. A grant that covers the profile
+ *     itself keeps every row, and the stamp is slow again. A worker's grant
+ *     comes after the session stamp, so a row beneath one reaches srt-win as
+ *     a per-exec deny of the worker's wrap, which restates the floor.
+ * Other platforms get the list unchanged.
+ */
+function windowsDenyTargets(
+  paths: readonly string[],
+  userDataDir: string | undefined,
+  grants: readonly string[],
+): string[] {
+  if (process.platform !== "win32") return [...paths];
+  const home = homedir();
+  const ave = aveHome();
+  const directories = new Set(
+    [
+      ...SENSITIVE_PATH_ENTRIES.filter((entry) => entry.kind === "dir" && entry.anchor !== "root").map((entry) =>
+        join(entry.anchor === "ave-home" ? ave : home, ...entry.segments),
+      ),
+      electronUserDataDir(userDataDir),
+      ...writePersistenceDirectories(),
+    ].map(caseFoldForMatch),
+  );
+  const posixRooted = new Set<string>([
+    ...SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor === "root").map((entry) => "/" + entry.segments.join("/")),
+    ...POSIX_CRON_DENIES,
+    ...POSIX_ASRT_TEMP_DENIES,
+  ]);
+  return paths
+    .filter((path) => !posixRooted.has(path))
+    .filter((path) => !isWindowsPathAtOrUnder(path, home) || grants.some((grant) => isWindowsPathAtOrUnder(path, grant)))
+    .map((path) => (!/[\\/]$/.test(path) && directories.has(caseFoldForMatch(path)) ? `${path}\\` : path));
+}
+
+function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string): string[] {
+  const home = homedir();
+  const ave = aveHome();
+  // Exact runtime data dir when provided by a trusted caller; otherwise
+  // derive the platform default without importing main-process modules.
+  const electronUserData = electronUserDataDir(userDataDir);
   const raw = [
     // ── The sensitive-path table, projected to literal absolute paths ──
     // Projected from the single authority, SENSITIVE_PATH_ENTRIES in
@@ -1446,10 +1558,7 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     join(home, "Library", "LaunchAgents"),
     // ── User crontab spool + system cron drop-ins (a crontab edit re-executes
     //    outside the sandbox) ──
-    "/usr/lib/cron/tabs", // macOS user crontab spool
-    "/var/spool/cron/crontabs", // Linux (Debian/Ubuntu) user crontab spool
-    "/var/spool/cron", // Linux (RHEL/Fedora) user crontab spool
-    "/etc/cron.d", // system cron drop-in dir
+    ...POSIX_CRON_DENIES,
     // ── ASRT vendored srt-win backend dir (re-exec vector) ──
     // A sandboxed process must never be able to WRITE/overwrite the broker binary
     // it is itself spawned through. 0.0.67's explicit srt-win path closes the
@@ -1476,8 +1585,7 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     // this list, so denying it also broke every `writeFileSync(join(tmpdir(),
     // …))` in every confined child. `useAppOwnedSandboxTempRoot` moved the temp
     // root under `~/.ave` first, which is what makes the deny survivable.
-    "/tmp/claude",
-    "/private/tmp/claude",
+    ...POSIX_ASRT_TEMP_DENIES,
     join(home, ".npm", "_logs"),
     join(home, ".claude", "debug"),
   ];
@@ -1580,13 +1688,19 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
     }
   }
   const sharedFloor = getProtectedReadDenyPaths(trustedSettings.userDataDir, trustedSettings.denyRead);
+  const allowWrite = writeRootsOutsideReadDenies(trustedSettings.allowWrite ?? [], sharedFloor);
+  const allowRead =
+    trustedSettings.allowRead !== undefined ? readGrantsOutsideReadDenies(trustedSettings.allowRead, sharedFloor, []) : undefined;
+  const windowsGrants = [...allowWrite, ...(allowRead ?? [])];
   const filesystem: FilesystemConfig = {
-    denyRead: asrtReadDenyPaths(denyReadUnion, appOwnedSandboxPrivateRoots()),
-    allowWrite: writeRootsOutsideReadDenies(trustedSettings.allowWrite ?? [], sharedFloor),
-    denyWrite: denyWriteUnion,
-    ...(trustedSettings.allowRead !== undefined
-      ? { allowRead: readGrantsOutsideReadDenies(trustedSettings.allowRead, sharedFloor, []) }
-      : {}),
+    denyRead: windowsDenyTargets(
+      asrtReadDenyPaths(denyReadUnion, appOwnedSandboxPrivateRoots()),
+      trustedSettings.userDataDir,
+      windowsGrants,
+    ),
+    allowWrite,
+    denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir, windowsGrants),
+    ...(allowRead !== undefined ? { allowRead } : {}),
   };
 
   // Windows-only: pin the egress proxy bind range so it matches the WFP permit
@@ -2625,6 +2739,8 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
     }
   }
 
+  for (const path of allowRead) _windowsLiveGrants.set(path, (_windowsLiveGrants.get(path) ?? 0) + 1);
+
   let released = false;
   return {
     allowRead,
@@ -2632,6 +2748,11 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
     release: () => {
       if (released) return;
       released = true;
+      for (const path of allowRead) {
+        const held = (_windowsLiveGrants.get(path) ?? 0) - 1;
+        if (held > 0) _windowsLiveGrants.set(path, held);
+        else _windowsLiveGrants.delete(path);
+      }
       // Capture srtWin in the closure — the release may run long after the
       // dynamic import scope has gone; it still needs the explicit spawn
       // descriptor (0.0.67 has no implicit vendored fallback).

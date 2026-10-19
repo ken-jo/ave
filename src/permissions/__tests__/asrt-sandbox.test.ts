@@ -29,7 +29,7 @@ import {
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 
@@ -116,6 +116,25 @@ afterEach(async () => {
     await resetAsrtSandbox();
   }
 });
+
+/** Strip the directory marker only for comparisons with the literal floor. */
+function bare(paths: readonly unknown[]): string[] {
+  return paths.map((path) => String(path).replace(/[\\/]$/, ""));
+}
+
+/**
+ * A row of an ungranted config as srt-win receives it: POSIX-rooted rows never
+ * reach it (they would resolve on the current drive), nor do rows in the
+ * profile, where the sandbox user has no rights.
+ */
+function reachesAsrt(path: string): boolean {
+  if (process.platform !== "win32") return true;
+  const home = homedir().toLowerCase();
+  const folded = path.toLowerCase();
+  return !path.startsWith("/") && folded !== home && !folded.startsWith(home.endsWith(sep) ? home : home + sep);
+}
+
+const ORIGINAL_PLATFORM_FOR_DENY_TEST = process.platform;
 
 function runArgv(
   argv: string[],
@@ -961,8 +980,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     expect(getDefaultSensitiveReadDenyPaths()).toContain(runtime);
     expect(getDefaultSensitiveWriteDenyPaths()).toContain(runtime);
     const config = buildSandboxConfig({ allowedDomains: [], denyRead: [], denyWrite: [] });
-    expect(config.filesystem.denyRead).toContain(runtime);
-    expect(config.filesystem.denyWrite).toContain(runtime);
+    expect(bare(config.filesystem.denyRead)).toContain(runtime);
+    expect(bare(config.filesystem.denyWrite)).toContain(runtime);
     expect(config.filesystem.denyRead).not.toContain(profile);
     expect(config.filesystem.denyWrite).not.toContain(profile);
   });
@@ -1021,7 +1040,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       allowedDomains: [],
       userDataDir: customUserData,
     });
-    expect(config.filesystem.denyRead).toContain(customUserData);
+    expect(bare(config.filesystem.denyRead)).toContain(customUserData);
   });
 
   it("buildSandboxConfig unions the sensitive deny-list into filesystem.denyRead", () => {
@@ -1032,10 +1051,10 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       // On macOS the sandbox private roots reach ASRT as exact globs, which it
       // re-emits after the allows minus a wrap's own directory under them.
       const spelled = process.platform === "darwin" && privateRoots.includes(p) ? `${p.slice(0, -1)}[${p.slice(-1)}]` : p;
-      expect(config.filesystem.denyRead).toContain(spelled);
+      if (reachesAsrt(p)) expect(bare(config.filesystem.denyRead)).toContain(spelled);
     }
     // Secrets is part of the floor (the prior single-entry deny is subsumed).
-    expect(config.filesystem.denyRead).toContain(join(FAKE_AVE_HOME, "secrets"));
+    expect(bare(config.filesystem.denyRead)).toContain(join(FAKE_AVE_HOME, "secrets"));
   });
 
   it("buildSandboxConfig keeps a caller-supplied denyRead AND adds the sensitive floor (union, deduped)", () => {
@@ -1044,13 +1063,13 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     // Caller entry survives.
     expect(config.filesystem.denyRead).toContain(extra);
     // Sensitive floor is still present.
-    expect(config.filesystem.denyRead).toContain(join(FAKE_AVE_HOME, "secrets"));
+    expect(bare(config.filesystem.denyRead)).toContain(join(FAKE_AVE_HOME, "secrets"));
     // Passing a path already on the floor does not duplicate it.
     const dupConfig = buildSandboxConfig({
       allowedDomains: [],
       denyRead: [join(FAKE_AVE_HOME, "secrets")],
     });
-    const occurrences = dupConfig.filesystem.denyRead.filter(
+    const occurrences = bare(dupConfig.filesystem.denyRead).filter(
       (p) => p === join(FAKE_AVE_HOME, "secrets"),
     ).length;
     expect(occurrences).toBe(1);
@@ -1060,21 +1079,105 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
     const sensitive = getDefaultSensitiveWriteDenyPaths();
     for (const p of sensitive) {
-      expect(config.filesystem.denyWrite).toContain(p);
+      if (reachesAsrt(p)) expect(bare(config.filesystem.denyWrite)).toContain(p);
     }
-    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".config"));
-    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".ssh"));
+    if (reachesAsrt(join(homedir(), ".config"))) {
+      expect(bare(config.filesystem.denyWrite)).toContain(join(homedir(), ".config"));
+      expect(bare(config.filesystem.denyWrite)).toContain(join(homedir(), ".ssh"));
+    }
   });
 
   it("buildSandboxConfig keeps caller-supplied denyWrite AND adds the sensitive write floor", () => {
     const extra = join(tmpdir(), "caller-supplied-write-deny-xyz");
     const config = buildSandboxConfig({ allowedDomains: [], denyWrite: [extra] });
     expect(config.filesystem.denyWrite).toContain(extra);
-    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".config"));
+    if (reachesAsrt(join(homedir(), ".config"))) {
+      expect(bare(config.filesystem.denyWrite)).toContain(join(homedir(), ".config"));
+    }
 
     const dup = join(homedir(), ".config");
     const dupConfig = buildSandboxConfig({ allowedDomains: [], denyWrite: [dup] });
-    expect(dupConfig.filesystem.denyWrite.filter((p) => p === dup)).toHaveLength(1);
+    expect(bare(dupConfig.filesystem.denyWrite).filter((p) => p === dup)).toHaveLength(reachesAsrt(dup) ? 1 : 0);
+  });
+
+  it("Windows: directory denies reach srt-win as directories, and POSIX rows do not reach it", () => {
+    const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
+    process.env.AVE_ASRT_TEST_HOME = join(tmpdir(), "ave-windeny-profile");
+    setProcessPlatform("win32");
+    try {
+      const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
+      const denyWrite = config.filesystem.denyWrite.map(String);
+      // A missing target is created by `srt-win acl stamp`: a trailing
+      // separator makes it a directory instead of a 0-byte file.
+      expect(denyWrite).toContain(`${join(FAKE_AVE_HOME, "keys")}\\`);
+      expect(denyWrite).toContain(join(FAKE_AVE_HOME, "settings.json"));
+      // `/etc/shadow` would become `<drive>:\etc\shadow`.
+      expect(denyWrite.filter((p) => p.startsWith("/"))).toEqual([]);
+      expect(config.filesystem.denyRead.map(String).filter((p) => p.startsWith("/"))).toEqual([]);
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+    }
+  });
+
+  it("Windows: a deny in the profile reaches srt-win only under a grant", () => {
+    const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
+    const profile = join(tmpdir(), "ave-windeny-profile");
+    process.env.AVE_ASRT_TEST_HOME = profile;
+    setProcessPlatform("win32");
+    try {
+      const work = join(profile, "work");
+      const config = buildSandboxConfig({
+        allowedDomains: [],
+        strictAllowlist: true,
+        allowWrite: [work],
+        denyWrite: [join(work, "locked")],
+      });
+      const denies = [...config.filesystem.denyRead, ...config.filesystem.denyWrite].map(String);
+      // Under the grant: kept, the sandbox user could otherwise reach it.
+      expect(denies).toContain(join(work, "locked"));
+      // Elsewhere in the profile the sandbox user has no rights, and srt-win
+      // would stamp the profile itself as the parent (404 s measured).
+      expect(denies.filter((p) => p.startsWith(profile) && !p.startsWith(work))).toEqual([]);
+      // Outside the profile: kept.
+      expect(denies).toContain(join(FAKE_AVE_HOME, "settings.json"));
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+    }
+  });
+
+  it.each([
+    ["equal paths", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work\\", "C:\\Users\\sandbox-test\\work", true],
+    ["case folding", "C:\\Users\\sandbox-test", "c:\\users\\SANDBOX-TEST\\WORK", "C:\\Users\\sandbox-test\\work\\locked", true],
+    ["mixed separators", "C:\\Users\\sandbox-test", "C:/Users/sandbox-test/work/", "C:\\Users\\sandbox-test\\work\\locked", true],
+    ["normalized descendants", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work", "C:\\Users\\sandbox-test\\work\\nested\\..\\locked", true],
+    ["normalized escapes", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work", "C:\\Users\\sandbox-test\\work\\..\\locked", false],
+    ["sibling boundaries", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work", "C:\\Users\\sandbox-test\\work-neighbor\\locked", false],
+    ["drive roots", "C:\\Users\\sandbox-test", "C:\\", "C:\\Users\\sandbox-test\\locked", true],
+    ["profile roots", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\", "C:\\Users\\sandbox-test\\locked", true],
+    ["network paths", "\\\\server\\profiles\\sandbox-test", "//SERVER/profiles/sandbox-test/work/", "\\\\server\\profiles\\sandbox-test\\work\\locked", true],
+    ["network share boundaries", "\\\\server\\profiles\\sandbox-test", "\\\\server\\profiles\\sandbox-test\\work", "\\\\server\\profiles\\sandbox-test\\work-neighbor\\locked", false],
+  ])("Windows: profile deny coverage respects %s", (_name, profile, grant, target, kept) => {
+    const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
+    process.env.AVE_ASRT_TEST_HOME = profile;
+    setProcessPlatform("win32");
+    try {
+      const config = buildSandboxConfig({
+        allowedDomains: [],
+        allowWrite: [grant],
+        denyRead: [target],
+        denyWrite: [target],
+      });
+      expect(config.filesystem.denyRead.includes(target)).toBe(kept);
+      expect(config.filesystem.denyWrite.includes(target)).toBe(kept);
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+    }
   });
 
   it("default-OFF: computing the deny-list / config does NOT activate the sandbox gate", () => {
