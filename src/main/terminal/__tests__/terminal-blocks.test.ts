@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   TerminalBlockTracker,
+  USER_INPUT_QUIET_MS,
   decodePercentEncoded,
   getTerminalBlockTracker,
   getWindowTerminalBlockTracker,
@@ -390,10 +391,44 @@ describe("prompt state (whether a command may be typed now)", () => {
     expect(tracker.promptState()).toBe("exited");
   });
 
-  it("treats fish's prompt (no end-of-prompt marker) as ready", () => {
+  it("refuses fish's prompt, which marks no end of prompt, so the user's typing there cannot be told", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE });
     tracker.recordOutput(`${mark("P;Cwd=/w")}${mark("A")}user@host /w> `);
+    expect(tracker.promptState()).toBe("no-prompt-end-marker");
+    // Typed text after fish's prompt looks the same as an empty prompt.
+    tracker.recordOutput("rm -rf ");
+    expect(tracker.promptState()).toBe("no-prompt-end-marker");
+  });
+
+  it("counts the user's keystrokes as typing until they have been quiet for a while (keys not yet echoed)", () => {
+    let clock = 10_000;
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, now: () => clock });
+    tracker.recordOutput(prompt());
     expect(tracker.promptState()).toBe("ready");
+    // Written to the PTY, not echoed yet: the echo is still empty.
+    tracker.recordInput("g");
+    expect(tracker.promptState()).toBe("pending-input");
+    clock += USER_INPUT_QUIET_MS - 1;
+    expect(tracker.promptState()).toBe("pending-input");
+    clock += 1;
+    expect(tracker.promptState()).toBe("ready");
+    // Input before this prompt counts the same way: the clock, not the prompt, decides.
+    tracker.recordInput("\r");
+    tracker.recordOutput(prompt());
+    expect(tracker.promptState()).toBe("pending-input");
+  });
+
+  it("never hands the marker nonce out in a block's command or output", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE });
+    tracker.recordOutput(cycle(`echo ${NONCE}`, `${NONCE}\r\n`, 0));
+    tracker.recordOutput(`${mark("P;Cwd=/work")}${mark("A")}% ${mark("B")}printf x${NONCE}y\r\n${mark("C;cmdline_url=printf")}x${NONCE}y`);
+    const blocks = tracker.recent(5);
+    expect(blocks).toHaveLength(2);
+    for (const block of blocks) {
+      expect(JSON.stringify(block)).not.toContain(NONCE);
+      expect(block.output).toContain("[terminal-nonce]");
+    }
+    expect(tracker.list().map((block) => block.command).join(" ")).not.toContain(NONCE);
   });
 
   it("tells subscribers about every marker and the exit, and stops after unsubscribe", () => {
@@ -403,7 +438,8 @@ describe("prompt state (whether a command may be typed now)", () => {
     expect(tracker.nextBlockId()).toBe(1);
     tracker.recordOutput(cycle("make", "built\r\n", 0));
     // P, A, B, C, D: one notification per marker.
-    expect(seen).toEqual(["between-prompts", "ready", "ready", "command-running", "between-prompts"]);
+    // Between A and B the shell has not yet shown that it marks the end of its prompt.
+    expect(seen).toEqual(["between-prompts", "no-prompt-end-marker", "ready", "command-running", "between-prompts"]);
     expect(tracker.nextBlockId()).toBe(2);
     tracker.recordExit();
     expect(seen.at(-1)).toBe("exited");

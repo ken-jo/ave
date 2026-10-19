@@ -421,9 +421,10 @@ export async function authorizeToolInvocation(
       : isCanonicalPowerShellTool(tool) ? "powershell" as const : undefined;
     // A command typed into the user's terminal is judged as a bash command
     // in the directory that terminal's shell reported — the one sealed into
-    // its approval scope before this decision (terminal-run.ts). The
-    // terminal's zsh/bash/fish reads the same POSIX command words the rules
-    // match.
+    // its approval scope before this decision (terminal-run.ts). Only zsh and
+    // bash terminals are typed into, and the command text refuses everything
+    // they read differently from bash (terminal-command-text.ts), so the words
+    // the rules match are the words the shell runs.
     const terminalScope = isCanonicalTerminalRunTool(tool)
       ? terminalCommandScopeOf(invocationPermissionContext.approvalMemory)
       : undefined;

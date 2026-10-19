@@ -7,27 +7,49 @@
  * the approval card never showed as its own line, a tab triggers completion,
  * ESC starts an editor or terminal sequence (bracketed-paste markers among
  * them), and Ctrl-C/Ctrl-U/Ctrl-D signal the shell or rewrite the line.
- * Invisible formatting characters (zero-width, bidirectional overrides) make
- * the card show a different command from the one the shell reads. All of
- * these are refused; there is no escape or "paste mode" that lets them
- * through.
+ * Characters a reader cannot see — format and default-ignorable characters,
+ * non-ASCII spaces, the braille blank, a combining mark stacked on ASCII, a
+ * long run of whitespace that pushes the rest off the card — make the card
+ * show a different command from the one the shell reads. All of these are
+ * refused; there is no escape or "paste mode" that lets them through.
  *
- * The line must also be one the shell runs exactly as approved and at once:
- *  - history expansion (`!!`, `!$`, `!name`, a leading `^old^new`) would run
- *    text the user never saw, so a `!` may only precede whitespace, `=`, `(`
- *    or the end of the line, where no interactive shell expands it;
+ * The line must also be one the shell runs exactly as approved and at once,
+ * and the same in every shell the terminal may run, because the permission
+ * rules read it as bash:
+ *  - history expansion (`!!`, `!$`, `!name`, a leading `^old^new`, the `r`
+ *    and `fc` re-run commands) would run text the user never saw, so a `!` may
+ *    only precede whitespace, `=`, `(` or the end of the line, where no
+ *    interactive shell expands it;
+ *  - a `#` comment is a comment in bash but ordinary text in an interactive
+ *    zsh without `interactivecomments`, so `ls # ; rm -rf x` would run the
+ *    `rm` the rules never saw; an unquoted `#` that starts a word is refused
+ *    whatever the shell's options;
+ *  - zsh reads a command word starting with `=` as a path lookup and
+ *    `nocorrect`/`noglob` as precommand modifiers, which bash does not;
+ *  - a construct the shell analysis does not model (`case`,
+ *    `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`) cannot
+ *    be checked for any of this, so it is refused too;
  *  - an unfinished construct (an open quote, a here-document, a trailing
  *    operator or backslash) leaves the shell waiting at a continuation prompt
- *    with the terminal half-typed, so the line must parse as a complete shell
- *    command.
+ *    with the terminal half-typed, so the line must parse as one complete
+ *    shell command.
+ *
+ * The command also must not change the shell for the user's later commands:
+ * no function definitions, no assignments to the variables a shell runs or
+ * resolves later commands through (prompt and hook variables, `PATH`, `IFS`,
+ * …), no builtins that install aliases, traps, hooks, options or key
+ * bindings, and no reference to the shell integration's own `__ave_*` names
+ * (its marker nonce among them).
  *
  * Pure: shared by the tool (before any approval is asked) and the PTY write
  * (which re-checks the characters it is handed).
  */
-import { analyzeShell } from "./shell-analysis.js";
+import { analyzeShell, staticShellWord, type ShellStatement, type ShellWord } from "./shell-analysis.js";
 
 /** Characters one command may hold — the length a block records (terminal-blocks.ts). */
 export const MAX_TERMINAL_COMMAND_CHARS = 4096;
+/** Longest run of whitespace a command may hold, so nothing hides past the card's edge. */
+export const MAX_TERMINAL_COMMAND_WHITESPACE_RUN = 16;
 
 export type TerminalCommandTextProblem =
   | "empty"
@@ -35,19 +57,50 @@ export type TerminalCommandTextProblem =
   | "multi-line"
   | "control-character"
   | "invisible-character"
+  | "whitespace-run"
   | "history-expansion"
+  | "comment"
+  | "shell-divergent"
+  | "shell-state"
+  | "shell-integration"
+  | "unchecked-construct"
   | "incomplete";
 
 /** C0 controls (tab, LF and CR included), DEL and the C1 controls. */
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/u;
 const LINE_BREAK = /[\n\r\u2028\u2029]/u;
 /**
- * Zero-width and joiner characters, bidirectional embeddings, overrides and
- * isolates, invisible operators and the byte-order mark.
+ * Characters that render as nothing or as blank space a reader takes for an
+ * ordinary space: format characters, default-ignorable code points (fillers,
+ * variation selectors, tags), every space separator except U+0020, and the
+ * braille pattern blank.
  */
-const INVISIBLE_CHARACTER = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/u;
+const INVISIBLE_CHARACTER = /[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Zs}\u2800]/u;
+/** A combining mark, judged by what it attaches to ({@link hasHiddenCombiningMark}). */
+const COMBINING_MARK = /\p{M}/u;
+const NON_ASCII = /[^\u0000-\u007f]/u;
 /** A `!` an interactive bash or zsh would expand. */
 const HISTORY_EXPANSION = /!(?![\s=(]|$)/u;
+
+/** Command words that run differently, or re-run history, in an interactive zsh or bash. */
+const DIVERGENT_COMMAND_WORDS: ReadonlySet<string> = new Set(["nocorrect", "noglob", "r", "fc"]);
+/** Builtins whose effect outlives the command: aliases, traps, hooks, options, bindings, sourced code. */
+const STATE_CHANGING_COMMAND_WORDS: ReadonlySet<string> = new Set([
+  "alias", "unalias", "trap", "add-zsh-hook", "autoload", "setopt", "unsetopt", "shopt", "set", "bindkey",
+  "zle", "unset", "unfunction", "functions", "enable", "disable", "hash", "source", ".", "exec",
+  "eval", "emulate", "zmodload", "complete", "compdef", "bind",
+]);
+/** Wrappers that run their first non-option argument as a command in the shell itself. */
+const COMMAND_WRAPPERS: ReadonlySet<string> = new Set(["builtin", "command", "time"]);
+/** Declaration builtins whose `NAME=value` arguments assign in the shell itself. */
+const DECLARATION_COMMAND_WORDS: ReadonlySet<string> = new Set(["export", "declare", "typeset", "local", "readonly", "integer", "float"]);
+/**
+ * Variables an interactive shell runs or resolves every later command
+ * through: prompt and hook variables, the command search path, word
+ * splitting, and startup files.
+ */
+const SHELL_STATE_VARIABLES = /^(?:PROMPT_COMMAND|PS[0-9]|PROMPT[0-9]?|RPROMPT[0-9]?|RPS[0-9]|(?:precmd|preexec|chpwd|periodic|zshaddhistory|zshexit)_functions|TRAP[A-Z]+|PATH|path|IFS|CDPATH|cdpath|FPATH|fpath|BASH_ENV|ENV|ZDOTDIR|HISTFILE|HISTCONTROL|HISTIGNORE|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|__ave_\w*)$/u;
+const ASSIGNMENT_WORD = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=/u;
 
 /** The first reason `command` may not be typed into a terminal, or null when it may. */
 export function terminalCommandTextProblem(command: string): TerminalCommandTextProblem | null {
@@ -55,21 +108,165 @@ export function terminalCommandTextProblem(command: string): TerminalCommandText
   if (command.length > MAX_TERMINAL_COMMAND_CHARS) return "too-long";
   if (LINE_BREAK.test(command)) return "multi-line";
   if (CONTROL_CHARACTER.test(command)) return "control-character";
-  if (INVISIBLE_CHARACTER.test(command)) return "invisible-character";
+  if (hasInvisibleCharacter(command)) return "invisible-character";
+  if (new RegExp(`\\s{${MAX_TERMINAL_COMMAND_WHITESPACE_RUN + 1},}`, "u").test(command)) return "whitespace-run";
   if (HISTORY_EXPANSION.test(command) || command.trimStart().startsWith("^")) return "history-expansion";
+  if (command.includes("__ave_")) return "shell-integration";
+  if (hasUnquotedComment(command)) return "comment";
   // An odd run of trailing backslashes escapes the Enter that submits the line.
   const trailingBackslashes = /\\*$/u.exec(command)?.[0].length ?? 0;
   if (trailingBackslashes % 2 === 1) return "incomplete";
-  let complete: boolean;
+  let analysis: ReturnType<typeof analyzeShell>;
   try {
-    complete = analyzeShell(command, "bash").ok;
+    analysis = analyzeShell(command, "bash");
   } catch {
-    complete = false;
+    return "incomplete";
   }
-  return complete ? null : "incomplete";
+  if (!analysis.ok) return "incomplete";
+  return statementProblem(analysis.program);
 }
 
 /** True when `command` is free of every character this module refuses (the PTY write's re-check). */
 export function hasOnlyTypeableCharacters(command: string): boolean {
-  return !LINE_BREAK.test(command) && !CONTROL_CHARACTER.test(command) && !INVISIBLE_CHARACTER.test(command);
+  return !LINE_BREAK.test(command) && !CONTROL_CHARACTER.test(command) && !hasInvisibleCharacter(command);
+}
+
+function hasInvisibleCharacter(command: string): boolean {
+  for (const ch of command) {
+    if (ch !== " " && INVISIBLE_CHARACTER.test(ch)) return true;
+  }
+  return hasHiddenCombiningMark(command);
+}
+
+/**
+ * A combining mark may follow a non-ASCII letter (or another such mark), as
+ * in scripts that write vowels with marks. On anything else — an ASCII
+ * letter, a digit, punctuation, a space — it changes how a character looks
+ * without changing what the shell reads.
+ */
+function hasHiddenCombiningMark(command: string): boolean {
+  let base: string | null = null;
+  for (const ch of command) {
+    if (COMBINING_MARK.test(ch)) {
+      if (base === null || !/\p{L}/u.test(base) || !NON_ASCII.test(base)) return true;
+      continue;
+    }
+    base = ch;
+  }
+  return false;
+}
+
+/**
+ * An unquoted `#` at the start of a word: a comment to bash, text to a zsh
+ * without `interactivecomments`.
+ */
+function hasUnquotedComment(command: string): boolean {
+  let quote: "'" | "\"" | null = null;
+  let escaped = false;
+  let wordStart = true;
+  for (const ch of command) {
+    if (escaped) {
+      escaped = false;
+      wordStart = false;
+      continue;
+    }
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote === "\"") {
+      if (ch === "\"") quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === "\"") {
+      quote = ch;
+      wordStart = false;
+      continue;
+    }
+    if (ch === "#" && wordStart) return true;
+    wordStart = /[\s;&|()<>`{}]/u.test(ch);
+  }
+  return false;
+}
+
+function statementProblem(statement: ShellStatement): TerminalCommandTextProblem | null {
+  switch (statement.kind) {
+    case "command":
+      return commandProblem(statement);
+    case "function":
+      return "shell-state";
+    case "sequence":
+    case "pipeline":
+      for (const child of statement.statements) {
+        const problem = statementProblem(child);
+        if (problem !== null) return problem;
+      }
+      return null;
+    case "and":
+    case "or":
+      return statementProblem(statement.left) ?? statementProblem(statement.right);
+    case "subshell":
+    case "background":
+    case "negate":
+      return statementProblem(statement.body);
+    case "redirected":
+      return statementProblem(statement.body) ?? firstWordsProblem(statement.redirects.flatMap((r) => [r.target, r.data].filter((w): w is ShellWord => w !== undefined)));
+    case "for":
+      return firstWordsProblem(statement.values ?? []) ?? statementProblem(statement.body);
+    case "if":
+      return statementProblem(statement.condition) ?? statementProblem(statement.consequent) ?? statementProblem(statement.alternate);
+    case "while":
+      return statementProblem(statement.condition) ?? statementProblem(statement.body);
+    case "unsupported":
+      // A construct the analysis does not model (case, declare/typeset/local,
+      // let, ((…)), select, coproc) cannot be checked for the rules above.
+      return "unchecked-construct";
+  }
+}
+
+/** Command substitutions inside words run commands too. */
+function firstWordsProblem(words: readonly ShellWord[]): TerminalCommandTextProblem | null {
+  for (const word of words) {
+    for (const part of word.parts) {
+      if (part.kind === "substitution") {
+        const problem = statementProblem(part.body);
+        if (problem !== null) return problem;
+      } else if (part.kind === "parameter-choice") {
+        const problem = firstWordsProblem([part.operand]);
+        if (problem !== null) return problem;
+      }
+    }
+  }
+  return null;
+}
+
+function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): TerminalCommandTextProblem | null {
+  const nested = firstWordsProblem([...command.words, ...command.assignments.map((a) => a.value), ...command.assignments.flatMap((a) => a.elements ?? [])]);
+  if (nested !== null) return nested;
+  // `NAME=value` with no command assigns in the shell itself and persists.
+  if (command.assignmentScope === "current" && command.assignments.some((a) => SHELL_STATE_VARIABLES.test(a.name))) {
+    return "shell-state";
+  }
+  const words = command.words.map((word) => staticShellWord(word) ?? word.source.raw);
+  let index = 0;
+  while (index < words.length && COMMAND_WRAPPERS.has(words[index]!)) {
+    index++;
+    while (index < words.length && words[index]!.startsWith("-")) index++;
+  }
+  const head = words[index];
+  if (head === undefined) return null;
+  if (head.startsWith("=") || DIVERGENT_COMMAND_WORDS.has(head)) return "shell-divergent";
+  if (STATE_CHANGING_COMMAND_WORDS.has(head)) return "shell-state";
+  if (DECLARATION_COMMAND_WORDS.has(head)) {
+    for (const argument of words.slice(index + 1)) {
+      const name = ASSIGNMENT_WORD.exec(argument)?.[1] ?? (/^-/u.test(argument) ? undefined : argument);
+      if (name !== undefined && SHELL_STATE_VARIABLES.test(name)) return "shell-state";
+      if (/^-[A-Za-z]*f/u.test(argument)) return "shell-state";
+    }
+  }
+  return null;
 }

@@ -733,7 +733,8 @@ const TERMINAL_NOT_READY_MESSAGES: Record<Exclude<TerminalPromptState, "ready">,
   exited: "the terminal's shell has exited",
   "command-running": "a command is running in the foreground of the terminal; typed text would go to it",
   "between-prompts": "the terminal's shell is between commands and has not shown its prompt yet",
-  "pending-input": "the prompt holds text the user typed and has not run",
+  "pending-input": "the user is typing at the prompt, or it holds text they typed and have not run",
+  "no-prompt-end-marker": "the terminal's shell does not mark the end of its prompt, so typing there cannot be told",
 };
 
 /** Resize the PTY (FitAddon / ResizeObserver). Clamped, no-op for unknown tab. */

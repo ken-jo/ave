@@ -6,13 +6,14 @@ import { ToolApprovalContent } from "../ToolApprovalContent.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { clearActiveSurface, showActiveSurface } from "../../preview/active-surface.js";
+import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../../shared/permission-reviewer-framework.js";
 
 /**
  * A `terminal_run` card shows the exact command and the terminal it will be
  * typed into — the target the host sealed before the card was shown — and
  * remembers the command in that directory for this app session only.
  */
-function terminalRunRequest(): ApprovalRequest {
+function terminalRunRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
   return {
     id: "terminal-run-1",
     category: "tool",
@@ -33,6 +34,24 @@ function terminalRunRequest(): ApprovalRequest {
       key: "terminal_run:command",
       scope: { kind: "terminal-command", commandSha256: "a".repeat(64), tabId: "terminal:3fa91c0e-2", cwd: "/workspace/project/app" },
     },
+    ...overrides,
+  };
+}
+
+function evaluationContext(allowedDirectories: string[]): NonNullable<ApprovalRequest["evaluationContext"]> {
+  return {
+    version: "permission-evaluation-context/v1",
+    reviewerFrameworkVersion: PERMISSION_REVIEWER_FRAMEWORK_VERSION,
+    policyMode: "default",
+    headless: false,
+    source: "builtin",
+    category: "shell",
+    trustOrigin: "llm-tool-arg",
+    executionCwd: "/session",
+    allowedDirectories,
+    pathFields: [],
+    targetFilePaths: [],
+    sensitivePathsAdjacent: [],
   };
 }
 
@@ -60,6 +79,26 @@ describe("ToolApprovalContent terminal_run card", () => {
     const target = screen.getByTestId("approval-terminal-target");
     expect(target).toHaveTextContent("terminal:3fa91c0e-2");
     expect(target).not.toHaveTextContent("Terminal 1");
+  });
+
+  it("lists each non-ASCII character by code point, so a look-alike cannot pass as the letter it imitates", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    // A Cyrillic a in place of the Latin one.
+    render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest({ args: { command: "c\u0430t notes.txt" } })} onDecide={vi.fn()} />);
+    const notes = screen.getAllByTestId("approval-terminal-note");
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toHaveTextContent("U+0430");
+  });
+
+  it("says when the terminal's directory is outside the allowed folders, and only then", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    const { unmount } = render(
+      <ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest({ evaluationContext: evaluationContext(["/elsewhere"]) })} onDecide={vi.fn()} />,
+    );
+    expect(screen.getByTestId("approval-terminal-note")).toHaveTextContent("/workspace/project/app");
+    unmount();
+    render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest({ evaluationContext: evaluationContext(["/workspace/project"]) })} onDecide={vi.fn()} />);
+    expect(screen.queryByTestId("approval-terminal-note")).toBeNull();
   });
 
   it("remembers the command in that directory for this session only", async () => {

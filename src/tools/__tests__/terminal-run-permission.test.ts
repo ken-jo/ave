@@ -147,6 +147,24 @@ describe("terminal_run permission", () => {
     }
   });
 
+  // The terminal's zsh would run text after a `#` that bash (and so the
+  // rules) reads as a comment; such a command must never reach allow mode's
+  // no-card typing or slip past a Bash(...) deny rule.
+  it.each([
+    ["echo SAFE # ; echo PWNED", /# comment/],
+    ["ls # ; rm -rf build", /# comment/],
+    ["=rm -rf build", /starting with =/],
+    ["nocorrect rm -rf build", /nocorrect/],
+    ["r ls=rm", /history re-run/],
+  ])("allow mode with a Bash(rm *) deny refuses %s before any decision, typing nothing", async (command, reason) => {
+    const { decision, requestAndWait, typed, result } = await run(command, { mode: "allow", rules: [{ pattern: "Bash(rm *)", action: "deny" }] });
+    expect(decision).toBeUndefined();
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(typed).toEqual([]);
+    expect(result.is_error).toBe(true);
+    expect(String(result.content)).toMatch(reason);
+  });
+
   it("a busy terminal is refused before any decision or card", async () => {
     const { decision, requestAndWait, typed, result } = await run("npm test", { mode: "allow", busy: true });
     expect(decision).toBeUndefined();

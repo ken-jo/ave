@@ -176,7 +176,7 @@ import {
 // to `canonicalizePathForMatch(process.cwd())` (the workspace-root anchor) and
 // validates a renderer-supplied cwd against it, so the test computes the same.
 import { canonicalizePathForMatch } from "../../../permissions/sensitive-paths.js";
-import { getTerminalBlockTracker, listTerminalBlockTabs } from "../terminal-blocks.js";
+import { USER_INPUT_QUIET_MS, getTerminalBlockTracker, listTerminalBlockTabs } from "../terminal-blocks.js";
 
 /** The workspace root the module anchors the write-jail to by default. */
 const ROOT = canonicalizePathForMatch(process.cwd());
@@ -842,6 +842,23 @@ describe("pty-manager typing an approved agent command", () => {
     expect(pty.written).toEqual(["ls -la\r"]);
     pty.emitExit(0);
     expect(typeTerminalCommand("terminal:0000000a-1", 3, "pwd")).toMatchObject({ ok: false, reason: "no-terminal" });
+  });
+
+  it("refuses while the user's keystrokes may still be on their way to the echo", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { pty, mark } = await zshTerminal(3);
+      pty.emitData(`${mark("D;0")}${mark("P;Cwd=/w")}${mark("A")}% ${mark("B")}`);
+      // Written to the PTY, not echoed back yet: the prompt still looks empty.
+      writeTerminal("terminal:0000000a-1", "r");
+      expect(typeTerminalCommand("terminal:0000000a-1", 3, "ls")).toMatchObject({ ok: false, reason: "pending-input" });
+      expect(pty.written).toEqual(["r"]);
+      vi.setSystemTime(Date.now() + USER_INPUT_QUIET_MS);
+      expect(typeTerminalCommand("terminal:0000000a-1", 3, "ls")).toEqual({ ok: true, firstBlockId: 1 });
+      expect(pty.written).toEqual(["r", "ls\r"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("throws on a line holding characters that would act as keys (a caller bug, never typed)", async () => {

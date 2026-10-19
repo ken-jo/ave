@@ -564,7 +564,10 @@ separate classifier:
   command as `bash` does.
 - The reviewer sees the terminal's own substrate: the active ASRT capability
   while the sandbox still contains shells (a terminal can only be spawned under
-  such a sandbox and keeps its wrap for life), otherwise `none`.
+  such a sandbox and keeps its wrap for life), otherwise `none`. That is the
+  sandbox as it is now; the terminal's jail (its write paths, deny floors and
+  egress allow-list) was fixed when its shell spawned, so later changes to
+  allowed directories or the allow-list do not reach a running terminal.
 
 The target terminal is resolved once, before any decision, and sealed into the
 approval scope: an explicit `tabId`, then the terminal the conversation is
@@ -576,13 +579,34 @@ directory since approval.
 The command is typed only at an empty prompt, as the shell's own command
 markers report it ([terminal-blocks.ts](../../src/main/terminal/terminal-blocks.ts)
 `promptState`). A running command or full-screen program, the user's unsent
-typing at the prompt, a shell between prompts, an exited shell and a shell that
-emits no markers are refused with the reason, before the card and again at
-execution. The text must be one line that the shell runs exactly as shown
-([terminal-command-text.ts](../../src/shared/terminal-command-text.ts)): control
-characters (newline, tab, ESC and bracketed-paste markers included), invisible
-formatting characters, history expansion and an incomplete construct are
-refused before any card; there is no mode that lets them through.
+typing at the prompt or any keystroke in the last 1.5 seconds (keys not yet
+echoed), a shell between prompts, an exited shell, a shell that emits no
+markers and a shell that does not mark the end of its prompt (fish) are refused
+with the reason, before the card and again at execution.
+
+The text must be one line that every supported shell runs exactly as shown and
+as the rules read it
+([terminal-command-text.ts](../../src/shared/terminal-command-text.ts)). Refused
+before any card, with no mode that lets them through:
+
+- control characters (newline, tab, ESC and bracketed-paste markers included);
+- characters a reader cannot see: format and default-ignorable characters,
+  non-ASCII spaces, the braille blank, combining marks on ASCII, and
+  whitespace runs longer than 16;
+- history expansion (`!word`, a leading `^`, the `r` and `fc` re-run commands);
+- constructs zsh and bash read differently: an unquoted `#` comment, a command
+  word starting with `=`, `nocorrect` and `noglob`. The terminal's zsh also
+  runs with `interactivecomments`;
+- anything that would change the shell for the user's later commands: function
+  definitions; assignments to prompt and hook variables, `PATH`, `IFS` and
+  similar; builtins that install aliases, traps, hooks, options or key
+  bindings or source code;
+- references to the shell integration's `__ave_*` names; block records also
+  redact the marker nonce, so printed text cannot forge markers;
+- an incomplete construct.
+
+The card shows the exact command, each non-ASCII character by code point, and
+a note when the terminal's directory is outside the allowed folders.
 
 ## Default Allowed Roots
 

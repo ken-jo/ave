@@ -106,6 +106,12 @@ describe("installShellIntegration", () => {
       expect(blocks.every((block) => block.source === "osc133")).toBe(true);
     });
 
+    it.runIf(existsSync(shell))(`${shell}: reads # as a comment, as the bash-dialect permission rules do`, () => {
+      const { tracker } = runInteractive(shell, ["echo SAFE # ; echo PWNED", "exit", ""].join("\n"));
+      const [first] = tracker.recent(10).reverse();
+      expect(first).toMatchObject({ command: "echo SAFE # ; echo PWNED", output: "SAFE\n" });
+    });
+
     it.runIf(existsSync(shell))(`${shell}: unsets the nonce before any command runs and keeps markers out of forged output`, () => {
       const { tracker, raw, display } = runInteractive(
         shell,

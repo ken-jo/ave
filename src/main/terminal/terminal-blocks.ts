@@ -230,7 +230,11 @@ function cleanCommand(raw: string): string {
  *    foreground, so typed text would go to it rather than to the shell;
  *  - `between-prompts`: a command finished and the next prompt has not
  *    started;
- *  - `pending-input`: the user has typed at the prompt and not submitted it.
+ *  - `pending-input`: the user has typed at the prompt and not submitted it,
+ *    or typed anything within the last {@link USER_INPUT_QUIET_MS} (keys
+ *    still on their way through the shell have not been echoed yet);
+ *  - `no-prompt-end-marker`: the shell marks no end of prompt (fish), so
+ *    typing at its prompt cannot be told from the prompt itself.
  */
 export type TerminalPromptState =
   | "ready"
@@ -238,7 +242,15 @@ export type TerminalPromptState =
   | "exited"
   | "command-running"
   | "between-prompts"
-  | "pending-input";
+  | "pending-input"
+  | "no-prompt-end-marker";
+
+/**
+ * How long after the user's last keystroke the prompt is still treated as in
+ * use: a key written to the PTY reaches the echo only after the shell reads
+ * it, so an empty echo just after typing proves nothing.
+ */
+export const USER_INPUT_QUIET_MS = 1500;
 
 /**
  * Turns one terminal's output (and, for the fallback, its typed input) into
@@ -260,6 +272,10 @@ export class TerminalBlockTracker {
   /** Echoed input between B and C, used when C carries no command text. */
   private echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
   private exited = false;
+  /** When the user last wrote to this terminal ({@link recordInput}), or null. */
+  private lastInputAt: number | null = null;
+  /** True once the shell has marked the end of a prompt (B): zsh and bash do, fish does not. */
+  private marksPromptEnd = false;
   /** Called after every authenticated marker and on exit (see {@link subscribe}). */
   private readonly listeners = new Set<() => void>();
 
@@ -290,8 +306,12 @@ export class TerminalBlockTracker {
     // zsh and bash mark the end of the prompt (B): anything echoed after it is
     // the user's own typing. fish marks no B, so its prompt phase is the
     // steady state and typing there cannot be told from the prompt text.
-    if (this.phase === "input") return this.echo.text().trim() === "" ? "ready" : "pending-input";
-    if (this.phase === "prompt") return "ready";
+    if (this.phase === "input") {
+      if (this.echo.text().trim() !== "") return "pending-input";
+      if (this.lastInputAt !== null && this.now() - this.lastInputAt < USER_INPUT_QUIET_MS) return "pending-input";
+      return "ready";
+    }
+    if (this.phase === "prompt") return this.marksPromptEnd ? "between-prompts" : "no-prompt-end-marker";
     return "between-prompts";
   }
 
@@ -448,11 +468,13 @@ export class TerminalBlockTracker {
   }
 
   /**
-   * Feed one user input write. Used only by the fallback: before the shell has
-   * shown any marker, an Enter closes the running heuristic block and opens a
-   * new one named after the line on screen.
+   * Feed one user input write. Its time is kept for {@link promptState}. The
+   * fallback also uses it: before the shell has shown any marker, an Enter
+   * closes the running heuristic block and opens a new one named after the
+   * line on screen.
    */
   recordInput(data: string): void {
+    this.lastInputAt = this.now();
     if (this.integrated || !data.includes("\r")) return;
     const line = this.open ? this.open.output.currentLine() : this.idle.currentLine();
     const command = cleanCommand(line || (this.open ? this.open.output.lastNonEmptyLine() : this.idle.lastNonEmptyLine()));
@@ -530,6 +552,7 @@ export class TerminalBlockTracker {
         this.phase = "prompt";
         break;
       case "B":
+        this.marksPromptEnd = true;
         this.echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
         this.phase = "input";
         break;
@@ -580,10 +603,19 @@ export class TerminalBlockTracker {
     }
   }
 
+  /**
+   * A command can print this terminal's marker nonce (the shell holds it in a
+   * variable). Block records go to the agent, and a nonce in the agent's hands
+   * would let printed text forge markers, so the records never carry it.
+   */
+  private redactNonce(text: string): string {
+    return text.includes(this.nonce) ? text.split(this.nonce).join("[terminal-nonce]") : text;
+  }
+
   private snapshotOpen(open: OpenBlock): TerminalBlock {
     return {
       id: open.id,
-      command: open.command,
+      command: this.redactNonce(open.command),
       cwd: open.cwd,
       exitCode: null,
       startedAt: open.startedAt,
@@ -592,7 +624,7 @@ export class TerminalBlockTracker {
       source: open.source,
       outputChars: open.output.chars(),
       truncated: open.output.truncated(),
-      output: open.output.text(),
+      output: this.redactNonce(open.output.text()),
     };
   }
 

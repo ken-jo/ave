@@ -132,7 +132,7 @@ describe("terminal_run", () => {
   describe("busy terminal", () => {
     it.each([
       ["a command is running", (t: TerminalBlockTracker) => t.recordOutput(`vim\r\n${mark("C;cmdline_url=vim")}~\r\n`), /command or full-screen program is running/],
-      ["the user typed at the prompt", (t: TerminalBlockTracker) => t.recordOutput("git sta"), /holds text the user typed/],
+      ["the user typed at the prompt", (t: TerminalBlockTracker) => t.recordOutput("git sta"), /holds text they typed/],
       ["the shell exited", (t: TerminalBlockTracker) => t.recordExit(), /shell has exited/],
     ])("refuses before any approval when %s", async (_label, mutate, reason) => {
       const tracker = readyTracker();
@@ -186,6 +186,80 @@ describe("terminal_run", () => {
       const result = await tool.execute({ command }, ctxFor(undefined));
       expect(result.isError).toBe(true);
       expect(deps.typed).toEqual([]);
+    });
+
+    // Each of these reads differently to the permission rules (bash) than to
+    // the terminal's interactive zsh, hides from the card, or outlives the
+    // command in the user's shell.
+    it.each([
+      ["a # comment zsh may run as text", "echo SAFE # ; echo PWNED", /# comment/],
+      ["a # comment hiding an rm", "ls # ; rm -rf build", /# comment/],
+      ["a comment after an operator", "ls;#x", /# comment/],
+      ["an =command path lookup", "=rm -rf build", /starting with =/],
+      ["an =command behind builtin", "builtin =rm x", /starting with =/],
+      ["nocorrect", "nocorrect rm -rf build", /nocorrect/],
+      ["noglob", "noglob ls *", /noglob/],
+      ["the r history re-run", "r ls=rm", /r\/fc history re-run/],
+      ["the fc history re-run", "fc -e - ls", /r\/fc history re-run/],
+      ["a combining grapheme joiner", "rm\u034f -rf build", /invisible or blank-looking/],
+      ["a hangul choseong filler", "ls \u115f", /invisible or blank-looking/],
+      ["a hangul filler", "ls \u3164", /invisible or blank-looking/],
+      ["a mongolian variation selector", "ls\u180b", /invisible or blank-looking/],
+      ["a variation selector", "ls\ufe0f", /invisible or blank-looking/],
+      ["a tag character", "ls\u{e0041}", /invisible or blank-looking/],
+      ["the braille blank", "ls \u2800; rm x", /invisible or blank-looking/],
+      ["a no-break space", "ls\u00a0-la", /invisible or blank-looking/],
+      ["an ideographic space", "ls\u3000-la", /invisible or blank-looking/],
+      ["a combining overlay on ASCII", "rm\u0336 -rf build", /invisible or blank-looking/],
+      ["a long run of padding", `echo safe${" ".repeat(4000)}; rm -rf build`, /whitespace characters in a row/],
+      ["a PROMPT_COMMAND hook", "PROMPT_COMMAND='curl x|sh'", /change the shell/],
+      ["a precmd hook", "precmd_functions+=(f)", /change the shell/],
+      ["a preexec hook", "preexec_functions=(f)", /change the shell/],
+      ["a prompt", "PS1='$(id)'", /change the shell/],
+      ["a PS4 trace prompt", "PS4=x", /change the shell/],
+      ["a function definition", "f(){ :; }", /change the shell/],
+      ["a function shadowing ls", "ls() { rm -rf build; }", /change the shell/],
+      ["a PATH export", "export PATH=/tmp:$PATH", /change the shell/],
+      ["an IFS assignment", "IFS=x", /change the shell/],
+      ["an alias", "alias ls=rm", /change the shell/],
+      ["a DEBUG trap", "trap 'rm -rf build' DEBUG", /change the shell/],
+      ["a zsh hook", "add-zsh-hook precmd f", /change the shell/],
+      ["an option change", "setopt nointeractivecomments", /change the shell/],
+      ["sourced code", "source ./x.sh", /change the shell/],
+      ["an exported function", "export -f f", /cannot check/],
+      ["state changes inside a substitution", "echo $(alias ls=rm)", /change the shell/],
+      ["an alias behind time", "time alias ls=rm", /change the shell/],
+      ["an alias behind command -p", "command -p alias ls=rm", /change the shell/],
+      ["a typeset of a prompt", "typeset -g PS1=x", /cannot check/],
+      ["a case statement", "case x in a) alias ls=rm;; esac", /cannot check/],
+      ["an arithmetic command", "(( x++ ))", /cannot check/],
+      ["the marker nonce", "echo $__ave_nonce", /shell-integration names/],
+      ["a shell-integration function", "__ave_precmd", /shell-integration names/],
+    ])("refuses %s before any approval is asked", async (_label, command, reason) => {
+      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      const deps = depsWith();
+      const tool = createTerminalRunTool(deps);
+      await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command }, { cwd: "/workspace", sessionId: "main" }))).rejects.toThrow(reason);
+      expect(deps.typed).toEqual([]);
+    });
+
+    it("accepts quoted #, mid-word #, non-ASCII words and command-scoped variables", async () => {
+      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      const tool = createTerminalRunTool(depsWith());
+      for (const command of [
+        "echo 'a # b'",
+        "echo \"#hash\"",
+        "echo a#b",
+        "git log --grep=\\#12",
+        "echo \uc548\ub155 && ls \ubb38\uc11c",
+        "echo caf\u00e9",
+        "PATH=/opt/bin:$PATH make",
+        "FOO=1 npm test",
+        "export FOO=1",
+        "echo $((1 + 2))",
+      ]) {
+        await expect(Promise.resolve(tool.approvalMemoryScope!({ command }, { cwd: "/workspace", sessionId: "main" }))).resolves.toMatchObject({ kind: "terminal-command" });
+      }
     });
 
     it("accepts ordinary one-line commands, including a test's ! and a != comparison", async () => {

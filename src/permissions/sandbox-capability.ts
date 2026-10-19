@@ -637,6 +637,11 @@ export function resolveReviewerSandboxCapability(
   // stays wrapped for its whole life, so while that still holds the command
   // lands on a confined substrate. Otherwise it reports `none` like any other
   // in-process builtin (never more confinement than is proven now).
+  // What this reports is the sandbox as it is NOW. The terminal's own jail —
+  // its write paths (spawn cwd ∪ its HOME), deny floors and egress allow-list —
+  // was fixed when its shell spawned; later changes to allowed directories or
+  // the network allow-list do not reach a running terminal. The capability
+  // kind is the same; the exact policy may be older.
   if (source === "builtin" && toolName === "terminal_run" && isActiveSandboxShellContained()) {
     const active = detectSandboxCapability();
     if (active.kind === "asrt") {

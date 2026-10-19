@@ -33,13 +33,16 @@
  * BUSY TERMINAL. The shell's own command markers decide (terminal-blocks.ts
  * `promptState`): the command is typed only at an empty prompt. A running
  * command or full-screen program, a prompt holding the user's unfinished
- * typing, a shell between prompts, an exited shell, or a shell with no
- * markers at all is refused with the reason — before the card when it is
- * already so, and again at execute time.
+ * typing or a keystroke too recent to have been echoed, a shell between
+ * prompts, an exited shell, a shell with no markers at all, or one that marks
+ * no end of prompt (fish) is refused with the reason — before the card when
+ * it is already so, and again at execute time.
  *
- * TEXT. One line of plain characters that the shell runs exactly as shown
- * (terminal-command-text.ts): no newline, tab, ESC or other control or
- * invisible character, no history expansion, nothing left open.
+ * TEXT. One line of plain characters that zsh and bash both run exactly as
+ * shown and as the rules read it (terminal-command-text.ts): no newline, tab,
+ * ESC or other control or invisible character, no long whitespace run, no
+ * history expansion, no `#` comment or zsh-only construct, nothing that
+ * changes the shell for the user's later commands, nothing left open.
  */
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
@@ -48,6 +51,7 @@ import type { TerminalBlock } from "../shared/terminal-blocks.js";
 import type { ApprovalMemory, ApprovalMemoryScope } from "../shared/permissions-events.js";
 import {
   MAX_TERMINAL_COMMAND_CHARS,
+  MAX_TERMINAL_COMMAND_WHITESPACE_RUN,
   terminalCommandTextProblem,
   type TerminalCommandTextProblem,
 } from "../shared/terminal-command-text.js";
@@ -117,8 +121,14 @@ const TEXT_PROBLEM_MESSAGES: Record<TerminalCommandTextProblem, string> = {
   "too-long": `command is longer than ${MAX_TERMINAL_COMMAND_CHARS} characters`,
   "multi-line": "command must be a single line; join steps with && or ; instead of newlines",
   "control-character": "command holds a control character (tab, escape or similar), which the terminal would act on as a key",
-  "invisible-character": "command holds an invisible formatting character, so the approval card would not show what the shell reads",
+  "invisible-character": "command holds an invisible or blank-looking character (a format character, a non-ASCII space, a filler, a combining mark on ASCII), so the approval card would not show what the shell reads",
+  "whitespace-run": `command holds more than ${MAX_TERMINAL_COMMAND_WHITESPACE_RUN} whitespace characters in a row, which would push the rest of it out of view`,
   "history-expansion": "command uses shell history expansion (a ! before a word, or a leading ^), which would run text nobody approved; quote or rephrase it",
+  comment: "command holds a # comment, which some interactive shells run as text; remove it",
+  "shell-divergent": "command uses a construct an interactive zsh and bash run differently (a command word starting with =, nocorrect, noglob, or the r/fc history re-run); rephrase it",
+  "shell-state": "command would change the shell for the user's later commands (a function definition, an alias, trap, hook, option or key binding, sourced code, or an assignment to a prompt, hook, PATH or IFS variable); terminal_run does not do that",
+  "shell-integration": "command refers to the terminal's own shell-integration names (__ave_*), which terminal_run does not expose",
+  "unchecked-construct": "command uses a construct terminal_run cannot check (case, declare, typeset, local, let, ((...)), select or coproc); rephrase it with plain commands",
   incomplete: "command is not one complete shell command (an open quote, here-document, trailing operator or backslash), so the shell would wait for more input",
 };
 
@@ -312,5 +322,6 @@ const NOT_READY_REASONS: Record<Exclude<ReturnType<TerminalBlockTracker["promptS
   exited: "its shell has exited",
   "command-running": "a command or full-screen program is running in its foreground",
   "between-prompts": "its shell has not shown its next prompt yet",
-  "pending-input": "the prompt holds text the user typed and has not run",
+  "pending-input": "the user is typing at the prompt, or it holds text they typed and have not run",
+  "no-prompt-end-marker": "its shell does not mark the end of its prompt (fish), so whether the user is typing there cannot be told; terminal_run needs zsh or bash",
 };

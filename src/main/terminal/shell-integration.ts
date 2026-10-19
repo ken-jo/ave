@@ -70,6 +70,10 @@ const ZSH_RC = [
   HEADER,
   '__ave_nonce="$' + SHELL_INTEGRATION_NONCE_ENV + '"',
   'unset ' + SHELL_INTEGRATION_NONCE_ENV,
+  // `#` starts a comment, as in bash: the permission rules read a typed
+  // command as bash, and without this option zsh runs the text after `#`.
+  // Set before anything can return, so every shell of the terminal has it.
+  "setopt interactivecomments",
   // A nested shell (or one started without the variable) has no nonce: it
   // emits no markers rather than markers the tracker would reject.
   '[[ -n "$__ave_nonce" ]] || return 0',
@@ -106,6 +110,7 @@ const BASH_PROFILE = [
   HEADER,
   '__ave_nonce="$' + SHELL_INTEGRATION_NONCE_ENV + '"',
   'unset ' + SHELL_INTEGRATION_NONCE_ENV,
+  "shopt -s interactive_comments",
   '[ -n "$__ave_nonce" ] || return 0',
   "__ave_encode() {",
   '  local LC_ALL=C s="$1" out="" c i',

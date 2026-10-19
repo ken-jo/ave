@@ -591,6 +591,42 @@ function terminalTargetText(
 }
 
 /**
+ * Facts about a `terminal_run` command a reader could miss in its text: each
+ * non-ASCII character by code point (a look-alike reads as the letter it
+ * imitates), and a terminal directory outside the allowed folders (the
+ * command still runs there, inside the terminal's sandbox).
+ */
+function terminalCommandNotes(
+  t: (key: string, params?: Record<string, string>) => string,
+  request: Pick<ApprovalRequest, "approvalMemory" | "args" | "evaluationContext">,
+): string[] {
+  const memory = request.approvalMemory;
+  if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return [];
+  const notes: string[] = [];
+  const command = parseArgs(request.args)?.command;
+  if (typeof command === "string") {
+    const nonAscii = [...new Set([...command].filter((ch) => ch.codePointAt(0)! > 0x7e))];
+    if (nonAscii.length > 0) {
+      const list = nonAscii
+        .slice(0, 12)
+        .map((ch) => `${ch} U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`)
+        .join(", ");
+      notes.push(t("toolApprovalDialog.terminalNonAscii", { list: nonAscii.length > 12 ? `${list}, …` : list }));
+    }
+  }
+  const context = request.evaluationContext;
+  if (context) {
+    const cwd = memory.scope.cwd;
+    const inside = [context.executionCwd, ...context.allowedDirectories].some((dir) => {
+      const root = dir.endsWith("/") ? dir.slice(0, -1) : dir;
+      return cwd === root || cwd.startsWith(`${root}/`);
+    });
+    if (!inside) notes.push(t("toolApprovalDialog.terminalOutsideAllowed", { cwd }));
+  }
+  return notes;
+}
+
+/**
  * Whether this card's remember button records for this app session only
  * (browser scopes) rather than persistently. Host-derived from the request's
  * `approvalMemory`, the same predicate the record handler enforces.
@@ -1604,6 +1640,11 @@ export function ToolApprovalContent({
                 {terminalTargetText(tHook, request)}
               </p>
             ) : null}
+            {terminalCommandNotes(tHook, request).map((note) => (
+              <p key={note} className="text-[10px] text-warning" data-testid="approval-terminal-note">
+                {note}
+              </p>
+            ))}
             {!alwaysAllowUnavailable && !isOutOfDir && request.persistentApprovalCwd ? (
               <p className="text-[10px] text-muted-foreground" data-testid="allow-always-exact-scope">
                 {rememberScopeText(tHook, request, request.persistentApprovalCwd)}
