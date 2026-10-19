@@ -282,6 +282,15 @@ describe("describeUpstreamProxy (Settings diagnostic)", () => {
     expect(JSON.stringify(diagnostic)).not.toMatch(/alice|hunter2/u);
   });
 
+  it("keeps credentials out of a refusal from an environment proxy it cannot use", async () => {
+    for (const value of ["socks5h://alice:hunter2@s.test:1080", "ftp://alice:hunter2@f.test:21", "http://alice:hunter2@bad host:1"]) {
+      const diagnostic = await describeUpstreamProxy(deps({ envVars: { https_proxy: value } }), "https://example.com/");
+      expect(diagnostic.routes).toEqual([]);
+      expect(diagnostic.refusal).toMatch(/^the proxy in https_proxy is /u);
+      expect(JSON.stringify(diagnostic)).not.toMatch(/alice|hunter2/u);
+    }
+  });
+
   it("names a refusal", async () => {
     const diagnostic = await describeUpstreamProxy(deps({ resolveProxy: async () => "SOCKS s:1" }), "https://example.com/");
     expect(diagnostic.refusal).toBe("the system proxy settings offer no route the sandbox can use (SOCKS proxies are not supported)");
