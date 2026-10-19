@@ -410,6 +410,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     const liveScopeOwners: unknown[] = [
       deps.conversationLoop,
       deps.sideChatConversationLoop,
+      ...(deps.paneChatLoops?.all() ?? []),
       deps.routineEngine,
       // The plugin-surface permission scope holds session grants keyed by plugin
       // subject. It is a live scope owner exactly like the loops above; leaving

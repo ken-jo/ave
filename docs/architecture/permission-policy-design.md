@@ -570,9 +570,12 @@ separate classifier:
   allowed directories or the allow-list do not reach a running terminal.
 
 The target terminal is resolved once, before any decision, and sealed into the
-approval scope: an explicit `tabId`, then the terminal the conversation is
-bound to when the host binds one, then the window's active terminal. With none
-of them the call fails; it never chooses a terminal itself. Execute types into
+approval scope: an explicit `tabId`, then the terminal the conversation's pane
+chat is docked beside (a sub-agent uses its hosting conversation's), then, for
+a conversation bound to no pane, the window's active terminal. A chat docked
+beside a page has no terminal of its own and fails without a `tabId`, and a
+bound terminal that is gone fails the call. With none of them the call fails;
+it never chooses a terminal itself. Execute types into
 the sealed terminal and refuses when that terminal's shell has moved to another
 directory since approval.
 

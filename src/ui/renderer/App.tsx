@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useTranslation } from "../../i18n/react.js";
 import { MAX_CHAT_GROUPS } from "../../contract/app-contract.js";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
@@ -30,13 +30,13 @@ import { StarredView } from "./components/StarredView.js";
 import { SettingsInlineView } from "./SettingsInlineView.js";
 import { PageShell } from "./components/PageShell.js";
 import type { ConversationRowActions, ProjectRowActions } from "./components/Sidebar.js";
-import { PanelRightOpen } from "lucide-react";
 import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
 import { SurfacePane } from "./components/MainSurfacePanels.js";
+import type { SideChatRuntime } from "./components/SideChatView.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
-import { forgetActiveSurface, showActiveSurface, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
+import { forgetActiveSurface, showActiveSurface, subscribeSurfaceClosed, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
 import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
 import { attachToComposer } from "./preview/composer-targets.js";
 import { useMainLayout } from "./hooks/use-main-layout.js";
@@ -615,6 +615,16 @@ export function App() {
   // What the side chat acts on is also the tab main's agent tools default to
   // when none is named: one report per window, from the one store.
   useReportActiveSurface(api);
+  // A closed terminal or page ends its pane chat: main stops that chat's turn
+  // and archives its conversation, and the list shows it archived.
+  useEffect(() => subscribeSurfaceClosed((tabId) => {
+    const sideChat = api.sideChat;
+    if (!sideChat) return;
+    void sideChat.endPaneChat(tabId, "closed").then((res) => {
+      if (!res.ok) console.warn(`pane chat for ${tabId} not ended: ${res.error}`);
+      else if (res.sessionId !== null) void refreshSessions();
+    }, (err: unknown) => console.warn(`pane chat for ${tabId} not ended: ${errorMessage(err)}`));
+  }), [api, refreshSessions]);
 
   // The main area's web panels are a host of the agent browser tools' tab
   // operations (`preview/agent-browser-bridge.ts`): select shows the page —
@@ -764,13 +774,16 @@ export function App() {
   // lane cannot disagree about who is waiting.
   const deferredSessionIds = useDeferredSessionIds(api.permission);
   const [overlayQueue, setOverlayQueue] = useState<readonly OverlayItem[]>([]);
+  // A pane's own chat is no tile; the claim it holds is how the window knows it draws its cards.
+  const approvalClaimsVersion = useSyncExternalStore(approvalClaims.subscribe, approvalClaims.readVersion, approvalClaims.readVersion);
   const pendingAnswers = useMemo(() => selectPendingAnswers({
     approvals: approvalQueue,
     tiles: tileSessions,
     deferredSessionIds,
     overlayCards: overlayQueue,
     sessions,
-  }), [approvalQueue, tileSessions, deferredSessionIds, overlayQueue, sessions]);
+    isClaimed: (sessionId) => approvalClaims.ownerOf(sessionId) !== null,
+  }), [approvalQueue, tileSessions, deferredSessionIds, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
   // Cards waiting in the dedicated Suggestions conversation — its row's count.
   const suggestionsPendingCount = useMemo(
@@ -1788,6 +1801,21 @@ export function App() {
     pendingAnswers,
   ]);
 
+  /** What a terminal or web pane's own chat composer needs to know about the model. */
+  const paneChatRuntime = useMemo<SideChatRuntime>(() => ({
+    hasApiKey: effectiveLlmReady, settingsLoaded, onOpenSettings,
+    subscriptionRuntimePolicy,
+    subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
+    subscriptionUnavailableProvider, subscriptionPendingProvider,
+    llmVendor, llmModel, llmRouteModalities, processingDisplayLevel,
+    usageAvailable: apiUsageProjectionAvailable,
+  }), [
+    effectiveLlmReady, settingsLoaded, onOpenSettings, subscriptionRuntimePolicy,
+    subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
+    subscriptionUnavailableProvider, subscriptionPendingProvider,
+    llmVendor, llmModel, llmRouteModalities, processingDisplayLevel, apiUsageProjectionAvailable,
+  ]);
+
   // ─── Render ───────────────────────────────────
   /**
    * A pane's maximize control carries the dot while it is the maximized pane
@@ -2082,13 +2110,9 @@ export function App() {
             // The header is the surface's drag handle: onto another pane, or
             // onto a side panel's tabs.
             dragSurface: { tabId: surface.tabId, kind: surface.kind, from: { pane: paneId } },
-            actions: [{
-              id: "surface.moveToSide",
-              label: t("mainPanels.moveToSide"),
-              icon: <PanelRightOpen className="h-4 w-4" />,
-              onSelect: () => surfaceMoves.paneToSide(paneId),
-            }],
           }}
+          chatRuntime={paneChatRuntime}
+          onSessionsChanged={refreshSessions}
           onNavigate={mainSurfaces.setUrl}
           onCwd={mainSurfaces.setCwd}
           // A main terminal has no conversation beside it: its blocks go to

@@ -67,6 +67,7 @@ async function run(
     windowIdForHostedSession: (sessionId) => (sessionId === "chat" ? WINDOW : null),
     liveOriginSessionId: () => undefined,
     activeTerminalTabId: () => TAB,
+    boundSurface: () => undefined,
     typeCommand,
   }));
   const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: options.choice ?? "deny-once" }));

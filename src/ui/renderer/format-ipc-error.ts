@@ -95,6 +95,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-params": "formatIpcError.invalidParams",
   "invalid-input": "formatIpcError.invalidInput",
   "invalid-send-request-id": "formatIpcError.invalidInput",
+  "invalid-surface": "formatIpcError.invalidInput",
   "invalid-arguments": "formatIpcError.invalidInput",
   "invalid-answer": "formatIpcError.invalidInput",
   "invalid-proposal-key": "formatIpcError.invalidInput",
@@ -368,6 +369,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "checkpoint-not-found": "formatIpcError.checkpointNotFound",
   "session-mismatch": "formatIpcError.sessionMismatch",
   "streaming-active": "formatIpcError.streamingActive",
+  "session-open-in-pane": "formatIpcError.sessionOpenInPane",
+  "pane-chat-ended": "formatIpcError.paneChatEnded",
   // ── Tiled chat groups ──
   "chat-group-limit-reached": "formatIpcError.chatGroupLimitReached",
   "chat-groups-unavailable": "formatIpcError.chatGroupsUnavailable",

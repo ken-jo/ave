@@ -34,7 +34,7 @@ import { getWindowTerminalBlockTracker, listTerminalBlockTabs } from "../main/te
 import type { TerminalBlock } from "../shared/terminal-blocks.js";
 import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 import { t } from "../i18n/index.js";
-import { resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
+import { resolveSessionWindow, resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
@@ -48,8 +48,12 @@ const SUMMARIES_PER_TAB = 10;
 const MAX_RESPONSE_OUTPUT_CHARS = 96 * 1024;
 
 export interface TerminalReadToolDeps extends SessionWindowScopeDeps {
-  /** The terminal tab the user is looking at in a window, if a terminal is the active surface. */
-  activeTerminalTabId?: (windowId: number) => string | undefined;
+  /**
+   * The terminal a conversation reads when a call names none: the terminal its
+   * pane chat is bound to, else the one the user is looking at in the window.
+   * `sessionId` is the conversation the window hosts (a sub-agent's parent).
+   */
+  defaultTerminalTabId?: (windowId: number, sessionId: string) => string | undefined;
 }
 
 /**
@@ -151,11 +155,12 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
         return terminalToolFailure(`limit must be an integer from 1 to ${MAX_LIMIT}`);
       }
       const sessionId = typeof ctx?.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
-      const windowId = resolveTerminalWindowId(sessionId, deps);
-      if (windowId === null) {
+      const scope = resolveSessionWindow(sessionId, deps);
+      if (scope === null) {
         return terminalToolFailure("terminal_read is available only to a conversation in an app window (or its sub-agents); this session has no terminals");
       }
-      const activeTabId = deps.activeTerminalTabId?.(windowId);
+      const { windowId } = scope;
+      const activeTabId = deps.defaultTerminalTabId?.(windowId, scope.hostSessionId);
 
       if (input.tabId === undefined && input.blockId === undefined && input.limit === undefined) {
         const terminals = listTerminalBlockTabs(windowId).map(({ tabId, tracker }) => ({

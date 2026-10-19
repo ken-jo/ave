@@ -50,6 +50,7 @@ function depsWith(overrides: Partial<TerminalRunToolDeps> = {}): TerminalRunTool
     windowIdForHostedSession: (sessionId) => (sessionId === "main" ? WINDOW : null),
     liveOriginSessionId: (sessionId) => (sessionId === "child" ? "main" : undefined),
     activeTerminalTabId: () => "terminal:aaaaaaaa-1",
+    boundSurface: () => undefined,
     typeCommand,
     typed,
     ...overrides,
@@ -123,10 +124,44 @@ describe("terminal_run", () => {
       registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
       registerTerminalBlockTracker("terminal:aaaaaaaa-2", readyTracker("/two"), WINDOW);
       registerTerminalBlockTracker("terminal:aaaaaaaa-3", readyTracker("/three"), WINDOW);
-      const tool = createTerminalRunTool(depsWith({ boundTerminalTabId: () => "terminal:aaaaaaaa-2" }));
+      const asked: Array<[number, string]> = [];
+      const tool = createTerminalRunTool(depsWith({
+        boundSurface: (windowId, hostSessionId) => {
+          asked.push([windowId, hostSessionId]);
+          return { kind: "terminal", tabId: "terminal:aaaaaaaa-2" };
+        },
+      }));
       expect(await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })).toMatchObject({ tabId: "terminal:aaaaaaaa-2", cwd: "/two" });
       expect(await tool.approvalMemoryScope!({ command: "ls", tabId: "terminal:aaaaaaaa-3" }, { cwd: "/workspace", sessionId: "main" }))
         .toMatchObject({ tabId: "terminal:aaaaaaaa-3", cwd: "/three" });
+      // A sub-agent of the pane chat types into the same bound terminal: the binding is its host's.
+      expect(await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "child" })).toMatchObject({ tabId: "terminal:aaaaaaaa-2" });
+      expect(asked).toEqual([[WINDOW, "main"], [WINDOW, "main"]]);
+    });
+
+    it("refuses a chat bound to a page instead of typing into the active terminal", async () => {
+      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      const deps = depsWith({ boundSurface: () => ({ kind: "browser", tabId: "browser:aaaaaaaa-4" }) });
+      const tool = createTerminalRunTool(deps);
+      await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
+        .rejects.toThrow(/bound to a page, not a terminal; pass tabId/);
+      // A terminal it names explicitly is still reachable.
+      expect(await tool.approvalMemoryScope!({ command: "ls", tabId: "terminal:aaaaaaaa-1" }, { cwd: "/workspace", sessionId: "main" }))
+        .toMatchObject({ tabId: "terminal:aaaaaaaa-1" });
+      expect(deps.typed).toEqual([]);
+    });
+
+    it("fails a chat whose bound terminal is gone, never falling back to the active one", async () => {
+      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      const tool = createTerminalRunTool(depsWith({ boundSurface: () => ({ kind: "terminal", tabId: "terminal:aaaaaaaa-9" }) }));
+      await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
+        .rejects.toThrow(/no terminal with tabId "terminal:aaaaaaaa-9"/);
+    });
+
+    it("types into the window's active terminal from a chat bound to nothing", async () => {
+      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      const tool = createTerminalRunTool(depsWith({ boundSurface: () => undefined }));
+      expect(await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })).toMatchObject({ tabId: "terminal:aaaaaaaa-1" });
     });
 
     it("a sub-agent reaches its parent's window", async () => {

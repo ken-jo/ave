@@ -30,6 +30,7 @@ import type { AveApi } from "../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-targets.js";
 import { PtyTerminalView } from "./PtyTerminalView.js";
 import { SideChatView, type SideChatOpenRequest } from "./SideChatView.js";
+import { ActiveSurfaceChip } from "./ActiveSurfaceChip.js";
 import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, isMovableTabKind, useSurfaceMoves, type MovableTabKind } from "../preview/surface-moves.js";
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import { TerminalAttentionDot } from "./TerminalAttentionDot.js";
@@ -1312,6 +1313,7 @@ export function ChatSidePanel({
                 shown={sideChatActive}
                 onSessionIdChange={handleSideChatSession}
                 onSessionClaim={handleSideChatClaim}
+                targetChip={<ActiveSurfaceChip />}
                 {...(chatGroupId !== undefined ? { chatGroupId } : {})}
               />
             </div>

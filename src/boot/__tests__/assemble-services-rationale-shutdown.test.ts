@@ -9,7 +9,7 @@ vi.mock("../../main/auth-window-service.js", () => ({
 }));
 
 describe("assembleAppServices rationale shutdown", () => {
-  it("aborts interactive loops and drains teardown after a rationale shutdown failure", async () => {
+  it("aborts interactive loops (every pane chat's too) and drains teardown after a rationale shutdown failure", async () => {
     const order: string[] = [];
     const mark = (name: string) => () => {
       order.push(name);
@@ -27,6 +27,9 @@ describe("assembleAppServices rationale shutdown", () => {
       dueSoonTimer: undefined,
       conversationLoop: { abortCurrentTurn: mark("main-abort") },
       sideChatConversationLoop: { abortCurrentTurn: mark("side-abort") },
+      paneChatLoops: {
+        all: () => [{ abortCurrentTurn: mark("pane-abort-1") }, { abortCurrentTurn: mark("pane-abort-2") }],
+      },
       rationaleHostService: {
         shutdown: () => {
           order.push("rationale");
@@ -70,6 +73,8 @@ describe("assembleAppServices rationale shutdown", () => {
       "routines",
       "main-abort",
       "side-abort",
+      "pane-abort-1",
+      "pane-abort-2",
       "rationale",
       "approval",
       "ask",
