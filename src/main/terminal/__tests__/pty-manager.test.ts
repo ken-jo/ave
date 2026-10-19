@@ -167,6 +167,7 @@ import {
   killTerminalsOwnedBy,
   forceKillAllTerminalsForShutdown,
   setTerminalEmitter,
+  typeTerminalCommand,
   __resetTerminalsForTest,
   __terminalSessionCountForTest,
   type TerminalEmit,
@@ -808,6 +809,48 @@ describe("pty-manager command blocks", () => {
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
     expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
     expect(getTerminalBlockTracker("terminal:0000000a-1")).toBeUndefined();
+  });
+});
+
+describe("pty-manager typing an approved agent command", () => {
+  async function zshTerminal(ownerWindowId: number): Promise<{ pty: FakePty; mark: (fields: string) => string }> {
+    vi.stubEnv("SHELL", "/bin/zsh");
+    try {
+      expect((await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId })).ok).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
+    const nonce = opts.env.AVE_TERMINAL_NONCE;
+    return { pty: lastPty!, mark: (fields) => `\u001b]133;${fields};${nonce}\u0007` };
+  }
+
+  it("types the line and Enter only at an empty prompt of the owning window's live terminal", async () => {
+    const { pty, mark } = await zshTerminal(3);
+    // Before the shell's first prompt nothing can be told: refused.
+    expect(typeTerminalCommand("terminal:0000000a-1", 3, "ls")).toMatchObject({ ok: false, reason: "no-shell-integration" });
+    pty.emitData(`${mark("D;0")}${mark("P;Cwd=/w")}${mark("A")}% ${mark("B")}`);
+    // Another window's terminal answers like a missing one.
+    expect(typeTerminalCommand("terminal:0000000a-1", 4, "ls")).toMatchObject({ ok: false, reason: "no-terminal" });
+    expect(typeTerminalCommand("terminal:0000000a-1", 3, "ls -la")).toEqual({ ok: true, firstBlockId: 1 });
+    expect(pty.written).toEqual(["ls -la\r"]);
+    // Until the shell starts it, the typed line sits at the prompt: a second command is refused.
+    pty.emitData("ls -la");
+    expect(typeTerminalCommand("terminal:0000000a-1", 3, "pwd")).toMatchObject({ ok: false, reason: "pending-input" });
+    pty.emitData(`\r\n${mark("C;cmdline_url=ls%20-la")}total 0\r\n`);
+    expect(typeTerminalCommand("terminal:0000000a-1", 3, "pwd")).toMatchObject({ ok: false, reason: "command-running" });
+    expect(pty.written).toEqual(["ls -la\r"]);
+    pty.emitExit(0);
+    expect(typeTerminalCommand("terminal:0000000a-1", 3, "pwd")).toMatchObject({ ok: false, reason: "no-terminal" });
+  });
+
+  it("throws on a line holding characters that would act as keys (a caller bug, never typed)", async () => {
+    const { pty, mark } = await zshTerminal(3);
+    pty.emitData(`${mark("D;0")}${mark("P;Cwd=/w")}${mark("A")}% ${mark("B")}`);
+    for (const line of ["ls\nrm -rf ~", "ls\t", "echo \u001b[201~", "rm\u200b -rf x"]) {
+      expect(() => typeTerminalCommand("terminal:0000000a-1", 3, line)).toThrow(/cannot be typed as one command/);
+    }
+    expect(pty.written).toEqual([]);
   });
 });
 

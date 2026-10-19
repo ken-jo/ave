@@ -540,6 +540,46 @@ credential files. The actual environment remains owned by
 provides shared descriptions for the system prompt and approval UI; the prompt
 describes the default route, while the approval describes the final call's plan.
 
+## Commands Typed Into A Workspace Terminal
+
+`terminal_run` ([terminal-run.ts](../../src/tools/terminal-run.ts)) types one
+command into a workspace terminal the user can see and presses Enter. It is a
+builtin in the `shell` category and takes the same lane as `bash`; there is no
+separate classifier:
+
+- The command is the permission manager's bash rule subject, in the directory
+  the target terminal's shell last reported. `Bash(...)` deny, ask and allow
+  rules (user and project), the credential-exfiltration floor and the
+  sensitive-path floor read it exactly as they read a `bash` command. The
+  executor's shape-based shell checks (path containment and the structural
+  validator) read its `command` argument against the session working
+  directory, as they do for a `bash` call without `cwd`.
+- A remembered decision covers the exact command in that directory, and only
+  for the app session (`terminal-command` scope). A bare `terminal_run` allow
+  pattern does not cover every command, because the tool keys policy on its
+  command as `bash` does.
+- The reviewer sees the terminal's own substrate: the active ASRT capability
+  while the sandbox still contains shells (a terminal can only be spawned under
+  such a sandbox and keeps its wrap for life), otherwise `none`.
+
+The target terminal is resolved once, before any decision, and sealed into the
+approval scope: an explicit `tabId`, then the terminal the conversation is
+bound to when the host binds one, then the window's active terminal. With none
+of them the call fails; it never chooses a terminal itself. Execute types into
+the sealed terminal and refuses when that terminal's shell has moved to another
+directory since approval.
+
+The command is typed only at an empty prompt, as the shell's own command
+markers report it ([terminal-blocks.ts](../../src/main/terminal/terminal-blocks.ts)
+`promptState`). A running command or full-screen program, the user's unsent
+typing at the prompt, a shell between prompts, an exited shell and a shell that
+emits no markers are refused with the reason, before the card and again at
+execution. The text must be one line that the shell runs exactly as shown
+([terminal-command-text.ts](../../src/shared/terminal-command-text.ts)): control
+characters (newline, tab, ESC and bracketed-paste markers included), invisible
+formatting characters, history expansion and an incomplete construct are
+refused before any card; there is no mode that lets them through.
+
 ## Default Allowed Roots
 
 Layer 1 seeds its allow-list from the project root, the application data root

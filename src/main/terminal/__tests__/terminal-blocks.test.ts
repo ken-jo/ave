@@ -361,3 +361,54 @@ describe("terminal block registry", () => {
     __resetTerminalBlocksForTest();
   });
 });
+
+describe("prompt state (whether a command may be typed now)", () => {
+  const prompt = (cwd = "/work"): string => `${mark(`P;Cwd=${cwd}`)}${mark("A")}user@host work % ${mark("B")}`;
+
+  it("is ready only at an empty prompt, and names every other state", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE });
+    expect(tracker.promptState()).toBe("no-shell-integration");
+    // A marker a program printed without the nonce proves nothing.
+    tracker.recordOutput(osc("133;A"));
+    expect(tracker.promptState()).toBe("no-shell-integration");
+    tracker.recordOutput(prompt());
+    expect(tracker.promptState()).toBe("ready");
+    expect(tracker.currentCwd()).toBe("/work");
+    tracker.recordOutput("git sta");
+    expect(tracker.promptState()).toBe("pending-input");
+    // Erased again with backspaces: an empty prompt once more.
+    tracker.recordOutput("\b \b".repeat(7));
+    expect(tracker.promptState()).toBe("ready");
+    tracker.recordOutput(`vim\r\n${mark("C;cmdline_url=vim")}`);
+    expect(tracker.promptState()).toBe("command-running");
+    tracker.recordOutput(mark("D;0"));
+    expect(tracker.promptState()).toBe("between-prompts");
+    tracker.recordOutput(prompt("/work/app"));
+    expect(tracker.promptState()).toBe("ready");
+    expect(tracker.currentCwd()).toBe("/work/app");
+    tracker.recordExit();
+    expect(tracker.promptState()).toBe("exited");
+  });
+
+  it("treats fish's prompt (no end-of-prompt marker) as ready", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE });
+    tracker.recordOutput(`${mark("P;Cwd=/w")}${mark("A")}user@host /w> `);
+    expect(tracker.promptState()).toBe("ready");
+  });
+
+  it("tells subscribers about every marker and the exit, and stops after unsubscribe", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE });
+    const seen: string[] = [];
+    const unsubscribe = tracker.subscribe(() => seen.push(tracker.promptState()));
+    expect(tracker.nextBlockId()).toBe(1);
+    tracker.recordOutput(cycle("make", "built\r\n", 0));
+    // P, A, B, C, D: one notification per marker.
+    expect(seen).toEqual(["between-prompts", "ready", "ready", "command-running", "between-prompts"]);
+    expect(tracker.nextBlockId()).toBe(2);
+    tracker.recordExit();
+    expect(seen.at(-1)).toBe("exited");
+    unsubscribe();
+    tracker.recordOutput(prompt());
+    expect(seen.length).toBe(6);
+  });
+});

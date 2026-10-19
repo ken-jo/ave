@@ -219,6 +219,28 @@ function cleanCommand(raw: string): string {
 }
 
 /**
+ * Whether the shell is waiting at its prompt for a new command, and if not,
+ * why not. Read before `terminal_run` types a command into a terminal.
+ *  - `ready`: an empty prompt — the last command finished and nothing has
+ *    been typed at the new prompt;
+ *  - `no-shell-integration`: the shell emits no markers, so its state cannot
+ *    be known;
+ *  - `exited`: the shell is gone;
+ *  - `command-running`: a command (or a full-screen program) is in the
+ *    foreground, so typed text would go to it rather than to the shell;
+ *  - `between-prompts`: a command finished and the next prompt has not
+ *    started;
+ *  - `pending-input`: the user has typed at the prompt and not submitted it.
+ */
+export type TerminalPromptState =
+  | "ready"
+  | "no-shell-integration"
+  | "exited"
+  | "command-running"
+  | "between-prompts"
+  | "pending-input";
+
+/**
  * Turns one terminal's output (and, for the fallback, its typed input) into
  * blocks. One tracker per PTY session.
  */
@@ -238,6 +260,8 @@ export class TerminalBlockTracker {
   /** Echoed input between B and C, used when C carries no command text. */
   private echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
   private exited = false;
+  /** Called after every authenticated marker and on exit (see {@link subscribe}). */
+  private readonly listeners = new Set<() => void>();
 
   private readonly nonce: string;
   private readonly now: () => number;
@@ -256,6 +280,46 @@ export class TerminalBlockTracker {
 
   hasExited(): boolean {
     return this.exited;
+  }
+
+  /** The shell's state at this moment, from its markers alone ({@link TerminalPromptState}). */
+  promptState(): TerminalPromptState {
+    if (this.exited) return "exited";
+    if (!this.integrated) return "no-shell-integration";
+    if (this.open) return "command-running";
+    // zsh and bash mark the end of the prompt (B): anything echoed after it is
+    // the user's own typing. fish marks no B, so its prompt phase is the
+    // steady state and typing there cannot be told from the prompt text.
+    if (this.phase === "input") return this.echo.text().trim() === "" ? "ready" : "pending-input";
+    if (this.phase === "prompt") return "ready";
+    return "between-prompts";
+  }
+
+  /** The working directory the shell last reported, or null before it reported one. */
+  currentCwd(): string | null {
+    return this.cwd;
+  }
+
+  /** The id the next block will get: every block opened after this call has at least this id. */
+  nextBlockId(): number {
+    return this.nextId;
+  }
+
+  /**
+   * Be told when a block opens or closes or the prompt state changes (after
+   * every authenticated marker, and when the shell exits). Returns the
+   * unsubscribe function. A listener runs inside the PTY data callback and
+   * must only record what it needs.
+   */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private notify(): void {
+    for (const listener of [...this.listeners]) listener();
   }
 
   /**
@@ -409,6 +473,7 @@ export class TerminalBlockTracker {
     this.exited = true;
     if (this.open) this.closeOpen(null);
     this.phase = "idle";
+    this.notify();
   }
 
   /** Newest first, completed and running. */
@@ -495,6 +560,7 @@ export class TerminalBlockTracker {
       default:
         break;
     }
+    this.notify();
     return marker;
   }
 

@@ -32,6 +32,7 @@ import {
   type RationaleApprovalDisplay,
 } from "../../../shared/rationale-approval-display.js";
 import { isNonUserTrustOrigin, trustOriginLabel } from "../utils/trust-origin-label.js";
+import { getActiveSurface } from "../preview/active-surface.js";
 import {
   ReviewRow,
   categoryLabel,
@@ -564,7 +565,26 @@ function rememberScopeText(
       );
     case "browser-agent-tabs":
       return t("toolApprovalDialog.rememberScopeBrowserAgentTabs", { toolName });
+    case "terminal-command":
+      return t("toolApprovalDialog.rememberScopeTerminalCommand", { cwd: memory.scope.cwd });
   }
+}
+
+/**
+ * The terminal a `terminal_run` card types into and the directory its shell
+ * is in — both sealed by the host before the card was shown. Named the way
+ * the terminal's tab is labelled when it is the window's active terminal
+ * (the usual target), else by its id.
+ */
+function terminalTargetText(
+  t: (key: string, params?: Record<string, string>) => string,
+  request: Pick<ApprovalRequest, "approvalMemory">,
+): string | null {
+  const memory = request.approvalMemory;
+  if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return null;
+  const active = getActiveSurface();
+  const terminal = active?.kind === "terminal" && active.tabId === memory.scope.tabId ? active.label : memory.scope.tabId;
+  return t("toolApprovalDialog.terminalTarget", { terminal, cwd: memory.scope.cwd });
 }
 
 /**
@@ -1574,6 +1594,11 @@ export function ToolApprovalContent({
             {browserTargetText(tHook, request) ? (
               <p className="text-[10px] text-muted-foreground" data-testid="approval-browser-target">
                 {browserTargetText(tHook, request)}
+              </p>
+            ) : null}
+            {terminalTargetText(tHook, request) ? (
+              <p className="text-[10px] text-muted-foreground" data-testid="approval-terminal-target">
+                {terminalTargetText(tHook, request)}
               </p>
             ) : null}
             {!alwaysAllowUnavailable && !isOutOfDir && request.persistentApprovalCwd ? (

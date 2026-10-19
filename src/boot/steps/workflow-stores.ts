@@ -34,6 +34,7 @@ import { promptSurfaceResolver } from "../host-runtime.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
+import { typeTerminalCommand } from "../../main/terminal/pty-manager.js";
 import { findSessionMainWindowContents, mainWindowForContents, sideChatOwnerWindow } from "../../main/app-state.js";
 import { browserOrigin } from "../../tools/browser-tools.js";
 
@@ -173,6 +174,13 @@ export async function setupWorkflowStores(
             liveOriginSessionId,
             activeTerminalTabId: (windowId: number): string | undefined =>
               browserTabRegistry.activeTerminalTabId(windowId),
+          },
+          terminalRun: {
+            windowIdForHostedSession,
+            liveOriginSessionId,
+            activeTerminalTabId: (windowId: number): string | undefined =>
+              browserTabRegistry.activeTerminalTabId(windowId),
+            typeCommand: typeTerminalCommand,
           },
           browser: {
             windowIdForHostedSession,

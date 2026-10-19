@@ -24,6 +24,7 @@ import {
 } from "../permissions/sandbox-capability.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import { isCanonicalBashTool, isCanonicalPowerShellTool } from "./shell-tools.js";
+import { isCanonicalTerminalRunTool, terminalCommandScopeOf } from "./terminal-run.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import {
   isRemoteControllerAuthorityCurrent,
@@ -418,6 +419,14 @@ export async function authorizeToolInvocation(
     const shellDialect = isCanonicalBashTool(tool)
       ? "bash" as const
       : isCanonicalPowerShellTool(tool) ? "powershell" as const : undefined;
+    // A command typed into the user's terminal is judged as a bash command
+    // in the directory that terminal's shell reported — the one sealed into
+    // its approval scope before this decision (terminal-run.ts). The
+    // terminal's zsh/bash/fish reads the same POSIX command words the rules
+    // match.
+    const terminalScope = isCanonicalTerminalRunTool(tool)
+      ? terminalCommandScopeOf(invocationPermissionContext.approvalMemory)
+      : undefined;
     const shellRuleSubject = shellDialect !== undefined && typeof finalInput.command === "string"
       ? {
           kind: "shell" as const,
@@ -428,7 +437,9 @@ export async function authorizeToolInvocation(
             typeof finalInput.cwd === "string" && finalInput.cwd.length > 0 ? finalInput.cwd : undefined,
           ),
         }
-      : undefined;
+      : terminalScope !== undefined && typeof finalInput.command === "string"
+        ? { kind: "shell" as const, dialect: "bash" as const, command: finalInput.command, cwd: terminalScope.cwd }
+        : undefined;
     const projectRulesCwd = shellRuleSubject?.dialect === "bash" ? shellRuleSubject.cwd : undefined;
     if (services.permissionManager && projectRulesCwd !== undefined) {
       await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
