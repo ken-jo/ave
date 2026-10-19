@@ -84,6 +84,7 @@ export function resolveShell(dialect: ShellDialect = "posix"): ResolvedShellComm
       // Bash tools are non-interactive and must not acquire login-profile behavior.
       if (dialect === "bash") candidate.shellArgs = (script: string) => ["-c", script];
       const probe = execFileSync(candidate.cmd, candidate.shellArgs(probeCommand), {
+        windowsHide: true,
         stdio: "pipe",
         encoding: "utf-8",
         timeout: SHELL_PROBE_TIMEOUT_MS,
@@ -125,7 +126,7 @@ function windowsShellCandidates(): ResolvedShellCommand[] {
 
 function resolveWindowsShellCandidate(cmd: string, dialect: ShellDialect): string {
   if (/^[A-Za-z]:[\\/]/.test(cmd)) return cmd;
-  const matches = execFileSync("where", [cmd], { stdio: "pipe", encoding: "utf-8", env: buildSafeChildEnv() });
+  const matches = execFileSync("where", [cmd], { windowsHide: true, stdio: "pipe", encoding: "utf-8", env: buildSafeChildEnv() });
   if (dialect === "posix") return cmd;
   // Pin the first search result before probing so later execution cannot repeat
   // PATH lookup under a different working directory or environment.
@@ -142,6 +143,7 @@ function detectWindowsShellFlavor(shell: ResolvedShellCommand): WindowsShellFlav
   }
   try {
     const output = execFileSync(shell.cmd, shell.shellArgs("uname -s"), {
+      windowsHide: true,
       stdio: "pipe",
       encoding: "utf-8",
       timeout: SHELL_PROBE_TIMEOUT_MS,

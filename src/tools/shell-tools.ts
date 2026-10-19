@@ -2094,6 +2094,7 @@ export async function spawnWithSandbox(
     try {
       assertManagedChildProcessAdmissionOpen("tool:bash:asrt");
       child = spawn(cmd, args, {
+        windowsHide: true,
         detached: process.platform !== "win32",
         cwd: resolvedCwd,
         stdio: ["ignore", "pipe", "pipe"],
@@ -2205,6 +2206,7 @@ async function spawnWithTimeout(
     signal?.throwIfAborted();
     assertManagedChildProcessAdmissionOpen("tool:bash");
     const child = spawn(shell.cmd, [...argv], {
+      windowsHide: true,
       detached: process.platform !== "win32",
       cwd,
       stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
@@ -3033,6 +3035,7 @@ async function parsePowerShellAst(command: string): Promise<PowerShellAstSummary
       executable,
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", POWER_SHELL_AST_PARSER],
       {
+        windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
         env: buildSafeChildEnv(),
       },
@@ -3223,6 +3226,7 @@ async function spawnPowerShellWithSandbox(
     try {
       assertManagedChildProcessAdmissionOpen("tool:powershell:asrt");
       child = spawn(cmd, args, {
+        windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
@@ -3320,6 +3324,7 @@ async function spawnPowerShell(
       executable,
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", (prelude ?? "") + command],
       {
+        windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
         stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
