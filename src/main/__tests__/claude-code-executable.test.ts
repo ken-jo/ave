@@ -183,7 +183,10 @@ describe("subscription package launch inputs", () => {
   it.skipIf(process.platform === "win32")("pins a package script and a private native interpreter through a protected launcher link", async () => {
     const { launcher, runtime, discovery, script, interpreter } = npmFixture();
     const proof = await pinClaudeCodeExecutable(launcher, runtime, discovery);
-    expect(proof.args).toEqual([script]);
+    expect(proof.args.slice(0, 2)).toEqual(["--no-global-search-paths", "--import"]);
+    expect(proof.args[2]).toMatch(/^file:/);
+    expect(proof.args[3]).not.toBe(script);
+    expect(readFileSync(proof.args[3]!)).toEqual(readFileSync(script));
     expect(proof.executable).not.toBe(interpreter);
     expect(readFileSync(proof.executable)).toEqual(readFileSync(interpreter));
     await expect(proof.verify()).resolves.toBeUndefined();
@@ -193,7 +196,10 @@ describe("subscription package launch inputs", () => {
     const { launcher, runtime, discovery, script, interpreter } = npmFixture("win32");
     expect(claudeCodeNpmShimTarget(launcher)).toBe(script);
     const proof = await pinClaudeCodeExecutable(launcher, runtime, discovery);
-    expect(proof.args).toEqual([script]);
+    expect(proof.args.slice(0, 2)).toEqual(["--no-global-search-paths", "--import"]);
+    expect(proof.args[2]).toMatch(/^file:/);
+    expect(proof.args[3]).not.toBe(script);
+    expect(readFileSync(proof.args[3]!)).toEqual(readFileSync(script));
     expect(proof.executable).not.toBe(interpreter);
     expect(proof.executable.endsWith("runtime.exe")).toBe(true);
     expect(readFileSync(proof.executable)).toEqual(nativeExecutableBytes("win32"));

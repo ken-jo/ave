@@ -1,13 +1,13 @@
-import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { basename, dirname, join, win32 } from "node:path";
 import {
   copyNativeExecutableFile, discardCodexExecutableArtifact, hashExecutableFile, openExecutableFile,
   verifyCodexExecutableArtifact, type CodexExecutableArtifact,
 } from "./codex-executable-artifact.js";
-import { assertCodexExecutableLocation, assertCodexPrivateRuntimeDirectory, assertExecutableDirectory } from "./codex-executable-location.js";
+import { assertCodexExecutableLocation, assertCodexPrivateRuntimeDirectory } from "./codex-executable-location.js";
 import { isNativeExecutableFile } from "./native-executable-format.js";
 import { cliExecutableCandidates, type CliDiscoveryEnvironment } from "./user-cli-discovery.js";
+import { copySubscriptionPackageArtifact } from "./subscription-package-artifact.js";
 
 export interface ClaudeCodeExecutable {
   readonly executable: string;
@@ -18,7 +18,6 @@ export interface ClaudeCodeExecutable {
 }
 
 const PACKAGE_NAME = "@anthropic-ai/claude-code";
-const MAX_PACKAGE_FILES = 20_000;
 
 async function contentHash(path: string): Promise<string> {
   await assertCodexExecutableLocation(path);
@@ -26,7 +25,7 @@ async function contentHash(path: string): Promise<string> {
   try { return await hashExecutableFile(file); } finally { await file.close(); }
 }
 
-async function nativeFile(path: string, platform: NodeJS.Platform): Promise<boolean> {
+async function isNativeFile(path: string, platform: NodeJS.Platform): Promise<boolean> {
   await assertCodexExecutableLocation(path);
   const file = await openExecutableFile(path);
   try { return await isNativeExecutableFile(file, platform, process.arch); } finally { await file.close(); }
@@ -39,30 +38,6 @@ export function claudeCodeNpmShimTarget(shim: string, platform: NodeJS.Platform 
   return paths.join(paths.dirname(shim), "node_modules", "@anthropic-ai", "claude-code", "cli.js");
 }
 
-async function packageHash(root: string): Promise<string> {
-  const hash = createHash("sha256");
-  let count = 0;
-  const visit = async (directory: string, relative: string): Promise<void> => {
-    await assertExecutableDirectory(directory);
-    for (const name of (await fs.readdir(directory)).sort()) {
-      if (++count > MAX_PACKAGE_FILES) throw new Error("Subscription package is too large");
-      const path = join(directory, name);
-      const entry = await fs.lstat(path);
-      // External links can bring code outside the pinned package into a turn.
-      if (entry.isSymbolicLink()) throw new Error("Subscription package contains a symbolic link");
-      const key = `${relative}/${name}`;
-      if (entry.isDirectory()) {
-        hash.update(JSON.stringify([key, "directory"]));
-        await visit(path, key);
-      } else if (entry.isFile()) {
-        hash.update(JSON.stringify([key, await contentHash(path)]));
-      } else throw new Error("Invalid subscription package entry");
-    }
-  };
-  await visit(root, "");
-  return hash.digest("hex");
-}
-
 /** Admit all launch inputs before the first probe and retain a content proof. */
 export async function pinClaudeCodeExecutable(
   candidate: string,
@@ -72,11 +47,11 @@ export async function pinClaudeCodeExecutable(
   await assertCodexExecutableLocation(candidate);
   const source = await fs.realpath(candidate);
   const launcherHash = await contentHash(source);
-  const shim = discovery.platform === "win32" && source.toLowerCase().endsWith(".cmd");
-  let script: string | null = shim ? claudeCodeNpmShimTarget(source) : null;
+  const isNpmShim = discovery.platform === "win32" && source.toLowerCase().endsWith(".cmd");
+  let script: string | null = isNpmShim ? claudeCodeNpmShimTarget(source) : null;
   let interpreter: string = source;
   let root: string | null = null;
-  if (script === null && !await nativeFile(source, discovery.platform)) script = source;
+  if (script === null && !await isNativeFile(source, discovery.platform)) script = source;
   if (script !== null) {
     await assertCodexExecutableLocation(script);
     script = await fs.realpath(script);
@@ -101,7 +76,7 @@ export async function pinClaudeCodeExecutable(
       if (shebang[1] !== "/usr/bin/env node") explicitInterpreter = shebang[1]!;
     } finally { await input.close(); }
     const candidates = explicitInterpreter ? [explicitInterpreter] : [
-      ...(shim ? [join(dirname(source), "node.exe")] : []),
+      ...(isNpmShim ? [join(dirname(source), "node.exe")] : []),
       ...cliExecutableCandidates(discovery, [discovery.platform === "win32" ? "node.exe" : "node"], []),
     ];
     let resolved: string | null = null;
@@ -111,7 +86,7 @@ export async function pinClaudeCodeExecutable(
         throw error;
       }
       // An existing but untrusted interpreter stops discovery before execution.
-      if (!await nativeFile(path, discovery.platform)) throw new Error("Invalid subscription interpreter");
+      if (!await isNativeFile(path, discovery.platform)) throw new Error("Invalid subscription interpreter");
       resolved = await fs.realpath(path);
       break;
     }
@@ -119,7 +94,6 @@ export async function pinClaudeCodeExecutable(
     interpreter = resolved;
   }
   const interpreterHash = await contentHash(interpreter);
-  const treeHash = root === null ? null : await packageHash(root);
   await assertCodexPrivateRuntimeDirectory(runtimeDirectory);
   const directory = await fs.mkdtemp(join(runtimeDirectory, "executable-"));
   try {
@@ -127,20 +101,21 @@ export async function pinClaudeCodeExecutable(
     const primary = await copyNativeExecutableFile(interpreter,
       join(directory, discovery.platform === "win32" ? "runtime.exe" : "runtime"), discovery.platform, process.arch);
     if (primary.contentHash !== interpreterHash) throw new Error("Subscription interpreter changed");
+    const packageArtifact = root === null || script === null ? null : await copySubscriptionPackageArtifact(root, script, directory);
     const artifact: CodexExecutableArtifact = Object.freeze({ ...primary, companion: null });
     const verify = async (): Promise<void> => {
       // Retain the launcher's link route as well as the canonical target.
       await assertCodexExecutableLocation(candidate);
       if (await fs.realpath(candidate) !== source || await contentHash(source) !== launcherHash
-        || await contentHash(interpreter) !== interpreterHash
-        || (root !== null && await packageHash(root) !== treeHash)) {
+        || await contentHash(interpreter) !== interpreterHash) {
         throw new Error("Subscription executable changed");
       }
       await verifyCodexExecutableArtifact(artifact);
+      await packageArtifact?.verify();
     };
     await verify();
-    return Object.freeze({ executable: artifact.executable, args: Object.freeze(script === null ? [] : [script]),
-      identity: JSON.stringify([source, launcherHash, interpreter, interpreterHash, treeHash]), verify,
+    return Object.freeze({ executable: artifact.executable, args: packageArtifact?.args ?? Object.freeze([]),
+      identity: JSON.stringify([source, launcherHash, interpreter, interpreterHash, packageArtifact?.identity ?? null]), verify,
       discard: () => discardCodexExecutableArtifact(artifact),
     });
   } catch (error) {

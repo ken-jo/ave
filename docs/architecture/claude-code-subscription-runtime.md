@@ -15,20 +15,30 @@ checks; extended access rules follow the same shared policy.
 
 Native executables run from a private, sealed, content-hashed copy. Package
 launchers resolve only the official package's `cli.js` and a pinned native
-interpreter, without a shell. The interpreter runs from a private copy; every
-regular file in the package tree is content-hashed through no-follow handles.
-Package symlinks and unsupported script interpreters fail closed. Qualification,
-authentication and each turn recheck the original launcher route, source bytes,
-interpreter bytes, package tree and private artifact immediately before spawn.
-A changed source or private artifact refuses the next turn of an existing session.
+interpreter, without a shell. The interpreter, package files and declared
+required/optional/peer dependency closure are copied through the same no-follow
+hashing and sealing primitives. Dependency directory layout is preserved, so
+nested and hoisted dependencies resolve inside the snapshot. Missing required
+dependencies, package symlinks and unsupported script interpreters fail closed.
 
-For package scripts, the package stays in its installation directory to preserve
-relative dependency resolution. Hash checking is not an atomic execute operation:
-a process with the same account's write authority can race the final check or
-change a dependency after it. Dependencies loaded outside the package root and
-system dynamic libraries are outside this content proof. Do not interpret this
-as isolation from a compromised current account. Native installation is preferred
-when that limitation is unacceptable.
+Package entry points run only from that snapshot. A sealed preload registers
+synchronous module resolution/loading hooks before entry execution. Both import
+and require are restricted to built-ins and the copied file manifest. Global
+module search is disabled; undeclared, absolute and network module sources
+outside the manifest are rejected. JavaScript and JSON code are loaded from
+no-follow handles and checked against their digests at load time. The script
+interpreter must support synchronous loading hooks (22.15.0 or later on the 22.x
+line, 23.5.0 or later on newer lines); unsupported runtimes are rejected before the CLI probe.
+Copied package metadata is also checked around resolution and loading.
+The installed script or its dependencies are never executed by path after a
+check, so an installer replacing them cannot change the invocation's code.
+
+Qualification, authentication and each turn recheck the original launcher route,
+source dependency graph and the sealed private artifact immediately before
+spawn. A changed source or artifact refuses the next turn of an existing session.
+The ownership trust boundary remains the current account and root, as for native
+artifacts; it does not claim to isolate a compromised current account or replace
+the operating system's native library loader.
 
 Discovery checks the version identity and advertised authentication commands.
 Help is not a complete flag inventory. Connected verification exercises the

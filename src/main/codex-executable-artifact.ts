@@ -11,13 +11,13 @@ import { retryOnTransientFsLock } from "../lib/transient-fs-lock-retry.js";
 
 const COPY_BUFFER_BYTES = 64 * 1024;
 
-interface NativeArtifactFile {
+interface ExecutableArtifactFile {
   readonly executable: string;
   readonly contentHash: string;
 }
 
-export interface CodexExecutableArtifact extends NativeArtifactFile {
-  readonly companion: NativeArtifactFile | null;
+export interface CodexExecutableArtifact extends ExecutableArtifactFile {
+  readonly companion: ExecutableArtifactFile | null;
 }
 
 export class CodexExecutableArtifactError extends Error {
@@ -72,12 +72,10 @@ export async function hashExecutableFile(handle: FileHandle): Promise<string> {
   return hash.digest("hex");
 }
 
-export async function copyNativeExecutableFile(
+export async function copyExecutableFile(
   source: string,
   executable: string,
-  platform: NodeJS.Platform,
-  arch: NodeJS.Architecture,
-): Promise<NativeArtifactFile> {
+): Promise<ExecutableArtifactFile> {
   await assertCodexExecutableLocation(source);
   const input = await openExecutableFile(source);
   try {
@@ -103,17 +101,26 @@ export async function copyNativeExecutableFile(
     } finally {
       await output.close();
     }
-    const artifact = Object.freeze({ executable, contentHash: hash.digest("hex") });
-    const copied = await openExecutableFile(executable);
-    try {
-      if (!await isNativeExecutableFile(copied, platform, arch)) throw new CodexExecutableArtifactError();
-    } finally {
-      await copied.close();
-    }
-    return artifact;
+    return Object.freeze({ executable, contentHash: hash.digest("hex") });
   } finally {
     await input.close();
   }
+}
+
+export async function copyNativeExecutableFile(
+  source: string,
+  executable: string,
+  platform: NodeJS.Platform,
+  arch: NodeJS.Architecture,
+): Promise<ExecutableArtifactFile> {
+  const artifact = await copyExecutableFile(source, executable);
+  const copied = await openExecutableFile(executable);
+  try {
+    if (!await isNativeExecutableFile(copied, platform, arch)) throw new CodexExecutableArtifactError();
+  } finally {
+    await copied.close();
+  }
+  return artifact;
 }
 
 async function companionSource(source: string, platform: NodeJS.Platform): Promise<string | null> {
