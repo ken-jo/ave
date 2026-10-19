@@ -31,6 +31,12 @@ const ORIGIN_LABEL_KEYS = {
   terminal: "permissionsTab.networkGrantOriginTerminal",
 } as const;
 
+const NETWORK_LABEL_KEYS = {
+  public: "permissionsTab.networkGrantClassPublic",
+  local: "permissionsTab.networkGrantClassLocal",
+  unverified: "permissionsTab.networkGrantClassUnverified",
+} as const;
+
 function grantKey(grant: ListedEgressGrant): string {
   const owner = grant.scope === "conversation" ? grant.sessionId
     : grant.scope === "tab" ? grant.tabId
@@ -122,6 +128,9 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
             <li key={grantKey(grant)} className="flex min-w-0 items-center justify-between gap-3 px-3 py-2" data-testid="egress-grant-row">
               <div className="min-w-0 space-y-0.5">
                 <span className="block min-w-0 break-all font-mono text-[12px]">{`${grant.host}:${grant.port}`}</span>
+                <p className="text-[11px] text-muted-foreground" data-testid="egress-grant-class">
+                  {translate(NETWORK_LABEL_KEYS[grant.network ?? "public"])}
+                </p>
                 <p className="min-w-0 break-words text-[11px] text-muted-foreground">
                   {grant.scope === "always"
                     ? translate("permissionsTab.networkGrantScopeAlways", {

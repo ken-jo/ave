@@ -370,34 +370,47 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
   });
 
   it("folds concurrent connections to one destination from one tab into one banner; other destinations ask on their own", async () => {
-    const releases: Array<(value: EgressApprovalAnswer) => void> = [];
-    answer = () => new Promise((resolve) => { releases.push(resolve); });
+    const requestKey = (tabId: string, host: string) => `${tabId}\n${host}`;
+    const releases = new Map<string, (value: EgressApprovalAnswer) => void>();
+    answer = (request) => new Promise((resolve) => {
+      if (request.origin !== "terminal") throw new Error("Expected a terminal approval");
+      releases.set(requestKey(request.tabId, request.destination.host), resolve);
+    });
+    const respond = (tabId: string, host: string, value: EgressApprovalAnswer) => {
+      const key = requestKey(tabId, host);
+      const release = releases.get(key);
+      expect(release).toBeTypeOf("function");
+      releases.delete(key);
+      release!(value);
+    };
     const ask = callback();
+    const otherHost = ask({ host: "registry.npmjs.org", port: 443 }, listener(TERMINAL_TOKEN));
+    const otherTab = ask({ host: "github.com", port: 443 }, listener(OTHER_TERMINAL_TOKEN));
+    await vi.waitFor(() => expect(asked).toHaveLength(2));
     const first = ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
     const second = ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
     const third = ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
-    const otherHost = ask({ host: "registry.npmjs.org", port: 443 }, listener(TERMINAL_TOKEN));
-    const otherTab = ask({ host: "github.com", port: 443 }, listener(OTHER_TERMINAL_TOKEN));
     await vi.waitFor(() => expect(asked).toHaveLength(3));
-    expect(asked.map((request) => [request.origin === "terminal" ? request.tabId : null, request.destination.host])).toEqual([
-      [TERMINAL_TAB, "github.com"],
-      [TERMINAL_TAB, "registry.npmjs.org"],
-      [OTHER_TERMINAL_TAB, "github.com"],
-    ]);
+    expect([...releases.keys()].sort()).toEqual([
+      requestKey(TERMINAL_TAB, "github.com"),
+      requestKey(TERMINAL_TAB, "registry.npmjs.org"),
+      requestKey(OTHER_TERMINAL_TAB, "github.com"),
+    ].sort());
     // Allow once on the shared banner lets one of the three through; the
     // other two fold into the next banner, whose This tab covers both.
-    releases[0]!({ allow: true, scope: "once" });
-    releases[1]!({ allow: false, reason: "denied by the user" });
-    releases[2]!({ allow: false, reason: "denied by the user" });
+    respond(TERMINAL_TAB, "github.com", { allow: true, scope: "once" });
+    respond(TERMINAL_TAB, "registry.npmjs.org", { allow: false, reason: "denied by the user" });
+    respond(OTHER_TERMINAL_TAB, "github.com", { allow: false, reason: "denied by the user" });
     await vi.waitFor(() => expect(asked).toHaveLength(4));
     expect(asked[3]).toMatchObject({ origin: "terminal", tabId: TERMINAL_TAB, destination: { host: "github.com", port: 443 } });
-    releases[3]!({ allow: true, scope: "tab" });
+    expect([...releases.keys()]).toEqual([requestKey(TERMINAL_TAB, "github.com")]);
+    respond(TERMINAL_TAB, "github.com", { allow: true, scope: "tab" });
     expect(await Promise.all([first, second, third])).toEqual([true, true, true]);
     expect(await otherHost).toEqual({ allow: false, reason: "denied by the user" });
     expect(await otherTab).toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toHaveLength(4);
     expect(audit.filter((row) => row.destination.host === "github.com" && row.invocation?.kind === "terminal" && (row.invocation as { tabId: string }).tabId === TERMINAL_TAB)
-      .map((row) => [row.decision, row.basis, row.scope])).toEqual([
+      .map((row) => [row.decision, row.basis, row.scope]).sort()).toEqual([
       ["allow", "prompt", "once"],
       ["allow", "prompt", "tab"],
       ["allow", "prompt", "tab"],

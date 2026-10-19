@@ -116,6 +116,27 @@ describe("EgressGrantsList", () => {
   };
   const alwaysGrant: PersistentEgressGrant = { scope: "always", origin: "terminal", host: "github.com", port: 443, grantedAt: "2026-10-19T02:00:00.000Z" };
 
+  it.each([
+    ["en", ["Public network", "Local / private network", "Unverified destination"]],
+    ["ko", ["공개 네트워크", "로컬 / 사설 네트워크", "확인되지 않은 목적지"]],
+  ] as const)("distinguishes same-destination grants by class in %s", async (locale, labels) => {
+    setLocale(locale);
+    const base: ConversationEgressGrant = { scope: "conversation", sessionId: "session-7", host: "data.example.test", port: 443, grantedAt: "2026-10-19T03:00:00.000Z" };
+    const grants: ConversationEgressGrant[] = [
+      { ...base, network: "public" }, { ...base, network: "local" }, { ...base, network: "unverified" },
+    ];
+    render(<EgressGrantsList fetcher={async () => ({ ok: true, grants })} />);
+    await waitFor(() => expect(screen.getAllByTestId("egress-grant-row")).toHaveLength(3));
+    expect(screen.getAllByTestId("egress-grant-class").map(label => label.textContent)).toEqual(labels);
+    expect(screen.getAllByTestId("egress-grant-row").every(row => row.textContent?.includes("data.example.test:443"))).toBe(true);
+  });
+
+  it.each(["en", "ko"] as const)("labels legacy classless grants as public in %s", async (locale) => {
+    setLocale(locale);
+    render(<EgressGrantsList fetcher={async () => ({ ok: true, grants: [alwaysGrant] })} />);
+    expect((await screen.findByTestId("egress-grant-class")).textContent).toBe(locale === "en" ? "Public network" : "공개 네트워크");
+  });
+
   it("lists persistent grants and revokes the one picked", async () => {
     let grants = [workspaceGrant, alwaysGrant];
     const fetcher = vi.fn(async () => ({ ok: true, grants }));
