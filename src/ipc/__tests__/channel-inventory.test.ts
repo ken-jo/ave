@@ -418,6 +418,8 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:permissions:sandbox-capability",
         "ave:permissions:sandbox-windows-install",
         "ave:permissions:sandbox-windows-status",
+        "ave:permissions:upstream-proxy-get",
+        "ave:permissions:upstream-proxy-set",
         "ave:permissions:user-approval-list",
         "ave:permissions:user-approval-record",
         "ave:permissions:user-approval-revoke",

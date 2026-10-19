@@ -196,6 +196,8 @@ describe("preload contextBridge world shape lock", () => {
             "sandboxWindowsInstall",
             "sandboxWindowsStatus",
             "setMode",
+            "upstreamProxyGet",
+            "upstreamProxySet",
           ],
           "pluginConfig": [
             "get",
@@ -550,6 +552,8 @@ describe("preload contextBridge world shape lock", () => {
             "sandboxWindowsInstall",
             "sandboxWindowsStatus",
             "setMode",
+            "upstreamProxyGet",
+            "upstreamProxySet",
           ],
           "pingAiProvider": "function",
           "pluginPreloadUrl": "string",

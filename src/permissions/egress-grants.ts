@@ -19,9 +19,9 @@
  * through, nor the reverse. Working directories are compared after
  * `canonicalizePathForMatch`, the canonicalizer the sandbox jails use.
  *
- * A grant names one destination, `host:port`, with the host canonicalised
+ * A grant names one destination and its approved network class, with the host canonicalised
  * the way a client's request is (lower case, no trailing dot, IPv6 without
- * brackets), so the spelling a command used cannot widen or miss a grant.
+ * brackets), so neither its spelling nor a changed class widens a grant.
  *
  * Grants apply to shells only. They are never written into ASRT's
  * `allowedDomains` and never consulted for a plugin worker (invariant I4).
@@ -52,6 +52,8 @@ import { maxEgressGrantScope, type EgressIdentityStrength } from "../shared/sand
 import {
   EGRESS_GRANT_SCOPE_LADDERS,
   isEgressGrantScope,
+  isEgressGrantNetwork,
+  type EgressGrantNetwork,
   type EgressAskOrigin,
   type EgressGrantScope,
   type ConversationEgressGrant,
@@ -81,6 +83,11 @@ export function egressGrantScopesFor(
 export interface EgressDestination {
   readonly host: string;
   readonly port: number;
+}
+
+/** A grant also names the class approved; omission means a legacy public grant. */
+export interface EgressGrantDestination extends EgressDestination {
+  readonly network?: EgressGrantNetwork;
 }
 
 /**
@@ -120,7 +127,7 @@ export function canonicalEgressHost(host: string): string | undefined {
  *     was never checked. Like `local`, a grant for it never outlives the
  *     conversation (a terminal: the tab) and the card says why.
  */
-export type EgressDestinationNetwork = "public" | "local" | "unverified" | "reserved";
+export type EgressDestinationNetwork = EgressGrantNetwork | "reserved";
 
 const RESERVED_RANGES = [
   "169.254.0.0/16", "fe80::/10", // link-local, incl. most instance metadata
@@ -199,8 +206,14 @@ export function isValidEgressPort(port: unknown): port is number {
   return typeof port === "number" && Number.isInteger(port) && port >= 1 && port <= 65535;
 }
 
-function destinationKey(destination: EgressDestination): string {
-  return `${destination.host} ${destination.port}`;
+function grantNetwork(destination: EgressGrantDestination): EgressGrantNetwork {
+  const network = destination.network === undefined ? "public" : destination.network;
+  if (!isEgressGrantNetwork(network)) throw new Error("egress grant: invalid network class");
+  return network;
+}
+
+function destinationKey(destination: EgressGrantDestination): string {
+  return `${destination.host} ${destination.port} ${grantNetwork(destination)}`;
 }
 
 /** Where a shell call or terminal tab that asks for a grant runs. */
@@ -258,7 +271,7 @@ function parseGrant(path: string, entry: unknown, index: number): PersistentEgre
     throw new EgressGrantFileError(path, `grants[${index}] ${problem}`);
   };
   if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return fail("is not an object");
-  const { scope, origin, workspaceRoot, host, port, grantedAt, ...extra } = entry as Record<string, unknown>;
+  const { scope, origin, workspaceRoot, host, port, network = "public", grantedAt, ...extra } = entry as Record<string, unknown>;
   if (Object.keys(extra).length > 0) return fail(`has unknown field ${Object.keys(extra)[0]}`);
   if (scope !== "workspace" && scope !== "always") return fail("has a scope that is neither workspace nor always");
   if (origin !== "shell" && origin !== "terminal") return fail("has an origin that is neither shell nor terminal");
@@ -271,10 +284,11 @@ function parseGrant(path: string, entry: unknown, index: number): PersistentEgre
   if (scope === "always" && workspaceRoot !== undefined) return fail("is an always grant with a workspaceRoot");
   if (typeof host !== "string" || canonicalEgressHost(host) !== host) return fail("has a host that is not canonical");
   if (!isValidEgressPort(port)) return fail("has an invalid port");
+  if (!isEgressGrantNetwork(network)) return fail("has an invalid network class");
   if (typeof grantedAt !== "string" || Number.isNaN(Date.parse(grantedAt))) return fail("has an invalid grantedAt");
   return scope === "workspace"
-    ? { scope, origin, workspaceRoot: workspaceRoot as string, host, port, grantedAt }
-    : { scope, origin, host, port, grantedAt };
+    ? { scope, origin, workspaceRoot: workspaceRoot as string, host, port, network, grantedAt }
+    : { scope, origin, host, port, network, grantedAt };
 }
 
 function defaultEgressGrantFilePath(): string {
@@ -287,12 +301,13 @@ function grantUseKey(grant: RevocableEgressGrant): string {
   const owner = grant.scope === "conversation" ? grant.sessionId
     : grant.scope === "tab" ? grant.tabId
     : grant.scope === "workspace" ? `${grant.origin}\n${grant.workspaceRoot ?? ""}` : grant.origin;
-  return `${grant.scope}\n${owner}\n${grant.host} ${grant.port}`;
+  return `${grant.scope}\n${owner}\n${destinationKey(grant)}`;
 }
 
-function parseDestinationKey(key: string): { host: string; port: number } {
-  const space = key.lastIndexOf(" ");
-  return { host: key.slice(0, space), port: Number(key.slice(space + 1)) };
+function parseDestinationKey(key: string): EgressGrantDestination {
+  const [host, port, network] = key.split(" ");
+  if (host === undefined || !isEgressGrantNetwork(network)) throw new Error("egress grant: invalid destination key");
+  return { host, port: Number(port), network };
 }
 
 export class EgressGrantStore {
@@ -313,14 +328,15 @@ export class EgressGrantStore {
    * undefined. Throws EgressGrantFileError when the persistent file is not
    * valid, so the caller can deny with that reason instead of guessing.
    */
-  async matchingScope(subject: EgressGrantSubject, destination: EgressDestination): Promise<EgressGrantScope | undefined> {
+  async matchingScope(subject: EgressGrantSubject, destination: EgressGrantDestination): Promise<EgressGrantScope | undefined> {
     const key = destinationKey(destination);
     if (this.once.get(subject.token)?.has(key)) return "once";
     if (subject.sessionId !== undefined && this.conversation.get(subject.sessionId)?.has(key)) return "conversation";
     if (subject.tabId !== undefined && this.tab.get(subject.tabId)?.has(key)) return "tab";
     // Persistent grants of the subject's own origin only.
     const persistent = (await this.loadPersistent()).filter((grant) =>
-      grant.origin === subject.origin && grant.host === destination.host && grant.port === destination.port);
+      grant.origin === subject.origin && destinationKey(grant) === key
+      && egressScopesForNetwork([grant.scope], grantNetwork(destination)).length > 0);
     const workspaceRoot = subject.workspaceRoot === undefined ? undefined : canonicalWorkspaceRoot(subject.workspaceRoot);
     if (workspaceRoot !== undefined && persistent.some((g) => g.scope === "workspace" && g.workspaceRoot === workspaceRoot)) return "workspace";
     if (persistent.some((g) => g.scope === "always")) return "always";
@@ -337,13 +353,15 @@ export class EgressGrantStore {
     scope: EgressGrantScope,
     allowedScopes: readonly EgressGrantScope[],
     subject: EgressGrantSubject,
-    destination: EgressDestination,
+    destination: EgressGrantDestination,
     now: Date = new Date(),
   ): Promise<void> {
     if (!isEgressGrantScope(scope)) throw new Error(`egress grant: unknown scope ${String(scope)}`);
     if (!allowedScopes.includes(scope)) throw new Error(`egress grant: scope ${scope} was not offered`);
     if (canonicalEgressHost(destination.host) !== destination.host) throw new Error("egress grant: host is not canonical");
     if (!isValidEgressPort(destination.port)) throw new Error("egress grant: invalid port");
+    const network = grantNetwork(destination);
+    if (egressScopesForNetwork([scope], network).length === 0) throw new Error("egress grant: scope cannot cover this network class");
     const key = destinationKey(destination);
     switch (scope) {
       case "once":
@@ -364,16 +382,16 @@ export class EgressGrantStore {
         if (subject.workspaceRoot === undefined) throw new Error("egress grant: no workspace to grant for");
         const workspaceRoot = canonicalWorkspaceRoot(subject.workspaceRoot);
         await this.mutatePersistent((grants) => {
-          if (grants.some((g) => g.scope === "workspace" && g.origin === "shell" && g.workspaceRoot === workspaceRoot && g.host === destination.host && g.port === destination.port)) return grants;
-          return [...grants, { scope: "workspace", origin: "shell", workspaceRoot, host: destination.host, port: destination.port, grantedAt: now.toISOString() }];
+          if (grants.some((g) => g.scope === "workspace" && g.origin === "shell" && g.workspaceRoot === workspaceRoot && destinationKey(g) === key)) return grants;
+          return [...grants, { scope: "workspace", origin: "shell", workspaceRoot, host: destination.host, port: destination.port, network: grantNetwork(destination), grantedAt: now.toISOString() }];
         });
         return;
       }
       case "always": {
         const origin = subject.origin;
         await this.mutatePersistent((grants) => {
-          if (grants.some((g) => g.scope === "always" && g.origin === origin && g.host === destination.host && g.port === destination.port)) return grants;
-          return [...grants, { scope: "always", origin, host: destination.host, port: destination.port, grantedAt: now.toISOString() }];
+          if (grants.some((g) => g.scope === "always" && g.origin === origin && destinationKey(g) === key)) return grants;
+          return [...grants, { scope: "always", origin, host: destination.host, port: destination.port, network: grantNetwork(destination), grantedAt: now.toISOString() }];
         });
         return;
       }
@@ -385,25 +403,25 @@ export class EgressGrantStore {
    * scope's grant, so revoking the grant can close what it let through.
    * "Allow once" ends with its call and is not recorded.
    */
-  noteUse(scope: EgressGrantScope, subject: EgressGrantSubject, destination: EgressDestination): void {
+  noteUse(scope: EgressGrantScope, subject: EgressGrantSubject, destination: EgressGrantDestination): void {
     let grant: RevocableEgressGrant;
     switch (scope) {
       case "once":
         return;
       case "conversation":
         if (subject.sessionId === undefined) return;
-        grant = { scope, sessionId: subject.sessionId, host: destination.host, port: destination.port };
+        grant = { scope, sessionId: subject.sessionId, host: destination.host, port: destination.port, network: grantNetwork(destination) };
         break;
       case "tab":
         if (subject.tabId === undefined) return;
-        grant = { scope, tabId: subject.tabId, host: destination.host, port: destination.port };
+        grant = { scope, tabId: subject.tabId, host: destination.host, port: destination.port, network: grantNetwork(destination) };
         break;
       case "workspace":
         if (subject.workspaceRoot === undefined) return;
-        grant = { scope, origin: subject.origin, workspaceRoot: canonicalWorkspaceRoot(subject.workspaceRoot), host: destination.host, port: destination.port };
+        grant = { scope, origin: subject.origin, workspaceRoot: canonicalWorkspaceRoot(subject.workspaceRoot), host: destination.host, port: destination.port, network: grantNetwork(destination) };
         break;
       case "always":
-        grant = { scope, origin: subject.origin, host: destination.host, port: destination.port };
+        grant = { scope, origin: subject.origin, host: destination.host, port: destination.port, network: grantNetwork(destination) };
         break;
     }
     addTo(this.uses, grantUseKey(grant), subject.token);
@@ -473,11 +491,11 @@ export class EgressGrantStore {
   }
 
   /** Remove one persistent grant. Resolves true when it existed. */
-  private async revokePersistent(target: Pick<PersistentEgressGrant, "scope" | "origin" | "host" | "port" | "workspaceRoot">): Promise<boolean> {
+  private async revokePersistent(target: Pick<PersistentEgressGrant, "scope" | "origin" | "host" | "port" | "network" | "workspaceRoot">): Promise<boolean> {
     let removed = false;
     await this.mutatePersistent((grants) => {
       const kept = grants.filter((g) => {
-        const same = g.scope === target.scope && g.origin === target.origin && g.host === target.host && g.port === target.port &&
+        const same = g.scope === target.scope && g.origin === target.origin && destinationKey(g) === destinationKey(target) &&
           (g.scope === "always" || g.workspaceRoot === target.workspaceRoot);
         if (same) removed = true;
         return !same;

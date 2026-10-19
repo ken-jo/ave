@@ -19,6 +19,7 @@ import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../shared/processing-display-l
 import { DEFAULT_SIDEBAR_TAB } from "../shared/sidebar-tab.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
 import { LOG_RETENTION_DAYS } from "../shared/log-retention.js";
+import { DEFAULT_UPSTREAM_PROXY } from "../shared/upstream-proxy.js";
 import type { AppSettings } from "./settings-store.js";
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -95,6 +96,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     auditRotationMaxBytes: 10 * 1024 * 1024, // 10 MB
     auditRetentionDays: 30,
   },
+  // Owner decision 2026-10-20: the sandbox egress proxy follows the
+  // environment and the OS proxy settings unless Settings says otherwise.
+  upstreamProxy: { ...DEFAULT_UPSTREAM_PROXY },
   diagnostics: {
     // Raw crash-dump binaries excluded by default — metadata-only in the bundle.
     includeCrashDumps: false,

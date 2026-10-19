@@ -1,4 +1,4 @@
-Two backports and one Ave addition onto @anthropic-ai/sandbox-runtime 0.0.80.
+Two backports and three Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
 Drop each part when a released version carries it, and the whole patch (and
 the patchedDependencies entry in package.json) when all are released and Ave
 pins that version.
@@ -35,17 +35,19 @@ the installed package.
    0700 directory, and every Linux wrap mounts a tmpfs over that directory and
    binds back only its own lane socket, so no wrap can reach another
    invocation's socket even when allowAllUnixSockets lifts the AF_UNIX block.
-   A destination name is resolved once, before the ask callback, and refused
-   when any address is one the resolved-address guard refuses; the callback is told the addresses
-   (`SandboxAskContext.addresses`) and the connection is pinned to them: a
+   A destination name is resolved once, after the ask callback allowed the
+   name (part 5) and before its resolved phase, and refused when any address
+   is one the resolved-address guard refuses; the resolved phase is told the
+   addresses (`SandboxAskResolvedContext.addresses`) and the connection is pinned to them: a
    direct dial uses them instead of resolving again, and a parent-proxy
    CONNECT names an address literal instead of the name, trying the vetted
    addresses in turn (IPv4 first) until the upstream opens one (SNI inside
    the tunnel is the client's). So neither DNS rebinding between the check and
    the dial nor the upstream's own resolution reaches an address the guard
-   refuses. A plain-HTTP request by name through a parent proxy is refused
-   (its absolute-form target cannot be pinned without breaking virtual
-   hosting). A name this host cannot resolve is refused without a parent
+   refuses. A plain-HTTP request by name through a parent proxy cannot be
+   pinned (its absolute-form target names the host, which the upstream
+   resolves), so it is treated like a name this host cannot resolve. A name
+   this host cannot resolve is refused without a parent
    proxy; through a remote one it is forwarded by name and the callback is
    told `resolution: 'upstream'` (unverified); through one on this host
    (loopback, localhost-style names, an interface address) it is refused
@@ -63,21 +65,77 @@ the installed package.
    (defense in depth for #160, which the embedder pairs with a new session per
    wrap).
 
+4. Upstream routes (Ave): `SandboxManager.setParentProxyRouter(router)`
+   replaces the single static `parentProxy` with a per-destination hook. The
+   filter asks `router({ host, port, scheme })` once per decision, after the
+   name phase allowed it (part 5) and before the resolved phase (canonical
+   host; scheme 'https' for CONNECT/SOCKS, 'http' for
+   plain HTTP), and judges every answered route (`direct`, or an
+   `http`/`https` proxy with optional Basic `auth` and `resolvesNames`) the
+   way part 3 judges the one parent proxy: a pinned name or literal goes
+   direct to its vetted addresses or CONNECTs to them as literals; a
+   plain-HTTP name keeps its direct routes pinned and goes by name over the
+   proxy routes that may carry a name (`resolution: 'upstream'`); a name this host cannot resolve
+   drops direct routes and untrusted proxies on this host and is forwarded by
+   name over the rest (`resolution: 'upstream'`); a route naming one of the
+   session's proxy listeners is dropped, and the socket every proxy route
+   actually reaches is judged against those listeners too. The allowed
+   connection is dialed over the kept routes in order: only a route that
+   fails to connect (refused, reset, timed out, proxy name unresolvable)
+   hands over to the next; a policy refusal on a route (its socket reached
+   this host or a listener) ends it, so a recorded refusal is the answer the
+   client gets; a 407 refuses with "upstream proxy requires authentication"
+   (CONNECT status line or plain-HTTP response, never relayed to the
+   client); any other non-2xx CONNECT answer refuses with "upstream proxy
+   refused the connection (HTTP <status>)", so neither a later proxy nor
+   DIRECT carries what an upstream refused. Within one route, only a
+   connection failure tries the next vetted destination address; every HTTP
+   response is final. A loopback destination is always direct, a
+   router that throws or answers a malformed route refuses, and an empty
+   answer refuses with the router's reason. Without a router the static
+   `parentProxy` is turned into the same routes, so behaviour is unchanged.
+   `closeAllInvocationConnections()` closes every open
+   connection the proxy allowed (the embedder calls it when the upstream
+   setting changes). The router may expose synchronous `generation()` and
+   `decisionClass(host, addresses, resolution)` hooks. A decision captures the
+   generation; changes while awaiting approval, routing or DNS re-plan under
+   the new configuration before dialing or writing credentials. Name-phase
+   allowances remain held, resolved allowances are reused only for the same
+   policy class, and denials stay final. Each socket attempt, proxy DNS answer
+   and connected peer is checked again; plain HTTP also checks immediately
+   before creating its request. Repeated changes fail closed. reset() clears
+   the router.
+
+5. Name-first decisions (Ave): the ask callback is asked in two phases.
+   The name phase (`SandboxAskContext.phase: 'name'`, no addresses) runs
+   right after the configured and per-command lists, before anything is
+   resolved or routed; a denial there ends the connection with no DNS query
+   and no router call, so a destination that will be refused cannot carry
+   data out through a name lookup (the proxy's lookup is the sandbox's only
+   resolver). Only a name-phase `true` leads to the routes and the
+   resolution, and then to the resolved phase (`phase: 'resolved'` with
+   `addresses` and `resolution`), whose answer decides the connection. A
+   destination a configured or per-command list allows goes straight to the
+   routes and the resolution, as before.
+
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..fe6a09e229bba2148903856733a5f9f9049329b9 100644
+index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
-@@ -3,7 +3,7 @@ export type { WrapWithSandboxOptions } from './sandbox/sandbox-manager.js';
+@@ -1,9 +1,9 @@
+ export { SandboxManager } from './sandbox/sandbox-manager.js';
+-export type { WrapWithSandboxOptions } from './sandbox/sandbox-manager.js';
++export type { WrapWithSandboxOptions, ParentProxyRoute, ParentProxyRouter } from './sandbox/sandbox-manager.js';
  export { SandboxViolationStore } from './sandbox/sandbox-violation-store.js';
  export type { SandboxRuntimeConfig, NetworkConfig, FilesystemConfig, FilesystemPathEntry, CredentialsConfig, CredentialFileConfig, CredentialEnvVarConfig, CredentialMode, IgnoreViolationsConfig, } from './sandbox/sandbox-config.js';
  export { SandboxRuntimeConfigSchema, NetworkConfigSchema, FilesystemConfigSchema, CredentialsConfigSchema, IgnoreViolationsConfigSchema, RipgrepConfigSchema, } from './sandbox/sandbox-config.js';
 -export type { SandboxAskCallback, FsReadRestrictionConfig, FsWriteRestrictionConfig, CredentialRestrictionConfig, NetworkRestrictionConfig, NetworkHostPattern, } from './sandbox/sandbox-schemas.js';
-+export type { SandboxAskCallback, SandboxAskContext, FsReadRestrictionConfig, FsWriteRestrictionConfig, CredentialRestrictionConfig, NetworkRestrictionConfig, NetworkHostPattern, } from './sandbox/sandbox-schemas.js';
++export type { SandboxAskCallback, SandboxAskContext, SandboxAskNameContext, SandboxAskResolvedContext, FsReadRestrictionConfig, FsWriteRestrictionConfig, CredentialRestrictionConfig, NetworkRestrictionConfig, NetworkHostPattern, } from './sandbox/sandbox-schemas.js';
  export type { FilterRequestCallback, RequestDecision, RequestInfo, MutateForwardedHeaders, } from './sandbox/request-filter.js';
  export type { SandboxViolationEvent } from './sandbox/macos-sandbox-utils.js';
  export { type SandboxDependencyCheck, LinuxSandboxProfileError, type LinuxSandboxProfileErrorCode, } from './sandbox/linux-sandbox-utils.js';
 diff --git a/dist/sandbox/http-proxy.d.ts b/dist/sandbox/http-proxy.d.ts
-index bb9071e3ab671dd5424e1cbca4e026a7f85688f1..16b80a9e03d4634b887fa6fb53a946d1e82f38e9 100644
+index bb9071e3ab671dd5424e1cbca4e026a7f85688f1..8eebf8ec4a00944e3f17defc63c73900230d873f 100644
 --- a/dist/sandbox/http-proxy.d.ts
 +++ b/dist/sandbox/http-proxy.d.ts
 @@ -8,7 +8,7 @@ import { type TunnelTimeouts } from './tls-terminate-proxy.js';
@@ -103,7 +161,7 @@ index bb9071e3ab671dd5424e1cbca4e026a7f85688f1..16b80a9e03d4634b887fa6fb53a946d1
      /**
       * Optional function to get the MITM proxy socket path for a given host.
       * If returns a socket path, the request will be routed through that MITM proxy.
-@@ -149,6 +154,10 @@ export interface HttpProxyServerOptions {
+@@ -149,6 +154,35 @@ export interface HttpProxyServerOptions {
       * resolves the name.
       */
      lookupFor?: DirectLookup;
@@ -111,11 +169,36 @@ index bb9071e3ab671dd5424e1cbca4e026a7f85688f1..16b80a9e03d4634b887fa6fb53a946d1
 +    parentDestination?: ParentDestination;
 +    /** Ave patch: how this request dials the parent proxy (see ParentHop). */
 +    parentHop?: (socket: Socket | Duplex, host: string, port: number, encodedCommand: string | undefined) => ParentHop;
++    /**
++     * Ave patch (upstream routes): open an allowed CONNECT destination over
++     * the routes its filter pinned, in order. When given, it replaces the
++     * `parentProxy` decision for CONNECT tunnels.
++     */
++    openRoute?: (socket: Socket | Duplex, host: string, port: number, encodedCommand: string | undefined) => Promise<import('node:net').Socket>;
++    /**
++     * Ave patch (upstream routes): the route for an allowed plain-HTTP
++     * request: direct request options, or a connected socket to the proxy
++     * that takes the absolute-form request. `authRequired()` builds the
++     * refusal for a 407 from that proxy. When given, the filter is told every
++     * plain-HTTP request as such (its last argument).
++     */
++    openPlainHttpRoute?: (socket: Socket | Duplex, host: string, port: number, encodedCommand: string | undefined, tls: boolean) => Promise<{
++        kind: 'direct';
++        isCurrent?: () => boolean;
++        request: import('./parent-proxy.js').DirectRequestOptions;
++        authRequired: () => Error;
++    } | {
++        kind: 'proxy';
++        isCurrent?: () => boolean;
++        url: URL;
++        socket: import('node:net').Socket;
++        authRequired: () => Error;
++    }>;
      /**
       * Per-session bearer token. When set, every CONNECT and absolute-URI
       * request must carry `Proxy-Authorization: Basic
 diff --git a/dist/sandbox/http-proxy.js b/dist/sandbox/http-proxy.js
-index 7ad12c3c8529987ba0a045103b8b30be09df0c99..a13b43e777e91b17d2293be744e6ceefb113aa91 100644
+index 7ad12c3c8529987ba0a045103b8b30be09df0c99..638a2d66d315042991d73fb53d8430688c9dc50c 100644
 --- a/dist/sandbox/http-proxy.js
 +++ b/dist/sandbox/http-proxy.js
 @@ -15,7 +15,7 @@ const ALLOWLIST_DENY = [
@@ -136,9 +219,24 @@ index 7ad12c3c8529987ba0a045103b8b30be09df0c99..a13b43e777e91b17d2293be744e6ceef
              // Decide upstream route:
              //   in-process TLS termination
              //   > external MITM unix socket
-@@ -461,7 +461,11 @@ export function createHttpProxyServer(options) {
+@@ -444,7 +444,10 @@ export function createHttpProxyServer(options) {
+                 logForDebugging(`[tls-terminate] policy exempts ${hostname}:${port}; opaque-tunnelling`);
+             }
+             const mitmSocketPath = options.getMitmSocketPath?.(hostname);
++            // Ave patch (upstream routes): the routes the filter pinned decide
++            // direct or parent proxy, tried in order (see openRoute).
+             const parentUrl = !mitmSocketPath &&
++                !options.openRoute &&
+                 options.parentProxy &&
+                 !shouldBypassParentProxy(options.parentProxy, hostname)
+                 ? selectParentProxyUrl(options.parentProxy, { isHttps: true })
+@@ -460,8 +463,15 @@ export function createHttpProxyServer(options) {
+                         destPort: port,
                      });
                  }
++                else if (options.openRoute) {
++                    upstream = await options.openRoute(socket, hostname, port, auth.encodedCommand);
++                }
                  else if (parentUrl) {
 -                    upstream = await connectViaParentProxy(parentUrl, hostname, port);
 +                    // Ave patch: the pinned addresses, never the name (see
@@ -149,7 +247,7 @@ index 7ad12c3c8529987ba0a045103b8b30be09df0c99..a13b43e777e91b17d2293be744e6ceef
                  }
                  else {
                      upstream = await dialDirect(hostname, port, lookup);
-@@ -580,7 +584,17 @@ export function createHttpProxyServer(options) {
+@@ -580,7 +590,22 @@ export function createHttpProxyServer(options) {
              const defaultPort = isHttps ? 443 : 80;
              const requestedHost = stripBrackets(url.hostname);
              const port = url.port ? parseInt(url.port, 10) : defaultPort;
@@ -159,16 +257,31 @@ index 7ad12c3c8529987ba0a045103b8b30be09df0c99..a13b43e777e91b17d2293be744e6ceef
 +            // itself. The filter is told, so it refuses a name it would have
 +            // pinned before anybody is asked (see destinationRefusal).
 +            const parentHost = canonicalizeHost(requestedHost) ?? requestedHost;
-+            const plainHttpViaParent = Boolean(options.parentDestination &&
-+                options.parentProxy &&
-+                !options.getMitmSocketPath?.(parentHost) &&
-+                !shouldBypassParentProxy(options.parentProxy, parentHost) &&
-+                selectParentProxyUrl(options.parentProxy, { isHttps }));
++            // Ave patch (upstream routes): with openPlainHttpRoute the filter
++            // judges each route itself, so it is told the request is plain
++            // HTTP (unless the MITM proxy takes it).
++            const plainHttpViaParent = options.openPlainHttpRoute
++                ? !options.getMitmSocketPath?.(parentHost)
++                : Boolean(options.parentDestination &&
++                    options.parentProxy &&
++                    !options.getMitmSocketPath?.(parentHost) &&
++                    !shouldBypassParentProxy(options.parentProxy, parentHost) &&
++                    selectParentProxyUrl(options.parentProxy, { isHttps }));
 +            const allowed = await options.filter(port, requestedHost, req.socket, auth.encodedCommand, undefined, plainHttpViaParent);
              if (!allowed) {
                  logForDebugging(`HTTP request blocked to ${requestedHost}:${port}`, {
                      level: 'error',
-@@ -748,6 +762,31 @@ export function createHttpProxyServer(options) {
+@@ -617,7 +642,9 @@ export function createHttpProxyServer(options) {
+             };
+             // Decide upstream route: MITM unix socket > parent HTTP proxy > direct.
+             const mitmSocketPath = options.getMitmSocketPath?.(hostname);
++            const routed = !mitmSocketPath && options.openPlainHttpRoute !== undefined;
+             const parentUrl = !mitmSocketPath &&
++                !routed &&
+                 options.parentProxy &&
+                 !shouldBypassParentProxy(options.parentProxy, hostname)
+                 ? selectParentProxyUrl(options.parentProxy, {
+@@ -748,6 +775,55 @@ export function createHttpProxyServer(options) {
                  });
                  respondUpstreamError(res, err, options.denyHeader);
              };
@@ -197,10 +310,75 @@ index 7ad12c3c8529987ba0a045103b8b30be09df0c99..a13b43e777e91b17d2293be744e6ceef
 +                    return;
 +                }
 +            }
++            // Ave patch (upstream routes): the pinned routes, in order, before
++            // any request object exists (see openPlainHttpRoute).
++            let plainRoute;
++            if (routed) {
++                try {
++                    let attempts = 0;
++                    do {
++                        if (++attempts > 32) throw new Error('upstream routing changed too often during the connection decision');
++                        if (plainRoute?.kind === 'proxy') plainRoute.socket.destroy();
++                        plainRoute = await options.openPlainHttpRoute(req.socket, hostname, port, auth.encodedCommand, isHttps);
++                    } while (plainRoute.isCurrent?.() === false);
++                }
++                catch (err) {
++                    failUpstream(err);
++                    return;
++                }
++                if (res.destroyed || req.socket.destroyed) {
++                    // Client went away during the dial.
++                    if (plainRoute.kind === 'proxy')
++                        plainRoute.socket.destroy();
++                    body.destroy();
++                    return;
++                }
++            }
              let proxyReq;
              if (mitmSocketPath) {
                  logForDebugging(`Routing HTTP ${req.method} ${hostname}:${port} through MITM proxy at ${mitmSocketPath}`);
-@@ -787,6 +826,7 @@ export function createHttpProxyServer(options) {
+@@ -779,6 +855,40 @@ export function createHttpProxyServer(options) {
+                         proxyRes.pipe(res);
+                 });
+             }
++            else if (plainRoute?.kind === 'proxy') {
++                const routeAuth = proxyAuthHeader(plainRoute.url);
++                const proxySocket = plainRoute.socket;
++                proxyReq = httpRequest({
++                    createConnection: () => proxySocket,
++                    path: absUrl,
++                    method: req.method,
++                    headers: routeAuth
++                        ? { ...fwdHeaders, 'proxy-authorization': routeAuth }
++                        : fwdHeaders,
++                }, proxyRes => {
++                    // A 407 is the upstream asking Ave for credentials, not an
++                    // answer for the client (it would read it as its own
++                    // proxy's): refused with the reason instead.
++                    if (proxyRes.statusCode === 407) {
++                        proxyRes.resume();
++                        failUpstream(plainRoute.authRequired());
++                        return;
++                    }
++                    proxyRes.on('error', err => {
++                        logForDebugging(`Upstream response error: ${err.message}`, {
++                            level: 'error',
++                        });
++                        res.destroy();
++                    });
++                    const outHeaders = stripHopByHop(proxyRes.headers);
++                    notifyResponse(decision, proxyRes.statusCode, outHeaders);
++                    if (options.stripResponseHeaders) {
++                        removeHeadersFolded(outHeaders, options.stripResponseHeaders);
++                    }
++                    if (relayResponseHead(res, proxyRes, outHeaders))
++                        proxyRes.pipe(res);
++                });
++            }
+             else if (parentUrl) {
+                 const parentHost = stripBrackets(parentUrl.hostname);
+                 const parentPort = Number(parentUrl.port) || (parentUrl.protocol === 'https:' ? 443 : 80);
+@@ -787,6 +897,7 @@ export function createHttpProxyServer(options) {
                  proxyReq = requestFn({
                      hostname: parentHost,
                      port: parentPort,
@@ -208,15 +386,29 @@ index 7ad12c3c8529987ba0a045103b8b30be09df0c99..a13b43e777e91b17d2293be744e6ceef
                      path: absUrl,
                      method: req.method,
                      headers: auth
-@@ -816,7 +856,7 @@ export function createHttpProxyServer(options) {
+@@ -814,13 +925,15 @@ export function createHttpProxyServer(options) {
+             else {
+                 // Vet and pick the upstream address before any request object exists
                  // (see directRequestOptions); the name stays in Host and, for TLS, SNI.
-                 let direct;
-                 try {
+-                let direct;
+-                try {
 -                    direct = await directRequestOptions(hostname, port, options.lookupFor?.(port, auth.encodedCommand), isHttps);
-+                    direct = await directRequestOptions(hostname, port, options.lookupFor?.(port, auth.encodedCommand, req.socket, hostname), isHttps);
+-                }
+-                catch (err) {
+-                    failUpstream(err);
+-                    return;
++                let direct = plainRoute?.kind === 'direct' ? plainRoute.request : undefined;
++                if (direct === undefined) {
++                    try {
++                        direct = await directRequestOptions(hostname, port, options.lookupFor?.(port, auth.encodedCommand, req.socket, hostname), isHttps);
++                    }
++                    catch (err) {
++                        failUpstream(err);
++                        return;
++                    }
                  }
-                 catch (err) {
-                     failUpstream(err);
+                 if (res.destroyed || req.socket.destroyed) {
+                     // Client went away during the dial.
 diff --git a/dist/sandbox/linux-sandbox-utils.d.ts b/dist/sandbox/linux-sandbox-utils.d.ts
 index 53c4a26438ebb3658b6ec0c64a28580f6010f407..3a43a5fd751742ffb876783aeba73f18f0d4ed69 100644
 --- a/dist/sandbox/linux-sandbox-utils.d.ts
@@ -408,7 +600,7 @@ index 18e2472cb5b5f40b74c31ed9181aaa51b7f3b73a..43c61511641d87c89a005118a2cd388f
                  // unlinking; clear any stale file so listen() doesn't EADDRINUSE.
                  await unlink(path).catch(() => { });
 diff --git a/dist/sandbox/parent-proxy.d.ts b/dist/sandbox/parent-proxy.d.ts
-index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..3b1218390852b6b14b6f589bcaffdeef51342784 100644
+index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..0e5f5fae9ec6e3c2accee790e7cdaa2361124e95 100644
 --- a/dist/sandbox/parent-proxy.d.ts
 +++ b/dist/sandbox/parent-proxy.d.ts
 @@ -55,6 +55,8 @@ export interface ConnectTunnelOptions {
@@ -429,7 +621,7 @@ index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..3b1218390852b6b14b6f589bcaffdeef
  export declare function proxyAuthHeader(proxyUrl: URL): string | undefined;
  /**
   * Write an upstream response's status line and headers to the client.
-@@ -140,7 +142,38 @@ export declare function isValidHost(h: string): boolean;
+@@ -140,7 +142,42 @@ export declare function isValidHost(h: string): boolean;
   */
  export declare function canonicalizeHost(h: string): string | undefined;
  /** Per-dial name resolution the proxies are handed: the guard's `lookup` for `port`, refusals recorded. */
@@ -461,16 +653,20 @@ index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..3b1218390852b6b14b6f589bcaffdeef
 + * the error to fail with, or undefined to go on.
 + */
 +export type ParentHop = {
++    /** Refuse a stale routing plan immediately before each socket attempt. */
++    checkCurrent?: () => Error | undefined;
 +    lookup?: import('node:net').LookupFunction;
 +    vetPeer?: (socket: import('node:net').Socket) => Error | undefined;
 +};
++/** Ave patch (upstream routes): whether `error` is the parent proxy answering 407 Proxy Authentication Required. */
++export declare function isParentProxyAuthRequired(error: unknown): boolean;
 +/** Ave patch: a connected socket to the parent proxy for a plain-HTTP request, vetted by `hop.vetPeer`. */
 +export declare function connectToParentProxy(proxyUrl: URL, hop?: ParentHop): Promise<import('node:net').Socket>;
  /** `host[:port]` as it belongs in a Host header / URL authority: IPv6 bracketed, the default port elided. */
  export declare function formatAuthority(host: string, port: number, defaultPort: number): string;
  export interface DirectRequestOptions {
 diff --git a/dist/sandbox/parent-proxy.js b/dist/sandbox/parent-proxy.js
-index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..a07f6761b86a9195ec35dcff780da62b873f7f8b 100644
+index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..1115d54217ff4dda69f0aab01af5eacb086d6771 100644
 --- a/dist/sandbox/parent-proxy.js
 +++ b/dist/sandbox/parent-proxy.js
 @@ -201,6 +201,11 @@ export function openConnectTunnel(opts) {
@@ -485,7 +681,19 @@ index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..a07f6761b86a9195ec35dcff780da62b
              sock.write(`CONNECT ${authority} HTTP/1.1\r\n` +
                  `Host: ${authority}\r\n` +
                  (opts.authHeader
-@@ -245,23 +250,72 @@ export function openConnectTunnel(opts) {
+@@ -224,7 +229,10 @@ export function openConnectTunnel(opts) {
+                 sock.removeListener('data', onData);
+                 const statusLine = buf.slice(0, buf.indexOf('\r\n'));
+                 if (!/^HTTP\/1\.[01] 2\d\d(?:\s|$)/.test(statusLine)) {
+-                    return fail(new Error(`Proxy refused CONNECT: ${statusLine.trim()}`));
++                    // Ave patch (upstream routes): the status rides on the error,
++                    // so a 407 is told apart from a refusal worth a next route.
++                    const status = /^HTTP\/1\.[01] (\d{3})(?:\s|$)/.exec(statusLine);
++                    return fail(Object.assign(new Error(`Proxy refused CONNECT: ${statusLine.trim()}`), status ? { proxyStatus: Number(status[1]) } : {}));
+                 }
+                 // Re-emit any bytes that arrived after the header terminator.
+                 const rest = buf.slice(end + 4);
+@@ -245,23 +253,84 @@ export function openConnectTunnel(opts) {
   * Thin wrapper around openConnectTunnel that dials TCP or TLS based on the
   * proxy URL scheme.
   */
@@ -504,11 +712,21 @@ index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..a07f6761b86a9195ec35dcff780da62b
 +            return await connectViaParentProxy(proxyUrl, destination, destPort, hop);
 +        }
 +        catch (error) {
++            // Every HTTP response is final for this destination. Only a
++            // connection failure can try another vetted address.
++            if (isParentProxyAuthRequired(error) || error?.code === 'ERR_SRT_RESOLVED_ADDRESS_DENIED')
++                throw error;
++            if (Number.isInteger(error?.proxyStatus) || error?.code === 'ERR_SRT_STALE_ROUTE')
++                throw error;
 +            lastError = error;
 +            logForDebugging(`Parent proxy CONNECT ${destination}:${destPort} failed (${error?.message}); trying the next address`);
 +        }
 +    }
 +    throw lastError;
++}
++/** Ave patch (upstream routes): whether `error` is the parent proxy answering 407 Proxy Authentication Required. */
++export function isParentProxyAuthRequired(error) {
++    return typeof error === 'object' && error !== null && error.proxyStatus === 407;
 +}
 +export function connectViaParentProxy(proxyUrl, destHost, destPort, hop) {
      const useTls = proxyUrl.protocol === 'https:';
@@ -531,6 +749,8 @@ index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..a07f6761b86a9195ec35dcff780da62b
 +}
 +/** Ave patch: a TCP or TLS socket to the parent proxy, resolving its name with `hop.lookup` when given. */
 +function dialParentSocket(proxyUrl, hop) {
++    const stale = hop?.checkCurrent?.();
++    if (stale) throw stale;
 +    const proxyHost = stripBrackets(proxyUrl.hostname);
 +    const proxyPort = Number(proxyUrl.port) || (proxyUrl.protocol === 'https:' ? 443 : 80);
 +    const lookup = hop?.lookup ? { lookup: hop.lookup } : {};
@@ -709,10 +929,10 @@ index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa
  /**
   * Schema for the access mode of a declared credential source.
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..55097a1b199f0014a647f6dddf7cfb32908b0609 100644
+index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..dda8ebf6569640dedca8c1aea348b77a5255c2d4 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
-@@ -45,6 +45,13 @@ export type WrapWithSandboxOptions = {
+@@ -45,6 +45,51 @@ export type WrapWithSandboxOptions = {
       * reported as the violation's `command`. Defaults to `command`.
       */
      commandText?: string;
@@ -723,10 +943,48 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..55097a1b199f0014a647f6dddf7cfb32
 +     * anthropics/sandbox-runtime#722.
 +     */
 +    ttys?: readonly string[];
++};
++/**
++ * Ave patch (upstream routes): one way to reach a destination. `direct`
++ * dials it (the pinned addresses of a name); `http`/`https` is a parent
++ * proxy at `host:port` (TLS to the proxy for `https`), with Basic `auth`
++ * when given. `resolvesNames` trusts a proxy on this host to resolve names
++ * this host cannot (otherwise such a name is refused through it).
++ */
++export type ParentProxyRoute = {
++    kind: 'direct';
++} | {
++    kind: 'http' | 'https';
++    host: string;
++    port: number;
++    auth?: {
++        username: string;
++        password: string;
++    };
++    resolvesNames?: boolean;
++};
++/**
++ * Ave patch (upstream routes): the per-destination route hook. Asked with
++ * the canonical host, the port, and `scheme` 'https' (CONNECT or SOCKS
++ * tunnel) or 'http' (plain-HTTP request); answers the routes to try in
++ * order and, for an empty list, the reason the destination is refused.
++ */
++export type ParentProxyRouter = ((destination: {
++    host: string;
++    port: number;
++    scheme: 'http' | 'https';
++}) => Promise<{
++    routes: readonly ParentProxyRoute[];
++    reason?: string;
++}>) & {
++    /** Publish routing changes and advance this monotonic revision in one synchronous turn. */
++    generation?: () => number;
++    /** The policy class whose resolved allowance may be reused; without this hook the complete addresses/resolution must match. */
++    decisionClass?: (host: string, addresses: readonly string[], resolution: 'pinned' | 'upstream') => string;
  };
  /**
   * Interface for the sandbox manager API
-@@ -125,6 +132,46 @@ export interface ISandboxManager {
+@@ -125,6 +170,66 @@ export interface ISandboxManager {
       * none. `reset()` removes them all.
       */
      unregisterCommandNetworkLists(commandId: string): void;
@@ -770,10 +1028,30 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..55097a1b199f0014a647f6dddf7cfb32
 +     * keep-alive request sockets). Returns how many were closed.
 +     */
 +    closeInvocationConnections(commandIds: readonly string[], host: string, port: number): number;
++    /**
++     * Ave patch (upstream routes). Close every open connection the proxy
++     * allowed, for every invocation (e.g. when the upstream that routed them
++     * changes). Returns how many were closed.
++     */
++    closeAllInvocationConnections(): number;
++    /**
++     * Ave patch (upstream routes). Install the route hook (undefined removes
++     * it). While set it replaces `network.parentProxy` for routing: each
++     * destination decision asks it once, after the ask callback allowed the
++     * name and before its resolved phase, and the
++     * allowed connection is dialed over the answered routes in order (only a
++     * route that fails to connect hands over to the next; a policy refusal
++     * ends it, a 407 refuses with "upstream proxy requires authentication",
++     * and any other HTTP answer from an upstream refuses with "upstream proxy
++     * refused the connection (HTTP <status>)"). A loopback destination is
++     * always direct; a hook that throws or answers a malformed route refuses
++     * the destination. Cleared by reset().
++     */
++    setParentProxyRouter(router: ParentProxyRouter | undefined): void;
      /**
       * True when the network filter understands an ask callback's
       * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
-@@ -150,4 +197,13 @@ export interface ISandboxManager {
+@@ -150,4 +255,13 @@ export interface ISandboxManager {
   * for this session. This runs outside of the sandbox, on the host machine.
   */
  export declare const SandboxManager: ISandboxManager;
@@ -789,7 +1067,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..55097a1b199f0014a647f6dddf7cfb32
  //# sourceMappingURL=sandbox-manager.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b79469b7a9 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49ef2968153 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -16,17 +16,21 @@ import * as fs from 'fs';
@@ -804,7 +1082,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
  import { ownInstallWarning } from './own-files.js';
  import { SandboxViolationStore, sanitizeDenialReason, sanitizeUnregisteredCommandKey, shouldIgnoreViolation, } from './sandbox-violation-store.js';
 -import { canonicalizeHost, isValidHost, redactUrl, resolveParentProxy, } from './parent-proxy.js';
-+import { canonicalizeHost, isValidHost, redactUrl, resolveParentProxy, selectParentProxyUrl, shouldBypassParentProxy, } from './parent-proxy.js';
++import { canonicalizeHost, connectToParentProxy, connectViaParentProxyToFirst, dialDirect, directRequestOptions, isParentProxyAuthRequired, isValidHost, redactUrl, resolveParentProxy, selectParentProxyUrl, shouldBypassParentProxy, stripBrackets, } from './parent-proxy.js';
  import { ALLOWED_DOMAIN_ENTRY_MESSAGE, isValidAllowedDomainEntry, matchesDomainPattern, matchesDomainPatternWithPort, stripDomainPatternPort, } from './domain-pattern.js';
 -import { createResolvedAddressGuard, isResolvedAddressDenied, } from './resolved-address-guard.js';
 -import { EOL } from 'node:os';
@@ -819,16 +1097,35 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
  import { getJavaProxyAgentJarPathAsync } from './java-proxy-agent.js';
  import { getApplySeccompBinaryPathAsync } from './generate-seccomp-filter.js';
  // ============================================================================
-@@ -47,6 +51,8 @@ let ownInstallLogged = false;
+@@ -47,6 +51,27 @@ let ownInstallLogged = false;
  let logMonitorShutdown;
  let linuxMonitor;
  let parentProxy;
-+/** Ave patch: the trusted `network.parentProxy.resolvesNames` opt-in (see upstreamForNames). */
++/** Ave patch: the trusted `network.parentProxy.resolvesNames` opt-in (see planDestination). */
 +let parentProxyResolvesNames = false;
++/**
++ * Ave patch (upstream routes): the embedder's per-destination route hook (see
++ * setParentProxyRouter). When set, it replaces `parentProxy` for routing.
++ */
++let parentProxyRouter;
++let routingInstalls = 0;
++/** A decision snapshots both the hook identity and its live revision. */
++function routingGeneration() {
++    return { installs: routingInstalls, router: parentProxyRouter, revision: parentProxyRouter?.generation?.() };
++}
++function routingIsCurrent(stamp) {
++    return stamp !== undefined && stamp.installs === routingInstalls && stamp.router === parentProxyRouter && stamp.revision === parentProxyRouter?.generation?.();
++}
++function staleRouteError() {
++    return Object.assign(new Error('upstream routing changed during the connection decision'), { code: 'ERR_SRT_STALE_ROUTE' });
++}
++function assertRoutingCurrent(stamp) {
++    if (!routingIsCurrent(stamp)) throw staleRouteError();
++}
  /** Read live through {@link directLookup}, so a config update applies to the next dial. */
  let resolvedAddressGuard = createResolvedAddressGuard();
  let mitmCA;
-@@ -84,6 +90,68 @@ let windowsWfpVerified = false;
+@@ -84,6 +109,68 @@ let windowsWfpVerified = false;
  // grants/stamps were applied with even if `config` mutated between.
  let srtWinSpawn;
  const sandboxViolationStore = new SandboxViolationStore();
@@ -897,16 +1194,40 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
  // Per-session sentinel↔real-value map for masked credentials. Lives only in
  // process memory; never written to disk or logged. Cleared on reset().
  const sentinelRegistry = new SentinelRegistry();
-@@ -300,7 +368,7 @@ function deniedDomainReason(entry) {
+@@ -300,11 +387,21 @@ function deniedDomainReason(entry) {
      const own = Object.prototype.hasOwnProperty.call(reasons, entry);
      return (own ? reasons[entry] : undefined) ?? 'host is on the deny list';
  }
 -async function filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain) {
-+async function filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain, identity = 'username', addresses = [], viaUpstream = false) {
++/**
++ * Ave patch (name-first decisions). The first phase of a destination
++ * decision, on the destination as named: nothing is resolved and no route is
++ * asked for until it passes, so a destination this phase refuses costs no DNS
++ * query and no proxy lookup (a lookup is itself a way out: the sandbox has no
++ * resolver of its own, and `<data>.attacker.example` would carry the data to
++ * whoever serves that zone). Resolves to 'deny' (recorded), 'config' (a
++ * configured or per-command allow list allows it; no callback phase follows)
++ * or 'ask' (the callback allowed the name; the resolved phase must confirm).
++ */
++async function decideByName(port, host, sandboxAskCallback, encodedCommand, explain, identity = 'username') {
      const denied = (reason) => {
          recordOutboundDeny(host, port, reason, encodedCommand);
          explain?.(reason);
-@@ -353,8 +421,11 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+-        return false;
++        return 'deny';
+     };
+     if (!config) {
+         logForDebugging('No config available, denying network request');
+@@ -340,7 +437,7 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+     for (const allowedDomain of config.network.allowedDomains) {
+         if (matchesDomainPatternWithPort(canonicalHost, port, allowedDomain)) {
+             logForDebugging(`Allowed by config rule: ${host}:${port}`);
+-            return true;
++            return 'config';
+         }
+     }
+     // strictAllowlist makes the configured allowlist deterministic enforcement:
+@@ -353,33 +450,70 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
      // Coming after both configured lists, it lifts the default deny for that
      // one command and never a configured deniedDomains entry. The username is
      // presented by the sandboxed client: see registerCommandNetworkLists.
@@ -920,30 +1241,137 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
          : undefined;
      for (const allowedDomain of perCommand?.allowedDomains ?? []) {
          if (matchesDomainPatternWithPort(canonicalHost, port, allowedDomain)) {
-@@ -369,7 +440,21 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
-     logForDebugging(`No matching rule, asking user: ${host}:${port}`);
+             logForDebugging(`Allowed by per-command rule: ${host}:${port}`);
+-            return true;
++            return 'config';
+         }
+     }
+     if (!sandboxAskCallback) {
+         logForDebugging(`No matching rule, denying: ${host}:${port}`);
+         return denied('host is not on the allow list');
+     }
+-    logForDebugging(`No matching rule, asking user: ${host}:${port}`);
++    logForDebugging(`No matching rule, asking by name: ${host}:${port}`);
++    const allowed = await askSandboxCallback(sandboxAskCallback, host, port, { attributionKey, identity, phase: 'name' }, denied);
++    return allowed === true ? 'ask' : 'deny';
++}
++/**
++ * Ave patch (name-first decisions). The second phase, after the callback
++ * allowed the name: it is asked again with what the destination resolved to
++ * and how it will be reached, and its answer decides the connection.
++ */
++async function confirmResolvedDestination(port, host, sandboxAskCallback, encodedCommand, explain, identity, plan) {
++    const denied = (reason) => {
++        recordOutboundDeny(host, port, reason, encodedCommand);
++        explain?.(reason);
++        return false;
++    };
++    const attributionKey = encodedCommand
++        ? decodeSandboxedCommand(encodedCommand)
++        : undefined;
++    return askSandboxCallback(sandboxAskCallback, host, port, {
++        attributionKey,
++        identity,
++        phase: 'resolved',
++        addresses: plan.addresses.map(a => a.address),
++        resolution: plan.viaUpstream ? 'upstream' : 'pinned',
++    }, denied);
++}
++/**
++ * One call of the ask callback. Backport of anthropics/sandbox-runtime#735:
++ * `attributionKey` is the key the per-command lists and the violation store
++ * use, so the callback can tell which invocation opened the connection.
++ * Ave patch (invocation listeners): `identity` says how the key was learned.
++ * 'listener' is the port (macOS) or socket path (Linux) the connection
++ * arrived on, which the sandbox profile pins for one invocation; 'username'
++ * is what the client presented and can forge.
++ */
++async function askSandboxCallback(sandboxAskCallback, host, port, context, denied) {
      try {
-         // Held as unknown: a JavaScript caller is not bound by the declared type.
+-        // Held as unknown: a JavaScript caller is not bound by the declared type.
 -        const answer = await sandboxAskCallback({ host, port });
-+        // Backport of anthropics/sandbox-runtime#735: the key the per-command
-+        // lists and the violation store use, so the callback can tell which
-+        // invocation opened the connection.
-+        // Ave patch (invocation listeners): `identity` says how the key was
-+        // learned. 'listener' is the port (macOS) or socket path (Linux) the
-+        // connection arrived on, which the sandbox profile pins for one
-+        // invocation; 'username' is what the client presented and can forge.
-+        // `addresses` are what the connection will be dialed to (pinned);
-+        // `resolution: 'upstream'` means the upstream proxy resolves the name.
-+        const answer = await sandboxAskCallback({ host, port }, {
-+            attributionKey,
-+            identity,
-+            addresses: addresses.map(a => a.address),
-+            resolution: viaUpstream ? 'upstream' : 'pinned',
-+        });
++        const answer = await sandboxAskCallback({ host, port }, context);
          // Only `true` allows: an object is how a callback denies with a reason,
          // and a truthiness test here would read every such denial as an allow.
          if (answer === true) {
-@@ -497,11 +582,80 @@ function shouldTerminateTLSForHost(host) {
+-            logForDebugging(`User allowed: ${host}:${port}`);
++            logForDebugging(`User allowed (${context.phase}): ${host}:${port}`);
+             return true;
+         }
+         if (!isDeclaredDenial(answer)) {
+             logForDebugging(`Ask callback answered neither a boolean nor { allow: false, reason }; treating it as a denial: ${host}:${port}`, { level: 'warn' });
+         }
+-        logForDebugging(`User denied: ${host}:${port}`);
++        logForDebugging(`User denied (${context.phase}): ${host}:${port}`);
+         // The callback's own reason, when it gave one, says what to do instead.
+         return denied(denialReasonOf(answer) ?? 'user denied');
+     }
+@@ -390,6 +524,46 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+         return denied('permission prompt failed');
+     }
+ }
++/**
++ * Ave patch (name-first decisions). A destination decided in order: the
++ * name phase, then (only if it passed) the routes and the resolution, then
++ * (only if the callback allowed the name) the resolved phase. Resolves to the
++ * pinned plan, or undefined when refused (recorded).
++ */
++async function decideDestination(port, host, sandboxAskCallback, encodedCommand, explain, identity, plainHttp, previous) {
++    // Keep this attempt's name allowance: a settings change must not leak a
++    // refused name through a lookup, or duplicate a card already answered.
++    const byName = previous?.byName ?? await decideByName(port, host, sandboxAskCallback, encodedCommand, explain, identity);
++    if (byName === 'deny')
++        return undefined;
++    let approvedClass = previous?.approvedClass;
++    for (let attempt = 0; attempt < 32; attempt++) {
++        const generation = routingGeneration();
++        const plan = await planDestination(host, port, plainHttp === true);
++        if (!routingIsCurrent(generation)) continue;
++        if (plan.reason !== undefined) {
++            recordOutboundDeny(host, port, plan.reason, encodedCommand);
++            explain?.(plan.reason);
++            return undefined;
++        }
++        // The embedder owns the class. Without a classifier an allowance is
++        // reused only when the full resolved judgment is unchanged.
++        const decisionClass = generation.router?.decisionClass?.(canonicalizeHost(host) ?? host, plan.addresses.map(a => a.address), plan.viaUpstream ? 'upstream' : 'pinned')
++            ?? JSON.stringify([plan.viaUpstream, plan.addresses.map(a => a.address).sort()]);
++        if (byName === 'ask' && decisionClass !== approvedClass) {
++            if (!(await confirmResolvedDestination(port, host, sandboxAskCallback, encodedCommand, explain, identity, plan)))
++                return undefined;
++            approvedClass = decisionClass;
++        }
++        if (!routingIsCurrent(generation)) continue;
++        return { ...plan, generation, byName, approvedClass };
++    }
++    const reason = 'upstream routing changed too often during the connection decision';
++    recordOutboundDeny(host, port, reason, encodedCommand);
++    explain?.(reason);
++    return undefined;
++}
++
+ /**
+  * Build the header-mutation callback that substitutes sentinel→real for
+  * masked credentials. Returns undefined when no `credentials` block is
+@@ -438,7 +612,7 @@ function buildSigv4Planner() {
+  * otherwise returns undefined.
+  *
+  * Matches the canonicalized hostname, like the allow/deny filter
+- * (filterNetworkRequest) and the tlsTerminate exclusion below. This site
++ * (decideByName) and the tlsTerminate exclusion below. This site
+  * fails OPEN on a miss — a host that matches no MITM pattern is dialed
+  * directly — so it must accept exactly the set of spellings the allowlist
+  * accepts: otherwise `api.example.com.` (trailing-dot FQDN, same name to
+@@ -468,7 +642,7 @@ function getMitmSocketPath(host) {
+  * so mTLS / cert-pinning clients can complete their own handshake.
+  *
+  * Matches the canonicalized hostname, like the allow/deny filter
+- * (filterNetworkRequest) — otherwise a spelling the allowlist accepts after
++ * (decideByName) — otherwise a spelling the allowlist accepts after
+  * canonicalization (`127.1`, a trailing-dot FQDN) would dodge the exclusion
+  * and get terminated anyway.
+  */
+@@ -497,11 +671,206 @@ function shouldTerminateTLSForHost(host) {
      }
      return true;
  }
@@ -962,7 +1390,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 +    const attribution = (encodedCommand) => lane ? lane.encodedKey : encodedCommand;
 +    const filter = lane
 +        ? invocationListenerFilter(lane, sandboxAskCallback)
-+        : async (port, host, encodedCommand, explain, socket, plainHttpViaParent) => {
++        : async (port, host, encodedCommand, explain, socket, plainHttp) => {
 +            // A proxy front end is never a destination, through any front end.
 +            const local = localDestinationReason(host, port);
 +            if (local !== undefined) {
@@ -970,17 +1398,12 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 +                explain?.(local);
 +                return false;
 +            }
-+            const resolved = await resolveDestination(host, port);
-+            const refusal = destinationRefusal(host, resolved, plainHttpViaParent);
-+            if (refusal !== undefined) {
-+                recordOutboundDeny(host, port, refusal, encodedCommand);
-+                explain?.(refusal);
++            const resolved = await decideDestination(port, host, sandboxAskCallback, encodedCommand, explain, 'username', plainHttp);
++            if (resolved === undefined)
 +                return false;
-+            }
-+            const allowed = await filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain, 'username', resolved.addresses, resolved.viaUpstream);
-+            if (allowed && socket)
++            if (socket)
 +                pinDestination(socket, host, port, resolved);
-+            return allowed;
++            return true;
 +        };
 +    // A dial from a client socket uses what its filter pinned; a name with no
 +    // pin there is refused rather than resolved again.
@@ -996,25 +1419,156 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 +    // How the parent proxy is dialed for one request. Its name is resolved
 +    // with the destination resolver; when the request forwards a name the
 +    // upstream resolves (and the upstream is not trusted to), the proxy the
-+    // socket actually reached must not be this host: upstreamForNames judged
++    // socket actually reached must not be this host: planDestination judged
 +    // the proxy's name before, and the dial resolves it again.
-+    const parentHop = (socket, host, port, encodedCommand) => ({
-+        lookup: parentProxyLookup,
-+        vetPeer: pinnedFor(socket, host, port)?.viaUpstream && !parentProxyResolvesNames
-+            ? (peer) => {
++    //
++    // Ave patch (upstream routes): judged per route. A proxy the dial reached
++    // on this host, on a port one of this session's proxy front ends listens
++    // on, is refused whatever it was configured as (a PAC answer is network
++    // input and could name another invocation's listener); a proxy the dial
++    // reached on this host is refused for a forwarded name unless that route
++    // is trusted to resolve names.
++    const parentHop = (socket, host, port, encodedCommand, route) => {
++        const pin = pinnedFor(socket, host, port);
++        const trusted = route ? route.resolvesNames === true : parentProxyResolvesNames;
++        const refuse = (reason) => {
++            recordOutboundDeny(host, port, reason, attribution(encodedCommand));
++            return new ResolvedAddressDeniedError(host, reason, []);
++        };
++        return {
++            checkCurrent: () => routingIsCurrent(pin?.generation) ? undefined : staleRouteError(),
++            lookup: (hostname, options, callback) => {
++                if (!routingIsCurrent(pin?.generation)) return callback(staleRouteError(), []);
++                parentProxyLookup(hostname, options, (...args) => {
++                    if (!routingIsCurrent(pin?.generation)) return callback(staleRouteError(), []);
++                    callback(...args);
++                });
++            },
++            vetPeer: (peer) => {
++                if (!routingIsCurrent(pin?.generation)) return staleRouteError();
 +                const address = peer.remoteAddress;
-+                if (address !== undefined && !isThisHostAddress(address))
-+                    return undefined;
-+                recordOutboundDeny(host, port, LOCAL_UPSTREAM_REASON, attribution(encodedCommand));
-+                return new ResolvedAddressDeniedError(host, LOCAL_UPSTREAM_REASON, []);
++                const onThisHost = address === undefined || isThisHostAddress(address);
++                if (onThisHost && peer.remotePort !== undefined && proxyListenerPorts().has(peer.remotePort))
++                    return refuse('sandbox proxy listener');
++                if (onThisHost && pin?.viaUpstream && !trusted)
++                    return refuse(LOCAL_UPSTREAM_REASON);
++                return undefined;
++            },
++        };
++    };
++    // Ave patch (upstream routes): dial an allowed CONNECT/SOCKS destination
++    // over the routes its filter pinned, in order. Only a route that fails to
++    // connect (refused, reset, timed out, the proxy's name unresolvable)
++    // hands over to the next. Any HTTP answer from an upstream ends it (a 407
++    // as "upstream proxy requires authentication", any other non-2xx as the
++    // upstream's refusal), and so does a policy refusal (a proxy socket that
++    // reached this host or a listener, a refused address), so a recorded
++    // refusal is always the answer the client gets and nothing the upstream
++    // refused goes out by a later route. A destination with no pin is refused.
++    const notDecided = (host, port, encodedCommand) => {
++        const reason = 'destination was not decided before the dial';
++        recordOutboundDeny(host, port, reason, attribution(encodedCommand));
++        return new ResolvedAddressDeniedError(host, reason, []);
++    };
++    const currentPin = async (socket, host, port, encodedCommand, plainHttp) => {
++        let pin = pinnedFor(socket, host, port);
++        if (!pin) throw notDecided(host, port, encodedCommand);
++        if (!routingIsCurrent(pin.generation)) {
++            const resolved = await decideDestination(port, host, sandboxAskCallback, attribution(encodedCommand), undefined, lane ? 'listener' : 'username', plainHttp, pin);
++            if (!resolved) throw notDecided(host, port, encodedCommand);
++            pinDestination(socket, host, port, resolved);
++            pin = pinnedFor(socket, host, port);
++        }
++        return pin;
++    };
++    const openRoute = async (socket, host, port, encodedCommand) => {
++        const canonical = canonicalizeHost(host) ?? host;
++        for (let attempt = 0; attempt < 32; attempt++) {
++            const pin = await currentPin(socket, host, port, encodedCommand, false);
++            if (!routingIsCurrent(pin.generation)) continue;
++            let lastError = new Error(`no route to ${host}:${port}`);
++            let stale = false;
++            for (const route of pin.routes) {
++                try {
++                    assertRoutingCurrent(pin.generation);
++                    const connected = route.kind === 'direct'
++                        ? await dialDirect(canonical, port, lookupFor(port, encodedCommand, socket, host))
++                        : await connectViaParentProxyToFirst(route.url, parentDestination(socket, host, port, encodedCommand, false), port, parentHop(socket, host, port, encodedCommand, route));
++                    if (!routingIsCurrent(pin.generation)) {
++                        connected.destroy();
++                        throw staleRouteError();
++                    }
++                    return connected;
++                }
++                catch (error) {
++                    // An HTTP response remains final even if settings changed
++                    // while it arrived: never replay an answered request.
++                    if (isParentProxyAuthRequired(error))
++                        throw upstreamAuthRefusal(host, port, attribution(encodedCommand));
++                    if (parentProxyStatusOf(error) !== undefined)
++                        throw upstreamStatusRefusal(host, port, parentProxyStatusOf(error), attribution(encodedCommand));
++                    if (isResolvedAddressDenied(error)) throw error;
++                    if (error?.code === 'ERR_SRT_STALE_ROUTE' || !routingIsCurrent(pin.generation)) {
++                        stale = true;
++                        break;
++                    }
++                    lastError = error;
++                    logForDebugging(`Route ${describeRoute(route)} to ${host}:${port} failed (${error?.message}); trying the next route`);
++                }
 +            }
-+            : undefined,
-+    });
++            if (!stale) throw lastError;
++        }
++        throw staleRouteError();
++    };
++    // Ave patch (upstream routes): the same for a plain-HTTP request. Resolves
++    // to `{ kind: 'direct', request }` (options for the request to the
++    // vetted address) or `{ kind: 'proxy', url, socket }` (a connected, vetted
++    // socket to the proxy that takes the absolute-form request); with either,
++    // `authRequired()` records and builds the refusal for a 407 answer.
++    const openPlainHttpRoute = async (socket, host, port, encodedCommand, tls) => {
++        const canonical = canonicalizeHost(host) ?? host;
++        const authRequired = () => upstreamAuthRefusal(host, port, attribution(encodedCommand));
++        for (let attempt = 0; attempt < 32; attempt++) {
++            const pin = await currentPin(socket, host, port, encodedCommand, true);
++            if (!routingIsCurrent(pin.generation)) continue;
++            const isCurrent = () => routingIsCurrent(pin.generation);
++            let lastError = new Error(`no route to ${host}:${port}`);
++            let stale = false;
++            for (const route of pin.routes) {
++                try {
++                    assertRoutingCurrent(pin.generation);
++                    if (route.kind === 'direct') {
++                        const request = await directRequestOptions(canonical, port, lookupFor(port, encodedCommand, socket, host), tls);
++                        assertRoutingCurrent(pin.generation);
++                        return { kind: 'direct', request, authRequired, isCurrent };
++                    }
++                    parentDestination(socket, host, port, encodedCommand, true);
++                    const proxySocket = await connectToParentProxy(route.url, parentHop(socket, host, port, encodedCommand, route));
++                    if (!isCurrent()) {
++                        proxySocket.destroy();
++                        throw staleRouteError();
++                    }
++                    return { kind: 'proxy', url: route.url, socket: proxySocket, authRequired, isCurrent };
++                }
++                catch (error) {
++                    if (isResolvedAddressDenied(error)) throw error;
++                    if (error?.code === 'ERR_SRT_STALE_ROUTE' || !isCurrent()) {
++                        stale = true;
++                        break;
++                    }
++                    lastError = error;
++                    logForDebugging(`Route ${describeRoute(route)} to ${host}:${port} failed (${error?.message}); trying the next route`);
++                }
++            }
++            if (!stale) throw lastError;
++        }
++        throw staleRouteError();
++    };
 +    // Ave patch (invocation listeners): every allowed client socket is kept
 +    // under (key, host, port) so the embedder can close it when the grant
 +    // that allowed it is revoked.
-+    const trackedFilter = async (port, host, encodedCommand, explain, socket, plainHttpViaParent) => {
-+        const allowed = await filter(port, host, encodedCommand, explain, socket, plainHttpViaParent);
++    const trackedFilter = async (port, host, encodedCommand, explain, socket, plainHttp) => {
++        const allowed = await filter(port, host, encodedCommand, explain, socket, plainHttp);
 +        if (allowed && socket) {
 +            const encoded = attribution(encodedCommand);
 +            if (encoded)
@@ -1023,11 +1577,11 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 +        return allowed;
 +    };
 +    const http = createHttpProxyServer({
-+        filter: (port, host, socket, encodedCommand, explain, plainHttpViaParent) => trackedFilter(port, host, encodedCommand, explain, socket, plainHttpViaParent),
++        filter: (port, host, socket, encodedCommand, explain, plainHttp) => trackedFilter(port, host, encodedCommand, explain, socket, plainHttp),
          getMitmSocketPath,
          mitmCA,
          shouldTerminateTLS: shouldTerminateTLSForHost,
-@@ -521,7 +675,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -521,7 +890,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          onFilterRequestDenied: ({ method, url, reason, encodedCommand }) => {
              // A refused CONNECT comes with its authority (`host:port`), not a URL.
              const target = method === 'CONNECT' ? url : redactUrlForViolation(url);
@@ -1036,7 +1590,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
          },
          // TLS-terminated path always gets the injector; the plain-HTTP path
          // only when explicitly opted in. Without the opt-in, a sentinel sent
-@@ -538,19 +692,23 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -538,19 +907,26 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          // injection: the real signature must not travel over plaintext.
          planSigv4: buildSigv4Planner(),
          parentProxy,
@@ -1044,6 +1598,8 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 +        lookupFor,
 +        parentDestination,
 +        parentHop,
++        openRoute,
++        openPlainHttpRoute,
          proxyAuthToken,
      });
 -    socksProxyServer = createSocksProxyServer({
@@ -1055,6 +1611,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 +        lookupFor,
 +        parentDestination,
 +        parentHop,
++        openRoute,
          proxyAuthToken,
          // A SOCKS tunnel is opaque, so the option that keeps opaque CONNECT
          // tunnels off the HTTP side must close this side of the port too.
@@ -1065,7 +1622,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
          },
          probeUnauthenticated: async (port, host) => {
              // Explicit deny rules only: an unauthenticated peer must never reach
-@@ -562,17 +720,25 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -562,17 +938,25 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
              for (const entry of config.network.deniedDomains) {
                  if (matchesDomainPatternWithPort(canonical, port, entry)) {
                      const reason = deniedDomainReason(entry);
@@ -1092,7 +1649,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +754,558 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,6 +972,735 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -1188,13 +1745,32 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 +    return closed;
 +}
 +/**
++ * Ave patch (upstream routes). Close every open connection the proxy allowed,
++ * for every invocation (tunnels and keep-alive request sockets alike), e.g.
++ * when the upstream they were routed by changes: a connection opened through
++ * the old upstream (or direct, before an upstream was required) must not
++ * outlive the setting that routed it. Returns how many were closed.
++ */
++function closeAllInvocationConnections() {
++    let closed = 0;
++    for (const [id, sockets] of liveConnections) {
++        for (const socket of sockets) {
++            socket.destroy();
++            closed++;
++        }
++        liveConnections.delete(id);
++    }
++    return closed;
++}
++/**
 + * Ave patch (invocation listeners). One resolution per destination, pinned.
 + *
-+ * A name is resolved once, in the filter, before the ask callback runs; every
-+ * address must be one the resolved-address guard permits (no loopback for a
-+ * non-loopback name, link-local, metadata, unspecified, multicast, broadcast
-+ * or this host's own addresses). The callback is told the addresses
-+ * (`SandboxAskContext.addresses`), so it decides on what will be dialed, and
++ * A name is resolved once, in the filter, after the name phase allowed it
++ * (see decideByName) and before the resolved phase; every address must be
++ * one the resolved-address guard permits (no loopback for a non-loopback
++ * name, link-local, metadata, unspecified, multicast, broadcast or this
++ * host's own addresses). The resolved phase is told the addresses
++ * (`SandboxAskResolvedContext.addresses`), so it decides on what will be dialed, and
 + * an allowed connection is pinned to them: the direct dial's lookup returns
 + * the pinned addresses instead of resolving again, and a parent-proxy CONNECT
 + * carries the pinned address literal instead of the name (the client's TLS
@@ -1202,10 +1778,11 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 + * pin, a name could answer differently between the check and the dial (DNS
 + * rebinding), or the upstream could resolve it to something this host would
 + * refuse, such as its own loopback with another invocation's listener on it.
-+ * A name that does not resolve here is refused: nothing could be pinned. A
-+ * plain-HTTP request by name through a parent proxy is refused too: the
-+ * upstream reads the host from the absolute-form target, so it cannot be
-+ * pinned without breaking virtual hosting (an address literal still goes).
++ * A name that does not resolve here, and a plain-HTTP request by name
++ * through a parent proxy (the upstream reads the host from the absolute-form
++ * target, so it cannot be pinned without breaking virtual hosting), cannot be
++ * pinned: they go by name only through an upstream that is not on this host
++ * or is trusted to resolve names, as `resolution: 'upstream'` (unverified).
 + */
 +const resolveWithSystem = (name) => dnsPromises.lookup(name, { all: true, verbatim: true });
 +let destinationResolver = resolveWithSystem;
@@ -1239,21 +1816,15 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 +    let pins = pinnedDestinations.get(socket);
 +    if (!pins)
 +        pinnedDestinations.set(socket, (pins = new Map()));
-+    pins.set(pinKey(host, port), { addresses: resolved.addresses, viaUpstream: resolved.viaUpstream === true });
++    pins.set(pinKey(host, port), {
++        ...resolved,
++        addresses: resolved.addresses,
++        viaUpstream: resolved.viaUpstream === true,
++        routes: resolved.routes ?? [{ kind: 'direct' }],
++    });
 +}
 +function pinnedFor(socket, host, port) {
 +    return socket ? pinnedDestinations.get(socket)?.get(pinKey(host, port)) : undefined;
-+}
-+/** The filter's refusal for a destination, or undefined to go on and decide it. */
-+function destinationRefusal(host, resolved, plainHttpViaParent) {
-+    if (resolved.reason !== undefined)
-+        return resolved.reason;
-+    // Plain HTTP through an upstream names the host in its absolute-form
-+    // target, which the upstream resolves itself: only an address literal, or
-+    // a name the upstream is trusted to resolve anyway, can go.
-+    if (plainHttpViaParent && !resolved.viaUpstream && isIP(canonicalizeHost(host) ?? host) === 0)
-+        return 'plain HTTP by name cannot be pinned through the parent proxy';
-+    return undefined;
 +}
 +/** Names that mean this host however a resolver answers them. */
 +const THIS_HOST_NAMES = new Set(['localhost', 'localhost.localdomain', 'ip6-localhost', 'ip6-loopback']);
@@ -1290,23 +1861,6 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 +    }
 +    return false;
 +}
-+/**
-+ * Ave patch (owner decision 2026-10-19). A name this host cannot resolve, on
-+ * a route through an upstream proxy: 'remote' forwards the name and lets the
-+ * upstream resolve it (the callback is told `resolution: 'upstream'`, so the
-+ * embedder can treat it as unverified); 'local' refuses it, since an upstream
-+ * on this host resolves names itself and could hand the connection back to
-+ * this host after the check (the trusted `parentProxy.resolvesNames` opt-in
-+ * gives such an upstream the remote treatment); undefined when no upstream
-+ * applies to the name.
-+ */
-+async function upstreamForNames(canonical) {
-+    if (!parentProxy || shouldBypassParentProxy(parentProxy, canonical))
-+        return undefined;
-+    if (!selectParentProxyUrl(parentProxy, { isHttps: true }) && !selectParentProxyUrl(parentProxy, { isHttps: false }))
-+        return undefined;
-+    return (await upstreamOnThisHost()) && !parentProxyResolvesNames ? 'local' : 'remote';
-+}
 +/** A `lookup` for dialing the parent proxy, through the destination resolver. */
 +function parentProxyLookup(hostname, options, callback) {
 +    destinationResolver(hostname).then(answer => {
@@ -1325,43 +1879,223 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 +}
 +const LOCAL_UPSTREAM_REASON = 'the upstream proxy on this host resolves names itself, so a name this host cannot resolve is not forwarded ' +
 +    '(the trusted network.parentProxy.resolvesNames setting lets it)';
-+/** What a name this host could not resolve gets: forwarded by name to a remote upstream, or refused. */
-+async function unresolvedDestination(canonical) {
-+    const upstream = await upstreamForNames(canonical);
-+    if (upstream === 'remote')
-+        return { addresses: [], viaUpstream: true };
-+    if (upstream === 'local')
-+        return { reason: LOCAL_UPSTREAM_REASON };
-+    return { reason: 'destination name did not resolve' };
++const LOCAL_PLAIN_HTTP_REASON = 'the upstream proxy on this host resolves names itself, so a plain-HTTP request by name is not forwarded to it ' +
++    '(the trusted network.parentProxy.resolvesNames setting lets it)';
++/** Ave patch (upstream routes): the refusal for a parent proxy that answered 407. */
++const UPSTREAM_AUTH_REASON = 'upstream proxy requires authentication';
++function upstreamAuthRefusal(host, port, encodedCommand) {
++    recordOutboundDeny(host, port, UPSTREAM_AUTH_REASON, encodedCommand);
++    return new ResolvedAddressDeniedError(host, UPSTREAM_AUTH_REASON, []);
++}
++/** Ave patch (upstream routes): the HTTP status a parent proxy answered a CONNECT with, if the error carries one. */
++function parentProxyStatusOf(error) {
++    const status = typeof error === 'object' && error !== null ? error.proxyStatus : undefined;
++    return Number.isInteger(status) ? status : undefined;
++}
++/** Ave patch (upstream routes): the refusal for a parent proxy that answered a CONNECT with a non-2xx status other than 407. */
++function upstreamStatusRefusal(host, port, status, encodedCommand) {
++    const reason = `upstream proxy refused the connection (HTTP ${status})`;
++    recordOutboundDeny(host, port, reason, encodedCommand);
++    return new ResolvedAddressDeniedError(host, reason, []);
++}
++/** A route for a debug line: the proxy without its credentials. */
++function describeRoute(route) {
++    return route.kind === 'direct' ? 'DIRECT' : redactUrl(route.url);
 +}
 +/**
-+ * `{ addresses }` to decide on and dial (pinned), `{ addresses: [], viaUpstream }`
-+ * for a name the upstream will resolve, or `{ reason }` to refuse.
++ * Ave patch (upstream routes). Install the embedder's route hook, or remove
++ * it with undefined. `router({ host, port, scheme })` is asked once per
++ * destination decision, with the canonical host and `scheme` 'https' for a
++ * CONNECT or SOCKS tunnel and 'http' for a plain-HTTP request, and answers
++ * `{ routes, reason? }`: the routes to try in order, each
++ * `{ kind: 'direct' }` or `{ kind: 'http' | 'https', host, port, auth?,
++ * resolvesNames? }`, and the refusal to give when the list is empty. While a
++ * router is set it replaces `network.parentProxy` for routing; a loopback
++ * destination is always direct, and a router that throws, or answers
++ * anything malformed, refuses the destination (never direct).
 + */
-+async function resolveDestination(host, port) {
-+    const canonical = canonicalizeHost(host) ?? host;
-+    const family = isIP(canonical);
-+    if (family !== 0)
-+        return { addresses: [{ address: canonical, family }] };
++function setParentProxyRouter(router) {
++    if (router !== undefined && typeof router !== 'function') {
++        throw new TypeError('setParentProxyRouter: the router must be a function or undefined');
++    }
++    routingInstalls += 1;
++    parentProxyRouter = router;
++}
++/** A router's route as the dialers use it, or undefined when it is malformed. */
++function normalizeRoute(entry) {
++    if (!entry || typeof entry !== 'object')
++        return undefined;
++    if (entry.kind === 'direct')
++        return { kind: 'direct' };
++    if (entry.kind !== 'http' && entry.kind !== 'https')
++        return undefined;
++    const port = entry.port;
++    if (typeof entry.host !== 'string' || !Number.isInteger(port) || port < 1 || port > 65535)
++        return undefined;
++    const bare = stripBrackets(entry.host);
++    if (!isValidHost(bare))
++        return undefined;
++    const host = canonicalizeHost(bare);
++    if (host === undefined)
++        return undefined;
++    let url;
++    try {
++        url = new URL(`${entry.kind}://${isIP(host) === 6 ? `[${host}]` : host}:${port}`);
++    }
++    catch {
++        return undefined;
++    }
++    if (entry.auth !== undefined) {
++        const { username, password } = entry.auth ?? {};
++        if (typeof username !== 'string' || typeof password !== 'string')
++            return undefined;
++        url.username = encodeURIComponent(username);
++        url.password = encodeURIComponent(password);
++    }
++    return { kind: 'proxy', url, resolvesNames: entry.resolvesNames === true };
++}
++/** The routes `network.parentProxy` gives a destination (the behaviour without a router). */
++function staticRoutes(canonical, scheme) {
++    if (!parentProxy || shouldBypassParentProxy(parentProxy, canonical))
++        return [{ kind: 'direct' }];
++    const url = selectParentProxyUrl(parentProxy, { isHttps: scheme === 'https' });
++    return url ? [{ kind: 'proxy', url, resolvesNames: parentProxyResolvesNames }] : [{ kind: 'direct' }];
++}
++/** `{ routes }` to try in order for a destination, or `{ reason }` to refuse it. */
++async function routesFor(canonical, port, scheme) {
++    // Always direct, as without a router: chaining this host's own
++    // loopback through an upstream proxy is never what is meant.
++    if (canonical === 'localhost' || isLoopbackAddress(canonical))
++        return { routes: [{ kind: 'direct' }] };
++    if (!parentProxyRouter)
++        return { routes: staticRoutes(canonical, scheme) };
++    let answer;
++    try {
++        answer = await parentProxyRouter({ host: canonical, port, scheme });
++    }
++    catch (error) {
++        logForDebugging(`Upstream route lookup for ${canonical}:${port} failed: ${error?.message}`, { level: 'error' });
++        return { reason: 'upstream proxy lookup failed' };
++    }
++    if (!answer || typeof answer !== 'object' || !Array.isArray(answer.routes))
++        return { reason: 'upstream proxy lookup answered no route list' };
++    const routes = [];
++    for (const entry of answer.routes) {
++        const route = normalizeRoute(entry);
++        if (!route)
++            return { reason: 'upstream proxy lookup answered a malformed route' };
++        routes.push(route);
++    }
++    if (routes.length === 0) {
++        return {
++            reason: typeof answer.reason === 'string' && answer.reason.length > 0
++                ? sanitizeDenialReason(answer.reason)
++                : 'no usable route to the destination',
++        };
++    }
++    return { routes };
++}
++/** Whether a proxy route names, as a literal, one of this session's proxy front ends. */
++function routeIsProxyListener(route) {
++    if (route.kind !== 'proxy')
++        return false;
++    const port = Number(route.url.port) || (route.url.protocol === 'https:' ? 443 : 80);
++    return localDestinationReason(stripBrackets(route.url.hostname), port) !== undefined;
++}
++/** The addresses a name resolves to here, or [] when it does not resolve. */
++async function resolveAddresses(canonical) {
 +    let answer;
 +    try {
 +        answer = await destinationResolver(canonical);
 +    }
 +    catch {
-+        return unresolvedDestination(canonical);
++        return [];
 +    }
-+    const addresses = (Array.isArray(answer) ? answer : [])
++    return (Array.isArray(answer) ? answer : [])
 +        .filter(a => a && typeof a.address === 'string' && isIP(a.address) !== 0)
 +        .map(a => ({ address: a.address, family: isIP(a.address) }));
-+    if (addresses.length === 0)
-+        return unresolvedDestination(canonical);
-+    for (const { address } of addresses) {
-+        if (!resolvedAddressGuard.permits(canonical, address, port))
-+            return { reason: 'destination resolves to this host or a reserved address' };
-+        if (proxyListenerPorts().has(port) && localDestinationReason(address, port) !== undefined)
-+            return { reason: 'sandbox proxy listener' };
++}
++/**
++ * Ave patch (upstream routes). What the filter decides a destination on and
++ * pins for its dial: `{ addresses, viaUpstream, routes }`, or `{ reason }`
++ * to refuse it before anybody is asked.
++ *
++ * The routes come from the router (or `network.parentProxy`) and are judged
++ * one by one:
++ *   - an address literal, or a name this host resolves (every address must
++ *     pass the resolved-address guard), is pinned: a direct route dials the
++ *     pinned addresses, a proxy route CONNECTs to them as literals. A
++ *     plain-HTTP request by such a name cannot be pinned through a proxy
++ *     route (the upstream reads the absolute-form target and resolves it
++ *     itself): its direct routes stay pinned, and a proxy route takes the
++ *     name (`viaUpstream`) unless it is on this host and not trusted to
++ *     resolve names, as below;
++ *   - a name this host cannot resolve has no direct route; a proxy route on
++ *     this host is dropped unless it is trusted to resolve names (it would
++ *     resolve the name after the check, and could hand the connection back
++ *     to this host); the rest forward the name (`viaUpstream`, told to the
++ *     ask callback as `resolution: 'upstream'`).
++ * A proxy route that names one of this session's proxy front ends is
++ * dropped. Nothing left is a refusal with the reason that dropped the last.
++ */
++async function planDestination(host, port, plainHttp) {
++    const canonical = canonicalizeHost(host) ?? host;
++    const routed = await routesFor(canonical, port, plainHttp ? 'http' : 'https');
++    if (routed.reason !== undefined)
++        return { reason: routed.reason };
++    const candidates = routed.routes.filter(route => !routeIsProxyListener(route));
++    if (candidates.length === 0)
++        return { reason: 'sandbox proxy listener' };
++    const family = isIP(canonical);
++    const addresses = family !== 0 ? [{ address: canonical, family }] : await resolveAddresses(canonical);
++    if (addresses.length > 0) {
++        if (family === 0) {
++            for (const { address } of addresses) {
++                if (!resolvedAddressGuard.permits(canonical, address, port))
++                    return { reason: 'destination resolves to this host or a reserved address' };
++                if (proxyListenerPorts().has(port) && localDestinationReason(address, port) !== undefined)
++                    return { reason: 'sandbox proxy listener' };
++            }
++        }
++        if (!(plainHttp && family === 0))
++            return { addresses, viaUpstream: false, routes: candidates };
++        // Plain HTTP through an upstream names the host in its absolute-form
++        // target, which the upstream resolves itself, so the name cannot be
++        // pinned there. As for a name this host cannot resolve (owner
++        // decision 2026-10-19): a direct route still dials the pinned
++        // addresses; a proxy route takes the name, unverified, unless it is
++        // on this host and not trusted to resolve names.
++        const routes = [];
++        let localDropped = false;
++        let forwarded = false;
++        for (const route of candidates) {
++            if (route.kind !== 'direct') {
++                if (!route.resolvesNames && await proxyUrlOnThisHost(route.url)) {
++                    localDropped = true;
++                    continue;
++                }
++                forwarded = true;
++            }
++            routes.push(route);
++        }
++        if (routes.length === 0)
++            return { reason: localDropped ? LOCAL_PLAIN_HTTP_REASON : 'plain HTTP by name cannot be pinned through the parent proxy' };
++        return { addresses, viaUpstream: forwarded, routes };
 +    }
-+    return { addresses };
++    const routes = [];
++    let localDropped = false;
++    for (const route of candidates) {
++        if (route.kind === 'direct')
++            continue;
++        if (!route.resolvesNames && await proxyUrlOnThisHost(route.url)) {
++            localDropped = true;
++            continue;
++        }
++        routes.push(route);
++    }
++    if (routes.length === 0)
++        return { reason: localDropped ? LOCAL_UPSTREAM_REASON : 'destination name did not resolve' };
++    return { addresses: [], viaUpstream: true, routes };
 +}
 +/** A direct dial's lookup that answers with the pinned addresses, re-vetted against the current guard. */
 +function pinnedLookup(port, addresses, encodedCommand) {
@@ -1381,10 +2115,12 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 +}
 +/**
 + * The destinations a parent-proxy request may name, to try in order: an
-+ * address literal as is, a name as its pinned, re-vetted addresses (IPv4
-+ * first: an upstream that cannot reach IPv6 still gets a usable one). Throws
-+ * a ResolvedAddressDeniedError (the proxies answer it as a policy refusal)
-+ * for a name with no pin, and for any name on the plain-HTTP path.
++ * address literal as is, a name the plan forwards (`viaUpstream`) as the
++ * name, a name as its pinned, re-vetted addresses (IPv4 first: an upstream
++ * that cannot reach IPv6 still gets a usable one). Throws a
++ * ResolvedAddressDeniedError (the proxies answer it as a policy refusal) for
++ * a name with no pin, and for a name on the plain-HTTP path the plan did not
++ * forward.
 + */
 +function parentDestinationFor(socket, host, port, encodedCommand, plainHttp) {
 +    const canonical = canonicalizeHost(host) ?? host;
@@ -1414,7 +2150,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 + * path still lacks), and the decision is attributed to the listener's key.
 + */
 +function invocationListenerFilter(lane, sandboxAskCallback) {
-+    return async (port, host, encodedCommand, explain, socket, plainHttpViaParent) => {
++    return async (port, host, encodedCommand, explain, socket, plainHttp) => {
 +        const denied = (reason) => {
 +            recordOutboundDeny(host, port, reason, lane.encodedKey);
 +            explain?.(reason);
@@ -1427,14 +2163,12 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
 +        const local = localDestinationReason(host, port);
 +        if (local !== undefined)
 +            return denied(local);
-+        const resolved = await resolveDestination(host, port);
-+        const refusal = destinationRefusal(host, resolved, plainHttpViaParent);
-+        if (refusal !== undefined)
-+            return denied(refusal);
-+        const allowed = await filterNetworkRequest(port, host, sandboxAskCallback, lane.encodedKey, explain, 'listener', resolved.addresses, resolved.viaUpstream);
-+        if (allowed && socket)
++        const resolved = await decideDestination(port, host, sandboxAskCallback, lane.encodedKey, explain, 'listener', plainHttp);
++        if (resolved === undefined)
++            return false;
++        if (socket)
 +            pinDestination(socket, host, port, resolved);
-+        return allowed;
++        return true;
 +    };
 +}
 +function invocationListenerKey(commandId, caller) {
@@ -1651,7 +2385,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -616,7 +1334,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +1729,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -1664,7 +2398,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -1515,6 +2238,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2633,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -1674,7 +2408,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +2436,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +2831,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -1696,7 +2430,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1734,23 +2463,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1734,23 +2858,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -1731,7 +2465,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1786,6 +2523,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +2918,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -1739,7 +2473,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,6 +2559,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,6 +2954,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -1748,7 +2482,16 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
      const platform = getPlatform();
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
-@@ -1989,6 +2729,7 @@ function updateConfig(newConfig) {
+@@ -1950,7 +3085,7 @@ function getConfig() {
+  *
+  * **Network/allowlist changes are a live swap**: the running
+  * mux proxy reads `config.network.allowedDomains` /
+- * `deniedDomains` per-request (via `filterNetworkRequest`), so
++ * `deniedDomains` per-request (via `decideByName`), so
+  * reassigning `config` here takes effect on the next connection
+  * with no proxy rebind and no port change — on every platform,
+  * including Windows. This is what lets a host enable/deny domains
+@@ -1989,6 +3124,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -1756,15 +2499,16 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2222,6 +2963,7 @@ async function reset() {
+@@ -2222,6 +3358,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
 +    parentProxyResolvesNames = false;
++    parentProxyRouter = undefined;
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,6 +2971,22 @@ async function reset() {
+@@ -2229,6 +3367,22 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -1787,21 +2531,23 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b7
      maskedFileStore.dispose();
  }
  function getSandboxViolationStore() {
-@@ -2336,6 +3094,9 @@ export const SandboxManager = {
+@@ -2336,6 +3490,11 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
 +    openInvocationListener,
 +    closeInvocationListener,
 +    closeInvocationConnections,
++    closeAllInvocationConnections,
++    setParentProxyRouter,
      askCallbackDenyReason: true,
      cleanupAfterCommand,
      reset,
 diff --git a/dist/sandbox/sandbox-schemas.d.ts b/dist/sandbox/sandbox-schemas.d.ts
-index 4c0be53fa68af536b0dcf49192421651d7b51476..301490e2a46c1beb3fdaa6cb5a7ef0067a93b1b4 100644
+index 4c0be53fa68af536b0dcf49192421651d7b51476..2eb129ab7d56f8537980f1f39ccdf761c4ea77d9 100644
 --- a/dist/sandbox/sandbox-schemas.d.ts
 +++ b/dist/sandbox/sandbox-schemas.d.ts
-@@ -151,8 +151,54 @@ export type NetworkHostPattern = {
+@@ -151,8 +151,75 @@ export type NetworkHostPattern = {
   * Check `SandboxManager.askCallbackDenyReason` before returning an object:
   * a release without it reads any truthy answer as an allow.
   */
@@ -1829,7 +2575,9 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..301490e2a46c1beb3fdaa6cb5a7ef006
 + * value as unattributed. It is passed whether or not this process wrapped a
 + * command under it.
 + */
-+export type SandboxAskContext = {
++export type SandboxAskContext = SandboxAskNameContext | SandboxAskResolvedContext;
++/** What both phases of a SandboxAskCallback decision carry. */
++type SandboxAskIdentity = {
 +    attributionKey: string | undefined;
 +    /**
 +     * Ave patch (invocation listeners). How `attributionKey` was learned:
@@ -1840,6 +2588,24 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..301490e2a46c1beb3fdaa6cb5a7ef006
 +     * end and the key is only what the client presented.
 +     */
 +    identity: 'listener' | 'username';
++};
++/**
++ * Ave patch. The first phase: the destination as named, before anything is
++ * looked up for it. Nothing has been resolved, and no route asked for: a
++ * denial here ends the connection with no DNS query and no proxy lookup, so a
++ * destination that will be refused cannot carry data out through a name
++ * lookup. Only an allow here (`true`) leads to the second phase.
++ */
++export type SandboxAskNameContext = SandboxAskIdentity & {
++    phase: 'name';
++};
++/**
++ * Ave patch. The second phase, after a first-phase allow: the destination
++ * resolved and routed. The answer decides the connection; the callback
++ * re-checks what the name turned out to be.
++ */
++export type SandboxAskResolvedContext = SandboxAskIdentity & {
++    phase: 'resolved';
 +    /**
 +     * Ave patch (invocation listeners). The addresses the connection will be
 +     * dialed to: the destination resolved once, vetted by the
@@ -1849,17 +2615,18 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..301490e2a46c1beb3fdaa6cb5a7ef006
 +    addresses: readonly string[];
 +    /**
 +     * Ave patch. `'pinned'`: the connection goes to `addresses` (an address
-+     * literal, or a name resolved and vetted here). `'upstream'`: this host
-+     * could not resolve the name and a remote upstream proxy (or one trusted
-+     * with `parentProxy.resolvesNames`) will; `addresses` is empty and the
-+     * address is unverified.
++     * literal, or a name resolved and vetted here). `'upstream'`: a remote
++     * upstream proxy (or one trusted with `parentProxy.resolvesNames`) will
++     * resolve the name, either because this host could not or because a
++     * plain-HTTP request names it in its absolute-form target; the address
++     * the upstream reaches is unverified.
 +     */
 +    resolution: 'pinned' | 'upstream';
 +};
  //# sourceMappingURL=sandbox-schemas.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/socks-proxy.d.ts b/dist/sandbox/socks-proxy.d.ts
-index a4ba5d4f755ff3c47e3c0b005e97eb1e87ea0c2a..421ba713440e92ad18f38a5e8027b1a9b9332f9a 100644
+index a4ba5d4f755ff3c47e3c0b005e97eb1e87ea0c2a..5c42847231dd55c0f594a973a51aebd87c3c25dc 100644
 --- a/dist/sandbox/socks-proxy.d.ts
 +++ b/dist/sandbox/socks-proxy.d.ts
 @@ -1,12 +1,12 @@
@@ -1877,7 +2644,7 @@ index a4ba5d4f755ff3c47e3c0b005e97eb1e87ea0c2a..421ba713440e92ad18f38a5e8027b1a9
      /**
       * Optional upstream HTTP proxy. When present, SOCKS CONNECT requests are
       * tunnelled through the parent's HTTP CONNECT instead of dialing directly.
-@@ -15,6 +15,10 @@ export interface SocksProxyServerOptions {
+@@ -15,6 +15,12 @@ export interface SocksProxyServerOptions {
      parentProxy?: ResolvedParentProxy;
      /** Direct-dial name resolution (see HttpProxyServerOptions.lookupFor); a refusal is answered "not allowed by ruleset". */
      lookupFor?: DirectLookup;
@@ -1885,11 +2652,13 @@ index a4ba5d4f755ff3c47e3c0b005e97eb1e87ea0c2a..421ba713440e92ad18f38a5e8027b1a9
 +    parentDestination?: ParentDestination;
 +    /** Ave patch: how this CONNECT dials the parent proxy (see ParentHop). */
 +    parentHop?: (socket: import('node:net').Socket, host: string, port: number, encodedCommand: string | undefined) => ParentHop;
++    /** Ave patch (upstream routes): open an allowed destination over the routes its filter pinned, in order. */
++    openRoute?: (socket: import('node:net').Socket, host: string, port: number, encodedCommand: string | undefined) => Promise<import('node:net').Socket>;
      /**
       * Per-session token (same value as the HTTP proxy's). When set, the
       * server requires SOCKS5 username/password auth and only accepts
 diff --git a/dist/sandbox/socks-proxy.js b/dist/sandbox/socks-proxy.js
-index 760a10b1d1c475a7636ff78092d3c9daaafe7335..ab4ee21e4c6b5d14487429ca37c4ab12821fa5ba 100644
+index 760a10b1d1c475a7636ff78092d3c9daaafe7335..f5d3745305c9b477df293642547f285d51760b63 100644
 --- a/dist/sandbox/socks-proxy.js
 +++ b/dist/sandbox/socks-proxy.js
 @@ -1,7 +1,7 @@
@@ -1912,16 +2681,20 @@ index 760a10b1d1c475a7636ff78092d3c9daaafe7335..ab4ee21e4c6b5d14487429ca37c4ab12
              if (!allowed) {
                  logForDebugging(`Connection blocked to ${hostname}:${port}`, {
                      level: 'error',
-@@ -83,9 +85,14 @@ export function createSocksProxyServer(options) {
+@@ -83,9 +85,17 @@ export function createSocksProxyServer(options) {
          const parentUrl = options.parentProxy && !shouldBypassParentProxy(options.parentProxy, host)
              ? selectParentProxyUrl(options.parentProxy, { isHttps: true })
              : undefined;
+-        const open = parentUrl
+-            ? connectViaParentProxy(parentUrl, host, port)
+-            : dialDirect(host, port, options.lookupFor?.(port, encodedCommandFromProxyUser(conn.username)));
 +        // Ave patch: a parent CONNECT names the pinned address, and a direct
 +        // dial uses the pinned lookup, both keyed by this client socket.
 +        const encodedCommand = encodedCommandFromProxyUser(conn.username);
-         const open = parentUrl
--            ? connectViaParentProxy(parentUrl, host, port)
--            : dialDirect(host, port, options.lookupFor?.(port, encodedCommandFromProxyUser(conn.username)));
++        // Ave patch (upstream routes): the routes the filter pinned, in order.
++        const open = options.openRoute
++            ? Promise.resolve().then(() => options.openRoute(conn.socket, host, port, encodedCommand))
++            : parentUrl
 +            ? Promise.resolve().then(() => options.parentDestination
 +                ? connectViaParentProxyToFirst(parentUrl, options.parentDestination(conn.socket, host, port, encodedCommand, false), port, options.parentHop?.(conn.socket, host, port, encodedCommand))
 +                : connectViaParentProxy(parentUrl, host, port))

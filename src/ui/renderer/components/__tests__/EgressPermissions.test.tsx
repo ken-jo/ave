@@ -116,6 +116,27 @@ describe("EgressGrantsList", () => {
   };
   const alwaysGrant: PersistentEgressGrant = { scope: "always", origin: "terminal", host: "github.com", port: 443, grantedAt: "2026-10-19T02:00:00.000Z" };
 
+  it.each([
+    ["en", ["Public network", "Local / private network", "Unverified destination"]],
+    ["ko", ["공개 네트워크", "로컬 / 사설 네트워크", "확인되지 않은 목적지"]],
+  ] as const)("distinguishes same-destination grants by class in %s", async (locale, labels) => {
+    setLocale(locale);
+    const base: ConversationEgressGrant = { scope: "conversation", sessionId: "session-7", host: "data.example.test", port: 443, grantedAt: "2026-10-19T03:00:00.000Z" };
+    const grants: ConversationEgressGrant[] = [
+      { ...base, network: "public" }, { ...base, network: "local" }, { ...base, network: "unverified" },
+    ];
+    render(<EgressGrantsList fetcher={async () => ({ ok: true, grants })} />);
+    await waitFor(() => expect(screen.getAllByTestId("egress-grant-row")).toHaveLength(3));
+    expect(screen.getAllByTestId("egress-grant-class").map(label => label.textContent)).toEqual(labels);
+    expect(screen.getAllByTestId("egress-grant-row").every(row => row.textContent?.includes("data.example.test:443"))).toBe(true);
+  });
+
+  it.each(["en", "ko"] as const)("labels legacy classless grants as public in %s", async (locale) => {
+    setLocale(locale);
+    render(<EgressGrantsList fetcher={async () => ({ ok: true, grants: [alwaysGrant] })} />);
+    expect((await screen.findByTestId("egress-grant-class")).textContent).toBe(locale === "en" ? "Public network" : "공개 네트워크");
+  });
+
   it("lists persistent grants and revokes the one picked", async () => {
     let grants = [workspaceGrant, alwaysGrant];
     const fetcher = vi.fn(async () => ({ ok: true, grants }));
@@ -168,6 +189,27 @@ describe("EgressGrantsList", () => {
       fireEvent.click(screen.getByTestId("egress-grant-revoke"));
       await screen.findByTestId("egress-grants-empty");
       expect(egressGrantRevoke).toHaveBeenCalledWith({ scope: "always", origin: "terminal", host: "github.com", port: 443 });
+    } finally {
+      (window as { ave?: unknown }).ave = previous;
+    }
+  });
+
+  it("keeps same-destination grants separate and forwards the selected network class", async () => {
+    const base: ConversationEgressGrant = { scope: "conversation", sessionId: "session-7", host: "data.example.test", port: 443, grantedAt: "2026-10-19T03:00:00.000Z" };
+    let grants: ConversationEgressGrant[] = [{ ...base, network: "public" }, { ...base, network: "local" }, { ...base, network: "unverified" }];
+    const egressGrantRevoke = vi.fn(async (target: { network?: string }) => {
+      grants = grants.filter(grant => grant.network !== target.network);
+      return { ok: true };
+    });
+    const previous = window.ave;
+    (window as { ave?: unknown }).ave = { permission: { egressGrantsList: async () => ({ ok: true, grants }), egressGrantRevoke } };
+    try {
+      render(<EgressGrantsList />);
+      await waitFor(() => expect(screen.getAllByTestId("egress-grant-row")).toHaveLength(3));
+      fireEvent.click(screen.getAllByTestId("egress-grant-revoke")[1]!);
+      await waitFor(() => expect(screen.getAllByTestId("egress-grant-row")).toHaveLength(2));
+      expect(egressGrantRevoke).toHaveBeenCalledWith({ scope: "conversation", sessionId: "session-7", host: base.host, port: base.port, network: "local" });
+      expect(grants.map(grant => grant.network)).toEqual(["public", "unverified"]);
     } finally {
       (window as { ave?: unknown }).ave = previous;
     }

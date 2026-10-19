@@ -41,6 +41,52 @@ import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-pac
 import { MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH } from "../../shared/subscription-runtime.js";
 import { routeExternalUrl } from "../../boot/steps/plugin-runtime/external-url.js";
 
+describe("SettingsService upstream proxy (main-owned)", () => {
+  let userDataPath: string;
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-upstream-proxy-"));
+  });
+
+  afterEach(async () => {
+    await cleanupTmpDir(userDataPath);
+  });
+
+  it("defaults to the system settings and is not written by patch()", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("upstreamProxy")).toEqual({ mode: "system", manualUrl: "", bypass: "", resolvesNames: false });
+    await service.patch({ upstreamProxy: { mode: "manual", manualUrl: "http://p.test:1" } } as never);
+    expect(service.get("upstreamProxy").mode).toBe("system");
+  });
+
+  it("normalizes a hand-edited file: credentials dropped from the URL, wrong types back to defaults", () => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
+      upstreamProxy: { mode: "manual", manualUrl: " http://user:secret@proxy.test:3128 ", bypass: 7, resolvesNames: "yes" },
+    }), "utf-8");
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("upstreamProxy")).toEqual({ mode: "manual", manualUrl: "http://proxy.test:3128", bypass: "", resolvesNames: false });
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ upstreamProxy: { mode: "pac" } }), "utf-8");
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("upstreamProxy").mode).toBe("system");
+  });
+
+  it("notifies a change written through set()", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const changed = vi.fn();
+    service.onChanged("upstreamProxy", changed);
+    await service.set("upstreamProxy", { mode: "off", manualUrl: "", bypass: "", resolvesNames: false });
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(service.get("upstreamProxy").mode).toBe("off");
+  });
+
+  it.each([" * ", "\t* ", " ", "*"])("preserves bypass text %j across save and reload", async (bypass) => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.set("upstreamProxy", { mode: "manual", manualUrl: "http://proxy.test:80", bypass, resolvesNames: false });
+    expect(service.get("upstreamProxy").bypass).toBe(bypass);
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("upstreamProxy").bypass).toBe(bypass);
+  });
+});
+
 describe("SettingsService remote A2A canonical route-control origin", () => {
   let userDataPath: string;
 

@@ -12,6 +12,7 @@ const manager = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
+  setParentProxyRouter: () => undefined,
   initialize: async (config: typeof manager.config) => { manager.config = config; },
   updateConfig: (config: typeof manager.config) => { manager.update(config); manager.config = config; },
   reset: async () => { manager.config = undefined; },

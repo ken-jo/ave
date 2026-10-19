@@ -61,10 +61,11 @@ import type { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
 
 describe("renderer types are the owner types", () => {
-  it("AppSettings is the host settings minus the main-only a2aRemote block", () => {
+  it("AppSettings is the host settings minus the main-only a2aRemote block and the upstream proxy (own channels)", () => {
     expectTypeOf<AppSettings>().toEqualTypeOf<RendererSettingsSnapshot>();
-    expectTypeOf<AppSettings>().toEqualTypeOf<Omit<HostAppSettings, "a2aRemote">>();
+    expectTypeOf<AppSettings>().toEqualTypeOf<Omit<HostAppSettings, "a2aRemote" | "upstreamProxy">>();
     expectTypeOf<"a2aRemote">().not.toMatchTypeOf<keyof AppSettings>();
+    expectTypeOf<"upstreamProxy">().not.toMatchTypeOf<keyof AppSettings>();
     expectTypeOf<MemoryCaptureMode>().toEqualTypeOf<HostMemoryCaptureMode>();
   });
 

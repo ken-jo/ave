@@ -2,12 +2,21 @@
  * Permissions domain IPC handlers.
  * Covers: ave:permission:*, ave:approval:*, ave:policy:*
  */
-import { ipcMain } from "electron";
+import { ipcMain, session } from "electron";
 import { randomUUID } from "node:crypto";
 import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import type { ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
+import {
+  UPSTREAM_PROXY_CREDENTIALS_SECRET,
+  UPSTREAM_PROXY_MODES,
+  type UpstreamProxySettings,
+  type UpstreamProxyView,
+} from "../../shared/upstream-proxy.js";
+
+/** The destination the Settings diagnostic line resolves. */
+const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
 import {
   RECENT_EGRESS_DENIALS_LIMIT,
@@ -56,6 +65,7 @@ import {
   canonicalStringify,
 } from "../../permissions/user-approval-store.js";
 import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
+import { isEgressGrantNetwork } from "../../shared/egress-grant-scopes.js";
 import { isTerminalTabId } from "../../shared/tab-id.js";
 import type {
   SandboxWindowsStatusInfo,
@@ -398,7 +408,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
-    const { scope, origin, host, port, workspaceRoot, sessionId, tabId } = body;
+    const { scope, origin, host, port, workspaceRoot, sessionId, tabId, network } = body;
+    if (network !== undefined && !isEgressGrantNetwork(network)) {
+      return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: invalid network class" };
+    }
     if (scope !== "conversation" && scope !== "tab" && scope !== "workspace" && scope !== "always") {
       return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be conversation, tab, workspace or always" };
     }
@@ -420,13 +433,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       : origin !== undefined) {
       return { ok: false, error: "invalid-egress-grant-origin", message: "revoke: a workspace or always grant names its origin (shell, or terminal for always), no other grant does" };
     }
+    const destination = { host, port, ...(network === undefined ? {} : { network }) };
     const { revokeEgressGrant } = await import("../../permissions/egress-runtime.js");
     try {
       const { removed, closed } = await revokeEgressGrant(
-        scope === "conversation" ? { scope, sessionId: sessionId as string, host, port }
-        : scope === "tab" ? { scope, tabId: tabId as string, host, port }
-        : scope === "workspace" ? { scope, origin: "shell", workspaceRoot: workspaceRoot as string, host, port }
-        : { scope, origin: origin as "shell" | "terminal", host, port },
+        scope === "conversation" ? { scope, sessionId: sessionId as string, ...destination }
+        : scope === "tab" ? { scope, tabId: tabId as string, ...destination }
+        : scope === "workspace" ? { scope, origin: "shell", workspaceRoot: workspaceRoot as string, ...destination }
+        : { scope, origin: origin as "shell" | "terminal", ...destination },
       );
       auditLogger.log({
         timestamp: new Date().toISOString(),
@@ -438,6 +452,119 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     } catch (error) {
       return { ok: false, error: "egress-grant-store-unreadable", message: errorMessage(error) };
     }
+  });
+
+  // Upstream proxy (owner decision 2026-10-20). Main-owned setting: these two
+  // handlers are its only reader and writer for the renderer, and neither
+  // ever returns a credential value (only whether one is stored).
+  const upstreamProxyView = async (): Promise<UpstreamProxyView> => {
+    const { describeUpstreamProxy, upstreamProxyDeps, parseStoredProxyCredentials } = await import("../../permissions/upstream-proxy.js");
+    const routerDeps = upstreamProxyDeps(deps.settingsService, (url) => session.defaultSession.resolveProxy(url));
+    const settings = deps.settingsService.get("upstreamProxy");
+    const stored = parseStoredProxyCredentials(deps.settingsService.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET));
+    return {
+      settings,
+      // Only credentials that would be sent count: bound to the manual proxy as it is now.
+      hasCredentials: stored !== null && stored.origin === settings.manualUrl,
+      diagnostic: await describeUpstreamProxy(routerDeps, UPSTREAM_PROXY_DIAGNOSTIC_URL),
+    };
+  };
+
+  ipcMain.handle(PERMISSIONS.upstreamProxyGet, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxyGet, e); return UNAUTHORIZED_FRAME; }
+    return upstreamProxyView();
+  });
+
+  ipcMain.handle(PERMISSIONS.upstreamProxySet, async (e, payload: unknown) => {
+    // This setter redirects all sandbox egress, and the keyboard-intent marker
+    // below is the renderer's own claim: it also requires the main frame of
+    // one of Ave's own windows (the approvalRespond rule), never a subframe
+    // or another webContents that loads a host-renderer URL.
+    const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
+    const appWindowMainFrame = e.senderFrame !== null && e.senderFrame === e.sender?.mainFrame
+      && windows.some((window) => window?.webContents === e.sender);
+    if (!validateHostRendererSender(e) || !appWindowMainFrame) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxySet, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const { parseProxyUrl, proxyOrigin, parseStoredProxyCredentials } = await import("../../permissions/upstream-proxy.js");
+    const { normalizeUpstreamProxy } = await import("../../data/settings-normalization.js");
+    const next = deps.settingsService.get("upstreamProxy");
+    if (body.mode !== undefined) {
+      if (typeof body.mode !== "string" || !(UPSTREAM_PROXY_MODES as readonly string[]).includes(body.mode)) {
+        return { ok: false, error: "invalid-upstream-proxy-mode", message: "upstream proxy: mode must be off, system or manual" };
+      }
+      next.mode = body.mode as UpstreamProxySettings["mode"];
+    }
+    if (body.resolvesNames !== undefined) {
+      if (typeof body.resolvesNames !== "boolean") {
+        return { ok: false, error: "invalid-upstream-proxy-resolves-names", message: "upstream proxy: resolvesNames must be a boolean" };
+      }
+      next.resolvesNames = body.resolvesNames;
+    }
+    if (body.bypass !== undefined) {
+      if (typeof body.bypass !== "string" || body.bypass.length > 8192) {
+        return { ok: false, error: "invalid-upstream-proxy-bypass", message: "upstream proxy: the bypass list must be text of at most 8192 characters" };
+      }
+      next.bypass = body.bypass;
+    }
+    let credentials: { username: string; password: string } | undefined;
+    if (body.manualUrl !== undefined) {
+      if (typeof body.manualUrl !== "string" || body.manualUrl.length > 2048) {
+        return { ok: false, error: "invalid-upstream-proxy-url", message: "upstream proxy: the URL must be text of at most 2048 characters" };
+      }
+      if (body.manualUrl.trim() === "") {
+        next.manualUrl = "";
+      } else {
+        const parsed = parseProxyUrl(body.manualUrl);
+        if (!parsed.ok) {
+          return parsed.reason === "socks"
+            ? { ok: false, error: "upstream-proxy-socks-unsupported", message: "upstream proxy: SOCKS proxies cannot be used as the sandbox's upstream" }
+            : { ok: false, error: "invalid-upstream-proxy-url", message: "upstream proxy: enter http://host:port or https://host:port" };
+        }
+        next.manualUrl = proxyOrigin(parsed);
+        credentials = parsed.auth;
+      }
+    }
+    if (next.mode === "manual" && next.manualUrl === "") {
+      return { ok: false, error: "upstream-proxy-url-required", message: "upstream proxy: manual mode needs a proxy URL" };
+    }
+    // Stored credentials are bound to the manual proxy's origin: entered with
+    // a URL, they are saved for that URL's origin; a URL change to another
+    // host, port or scheme removes them (and says so), so the old proxy's
+    // password is never sent to the new one.
+    let credentialsChange: "replaced" | "cleared" | "removed" | "unchanged" = "unchanged";
+    if (credentials !== undefined) {
+      await deps.settingsService.setSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET, JSON.stringify({ ...credentials, origin: next.manualUrl }));
+      credentialsChange = "replaced";
+    } else if (body.clearCredentials === true) {
+      await deps.settingsService.deleteSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+      credentialsChange = "cleared";
+    } else {
+      const storedSecret = deps.settingsService.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+      const stored = parseStoredProxyCredentials(storedSecret);
+      if (storedSecret !== null && (stored === null || stored.origin !== next.manualUrl)) {
+        await deps.settingsService.deleteSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+        credentialsChange = "removed";
+      }
+    }
+    // `set` notifies the boot router, which drops its cached routes.
+    const stored = normalizeUpstreamProxy(next);
+    await deps.settingsService.set("upstreamProxy", stored);
+    auditLogger.log({
+      timestamp: new Date().toISOString(),
+      sessionId: "settings",
+      type: "approval",
+      output: `[upstream-proxy:set] mode=${stored.mode} manual=${stored.manualUrl === "" ? "-" : stored.manualUrl}`
+        + ` credentials=${credentialsChange}`
+        + ` bypassEntries=${stored.bypass === "" ? 0 : stored.bypass.split(",").filter((entry) => entry.trim() !== "").length}`
+        + ` resolvesNames=${stored.resolvesNames}`,
+    });
+    return {
+      ok: true as const,
+      view: await upstreamProxyView(),
+      ...(credentialsChange === "removed" ? { credentialsRemoved: true as const } : {}),
+    };
   });
 
   // MUTATING (sender-frame-guarded + user-keyboard intent) — the SINGLE

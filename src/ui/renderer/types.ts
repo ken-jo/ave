@@ -1,6 +1,7 @@
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
 
+import type { UpstreamProxyPatch, UpstreamProxyView } from "../../shared/upstream-proxy.js";
 import type { PluginUiExtensionView } from "../../plugin-ui-host.js";
 import type {
   AgentInstallResultPayload,
@@ -88,7 +89,7 @@ import type {
   SandboxWindowsInstallResult,
 } from "../../shared/sandbox-capability-info.js";
 import type { EgressDenialRow } from "../../shared/egress-denials.js";
-import type { ListedEgressGrant } from "../../shared/egress-grant-scopes.js";
+import type { EgressGrantNetwork, ListedEgressGrant } from "../../shared/egress-grant-scopes.js";
 
 // Re-export MCP types for renderer-side consumers (type-only, no main-process runtime)
 export type { McpServerConfig, McpServerConfigDto, McpServerState };
@@ -1617,8 +1618,18 @@ export type AvePermissionApi = {
     | { ok: false; error: string; message: string }
     | IpcErrorResult
   >;
+  /** Read-only: the upstream proxy setting (no credential values) and the effective upstream for https://example.com. */
+  upstreamProxyGet: () => Promise<UpstreamProxyView | IpcErrorResult>;
+  /** MUTATING: change the upstream proxy setting; resolves to the new view or a refusal. */
+  upstreamProxySet: (patch: UpstreamProxyPatch) => Promise<
+    /** `credentialsRemoved`: the stored credentials belonged to the previous proxy and were removed. */
+    | { ok: true; view: UpstreamProxyView; credentialsRemoved?: true }
+    | { ok: false; error: string; message: string }
+    | IpcErrorResult
+  >;
   /** MUTATING: revoke one shell egress grant. */
   egressGrantRevoke: (grant: {
+    network?: EgressGrantNetwork;
     scope: "conversation" | "tab" | "workspace" | "always";
     host: string;
     port: number;

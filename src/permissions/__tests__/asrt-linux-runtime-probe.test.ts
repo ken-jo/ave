@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({
   SandboxManager: {
+    setParentProxyRouter: () => undefined,
     initialize: h.initialize,
     wrapWithSandboxArgv: h.wrapWithSandboxArgv,
     cleanupAfterCommand: h.cleanupAfterCommand,
