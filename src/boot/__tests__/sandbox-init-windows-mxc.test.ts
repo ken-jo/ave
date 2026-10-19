@@ -59,6 +59,7 @@ import {
   __resetSandboxRequestedAtBootForTest,
   __resetWindowsSandboxSubstrateForTest,
   detectPluginWorkerSandboxCapability,
+  detectSandboxCapability,
   detectShellSandboxCapability,
   getHostShellExecutionPlan,
   getSandboxBootOutcome,
@@ -66,7 +67,7 @@ import {
 } from "../../permissions/sandbox-capability.js";
 
 const ORIGINAL_PLATFORM = process.platform;
-const SRT_WIN_MISSING = { errors: ["srt-win is not installed"], warnings: [] };
+const SRT_WIN_MISSING = { errors: ["no srt-win path configured"], warnings: [] };
 // Boot-path checks passed; the PowerShell start probe (h.startProbe) decides.
 const MXC_OK = { state: "available", windowsBuild: "10.0.26300.9711" };
 const MXC_OLD = { state: "unavailable", reason: "tier-unsupported", windowsBuild: "10.0.22631.4317", detail: "tier none" };
@@ -109,8 +110,14 @@ describe("initSandboxGate — Windows MXC substrate", () => {
 
     expect(h.initialize).toHaveBeenCalledOnce();
     expect(h.initialize.mock.calls[0]?.[0]).toMatchObject({ windows: { externalConfinement: true } });
-    expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only" });
+    expect(getSandboxBootOutcome()).toMatchObject({
+      action: "activate",
+      reason: "activate-windows-mxc-proxy-only",
+      dependencyErrors: SRT_WIN_MISSING.errors,
+      causes: ["windows-sandbox-missing"],
+    });
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel" }));
+    expect(detectSandboxCapability().reason).toContain("agent shell commands run in containers");
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", substrate: "mxc" });
     // Nothing outside the containers is claimed as confined.
     expect(detectShellSandboxCapability().confines).toEqual({ filesystem: false, process: false, network: false });
@@ -228,25 +235,43 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
     expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only" });
     expect(getWindowsSandboxSubstrate()).toMatchObject({ mxc: { state: "checking" }, shells: "approved-host", shellEgressIdentity: "shared" });
+    expect(detectSandboxCapability().reason).toContain("container start check pending");
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
 
     finishProbe({ state: "available", windowsBuild: "10.0.26300.9711" });
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ mxc: { state: "available" }, shells: "mxc" }));
+    expect(detectSandboxCapability().reason).toContain("agent shell commands run in containers");
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", substrate: "mxc", requiresExplicitUserApproval: false });
   });
 
   it("keeps the approved route and records the reason when PowerShell cannot start in a container", async () => {
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
     h.detectMxc.mockResolvedValue(MXC_OK);
-    h.startProbe.mockResolvedValue({ state: "unavailable", reason: "unverified-session", windowsBuild: "10.0.26300.9711", detail: "0xC0000142" });
+    let finishProbe!: (value: unknown) => void;
+    h.startProbe.mockReturnValue(new Promise((resolve) => { finishProbe = resolve; }));
 
     await initSandboxGate(harness.context(true, false));
+    await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
+    expect(detectSandboxCapability().reason).toContain("container start check pending");
+
+    finishProbe({ state: "unavailable", reason: "unverified-session", windowsBuild: "10.0.26300.9711", detail: "0xC0000142" });
 
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({
       mxc: { state: "unavailable", reason: "unverified-session" },
       // The proxy-only boot cannot change mode mid-session: shells ask.
       shells: "approved-host",
     }));
+    expect(getSandboxBootOutcome()).toMatchObject({
+      action: "activate",
+      reason: "activate-windows-mxc-proxy-only",
+      dependencyErrors: SRT_WIN_MISSING.errors,
+      causes: ["windows-sandbox-missing"],
+    });
+    expect(detectSandboxCapability()).toMatchObject({
+      kind: "asrt",
+      reason: expect.stringContaining("containers unavailable; agent shell commands require host approval"),
+      confines: { filesystem: false, process: false, network: false },
+    });
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", requiresExplicitUserApproval: true });
     expect(h.logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("Microsoft Execution Containers cannot confine agent shells"),

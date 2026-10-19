@@ -186,12 +186,18 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
         };
         const first = at(windowsInputs.mxc);
         setWindowsSandboxSubstrate(first, first.shells === "mxc" ? mxcShellCapability() : undefined);
+        if (started === "proxy-only" && !failed) {
+          setActiveSandboxCapability(windowsProxyOnlyCapability(first));
+        }
         if (windowsInputs.mxc.state !== "checking") return;
         const recorded = getWindowsSandboxSubstrate();
         void settleWindowsMxcStartProbe().then((mxc) => {
           if (getWindowsSandboxSubstrate() !== recorded) return;
           const settled = at(mxc);
           setWindowsSandboxSubstrate(settled, settled.shells === "mxc" ? mxcShellCapability() : undefined);
+          if (started === "proxy-only" && !failed) {
+            setActiveSandboxCapability(windowsProxyOnlyCapability(settled));
+          }
           log.info(
             "boot: Windows sandbox settled — MXC %s, shells: %s, shell egress identity: %s",
             mxc.state === "unavailable" ? `unavailable (${mxc.reason})` : mxc.state,
@@ -392,19 +398,17 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             process.platform === "win32"
               ? `ASRT (${asrtBackend}) active — filesystem + network contained, process isolation unavailable`
               : `ASRT (${asrtBackend}) active — fs+process+network contained`;
-          setActiveSandboxCapability(
-            windowsStart === "proxy-only"
-              ? windowsProxyOnlyCapability()
-              : {
-                  kind: "asrt",
-                  confidence: "verified",
-                  platform: process.platform,
-                  reason,
-                  // Machine-checkable confinement for the host-shell substrate. Full
-                  // on mac/linux; partial on Windows — see sandboxConfinementForPlatform.
-                  confines,
-                },
-          );
+          if (windowsStart !== "proxy-only") {
+            setActiveSandboxCapability({
+              kind: "asrt",
+              confidence: "verified",
+              platform: process.platform,
+              reason,
+              // Machine-checkable confinement for the host-shell substrate. Full
+              // on mac/linux; partial on Windows — see sandboxConfinementForPlatform.
+              confines,
+            });
+          }
           if (windowsInputs !== undefined && windowsStart !== undefined) {
             recordWindows(windowsStart, false);
             const substrate = windowsSubstrateFor(windowsInputs, windowsStart);
@@ -433,7 +437,12 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             sandboxTempRoot,
           );
           sandboxActive = true;
-          recordGate("activate", windowsStart === "proxy-only" ? "activate-windows-mxc-proxy-only" : decision.reason);
+          recordGate(
+            "activate",
+            windowsStart === "proxy-only" ? "activate-windows-mxc-proxy-only" : decision.reason,
+            deps.errors,
+            deps.errors.length > 0 ? classifySandboxDependencyErrors(process.platform, deps.errors) : [],
+          );
         } catch (initErr) {
           // Init FAILURE (initializeAsrtSandbox threw despite deps present) is the
           // SAME "cannot activate" condition as deps-missing — re-decide with

@@ -142,13 +142,20 @@ export function mxcShellCapability(): SandboxCapability {
  * dimension is false: the workspace terminal and plugin surfaces, which read
  * this capability, must not believe otherwise.
  */
-export function windowsProxyOnlyCapability(): SandboxCapability {
+export function windowsProxyOnlyCapability(substrate?: SandboxWindowsSubstrateInfo): SandboxCapability {
+  const shellReason = substrate === undefined
+    ? "agent shell confinement depends on the container substrate"
+    : substrate.shells === "mxc"
+      ? "agent shell commands run in containers"
+      : substrate.mxc.state === "checking"
+        ? "container start check pending; agent shell commands require host approval"
+        : "containers unavailable; agent shell commands require host approval";
   return {
     kind: "asrt",
     confidence: "verified",
     platform: "win32",
     reason:
-      "ASRT proxy only — agent shell commands run in Microsoft Execution Containers; " +
+      `Proxy only — ${shellReason}; ` +
       "nothing else is confined (extension confinement needs the one-time Windows sandbox install)",
     confines: { filesystem: false, process: false, network: false },
   };

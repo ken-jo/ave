@@ -90,8 +90,24 @@ describe("Windows substrate helpers", () => {
   });
 
   it("claims full confinement for an MXC shell and none for the proxy-only runtime", () => {
+    const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: false });
     expect(mxcShellCapability().confines).toEqual({ filesystem: true, process: true, network: true });
-    expect(windowsProxyOnlyCapability()).toMatchObject({ kind: "asrt", confines: { filesystem: false, process: false, network: false } });
+    expect(windowsProxyOnlyCapability(substrate)).toMatchObject({
+      kind: "asrt",
+      reason: expect.stringContaining("agent shell commands run in containers"),
+      confines: { filesystem: false, process: false, network: false },
+    });
+  });
+
+  it("reports the approved host route when the proxy-only container probe fails", () => {
+    const input = { shellRequested: true, workerRequested: true, windowsBuild: BUILD, srtWinReady: false } as const;
+    const substrate = windowsSubstrateFor({ ...input, mxc: UNAVAILABLE }, "proxy-only");
+    expect(substrate).toMatchObject({ shells: "approved-host", extensions: "none" });
+    expect(windowsProxyOnlyCapability(substrate)).toMatchObject({
+      kind: "asrt",
+      reason: expect.stringContaining("containers unavailable; agent shell commands require host approval"),
+      confines: { filesystem: false, process: false, network: false },
+    });
   });
 
   it("caps egress grants at the conversation for a shared identity only", () => {
