@@ -567,6 +567,77 @@ interface InputAttribution {
   documentChanged(guestId: number): void;
 }
 
+/**
+ * The screen position of the content area of the window that hosts `guest`,
+ * or null when the guest has no live host window. Production reads the
+ * owning BrowserWindow's content bounds.
+ */
+export type HostContentOrigin = (guest: WebContents) => { x: number; y: number } | null;
+
+/** How long a pointer move may take to be reported back before a tap is refused. */
+const POINTER_ECHO_MAX_MS = 1_000;
+
+/**
+ * TOUCH COORDINATES. For a page shown in a `<webview>`, the protocol takes a
+ * mouse event's point in the page's own viewport but a touch event's point in
+ * the hosting window's content area (measured: a tap at the page point of a
+ * button landed on the page root; the same point offset by the page's place in
+ * the window pressed the button). The guard checks every input against the
+ * page point, so the point is only moved here, at the native boundary.
+ *
+ * Where the page sits is measured, not reported by the renderer: the pointer
+ * move sent before every press comes back as a native input event carrying
+ * both the page point and its screen point, and the host window's content
+ * origin turns the screen point into the window point.
+ */
+function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContentOrigin) {
+  let offset: { x: number; y: number } | null = null;
+  type PointerEcho = { type?: string; x?: number; y?: number; globalX?: number; globalY?: number };
+  return {
+    /**
+     * Before a pointer move is sent: listen for its native echo. `settle`,
+     * after the send, learns the page's offset in its window from it.
+     */
+    watch(method: string, params: Record<string, unknown> | undefined): { settle(): Promise<void> } | null {
+      if (method !== "Input.dispatchMouseEvent" || params?.type !== "mouseMoved") return null;
+      const point = { x: params.x, y: params.y };
+      let onInput: ((event: unknown, input: PointerEcho) => void) | undefined;
+      const echo = new Promise<PointerEcho | null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), POINTER_ECHO_MAX_MS);
+        onInput = (_event, input) => {
+          if (input.type !== "mouseMove" || input.x !== point.x || input.y !== point.y) return;
+          if (typeof input.globalX !== "number" || typeof input.globalY !== "number") return;
+          clearTimeout(timer);
+          resolve(input);
+        };
+        guest.on("input-event", onInput as never);
+      });
+      return {
+        settle: async () => {
+          try {
+            const seen = await echo;
+            const host = hostContentOrigin(guest);
+            if (seen && host) offset = { x: seen.globalX! - seen.x! - host.x, y: seen.globalY! - seen.y! - host.y };
+          } finally {
+            guest.removeListener("input-event", onInput as never);
+          }
+        },
+      };
+    },
+    /** A touch event's page points as window points; a clear refusal when never measured. */
+    placed(method: string, params: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+      if (method !== "Input.dispatchTouchEvent") return params;
+      const points = (params?.touchPoints as Array<{ x: number; y: number }> | undefined) ?? [];
+      if (points.length === 0) return params;
+      if (!offset) {
+        throw new BrowserActionError("no-pointer-position", "could not tell where the page sits in its window, so nothing was pressed; try again");
+      }
+      const by = offset;
+      return { ...params, touchPoints: points.map((point) => ({ ...point, x: point.x + by.x, y: point.y + by.y })) };
+    },
+  };
+}
+
 /** One live registry tab and the signal that cancels its action. */
 interface LiveTab {
   readonly tab: { readonly handle: string; readonly guest: WebContents | null; readonly documentId: number };
@@ -574,7 +645,7 @@ interface LiveTab {
   readonly approval?: { readonly tabId: string; readonly origin: string; readonly documentId: number };
 }
 
-async function targetFor(live: LiveTab, attribution: InputAttribution, input = false): Promise<ActionTarget> {
+async function targetFor(live: LiveTab, attribution: InputAttribution, hostContentOrigin: HostContentOrigin, input = false): Promise<ActionTarget> {
   const guest = live.tab.guest;
   if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
   const approval = live.approval;
@@ -595,11 +666,15 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, input = f
   assertCurrent(false);
   const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
   assertCurrent(false);
+  const touch = createTouchPlacement(guest, hostContentOrigin);
   const cdp: CdpSession = {
     onEvent: (listener) => session.onEvent(listener),
     send: async (method, params) => {
       assertCurrent(method === "Input.dispatchKeyEvent" || method === "Input.insertText");
+      params = touch.placed(method, params);
+      const echo = touch.watch(method, params);
       const result = await session.send(method, params);
+      await echo?.settle();
       // The action guard owns input completion: its last input may navigate.
       if (method.startsWith("Input.")) assertGuest();
       else assertCurrent(false);
@@ -629,6 +704,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, input = f
 export function createBrowserPageActions(
   attribution: InputAttribution,
   originOf: (url: string) => string | null,
+  hostContentOrigin: HostContentOrigin,
 ): BrowserPageActions<WebContents> {
   return {
     prepare: async (live) => {
@@ -639,14 +715,15 @@ export function createBrowserPageActions(
       if (live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was replaced");
     },
     snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
-      snapshot(await targetFor(live, attribution), options),
-    screenshot: async (live: LiveTab) => screenshot(await targetFor(live, attribution)),
+      snapshot(await targetFor(live, attribution, hostContentOrigin), options),
+    screenshot: async (live: LiveTab) => screenshot(await targetFor(live, attribution, hostContentOrigin)),
     waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
-      waitFor(await targetFor(live, attribution), options),
-    click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution, true), ref),
+      waitFor(await targetFor(live, attribution, hostContentOrigin), options),
+    click: async (live: LiveTab, ref: string) => click(await targetFor(live, attribution, hostContentOrigin, true), ref),
     type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>
-      type(await targetFor(live, attribution, true), ref, text, options),
-    pressKey: async (live: LiveTab, key: string, ref?: string) => pressKey(await targetFor(live, attribution, true), key, ref),
+      type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options),
+    pressKey: async (live: LiveTab, key: string, ref?: string) =>
+      pressKey(await targetFor(live, attribution, hostContentOrigin, true), key, ref),
     navigate: async (live: LiveTab, url: string, approvedOrigin: string) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");

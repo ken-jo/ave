@@ -98,6 +98,18 @@ const AGENT_INPUT_EVENT_TYPES: ReadonlySet<string> = new Set([
 const DEBUGGER_INPUT_MODIFIER = 1 << 23;
 const DERIVED_TAP_MODIFIERS = 1 << 25;
 
+/**
+ * Whether a tap gesture's modifiers fit one derived from an injected touch.
+ * The derived gestures do not carry the debugger bit; measured in the app,
+ * they arrive with either the derived-tap bit or no modifiers at all. Any
+ * other bit (a held key) is not part of the injected sequence. The sequence
+ * itself — a marked touch first, each gesture once, in order — is what
+ * attributes them; a user's own tap starts with an unmarked touch.
+ */
+function isDerivedTapModifiers(modifiers: number): boolean {
+  return modifiers === 0 || modifiers === DERIVED_TAP_MODIFIERS;
+}
+
 /** Whether an input event type is the user acting on the page (not hovering). */
 export function isUserActionInputType(type: string): boolean {
   return AGENT_INPUT_EVENT_TYPES.has(type);
@@ -236,7 +248,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const touch = this.injectedTouches.get(guestId);
     // Match only the native tap sequence derived from that marked contact.
     // An unmarked contact, key, mouse or other gesture still cancels below.
-    if (touch && modifiers === DERIVED_TAP_MODIFIERS) {
+    if (touch && isDerivedTapModifiers(modifiers)) {
       if (input?.type === "gestureTapDown" && touch.pressed && !touch.down) {
         touch.down = true;
         return;

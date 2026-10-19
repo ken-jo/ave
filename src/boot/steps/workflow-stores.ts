@@ -181,7 +181,13 @@ export async function setupWorkflowStores(
             // Page actions (CDP) load on first use, outside the initial bundle.
             loadActions: async () => {
               const { createBrowserPageActions } = await import("../../main/browser/browser-actions.js");
-              return createBrowserPageActions(browserTabRegistry, browserOrigin);
+              return createBrowserPageActions(browserTabRegistry, browserOrigin, (guest) => {
+                const host = guest.hostWebContents;
+                const window = host && !host.isDestroyed() ? mainWindowForContents(host) : null;
+                if (!window || window.isDestroyed()) return null;
+                const bounds = window.getContentBounds();
+                return { x: bounds.x, y: bounds.y };
+              });
             },
           },
         };

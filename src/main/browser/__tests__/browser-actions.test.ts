@@ -749,27 +749,45 @@ describe("focused field and document replacement", () => {
   });
 });
 
-function adapterFixture() {
+/** Where the fixture's window content sits on screen, and where its page sits in that window. */
+const HOST_CONTENT = { x: 1000, y: 500 };
+const PAGE_IN_WINDOW = { x: 40, y: 60 };
+
+function adapterFixture(options: { hostKnown?: boolean } = {}) {
   const cdp = new FakeCdp();
   cdp.nodes = page([ax("f", "textbox", "Replacement", { backendDOMNodeId: 5 })]);
   cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { value: true } }] };
   let attached = false;
+  const guestEvents = new EventEmitter();
   const debuggerEvents = Object.assign(new EventEmitter(), {
     attach: () => { attached = true; },
     isAttached: () => attached,
-    sendCommand: (method: string, params?: Record<string, unknown>) => cdp.send(method, params),
+    sendCommand: async (method: string, params?: Record<string, unknown>) => {
+      const result = await cdp.send(method, params);
+      // The native echo of a pointer move: the page point and its screen point.
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved") {
+        const x = params.x as number;
+        const y = params.y as number;
+        guestEvents.emit("input-event", {}, {
+          type: "mouseMove", x, y,
+          globalX: HOST_CONTENT.x + PAGE_IN_WINDOW.x + x,
+          globalY: HOST_CONTENT.y + PAGE_IN_WINDOW.y + y,
+        });
+      }
+      return result;
+    },
   });
   const mainFrame = { framesInSubtree: [] };
   let url = "https://a.example/form";
-  const guest = {
+  const guest = Object.assign(guestEvents, {
     id: 101, isDestroyed: () => false, isLoading: () => false, getURL: () => url, getTitle: () => "Page",
     mainFrame, focusedFrame: mainFrame, debugger: debuggerEvents,
-  };
+  });
   const registry = new BrowserTabRegistry();
   registry.guestAttached(guest, 1);
   registry.bindTab(1, { tabId: "user", webContentsId: guest.id });
   const tab = registry.liveTab("tab-1")!;
-  const actions = createBrowserPageActions(registry, browserOrigin);
+  const actions = createBrowserPageActions(registry, browserOrigin, () => (options.hostKnown === false ? null : HOST_CONTENT));
   const tools = createBrowserTools({
     tabs: registry,
     windowIdForHostedSession: () => 1,
@@ -835,6 +853,32 @@ it.each(["https://a.example/next", "https://b.example/next"])("reports navigatio
   expect(JSON.parse(result.output.split("\n")[2]!)).toMatchObject({ url: destination, origin: browserOrigin(destination) });
   expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent", "Input.dispatchTouchEvent", "Input.dispatchTouchEvent"]);
   expect(tab.opener).toBe(destination.includes("b.example") ? "user" : "agent");
+});
+
+describe("tap placement", () => {
+  async function clickLink(options: { hostKnown?: boolean } = {}) {
+    const fixture = adapterFixture(options);
+    const { cdp, tab, actions, approve } = fixture;
+    cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+    const live = await approve("browser_click");
+    const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)![1]!;
+    return { ...fixture, run: () => actions.click(live, ref), tab };
+  }
+
+  it("presses the page point at the page's place in its window", async () => {
+    const { cdp, run } = await clickLink();
+    await run();
+    const move = cdp.calls.find((call) => call.method === "Input.dispatchMouseEvent")!.params!;
+    const start = cdp.calls.find((call) => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchStart")!.params!;
+    // The pointer move stays a page point; the tap is the same point in window space.
+    expect(start.touchPoints).toEqual([{ x: (move.x as number) + PAGE_IN_WINDOW.x, y: (move.y as number) + PAGE_IN_WINDOW.y, id: 1 }]);
+  });
+
+  it("refuses to press when the page's place in its window is unknown", async () => {
+    const { cdp, run } = await clickLink({ hostKnown: false });
+    await expect(run()).rejects.toMatchObject({ code: "no-pointer-position" });
+    expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent"]);
+  });
 });
 
 it.each(["Enter", "Space"])("finishes after navigation on %s without releasing into the next document", async (key) => {

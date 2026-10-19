@@ -315,7 +315,42 @@ describe("native injected touch attribution", () => {
     registry.userInput(11, { type: "gestureTap", _modifiers: 1 << 25 });
     expect(signal.aborted).toBe(true);
   });
-  it.each(["mouseDown", "keyDown", "touchStart", "gestureTapDown", "gestureScrollBegin", "pointerDown"])("cancels unmarked %s during a marked touch sequence", (type) => {
+  // Measured in the app (Electron on macOS, window in the background): the
+  // gestures derived from an injected touch arrive with no modifiers at all.
+  // Treating them as the user's own taps cancelled every agent click and type.
+  it("matches the derived tap sequence when it carries no modifiers", () => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    registry.userInput(11, { type: "touchStart", _modifiers: 1 << 23 });
+    registry.userInput(11, { type: "gestureTapDown", _modifiers: 0 });
+    registry.userInput(11, { type: "touchMove", _modifiers: 1 << 23 });
+    registry.userInput(11, { type: "touchEnd", _modifiers: 1 << 23 });
+    registry.userInput(11, { type: "gestureShowPress", _modifiers: 0 });
+    registry.userInput(11, { type: "gestureTap", _modifiers: 0 });
+    expect(signal.aborted).toBe(false);
+    registry.userInput(11, { type: "gestureTap", _modifiers: 0 });
+    expect(signal.aborted).toBe(true);
+  });
+  it("cancels a tap gesture with no marked touch before it", () => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    registry.userInput(11, { type: "gestureTapDown", _modifiers: 0 });
+    expect(signal.aborted).toBe(true);
+  });
+  it("cancels a tap gesture carrying a keyboard modifier during a marked touch sequence", () => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    registry.userInput(11, { type: "touchStart", _modifiers: 1 << 23 });
+    registry.userInput(11, { type: "gestureTapDown", _modifiers: 1 << 1 });
+    expect(signal.aborted).toBe(true);
+  });
+  it.each(["mouseDown", "keyDown", "touchStart", "gestureScrollBegin", "gestureTapCancel", "pointerDown"])("cancels unmarked %s during a marked touch sequence", (type) => {
     const { registry } = setup();
     registry.guestAttached(new FakeGuest(11), 1);
     registry.bindTab(1, { tabId: "user", webContentsId: 11 });
