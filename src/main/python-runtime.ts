@@ -615,7 +615,7 @@ export class PythonRuntimeBootstrapper {
       }
 
       assertManagedChildProcessAdmissionOpen("python-runtime:uv");
-      const proc = spawn(uvBin, args, { windowsHide: true, env, stdio: ["ignore", "pipe", "pipe"] });
+      const proc = spawn(uvBin, args, { env, stdio: ["ignore", "pipe", "pipe"] });
       trackManagedChildProcess(proc, { label: "python-runtime:uv" });
 
       let stdout = "";
@@ -694,7 +694,7 @@ export class PythonRuntimeBootstrapper {
         if (value !== undefined) safeEnv[key] = value;
       }
       assertManagedChildProcessAdmissionOpen("python-runtime:python");
-      const proc = spawn(pythonBin, args, { windowsHide: true, env: safeEnv, stdio: ["ignore", "pipe", "pipe"] });
+      const proc = spawn(pythonBin, args, { env: safeEnv, stdio: ["ignore", "pipe", "pipe"] });
       trackManagedChildProcess(proc, { label: "python-runtime:python" });
 
       let stdout = "";

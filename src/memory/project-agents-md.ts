@@ -314,7 +314,6 @@ function askGitIgnores(repoRoot: string, path: string): boolean {
   for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
   try {
     execFileSync("git", ["-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)], {
-      windowsHide: true,
       stdio: "ignore",
       timeout: 2_000,
       env,
