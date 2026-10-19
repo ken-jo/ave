@@ -220,19 +220,21 @@ export function withHostLock(options, callback) {
     }
     if (held !== null) break;
     const waitedMs = now() - startedAt;
-    if (waitedMs >= timeoutMs) {
-      throw new Error(
-        `[PRE_PUSH_HOST_LOCK_TIMEOUT] waited ${Math.round(waitedMs / 1000)}s for the ${label} host lock ` +
-          `(held by ${holders.join(", ")}: ${paths.join(", ")}); no checks ran and the push is refused. ` +
-          "Push again when that run finishes, or raise AVE_PREPUSH_LOCK_TIMEOUT_S.",
-      );
-    }
+    // Announce the holder before the timeout check, so the notice is there even
+    // when the first acquisition round alone outlasts the timeout.
     if (lastNoticeAt === null || now() - lastNoticeAt >= WAIT_NOTICE_INTERVAL_MS) {
       log(
         `[checks] waiting for the ${label} host lock held by ${holders.join(", ")} ` +
           `(${Math.round(waitedMs / 1000)}s of ${Math.round(timeoutMs / 1000)}s; AVE_PREPUSH_LOCK_TIMEOUT_S sets the limit)`,
       );
       lastNoticeAt = now();
+    }
+    if (waitedMs >= timeoutMs) {
+      throw new Error(
+        `[PRE_PUSH_HOST_LOCK_TIMEOUT] waited ${Math.round(waitedMs / 1000)}s for the ${label} host lock ` +
+          `(held by ${holders.join(", ")}: ${paths.join(", ")}); no checks ran and the push is refused. ` +
+          "Push again when that run finishes, or raise AVE_PREPUSH_LOCK_TIMEOUT_S.",
+      );
     }
     sleep(pollMs);
   }
