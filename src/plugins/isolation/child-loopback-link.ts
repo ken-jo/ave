@@ -2,10 +2,12 @@
  * The Windows sandboxed plugin child's protocol channel: one authenticated
  * loopback TCP connection instead of the child's stdin and stdout.
  *
- * WHY NOT STDIO. ASRT 0.0.80's `srt-win exec` starts the target as the
- * `srt-sandbox` account through a two-hop runner that relays the target's
- * stdout but no stdin: `echo hi | srt-win exec -- cmd /c more` prints nothing
- * (measured on a provisioned Windows 11 host, 2026-10-10). The plugin protocol
+ * WHY NOT STDIO. `srt-win exec` starts the target as the `srt-sandbox` account
+ * through a two-hop runner that relays the target's stdout but no stdin:
+ * `echo hi | srt-win exec -- cmd /c more` prints nothing (measured on ASRT
+ * 0.0.76 on a provisioned Windows 11 host, 2026-10-10; through ASRT 0.0.80 the
+ * srt-win source changes only in merging a batch's duplicate targets, #656, so
+ * the relay is unchanged). The plugin protocol
  * is framed in both directions, so on that path the host's half has nowhere to
  * go. macOS and Linux keep stdio; nothing here runs there.
  *
