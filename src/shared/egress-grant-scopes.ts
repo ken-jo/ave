@@ -8,7 +8,9 @@
  *   - `workspace`: this working directory, until revoked in Settings.
  *   - `always`: every workspace, until revoked in Settings.
  */
-export type EgressGrantScope = "once" | "conversation" | "workspace" | "always";
+import type { EgressGrantScope } from "./sandbox-capability-info.js";
+
+export type { EgressGrantScope };
 
 /** Every scope, narrowest first: the order the ask offers them in. */
 export const EGRESS_GRANT_SCOPES: readonly EgressGrantScope[] = ["once", "conversation", "workspace", "always"];

@@ -18,7 +18,7 @@ import {
   type EgressApprovalAnswer,
 } from "../egress-ask.js";
 import { EgressGrantStore } from "../egress-grants.js";
-import type { EgressIdentityStrength } from "../egress-identity.js";
+import type { EgressIdentityStrength } from "../../shared/sandbox-capability-info.js";
 import type { EgressInvocationOwner, ShellEgressOwner } from "../egress-invocations.js";
 
 const SHELL_TOKEN = "5".repeat(32);
@@ -114,6 +114,23 @@ describe("egress ask callback — attribution", () => {
     const ask = callback();
     expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username" }))
       .toBe(true);
+  });
+
+  it("judges the identity by the kind of process (Windows: MXC shells, srt-win extensions)", async () => {
+    const ask = createEgressAskCallback({
+      identityStrength: (kind) => (kind === "shell" ? "kernel-channel" : "shared"),
+      ownerOf: (token) => owners.get(token),
+      abortSignalOf: () => undefined,
+      workerAllowedDomains: () => ["api.fixture.example"],
+      grants,
+      shellAskEnabled: () => true,
+      requester: () => undefined,
+      audit: () => {},
+    });
+    expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username" }))
+      .toBe(true);
+    expect(await ask({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "username" }))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
   });
 
   it("denies a malformed destination", async () => {

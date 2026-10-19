@@ -15,6 +15,7 @@ import {
   isValidEgressPort,
 } from "../egress-grants.js";
 import { egressIdentityStrength } from "../egress-identity.js";
+import { maxEgressGrantScope } from "../../shared/sandbox-capability-info.js";
 import { setWorkerEgressAllowlists, workerEgressAllowedDomains } from "../egress-runtime.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
@@ -144,16 +145,20 @@ describe("identity strength and the scopes it allows", () => {
     const original = process.platform;
     try {
       setProcessPlatform("win32");
-      expect(egressIdentityStrength()).toBe("shared");
+      expect(egressIdentityStrength("shell")).toBe("shared");
+      expect(egressIdentityStrength("extension")).toBe("shared");
       for (const platform of ["darwin", "linux"] as const) {
         setProcessPlatform(platform);
-        expect(egressIdentityStrength()).toBe("kernel-channel");
+        expect(egressIdentityStrength("shell")).toBe("kernel-channel");
+        expect(egressIdentityStrength("extension")).toBe("kernel-channel");
       }
     } finally {
       setProcessPlatform(original);
     }
     expect(egressGrantScopesFor("kernel-channel")).toEqual(ALL);
     expect(egressGrantScopesFor("shared")).toEqual(["once", "conversation"]);
+    expect(maxEgressGrantScope("kernel-channel")).toBe("always");
+    expect(maxEgressGrantScope("shared")).toBe("conversation");
   });
 });
 

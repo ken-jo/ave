@@ -29,7 +29,7 @@ import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { aveHome } from "../shared/ave-home.js";
-import type { EgressIdentityStrength } from "./egress-identity.js";
+import { maxEgressGrantScope, type EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
 import {
   EGRESS_GRANT_SCOPES,
   isEgressGrantScope,
@@ -44,7 +44,7 @@ import {
  * conversation that made it.
  */
 export function egressGrantScopesFor(strength: EgressIdentityStrength): readonly EgressGrantScope[] {
-  return strength === "kernel-channel" ? EGRESS_GRANT_SCOPES : ["once", "conversation"];
+  return EGRESS_GRANT_SCOPES.slice(0, EGRESS_GRANT_SCOPES.indexOf(maxEgressGrantScope(strength)) + 1);
 }
 
 /** One destination: a canonical host and a port. */

@@ -30,7 +30,7 @@ import { matchesDomainPatternWithPort } from "@anthropic-ai/sandbox-runtime/dist
 import type { SandboxEgressDecisionAuditEntry, EgressDecisionBasis } from "../audit/sandbox-audit.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
 import { errorMessage } from "../shared/error-message.js";
-import type { EgressIdentityStrength } from "./egress-identity.js";
+import type { EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
 import type { EgressInvocationOwner, ShellEgressOwner } from "./egress-invocations.js";
 import {
   canonicalEgressHost,
@@ -62,8 +62,8 @@ export type EgressApprovalAnswer =
 export type EgressApprovalRequester = (request: EgressApprovalRequest) => Promise<EgressApprovalAnswer>;
 
 export interface EgressAskDeps {
-  /** The identity strength on this host (`egressIdentityStrength`). */
-  readonly identityStrength: () => EgressIdentityStrength;
+  /** The identity strength of this kind of process on this host (`egressIdentityStrength`). */
+  readonly identityStrength: (kind: "shell" | "extension") => EgressIdentityStrength;
   /** The live owner of a token (`egressInvocationOwner`). */
   readonly ownerOf: (token: string) => EgressInvocationOwner | undefined;
   /** The abort signal the token was opened with (`egressInvocationAbortSignal`). */
@@ -132,7 +132,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     const asking = (async (): Promise<Decision> => {
       const requester = deps.requester();
       if (requester === undefined) return deny("prompt", EGRESS_DENY_REASONS.noSurface);
-      const scopes = egressGrantScopesFor(deps.identityStrength()).filter((scope) =>
+      const scopes = egressGrantScopesFor(deps.identityStrength("shell")).filter((scope) =>
         scope === "conversation" ? owner.context.sessionId !== undefined
         : scope === "workspace" ? owner.context.workspaceRoot !== undefined
         : true);
@@ -164,14 +164,15 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
   ): Promise<{ owner: EgressInvocationOwner | undefined; decision: Decision }> => {
     const token = context?.attributionKey;
     if (token === undefined) return { owner: undefined, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
-    // On a host with per-invocation listeners only the listener vouches for
-    // who connected; a key that came from the proxy username alone may have
-    // been read off another process.
-    if (deps.identityStrength() === "kernel-channel" && context?.identity !== "listener") {
-      return { owner: undefined, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
-    }
     const owner = deps.ownerOf(token);
     if (owner === undefined) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
+    // Where this kind of process has its own listener only the listener
+    // vouches for who connected; a key that came from the proxy username
+    // alone may have been read off another process, so it names nobody.
+    if (deps.identityStrength(owner.kind === "worker" ? "extension" : "shell") === "kernel-channel"
+      && context?.identity !== "listener") {
+      return { owner: undefined, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
+    }
     const canonicalHost = canonicalEgressHost(host);
     if (canonicalHost === undefined || !isValidEgressPort(port)) {
       return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };

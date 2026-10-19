@@ -22,7 +22,7 @@ import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
 import { errorMessage } from "../shared/error-message.js";
 import { onEgressInvocationReleased } from "./egress-invocations.js";
-import { egressIdentityStrength } from "./egress-identity.js";
+import { asrtInvocationListenersSupported } from "./egress-identity.js";
 import {
   isPluginWorkerConfinementRequestedAtBoot,
   isShellSandboxRequestedAtBoot,
@@ -504,7 +504,7 @@ async function openEgressListener(
   caller: string,
   commandId: string,
 ): Promise<void> {
-  if (egressIdentityStrength() !== "kernel-channel") return;
+  if (!asrtInvocationListenersSupported()) return;
   try {
     await SandboxManager.openInvocationListener(commandId);
   } catch (error) {

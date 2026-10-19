@@ -1,24 +1,31 @@
 /**
- * The single capability flag the egress ask reads to decide which grant
- * scopes an attribution can carry. The Windows MXC writer flips win32 to
- * `"kernel-channel"` here once each invocation gets its own proxy endpoint.
+ * Which identity strength a confined process's egress has on this host, per
+ * kind of process (`EgressIdentityStrength`, `maxEgressGrantScope` in
+ * `shared/sandbox-capability-info.ts`, shared with the Windows MXC path).
+ *
+ *   - macOS, Linux: `"kernel-channel"` for every kind. Each wrap gets its own
+ *     ASRT proxy listener (`SandboxManager.openInvocationListener`, bun patch
+ *     part 3) that its sandbox alone can reach: Seatbelt pins the port, bwrap
+ *     binds the socket path. The ask callback then hears
+ *     `identity: "listener"` and refuses anything else.
+ *   - Windows: `"shared"` here (srt-win: one account, one proxy, the identity
+ *     is the proxy username), which caps grants at "This conversation". The
+ *     MXC path (proxy-egress PR 9) gives shells their own endpoint and sets
+ *     `shellEgressIdentity` per boot; whichever of the two PRs merges second
+ *     sources the win32 shell answer from that substrate, and must make an
+ *     MXC shell's connections reach the callback as `identity: "listener"`
+ *     (or relax the listener check for that substrate) — a `"kernel-channel"`
+ *     shell whose connections arrive as `"username"` is refused.
  */
+import type { EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
 
-/**
- * How strongly a proxy connection's attribution identifies the invocation
- * that opened it, on this host:
- *   - `"kernel-channel"` (macOS, Linux): each invocation has its own proxy
- *     listener that its sandbox profile alone can reach (Seatbelt pins the
- *     port; bwrap binds the socket path), so the identity cannot be borrowed
- *     by another invocation. Every grant scope is offered.
- *   - `"shared"` (Windows, srt-win): every sandboxed process shares one
- *     account and one port range, so the identity is the proxy username,
- *     which another invocation can present. Grants are capped at "This
- *     conversation" until the MXC path, which gives each invocation its own
- *     proxy endpoint, sets `"kernel-channel"` here.
- */
-export type EgressIdentityStrength = "kernel-channel" | "shared";
+/** Whether ASRT opens a per-invocation listener on this platform. */
+export function asrtInvocationListenersSupported(): boolean {
+  return process.platform === "darwin" || process.platform === "linux";
+}
 
-export function egressIdentityStrength(): EgressIdentityStrength {
-  return process.platform === "darwin" || process.platform === "linux" ? "kernel-channel" : "shared";
+/** The identity strength of one kind of confined process on this host. */
+export function egressIdentityStrength(kind: "shell" | "extension"): EgressIdentityStrength {
+  void kind;
+  return asrtInvocationListenersSupported() ? "kernel-channel" : "shared";
 }
