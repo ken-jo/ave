@@ -111,7 +111,11 @@ afterEach(async () => {
 });
 
 describe("executor broker shell route", () => {
-  it("authorizes and audits the guest request without host preparation, path inspection, or spawn", async () => {
+  it.each([
+    { cwd: "/git", expectedCwd: "/git" },
+    { cwd: "nested", expectedCwd: "/app/nested" },
+    { cwd: undefined, expectedCwd: "/app" },
+  ])("authorizes and audits guest cwd $cwd without host preparation, path inspection, or spawn", async ({ cwd, expectedCwd }) => {
     const registry = new ToolRegistry();
     registry.register(new BashTool());
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
@@ -151,7 +155,7 @@ describe("executor broker shell route", () => {
         name: "bash",
         input: {
           command: "printf broker-only > /logs/result",
-          cwd: "/git",
+          ...(cwd === undefined ? {} : { cwd }),
           timeoutSeconds: 30,
         },
       }],
@@ -176,7 +180,7 @@ describe("executor broker shell route", () => {
       "shell.run",
       {
         command: "printf broker-only > /logs/result",
-        cwd: "/git",
+        cwd: expectedCwd,
         timeoutMs: 30_000,
       },
       expect.objectContaining({ operation: "shell.run", toolName: "bash" }),

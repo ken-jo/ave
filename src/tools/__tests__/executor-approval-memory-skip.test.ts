@@ -108,6 +108,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       [{ id: "tu-skip", name: "write_probe", input: { path: join(dir, "file.txt") } }],
       {
         sessionId: "sess-skip",
+        executionCwd: dir,
         permissionContext: userPermissionContext({ additionalDirectories: [dir] }),
       },
     );
@@ -322,6 +323,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       [{ id: "tu-foreground-auto-skip", name: "write_probe", input: { path: join(dir, "file.txt") } }],
       {
         sessionId: "sess-foreground-auto-skip",
+        executionCwd: dir,
         permissionContext: userPermissionContext({ additionalDirectories: [dir] }),
       },
     );
@@ -364,6 +366,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       [{ id: "tu-escalate", name: "write_probe", input: { path: join(dir, "nested", "deep", "file.txt") } }],
       {
         sessionId: "sess-escalate",
+        executionCwd: dir,
         permissionContext: userPermissionContext({ additionalDirectories: [dir] }),
       },
     );
@@ -737,6 +740,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       [{ id: "tu-disclose", name: "write_probe", input: { path: join(dir, "file.txt") } }],
       {
         sessionId: "sess-disclose",
+        executionCwd: dir,
         permissionContext: userPermissionContext({ additionalDirectories: [dir] }),
       },
     );
@@ -783,6 +787,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       [{ id: "tu-disclose-p", name: "write_probe", input: { path: join(dir, "file.txt") } }],
       {
         sessionId: "sess-disclose-p",
+        executionCwd: dir,
         permissionContext: userPermissionContext({ additionalDirectories: [dir] }),
       },
     );
