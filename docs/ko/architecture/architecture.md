@@ -1948,6 +1948,26 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
 
 - **백엔드**: macOS 는 Seatbelt 프로파일, Linux 는 bwrap+seccomp — 둘 다
   capability SOT 에서 단일 `kind: "asrt"` 로 보고된다.
+- **Linux 중첩 namespace 금지 (ASRT 0.0.80)**: 샌드박스 안의 명령은 자기
+  user namespace 도, mount namespace 도 만들 수 없다. seccomp helper 가 그
+  호출을 막는다. helper 가 체인에 없으면 bubblewrap 0.8 이상에
+  `--disable-userns` 를 넘긴다. worker control socket 을 하나라도 등록하면
+  `allowAllUnixSockets` 가 켜지므로 helper 는 그때마다 체인에서 빠진다. 그래서
+  그런 방식으로 스스로를 격리하는 것은 Ave 샌드박스 안에서 실패한다:
+  Chromium 이나 Electron 의 namespace 샌드박스, rootless podman 이나 buildah,
+  중첩 bubblewrap, `unshare -U`. plugin worker 는 영향받지 않는다.
+  `ELECTRON_RUN_AS_NODE` 로 Node 로 실행되어 Chromium 샌드박스를 띄우지 않기
+  때문이다. Ave 는 `allowNestedUserNamespaces` 를 켜지 않는다. wrap
+  hardener(`linux-sandbox-wrap.ts`)는 arity 표에 있는 bubblewrap 옵션만
+  받는다. 설치된 wrapper 에 표에 없는 옵션이 생기면
+  `linux-sandbox-wrap.test.ts` 가 실패한다.
+- **Windows 목록 순위 (ASRT 0.0.80)**: ASRT 는 `srt-win` 에 넘기기 전에
+  파일시스템 목록의 순위를 JavaScript 에서 매긴다. `denyWrite` 경로 또는 그
+  아래의 write grant 는 read grant 로 넘어가고, `credentials.files` 항목 또는
+  그 아래의 grant 는 빠진다. 그래서 Ave 의 write floor 경로 아래에 있는
+  workspace 나 plugin root 는 macOS·Linux 처럼 Windows 에서도 읽기 전용이다.
+  `windows-sandbox-logic.test.ts` 가 이 순위를 고정한다. NSIS drift guard 는
+  `srt-win` 의 Rust 소스만 본다.
 - **Spawn 모델**: ASRT 는 워크로드를 직접 spawn 하지 않는다. `wrapToolCommand`
   가 OS-confined wrapper 의 `{ argv, env }` 를 반환하고 host(`tools/shell-tools.ts`)
   가 `shell: false` 로 직접 spawn 한다.
