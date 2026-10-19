@@ -82,4 +82,4 @@ function sameDecodedImage(a, b) {
   return left !== null && right !== null && left.equals(right);
 }
 
-module.exports = { normalizedPng, normalizedIco, normalizedImage, sameDecodedImage };
+module.exports = { sameDecodedImage };
