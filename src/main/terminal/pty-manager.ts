@@ -700,6 +700,7 @@ export function writeTerminal(tabId: string, data: string): void {
 }
 
 type TerminalNotTypedReason =
+  | "edit-line-mismatch"
   | "no-terminal"
   | Exclude<TerminalPromptState, "ready">
   | "no-fresh-prompt"
@@ -733,7 +734,7 @@ export async function verifyTerminalShell(tabId: string, ownerWindowId: number, 
   if (!session || session.exited || session.closing || session.ownerWindowId !== ownerWindowId) {
     return { ok: false, reason: "no-terminal", message: `no running terminal with tabId ${JSON.stringify(tabId)} in this window` };
   }
-  return foregroundVerdict(await readTerminalForeground(session.pty.pid), session.shellName, reportedCwd);
+  return foregroundVerdict(await readTerminalForeground(session.pty.pid), session.pty.pid, session.shellName, reportedCwd);
 }
 
 /**
@@ -741,12 +742,20 @@ export async function verifyTerminalShell(tabId: string, ownerWindowId: number, 
  * {@link verifyTerminalShell}: it must be `shellName`, in `reportedCwd`
  * (compared after resolving symlinks).
  */
-export function foregroundVerdict(reading: TerminalForegroundReading, shellName: string, reportedCwd: string): VerifyTerminalShellResult {
+export function foregroundVerdict(
+  reading: TerminalForegroundReading,
+  shellPid: number,
+  shellName: string,
+  reportedCwd: string,
+): VerifyTerminalShellResult {
   if (!reading.ok) {
     return { ok: false, reason: "cwd-unverified", message: `the terminal's shell could not be checked: ${reading.reason}` };
   }
   const { foreground } = reading;
-  if (foreground.command !== shellName) {
+  // The shell is the process spawned on the pty (its session leader; every
+  // wrapper before it execs in place). A nested shell or any other process
+  // holding the terminal is not it, whatever its name.
+  if (foreground.pid !== shellPid || foreground.command !== shellName) {
     return {
       ok: false,
       reason: "foreground-not-shell",
@@ -808,8 +817,11 @@ function waitForFreshPrompt(blocks: TerminalBlockTracker, since: number, timeout
  *  3. Wait for that fresh prompt, and check it is still idle, untouched and
  *     in the same directory.
  *  4. Write the line as a bracketed paste (`ESC[200~ … ESC[201~`), which the
- *     line editor inserts as text and never reads as keys, then Enter. The
- *     shell reported bracketed paste on at this prompt (promptState).
+ *     line editor inserts as text and never reads as keys. The shell reported
+ *     bracketed paste on, with the builtin paste widgets, at this prompt
+ *     (promptState).
+ *  5. Press Enter only once the edit line the shell echoes is exactly the
+ *     approved line and the user pressed no key; otherwise clear it (Ctrl-C).
  *
  * Returns the id the command's block will have at least, so the caller can
  * wait for it, and compare the command the shell ran with the approved one.
@@ -853,7 +865,8 @@ export interface PromptTypingTarget {
 
 /**
  * The typing protocol of {@link typeTerminalCommand}, over any terminal:
- * check, reset (Ctrl-C), wait for the fresh prompt, paste, Enter.
+ * check, reset (Ctrl-C), wait for the fresh prompt, paste, confirm the edit
+ * line, Enter.
  */
 export async function typeLineAtPrompt(
   target: PromptTypingTarget,
@@ -894,10 +907,39 @@ export async function typeLineAtPrompt(
   // 4. Synchronously from the last check: nothing can run in between.
   const beforeWrite = check();
   if (beforeWrite) return beforeWrite;
+  const prompt = blocks.promptEndCount();
+  target.write(`\u001b[200~${line}\u001b[201~`);
+  // 5. Enter only once the line editor shows exactly the approved line, as
+  // pasted: a widget that rewrites pasted text (bracketed-paste-magic,
+  // url-quote-magic) or a key the user pressed in between shows here.
+  const shown = await waitForEditLine(blocks, prompt, line, EDIT_LINE_TIMEOUT_MS);
+  if (!shown || !target.isLive()) {
+    if (target.isLive()) target.write("\u0003");
+    return notTyped("edit-line-mismatch", "the terminal's line editor did not show exactly the approved line after it was pasted, so Enter was not pressed and the line was cleared");
+  }
   const firstBlockId = blocks.nextBlockId();
-  target.write(`\u001b[200~${line}\u001b[201~\r`);
+  target.write("\r");
   onTyped();
   return { ok: true, firstBlockId };
+}
+
+/** How long typing waits for the pasted line to show in the line editor. */
+const EDIT_LINE_TIMEOUT_MS = 2_000;
+
+/**
+ * Wait until the prompt typed at (`prompt`, its end count) shows exactly
+ * `line` in its edit line, with no key from the user since it was drawn.
+ * False on timeout, or when that prompt goes away.
+ */
+async function waitForEditLine(blocks: TerminalBlockTracker, prompt: number, line: string, timeoutMs: number): Promise<boolean> {
+  // Echoed text does not notify subscribers (only markers do), so poll.
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (blocks.promptEndCount() !== prompt || blocks.hasExited() || blocks.typedSincePromptEnd()) return false;
+    if (blocks.editLineText() === line) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 const TERMINAL_NOT_READY_MESSAGES: Record<Exclude<TerminalPromptState, "ready">, string> = {

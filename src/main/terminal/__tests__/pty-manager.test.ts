@@ -841,14 +841,21 @@ describe("pty-manager command blocks", () => {
 
 describe("pty-manager typing an approved agent command", () => {
   const TAB = "terminal:0000000a-1";
-  const PASTE = (line: string): string => `\u001b[200~${line}\u001b[201~\r`;
+  /** The line in bracketed-paste markers; Enter follows separately once it shows. */
+  const PASTE = (line: string): string => `\u001b[200~${line}\u001b[201~`;
 
   beforeEach(() => {
     foregroundReading = { ok: true, foreground: { pid: 9999, command: "zsh", cwd: "/w" } };
     readForegroundMock.mockClear();
   });
 
-  async function zshTerminal(ownerWindowId: number): Promise<{ pty: FakePty; mark: (fields: string) => string; prompt: (fields?: string) => string }> {
+  async function zshTerminal(ownerWindowId: number): Promise<{
+    pty: FakePty;
+    mark: (fields: string) => string;
+    prompt: (fields?: string) => string;
+    /** How the fake shell shows a pasted line in its edit line. */
+    shell: { shows: (line: string) => string };
+  }> {
     vi.stubEnv("SHELL", "/bin/zsh");
     try {
       expect((await spawnTerminal({ tabId: TAB, ownerWindowId })).ok).toBe(true);
@@ -858,16 +865,25 @@ describe("pty-manager typing an approved agent command", () => {
     const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
     const nonce = spawnedNonce(opts.env);
     const mark = (fields: string): string => `\u001b]133;${fields};${nonce}\u0007`;
-    const prompt = (fields = ";Keys=emacs;Paste=1"): string => `${mark("D;0")}${mark(`P;Cwd=/w${fields}`)}${mark("A")}% ${mark("B")}`;
+    // Each prompt announces a fresh B token in P; B carries it, not the nonce.
+    let prompts = 0;
+    const prompt = (fields = ";Keys=emacs;Paste=1"): string => {
+      const token = `${(++prompts).toString(16).padStart(2, "0")}`.repeat(16);
+      return `${mark("D;0")}${mark(`P;Cwd=/w${fields};B=${token}`)}${mark("A")}% \u001b]133;B;${token}\u0007`;
+    };
     const pty = lastPty!;
-    // The shell: Ctrl-C at its prompt drops the line and draws a fresh prompt.
+    // The shell: Ctrl-C at its prompt drops the line and draws a fresh prompt;
+    // a paste shows in the edit line (as `shows` renders it).
+    const shell = { shows: (line: string): string => line };
     pty.respond = (data) => {
       if (data === "\u0003") queueMicrotask(() => pty.emitData(`\r\n${prompt()}`));
+      const paste = /^\u001b\[200~([\s\S]*)\u001b\[201~$/u.exec(data);
+      if (paste) queueMicrotask(() => pty.emitData(shell.shows(paste[1]!)));
     };
-    return { pty, mark, prompt };
+    return { pty, mark, prompt, shell };
   }
 
-  it("resets the line editor, checks the shell with the operating system, then pastes the line and Enter", async () => {
+  it("resets the line editor, checks the shell with the operating system, then pastes the line, and presses Enter once it shows", async () => {
     const { pty, mark, prompt } = await zshTerminal(3);
     // Before the shell's first prompt nothing can be told: refused.
     await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-shell-integration" });
@@ -875,22 +891,44 @@ describe("pty-manager typing an approved agent command", () => {
     // Another window's terminal answers like a missing one.
     await expect(typeTerminalCommand(TAB, 4, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
     await expect(typeTerminalCommand(TAB, 3, "ls -la", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
-    expect(pty.written).toEqual(["\u0003", PASTE("ls -la")]);
+    expect(pty.written).toEqual(["\u0003", PASTE("ls -la"), "\r"]);
     expect(readForegroundMock).toHaveBeenCalledWith(9999);
     // Until the shell starts it, the pasted line sits at the prompt: a second command is refused.
-    pty.emitData("ls -la");
     await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
     pty.emitData(`\r\n${mark("C;cmdline_url=ls%20-la")}total 0\r\n`);
     await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "command-running" });
-    expect(pty.written).toEqual(["\u0003", PASTE("ls -la")]);
+    expect(pty.written).toEqual(["\u0003", PASTE("ls -la"), "\r"]);
     pty.emitExit(0);
     await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
+  });
+
+  it("presses Enter only when the edit line shows exactly the pasted line, and clears it otherwise", async () => {
+    const { pty, prompt, shell } = await zshTerminal(3);
+    pty.emitData(prompt());
+    // A widget that rewrites pasted text (url-quote-magic quoting a URL).
+    shell.shows = (line) => line.replace("?", "\\?");
+    await expect(typeTerminalCommand(TAB, 3, "curl https://x/?a", "/w")).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
+    expect(pty.written).toEqual(["\u0003", PASTE("curl https://x/?a"), "\u0003"]);
+    // A key the user presses before Enter.
+    shell.shows = (line) => line;
+    pty.written.length = 0;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    pty.respond = ((respond) => (data: string) => {
+      respond?.(data);
+      if (data.startsWith("\u001b[200~")) writeTerminal(TAB, "x");
+    })(pty.respond);
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
+    expect(pty.written.at(-1)).toBe("\u0003");
+    expect(pty.written).not.toContain("\r");
   });
 
   it("types nothing when the operating system says a program, not the shell, holds the terminal, or another directory", async () => {
     const { pty, prompt } = await zshTerminal(3);
     pty.emitData(prompt());
     foregroundReading = { ok: true, foreground: { pid: 4242, command: "python3", cwd: "/w" } };
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "foreground-not-shell" });
+    // A nested zsh the user started holds the terminal: same name, not the terminal's shell.
+    foregroundReading = { ok: true, foreground: { pid: 4243, command: "zsh", cwd: "/w" } };
     await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "foreground-not-shell" });
     foregroundReading = { ok: true, foreground: { pid: 9999, command: "zsh", cwd: "/etc" } };
     await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "cwd-mismatch" });
@@ -939,7 +977,7 @@ describe("pty-manager typing an approved agent command", () => {
       await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
       vi.setSystemTime(Date.now() + USER_INPUT_QUIET_MS);
       await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
-      expect(pty.written).toEqual(["\u001b", "\r", "\u0003", PASTE("ls")]);
+      expect(pty.written).toEqual(["\u001b", "\r", "\u0003", PASTE("ls"), "\r"]);
     } finally {
       vi.useRealTimers();
     }

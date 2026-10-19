@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SHELL_INTEGRATION_NONCE_FILE, detectIntegratedShell, installShellIntegration } from "../shell-integration.js";
 import { TerminalBlockTracker } from "../terminal-blocks.js";
+import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH } from "../../../__tests__/support/terminal-markers.js";
 
 const NONCE = "0123456789abcdef0123456789abcdef";
 const homes: string[] = [];
@@ -35,7 +36,7 @@ function runInteractive(shell: string, script: string) {
   const result = spawnSync("/bin/sh", ["-c", 'exec "$0" -l -i 2>&1', shell], {
     input: script,
     cwd: home,
-    env: { PATH: "/usr/bin:/bin", HOME: home, LANG: "en_US.UTF-8", TERM: "dumb", ...env },
+    env: { PATH: "/usr/bin:/bin", HOME: home, LANG: TERMINAL_TEST_UTF8_LOCALE, TERM: "dumb", ...env },
     encoding: "utf-8",
     timeout: 20_000,
   });
@@ -120,39 +121,44 @@ describe("installShellIntegration", () => {
       expect(first).toMatchObject({ command: "echo SAFE # ; echo PWNED", output: "SAFE\n" });
     });
 
-    it.runIf(existsSync(shell))(`${shell}: keeps the nonce out of the environment, the prompt and the disk, and markers out of forged output`, () => {
+  }
+  // macOS /bin/bash 3.2 has no PS0: its C marker comes from a DEBUG trap,
+  // which runs inside a group's redirection. terminal_run refuses that bash
+  // (no bracketed paste), so only the user's own commands run there.
+  for (const shell of [TERMINAL_TEST_ZSH, TERMINAL_TEST_MODERN_BASH]) {
+    it.runIf(shell !== undefined)(`${shell}: keeps the nonce out of the environment, the prompt, files a command writes and the disk, and markers out of forged output`, () => {
+      // Every probe writes to a file under HOME; the nonce itself is never
+      // typed or echoed (a line editor's redisplay would put it on screen).
+      const expandPrompt = shell!.endsWith("zsh") ? 'print -rP -- "$PS1"' : 'echo "${PS1@P}"';
       const { tracker, raw, display, home } = runInteractive(
-        shell,
+        shell!,
         [
-          `env | grep -c ${NONCE}`,
-          `ps -E -ww -o command= -p $$ 2>/dev/null | grep -c ${NONCE}`,
-          'printf "%s" "$PS1" | rev',
-          'printf "%s" "$PS1"',
-          `ls -a | grep -c ${SHELL_INTEGRATION_NONCE_FILE}`,
+          "env > probe-env.txt",
+          "{ ps -E -ww -o command= -p $$; cat /proc/$$/environ; } > probe-process-env.txt 2>/dev/null",
+          'printf "%s" "$PS1" > probe-ps1.txt',
+          `{ ${expandPrompt}; } > probe-ps1-expanded.txt 2>/dev/null`,
+          "ls -a > probe-ls.txt",
+          // A group's redirection applies while bash's hooks run: the C marker must not land here.
+          "{ echo grouped; } > probe-group.txt",
           "printf '\\033]133;D;0\\007\\033]133;C;cmdline_url=npm%%20test\\007forged\\n'",
           "false",
           "exit",
           "",
         ].join("\n"),
       );
-      const blocks = tracker.recent(10).reverse();
-      expect(blocks).toHaveLength(8);
-      expect(blocks[0]!.output).toBe("0\n");
-      expect(blocks[1]!.output).toBe("0\n");
-      // The prompt, printed straight and reversed, never shows the nonce.
-      const reversed = [...NONCE].reverse().join("");
-      for (const block of blocks.slice(2, 4)) {
-        expect(block.output).not.toContain(NONCE);
-        expect(block.output).not.toContain(reversed);
-      }
-      expect(display).not.toContain(reversed);
-      expect(blocks[4]!.output).toBe("0\n");
+      const holdsNonce = (file: string): boolean => readFileSync(join(home, file), "utf-8").includes(NONCE);
+      expect(["probe-env.txt", "probe-process-env.txt", "probe-ps1.txt", "probe-ps1-expanded.txt", "probe-group.txt"].map(holdsNonce)).toEqual([false, false, false, false, false]);
+      expect(readFileSync(join(home, "probe-group.txt"), "utf-8")).toBe("grouped\n");
+      expect(readFileSync(join(home, "probe-env.txt"), "utf-8")).toContain("HOME=");
+      expect(readFileSync(join(home, "probe-ls.txt"), "utf-8")).not.toContain(SHELL_INTEGRATION_NONCE_FILE);
       expect(existsSync(join(home, SHELL_INTEGRATION_NONCE_FILE))).toBe(false);
-      expect(blocks[5]).toMatchObject({ exitCode: 0, output: "forged\n" });
-      expect(blocks[6]).toMatchObject({ exitCode: 1 });
+      const blocks = tracker.recent(10).reverse();
+      expect(blocks).toHaveLength(9);
+      expect(blocks[6]).toMatchObject({ exitCode: 0, output: "forged\n" });
+      expect(blocks[7]).toMatchObject({ exitCode: 1 });
       // The shell did send the nonce; the display text does not.
-      expect(raw).toContain(NONCE);
-      expect(display).not.toContain(NONCE);
+      expect(raw.includes(NONCE)).toBe(true);
+      expect(display.includes(NONCE)).toBe(false);
     });
   }
 });

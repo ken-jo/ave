@@ -28,8 +28,7 @@
  * ...), and background jobs (which may run after their records are read),
  * are not run; the summary counts them.
  */
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { basename, join } from "node:path";
@@ -43,6 +42,7 @@ import { terminalCommandTextProblem } from "../../../shared/terminal-command-tex
 import { analyzeShellForRules } from "../../../permissions/rules/shell-rule-matcher.js";
 import { wrapperPrefixLength } from "../../../permissions/rules/shell-prefix-policy.js";
 import { analyzeShell } from "../../../shared/shell-analysis.js";
+import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH } from "../../../__tests__/support/terminal-markers.js";
 
 const NONCE = "0123456789abcdef0123456789abcdef";
 
@@ -426,7 +426,7 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
     cwd: rig.box,
     cols: 200,
     rows: 50,
-    env: { PATH: "/usr/bin:/bin", HOME: home, TERM: "xterm-256color", LANG: "en_US.UTF-8", ...env },
+    env: { PATH: "/usr/bin:/bin", HOME: home, TERM: "xterm-256color", LANG: TERMINAL_TEST_UTF8_LOCALE, ...env },
   });
   const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
   pty.onData((data) => { tracker.recordOutput(data); });
@@ -467,6 +467,9 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
       await until(() => tracker.promptEndCount() > prompts, 3_000);
       return { blockId: typed.firstBlockId, hung: true };
     }
+    // The next line is typed only at a ready prompt (the shell may still be
+    // writing after its prompt marker).
+    await until(() => tracker.promptState() === "ready", 3_000);
     return { blockId: typed.firstBlockId, hung: false };
   };
 
@@ -525,9 +528,8 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
 
 // ---------------------------------------------------------------------------
 
-const BASH = ["/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/usr/bin/bash", "/bin/bash"].find((path) =>
-  existsSync(path) && /version (?:4\.[4-9]|[5-9]\.)/u.test(spawnSync(path, ["--version"], { encoding: "utf-8" }).stdout));
-const ZSH = existsSync("/bin/zsh") ? "/bin/zsh" : undefined;
+const BASH = TERMINAL_TEST_MODERN_BASH;
+const ZSH = TERMINAL_TEST_ZSH;
 const SHELLS = [ZSH, BASH].filter((path): path is string => path !== undefined);
 const SESSIONS_PER_SHELL = 2;
 

@@ -23,6 +23,7 @@ import { installShellIntegration } from "../shell-integration.js";
 import { TerminalBlockTracker, USER_INPUT_QUIET_MS } from "../terminal-blocks.js";
 import { foregroundVerdict, typeLineAtPrompt, type TypeTerminalCommandResult } from "../pty-manager.js";
 import { readTerminalForeground } from "../shell-process.js";
+import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH } from "../../../__tests__/support/terminal-markers.js";
 
 const NONCE = "fedcba9876543210fedcba9876543210";
 
@@ -61,7 +62,7 @@ async function startShell(shellPath: string): Promise<LiveShell> {
     cwd: home,
     cols: 120,
     rows: 30,
-    env: { PATH: "/usr/bin:/bin", HOME: home, TERM: "xterm-256color", LANG: "en_US.UTF-8", ...env },
+    env: { PATH: "/usr/bin:/bin", HOME: home, TERM: "xterm-256color", LANG: TERMINAL_TEST_UTF8_LOCALE, ...env },
   });
   const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
   pty.onData((data) => { tracker.recordOutput(data); });
@@ -82,7 +83,7 @@ async function startShell(shellPath: string): Promise<LiveShell> {
       blocks: tracker,
       isLive: () => !tracker.hasExited(),
       write: (data) => pty.write(data),
-      verify: async () => foregroundVerdict(await readTerminalForeground(pty.pid), shellName, tracker.currentCwd() ?? ""),
+      verify: async () => foregroundVerdict(await readTerminalForeground(pty.pid), pty.pid, shellName, tracker.currentCwd() ?? ""),
       missing: "no terminal",
     }, line),
   };
@@ -95,16 +96,21 @@ async function ranCommand(shell: LiveShell, result: TypeTerminalCommandResult): 
   return shell.tracker.get(result.firstBlockId)!.command;
 }
 
-/** A bash with bracketed paste (4.4 or later), if this machine has one. */
-const BASH = ["/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/usr/bin/bash", "/bin/bash"].find((path) =>
-  existsSync(path) && /version (?:4\.[4-9]|[5-9]\.)/u.test(spawnSync(path, ["--version"], { encoding: "utf-8" }).stdout));
+const BASH = TERMINAL_TEST_MODERN_BASH;
 
-const SHELLS: Array<{ path: string | undefined; enableVi: string }> = [
-  { path: existsSync("/bin/zsh") ? "/bin/zsh" : undefined, enableVi: "bindkey -v" },
-  { path: BASH, enableVi: "set -o vi" },
+/** Each shell's way to print its prompt string expanded (which prints B). */
+/** Each shell's way to have pasted text rewritten, or not taken as a paste at all. */
+const SHELLS: Array<{ path: string | undefined; enableVi: string; expandPrompt: string; rewritePaste: string }> = [
+  {
+    path: TERMINAL_TEST_ZSH,
+    enableVi: "bindkey -v",
+    expandPrompt: "print -rP -- \"$PS1\"",
+    rewritePaste: "autoload -Uz bracketed-paste-magic && zle -N bracketed-paste bracketed-paste-magic",
+  },
+  { path: BASH, enableVi: "set -o vi", expandPrompt: "echo \"${PS1@P}\"", rewritePaste: "bind 'set enable-bracketed-paste off'" },
 ];
 
-for (const { path, enableVi } of SHELLS) {
+for (const { path, enableVi, expandPrompt, rewritePaste } of SHELLS) {
   describe.runIf(path !== undefined)(`${path}: typing an approved command`, () => {
     it("runs exactly the approved line, and the operating system confirms the shell and its directory", async () => {
       const shell = await startShell(path!);
@@ -134,6 +140,47 @@ for (const { path, enableVi } of SHELLS) {
       expect(shell.tracker.get((result as { firstBlockId: number }).firstBlockId)!.output).toBe("SAFE-RUN\n");
     }, 30_000);
 
+    it("does not take a B marker a command prints by expanding the prompt, now or from the background later", async () => {
+      const shell = await startShell(path!);
+      // Typed raw, as a user could: terminal_run's validator refuses these.
+      const before = shell.tracker.promptEndCount();
+      shell.pty.write(`${expandPrompt} | od -c | head -1; ${expandPrompt}\r`);
+      await until(() => shell.tracker.promptEndCount() > before);
+      await sleep(500);
+      expect(shell.tracker.promptEndCount()).toBe(before + 1);
+      const ready = shell.tracker.promptEndCount();
+      shell.pty.write(`(sleep 1; ${expandPrompt}) &\r`);
+      await until(() => shell.tracker.promptEndCount() > ready);
+      await sleep(2_000);
+      // The background job printed a stale token after the next prompt was up.
+      expect(shell.tracker.promptEndCount()).toBe(ready + 1);
+    }, 30_000);
+
+    it("stays ready when the line editor redraws its prompt (resize, Ctrl-L)", async () => {
+      const shell = await startShell(path!);
+      shell.pty.resize(100, 30);
+      await sleep(500);
+      expect(shell.tracker.promptState()).toBe("ready");
+      // Ctrl-L is the user's key: it counts as typing until it goes quiet.
+      shell.press("\u000c");
+      await sleep(USER_INPUT_QUIET_MS + 300);
+      expect(shell.tracker.promptState()).toBe("pending-input");
+    }, 30_000);
+
+    it("runs a line longer than the terminal is wide exactly as approved (the edit line wraps)", async () => {
+      const shell = await startShell(path!);
+      const line = `echo ${"w".repeat(150)} ${"v".repeat(130)}`;
+      const result = await shell.type(line);
+      expect(await ranCommand(shell, result)).toBe(line);
+    }, 30_000);
+
+    it("refuses a line editor that would rewrite pasted text or not take it as a paste", async () => {
+      const shell = await startShell(path!);
+      await ranCommand(shell, await shell.type(rewritePaste));
+      await sleep(100);
+      await expect(shell.type("echo hi")).resolves.toMatchObject({ ok: false, reason: "no-bracketed-paste" });
+    }, 30_000);
+
     it("refuses vi key bindings", async () => {
       const shell = await startShell(path!);
       const enable = await shell.type(enableVi);
@@ -150,7 +197,7 @@ for (const { path, enableVi } of SHELLS) {
       await until(() => shell.tracker.promptState() === "command-running");
       await sleep(300);
       const during = await readTerminalForeground(shell.pty.pid);
-      expect(foregroundVerdict(during, basename(path!), shell.home)).toMatchObject({ ok: false, reason: "foreground-not-shell" });
+      expect(foregroundVerdict(during, shell.pty.pid, basename(path!), shell.home)).toMatchObject({ ok: false, reason: "foreground-not-shell" });
     }, 30_000);
   });
 }

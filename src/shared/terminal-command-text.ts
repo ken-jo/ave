@@ -53,6 +53,14 @@
  * reference to the shell integration's own `__ave_*` names
  * (its marker nonce among them).
  *
+ * Nor may it print the shell's own state: prompt expansion (`print -P`,
+ * `${…@P}`) and any reference to the prompt, hook or line-editor variables,
+ * bash's `${…@A}`/`${…@K}` declarations, variable listings (`export`,
+ * `readonly`, `integer` or `float` bare or with `-p`; `compgen`; `set`,
+ * `typeset`, `declare` and `local` are refused already), `vared`, and
+ * `print -z`/`-s`/`-S` (the line editor's buffer stack and the history;
+ * `history` itself is refused as shell state).
+ *
  * Pure: shared by the tool (before any approval is asked) and the PTY write
  * (which re-checks the characters it is handed).
  */
@@ -75,6 +83,7 @@ export type TerminalCommandTextProblem =
   | "shell-divergent"
   | "shell-state"
   | "shell-integration"
+  | "shell-introspection"
   | "unchecked-construct"
   | "incomplete";
 
@@ -92,7 +101,6 @@ const INVISIBLE_CHARACTER = /[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Zs}\u2800
 const COMBINING_MARK = /\p{M}/u;
 const NON_ASCII = /[^\u0000-\u007f]/u;
 /** A `!` an interactive bash or zsh would expand. */
-const HISTORY_EXPANSION = /!(?![\s=(]|$)/u;
 
 /** Command words that run differently, or re-run history, in an interactive zsh or bash. */
 const DIVERGENT_COMMAND_WORDS: ReadonlySet<string> = new Set(["nocorrect", "noglob", "-", "repeat", "foreach", "r", "fc"]);
@@ -109,7 +117,17 @@ const STATE_CHANGING_COMMAND_WORDS: ReadonlySet<string> = new Set([
  * `printf -v NAME`. Every argument naming a variable is judged like the left
  * side of `NAME=value`.
  */
-const VARIABLE_SETTING_COMMAND_WORDS: ReadonlySet<string> = new Set(["read", "mapfile", "readarray", "getopts", "printf", "vared"]);
+const VARIABLE_SETTING_COMMAND_WORDS: ReadonlySet<string> = new Set(["read", "mapfile", "readarray", "getopts", "printf", "print"]);
+/** Builtins that list the shell's variables or completions, or edit a variable in the line editor. */
+const INTROSPECTION_COMMAND_WORDS: ReadonlySet<string> = new Set(["compgen", "vared"]);
+/** Declaration builtins that list every variable (and its value) when given nothing to declare, or `-p`. */
+const LISTING_DECLARATION_WORDS: ReadonlySet<string> = new Set(["export", "readonly", "integer", "float"]);
+/**
+ * Variables that hold the prompt, its hooks or the line editor's settings.
+ * Their values are the shell integration's (the prompt prints the B marker
+ * of the moment); a command neither reads nor expands them.
+ */
+const PROMPT_VARIABLE = /^\{?#?(?:PS[0-9]|PROMPT[0-9]?|RPROMPT[0-9]?|RPS[0-9]|PROMPT_COMMAND|(?:precmd|preexec|chpwd|periodic|zshaddhistory|zshexit)_functions|zle_[A-Za-z_]+|widgets)(?![A-Za-z0-9_])/u;
 /** Wrappers that run their first non-option argument as a command in the shell itself. */
 const COMMAND_WRAPPERS: ReadonlySet<string> = new Set(["builtin", "command", "time"]);
 /** Declaration builtins whose `NAME=value` arguments assign in the shell itself. */
@@ -130,13 +148,14 @@ export function terminalCommandTextProblem(command: string): TerminalCommandText
   if (CONTROL_CHARACTER.test(command)) return "control-character";
   if (hasInvisibleCharacter(command)) return "invisible-character";
   if (new RegExp(`\\s{${MAX_TERMINAL_COMMAND_WHITESPACE_RUN + 1},}`, "u").test(command)) return "whitespace-run";
-  if (HISTORY_EXPANSION.test(command) || command.trimStart().startsWith("^")) return "history-expansion";
+  if (hasHistoryExpansion(command) || command.trimStart().startsWith("^")) return "history-expansion";
   if (command.includes("__ave_")) return "shell-integration";
   // A parameter named at run time — zsh flags such as `${(P)name}` and
   // `${(e)…}`, bash's `${!name}` — could read any variable, the shell
   // integration's among them, whatever its spelling here.
   if (/\$\{[(!]/u.test(command)) return "unchecked-construct";
-  if (hasZshParameterFlag(command)) return "shell-divergent";
+  const expansion = expansionProblem(command);
+  if (expansion !== null) return expansion;
   // An odd run of trailing backslashes escapes the Enter that submits the line.
   const trailingBackslashes = /\\*$/u.exec(command)?.[0].length ?? 0;
   if (trailingBackslashes % 2 === 1) return "incomplete";
@@ -255,11 +274,11 @@ function hasUnquotedComment(command: string): boolean {
 }
 
 /**
- * True when an unquoted or double-quoted `$` starts one of zsh's parameter
- * flags (`$=x` splits, `$+x` tests, `$~x` globs, `$^x` distributes; also in
- * `${…}` form): bash reads `$=x` as the text `$=x`, and the rules with it.
+ * Each character of `command` that the shell reads outside single quotes and
+ * `$'…'`, and that no backslash escapes: where `$` expands and `!` recalls
+ * history, in both zsh and bash (double quotes included).
  */
-function hasZshParameterFlag(command: string): boolean {
+function* liveCharacters(command: string): Generator<{ readonly index: number; readonly char: string }> {
   let quote: "none" | "double" | "single" | "ansi" = "none";
   for (let i = 0; i < command.length; i++) {
     const ch = command[i]!;
@@ -292,9 +311,40 @@ function hasZshParameterFlag(command: string): boolean {
       i++;
       continue;
     }
-    if (ch === "$" && /^\{?[=+~^]/u.test(command.slice(i + 1, i + 3))) return true;
+    yield { index: i, char: ch };
+  }
+}
+
+/**
+ * A `!` the shell would read as history expansion (`!!`, `!$`, `!name`): one
+ * outside single quotes, unescaped, not before whitespace, `=`, `(` or the
+ * end of the line, where no interactive shell expands it.
+ */
+function hasHistoryExpansion(command: string): boolean {
+  for (const { index, char } of liveCharacters(command)) {
+    if (char === "!" && !/^(?:[\s=(]|$)/u.test(command.slice(index + 1, index + 2))) return true;
   }
   return false;
+}
+
+/**
+ * The first problem with a `$` expansion the shell would perform:
+ *  - zsh's parameter flags (`$=x` splits, `$+x` tests, `$~x` globs, `$^x`
+ *    distributes; also in `${…}` form), which bash reads as the text `$=x`,
+ *    and the rules with it;
+ *  - bash's `${…@X}` transformations, which expand a prompt (`@P`) or print
+ *    declarations (`@A`, `@K`);
+ *  - any reference to the prompt, its hooks or the line editor's settings.
+ */
+function expansionProblem(command: string): TerminalCommandTextProblem | null {
+  for (const { index, char } of liveCharacters(command)) {
+    if (char !== "$") continue;
+    const rest = command.slice(index + 1);
+    if (/^\{?[=+~^]/u.test(rest)) return "shell-divergent";
+    if (/^\{[^{}]*@[A-Za-z]\}/u.test(rest)) return "shell-introspection";
+    if (PROMPT_VARIABLE.test(rest)) return "shell-introspection";
+  }
+  return null;
 }
 
 /** zsh's `=cmd` path lookup: an unquoted word starting with `=` and more. */
@@ -406,9 +456,31 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
   // `command NAME=v cmd`: zsh assigns and runs cmd, bash runs a program named `NAME=v`.
   if (index > 0 && ASSIGNMENT_WORD.test(head)) return "shell-divergent";
   if (STATE_CHANGING_COMMAND_WORDS.has(head)) return "shell-state";
-  if (VARIABLE_SETTING_COMMAND_WORDS.has(head) || DECLARATION_COMMAND_WORDS.has(head)) {
+  const args = words.slice(index + 1);
+  const staticArgs = staticWords.slice(index + 1);
+  if (INTROSPECTION_COMMAND_WORDS.has(head)) return "shell-introspection";
+  // `print -P` and `echo -P` expand prompt escapes; `print -z` pushes onto
+  // the line editor's buffer stack and `print -s`/`-S` onto the history.
+  if ((head === "print" || head === "echo") && leadingOptions(args).some((option) => /^-[A-Za-z]*[PzsS]/u.test(option))) {
+    return "shell-introspection";
+  }
+  // `export`, `readonly`, `integer`, `float` with nothing to declare, or with
+  // `-p`, list every such variable with its value.
+  if (LISTING_DECLARATION_WORDS.has(head)) {
+    const options = leadingOptions(args);
+    // The analysis lowers `NAME=value` and `NAME` operands to assignments.
+    const declares = command.assignments.length > 0 || options.length < args.length;
+    if (!declares || options.some((option) => /^-[A-Za-z]*p/u.test(option))) return "shell-introspection";
+  }
+  if (head === "printf" || head === "print") {
+    // Only the `-v` operand names a variable; an option taken from a
+    // variable could be `-v` itself.
+    if (staticArgs[0] === undefined && args.length > 0) return "shell-state";
+    const v = args.findIndex((arg, i) => i < leadingOptions(args).length && /^-[A-Za-z]*v$/u.test(arg));
+    if (v >= 0 && staticArgs[v + 1] === undefined) return "shell-state";
+  } else if (VARIABLE_SETTING_COMMAND_WORDS.has(head) || DECLARATION_COMMAND_WORDS.has(head)) {
     // A variable name only known at run time could be any of them.
-    if (staticWords.slice(index + 1).some((word) => word === undefined)) return "shell-state";
+    if (staticArgs.some((word) => word === undefined)) return "shell-state";
   }
   if (VARIABLE_SETTING_COMMAND_WORDS.has(head)) {
     return assignedVariableNames(head, words.slice(index + 1)).some((name) => SHELL_STATE_VARIABLES.test(name)) ? "shell-state" : null;
@@ -423,6 +495,16 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
   return null;
 }
 
+/** The leading option words of a builtin's arguments, up to `--` or the first operand. */
+function leadingOptions(args: readonly string[]): string[] {
+  const options: string[] = [];
+  for (const arg of args) {
+    if (arg === "--" || !/^-[A-Za-z]/u.test(arg)) break;
+    options.push(arg);
+  }
+  return options;
+}
+
 /**
  * The variables a {@link VARIABLE_SETTING_COMMAND_WORDS} builtin assigns.
  * Over-inclusive on purpose: for `read`, `mapfile`, `readarray` and `vared`
@@ -433,12 +515,12 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
  */
 function assignedVariableNames(head: string, args: readonly string[]): string[] {
   const nameOf = (word: string): string => word.replace(/^-[A-Za-z]*/u, "").split(/[?[]/u)[0]!;
-  if (head === "printf") {
+  if (head === "printf" || head === "print") {
     const names: string[] = [];
     for (let i = 0; i < args.length; i++) {
       const arg = args[i]!;
       if (arg === "--") break;
-      if (arg === "-v" && args[i + 1] !== undefined) names.push(args[i + 1]!);
+      if (/^-[A-Za-z]*v$/u.test(arg) && args[i + 1] !== undefined) names.push(args[i + 1]!);
       else if (/^-v./u.test(arg)) names.push(arg.slice(2));
     }
     return names;

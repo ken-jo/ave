@@ -587,14 +587,23 @@ The directory the shell reports is text on the terminal's output stream, so
 it is checked against the operating system before the rules, the approval
 scope or project rules use it
 ([shell-process.ts](../../src/main/terminal/shell-process.ts)). The terminal's
-foreground process group must be the shell itself (no program running in
-front of it), and that process's working directory, symlinks resolved, must
-equal the reported one. On Linux both come from `/proc`. On macOS the
+foreground process group must be the shell itself: the process spawned on
+the pty, matched by pid and program name, so neither a program running in
+front of it nor a nested shell of the same name passes. That process's working
+directory, symlinks resolved, must equal the reported one. On Linux both come from `/proc`. On macOS the
 foreground group comes from `ps`, and the working directory comes from
 `lsof -d cwd`. Node cannot call `proc_pidinfo` without a native addon, and
 `lsof` is the stock unprivileged reader of that call. Other platforms get no
 reading, and the call is refused. The comparison directory in the approval
 scope is the verified one.
+
+On macOS every wrapper before the shell (the pty trampoline, `env`,
+`sandbox-exec`, `bash -c`) execs in place, so the pty's process is the shell.
+On Linux the sandbox runs the shell under `bwrap --new-session --unshare-pid`.
+The shell is then a forked child in its own session and never holds the pty's
+foreground, so `terminal_run` refuses every sandboxed Linux terminal
+(`foreground-not-shell`) until the check can follow the shell into bwrap's
+namespace.
 
 The command is typed only at an empty prompt, as the shell's own command
 markers report it ([terminal-blocks.ts](../../src/main/terminal/terminal-blocks.ts)
@@ -609,10 +618,14 @@ execution:
 - an exited shell or a shell that emits no markers;
 - a shell that does not mark the end of its prompt (fish), which is not
   supported;
-- a line editor that does not take bracketed paste (bash before 4.4, such as
-  macOS `/bin/bash` 3.2), or one with vi key bindings. Each prompt reports
-  both (`Keys=`, `Paste=` in its `P` marker). The bash startup file turns
-  bracketed paste on where readline has it.
+- a line editor that does not take bracketed paste as plain text, or one with
+  vi key bindings. Each prompt reports both (`Keys=`, `Paste=` in its `P`
+  marker). zsh reports paste only while `zle_bracketed_paste` is set and the
+  `bracketed-paste` and `self-insert` widgets are still the builtins (so
+  `bracketed-paste-magic` and `url-quote-magic` count as no paste). bash
+  reports it while readline has `enable-bracketed-paste on`, which the
+  startup file turns on for bash 4.4 and later. Bash before 4.4, such as
+  macOS `/bin/bash` 3.2, has none.
 
 Typing is a fixed protocol (pty-manager `typeLineAtPrompt`):
 1. Check the prompt state.
@@ -621,14 +634,20 @@ Typing is a fixed protocol (pty-manager `typeLineAtPrompt`):
    whatever its state: an ESC or Ctrl-X prefix waiting for its next key, a
    half-typed line. It cannot run anything.
 4. Wait for the fresh prompt, then check the directory and the state again.
-5. Paste the line between bracketed-paste markers, then press Enter.
+5. Paste the line between bracketed-paste markers, without Enter.
+6. Wait until the line editor's echo of its edit line (wrapping removed) is
+   exactly the approved line, with no key from the user since the prompt. Only
+   then press Enter. Otherwise write Ctrl-C to clear the line and refuse
+   (`edit-line-mismatch`).
 
 Inside a paste, the line editor inserts the text and does not read it as
 keys. Raw typing after a pending ESC ran `[200~echo hi there~` in place of
 `echo hi there` in a real zsh.
 
-After the command, the shell's own record of the line it ran (its `C` marker)
-is compared with the approved text. A difference fails the call. It also
+Once the shell reports starting the command (its `C` marker, waited for up
+to 3 seconds whatever `waitSeconds` is), the line it recorded is compared with
+the approved text, even while the command is still running. A difference fails
+the call. No `C` marker means the call fails as not verified. It also
 writes an audit row with the session, the terminal and the SHA-256 of both
 texts. Known false-difference sources, both history options that neither
 the terminal's startup file nor the macOS system files set, and that a typed
@@ -642,12 +661,37 @@ command cannot set (options are shell state):
 Both fail closed: the call reports a failure for a command that ran as
 approved.
 
-The markers carry a per-terminal nonce, so printed text cannot forge them.
-The nonce reaches the shell in an owner-only file in the terminal's sandbox
-HOME. The startup file reads it into an unexported shell variable and deletes
-the file before the first prompt. The nonce is never in the environment,
-which other processes can read, and never in `PS1`, which names the variable
-rather than its value.
+The markers that the hooks print (`D`, `P`, `A`, `C`) carry a per-terminal
+nonce, so printed text cannot forge them. The nonce reaches the shell in an
+owner-only file in the terminal's sandbox HOME. The startup file reads it into
+an unexported shell variable and deletes the file before the first prompt.
+The nonce is never in the environment, which other processes can read. Only
+the hook functions read it, and they print only to the terminal. bash 4.4 and
+later print `C` from `PS0`, which bash writes before running the line,
+outside any redirection the line makes. A DEBUG trap would run inside a
+group's redirection, so `{ cmd; } > f` would capture the marker.
+
+`B` marks the end of the prompt text, so it comes from the prompt string
+itself: the line editor redraws the prompt on a resize or Ctrl-L without
+running a hook. Prompt expansion can print anything in the prompt string
+(`print -P "$PS1"`, `${PS1@P}`), so `B` never carries the nonce. It carries a
+token the hook draws fresh from `/dev/urandom` for each prompt and announces
+in that prompt's nonce-carrying `P`. The tracker accepts a `B` only with the
+current token, and only while that prompt is up:
+- The first `B` ends the prompt.
+- A repeated `B` is a redraw: the echo starts over, and the prompt count and
+  any typing stay.
+- A `B` printed while a command runs is ordinary output.
+
+A command can therefore print only its own prompt's token, during its run,
+when it is refused, or a stale one afterwards.
+
+Residual risk: a process that is still running while the next prompt is up
+and can read the shell's current state. That means a background job asking
+the shell itself (not a copy made when it forked), or reading the shell's
+memory, such as `/proc/<pid>/mem` under a permissive `ptrace_scope`. The
+validator refuses every way for a command to expand or list shell state (see
+below). Nothing else runs at a prompt except the hooks.
 
 The 1.5-second quiet window is a heuristic. A key written to the PTY shows in
 the echo only after the shell reads it, so an empty echo just after typing
@@ -667,7 +711,9 @@ before any card, with no mode that lets them through:
 - characters a reader cannot see: format and default-ignorable characters,
   non-ASCII spaces, the braille blank, combining marks on ASCII, and
   whitespace runs longer than 16;
-- history expansion (`!word`, a leading `^`, the `r` and `fc` re-run commands);
+- history expansion (`!word` outside single quotes and `$'…'`, unescaped; a
+  leading `^`; the `r` and `fc` re-run commands). Inside double quotes both
+  shells expand it, so it stays refused there;
 - constructs zsh and bash read differently:
   - an unquoted `#` comment. A `#` inside a `${…}` expansion (`${#x}`,
     `${x#p}`) is an operator, not a comment. The terminal's zsh also runs
@@ -706,6 +752,18 @@ before any card, with no mode that lets them through:
     history, or source code;
 - references to the shell integration's `__ave_*` names; block records also
   redact the marker nonce, so printed text cannot forge markers;
+- anything that prints the shell's own state:
+  - prompt expansion (`print -P`, `echo -P`, `${…@P}`);
+  - any reference to the prompt, hook or line-editor variables (`PS0`–`PS9`,
+    `PROMPT*`, `RPROMPT*`, `PROMPT_COMMAND`, `*_functions`, `zle_*`,
+    `widgets`), so `echo $PS1` and `printf '%s' "$PS1"` are treated alike;
+  - bash's `${…@A}`/`${…@K}` declaration dumps;
+  - variable listings: `export`, `readonly`, `integer` or `float` with nothing
+    to declare or with `-p`, and `compgen`. `set`, `typeset`, `declare` and
+    `local` are refused already;
+  - `vared`;
+  - `print -z` (the line editor's buffer stack) and `print -s`/`-S` (the
+    history). `history` itself is refused as shell state;
 - a construct the shell analysis does not model (`case`,
   `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`), a glob
   with parentheses (zsh glob qualifiers such as `*(e:'cmd':)` and `*(+cmd)`

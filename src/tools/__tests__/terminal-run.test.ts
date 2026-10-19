@@ -285,6 +285,36 @@ describe("terminal_run", () => {
       ["a zsh glob qualifier that calls a command", "ls *(+rm)", /cannot check/],
       ["a parenthesized glob in a redirect target", "echo x > @(a|b)", /cannot check/],
       ["state changes inside a redirect target's substitution", "echo x > \"$(alias ls=rm)\"", /change the shell/],
+      // Prompt expansion prints the prompt's B marker; listings print state.
+      ["zsh prompt expansion of PS1", "print -rP -- \"$PS1\" | base64", /shell's own state/],
+      ["bash prompt expansion of PS1", "echo \"${PS1@P}\" | base64", /shell's own state/],
+      ["prompt expansion in the background", "(sleep 3; print -rP -- \"$PS1\") &", /shell's own state/],
+      ["print -P of prompt escapes", "print -P '%~'", /shell's own state/],
+      ["echo -P", "echo -nP x", /shell's own state/],
+      ["a ${@P} transformation of any variable", "echo \"${x@P}\"", /shell's own state/],
+      ["a ${@A} declaration dump", "echo \"${x@A}\"", /shell's own state/],
+      ["reading PS1", "echo $PS1", /shell's own state/],
+      ["reading PS1 through printf", "printf '%s' \"$PS1\"", /shell's own state/],
+      ["reading PROMPT_COMMAND", "echo ${PROMPT_COMMAND}", /shell's own state/],
+      ["reading the prompt length", "echo ${#PS1}", /shell's own state/],
+      ["reading the precmd hooks", "echo $precmd_functions", /shell's own state/],
+      ["reading a line-editor setting", "echo $zle_bracketed_paste", /shell's own state/],
+      ["a bare export", "export", /shell's own state/],
+      ["export -p", "export -p", /cannot check/],
+      ["readonly -p", "readonly -p", /cannot check/],
+      ["integer, listing", "integer", /shell's own state/],
+      ["compgen -v", "compgen -v", /shell's own state/],
+      ["vared", "vared x", /shell's own state/],
+      ["print -z onto the line editor's stack", "print -z rm -rf build", /shell's own state/],
+      ["print -s onto the history", "print -s rm -rf build", /shell's own state/],
+      ["history", "history", /history/],
+      ["a bare set", "set", /change the shell/],
+      ["typeset -p", "typeset -p", /cannot check/],
+      ["declare -p", "declare -p", /cannot check/],
+      ["a printf option from a variable", "printf $o PATH x", /change the shell/],
+      ["print -v PATH", "print -v PATH x", /change the shell/],
+      ["printf -v into a name from a variable", "printf -v \"$v\" '%s' x", /change the shell/],
+      ["history expansion in double quotes", "echo \"hi !x\"", /history expansion/],
       ["a combining grapheme joiner", "rm\u034f -rf build", /invisible or blank-looking/],
       ["a hangul choseong filler", "ls \u115f", /invisible or blank-looking/],
       ["a hangul filler", "ls \u3164", /invisible or blank-looking/],
@@ -371,6 +401,14 @@ describe("terminal_run", () => {
         "test \"$a\" = b",
         "echo '$=x' \\=x \"=x\" a=b $'$+x'",
         "ls >| out",
+        "git commit -m 'done!'",
+        "echo 'hello!'",
+        "echo $'wow!' \\!x",
+        "printf '%s\\n' \"$HOME\" \"$x\"",
+        "printf -v out '%s' \"$x\"",
+        "print -r -- \"$x\"",
+        "export FOO=1 BAR",
+        "echo $PATH $PSX",
       ]) {
         await expect(Promise.resolve(tool.approvalMemoryScope!({ command }, { cwd: "/workspace", sessionId: "main" }))).resolves.toMatchObject({ kind: "terminal-command" });
       }
@@ -417,6 +455,18 @@ describe("terminal_run", () => {
       active = "terminal:aaaaaaaa-2";
       await tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
       expect(deps.typed).toEqual([["terminal:aaaaaaaa-1", WINDOW, "ls"]]);
+    });
+
+    it("fails as not verified when the shell never reports starting the typed command", async () => {
+      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
+      const deps = depsWith();
+      const tool = createTerminalRunTool(deps);
+      const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
+      const result = await tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      expect(deps.typed).toEqual([["terminal:aaaaaaaa-1", WINDOW, "ls"]]);
+      expect(result.isError).toBe(true);
+      expect(body(result.output as string)).toMatchObject({ typed: true, finished: false, error: expect.stringContaining("terminal:aaaaaaaa-1") });
+      expect(body(result.output as string)).not.toHaveProperty("block");
     });
 
     it("reports, audits and fails a run whose shell record names another command than the approved one", async () => {

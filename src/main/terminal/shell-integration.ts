@@ -8,12 +8,13 @@
  *
  * Each shell reports, around every command it runs (`<n>` is the nonce):
  *   OSC 133;D;<exit>;<n>            the previous command finished (first prompt: nothing open)
- *   OSC 133;P;Cwd=<encoded path>;Keys=<emacs|vi>;Paste=<0|1>;<n>
+ *   OSC 133;P;Cwd=<encoded path>;Keys=<emacs|vi>;Paste=<0|1>;B=<token>;<n>
  *                                   the working directory, the line editor's
- *                                   key bindings, and whether it takes
- *                                   bracketed paste (zsh, bash; fish: Cwd only)
+ *                                   key bindings, whether it takes bracketed
+ *                                   paste, and the token of this prompt's B
+ *                                   (zsh, bash; fish: Cwd only)
  *   OSC 133;A;<n>                   prompt start
- *   OSC 133;B;<n>                   end of prompt / start of typed input (zsh, bash)
+ *   OSC 133;B;<token>               end of prompt / start of typed input (zsh, bash)
  *   OSC 133;C;cmdline_url=<percent-encoded command>;<n>  output starts
  *
  * NONCE. Anything a command prints reaches the same stream, so a program (or
@@ -30,11 +31,26 @@
  * `/proc/<pid>/environ`), so any program the shell runs could read it. It
  * arrives in an owner-only file in the sandbox HOME that the startup file
  * reads into an unexported shell variable and deletes before the first
- * prompt. The prompt string refers to that variable rather than holding the
- * nonce, so printing `$PS1` (or any transformation of it) reveals nothing.
- * Only the shell's own hook functions read it. Unlike VS Code, where only E
- * and P carry it,
- * every marker here does: a forged A, B, C or D would split blocks just as well.
+ * prompt. Only the shell's own hook functions read it, and only they print
+ * the markers that carry it (D, P, A, C), always to the terminal: bash 4.4
+ * and later print C from PS0, outside any redirection the command line
+ * makes, because a DEBUG trap runs inside a group's (`{ cmd; } > f`). Unlike VS Code, where only E and P
+ * carry it, every one of those does: a forged A, C or D would split blocks
+ * just as well.
+ *
+ * B must come from the prompt string itself: it marks the end of the prompt
+ * text, and the line editor redraws the prompt (resize, Ctrl-L) without
+ * running any hook. Anything in the prompt string can be printed by prompt
+ * expansion (`print -P "$PS1"`, `${PS1@P}`), so B never carries the nonce. It
+ * carries a token drawn fresh from /dev/urandom for each prompt by the hook
+ * that draws it, and announced in that prompt's nonce-carrying P marker.
+ * terminal-blocks.ts accepts a B only with the current token and only while a
+ * prompt is up (never while a command runs), so a token a command prints is
+ * either its own prompt's, during its run, or a stale one afterwards.
+ * Residual risk: a command that expands the prompt from a process the shell
+ * runs at the prompt itself; the validator refuses every way to expand or
+ * list shell state (terminal-command-text.ts), and nothing runs at a prompt
+ * except the hooks.
  * The working directory moved from OSC 7 to `P;Cwd=` because OSC 7 has no
  * field for a nonce.
  *
@@ -109,14 +125,20 @@ const ZSH_RC = (noncePath: string): string => [
   '  REPLY="$out"',
   "}",
   "__ave_precmd() {",
-  "  local ave_status=$? ave_keys=emacs ave_paste=0",
+  "  local ave_status=$? ave_keys=emacs ave_paste=0 ave_token",
   "  printf '\\e]133;D;%s;%s\\a' \"$ave_status\" \"$__ave_nonce\"",
   // How typed text will be read: vi bindings in the main keymap, and whether
-  // zle takes bracketed paste (it does unless zle_bracketed_paste is unset).
+  // zle takes bracketed paste as plain text: zle_bracketed_paste set, and the
+  // paste and self-insert widgets still the builtins (bracketed-paste-magic or
+  // url-quote-magic would rewrite what is pasted).
   '  [[ "$(bindkey -lL main)" == *vi* ]] && ave_keys=vi',
-  '  [[ -n "$zle_bracketed_paste" ]] && ave_paste=1',
+  '  [[ -n "$zle_bracketed_paste" && "${widgets[bracketed-paste]}" == builtin && "${widgets[self-insert]}" == builtin ]] && ave_paste=1',
+  // A fresh token for this prompt's B, which the prompt string prints.
+  '  ave_token="$(/usr/bin/od -An -N16 -tx1 /dev/urandom 2>/dev/null)"',
+  '  ave_token="${ave_token//[^0-9a-f]/}"',
+  "  __ave_b=$'\\e]133;B;'\"$ave_token\"$'\\a'",
   '  __ave_encode "$PWD"',
-  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$__ave_nonce\" \"$__ave_nonce\"",
+  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;B=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_token\" \"$__ave_nonce\" \"$__ave_nonce\"",
   "}",
   "__ave_preexec() {",
   '  __ave_encode "${1[1,' + MAX_ENCODED_COMMAND_CHARS + ']}"',
@@ -125,8 +147,9 @@ const ZSH_RC = (noncePath: string): string => [
   "autoload -Uz add-zsh-hook",
   "add-zsh-hook precmd __ave_precmd",
   "add-zsh-hook preexec __ave_preexec",
-  // The prompt names the variable, not its value: `$PS1` never shows the nonce.
-  "__ave_b=$'\\e]133;B;'\"${__ave_nonce}\"$'\\a'",
+  "zmodload zsh/zleparameter",
+  // The prompt prints the B marker of the moment (set by the hook above).
+  "__ave_b=''",
   "setopt prompt_subst",
   "PS1=\"${PS1:-%m%# }\"'%{${__ave_b}%}'",
   "",
@@ -162,11 +185,17 @@ const BASH_PROFILE = (noncePath: string): string => [
   "  bind 'set enable-bracketed-paste on' 2>/dev/null && __ave_paste=1",
   "fi",
   "__ave_precmd() {",
-  "  local ave_status=$? ave_keys=emacs",
+  "  local ave_status=$? ave_keys=emacs ave_paste=0 ave_token",
   "  printf '\\e]133;D;%s;%s\\a' \"$ave_status\" \"$__ave_nonce\"",
   "  [[ -o vi ]] && ave_keys=vi",
+  // Bracketed paste as readline has it now (a user can turn it off by hand).
+  '  [[ "$__ave_paste" = 1 && "$(bind -v)" == *"enable-bracketed-paste on"* ]] && ave_paste=1',
+  // A fresh token for this prompt's B, which the prompt string prints.
+  '  ave_token="$(/usr/bin/od -An -N16 -tx1 /dev/urandom 2>/dev/null)"',
+  '  ave_token="${ave_token//[^0-9a-f]/}"',
+  "  __ave_b=$'\\e]133;B;'\"$ave_token\"$'\\a'",
   '  __ave_encode "$PWD"',
-  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$__ave_paste\" \"$__ave_nonce\" \"$__ave_nonce\"",
+  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;B=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_token\" \"$__ave_nonce\" \"$__ave_nonce\"",
   "  __ave_at_prompt=1",
   "}",
   "__ave_preexec() {",
@@ -184,12 +213,24 @@ const BASH_PROFILE = (noncePath: string): string => [
   "  printf '\\e]133;C;cmdline_url=%s;%s\\a' \"$REPLY\" \"$__ave_nonce\"",
   "}",
   'PROMPT_COMMAND="__ave_precmd"',
-  // The prompt names the variable, not its value (bash expands variables in
-  // PS1 after decoding its escapes, so the variable holds the raw ESC/BEL).
-  "__ave_b=$'\\e]133;B;'\"${__ave_nonce}\"$'\\a'",
+  // The prompt prints the B marker of the moment, set by the hook above (bash
+  // expands variables in PS1 after decoding its escapes, so the variable
+  // holds the raw ESC/BEL).
+  "__ave_b=''",
   "shopt -s promptvars",
   "PS1=\"${PS1:-\\s-\\v\\$ }\"'\\[${__ave_b}\\]'",
-  "trap '__ave_preexec' DEBUG",
+  // C must reach the terminal, never a file: a DEBUG trap runs inside the
+  // redirections of a group (`{ cmd; } > f` would capture the marker and its
+  // nonce). Bash 4.4 and later expand PS0 after reading a line and print it
+  // before running it, outside any redirection the line makes; the
+  // substitution runs the hook in a subshell, which prints C. Older bash
+  // keeps the DEBUG trap; terminal_run refuses those shells (no bracketed
+  // paste), so only commands the user types run there.
+  "if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then",
+  "  PS0='$(__ave_preexec)'",
+  "else",
+  "  trap '__ave_preexec' DEBUG",
+  "fi",
   "",
 ].join("\n");
 

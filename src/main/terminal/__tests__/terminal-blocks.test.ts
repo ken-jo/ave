@@ -21,9 +21,18 @@ const osc = (body: string, terminator: "bel" | "st" = "bel"): string =>
   `${ESC}]${body}${terminator === "bel" ? BEL : `${ESC}\\`}`;
 /** This terminal's marker nonce, as the shell integration would carry it. */
 const NONCE = "0123456789abcdef0123456789abcdef";
-/** An authenticated OSC 133 marker: its fields, then the nonce. */
-const mark = (fields: string, terminator: "bel" | "st" = "bel"): string =>
-  osc(`133;${fields};${NONCE}`, terminator);
+/** The B token the test prompts announce in their P marker. */
+const PROMPT_TOKEN = "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf";
+/**
+ * An authenticated OSC 133 marker: its fields, then the nonce. A P marker
+ * also announces the prompt's B token, and B carries that token instead of
+ * the nonce (the prompt string prints it).
+ */
+const mark = (fields: string, terminator: "bel" | "st" = "bel"): string => {
+  if (fields === "B") return osc(`133;B;${PROMPT_TOKEN}`, terminator);
+  const announced = fields.startsWith("P;") && !fields.includes(";B=") ? `${fields};B=${PROMPT_TOKEN}` : fields;
+  return osc(`133;${announced};${NONCE}`, terminator);
+};
 
 /** One prompt-command-output-finish cycle, as the generated zsh rc emits it. */
 function cycle(command: string, output: string, exit: number, cwd = "/work"): string {
@@ -135,8 +144,47 @@ describe("TerminalBlockTracker — OSC 133", () => {
 
   it("falls back to the echoed input when C carries no command text", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-    tracker.recordOutput(`${mark("A")}$ ${mark("B")}make test\r\n${mark("C")}ok\r\n${mark("D;0")}`);
+    tracker.recordOutput(`${mark("P;Cwd=/work")}${mark("A")}$ ${mark("B")}make test\r\n${mark("C")}ok\r\n${mark("D;0")}`);
     expect(tracker.recent(1)[0]).toMatchObject({ command: "make test", output: "ok\n" });
+  });
+
+  it("accepts B only with the token its prompt's P announced, and only while that prompt is up", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    const forged = (token: string): string => osc(`133;B;${token}`);
+    // Before any P: no token to match.
+    tracker.recordOutput(`${mark("A")}$ ${mark("B")}`);
+    expect(tracker.promptEndCount()).toBe(0);
+    tracker.recordOutput(`${mark("D;0")}${mark("P;Cwd=/work;Keys=emacs;Paste=1;B=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")}${mark("A")}$ `);
+    // The nonce, another token, or a field too many is ordinary output.
+    tracker.recordOutput(`${osc(`133;B;${NONCE}`)}${forged("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")}${osc("133;B;aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;x")}`);
+    expect(tracker.promptEndCount()).toBe(0);
+    tracker.recordOutput(forged("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    expect(tracker.promptEndCount()).toBe(1);
+    expect(tracker.promptState()).toBe("ready");
+    // A command prints its own prompt's B while it runs: output, not a prompt.
+    tracker.recordOutput(`${mark("C;cmdline_url=x")}${forged("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")}`);
+    expect(tracker.promptEndCount()).toBe(1);
+    expect(tracker.promptState()).toBe("command-running");
+    // After it, the next prompt has a new token; the old one is stale.
+    tracker.recordOutput(`${mark("D;0")}${mark("P;Cwd=/work;Keys=emacs;Paste=1;B=cccccccccccccccccccccccccccccccc")}${mark("A")}$ ${forged("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")}`);
+    expect(tracker.promptEndCount()).toBe(1);
+    tracker.recordOutput(forged("cccccccccccccccccccccccccccccccc"));
+    expect(tracker.promptEndCount()).toBe(2);
+  });
+
+  it("reads a repeated B as the line editor redrawing its prompt: the echo starts over, the count and typing stay", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(`${mark("D;0")}${mark("P;Cwd=/work;Keys=emacs;Paste=1")}${mark("A")}$ ${mark("B")}`);
+    expect(tracker.promptState()).toBe("ready");
+    // A resize redraws the prompt text and its B.
+    tracker.recordOutput(`\r$ ${mark("B")}`);
+    expect(tracker.promptEndCount()).toBe(1);
+    expect(tracker.promptState()).toBe("ready");
+    tracker.recordInput("l");
+    tracker.recordOutput("l");
+    tracker.recordOutput(`\r$ ${mark("B")}l`);
+    expect(tracker.editLineText()).toBe("l");
+    expect(tracker.promptState()).toBe("pending-input");
   });
 
   it("closes a block whose D never came when the next prompt starts, without an exit code", () => {
@@ -195,7 +243,7 @@ describe("TerminalBlockTracker — OSC 133", () => {
 
   it("bounds a newline-free prompt and echoed input as well", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-    tracker.recordOutput(mark("A"));
+    tracker.recordOutput(`${mark("P;Cwd=/work")}${mark("A")}`);
     tracker.recordOutput("p".repeat(2 * 1024 * 1024));
     tracker.recordOutput(mark("B"));
     tracker.recordOutput("e".repeat(2 * 1024 * 1024));

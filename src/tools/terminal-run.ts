@@ -71,7 +71,7 @@ const MAX_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs / 1000;
 /**
  * Type a command into a terminal (pty-manager `typeTerminalCommand`): reset
  * the line editor, check the shell against the operating system, paste the
- * line, press Enter.
+ * line, and press Enter once the edit line shows exactly that line.
  */
 export type TypeTerminalCommand = (
   tabId: string,
@@ -158,8 +158,9 @@ const TEXT_PROBLEM_MESSAGES: Record<TerminalCommandTextProblem, string> = {
   "history-expansion": "command uses shell history expansion (a ! before a word, or a leading ^), which would run text nobody approved; quote or rephrase it",
   comment: "command holds a # comment, which some interactive shells run as text; remove it",
   "shell-divergent": "command uses a construct an interactive zsh and bash run differently (a word starting with =, a zsh parameter flag such as $=x or $+x, nocorrect, noglob, -, repeat, an assignment after command or builtin, a command of redirections alone, or the r/fc history re-run); rephrase it",
-  "shell-state": "command would change the shell for the user's later commands (a function definition, an alias, trap, hook, option or key binding, sourced code, or an assignment to a prompt, hook, PATH or IFS variable); terminal_run does not do that",
+  "shell-state": "command would change the shell for the user's later commands (a function definition, an alias, trap, hook, option or key binding, sourced code, an edit or listing of the shell history, or an assignment to a prompt, hook, PATH or IFS variable); terminal_run does not do that",
   "shell-integration": "command refers to the terminal's own shell-integration names (__ave_*), which terminal_run does not expose",
+  "shell-introspection": "command would print the shell's own state (prompt expansion with print -P or ${...@P}, the prompt, hook or line-editor variables such as PS1 or PROMPT_COMMAND, a listing of variables or declarations such as export -p or compgen, vared, or print -z/-s); terminal_run does not expose it",
   "unchecked-construct": "command uses a construct terminal_run cannot check (case, declare, typeset, local, let, ((...)), select, coproc, a glob with parentheses such as *(...), which zsh runs as glob qualifiers, a command name taken from a variable, or a parameter expansion with zsh flags or bash indirection such as ${(P)x} or ${!x}); rephrase it with plain commands",
   incomplete: "command is not one complete shell command (an open quote, here-document, trailing operator or backslash), so the shell would wait for more input",
 };
@@ -183,6 +184,28 @@ function parseInput(raw: unknown): TerminalRunInput {
     ...(input.tabId === undefined ? {} : { tabId: input.tabId as string }),
     waitSeconds: waitSeconds as number,
   };
+}
+
+/** How long a call waits for the shell to report starting the typed command, whatever its waitSeconds. */
+const BLOCK_START_WAIT_MS = 3_000;
+
+/** Wait until block `id` has opened (or the shell exits), `waitMs` passes, or `signal` aborts. */
+function waitForBlockStart(tracker: TerminalBlockTracker, id: number, waitMs: number, signal: AbortSignal | undefined): Promise<void> {
+  const started = (): boolean => tracker.get(id) !== null || tracker.hasExited();
+  if (started() || signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      unsubscribe();
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, waitMs);
+    const unsubscribe = tracker.subscribe(() => {
+      if (started()) finish();
+    });
+    signal?.addEventListener("abort", finish, { once: true });
+  });
 }
 
 /** One page of a block wait: the block once it opened, and whether it finished. */
@@ -324,11 +347,20 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     if (!typed.ok) {
       return terminalToolFailure(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
     }
+    // Whatever the wait, give the shell time to report starting the command
+    // (its C marker, which records the line it ran), so the line can be checked.
+    await waitForBlockStart(tracker, typed.firstBlockId, BLOCK_START_WAIT_MS, ctx.abortSignal);
     const { block, finished } = await waitForBlock(tracker, typed.firstBlockId, input.waitSeconds * 1000, ctx.abortSignal);
+    if (block === null) {
+      return {
+        ...fenceTerminalData({ tabId: scope.tabId, typed: true, finished, error: t("be_terminalRun.notVerified", { tabId: scope.tabId }) }),
+        isError: true,
+      };
+    }
     // The shell's own record of what it ran (its C marker) against what was
     // approved. Typing cannot prove the line editor inserted the text as
     // written; this can, after the fact.
-    if (block !== null && block.command.trim() !== input.command.trim()) {
+    if (block.command.trim() !== input.command.trim()) {
       deps.auditMismatch({
         sessionId,
         tabId: scope.tabId,
@@ -350,12 +382,8 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       tabId: scope.tabId,
       typed: true,
       finished,
-      ...(block === null ? {} : { block: withOutputBudget([block])[0] }),
-      ...(finished ? {} : {
-        note: block === null
-          ? t("be_terminalRun.notStarted", { tabId: scope.tabId })
-          : t("be_terminalRun.stillRunning", { tabId: scope.tabId, blockId: block.id }),
-      }),
+      block: withOutputBudget([block])[0],
+      ...(finished ? {} : { note: t("be_terminalRun.stillRunning", { tabId: scope.tabId, blockId: block.id }) }),
     });
   };
 

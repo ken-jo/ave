@@ -60,7 +60,10 @@ async function run(
   const typed: string[] = [];
   const typeCommand: TypeTerminalCommand = async (_tabId, _windowId, line) => {
     typed.push(line);
-    return { ok: true, firstBlockId: tracker.nextBlockId() };
+    const firstBlockId = tracker.nextBlockId();
+    // The shell starts it and records the line it ran (its C marker).
+    queueMicrotask(() => tracker.recordOutput(`\r\n${mark(`C;cmdline_url=${encodeURIComponent(line)}`)}`));
+    return { ok: true, firstBlockId };
   };
   const registry = new ToolRegistry();
   registry.register(createTerminalRunTool({

@@ -307,6 +307,12 @@ export class TerminalBlockTracker {
    * (`Keys=` and `Paste=` on the P marker), or null when it reported none.
    */
   private editor: { readonly keys: string; readonly bracketedPaste: boolean } | null = null;
+  /**
+   * The token the current prompt's B marker carries, announced in its P
+   * marker. B comes from the prompt string, which prompt expansion can print,
+   * so it carries this per-prompt token instead of the nonce.
+   */
+  private promptEndToken: string | null = null;
   /** Called after every authenticated marker and on exit (see {@link subscribe}). */
   private readonly listeners = new Set<() => void>();
 
@@ -357,6 +363,20 @@ export class TerminalBlockTracker {
   /** How many prompts the shell has finished drawing; grows by one with each new prompt. */
   promptEndCount(): number {
     return this.promptEnds;
+  }
+
+  /** Whether the user pressed a key at the current prompt (emulator replies aside). */
+  typedSincePromptEnd(): boolean {
+    return this.inputSincePromptEnd;
+  }
+
+  /**
+   * What the line editor shows after the prompt: typed or pasted text as the
+   * shell echoed it, with line breaks from wrapping removed. Empty when no
+   * prompt is up.
+   */
+  editLineText(): string {
+    return this.phase === "input" ? this.echo.text().replace(/[\r\n]/gu, "") : "";
   }
 
   /** The working directory the shell last reported, or null before it reported one. */
@@ -573,6 +593,7 @@ export class TerminalBlockTracker {
   private handleOsc(body: string, flush: () => void): string | null {
     if (!body.startsWith("133;")) return null;
     const fields = body.slice(4).split(";");
+    if (fields[0] === "B") return this.handlePromptEnd(fields, flush);
     // The nonce is the last field. Anything else — no nonce, a wrong one, a
     // marker a program printed — changes nothing, and in particular does not
     // switch the fallback off.
@@ -595,6 +616,8 @@ export class TerminalBlockTracker {
         const keys = params.find((p) => p.startsWith("Keys="))?.slice("Keys=".length);
         const paste = params.find((p) => p.startsWith("Paste="))?.slice("Paste=".length);
         this.editor = keys === undefined || paste === undefined ? null : { keys, bracketedPaste: paste === "1" };
+        const token = params.find((p) => p.startsWith("B="))?.slice("B=".length);
+        this.promptEndToken = token !== undefined && /^[0-9a-f]{16,}$/u.test(token) ? token : null;
         break;
       }
       case "A":
@@ -602,13 +625,6 @@ export class TerminalBlockTracker {
         // interrupted command in some shells): close it without an exit code.
         if (this.open) this.closeOpen(null);
         this.phase = "prompt";
-        break;
-      case "B":
-        this.sawPromptEnd = true;
-        this.promptEnds++;
-        this.inputSincePromptEnd = false;
-        this.echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
-        this.phase = "input";
         break;
       case "C": {
         if (this.open) this.closeOpen(null);
@@ -639,6 +655,28 @@ export class TerminalBlockTracker {
     }
     this.notify();
     return marker;
+  }
+
+  /**
+   * B, the end of the prompt text. Accepted only with the current prompt's
+   * token and only while that prompt is up: the first B after A ends the
+   * prompt; a later one is the line editor redrawing it (a resize, Ctrl-L),
+   * which re-echoes the edit line, so only the echo starts over. A B printed
+   * while a command runs, or with any other token, is ordinary output.
+   */
+  private handlePromptEnd(fields: readonly string[], flush: () => void): string | null {
+    if (fields.length !== 2 || this.promptEndToken === null || fields[1] !== this.promptEndToken) return null;
+    if (this.phase !== "prompt" && this.phase !== "input") return null;
+    flush();
+    if (this.phase === "prompt") {
+      this.sawPromptEnd = true;
+      this.promptEnds++;
+      this.inputSincePromptEnd = false;
+      this.phase = "input";
+    }
+    this.echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
+    this.notify();
+    return "B";
   }
 
   private appendText(text: string): void {
