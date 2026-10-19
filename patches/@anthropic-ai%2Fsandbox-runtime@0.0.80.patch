@@ -1,0 +1,240 @@
+Two backports onto @anthropic-ai/sandbox-runtime 0.0.80. Drop each part when a
+released version carries it, and the whole patch (and the patchedDependencies
+entry in package.json) when both are released and Ave pins that version.
+test/scripts/asrt-patched-symbols.test.ts fails if either part is missing from
+the installed package.
+
+1. https://github.com/anthropics/sandbox-runtime/pull/722 (issue #721): a
+   per-wrap `ttys` option that grants file-ioctl on the named pty slave only,
+   so the workspace terminal's shell can set its own tty (no double echo,
+   working job control) without allowPty's grant on every /dev/ttys*.
+
+2. https://github.com/anthropics/sandbox-runtime/pull/735 (issue #734): the
+   ask callback is told which invocation asked. `SandboxAskCallback` receives
+   a second argument `{ attributionKey }`, the decoded proxy-username key (the
+   wrap's `commandId`) that the per-command lists and the violation store are
+   keyed by. Without it an embedder that runs several invocations through the
+   one process-wide proxy cannot tell which of them opened the connection it
+   is asked about. Carried regardless of upstream review (owner 2026-10-19).
+
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 46dc273..fe6a09e 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -3,7 +3,7 @@ export type { WrapWithSandboxOptions } from './sandbox/sandbox-manager.js';
+ export { SandboxViolationStore } from './sandbox/sandbox-violation-store.js';
+ export type { SandboxRuntimeConfig, NetworkConfig, FilesystemConfig, FilesystemPathEntry, CredentialsConfig, CredentialFileConfig, CredentialEnvVarConfig, CredentialMode, IgnoreViolationsConfig, } from './sandbox/sandbox-config.js';
+ export { SandboxRuntimeConfigSchema, NetworkConfigSchema, FilesystemConfigSchema, CredentialsConfigSchema, IgnoreViolationsConfigSchema, RipgrepConfigSchema, } from './sandbox/sandbox-config.js';
+-export type { SandboxAskCallback, FsReadRestrictionConfig, FsWriteRestrictionConfig, CredentialRestrictionConfig, NetworkRestrictionConfig, NetworkHostPattern, } from './sandbox/sandbox-schemas.js';
++export type { SandboxAskCallback, SandboxAskContext, FsReadRestrictionConfig, FsWriteRestrictionConfig, CredentialRestrictionConfig, NetworkRestrictionConfig, NetworkHostPattern, } from './sandbox/sandbox-schemas.js';
+ export type { FilterRequestCallback, RequestDecision, RequestInfo, MutateForwardedHeaders, } from './sandbox/request-filter.js';
+ export type { SandboxViolationEvent } from './sandbox/macos-sandbox-utils.js';
+ export { type SandboxDependencyCheck, LinuxSandboxProfileError, type LinuxSandboxProfileErrorCode, } from './sandbox/linux-sandbox-utils.js';
+diff --git a/dist/sandbox/macos-sandbox-utils.d.ts b/dist/sandbox/macos-sandbox-utils.d.ts
+index 8af5e03..cb47568 100644
+--- a/dist/sandbox/macos-sandbox-utils.d.ts
++++ b/dist/sandbox/macos-sandbox-utils.d.ts
+@@ -48,6 +48,8 @@ export interface MacOSSandboxParams {
+     degradeToDenyPaths?: readonly string[];
+     ignoreViolations?: IgnoreViolationsConfig | undefined;
+     allowPty?: boolean;
++    /** Pty slave devices the caller spawns the child on (backport of anthropics/sandbox-runtime#722). */
++    ttys?: readonly string[];
+     allowGitConfig?: boolean;
+     /**
+      * Directories to emit as `safe.directory` via `GIT_CONFIG_*` env
+@@ -114,4 +116,5 @@ export declare function startMacOSSandboxLogMonitor(callback: SandboxViolationCa
+  *  `sanitizeUnregisteredCommandKey`, which treats the key as the untrusted
+  *  bytes it arrived as. */
+ resolveCommandText: (decodedKey: string) => string): () => void;
++export declare function assertPtySlavePaths(ttys: readonly string[]): void;
+ //# sourceMappingURL=macos-sandbox-utils.d.ts.map
+\ No newline at end of file
+diff --git a/dist/sandbox/macos-sandbox-utils.js b/dist/sandbox/macos-sandbox-utils.js
+index 0e598b6..f176ead 100644
+--- a/dist/sandbox/macos-sandbox-utils.js
++++ b/dist/sandbox/macos-sandbox-utils.js
+@@ -750,7 +750,7 @@ function generateWriteRules(config, logTag, allowGitConfig, writeRoots) {
+ /**
+  * Generate complete sandbox profile
+  */
+-function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, httpProxyPort, socksProxyPort, needsNetworkRestriction, allowUnixSockets, allowAllUnixSockets, allowLocalBinding, allowMachLookup, allowPty, allowGitConfig = false, enableWeakerNetworkIsolation = false, allowAppleEvents = false, logTag, }) {
++function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, httpProxyPort, socksProxyPort, needsNetworkRestriction, allowUnixSockets, allowAllUnixSockets, allowLocalBinding, allowMachLookup, allowPty, ttys = [], allowGitConfig = false, enableWeakerNetworkIsolation = false, allowAppleEvents = false, logTag, }) {
+     const profile = [
+         '(version 1)',
+         `(deny default (with message "${logTag}"))`,
+@@ -1032,6 +1032,16 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
+         profile.push('  (regex #"^/dev/ttys")');
+         profile.push(')');
+     }
++    else if (ttys.length > 0) {
++        // Backport of anthropics/sandbox-runtime#722: the child's own terminal
++        // only. Without file-ioctl on it, TIOCSETA and TIOCSPGRP fail with
++        // EPERM: a shell cannot turn off echo or run job control.
++        profile.push('');
++        profile.push('; Pseudo-terminal: only the terminals the caller named');
++        for (const device of ttys) {
++            profile.push(`(allow file-ioctl (literal ${escapePath(device)}))`);
++        }
++    }
+     return profile.join('\n');
+ }
+ /**
+@@ -1040,11 +1050,27 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
+ function escapePath(pathStr) {
+     return JSON.stringify(pathStr);
+ }
++const PTY_SLAVE_PATH = /^\/dev\/ttys[0-9]{3,}$/;
++/**
++ * Throws unless every entry is a pty slave device path (`/dev/ttys` and three
++ * or more digits). Backport of anthropics/sandbox-runtime#722.
++ */
++export function assertPtySlavePaths(ttys) {
++    for (const device of ttys) {
++        if (typeof device !== 'string' || !PTY_SLAVE_PATH.test(device)) {
++            throw new Error(`ttys: ${JSON.stringify(device)} is not a pty slave device ` +
++                '(expected /dev/ttys followed by three or more digits)');
++        }
++    }
++}
+ /**
+  * Wrap command with macOS sandbox
+  */
+ export function wrapCommandWithSandboxMacOS(params) {
+-    const { command, commandId, needsNetworkRestriction, httpProxyPort, socksProxyPort, proxyAuthToken, caCertPath, javaAgentJarPath, allowUnixSockets, allowAllUnixSockets, allowLocalBinding, allowMachLookup, readConfig, writeConfig, unsetEnvVars, setEnvVars, maskedFileBinds, degradeToDenyPaths, allowPty, allowGitConfig = false, gitSafeDirectories, enableWeakerNetworkIsolation = false, allowAppleEvents = false, binShell, } = params;
++    const { command, commandId, needsNetworkRestriction, httpProxyPort, socksProxyPort, proxyAuthToken, caCertPath, javaAgentJarPath, allowUnixSockets, allowAllUnixSockets, allowLocalBinding, allowMachLookup, readConfig, writeConfig, unsetEnvVars, setEnvVars, maskedFileBinds, degradeToDenyPaths, allowPty, ttys = [], allowGitConfig = false, gitSafeDirectories, enableWeakerNetworkIsolation = false, allowAppleEvents = false, binShell, } = params;
++    // Before any early return: a malformed entry is refused even when nothing
++    // else would make this command sandboxed.
++    assertPtySlavePaths(ttys);
+     // SBPL cannot redirect a read to different bytes, so whole-file masking
+     // degrades to read-deny on macOS: the sandboxed process gets EPERM
+     // instead of the sentinel. The DYLD interposer (a later step) lifts
+@@ -1098,6 +1124,7 @@ export function wrapCommandWithSandboxMacOS(params) {
+         allowLocalBinding,
+         allowMachLookup,
+         allowPty,
++        ttys,
+         allowGitConfig,
+         enableWeakerNetworkIsolation,
+         allowAppleEvents,
+diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
+index 5c46e7a..fc7e15a 100644
+--- a/dist/sandbox/sandbox-manager.d.ts
++++ b/dist/sandbox/sandbox-manager.d.ts
+@@ -45,6 +45,13 @@ export type WrapWithSandboxOptions = {
+      * reported as the violation's `command`. Defaults to `command`.
+      */
+     commandText?: string;
++    /**
++     * macOS: the pty slave devices (`/dev/ttysNNN`) the command is spawned on.
++     * Each gets `file-ioctl` as a literal; other terminals stay denied. Any
++     * entry not matching `^/dev/ttys[0-9]{3,}$` throws. Backport of
++     * anthropics/sandbox-runtime#722.
++     */
++    ttys?: readonly string[];
+ };
+ /**
+  * Interface for the sandbox manager API
+diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
+index 810b0aa..a941d40 100644
+--- a/dist/sandbox/sandbox-manager.js
++++ b/dist/sandbox/sandbox-manager.js
+@@ -16,7 +16,7 @@ import * as fs from 'fs';
+ import { randomBytes } from 'node:crypto';
+ import { WorkingDirectoryChanged, wrapCommandWithSandboxLinux, initializeLinuxNetworkBridge, checkLinuxDependencies, cleanupBwrapMountPoints, linuxGetCwdMandatoryDenyPaths, } from './linux-sandbox-utils.js';
+ import { expandReadDenyGlobLinuxSteps } from './read-deny-glob.js';
+-import { wrapCommandWithSandboxMacOS, startMacOSSandboxLogMonitor, } from './macos-sandbox-utils.js';
++import { assertPtySlavePaths, wrapCommandWithSandboxMacOS, startMacOSSandboxLogMonitor, } from './macos-sandbox-utils.js';
+ import { startLinuxSandboxViolationMonitor, } from './linux-violation-monitor.js';
+ import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
+ import { getDefaultWritePaths, containsGlobChars, globBaseDirIsRoot, globPatternBaseDir, normalizePathForSandbox, removeTrailingGlobSuffix, walkGlobPatternSteps, workingDirectory, finish, finishInTurns, attributionKeyFor, decodeSandboxedCommand, encodeSandboxedCommand, } from './sandbox-utils.js';
+@@ -353,8 +353,11 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+     // Coming after both configured lists, it lifts the default deny for that
+     // one command and never a configured deniedDomains entry. The username is
+     // presented by the sandboxed client: see registerCommandNetworkLists.
+-    const perCommand = encodedCommand
+-        ? commandNetworkListsByKey.get(decodeSandboxedCommand(encodedCommand))
++    const attributionKey = encodedCommand
++        ? decodeSandboxedCommand(encodedCommand)
++        : undefined;
++    const perCommand = attributionKey !== undefined
++        ? commandNetworkListsByKey.get(attributionKey)
+         : undefined;
+     for (const allowedDomain of perCommand?.allowedDomains ?? []) {
+         if (matchesDomainPatternWithPort(canonicalHost, port, allowedDomain)) {
+@@ -369,7 +372,10 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+     logForDebugging(`No matching rule, asking user: ${host}:${port}`);
+     try {
+         // Held as unknown: a JavaScript caller is not bound by the declared type.
+-        const answer = await sandboxAskCallback({ host, port });
++        // Backport of anthropics/sandbox-runtime#735: the key the per-command
++        // lists and the violation store use, so the callback can tell which
++        // invocation opened the connection.
++        const answer = await sandboxAskCallback({ host, port }, { attributionKey });
+         // Only `true` allows: an object is how a callback denies with a reason,
+         // and a truthiness test here would read every such denial as an allow.
+         if (answer === true) {
+@@ -1515,6 +1521,9 @@ async function waitToWalk(signal) {
+     };
+ }
+ async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
++    // Backport of anthropics/sandbox-runtime#722: validated on every platform,
++    // once, before any restart.
++    assertPtySlavePaths(options?.ttys ?? []);
+     return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
+ }
+ /** {@link wrapWithSandbox}, having started over `restarts` times. */
+@@ -1734,6 +1743,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+                 allowMachLookup: getAllowMachLookup(),
+                 ignoreViolations: getIgnoreViolations(),
+                 allowPty,
++                ttys: options?.ttys,
+                 allowGitConfig: getAllowGitConfig(),
+                 gitSafeDirectories,
+                 enableWeakerNetworkIsolation: getEnableWeakerNetworkIsolation(),
+@@ -1821,6 +1831,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+  *   `process.cwd()`. Currently unused on macOS/Linux.
+  */
+ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
++    // Backport of anthropics/sandbox-runtime#722: before the Windows branch.
++    assertPtySlavePaths(options?.ttys ?? []);
+     const platform = getPlatform();
+     if (platform === 'windows') {
+         const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
+diff --git a/dist/sandbox/sandbox-schemas.d.ts b/dist/sandbox/sandbox-schemas.d.ts
+index 4c0be53..1e41362 100644
+--- a/dist/sandbox/sandbox-schemas.d.ts
++++ b/dist/sandbox/sandbox-schemas.d.ts
+@@ -151,8 +151,30 @@ export type NetworkHostPattern = {
+  * Check `SandboxManager.askCallbackDenyReason` before returning an object:
+  * a release without it reads any truthy answer as an allow.
+  */
+-export type SandboxAskCallback = (params: NetworkHostPattern) => Promise<boolean | {
++export type SandboxAskCallback = (params: NetworkHostPattern, context?: SandboxAskContext) => Promise<boolean | {
+     allow: false;
+     reason: string;
+ }>;
++/**
++ * Which invocation opened the connection a SandboxAskCallback is asked about
++ * (backport of anthropics/sandbox-runtime#735, issue #734). The library always
++ * passes it; the parameter is optional only so a callback invoked directly by
++ * existing code still type-checks.
++ *
++ * `attributionKey` is the key the proxy username carries, decoded: the
++ * `commandId` given to `wrapWithSandbox` (or the command text when none was
++ * given), cut to its first 100 characters, the same key a proxy denial is
++ * recorded under in the violation store and that
++ * `registerCommandNetworkLists` is looked up by. It is `undefined` when the
++ * connection named no key (the bare `srt` username).
++ *
++ * The sandboxed process chooses which username it presents, so the key is a
++ * label, not a credential. Compare it with ids you minted at random (at least
++ * 128 bits, as `registerCommandNetworkLists` requires) and treat any other
++ * value as unattributed. It is passed whether or not this process wrapped a
++ * command under it.
++ */
++export type SandboxAskContext = {
++    attributionKey: string | undefined;
++};
+ //# sourceMappingURL=sandbox-schemas.d.ts.map
+\ No newline at end of file

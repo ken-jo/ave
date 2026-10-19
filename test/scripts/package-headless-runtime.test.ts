@@ -41,6 +41,18 @@ it("advertises the packaged permission-audit contracts", async () => {
   expect(module.HEADLESS_LAUNCHER).toContain('"$@"');
 });
 
+it("accepts only a Node 22 runtime at or above the engines floor", async () => {
+  const module = await import(packager) as { isSupportedHeadlessNodeVersion: (version: string) => boolean };
+  const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as { engines: { node: string } };
+  expect(pkg.engines.node).toBe(">=22.12");
+  for (const version of ["v22.12.0", "v22.15.1", "v22.20.0"]) {
+    expect(module.isSupportedHeadlessNodeVersion(version), version).toBe(true);
+  }
+  for (const version of ["v22.4.0", "v22.11.9", "v24.20.0", "v20.19.0", "22.12.0", "v22.12"]) {
+    expect(module.isSupportedHeadlessNodeVersion(version), version).toBe(false);
+  }
+});
+
 it.skipIf(process.platform === "win32")("blocks an inherited preload before every native command", async () => {
   const module = await import(packager) as { HEADLESS_LAUNCHER: string };
   const root = mkdtempSync(join(tmpdir(), "native-launch-environment-"));

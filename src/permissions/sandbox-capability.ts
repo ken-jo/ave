@@ -896,7 +896,7 @@ export function isWeakSandbox(cap: SandboxCapability): boolean {
  * Behaviour invariant: a full-confine ASRT relaxes ALL categories, matching the
  * historical `isWeakSandbox(cap) === false` behavior. A partial-confine ASRT
  * relaxes only the categories covered by its declared dimensions. This actively
- * applies on Windows ASRT 0.0.76 (`filesystem + network`, no process): network
+ * applies on Windows ASRT 0.0.80 (`filesystem + network`, no process): network
  * and filesystem-bearing read/write/meta calls may relax, but shell calls may
  * not relax because process isolation is absent.
  */

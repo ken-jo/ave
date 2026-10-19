@@ -25,6 +25,7 @@ import type {
   SandboxRuntimeConfig,
   NetworkConfig,
   FilesystemConfig,
+  FilesystemPathEntry,
   WindowsConfig,
   WindowsBinShell,
   SandboxAskCallback,
@@ -331,7 +332,7 @@ export interface TrustedSandboxSettings {
  * per command, and it can only ever NARROW or RE-SHAPE the filesystem jail —
  * it cannot widen network egress and cannot carry any sandbox-weakening flag.
  *
- * Windows ASRT 0.0.76 note: `srt-win exec` supports per-exec `denyRead` /
+ * Windows ASRT 0.0.80 note: `srt-win exec` supports per-exec `denyRead` /
  * `denyWrite` only. Non-empty per-exec `allowRead` / `allowWrite` is rejected
  * before calling ASRT. Long-lived plugin workers that need explicit read/write
  * grants use {@link grantWindowsWorkerFilesystemAccess} with a dedicated
@@ -578,7 +579,7 @@ export function assertPerExecFilesystemSupported(
     return;
   }
   throw new Error(
-    `${caller}: ASRT 0.0.76 on Windows does not support per-exec ` +
+    `${caller}: ASRT 0.0.80 on Windows does not support per-exec ` +
       "filesystem.allowRead/allowWrite; only per-exec denyRead/denyWrite " +
       "are supported. Long-lived plugin workers must use the holder-PID " +
       "Windows ACL grant path instead.",
@@ -597,8 +598,9 @@ export function assertPerExecFilesystemSupported(
  * each ancestor D of the denied path, after those allows, and the last
  * matching rule wins. A deny on `W/<marker>` therefore makes `(literal W)`
  * unremovable and unreplaceable while every other entry inside W stays
- * writable. ASRT 0.0.76 offers no per-command literal rule of its own, so the
- * root is pinned through this one.
+ * writable. ASRT 0.0.80 offers no per-command literal rule of its own (its
+ * `{ path, literal: true }` entry only stops a name being read as a glob; the
+ * entry is still a subpath grant), so the root is pinned through this one.
  *
  * macOS only. Under bubblewrap each write root is its own bind mount: the
  * child's `rmdir` or `rename` of it fails with EBUSY, so the marker is not
@@ -727,8 +729,10 @@ export function isGrantPathWithin(root: string, path: string): boolean {
  * What a Windows filesystem grant is given instead of the path a plugin named.
  * `srt-win acl grant` canonicalises the path it is handed — it follows a
  * junction or symlink in any component and stamps its `(OI)(CI)` ACE on the
- * TARGET (measured on ASRT 0.0.76: a grant on `data\link` landed on the
- * directory the junction named). A path below an envelope root passes through
+ * TARGET (measured on ASRT 0.0.76; through ASRT 0.0.80 the srt-win source
+ * changes only in merging a batch's duplicate targets, #656: a grant on
+ * `data\link` landed on the directory the junction named). A path
+ * below an envelope root passes through
  * directories the plugin's own process can replace with a junction between any
  * check and the grant, so no lstat walk closes it. What the outermost root
  * rests on depends on which root it is. `data/` and `sockets/` are directories
@@ -852,6 +856,26 @@ export interface SandboxWrapResult {
   readonly env: NodeJS.ProcessEnv;
 }
 
+/**
+ * A path list of the per-command config as the Linux wrapper replays it. Since
+ * ASRT 0.0.79 (unchanged in ASRT 0.0.80) ASRT types these lists as `FilesystemPathEntry[]`, which admits a marked
+ * `{ path, literal: true }` entry; this module only ever hands ASRT plain
+ * spellings, and the wrapper's re-allow replay compares spellings, so a marked
+ * entry here is a contract break, refused rather than replayed as something
+ * it is not.
+ */
+function spelledPathEntries(entries: readonly FilesystemPathEntry[], field: string): string[] {
+  return entries.map((entry) => {
+    if (typeof entry !== "string") {
+      throw new Error(
+        `applyLinuxReadMaskWriteFloor: per-command ${field} holds a marked literal entry; `
+          + "the Linux wrapper replays plain spellings only",
+      );
+    }
+    return entry;
+  });
+}
+
 function applyLinuxReadMaskWriteFloor(
   wrapped: SandboxWrapResult,
   filesystem: PerCommandFilesystem | undefined,
@@ -863,8 +887,8 @@ function applyLinuxReadMaskWriteFloor(
     // ASRT was given, after the floor withheld what it withholds.
     const applied = buildPerCommandSandboxCustomConfig(filesystem)?.filesystem;
     return hardenLinuxSandboxWrap(wrapped, {
-      ...(applied?.allowRead !== undefined ? { allowRead: applied.allowRead } : {}),
-      ...(applied?.denyWrite !== undefined ? { denyWrite: applied.denyWrite } : {}),
+      ...(applied?.allowRead !== undefined ? { allowRead: spelledPathEntries(applied.allowRead, "allowRead") } : {}),
+      ...(applied?.denyWrite !== undefined ? { denyWrite: spelledPathEntries(applied.denyWrite, "denyWrite") } : {}),
     });
   } catch (error) {
     cleanupAfterCommand();
@@ -949,7 +973,7 @@ export function isAsrtSandboxActive(): boolean {
  * PLATFORM: every entry is a LITERAL absolute path (NO glob chars). On macOS the
  * stripped path is a recursive seatbelt subpath; on Linux bwrap deny-binds the
  * literal path (bwrap cannot glob — ASRT only `expandGlobPattern`s entries that
- * CONTAIN glob chars, so literals are safe on both). On Windows, ASRT 0.0.76
+ * CONTAIN glob chars, so literals are safe on both). On Windows, ASRT 0.0.80
  * applies filesystem rules through the srt-sandbox user ACL backend.
  *
  * NO-FALLBACK (deny-by-default): paths are derived from `os.homedir()` /
@@ -1456,7 +1480,7 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
             ...(trustedSettings.windows?.proxyPortRange ??
               DEFAULT_WINDOWS_PROXY_PORT_RANGE),
           ] as [number, number],
-          // ASRT 0.0.76: srt-win path is REQUIRED — no implicit vendored
+          // ASRT 0.0.80: srt-win path is REQUIRED — no implicit vendored
           // resolution. Supply the explicit SoT path so SandboxManager.initialize
           // (+ wrapWithSandboxArgv + the in-initialize dependency check) can spawn
           // the backend instead of throwing. See getVendoredSrtWinExePath.
@@ -1492,7 +1516,7 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
 
 /**
  * A fixed, no-I/O workload used only to prove that Linux can actually start the
- * configured ASRT/bwrap wrapper. ASRT 0.0.76's dependency check verifies
+ * configured ASRT/bwrap wrapper. ASRT 0.0.80's dependency check verifies
  * binaries, but cannot detect hosts that prohibit the wrapper's user namespace
  * / seccomp setup until a wrapped process starts.
  *
@@ -1702,10 +1726,11 @@ async function discardFailedAsrtInitialization(
  *
  * askCb SUPERSESSION (corrects WIRING-A #1356): the enforced model is GLOBAL
  * strict hard-deny — boot sets `strictAllowlist: true`. Under strict,
- * `filterNetworkRequest` NEVER calls the askCb (it hard-denies on any
- * out-of-union host: `if (!sandboxAskCallback || config.network.strictAllowlist)
- * return false`). The interactive host-tool askCb prompt added in WIRING-A is
- * therefore inert under strict and is NOT passed at boot anymore. `askCb` stays
+ * `filterNetworkRequest` NEVER calls the askCb: in ASRT 0.0.80 the order is
+ * `deniedDomains`, then `allowedDomains`, then the strict deny, and only after
+ * that the per-command lists and the callback, so an out-of-union host is
+ * refused before either is consulted. The interactive host-tool askCb prompt
+ * added in WIRING-A is therefore inert under strict and is NOT passed at boot anymore. `askCb` stays
  * an optional param only for a NON-strict configuration (not used by the
  * shipped enforced model); when `strictAllowlist` is true it is dead weight by
  * design.
@@ -1715,7 +1740,12 @@ async function discardFailedAsrtInitialization(
  *               callback entirely (hard-deny). Kept so a future non-strict
  *               configuration has a hook; boot does not pass it. The wiring
  *               test passes a recording callback purely to PROVE strict never
- *               consults it.
+ *               consults it. A non-strict callback must resolve to the literal
+ *               `true` to allow: ASRT 0.0.80 denies every other value, truthy
+ *               ones included, and reads `{ allow: false, reason }` as a deny
+ *               with that reason. Its optional second argument carries the
+ *               invocation's `attributionKey` (the carried bun patch; see
+ *               test/scripts/asrt-patched-symbols.test.ts).
  * @param enableLogMonitor  Forwarded to ASRT (violation log monitor). Default
  *                          off to avoid surprising background activity.
  */
@@ -2301,7 +2331,7 @@ export interface DynamicEndpointSettings {
  * order-stable.
  *
  * RESOLVED-ADDRESS CHECK: being on this list admits a NAME, not whatever it
- * resolves to. ASRT 0.0.76 resolves an allow-listed hostname once at dial time
+ * resolves to. ASRT 0.0.80 resolves an allow-listed hostname once at dial time
  * and refuses it when every answer is loopback, unspecified, link-local,
  * multicast, a cloud-metadata endpoint, or an address on one of this host's own
  * interfaces. `localhost` / `*.localhost` may still reach loopback, an IP
@@ -2459,13 +2489,13 @@ export async function unregisterWorkerUnixSocketDir(socketDir: string, holder: o
 
 /**
  * Apply a Windows-only, worker-lifetime filesystem grant under a dedicated
- * holder PID. ASRT 0.0.76 cannot carry per-exec allowRead/allowWrite through
+ * holder PID. ASRT 0.0.80 cannot carry per-exec allowRead/allowWrite through
  * `wrapWithSandboxArgv()`, and `updateConfig()` explicitly does not apply
  * Windows filesystem changes live. The supported live primitive is therefore
  * srt-win's refcounted ACL grant/revoke path, keyed by a holder PID that the
  * caller owns for exactly one worker.
  *
- * ASRT 0.0.76: every srt-win-backed helper (status query, grant, revoke) takes
+ * ASRT 0.0.80: every srt-win-backed helper (status query, grant, revoke) takes
  * an EXPLICIT `srtWin` spawn descriptor — there is no implicit vendored fallback.
  * We resolve it ONCE here (from the SoT {@link getVendoredSrtWinExePath}) and
  * thread it through the status probe, the grant, and BOTH revoke paths (the
