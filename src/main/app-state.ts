@@ -17,6 +17,7 @@
 import type { BrowserWindow, Tray, WebContents } from "electron";
 import type { WindowManager } from "./window-manager.js";
 import type { AppServices } from "../boot.js";
+import { terminalOwnerWindowId } from "./terminal/pty-manager.js";
 import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type GitMarketplaceDeepLink } from "../shared/git-marketplace.js";
 
 // Main-window identity and mode-driven bounds manager. Created before
@@ -143,6 +144,18 @@ export function findSessionMainWindowContents(sessionId: string | undefined): We
   if (sessionId === undefined) return null;
   const holder = sessionContentsLookup?.(sessionId) ?? null;
   return holder && !holder.isDestroyed() && mainWindowForContents(holder) ? holder : null;
+}
+
+/**
+ * The live main window renderer that owns workspace terminal `tabId`, or null
+ * when no shell runs under it or its window is gone. A terminal tab's egress
+ * ask is drawn there, in the tab's banner, and nowhere else.
+ */
+export function findTerminalMainWindowContents(tabId: string): WebContents | null {
+  const ownerWindowId = terminalOwnerWindowId(tabId);
+  if (ownerWindowId === undefined || ownerWindowId === null) return null;
+  const owner = liveMainWindows().find((win) => win.id === ownerWindowId);
+  return owner && !owner.webContents.isDestroyed() ? owner.webContents : null;
 }
 
 /**

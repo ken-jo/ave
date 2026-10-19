@@ -137,6 +137,11 @@ interface TerminalSession {
   disposeData: () => void;
   disposeExit: () => void;
   cleanupSandboxHome: () => void;
+  /**
+   * Aborted when the tab closes or its shell ends: denies the tab's pending
+   * egress asks at once instead of leaving their banners to time out.
+   */
+  egressAbort: AbortController;
   forceKillTimer: ReturnType<typeof setTimeout> | null;
   closing: boolean;
   exited: boolean;
@@ -208,10 +213,19 @@ function resolveLoginShell(): string {
  * as {@link deriveSandboxWritePaths} so the validated path and the derived jail
  * see bit-identical strings.
  */
+/**
+ * The workspace root every terminal is anchored to (its write-jail): the app's
+ * one default workspace, shared with agent shell calls, which is why a
+ * terminal's egress ask offers no "This workspace".
+ */
+function terminalWorkspaceRoot(): string {
+  return canonicalizePathForMatch(process.cwd());
+}
+
 function resolveTerminalCwd(
   requested: string | undefined,
 ): { ok: true; cwd: string } | { ok: false; message: string } {
-  const root = canonicalizePathForMatch(process.cwd());
+  const root = terminalWorkspaceRoot();
   if (requested === undefined) return { ok: true, cwd: root };
   if (typeof requested !== "string" || !isAbsolute(requested)) {
     return { ok: false, message: "terminal cwd must be an absolute path" };
@@ -529,9 +543,18 @@ async function spawnNewTerminal(
     }
 
     // The tab's egress token, for the life of this shell: every proxy deny of
-    // the shell and its children is audited under the tab.
-    const egress = openEgressInvocation({ kind: "terminal", tabId });
-    const releaseEgress = addCleanup(() => egress.release());
+    // the shell and its children is audited under the tab, and a connection to
+    // a host no grant covers is asked about in the tab's banner. Releasing it
+    // (the shell ended: the tab closed) drops the tab's "This tab" grants.
+    const egressAbort = new AbortController();
+    const egress = openEgressInvocation(
+      { kind: "terminal", tabId },
+      { abortSignal: egressAbort.signal },
+    );
+    const releaseEgress = addCleanup(() => {
+      egressAbort.abort(new Error("terminal shell ended"));
+      egress.release();
+    });
     const { argv, env } =
       ownTty === undefined
         ? await wrapWorkerCommand(cmdline, { filesystem, abortSignal: owner.abort.signal, commandId: egress.token })
@@ -582,6 +605,7 @@ async function spawnNewTerminal(
       disposeData: () => {},
       disposeExit: () => {},
       cleanupSandboxHome,
+      egressAbort,
       forceKillTimer: null,
       closing: false,
       exited: false,
@@ -679,6 +703,19 @@ export function terminalOwnedBy(tabId: string, ownerWindowId: number | null): bo
     if (!waiter.cancelled) return waiter.ownerWindowId === ownerWindowId;
   }
   return true;
+}
+
+/**
+ * The window that owns a live (or starting) terminal tab: where that tab's
+ * egress asks are drawn. Undefined when no shell runs or starts under the id;
+ * null when the shell belongs to no window.
+ */
+export function terminalOwnerWindowId(tabId: string): number | null | undefined {
+  const session = sessions.get(tabId);
+  if (session && !session.exited && !session.closing) return session.ownerWindowId;
+  const inFlight = terminalSpawnsInFlight.get(tabId);
+  if (inFlight && !inFlight.cancelled) return inFlight.ownerWindowId;
+  return undefined;
 }
 
 /** Forward user keystrokes to the PTY. No-op for an unknown/exited tab. An
@@ -810,6 +847,8 @@ export function killTerminal(tabId: string): void {
   const session = sessions.get(tabId);
   if (!session || session.closing) return;
   session.closing = true;
+  // The tab is closing: its banners go now, not when the shell has exited.
+  session.egressAbort.abort(new Error("terminal tab closed"));
   session.disposeData();
   try {
     if (!session.exited) session.pty.kill();

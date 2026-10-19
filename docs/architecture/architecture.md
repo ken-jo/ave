@@ -1426,28 +1426,44 @@ process's environment.
 ASRT runs non-strict with an empty `allowedDomains`, so the callback decides
 every connection: a plugin worker reaches its own extension's declared
 domains and the configured model endpoints, nothing else, and is never asked;
-a workspace terminal is refused with a fixed reason until the tab banner
-lands; a Bash or PowerShell call reaches a host a grant covers, and otherwise
+a Bash or PowerShell call reaches a host a grant covers, and otherwise
 the person is asked on the approval dock (Deny, Allow once, This
-conversation, This workspace, Always; `src/permissions/egress-grants.ts`
-holds the grants, the persistent ones in
+conversation, This workspace, Always); a workspace terminal tab (always in
+the foreground) reaches a host a grant covers, and otherwise the person is
+asked in a banner in that tab, drawn only in, fetched by and answered from
+the window that owns the tab (Deny, Allow once, This tab, Always: a
+terminal's Allow once lets that one connection through and is never held;
+"This tab" takes the place of "This conversation" and lasts until the tab's
+shell exits, including an exit followed by a respawn; terminals have no
+This workspace, since every tab runs in the app's one default workspace,
+which agent shell calls share). A persistent grant records its origin
+(`shell` or `terminal`) and covers only that origin, so a terminal's Always
+never lets an agent's shell call through, nor the reverse; Settings shows the
+origin. Working directories are compared after `canonicalizePathForMatch`. The
+connection is held while the banner is up and denied after 120 s without an
+answer, or at once when the tab closes; connections from one tab to one
+destination share one banner row. While no view of the tab is mounted the
+ask is drawn on the focused pane's lane instead
+(`src/ui/renderer/components/permissions/TerminalEgressBanner.tsx`).
+`src/permissions/egress-grants.ts` holds the grants, the persistent ones in
 `<AVE_HOME>/permissions/shell-egress-hosts.json`, revocable in Settings →
-Permissions → Network). A background call nobody can answer, asks turned off
+Permissions → Network. A background call nobody can answer, asks turned off
 (`features.shellEgressAsk`), or an unreadable grant file is a refusal.
 Destinations are classed by `egressDestinationNetwork()` on the host and every
 address it resolved to, most restrictive first: link-local, cloud metadata,
 unspecified, multicast and broadcast addresses are refused without asking;
 loopback, `localhost`/`*.localhost`, local-network names (`*.local`,
 `*.localdomain`, `*.home.arpa`, `*.internal`, `*.lan`), RFC1918, CGNAT, ULA
-and site-local addresses are offered at most This conversation, with a local-network warning on the
-card, and persistent grants never apply to them. Only the desktop window
-answers an egress ask; an answer from any other surface leaves it pending. Conversation grants are
-listed and revocable in Settings too, and revoking a grant closes the
+and site-local addresses are offered at most This conversation (a terminal:
+This tab), with a local-network warning on the card, and persistent grants
+never apply to them. Only the desktop window
+answers an egress ask; an answer from any other surface leaves it pending. Conversation and
+tab grants are listed and revocable in Settings too, and revoking a grant closes the
 connections it let through that are still open. Each decision, including a
 refusal the proxy made before asking, writes an `egress-decision` sandbox audit
 row. Where the identity is
 only the proxy username (Windows srt-win, `egressIdentityStrength() ===
-"shared"`), grants stop at This conversation.
+"shared"`), grants stop at This conversation (a terminal: This tab).
 
 `spawnWorker` is the only host primitive that can establish that worker-backed
 plugin substrate. macOS and Linux workers use an ASRT-wrapped Unix-domain-socket

@@ -1611,7 +1611,7 @@ export type AvePermissionApi = {
    * that opened it ("unattributed" when no live invocation held its key).
    */
   egressDenialsRecent: () => Promise<EgressDenialRow[] | IpcErrorResult>;
-  /** Read-only: the shell egress grants that outlive a call (conversation, workspace, always). */
+  /** Read-only: the shell egress grants that outlive a call (conversation, terminal tab, workspace, always). */
   egressGrantsList: () => Promise<
     | { ok: true; grants: ListedEgressGrant[] }
     | { ok: false; error: string; message: string }
@@ -1619,11 +1619,13 @@ export type AvePermissionApi = {
   >;
   /** MUTATING: revoke one shell egress grant. */
   egressGrantRevoke: (grant: {
-    scope: "conversation" | "workspace" | "always";
+    scope: "conversation" | "tab" | "workspace" | "always";
     host: string;
     port: number;
+    origin?: "shell" | "terminal";
     workspaceRoot?: string;
     sessionId?: string;
+    tabId?: string;
   }) => Promise<{ ok: boolean; error?: string; message?: string } | IpcErrorResult>;
   /**
    * MUTATING: trigger the one-time Windows srt-win install (one self-elevating

@@ -25,6 +25,9 @@ const SHELL_TOKEN = "5".repeat(32);
 const WORKER_TOKEN = "6".repeat(32);
 const TERMINAL_TOKEN = "7".repeat(32);
 const OTHER_SHELL_TOKEN = "8".repeat(32);
+const OTHER_TERMINAL_TOKEN = "9".repeat(32);
+const TERMINAL_TAB = "terminal:0a1b2c3d-1";
+const OTHER_TERMINAL_TAB = "terminal:0a1b2c3d-2";
 
 const interactiveShell: ShellEgressOwner = {
   kind: "shell",
@@ -76,7 +79,8 @@ beforeEach(() => {
     [SHELL_TOKEN, interactiveShell],
     [OTHER_SHELL_TOKEN, { ...interactiveShell, toolUseId: "toolu_2" }],
     [WORKER_TOKEN, { kind: "worker", role: "worker", pluginId: "fixture_plugin", instanceId: "w1" }],
-    [TERMINAL_TOKEN, { kind: "terminal", tabId: "tab-1" }],
+    [TERMINAL_TOKEN, { kind: "terminal", tabId: TERMINAL_TAB }],
+    [OTHER_TERMINAL_TOKEN, { kind: "terminal", tabId: OTHER_TERMINAL_TAB }],
   ]);
   audit = [];
   asked = [];
@@ -169,7 +173,7 @@ describe("egress ask callback — plugin workers", () => {
 
   it("never lets a shell grant reach a worker (I4)", async () => {
     await grants.grant("always", ["once", "conversation", "workspace", "always"], {
-      token: SHELL_TOKEN, sessionId: undefined, workspaceRoot: undefined,
+      token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const,
     }, { host: "github.com", port: 443 });
     const ask = callback();
     expect(await ask({ host: "github.com", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
@@ -185,11 +189,278 @@ describe("egress ask callback — plugin workers", () => {
   });
 });
 
-describe("egress ask callback — workspace terminal", () => {
-  it("denies with the fixed reason and never asks", async () => {
+describe("egress ask callback — workspace terminal tab (design F)", () => {
+  /** Lets the callback's real-I/O steps (the grant file read) run while setTimeout is faked. */
+  async function untilAsked(count: number): Promise<void> {
+    for (let i = 0; i < 1000 && asked.length < count; i++) await new Promise((resolve) => setImmediate(resolve));
+    expect(asked).toHaveLength(count);
+  }
+
+  /** An answer that only comes when the ask is ended (the banner timed out or the tab closed). */
+  const answerOnlyOnAbort = (request: EgressApprovalRequest): Promise<EgressApprovalAnswer> =>
+    new Promise((resolve) => {
+      request.abortSignal?.addEventListener("abort", () => resolve({ allow: false, reason: "network approval answer was rejected" }), { once: true });
+    });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("asks in the tab with This tab in place of This conversation, always (a terminal is never background)", async () => {
+    const ask = callback();
+    expect(await ask({ host: "GitHub.com", port: 443 }, listener(TERMINAL_TOKEN)))
+      .toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({
+      origin: "terminal",
+      tabId: TERMINAL_TAB,
+      destination: { host: "github.com", port: 443 },
+      scopes: ["once", "tab", "always"],
+      network: "public",
+    });
+    expect(asked[0]).not.toHaveProperty("sessionId");
+    expect(audit.at(-1)).toMatchObject({
+      entryKind: "egress-decision",
+      invocation: { kind: "terminal", tabId: TERMINAL_TAB },
+      destination: { host: "GitHub.com", port: 443 },
+      decision: "deny",
+      basis: "prompt",
+      scope: null,
+      reason: "denied by the user",
+    });
+  });
+
+  it.each([
+    ["public", "github.com", [], "pinned", ["once", "tab", "always"]],
+    ["local (loopback)", "127.0.0.1", [], "pinned", ["once", "tab"]],
+    ["local (RFC 1918 by resolution)", "nas.corp.example", ["10.20.30.40"], "pinned", ["once", "tab"]],
+    ["local (local-network name)", "printer.local", [], "upstream", ["once", "tab"]],
+    ["unverified (the upstream resolves the name)", "intranet.corp.test", [], "upstream", ["once", "tab"]],
+  ] as const)("offers the %s class exactly its scopes", async (_label, host, addresses, resolution, scopes) => {
+    await callback()({ host, port: 8443 }, listener(TERMINAL_TOKEN, addresses, resolution));
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.scopes).toEqual(scopes);
+    expect(asked[0]?.network).toBe(_label.split(" ")[0]);
+  });
+
+  it("refuses a reserved destination without a banner", async () => {
+    expect(await callback()({ host: "169.254.169.254", port: 80 }, listener(TERMINAL_TOKEN)))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
+    expect(await callback()({ host: "meta.example", port: 80 }, listener(TERMINAL_TOKEN, ["169.254.169.254"])))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
+    expect(asked).toEqual([]);
+    expect(audit.map((row) => [row.decision, row.basis, row.invocation])).toEqual([
+      ["deny", "policy", { kind: "terminal", tabId: TERMINAL_TAB }],
+      ["deny", "policy", { kind: "terminal", tabId: TERMINAL_TAB }],
+    ]);
+  });
+
+  it("caps a terminal at This tab where the identity is shared", async () => {
+    strength = "shared";
+    await callback()({ host: "github.com", port: 443 }, { attributionKey: TERMINAL_TOKEN, identity: "username", addresses: [], resolution: "pinned" });
+    expect(asked[0]?.scopes).toEqual(["once", "tab"]);
+  });
+
+  it("This tab covers later connections from that tab only, and an audit row names the scope", async () => {
+    answer = async () => ({ allow: true, scope: "tab" });
+    const ask = callback();
+    expect(await ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN))).toBe(true);
+    expect(await ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN))).toBe(true);
+    expect(asked).toHaveLength(1);
+    expect(audit.map((row) => [row.decision, row.basis, row.scope, row.invocation])).toEqual([
+      ["allow", "prompt", "tab", { kind: "terminal", tabId: TERMINAL_TAB }],
+      ["allow", "grant", "tab", { kind: "terminal", tabId: TERMINAL_TAB }],
+    ]);
+    expect(grants.listTab()).toEqual([
+      { scope: "tab", tabId: TERMINAL_TAB, host: "github.com", port: 443, grantedAt: expect.any(String) },
+    ]);
+    // Another tab, and a shell call in the same workspace, are asked again.
+    answer = async () => ({ allow: false, reason: "denied by the user" });
+    expect(await ask({ host: "github.com", port: 443 }, listener(OTHER_TERMINAL_TOKEN))).not.toBe(true);
+    expect(await ask({ host: "github.com", port: 443 }, listener(SHELL_TOKEN))).not.toBe(true);
+    expect(asked).toHaveLength(3);
+  });
+
+  it("a conversation grant never covers a terminal, and a terminal's Always never covers a shell call, nor the reverse", async () => {
+    await grants.grant("conversation", ["conversation"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
+      { host: "github.com", port: 443 });
+    const ask = callback();
+    expect(await ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
+    // Always from the terminal's banner: every terminal tab, no shell call.
+    answer = async () => ({ allow: true, scope: "always" });
+    expect(await ask({ host: "registry.npmjs.org", port: 443 }, listener(TERMINAL_TOKEN))).toBe(true);
+    expect(await ask({ host: "registry.npmjs.org", port: 443 }, listener(OTHER_TERMINAL_TOKEN))).toBe(true);
+    expect(asked).toHaveLength(2);
+    answer = async () => ({ allow: false, reason: "denied by the user" });
+    expect(await ask({ host: "registry.npmjs.org", port: 443 }, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked).toHaveLength(3);
+    // Always and This workspace from a shell call's card: no terminal tab.
+    answer = async () => ({ allow: true, scope: "always" });
+    expect(await ask({ host: "pypi.org", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
+    answer = async () => ({ allow: true, scope: "workspace" });
+    expect(await ask({ host: "crates.io", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
+    answer = async () => ({ allow: false, reason: "denied by the user" });
+    expect(await ask({ host: "pypi.org", port: 443 }, listener(TERMINAL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
+    expect(await ask({ host: "crates.io", port: 443 }, listener(TERMINAL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked).toHaveLength(7);
+    expect((await grants.listPersistent()).map((grant) => [grant.scope, grant.origin, grant.host])).toEqual([
+      ["always", "terminal", "registry.npmjs.org"],
+      ["always", "shell", "pypi.org"],
+      ["workspace", "shell", "crates.io"],
+    ]);
+  });
+
+  it("Allow once lets exactly one connection through and is never held: the next connection asks again", async () => {
+    answer = async () => ({ allow: true, scope: "once" });
+    const ask = callback();
+    expect(await ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN))).toBe(true);
+    expect(asked).toHaveLength(1);
+    answer = async () => ({ allow: false, reason: "denied by the user" });
+    expect(await ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked).toHaveLength(2);
+    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([
+      ["allow", "prompt", "once"],
+      ["deny", "prompt", null],
+    ]);
+    expect(grants.listTab()).toEqual([]);
+    expect(await grants.listPersistent()).toEqual([]);
+  });
+
+  it("a local destination's This tab grant is offered and kept; a persistent grant never covers it", async () => {
+    await grants.grant("always", ["always"], { token: TERMINAL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "terminal" as const },
+      { host: "127.0.0.1", port: 8080 });
+    answer = async () => ({ allow: true, scope: "tab" });
+    const ask = callback();
+    expect(await ask({ host: "127.0.0.1", port: 8080 }, listener(TERMINAL_TOKEN))).toBe(true);
+    expect(await ask({ host: "127.0.0.1", port: 8080 }, listener(TERMINAL_TOKEN))).toBe(true);
+    expect(asked).toHaveLength(1);
+    expect(audit.at(-1)).toMatchObject({ decision: "allow", basis: "grant", scope: "tab" });
+  });
+
+  it("folds concurrent connections to one destination from one tab into one banner; other destinations ask on their own", async () => {
+    const releases: Array<(value: EgressApprovalAnswer) => void> = [];
+    answer = () => new Promise((resolve) => { releases.push(resolve); });
+    const ask = callback();
+    const first = ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
+    const second = ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
+    const third = ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
+    const otherHost = ask({ host: "registry.npmjs.org", port: 443 }, listener(TERMINAL_TOKEN));
+    const otherTab = ask({ host: "github.com", port: 443 }, listener(OTHER_TERMINAL_TOKEN));
+    await vi.waitFor(() => expect(asked).toHaveLength(3));
+    expect(asked.map((request) => [request.origin === "terminal" ? request.tabId : null, request.destination.host])).toEqual([
+      [TERMINAL_TAB, "github.com"],
+      [TERMINAL_TAB, "registry.npmjs.org"],
+      [OTHER_TERMINAL_TAB, "github.com"],
+    ]);
+    // Allow once on the shared banner lets one of the three through; the
+    // other two fold into the next banner, whose This tab covers both.
+    releases[0]!({ allow: true, scope: "once" });
+    releases[1]!({ allow: false, reason: "denied by the user" });
+    releases[2]!({ allow: false, reason: "denied by the user" });
+    await vi.waitFor(() => expect(asked).toHaveLength(4));
+    expect(asked[3]).toMatchObject({ origin: "terminal", tabId: TERMINAL_TAB, destination: { host: "github.com", port: 443 } });
+    releases[3]!({ allow: true, scope: "tab" });
+    expect(await Promise.all([first, second, third])).toEqual([true, true, true]);
+    expect(await otherHost).toEqual({ allow: false, reason: "denied by the user" });
+    expect(await otherTab).toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked).toHaveLength(4);
+    expect(audit.filter((row) => row.destination.host === "github.com" && row.invocation?.kind === "terminal" && (row.invocation as { tabId: string }).tabId === TERMINAL_TAB)
+      .map((row) => [row.decision, row.basis, row.scope])).toEqual([
+      ["allow", "prompt", "once"],
+      ["allow", "prompt", "tab"],
+      ["allow", "prompt", "tab"],
+    ]);
+  });
+
+  it("denies after 120 s without an answer, with the timeout reason, and a later connection asks again", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    answer = answerOnlyOnAbort;
+    const ask = callback();
+    let settled: unknown;
+    const pending = ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN)).then((value) => { settled = value; return value; });
+    await untilAsked(1);
+    const signal = asked[0]!.abortSignal!;
+    expect(signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(settled).toBeUndefined();
+    expect(signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.terminalTimeout });
+    expect(signal.aborted).toBe(true);
+    expect(audit.at(-1)).toMatchObject({
+      invocation: { kind: "terminal", tabId: TERMINAL_TAB },
+      decision: "deny",
+      basis: "prompt",
+      reason: EGRESS_DENY_REASONS.terminalTimeout,
+    });
+    // The coalesced ask is gone: the next connection gets a new banner.
+    void ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
+    await untilAsked(2);
+  });
+
+  it("an answer before the deadline wins and clears the timer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    answer = async () => ({ allow: true, scope: "once" });
+    expect(await callback()({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN))).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("closing the tab ends its banner at once, with the requester's reason, not the timeout", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const tab = new AbortController();
+    signals.set(TERMINAL_TOKEN, tab.signal);
+    answer = answerOnlyOnAbort;
+    const pending = callback()({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
+    await untilAsked(1);
+    tab.abort(new Error("terminal tab closed"));
+    expect(await pending).toEqual({ allow: false, reason: "network approval answer was rejected" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("can take a shorter deadline (the native acceptance test's)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    answer = answerOnlyOnAbort;
+    const ask = createEgressAskCallback({
+      identityStrength: () => "kernel-channel",
+      ownerOf: (token) => owners.get(token),
+      abortSignalOf: () => undefined,
+      workerAllowedDomains: () => [],
+      grants,
+      shellAskEnabled: () => true,
+      requester: () => async (request) => { asked.push(request); return answer(request); },
+      audit: () => {},
+      terminalAskTimeoutMs: 2_000,
+    });
+    const pending = ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
+    await untilAsked(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await pending).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.terminalTimeout });
+  });
+
+  it("denies without a banner when asks are off, but keeps granted hosts", async () => {
+    await grants.grant("tab", ["tab"], { token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, workspaceRoot: undefined, origin: "terminal" as const },
+      { host: "registry.npmjs.org", port: 443 });
+    askEnabled = false;
     const ask = callback();
     expect(await ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN)))
-      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.terminal });
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.askOff });
+    expect(await ask({ host: "registry.npmjs.org", port: 443 }, listener(TERMINAL_TOKEN))).toBe(true);
+    expect(asked).toEqual([]);
+  });
+
+  it("fails closed when no approval surface exists or the answer names a scope the banner did not offer", async () => {
+    requesterPresent = false;
+    expect(await callback()({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN)))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.noSurface });
+    requesterPresent = true;
+    answer = async () => ({ allow: true, scope: "conversation" });
+    expect(await callback()({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN)))
+      .toEqual({ allow: false, reason: `${EGRESS_DENY_REASONS.failed}: egress grant: scope conversation was not offered` });
+  });
+
+  it("refuses a terminal identity that only the proxy username vouches for on a kernel-channel host", async () => {
+    expect(await callback()({ host: "github.com", port: 443 }, { attributionKey: TERMINAL_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
     expect(asked).toEqual([]);
   });
 });
@@ -200,6 +471,7 @@ describe("egress ask callback — shell calls", () => {
     expect(await ask({ host: "GitHub.com", port: 443 }, listener(SHELL_TOKEN)))
       .toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toEqual([{
+      origin: "shell",
       sessionId: "session-1",
       toolName: "bash",
       toolUseId: "toolu_1",
@@ -314,7 +586,7 @@ describe("egress ask callback — shell calls", () => {
   });
 
   it("denies without asking when asks are off, but keeps granted hosts", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, workspaceRoot: undefined },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
       { host: "registry.npmjs.org", port: 443 });
     askEnabled = false;
     const ask = callback();
@@ -442,7 +714,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
   });
 
   it("does not let an Always grant for a name cover it once it resolves to a private address", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, workspaceRoot: undefined },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
       { host: "rebind.example", port: 443 });
     expect(await callback()({ host: "rebind.example", port: 443 }, listener(SHELL_TOKEN, ["93.184.215.14"]))).toBe(true);
     expect(asked).toHaveLength(0);
@@ -453,7 +725,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
   });
 
   it("treats a name the upstream proxy resolves as unverified: at most this conversation, and an Always grant does not cover it", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, workspaceRoot: undefined },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
       { host: "intranet.corp.test", port: 443 });
     expect(await callback()({ host: "intranet.corp.test", port: 443 }, listener(SHELL_TOKEN, [], "upstream")))
       .toEqual({ allow: false, reason: "denied by the user" });
@@ -477,7 +749,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
   });
 
   it("never lets a persistent grant cover a local destination", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, workspaceRoot: undefined },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
       { host: "127.0.0.1", port: 8080 });
     expect(await callback()({ host: "127.0.0.1", port: 8080 }, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toHaveLength(1);
