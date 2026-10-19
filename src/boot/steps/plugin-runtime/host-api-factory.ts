@@ -239,8 +239,18 @@ function floatingDock(host: BootHost, getPluginRuntime: () => PluginRuntime): Fl
       (pluginId, extensionId) => getPluginRuntime().resolveFloatingSurface(pluginId, extensionId),
     );
     // Slot titles are manifest text in the UI language; a switch re-resolves
-    // them. Process-lifetime, like the dock itself.
-    onLocaleChange(() => dock.refreshTitles());
+    // them. Process-lifetime, like the dock itself. Re-resolving runs the full
+    // surface lookup (entry containment included), so an entry rejected at
+    // attach is rejected — and audited — again here; that is the lookup's own
+    // rule, not a second one. Isolated so one listener's throw cannot skip the
+    // others in `setLocale`'s loop.
+    onLocaleChange(() => {
+      try {
+        dock.refreshTitles();
+      } catch (error) {
+        log.error({ err: error }, "floating dock titles were not refreshed after a language switch");
+      }
+    });
     sharedFloatingDock = dock;
   }
   return sharedFloatingDock;
