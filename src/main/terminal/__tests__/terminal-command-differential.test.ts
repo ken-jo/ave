@@ -24,6 +24,13 @@
  * be visible to the rules. Anything else is a word the rules never
  * saw, and fails the test.
  *
+ * Each session starts with a command-not-found handler, as Ubuntu's
+ * /etc/bash.bashrc defines one for bash: such a handler runs a program for any
+ * word that is not a command, so terminal_run refuses to type while one is
+ * defined. The harness checks that refusal, then removes the handler as a
+ * user would and runs the corpus; a handler that still ran would show as a
+ * recorded program.
+ *
  * Commands that wait for terminal input or end the shell (read, exit, kill,
  * ...), and background jobs (which may run after their records are read),
  * are not run; the summary counts them.
@@ -42,7 +49,7 @@ import { terminalCommandTextProblem } from "../../../shared/terminal-command-tex
 import { analyzeShellForRules } from "../../../permissions/rules/shell-rule-matcher.js";
 import { wrapperPrefixLength } from "../../../permissions/rules/shell-prefix-policy.js";
 import { analyzeShell } from "../../../shared/shell-analysis.js";
-import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH } from "../../../__tests__/support/terminal-markers.js";
+import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, ubuntuLikeNotFoundHandler } from "../../../__tests__/support/terminal-markers.js";
 
 const NONCE = "0123456789abcdef0123456789abcdef";
 
@@ -422,6 +429,20 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
   const trace = join(rig.root, `trace-${name}`);
   writeFileSync(trace, "");
   const { env } = installShellIntegration(home, shellPath, { nonce: NONCE, sandboxEnv: { HOME: home, XDG_CONFIG_HOME: join(home, "config") } });
+  // Every session starts as on an Ubuntu desktop, whatever the host: a
+  // command-not-found handler (Ubuntu's /etc/bash.bashrc defines one for
+  // bash) ahead of the integration. Its program records a call like a shim,
+  // so a handler that ever ran would show as a program the rules never saw.
+  const notFoundProgram = join(rig.root, `command-not-found-${name}`);
+  writeFileSync(notFoundProgram, [
+    "#!/bin/sh",
+    `f=$(/usr/bin/mktemp '${rig.calls}/call.XXXXXX') || exit 97`,
+    "printf '%s\\0' command-not-found \"$@\" > \"$f\"",
+    "exit 127",
+    "",
+  ].join("\n"), { mode: 0o755 });
+  const rc = join(home, name === "zsh" ? ".zshrc" : ".bash_profile");
+  writeFileSync(rc, ubuntuLikeNotFoundHandler(name, notFoundProgram) + readFileSync(rc, "utf-8"));
   const pty = nodePty.spawn(shellPath, ["-l", "-i"], {
     cwd: rig.box,
     cols: 200,
@@ -472,6 +493,26 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
     await until(() => tracker.promptState() === "ready", 3_000);
     return { blockId: typed.firstBlockId, hung: false };
   };
+
+  // terminal_run types nothing while the handler is defined: it runs code for
+  // any word that is not a command. The user removes it for this terminal (a
+  // key they type, not a line terminal_run types), and the run goes on.
+  await until(() => tracker.promptState() !== "shell-starting", 3_000);
+  const refused = await typeLineAtPrompt({
+    blocks: tracker,
+    isLive: () => !tracker.hasExited(),
+    write: (data) => pty.write(data),
+    verify: async () => ({ ok: true, cwd: canonicalizePathForMatch(tracker.currentCwd() ?? "") }),
+    missing: "no terminal",
+  }, "true");
+  if (refused.ok || refused.reason !== "not-found-handler") {
+    throw new Error(`${name}: typing with a command-not-found handler defined was not refused (${JSON.stringify(refused)})`);
+  }
+  const beforeRemoval = tracker.promptEndCount();
+  pty.write(`${name === "zsh" ? "unfunction command_not_found_handler" : "unset -f command_not_found_handle"}\r`);
+  if (!await until(() => tracker.promptEndCount() > beforeRemoval && tracker.promptState() === "ready", 5_000)) {
+    throw new Error(`${name}: the prompt was not ready after the handler was removed (${tracker.promptState()})`);
+  }
 
   // Trace to a file, every program through the shims, in the sandbox. zsh
   // asks before `rm *` (rm_star_silent off) and waits for the user's y/n;

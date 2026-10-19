@@ -13,7 +13,7 @@
  * ran (its C marker).
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { basename, join } from "node:path";
@@ -23,7 +23,7 @@ import { installShellIntegration } from "../shell-integration.js";
 import { TerminalBlockTracker, USER_INPUT_QUIET_MS } from "../terminal-blocks.js";
 import { foregroundVerdict, typeLineAtPrompt, type TypeTerminalCommandResult } from "../pty-manager.js";
 import { readTerminalForeground } from "../shell-process.js";
-import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH } from "../../../__tests__/support/terminal-markers.js";
+import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, ubuntuLikeNotFoundHandler } from "../../../__tests__/support/terminal-markers.js";
 
 const NONCE = "fedcba9876543210fedcba9876543210";
 
@@ -55,9 +55,24 @@ async function until(condition: () => boolean, timeoutMs = 8_000): Promise<void>
   }
 }
 
-async function startShell(shellPath: string): Promise<LiveShell> {
+/**
+ * Start `shellPath` on a pty with the shell integration. `notFoundProgram`
+ * puts an Ubuntu-like command-not-found handler that calls it ahead of the
+ * integration, where the system startup file would have defined it.
+ */
+async function startShell(shellPath: string, options: { notFoundProgram?: string } = {}): Promise<LiveShell> {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "ave-typing-")));
   const { env } = installShellIntegration(home, shellPath, { nonce: NONCE, sandboxEnv: { HOME: home, XDG_CONFIG_HOME: join(home, "config") } });
+  // The host distro's command-not-found handler is removed (Ubuntu's
+  // /etc/bash.bashrc, read before this file, defines one for bash), so a case
+  // has one only when it installs it: the same on every host.
+  const rc = join(home, basename(shellPath) === "zsh" ? ".zshrc" : ".bash_profile");
+  const removeDistroHandler = basename(shellPath) === "zsh"
+    ? "unfunction command_not_found_handler 2>/dev/null\n"
+    : "unset -f command_not_found_handle\n";
+  writeFileSync(rc, (options.notFoundProgram === undefined
+    ? removeDistroHandler
+    : ubuntuLikeNotFoundHandler(basename(shellPath), options.notFoundProgram)) + readFileSync(rc, "utf-8"));
   const pty = nodePty.spawn(shellPath, ["-l", "-i"], {
     cwd: home,
     cols: 120,
@@ -100,17 +115,24 @@ const BASH = TERMINAL_TEST_MODERN_BASH;
 
 /** Each shell's way to print its prompt string expanded (which prints B). */
 /** Each shell's way to have pasted text rewritten, or not taken as a paste at all. */
-const SHELLS: Array<{ path: string | undefined; enableVi: string; expandPrompt: string; rewritePaste: string }> = [
+const SHELLS: Array<{ path: string | undefined; enableVi: string; expandPrompt: string; rewritePaste: string; removeNotFoundHandler: string }> = [
   {
     path: TERMINAL_TEST_ZSH,
     enableVi: "bindkey -v",
     expandPrompt: "print -rP -- \"$PS1\"",
     rewritePaste: "autoload -Uz bracketed-paste-magic && zle -N bracketed-paste bracketed-paste-magic",
+    removeNotFoundHandler: "unfunction command_not_found_handler",
   },
-  { path: BASH, enableVi: "set -o vi", expandPrompt: "echo \"${PS1@P}\"", rewritePaste: "bind 'set enable-bracketed-paste off'" },
+  {
+    path: BASH,
+    enableVi: "set -o vi",
+    expandPrompt: "echo \"${PS1@P}\"",
+    rewritePaste: "bind 'set enable-bracketed-paste off'",
+    removeNotFoundHandler: "unset -f command_not_found_handle",
+  },
 ];
 
-for (const { path, enableVi, expandPrompt, rewritePaste } of SHELLS) {
+for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler } of SHELLS) {
   describe.runIf(path !== undefined)(`${path}: typing an approved command`, () => {
     it("runs exactly the approved line, and the operating system confirms the shell and its directory", async () => {
       const shell = await startShell(path!);
@@ -179,6 +201,34 @@ for (const { path, enableVi, expandPrompt, rewritePaste } of SHELLS) {
       await ranCommand(shell, await shell.type(rewritePaste));
       await sleep(100);
       await expect(shell.type("echo hi")).resolves.toMatchObject({ ok: false, reason: "no-bracketed-paste" });
+    }, 30_000);
+
+    it("types nothing while a command-not-found handler is defined (Ubuntu's /etc/bash.bashrc), and types once the user removes it", async () => {
+      const program = join(realpathSync(tmpdir()), `ave-not-found-${process.pid}-${basename(path!)}`);
+      const ran = `${program}.log`;
+      writeFileSync(program, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${ran}'\nexit 127\n`, { mode: 0o755 });
+      try {
+        const shell = await startShell(path!, { notFoundProgram: program });
+        // The handler is live: a word that is not a command runs it.
+        const before = shell.tracker.promptEndCount();
+        shell.pty.write("'x'=1\r");
+        await until(() => shell.tracker.promptEndCount() > before);
+        expect(existsSync(ran)).toBe(true);
+        rmSync(ran);
+        await sleep(200);
+        await expect(shell.type("'x'=1")).resolves.toMatchObject({ ok: false, reason: "not-found-handler" });
+        // The user removes it for this terminal; then terminal_run types, and
+        // the same word runs nothing the rules did not see.
+        const removed = shell.tracker.promptEndCount();
+        shell.pty.write(`${removeNotFoundHandler}\r`);
+        await until(() => shell.tracker.promptEndCount() > removed);
+        await sleep(200);
+        expect(await ranCommand(shell, await shell.type("'x'=1"))).toBe("'x'=1");
+        expect(existsSync(ran)).toBe(false);
+      } finally {
+        rmSync(program, { force: true });
+        rmSync(ran, { force: true });
+      }
     }, 30_000);
 
     it("refuses vi key bindings", async () => {

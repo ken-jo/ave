@@ -950,6 +950,7 @@ const TERMINAL_NOT_READY_MESSAGES: Record<Exclude<TerminalPromptState, "ready">,
   "pending-input": "the user is typing at the prompt, pressed a key since it was drawn, or it holds text they typed and have not run",
   "no-bracketed-paste": "the terminal's shell does not take bracketed paste (zsh 5.1 or bash 4.4 and later do), so typed text could be read as keys",
   "vi-editing-mode": "the terminal's shell uses vi key bindings, where typed text can be read as editing commands",
+  "not-found-handler": "the terminal's shell defines a command-not-found handler, which runs code for any word that is not a command",
   "shell-starting": "the terminal's shell is still starting and has not finished its first prompt; retry in a moment",
   "no-prompt-end-marker": "the terminal's shell does not mark the end of its prompt, so typing there cannot be told",
 };

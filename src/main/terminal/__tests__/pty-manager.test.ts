@@ -867,7 +867,7 @@ describe("pty-manager typing an approved agent command", () => {
     const mark = (fields: string): string => `\u001b]133;${fields};${nonce}\u0007`;
     // Each prompt announces a fresh B token in P; B carries it, not the nonce.
     let prompts = 0;
-    const prompt = (fields = ";Keys=emacs;Paste=1"): string => {
+    const prompt = (fields = ";Keys=emacs;Paste=1;NotFound=0"): string => {
       const token = `${(++prompts).toString(16).padStart(2, "0")}`.repeat(16);
       return `${mark("D;0")}${mark(`P;Cwd=/w${fields};B=${token}`)}${mark("A")}% \u001b]133;B;${token}\u0007`;
     };
@@ -953,12 +953,14 @@ describe("pty-manager typing an approved agent command", () => {
     }
   });
 
-  it("refuses a prompt without bracketed paste or with vi keys, before any key is sent", async () => {
+  it("refuses a prompt without bracketed paste, with vi keys, or with a command-not-found handler, before any key is sent", async () => {
     const { pty, prompt } = await zshTerminal(3);
     pty.emitData(prompt(";Keys=emacs;Paste=0"));
     await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-bracketed-paste" });
     pty.emitData(`\r\n${prompt(";Keys=vi;Paste=1")}`);
     await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "vi-editing-mode" });
+    pty.emitData(`\r\n${prompt(";Keys=emacs;Paste=1;NotFound=1")}`);
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "not-found-handler" });
     expect(pty.written).toEqual([]);
   });
 

@@ -430,6 +430,7 @@ const NOT_READY_REASONS: Record<Exclude<ReturnType<TerminalBlockTracker["promptS
   "pending-input": "the user is typing at the prompt, pressed a key since it was drawn, or it holds text they typed and have not run",
   "no-bracketed-paste": "its shell does not take bracketed paste, so typed text could be read as keys; terminal_run needs zsh 5.1 or bash 4.4 or later",
   "vi-editing-mode": "its shell uses vi key bindings, where typed text can be read as editing commands; terminal_run needs emacs key bindings",
+  "not-found-handler": "its shell defines a command-not-found handler (bash command_not_found_handle, which Ubuntu's /etc/bash.bashrc defines; zsh command_not_found_handler), which runs code the permission rules never see for any word that is not a command. terminal_run types only into a shell without one: tell the user they can run `unset -f command_not_found_handle` (bash) or `unfunction command_not_found_handler` (zsh) in that terminal, which removes the handler for that terminal only",
   "shell-starting": "its shell is still starting and has not finished its first prompt; retry in a moment",
   "no-prompt-end-marker": "its shell does not mark the end of its prompt (fish), so whether the user is typing there cannot be told; terminal_run needs zsh or bash",
 };

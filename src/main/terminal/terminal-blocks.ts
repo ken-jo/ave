@@ -239,6 +239,10 @@ function cleanCommand(raw: string): string {
  *    text written to it would be read as keys rather than inserted;
  *  - `vi-editing-mode`: the shell's line editor uses vi key bindings, where
  *    typed text can be read as editing commands;
+ *  - `not-found-handler`: the shell defines a command-not-found handler
+ *    (bash `command_not_found_handle`, as Ubuntu's /etc/bash.bashrc does; zsh
+ *    `command_not_found_handler`), which runs code for any word that is not
+ *    a command, unseen by the permission rules (or the shell did not say);
  *  - `shell-starting`: a shell that marks the end of its prompt (zsh, bash)
  *    has begun its first prompt but not finished it yet;
  *  - `no-prompt-end-marker`: the shell marks no end of prompt (fish), so
@@ -253,6 +257,7 @@ export type TerminalPromptState =
   | "pending-input"
   | "no-bracketed-paste"
   | "vi-editing-mode"
+  | "not-found-handler"
   | "shell-starting"
   | "no-prompt-end-marker";
 
@@ -306,7 +311,7 @@ export class TerminalBlockTracker {
    * The line editor's set-up as the shell reported it at its last prompt
    * (`Keys=` and `Paste=` on the P marker), or null when it reported none.
    */
-  private editor: { readonly keys: string; readonly bracketedPaste: boolean } | null = null;
+  private editor: { readonly keys: string; readonly bracketedPaste: boolean; readonly notFoundHandler: boolean } | null = null;
   /**
    * The token the current prompt's B marker carries, announced in its P
    * marker. B comes from the prompt string, which prompt expansion can print,
@@ -351,6 +356,7 @@ export class TerminalBlockTracker {
       if (this.lastInputAt !== null && this.now() - this.lastInputAt < USER_INPUT_QUIET_MS) return "pending-input";
       if (this.editor?.bracketedPaste !== true) return "no-bracketed-paste";
       if (this.editor.keys !== "emacs") return "vi-editing-mode";
+      if (this.editor.notFoundHandler) return "not-found-handler";
       return "ready";
     }
     if (this.phase === "prompt") {
@@ -615,7 +621,11 @@ export class TerminalBlockTracker {
         }
         const keys = params.find((p) => p.startsWith("Keys="))?.slice("Keys=".length);
         const paste = params.find((p) => p.startsWith("Paste="))?.slice("Paste=".length);
-        this.editor = keys === undefined || paste === undefined ? null : { keys, bracketedPaste: paste === "1" };
+        const notFound = params.find((p) => p.startsWith("NotFound="))?.slice("NotFound=".length);
+        this.editor = keys === undefined || paste === undefined
+          ? null
+          // A shell that does not say whether it has a not-found handler is taken to have one.
+          : { keys, bracketedPaste: paste === "1", notFoundHandler: notFound !== "0" };
         const token = params.find((p) => p.startsWith("B="))?.slice("B=".length);
         this.promptEndToken = token !== undefined && /^[0-9a-f]{16,}$/u.test(token) ? token : null;
         break;

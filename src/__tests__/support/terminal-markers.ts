@@ -19,7 +19,12 @@ const TERMINAL_TEST_PROMPT_TOKEN = "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf";
  */
 export function terminalMarker(fields: string): string {
   if (fields === "B") return `\u001b]133;B;${TERMINAL_TEST_PROMPT_TOKEN}\u0007`;
-  const announced = fields.startsWith("P;") && !fields.includes(";B=") ? `${fields};B=${TERMINAL_TEST_PROMPT_TOKEN}` : fields;
+  let announced = fields;
+  if (fields.startsWith("P;")) {
+    // A shell that reports its line editor also says whether a not-found handler is defined.
+    if (fields.includes(";Keys=") && !fields.includes(";NotFound=")) announced += ";NotFound=0";
+    if (!fields.includes(";B=")) announced += `;B=${TERMINAL_TEST_PROMPT_TOKEN}`;
+  }
   return `\u001b]133;${announced};${TERMINAL_TEST_NONCE}\u0007`;
 }
 
@@ -32,3 +37,25 @@ export const TERMINAL_TEST_MODERN_BASH = ["/opt/homebrew/bin/bash", "/usr/local/
 
 /** zsh on this machine, if any. */
 export const TERMINAL_TEST_ZSH = ["/bin/zsh", "/usr/bin/zsh"].find((path) => existsSync(path));
+
+/**
+ * A command-not-found handler as Ubuntu's /etc/bash.bashrc defines it for
+ * bash (`command_not_found_handle`, calling /usr/lib/command-not-found), and
+ * its zsh counterpart (`command_not_found_handler`), with `program` in place
+ * of the system's helper. Prepended to a terminal's startup file, it stands
+ * for the system file a login shell reads first, on any host.
+ */
+export function ubuntuLikeNotFoundHandler(shellName: string, program: string): string {
+  const quoted = `'${program.replace(/'/gu, `'\\''`)}'`;
+  const body = [
+    `  if [ -x ${quoted} ]; then`,
+    `    ${quoted} -- "$1"`,
+    "    return $?",
+    "  else",
+    "    printf \"%s: command not found\\n\" \"$1\" >&2",
+    "    return 127",
+    "  fi",
+  ];
+  const name = shellName === "zsh" ? "command_not_found_handler" : "command_not_found_handle";
+  return [`function ${name} {`, ...body, "}", ""].join("\n");
+}

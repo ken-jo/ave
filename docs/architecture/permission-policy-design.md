@@ -626,6 +626,19 @@ execution:
   reports it while readline has `enable-bracketed-paste on`, which the
   startup file turns on for bash 4.4 and later. Bash before 4.4, such as
   macOS `/bin/bash` 3.2, has none.
+- a shell with a command-not-found handler (`command_not_found_handle` in
+  bash, `command_not_found_handler` in zsh), reported as `NotFound=` in the
+  `P` marker; a shell that does not report it counts as having one
+  (`not-found-handler`). The shell runs the handler for any word that is not
+  a command, so a line the rules read as running nothing would run the
+  handler's code. Ubuntu's `/etc/bash.bashrc` defines one for every
+  interactive bash when the `command-not-found` package is installed (it runs
+  `/usr/lib/command-not-found`). Ave neither removes nor wraps the handler:
+  the user's own typing keeps it, and the refusal tells the model to ask the
+  user to run `unset -f command_not_found_handle` (bash) or
+  `unfunction command_not_found_handler` (zsh) in that terminal, which
+  removes it for that shell only. Wrapping it for typed lines alone was
+  rejected: the shell cannot tell a pasted line from the user's own.
 
 Typing is a fixed protocol (pty-manager `typeLineAtPrompt`):
 1. Check the prompt state.
