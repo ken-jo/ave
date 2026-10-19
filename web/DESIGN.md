@@ -18,10 +18,10 @@ shows it.
 | Page | What it covers |
 | --- | --- |
 | `/` | Hero loop, the feature tour (one step per feature page), the workbench, what agents work with, three ways to connect a model, safety, extension kinds, the latest release, download. |
-| `/browser/`, `/terminal/`, `/models/`, `/plugins/`, `/security/` | One feature each: hero shot, a split, a bento of crops, facts or a second split, 5–8 questions, next steps. |
+| `/browser/`, `/terminal/`, `/models/`, `/plugins/`, `/security/` | One feature each: hero shot, a split, a bento of crops, facts or a second split, 5–8 questions, next steps. Models adds every provider the app knows (read from `src/shared/llm-vendor-defaults.ts` at build time); Plugins adds the official catalog by kind (`lib/marketplace.json`). |
 | `/download/` | One card per system with the first-launch steps, then connecting a model, leading on to the start guide. |
 | `/docs/**` | The guide (`lib/docs.ts`), one template. |
-| `/changelog/` | `CHANGELOG.md` at build time, Ave's releases (v0.14.0 and later) each with an anchor. |
+| `/changelog/` | `CHANGELOG.md` at build time, Ave's releases (v0.14.0 and later) each with an anchor. The English page shows each release as a headline and bullet points from `lib/changelog-en.ts`, which the build holds to the same releases and item counts. |
 | `404.html`, `en/404.html` | Not-found page with links out. |
 
 ## Navigation
@@ -60,8 +60,9 @@ shows it.
     a caption of about twenty words); *choices* (three equal cards); *facts*
     (three short ruled columns); *kinds* (an icon grid); *questions* (native
     `<details>`); *next steps* (three linked cards).
-12. **Density.** Home about 1,150 English words and 14 media (the tour adds
-    the five feature pages' hero leads and shots); feature pages 600–700
+12. **Density.** Home about 1,750 English words and 19 media (the tour adds
+    each feature page's hero lead, first three points and two shots, and the
+    package stack adds seven catalog packages); feature pages 600–900
     English words and 6–7 media. Korean pages carry the same content.
 
 ## Type and colour
@@ -86,8 +87,16 @@ shows it.
     a static preview site). Each scene was driven and captured over the Chrome
     DevTools Protocol, once in the light theme and once with the Tokyo Night
     theme package installed for dark. The main app shots are 2880×1800 (2×);
-    shots with web pages inside are 1440×900, because guest pages mis-size
-    under emulated device scale.
+    older shots with web pages inside are 1440×900, because guest pages
+    mis-size under emulated device scale. `browser-live`, `browser-live-nav`
+    and `terminal-live` (2026-10-19, app at main 62f897f6d) are 2× with web
+    pages inside: Electron ran with `--force-device-scale-factor=2` and no
+    emulated scale, the window content set to 1440×900. They show the
+    browser or terminal in the main area with the side chat beside it,
+    driven by the scripted model through the real tools (`browser_snapshot`,
+    `browser_navigate`, `terminal_read` and the agent's own shell tool). The
+    agent cannot type into the terminal panel, and none of the captures
+    pretends it does; `terminal-live` is to be replaced once that changes.
 17. **Formats.** Each capture ships as AVIF (quality 62) and WebP (quality 80)
     at full size, plus a half-width 256-colour PNG fallback, for light and
     dark: `public/media/<key>-<light|dark>.<avif|webp|png>`. The hero loop is
@@ -107,22 +116,34 @@ shows it.
       them holds a framed capture. One scroll progress for the tour drives the
       frame's position, scale and rotation through a pose per step, the
       cross-fade between captures, and the current step (`aria-current="step"`
-      on the step, highlighted in the stage's index). A step changes exactly
-      at the middle of its cross-fade. The progress is smoothed by a spring
-      that only follows the scroll position, so scrolling back returns every
-      value to the same frame. Everywhere else (narrow screens, reduced
+      on the step, marked by colour, not opacity, and highlighted in the
+      stage's index). A step changes exactly at the middle of its cross-fade.
+      The frame follows the scroll position 1:1 and moves continuously
+      between step centres, so scrolling back retraces every frame; only the
+      inset capture drifts on a stiff spring. Everywhere else (narrow screens, reduced
       motion, no script) the tour is a plain stack of steps, each with its
       capture untransformed, and is exactly as long as its content.
+    - **Package stack** (`components/pkg-stack.tsx`). Under the extension
+      kinds, one real package per kind from the official catalog, with the
+      install review's fields. With PINNED it is an overlapping stack: scroll
+      walks through it (and back), a pointed-at or focused kind brings its
+      card forward and is highlighted, and pointing at the stack fans it out.
+      Otherwise a plain grid of cards.
     - **Entrances.** Home sections that start below the fold enter once, their
       parts one after the other (`components/motion.tsx`). A section on screen
       at load, or scrolled past, is never hidden; with reduced motion nothing
       is.
     - Beyond that: hover colour and a 0.98 press.
 
+Print shows every element in its static form.
+
 ## Copy
 
 20. Facts come from the app's guide, its UI strings and code, and what the
-    captures show. No testimonials, customer logos, rankings, or numbers
+    captures show. Packages come only from the catalog snapshot
+    (`scripts/marketplace-snapshot.mjs` writes `lib/marketplace.json` from a
+    recorded commit of ken-jo/agent-marketplace), and `lib/marketplace.ts`
+    fails the build for a package name the snapshot does not have. No testimonials, customer logos, rankings, or numbers
     without a source in the app; no placeholder text; no company hosts,
     addresses or paths.
 21. Names match the app's labels (Settings → Model, Allow once, Work mode).

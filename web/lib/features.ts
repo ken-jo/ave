@@ -55,7 +55,7 @@ const ko: Pages = {
       eyebrow: "브라우저",
       title: "에이전트가 웹 페이지를 열고, 읽고, 확인합니다",
       lead: "에이전트는 작업 패널의 브라우저에서 자기 탭을 열고 페이지를 읽은 뒤 링크를 누르고 양식에 입력합니다. 누르고 입력하는 동작은 실행 전에 묻고, 내가 연 탭에서는 그런 동작을 매번 따로 묻습니다.",
-      pic: { k: "browser-agent", alt: "에이전트가 연 탭에 trail-notes 미리보기가 열려 있고, 아래 독에 browser_click 승인 창이 떠 있는 화면" },
+      pic: { k: "browser-live-nav", alt: "메인 영역의 브라우저가 Ridge Loop 상세 페이지로 이동해 있고, 옆 사이드 채팅에 browser snapshot과 browser navigate 단계, 그리고 페이지의 고도 값에 단위가 없다는 답이 보이는 화면" },
     },
     first: {
       eyebrow: "에이전트의 도구",
@@ -68,7 +68,7 @@ const ko: Pages = {
         ["browser_wait", "는 글자가 나타날 때까지, 또는 최대 30초까지 기다립니다."],
         ["browser_tabs, browser_tab_new, browser_tab_close", "로 대화가 열린 창의 탭을 보고 열고 닫습니다. 내가 연 탭도 여기에 포함됩니다. 루틴과 헤드리스 실행에는 브라우저가 없습니다."],
       ],
-      pic: { k: "browser-done", alt: "에이전트가 Ridge Loop 상세 페이지를 열어 확인한 뒤, 목록에 4개 트레일이 있고 고도 단위가 빠졌다고 보고한 화면" },
+      pic: { k: "browser-live", alt: "메인 영역의 브라우저에 트레일 목록 페이지가 열려 있고, 사이드 채팅이 browser snapshot으로 목록을 읽은 뒤 browser_navigate 승인을 요청하는 화면" },
     },
     grid: {
       eyebrow: "안전 장치",
@@ -136,7 +136,7 @@ const ko: Pages = {
       eyebrow: "터미널",
       title: "실제 셸, 샌드박스 안에서",
       lead: "Ave의 터미널은 운영체제 샌드박스 안에서 실제 셸을 돌리는 PTY입니다. 사이드 패널에서 열어 메인 영역으로 옮길 수 있고, 에이전트는 내 명령의 결과를 읽어서 이어서 일합니다.",
-      pic: { k: "terminal-main", alt: "메인 영역에 대화와 터미널이 나란히 있고, 터미널에 git log와 npm test 결과가 보이는 화면" },
+      pic: { k: "terminal-live", alt: "메인 영역의 터미널에 git log와 실패한 npm test 결과가 있고, 옆 사이드 채팅이 terminal read로 터미널을 읽은 뒤 자기 셸 도구로 명령 두 개를 실행해 실패한 테스트를 짚는 화면" },
     },
     first: {
       eyebrow: "명령 블록",
@@ -500,7 +500,7 @@ const en: Pages = {
       eyebrow: "Browser",
       title: "Agents open web pages, read them and check them",
       lead: "In the work panel’s browser, the agent opens its own tab, reads the page, then follows links and fills in forms. Clicking and typing ask before they run, and in tabs you opened those actions ask every time.",
-      pic: { k: "browser-agent", alt: "A tab the agent opened shows the trail-notes preview while an approval card for browser_click waits in the dock below" },
+      pic: { k: "browser-live-nav", alt: "The browser in the main area has moved to the Ridge Loop detail page; the side chat beside it shows the browser snapshot and browser navigate steps and reports that the page’s elevation has no unit" },
     },
     first: {
       eyebrow: "The agent’s tools",
@@ -513,7 +513,7 @@ const en: Pages = {
         ["browser_wait", " waits for text to appear, or for up to 30 seconds."],
         ["browser_tabs, browser_tab_new, browser_tab_close", " list, open and close tabs in the window where the conversation is open, your own tabs included. Routines and headless runs get no browser."],
       ],
-      pic: { k: "browser-done", alt: "After opening the Ridge Loop detail page, the agent reports four trails on the list and a missing elevation unit" },
+      pic: { k: "browser-live", alt: "The browser in the main area shows the trail list; the side chat has read it with browser snapshot and asks for approval to run browser_navigate" },
     },
     grid: {
       eyebrow: "Safeguards",
@@ -581,7 +581,7 @@ const en: Pages = {
       eyebrow: "Terminal",
       title: "A real shell, inside the sandbox",
       lead: "Ave’s terminal is a PTY running a real shell inside the operating-system sandbox. Open it in the side panel, move it to the main area, and let the agent read what your commands returned.",
-      pic: { k: "terminal-main", alt: "The main area with a conversation beside a terminal showing git log and npm test output" },
+      pic: { k: "terminal-live", alt: "The terminal in the main area shows git log and a failing npm test run; the side chat beside it read the terminal with terminal read, ran two commands with its own shell tool, and names the failing test" },
     },
     first: {
       eyebrow: "Command blocks",
