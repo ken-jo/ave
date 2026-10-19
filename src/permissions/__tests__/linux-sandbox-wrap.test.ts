@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chownSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
@@ -310,39 +310,77 @@ it.runIf(process.platform !== "win32")("does not put back a write root that one 
   expect(notReallowed.argv[2]).not.toMatch(new RegExp(`'${pluginRoot}' '${pluginRoot}' '--bind'`));
 });
 
-it.runIf(process.platform !== "win32").each(["", "--bind /tmp/claude /tmp/claude", "--ro-bind /tmp/claude /tmp/claude", "--ro-bind /dev/null /tmp/claude"])("masks the shared temporary root without a host source: %s", (priorMount) => {
+it.runIf(process.platform !== "win32").each(["", "--bind /tmp/claude /tmp/claude", "--ro-bind /tmp/claude /tmp/claude", "--ro-bind /dev/null /tmp/claude"])("masks only the denied temporary leaf without a host source: %s", (priorMount) => {
   const before = lstatSync("/tmp/claude", { throwIfNoEntry: false });
   const wrapped = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", `bwrap --ro-bind / / --bind /tmp /tmp ${priorMount} -- /bin/sh -c 'true'`], env: {} }, { denySharedTempRoot: true });
-  const words = execFileSync("/bin/bash", ["-c", `set -- ${wrapped.argv[2].split("\n# Run the confined command\n").at(-1)!.split("\naveTmpStatus=")[0]}; printf '%s\\n' "$@"`], { encoding: "utf8" }).trimEnd().split("\n");
-  expect(words.some((word, index) => word === "--tmpfs" && words[index + 1] === "/tmp")).toBe(true);
+  const invocation = wrapped.argv[2].split("\n# Run the confined command\n").at(-1)!;
+  const words = execFileSync("/bin/bash", ["-c", `set -- ${invocation}; printf '%s\\n' "$@"`], { encoding: "utf8" }).trimEnd().split("\n");
+  expect(words.some((word, index) => word === "--tmpfs" && words[index + 1] === "/tmp")).toBe(false);
   expect(words.some((word, index) => word === "--tmpfs" && words[index + 1] === "/tmp/claude")).toBe(true);
   expect(words.some((word, index) => word === "--remount-ro" && words[index + 1] === "/tmp/claude")).toBe(true);
-  expect(words.some((word, index) => ["--bind", "--bind-try", "--ro-bind", "--ro-bind-try"].includes(word) && ["/tmp/claude"].includes(words[index + 1]!))).toBe(false);
-  expect(words.some((word, index) => word === "--bind" && words[index + 1] === "/tmp" && words[index + 2] === "/tmp")).toBe(false);
+  expect(words.some((word, index) => ["--bind", "--ro-bind"].includes(word) && words[index + 1] === "/tmp/claude")).toBe(false);
+  expect(words.some((word, index) => word === "--bind" && words[index + 1] === "/tmp" && words[index + 2] === "/tmp")).toBe(true);
   expect(lstatSync("/tmp/claude", { throwIfNoEntry: false })?.ino).toBe(before?.ino);
 });
 
-it.runIf(process.platform === "linux").each([false, true])("refuses a replaced source before startup hooks and workload code: %s", (startupHook) => {
-  const root = mkdtempSync(join(tmpdir(), "ave-tmp-source-"));
-  const target = mkdtempSync(join(tmpdir(), "ave-tmp-target-'\n$(echo unsafe)-"));
-  const moved = `${root}-moved`;
-  temporaryRoots.push(root, target, moved);
-  const launcher = join(root, "bwrap");
-  writeFileSync(join(target, "startup"), "echo startup-ran\n");
-  writeFileSync(launcher, [
-    "#!/bin/bash",
-    `mv -- ${shellQuote(root)} ${shellQuote(moved)}`,
-    `ln -s -- ${shellQuote(target)} ${shellQuote(root)}`,
-    'exec /usr/bin/bwrap "$@"',
-    "",
-  ].join("\n"), { mode: 0o755 });
+it.runIf(process.platform === "linux")("shares newly created temp entries with the host and the next sandbox while denying the reserved leaf", () => {
+  const root = mkdtempSync(join(tmpdir(), "ave-shared-temp-"));
+  temporaryRoots.push(root);
+  const target = join(tmpdir(), `${root.split("/").at(-1)}-new`);
+  temporaryRoots.push(target);
+  const run = (command: string) => {
+    const wrapped = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", `bwrap --unshare-user --unshare-pid --ro-bind / / --bind /tmp /tmp --dev /dev --proc /proc -- /bin/sh -c ${shellQuote(command)}`], env: {} }, { denySharedTempRoot: true });
+    return spawnSync(wrapped.argv[0], wrapped.argv.slice(1), { encoding: "utf8", env: process.env });
+  };
+  const first = run(`printf shared > ${target}`);
+  expect(first.status, first.stderr).toBe(0);
+  expect(execFileSync("cat", [target], { encoding: "utf8" })).toBe("shared");
+  const second = run(`cat ${target}`);
+  expect(second.status, second.stderr).toBe(0);
+  expect(second.stdout).toBe("shared");
+  const denied = run("printf forbidden > /tmp/claude/ave-write-probe");
+  expect(denied.status).not.toBe(0);
+  expect(denied.stderr).toMatch(/read-only/i);
+});
+
+it.runIf(process.platform === "linux").each([
+  "ln -s /var/tmp /tmp/claude",
+  "printf planted > /tmp/claude",
+  "mkdir -m 777 /tmp/claude",
+  "foreign-owned directory",
+])("refuses an unsafe reserved entry before startup hooks or workload: %s", (prepare) => {
   const wrapped = hardenLinuxSandboxWrap({
-    argv: ["/bin/bash", "-c", `${shellQuote(launcher)} --unshare-user --unshare-pid --ro-bind / / --bind /tmp /tmp --dev /dev --proc /proc -- /bin/sh -c 'echo workload-ran'`],
-    env: startupHook ? { BASH_ENV: join(root, "startup") } : {},
+    argv: ["/bin/bash", "-c", "bwrap --ro-bind / / --bind /tmp /tmp -- /bin/sh -c 'echo workload-ran'"],
+    env: {},
   }, { denySharedTempRoot: true });
-  const result = spawnSync(wrapped.argv[0], wrapped.argv.slice(1), { encoding: "utf8", env: { ...process.env, ...wrapped.env } });
+  const foreignDirectory = prepare === "foreign-owned directory";
+  const script = [
+    "chmod 1777 /tmp",
+    foreignDirectory ? "true" : prepare,
+    "printf 'echo startup-ran\\n' > /tmp/startup",
+    "export BASH_ENV=/tmp/startup",
+    "before=$(/usr/bin/stat -c '%d:%i:%u:%a:%F' -- /tmp/claude)",
+    "link=$(/usr/bin/readlink -- /tmp/claude || :)",
+    `/bin/bash -pc ${shellQuote(wrapped.argv[2])}`,
+    "result=$?",
+    "after=$(/usr/bin/stat -c '%d:%i:%u:%a:%F' -- /tmp/claude)",
+    '[[ "$before" == "$after" && "$link" == "$(/usr/bin/readlink -- /tmp/claude || :)" ]] || exit 125',
+    'exit "$result"',
+  ].join("; ");
+  let foreignSource = "/etc";
+  if (foreignDirectory && process.getuid?.() === 0) {
+    const root = mkdtempSync(join(tmpdir(), "ave-foreign-owner-"));
+    temporaryRoots.push(root);
+    foreignSource = join(root, "foreign");
+    mkdirSync(foreignSource);
+    chownSync(foreignSource, 65534, 65534);
+  }
+  // The bind owner is outside the namespace mapping for either launcher UID.
+  const foreignMount = foreignDirectory ? ["--ro-bind", foreignSource, "/tmp/claude"] : [];
+  // The outer namespace owns a fresh temp root; the host's entry stays intact.
+  const result = spawnSync("bwrap", ["--unshare-user", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--tmpfs", "/tmp", ...foreignMount, "--", "/bin/bash", "-pc", script], { encoding: "utf8" });
   expect(result.status, result.stderr).toBe(126);
-  expect(result.stderr).toContain("Sandbox temporary mount changed");
+  expect(result.stderr).toContain("Sandbox cannot reserve /tmp/claude");
   expect(result.stdout).not.toContain("workload-ran");
   expect(result.stdout).not.toContain("startup-ran");
 });

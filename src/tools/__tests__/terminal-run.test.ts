@@ -21,7 +21,7 @@ import type { ApprovalMemoryScope } from "../../shared/permissions-events.js";
 import type { ToolExecutionContext } from "../types.js";
 import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
 
-import { TERMINAL_REGISTRY_COMMANDS } from "../../__tests__/support/terminal-registry-commands.js";
+import { TERMINAL_CALLBACK_COMMANDS, TERMINAL_REGISTRY_COMMANDS } from "../../__tests__/support/terminal-registry-commands.js";
 import { terminalCommandTextProblem } from "../../shared/terminal-command-text.js";
 import { getLocale, setLocale } from "../../i18n/runtime.js";
 import { loadLocaleMessages } from "../../i18n/messages/index.js";
@@ -29,6 +29,26 @@ import { loadLocaleMessages } from "../../i18n/messages/index.js";
 describe("terminal executable registries", () => {
   it.each(TERMINAL_REGISTRY_COMMANDS)("refuses mutation: %s", (command) => {
     expect(terminalCommandTextProblem(command)).not.toBeNull();
+  });
+});
+
+describe("terminal shell callbacks", () => {
+  it.each(TERMINAL_CALLBACK_COMMANDS)("refuses callback execution or assignment: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).not.toBeNull();
+  });
+
+  it.each([
+    "mapfile -t -n1 lines < list",
+    "readarray -tn1 lines < list",
+    "mapfile -dC lines < list",
+    "readarray -d C lines < list",
+    "mapfile -- lines < list",
+    "printf '%%n %s' PATH",
+    "printf '%d' 42",
+    "printf '%.2f' 1.25",
+    "printf -v 'values[0]' '%s' value",
+  ])("allows data without callback evaluation: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).toBeNull();
   });
 });
 
@@ -361,6 +381,10 @@ describe("terminal_run", () => {
       ["zsh read of a prompt variable", "read 'PS1?go'", /change the shell/],
       ["mapfile PATH", "mapfile PATH", /change the shell/],
       ["readarray -t IFS", "readarray -t IFS", /change the shell/],
+      ["an array read callback", "mapfile -C 'PATH=/tmp; :' -c1 lines < list", /change the shell/],
+      ["a clustered array read callback", "readarray -tC'PATH=/tmp; :' -c1 lines < list", /change the shell/],
+      ["a numeric format assignment", "printf '%d' 'PATH=0'", /change the shell/],
+      ["a variable subscript callback", "printf -v 'values[$(echo callback-ran)]' '%s' value", /change the shell/],
       ["getopts into PATH", "getopts a PATH", /change the shell/],
       ["read into a name from a variable", "read \"$v\"", /change the shell/],
       ["printf -v into a name from a variable", "printf -v \"$v\" x", /change the shell/],
@@ -402,7 +426,7 @@ describe("terminal_run", () => {
         "echo ${#x}",
         "echo $'it\\'s' ok",
         "read -r line",
-        "read -p prompt answer",
+        "read -p message answer",
         "printf '%s\\n' PATH",
         "getopts ab opt",
         "echo ${x#p}",

@@ -48,10 +48,10 @@ import { canonicalizePathForMatch } from "../../../permissions/sensitive-paths.j
 import { terminalCommandTextProblem } from "../../../shared/terminal-command-text.js";
 import { analyzeShellForRules } from "../../../permissions/rules/shell-rule-matcher.js";
 import { wrapperPrefixLength } from "../../../permissions/rules/shell-prefix-policy.js";
-import { analyzeShell } from "../../../shared/shell-analysis.js";
+import { analyzeShell, staticShellWord } from "../../../shared/shell-analysis.js";
 import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, ubuntuLikeNotFoundHandler } from "../../../__tests__/support/terminal-markers.js";
 
-import { TERMINAL_REGISTRY_COMMANDS } from "../../../__tests__/support/terminal-registry-commands.js";
+import { TERMINAL_CALLBACK_COMMANDS, TERMINAL_REGISTRY_COMMANDS } from "../../../__tests__/support/terminal-registry-commands.js";
 
 const NONCE = "0123456789abcdef0123456789abcdef";
 
@@ -61,6 +61,16 @@ const NONCE = "0123456789abcdef0123456789abcdef";
 
 const BASE_COMMANDS: readonly string[] = [
   ...TERMINAL_REGISTRY_COMMANDS,
+  ...TERMINAL_CALLBACK_COMMANDS,
+  "mapfile -t -n1 lines < list",
+  "readarray -tn1 lines < list",
+  "mapfile -dC lines < list",
+  "readarray -d C lines < list",
+  "mapfile -- lines < list",
+  "mapfile lines",
+  "readarray lines",
+  "printf '%%n %s' PATH",
+  "printf -v 'values[0]' '%s' value",
   // The validator's accepted cases (terminal-run.test.ts).
   "echo 'a # b'",
   "echo \"#hash\"",
@@ -259,7 +269,7 @@ const MUTATIONS: ReadonlyArray<(command: string) => string> = [
 
 /** Heads that wait for terminal input, end or replace the shell, or signal it. */
 const NOT_RUN_HEADS: ReadonlySet<string> = new Set([
-  "read", "mapfile", "readarray", "vared", "exit", "logout", "bye", "kill", "suspend", "wait", "fg", "bg", "disown", "exec", "cat",
+  "read", "exit", "logout", "bye", "kill", "suspend", "wait", "fg", "bg", "disown", "cat",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -388,6 +398,7 @@ function makeRig(root: string, shimNames: ReadonlySet<string>): Rig {
   const calls = join(root, "calls");
   for (const dir of [box, shims, calls, join(box, "sub")]) mkdirSync(dir, { recursive: true });
   for (const file of ["a.txt", "x", "list"]) writeFileSync(join(box, file), "");
+  writeFileSync(join(box, "list"), "line\n");
   const shim = join(shims, ".shim");
   writeFileSync(shim, [
     "#!/bin/sh",
@@ -593,6 +604,26 @@ function hasBackgroundJob(command: string): boolean {
   return found(analysis.program);
 }
 
+/** Array reads run only with a known finite fixture file as standard input. */
+function hasUnboundedArrayRead(command: string): boolean {
+  const analysis = analyzeShell(command, "bash");
+  if (!analysis.ok) return true;
+  const found = (node: unknown): boolean => {
+    if (node === null || typeof node !== "object") return false;
+    if ((node as { kind?: unknown }).kind === "command") {
+      const simple = node as Extract<typeof analysis.program, { kind: "command" }>;
+      const argv = simple.words.map(staticShellWord);
+      if (commandStarts(argv).some((start) => argv[start] === "mapfile" || argv[start] === "readarray")) {
+        return argv.some((word) => word !== undefined && /^-[A-Za-z]*u/u.test(word))
+          || !simple.redirects.some((redirect) => redirect.effect === "read" && !redirect.descriptor
+          && redirect.target !== undefined && ["list", "a.txt", "/dev/null"].includes(staticShellWord(redirect.target) ?? ""));
+      }
+    }
+    return Object.values(node).some(found);
+  };
+  return found(analysis.program);
+}
+
 interface Plan {
   readonly candidates: number;
   readonly refused: number;
@@ -619,7 +650,7 @@ function plan(): Plan {
     if (shape.hidden.length > 0) hidden++;
     // A background job may run after the prompt returns, past the point its
     // records are read: not run, counted with the others.
-    if (hasBackgroundJob(command)) { notRun++; continue; }
+    if (hasBackgroundJob(command) || hasUnboundedArrayRead(command)) { notRun++; continue; }
     const commands = shape.commands.map((c) => c.argv);
     if (commands.some((argv) => commandStarts(argv).some((start) => NOT_RUN_HEADS.has(argv[start] ?? "")))) { notRun++; continue; }
     runs.push({ command, commands });
@@ -633,6 +664,16 @@ afterAll(() => {
 });
 
 describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated is what the shell runs", () => {
+  it("runs array reads only with finite fixture input", () => {
+    expect(hasUnboundedArrayRead("mapfile lines")).toBe(true);
+    expect(hasUnboundedArrayRead("readarray -t lines")).toBe(true);
+    expect(hasUnboundedArrayRead("builtin mapfile -t lines < list")).toBe(false);
+    expect(hasUnboundedArrayRead("command readarray lines < /dev/null")).toBe(false);
+    expect(hasUnboundedArrayRead("mapfile lines < /dev/tty")).toBe(true);
+    expect(hasUnboundedArrayRead("mapfile -u1 lines < list")).toBe(true);
+    expect(plan().runs.some(({ command }) => command === "mapfile -t -n1 lines < list")).toBe(true);
+  });
+
   it("runs no simple command, in zsh or bash, that the permission classifier did not evaluate", async () => {
     const { candidates, refused, unparsed, hidden, notRun, runs } = plan();
     const shimNames = new Set<string>(["rm", "touch", "sh", "bash", "zsh", "curl", "ls", "git", "make", "npm", "head", "wc", "tee", "diff", "env", "xargs", "sudo", "nohup", "which", "print", "repeat", "pwned", "id"]);

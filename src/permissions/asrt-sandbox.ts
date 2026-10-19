@@ -1853,7 +1853,7 @@ export async function wrapToolCommand(
  * the root itself. What this variable still decides is the `TMPDIR` ASRT
  * writes for a wrap that sets none of its own, which it keeps off
  * the shared default. Its deny is a namespace-local read-only mask on Linux;
- * no host mount-point stub is created or consumed.
+ * its persistent host mountpoint is verified and never used as a mount source.
  *
  * Called once, before any wrap, so nothing observes it changing.
  */

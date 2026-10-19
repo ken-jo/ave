@@ -778,6 +778,11 @@ before any card, with no mode that lets them through:
   - builtins that install aliases, traps, hooks, options, key bindings,
     limits, a umask, terminal settings or scheduled commands, edit the
     history, or source code;
+  - callback text passed to `mapfile`/`readarray -C`, completion or style
+    callbacks, and other builtins that evaluate strings outside the parsed
+    command. Formatted printing cannot assign through `%n` or evaluate
+    nonliteral numeric operands; variable-name operands cannot hide arithmetic
+    or command substitutions in subscripts;
 - references to the shell integration's `__ave_*` names; block records also
   redact the marker nonce, so printed text cannot forge markers;
 - anything that prints the shell's own state:
@@ -849,13 +854,20 @@ where the world-writable `/tmp` tradeoff is stated. Layer 0 still hard-blocks
 sensitive leaves beneath any default root, and `permissions.additionalDirectories`
 extends the list rather than replacing it.
 
-Linux wraps give `/tmp` a private tmpfs before applying their policy mounts.
-Existing host temp entries are checked by inode after namespace construction
-and before the workload runs; symlinks are copied as links. New top-level temp files
-belong to that sandbox. The shared runtime
-temp root is an empty read-only tmpfs inside this namespace, regardless of
-whether the host path is absent, a transient file, or a symlink. Its deny
-uses no shared host mount source or cleanup stub.
+Linux wraps keep host `/tmp` bound at sandbox `/tmp`: a new top-level entry is
+visible to the host and later sandboxed commands. Only the shared runtime temp root
+(`/tmp/claude`) is covered with an empty read-only tmpfs, after all policy
+mounts. The mask has no host mount source.
+
+A mount below the host bind needs a host mountpoint. The launcher reserves one
+permanent host `/tmp/claude` directory, owned by its effective UID with no group or other write access,
+and never cleans it up. It requires a root-owned sticky `/tmp` (mode `1777`).
+An existing symlink, file, foreign-owned directory or directory writable by group or others causes
+execution to refuse before workload or inherited startup hooks run; the entry
+is preserved. This trades availability under a foreign pre-created entry for
+host temp visibility and fail-closed denial. The same UID and root remain in
+the host trust boundary; another account cannot replace the reserved directory
+under the sticky parent. A conflicting entry needs explicit host-owner repair.
 
 ## Saved-Session Reads
 
