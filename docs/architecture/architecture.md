@@ -774,7 +774,11 @@ its pane chat ends.
 
 The browser tools and `terminal_read` called without a tab id act on the bound
 tab, and sub-agents inherit it through their hosting session; a bound tab that
-is gone, or of the other kind, is an error, never another tab. A conversation
+is gone, or of the other kind, is an error, never another tab. A press on a
+page is touch input, which the window routes through its one touch sequence
+even when sent through the page's own protocol session; so each press runs
+alone in its window, a started press always ends, and a press counts only when
+its own page reports it and no other page of the window took a touch. A conversation
 that is not a pane's acts on the window's active surface, which the side
 panel's chat shows as its target chip; its × drops the target until another
 terminal or page is shown. The pane chat claims its session's approval cards,

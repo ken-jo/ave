@@ -44,6 +44,20 @@ import type {
 import type { BrowserTabOpener } from "../../shared/permissions-events.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
 
+/** What one injected press's touch input did, by the guests' own native input events. */
+export interface TouchDeliveryReport {
+  started: boolean;
+  ended: boolean;
+  tapped: boolean;
+  elsewhere: number;
+}
+
+interface TouchWatchState {
+  readonly guestId: number;
+  readonly windowId: number | undefined;
+  readonly report: TouchDeliveryReport;
+}
+
 /** What the registry needs of a guest. Production passes Electron `WebContents`. */
 export interface BrowserGuest {
   readonly id: number;
@@ -141,6 +155,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   private readonly pending = new Map<string, PendingTabOp>();
   private nextAttachment = 0;
   private readonly injectedTouches = new Map<number, { pressed: boolean; down: boolean; shown: boolean }>();
+  private readonly touchWatches = new Set<TouchWatchState>();
   private link: BrowserTabRendererLink | null = null;
   private nextHandle = 1;
   private nextRequest = 1;
@@ -251,6 +266,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
    */
   userInput(guestId: number, input?: { type: string; _modifiers?: number }): void {
     const modifiers = input?._modifiers ?? 0;
+    if (input) this.recordTouch(guestId, input.type, modifiers);
     // Native provenance marks the raw injected touch and key events.
     if (input && input.type !== "mouseDown" && (modifiers & DEBUGGER_INPUT_MODIFIER) !== 0) {
       if (input.type === "touchStart") this.injectedTouches.set(guestId, { pressed: true, down: false, shown: false });
@@ -283,6 +299,47 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       if (tab.guest?.id !== guestId) continue;
       tab.actions.abort(new Error("the user took over this tab"));
       tab.actions = new AbortController();
+    }
+  }
+
+  /**
+   * Watch the touch input of `guestId`'s window while one injected press runs:
+   * whether this guest reported the marked touch start and end and the tap
+   * derived from them, and how many touch starts other guests of the window
+   * reported meanwhile (the press landing in the wrong page). `stop` drops
+   * the guest's press mark when none of the press reached it.
+   */
+  watchTouches(guestId: number): { delivery(): TouchDeliveryReport; stop(): void } {
+    const state: TouchWatchState = {
+      guestId,
+      windowId: this.attached.get(guestId)?.windowId,
+      report: { started: false, ended: false, tapped: false, elsewhere: 0 },
+    };
+    this.touchWatches.add(state);
+    return {
+      delivery: () => ({ ...state.report }),
+      stop: () => {
+        this.touchWatches.delete(state);
+        // A press none of whose touch reached this guest leaves no mark to
+        // match a later tap; one that did keeps it for its own late gestures.
+        if (!state.report.started) this.injectedTouches.delete(guestId);
+      },
+    };
+  }
+
+  private recordTouch(guestId: number, type: string, modifiers: number): void {
+    if (this.touchWatches.size === 0) return;
+    const windowId = this.attached.get(guestId)?.windowId;
+    const marked = (modifiers & DEBUGGER_INPUT_MODIFIER) !== 0;
+    for (const watch of this.touchWatches) {
+      if (watch.windowId === undefined || watch.windowId !== windowId) continue;
+      if (guestId !== watch.guestId) {
+        if (type === "touchStart") watch.report.elsewhere++;
+        continue;
+      }
+      if (type === "touchStart" && marked) watch.report.started = true;
+      if (type === "touchEnd" && marked && watch.report.started) watch.report.ended = true;
+      if (type === "gestureTap" && watch.report.ended && isDerivedTapModifiers(modifiers)) watch.report.tapped = true;
     }
   }
 
@@ -576,6 +633,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.closingByAgent.clear();
     this.pending.clear();
     this.injectedTouches.clear();
+    this.touchWatches.clear();
     this.link = null;
     this.nextHandle = 1;
     this.nextRequest = 1;

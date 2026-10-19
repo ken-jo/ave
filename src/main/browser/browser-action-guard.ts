@@ -18,6 +18,11 @@ export interface ActionTarget {
   title(): string;
   readonly cdp: CdpSession;
   injectInput<T>(inject: () => Promise<T>): Promise<T>;
+  /**
+   * Run one press (pointer move, touch start, touch end) as the only touch
+   * sequence in the page's window, and fail unless it reached this page.
+   */
+  press<T>(run: () => Promise<T>): Promise<T>;
   releaseFocus(): void;
   readonly signal: AbortSignal;
   /** Host frame metadata also includes children outside the protocol target. */

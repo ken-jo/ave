@@ -187,7 +187,7 @@ export async function setupWorkflowStores(
                 const window = host && !host.isDestroyed() ? mainWindowForContents(host) : null;
                 if (!window || window.isDestroyed()) return null;
                 const bounds = window.getContentBounds();
-                return { x: bounds.x, y: bounds.y };
+                return { x: bounds.x, y: bounds.y, windowId: window.id };
               });
             },
           },

@@ -460,3 +460,65 @@ describe("a conversation bound to a pane's tab", () => {
     expect(registry.paneConversation(2, "browser:pane")).toBe("elsewhere");
   });
 });
+
+describe("watching one press's touch input", () => {
+  const MARK = 1 << 23;
+  function windowWithTwoPages() {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "browser:a", webContentsId: 11 });
+    registry.guestAttached(new FakeGuest(12), 1);
+    registry.bindTab(1, { tabId: "browser:c", webContentsId: 12 });
+    registry.guestAttached(new FakeGuest(13), 2);
+    registry.bindTab(2, { tabId: "browser:other-window", webContentsId: 13 });
+    return registry;
+  }
+  const tap = (registry: BrowserTabRegistry<FakeGuest>, guestId: number) => {
+    registry.userInput(guestId, { type: "touchStart", _modifiers: MARK });
+    registry.userInput(guestId, { type: "gestureTapDown", _modifiers: 0 });
+    registry.userInput(guestId, { type: "touchEnd", _modifiers: MARK });
+    registry.userInput(guestId, { type: "gestureShowPress", _modifiers: 0 });
+    registry.userInput(guestId, { type: "gestureTap", _modifiers: 0 });
+  };
+
+  it("reports a press that reached its own page, start to derived tap", () => {
+    const registry = windowWithTwoPages();
+    const watch = registry.watchTouches(11);
+    tap(registry, 11);
+    // Another window's touch is not this window's business.
+    registry.userInput(13, { type: "touchStart", _modifiers: MARK });
+    expect(watch.delivery()).toEqual({ started: true, ended: true, tapped: true, elsewhere: 0 });
+    watch.stop();
+  });
+
+  it("counts a touch another page of the same window took meanwhile", () => {
+    const registry = windowWithTwoPages();
+    const watch = registry.watchTouches(11);
+    registry.userInput(12, { type: "touchStart", _modifiers: MARK });
+    expect(watch.delivery()).toEqual({ started: false, ended: false, tapped: false, elsewhere: 1 });
+    watch.stop();
+  });
+
+  it("reads an unmarked touch as no press of the agent's", () => {
+    const registry = windowWithTwoPages();
+    const watch = registry.watchTouches(11);
+    registry.userInput(11, { type: "touchStart", _modifiers: 0 });
+    expect(watch.delivery().started).toBe(false);
+    watch.stop();
+  });
+
+  it("keeps a delivered press's mark for its own late tap, and reads a later unmarked tap as the user's", async () => {
+    const registry = windowWithTwoPages();
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    const watch = registry.watchTouches(11);
+    registry.userInput(11, { type: "touchStart", _modifiers: MARK });
+    registry.userInput(11, { type: "gestureTapDown", _modifiers: 0 });
+    registry.userInput(11, { type: "touchEnd", _modifiers: MARK });
+    watch.stop();
+    registry.userInput(11, { type: "gestureShowPress", _modifiers: 0 });
+    registry.userInput(11, { type: "gestureTap", _modifiers: 0 });
+    expect(signal.aborted).toBe(false);
+    registry.userInput(11, { type: "touchStart", _modifiers: 0 });
+    expect(signal.aborted).toBe(true);
+  });
+});

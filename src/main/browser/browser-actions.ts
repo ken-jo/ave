@@ -19,6 +19,7 @@
 import type { WebContents } from "electron";
 import type { BrowserPageActions } from "../../tools/browser-tools.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
+import type { TouchDeliveryReport } from "./browser-tab-registry.js";
 import { BrowserActionError, frameTree, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import {
@@ -240,7 +241,7 @@ export async function click(target: ActionTarget, ref: string, refs: BrowserRefT
     target.expectNode(backendNodeId);
     const { x, y } = await centerOf(target.cdp, backendNodeId);
     throwIfAborted(target.signal);
-    await target.injectInput(() => withPageFocus(target, () => pressAt(target.cdp, x, y, target.finishWithInput)));
+    await target.injectInput(() => withPageFocus(target, () => pressAt(target, x, y, target.finishWithInput)));
   });
 }
 
@@ -271,7 +272,7 @@ async function pollUntil<T>(signal: AbortSignal, maxMs: number, probe: () => Pro
 async function pressForFocus(target: ActionTarget, x: number, y: number): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < FOCUS_MAX_MS) {
-    await pressAt(target.cdp, x, y);
+    await pressAt(target, x, y);
     if (await pollUntil(target.signal, FOCUS_PRESS_WAIT_MS, async () => (await pageHasFocus(target.cdp)) || undefined)) return;
   }
   throw new BrowserActionError("no-focus", "the page did not take keyboard focus, so nothing was typed; try again");
@@ -300,10 +301,12 @@ async function withPageFocus<T>(target: ActionTarget, act: () => Promise<T>): Pr
   }
 }
 
-async function pressAt(cdp: CdpSession, x: number, y: number, finish = (dispatch: () => Promise<unknown>) => dispatch()): Promise<void> {
-  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
-  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
-  await finish(() => cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }));
+async function pressAt(target: ActionTarget, x: number, y: number, finish = (dispatch: () => Promise<unknown>) => dispatch()): Promise<void> {
+  await target.press(async () => {
+    await target.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+    await target.cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+    await finish(() => target.cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }));
+  });
 }
 
 /** Why a field is refused for agent typing, or null when it is not sensitive. */
@@ -565,6 +568,13 @@ interface InputAttribution {
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
   releaseFocus(guestId: number): void;
   documentChanged(guestId: number): void;
+  /** Record the touch input every guest of `guestId`'s window reports until `stop`. */
+  watchTouches(guestId: number): TouchWatch;
+}
+
+interface TouchWatch {
+  delivery(): TouchDeliveryReport;
+  stop(): void;
 }
 
 /**
@@ -572,10 +582,91 @@ interface InputAttribution {
  * or null when the guest has no live host window. Production reads the
  * owning BrowserWindow's content bounds.
  */
-export type HostContentOrigin = (guest: WebContents) => { x: number; y: number } | null;
+export type HostContentOrigin = (guest: WebContents) => { x: number; y: number; windowId: number } | null;
 
 /** How long a pointer move may take to be reported back before a tap is refused. */
 const POINTER_ECHO_MAX_MS = 1_000;
+/** How long one pointer or touch dispatch may take; healthy ones return in milliseconds. */
+const INPUT_DISPATCH_MAX_MS = 3_000;
+/** How long the tap derived from a press may take to be reported back. */
+const TAP_ECHO_MAX_MS = 1_000;
+const TAP_POLL_MS = 20;
+
+/**
+ * ONE TOUCH SEQUENCE PER WINDOW. A touch sent through a page's own protocol
+ * session is still routed by its window's one touch sequence (measured with
+ * two pages in one window): a lone sequence reaches the page that sent it, but
+ * a touch start sent while another page's sequence is open joins that
+ * sequence and lands in the other page, and a sequence left open (a start
+ * without its end) leaves later touches of another page undelivered, its
+ * dispatch unanswered, and that page taking no touch again. So each press
+ * runs alone in its window, from its pointer move to its derived tap, and a
+ * press that started always ends.
+ */
+const windowPresses = new Map<number, Promise<void>>();
+
+async function aloneInWindow<T>(windowId: number, signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+  const before = windowPresses.get(windowId) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => { release = resolve; });
+  const turn = before.then(() => mine);
+  windowPresses.set(windowId, turn);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        try { throwIfAborted(signal); } catch (err) { reject(err); }
+      };
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+      void before.then(() => { signal.removeEventListener("abort", onAbort); resolve(); });
+    });
+    return await run();
+  } finally {
+    release();
+    if (windowPresses.get(windowId) === turn) windowPresses.delete(windowId);
+  }
+}
+
+function withinDispatchTime<T>(dispatch: Promise<T>): Promise<T> {
+  // A dispatch that loses the race still settles later; nobody awaits it then.
+  dispatch.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new BrowserActionError(
+      "input-not-delivered",
+      "the page did not take the input, so the action did not complete; close and reopen the page if this keeps happening",
+    )), INPUT_DISPATCH_MAX_MS);
+  });
+  return Promise.race([dispatch, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * The press reached this page and only this page. Touch echoes carry no
+ * point (measured), so the point itself rests on the offset measured from
+ * the pointer move's echo inside the same press; what is confirmed here is
+ * the recipient: this page reported the marked touch start and end and the
+ * tap derived from them, and no other page of the window took a touch.
+ */
+async function confirmDelivery(watch: TouchWatch, signal: AbortSignal, requireTap: boolean): Promise<void> {
+  const started = Date.now();
+  // Judge once this page's sequence is complete (or never will be): its
+  // derived tap arrives after the touch end.
+  let delivery = watch.delivery();
+  while (!(delivery.started && delivery.ended && (delivery.tapped || !requireTap)) && Date.now() - started < TAP_ECHO_MAX_MS) {
+    await sleep(TAP_POLL_MS, signal);
+    throwIfAborted(signal);
+    delivery = watch.delivery();
+  }
+  if (delivery.elsewhere > 0) {
+    throw new BrowserActionError("input-not-delivered", "the press reached another page in this window, so this action did not complete; take a new snapshot and try again");
+  }
+  if (!(delivery.started && delivery.ended)) {
+    throw new BrowserActionError("input-not-delivered", "this page did not report the press, so the action did not complete; try again");
+  }
+  if (requireTap && !delivery.tapped) {
+    throw new BrowserActionError("input-not-delivered", "the page took the touch but made no tap of it, so nothing is known to have been pressed; try again");
+  }
+}
 
 /**
  * TOUCH COORDINATES. For a page shown in a `<webview>`, the protocol takes a
@@ -670,13 +761,24 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
   assertCurrent(false);
   const touch = createTouchPlacement(guest, hostContentOrigin);
+  // A touch start went out and its sequence is not ended yet.
+  let touchOpen = false;
+  let touchEnded = false;
   const cdp: CdpSession = {
     onEvent: (listener) => session.onEvent(listener),
     send: async (method, params) => {
       assertCurrent(method === "Input.dispatchKeyEvent" || method === "Input.insertText");
       params = touch.placed(method, params);
       const echo = touch.watch(method, params);
-      const result = await session.send(method, params);
+      const pointer = method === "Input.dispatchTouchEvent" || method === "Input.dispatchMouseEvent";
+      const phase = method === "Input.dispatchTouchEvent" ? params?.type : undefined;
+      if (phase === "touchStart") touchOpen = true;
+      const sent = session.send(method, params);
+      const result = pointer ? await withinDispatchTime(sent) : await sent;
+      if (phase === "touchEnd" || phase === "touchCancel") {
+        touchOpen = false;
+        touchEnded = phase === "touchEnd";
+      }
       await echo?.settle();
       // The action guard owns input completion: its last input may navigate.
       if (method.startsWith("Input.")) assertGuest();
@@ -690,6 +792,40 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     title: () => guest.getTitle(),
     cdp,
     injectInput: (inject) => attribution.withAgentInput(guest.id, inject),
+    press: async (run) => {
+      const host = hostContentOrigin(guest);
+      if (!host) {
+        throw new BrowserActionError("no-pointer-position", "could not tell where the page sits in its window, so nothing was pressed; try again");
+      }
+      return aloneInWindow(host.windowId, live.signal, async () => {
+        touchEnded = false;
+        const watch = attribution.watchTouches(guest.id);
+        try {
+          let result: Awaited<ReturnType<typeof run>>;
+          try {
+            result = await run();
+          } catch (err) {
+            // A press whose end went out and then changed the document is a
+            // completed effect (the action guard decides); it still must have
+            // reached this page and no other.
+            if (touchEnded && err instanceof BrowserActionError && err.code === "document-changed") {
+              await confirmDelivery(watch, new AbortController().signal, false);
+            }
+            throw err;
+          }
+          await confirmDelivery(watch, live.signal, true);
+          return result;
+        } finally {
+          if (touchOpen) {
+            // The one dispatch made after a failure, past the document checks:
+            // it presses nothing, it only ends the window's open sequence.
+            touchOpen = false;
+            await withinDispatchTime(session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })).catch(() => undefined);
+          }
+          watch.stop();
+        }
+      });
+    },
     releaseFocus: () => attribution.releaseFocus(guest.id),
     signal: live.signal,
     documentId: () => live.tab.documentId,
