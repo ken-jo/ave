@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createEgressAskCallback, type EgressApprovalAnswer, type EgressApprovalRequest } from "../egress-ask.js";
 import { EgressGrantStore, type EgressGrantSubject } from "../egress-grants.js";
+import { DEFAULT_WINDOWS_PROXY_PORT_RANGE, getVendoredSrtWinExePath } from "../asrt-sandbox.js";
 import type { EgressInvocationOwner } from "../egress-invocations.js";
 import { createUpstreamProxyRouter } from "../upstream-proxy.js";
 import { DEFAULT_UPSTREAM_PROXY, type UpstreamProxySettings } from "../../shared/upstream-proxy.js";
@@ -157,7 +158,27 @@ function routingFixture(port: number, initialMode: "off" | "manual" = "off") {
   };
 }
 
-describe("egress grant class across route replanning", () => {
+// On this base the runtime's per-invocation listener is POSIX-only. Windows
+// pins that contract: the listener refuses to open, so no request reaches
+// the class-routed grant path. The MXC lane (#22) replaces this with the full
+// cases.
+describe.runIf(process.platform === "win32")("egress grant class on Windows without a listener lane", () => {
+  it("refuses to open a per-invocation listener and asks nothing", async () => {
+    let asked = 0;
+    await SandboxManager.initialize({
+      network: { allowedDomains: [], deniedDomains: [] },
+      filesystem: { denyRead: [], allowWrite: [], denyWrite: [] },
+      windows: {
+        srtWin: { path: getVendoredSrtWinExePath() },
+        proxyPortRange: [...DEFAULT_WINDOWS_PROXY_PORT_RANGE] as [number, number],
+      },
+    }, async () => { asked += 1; return true; });
+    await expect(SandboxManager.openInvocationListener(TOKEN)).rejects.toThrow(/not supported on windows/);
+    expect(asked).toBe(0);
+  });
+});
+
+describe.runIf(process.platform !== "win32")("egress grant class across route replanning", () => {
   it.each(GRANT_CASES)("asks the requester before $origin $scope becomes unverified", async ({ origin, scope }) => {
     const approval = approvalFixture(origin);
     const upstream = await recordingUpstream();
