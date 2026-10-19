@@ -37,7 +37,7 @@ import {
   getHostShellExecutionPlan,
   isIssuedHostShellExecutionPlan,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -96,14 +96,14 @@ function issueWindowsPlanB(): HostShellExecutionPlan {
     reason: "srt-win partial",
     confines: { filesystem: true, process: false, network: true },
   });
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   return getHostShellExecutionPlan();
 }
 
 function issueRequestedUnavailable(platform: "darwin" | "linux" | "win32"): HostShellExecutionPlan {
   setProcessPlatform(platform);
   __resetActiveSandboxCapabilityForTest();
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   return getHostShellExecutionPlan();
 }
 let approvalSequence = 0;

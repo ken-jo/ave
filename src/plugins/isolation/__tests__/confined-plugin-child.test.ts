@@ -140,7 +140,11 @@ import {
   type SandboxTempPrincipal,
 } from "../../../permissions/asrt-sandbox.js";
 import { sandboxCasesRun } from "./sandbox-cases.js";
-import { isPluginChildConfined } from "../../../permissions/sandbox-capability.js";
+import {
+  __resetSandboxRequestedAtBootForTest,
+  isPluginChildConfined,
+  setPluginWorkerConfinementRequestedAtBoot,
+} from "../../../permissions/sandbox-capability.js";
 import { connect } from "node:net";
 import { createServer } from "node:http";
 import { spawnConfinedPluginChild } from "../out-of-process-plugin.js";
@@ -781,10 +785,14 @@ beforeEach(() => {
   // is what makes `<AVE_HOME>/secrets` a real denied path with a real file in
   // it rather than an assertion about the developer's own home directory.
   process.env.AVE_HOME = fixture.aveHome;
+  // Every child here is a plugin child: it is wrapped only while
+  // plugin-worker confinement was requested at boot and ASRT is active.
+  setPluginWorkerConfinementRequestedAtBoot(true);
 });
 
 afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
+  __resetSandboxRequestedAtBootForTest();
   if (previousAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousAveHome;
   if (previousSandboxTmpdir === undefined) delete process.env.CLAUDE_CODE_TMPDIR;

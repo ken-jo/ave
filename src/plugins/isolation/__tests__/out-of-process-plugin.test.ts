@@ -38,6 +38,7 @@ const sandbox = vi.hoisted(() => ({ active: false }));
 vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../permissions/asrt-sandbox.js")>()),
   isAsrtSandboxActive: () => sandbox.active,
+  isPluginWorkerConfinementActive: () => sandbox.active,
   registerWorkerUnixSocketDir: async () => undefined,
   unregisterWorkerUnixSocketDir: async () => undefined,
   cleanupAsrtSandboxAfterCommand: async () => undefined,

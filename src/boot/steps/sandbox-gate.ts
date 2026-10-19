@@ -17,9 +17,11 @@ import type {
 } from "../../shared/sandbox-capability-info.js";
 
 export interface SandboxGateInputs {
-  /** `features.osToolSandbox` — the Settings toggle; off by default everywhere. */
+  /** `features.osToolSandbox` OR `features.pluginWorkerConfinement` — a Settings
+   *  toggle of either scope; both off by default everywhere. */
   settingOn: boolean;
-  /** `AVE_SANDBOX_ENABLED=1` — the deliberate, fail-closed env override. */
+  /** `AVE_SANDBOX_ENABLED=1` OR `AVE_PLUGIN_WORKER_CONFINEMENT=1` — the
+   *  deliberate, fail-closed env override of either scope. */
   explicitEnv: boolean;
   /** `process.platform` at boot. */
   platform: NodeJS.Platform;

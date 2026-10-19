@@ -61,7 +61,8 @@ import type {
   SandboxRuntimeCapabilityInfo,
 } from "../../shared/sandbox-capability-info.js";
 import {
-  detectSandboxCapability,
+  detectPluginWorkerSandboxCapability,
+  detectShellSandboxCapability,
   getSandboxBootOutcome,
   type SandboxCapability,
 } from "../../permissions/sandbox-capability.js";
@@ -251,7 +252,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       "../../shared/sandbox-capability-info.js"
     );
     const platform = process.platform;
-    // Must answer the same question boot answered (`sandboxOptIn` in
+    // Must answer the same question boot answered (`shellRequested` in
     // sandbox-init.ts), so it resolves through the registry rather than
     // re-stating which variable forces it on.
     const enabled = resolveEnvBackedBoolean(
@@ -291,7 +292,11 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
           : platform === "win32"
             ? "ASRT (srt-win) confines filesystem access and network egress against the host; every confined process, plugins included, runs as one shared sandbox account, so plugins are not isolated from each other; process isolation is unavailable on Windows; needs a one-time admin install"
             : "OS sandbox is fail-closed on this platform; tools run unconfined";
-    const runtime = runtimeInfoFromCapability(detectSandboxCapability());
+    // Per scope: ASRT is one runtime, but each scope is confined only when it
+    // was requested at boot, so a worker-only boot must not show shells as
+    // sandboxed (and the reverse).
+    const runtime = runtimeInfoFromCapability(detectShellSandboxCapability());
+    const workerRuntime = runtimeInfoFromCapability(detectPluginWorkerSandboxCapability());
     return {
       platform,
       enabled,
@@ -300,6 +305,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       reason: potentialReason,
       potentialReason,
       runtime,
+      workerRuntime,
       // What the gate decided THIS boot. The runtime snapshot cannot stand in
       // for it: a degraded gate never publishes a capability, so `runtime`
       // reports the same "no OS sandbox configured" it reports when the user

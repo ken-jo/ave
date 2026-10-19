@@ -49,6 +49,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
     root: TEMP_ROOT,
   }),
   isAsrtSandboxActive: () => sandboxActiveMock(),
+  isPluginWorkerConfinementActive: () => sandboxActiveMock(),
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
   // The floor carries the sandbox private roots, as the real one does on

@@ -8,7 +8,7 @@ import {
   getSandboxGeneration,
   getHostShellExecutionPlan,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../sandbox-capability.js";
 import {
   buildHostShellExecutionRoute,
@@ -176,20 +176,20 @@ function issuedBrokeredWorkloadCapability(
 
 function issuedPlain() {
   resetSandbox();
-  setSandboxRequestedAtBoot(false);
+  setShellSandboxRequestedAtBoot(false);
   return getHostShellExecutionPlan();
 }
 
 function issuedAsrt(executionMode: "default" | "host" = "default") {
   resetSandbox();
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability(fullAsrt);
   return getHostShellExecutionPlan(executionMode);
 }
 
 function issuedUnavailableFallback() {
   resetSandbox();
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   return getHostShellExecutionPlan();
 }
 
@@ -245,7 +245,7 @@ describe("execution router", () => {
 
   it("does not call an ASRT plan workspace-confined unless both dimensions are explicit", () => {
     resetSandbox();
-    setSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -618,8 +618,8 @@ describe("execution router", () => {
 
     operatorCapabilities.current = disposableCapability;
     const stale = makeGrant();
-    setSandboxRequestedAtBoot(true);
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(false);
     expect(consumeExecutionGrantForShellInvocation({ grant: stale, ...exact })).toBeNull();
   });
 
@@ -745,8 +745,8 @@ describe("execution router", () => {
     expect(isIssuedExecutionGrant(grant)).toBe(true);
     expect(Object.isFrozen(grant)).toBe(true);
 
-    setSandboxRequestedAtBoot(true);
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(false);
     const nextPlain = getHostShellExecutionPlan();
     const nextCapability = capability(["host"]);
     const changedGeneration = buildExecutionPlan({

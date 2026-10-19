@@ -1507,8 +1507,14 @@ describe("installer smoke and packaging discipline", () => {
     expect(agents).not.toContain("architecture section 6.3");
     expect(agents).toContain("OS tool sandbox is opt-in on every platform");
     expect(agents).toContain("per the decision comment beside");
-    expect(agents).toContain("src/data/settings-defaults.ts#L237-L254");
-    expect(agents).toContain("On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1`");
+    expect(agents).toContain("src/data/settings-defaults.ts#L216-L262");
+    expect(agents).toContain("On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1` or\n  `AVE_PLUGIN_WORKER_CONFINEMENT=1` activation failure");
+    // The two sandbox scopes stay separate in the contract: neither setting or
+    // variable decides the other.
+    expect(agents).toContain("`osToolSandbox` confines host shells only");
+    expect(agents).toContain("`pluginWorkerConfinement` confines plugin workers");
+    expect(agents).toContain("`AVE_SANDBOX_ENABLED=1` forces the shell scope only");
+    expect(agents).toContain("on `isPluginWorkerConfinementActive`, never the raw `isAsrtSandboxActive`");
     expect(agents).toContain("aborts startup; settings activation warns and continues without OS isolation");
     expect(agents).toContain("Windows always warns and continues when unavailable");
     expect(agents).toContain("Keep plugin read relaxation conditional on active filesystem confinement");

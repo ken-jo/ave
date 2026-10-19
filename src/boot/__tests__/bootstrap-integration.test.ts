@@ -561,7 +561,8 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
   isActiveSandboxShellContained: vi.fn(() => false),
   isActiveSandboxFilesystemContainedForPluginEffects: vi.fn(() => false),
   setActiveSandboxCapability: vi.fn(),
-  setSandboxRequestedAtBoot: vi.fn(),
+  setShellSandboxRequestedAtBoot: vi.fn(),
+  setPluginWorkerConfinementRequestedAtBoot: vi.fn(),
   setSandboxBootOutcome: vi.fn(),
   detectSandboxCapability: vi.fn(() => ({ kind: "none", confidence: "verified" })),
 }));

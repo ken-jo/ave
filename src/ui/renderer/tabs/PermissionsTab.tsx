@@ -377,6 +377,11 @@ export function PermissionsTab({
   // usable — what was missing was saying so.
   const envForcedPaths = useEnvForcedSettings();
   const [sandboxBusy, setSandboxBusy] = useState(false);
+  // Plugin-worker confinement: its own setting, so the shell toggle above
+  // never confines workers and this one never confines shells.
+  // `AVE_PLUGIN_WORKER_CONFINEMENT=1` is OR-ed with it at boot.
+  const [workerConfinementEnabled, setWorkerConfinementEnabled] = useState(false);
+  const [workerConfinementBusy, setWorkerConfinementBusy] = useState(false);
   // Windows srt-win repair flow (the OS sandbox is normally provisioned at
   // app-install time; this panel is the re-provision/repair fallback).
   // `windowsStatus` holds the latest readiness snapshot once the user opts in on
@@ -447,12 +452,15 @@ export function PermissionsTab({
         sandboxRes.boot?.dependencyErrors);
       const osSandboxOn = settingsRes.features?.osToolSandbox ?? false;
       setSandboxEnabled(osSandboxOn);
+      const workerConfinementOn = settingsRes.features?.pluginWorkerConfinement ?? false;
+      setWorkerConfinementEnabled(workerConfinementOn);
       // Mirrors the store default (ON) for a settings file written before the
       // flag existed — normalization stamps it on the next write.
       setAdjudicationEnabled(settingsRes.features?.subAgentParentAdjudication ?? true);
-      // On win32 with the setting already ON, surface the consent/setup state
-      // on tab entry so the panel persists across navigations until ready.
-      if (sandboxRes.platform === "win32" && osSandboxOn) {
+      // On win32 with either setting already ON, surface the consent/setup
+      // state on tab entry so the panel persists across navigations until
+      // ready: both scopes need the same one-time srt-win provisioning.
+      if (sandboxRes.platform === "win32" && (osSandboxOn || workerConfinementOn)) {
         const status = await window.ave.permission.sandboxWindowsStatus();
         if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
         setWindowsStatus(status);
@@ -760,30 +768,43 @@ export function PermissionsTab({
     }
   };
 
-  const handleSandboxToggle = async () => {
-    if (sandboxBusy) return;
-    const next = !sandboxEnabled;
-    setSandboxBusy(true);
-    setSandboxEnabled(next);
-    // Clear any stale install outcome whenever the toggle moves.
+  // One write path for both confinement scopes. Each scope writes ONLY its own
+  // setting: the shell toggle writes `osToolSandbox`, the worker toggle writes
+  // `pluginWorkerConfinement`, and neither reads or changes the other's value
+  // beyond deciding whether the Windows setup panel stays open.
+  const toggleConfinementScope = async (scope: "shell" | "pluginWorkers") => {
+    const isShell = scope === "shell";
+    if (isShell ? sandboxBusy : workerConfinementBusy) return;
+    const setEnabled = isShell ? setSandboxEnabled : setWorkerConfinementEnabled;
+    const setBusy = isShell ? setSandboxBusy : setWorkerConfinementBusy;
+    const next = !(isShell ? sandboxEnabled : workerConfinementEnabled);
+    const otherScopeOn = isShell ? workerConfinementEnabled : sandboxEnabled;
+    const label = isShell ? "OS sandbox toggle" : "plugin-worker confinement toggle";
+    setBusy(true);
+    setEnabled(next);
+    // Clear any stale install outcome whenever a toggle moves.
     setWindowsInstallOutcome(null);
     try {
-      const res = await getApi().updateSettings({ features: { osToolSandbox: next } });
+      const res = await getApi().updateSettings({
+        features: isShell ? { osToolSandbox: next } : { pluginWorkerConfinement: next },
+      });
       if (isIpcErrorResult(res)) {
-        setSandboxEnabled(!next);
-        showBanner("error", ipcFailureText("OS sandbox toggle", res, t("permissionsTab.osSandboxToggleFailed")));
+        setEnabled(!next);
+        showBanner("error", ipcFailureText(label, res, t(isShell
+          ? "permissionsTab.osSandboxToggleFailed"
+          : "permissionsTab.workerConfinementToggleFailed")));
         return;
       }
       // Re-read capability so the activation note reflects the new state.
       const capability = await window.ave.permission.sandboxCapability();
       setSandboxCapability(capability);
-      // Windows: enabling the setting alone does NOT confine anything — srt-win
+      // Windows: enabling a setting alone does NOT confine anything — srt-win
       // must be provisioned (normally at app-install time via NSIS customInstall).
-      // When the user flips the toggle ON on win32, fetch the readiness snapshot;
-      // if provisioning did not complete, the panel guides the (explicit,
-      // non-auto) re-provision/repair. Turning OFF clears the panel.
+      // While either scope is ON on win32, fetch the readiness snapshot; if
+      // provisioning did not complete, the panel guides the (explicit,
+      // non-auto) re-provision/repair. Turning the last one OFF clears it.
       if (capability.platform === "win32") {
-        if (next) {
+        if (next || otherScopeOn) {
           const status = await window.ave.permission.sandboxWindowsStatus();
           setWindowsStatus(status);
         } else {
@@ -791,12 +812,16 @@ export function PermissionsTab({
         }
       }
     } catch (e) {
-      setSandboxEnabled(!next);
-      showBanner("error", t("permissionsTab.osSandboxToggleError", { message: thrownErrorText("OS sandbox toggle", e) }));
+      setEnabled(!next);
+      showBanner("error", t(isShell
+        ? "permissionsTab.osSandboxToggleError"
+        : "permissionsTab.workerConfinementToggleError", { message: thrownErrorText(label, e) }));
     } finally {
-      setSandboxBusy(false);
+      setBusy(false);
     }
   };
+  const handleSandboxToggle = () => toggleConfinementScope("shell");
+  const handleWorkerConfinementToggle = () => toggleConfinementScope("pluginWorkers");
 
   // The ONLY user-consented privilege-escalation trigger. The OS sandbox is
   // normally provisioned at app-install time (NSIS customInstall), so this is
@@ -1252,24 +1277,54 @@ export function PermissionsTab({
           title={t("permissionsTab.osSandboxTitle")}
           description={t("permissionsTab.osSandboxDescription")}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-start gap-3">
             <Checkbox
               checked={sandboxEnabled}
               data-testid="os-sandbox-toggle"
               aria-label={t("permissionsTab.osSandboxCheckboxAriaLabel")}
               disabled={sandboxBusy || !(sandboxCapability?.available ?? false)}
-              className="size-5"
+              className="mt-0.5 size-5"
               onCheckedChange={() => void handleSandboxToggle()}
             />
-            <span className="text-sm">
-              {sandboxEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
-            </span>
+            <div className="min-w-0 space-y-0.5">
+              <p className="text-sm">
+                {t("permissionsTab.osSandboxShellLabel")}
+                {" — "}
+                {sandboxEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
+              </p>
+              <p className="text-[11px] text-muted-foreground">{t("permissionsTab.osSandboxShellHint")}</p>
+            </div>
           </div>
           <EnvForcedNotice
             settingsPath="features.osToolSandbox"
             forcedPaths={envForcedPaths}
             messageKey="permissionsTab.osSandboxEnvForced"
             testId="os-sandbox-forced"
+            className="mt-2"
+          />
+          <div className="mt-3 flex items-start gap-3">
+            <Checkbox
+              checked={workerConfinementEnabled}
+              data-testid="worker-confinement-toggle"
+              aria-label={t("permissionsTab.workerConfinementCheckboxAriaLabel")}
+              disabled={workerConfinementBusy || !(sandboxCapability?.available ?? false)}
+              className="mt-0.5 size-5"
+              onCheckedChange={() => void handleWorkerConfinementToggle()}
+            />
+            <div className="min-w-0 space-y-0.5">
+              <p className="text-sm">
+                {t("permissionsTab.workerConfinementLabel")}
+                {" — "}
+                {workerConfinementEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
+              </p>
+              <p className="text-[11px] text-muted-foreground">{t("permissionsTab.workerConfinementHint")}</p>
+            </div>
+          </div>
+          <EnvForcedNotice
+            settingsPath="features.pluginWorkerConfinement"
+            forcedPaths={envForcedPaths}
+            messageKey="permissionsTab.workerConfinementEnvForced"
+            testId="worker-confinement-forced"
             className="mt-2"
           />
           {sandboxCapability && !sandboxCapability.available ? (
@@ -1301,6 +1356,11 @@ export function PermissionsTab({
               {sandboxRuntimeReason ? (
                 <p data-testid="os-sandbox-runtime-reason">
                   {t("permissionsTab.osSandboxRuntimeReason", { reason: sandboxKindText(sandboxCapability.runtime?.kind) })}
+                </p>
+              ) : null}
+              {sandboxCapability.workerRuntime ? (
+                <p data-testid="worker-confinement-runtime-reason">
+                  {t("permissionsTab.workerConfinementRuntimeReason", { reason: sandboxKindText(sandboxCapability.workerRuntime.kind) })}
                 </p>
               ) : null}
             </div>
@@ -1349,7 +1409,7 @@ export function PermissionsTab({
                 : t("permissionsTab.osSandboxWindowsInstallRefreshing")}
             </p>
           ) : null}
-          {sandboxEnabled && windowsStatus?.applicable && !windowsStatus.ready ? (
+          {(sandboxEnabled || workerConfinementEnabled) && windowsStatus?.applicable && !windowsStatus.ready ? (
             windowsStatus.userState !== "absent" ||
             windowsStatus.wfpState !== "absent" ? (
               // Install partially ran or status cannot be fully read. Show the

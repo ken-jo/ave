@@ -29,7 +29,7 @@ import {
   ensureSandboxTempPrincipalDir,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
-  isAsrtSandboxActive,
+  isPluginWorkerConfinementActive,
   sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
@@ -250,7 +250,7 @@ export interface ConfinedChildSpec {
 }
 
 /**
- * The wrap a spawn actually applied — never the `features.osToolSandbox`
+ * The wrap a spawn actually applied — never the `features.pluginWorkerConfinement`
  * setting. A child spawned unwrapped is `unconfined` whatever the setting
  * says, because "confined" is a claim about this process, and only the wrap
  * makes it true. One value per substrate ASRT wraps with.
@@ -411,7 +411,7 @@ function windowsRelayLaunch(spec: ConfinedChildSpec): {
 /**
  * The substrate ASRT wraps with on this platform. Asked only on the wrapped
  * path; a platform ASRT does not wrap on is an internal contract violation,
- * because `isAsrtSandboxActive()` reported a live sandbox there.
+ * because `isPluginWorkerConfinementActive()` reported a live sandbox there.
  */
 function wrapConfinement(label: string): Exclude<SpawnConfinement, "unconfined"> {
   switch (process.platform) {
@@ -441,7 +441,7 @@ async function resolveSpawnLine(
   relayRequest?: RelayRequest;
   egress?: EgressInvocation;
 }> {
-  if (!isAsrtSandboxActive()) {
+  if (!isPluginWorkerConfinementActive()) {
     return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
   }
   const confinement = wrapConfinement(spec.label);

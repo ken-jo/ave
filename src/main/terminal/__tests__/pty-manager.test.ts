@@ -37,6 +37,7 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
     "../../../permissions/asrt-sandbox.js",
   )).sandboxTempEnvLaunch,
   isAsrtSandboxActive: () => gateActive,
+  isShellSandboxActive: () => gateActive,
   wrapWorkerCommand: (command: string, options?: unknown) => wrapWorkerCommandMock(command, options),
   wrapTerminalCommand: (command: string, options?: unknown) => wrapTerminalCommandMock(command, options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),

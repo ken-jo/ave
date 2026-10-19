@@ -62,7 +62,8 @@ import {
   __resetSandboxRequestedAtBootForTest,
   detectSandboxCapability,
   getHostShellExecutionPlan,
-  isSandboxRequestedAtBoot,
+  isPluginWorkerConfinementRequestedAtBoot,
+  isShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 
 const ORIGINAL_PLATFORM = process.platform;
@@ -79,6 +80,7 @@ beforeEach(() => {
   h.isProbeError.mockReset();
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
+  vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "");
 });
 
 afterEach(() => {
@@ -104,7 +106,7 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
       reason: "degrade-linux-runtime-probe-failed",
     });
     expect(detectSandboxCapability()).toMatchObject({ kind: "none", platform: "linux" });
-    expect(isSandboxRequestedAtBoot()).toBe(true);
+    expect(isShellSandboxRequestedAtBoot()).toBe(true);
     expect(getHostShellExecutionPlan()).toMatchObject({
       requestedSandbox: true,
       mode: "plain",
@@ -133,7 +135,7 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
       harness.flush.mock.invocationCallOrder[0],
     );
     expect(detectSandboxCapability()).toMatchObject({ kind: "none", platform: "linux" });
-    expect(isSandboxRequestedAtBoot()).toBe(true);
+    expect(isShellSandboxRequestedAtBoot()).toBe(true);
   });
 
   it("drains the dependency-abort audit before rejecting explicit opt-in", async () => {
@@ -154,5 +156,74 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
     expect(harness.logSandboxGate.mock.invocationCallOrder[0]).toBeLessThan(
       harness.flush.mock.invocationCallOrder[0],
     );
+  });
+});
+
+describe("initSandboxGate — shell sandbox and plugin-worker confinement scopes", () => {
+  it("activates ASRT for worker confinement alone and keeps host shells unsandboxed", async () => {
+    await initSandboxGate(harness.context(false, true));
+
+    expect(h.initialize).toHaveBeenCalledOnce();
+    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(true);
+    expect(isShellSandboxRequestedAtBoot()).toBe(false);
+    expect(detectSandboxCapability()).toMatchObject({ kind: "asrt" });
+    expect(getHostShellExecutionPlan()).toMatchObject({
+      requestedSandbox: false,
+      mode: "plain",
+      fallbackReason: "none",
+      requiresExplicitUserApproval: false,
+      capability: { kind: "none" },
+    });
+  });
+
+  it("seals the shell sandbox alone without requesting worker confinement", async () => {
+    await initSandboxGate(harness.context(true, false));
+
+    expect(h.initialize).toHaveBeenCalledOnce();
+    expect(isShellSandboxRequestedAtBoot()).toBe(true);
+    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
+    expect(getHostShellExecutionPlan()).toMatchObject({ requestedSandbox: true, mode: "asrt" });
+  });
+
+  it("skips ASRT when neither scope is requested", async () => {
+    await initSandboxGate(harness.context(false, false));
+
+    expect(h.initialize).not.toHaveBeenCalled();
+    expect(isShellSandboxRequestedAtBoot()).toBe(false);
+    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
+    expect(harness.logSandboxGate).toHaveBeenCalledWith(expect.objectContaining({ outcome: "skip" }));
+  });
+
+  it("AVE_SANDBOX_ENABLED=1 forces the shell scope only, and warns that extension processes are unconfined", async () => {
+    vi.stubEnv("AVE_SANDBOX_ENABLED", "1");
+    await initSandboxGate(harness.context(false, false));
+
+    expect(isShellSandboxRequestedAtBoot()).toBe(true);
+    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringMatching(
+      /AVE_SANDBOX_ENABLED=1 now confines host shells only[\s\S]*AVE_PLUGIN_WORKER_CONFINEMENT=1/,
+    ));
+  });
+
+  it("does not warn about the env split when worker confinement is also requested", async () => {
+    vi.stubEnv("AVE_SANDBOX_ENABLED", "1");
+    await initSandboxGate(harness.context(false, true));
+
+    expect(h.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("now confines host shells only"));
+  });
+
+  it("AVE_PLUGIN_WORKER_CONFINEMENT=1 forces the worker scope only, and is fail-closed", async () => {
+    vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "1");
+    h.checkDeps.mockResolvedValue({ errors: ["missing bwrap"], warnings: [] });
+
+    await expect(initSandboxGate(harness.context(false, false))).rejects.toThrow(
+      /ON via AVE_PLUGIN_WORKER_CONFINEMENT=1 but its dependencies are missing/,
+    );
+    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(true);
+    expect(isShellSandboxRequestedAtBoot()).toBe(false);
+    expect(harness.logSandboxGate).toHaveBeenCalledWith(expect.objectContaining({
+      onSignal: "explicit-env",
+      outcome: "abort",
+    }));
   });
 });

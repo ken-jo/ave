@@ -19,7 +19,7 @@ import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
@@ -63,7 +63,7 @@ function dynamicShellProbe(execute: (ctx: import("../types.js").ToolExecutionCon
 
 function fullDarwinAsrt(): void {
   setProcessPlatform("darwin");
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({
     kind: "asrt",
     confidence: "verified",
@@ -75,7 +75,7 @@ function fullDarwinAsrt(): void {
 function explicitlySandboxOff(platform: "darwin" | "linux" | "win32"): void {
   setProcessPlatform(platform);
   __resetActiveSandboxCapabilityForTest();
-  setSandboxRequestedAtBoot(false);
+  setShellSandboxRequestedAtBoot(false);
 }
 function gateResolving(
   choice: "allow-once" | "deny-once",
