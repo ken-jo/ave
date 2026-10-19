@@ -487,17 +487,17 @@ describe("Claude Code CLI discovery", () => {
 
   it("looks on PATH first, then in the official install locations", () => {
     expect(claudeCodeExecutableCandidates({
-      platform: "darwin", env: { PATH: "/opt/tools:relative/bin:/usr/bin" }, homeDir: "/Users/someone",
+      platform: "darwin", env: { PATH: "/opt/tools:relative/bin:/usr/bin" }, homeDir: "/Users/example",
     })).toEqual([
       "/opt/tools/claude",
       "/usr/bin/claude",
-      "/Users/someone/.local/bin/claude",
+      "/Users/example/.local/bin/claude",
       "/opt/homebrew/bin/claude",
       "/usr/local/bin/claude",
     ]);
     expect(claudeCodeExecutableCandidates({
-      platform: "win32", env: { Path: "C:\\Tools;relative", USERPROFILE: "C:\\Users\\someone" }, homeDir: "C:\\ignored",
-    })).toEqual(["C:\\Tools\\claude.exe", "C:\\Tools\\claude.cmd", "C:\\Users\\someone\\.local\\bin\\claude.exe"]);
+      platform: "win32", env: { Path: "C:\\Tools;relative", USERPROFILE: "C:\\Users\\example" }, homeDir: "C:\\ignored",
+    })).toEqual(["C:\\Tools\\claude.exe", "C:\\Tools\\claude.cmd", "C:\\Users\\example\\.local\\bin\\claude.exe"]);
   });
 
   it("checks the runtime version identity and advertised auth commands", () => {

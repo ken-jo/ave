@@ -1032,6 +1032,11 @@ describe("a turn parked on an approval, with two tiles", () => {
       streams.add(handler);
       return () => { streams.delete(handler); };
     });
+    const questionTimeouts = new Set<Parameters<NonNullable<typeof api.onAskUserQuestionTimeout>>[0]>();
+    vi.mocked(api.onAskUserQuestionTimeout!).mockImplementation((handler) => {
+      questionTimeouts.add(handler);
+      return () => { questionTimeouts.delete(handler); };
+    });
     const turns = Array.from({ length: 3 }, () => deferred<{ ok: true; result: {} }>());
     for (const turn of turns) vi.mocked(side.send).mockReturnValueOnce(turn.promise);
     for (const tile of [first!, second!]) {
@@ -1045,19 +1050,27 @@ describe("a turn parked on an approval, with two tiles", () => {
         fireEvent.pointerDown(add, { button: 0 });
         fireEvent.click(add);
       });
-      await act(async () => {
-        fireEvent.click(document.querySelector(`[data-testid="${chatSidePanelLauncherTestId(`menu-${kind}`)}"]`)!);
+      const item = await waitFor(() => {
+        const menu = document.querySelector('[role="menu"][data-state="open"]');
+        const target = menu?.querySelector(`[data-testid="${chatSidePanelLauncherTestId(`menu-${kind}`)}"]`) ?? null;
+        expect(target).not.toBeNull();
+        return target!;
       });
+      await act(async () => { fireEvent.click(item); });
+      await waitFor(() => expect(tile.element.querySelector(`[data-testid="chat-side-panel-tab-${kind}"][aria-selected="true"]`))
+        .not.toBeNull());
     };
     const childTitles = (tile: NonNullable<typeof first>) => Array.from(tile.element.querySelectorAll('[data-testid="chat-side-panel-subagent-row"]'), (row) => row.textContent);
     const finish = async (number: number) => {
+      const refreshes = vi.mocked(api.chatSessions).mock.calls.length;
       await act(async () => {
-        emitApprovalSettled(`approval-transfer-${number}`);
-        for (const [handler] of vi.mocked(api.onAskUserQuestionTimeout!).mock.calls) handler({ requestId: `ask-transfer-${number}` });
+        if (surface === "approval") emitApprovalSettled(`approval-transfer-${number}`);
+        if (surface === "question") for (const handler of questionTimeouts) handler({ requestId: `ask-transfer-${number}` });
         for (const stream of streams) stream({ type: "done", streamId: number });
         turns[number - 1]!.resolve({ ok: true, result: {} });
         await turns[number - 1]!.promise;
       });
+      await waitFor(() => expect(api.chatSessions).toHaveBeenCalledTimes(refreshes + 1));
     };
     try {
       for (const number of [1, 2, 3]) {
@@ -1076,10 +1089,14 @@ describe("a turn parked on an approval, with two tiles", () => {
         expect(side.send).toHaveBeenCalledTimes(number);
         await act(async () => {
           for (const stream of streams) stream({ type: "user_message", sessionId: MOCK_SIDE_CHAT_SESSION_ID, streamId: number, sendRequestId: vi.mocked(side.send).mock.calls[number - 1]![3] });
-          emitAskUserQuestion({ id: `ask-transfer-${number}`, sessionId: MOCK_SIDE_CHAT_SESSION_ID, createdAt: Date.now(), questions: [{ question: `Question for turn ${number}`, choices: ["Continue", "Stop"] }] });
-          emitApproval(approvalRequest({ id: `approval-transfer-${number}`, sessionId: MOCK_SIDE_CHAT_SESSION_ID }));
-          emitAgentSpawnEvent({ type: "start", spawnId: `child-transfer-${number}`, parentSessionId: MOCK_SIDE_CHAT_SESSION_ID, taskState: A2ATaskState.SUBMITTED, title: `Child from turn ${number}` });
-          emitAgentSpawnEvent({ type: "done", spawnId: `child-transfer-${number}`, parentSessionId: MOCK_SIDE_CHAT_SESSION_ID, taskState: A2ATaskState.COMPLETED, title: `Child from turn ${number}`, entries: [], toolCallCount: 0 });
+          if (surface === "question") {
+            emitAskUserQuestion({ id: `ask-transfer-${number}`, sessionId: MOCK_SIDE_CHAT_SESSION_ID, createdAt: Date.now(), questions: [{ question: `Question for turn ${number}`, choices: ["Continue", "Stop"] }] });
+          } else if (surface === "approval") {
+            emitApproval(approvalRequest({ id: `approval-transfer-${number}`, sessionId: MOCK_SIDE_CHAT_SESSION_ID }));
+          } else {
+            emitAgentSpawnEvent({ type: "start", spawnId: `child-transfer-${number}`, parentSessionId: MOCK_SIDE_CHAT_SESSION_ID, taskState: A2ATaskState.SUBMITTED, title: `Child from turn ${number}` });
+            emitAgentSpawnEvent({ type: "done", spawnId: `child-transfer-${number}`, parentSessionId: MOCK_SIDE_CHAT_SESSION_ID, taskState: A2ATaskState.COMPLETED, title: `Child from turn ${number}`, entries: [], toolCallCount: 0 });
+          }
         });
         if (!children) {
           const selector = `[data-testid="${surface === "question" ? "question-overlay" : "approval-dock"}"]`;
