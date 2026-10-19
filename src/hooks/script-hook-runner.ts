@@ -323,6 +323,7 @@ export async function runOneHookScript(
 
   return new Promise<ScriptHookInvocationResult>((resolve) => {
     const child = windowsSpawn?.child ?? spawn(spawnCmd, spawnArgs, {
+      windowsHide: true,
       cwd,
       // Allowlist env — do not leak ANTHROPIC_API_KEY, AWS_*, GITHUB_TOKEN
       // etc. to hook scripts. The hook receives only the AVE_HOOK_* vars.

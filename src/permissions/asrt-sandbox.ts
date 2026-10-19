@@ -1799,6 +1799,7 @@ function executeLinuxAsrtRuntimeProbe(
       // here; this probe never falls back to a plain host shell command.
       child = spawn(executable, args, {
         cwd: process.cwd(),
+        windowsHide: true,
         env: wrapped.env,
         shell: false,
         stdio: "ignore",
