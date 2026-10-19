@@ -918,7 +918,7 @@ describe("pty-manager typing an approved agent command", () => {
       if (data.startsWith("\u001b[200~")) writeTerminal(TAB, "x");
     })(pty.respond);
     await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
-    expect(pty.written.at(-1)).toBe("\u0003");
+    expect(pty.written.at(-1)).toBe("x");
     expect(pty.written).not.toContain("\r");
   });
 
@@ -952,6 +952,68 @@ describe("pty-manager typing an approved agent command", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("stops immediately when the user types during a reset, even across prompt redraws", async () => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      pty.respond = null;
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(pty.written).toEqual(["\u0003"]);
+      writeTerminal(TAB, "x");
+      pty.emitData(prompt());
+      await expect(typing).resolves.toMatchObject({ ok: false, reason: "pending-input" });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(pty.written).toEqual(["\u0003", "x"]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["foreground", "children", "cwd"])("stops resending when the OS reports a change in %s", async (change) => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      pty.respond = null;
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(100);
+      foregroundReading = change === "children"
+        ? { ok: false, reason: "the terminal shell has child processes" }
+        : { ok: true, foreground: { pid: change === "foreground" ? 4242 : 9999, command: change === "foreground" ? "sleep" : "zsh", cwd: change === "cwd" ? "/etc" : "/w" } };
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(typing).resolves.toMatchObject({ ok: false, reason: change === "children" ? "cwd-unverified" : change === "cwd" ? "cwd-mismatch" : "foreground-not-shell" });
+      expect(pty.written).toEqual(["\u0003"]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("rechecks the OS immediately before pasting after a fresh prompt", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    pty.respond = () => {
+      foregroundReading = { ok: true, foreground: { pid: 4242, command: "sleep", cwd: "/w" } };
+      queueMicrotask(() => pty.emitData(prompt()));
+    };
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "foreground-not-shell" });
+    expect(pty.written).toEqual(["\u0003"]);
+  });
+
+  it.each([2_499, 2_500, 2_501, 2_990])("requires the full quiet window inside the budget after a prompt at %i ms", async (at) => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      pty.respond = (data) => {
+        const paste = /^\u001b\[200~(.*)\u001b\[201~$/u.exec(data);
+        if (paste) queueMicrotask(() => pty.emitData(paste[1]!));
+      };
+      setTimeout(() => pty.emitData(prompt()), at);
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(3_100);
+      await expect(typing).resolves.toMatchObject(at <= 2_500 ? { ok: true } : { ok: false, reason: "no-fresh-prompt" });
+      expect(pty.written.some((data) => data.startsWith("\u001b[200~"))).toBe(at <= 2_500);
+    } finally { vi.useRealTimers(); }
   });
 
   it("sends Ctrl-C again when bash cleared its line but waits for a key to draw the fresh prompt", async () => {

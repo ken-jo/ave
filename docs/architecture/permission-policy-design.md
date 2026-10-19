@@ -640,19 +640,28 @@ execution:
   removes it for that shell only. Wrapping it for typed lines alone was
   rejected: the shell cannot tell a pasted line from the user's own.
 
+Executable shell registries (functions, aliases, command hashes and widgets)
+cannot be assigned or appended to by an agent line, including indirect writes
+and declaration or registration builtins. A handler cannot be installed earlier
+on the same approved line after a prompt reported no handler.
+
 Typing is a fixed protocol (pty-manager `typeLineAtPrompt`):
 1. Check the prompt state.
 2. Check the shell and its directory with the operating system.
 3. Write Ctrl-C. The tty turns it into SIGINT, which clears the line editor
    whatever its state: an ESC or Ctrl-X prefix waiting for its next key, a
-   half-typed line. It cannot run anything.
+   half-typed line.
 4. Wait for the fresh prompt, then check the directory and the state again.
    bash 5.2 clears the line at once but draws the fresh prompt only when the
    interrupt breaks its wait for a key, so a Ctrl-C that arrives while the
    prompt is still being drawn leaves no fresh prompt until the next key.
    Ctrl-C is sent again every half second until a fresh prompt is drawn
    (3 seconds in all), and after more than one, typing waits until no further
-   prompt arrives.
+   prompt arrives for a full 500 ms inside that same 3-second budget. Each
+   resend checks unchanged user-input generation, foreground shell identity,
+   absence of shell children, and the approved directory with the OS. A user
+   keystroke aborts immediately, even if the shell redraws its prompt. The OS
+   check runs again immediately before pasting.
 5. Paste the line between bracketed-paste markers, without Enter.
 6. Wait until the line editor's echo of its edit line (wrapping removed) is
    exactly the approved line, with no key from the user since the prompt. Only
@@ -839,6 +848,14 @@ conversation loop adds them to its per-turn base set
 where the world-writable `/tmp` tradeoff is stated. Layer 0 still hard-blocks
 sensitive leaves beneath any default root, and `permissions.additionalDirectories`
 extends the list rather than replacing it.
+
+Linux wraps give `/tmp` a private tmpfs before applying their policy mounts.
+Existing host temp entries are checked by inode after namespace construction
+and before the workload runs; symlinks are copied as links. New top-level temp files
+belong to that sandbox. The shared runtime
+temp root is an empty read-only tmpfs inside this namespace, regardless of
+whether the host path is absent, a transient file, or a symlink. Its deny
+uses no shared host mount source or cleanup stub.
 
 ## Saved-Session Reads
 

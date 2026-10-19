@@ -138,6 +138,8 @@ const DECLARATION_COMMAND_WORDS: ReadonlySet<string> = new Set(["export", "decla
  * splitting, and startup files.
  */
 const SHELL_STATE_VARIABLES = /^(?:PROMPT_COMMAND|PS[0-9]|PROMPT[0-9]?|RPROMPT[0-9]?|RPS[0-9]|(?:precmd|preexec|chpwd|periodic|zshaddhistory|zshexit)_functions|TRAP[A-Z]+|PATH|path|IFS|CDPATH|cdpath|FPATH|fpath|BASH_ENV|ENV|ZDOTDIR|HISTFILE|HISTCONTROL|HISTIGNORE|TMOUT|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|__ave_\w*)$/u;
+/** Executable registries must not be changed, even by command-scoped assignments. */
+const EXECUTABLE_REGISTRY_VARIABLE = /^(?:(?:dis_)?(?:functions|functions_source|aliases|galiases|saliases|builtins|commands)|widgets|BASH_ALIASES|BASH_CMDS)$/u;
 const ASSIGNMENT_WORD = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=/u;
 
 /** The first reason `command` may not be typed into a terminal, or null when it may. */
@@ -343,6 +345,8 @@ function expansionProblem(command: string): TerminalCommandTextProblem | null {
     if (/^\{?[=+~^]/u.test(rest)) return "shell-divergent";
     if (/^\{[^{}]*@[A-Za-z]\}/u.test(rest)) return "shell-introspection";
     if (PROMPT_VARIABLE.test(rest)) return "shell-introspection";
+    const name = /^\{?#?([A-Za-z_][A-Za-z0-9_]*)/u.exec(rest)?.[1];
+    if (name && EXECUTABLE_REGISTRY_VARIABLE.test(name)) return "shell-introspection";
   }
   return null;
 }
@@ -386,6 +390,7 @@ function statementProblem(statement: ShellStatement): TerminalCommandTextProblem
       if (statement.redirects.some(zshRedirectTarget)) return "shell-divergent";
       return statementProblem(statement.body) ?? firstWordsProblem(statement.redirects.flatMap((r) => [r.target, r.data].filter((w): w is ShellWord => w !== undefined)));
     case "for":
+      if (SHELL_STATE_VARIABLES.test(statement.name) || EXECUTABLE_REGISTRY_VARIABLE.test(statement.name)) return "shell-state";
       if ((statement.values ?? []).some(startsWithEquals)) return "shell-divergent";
       return firstWordsProblem(statement.values ?? []) ?? statementProblem(statement.body);
     case "if":
@@ -415,7 +420,7 @@ function firstWordsProblem(words: readonly ShellWord[]): TerminalCommandTextProb
       } else if (part.kind === "parameter-choice") {
         const problem = firstWordsProblem([part.operand]);
         if (problem !== null) return problem;
-      } else if (part.kind === "unknown" && /\bExtGlob$/u.test(part.reason)) {
+      } else if (part.kind === "unknown" && (/\bExtGlob$/u.test(part.reason) || part.reason === "Unsupported arithmetic effects")) {
         return "unchecked-construct";
       }
     }
@@ -440,6 +445,7 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
   if (command.assignmentScope === "current" && command.assignments.some((a) => SHELL_STATE_VARIABLES.test(a.name))) {
     return "shell-state";
   }
+  if (command.assignments.some((a) => EXECUTABLE_REGISTRY_VARIABLE.test(a.name))) return "shell-state";
   const staticWords = command.words.map((word) => staticShellWord(word));
   const words = command.words.map((word, i) => staticWords[i] ?? word.source.raw);
   let index = 0;
@@ -483,12 +489,12 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
     if (staticArgs.some((word) => word === undefined)) return "shell-state";
   }
   if (VARIABLE_SETTING_COMMAND_WORDS.has(head)) {
-    return assignedVariableNames(head, words.slice(index + 1)).some((name) => SHELL_STATE_VARIABLES.test(name)) ? "shell-state" : null;
+    return assignedVariableNames(head, words.slice(index + 1)).some((name) => (SHELL_STATE_VARIABLES.test(name) || EXECUTABLE_REGISTRY_VARIABLE.test(name))) ? "shell-state" : null;
   }
   if (DECLARATION_COMMAND_WORDS.has(head)) {
     for (const argument of words.slice(index + 1)) {
       const name = ASSIGNMENT_WORD.exec(argument)?.[1] ?? (/^-/u.test(argument) ? undefined : argument);
-      if (name !== undefined && SHELL_STATE_VARIABLES.test(name)) return "shell-state";
+      if (name !== undefined && (SHELL_STATE_VARIABLES.test(name) || EXECUTABLE_REGISTRY_VARIABLE.test(name))) return "shell-state";
       if (/^-[A-Za-z]*f/u.test(argument)) return "shell-state";
     }
   }
@@ -523,7 +529,7 @@ function assignedVariableNames(head: string, args: readonly string[]): string[] 
       if (/^-[A-Za-z]*v$/u.test(arg) && args[i + 1] !== undefined) names.push(args[i + 1]!);
       else if (/^-v./u.test(arg)) names.push(arg.slice(2));
     }
-    return names;
+    return names.map(nameOf);
   }
   if (head === "getopts") return args.slice(1).map(nameOf);
   return args.map(nameOf);

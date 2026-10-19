@@ -205,18 +205,7 @@ const HOST_STORED_TEXT = '{"stored":"by the host"}';
 /** What one child leaves in its own temp directory, so the host reading it back shows the write landed and lasted. */
 const OWN_TEMP_BYTES = "bytes one confined child left in its own temp directory";
 
-/**
- * ASRT's own default temp root — the one this app no longer uses, and now denies.
- *
- * The probe writes here to prove the deny floor refuses it. A write to a
- * directory that is NOT THERE fails too, with `ENOENT`, and that answer proves
- * nothing: it is what a machine with no sandbox history returns whether the
- * floor is in place or not. So the host CREATES the directory before the child
- * runs, which is the condition the deny exists for — another ASRT consumer on
- * the box already made it. Creating it is not litter: it is the standard root
- * any sandboxed run on this machine would create on first use, and it is left
- * empty.
- */
+/** The shared default temp root is denied; Linux supplies its own mount point. */
 const ASRT_DEFAULT_TEMP_ROOT = "/tmp/claude";
 
 interface Fixture {
@@ -588,9 +577,9 @@ async function runProbe(
   fx: Fixture,
   envelope: DelegatedWorkerConfinement = baseEnvelope(fx),
 ): Promise<ProbeReport> {
-  // See ASRT_DEFAULT_TEMP_ROOT — the deny is only measurable against a
-  // directory that exists.
-  mkdirSync(ASRT_DEFAULT_TEMP_ROOT, { recursive: true });
+  // Linux supplies its own denied directory inside the namespace. Other
+  // platforms need an existing directory to distinguish denial from absence.
+  if (process.platform !== "linux") mkdirSync(ASRT_DEFAULT_TEMP_ROOT, { recursive: true });
   const child = await spawnConfinedPluginChild({
     pluginId: PLUGIN_ID,
     socketDir: resolvePluginSocketDir(fx.pluginDataDir),
@@ -1558,10 +1547,11 @@ describe("the confined child, against the real sandbox", () => {
       // also fails — `ENOENT` — and a case that accepted any failure would go
       // green on a machine that simply never made the directory. `EPERM` on
       // macOS or `EROFS` on Linux beside a directory that IS there says
-      // "refused". The host creates `ASRT_DEFAULT_TEMP_ROOT`, so that check
-      // always runs. The host does not create the npm cache, so that check runs
+      // "refused". The Linux namespace supplies the directory; other platforms
+      // create it on the host. The read-only error verifies the Linux parent
+      // exists. The host does not create the npm cache, so that check runs
       // only if it is already present.
-      expect(existsSync(ASRT_DEFAULT_TEMP_ROOT)).toBe(true);
+      if (process.platform !== "linux") expect(existsSync(ASRT_DEFAULT_TEMP_ROOT)).toBe(true);
       expect(report.writeAsrtDefaultTemp.ok, JSON.stringify(report.writeAsrtDefaultTemp)).toBe(false);
       const deniedWriteCode = process.platform === "linux" ? "EROFS" : "EPERM";
       expect(report.writeAsrtDefaultTemp.code).toBe(deniedWriteCode);

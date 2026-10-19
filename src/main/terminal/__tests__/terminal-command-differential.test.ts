@@ -51,6 +51,8 @@ import { wrapperPrefixLength } from "../../../permissions/rules/shell-prefix-pol
 import { analyzeShell } from "../../../shared/shell-analysis.js";
 import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, ubuntuLikeNotFoundHandler } from "../../../__tests__/support/terminal-markers.js";
 
+import { TERMINAL_REGISTRY_COMMANDS } from "../../../__tests__/support/terminal-registry-commands.js";
+
 const NONCE = "0123456789abcdef0123456789abcdef";
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,7 @@ const NONCE = "0123456789abcdef0123456789abcdef";
 // and constructs where zsh and bash part ways, each then mutated.
 
 const BASE_COMMANDS: readonly string[] = [
+  ...TERMINAL_REGISTRY_COMMANDS,
   // The validator's accepted cases (terminal-run.test.ts).
   "echo 'a # b'",
   "echo \"#hash\"",

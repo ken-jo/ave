@@ -1,12 +1,13 @@
 import { afterEach, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { buildSandboxConfig, getBuiltinShellReadPolicy } from "../asrt-sandbox.js";
 import { hardenLinuxSandboxWrap } from "../linux-sandbox-wrap.js";
+import { shellQuote } from "../../lib/shell-resolver.js";
 import { deriveSandboxWritePaths } from "../sandbox-write-jail.js";
 
 const priorAveHome = process.env.AVE_HOME;
@@ -210,7 +211,7 @@ it("refuses a wrapper whose mount options cannot be located", () => {
 
 it.each([
   "--args 9",
-  "--bind-try /tmp/example /tmp/example",
+  "--overlay-src /tmp/example",
   "--tmpfs=/tmp/example",
   "--new-session=1",
   "--bind /tmp/other /tmp/example",
@@ -307,4 +308,41 @@ it.runIf(process.platform !== "win32")("does not put back a write root that one 
   // A read-only bind that is not one of the wrap's re-allows is not a re-allow.
   const notReallowed = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} }, { allowRead: [pluginData] });
   expect(notReallowed.argv[2]).not.toMatch(new RegExp(`'${pluginRoot}' '${pluginRoot}' '--bind'`));
+});
+
+it.runIf(process.platform !== "win32").each(["", "--bind /tmp/claude /tmp/claude", "--ro-bind /tmp/claude /tmp/claude", "--ro-bind /dev/null /tmp/claude"])("masks the shared temporary root without a host source: %s", (priorMount) => {
+  const before = lstatSync("/tmp/claude", { throwIfNoEntry: false });
+  const wrapped = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", `bwrap --ro-bind / / --bind /tmp /tmp ${priorMount} -- /bin/sh -c 'true'`], env: {} }, { denySharedTempRoot: true });
+  const words = execFileSync("/bin/bash", ["-c", `set -- ${wrapped.argv[2].split("\n# Run the confined command\n").at(-1)!.split("\naveTmpStatus=")[0]}; printf '%s\\n' "$@"`], { encoding: "utf8" }).trimEnd().split("\n");
+  expect(words.some((word, index) => word === "--tmpfs" && words[index + 1] === "/tmp")).toBe(true);
+  expect(words.some((word, index) => word === "--tmpfs" && words[index + 1] === "/tmp/claude")).toBe(true);
+  expect(words.some((word, index) => word === "--remount-ro" && words[index + 1] === "/tmp/claude")).toBe(true);
+  expect(words.some((word, index) => ["--bind", "--bind-try", "--ro-bind", "--ro-bind-try"].includes(word) && ["/tmp/claude"].includes(words[index + 1]!))).toBe(false);
+  expect(words.some((word, index) => word === "--bind" && words[index + 1] === "/tmp" && words[index + 2] === "/tmp")).toBe(false);
+  expect(lstatSync("/tmp/claude", { throwIfNoEntry: false })?.ino).toBe(before?.ino);
+});
+
+it.runIf(process.platform === "linux").each([false, true])("refuses a replaced source before startup hooks and workload code: %s", (startupHook) => {
+  const root = mkdtempSync(join(tmpdir(), "ave-tmp-source-"));
+  const target = mkdtempSync(join(tmpdir(), "ave-tmp-target-'\n$(echo unsafe)-"));
+  const moved = `${root}-moved`;
+  temporaryRoots.push(root, target, moved);
+  const launcher = join(root, "bwrap");
+  writeFileSync(join(target, "startup"), "echo startup-ran\n");
+  writeFileSync(launcher, [
+    "#!/bin/bash",
+    `mv -- ${shellQuote(root)} ${shellQuote(moved)}`,
+    `ln -s -- ${shellQuote(target)} ${shellQuote(root)}`,
+    'exec /usr/bin/bwrap "$@"',
+    "",
+  ].join("\n"), { mode: 0o755 });
+  const wrapped = hardenLinuxSandboxWrap({
+    argv: ["/bin/bash", "-c", `${shellQuote(launcher)} --unshare-user --unshare-pid --ro-bind / / --bind /tmp /tmp --dev /dev --proc /proc -- /bin/sh -c 'echo workload-ran'`],
+    env: startupHook ? { BASH_ENV: join(root, "startup") } : {},
+  }, { denySharedTempRoot: true });
+  const result = spawnSync(wrapped.argv[0], wrapped.argv.slice(1), { encoding: "utf8", env: { ...process.env, ...wrapped.env } });
+  expect(result.status, result.stderr).toBe(126);
+  expect(result.stderr).toContain("Sandbox temporary mount changed");
+  expect(result.stdout).not.toContain("workload-ran");
+  expect(result.stdout).not.toContain("startup-ran");
 });

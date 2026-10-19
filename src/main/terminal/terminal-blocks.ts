@@ -301,6 +301,7 @@ export class TerminalBlockTracker {
   private exited = false;
   /** When the user last wrote to this terminal ({@link recordInput}), or null. */
   private lastInputAt: number | null = null;
+  private userInputs = 0;
   /** True once the shell has marked the end of a prompt (B). */
   private sawPromptEnd = false;
   /** How many prompts the shell has finished drawing (B markers). */
@@ -318,7 +319,7 @@ export class TerminalBlockTracker {
    * so it carries this per-prompt token instead of the nonce.
    */
   private promptEndToken: string | null = null;
-  /** Called after every authenticated marker and on exit (see {@link subscribe}). */
+  /** Called after authenticated markers, user input, and exit (see {@link subscribe}). */
   private readonly listeners = new Set<() => void>();
 
   private readonly nonce: string;
@@ -371,6 +372,11 @@ export class TerminalBlockTracker {
     return this.promptEnds;
   }
 
+  /** Monotonic user-input generation; prompt redraws never reset it. */
+  userInputGeneration(): number {
+    return this.userInputs;
+  }
+
   /** Whether the user pressed a key at the current prompt (emulator replies aside). */
   typedSincePromptEnd(): boolean {
     return this.inputSincePromptEnd;
@@ -397,8 +403,8 @@ export class TerminalBlockTracker {
 
   /**
    * Be told when a block opens or closes or the prompt state changes (after
-   * every authenticated marker, and when the shell exits). Returns the
-   * unsubscribe function. A listener runs inside the PTY data callback and
+   * every authenticated marker, user input, and shell exit). Returns the
+   * unsubscribe function. A listener runs inside the PTY data or input callback and
    * must only record what it needs.
    */
   subscribe(listener: () => void): () => void {
@@ -547,7 +553,9 @@ export class TerminalBlockTracker {
    */
   recordInput(data: string): void {
     if (!TERMINAL_REPLY.test(data)) {
+      this.userInputs++;
       this.lastInputAt = this.now();
+      this.notify();
       if (this.phase === "input") this.inputSincePromptEnd = true;
     }
     if (this.integrated || !data.includes("\r")) return;

@@ -27,7 +27,7 @@ import {
   vi,
 } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -60,7 +60,6 @@ import {
   buildSandboxConfig,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
-  ensureAsrtSharedTempRootExists,
   appOwnedSandboxPrivateRoots,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
@@ -186,7 +185,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
 
       // mac/linux: [<shell>, "-c", <wrapped>]; Windows: [srt-win, "exec", ...]
       expect(argv.length).toBeGreaterThanOrEqual(3);
-      expect(argv[1]).toBe(process.platform === "win32" ? "exec" : "-c");
+      expect(argv[1]).toBe(process.platform === "win32" ? "exec" : process.platform === "linux" ? "-pc" : "-c");
 
       const res = await runArgv(argv, env, writeDir);
       cleanupAsrtSandboxAfterCommand();
@@ -295,7 +294,7 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const { argv } = await wrapToolCommand("true");
       try {
-        expect(argv[1]).toBe("-c");
+        expect(argv[1]).toBe("-pc");
         const renderedWrapper = argv[2] ?? "";
         expect(renderedWrapper).toContain("bwrap");
         expect(renderedWrapper).toContain("--unshare-user");
@@ -319,16 +318,15 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
       const checkout = checkoutRootAbove(helper);
       const { argv } = await wrapToolCommand("true", { filesystem: { denyRead: [checkout], allowRead: [] } });
       try {
-        const rendered = argv[2] ?? "";
-        expect(rendered).toContain(`--tmpfs ${checkout} `);
-        const reboundUnderDeny = [...rendered.matchAll(/--ro-bind (\S+) (\S+)/g)]
-          .filter(([, , target]) => target!.startsWith(`${checkout}/`))
-          .map(([, source, target]) => [source, target]);
+        const words = execFileSync("/bin/bash", ["-c", `set -- ${argv[2].split("\n# Run the confined command\n").at(-1)!.split("\naveTmpStatus=")[0]}; printf '%s\\n' "$@"`], { encoding: "utf8" }).trimEnd().split("\n");
+        expect(words.some((word, index) => word === "--tmpfs" && words[index + 1] === checkout)).toBe(true);
+        const reboundUnderDeny = words.flatMap((word, index) => word === "--ro-bind" && words[index + 2]!.startsWith(`${checkout}/`)
+          ? [[words[index + 1], words[index + 2]]] : []);
         // The helper is the one file this wrap re-allows; ASRT itself re-allows
         // its JVM proxy agent jar. No directory of the package comes back.
         const jar = getVendoredJavaProxyAgentJarPath();
         expect(reboundUnderDeny.sort()).toEqual([[helper, helper], [jar, jar]].sort());
-        expect(rendered).toContain(`${helper} `);
+        expect(words).toContain(helper);
       } finally {
         await cleanupAsrtSandboxAfterCommand();
       }
@@ -469,7 +467,7 @@ describe("asrt-sandbox — worker wrap carries only the filesystem jail", () => 
       filesystem: { allowWrite: [], allowRead: [] },
     });
     expect(argv.length).toBeGreaterThanOrEqual(3);
-    expect(argv[1]).toBe(process.platform === "win32" ? "exec" : "-c");
+    expect(argv[1]).toBe(process.platform === "win32" ? "exec" : process.platform === "linux" ? "-pc" : "-c");
   });
 });
 
@@ -1332,54 +1330,16 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
   );
 });
 
-describe("ASRT's shared temp root, kept present for the deny on it", () => {
-  // On a temp path: the real `/tmp/claude` is shared by everything on the
-  // machine and is not this test's to create or remove.
-  const made: string[] = [];
-  const scratch = (): string => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-shared-temp-root-")));
-    made.push(dir);
-    return dir;
-  };
-  afterAll(() => {
-    for (const dir of made) rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("creates the directory on Linux when nothing is there, so the deny is never a mount point ASRT creates and deletes", () => {
-    const root = join(scratch(), "claude");
-    ensureAsrtSharedTempRootExists(root, "linux");
-    expect(statSync(root).isDirectory()).toBe(true);
-  });
-
-  it("leaves whatever is already at the path alone: a directory with its contents, or a file", () => {
-    const dir = join(scratch(), "claude");
-    mkdirSync(dir);
-    writeFileSync(join(dir, "theirs"), "kept");
-    ensureAsrtSharedTempRootExists(dir, "linux");
-    expect(readFileSync(join(dir, "theirs"), "utf-8")).toBe("kept");
-
-    const file = join(scratch(), "claude");
-    writeFileSync(file, "");
-    ensureAsrtSharedTempRootExists(file, "linux");
-    expect(statSync(file).isFile()).toBe(true);
-  });
-
-  it("goes on without it when the parent is missing, as the wrap did before", () => {
-    const root = join(scratch(), "missing-parent", "claude");
-    ensureAsrtSharedTempRootExists(root, "linux");
-    expect(existsSync(root)).toBe(false);
-  });
-
-  it("throws on any other failure rather than hiding it", () => {
-    const parentFile = join(scratch(), "a-file");
-    writeFileSync(parentFile, "");
-    expect(() => ensureAsrtSharedTempRootExists(join(parentFile, "claude"), "linux")).toThrow(/ENOTDIR/u);
-  });
-
-  it("creates nothing off Linux, where the profile is lexical", () => {
-    const root = join(scratch(), "claude");
-    ensureAsrtSharedTempRootExists(root, "darwin");
-    ensureAsrtSharedTempRootExists(root, "win32");
-    expect(existsSync(root)).toBe(false);
+describe.runIf(process.platform === "linux")("private temporary deny mount", () => {
+  it("starts without a shared host source and refuses writes to the shared default", async () => {
+    expect(await asrtCanInitialize()).toBe(true);
+    await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp"] });
+    const wrapped = await wrapToolCommand("test -d /tmp/claude && test ! -L /tmp/claude && printf private-directory; printf forbidden > /tmp/claude/ave-write-probe");
+    expect(wrapped.argv[2]).toContain("'--tmpfs' '/tmp/claude'");
+    const result = await runArgv(wrapped.argv, wrapped.env, process.cwd());
+    cleanupAsrtSandboxAfterCommand();
+    expect(result.code, result.stderr).not.toBe(0);
+    expect(result.stdout).toBe("private-directory");
+    expect(result.stderr).toMatch(/read-only/i);
   });
 });

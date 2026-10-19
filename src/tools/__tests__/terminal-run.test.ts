@@ -21,6 +21,17 @@ import type { ApprovalMemoryScope } from "../../shared/permissions-events.js";
 import type { ToolExecutionContext } from "../types.js";
 import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
 
+import { TERMINAL_REGISTRY_COMMANDS } from "../../__tests__/support/terminal-registry-commands.js";
+import { terminalCommandTextProblem } from "../../shared/terminal-command-text.js";
+import { getLocale, setLocale } from "../../i18n/runtime.js";
+import { loadLocaleMessages } from "../../i18n/messages/index.js";
+
+describe("terminal executable registries", () => {
+  it.each(TERMINAL_REGISTRY_COMMANDS)("refuses mutation: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).not.toBeNull();
+  });
+});
+
 const WINDOW = 1;
 const NONCE = TERMINAL_TEST_NONCE;
 const mark = terminalMarker;
@@ -492,6 +503,25 @@ describe("terminal_run", () => {
         approvedSha256: sha256Hex("echo hi"),
         ranSha256: sha256Hex("[200~echo hi~"),
       }]);
+    });
+
+    it.each(["en", "ko"])("keeps the handler and explains its removal in %s", async (locale) => {
+      const previous = getLocale();
+      try {
+        await loadLocaleMessages(locale);
+        setLocale(locale);
+        const tracker = readyTracker("/repo");
+        tracker.recordOutput(promptIn("/repo").replace("NotFound=0", "NotFound=1"));
+        registerTerminalBlockTracker("terminal:aaaaaaaa-1", tracker, WINDOW);
+        const deps = depsWith();
+        const tool = createTerminalRunTool(deps);
+        const request = () => Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" }));
+        await expect(request()).rejects.toThrow("unset -f command_not_found_handle");
+        await expect(request()).rejects.toThrow("unfunction command_not_found_handler");
+        await expect(request()).rejects.toThrow(locale === "ko" ? "사용자에게" : "Ask the user");
+        expect(deps.typed).toEqual([]);
+        expect(tracker.promptState()).toBe("not-found-handler");
+      } finally { setLocale(previous); }
     });
 
     it("refuses before any card when the operating system disagrees with the terminal's markers", async () => {

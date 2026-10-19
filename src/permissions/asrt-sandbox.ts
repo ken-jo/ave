@@ -863,6 +863,7 @@ function applyLinuxReadMaskWriteFloor(
     // ASRT was given, after the floor withheld what it withholds.
     const applied = buildPerCommandSandboxCustomConfig(filesystem)?.filesystem;
     return hardenLinuxSandboxWrap(wrapped, {
+      denySharedTempRoot: true,
       ...(applied?.allowRead !== undefined ? { allowRead: applied.allowRead } : {}),
       ...(applied?.denyWrite !== undefined ? { denyWrite: applied.denyWrite } : {}),
     });
@@ -1639,7 +1640,6 @@ async function verifyLinuxAsrtRuntime(
   SandboxManager: Awaited<ReturnType<typeof loadSandboxManager>>,
 ): Promise<void> {
   if (process.platform !== "linux") return;
-  ensureAsrtSharedTempRootExists();
 
   const abortController = new AbortController();
   let wrapped = false;
@@ -1654,7 +1654,7 @@ async function verifyLinuxAsrtRuntime(
       process.cwd(),
     );
     wrapped = true;
-    await executeLinuxAsrtRuntimeProbe(probe, abortController);
+    await executeLinuxAsrtRuntimeProbe(hardenLinuxSandboxWrap(probe, { denySharedTempRoot: true }), abortController);
   } catch (error) {
     if (isAsrtLinuxRuntimeProbeError(error)) throw error;
     throw new AsrtLinuxRuntimeProbeError("configured ASRT wrapper could not be prepared");
@@ -1745,8 +1745,9 @@ export async function initializeAsrtSandbox(
   // the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = trustedSettings;
   _workerUnixSocketDirs.clear();
+  useAppOwnedSandboxTempRoot();
   const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings));
-  await SandboxManager.initialize(config, askCb, enableLogMonitor);
+  await SandboxManager.initialize(linuxRuntimeConfig(config), askCb, enableLogMonitor);
   try {
     // Linux's ASRT dependency check only proves executables are installed. Run
     // the configured wrapper once before publishing the adapter as active so a
@@ -1813,13 +1814,12 @@ export async function wrapToolCommand(
   // wrap that happened without this would hand the child a `TMPDIR` it is not
   // allowed to write — a broken temp directory with no visible cause. Idempotent.
   useAppOwnedSandboxTempRoot();
-  ensureAsrtSharedTempRootExists();
   assertPerExecFilesystemSupported(options.filesystem, "wrapToolCommand");
   const SandboxManager = await loadSandboxManager();
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
-    buildPerCommandSandboxCustomConfig(options.filesystem),
+    linuxRuntimeConfig(buildPerCommandSandboxCustomConfig(options.filesystem)),
     options.abortSignal,
   );
   return applyLinuxReadMaskWriteFloor(wrapped, options.filesystem, () => SandboxManager.cleanupAfterCommand());
@@ -1852,9 +1852,8 @@ export async function wrapToolCommand(
  * and a `TMPDIR` naming it, set inside the wrap, and none of them is granted
  * the root itself. What this variable still decides is the `TMPDIR` ASRT
  * writes for a wrap that sets none of its own, which it keeps off
- * `/tmp/claude`. That path stays on the deny floor, and on Linux it is made
- * to exist before each wrap ({@link ensureAsrtSharedTempRootExists}) so the
- * deny never creates and deletes it.
+ * the shared default. Its deny is a namespace-local read-only mask on Linux;
+ * no host mount-point stub is created or consumed.
  *
  * Called once, before any wrap, so nothing observes it changing.
  */
@@ -2066,51 +2065,18 @@ export function useAppOwnedSandboxTempRoot(): string {
 }
 
 /**
- * Codes for which ASRT's shared temp root cannot be made here, and the wrap
- * goes on as it did before this existed: it is already there (as anything),
- * or the host's `/tmp` does not let this user create it, in which case a
- * bwrap mount point could not be created there either.
+ * The Linux adapter supplies this deny with a private /tmp mount instead of
+ * handing a shared host path to the runtime's mount-point lifecycle.
+ * The public policy retains the deny; only runtime-bound arrays omit it.
  */
-const SHARED_TEMP_ROOT_UNCREATABLE = new Set(["EEXIST", "EACCES", "EPERM", "EROFS", "ENOENT"]);
-
-/**
- * Make sure ASRT's shared temp root exists before a Linux wrap, so the deny on
- * it is a read-only bind of a directory that is there.
- *
- * WHY THIS APP CREATES A DIRECTORY IT DOES NOT OWN. The deny floor names
- * `/tmp/claude` (see {@link appOwnedSandboxTempRoot}). When a denied path is
- * ABSENT and a wrap can write its parent — every sandboxed shell command can
- * write `/tmp` (`base-allowed-directories.ts`) — ASRT's Linux backend blocks
- * its creation by mounting `/dev/null` over it: bwrap creates an empty FILE
- * at `/tmp/claude` on the host as the mount point, and ASRT deletes it after
- * the command. So every such command created and deleted a path shared by
- * every process on the machine. ASRT counts its own wraps before deleting a
- * mount point, but only within one process; another process's wrap that saw
- * the path, and so binds it, fails with `bwrap: Can't find source path
- * /tmp/claude` once it is deleted underneath it. Measured: CI run 39283835815
- * and three of four runs in an ubuntu:24.04 container, where the shell-tool
- * suite and the confined-plugin suite run in parallel workers. In the app it
- * is the same with any other ASRT consumer on the machine, which also gets a
- * FILE where it expects its temp directory while the command runs.
- *
- * A directory that is there is never a mount point, so nothing creates or
- * deletes it, and the deny keeps it read-only to every wrap. It is created
- * as an ASRT consumer would (default mode), checked before every wrap because
- * anything on the machine may remove it, and left alone if anything is
- * already at that path. macOS needs none of this: its profile is lexical and
- * creates nothing on the host.
- */
-export function ensureAsrtSharedTempRootExists(
-  path: string = ASRT_SHARED_TEMP_ROOT,
-  platform: NodeJS.Platform = process.platform,
-): void {
-  if (platform !== "linux") return;
-  try {
-    mkdirSync(path);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === undefined || !SHARED_TEMP_ROOT_UNCREATABLE.has(code)) throw error;
-  }
+function linuxRuntimeConfig<T extends Partial<SandboxRuntimeConfig> | undefined>(config: T): T {
+  if (process.platform !== "linux" || !config?.filesystem) return config;
+  const withoutSharedRoot = (paths: string[] | undefined): string[] | undefined =>
+    paths?.filter((path) => resolve(path) !== ASRT_SHARED_TEMP_ROOT);
+  return { ...config, filesystem: { ...config.filesystem,
+    ...(config.filesystem.denyRead ? { denyRead: withoutSharedRoot(config.filesystem.denyRead) } : {}),
+    ...(config.filesystem.denyWrite ? { denyWrite: withoutSharedRoot(config.filesystem.denyWrite) } : {}),
+  } } as T;
 }
 
 /**
@@ -2189,14 +2155,13 @@ async function wrapLongLivedCommand(
   // wrap that happened without this would hand the child a `TMPDIR` it is not
   // allowed to write — a broken temp directory with no visible cause. Idempotent.
   useAppOwnedSandboxTempRoot();
-  ensureAsrtSharedTempRootExists();
   assertPerExecFilesystemSupported(options.filesystem, caller);
   const SandboxManager = await loadSandboxManager();
   // `wrapOptions` is undefined for every wrap but the terminal's.
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
-    buildPerCommandSandboxCustomConfig(options.filesystem),
+    linuxRuntimeConfig(buildPerCommandSandboxCustomConfig(options.filesystem)),
     options.abortSignal,
     undefined,
     wrapOptions,
@@ -2418,7 +2383,7 @@ export async function updateAsrtSandboxConfig(
   const SandboxManager = await loadSandboxManager();
   _baseTrustedSettings = trustedSettings;
   SandboxManager.updateConfig(
-    buildSandboxConfig(withWorkerUnixSockets(trustedSettings)),
+    linuxRuntimeConfig(buildSandboxConfig(withWorkerUnixSockets(trustedSettings))),
   );
 }
 
@@ -2477,7 +2442,7 @@ export async function registerWorkerUnixSocketDir(socketDir: string, holder: obj
     }
     // Other pending dirs belong to their own push. Including them here could
     // retain an allowance after that dir's push fails and its holders reject.
-    SandboxManager.updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings, socketDir)));
+    SandboxManager.updateConfig(linuxRuntimeConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings, socketDir))));
     entry.registered = true;
   } catch (error) {
     // Every holder of this entry — this caller and any waiter — sees the
@@ -2509,7 +2474,7 @@ export async function unregisterWorkerUnixSocketDir(socketDir: string, holder: o
   const SandboxManager = await loadSandboxManager();
   if (!active || _baseTrustedSettings === undefined) return;
   SandboxManager.updateConfig(
-    buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings)),
+    linuxRuntimeConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings))),
   );
 }
 

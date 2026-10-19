@@ -774,7 +774,7 @@ export function foregroundVerdict(
 }
 
 /** Resolves true once the shell finishes drawing a prompt after `since`, false at the timeout or exit. */
-function waitForFreshPrompt(blocks: TerminalBlockTracker, since: number, timeoutMs: number): Promise<boolean> {
+function waitForFreshPrompt(blocks: TerminalBlockTracker, since: number, timeoutMs: number, cancelled: () => boolean = () => false): Promise<boolean> {
   return new Promise((resolve) => {
     let done = false;
     const finish = (value: boolean): void => {
@@ -786,7 +786,7 @@ function waitForFreshPrompt(blocks: TerminalBlockTracker, since: number, timeout
     };
     const timer = setTimeout(() => finish(false), timeoutMs);
     const unsubscribe = blocks.subscribe(() => {
-      if (blocks.hasExited()) finish(false);
+      if (blocks.hasExited() || cancelled()) finish(false);
       else if (blocks.promptEndCount() > since) finish(true);
     });
   });
@@ -886,26 +886,35 @@ export async function typeLineAtPrompt(
     return state === "ready" ? null : notTyped(state, TERMINAL_NOT_READY_MESSAGES[state]);
   };
 
+  const generation = blocks?.userInputGeneration();
+  const interrupted = (): TypeTerminalCommandResult | null =>
+    blocks?.userInputGeneration() !== generation ? notTyped("pending-input", "the user typed while the command was being prepared; no further input was sent") : null;
+  const safeToWrite = async (): Promise<TypeTerminalCommandResult | null> => {
+    const before = interrupted();
+    if (before) return before;
+    const verified = await target.verify();
+    if (!verified.ok) return notTyped(verified.reason, verified.message);
+    return interrupted() ?? (!target.isLive() ? notTyped("no-terminal", target.missing) : null);
+  };
   const before = check();
   if (before || !blocks) return before ?? notTyped("no-terminal", target.missing);
 
   // 1. The operating system agrees: the shell holds the terminal, in the approved directory.
   const verified = await target.verify();
   if (!verified.ok) return notTyped(verified.reason, verified.message);
-  const afterCheck = check();
+  const afterCheck = interrupted() ?? check();
   if (afterCheck) return afterCheck;
 
   // 2–3. Reset the line editor and wait for the fresh prompt.
-  if (!await resetToFreshPrompt(blocks, target)) {
-    return notTyped("no-fresh-prompt", "the terminal's shell did not draw a fresh prompt after its line was cleared");
-  }
+  const resetFailure = await resetToFreshPrompt(blocks, target, safeToWrite, interrupted);
+  if (resetFailure) return resetFailure;
   const reported = blocks.currentCwd();
   if (reported === null || canonicalizePathForMatch(reported) !== verified.cwd) {
     return notTyped("cwd-mismatch", "the terminal's shell changed directory while the command was being prepared");
   }
 
-  // 4. Synchronously from the last check: nothing can run in between.
-  const beforeWrite = check();
+  // 4. Recheck the OS after the wait, immediately before the paste.
+  const beforeWrite = await safeToWrite() ?? check();
   if (beforeWrite) return beforeWrite;
   const prompt = blocks.promptEndCount();
   target.write(`\u001b[200~${line}\u001b[201~`);
@@ -913,9 +922,14 @@ export async function typeLineAtPrompt(
   // pasted: a widget that rewrites pasted text (bracketed-paste-magic,
   // url-quote-magic) or a key the user pressed in between shows here.
   const shown = await waitForEditLine(blocks, prompt, line, EDIT_LINE_TIMEOUT_MS);
-  if (!shown || !target.isLive()) {
-    if (target.isLive()) target.write("\u0003");
-    return notTyped("edit-line-mismatch", "the terminal's line editor did not show exactly the approved line after it was pasted, so Enter was not pressed and the line was cleared");
+  if (!shown || !target.isLive() || interrupted()) {
+    if (target.isLive() && !await safeToWrite()) target.write("\u0003");
+    return notTyped("edit-line-mismatch", "the terminal's line editor did not show exactly the approved line after it was pasted, so Enter was not pressed");
+  }
+  const beforeEnter = await safeToWrite();
+  if (beforeEnter) return beforeEnter;
+  if (blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd() || blocks.editLineText() !== line) {
+    return notTyped("edit-line-mismatch", "the terminal prompt or edit line changed before Enter; no further input was sent");
   }
   const firstBlockId = blocks.nextBlockId();
   target.write("\r");
@@ -930,7 +944,7 @@ export async function typeLineAtPrompt(
 const RESET_REPEAT_MS = 500;
 
 /**
- * Ctrl-C until the shell draws a fresh prompt; false if none comes within
+ * Ctrl-C until the shell draws a fresh prompt; refuse if none comes within
  * {@link FRESH_PROMPT_TIMEOUT_MS}.
  *
  * One is not always enough. bash 5.2 (readline 8.2) clears its line on SIGINT
@@ -940,29 +954,46 @@ const RESET_REPEAT_MS = 500;
  * after the prompt's end marker, and no fresh prompt until the next key
  * (measured: an ubuntu:24.04 container under load, 20 of 3,017 commands; the
  * output stopped at `^C ESC[?2004l CR ESC[?2004h`). The next Ctrl-C is that
- * key. A Ctrl-C cannot run anything, so another one is safe; when more than
+ * key. Each resend requires unchanged user input and a new OS check; when more than
  * one was sent, a prompt drawn for an earlier one can arrive before the last
  * one's, so the prompts must stay still for a moment before anything is
  * pasted.
  */
-async function resetToFreshPrompt(blocks: TerminalBlockTracker, target: PromptTypingTarget): Promise<boolean> {
+async function resetToFreshPrompt(
+  blocks: TerminalBlockTracker,
+  target: PromptTypingTarget,
+  safeToWrite: () => Promise<TypeTerminalCommandResult | null>,
+  interrupted: () => TypeTerminalCommandResult | null,
+): Promise<TypeTerminalCommandResult | null> {
   const deadline = Date.now() + FRESH_PROMPT_TIMEOUT_MS;
-  let sent = 0;
+  const expired = (): TypeTerminalCommandResult => ({ ok: false, reason: "no-fresh-prompt", message: "the terminal's shell did not draw a fresh prompt with a full quiet window within three seconds" });
   let drawn = false;
+  let sent = 0;
   while (!drawn) {
+    const unsafe = await safeToWrite();
+    if (unsafe) return unsafe;
     const left = deadline - Date.now();
-    if (left <= 0 || !target.isLive()) return false;
-    const fresh = waitForFreshPrompt(blocks, blocks.promptEndCount(), Math.min(RESET_REPEAT_MS, left));
+    if (left <= 0) return expired();
+    const fresh = waitForFreshPrompt(blocks, blocks.promptEndCount(), Math.min(RESET_REPEAT_MS, left), () => interrupted() !== null);
     target.write("\u0003");
-    sent += 1;
+    sent++;
     drawn = await fresh;
+    const changed = interrupted();
+    if (changed) return changed;
+    if (!target.isLive()) return { ok: false, reason: "no-terminal", message: target.missing };
   }
   if (sent > 1) {
-    while (await waitForFreshPrompt(blocks, blocks.promptEndCount(), Math.max(0, Math.min(RESET_REPEAT_MS, deadline - Date.now())))) {
-      if (Date.now() >= deadline) return false;
+    for (;;) {
+      // A truncated wait is not evidence of quiescence.
+      if (deadline - Date.now() < RESET_REPEAT_MS) return expired();
+      const redrawn = await waitForFreshPrompt(blocks, blocks.promptEndCount(), RESET_REPEAT_MS, () => interrupted() !== null);
+      const changed = interrupted();
+      if (changed) return changed;
+      if (!target.isLive()) return { ok: false, reason: "no-terminal", message: target.missing };
+      if (!redrawn) break;
     }
   }
-  return target.isLive();
+  return null;
 }
 
 /** How long typing waits for the pasted line to show in the line editor. */
@@ -992,7 +1023,7 @@ const TERMINAL_NOT_READY_MESSAGES: Record<Exclude<TerminalPromptState, "ready">,
   "pending-input": "the user is typing at the prompt, pressed a key since it was drawn, or it holds text they typed and have not run",
   "no-bracketed-paste": "the terminal's shell does not take bracketed paste (zsh 5.1 or bash 4.4 and later do), so typed text could be read as keys",
   "vi-editing-mode": "the terminal's shell uses vi key bindings, where typed text can be read as editing commands",
-  "not-found-handler": "the terminal's shell defines a command-not-found handler, which runs code for any word that is not a command",
+  "not-found-handler": "the terminal's shell defines a command-not-found handler; ask the user to run unset -f command_not_found_handle (bash) or unfunction command_not_found_handler (zsh) in this terminal, then retry",
   "shell-starting": "the terminal's shell is still starting and has not finished its first prompt; retry in a moment",
   "no-prompt-end-marker": "the terminal's shell does not mark the end of its prompt, so typing there cannot be told",
 };
