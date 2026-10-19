@@ -49,6 +49,7 @@ import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-review
 import { AuditPanel } from "../components/permissions/AuditPanel.js";
 import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
 import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
+import { UpstreamProxySettings } from "../components/permissions/UpstreamProxySettings.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { getApi } from "../api-client.js";
@@ -1462,6 +1463,7 @@ export function PermissionsTab({
               </div>
             )
           ) : null}
+          <UpstreamProxySettings />
         </SettingsSection>
 
         {/* ── Network: what the sandbox proxy refused ── */}

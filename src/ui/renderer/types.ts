@@ -1,6 +1,7 @@
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
 
+import type { UpstreamProxyPatch, UpstreamProxyView } from "../../shared/upstream-proxy.js";
 import type { PluginUiExtensionView } from "../../plugin-ui-host.js";
 import type {
   AgentInstallResultPayload,
@@ -1614,6 +1615,14 @@ export type AvePermissionApi = {
   /** Read-only: the shell egress grants that outlive a call (conversation, workspace, always). */
   egressGrantsList: () => Promise<
     | { ok: true; grants: ListedEgressGrant[] }
+    | { ok: false; error: string; message: string }
+    | IpcErrorResult
+  >;
+  /** Read-only: the upstream proxy setting (no credential values) and the effective upstream for https://example.com. */
+  upstreamProxyGet: () => Promise<UpstreamProxyView | IpcErrorResult>;
+  /** MUTATING: change the upstream proxy setting; resolves to the new view or a refusal. */
+  upstreamProxySet: (patch: UpstreamProxyPatch) => Promise<
+    | { ok: true; view: UpstreamProxyView }
     | { ok: false; error: string; message: string }
     | IpcErrorResult
   >;

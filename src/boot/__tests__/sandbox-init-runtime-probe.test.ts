@@ -185,6 +185,16 @@ describe("initSandboxGate — shell sandbox and plugin-worker confinement scopes
     expect(getHostShellExecutionPlan()).toMatchObject({ requestedSandbox: true, mode: "asrt" });
   });
 
+  it("installs the upstream proxy route hook from the live setting, and clears its cache on a change", async () => {
+    const context = harness.context(true, false);
+    await initSandboxGate(context);
+
+    const trusted = h.initialize.mock.calls[0]![0] as { upstreamRouter?: (d: { host: string; port: number; scheme: "http" | "https" }) => Promise<unknown> };
+    expect(typeof trusted.upstreamRouter).toBe("function");
+    const settings = context.settingsService as unknown as { onChanged: ReturnType<typeof vi.fn> };
+    expect(settings.onChanged).toHaveBeenCalledWith("upstreamProxy", expect.any(Function));
+  });
+
   it("skips ASRT when neither scope is requested", async () => {
     await initSandboxGate(harness.context(false, false));
 

@@ -220,6 +220,14 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-egress-grant-destination": "formatIpcError.invalidEgressGrantDestination",
   "invalid-egress-grant-workspace": "formatIpcError.invalidEgressGrantWorkspace",
   "invalid-egress-grant-conversation": "formatIpcError.invalidEgressGrantConversation",
+  // ── Upstream proxy (ave:permissions:upstream-proxy-*, settings:update) ──
+  "invalid-upstream-proxy-mode": "formatIpcError.invalidUpstreamProxyMode",
+  "invalid-upstream-proxy-resolves-names": "formatIpcError.invalidUpstreamProxyResolvesNames",
+  "invalid-upstream-proxy-bypass": "formatIpcError.invalidUpstreamProxyBypass",
+  "invalid-upstream-proxy-url": "formatIpcError.invalidUpstreamProxyUrl",
+  "upstream-proxy-socks-unsupported": "formatIpcError.upstreamProxySocksUnsupported",
+  "upstream-proxy-url-required": "formatIpcError.upstreamProxyUrlRequired",
+  "upstream-proxy-settings-main-owned": "formatIpcError.upstreamProxySettingsMainOwned",
   // A terminal tab driven from a window other than the one that started its shell.
   "not-owner": "formatIpcError.notOwner",
   "no-such-request": "formatIpcError.noSuchRequest",

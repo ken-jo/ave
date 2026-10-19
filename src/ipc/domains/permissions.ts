@@ -2,12 +2,21 @@
  * Permissions domain IPC handlers.
  * Covers: ave:permission:*, ave:approval:*, ave:policy:*
  */
-import { ipcMain } from "electron";
+import { ipcMain, session } from "electron";
 import { randomUUID } from "node:crypto";
 import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import type { ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
+import {
+  UPSTREAM_PROXY_CREDENTIALS_SECRET,
+  UPSTREAM_PROXY_MODES,
+  type UpstreamProxySettings,
+  type UpstreamProxyView,
+} from "../../shared/upstream-proxy.js";
+
+/** The destination the Settings diagnostic line resolves. */
+const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
 import {
   RECENT_EGRESS_DENIALS_LIMIT,
@@ -387,6 +396,91 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     } catch (error) {
       return { ok: false, error: "egress-grant-store-unreadable", message: errorMessage(error) };
     }
+  });
+
+  // Upstream proxy (owner decision 2026-10-20). Main-owned setting: these two
+  // handlers are its only reader and writer for the renderer, and neither
+  // ever returns a credential value (only whether one is stored).
+  const upstreamProxyView = async (): Promise<UpstreamProxyView> => {
+    const { describeUpstreamProxy, upstreamProxyDeps } = await import("../../permissions/upstream-proxy.js");
+    const routerDeps = upstreamProxyDeps(deps.settingsService, (url) => session.defaultSession.resolveProxy(url));
+    return {
+      settings: deps.settingsService.get("upstreamProxy"),
+      hasCredentials: deps.settingsService.hasStoredSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET),
+      diagnostic: await describeUpstreamProxy(routerDeps, UPSTREAM_PROXY_DIAGNOSTIC_URL),
+    };
+  };
+
+  ipcMain.handle(PERMISSIONS.upstreamProxyGet, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxyGet, e); return UNAUTHORIZED_FRAME; }
+    return upstreamProxyView();
+  });
+
+  ipcMain.handle(PERMISSIONS.upstreamProxySet, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxySet, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const { parseProxyUrl } = await import("../../permissions/upstream-proxy.js");
+    const { normalizeUpstreamProxy } = await import("../../data/settings-normalization.js");
+    const next = deps.settingsService.get("upstreamProxy");
+    if (body.mode !== undefined) {
+      if (typeof body.mode !== "string" || !(UPSTREAM_PROXY_MODES as readonly string[]).includes(body.mode)) {
+        return { ok: false, error: "invalid-upstream-proxy-mode", message: "upstream proxy: mode must be off, system or manual" };
+      }
+      next.mode = body.mode as UpstreamProxySettings["mode"];
+    }
+    if (body.resolvesNames !== undefined) {
+      if (typeof body.resolvesNames !== "boolean") {
+        return { ok: false, error: "invalid-upstream-proxy-resolves-names", message: "upstream proxy: resolvesNames must be a boolean" };
+      }
+      next.resolvesNames = body.resolvesNames;
+    }
+    if (body.bypass !== undefined) {
+      if (typeof body.bypass !== "string" || body.bypass.length > 8192) {
+        return { ok: false, error: "invalid-upstream-proxy-bypass", message: "upstream proxy: the bypass list must be text of at most 8192 characters" };
+      }
+      next.bypass = body.bypass.trim();
+    }
+    let credentials: { username: string; password: string } | undefined;
+    if (body.manualUrl !== undefined) {
+      if (typeof body.manualUrl !== "string" || body.manualUrl.length > 2048) {
+        return { ok: false, error: "invalid-upstream-proxy-url", message: "upstream proxy: the URL must be text of at most 2048 characters" };
+      }
+      if (body.manualUrl.trim() === "") {
+        next.manualUrl = "";
+      } else {
+        const parsed = parseProxyUrl(body.manualUrl);
+        if (!parsed.ok) {
+          return parsed.reason === "socks"
+            ? { ok: false, error: "upstream-proxy-socks-unsupported", message: "upstream proxy: SOCKS proxies cannot be used as the sandbox's upstream" }
+            : { ok: false, error: "invalid-upstream-proxy-url", message: "upstream proxy: enter http://host:port or https://host:port" };
+        }
+        next.manualUrl = `${parsed.scheme}://${parsed.host.includes(":") ? `[${parsed.host}]` : parsed.host}:${parsed.port}`;
+        credentials = parsed.auth;
+      }
+    }
+    if (next.mode === "manual" && next.manualUrl === "") {
+      return { ok: false, error: "upstream-proxy-url-required", message: "upstream proxy: manual mode needs a proxy URL" };
+    }
+    if (credentials !== undefined) {
+      await deps.settingsService.setSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET, JSON.stringify(credentials));
+    } else if (body.clearCredentials === true) {
+      await deps.settingsService.deleteSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+    }
+    // `set` notifies the boot router, which drops its cached routes.
+    const stored = normalizeUpstreamProxy(next);
+    await deps.settingsService.set("upstreamProxy", stored);
+    auditLogger.log({
+      timestamp: new Date().toISOString(),
+      sessionId: "settings",
+      type: "approval",
+      output: `[upstream-proxy:set] mode=${stored.mode} manual=${stored.manualUrl === "" ? "-" : stored.manualUrl}`
+        + ` credentials=${credentials !== undefined ? "replaced" : body.clearCredentials === true ? "cleared" : "unchanged"}`
+        + ` bypassEntries=${stored.bypass === "" ? 0 : stored.bypass.split(",").filter((entry) => entry.trim() !== "").length}`
+        + ` resolvesNames=${stored.resolvesNames}`,
+    });
+    return { ok: true as const, view: await upstreamProxyView() };
   });
 
   // MUTATING (sender-frame-guarded + user-keyboard intent) — the SINGLE

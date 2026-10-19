@@ -915,6 +915,16 @@ export function buildInternalApiSurface() {
       workspaceRoot?: string;
       sessionId?: string;
     }) => ipcRenderer.invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: ipcUserKeyboardIntent() }),
+    /** Read-only: the upstream proxy setting, whether credentials are stored, and the effective upstream. */
+    upstreamProxyGet: async () => ipcRenderer.invoke(PERMISSIONS.upstreamProxyGet),
+    /** MUTATING: change the upstream proxy setting (user-gesture intent attached). */
+    upstreamProxySet: async (patch: {
+      mode?: "off" | "system" | "manual";
+      manualUrl?: string;
+      bypass?: string;
+      resolvesNames?: boolean;
+      clearCredentials?: boolean;
+    }) => ipcRenderer.invoke(PERMISSIONS.upstreamProxySet, { ...patch, intent: ipcUserKeyboardIntent() }),
     /**
      * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
      * UAC prompt). The ONLY user-consented privilege-escalation entry point —

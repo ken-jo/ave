@@ -36,6 +36,7 @@ import type {
   WindowsConfig,
   WindowsBinShell,
   SandboxAskCallback,
+  ParentProxyRouter,
 } from "@anthropic-ai/sandbox-runtime";
 
 const log = createLogger("asrt-sandbox");
@@ -312,6 +313,17 @@ export interface TrustedSandboxSettings {
      */
     readonly resolvesNames?: boolean;
   };
+  /**
+   * The per-destination route hook (carried ASRT patch part 4,
+   * `SandboxManager.setParentProxyRouter`). TRUSTED-ONLY. When present it
+   * replaces {@link upstreamProxy} for routing: ASRT asks it once per
+   * destination decision and dials over the answered routes in order. Boot
+   * passes the router built from the main-owned `upstreamProxy` setting
+   * (`src/permissions/upstream-proxy.ts`); the static `parentProxy` stays
+   * the explicit-empty floor, so the ambient environment is never inherited
+   * by ASRT itself.
+   */
+  readonly upstreamRouter?: ParentProxyRouter;
   /**
    * Windows-only sandbox settings (srt-win network backend). TRUSTED-ONLY —
    * the proxy port range must agree with what the install flow WFP-permits.
@@ -1887,6 +1899,9 @@ export async function initializeAsrtSandbox(
   const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings));
   assertNoLocalBinding(config);
   noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
+  // Installed before the proxy starts, so no connection is routed without
+  // it; reset() (including a failed initialization's) clears it.
+  SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
   await SandboxManager.initialize(config, askCb, enableLogMonitor);
   try {
     // Linux's ASRT dependency check only proves executables are installed. Run

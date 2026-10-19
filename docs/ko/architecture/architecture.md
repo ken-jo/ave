@@ -1989,6 +1989,21 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   이 호스트가 해석하지 못한 이름은 원격 upstream 이면 이름 그대로 넘기고
   `unverified`(최대 "이 대화")로 묻고, 이 호스트의 upstream(cntlm/px 등)이면
   신뢰 설정 `upstreamProxy.resolvesNames` 가 없는 한 사유와 함께 거절한다.
+  상위 프록시의 출처(owner 결정 2026-10-20)는 main 소유 설정 `upstreamProxy`
+  (설정 → 권한 → OS 도구 샌드박스, permissions `upstreamProxySet` 채널로만
+  기록, `settings:update` 는 거절, 수동 자격 증명은 비밀 저장소)다. 기본값
+  "시스템 설정 사용"은 앱 프로세스의 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/
+  `NO_PROXY`(대소문자, curl 순서)가 있으면 그것을, 없으면 Chromium
+  `session.resolveProxy`(OS 설정·PAC·WPAD)를 따른다. PAC 는 목적지마다 다른
+  목록을 줄 수 있으므로 carried patch part 4 가 정적 `parentProxy` 대신 목적지별
+  route hook(`SandboxManager.setParentProxyRouter`, 구현은
+  `src/permissions/upstream-proxy.ts`)을 묻고, 각 경로를 위 규칙대로 판정한 뒤
+  순서대로 시도한다. 407 은 "upstream proxy requires authentication" 으로
+  거절하고(NTLM/Kerberos 는 cntlm·px 같은 로컬 도우미 + `resolvesNames`),
+  SOCKS 항목은 `egress-route` 감사 행과 함께 건너뛴다. 답은 (scheme, host,
+  port)별 45 초 캐시이며 설정 변경 시 즉시 비워 재시작 없이 적용된다. 샌드박스
+  프로세스의 환경에는 Ave 의 호출별 프록시만 보이고 상위 프록시나 자격 증명은
+  들어가지 않는다.
   Linux 는 lane 소켓을 비공개 디렉터리에 두고 wrap 마다 tmpfs 로 가린 뒤 자기
   소켓만 다시 바인드한다.
 - **Gate**: 두 범위가 하나의 ASRT 런타임을 공유한다. 셸 샌드박스

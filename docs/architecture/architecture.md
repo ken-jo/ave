@@ -1415,7 +1415,36 @@ persistent grants ignored); through an upstream on this host (loopback,
 `localhost`-style names, or one of this host's addresses, e.g. cntlm or px)
 it is refused with a reason, unless the trusted `upstreamProxy.resolvesNames`
 setting gives that upstream the remote treatment, which accepts the residual
-risk that the local proxy resolves the name to this host after the check. An ended
+risk that the local proxy resolves the name to this host after the check.
+
+Where the upstream comes from (owner decision 2026-10-20) is the main-owned
+`upstreamProxy` setting (Settings → Permissions → OS Tool Sandbox; written
+only through the permissions `upstreamProxySet` channel, refused by
+`settings:update`, absent from the renderer snapshot; manual credentials in
+the secret store). "Use system settings" (the default) takes the app
+process's own `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY` (either case,
+curl's order) when any is set, and otherwise the OS configuration through
+Chromium's `session.resolveProxy` (macOS system settings, Windows
+WinINET/WinHTTP, Linux environment/GNOME/KDE, PAC and WPAD); "Manual" is a
+URL plus a bypass list; "Off" is direct. Because a PAC script can answer
+differently per destination and with a fallback list, the carried patch's
+part 4 replaces ASRT's single static `parentProxy` with a route hook
+(`SandboxManager.setParentProxyRouter`, implemented in
+`src/permissions/upstream-proxy.ts`): asked once per destination decision
+with the canonical host, port and scheme, before the callback; every
+answered route is judged as above (a pinned name goes as its vetted literal,
+an unresolvable name skips direct routes and untrusted proxies on this host,
+a route naming one of the proxy's own listeners is dropped and every proxy
+socket is checked against them), and the connection tries the kept routes in
+order. A 407 refuses with "upstream proxy requires authentication" (Basic
+credentials from a `user:pass@` URL are sent; NTLM/Kerberos need a local
+helper such as cntlm or px plus the `resolvesNames` opt-in). SOCKS entries
+are skipped with an `egress-route` audit row (ASRT has no SOCKS client); an
+answer with nothing usable refuses, never falls back to direct. Answers are
+cached per (scheme, host, port) for 45 s (Electron has no proxy-change
+event); a Settings write clears the cache, so changes apply without a
+restart. Sandboxed processes see only Ave's per-invocation proxy in their
+environment, never the upstream or its credentials. An ended
 invocation's macOS port stays bound, refusing connections, for 30 minutes,
 longer while its process group still runs, and its number is never reused. A wrap with `network.allowLocalBinding` is
 refused, and Ave never sets it. The macOS profile also denies process-info on other processes and

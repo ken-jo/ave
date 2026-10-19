@@ -24,6 +24,7 @@ import {
 
 // Gate state only: these tests do not claim OS confinement.
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
+  setParentProxyRouter: () => undefined,
   initialize: async () => undefined,
   updateConfig: () => undefined,
   reset: async () => undefined,

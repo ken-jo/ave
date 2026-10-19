@@ -21,6 +21,7 @@ import {
   type PluginConfigRecord,
 } from "../shared/plugin-config.js";
 import type { AlertSettings, RetiredPluginConfigRecord } from "../shared/alerts-types.js";
+import type { UpstreamProxySettings } from "../shared/upstream-proxy.js";
 import {
   isMarketplaceEligibleLLMVendor,
   activeLlmRouteModel,
@@ -86,6 +87,7 @@ import {
   normalizeAppearance,
   normalizeChat,
   normalizeDiagnostics,
+  normalizeUpstreamProxy,
   normalizeFeatureFlags,
   normalizeMarketplace,
   normalizeProjectRootList,
@@ -686,6 +688,13 @@ export interface AppSettings {
   updates: UpdateSettings;
   telemetry: TelemetrySettings;
   audit: AuditSettings;
+  /**
+   * Where the sandbox egress proxy sends allowed connections next. Main-owned:
+   * written only through the permissions `upstreamProxySet` channel (host
+   * renderer only) via `set`, never through `patch()`, and left out of the
+   * renderer snapshot. See `src/shared/upstream-proxy.ts`.
+   */
+  upstreamProxy: UpstreamProxySettings;
   /** §E2 (#1499) — diagnostics bundle + log retention. */
   diagnostics: DiagnosticsSettings;
   /** Visual theme and UI preferences. */
@@ -1429,7 +1438,7 @@ export class SettingsService {
     partial: Partial<Omit<
       AppSettings,
       | "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
-      | "alerts" | "retiredPluginConfigs"
+      | "alerts" | "retiredPluginConfigs" | "upstreamProxy"
     >> & {
       marketplace?: Partial<MarketplaceSettings>;
       llm?: LLMSettingsPatch;
@@ -2309,6 +2318,7 @@ export class SettingsService {
         updates: { ...DEFAULT_SETTINGS.updates, ...parsed.updates },
         telemetry: normalizeTelemetry(parsed.telemetry),
         audit: { ...DEFAULT_SETTINGS.audit, ...parsed.audit },
+        upstreamProxy: normalizeUpstreamProxy(parsed.upstreamProxy),
         diagnostics: normalizeDiagnostics(parsed.diagnostics),
         appearance,
         webView: normalizeWebView(parsed.webView),

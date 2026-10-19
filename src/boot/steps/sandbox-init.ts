@@ -275,9 +275,36 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
               capability: detectSandboxCapability,
             });
           }
+          // Where allowed connections go next (owner decision 2026-10-20):
+          // the main-owned `upstreamProxy` setting, read per destination so a
+          // change applies without a restart (the cache is cleared on every
+          // write). Default "Use system settings": the app's own proxy
+          // environment, else the OS configuration through Chromium's
+          // resolver (PAC/WPAD included). Entries the sandbox cannot use are
+          // passed over with an audit row.
+          const upstreamRouter = await (async () => {
+            const [{ createUpstreamProxyRouter, upstreamProxyDeps }, { maskSensitiveData }, { emitSandboxAudit }] = await Promise.all([
+              import("../../permissions/upstream-proxy.js"),
+              import("../../audit/dlp-filter.js"),
+              import("../../audit/sandbox-audit-sink.js"),
+            ]);
+            const mask = (text: string): string => maskSensitiveData(text).masked;
+            const upstream = createUpstreamProxyRouter(upstreamProxyDeps(settingsService, ctx.host.resolveProxy, (event) => {
+              emitSandboxAudit({
+                timestamp: new Date().toISOString(),
+                entryKind: "egress-route",
+                destination: { host: mask(event.host), port: event.port },
+                source: event.source,
+                skipped: event.skipped.map(mask),
+              }).catch((error: unknown) => log.warn(`[sandbox] upstream route audit write failed: ${errorMessage(error)}`));
+            }));
+            settingsService.onChanged("upstreamProxy", () => upstream.invalidate());
+            return upstream.router;
+          })();
           await initializeAsrtSandbox({
             allowedDomains: [],
             strictAllowlist: false,
+            upstreamRouter,
             // Thread the REAL Electron userData path so the deny-list is exact
             // (handles --user-data-dir, XDG_CONFIG_HOME, future renames).
             // Safe: boot.ts is main-process only and already imports electron.

@@ -261,3 +261,22 @@ export interface SandboxEgressDecisionAuditEntry {
   /** Why a refusal happened; null for an allow. */
   reason: string | null;
 }
+
+// ─── SandboxEgressRouteAuditEntry ────────────────────────────────────────────
+
+/**
+ * One row when the upstream proxy configuration offered entries the sandbox
+ * passed over for a destination (a SOCKS proxy, a malformed PAC entry, an
+ * unusable environment URL). Written once per lookup, not per connection
+ * (lookups are cached briefly). Host and entries are DLP-masked; entries
+ * never carry credentials (PAC answers have none, and environment entries
+ * are reported by variable name).
+ */
+export interface SandboxEgressRouteAuditEntry {
+  timestamp: string;
+  entryKind: "egress-route";
+  destination: { host: string; port: number };
+  /** Where the routes came from (`UpstreamProxySource`). */
+  source: string;
+  skipped: string[];
+}
