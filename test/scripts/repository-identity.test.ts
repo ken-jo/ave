@@ -28,7 +28,8 @@ import { HOST_PROTOCOL_NOTIFICATIONS, isHostApiMethod } from "../../src/plugins/
  * - the deprecation-owner text ("owner role of `<owner>`", optionally "organization owner role");
  * - the `gh -R <owner>/` owner in the packaged `resources/AGENTS.md`;
  * - the replaceable-hash list for the seeded `resources/AGENTS.md`, which must
- *   carry every release tag's copy (editing that file for a move needs it).
+ *   carry the current copy and every shipped release tag's copy (editing that
+ *   file for a move needs it).
  *
  * Changing the owner or name therefore fails here, with every disagreeing site
  * listed, until each one agrees.
@@ -81,6 +82,19 @@ function gitText(...args: string[]): string {
   const result = git(args);
   if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed`);
   return result.stdout.toString("utf8");
+}
+
+/** The oldest release tag whose resources/AGENTS.md still holds the bytes it
+ *  shipped with; the 2026-10-17 history rewrite changed every earlier copy. */
+const FIRST_TAG_WITH_SHIPPED_AGENTS_MD = "v0.14.0";
+
+function compareReleaseTags(left: string, right: string): number {
+  const parts = (tag: string) => tag.slice(1).split(".").map(Number);
+  const [a, b] = [parts(left), parts(right)];
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
 }
 
 const trackedFiles = gitText("ls-files", "-z").split("\0").filter((path) => path.length > 0);
@@ -341,18 +355,25 @@ describe("repository identity source of truth", () => {
     expect(owners.filter((owner) => owner !== identity.owner)).toEqual([]);
   });
 
-  it("lists every release tag's resources/AGENTS.md in the replaceable-hash list", () => {
+  it("lists the current and every release tag's resources/AGENTS.md in the replaceable-hash list", () => {
     // The seeder replaces a user's copy in place only when its bytes are a
     // shipped version, so an edit to resources/AGENTS.md (as a move needs)
-    // must keep every tagged copy listed. CI checks out full history and tags.
+    // must keep every shipped copy listed. CI checks out full history and tags.
+    const listed = new Set(read("resources/AGENTS.md.replaceable-sha256").split(/\s+/u).filter(Boolean));
+    const current = createHash("sha256").update(readFileSync(resolve(root, "resources/AGENTS.md"))).digest("hex");
+    expect(listed.has(current), "the current resources/AGENTS.md is not in the replaceable-hash list").toBe(true);
+    // The 2026-10-17 history rewrite renamed the product in every commit before
+    // FIRST_TAG_WITH_SHIPPED_AGENTS_MD, so the older tags now hold bytes that never
+    // shipped. Their shipped hashes stay in the list as a fixed inventory that git
+    // can no longer re-derive; tags from the floor on still hold the shipped bytes.
     const tags = gitText("tag", "--list", "v*")
       .split("\n")
       .filter((tag) => /^v\d+\.\d+\.\d+$/u.test(tag));
-    expect(tags.length, "no release tags in this checkout; fetch the tags").toBeGreaterThan(0);
-    const listed = new Set(read("resources/AGENTS.md.replaceable-sha256").split(/\s+/u).filter(Boolean));
+    expect(tags, "the floor tag is not in this checkout; fetch the tags").toContain(FIRST_TAG_WITH_SHIPPED_AGENTS_MD);
+    const shippedTags = tags.filter((tag) => compareReleaseTags(tag, FIRST_TAG_WITH_SHIPPED_AGENTS_MD) >= 0);
     const missing: string[] = [];
     let taggedCopies = 0;
-    for (const tag of tags) {
+    for (const tag of shippedTags) {
       const copy = git(["cat-file", "-p", `${tag}:resources/AGENTS.md`]);
       if (copy.status !== 0) continue; // the tag predates the packaged contract
       taggedCopies += 1;
