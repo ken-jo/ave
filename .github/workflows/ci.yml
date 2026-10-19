@@ -615,3 +615,4 @@ jobs:
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
+          src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts

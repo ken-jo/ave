@@ -16,11 +16,12 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, useAppOwnedSandboxTempRoot } from "../../../permissions/asrt-sandbox.js";
 import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability } from "../../../permissions/sandbox-capability.js";
-import { sandboxCasesRun } from "../../../plugins/isolation/__tests__/sandbox-cases.js";
+import { requireSandboxCases } from "../../../plugins/isolation/__tests__/sandbox-cases.js";
+import { waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
 import {
   __resetTerminalsForTest,
   __terminalSessionCountForTest,
@@ -42,17 +43,7 @@ let exits: string[];
 /** Everything each terminal showed, for a failure's message. */
 let shown: Map<string, string>;
 
-async function requireSandbox(test: TestContext): Promise<void> {
-  if (!(await sandboxCasesRun())) test.skip("ASRT cannot initialize (sandbox dependencies missing)");
-}
-
-async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition()) {
-    if (Date.now() > deadline) throw new Error("timed out");
-    await sleep(25);
-  }
-}
+const until = (condition: () => boolean, timeoutMs = 10_000): Promise<void> => waitForTerminal(condition, timeoutMs);
 
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "pty-linux-sandbox-")));
@@ -141,7 +132,7 @@ describe.runIf(process.platform === "linux")("workspace terminal under the Linux
     const tabId = name === "zsh" ? "terminal:000000a1-1" : "terminal:000000a2-1";
 
     it(`${name}: Ctrl-C interrupts a running command and clears an idle line; the terminal survives`, async (test) => {
-      await requireSandbox(test);
+      await requireSandboxCases(test);
       const tracker = await startSandboxedShell(shellPath, tabId);
       // The shell has its own terminal: job control is on.
       expect(await typeAndWait(tabId, tracker, "case $- in *m*) echo monitor-on;; esac")).toBe("monitor-on\n");
@@ -170,7 +161,7 @@ describe.runIf(process.platform === "linux")("workspace terminal under the Linux
     }, 90_000);
 
     it(`${name}: a resize reaches the shell's own terminal`, async (test) => {
-      await requireSandbox(test);
+      await requireSandboxCases(test);
       const tracker = await startSandboxedShell(shellPath, tabId);
       expect(await typeAndWait(tabId, tracker, "stty size")).toBe("30 100\n");
       await settle(tracker);
@@ -181,7 +172,7 @@ describe.runIf(process.platform === "linux")("workspace terminal under the Linux
     }, 90_000);
 
     it(`${name}: terminal_run types at the shell's prompt, and refuses a busy, nested or moved shell`, async (test) => {
-      await requireSandbox(test);
+      await requireSandboxCases(test);
       const tracker = await startSandboxedShell(shellPath, tabId);
       const cwd = tracker.currentCwd()!;
       expect(await verifyTerminalShell(tabId, OWNER, cwd)).toEqual({ ok: true, cwd });

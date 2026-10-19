@@ -222,7 +222,7 @@ export function findSandboxedShell(
 }
 
 /** What the operating system says about a sandboxed Linux terminal's shell ({@link readSandboxedShell}). */
-export interface SandboxedShell {
+interface SandboxedShell {
   /** The shell's pid, as the host sees it. */
   readonly pid: number;
   /** Its pid in its own (innermost) pid namespace: what `$$` is inside the shell. */

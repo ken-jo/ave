@@ -42,7 +42,7 @@ import { execFile } from "node:child_process";
 import { shellQuote } from "../../lib/shell-resolver.js";
 
 /** util-linux `script(1)`, by absolute path: the sandbox mounts the host's `/usr` read-only. */
-export const INNER_PTY_RELAY_PATH = "/usr/bin/script";
+const INNER_PTY_RELAY_PATH = "/usr/bin/script";
 
 /** The shell `script` runs its `-c` command with: fixed, so the user's `$SHELL` never parses it. */
 const RELAY_COMMAND_SHELL = "/bin/sh";

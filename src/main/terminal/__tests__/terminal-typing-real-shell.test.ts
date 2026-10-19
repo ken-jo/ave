@@ -23,7 +23,7 @@ import { installShellIntegration } from "../shell-integration.js";
 import { TerminalBlockTracker, USER_INPUT_QUIET_MS } from "../terminal-blocks.js";
 import { foregroundVerdict, typeLineAtPrompt, type TypeTerminalCommandResult } from "../pty-manager.js";
 import { readTerminalForeground } from "../shell-process.js";
-import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH } from "../../../__tests__/support/terminal-markers.js";
+import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
 
 const NONCE = "fedcba9876543210fedcba9876543210";
 
@@ -47,13 +47,7 @@ afterEach(async () => {
   }
 });
 
-async function until(condition: () => boolean, timeoutMs = 8_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition()) {
-    if (Date.now() > deadline) throw new Error("timed out");
-    await sleep(25);
-  }
-}
+const until = waitForTerminal;
 
 async function startShell(shellPath: string): Promise<LiveShell> {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "ave-typing-")));

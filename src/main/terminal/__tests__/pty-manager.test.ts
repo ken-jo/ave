@@ -1378,7 +1378,8 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
 describe("pty-manager on Linux: the shell gets a pty of its own inside the sandbox", () => {
   const LINUX_TAB = "terminal:0000000f-1";
   const SHELL_PID = 4321;
-  const shellReading = (overrides: Partial<import("../shell-process.js").SandboxedShell> = {}): import("../shell-process.js").SandboxedShellReading => ({
+  type SandboxedShellReading = import("../shell-process.js").SandboxedShellReading;
+  const shellReading = (overrides: Partial<Extract<SandboxedShellReading, { ok: true }>["shell"]> = {}): SandboxedShellReading => ({
     ok: true,
     shell: {
       pid: SHELL_PID,
