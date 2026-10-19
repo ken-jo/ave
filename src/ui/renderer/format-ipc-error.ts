@@ -220,6 +220,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-egress-grant-destination": "formatIpcError.invalidEgressGrantDestination",
   "invalid-egress-grant-workspace": "formatIpcError.invalidEgressGrantWorkspace",
   "invalid-egress-grant-conversation": "formatIpcError.invalidEgressGrantConversation",
+  "invalid-egress-grant-tab": "formatIpcError.invalidEgressGrantTab",
+  "invalid-egress-grant-origin": "formatIpcError.invalidEgressGrantOrigin",
   // ── Upstream proxy (ave:permissions:upstream-proxy-*, settings:update) ──
   "invalid-upstream-proxy-mode": "formatIpcError.invalidUpstreamProxyMode",
   "invalid-upstream-proxy-resolves-names": "formatIpcError.invalidUpstreamProxyResolvesNames",

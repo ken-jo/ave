@@ -319,8 +319,13 @@ export function sandboxBootOutcomeView(outcome: SandboxBootOutcome): SandboxBoot
  */
 export type EgressIdentityStrength = "kernel-channel" | "shared";
 
-/** The scopes an egress grant can be given, narrowest first. */
-export type EgressGrantScope = "once" | "conversation" | "workspace" | "always";
+/**
+ * The scopes an egress grant can be given. A shell tool call's ladder is
+ * once, conversation, workspace, always; a workspace terminal tab's is once,
+ * tab, workspace, always (`tab` takes the place of `conversation`: a terminal
+ * belongs to no conversation, design F).
+ */
+export type EgressGrantScope = "once" | "conversation" | "tab" | "workspace" | "always";
 
 /**
  * The widest egress-grant scope an identity strength can carry. With a shared

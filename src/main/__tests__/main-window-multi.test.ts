@@ -4,6 +4,7 @@
  * the app document staying the only thing a main window may navigate to.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 
 type Listener = (...args: unknown[]) => void;
 
@@ -80,7 +81,9 @@ const killTerminalsOwnedBy = vi.fn((_ownerWindowId: number) => 0);
 vi.mock("../terminal/pty-manager.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../terminal/pty-manager.js")>()),
   killTerminalsOwnedBy: (ownerWindowId: number) => killTerminalsOwnedBy(ownerWindowId),
+  terminalOwnerWindowId: (tabId: string) => terminalOwners.get(tabId),
 }));
+const terminalOwners = new Map<string, number | null>();
 
 const appState = await import("../app-state.js");
 const { createWindow, getAppWindows, loadMainInterface, rendererIndexUrl } = await import("../main-window.js");
@@ -177,10 +180,60 @@ describe("main windows", () => {
 
   function promptSurface() {
     return promptSurfaceResolver(
-      { desktop: { findSessionSurface: appState.findSessionMainWindowContents } as never },
+      {
+        desktop: {
+          findSessionSurface: appState.findSessionMainWindowContents,
+          findTerminalSurface: appState.findTerminalMainWindowContents,
+        } as never,
+      },
       appState.getMainWindow,
     );
   }
+
+  it("draws a terminal tab's egress ask in the window that owns the tab, never in the focused one", async () => {
+    const { ApprovalGate } = await import("../../permissions/approval-gate.js");
+    const first = open();
+    const second = open();
+    first.emit("focus");
+    terminalOwners.set("terminal:0a1b2c3d-1", second.id);
+    const gate = new ApprovalGate(promptSurface());
+    const egressAsk = (id: string, tabId: string): ApprovalRequestInput => ({
+      id,
+      category: "tool" as const,
+      kind: "egress-host" as const,
+      toolName: "terminal",
+      args: { host: "github.com", port: 443, tabId },
+      reason: "terminal egress",
+      createdAt: Date.now(),
+      allowedChoices: ["allow-once", "deny-once"],
+      durableApprovalRecordAllowed: false,
+      forceExplicit: true,
+      isReadOnly: false,
+      egressHost: { host: "github.com", port: 443, scopes: ["once", "tab"], network: "public", terminalTabId: tabId },
+    });
+    try {
+      const owned = gate.requestAndWait(egressAsk("egress-owned", "terminal:0a1b2c3d-1"));
+      expect(second.webContents.send).toHaveBeenCalledWith("ave:approval:request", expect.objectContaining({ id: "egress-owned" }));
+      expect(first.webContents.send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
+      // A reloaded window refetching pending asks gets only its own tabs'; an
+      // answer from the other window is ignored and the ask stays pending.
+      expect(gate.listPendingRendererRequests(first.webContents as never).map((r) => r.id)).toEqual([]);
+      const [card] = gate.listPendingRendererRequests(second.webContents as never);
+      expect(card?.id).toBe("egress-owned");
+      const decision = { requestId: "egress-owned", choice: "allow-once" as const, egressScope: "once" as const, nonce: card!.nonce, hmac: card!.hmac };
+      expect(gate.resolveFromDesktopRenderer("egress-owned", decision, first.webContents as never)).toBeNull();
+      expect(gate.listPendingRendererRequests(second.webContents as never).map((r) => r.id)).toEqual(["egress-owned"]);
+      // A tab no live window owns is denied, not shown somewhere else.
+      const orphan = await gate.requestAndWait(egressAsk("egress-orphan", "terminal:0a1b2c3d-9"));
+      expect(orphan.choice).toBe("deny-once");
+      expect(first.webContents.send).not.toHaveBeenCalledWith("ave:approval:request", expect.objectContaining({ id: "egress-orphan" }));
+      expect(second.webContents.send).not.toHaveBeenCalledWith("ave:approval:request", expect.objectContaining({ id: "egress-orphan" }));
+      gate.disposeAll();
+      await owned.catch(() => undefined);
+    } finally {
+      terminalOwners.clear();
+    }
+  });
 
   it("still delivers approvals after the first window closes while a second stays open", async () => {
     const { ApprovalGate } = await import("../../permissions/approval-gate.js");
