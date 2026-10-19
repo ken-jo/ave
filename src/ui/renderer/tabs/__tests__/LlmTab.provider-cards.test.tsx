@@ -182,11 +182,9 @@ function profileApi(profile: Profile, rest: MockApi = {}) {
         publish();
         await Promise.resolve();
       });
-      // A second act, so the effects the broadcast queued are mounted before
-      // this one waits on them — inside a single act they would not be.
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      });
+      // Separate acts, so the effects the broadcast queued are mounted before
+      // their requests are waited on — inside a single act they would not be.
+      await settleModelListRequests();
     },
   };
 }
@@ -334,7 +332,7 @@ function TabHarness({
 async function renderTab(api: MockApi, props: TabProps = {}) {
   const hooks = makeHooks();
   const result = render(<TabHarness api={api} props={props} hooks={hooks} />);
-  // The tab syncs the active vendor's catalogue on a debounce after mount.
+  // Let the mount commit; the catalogue requests it queues are awaited per test.
   await act(async () => {
     await Promise.resolve();
   });
@@ -399,6 +397,22 @@ function pickChooserOption(modelId: string) {
   const option = chooserOption(modelId);
   option.focus();
   fireEvent.keyDown(option, { key: "Enter" });
+}
+
+/**
+ * Let every model-list request the tab queued reach the API stub. Nothing on
+ * that path is timed: the sync debounce went away when model lists became a
+ * cached catalogue, so a request is the tail of an effect → `hasApiKey` →
+ * `listLlmModels` promise chain. A few macrotask turns, each inside `act` so
+ * the effects a turn commits run before the next, is all the chance the tab
+ * needs to ask — and what "nothing was asked" has to wait for.
+ */
+async function settleModelListRequests(): Promise<void> {
+  for (let turn = 0; turn < 5; turn += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
 }
 
 function rowOrder(): (string | null)[] {
@@ -1852,16 +1866,6 @@ describe("LlmTab rows that are not the active one", () => {
 });
 
 describe("LlmTab asks only the rows that have a catalogue to give", () => {
-  /**
-   * Let the sync debounce elapse. Asserting "nothing was asked" before the
-   * window opens proves nothing at all.
-   */
-  async function settleSyncDebounce() {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 550));
-    });
-  }
-
   /** Every endpoint the tab actually asked for a model list, in call order. */
   function requestedEndpoints(api: MockApi): string[] {
     return (api.listLlmModels as Mock<(request: {
@@ -1881,7 +1885,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6", hasKey: false });
 
     await waitFor(() => expect(rowOrder()).toEqual(["codex"]));
-    await settleSyncDebounce();
+    await settleModelListRequests();
     expect(requestedEndpoints(api)).toEqual(["<fixed:openai>"]);
   });
 
@@ -1896,9 +1900,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
     })]);
     await renderTab(api, { vendor: "openai", model: "", hasKey: false });
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 550));
-    });
+    await settleModelListRequests();
 
     expect(rowOrder()).toEqual(["codex"]);
     // The row's line reports no sync outcome at all for a route it has not
@@ -1924,7 +1926,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
 
     await screen.findByTestId("llm-tab:connection:azure-foundry");
-    await settleSyncDebounce();
+    await settleModelListRequests();
     expect(requestedEndpoints(api)).toEqual([]);
     // And its curated models are still choosable, so nothing was lost.
     expect(await chooserModelIds()).toContain("gpt-5.4-mini");
@@ -1991,7 +1993,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
       expect(screen.getByTestId(`llm-tab:connection-blocked:${vendorId}`))
         .toHaveTextContent(/키|key|Schlüssel|clave|clé|キー|密钥/i);
     }
-    await settleSyncDebounce();
+    await settleModelListRequests();
     expect(requestedEndpoints(api)).toEqual([]);
   });
 });
@@ -2013,9 +2015,7 @@ describe("LlmTab says which kind of nothing a row has", () => {
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
 
     expect(await blockerText()).toMatch(NOT_ASKED);
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 550));
-    });
+    await settleModelListRequests();
     expect(api.listLlmModels).not.toHaveBeenCalled();
   });
 
@@ -2067,9 +2067,6 @@ describe("LlmTab says which kind of nothing a row has", () => {
     await waitFor(async () => expect(await blockerText()).toMatch(EMPTY));
   });
 
-  /** Longer than the sync debounce, so a queued request has actually fired. */
-  const PAST_THE_SYNC_DEBOUNCE_MS = 550;
-
   function broadcast(api: MockApi, vendors: Record<string, unknown>) {
     const handler = (api.onSettingsUpdated as Mock).mock.calls.at(-1)?.[0] as
       ((s: unknown) => void) | undefined;
@@ -2082,11 +2079,9 @@ describe("LlmTab says which kind of nothing a row has", () => {
         });
         await Promise.resolve();
       });
-      // A second act, so the effects the broadcast queued are already mounted
-      // when the debounce window opens — inside one act they would not be.
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, PAST_THE_SYNC_DEBOUNCE_MS));
-      });
+      // Separate acts, so the effects the broadcast queued are mounted before
+      // their requests are waited on — inside one act they would not be.
+      await settleModelListRequests();
     })();
   }
 
@@ -2211,9 +2206,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     first.unmount();
 
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await settleModelListRequests();
 
     // Leaving the settings tab and coming back is not a new launch.
     expect(askedCount(api)).toBe(1);
@@ -2242,9 +2235,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     });
 
     await waitFor(() => expect(askedCount(api)).toBe(2));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await settleModelListRequests();
     // The two routed rows, once each — and never Foundry, whose list is
     // curated here however its endpoint is configured.
     expect(askedAddresses(api).sort()).toEqual([CUSTOM_ENDPOINT, gateway.baseUrl].sort());
@@ -2331,9 +2322,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     });
 
     await waitFor(() => expect(askedCount(api)).toBeGreaterThan(0));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await settleModelListRequests();
     expect(askedCount(api)).toBe(1);
   });
 
@@ -2355,9 +2344,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     fireEvent.click(refresh);
 
     await waitFor(() => expect(askedCount(api)).toBe(2));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await settleModelListRequests();
     expect(askedCount(api)).toBe(2);
   });
 
@@ -2374,9 +2361,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     await renderTab(api, { model: "", hasKey: false });
 
     await waitFor(() => expect(api.hasApiKey).toHaveBeenCalledWith("openai"));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await settleModelListRequests();
     expect(askedCount(api)).toBe(0);
     expect(document.querySelector("[data-provider-sync-status=\"loading\"]")).toBeNull();
     expect(document.querySelector(".animate-spin")).toBeNull();

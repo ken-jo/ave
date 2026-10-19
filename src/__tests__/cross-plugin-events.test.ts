@@ -7,8 +7,9 @@
  *
  * Scenario 1  — meeting.summary.created → calendar handler called
  * Scenario 2  — email.invite.detected   → calendar handler called
- * Scenario 3  — calendar.event.upcoming → meeting reactive subscription
- *               (NOT wired yet — documented skip with reason comment)
+ * Scenario 3  — calendar.event.upcoming → meeting auto-start is deferred: no
+ *               plugin subscribes to it, so there is no host behavior to test
+ *               here. Its wiring belongs in the meeting plugin's own suite.
  * Scenario 4  — memory.private.secret   → event bus rejects (private namespace)
  * Scenario 5  — email.new emitted by a plugin that did not declare the email
  *               namespace in emittedEvents → dropped
@@ -124,28 +125,6 @@ describe("Sprint 4-D T4 — cross-plugin event flow (host event bus)", () => {
       }),
     );
   });
-
-  // ─── Scenario 3: calendar.event.upcoming → meeting (NOT wired yet) ─────
-  it.skip(
-    "Scenario 3 — calendar.event.upcoming → meeting auto-start (NOT WIRED YET)",
-    () => {
-      /**
-       * The meeting plugin does NOT currently subscribe to
-       * `calendar.event.upcoming`. Auto-starting a recording session when a
-       * calendar event is about to begin has been explicitly deferred (see
-       * sprint4d-cross-plugin-spec.md §2.2 — "calendar.event.started event is
-       * NOT yet emitted … explicitly deferred").
-       *
-       * When this feature is implemented:
-       *   1. calendar/plugin.json must add `eventSubscriptions: ["calendar.event.upcoming"]`
-       *      (or a new event emitted by the calendar watcher).
-       *   2. meeting/hostPlugin.ts must call hostApi.onEvent("calendar.event.upcoming", ...)
-       *      and auto-trigger meeting_start.
-       *   3. Remove the `.skip` and write the assertion here.
-       */
-      expect(true).toBe(false); // placeholder — must fail if accidentally un-skipped
-    },
-  );
 
   // ─── Scenario 4: private namespace → rejected ───────────────────────────
   it("Scenario 4 — memory.private.secret is classified as private and subscription is blocked at wiring time", () => {
