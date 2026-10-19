@@ -1472,7 +1472,7 @@ export function normalizeUpstreamProxy(input: unknown): UpstreamProxySettings {
   if (typeof obj.manualUrl === "string" && obj.manualUrl.length <= 2048) {
     result.manualUrl = obj.manualUrl.trim().replace(/^([a-z][a-z0-9+.-]*:\/\/)?[^/?#@]*@/iu, "$1");
   }
-  if (typeof obj.bypass === "string" && obj.bypass.length <= 8192) result.bypass = obj.bypass.trim();
+  if (typeof obj.bypass === "string" && obj.bypass.length <= 8192) result.bypass = obj.bypass;
   if (typeof obj.resolvesNames === "boolean") result.resolvesNames = obj.resolvesNames;
   return result;
 }

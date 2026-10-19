@@ -49,6 +49,7 @@ import {
 import { isLoopbackAddress } from "@anthropic-ai/sandbox-runtime/dist/sandbox/address.js";
 import type { ParentProxyRoute, ParentProxyRouter } from "@anthropic-ai/sandbox-runtime";
 import { parsePacAnswer } from "../shared/pac-proxy.js";
+import { egressDestinationNetwork } from "./egress-grants.js";
 import {
   UPSTREAM_PROXY_CREDENTIALS_SECRET,
   type UpstreamProxyDiagnostic,
@@ -87,7 +88,16 @@ export function parseProxyUrl(raw: string): ParsedProxyUrl {
   const host = canonicalizeHost(bare);
   if (host === undefined || !isValidHost(host)) return { ok: false, reason: "malformed" };
   if ((url.pathname !== "/" && url.pathname !== "") || url.search !== "" || url.hash !== "") return { ok: false, reason: "malformed" };
-  const port = url.port === "" ? DEFAULT_PROXY_PORT[kind] : Number(url.port);
+  // URL removes an explicitly written default port; retain the authority so
+  // credentials remain bound to the service the person actually named.
+  const authority = (scheme === undefined ? text : text.slice(text.indexOf("://") + 3)).split(/[/?#\\]/u)[0]!;
+  const endpoint = authority.slice(authority.lastIndexOf("@") + 1);
+  if (endpoint.length === 0) return { ok: false, reason: "malformed" };
+  const explicitPort = endpoint.startsWith("[")
+    ? /^\[[^\]]+\]:(.*)$/u.exec(endpoint)?.[1]
+    : /:([^:]*)$/u.exec(endpoint)?.[1];
+  if (explicitPort !== undefined && !/^\d+$/u.test(explicitPort)) return { ok: false, reason: "malformed" };
+  const port = explicitPort === undefined ? DEFAULT_PROXY_PORT[kind] : Number(explicitPort);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, reason: "malformed" };
   if (url.username === "" && url.password === "") return { ok: true, scheme: kind, host, port };
   try {
@@ -152,87 +162,57 @@ export function environmentProxyFor(env: NodeJS.ProcessEnv, scheme: "http" | "ht
 
 /** The environment's NO_PROXY list (`no_proxy` first). */
 function environmentNoProxy(env: NodeJS.ProcessEnv): string {
-  return envValue(env, "no_proxy") ?? envValue(env, "NO_PROXY") ?? "";
+  return env.no_proxy !== undefined && env.no_proxy.length > 0 ? env.no_proxy : env.NO_PROXY ?? "";
 }
 
-/** One NO_PROXY entry, parsed. */
-type BypassEntry =
-  | { kind: "all" }
-  | { kind: "name"; name: string; port?: number }
-  | { kind: "address"; block: BlockList; port?: number };
-
-function addressBlock(address: string, prefix?: number): BlockList | undefined {
-  const family = isIP(address);
-  if (family === 0) return undefined;
-  const type = family === 4 ? "ipv4" : "ipv6";
+/** Match a literal address or CIDR entry without crossing address families. */
+function bypassAddressMatches(token: string, host: string, family: 4 | 6): boolean {
+  if (token.length >= 128) return false;
+  const slash = token.indexOf("/");
+  const address = slash === -1 ? token : token.slice(0, slash);
+  if (address.includes("%") || isIP(address) !== family) return false;
+  const prefix = slash === -1 ? undefined : token.slice(slash + 1);
+  if (prefix !== undefined && !/^\d+$/u.test(prefix)) return false;
   const max = family === 4 ? 32 : 128;
-  const bits = prefix ?? max;
-  if (!Number.isInteger(bits) || bits < 0 || bits > max) return undefined;
+  let bits = prefix === undefined ? max : Number(prefix);
+  if (!Number.isSafeInteger(bits) || bits > max) return false;
+  // A zero IPv4 prefix bypasses all only when its network is also zero.
+  if (family === 4 && bits === 0 && address !== "0.0.0.0") bits = 32;
+  const type = family === 4 ? "ipv4" : "ipv6";
   const block = new BlockList();
   block.addSubnet(address, bits, type);
-  return block;
-}
-
-function parseBypassEntry(raw: string): BypassEntry | undefined {
-  let entry = raw.toLowerCase();
-  if (entry === "*") return { kind: "all" };
-  // CIDR (curl 7.86+): `10.0.0.0/8`, `2001:db8::/32`, never with a port.
-  const slash = entry.indexOf("/");
-  if (slash !== -1) {
-    const prefix = entry.slice(slash + 1);
-    if (!/^\d{1,3}$/u.test(prefix)) return undefined;
-    const block = addressBlock(entry.slice(0, slash).replace(/^\[|\]$/gu, ""), Number(prefix));
-    return block === undefined ? undefined : { kind: "address", block };
-  }
-  // A port narrows the entry to that port (`host:8080`, `[v6]:8080`,
-  // `192.0.2.1:8080`); curl has no port form and would never match such an
-  // entry, Go and Python match it on that port only, which is what it says.
-  let port: number | undefined;
-  const bracketed = /^\[([^\]]+)\](?::(\d{1,5}))?$/u.exec(entry);
-  if (bracketed) {
-    entry = bracketed[1]!;
-    if (bracketed[2] !== undefined) port = Number(bracketed[2]);
-  } else if (isIP(entry) === 0) {
-    const withPort = /^(.*):(\d{1,5})$/u.exec(entry);
-    if (withPort) {
-      entry = withPort[1]!;
-      port = Number(withPort[2]);
-    }
-  }
-  if (port !== undefined && (port < 1 || port > 65535)) return undefined;
-  const block = addressBlock(entry);
-  if (block !== undefined) return { kind: "address", block, ...(port !== undefined ? { port } : {}) };
-  // A name: curl ignores a leading and a trailing dot (`*.` is the same as a
-  // leading dot here); it then matches the name and every name under it.
-  const name = entry.replace(/^\*\./u, ".").replace(/^\./u, "").replace(/\.$/u, "");
-  if (name.length === 0 || !isValidHost(name)) return undefined;
-  return { kind: "name", name, ...(port !== undefined ? { port } : {}) };
+  return block.check(host, type);
 }
 
 /**
- * Whether `host:port` is on a NO_PROXY-style list, in curl's semantics:
- * entries separated by commas or blanks; `*` matches everything; a name
- * matches itself and every name under it at a dot boundary (a leading dot,
- * `*.` and a trailing dot on either side are ignored); an IP address matches
- * that address and a CIDR range its addresses, for an address destination
- * only. An entry with a port (`example.com:8080`) matches only that port.
- * This host's loopback always bypasses.
+ * Match a NO_PROXY list: only a raw singleton `*` bypasses everything.
+ * Commas separate tokens; spaces and tabs surround them but do not separate
+ * entries. A domain matches itself and subdomains, ignoring one leading and
+ * trailing dot. Address entries use their own family, with optional CIDR.
+ * Ports and wildcard-domain syntax have no special meaning.
  */
-export function bypassesProxy(list: string, host: string, port: number): boolean {
-  const bare = host.replace(/^\[|\]$/gu, "").toLowerCase().replace(/\.$/u, "");
-  if (bare === "localhost" || isLoopbackAddress(bare)) return true;
-  const family = isIP(bare);
-  for (const raw of list.split(/[\s,]+/u)) {
-    if (raw.length === 0) continue;
-    const entry = parseBypassEntry(raw);
-    if (entry === undefined) continue;
-    if (entry.kind === "all") return true;
-    if (entry.port !== undefined && entry.port !== port) continue;
-    if (entry.kind === "address") {
-      if (family !== 0 && entry.block.check(bare, family === 4 ? "ipv4" : "ipv6")) return true;
-    } else if (family === 0 && (bare === entry.name || bare.endsWith(`.${entry.name}`))) {
-      return true;
+export function bypassesProxy(list: string, host: string): boolean {
+  if (host.length === 0) return false;
+  if (list === "*") return true;
+  const family = host.includes("%") ? 0 : isIP(host);
+  const name = host.toLowerCase().replace(/\.$/u, "");
+  let offset = 0;
+  while (offset < list.length) {
+    while (list[offset] === " " || list[offset] === "\t") offset += 1;
+    const start = offset;
+    while (offset < list.length && list[offset] !== " " && list[offset] !== "\t" && list[offset] !== ",") offset += 1;
+    const token = list.slice(start, offset);
+    if (token.length > 0) {
+      if (family === 4 || family === 6) {
+        if (bypassAddressMatches(token, host, family)) return true;
+      } else {
+        const domain = token.toLowerCase().replace(/\.$/u, "").replace(/^\./u, "");
+        if (name === domain || name.endsWith(`.${domain}`)) return true;
+      }
     }
+    while (list[offset] === " " || list[offset] === "\t") offset += 1;
+    if (list[offset] !== ",") break;
+    while (list[offset] === ",") offset += 1;
   }
   return false;
 }
@@ -350,9 +330,11 @@ export async function upstreamRoutesFor(
     return answer("off", [], { reason: "the destination is not a canonical host and port" });
   }
   if (settings.mode === "off") return answer("off", [DIRECT]);
+  // Local destinations stay on this host independently of the bypass syntax.
+  const localDestination = host === "localhost" || isLoopbackAddress(host);
 
   if (settings.mode === "manual") {
-    if (bypassesProxy(settings.bypass, host, port)) return answer("manual-bypass", [DIRECT]);
+    if (localDestination || bypassesProxy(settings.bypass, host)) return answer("manual-bypass", [DIRECT]);
     const parsed = parseProxyUrl(settings.manualUrl);
     if (!parsed.ok) {
       return answer("manual", [], {
@@ -374,7 +356,7 @@ export async function upstreamRoutesFor(
   if (environmentProxyConfigured(env)) {
     const chosen = environmentProxyFor(env, scheme);
     if (chosen === undefined) return answer("environment", [DIRECT]);
-    if (bypassesProxy(environmentNoProxy(env), host, port)) return answer("environment-bypass", [DIRECT], { envVar: chosen.name });
+    if (localDestination || bypassesProxy(environmentNoProxy(env), host)) return answer("environment-bypass", [DIRECT], { envVar: chosen.name });
     const parsed = parseProxyUrl(chosen.value);
     if (!parsed.ok) {
       const what = parsed.reason === "socks" ? SOCKS_SKIP : "not a usable proxy URL";
@@ -433,13 +415,13 @@ export function createUpstreamProxyRouter(input: UpstreamProxyRouterDeps): Upstr
   const cache = new Map<string, { at: number; value: Promise<UpstreamRouteAnswer> }>();
   let generation = 0;
 
-  const lookup = (destination: { host: string; port: number; scheme: "http" | "https" }): Promise<UpstreamRouteAnswer> => {
+  const lookupOnce = (destination: { host: string; port: number; scheme: "http" | "https" }): Promise<UpstreamRouteAnswer> => {
     const key = `${destination.scheme}\n${destination.host}\n${destination.port}`;
     const hit = cache.get(key);
     if (hit && now() - hit.at < ttlMs) return hit.value;
     const started = generation;
     const value = upstreamRoutesFor(deps, destination).then((result) => {
-      if (result.skipped.length > 0) {
+      if (generation === started && result.skipped.length > 0) {
         deps.onSkipped?.({ host: destination.host, port: destination.port, source: result.source, skipped: result.skipped });
       }
       return result;
@@ -458,11 +440,30 @@ export function createUpstreamProxyRouter(input: UpstreamProxyRouterDeps): Upstr
     return value;
   };
 
-  return {
-    router: async (destination) => {
+  const lookup = async (destination: Parameters<ParentProxyRouter>[0]): Promise<UpstreamRouteAnswer> => {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const started = generation;
+      const result = await lookupOnce(destination);
+      if (generation === started) return result;
+    }
+    return answer("off", [], { reason: "the upstream proxy configuration changed too often", transient: true });
+  };
+  const router: ParentProxyRouter = Object.assign(
+    async (destination: Parameters<ParentProxyRouter>[0]) => {
       const result = await lookup(destination);
       return result.reason !== undefined ? { routes: result.routes, reason: result.reason } : { routes: result.routes };
     },
+    {
+      generation: () => generation,
+      decisionClass: (host: string, addresses: readonly string[], resolution: "pinned" | "upstream") => {
+        const network = egressDestinationNetwork(host, addresses);
+        return resolution === "upstream" && network === "public" ? "unverified" : network;
+      },
+    },
+  );
+
+  return {
+    router,
     invalidate: () => {
       generation += 1;
       cache.clear();

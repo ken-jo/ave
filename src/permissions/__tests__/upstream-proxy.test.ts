@@ -59,6 +59,35 @@ describe("parsePacAnswer", () => {
 });
 
 describe("parseProxyUrl", () => {
+  it.each<[string, "http" | "https", string, number]>([
+    ["http://proxy.test:80", "http", "proxy.test", 80],
+    ["http://proxy.test:443", "http", "proxy.test", 443],
+    ["http://proxy.test:1080", "http", "proxy.test", 1080],
+    ["http://proxy.test", "http", "proxy.test", 1080],
+    ["https://proxy.test:80", "https", "proxy.test", 80],
+    ["https://proxy.test:443", "https", "proxy.test", 443],
+    ["https://proxy.test:1080", "https", "proxy.test", 1080],
+    ["https://proxy.test", "https", "proxy.test", 443],
+    ["http://[2001:db8::1]:80", "http", "2001:db8::1", 80],
+    ["http://[2001:db8::1]:443", "http", "2001:db8::1", 443],
+    ["http://[2001:db8::1]:1080", "http", "2001:db8::1", 1080],
+    ["http://[2001:db8::1]", "http", "2001:db8::1", 1080],
+    ["https://[2001:db8::1]:443", "https", "2001:db8::1", 443],
+    ["https://[2001:db8::1]:80", "https", "2001:db8::1", 80],
+    ["https://[2001:db8::1]:1080", "https", "2001:db8::1", 1080],
+    ["https://[2001:db8::1]", "https", "2001:db8::1", 443],
+    ["proxy.test:80", "http", "proxy.test", 80],
+    ["proxy.test:443", "http", "proxy.test", 443],
+    ["proxy.test:1080", "http", "proxy.test", 1080],
+    ["proxy.test", "http", "proxy.test", 1080],
+    ["[2001:db8::1]:80", "http", "2001:db8::1", 80],
+    ["[2001:db8::1]:443", "http", "2001:db8::1", 443],
+    ["[2001:db8::1]:1080", "http", "2001:db8::1", 1080],
+    ["[2001:db8::1]", "http", "2001:db8::1", 1080],
+  ])("preserves the effective service for %s", (raw, scheme, host, port) => {
+    expect(parseProxyUrl(raw)).toEqual({ ok: true, scheme, host, port });
+  });
+
   it("reads curl's forms: scheme-less is HTTP, default ports 1080/443, credentials percent-decoded", () => {
     expect(parseProxyUrl("proxy.example:3128")).toEqual({ ok: true, scheme: "http", host: "proxy.example", port: 3128 });
     expect(parseProxyUrl("http://proxy.example")).toEqual({ ok: true, scheme: "http", host: "proxy.example", port: 1080 });
@@ -77,6 +106,8 @@ describe("parseProxyUrl", () => {
     expect(parseProxyUrl("")).toEqual({ ok: false, reason: "malformed" });
     expect(parseProxyUrl("http://exa mple:1")).toEqual({ ok: false, reason: "malformed" });
     expect(parseProxyUrl("http://p:99999")).toEqual({ ok: false, reason: "malformed" });
+    expect(parseProxyUrl("http:///proxy.test:80")).toEqual({ ok: false, reason: "malformed" });
+    expect(parseProxyUrl("http://proxy.test:")).toEqual({ ok: false, reason: "malformed" });
   });
 });
 
@@ -92,50 +123,80 @@ describe("environment proxy (curl order, both cases)", () => {
     expect(environmentProxyConfigured({ HTTPS_PROXY: "" })).toBe(false);
   });
 
-  it("matches NO_PROXY in curl's semantics: suffix at a dot boundary, leading and trailing dots ignored, *, IPs, CIDR", () => {
-    expect(bypassesProxy("example.com", "example.com", 443)).toBe(true);
-    expect(bypassesProxy("example.com", "api.example.com", 443)).toBe(true);
-    expect(bypassesProxy("example.com", "notexample.com", 443)).toBe(false);
-    expect(bypassesProxy(".example.com", "example.com", 443)).toBe(true);
-    expect(bypassesProxy("*.example.com", "a.example.com", 443)).toBe(true);
-    // A trailing dot on the entry or on the host is the same name.
-    expect(bypassesProxy("example.com.", "example.com", 443)).toBe(true);
-    expect(bypassesProxy("example.com.", "api.example.com", 443)).toBe(true);
-    expect(bypassesProxy("example.com", "example.com.", 443)).toBe(true);
-    expect(bypassesProxy("10.0.0.0/8", "10.1.2.3", 443)).toBe(true);
-    expect(bypassesProxy("10.0.0.0/8", "11.1.2.3", 443)).toBe(false);
-    expect(bypassesProxy("2001:db8::/32", "2001:db8::5", 443)).toBe(true);
-    expect(bypassesProxy("192.0.2.7", "192.0.2.7", 443)).toBe(true);
-    expect(bypassesProxy("[2001:db8::1]", "2001:db8::1", 443)).toBe(true);
-    // An address entry never matches a name, and a name entry never an address.
-    expect(bypassesProxy("192.0.2.7", "192.0.2.7.example", 443)).toBe(false);
-    expect(bypassesProxy("example.com", "192.0.2.7", 443)).toBe(false);
-    // Blanks separate entries as well as commas; a malformed entry is ignored.
-    expect(bypassesProxy("a.test b.test,,  c.test", "b.test", 443)).toBe(true);
-    expect(bypassesProxy("10.0.0.0/99, bad host", "10.1.2.3", 443)).toBe(false);
-    expect(bypassesProxy("*", "anything.test", 443)).toBe(true);
-    expect(bypassesProxy("a.test, *", "anything.test", 443)).toBe(true);
-    expect(bypassesProxy("", "127.0.0.1", 443)).toBe(true);
-    expect(bypassesProxy("", "localhost", 443)).toBe(true);
-    expect(bypassesProxy("", "example.com", 443)).toBe(false);
+  it.each<[string, string, boolean]>([
+    ["example.com", "example.com", true],
+    ["example.com", "api.example.com", true],
+    ["example.com", "notexample.com", false],
+    [".example.com", "example.com", true],
+    ["*.example.com", "api.example.com", false],
+    ["EXAMPLE.com.", "API.example.com", true],
+    ["example.com", "example.com.", true],
+    ["..example.com", "api.example.com", false],
+    ["*", "anything.test", true],
+    [" *", "anything.test", false],
+    ["* ", "anything.test", false],
+    ["other.example, *", "anything.test", false],
+    ["*, example.com", "api.example.com", true],
+    ["*, example.com", "anything.test", false],
+    ["a.test b.test,, c.test", "b.test", false],
+    ["a.test b.test,, c.test", "c.test", false],
+    ["a.test, \tb.test,, c.test", "b.test", true],
+    ["a.test\nb.test, c.test", "c.test", true],
+    ["a.test\nb.test", "b.test", false],
+    ["10.0.0.0/8", "10.1.2.3", true],
+    ["10.0.0.0/8", "11.1.2.3", false],
+    ["10.0.0.0/99, bad host", "10.1.2.3", false],
+    ["10.0.0.0/0", "10.1.2.3", false],
+    ["10.0.0.0/0", "10.0.0.0", true],
+    ["0.0.0.0/0", "192.0.2.7", true],
+    ["192.0.2.7/32", "192.0.2.7", true],
+    ["192.0.2.7/", "192.0.2.7", false],
+    ["192.0.2.7/-1", "192.0.2.7", false],
+    ["192.0.2.7/+32", "192.0.2.7", false],
+    ["192.0.2.7/032", "192.0.2.7", true],
+    ["2001:db8::/32", "2001:db8::5", true],
+    ["2001:db8::/32", "2001:db9::5", false],
+    ["2001:db8::/0", "2001:db9::5", true],
+    ["::/0", "2001:db8::5", true],
+    ["2001:db8::1/129", "2001:db8::1", false],
+    ["fe80::/10", "fe80::1%lo0", false],
+    ["fe80::1%lo0", "fe80::1", false],
+    ["2001:db8::1", "2001:0db8:0:0:0:0:0:1", true],
+    ["[2001:db8::1]", "2001:db8::1", false],
+    ["[2001:db8::]/32", "2001:db8::1", false],
+    ["192.0.2.7", "192.0.2.7.example", false],
+    ["example.com", "192.0.2.7", false],
+    ["192.0.2.0/24", "::ffff:192.0.2.7", false],
+    ["::ffff:192.0.2.0/120", "::ffff:192.0.2.7", true],
+    ["::ffff:192.0.2.0/120", "192.0.2.7", false],
+    ["intranet:8080", "intranet", false],
+    ["example.com:8443", "api.example.com", false],
+    ["192.0.2.7:80", "192.0.2.7", false],
+    ["[2001:db8::1]:8080", "2001:db8::1", false],
+    ["2001:db8::80", "2001:db8::80", true],
+    ["", "127.0.0.1", false],
+    ["", "localhost", false],
+    ["", "example.com", false],
+    ["*", "", false],
+  ])("matches bypass list %j for %j as %s", (list, host, expected) => {
+    expect(bypassesProxy(list, host)).toBe(expected);
   });
 
-  it("matches a NO_PROXY entry with a port on that port only", () => {
-    expect(bypassesProxy("intranet:8080", "intranet", 8080)).toBe(true);
-    expect(bypassesProxy("intranet:8080", "intranet", 443)).toBe(false);
-    expect(bypassesProxy("example.com:8443", "api.example.com", 8443)).toBe(true);
-    expect(bypassesProxy("example.com:8443", "api.example.com", 443)).toBe(false);
-    expect(bypassesProxy("192.0.2.7:80", "192.0.2.7", 80)).toBe(true);
-    expect(bypassesProxy("192.0.2.7:80", "192.0.2.7", 443)).toBe(false);
-    expect(bypassesProxy("[2001:db8::1]:8080", "2001:db8::1", 8080)).toBe(true);
-    expect(bypassesProxy("[2001:db8::1]:8080", "2001:db8::1", 80)).toBe(false);
-    // A bare IPv6 entry's last group is not a port.
-    expect(bypassesProxy("2001:db8::80", "2001:db8::80", 443)).toBe(true);
-    expect(bypassesProxy("intranet:0, intranet:70000", "intranet", 443)).toBe(false);
-  });
 });
 
 describe("upstreamRoutesFor", () => {
+  it.each([80, 443, 1080])("sends environment credentials only to the explicit port %i", async (port) => {
+    const result = await upstreamRoutesFor(deps({ envVars: { HTTPS_PROXY: `http://u:p@proxy.test:${port}` } }), https("example.com"));
+    expect(result.routes).toEqual([{ kind: "http", host: "proxy.test", port, auth: { username: "u", password: "p" } }]);
+  });
+
+  it.each(["localhost", "127.0.0.1", "::1"])("keeps local destination %s direct independently of bypass matching", async (host) => {
+    const environment = deps({ envVars: { HTTPS_PROXY: "http://proxy.test:80" } });
+    const manual = deps({ settings: { mode: "manual", manualUrl: "http://proxy.test:80", bypass: "" } });
+    expect(await upstreamRoutesFor(environment, https(host))).toMatchObject({ source: "environment-bypass", routes: [{ kind: "direct" }] });
+    expect(await upstreamRoutesFor(manual, https(host))).toMatchObject({ source: "manual-bypass", routes: [{ kind: "direct" }] });
+  });
+
   it("off: direct, whatever the environment says", async () => {
     const result = await upstreamRoutesFor(deps({ settings: { mode: "off" }, envVars: { HTTPS_PROXY: "http://p:1" } }), https("example.com"));
     expect(result.routes).toEqual([{ kind: "direct" }]);
@@ -158,6 +219,16 @@ describe("upstreamRoutesFor", () => {
     expect(resolveProxy).not.toHaveBeenCalled();
   });
 
+  it.each([" ", "\t", " * "])("preserves nonempty lowercase bypass value %j over uppercase", async (noProxy) => {
+    const d = deps({ envVars: { HTTPS_PROXY: "http://proxy.test:80", no_proxy: noProxy, NO_PROXY: "*" } });
+    expect(await upstreamRoutesFor(d, https("example.com"))).toMatchObject({ source: "environment", routes: [{ kind: "http", host: "proxy.test", port: 80 }] });
+  });
+
+  it("uses the uppercase bypass value when the lowercase value is empty", async () => {
+    const d = deps({ envVars: { HTTPS_PROXY: "http://proxy.test:80", no_proxy: "", NO_PROXY: "*" } });
+    expect(await upstreamRoutesFor(d, https("example.com"))).toMatchObject({ source: "environment-bypass", routes: [{ kind: "direct" }] });
+  });
+
   it("never trusts a proxy from the OS settings or PAC to resolve names, even with the opt-in on", async () => {
     const d = deps({ resolveProxy: async () => "PROXY 127.0.0.1:3128", settings: { resolvesNames: true } });
     expect((await upstreamRoutesFor(d, https("example.com"))).routes).toEqual([{ kind: "http", host: "127.0.0.1", port: 3128 }]);
@@ -166,9 +237,9 @@ describe("upstreamRoutesFor", () => {
     expect((await upstreamRoutesFor(manual, https("example.com"))).routes).toEqual([{ kind: "http", host: "127.0.0.1", port: 3128, resolvesNames: true }]);
   });
 
-  it("honours a NO_PROXY port: a bypass for one port leaves the others on the proxy", async () => {
+  it("does not interpret a port suffix as a bypass extension", async () => {
     const d = deps({ envVars: { HTTPS_PROXY: "http://proxy.test:3128", NO_PROXY: "git.internal.test:8443" } });
-    expect(await upstreamRoutesFor(d, https("git.internal.test", 8443))).toMatchObject({ routes: [{ kind: "direct" }], source: "environment-bypass" });
+    expect(await upstreamRoutesFor(d, https("git.internal.test", 8443))).toMatchObject({ routes: [{ kind: "http", host: "proxy.test", port: 3128 }], source: "environment" });
     expect(await upstreamRoutesFor(d, https("git.internal.test", 443))).toMatchObject({ routes: [{ kind: "http", host: "proxy.test", port: 3128 }], source: "environment" });
   });
 
@@ -254,6 +325,32 @@ describe("upstreamRoutesFor", () => {
 });
 
 describe("createUpstreamProxyRouter", () => {
+  it("retries a pending route lookup after configuration changes", async () => {
+    let release!: (answer: string) => void;
+    const resolveProxy = vi.fn(() => new Promise<string>((resolve) => { release = resolve; }));
+    let settings: UpstreamProxySettings = { ...DEFAULT_UPSTREAM_PROXY };
+    const { router, invalidate } = createUpstreamProxyRouter({ ...deps({ resolveProxy }), settings: () => settings });
+    const pending = router(https("example.com"));
+    settings = { ...settings, mode: "manual", manualUrl: "http://new.test:80" };
+    invalidate();
+    release("PROXY old.test:3128");
+    expect(await pending).toEqual({ routes: [{ kind: "http", host: "new.test", port: 80 }] });
+    expect(await router(https("example.com"))).toEqual({ routes: [{ kind: "http", host: "new.test", port: 80 }] });
+    expect(resolveProxy).toHaveBeenCalledTimes(1);
+  });
+
+  it("exposes the active generation and the policy's resolved decision class", () => {
+    const { router, invalidate } = createUpstreamProxyRouter(deps());
+    expect(router.generation?.()).toBe(0);
+    invalidate();
+    expect(router.generation?.()).toBe(1);
+    expect(router.decisionClass?.("example.com", ["93.184.216.34"], "pinned")).toBe("public");
+    expect(router.decisionClass?.("example.com", [], "upstream")).toBe("unverified");
+    expect(router.decisionClass?.("example.com", ["10.0.0.1"], "pinned")).toBe("local");
+    expect(router.decisionClass?.("localhost", [], "upstream")).toBe("local");
+    expect(router.decisionClass?.("0.0.0.0", [], "upstream")).toBe("reserved");
+  });
+
   it("caches a destination's answer for the TTL, per scheme/host/port, and drops it on invalidate()", async () => {
     let now = 0;
     let answer = "PROXY a.test:1";

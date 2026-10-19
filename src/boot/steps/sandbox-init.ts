@@ -305,7 +305,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
               }).catch((error: unknown) => log.warn(`[sandbox] upstream route audit write failed: ${errorMessage(error)}`));
             }));
             // A change applies to new connections at once (the cache is
-            // dropped) and closes the open ones, which the old setting routed.
+            // dropped, its generation advanced) and closes the open ones.
+            // Pending decisions observe that generation again before dialing.
             settingsService.onChanged("upstreamProxy", () => {
               upstream.invalidate();
               const closed = closeAllEgressConnections();

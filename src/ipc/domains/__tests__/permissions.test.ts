@@ -1836,13 +1836,13 @@ describe("upstream proxy in Settings", () => {
     expect(result).toMatchObject({
       ok: true,
       view: {
-        settings: { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: ".lan, 10.0.0.0/8", resolvesNames: false },
+        settings: { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: " .lan, 10.0.0.0/8 ", resolvesNames: false },
         hasCredentials: true,
         diagnostic: { source: "manual", routes: [{ kind: "http", endpoint: "proxy.test:3128", credentials: true }] },
       },
     });
     expect(JSON.stringify(result)).not.toMatch(/alice|p%40ss|p@ss/u);
-    expect(service.set).toHaveBeenCalledWith("upstreamProxy", { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: ".lan, 10.0.0.0/8", resolvesNames: false });
+    expect(service.set).toHaveBeenCalledWith("upstreamProxy", { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: " .lan, 10.0.0.0/8 ", resolvesNames: false });
     expect(JSON.parse(secrets.get("upstreamProxy.manualCredentials")!)).toEqual({ username: "alice", password: "p@ss", origin: "http://proxy.test:3128" });
     const audit = JSON.stringify((deps.auditLogger.log as ReturnType<typeof vi.fn>).mock.calls);
     expect(audit).toContain("[upstream-proxy:set] mode=manual manual=http://proxy.test:3128 credentials=replaced bypassEntries=2 resolvesNames=false");
@@ -1852,6 +1852,17 @@ describe("upstream proxy in Settings", () => {
       .toMatchObject({ ok: true, view: { hasCredentials: true } });
     expect(await fromAppWindow(PERMISSIONS.upstreamProxySet, { clearCredentials: true, intent: USER_INTENT })).toMatchObject({ ok: true, view: { hasCredentials: false } });
     expect(secrets.has("upstreamProxy.manualCredentials")).toBe(false);
+  });
+
+  it("preserves bypass whitespace so only an exact singleton asterisk bypasses all", async () => {
+    const { service } = await setupUpstream();
+    const padded = await fromAppWindow(PERMISSIONS.upstreamProxySet, {
+      mode: "manual", manualUrl: "http://proxy.test:80", bypass: " * ", intent: USER_INTENT,
+    });
+    expect(padded).toMatchObject({ ok: true, view: { settings: { bypass: " * " }, diagnostic: { source: "manual", routes: [{ kind: "http", endpoint: "proxy.test:80" }] } } });
+    expect(service.set).toHaveBeenLastCalledWith("upstreamProxy", expect.objectContaining({ bypass: " * " }));
+    const singleton = await fromAppWindow(PERMISSIONS.upstreamProxySet, { bypass: "*", intent: USER_INTENT });
+    expect(singleton).toMatchObject({ ok: true, view: { settings: { bypass: "*" }, diagnostic: { source: "manual-bypass", routes: [{ kind: "direct" }] } } });
   });
 
   it("removes stored credentials when the manual proxy's host, port or scheme changes, and says so", async () => {
@@ -1864,6 +1875,36 @@ describe("upstream proxy in Settings", () => {
       expect(secrets.has("upstreamProxy.manualCredentials"), changed).toBe(false);
       expect(JSON.stringify((deps.auditLogger.log as ReturnType<typeof vi.fn>).mock.calls)).toContain("credentials=removed");
     }
+  });
+
+  it.each([
+    ["http://alice:pw@proxy.test:1080", "http://proxy.test:80"],
+    ["http://alice:pw@proxy.test:80", "http://proxy.test:1080"],
+    ["http://alice:pw@proxy.test", "proxy.test:80"],
+    ["alice:pw@proxy.test:80", "http://proxy.test"],
+    ["http://alice:pw@[2001:db8::1]:80", "http://[2001:db8::1]"],
+    ["http://alice:pw@[2001:db8::1]", "[2001:db8::1]:80"],
+  ])("clears credentials when effective service changes from %s to %s", async (initial, changed) => {
+    const { secrets } = await setupUpstream();
+    await fromAppWindow(PERMISSIONS.upstreamProxySet, { mode: "manual", manualUrl: initial, intent: USER_INTENT });
+    expect(secrets.has("upstreamProxy.manualCredentials")).toBe(true);
+    const result = await fromAppWindow(PERMISSIONS.upstreamProxySet, { manualUrl: changed, intent: USER_INTENT });
+    expect(result).toMatchObject({ ok: true, credentialsRemoved: true, view: { hasCredentials: false } });
+    expect(secrets.has("upstreamProxy.manualCredentials")).toBe(false);
+  });
+
+  it.each([
+    ["http://alice:pw@proxy.test:80", "proxy.test:80", "http://proxy.test:80"],
+    ["http://alice:pw@proxy.test", "http://proxy.test:1080", "http://proxy.test:1080"],
+    ["https://alice:pw@proxy.test", "https://proxy.test:443", "https://proxy.test:443"],
+    ["http://alice:pw@[2001:db8::1]", "[2001:db8::1]:1080", "http://[2001:db8::1]:1080"],
+  ])("keeps credentials when effective service is unchanged from %s to %s", async (initial, changed, origin) => {
+    const { secrets } = await setupUpstream();
+    await fromAppWindow(PERMISSIONS.upstreamProxySet, { mode: "manual", manualUrl: initial, intent: USER_INTENT });
+    expect(JSON.parse(secrets.get("upstreamProxy.manualCredentials")!)).toMatchObject({ origin });
+    const result = await fromAppWindow(PERMISSIONS.upstreamProxySet, { manualUrl: changed, intent: USER_INTENT });
+    expect(result).toMatchObject({ ok: true, view: { hasCredentials: true, settings: { manualUrl: origin } } });
+    expect(secrets.has("upstreamProxy.manualCredentials")).toBe(true);
   });
 
   it("treats a stored entry without its origin, or bound to another proxy, as no credentials", async () => {

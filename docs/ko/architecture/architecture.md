@@ -1998,24 +1998,48 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   상위 프록시의 출처(owner 결정 2026-10-20)는 main 소유 설정 `upstreamProxy`
   (설정 → 권한 → OS 도구 샌드박스, permissions `upstreamProxySet` 채널로만
   기록, `settings:update` 는 거절, 수동 자격 증명은 비밀 저장소에 프록시의
-  `scheme://host:port` 에 묶어 두어 그곳에만 보내고, URL 이 다른 origin 으로 바뀌면 알림과 함께 삭제)다. 기본값
+  스킴·정규화된 호스트·실제 포트에 묶어 두어 그곳에만 보내고, 그중 하나가 바뀌면
+  알림과 함께 삭제)다. 명시한 포트는 URL 정규화 전에 보존하고, 생략한 경우에만
+  HTTP 는 1080, HTTPS 는 443 을 쓴다. 스킴을 생략하면 HTTP 다. 기본값
   "시스템 설정 사용"은 앱 프로세스의 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/
-  `NO_PROXY`(대소문자, curl 순서; `NO_PROXY` 와 수동 우회 목록은 curl 규칙에 더해
-  `host:port` 항목이면 그 포트만 우회)가 있으면 그것을, 없으면 Chromium
-  `session.resolveProxy`(OS 설정·PAC·WPAD)를 따른다. PAC 는 목적지마다 다른
+  `NO_PROXY`(대소문자 모두, 소문자 우선)가 있으면 그것을, 없으면
+  `session.resolveProxy`(OS 설정·PAC·WPAD)를 따른다. `NO_PROXY` 와 수동 우회 목록은
+  도메인·IP 리터럴·CIDR 범위를 쉼표로 구분한다. 도메인 앞의 점 하나는 무시하며
+  도메인과 그 하위 도메인이 일치한다. `*.` 는 와일드카드가 아니며, 전체 값이
+  앞뒤 공백 없이 정확히 `*` 일 때만 모두 우회한다(긴 목록 속 `*` 항목은 해당 없음).
+  `host:port` 는 지원하지 않고 IPv6 항목에는 대괄호를 쓰지 않는다. 이 호스트 자신의 목적지를
+  직접 연결하는 정책은 이 목록과 별도로 유지된다. PAC 는 목적지마다 다른
   목록을 줄 수 있으므로 carried patch part 4 가 정적 `parentProxy` 대신 목적지별
   route hook(`SandboxManager.setParentProxyRouter`, 구현은
   `src/permissions/upstream-proxy.ts`)을 묻고, 각 경로를 위 규칙대로 판정한 뒤
   순서대로 시도한다. 다음 경로로 넘어가는 것은 연결 실패뿐이며, upstream 의
-  HTTP 응답(403·5xx 등)은 최종 거절이라 다음 프록시나 DIRECT 로 우회하지 않는다. 407 은 "upstream proxy requires authentication" 으로
+  모든 HTTP 응답은 non-2xx 도 포함해 최종 답이다. non-2xx CONNECT 응답은
+  "upstream proxy refused the connection (HTTP <status>)" 로 거절하고, 평문 HTTP
+  응답은 407 을 제외하고 그대로 전달한다. 같은 경로의 다음 주소나 다음 프록시,
+  DIRECT 로 재시도하지 않는다. 407 은 "upstream proxy requires authentication" 으로
   거절하고(NTLM/Kerberos 는 cntlm·px 같은 로컬 도우미 + `resolvesNames`; 이 신뢰
   설정은 설정이나 환경 변수로 지정한 프록시에만 적용되고 PAC·WPAD 답의 프록시에는
   적용되지 않는다), `resolveProxy` 는 동시에 최대 4 개만 평가하며,
   SOCKS 항목은 `egress-route` 감사 행과 함께 건너뛴다. 답은 (scheme, host,
-  port)별 45 초 캐시이며 설정 변경 시 즉시 비우고 열린 샌드박스 연결(직접 연결 포함)을
-  모두 닫아, 재시작 없이 적용되고 이전 설정으로 열린 터널이 남지 않는다. 샌드박스
+  port)별 45 초 캐시다. 상위 프록시 설정 변경 시 경로 세대를 올리고 캐시를 비우며 열린
+  샌드박스 연결(직접 연결 포함)을 모두 닫는다. 진행 중인 승인·DNS·경로 조회는
+  세대를 캡처하고, 비동기 프록시 준비 뒤를 포함해 직접 또는 상위 연결을 열기
+  직전에 다시 확인한다. 세대가 바뀌면 현재 설정으로 경로를 다시 계획하며,
+  허용한 목적지 분류가 같을 때만 답을 재사용하고 분류가 바뀌면 다시 묻는다.
+  거절은 최종 답이며, 설정이 계속 바뀌면 연결을 거절한다. 재시작 없이 적용되고
+  이전 설정으로 열린 터널이 남지 않는다. 샌드박스
   프로세스의 환경에는 Ave 의 호출별 프록시만 보이고 상위 프록시나 자격 증명은
   들어가지 않는다.
+  `patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch` 를 재생성할 때는
+  첫 `diff --git` 앞의 설명을 보관하고
+  `bun patch @anthropic-ai/sandbox-runtime@0.0.80` 을 실행한다. 설치된 패키지의
+  `dist` 를 수정해 checkout 밖에 비교용 사본을 남긴 뒤
+  `bun patch --commit node_modules/@anthropic-ai/sandbox-runtime` 을 실행한다.
+  갱신한 설명을 생성된 diff 앞에 복원하고 `bun install --lockfile-only` 로 최종
+  패치의 lockfile 메타데이터를 갱신하거나 확인한다. 수정한 manifest·lockfile·패치를
+  포함한 일회용 clean checkout 에서 `bun install --frozen-lockfile` 을 실행한 다음
+  `diff -r <saved-dist> node_modules/@anthropic-ai/sandbox-runtime/dist` 에 차이가
+  없는지 확인해 수정한 배포 파일의 재현성을 검증한다.
   Linux 는 lane 소켓을 비공개 디렉터리에 두고 wrap 마다 tmpfs 로 가린 뒤 자기
   소켓만 다시 바인드한다.
 - **Gate**: 두 범위가 하나의 ASRT 런타임을 공유한다. 셸 샌드박스

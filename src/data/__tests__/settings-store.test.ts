@@ -77,6 +77,14 @@ describe("SettingsService upstream proxy (main-owned)", () => {
     expect(changed).toHaveBeenCalledTimes(1);
     expect(service.get("upstreamProxy").mode).toBe("off");
   });
+
+  it.each([" * ", "\t* ", " ", "*"])("preserves bypass text %j across save and reload", async (bypass) => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.set("upstreamProxy", { mode: "manual", manualUrl: "http://proxy.test:80", bypass, resolvesNames: false });
+    expect(service.get("upstreamProxy").bypass).toBe(bypass);
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("upstreamProxy").bypass).toBe(bypass);
+  });
 });
 
 describe("SettingsService remote A2A canonical route-control origin", () => {

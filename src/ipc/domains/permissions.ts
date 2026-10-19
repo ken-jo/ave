@@ -501,7 +501,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       if (typeof body.bypass !== "string" || body.bypass.length > 8192) {
         return { ok: false, error: "invalid-upstream-proxy-bypass", message: "upstream proxy: the bypass list must be text of at most 8192 characters" };
       }
-      next.bypass = body.bypass.trim();
+      next.bypass = body.bypass;
     }
     let credentials: { username: string; password: string } | undefined;
     if (body.manualUrl !== undefined) {

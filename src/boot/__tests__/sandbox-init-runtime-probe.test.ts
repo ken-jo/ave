@@ -191,13 +191,15 @@ describe("initSandboxGate — shell sandbox and plugin-worker confinement scopes
     const context = harness.context(true, false);
     await initSandboxGate(context);
 
-    const trusted = h.initialize.mock.calls[0]![0] as { upstreamRouter?: (d: { host: string; port: number; scheme: "http" | "https" }) => Promise<unknown> };
+    const trusted = h.initialize.mock.calls[0]![0] as { upstreamRouter?: import("@anthropic-ai/sandbox-runtime").ParentProxyRouter };
     expect(typeof trusted.upstreamRouter).toBe("function");
     const settings = context.settingsService as unknown as { onChanged: ReturnType<typeof vi.fn> };
     expect(settings.onChanged).toHaveBeenCalledWith("upstreamProxy", expect.any(Function));
     h.closeAll.mockClear();
     const onChange = settings.onChanged.mock.calls.find((call) => call[0] === "upstreamProxy")![1] as () => void;
+    const generation = trusted.upstreamRouter!.generation!();
     onChange();
+    expect(trusted.upstreamRouter!.generation!()).toBe(generation + 1);
     expect(h.closeAll).toHaveBeenCalledOnce();
   });
 

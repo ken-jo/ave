@@ -1432,14 +1432,23 @@ Where the upstream comes from (owner decision 2026-10-20) is the main-owned
 `upstreamProxy` setting (Settings → Permissions → OS Tool Sandbox; written
 only through the permissions `upstreamProxySet` channel, refused by
 `settings:update`, absent from the renderer snapshot; manual credentials in
-the secret store, bound to the proxy's `scheme://host:port`: sent only to it,
-and removed, with a notice, when the URL changes to another origin). "Use system settings" (the default) takes the app
+the secret store, bound to the proxy's scheme, canonical host and effective
+port: sent only to it, and removed, with a notice, when any of those changes).
+An explicitly written port is preserved before URL normalization; only an
+omitted port defaults to 1080 for HTTP or 443 for HTTPS. A scheme-less proxy
+URL means HTTP. "Use system settings" (the default) takes the app
 process's own `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY` (either case,
-curl's order; `NO_PROXY` and the manual bypass list follow curl's matcher, plus
-`host:port` entries that bypass that port only) when any is set, and otherwise the OS configuration through
+lowercase first) when any is set, and otherwise the OS configuration through
 Chromium's `session.resolveProxy` (macOS system settings, Windows
 WinINET/WinHTTP, Linux environment/GNOME/KDE, PAC and WPAD); "Manual" is a
-URL plus a bypass list; "Off" is direct. Because a PAC script can answer
+URL plus a bypass list; "Off" is direct. `NO_PROXY` and the manual bypass list
+use comma-separated domains, IP literals and CIDR ranges. A bare domain or
+one leading dot matches the domain and its subdomains; `*.` has no wildcard
+meaning. Only the raw complete value `*`, without surrounding whitespace,
+bypasses everything, not a `*` token in a longer list. Entries do not support
+`host:port`; IPv6 entries are unbracketed.
+This host's own destinations remain direct under the separate local-routing
+policy. Because a PAC script can answer
 differently per destination and with a fallback list, the carried patch's
 part 4 replaces ASRT's single static `parentProxy` with a route hook
 (`SandboxManager.setParentProxyRouter`, implemented in
@@ -1450,10 +1459,12 @@ answered route is judged as above (a pinned name goes as its vetted literal,
 an unresolvable name skips direct routes and untrusted proxies on this host,
 a route naming one of the proxy's own listeners is dropped and every proxy
 socket is checked against them), and the connection tries the kept routes in
-order, handing over only on a connection failure: any HTTP answer from an
-upstream is final (a 403 or 5xx refuses with "upstream proxy refused the
-connection (HTTP <status>)"; a later proxy or DIRECT never carries what it
-refused). A 407 refuses with "upstream proxy requires authentication" (Basic
+order, handing over only on a connection failure: every upstream HTTP response
+is final, including non-2xx. A non-2xx CONNECT answer refuses with
+"upstream proxy refused the connection (HTTP <status>)"; a plain-HTTP response
+is relayed unchanged except 407. Neither another address on the same route
+nor a later proxy or DIRECT retries an HTTP response. A 407 refuses with
+"upstream proxy requires authentication" (Basic
 credentials from a `user:pass@` URL are sent; NTLM/Kerberos need a local
 helper such as cntlm or px plus the `resolvesNames` opt-in, which covers a
 proxy named in Settings or the environment and never one a PAC or WPAD answer
@@ -1462,10 +1473,16 @@ evaluations at once. SOCKS entries
 are skipped with an `egress-route` audit row (ASRT has no SOCKS client); an
 answer with nothing usable refuses, never falls back to direct. Answers are
 cached per (scheme, host, port) for 45 s (Electron has no proxy-change
-event); a Settings write clears the cache and closes every open sandbox
-connection (`closeAllInvocationConnections`, direct ones included), so
-changes apply without a restart and no tunnel outlives the setting that
-routed it. Sandboxed processes see only Ave's per-invocation proxy in their
+event); an upstream proxy settings write advances the routing generation, clears the cache
+and closes every open sandbox connection (`closeAllInvocationConnections`,
+direct ones included). Pending approval, DNS and route decisions capture that
+generation and check it immediately before any direct or upstream dial,
+including after asynchronous proxy preparation. A stale attempt replans its
+routes under the current generation; an allowed decision is reused only for
+the same destination class, and a changed class is asked again. A denial
+remains final, and repeated configuration churn fails closed. Changes apply
+without a restart and no tunnel outlives the setting that routed it.
+Sandboxed processes see only Ave's per-invocation proxy in their
 environment, never the upstream or its credentials. An ended
 invocation's macOS port stays bound, refusing connections, for 30 minutes,
 longer while its process group still runs, and its number is never reused. A wrap with `network.allowLocalBinding` is
@@ -1473,6 +1490,18 @@ refused, and Ave never sets it. The macOS profile also denies process-info on ot
 the `kern.procargs` sysctls, and each non-PTY wrap starts in its own session
 (node-pty already starts one), so a sandboxed process cannot read another
 process's environment.
+
+To regenerate `patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch`, save its
+explanatory preamble (everything before the first `diff --git`) and run
+`bun patch @anthropic-ai/sandbox-runtime@0.0.80`. Edit the installed package's
+`dist`, save a copy outside the checkout for comparison, then run
+`bun patch --commit node_modules/@anthropic-ai/sandbox-runtime`. Restore the
+updated preamble ahead of the generated diff and run `bun install --lockfile-only`
+to refresh or verify lockfile metadata for the final patch. In a disposable
+clean checkout with the revised manifest, lockfile and patch, run
+`bun install --frozen-lockfile`, then
+`diff -r <saved-dist> node_modules/@anthropic-ai/sandbox-runtime/dist`;
+no differences prove the patch reproduces the edited distribution.
 
 ASRT runs non-strict with an empty `allowedDomains`, so the callback decides
 every connection: a plugin worker reaches its own extension's declared

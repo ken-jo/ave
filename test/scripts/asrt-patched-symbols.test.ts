@@ -152,7 +152,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(order.every((at) => at > 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(decide).toMatch(/if \(byName === 'deny'\)\s+return undefined;/u);
-    expect(decide).toMatch(/if \(byName === 'ask' && !\(await confirmResolvedDestination\(/u);
+    expect(decide).toContain("if (byName === 'ask' && decisionClass !== approvedClass)");
     const schemas = readInstalled("dist/sandbox/sandbox-schemas.d.ts");
     expect(schemas).toMatch(/export type SandboxAskContext = SandboxAskNameContext \| SandboxAskResolvedContext;/u);
     expect(schemas).toMatch(/export type SandboxAskNameContext = SandboxAskIdentity & \{\s+phase: 'name';\s+\};/u);
@@ -448,10 +448,10 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
 
   /**
    * A stand-in upstream proxy: answers every CONNECT 200 and keeps the tunnel
-   * open, except a CONNECT whose authority is in `refuse`, answered 502 (an
-   * upstream that cannot reach that address).
+   * open, except a CONNECT whose authority is in `disconnect`, closed without
+   * an HTTP answer (a transport failure).
    */
-  async function fakeUpstream(refuse: readonly string[] = []): Promise<{ port: number; connects: string[]; close: () => Promise<void> }> {
+  async function fakeUpstream(disconnect: readonly string[] = []): Promise<{ port: number; connects: string[]; close: () => Promise<void> }> {
     const { createServer } = await import("node:net");
     const connects: string[] = [];
     const sockets = new Set<import("node:net").Socket>();
@@ -462,7 +462,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
         const line = chunk.toString("latin1").split("\r\n")[0] ?? "";
         connects.push(line);
         const authority = line.split(" ")[1] ?? "";
-        if (refuse.includes(authority)) socket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+        if (disconnect.includes(authority)) socket.destroy();
         else if (!line.startsWith("CONNECT ")) socket.end("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         else socket.write("HTTP/1.1 200 Connection established\r\n\r\n");
       });
@@ -925,7 +925,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
    * Proxy-Authorization header, and answers `status` to every request
    * (`200` keeps a CONNECT tunnel open).
    */
-  async function recordingUpstream(status: 200 | 403 | 407 | 502): Promise<{ port: number; requests: Array<{ line: string; authorization: string | undefined }>; close: () => Promise<void> }> {
+  async function recordingUpstream(status: 200 | 403 | 407 | 502 | 503 | 504): Promise<{ port: number; requests: Array<{ line: string; authorization: string | undefined }>; close: () => Promise<void> }> {
     const { createServer } = await import("node:net");
     const requests: Array<{ line: string; authorization: string | undefined }> = [];
     const sockets = new Set<import("node:net").Socket>();
@@ -941,7 +941,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
         const authorization = lines.find((l) => /^proxy-authorization:/iu.test(l))?.replace(/^[^:]+:\s*/u, "");
         requests.push({ line: lines[0] ?? "", authorization });
         if (status === 407) socket.end("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"up\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        else if (status === 403 || status === 502) socket.end(`HTTP/1.1 ${status} ${status === 403 ? "Forbidden" : "Bad Gateway"}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+        else if (status !== 200) socket.end(`HTTP/1.1 ${status} ${status === 403 ? "Forbidden" : "Bad Gateway"}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
         else if (!(lines[0] ?? "").startsWith("CONNECT ")) socket.end("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         else socket.write("HTTP/1.1 200 Connection established\r\n\r\n");
       };
@@ -1033,6 +1033,139 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       }
     } finally {
       await good.close();
+    }
+  });
+
+  it.for([403, 407, 502, 503, 504] as const)("keeps HTTP %i final across addresses and routes", async (status, test) => {
+    const refusing = await recordingUpstream(status);
+    const next = await recordingUpstream(200);
+    const setup = await withRouter(test, async () => ({ routes: [
+      { kind: "http", host: "127.0.0.1", port: refusing.port },
+      { kind: "http", host: "127.0.0.1", port: next.port },
+      { kind: "direct" },
+    ] }));
+    try {
+      if (setup === undefined) return;
+      setDestinationResolverForTesting(async (name) => name === "multi.example.invalid"
+        ? [{ address: "198.51.100.7", family: 4 }, { address: "198.51.100.8", family: 4 }, { address: "2001:db8::7", family: 6 }]
+        : testResolver(name));
+      const response = await connectThrough(setup.front, setup.proxy, setup.name, "multi.example.invalid:443");
+      expect(response).toBe(status === 407 ? "HTTP/1.1 403 upstream proxy requires authentication"
+        : `HTTP/1.1 403 upstream proxy refused the connection (HTTP ${status})`);
+      expect(refusing.requests.map(r => r.line)).toEqual(["CONNECT 198.51.100.7:443 HTTP/1.1"]);
+      const plain = await plainHttpThrough(setup.front, setup.proxy, setup.name, "http://198.51.100.7/");
+      expect(plain).toMatch(new RegExp(`^HTTP/1\\.1 ${status === 407 ? 403 : status} `, "u"));
+      expect(refusing.requests).toHaveLength(2);
+      expect(next.requests).toEqual([]);
+    } finally {
+      await setup?.SandboxManager.reset();
+      await refusing.close();
+      await next.close();
+    }
+  });
+
+  it.each([false, true])("replans a held destination DNS decision from Off to Manual (plain HTTP: %s)", async (plainHttp) => {
+    const { createServer } = await import("node:net");
+    const { createUpstreamProxyRouter } = await import("../../src/permissions/upstream-proxy.js");
+    const { DEFAULT_UPSTREAM_PROXY } = await import("../../src/shared/upstream-proxy.js");
+    let directConnections = 0;
+    const canary = createServer(socket => { directConnections++; socket.end("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"); });
+    await new Promise<void>(resolve => canary.listen(0, "127.0.0.1", resolve));
+    const port = (canary.address() as import("node:net").AddressInfo).port;
+    const upstream = await recordingUpstream(200);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    let settings = { ...DEFAULT_UPSTREAM_PROXY, mode: "off" as "off" | "manual" };
+    const router = createUpstreamProxyRouter({ settings: () => settings, manualCredentials: () => null, env: () => ({}) });
+    const phases: Array<SandboxAskContext["phase"]> = [];
+    let release!: () => void;
+    let entered!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    try {
+      SandboxManager.setParentProxyRouter(router.router);
+      await SandboxManager.initialize({ network: { allowedDomains: [`127.0.0.1:${port}`], deniedDomains: [], parentProxy: { http: "", https: "" } }, filesystem: { denyRead: [], allowWrite: [], denyWrite: [] } }, async (_params, context) => {
+        if (context) phases.push(context.phase);
+        return true;
+      });
+      const commandId = "3".repeat(32);
+      const listener = await SandboxManager.openInvocationListener(commandId);
+      const proxy = proxyUrlIn(await SandboxManager.wrapWithSandbox("true", undefined, undefined, undefined, { commandId }));
+      setDestinationResolverForTesting(async name => {
+        if (name !== "held.example.test") return testResolver(name);
+        entered(); await held;
+        return [{ address: "127.0.0.1", family: 4 }];
+      });
+      const user = `srt.${Buffer.from(commandId).toString("base64")}`;
+      const pending = plainHttp
+        ? plainHttpThrough(frontOf(listener), proxy, user, `http://held.example.test:${port}/`)
+        : connectThrough(frontOf(listener), proxy, user, `held.example.test:${port}`);
+      await started;
+      settings = { ...settings, mode: "manual", manualUrl: `http://127.0.0.1:${upstream.port}`, resolvesNames: true };
+      router.invalidate();
+      SandboxManager.closeAllInvocationConnections();
+      release();
+      expect(await pending).toMatch(/^HTTP\/1\.1 200/u);
+      expect(directConnections).toBe(0);
+      expect(upstream.requests.map(r => r.line)).toEqual([plainHttp
+        ? `GET http://held.example.test:${port}/ HTTP/1.1` : `CONNECT 127.0.0.1:${port} HTTP/1.1`]);
+      expect(phases).toEqual(["name", "resolved"]);
+    } finally {
+      release();
+      await SandboxManager.reset();
+      await upstream.close();
+      await new Promise<void>(resolve => canary.close(() => resolve()));
+    }
+  });
+
+  it.each([
+    ["name", false, 1], ["route", false, 1], ["resolved", false, 1], ["resolved", true, 2], ["proxy-dns", false, 1],
+  ] as const)("replans pending %s work and only repeats a changed class (plain HTTP: %s)", async (stage, plainHttp, resolvedCount) => {
+    const { createUpstreamProxyRouter } = await import("../../src/permissions/upstream-proxy.js");
+    const { DEFAULT_UPSTREAM_PROXY } = await import("../../src/shared/upstream-proxy.js");
+    const old = await recordingUpstream(200);
+    const next = await recordingUpstream(200);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    let settings = { ...DEFAULT_UPSTREAM_PROXY, mode: stage === "route" ? "system" : stage === "proxy-dns" ? "manual" : "off", manualUrl: `http://old-proxy.example.test:${old.port}` } as import("../../src/shared/upstream-proxy.js").UpstreamProxySettings;
+    let release!: () => void;
+    let enter!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const phases: Array<SandboxAskContext["phase"]> = [];
+    const router = createUpstreamProxyRouter({
+      settings: () => settings, manualCredentials: () => null, env: () => ({}),
+      resolveProxy: async () => { enter(); await hold; return "DIRECT"; },
+    });
+    try {
+      SandboxManager.setParentProxyRouter(router.router);
+      await SandboxManager.initialize({ network: { allowedDomains: [], deniedDomains: [], parentProxy: { http: "", https: "" } }, filesystem: { denyRead: [], allowWrite: [], denyWrite: [] } }, async (_params, context) => {
+        if (context) phases.push(context.phase);
+        if (context?.phase === stage) { enter(); await hold; }
+        return true;
+      });
+      const commandId = "4".repeat(32);
+      const listener = await SandboxManager.openInvocationListener(commandId);
+      const proxy = proxyUrlIn(await SandboxManager.wrapWithSandbox("true", undefined, undefined, undefined, { commandId }));
+      setDestinationResolverForTesting(async name => {
+        if (name === "old-proxy.example.test") { enter(); await hold; return [{ address: "127.0.0.1", family: 4 }]; }
+        return testResolver(name);
+      });
+      const user = `srt.${Buffer.from(commandId).toString("base64")}`;
+      const pending = plainHttp ? plainHttpThrough(frontOf(listener), proxy, user, "http://change.example.invalid/")
+        : connectThrough(frontOf(listener), proxy, user, "change.example.invalid:443");
+      await entered;
+      settings = { ...settings, mode: "manual", manualUrl: `http://127.0.0.1:${next.port}`, resolvesNames: true };
+      router.invalidate();
+      release();
+      expect(await pending).toMatch(/^HTTP\/1\.1 200/u);
+      expect(old.requests).toEqual([]);
+      expect(next.requests).toHaveLength(1);
+      expect(phases.filter(phase => phase === "name")).toHaveLength(1);
+      expect(phases.filter(phase => phase === "resolved")).toHaveLength(resolvedCount);
+    } finally {
+      release();
+      await SandboxManager.reset();
+      await old.close();
+      await next.close();
     }
   });
 
