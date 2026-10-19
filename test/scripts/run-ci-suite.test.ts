@@ -14,10 +14,12 @@ import {
   AFFECTED_TEST_LIMIT,
   expandMustRunTests,
   loadsComputedImport,
+  isCategoryMergeToMain,
   MUST_RUN_TESTS_PATH,
   namedRepositoryPaths,
   namesChangedPath,
   planCiSuite,
+  runsRepoCodeOutOfProcess,
   selectCiTests,
 } from "../../scripts/run-ci-suite.mjs";
 import { parseGitRawDiff } from "../../scripts/hooks/pre-push-ref-updates.mjs";
@@ -47,7 +49,12 @@ function readText(path: string): string | null {
  * whole suite's module graph, and on the 3-CPU CI slice one discovery per
  * case took the file past two minutes (PR #10). The cases read the result.
  */
-const GRAPH_SOURCES = ["src/core/route-engine.ts", "src/shared/escape-html.ts", "src/plugins/runtime/index.ts"];
+const GRAPH_SOURCES = [
+  "src/core/route-engine.ts",
+  "src/shared/escape-html.ts",
+  "src/plugins/runtime/index.ts",
+  "src/core/model-catalog/refresh.ts",
+];
 let graphCoverage = new Map<string, string[]>();
 
 beforeAll(async () => {
@@ -117,6 +124,17 @@ describe("CI test selection over the real import graph", () => {
     const plan = select([modified("src/plugins/runtime/index.ts")]);
     expect(plan.mode).toBe("affected");
     expect(plan.tests).toContain(reader);
+  });
+
+  it("selects a test whose spawned fixture is the only importer of a changed module", () => {
+    // The independent review's repro for PR #10: cache-concurrency spawns
+    // fixtures/refresh-process.ts under tsx, and only that fixture imports
+    // refresh.ts, so the import graph does not reach the test.
+    const spawner = "src/core/model-catalog/__tests__/cache-concurrency.test.ts";
+    expect(graphCoverage.get("src/core/model-catalog/refresh.ts")).not.toContain(spawner);
+    const plan = select([modified("src/core/model-catalog/refresh.ts")]);
+    expect(plan.mode).toBe("affected");
+    expect(plan.tests).toContain(spawner);
   });
 
   it.each([
@@ -189,15 +207,51 @@ describe("CI test selection fallbacks", () => {
     }
     expect(() => planCiSuite(undefined)).toThrow("GITHUB_EVENT_NAME is unset");
   });
+
+  it("runs the full suite for a category merge to main, and refuses a pull request without its refs", () => {
+    expect(planCiSuite("pull_request", { headRef: "integration/permissions", baseRef: "main" })).toEqual({
+      mode: "full",
+      reason: "integration/permissions -> main is a category merge to main, which runs the full suite",
+      tests: [],
+    });
+    expect(isCategoryMergeToMain("integration/permissions", "main")).toBe(true);
+    // A sub-branch into its category, and an ordinary branch into main, are selected.
+    expect(isCategoryMergeToMain("fix/one-thing", "integration/permissions")).toBe(false);
+    expect(isCategoryMergeToMain("fix/one-thing", "main")).toBe(false);
+    expect(() => planCiSuite("pull_request", {})).toThrow("GITHUB_HEAD_REF and GITHUB_BASE_REF must be set");
+  });
 });
 
 describe("the must-run set", () => {
   it("names security, permissions, sandbox, contract, IPC and naming tests that all exist", () => {
     expect(Object.keys((mustRunDocument as { groups: object }).groups).sort())
-      .toEqual(["contract", "ipc", "naming", "permissions", "sandbox", "security"]);
+      .toEqual(["contract", "ipc", "naming", "out-of-process", "permissions", "sandbox", "security"]);
     expect(mustRunTests).toContain("src/permissions/__tests__/runner-decisions.test.ts");
     expect(mustRunTests).toContain("src/ipc/__tests__/channel-inventory.test.ts");
     expect(mustRunTests).toContain("src/plugins/__tests__/tool-name-policy.test.ts");
+  });
+
+  it("holds every test that runs repository code in a tsx child or an esbuild bundle", () => {
+    // What such a child or bundle imports never enters the Vitest module
+    // graph: changing src/core/model-catalog/refresh.ts, which only
+    // cache-concurrency's spawned fixture imports, selected 238 files without
+    // that test before this group existed.
+    const outOfProcess = trackedTests.filter((test) => runsRepoCodeOutOfProcess(readText(test) ?? ""));
+    expect(outOfProcess).toContain("src/core/model-catalog/__tests__/cache-concurrency.test.ts");
+    expect(outOfProcess).toContain("src/tools/__tests__/archive-entry-reader-bundle.test.ts");
+    expect(outOfProcess.filter((test) => !mustRunTests.includes(test))).toEqual([]);
+  });
+
+  it("recognizes the tsx and esbuild spellings, and not a plain import", () => {
+    // Assembled at run time, so this file does not itself read as one of
+    // those tests to the scan above.
+    const loader = ["t", "sx"].join("");
+    const entries = ["entry", "Points"].join("");
+    expect(runsRepoCodeOutOfProcess(`spawn(process.execPath, ["--import", "${loader}", fixture])`)).toBe(true);
+    expect(runsRepoCodeOutOfProcess(`execFileSync(node, ['--import=${loader}', script])`)).toBe(true);
+    expect(runsRepoCodeOutOfProcess(`const loader = "${loader}/esm";`)).toBe(true);
+    expect(runsRepoCodeOutOfProcess(`await build({ ${entries}: [file], bundle: true })`)).toBe(true);
+    expect(runsRepoCodeOutOfProcess('import { refresh } from "../refresh.js";')).toBe(false);
   });
 
   it("refuses an entry that selects nothing", () => {

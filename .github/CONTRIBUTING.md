@@ -62,12 +62,15 @@ consumer skips those expensive gates after diff and policy checks. Eligible
 test-only pushes run typecheck and targeted Vitest in the hook. Register
 documents read by native or non-Node processes, or through `openAsBlob`, in
 `scripts/hooks/documentation-references.json`; the read guard cannot see them.
-CI's `build-and-test` always runs typecheck and the build. On a pull request
-to `main` or an `integration/*` branch, it then runs only the affected Vitest
+CI's `build-and-test` always runs typecheck and the build. A category merge
+(a pull request from `integration/*` into `main`) runs the full suite with
+coverage, as the multi-stage flow requires. Any other pull request to `main`
+or to an `integration/*` branch runs only the affected Vitest
 tests (`bun run test:ci`, `scripts/run-ci-suite.mjs`): the changed tests, every
 test `vitest related` reaches from a changed module, the triggered lock suites,
 and the must-run set in `config/ci-must-run-tests.json` (security, permissions,
-sandbox, contract, IPC and naming). It runs the full suite whenever that
+sandbox, contract, IPC, naming, and every test that runs repository code in a
+tsx child process or an esbuild bundle). It runs the full suite whenever that
 selection cannot be trusted: the hook's global inputs, message catalogs,
 deleted or renamed modules, a module that computes its imports, a module no
 test reaches, failed discovery, or more than 600 selected files. An affected

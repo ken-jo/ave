@@ -6,6 +6,8 @@
 // Full (`bun run check:test-coverage`, every global coverage threshold):
 //   - every event other than pull_request: a push to main, a release tag, the
 //     nightly schedule and a manual dispatch;
+//   - a category merge, a pull request from integration/* into main: the
+//     multi-stage flow makes that merge the full-suite gate;
 //   - a pull request whose selection is not trusted. The rule is the pre-push
 //     tier's, "uncertain -> full", and reuses its source policy
 //     (scripts/hooks/pre-push-source-policy.mjs): a global test or build input
@@ -95,6 +97,19 @@ export function namesChangedPath(named, changedPath) {
   if (named.replace(MODULE_EXTENSION, "") === changedPath.replace(MODULE_EXTENSION, "")) return true;
   const directory = named.endsWith("/") ? named : `${named}/`;
   return changedPath.startsWith(directory);
+}
+
+/**
+ * A test that runs repository code outside the Vitest module graph: a child
+ * process loaded through tsx (`--import tsx`, `tsx/esm`) or an esbuild bundle
+ * (`entryPoints:`). Whatever that child or bundle imports is invisible to
+ * `vitest related`, so every such test belongs to the must-run set
+ * (test/scripts/run-ci-suite.test.ts holds the set to this).
+ */
+const OUT_OF_PROCESS_CODE = /["'`]--import["'`]\s*,\s*["'`]tsx["'`]|--import[= ]tsx\b|\btsx\/(?:esm|cjs)\b|require\.resolve\(\s*["'`]tsx["'`]|\bentryPoints\s*:/u;
+
+export function runsRepoCodeOutOfProcess(text) {
+  return OUT_OF_PROCESS_CODE.test(text);
 }
 
 /**
@@ -233,11 +248,26 @@ function discoverRelatedTests(paths) {
   }
 }
 
-export function planCiSuite(eventName) {
+/**
+ * A category branch (`integration/<category>`) reaches main through one pull
+ * request, and the multi-stage flow makes that merge the full-suite gate (the
+ * pre-push tier and the sub-branch PRs into the category ran scoped checks).
+ */
+export function isCategoryMergeToMain(headRef, baseRef) {
+  return baseRef === "main" && typeof headRef === "string" && headRef.startsWith("integration/");
+}
+
+export function planCiSuite(eventName, { headRef, baseRef } = {}) {
   if (typeof eventName !== "string" || eventName.length === 0) {
     throw new Error("GITHUB_EVENT_NAME is unset: the CI suite needs the triggering event");
   }
   if (eventName !== "pull_request") return full(`${eventName} runs the full suite`);
+  if (typeof headRef !== "string" || headRef.length === 0 || typeof baseRef !== "string" || baseRef.length === 0) {
+    throw new Error("GITHUB_HEAD_REF and GITHUB_BASE_REF must be set for a pull_request run");
+  }
+  if (isCategoryMergeToMain(headRef, baseRef)) {
+    return full(`${headRef} -> ${baseRef} is a category merge to main, which runs the full suite`);
+  }
   const changes = pullRequestChanges();
   if (changes.reason) return full(changes.reason);
   const trackedTests = trackedVitestFiles();
@@ -282,7 +312,10 @@ function runPlan(plan) {
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   try {
-    const plan = planCiSuite(process.env.GITHUB_EVENT_NAME);
+    const plan = planCiSuite(process.env.GITHUB_EVENT_NAME, {
+      headRef: process.env.GITHUB_HEAD_REF,
+      baseRef: process.env.GITHUB_BASE_REF,
+    });
     console.log(`[ci-suite] ${plan.mode}: ${plan.reason}`);
     if (plan.mode === "affected") console.log(`[ci-suite] ${plan.tests.length} test files; coverage gate runs on full runs only`);
     writeSummary(plan);

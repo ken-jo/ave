@@ -1,8 +1,9 @@
 name: CI
 # Pull requests (to main and to integration/* category branches) run the
-# affected Vitest tests unless the selection cannot be trusted; every other
-# event runs the full suite with its coverage gate: a push to main after a
-# merge, a release tag, the nightly schedule and a manual dispatch. See
+# affected Vitest tests unless the selection cannot be trusted. A category
+# merge (integration/* into main) and every other event run the full suite
+# with its coverage gate: a push to main after a merge, a release tag, the
+# nightly schedule and a manual dispatch. See
 # scripts/run-ci-suite.mjs for the selection and its full-suite fallbacks.
 on:
   pull_request:
@@ -17,10 +18,11 @@ on:
 concurrency:
   # The event is part of the group so the nightly run on main never cancels,
   # and is never cancelled by, the full run of a push to main. A push groups
-  # by its commit, so a second merge never cancels the first merge's full
-  # run: every merged commit gets its own green or red result. A pull
+  # by ref and commit, so a second merge never cancels the first merge's
+  # full run, and tagging a merge commit (a push of the same sha to a tag
+  # ref) never cancels that commit's main run. A pull
   # request still cancels its own superseded run.
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
   cancel-in-progress: true
 jobs:
   build-and-test:
