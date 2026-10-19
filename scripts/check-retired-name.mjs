@@ -55,8 +55,9 @@ export const ALLOWLIST = Object.freeze([]);
 
 /**
  * Exact text where a retired plugin id may stay: `{ path, words, text, reason }`.
- * `words` names the id as `RETIRED_PLUGIN_IDS` stores it. Only occurrences of
- * `text` in `path` are exempt; the rest of each line is still scanned. In `text`,
+ * `words` names the id as `RETIRED_PLUGIN_IDS` stores it. Occurrences of `text`
+ * in `path` are masked with equal-length spaces to keep surrounding text separate;
+ * the rest of each line is still scanned. In `text`,
  * `{id}` stands for the id as spelled and `{Id}` for its Capitalized words,
  * so this list never spells an id either.
  */
@@ -179,7 +180,7 @@ export function scanRetiredPluginIds(repoRoot, allowlist = RETIRED_PLUGIN_ALLOWL
         for (const item of allowed) {
           if (item.path !== path || item.id !== id || !line.includes(item.needle)) continue;
           used.add(item);
-          remainder = remainder.replaceAll(item.needle, "");
+          remainder = remainder.replaceAll(item.needle, " ".repeat(item.needle.length));
         }
         if (pattern.test(remainder)) hits.push(index + 1);
       });

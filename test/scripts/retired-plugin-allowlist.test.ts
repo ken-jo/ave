@@ -37,12 +37,25 @@ test("rejects a retired id beside an allowed phrase on the same line", () => {
   });
 });
 
+test.each(["before", "after"] as const)("rejects a retired id glued directly %s an allowed phrase", (placement) => {
+  const [anchorEntry] = RETIRED_PLUGIN_IDS;
+  const anchorId = retiredPluginId(anchorEntry);
+  const anchor = `](#10-${anchorId}--heading)`;
+  const allowance = { path, words: anchorEntry.words, text: "](#10-{id}--heading)", reason: "kept heading anchor" };
+  const content = placement === "before" ? `${anchorId}${anchor}label` : `[Board${anchor}${anchorId}`;
+  const root = fixture(`${content}\n`);
+  expect(scanRetiredPluginIds(root, [allowance], [anchorEntry])).toEqual({
+    offenders: [{ path, id: anchorId, inPath: false, lines: [1] }],
+    stale: [],
+  });
+});
+
 test("accepts an allowed phrase alone", () => {
   const root = fixture(`${libraryName}\n`);
   expect(scanRetiredPluginIds(root, [libraryAllowance], [entry])).toEqual({ offenders: [], stale: [] });
 });
 
-test("removes every occurrence of every matching allowance on a line", () => {
+test("masks every occurrence of every matching allowance on a line", () => {
   const root = fixture(`${libraryName} \`${id}==0.2.8\` ${libraryName} \`${id}==0.2.8\`\n`);
   expect(scanRetiredPluginIds(root, [libraryAllowance, pinAllowance], [entry])).toEqual({ offenders: [], stale: [] });
 });
