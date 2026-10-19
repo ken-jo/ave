@@ -55,6 +55,18 @@ describe.skipIf(process.platform !== "win32")("native shell path aliases", () =>
   });
 
   it.each([
+    "sort '-o=x\\..\\.ENV' input.txt",
+    "curl '-K=x\\..\\.AWS\\credentials' https://example.invalid/",
+    "curl '-o=x\\..\\.ENV' https://example.invalid/",
+    "wget '-O=x\\..\\.ENV' https://example.invalid/",
+  ])("checks native paths after a leading equals sign in a short option: %s", command => {
+    for (const fenced of [false, true]) {
+      expect(findShellPathPolicyViolation(command, process.cwd(), process.cwd(), [], fenced))
+        .toMatchObject({ kind: "sensitive-path" });
+    }
+  });
+
+  it.each([
     "sort '-oC:.env' input.txt",
     "curl '-oC:.env' https://example.invalid/",
     "sort '--output=C:.env' input.txt",

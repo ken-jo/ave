@@ -218,6 +218,38 @@ describe("shell-path-policy", () => {
     });
   });
 
+  it.each([
+    "sort -o=x/../.env input.txt",
+    "curl -K=x/../.aws/credentials https://example.invalid/",
+    "curl -o=x/../.env https://example.invalid/",
+    "wget -O=x/../.env https://example.invalid/",
+    "sort -ro=x/../.env input.txt",
+    "curl -sSK=x/../.aws/credentials https://example.invalid/",
+    "curl -sSo=x/../.env https://example.invalid/",
+    "wget -qO=x/../.env https://example.invalid/",
+  ])("checks leading equals signs in attached file options: %s", command => {
+    withRoot(root => {
+      for (const fenced of [false, true]) {
+        expect(validateShellCommandPathPolicy(command, root, root, [], fenced))
+          .toContain("Sensitive path:");
+      }
+    });
+  });
+
+  it.each([
+    "sort -o=x/../result.txt input.txt",
+    "curl -K=x/../config.txt https://example.invalid/",
+    "curl -o=x/../result.txt https://example.invalid/",
+    "wget -O=x/../result.txt https://example.invalid/",
+    "curl -w=@.env https://example.invalid/",
+    "curl -w '=@.env' https://example.invalid/",
+    "curl --write-out='=@.env' https://example.invalid/",
+  ])("preserves ordinary attached paths and literal format data: %s", command => {
+    withRoot(root => {
+      expect(validateShellCommandPathPolicy(command, root, root, [], true)).toBeNull();
+    });
+  });
+
   it("rejects unsupported home expansion before shell execution", () => {
     withRoot((root) => {
       const result = validateShellCommandPathPolicy("cat ~someone/.ssh/id_rsa", root, root, []);

@@ -1009,7 +1009,8 @@ function readOptionValue(
 ): { value: string; consumedNext: boolean } | null {
   const token = argv[index]!;
   const equals = token.indexOf("=");
-  if (equals > 0 && options.has(token.slice(0, equals))) {
+  // A short option consumes the entire suffix, including a leading equals sign.
+  if (equals > 2 && options.has(token.slice(0, equals))) {
     return { value: token.slice(equals + 1), consumedNext: false };
   }
   const takeNext = (): { value: string; consumedNext: boolean } | null => {
@@ -1212,7 +1213,7 @@ function operandPaths(value: string, option: boolean, verb: string): string[] {
   if (option && value.startsWith("-") && value.length > 1) {
     const equals = value.indexOf("=");
     if (value.startsWith("--") && equals > 0) return [value.slice(equals + 1)];
-    const glued = /^-[A-Za-z]+?((?:[A-Za-z]:|[\\/~.]).*)$/.exec(value);
+    const glued = /^-[A-Za-z]+?((?:[A-Za-z]:|[=\\/~.]).*)$/.exec(value);
     return glued ? [glued[1]!] : [];
   }
   if (["awk", "gawk", "mawk", "nawk"].includes(verb)) {
