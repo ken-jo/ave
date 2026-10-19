@@ -219,6 +219,63 @@ describe("shell-path-policy", () => {
   });
 
   it.each([
+    "sort -o1/../.env input.txt",
+    "curl -K1/../.aws/credentials https://example.invalid/",
+    "wget -O1/../.env https://example.invalid/",
+    "cp -t1/../.ssh input.txt",
+    ...["_x", "@x", "-x", "한", " x"].map(prefix => `sort '-o${prefix}/../.env' input.txt`),
+    "sort -ro1/../.env input.txt",
+    "curl -sSK1/../.aws/credentials https://example.invalid/",
+    "wget -qO1/../.env https://example.invalid/",
+    "sort -o '-x/../.env' input.txt",
+    "sort -T1/../.ssh input.txt",
+    ...["-o", "-D", "-c", "-T", "-b", "-E"].map(option => `curl ${option}1/../.env https://example.invalid/`),
+    ...["-o", "-a", "-P", "-i"].map(option => `wget ${option}1/../.env https://example.invalid/`),
+    ...["mv", "install", "ln"].map(verb => `${verb} -t1/../.ssh input.txt`),
+    "unknown-command -o1/../.env input.txt",
+  ])("checks the complete attached file value regardless of its first byte: %s", command => {
+    withRoot(root => {
+      for (const fenced of [false, true]) {
+        expect(validateShellCommandPathPolicy(command, root, root, [], fenced))
+          .toContain("Sensitive path:");
+      }
+    });
+  });
+
+  it.each([
+    "sort -oresults.env in",
+    "sort -ooutput/result.txt in",
+    "sort -rooutput/result.txt in",
+    "sort -o '-x/../result.txt' in",
+    "sort -o -- in",
+    "sort -k1/../.env in",
+    "sort -t/.env in",
+    "sort -k1o.env in",
+    "curl -d1/../.env https://example.invalid/",
+    "curl -sd1/../.env https://example.invalid/",
+    ...["cp", "mv", "install", "ln"].map(verb => `${verb} -S1/../.env input.txt output.txt`),
+    "sort -- -oresults.env",
+    "tee results.env",
+  ])("keeps full in-workspace paths and option data intact: %s", command => {
+    withRoot(root => {
+      expect(validateShellCommandPathPolicy(command, root, root, [], true)).toBeNull();
+    });
+  });
+
+  it.each([
+    "sort -o1/../../outside.txt input.txt",
+    "sort -ro1/../../outside.txt input.txt",
+    "curl -K1/../../outside.txt https://example.invalid/",
+    "wget -O1/../../outside.txt https://example.invalid/",
+    "cp -t1/../../outside input.txt",
+    "unknown-command -o1/../../outside input.txt",
+  ])("applies the workspace boundary to complete attached file values: %s", command => {
+    withRoot(root => {
+      expect(validateShellCommandPathPolicy(command, root, root, [], true)).toContain("Sandbox:");
+    });
+  });
+
+  it.each([
     "sort -o=x/../.env input.txt",
     "curl -K=x/../.aws/credentials https://example.invalid/",
     "curl -o=x/../.env https://example.invalid/",

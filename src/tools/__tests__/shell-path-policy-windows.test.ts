@@ -67,6 +67,31 @@ describe.skipIf(process.platform !== "win32")("native shell path aliases", () =>
   });
 
   it.each([
+    "sort '-o1\\..\\.ENV' input.txt",
+    "curl '-K1\\..\\.AWS\\credentials' https://example.invalid/",
+    "wget '-O1\\..\\.ENV' https://example.invalid/",
+    "cp '-t1\\..\\.SSH' input.txt",
+    ...["_x", "@x", "-x", "한", " x"].map(prefix => `sort '-o${prefix}\\..\\.ENV' input.txt`),
+    "sort '-ro1\\..\\.ENV' input.txt",
+    "curl '-sSK1\\..\\.AWS\\credentials' https://example.invalid/",
+    "sort '-o1\\..\\.env:stream' input.txt",
+  ])("checks complete native paths in attached short-option values: %s", command => {
+    for (const fenced of [false, true]) {
+      expect(findShellPathPolicyViolation(command, process.cwd(), process.cwd(), [], fenced))
+        .toMatchObject({ kind: "sensitive-path" });
+    }
+  });
+
+  it.each([
+    "sort -oresults.env in",
+    "sort '-ooutput\\result.txt' in",
+    "sort '-rooutput\\result.txt' in",
+    "sort '-o-x\\..\\result.txt' in",
+  ])("preserves ordinary complete native output paths: %s", command => {
+    expect(findShellPathPolicyViolation(command, process.cwd(), process.cwd(), [], true)).toBeNull();
+  });
+
+  it.each([
     "sort '-oC:.env' input.txt",
     "curl '-oC:.env' https://example.invalid/",
     "sort '--output=C:.env' input.txt",

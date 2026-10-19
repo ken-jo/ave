@@ -274,6 +274,7 @@ const NON_PATH_OPERAND_SPECS: ReadonlyMap<string, NonPathOperandSpec> = new Map<
   }] as [string, NonPathOperandSpec]),
   ["sed", {
     valueOptions: new Set(["-e", "--expression"]),
+    pathValueOptions: new Set(["-f", "--file"]),
     firstPositionalIsProgram: true,
     programSuppliedBy: new Set(["-e", "--expression", "-f", "--file"]),
   }],
@@ -285,12 +286,33 @@ const NON_PATH_OPERAND_SPECS: ReadonlyMap<string, NonPathOperandSpec> = new Map<
       "-e", "--regexp", "-g", "--glob",
       "--include", "--exclude", "--include-dir", "--exclude-dir",
     ]),
+    pathValueOptions: new Set(["-f", "--file"]),
     firstPositionalIsProgram: true,
     programSuppliedBy: new Set(["-e", "--regexp", "-f", "--file"]),
   }] as [string, NonPathOperandSpec]),
   ["curl", {
     valueOptions: new Set(["-w", "--write-out", "-H", "--header", "-d", "--data", "--data-ascii", "--data-binary", "--json"]),
     pathValueOptions: new Set(["-o", "--output", "-D", "--dump-header", "-K", "--config", "-c", "--cookie-jar", "-T", "--upload-file", "-b", "--cookie", "-E", "--cert"]),
+  }],
+  ["sort", {
+    valueOptions: new Set(["-k", "--key", "-t", "--field-separator", "-S", "--buffer-size"]),
+    pathValueOptions: new Set(["-o", "--output", "-T", "--temporary-directory", "--files0-from"]),
+  }],
+  ["wget", {
+    valueOptions: new Set(["-U", "--user-agent", "--header", "--post-data"]),
+    pathValueOptions: new Set(["-O", "--output-document", "-o", "--output-file", "-a", "--append-output", "-P", "--directory-prefix", "-i", "--input-file", "--post-file"]),
+  }],
+  ...(["cp", "mv", "install", "ln"] as const).map((verb) => [verb, {
+    valueOptions: new Set([
+      "-S", "--suffix",
+      ...(verb === "install" ? ["-m", "--mode", "-o", "--owner", "-g", "--group"] : []),
+    ]),
+    pathValueOptions: new Set(["-t", "--target-directory"]),
+  }] as [string, NonPathOperandSpec]),
+  ["tee", {}],
+  ["tar", {
+    valueOptions: new Set(["-b", "--blocking-factor", "-H", "--format"]),
+    pathValueOptions: new Set(["-f", "--file", "-C", "--directory", "-T", "--files-from", "-X", "--exclude-from"]),
   }],
   // Passphrase option values are data except their documented file: source.
   ["openssl", { valueOptions: new Set(["-subj", ...OPENSSL_PASSPHRASE_OPTIONS]) }],
@@ -695,12 +717,12 @@ function classifyUvRunOperandSlots(argv: readonly string[]): OperandSlotClassifi
   for (let index = 1; index < childArgv.length; index += 1) {
     const absoluteIndex = childIndex + index;
     const argument = childArgv[index]!;
+    if (childSlots.nonPathIndices.has(index)) continue;
     if (!optionsEnded && argument === "--") {
       optionsEnded = true;
       nonPathIndices.add(absoluteIndex);
       continue;
     }
-    if (childSlots.nonPathIndices.has(index)) continue;
     nonPathIndices.add(absoluteIndex);
     extraCandidates.push(...operandPaths(argument, !optionsEnded, childVerb)
       .map((value) => ({ value, index: absoluteIndex })));
@@ -755,11 +777,12 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
     if (listing) {
       for (let i = verbIndex + 1; i < argv.length; i += 1) skip.add(i);
       extraCandidates.push(...listing.archivePaths.map((value, index) => ({ value, index: listing.archiveArgIndices[index]! })));
+      return empty;
     }
-    return empty;
   }
   const spec = NON_PATH_OPERAND_SPECS.get(verb);
   if (!spec) return empty;
+  const valueOptions = new Set([...spec.valueOptions ?? [], ...spec.pathValueOptions ?? []]);
   const isSed = verb === "sed";
 
   /**
@@ -825,28 +848,27 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
         skip.add(++i);
         continue;
       }
-      if (verb === "curl" && spec.valueOptions) {
-        // The same option arity applies to separate, equals and short attached
-        // values. A glued @file must retain its original operand span.
-        const carried = readOptionValue(argv, i, spec.valueOptions, spec.pathValueOptions);
-        if (carried) {
-          const index = carried.consumedNext ? i + 1 : i;
-          if (exempts(carried.value, index)) skip.add(index);
-          if (carried.consumedNext) i += 1;
-          continue;
+      // The first value-taking short option owns the entire remaining token.
+      // Reify path values separately so leading '-' and '=' stay filename bytes.
+      const carried = readOptionValue(argv, i, valueOptions);
+      if (carried) {
+        const index = carried.consumedNext ? i + 1 : i;
+        if (spec.programSuppliedBy?.has(carried.option)) programTaken = true;
+        if (spec.pathValueOptions?.has(carried.option)) {
+          skip.add(i);
+          skip.add(index);
+          const values = ["awk", "gawk", "mawk", "nawk"].includes(verb)
+            ? operandPaths(carried.value, false, verb) : [carried.value];
+          extraCandidates.push(...values.map(value => ({ value, index })));
+        } else {
+          if (isSed || spec.nestedCommandOptions?.has(carried.option)) programIndices.add(index);
+          if (exempts(carried.value, index, carried.option)) {
+            skip.add(i);
+            skip.add(index);
+          }
         }
-      }
-      const embeddedProgramOptions = isSed ? spec.valueOptions : spec.nestedCommandOptions;
-      if (embeddedProgramOptions) {
-        const carried = readOptionValue(argv, i, embeddedProgramOptions);
-        if (carried) {
-          if (isSed) programTaken = true;
-          const index = carried.consumedNext ? i + 1 : i;
-          programIndices.add(index);
-          if (exempts(carried.value, index)) skip.add(index);
-          if (carried.consumedNext) i += 1;
-          continue;
-        }
+        if (carried.consumedNext) i += 1;
+        continue;
       }
       const equals = token.indexOf("=");
       const name = equals > 0 ? token.slice(0, equals) : token;
@@ -1006,18 +1028,18 @@ function readOptionValue(
   index: number,
   options: ReadonlySet<string>,
   otherValueOptions?: ReadonlySet<string>,
-): { value: string; consumedNext: boolean } | null {
+): { option: string; value: string; consumedNext: boolean } | null {
   const token = argv[index]!;
   const equals = token.indexOf("=");
   // A short option consumes the entire suffix, including a leading equals sign.
   if (equals > 2 && options.has(token.slice(0, equals))) {
-    return { value: token.slice(equals + 1), consumedNext: false };
+    return { option: token.slice(0, equals), value: token.slice(equals + 1), consumedNext: false };
   }
-  const takeNext = (): { value: string; consumedNext: boolean } | null => {
+  const takeNext = (option: string): { option: string; value: string; consumedNext: boolean } | null => {
     const next = argv[index + 1];
-    return next === undefined ? null : { value: next, consumedNext: true };
+    return next === undefined ? null : { option, value: next, consumedNext: true };
   };
-  if (options.has(token)) return takeNext();
+  if (options.has(token)) return takeNext(token);
   // A clustered short-option group. A long option is never a cluster, so `--`
   // is excluded rather than being read letter by letter.
   if (!token.startsWith("-") || token.startsWith("--")) return null;
@@ -1027,7 +1049,7 @@ function readOptionValue(
     if (otherValueOptions?.has(option)) return null;
     if (!options.has(option)) continue;
     const attached = token.slice(i + 1);
-    return attached.length > 0 ? { value: attached, consumedNext: false } : takeNext();
+    return attached.length > 0 ? { option, value: attached, consumedNext: false } : takeNext(option);
   }
   return null;
 }
@@ -1182,12 +1204,12 @@ export function findShellPathPolicyViolation(
         let optionsEnded=false;
         for(let index=1;index<knownArgv.length;index++){
           const argument=knownArgv[index]!;
+          if(projectedSlots.nonPathIndices.has(index))continue;
           if(!optionsEnded && argument === "--"){optionsEnded=true;continue;}
           if(offset === 0 && event.testExpression?.pathIndices.has(index)){
             checkPath(argument,words[index]!.source.raw,projectedCwd,effect);
             continue;
           }
-          if(projectedSlots.nonPathIndices.has(index))continue;
           for(const path of operandPaths(argument,!optionsEnded,verb))checkPath(path,words[index]!.source.raw,projectedCwd,effect);
         }
         for(const path of projectedSlots.extraCandidates)checkPath(path.value,words[path.index]!.source.raw,projectedCwd,effect);
@@ -1213,8 +1235,12 @@ function operandPaths(value: string, option: boolean, verb: string): string[] {
   if (option && value.startsWith("-") && value.length > 1) {
     const equals = value.indexOf("=");
     if (value.startsWith("--") && equals > 0) return [value.slice(equals + 1)];
-    const glued = /^-[A-Za-z]+?((?:[A-Za-z]:|[=\\/~.]).*)$/.exec(value);
-    return glued ? [glued[1]!] : [];
+    // Known value options are consumed by the argv classifier before this scan.
+    // With unknown arity, any option letter could own the remaining suffix.
+    // Check every possible nonempty value through the normal path gate; this
+    // grants no data exemption and can only add refusals for candidate paths.
+    // Never guess a suffix inside a value whose option contract is known.
+    return value.startsWith("--") ? [] : Array.from({ length: value.length - 2 }, (_, index) => value.slice(index + 2));
   }
   if (["awk", "gawk", "mawk", "nawk"].includes(verb)) {
     const equals = value.indexOf("=");
