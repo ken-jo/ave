@@ -1997,7 +1997,8 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   신뢰 설정 `upstreamProxy.resolvesNames` 가 없는 한 사유와 함께 거절한다.
   상위 프록시의 출처(owner 결정 2026-10-20)는 main 소유 설정 `upstreamProxy`
   (설정 → 권한 → OS 도구 샌드박스, permissions `upstreamProxySet` 채널로만
-  기록, `settings:update` 는 거절, 수동 자격 증명은 비밀 저장소)다. 기본값
+  기록, `settings:update` 는 거절, 수동 자격 증명은 비밀 저장소에 프록시의
+  `scheme://host:port` 에 묶어 두어 그곳에만 보내고, URL 이 다른 origin 으로 바뀌면 알림과 함께 삭제)다. 기본값
   "시스템 설정 사용"은 앱 프로세스의 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/
   `NO_PROXY`(대소문자, curl 순서)가 있으면 그것을, 없으면 Chromium
   `session.resolveProxy`(OS 설정·PAC·WPAD)를 따른다. PAC 는 목적지마다 다른

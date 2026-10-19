@@ -1816,14 +1816,38 @@ describe("upstream proxy in Settings", () => {
     });
     expect(JSON.stringify(result)).not.toMatch(/alice|p%40ss|p@ss/u);
     expect(service.set).toHaveBeenCalledWith("upstreamProxy", { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: ".lan, 10.0.0.0/8", resolvesNames: false });
-    expect(JSON.parse(secrets.get("upstreamProxy.manualCredentials")!)).toEqual({ username: "alice", password: "p@ss" });
+    expect(JSON.parse(secrets.get("upstreamProxy.manualCredentials")!)).toEqual({ username: "alice", password: "p@ss", origin: "http://proxy.test:3128" });
     const audit = JSON.stringify((deps.auditLogger.log as ReturnType<typeof vi.fn>).mock.calls);
     expect(audit).toContain("[upstream-proxy:set] mode=manual manual=http://proxy.test:3128 credentials=replaced bypassEntries=2 resolvesNames=false");
     expect(audit).not.toMatch(/alice|p@ss/u);
-    // A later URL without credentials keeps them; clearCredentials removes them.
-    await invoke(PERMISSIONS.upstreamProxySet, { manualUrl: "https://other.test:8443", intent: USER_INTENT });
-    expect(secrets.has("upstreamProxy.manualCredentials")).toBe(true);
+    // The same origin spelled again (and other changes) keeps them; clearCredentials removes them.
+    expect(await invoke(PERMISSIONS.upstreamProxySet, { manualUrl: "http://PROXY.test:3128", bypass: "", intent: USER_INTENT }))
+      .toMatchObject({ ok: true, view: { hasCredentials: true } });
     expect(await invoke(PERMISSIONS.upstreamProxySet, { clearCredentials: true, intent: USER_INTENT })).toMatchObject({ ok: true, view: { hasCredentials: false } });
+    expect(secrets.has("upstreamProxy.manualCredentials")).toBe(false);
+  });
+
+  it("removes stored credentials when the manual proxy's host, port or scheme changes, and says so", async () => {
+    for (const changed of ["http://other.test:3128", "http://proxy.test:8080", "https://proxy.test:3128", ""]) {
+      const { secrets, deps } = await setupUpstream();
+      await invoke(PERMISSIONS.upstreamProxySet, { mode: "manual", manualUrl: "http://alice:pw@proxy.test:3128", intent: USER_INTENT });
+      expect(secrets.has("upstreamProxy.manualCredentials")).toBe(true);
+      const result = await invoke(PERMISSIONS.upstreamProxySet, { mode: changed === "" ? "system" : "manual", manualUrl: changed, intent: USER_INTENT });
+      expect(result, changed).toMatchObject({ ok: true, credentialsRemoved: true, view: { hasCredentials: false } });
+      expect(secrets.has("upstreamProxy.manualCredentials"), changed).toBe(false);
+      expect(JSON.stringify((deps.auditLogger.log as ReturnType<typeof vi.fn>).mock.calls)).toContain("credentials=removed");
+    }
+  });
+
+  it("treats a stored entry without its origin, or bound to another proxy, as no credentials", async () => {
+    const { secrets } = await setupUpstream({ mode: "manual", manualUrl: "http://proxy.test:3128" });
+    secrets.set("upstreamProxy.manualCredentials", JSON.stringify({ username: "u", password: "p" }));
+    expect(await invoke(PERMISSIONS.upstreamProxyGet)).toMatchObject({ hasCredentials: false, diagnostic: { routes: [{ kind: "http", endpoint: "proxy.test:3128" }] } });
+    secrets.set("upstreamProxy.manualCredentials", JSON.stringify({ username: "u", password: "p", origin: "http://elsewhere.test:3128" }));
+    expect(await invoke(PERMISSIONS.upstreamProxyGet)).toMatchObject({ hasCredentials: false, diagnostic: { routes: [{ kind: "http", endpoint: "proxy.test:3128" }] } });
+    // The next save removes the stale entry.
+    expect(await invoke(PERMISSIONS.upstreamProxySet, { resolvesNames: true, intent: USER_INTENT })).toMatchObject({ ok: true, credentialsRemoved: true });
+    expect(secrets.has("upstreamProxy.manualCredentials")).toBe(false);
   });
 
   it("toggles the trusted resolves-names opt-in and the mode", async () => {

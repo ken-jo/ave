@@ -102,6 +102,23 @@ function endpointOf(host: string, port: number): string {
   return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
 }
 
+/**
+ * A parsed proxy's origin, `scheme://host:port` (IPv6 bracketed, the port
+ * always written): the form Settings stores the manual URL in, and what
+ * stored credentials are bound to.
+ */
+export function proxyOrigin(proxy: { scheme: "http" | "https"; host: string; port: number }): string {
+  return `${proxy.scheme}://${endpointOf(proxy.host, proxy.port)}`;
+}
+
+/** The manual proxy's stored credentials, bound to the origin they were entered for. */
+export interface StoredProxyCredentials {
+  username: string;
+  password: string;
+  /** `scheme://host:port` of the manual proxy they were saved with; sent only to that proxy. */
+  origin: string;
+}
+
 /** The variable names that make "Use system settings" mean the environment. */
 const ENV_PROXY_VARS = ["https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"] as const;
 
@@ -158,8 +175,8 @@ export interface UpstreamRouteAnswer {
 export interface UpstreamProxyRouterDeps {
   /** The live `upstreamProxy` setting (read per decision, so a change applies without restart). */
   settings: () => UpstreamProxySettings;
-  /** The manual proxy's stored credentials, or null. */
-  manualCredentials: () => { username: string; password: string } | null;
+  /** The manual proxy's stored credentials, or null. Sent only when their origin is the manual proxy's. */
+  manualCredentials: () => StoredProxyCredentials | null;
   /** The app process's environment. */
   env: () => NodeJS.ProcessEnv;
   /** Chromium's PAC resolution (`session.resolveProxy`); absent on a host without one. */
@@ -227,7 +244,13 @@ export async function upstreamRoutesFor(
           : "the upstream proxy URL in Settings is not usable",
       });
     }
-    return answer("manual", [proxyRoute(parsed.scheme, parsed.host, parsed.port, deps.manualCredentials() ?? undefined, settings.resolvesNames)]);
+    // Credentials go only to the proxy they were entered for: a changed host,
+    // port or scheme never receives the old one's password.
+    const stored = deps.manualCredentials();
+    const auth = stored !== null && stored.origin === proxyOrigin(parsed)
+      ? { username: stored.username, password: stored.password }
+      : undefined;
+    return answer("manual", [proxyRoute(parsed.scheme, parsed.host, parsed.port, auth, settings.resolvesNames)]);
   }
 
   const env = deps.env();
@@ -365,14 +388,18 @@ export function upstreamProxyDeps(
   };
 }
 
-/** Parse the stored manual credentials (`{ username, password }` JSON), or null. */
-export function parseStoredProxyCredentials(stored: string | null): { username: string; password: string } | null {
+/**
+ * Parse the stored manual credentials (`{ username, password, origin }`
+ * JSON), or null. An entry without its origin is treated as absent: it is
+ * never sent anywhere.
+ */
+export function parseStoredProxyCredentials(stored: string | null): StoredProxyCredentials | null {
   if (stored === null) return null;
   try {
-    const value = JSON.parse(stored) as unknown;
-    if (value && typeof value === "object" && typeof (value as { username?: unknown }).username === "string"
-      && typeof (value as { password?: unknown }).password === "string") {
-      return { username: (value as { username: string }).username, password: (value as { password: string }).password };
+    const value = JSON.parse(stored) as Partial<Record<keyof StoredProxyCredentials, unknown>> | null;
+    if (value && typeof value === "object" && typeof value.username === "string"
+      && typeof value.password === "string" && typeof value.origin === "string" && value.origin.length > 0) {
+      return { username: value.username, password: value.password, origin: value.origin };
     }
   } catch {
     // A corrupt entry is treated as absent; Settings shows no stored credentials.

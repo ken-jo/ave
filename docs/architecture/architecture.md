@@ -1431,7 +1431,8 @@ Where the upstream comes from (owner decision 2026-10-20) is the main-owned
 `upstreamProxy` setting (Settings → Permissions → OS Tool Sandbox; written
 only through the permissions `upstreamProxySet` channel, refused by
 `settings:update`, absent from the renderer snapshot; manual credentials in
-the secret store). "Use system settings" (the default) takes the app
+the secret store, bound to the proxy's `scheme://host:port`: sent only to it,
+and removed, with a notice, when the URL changes to another origin). "Use system settings" (the default) takes the app
 process's own `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY` (either case,
 curl's order) when any is set, and otherwise the OS configuration through
 Chromium's `session.resolveProxy` (macOS system settings, Windows

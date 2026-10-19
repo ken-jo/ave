@@ -1622,7 +1622,8 @@ export type AvePermissionApi = {
   upstreamProxyGet: () => Promise<UpstreamProxyView | IpcErrorResult>;
   /** MUTATING: change the upstream proxy setting; resolves to the new view or a refusal. */
   upstreamProxySet: (patch: UpstreamProxyPatch) => Promise<
-    | { ok: true; view: UpstreamProxyView }
+    /** `credentialsRemoved`: the stored credentials belonged to the previous proxy and were removed. */
+    | { ok: true; view: UpstreamProxyView; credentialsRemoved?: true }
     | { ok: false; error: string; message: string }
     | IpcErrorResult
   >;

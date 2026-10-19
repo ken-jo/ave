@@ -107,7 +107,13 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
       }
       const next = (result as { view?: unknown }).view;
       if (isView(next)) adopt(next);
-      if (successNotice !== undefined) setNotice(successNotice);
+      // Credentials bound to the previous proxy are removed by main; say so
+      // whatever was saved, so the person is not surprised by a 407 later.
+      if ((result as { credentialsRemoved?: unknown }).credentialsRemoved === true) {
+        setNotice(translate("upstreamProxySettings.credentialsRemoved"));
+      } else if (successNotice !== undefined) {
+        setNotice(successNotice);
+      }
     } catch (err) {
       setError(translate("upstreamProxySettings.saveFailed", { message: errorMessage(err) }));
     } finally {

@@ -75,6 +75,21 @@ describe("UpstreamProxySettings", () => {
       .toBe("Could not change the upstream proxy: Enter the upstream proxy as http://host:port or https://host:port.");
   });
 
+  it("says when main removed credentials that belonged to the previous proxy", async () => {
+    const writer = vi.fn(async () => ({
+      ok: true,
+      credentialsRemoved: true,
+      view: view({ settings: { mode: "manual", manualUrl: "http://other.test:3128", bypass: "", resolvesNames: false }, hasCredentials: false }),
+    }));
+    render(<UpstreamProxySettings reader={async () => view({ settings: { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: "", resolvesNames: false }, hasCredentials: true })} writer={writer} />);
+    await screen.findByTestId("upstream-proxy-manual");
+    fireEvent.change(screen.getByTestId("upstream-proxy-url"), { target: { value: "http://other.test:3128" } });
+    fireEvent.click(screen.getByTestId("upstream-proxy-save"));
+    expect((await screen.findByTestId("upstream-proxy-notice")).textContent)
+      .toBe("Saved. The stored user name and password belonged to the previous proxy and were removed; enter them in the URL again if this proxy needs them.");
+    expect(screen.queryByTestId("upstream-proxy-credentials")).toBeNull();
+  });
+
   it("shows why connections would be refused", async () => {
     render(<UpstreamProxySettings
       reader={async () => view({ diagnostic: { url: "https://example.com/", source: "environment", envVar: "ALL_PROXY", routes: [], skipped: [], refusal: "the proxy in ALL_PROXY is a SOCKS proxy" } })}

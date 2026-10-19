@@ -441,11 +441,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // handlers are its only reader and writer for the renderer, and neither
   // ever returns a credential value (only whether one is stored).
   const upstreamProxyView = async (): Promise<UpstreamProxyView> => {
-    const { describeUpstreamProxy, upstreamProxyDeps } = await import("../../permissions/upstream-proxy.js");
+    const { describeUpstreamProxy, upstreamProxyDeps, parseStoredProxyCredentials } = await import("../../permissions/upstream-proxy.js");
     const routerDeps = upstreamProxyDeps(deps.settingsService, (url) => session.defaultSession.resolveProxy(url));
+    const settings = deps.settingsService.get("upstreamProxy");
+    const stored = parseStoredProxyCredentials(deps.settingsService.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET));
     return {
-      settings: deps.settingsService.get("upstreamProxy"),
-      hasCredentials: deps.settingsService.hasStoredSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET),
+      settings,
+      // Only credentials that would be sent count: bound to the manual proxy as it is now.
+      hasCredentials: stored !== null && stored.origin === settings.manualUrl,
       diagnostic: await describeUpstreamProxy(routerDeps, UPSTREAM_PROXY_DIAGNOSTIC_URL),
     };
   };
@@ -460,7 +463,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
-    const { parseProxyUrl } = await import("../../permissions/upstream-proxy.js");
+    const { parseProxyUrl, proxyOrigin, parseStoredProxyCredentials } = await import("../../permissions/upstream-proxy.js");
     const { normalizeUpstreamProxy } = await import("../../data/settings-normalization.js");
     const next = deps.settingsService.get("upstreamProxy");
     if (body.mode !== undefined) {
@@ -495,17 +498,31 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
             ? { ok: false, error: "upstream-proxy-socks-unsupported", message: "upstream proxy: SOCKS proxies cannot be used as the sandbox's upstream" }
             : { ok: false, error: "invalid-upstream-proxy-url", message: "upstream proxy: enter http://host:port or https://host:port" };
         }
-        next.manualUrl = `${parsed.scheme}://${parsed.host.includes(":") ? `[${parsed.host}]` : parsed.host}:${parsed.port}`;
+        next.manualUrl = proxyOrigin(parsed);
         credentials = parsed.auth;
       }
     }
     if (next.mode === "manual" && next.manualUrl === "") {
       return { ok: false, error: "upstream-proxy-url-required", message: "upstream proxy: manual mode needs a proxy URL" };
     }
+    // Stored credentials are bound to the manual proxy's origin: entered with
+    // a URL, they are saved for that URL's origin; a URL change to another
+    // host, port or scheme removes them (and says so), so the old proxy's
+    // password is never sent to the new one.
+    let credentialsChange: "replaced" | "cleared" | "removed" | "unchanged" = "unchanged";
     if (credentials !== undefined) {
-      await deps.settingsService.setSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET, JSON.stringify(credentials));
+      await deps.settingsService.setSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET, JSON.stringify({ ...credentials, origin: next.manualUrl }));
+      credentialsChange = "replaced";
     } else if (body.clearCredentials === true) {
       await deps.settingsService.deleteSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+      credentialsChange = "cleared";
+    } else {
+      const storedSecret = deps.settingsService.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+      const stored = parseStoredProxyCredentials(storedSecret);
+      if (storedSecret !== null && (stored === null || stored.origin !== next.manualUrl)) {
+        await deps.settingsService.deleteSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+        credentialsChange = "removed";
+      }
     }
     // `set` notifies the boot router, which drops its cached routes.
     const stored = normalizeUpstreamProxy(next);
@@ -515,11 +532,15 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       sessionId: "settings",
       type: "approval",
       output: `[upstream-proxy:set] mode=${stored.mode} manual=${stored.manualUrl === "" ? "-" : stored.manualUrl}`
-        + ` credentials=${credentials !== undefined ? "replaced" : body.clearCredentials === true ? "cleared" : "unchanged"}`
+        + ` credentials=${credentialsChange}`
         + ` bypassEntries=${stored.bypass === "" ? 0 : stored.bypass.split(",").filter((entry) => entry.trim() !== "").length}`
         + ` resolvesNames=${stored.resolvesNames}`,
     });
-    return { ok: true as const, view: await upstreamProxyView() };
+    return {
+      ok: true as const,
+      view: await upstreamProxyView(),
+      ...(credentialsChange === "removed" ? { credentialsRemoved: true as const } : {}),
+    };
   });
 
   // MUTATING (sender-frame-guarded + user-keyboard intent) — the SINGLE
