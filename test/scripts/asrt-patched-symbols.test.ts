@@ -172,7 +172,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(filter).toMatch(/if \(lane\.ended\)\s+return denied\('invocation ended'\);/u);
     expect(filter).toMatch(/if \(encodedCommand !== lane\.encodedKey\)/u);
     expect(filter).toMatch(/localDestinationReason\(host, port\)/u);
-    expect(filter).toMatch(/const resolved = await resolveDestination\(host, port\);/u);
+    expect(filter).toMatch(/const resolved = await planDestination\(host, port, plainHttp === true\);/u);
     expect(filter).toMatch(/filterNetworkRequest\(port, host, sandboxAskCallback, lane\.encodedKey, explain, 'listener', resolved\.addresses, resolved\.viaUpstream\)/u);
     expect(filter).toMatch(/pinDestination\(socket, host, port, resolved\);/u);
     const close = functionBody(manager, /\nfunction closeInvocationListener\(/u);
@@ -702,22 +702,23 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     try {
       const setup = await withUpstream(test, { http: url, https: url }, true);
       if (setup === undefined) return;
-      // The check (upstreamForNames: http and https URLs) sees a remote
-      // address; the dial's lookup, the next call, gets this host's loopback.
+      // The check (planDestination: the one route this destination takes)
+      // sees a remote address; the dial's lookup, the next call, gets this
+      // host's loopback.
       let calls = 0;
       setDestinationResolverForTesting(async (name) => {
         if (name !== "proxy.rebind.test") return corpResolver(name);
         calls += 1;
-        return [{ address: calls <= 2 ? "198.51.100.50" : "127.0.0.1", family: 4 }];
+        return [{ address: calls <= 1 ? "198.51.100.50" : "127.0.0.1", family: 4 }];
       });
       try {
         expect(await connectThrough(setup.front, setup.proxy, setup.name, "intranet.corp.test:443"))
           .toMatch(/^HTTP\/1\.1 403 .*upstream proxy on this host resolves names itself/u);
-        expect(calls).toBe(3);
+        expect(calls).toBe(2);
         calls = 0;
         expect(await plainHttpThrough(setup.front, setup.proxy, setup.name, "http://wiki.corp.test/"))
           .toMatch(/^HTTP\/1\.1 403/u);
-        expect(calls).toBe(3);
+        expect(calls).toBe(2);
         // Nothing was written to the proxy the dial reached.
         expect(upstream.connects).toEqual([]);
         expect(setup.asked.map((a) => a.context?.resolution)).toEqual(["upstream", "upstream"]);
@@ -890,5 +891,252 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       await SandboxManager.reset();
       await upstream.close();
     }
+  });
+
+  /**
+   * An upstream that records each request's first line and its
+   * Proxy-Authorization header, and answers `status` to every request
+   * (`200` keeps a CONNECT tunnel open).
+   */
+  async function recordingUpstream(status: 200 | 407): Promise<{ port: number; requests: Array<{ line: string; authorization: string | undefined }>; close: () => Promise<void> }> {
+    const { createServer } = await import("node:net");
+    const requests: Array<{ line: string; authorization: string | undefined }> = [];
+    const sockets = new Set<import("node:net").Socket>();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      let head = "";
+      const onData = (chunk: Buffer): void => {
+        head += chunk.toString("latin1");
+        if (!head.includes("\r\n\r\n")) return;
+        socket.removeListener("data", onData);
+        const lines = head.split("\r\n");
+        const authorization = lines.find((l) => /^proxy-authorization:/iu.test(l))?.replace(/^[^:]+:\s*/u, "");
+        requests.push({ line: lines[0] ?? "", authorization });
+        if (status === 407) socket.end("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"up\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        else if (!(lines[0] ?? "").startsWith("CONNECT ")) socket.end("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        else socket.write("HTTP/1.1 200 Connection established\r\n\r\n");
+      };
+      socket.on("data", onData);
+      socket.on("error", () => {});
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as import("node:net").AddressInfo).port;
+    return {
+      port,
+      requests,
+      close: async () => {
+        for (const socket of sockets) socket.destroy();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      },
+    };
+  }
+
+  /** A loopback port nothing listens on (bound, then released). */
+  async function deadPort(): Promise<number> {
+    const { createServer } = await import("node:net");
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as import("node:net").AddressInfo).port;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    return port;
+  }
+
+  type Router = Parameters<typeof import("@anthropic-ai/sandbox-runtime").SandboxManager.setParentProxyRouter>[0];
+
+  /** Ave's production shape: no static upstream, the route hook installed, every ask allowed. */
+  async function withRouter(test: { skip: (note: string) => void }, router: Router) {
+    const setup = await withUpstream(test, { http: "", https: "" }, true);
+    if (setup === undefined) return undefined;
+    setup.SandboxManager.setParentProxyRouter(router);
+    return setup;
+  }
+
+  it("routes each destination by the router's answer, asked once per decision with the canonical host, port and scheme", async (test) => {
+    const first = await recordingUpstream(200);
+    const second = await recordingUpstream(200);
+    const calls: Array<{ host: string; port: number; scheme: string }> = [];
+    try {
+      const setup = await withRouter(test, async (destination) => {
+        calls.push(destination);
+        const port = destination.host === "a.example.invalid" ? first.port : second.port;
+        return { routes: [{ kind: "http", host: "127.0.0.1", port }] };
+      });
+      if (setup === undefined) return;
+      try {
+        expect(await connectThrough(setup.front, setup.proxy, setup.name, "A.Example.Invalid.:443")).toMatch(/^HTTP\/1\.1 200/u);
+        expect(await connectThrough(setup.front, setup.proxy, setup.name, "b.example.invalid:8443")).toMatch(/^HTTP\/1\.1 200/u);
+        expect(await plainHttpThrough(setup.front, setup.proxy, setup.name, `http://${TEST_ADDRESS}/x`)).toMatch(/^HTTP\/1\.1 200/u);
+        expect(calls).toEqual([
+          { host: "a.example.invalid", port: 443, scheme: "https" },
+          { host: "b.example.invalid", port: 8443, scheme: "https" },
+          { host: TEST_ADDRESS, port: 80, scheme: "http" },
+        ]);
+        // Pinned per destination: each name went to its own upstream as the vetted literal.
+        expect(first.requests.map((r) => r.line)).toEqual([`CONNECT ${TEST_ADDRESS}:443 HTTP/1.1`]);
+        expect(second.requests.map((r) => r.line)).toEqual([
+          `CONNECT ${TEST_ADDRESS}:8443 HTTP/1.1`,
+          `GET http://${TEST_ADDRESS}/x HTTP/1.1`,
+        ]);
+        expect(setup.asked.map((a) => a.context?.resolution)).toEqual(["pinned", "pinned", "pinned"]);
+      } finally {
+        await setup.SandboxManager.reset();
+      }
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  });
+
+  it("tries the routes in order: a proxy that refuses the connection hands over to the next", async (test) => {
+    const good = await recordingUpstream(200);
+    const dead = await deadPort();
+    try {
+      const setup = await withRouter(test, async () => ({
+        routes: [{ kind: "http", host: "127.0.0.1", port: dead }, { kind: "http", host: "127.0.0.1", port: good.port }],
+      }));
+      if (setup === undefined) return;
+      try {
+        expect(await connectThrough(setup.front, setup.proxy, setup.name, "fallback.example.invalid:443")).toMatch(/^HTTP\/1\.1 200/u);
+        expect(await plainHttpThrough(setup.front, setup.proxy, setup.name, `http://${TEST_ADDRESS}/`)).toMatch(/^HTTP\/1\.1 200/u);
+        expect(good.requests.map((r) => r.line)).toEqual([`CONNECT ${TEST_ADDRESS}:443 HTTP/1.1`, `GET http://${TEST_ADDRESS}/ HTTP/1.1`]);
+      } finally {
+        await setup.SandboxManager.reset();
+      }
+    } finally {
+      await good.close();
+    }
+  });
+
+  it("refuses with 'upstream proxy requires authentication' on a 407, sends Basic credentials, and does not fall back", async (test) => {
+    const wantsAuth = await recordingUpstream(407);
+    const next = await recordingUpstream(200);
+    try {
+      const setup = await withRouter(test, async () => ({
+        routes: [
+          { kind: "http", host: "127.0.0.1", port: wantsAuth.port, auth: { username: "user", password: "p@ss:word" } },
+          { kind: "http", host: "127.0.0.1", port: next.port },
+        ],
+      }));
+      if (setup === undefined) return;
+      const { getSandboxViolationStore } = setup.SandboxManager;
+      try {
+        expect(await connectThrough(setup.front, setup.proxy, setup.name, "auth.example.invalid:443"))
+          .toBe("HTTP/1.1 403 upstream proxy requires authentication");
+        expect(await plainHttpThrough(setup.front, setup.proxy, setup.name, `http://${TEST_ADDRESS}/`)).toMatch(/^HTTP\/1\.1 403/u);
+        const basic = `Basic ${Buffer.from("user:p@ss:word").toString("base64")}`;
+        expect(wantsAuth.requests).toEqual([
+          { line: `CONNECT ${TEST_ADDRESS}:443 HTTP/1.1`, authorization: basic },
+          { line: `GET http://${TEST_ADDRESS}/ HTTP/1.1`, authorization: basic },
+        ]);
+        expect(next.requests).toEqual([]);
+        // The refusal is recorded with the reason, never the credential.
+        const recorded = JSON.stringify(getSandboxViolationStore().getViolations());
+        expect(recorded).toContain("upstream proxy requires authentication");
+        expect(recorded).not.toContain("p@ss");
+        expect(recorded).not.toContain(Buffer.from("user:p@ss:word").toString("base64"));
+      } finally {
+        await setup.SandboxManager.reset();
+      }
+    } finally {
+      await wantsAuth.close();
+      await next.close();
+    }
+  });
+
+  it("judges each route for a name this host cannot resolve: an untrusted proxy on this host is skipped, a trusted one after it is used", async (test) => {
+    const untrusted = await recordingUpstream(200);
+    const trusted = await recordingUpstream(200);
+    try {
+      const setup = await withRouter(test, async () => ({
+        routes: [
+          { kind: "direct" },
+          { kind: "http", host: "127.0.0.1", port: untrusted.port },
+          { kind: "http", host: "127.0.0.1", port: trusted.port, resolvesNames: true },
+        ],
+      }));
+      if (setup === undefined) return;
+      try {
+        expect(await connectThrough(setup.front, setup.proxy, setup.name, "intranet.corp.test:443")).toMatch(/^HTTP\/1\.1 200/u);
+        expect(untrusted.requests).toEqual([]);
+        expect(trusted.requests.map((r) => r.line)).toEqual(["CONNECT intranet.corp.test:443 HTTP/1.1"]);
+        expect(setup.asked.map((a) => [a.host, a.context?.resolution, a.context?.addresses])).toEqual([["intranet.corp.test", "upstream", []]]);
+      } finally {
+        await setup.SandboxManager.reset();
+      }
+      // Without the trusted route nothing can carry the name: refused with the reason, nobody asked.
+      const refused = await withRouter(test, async () => ({ routes: [{ kind: "direct" }, { kind: "http", host: "127.0.0.1", port: untrusted.port }] }));
+      if (refused === undefined) return;
+      try {
+        expect(await connectThrough(refused.front, refused.proxy, refused.name, "intranet.corp.test:443"))
+          .toMatch(/^HTTP\/1\.1 403 .*upstream proxy on this host resolves names itself/u);
+        expect(refused.asked).toEqual([]);
+        expect(untrusted.requests).toEqual([]);
+      } finally {
+        await refused.SandboxManager.reset();
+      }
+    } finally {
+      await untrusted.close();
+      await trusted.close();
+    }
+  });
+
+  it("drops a route that names one of the proxy's own listeners, and refuses a plain-HTTP name through a proxy route", async (test) => {
+    let listenerPort = 0;
+    const setup = await withRouter(test, async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: listenerPort }] }));
+    if (setup === undefined) return;
+    try {
+      listenerPort = setup.SandboxManager.getProxyPort()!;
+      expect(listenerPort).toBeTypeOf("number");
+      expect(await connectThrough(setup.front, setup.proxy, setup.name, "hop.example.invalid:443")).toBe("HTTP/1.1 403 sandbox proxy listener");
+      expect(await plainHttpThrough(setup.front, setup.proxy, setup.name, "http://hop.example.invalid/")).toMatch(/^HTTP\/1\.1 403/u);
+      expect(setup.asked).toEqual([]);
+    } finally {
+      await setup.SandboxManager.reset();
+    }
+  });
+
+  it("refuses when the router throws, answers a malformed route or no route (with its reason); never asks it for loopback", async (test) => {
+    let answer: () => Promise<Awaited<ReturnType<NonNullable<Router>>>> = async () => { throw new Error("pac failed"); };
+    let calls = 0;
+    const setup = await withRouter(test, async () => {
+      calls += 1;
+      return answer();
+    });
+    if (setup === undefined) return;
+    try {
+      expect(await connectThrough(setup.front, setup.proxy, setup.name, "x.example.invalid:443")).toBe("HTTP/1.1 403 upstream proxy lookup failed");
+      answer = async () => ({ routes: [{ kind: "socks5" } as never] });
+      expect(await connectThrough(setup.front, setup.proxy, setup.name, "x.example.invalid:443")).toBe("HTTP/1.1 403 upstream proxy lookup answered a malformed route");
+      answer = async () => ({ routes: [], reason: "the system proxy offers only SOCKS" });
+      expect(await connectThrough(setup.front, setup.proxy, setup.name, "x.example.invalid:443")).toBe("HTTP/1.1 403 the system proxy offers only SOCKS");
+      answer = async () => ({ routes: [] });
+      expect(await connectThrough(setup.front, setup.proxy, setup.name, "x.example.invalid:443")).toBe("HTTP/1.1 403 no usable route to the destination");
+      expect(calls).toBe(4);
+      expect(setup.asked).toEqual([]);
+      // Loopback is always direct: the router is not asked (the ask callback is).
+      const local = await recordingUpstream(200);
+      try {
+        expect(await plainHttpThrough(setup.front, setup.proxy, setup.name, `http://127.0.0.1:${local.port}/`)).toMatch(/^HTTP\/1\.1 200/u);
+        expect(local.requests.map((r) => r.line)).toEqual(["GET / HTTP/1.1"]);
+      } finally {
+        await local.close();
+      }
+      expect(calls).toBe(4);
+    } finally {
+      await setup.SandboxManager.reset();
+    }
+  });
+
+  it("exports setParentProxyRouter on SandboxManager, typed, and clears it on reset", () => {
+    const manager = readInstalled("dist/sandbox/sandbox-manager.js");
+    expect(manager).toMatch(/\n\s+closeInvocationConnections,\n\s+setParentProxyRouter,\n/u);
+    expect(functionBody(manager, /\nasync function reset\(/u)).toMatch(/parentProxyRouter = undefined;/u);
+    const declarations = readInstalled("dist/sandbox/sandbox-manager.d.ts");
+    expect(declarations).toMatch(/\n\s+setParentProxyRouter\(router: ParentProxyRouter \| undefined\): void;/u);
+    expect(readInstalled("dist/index.d.ts")).toMatch(/ParentProxyRoute, ParentProxyRouter \} from '\.\/sandbox\/sandbox-manager\.js';/u);
+    // The proxies dial through the pinned routes, not the static parentProxy.
+    expect(readInstalled("dist/sandbox/http-proxy.js")).toMatch(/upstream = await options\.openRoute\(socket, hostname, port, auth\.encodedCommand\);/u);
+    expect(readInstalled("dist/sandbox/socks-proxy.js")).toMatch(/options\.openRoute\(conn\.socket, host, port, encodedCommand\)/u);
   });
 });
