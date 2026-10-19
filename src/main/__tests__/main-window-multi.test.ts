@@ -4,6 +4,7 @@
  * the app document staying the only thing a main window may navigate to.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 
 type Listener = (...args: unknown[]) => void;
 
@@ -196,7 +197,7 @@ describe("main windows", () => {
     first.emit("focus");
     terminalOwners.set("terminal:0a1b2c3d-1", second.id);
     const gate = new ApprovalGate(promptSurface());
-    const egressAsk = (id: string, tabId: string) => ({
+    const egressAsk = (id: string, tabId: string): ApprovalRequestInput => ({
       id,
       category: "tool" as const,
       kind: "egress-host" as const,
@@ -204,11 +205,11 @@ describe("main windows", () => {
       args: { host: "github.com", port: 443, tabId },
       reason: "terminal egress",
       createdAt: Date.now(),
-      allowedChoices: ["allow-once" as const, "deny-once" as const],
+      allowedChoices: ["allow-once", "deny-once"],
       durableApprovalRecordAllowed: false,
       forceExplicit: true,
       isReadOnly: false,
-      egressHost: { host: "github.com", port: 443, scopes: ["once" as const, "tab" as const], network: "public" as const, terminalTabId: tabId },
+      egressHost: { host: "github.com", port: 443, scopes: ["once", "tab"], network: "public", terminalTabId: tabId },
     });
     try {
       const owned = gate.requestAndWait(egressAsk("egress-owned", "terminal:0a1b2c3d-1"));
