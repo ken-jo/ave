@@ -9,6 +9,7 @@ import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import type { SandboxGateAction, SandboxGateReason } from "./sandbox-gate.js";
 import {
+  canRetryWindowsAsProxyOnly,
   mxcShellCapability,
   planWindowsSandbox,
   windowsProxyOnlyCapability,
@@ -164,6 +165,9 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
         ? await detectWindowsBootInputs(shellRequested, workerRequested, deps.errors.length === 0)
         : undefined;
       const windowsPlan = windowsInputs === undefined ? undefined : planWindowsSandbox(windowsInputs);
+      // What ASRT actually started as: the plan, or `proxy-only` after a
+      // failed srt-win start (see canRetryWindowsAsProxyOnly).
+      let windowsStart = windowsPlan?.start;
       /**
        * Record what carries Windows shells and extensions for ASRT started as
        * `started` (`failed`: init threw after all). While MXC is `checking`,
@@ -341,16 +345,34 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
               capability: detectSandboxCapability,
             });
           }
-          await initializeAsrtSandbox({
-            allowedDomains: unionAllowedDomains,
-            strictAllowlist: true,
-            // Thread the REAL Electron userData path so the deny-list is exact
-            // (handles --user-data-dir, XDG_CONFIG_HOME, future renames).
-            // Safe: boot.ts is main-process only and already imports electron.
-            userDataDir: ctx.host.userDataPath,
-            // Windows with MXC and no srt-win: run the proxy only.
-            ...(windowsPlan?.start === "proxy-only" ? { windows: { externalConfinement: true } } : {}),
-          });
+          const initializeAs = (start: typeof windowsStart) =>
+            initializeAsrtSandbox({
+              allowedDomains: unionAllowedDomains,
+              strictAllowlist: true,
+              // Thread the REAL Electron userData path so the deny-list is exact
+              // (handles --user-data-dir, XDG_CONFIG_HOME, future renames).
+              // Safe: boot.ts is main-process only and already imports electron.
+              userDataDir: ctx.host.userDataPath,
+              // Windows with MXC and no srt-win: run the proxy only.
+              ...(start === "proxy-only" ? { windows: { externalConfinement: true } } : {}),
+            });
+          try {
+            await initializeAs(windowsStart);
+          } catch (srtWinErr) {
+            // srt-win passed its dependency check but its session setup threw
+            // (ASRT clears its config before starting the proxy, so a second
+            // initialize is clean). MXC shells need only the proxy.
+            if (windowsInputs === undefined || windowsStart === undefined || !canRetryWindowsAsProxyOnly(windowsInputs, windowsStart)) {
+              throw srtWinErr;
+            }
+            log.warn(
+              "boot: the Windows sandbox (srt-win) failed to start — extensions run with NO OS isolation this session; " +
+                "retrying ASRT as the proxy only so agent shells can run in Microsoft Execution Containers. " +
+                `Cause: ${errorMessage(srtWinErr)}`,
+            );
+            windowsStart = "proxy-only";
+            await initializeAs(windowsStart);
+          }
           // Publish the active capability to the SOT now that ASRT is
           // genuinely initialized (gate ON, deps present). detectSandboxCapability
           // + the reviewer/UI consumers read this; the reviewer's per-category
@@ -367,7 +389,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             process.platform === "darwin"
               ? "Seatbelt"
               : process.platform === "win32"
-                ? windowsPlan?.start === "proxy-only" ? "proxy only, shells in MXC" : "srt-win"
+                ? windowsStart === "proxy-only" ? "proxy only, shells in MXC" : "srt-win"
                 : "bwrap";
           const confinementKind = process.platform === "win32" ? "partial" : "full";
           const confines = sandboxConfinementForPlatform(
@@ -379,7 +401,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
               ? `ASRT (${asrtBackend}) active — filesystem + network contained, process isolation unavailable`
               : `ASRT (${asrtBackend}) active — fs+process+network contained`;
           setActiveSandboxCapability(
-            windowsPlan?.start === "proxy-only"
+            windowsStart === "proxy-only"
               ? windowsProxyOnlyCapability()
               : {
                   kind: "asrt",
@@ -391,9 +413,11 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
                   confines,
                 },
           );
-          if (windowsPlan !== undefined) {
-            recordWindows(windowsPlan.start, false);
-            if (workerRequested && windowsPlan.substrate.extensions === "none") {
+          if (windowsInputs !== undefined && windowsStart !== undefined) {
+            recordWindows(windowsStart, false);
+            const substrate = windowsSubstrateFor(windowsInputs, windowsStart);
+            // A retried srt-win start already warned, with its cause.
+            if (workerRequested && substrate.extensions === "none" && windowsPlan?.start !== "srt-win") {
               log.warn(
                 "boot: extension confinement is ON but the Windows sandbox (srt-win) is NOT ready — " +
                   "plugin workers, plugin children, plugin hooks and MCP stdio servers run with NO OS isolation " +
@@ -403,10 +427,10 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             }
             log.info(
               "boot: Windows sandbox — MXC %s, shells: %s, extensions: %s, shell egress identity: %s",
-              windowsPlan.substrate.mxc.state,
-              windowsPlan.substrate.shells,
-              windowsPlan.substrate.extensions,
-              windowsPlan.substrate.shellEgressIdentity,
+              substrate.mxc.state,
+              substrate.shells,
+              substrate.extensions,
+              substrate.shellEgressIdentity,
             );
           }
           log.info(
@@ -418,7 +442,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             sandboxTempRoot,
           );
           sandboxActive = true;
-          recordGate("activate", decision.reason);
+          recordGate("activate", windowsStart === "proxy-only" ? "activate-windows-mxc-proxy-only" : decision.reason);
         } catch (initErr) {
           // Init FAILURE (initializeAsrtSandbox threw despite deps present) is the
           // SAME "cannot activate" condition as deps-missing — re-decide with
@@ -457,7 +481,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
                 "to make this fail-closed instead.) " +
               `Cause: ${cause}`,
           );
-          recordWindows(windowsPlan?.start ?? "none", true);
+          recordWindows(windowsStart ?? "none", true);
           recordGate("degrade", failureReason, [cause]);
           // sandboxActive stays false: a Linux runtime-probe failure never
           // publishes a verified capability, so UI/reviewer remain kind="none".

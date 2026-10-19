@@ -13,6 +13,10 @@
  * | unavailable                  | yes           | srt-win (as before)      | approved host | srt-win    |
  * | unavailable                  | no            | not started (degrade)    | none          | none       |
  *
+ * An srt-win start that throws (row 1) is retried as the proxy only while MXC
+ * is still a candidate ({@link canRetryWindowsAsProxyOnly}), so a failed
+ * srt-win session setup lands on row 2, not on "neither".
+ *
  * No row falls back silently: each one is recorded for Settings
  * ({@link SandboxWindowsSubstrateInfo}) and logged at boot. Where MXC is
  * unavailable the egress identity is `shared`; the egress ask (PR 4, not yet
@@ -55,9 +59,24 @@ export interface WindowsSandboxPlan {
 }
 
 export function planWindowsSandbox(input: WindowsSandboxPlanInputs): WindowsSandboxPlan {
-  const mxcCandidate = input.mxc.state !== "unavailable" && input.shellRequested;
-  const start: WindowsAsrtStart = input.srtWinReady ? "srt-win" : mxcCandidate ? "proxy-only" : "none";
+  const start: WindowsAsrtStart = input.srtWinReady ? "srt-win" : mxcCandidate(input) ? "proxy-only" : "none";
   return { start, substrate: windowsSubstrateFor(input, start) };
+}
+
+function mxcCandidate(input: WindowsSandboxPlanInputs): boolean {
+  return input.mxc.state !== "unavailable" && input.shellRequested;
+}
+
+/**
+ * Whether an srt-win start that threw may be retried, in the same boot, as the
+ * proxy only. srt-win's dependency check can pass and its session setup still
+ * fail (measured on Windows 26300: `srt-win acl stamp` timed out after 60 s),
+ * and the MXC shells need nothing from srt-win but the ASRT proxy. Without the
+ * retry that host lands on the "neither" row although MXC would carry it. No
+ * shell has run yet at that point, so this is not a mid-session mode change.
+ */
+export function canRetryWindowsAsProxyOnly(input: WindowsSandboxPlanInputs, started: WindowsAsrtStart): boolean {
+  return started === "srt-win" && mxcCandidate(input);
 }
 
 /**

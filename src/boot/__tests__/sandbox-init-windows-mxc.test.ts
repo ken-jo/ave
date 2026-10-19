@@ -185,6 +185,37 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(getHostShellExecutionPlan().substrate).not.toBe("mxc");
   });
 
+  it("retries as the proxy only when srt-win passes its check but fails to start, so shells still run in containers", async () => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    h.initialize
+      .mockRejectedValueOnce(new Error("srt-win acl stamp timed out after 60000ms"))
+      .mockResolvedValueOnce(undefined);
+
+    await initSandboxGate(harness.context(true, true));
+
+    expect(h.initialize).toHaveBeenCalledTimes(2);
+    expect(h.initialize.mock.calls[0]?.[0]).not.toHaveProperty("windows");
+    expect(h.initialize.mock.calls[1]?.[0]).toMatchObject({ windows: { externalConfinement: true } });
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only" });
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" }));
+    expect(detectShellSandboxCapability().confines).toEqual({ filesystem: false, process: false, network: false });
+    expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("srt-win acl stamp timed out"));
+  });
+
+  it("does not retry a failed srt-win start when MXC is unavailable", async () => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(MXC_OLD);
+    h.initialize.mockRejectedValue(new Error("srt-win acl stamp timed out after 60000ms"));
+
+    await initSandboxGate(harness.context(true, false));
+
+    expect(h.initialize).toHaveBeenCalledOnce();
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade" });
+    expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "none", extensions: "none" });
+  });
+
   it("does not wait for the PowerShell start probe: shells take the approved route while it is checking", async () => {
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
     h.detectMxc.mockResolvedValue(MXC_OK);
