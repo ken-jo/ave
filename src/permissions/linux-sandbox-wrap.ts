@@ -62,9 +62,8 @@ function quoteShellWord(value: string): string {
 }
 
 /** Resolve symlinked prefixes, including when the mount target does not exist yet. */
-function mountIdentity(target: string, reservedTempRoot = false): string {
+function mountIdentity(target: string): string {
   const path = resolve(target);
-  if (reservedTempRoot && (path === "/tmp" || isAtOrUnder(path, "/tmp/claude"))) return path;
   let ancestor = path;
   for (let depth = 0; depth <= MAX_WALK_UP; depth++) {
     try {
@@ -92,8 +91,6 @@ function mountIdentity(target: string, reservedTempRoot = false): string {
 
 /** The two lists of the wrap's own filesystem section that decide a re-allow. */
 export interface LinuxWrapFilesystem {
-  /** Mask only the shared default temp root, keeping the host temp bind. */
-  readonly denySharedTempRoot?: boolean;
   /** The wrap's read re-allows, as handed to ASRT. */
   readonly allowRead?: readonly string[];
   /** The wrap's write denies, as handed to ASRT. */
@@ -126,7 +123,7 @@ function isAtOrUnder(path: string, ancestor: string): boolean {
  * own read-only bind, emitted later, is the answer ASRT intends.
  */
 function replayShadowedMounts(options: readonly WrapperOption[], filesystem: LinuxWrapFilesystem): WrapperOption[] {
-  const reallows = new Set((filesystem.allowRead ?? []).map((path) => mountIdentity(path, filesystem.denySharedTempRoot)));
+  const reallows = new Set((filesystem.allowRead ?? []).map((path) => mountIdentity(path)));
   const writeDenies = (filesystem.denyWrite ?? []).map((path) => mountIdentity(path));
   const out = [...options];
   for (let index = 0; index < out.length; index++) {
@@ -175,7 +172,7 @@ function replayShadowedWrap(command: string, filesystem: LinuxWrapFilesystem): s
     if (mounts && (target === undefined || !isAbsolute(target))) {
       throw new Error(`Linux sandbox wrapper has an invalid mount target: ${option}`);
     }
-    options.push(mounts ? { option, operands, identity: mountIdentity(resolve(target!), filesystem.denySharedTempRoot) } : { option, operands });
+    options.push(mounts ? { option, operands, identity: mountIdentity(resolve(target!)) } : { option, operands });
     index += arity + 1;
   }
   if (words[index]?.value !== "--") throw new Error("Linux sandbox wrapper has no command separator");
@@ -183,48 +180,6 @@ function replayShadowedWrap(command: string, filesystem: LinuxWrapFilesystem): s
   if (replayed.length === options.length) return command;
   const optionText = replayed.flatMap((entry) => [entry.option, ...entry.operands]).map(quoteShellWord).join(" ");
   return `${command.slice(0, words[1]!.start)}${optionText} ${command.slice(words[index]!.start)}`;
-}
-
-/** Keep the host temp bind; replace only mounts of the denied runtime leaf. */
-function maskSharedTempRoot(command: string): string {
-  const words = parseWrappedWords(command);
-  if (basename(words[0]?.value ?? "") !== "bwrap") throw new Error("Linux sandbox wrapper does not invoke bubblewrap");
-  const kept: string[] = [];
-  let index = 1;
-  while (index < words.length && words[index]!.value !== "--") {
-    const option = words[index]!.value;
-    if (!Object.hasOwn(BWRAP_OPTION_ARITY, option)) throw new Error(`Linux sandbox wrapper has an unsupported option: ${option}`);
-    const arity = BWRAP_OPTION_ARITY[option as keyof typeof BWRAP_OPTION_ARITY];
-    const operands = words.slice(index + 1, index + arity + 1).map((word) => word.value);
-    if (operands.length !== arity || operands.includes("--")) throw new Error("Linux sandbox wrapper has a missing operand");
-    const target = operands.at(-1);
-    if (!(["--bind", "--ro-bind", "--tmpfs"].includes(option) && target && isAtOrUnder(target, "/tmp/claude"))) {
-      kept.push(option, ...operands);
-    }
-    index += arity + 1;
-  }
-  if (words[index]?.value !== "--") throw new Error("Linux sandbox wrapper has no command separator");
-  kept.push("--tmpfs", "/tmp/claude");
-  return `${quoteShellWord(words[0]!.value)} ${kept.map(quoteShellWord).join(" ")} ${command.slice(words[index]!.start)}`;
-}
-
-/**
- * Mounting below the host temp bind needs a host mountpoint. Keep one owned
- * directory permanently, without registering it for runtime cleanup. The mask
- * itself is a namespace-local tmpfs and has no host source.
- * Foreign entries are never followed, removed or repaired; execution refuses.
- * Privileged shell mode skips inherited startup hooks before these checks.
- */
-function prepareSharedTempMountpoint(command: string): string {
-  return [
-    'aveTmpParent=$(/usr/bin/stat -c "%u:%a" -- /tmp) || exit 126',
-    '[[ ! -L /tmp && "$aveTmpParent" == 0:1777 ]] || { echo "Sandbox requires a root-owned sticky /tmp directory" >&2; exit 126; }',
-    '/bin/mkdir -m 700 -- /tmp/claude 2>/dev/null || :',
-    'aveTmpOwner=$(/usr/bin/stat -c "%u:%a" -- /tmp/claude) || exit 126',
-    '[[ ! -L /tmp/claude && -d /tmp/claude && "${aveTmpOwner%%:*}" == "$EUID" ]] && (( (8#${aveTmpOwner#*:} & 0022) == 0 )) || { echo "Sandbox cannot reserve /tmp/claude: use an owned directory without group or other write access; foreign entries are preserved" >&2; exit 126; }',
-    '# Run the confined command',
-    `exec ${command}`,
-  ].join("\n");
 }
 
 /**
@@ -245,8 +200,7 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
   if (wrapped.argv.length !== 3 || wrapped.argv[1] !== "-c") {
     throw new Error("Linux sandbox wrapper has an unexpected command shape");
   }
-  const masked = filesystem.denySharedTempRoot ? maskSharedTempRoot(wrapped.argv[2]) : wrapped.argv[2];
-  const command = replayShadowedWrap(masked, filesystem);
+  const command = replayShadowedWrap(wrapped.argv[2], filesystem);
   const words = parseWrappedWords(command);
   if (basename(words[0]?.value ?? "") !== "bwrap") {
     throw new Error("Linux sandbox wrapper does not invoke bubblewrap");
@@ -267,7 +221,7 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
       const target = words[index + arity]!.value;
       if (!isAbsolute(target)) throw new Error(`Linux sandbox wrapper has an invalid mount target: ${option}`);
       const path = resolve(target);
-      const identity = mountIdentity(path, filesystem.denySharedTempRoot);
+      const identity = mountIdentity(path);
       if (option === "--bind" || option === "--ro-bind") {
         const source = words[index + 1]!.value;
         if (!isAbsolute(source) || (option === "--bind" && resolve(source) !== path)) {
@@ -288,7 +242,7 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
     if (final === "special") throw new Error("Linux sandbox wrapper replaces a mask with an unsupported mount");
     return final === "mask";
   }).map(([, path]) => path);
-  if (remountTargets.length === 0 && !filesystem.denySharedTempRoot) {
+  if (remountTargets.length === 0) {
     return command === wrapped.argv[2] ? wrapped : { ...wrapped, argv: [wrapped.argv[0], wrapped.argv[1], command] };
   }
 
@@ -300,8 +254,6 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
   const hardened = `${command.slice(0, insertion)}${remounts} ${command.slice(insertion)}`;
   return {
     ...wrapped,
-    argv: filesystem.denySharedTempRoot
-      ? ["/bin/bash", "-pc", prepareSharedTempMountpoint(hardened)]
-      : [wrapped.argv[0], wrapped.argv[1], hardened],
+    argv: [wrapped.argv[0], wrapped.argv[1], hardened],
   };
 }

@@ -116,7 +116,7 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     expect(wrapCall?.[4]).toBe(process.cwd());
     expect(h.spawn).toHaveBeenCalledWith(
       "/bin/bash",
-      ["-pc", expect.stringContaining("'--tmpfs' '/tmp/claude'")],
+      ["-c", CONFIGURED_LINUX_BWRAP_COMMAND],
       {
         cwd: process.cwd(),
         env: { ASRT_PROBE_ENV: "configured" },

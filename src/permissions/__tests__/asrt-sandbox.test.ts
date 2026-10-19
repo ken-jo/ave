@@ -80,6 +80,7 @@ import { preparedShellExecutableReadPaths } from "../../tools/prepared-shell-inv
 // re-implementation that could drift from the package).
 import { matchesDomainPattern } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
 import { resolveParentProxy } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
+import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 
 let originalAsrtTestHome: string | undefined;
 let originalAveHome: string | undefined;
@@ -1330,16 +1331,43 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
   );
 });
 
-describe.runIf(process.platform === "linux")("private temporary deny mount", () => {
-  it("starts without a shared host source and refuses writes to the shared default", async () => {
+describe("runtime write defaults", () => {
+  it("grants only device defaults before caller policy is applied", () => {
+    expect(getDefaultWritePaths()).toEqual([
+      "/dev/stdout", "/dev/stderr", "/dev/null", "/dev/tty", "/dev/dtracehelper", "/dev/autofs_nowait",
+    ]);
+    expect(buildSandboxConfig({ allowWrite: [] }).filesystem.allowWrite).toEqual([]);
+  });
+
+  it("does not add compensating denies for paths without an implicit grant", () => {
+    const floor = getDefaultSensitiveWriteDenyPaths();
+    for (const target of ["/tmp/claude", "/private/tmp/claude", join(homedir(), ".npm", "_logs"), join(homedir(), ".claude", "debug")]) {
+      expect(floor).not.toContain(target);
+    }
+  });
+});
+
+describe.runIf(process.platform === "linux")("ordinary temporary write policy", () => {
+  it("shares explicitly granted temp writes with the host and later commands", async () => {
     expect(await asrtCanInitialize()).toBe(true);
-    await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp"] });
-    const wrapped = await wrapToolCommand("test -d /tmp/claude && test ! -L /tmp/claude && printf private-directory; printf forbidden > /tmp/claude/ave-write-probe");
-    expect(wrapped.argv[2]).toContain("'--tmpfs' '/tmp/claude'");
-    const result = await runArgv(wrapped.argv, wrapped.env, process.cwd());
-    cleanupAsrtSandboxAfterCommand();
-    expect(result.code, result.stderr).not.toBe(0);
-    expect(result.stdout).toBe("private-directory");
-    expect(result.stderr).toMatch(/read-only/i);
+    const root = mkdtempSync("/tmp/ave-ordinary-temp-");
+    try {
+      await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp"] });
+      const target = join(root, "shared.txt");
+      const first = await wrapToolCommand(`printf shared > ${shellQuote(target)}`);
+      expect(first.argv[1]).toBe("-c");
+      expect(first.argv[2]).not.toContain("/tmp/claude");
+      const written = await runArgv(first.argv, first.env, process.cwd());
+      cleanupAsrtSandboxAfterCommand();
+      expect(written.code, written.stderr).toBe(0);
+      expect(readFileSync(target, "utf8")).toBe("shared");
+      const next = await wrapToolCommand(`cat ${shellQuote(target)}`);
+      const read = await runArgv(next.argv, next.env, process.cwd());
+      cleanupAsrtSandboxAfterCommand();
+      expect(read.code, read.stderr).toBe(0);
+      expect(read.stdout).toBe("shared");
+    } finally {
+      await cleanupTmpDir(root);
+    }
   });
 });

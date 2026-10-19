@@ -854,20 +854,20 @@ where the world-writable `/tmp` tradeoff is stated. Layer 0 still hard-blocks
 sensitive leaves beneath any default root, and `permissions.additionalDirectories`
 extends the list rather than replacing it.
 
-Linux wraps keep host `/tmp` bound at sandbox `/tmp`: a new top-level entry is
-visible to the host and later sandboxed commands. Only the shared runtime temp root
-(`/tmp/claude`) is covered with an empty read-only tmpfs, after all policy
-mounts. The mask has no host mount source.
+The pinned `@anthropic-ai/sandbox-runtime` patch removes unconditional write
+grants for `/tmp/claude`, `/private/tmp/claude`, `<real home>/.npm/_logs` and
+`<real home>/.claude/debug` on every platform. Device write defaults remain.
+The four paths follow Ave's configured write grants, symlink resolution and
+generic sensitive-path floors; they have no dedicated compensating write denies.
+Runtime `TMPDIR` stays under the application-owned sandbox temp root, and
+plugin-owned processes receive only their principal's temp directory.
 
-A mount below the host bind needs a host mountpoint. The launcher reserves one
-permanent host `/tmp/claude` directory, owned by its effective UID with no group or other write access,
-and never cleans it up. It requires a root-owned sticky `/tmp` (mode `1777`).
-An existing symlink, file, foreign-owned directory or directory writable by group or others causes
-execution to refuse before workload or inherited startup hooks run; the entry
-is preserved. This trades availability under a foreign pre-created entry for
-host temp visibility and fail-closed denial. The same UID and root remain in
-the host trust boundary; another account cannot replace the reserved directory
-under the sticky parent. A conflicting entry needs explicit host-owner repair.
+Linux wraps keep the host temp tree visible. A shell granted `/tmp` can create
+a top-level entry that the host and later sandboxed commands see. The legacy
+`/tmp/claude` path follows that same grant. A plugin without a covering write
+grant cannot write there. Its existence, type or owner does not require host
+reservation or prevent the workload from starting. Normal filesystem access
+checks still apply.
 
 ## Saved-Session Reads
 
