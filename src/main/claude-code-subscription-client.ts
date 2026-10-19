@@ -307,6 +307,10 @@ export class ClaudeCodeSubscriptionClient {
   /** Qualification verdicts by executable identity; a probe that could not run is not remembered. */
   private readonly qualifications = new Map<string, Promise<QualifiedClaudeCode>>();
   private pendingLogin: PendingLogin | null = null;
+  /** The version the last probed CLI reported, kept when it failed qualification. */
+  private lastVersion: string | null = null;
+  /** The last status read, for an error response that still has to describe the card. */
+  private lastStatus: ClaudeCodeSubscriptionStatus = configuredStatus();
   private verifiedVersion: string | null = null;
   /** The identity `verify()` proved; a different binary must be verified again. */
   private verifiedIdentity: string | null = null;
@@ -366,18 +370,35 @@ export class ClaudeCodeSubscriptionClient {
     if (this.pendingLogin) {
       return claudeCodeSubscriptionStatus("ready", "pending", this.verifiedVersion ?? this.found?.version ?? null, "browser");
     }
-    const found = await this.locate();
-    if (!found) return configuredStatus();
+    let found: QualifiedClaudeCode | null;
+    try {
+      found = await this.locate();
+    } catch (error) {
+      // The card still has to say which CLI it found while it reports the error.
+      this.lastStatus = claudeCodeSubscriptionStatus("unavailable", "unknown", this.lastVersion);
+      throw error;
+    }
+    if (!found) return this.remember(configuredStatus());
     try {
       const auth = await this.readAuthStatus();
-      return claudeCodeSubscriptionStatus(
+      return this.remember(claudeCodeSubscriptionStatus(
         this.verifiedVersion ? "ready" : "unverified",
         auth.loggedIn === true ? "connected" : "signed-out",
         this.verifiedVersion ?? found.version,
-      );
+      ));
     } catch {
-      return unavailableStatus();
+      return this.remember(unavailableStatus());
     }
+  }
+
+  /** The last status read, without running anything. */
+  getCachedStatus(): ClaudeCodeSubscriptionStatus {
+    return this.lastStatus;
+  }
+
+  private remember(status: ClaudeCodeSubscriptionStatus): ClaudeCodeSubscriptionStatus {
+    this.lastStatus = status;
+    return status;
   }
 
   async verify(): Promise<ClaudeCodeSubscriptionStatus> {
@@ -511,6 +532,7 @@ export class ClaudeCodeSubscriptionClient {
       break;
     }
     if (!executable) {
+      this.lastVersion = null;
       this.adopt(null);
       return null;
     }
@@ -554,6 +576,7 @@ export class ClaudeCodeSubscriptionClient {
   private async qualify(executable: string, identity: string): Promise<QualifiedClaudeCode> {
     const incompatible = () => new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible");
     const version = parseClaudeCodeVersion((await this.runCaptured(executable, ["--version"], PROBE_TIMEOUT_MS)).stdout);
+    this.lastVersion = version;
     if (!version) throw incompatible();
     const help = (await this.runCaptured(executable, ["--help"], PROBE_TIMEOUT_MS)).stdout;
     const authHelp = (await this.runCaptured(executable, ["auth", "--help"], PROBE_TIMEOUT_MS)).stdout;

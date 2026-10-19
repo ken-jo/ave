@@ -1175,6 +1175,10 @@ export class SubscriptionRuntimeService {
   /** Error projection without forcing a new runtime start or credential refresh. */
   getCachedStatus(runtimeId: SubscriptionRuntimeId): SubscriptionRuntimeStatus | undefined {
     if (this.stopped) return undefined;
+    if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
+      // A projection only: an error response must not also revoke a proof.
+      return this.claudeCodeStatusProjection(this.claudeCodeClient.getCachedStatus());
+    }
     if (runtimeId !== "codex") return undefined;
     return this.projectCodexStatus(this.codexClient.getCachedStatus());
   }
@@ -1495,6 +1499,10 @@ export class SubscriptionRuntimeService {
 
   private projectClaudeCodeStatus(status: ClaudeCodeSubscriptionStatus): SubscriptionRuntimeStatus {
     this.reconcileSafety(status.provider, status);
+    return this.claudeCodeStatusProjection(status);
+  }
+
+  private claudeCodeStatusProjection(status: ClaudeCodeSubscriptionStatus): SubscriptionRuntimeStatus {
     return {
       provider: status.provider,
       runtime: status.runtime,

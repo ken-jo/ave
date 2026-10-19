@@ -514,6 +514,11 @@ describe("Claude Code CLI discovery", () => {
       });
     }
     await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-incompatible" });
+    // The error response still describes the card: the CLI is there but unusable.
+    expect(h.client.getCachedStatus()).toMatchObject({
+      runtime: "unavailable",
+      version: foreignVersion ? null : "2.1.0",
+    });
     const probed = h.probes.length;
     await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-incompatible" });
     expect(h.probes).toHaveLength(probed);

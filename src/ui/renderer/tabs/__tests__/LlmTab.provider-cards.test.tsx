@@ -1756,12 +1756,23 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
     }
     expect(within(card).getByTestId("llm-tab:connection-subline:codex"))
       .toHaveTextContent(t("subscriptionProvidersSection.statusCliNotFound"));
+    expect(within(card).getByTestId("llm-tab:connection:codex:state"))
+      .toHaveTextContent(t("connectionRow.stateNeedsSetup"));
     fireEvent.click(method("codex", "subscription"));
     expect(within(card).getByTestId("subscription-provider:codex:install-guidance"))
       .toHaveTextContent(t("subscriptionProvidersSection.installGuidance", { cli: "Codex CLI", plan: "ChatGPT" }));
     expect(within(card).queryByTestId("subscription-provider:codex:configure-runtime")).toBeNull();
     fireEvent.click(within(card).getByTestId("subscription-provider:codex:check-again"));
     expect(refreshStatus).toHaveBeenCalledWith("codex");
+  });
+
+  it("words a Claude plan with no CLI found as needing setup, though its account is unknown", async () => {
+    installSubscription([claudeCodeView({ status: { runtime: "not-configured", connection: "unknown", models: [] } })]);
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:claude-code"));
+    expect(await screen.findByTestId("llm-tab:connection:claude-code:state"))
+      .toHaveTextContent(t("connectionRow.stateNeedsSetup"));
   });
 
   it("offers each company once in 'add a provider', and never a runtime by name", async () => {

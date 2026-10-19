@@ -3051,11 +3051,15 @@ export function LlmTab(props: LlmTabProps) {
     const status = row.subscription?.status;
     // No word at all while the surface that owns the real state is still
     // answering — guessing "signed out" during the check is how a row lies.
+    // "No CLI found" and "the CLI found cannot be used" are answers, though:
+    // a runtime with nothing usable to run has no account to ask about, so
+    // its connection stays unknown for good.
+    if (status?.runtime === "not-configured") return "needs-setup";
+    if (status?.runtime === "unavailable") return "attention";
     if (row.subscription && (!status || status.runtime === "checking" || status.connection === "unknown")) {
       return null;
     }
-    if (status?.runtime === "unavailable") return "attention";
-    if (status?.runtime === "not-configured" || status?.runtime === "unverified") return "needs-setup";
+    if (status?.runtime === "unverified") return "needs-setup";
     if (status?.connection === "pending") return "pending";
     if (status?.connection === "connected" || row.apiConfigured) {
       // A failed catalogue fetch is the fifth word only when it left the row
