@@ -70,12 +70,13 @@ function makeDeps(opts: {
         throw new Error("reviewer down");
       }).mockImplementation(() => undefined)
     : vi.fn();
-  const prevLlm = { provider: "openai", vendors: { "azure-foundry": { baseUrl: null } } };
+  const prevLlm = { provider: "openai", activeChatRuntime: { kind: "api" }, vendors: { "azure-foundry": { baseUrl: null } } };
   const nextLlm = opts.llmChanges
-    ? { provider: "claude", vendors: { "azure-foundry": { baseUrl: null } } }
+    ? { provider: "claude", activeChatRuntime: { kind: "api" }, vendors: { "azure-foundry": { baseUrl: null } } }
     : prevLlm;
   return {
     settingsService: {
+      hasStoredSecret: vi.fn(() => false),
       getAll: vi.fn(() => ({ llm: nextLlm })),
       get: vi.fn((key: string) => {
         if (key === "llm") return patched ? nextLlm : prevLlm;

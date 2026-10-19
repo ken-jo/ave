@@ -6,6 +6,7 @@ import {
   subscriptionRuntimeDescriptor,
 } from "../../../shared/subscription-runtime.js";
 import { normalizeExecutionMode, type ExecutionModeDisplay } from "../../../shared/permission-mode.js";
+import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 
 /**
  * In-bar status sub-row data.
@@ -31,6 +32,12 @@ import { normalizeExecutionMode, type ExecutionModeDisplay } from "../../../shar
 export interface InputStatusRow {
   /** "OpenAI · gpt-5.4" style label (vendor · model), or vendor alone. */
   vendorModel: string;
+  /**
+   * Main's answer to which model chat is on; null until the first settings
+   * snapshot lands. `kind: "none"` means there is no model to name, and the
+   * row offers provider setup instead of a label.
+   */
+  activeChatModel: ActiveChatModel | null;
   /** Permission policy mode for per-mode text color + label. */
   permissionMode: ExecutionModeDisplay;
   /** Pending deferred-approval count (appended to the permission cell). */
@@ -39,6 +46,7 @@ export interface InputStatusRow {
 
 export function useInputStatusRow(api: AveApi): InputStatusRow {
   const [vendorModel, setVendorModel] = useState("");
+  const [activeChatModel, setActiveChatModel] = useState<ActiveChatModel | null>(null);
   const [permissionMode, setPermissionMode] = useState<ExecutionModeDisplay>("unknown");
   const [pendingApprovals, setPendingApprovals] = useState(0);
 
@@ -49,10 +57,19 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
 
     const apply = (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
       if (cancelled) return;
+      setActiveChatModel((current) =>
+        JSON.stringify(current) === JSON.stringify(settings.activeChatModel) ? current : settings.activeChatModel);
+      // No connected provider: the vendor block still carries its default id,
+      // but nothing was chosen and nothing could answer, so nothing is named.
+      if (settings.activeChatModel.kind === "none" && settings.activeChatModel.reason === "no-connected-provider") {
+        setVendorModel("");
+        return;
+      }
       const activeRuntime = settings.llm?.activeChatRuntime;
       if (activeRuntime?.kind === "subscription" && isSubscriptionRuntimeId(activeRuntime.provider)) {
         const model = typeof activeRuntime.model === "string" ? activeRuntime.model.trim() : "";
-        const label = subscriptionRuntimeDescriptor(activeRuntime.provider).label;
+        // The plan's brand ("ChatGPT", "Claude"), never the runtime's own name.
+        const label = subscriptionRuntimeDescriptor(activeRuntime.provider).planName;
         setVendorModel(model.length > 0 ? `${label} · ${model}` : label);
         return;
       }
@@ -114,5 +131,5 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
     };
   }, [api]);
 
-  return { vendorModel, permissionMode, pendingApprovals };
+  return { vendorModel, activeChatModel, permissionMode, pendingApprovals };
 }

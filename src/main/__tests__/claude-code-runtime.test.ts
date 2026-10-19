@@ -1,13 +1,22 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
+import { createHash } from "node:crypto";
+import { pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "../claude-code-executable.js";
+import { normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StreamEvent, ToolSchema } from "../../engine/llm/types.js";
 import { ClaudeCodeConversationRuntime } from "../claude-code-conversation-runtime.js";
-import { ClaudeCodeSubscriptionClient, type ClaudeCodeSubscriptionConfigStore } from "../claude-code-subscription-client.js";
+import {
+  claudeCodeExecutableCandidates,
+  ClaudeCodeSubscriptionClient,
+  resolveClaudeCodeSubscriptionExecutable,
+  missingClaudeCodeAuthCommands,
+  parseClaudeCodeVersion,
+} from "../claude-code-subscription-client.js";
 import { CLAUDE_CODE_MAX_OUTPUT_BYTES } from "../claude-code-stream.js";
 import type { CodexAppServerClient } from "../codex-app-server-client.js";
 import * as managed from "../managed-child-processes.js";
@@ -75,16 +84,50 @@ function paths() {
   return value;
 }
 
-function spawnHarness(script?: (child: FakeChild, args: readonly string[]) => void) {
+const QUALIFYING_AUTH_HELP = "Commands:\n  login [options]   Sign in\n  logout            Log out\n  status [options]  Show status\n";
+
+interface Qualification {
+  version?: string;
+  authHelp?: string;
+}
+
+function isQualificationProbe(args: readonly string[]): boolean {
+  return (args.length === 2 && args[0] === "--bare" && args[1] === "--version")
+    || (args.length === 2 && args[0] === "auth" && args[1] === "--help");
+}
+
+/**
+ * Fake CLI processes. With `qualification`, the discovery probes
+ * (`--bare --version`, `auth --help`) are answered here and recorded in
+ * `probes`, so `calls` and `started` describe only the account and chat
+ * commands a test drives.
+ */
+function spawnHarness(
+  script?: (child: FakeChild, args: readonly string[]) => void,
+  qualification?: Qualification,
+) {
   let ready!: (child: FakeChild) => void;
   const started = new Promise<FakeChild>((resolve) => { ready = resolve; });
   const calls: Array<{ child: FakeChild; args: readonly string[]; options: SpawnOptions }> = [];
+  const probes: string[][] = [];
   const spawn = vi.fn((_command: string, args: readonly string[], options: SpawnOptions) => {
-    const child = new FakeChild(); children.push(child); calls.push({ child, args, options }); ready(child);
+    const child = new FakeChild(); children.push(child);
+    if (qualification && isQualificationProbe(args)) {
+      probes.push([...args]);
+      setImmediate(() => {
+        const output = args.includes("--version")
+          ? `${qualification.version ?? "2.1.0"} (Claude Code)\n`
+          : qualification.authHelp ?? QUALIFYING_AUTH_HELP;
+        child.stdout.write(output);
+        child.close();
+      });
+      return child as unknown as ChildProcess;
+    }
+    calls.push({ child, args, options }); ready(child);
     if (script) setImmediate(() => script(child, args));
     return child as unknown as ChildProcess;
   });
-  return { spawn, calls, started };
+  return { spawn, calls, started, probes };
 }
 
 function conversation(tools: readonly ToolSchema[] = [], resolveExecutable?: (path: string) => Promise<string>) {
@@ -95,7 +138,14 @@ function conversation(tools: readonly ToolSchema[] = [], resolveExecutable?: (pa
     name: "ave-host-tools", command: "/host/mcp", args: [], env: { TEST_BRIDGE_TOKEN: "ephemeral-only" },
   });
   const runtime = new ClaudeCodeConversationRuntime({ ...directories, bridge, ...harness,
-    executablePath: "/approved/claude", resolveExecutable: resolveExecutable ?? (async (path) => path) });
+    resolveRuntime: async () => ({
+      executable: await (resolveExecutable ?? (async (path: string) => path))("/approved/claude"),
+      args: [], identity: "approved", verify: async () => {
+        if (resolveExecutable && await resolveExecutable("/approved/claude") !== "/approved/claude") {
+          throw new Error("Executable changed");
+        }
+      }, discard: async () => undefined,
+    }) });
   owners.push(runtime);
   return { ...harness, ...directories, runtime, bridge };
 }
@@ -148,9 +198,10 @@ describe("CLI conversation boundary", () => {
     ["startup hook", [{ type: "system", subtype: "hook_started", session_id: SESSION }]],
     ["plugin", [{ ...init(), plugins: [{ name: "unexpected" }] }]],
     ["extra result", [init(), result(), result()]],
-  ])("rejects %s instead of synthesizing success", async (_name, records) => {
+  ])("rejects %s instead of synthesizing success", async (name, records) => {
     const h = conversation(); const done = collect(h.runtime.streamTurn("hello"));
-    const expected = expect(done).rejects.toMatchObject({ code: "claude-code-operation-failed" });
+    const expected = expect(done).rejects.toMatchObject({ code: ["native catalog", "plugin"].includes(name)
+      ? "claude-code-runtime-incompatible" : "claude-code-operation-failed" });
     const child = await h.started; for (const record of records) child.send(record); child.close();
     await expected; expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
@@ -289,16 +340,42 @@ describe("CLI conversation boundary", () => {
 
   it("refuses an executable whose canonical target changed", async () => {
     const h = conversation([], async () => "/replacement/claude");
-    await expect(collect(h.runtime.streamTurn("hello"))).rejects.toMatchObject({ code: "claude-code-runtime-invalid-executable" });
+    await expect(collect(h.runtime.streamTurn("hello"))).rejects.toMatchObject({ code: "claude-code-operation-failed" });
     expect(h.spawn).not.toHaveBeenCalled();
   });
 });
 
-function clientHarness(script: (child: FakeChild, args: readonly string[]) => void, configStore?: ClaudeCodeSubscriptionConfigStore) {
-  const directories = paths(); const harness = spawnHarness(script);
-  const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness, executablePath: "/approved/claude",
-    resolveExecutable: async (path) => path, configStore });
-  owners.push(client); return { ...directories, ...harness, client };
+/** An installed `claude`, and the one place this client is told to look. */
+function installedCli(root: string, install = true): { executable: string; candidates: () => string[] } {
+  const bin = join(root, "bin");
+  mkdirSync(bin, { recursive: true });
+  const executable = join(bin, "claude");
+  if (install) writeCli(executable);
+  return { executable, candidates: () => [join(root, "missing", "claude"), executable] };
+}
+
+async function pinForTest(executable: string): Promise<ClaudeCodeExecutable> {
+  const hash = () => createHash("sha256").update(readFileSync(executable)).digest("hex");
+  const identity = hash();
+  return { executable, args: [], identity, verify: async () => {
+    if (hash() !== identity) throw new Error("Executable changed");
+  }, discard: async () => undefined };
+}
+
+function writeCli(path: string, body = "#!/bin/sh\n"): void {
+  writeFileSync(path, body);
+  chmodSync(path, 0o755);
+}
+
+function clientHarness(
+  script: (child: FakeChild, args: readonly string[]) => void,
+  qualification: Qualification = {},
+) {
+  const directories = paths(); const harness = spawnHarness(script, qualification);
+  const cli = installedCli(directories.runtimeHome);
+  const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
+    candidates: cli.candidates, resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest });
+  owners.push(client); return { ...directories, ...harness, ...cli, client };
 }
 
 describe("CLI account and verification boundary", () => {
@@ -324,28 +401,48 @@ describe("CLI account and verification boundary", () => {
     expect(await h.client.getStatus()).toMatchObject({ runtime: "unavailable", connection: "unknown" });
   });
 
-  it("verifies the same isolated stream contract as chat", async () => {
+  it("detects and verifies a connected account without any model prompt or account-home capability probe", async () => {
     const h = clientHarness((child, args) => {
-      if (args[0] === "--version") child.stdout.write("2.1.0 (Claude Code)\n");
-      else if (args[0] === "auth") child.send(auth);
-      else { child.send(init()); child.send(result({ result: "AVE_OK" })); }
+      expect(args).toEqual(["auth", "status"]);
+      child.send(auth);
       child.close();
     });
+    const spawn = h.spawn.getMockImplementation()!;
+    h.spawn.mockImplementation((command, args, options) => {
+      if (isQualificationProbe(args)) {
+        const home = options.env!.HOME!;
+        expect(home).not.toBe(h.runtimeHome);
+        expect(home.startsWith(join(h.runtimeTempDir, "probe-"))).toBe(true);
+        expect(options.env!.CLAUDE_CONFIG_DIR).toBe(home);
+        expect(readdirSync(home)).toEqual([]);
+        if (process.platform !== "win32") expect(statSync(home).mode & 0o777).toBe(0o700);
+      }
+      return spawn(command, args, options);
+    });
+    expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", connection: "connected" });
     expect(await h.client.verify()).toMatchObject({ runtime: "ready", connection: "connected", version: "2.1.0" });
-    expect(h.calls[2]!.child.input).toBe("Reply with exactly: AVE_OK");
-    expect(h.calls[2]!.args).not.toContain("Reply with exactly: AVE_OK");
+    expect(h.probes).toEqual([["--bare", "--version"], ["auth", "--help"]]);
+    for (const [, args, options] of h.spawn.mock.calls) {
+      expect(args).not.toContain("-p"); expect(args).not.toContain("--print");
+      expect(options.stdio).toEqual(["ignore", "pipe", "pipe"]);
+    }
+    for (const call of h.calls) {
+      expect(call.args).toEqual(["auth", "status"]);
+      expect(call.options.env!.HOME).toBe(h.runtimeHome);
+      expect(call.child.input).toBe("");
+    }
     expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
 
-  it("does not retain verification after an invalid print result", async () => {
-    const h = clientHarness((child, args) => {
-      if (args[0] === "--version") child.stdout.write("2.1.0\n");
-      else if (args[0] === "auth") child.send(auth);
-      else { child.send(init()); child.send(result({ is_error: true })); }
-      child.close();
+  it("does not retain verification after the account signs out", async () => {
+    let loggedIn = true;
+    const h = clientHarness((child) => {
+      child.send(loggedIn ? auth : { loggedIn: false }); child.close(loggedIn ? 0 : 1);
     });
-    await expect(h.client.verify()).rejects.toThrow();
-    expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", connection: "connected" });
+    await h.client.verify();
+    loggedIn = false;
+    expect(await h.client.verify()).toMatchObject({ runtime: "unverified", connection: "signed-out" });
+    await expect(h.client.verifiedRuntime()).rejects.toMatchObject({ code: "claude-code-runtime-unverified" });
     expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
 
@@ -355,31 +452,16 @@ describe("CLI account and verification boundary", () => {
     await expect(h.client.verify()).rejects.toThrow(); expect(h.calls).toHaveLength(1); expect(child.kill).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the approved executable if persistence fails", async () => {
-    const store = { setExecutable: vi.fn(async () => { throw new Error("disk failure"); }) } as unknown as ClaudeCodeSubscriptionConfigStore;
-    const h = clientHarness(() => undefined, store);
-    await expect(h.client.setExecutable("/new/claude")).rejects.toThrow("disk failure");
-    expect(h.client.getConfiguredExecutable()).toBe("/approved/claude");
-  });
-
-  it("serializes executable persistence against another configuration change", async () => {
-    let finish!: () => void;
-    const writing = new Promise<void>((resolve) => { finish = resolve; });
-    const store = { setExecutable: vi.fn(() => writing), clearExecutable: vi.fn() } as unknown as ClaudeCodeSubscriptionConfigStore;
-    const h = clientHarness(() => undefined, store); const first = h.client.setExecutable("/new/claude");
-    await expect(h.client.clearExecutable()).rejects.toThrow(); finish(); await first;
-    expect(h.client.getConfiguredExecutable()).toBe("/new/claude"); expect(store.clearExecutable).not.toHaveBeenCalled();
-  });
-
   it("rejects invalid captured UTF-8 rather than replacing protocol bytes", async () => {
     const h = clientHarness((child) => { child.stdout.write(Buffer.from([0xed])); child.close(); });
     expect(await h.client.getStatus()).toMatchObject({ runtime: "unavailable", connection: "unknown" });
   });
 
   it("opens a complete trusted login URL once and ignores cancelled output", async () => {
-    const directories = paths(); const h = spawnHarness(); const openExternal = vi.fn();
-    const client = new ClaudeCodeSubscriptionClient({ ...directories, ...h, executablePath: "/approved/claude",
-      resolveExecutable: async (path) => path, openExternal }); owners.push(client);
+    const directories = paths(); const h = spawnHarness(undefined, {}); const openExternal = vi.fn();
+    const cli = installedCli(directories.runtimeHome);
+    const client = new ClaudeCodeSubscriptionClient({ ...directories, ...h, candidates: cli.candidates,
+      resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest, openExternal }); owners.push(client);
     await client.startBrowserLogin(); const child = await h.started;
     expect(h.calls[0]!.args).toEqual(["auth", "login"]);
     child.stdout.write("See https://untrusted.invalid/help\nhttps://user:secret@claude.ai/oauth\n");
@@ -392,8 +474,258 @@ describe("CLI account and verification boundary", () => {
   });
 });
 
+describe("Claude Code CLI discovery", () => {
+  function discoveryHarness(qualification: Qualification = {}, install = true) {
+    const directories = paths();
+    const harness = spawnHarness((child) => { child.send({ loggedIn: false }); child.close(1); }, qualification);
+    const cli = installedCli(directories.runtimeHome, install);
+    const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
+      candidates: cli.candidates, resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest });
+    owners.push(client);
+    return { ...directories, ...harness, ...cli, client };
+  }
+
+  it("looks on PATH first, then in the official install locations", () => {
+    expect(claudeCodeExecutableCandidates({
+      platform: "darwin", env: { PATH: "/opt/tools:relative/bin:/usr/bin" }, homeDir: "/Users/someone",
+    })).toEqual([
+      "/opt/tools/claude",
+      "/usr/bin/claude",
+      "/Users/someone/.local/bin/claude",
+      "/opt/homebrew/bin/claude",
+      "/usr/local/bin/claude",
+    ]);
+    expect(claudeCodeExecutableCandidates({
+      platform: "win32", env: { Path: "C:\\Tools;relative", USERPROFILE: "C:\\Users\\someone" }, homeDir: "C:\\ignored",
+    })).toEqual(["C:\\Tools\\claude.exe", "C:\\Tools\\claude.cmd", "C:\\Users\\someone\\.local\\bin\\claude.exe"]);
+  });
+
+  it("checks the runtime version identity and advertised auth commands", () => {
+    expect(parseClaudeCodeVersion("2.1.303 (Claude Code)\n")).toBe("2.1.303");
+    expect(parseClaudeCodeVersion("claude 2.1.303\n")).toBeNull();
+    expect(missingClaudeCodeAuthCommands(QUALIFYING_AUTH_HELP)).toEqual([]);
+    expect(missingClaudeCodeAuthCommands("Commands:\n  login\n  status\n")).toEqual(["logout"]);
+  });
+
+  it("reports a missing CLI as not configured without running anything", async () => {
+    const h = discoveryHarness({}, false);
+    expect(await h.client.getStatus()).toMatchObject({ runtime: "not-configured" });
+    expect(h.spawn).not.toHaveBeenCalled();
+  });
+
+  it("finds a CLI installed after it reported none, without being pointed at it", async () => {
+    const h = discoveryHarness({}, false);
+    expect(await h.client.getStatus()).toMatchObject({ runtime: "not-configured" });
+    writeCli(h.executable);
+    expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", connection: "signed-out", version: "2.1.0" });
+  });
+
+  it("probes a found CLI once and again only when the file changes", async () => {
+    const h = discoveryHarness();
+    await h.client.getStatus();
+    await h.client.getStatus();
+    expect(h.probes).toEqual([["--bare", "--version"], ["auth", "--help"]]);
+    writeCli(h.executable, "#!/bin/sh\n# updated\n");
+    await h.client.getStatus();
+    expect(h.probes).toHaveLength(4);
+  });
+
+  it.each<[string, Qualification, boolean]>([
+    ["is not Claude Code", {}, true],
+    ["lacks an auth command", { authHelp: "Commands:\n  login\n  status\n" }, false],
+  ])("reports a CLI that %s as incompatible and remembers that verdict", async (_name, qualification, foreignVersion) => {
+    const h = discoveryHarness(qualification);
+    if (foreignVersion) {
+      // A version line in another format is not Claude Code's.
+      h.spawn.mockImplementationOnce((_command, args) => {
+        const child = new FakeChild(); children.push(child); h.probes.push([...args]);
+        setImmediate(() => { child.stdout.write("claude 9.9.9\n"); child.close(); });
+        return child as unknown as ChildProcess;
+      });
+    }
+    await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-incompatible" });
+    // The error response still describes the card: the CLI is there but unusable.
+    expect(h.client.getCachedStatus()).toMatchObject({
+      runtime: "unavailable",
+      version: foreignVersion ? null : "2.1.0",
+    });
+    const probed = h.probes.length;
+    await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-incompatible" });
+    expect(h.probes).toHaveLength(probed);
+    expect(h.calls).toEqual([]);
+    expect(readdirSync(h.runtimeTempDir)).toEqual([]);
+  });
+
+  it("reports a CLI whose probe exits non-zero as incompatible, not as a failed operation", async () => {
+    // An old CLI without an `auth` subcommand answers `auth --help` with an error.
+    const h = discoveryHarness();
+    h.spawn.mockImplementation((_command, args) => {
+      const child = new FakeChild(); children.push(child); h.probes.push([...args]);
+      setImmediate(() => {
+        if (args.includes("--version")) child.stdout.write("1.0.3 (Claude Code)\n");
+        child.close(args[0] === "auth" ? 1 : 0);
+      });
+      return child as unknown as ChildProcess;
+    });
+    await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-incompatible" });
+    expect(h.client.getCachedStatus()).toMatchObject({ runtime: "unavailable", version: "1.0.3" });
+  });
+
+  // POSIX execute bits decide "runnable" here; Windows admits only a native `.exe`.
+  it.runIf(process.platform !== "win32")("passes over an entry that is not a runnable file, as a shell would", async () => {
+    const directories = paths();
+    const harness = spawnHarness((child) => { child.send({ loggedIn: false }); child.close(1); }, {});
+    const cli = installedCli(directories.runtimeHome);
+    const broken = join(directories.runtimeHome, "stale", "claude");
+    mkdirSync(join(directories.runtimeHome, "stale"), { recursive: true });
+    writeFileSync(broken, "not runnable");
+    const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
+      candidates: () => [broken, cli.executable],
+      resolveExecutable: (path) => resolveClaudeCodeSubscriptionExecutable(path), _pinExecutableForTest: pinForTest });
+    owners.push(client);
+    expect(await client.getStatus()).toMatchObject({ runtime: "unverified", version: "2.1.0" });
+    expect(harness.spawn).toHaveBeenCalledWith(cli.executable, expect.anything(), expect.anything());
+    expect(harness.spawn).not.toHaveBeenCalledWith(expect.stringContaining("stale"), expect.anything(), expect.anything());
+  });
+
+  it("asks again after a probe that could not run", async () => {
+    const h = discoveryHarness();
+    h.spawn.mockImplementationOnce((_command, args) => {
+      const child = new FakeChild(); children.push(child); h.probes.push([...args]);
+      setImmediate(() => child.emit("error", new Error("spawn EACCES")));
+      return child as unknown as ChildProcess;
+    });
+    await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-unavailable" });
+    expect(readdirSync(h.runtimeTempDir)).toEqual([]);
+    expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", version: "2.1.0" });
+  });
+
+  it("requires fresh admission when the qualified source changes", async () => {
+    const h = clientHarness((child, args) => {
+      if (args[0] === "auth") child.send(auth);
+      else { child.send(init()); child.send(result()); }
+      child.close();
+    });
+    await expect(h.client.verifiedRuntime()).rejects.toMatchObject({ code: "claude-code-runtime-unverified" });
+    await h.client.verify();
+    await expect(h.client.verifiedRuntime()).resolves.toMatchObject({ executable: h.executable });
+    writeCli(h.executable, "#!/bin/sh\n# reinstalled\n");
+    // An auto-update is a different file: chat asks for a new verification.
+    await expect(h.client.verifiedRuntime()).rejects.toMatchObject({ code: "claude-code-runtime-unverified" });
+    expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified" });
+  });
+
+  it("does not require a complete help inventory or a model response before chat", async () => {
+    const h = clientHarness((child, args) => {
+      if (args[0] === "auth") child.send(auth);
+      else { child.send(init()); child.send(result()); }
+      child.close();
+    });
+    await h.client.verify();
+    expect(h.probes).not.toContainEqual(["--help"]);
+    expect(h.calls.every((call) => call.args[0] === "auth")).toBe(true);
+    await expect(h.client.verifiedRuntime()).resolves.toMatchObject({ executable: h.executable });
+  });
+
+  it("reports unsupported startup options on the first real turn without a synthetic model request", async () => {
+    const h = clientHarness((child, args) => {
+      if (args[0] === "auth") { child.send(auth); child.close(); }
+      else { child.stderr.write("error: unknown op"); child.stderr.write("tion '--strict-mcp-config'\n"); child.close(1); }
+    });
+    await h.client.verify();
+    expect(h.calls.every((call) => call.args[0] === "auth")).toBe(true);
+    const artifact = await h.client.verifiedRuntime();
+    const runtime = new ClaudeCodeConversationRuntime({ ...h.client.getRuntimePaths(), ...h,
+      bridge: new SubscriptionToolBridge([]), resolveRuntime: async () => artifact });
+    owners.push(runtime);
+    await expect(collect(runtime.streamTurn("the user's first actual request")))
+      .rejects.toMatchObject({ code: "claude-code-runtime-incompatible" });
+    const turns = h.calls.filter((call) => call.args[0] === "-p");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.child.input).toBe("the user's first actual request");
+    expect(readdirSync(h.runtimeTempDir)).toEqual([]);
+  });
+
+  it("refuses the next turn when the verified file is replaced during a session", async () => {
+    const h = clientHarness((child, args) => {
+      if (args[0] === "auth") child.send(auth);
+      else { child.send(init()); child.send(result()); }
+      child.close();
+    });
+    await h.client.verify();
+    const executable = await h.client.verifiedRuntime();
+    const runtime = new ClaudeCodeConversationRuntime({ ...h.client.getRuntimePaths(), ...h,
+      bridge: new SubscriptionToolBridge([]), resolveRuntime: async () => executable });
+    owners.push(runtime);
+    await collect(runtime.streamTurn("first"));
+    const before = h.spawn.mock.calls.length;
+    const stat = statSync(h.executable);
+    writeCli(h.executable, "#!/bin/zz\n");
+    utimesSync(h.executable, stat.atime, stat.mtime);
+    await expect(collect(runtime.streamTurn("second"))).rejects.toMatchObject({ code: "claude-code-operation-failed" });
+    expect(h.spawn).toHaveBeenCalledTimes(before);
+  });
+
+  it("checks the real private artifact and source before the next session turn", async () => {
+    const directories = paths();
+    normalizeFixtureAncestorPermissions(directories.runtimeHome);
+    const source = writeNativeExecutable(join(directories.runtimeHome, "installed", "claude"));
+    const executable = await pinClaudeCodeExecutable(source, directories.runtimeHome,
+      { platform: process.platform, env: {}, homeDir: directories.runtimeHome });
+    owners.push({ stop: executable.discard });
+    const h = spawnHarness((child) => { child.send(init()); child.send(result()); child.close(); });
+    const runtime = new ClaudeCodeConversationRuntime({ ...directories, ...h, bridge: new SubscriptionToolBridge([]),
+      resolveRuntime: async () => executable });
+    owners.push(runtime);
+    await collect(runtime.streamTurn("first"));
+    const calls = h.spawn.mock.calls.length;
+    const stat = statSync(source);
+    const bytes = readFileSync(source); bytes[bytes.length - 1] = 1;
+    writeFileSync(source, bytes); utimesSync(source, stat.atime, stat.mtime);
+    await expect(collect(runtime.streamTurn("second"))).rejects.toMatchObject({ code: "claude-code-operation-failed" });
+    expect(h.spawn).toHaveBeenCalledTimes(calls);
+  });
+
+  it.skipIf(process.platform === "win32").each(["runtimeHome", "workspaceDir", "runtimeTempDir"] as const)(
+    "refuses a session turn after the %s loses its private permissions", async (directory) => {
+      const h = conversation();
+      chmodSync(h[directory], 0o777);
+      await expect(collect(h.runtime.streamTurn("hello"))).rejects.toMatchObject({ code: "claude-code-runtime-unavailable" });
+      expect(h.spawn).not.toHaveBeenCalled();
+    },
+  );
+
+  it("discards private copies after retryable qualification failures", async () => {
+    const directories = paths();
+    normalizeFixtureAncestorPermissions(directories.runtimeHome);
+    const executable = writeNativeExecutable(join(directories.runtimeHome, "installed", "claude"));
+    const spawn = vi.fn(() => {
+      const child = new FakeChild(); children.push(child);
+      setImmediate(() => child.emit("error", new Error("spawn EACCES")));
+      return child as unknown as ChildProcess;
+    });
+    const client = new ClaudeCodeSubscriptionClient({ ...directories, spawn, env: {}, candidates: () => [executable] });
+    owners.push(client);
+    for (let retry = 0; retry < 3; retry++) {
+      await expect(client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-unavailable" });
+      expect(readdirSync(directories.runtimeHome).filter((name) => name.startsWith("executable-"))).toEqual([]);
+    }
+  });
+
+  it("has no way to set or clear a path", () => {
+    const h = discoveryHarness();
+    expect("setExecutable" in h.client).toBe(false);
+    expect("clearExecutable" in h.client).toBe(false);
+  });
+});
+
 describe("Claude service integration", () => {
-  it("revokes a failed actual stream and re-verifies before the next session", async () => {
+  it.each([
+    ["failed result", "subscription-operation-failed"],
+    ["unsupported startup", "subscription-runtime-incompatible"],
+    ["unsupported catalog", "subscription-runtime-incompatible"],
+    ["provider startup", "subscription-operation-failed"],
+  ])("revokes %s and re-verifies before the next session", async (failure, code) => {
     const directories = paths(); const h = spawnHarness(); const audit = vi.fn();
     const namespace: FeatureNamespaceHandle = {
       dir: directories.runtimeHome,
@@ -403,22 +735,26 @@ describe("Claude service integration", () => {
     const status = claudeCodeSubscriptionStatus("ready", "connected", "2.1.0");
     const verify = vi.fn(async () => status);
     const client = {
-      getStatus: vi.fn(async () => status), verify, getConfiguredExecutable: () => "/approved/claude",
+      getStatus: vi.fn(async () => status), verify, verifiedRuntime: async () => ({ executable: "/approved/claude", args: [], identity: "approved", verify: async () => undefined }),
       getRuntimePaths: () => directories, stop: vi.fn(async () => undefined),
     } as unknown as ClaudeCodeSubscriptionClient;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
       namespace, audit, claudeCodeClient: client,
       codexClient: { stop: vi.fn() } as unknown as CodexAppServerClient,
       acpRegistry: { stopAll: vi.fn() } as unknown as AcpSubscriptionRuntimeRegistry,
-      createClaudeCodeConversationRuntime: (options) => new ClaudeCodeConversationRuntime({ ...options, ...h,
-        resolveExecutable: async (path) => path }),
+      createClaudeCodeConversationRuntime: (options) => new ClaudeCodeConversationRuntime({ ...options, ...h }),
     });
     owners.push(service);
     await service.verify("claude-code");
     const session = await service.openTextSession({ kind: "subscription", provider: "claude-code" });
     const pending = collect(session.streamTurn("hello"));
-    const expected = expect(pending).rejects.toMatchObject({ code: "subscription-operation-failed" });
-    const child = await h.started; child.send(init()); child.send(result({ is_error: true })); child.close(); await expected;
+    const expected = expect(pending).rejects.toMatchObject({ code });
+    const child = await h.started;
+    if (failure === "unsupported startup") { child.stderr.write("error: unknown option '--strict-mcp-config'\n"); child.close(1); }
+    else if (failure === "provider startup") { child.stderr.write("Error: service unavailable\n"); child.close(1); }
+    else if (failure === "unsupported catalog") child.send(init(["Bash"]));
+    else { child.send(init()); child.send(result({ is_error: true })); child.close(); }
+    await expected;
     expect(audit).toHaveBeenCalledExactlyOnceWith({ provider: "claude-code", outcome: "session-failed" });
     expect((await service.getStatus("claude-code")).capabilities.chat).toBe(false);
     await service.openTextSession({ kind: "subscription", provider: "claude-code" });

@@ -1,12 +1,67 @@
 # Claude Code subscription runtime
 
-The main process launches a user-selected official CLI executable. Its auth
+The main process launches the official `claude` CLI the user installed. Ave
+finds it itself — each fully qualified PATH entry, then `~/.local/bin` (the
+native installer's launcher), `/opt/homebrew/bin`, `/usr/local/bin` and
+`/usr/bin`; on Windows PATH, the native install directory and the roaming
+package-manager prefix. The user never picks the file. The first runnable
+candidate decides; an untrusted one stops discovery before any probe.
+
+Location admission, no-follow file opens, hashing and native artifact copying
+reuse the shared executable trust implementation. Every path component and
+symlink owner must be the current account or root; group/world mutation is
+rejected except for sticky root-owned directories. Windows uses owner/DACL
+checks; extended access rules follow the same shared policy.
+
+Native executables run from a private, sealed, content-hashed copy. Package
+launchers resolve only the official package's `cli.js` and a pinned native
+interpreter, without a shell. The interpreter, package files and declared
+required/optional/peer dependency closure are copied through the same no-follow
+hashing and sealing primitives. Dependency directory layout is preserved, so
+nested and hoisted dependencies resolve inside the snapshot. Missing required
+dependencies, package symlinks and unsupported script interpreters fail closed.
+The manifest covers the declared transitive dependency graph. It does not
+enforce a separate direct-dependency allowlist for each package: a package may
+resolve another copied graph member when ordinary module resolution reaches it.
+
+Package entry points run only from that snapshot. A sealed preload registers
+synchronous module resolution/loading hooks before entry execution. Both import
+and require are restricted to built-ins and the copied file manifest. Global
+module search is disabled; module sources outside the graph manifest, including
+absolute and network imports, are rejected. JavaScript and JSON code are loaded from
+no-follow handles and checked against their digests at load time. The script
+interpreter must support synchronous loading hooks (22.15.0 or later on the 22.x
+line, 23.5.0 or later on newer lines); unsupported runtimes are rejected before the CLI probe.
+Copied package metadata is also checked around resolution and loading.
+The invocation uses the private snapshot rather than reopening installed script
+paths, so ordinary installer replacements do not change its copied code.
+
+Qualification, authentication and each turn recheck the original launcher route,
+source dependency graph and the sealed private artifact immediately before
+spawn. Changes detected by these checks refuse the next turn of an existing session.
+The final hash check and spawn are not atomic. A same-UID or root attacker who can
+modify the private directory can replace its executable after the check for one
+invocation. That compromise is outside the current-user/root trust boundary;
+there is no unconditional exact-binary guarantee. The operating system's native
+library loader is also outside this content proof.
+
+Discovery runs only `--bare --version` and `auth --help` in a fresh empty private
+probe home, with stdin ignored. These local checks need no authentication or
+model request; help is not treated as a complete flag inventory. Verification
+combines that admission with the account's local `auth status` and an artifact
+recheck. It sends no prompt and consumes no subscription model usage. A signed-out
+verification creates no transport proof. Failed identity qualification is
+`claude-code-runtime-incompatible`, shown as update guidance; verdicts are
+cached by content identity and probes that cannot run are retried. An update or
+reinstall requires fresh verification. Authentication
 commands use a separate application-owned home and `CLAUDE_CONFIG_DIR`; Ave
 does not read OAuth tokens, reuse API keys, or forward auth output to the renderer.
 The status projection accepts the CLI's `claude.ai` first-party authentication
 with subscription metadata. Missing or contradictory metadata remains unavailable.
-Executable selection, browser login, cancellation, logout, and verification use
-the existing subscription service and UI contracts. Model selection and native
+Discovery, browser login, cancellation, logout, and verification use the
+existing subscription service and UI contracts. Settings lists Anthropic once:
+its card asks for "Claude subscription" or "API key" first, and shows the
+official install methods with "Check again" while no usable CLI is found. Model selection and native
 image attachments are not supported by this transport.
 
 `SubscriptionLlmProvider` sends the complete controlled conversation envelope for
@@ -40,16 +95,27 @@ structured result, and successful process/stdio completion. Malformed or truncat
 output, a failed result, unknown execution events, and extra records after the
 result fail explicitly. Raw stderr is drained without retention or UI projection.
 
-Verification performs version/auth checks and one short print request under the
-same stream contract without tools. Every tool-enabled invocation also validates
-its actual bridge catalog. Failures revoke the subscription service's verification
-proof; another session must verify again. User cancellation stays cancellation.
+The first real user turn performs the print protocol and isolation checks that
+require a model response. Every invocation validates its actual initialization
+and bridge catalog, successful result and process completion. A nonzero startup
+exit with a recognized argument-parser rejection before protocol initialization,
+or a rejected initialization catalog, uses the existing runtime-incompatible
+error and update guidance. Other startup/provider failures remain operation errors.
+Only fixed diagnostic match state is retained from stderr, never its raw text.
+Failures revoke the subscription service's verification proof; another session
+must verify again.
+[The subscription service](../../src/main/subscription-runtime-service.ts) owns
+that revocation and checks its safety epoch on each tracked session call.
+User cancellation stays cancellation.
 
 One managed child owns each invocation. POSIX children receive an owned process
-group so cancellation includes the CLI's MCP descendants. Setup, cancellation,
-stream errors, timeouts, and consumer exit all clean the request's temporary MCP
-configuration. Those files use the feature namespace's private atomic writer and
-are never retained as an auth store.
+group so cancellation includes the CLI's MCP descendants. Generator completion,
+setup failures, and resumed cancellation paths clean the temporary MCP
+configuration in the iterator's finally block. A consumer must finish or return
+the iterator for that cleanup to complete: stopping a paused iterator alone does
+not advance it. Those files use the feature namespace's private atomic writer and
+are never used as an auth store. Login termination currently clears its local
+handle before a best-effort kill; a kill failure is not surfaced by that path.
 
 The external protocol is documented in the official [CLI reference](https://code.claude.com/docs/en/cli-reference),
 [programmatic usage guide](https://code.claude.com/docs/en/headless), and

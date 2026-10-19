@@ -1,3 +1,4 @@
+import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { parkComposerDraft, takeComposerDraft } from "../state/composer-draft-store.js";
 import type { ResolvedOutputTokenLimit, RouteInputModalities } from "../../../shared/context-budget.js";
@@ -86,6 +87,8 @@ export interface ChatGroupEnvironment {
   chatReasoningAvailable: boolean;
   effectiveLlmReady: boolean | null;
   chatReadyWithoutApiKey: boolean;
+  /** Main's active chat model; `kind: "none"` blocks the send (see `useSendMessage`). */
+  activeChatModel: ActiveChatModel | null;
   checkApiKey: () => Promise<boolean>;
   onOpenSettings: (tab?: string) => void;
   /** The active route's effective output limit and who set it (`resolveContextWindowForRoute(...).output`). */
@@ -492,6 +495,7 @@ export function ChatGroupSession({
     refreshSessionId, refreshSessions: env.refreshSessions, attachments, setAttachments,
     llmVendor: env.llmVendor, llmModel: env.llmModel, llmRouteModalities: env.llmRouteModalities,
     llmReadyWithoutApiKey: env.chatReadyWithoutApiKey,
+    activeChatModel: env.activeChatModel,
     settingsReady: env.settingsLoaded,
     subscriptionRuntimePolicy: env.subscriptionRuntimePolicy,
     onOpenSettings: env.onOpenSettings, setQuestion, handleAskRef,

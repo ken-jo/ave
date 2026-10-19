@@ -163,7 +163,12 @@ describe("Tutorial-C PR #983 follow-up: tour anchors", () => {
         <ComposerHarness />
         <InputActionBar {...inputActionBarProps} />
         <ComposerStatusRow
-          statusRow={{ vendorModel: "OpenAI · gpt-5.4", permissionMode: "auto", pendingApprovals: 0 }}
+          statusRow={{
+            vendorModel: "OpenAI · gpt-5.4",
+            activeChatModel: { kind: "api", vendor: "openai", model: "gpt-5.4" },
+            permissionMode: "auto",
+            pendingApprovals: 0,
+          }}
           ringSlot={null}
           onOpenModelSettings={vi.fn()}
           enableThinkingChat={false}
