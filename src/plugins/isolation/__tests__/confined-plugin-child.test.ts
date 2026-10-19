@@ -3691,9 +3691,9 @@ interface TreeMeasurement {
 
 /**
  * Sample the process tree rooted at `rootPid` — the spawned wrapper, as
- * `observeChild` reports it — every 50 ms, until `exited` settles. Linux
- * reads only this tree through procfs, including an immediate first sample;
- * other platforms use the process table.
+ * `observeChild` reports it — every 50 ms, until `exited` settles. The first
+ * sample completes synchronously before the caller can stop the child. Linux
+ * reads only this tree through procfs; other platforms use the process table.
  * RSS is in KiB on both platforms. `process.resourceUsage()` is not used: it
  * reports the test runner.
  */
@@ -3704,7 +3704,7 @@ function sampleProcessTree(rootPid: number, exited: Promise<unknown>): Promise<T
   void exited.then(() => {
     done = true;
   });
-  const sample = async (): Promise<void> => {
+  const sample = async (initial = false): Promise<void> => {
     if (process.platform === "linux") {
       const seen = new Set<number>();
       const pending = [rootPid];
@@ -3738,7 +3738,9 @@ function sampleProcessTree(rootPid: number, exited: Promise<unknown>): Promise<T
       }
       return;
     }
-    const { stdout } = await execFileAsync("ps", ["-o", "pid=,ppid=,rss=", "-A"]);
+    const stdout = initial
+      ? execFileSync("ps", ["-o", "pid=,ppid=,rss=", "-A"], { encoding: "utf8" })
+      : (await execFileAsync("ps", ["-o", "pid=,ppid=,rss=", "-A"])).stdout;
     const children = new Map<number, number[]>();
     const rss = new Map<number, number>();
     for (const line of stdout.split("\n")) {
@@ -3758,15 +3760,19 @@ function sampleProcessTree(rootPid: number, exited: Promise<unknown>): Promise<T
     peakKiB = Math.max(peakKiB, total);
   };
   return (async () => {
+    await sample(true);
+    if (samples === 0) {
+      throw new Error(`Process tree root ${rootPid} was unavailable before its first RSS sample`);
+    }
     while (!done) {
-      await sample();
       await new Promise((resolve) => setTimeout(resolve, 50));
+      if (!done) await sample();
     }
     return { peakRssBytes: peakKiB * 1024, samples };
   })();
 }
 
-it.runIf(process.platform === "linux")("samples a live child before its immediate exit", async () => {
+it.runIf(process.platform === "darwin" || process.platform === "linux")("samples a live child before its immediate exit", async () => {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
     stdio: "ignore",
@@ -3785,6 +3791,21 @@ it.runIf(process.platform === "linux")("samples a live child before its immediat
     child.kill();
     await exited;
   }
+});
+
+it.runIf(process.platform === "darwin" || process.platform === "linux")("reports a child that exited before its first sample", async () => {
+  const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    stdio: "ignore",
+  });
+  const exited = new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", () => resolve());
+  });
+  await exited;
+  await expect(sampleProcessTree(child.pid!, exited)).rejects.toThrow(
+    `Process tree root ${child.pid!} was unavailable before its first RSS sample`,
+  );
 });
 
 /**
