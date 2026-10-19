@@ -1,7 +1,6 @@
 const { mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { join, relative, resolve, sep } = require("node:path");
 const { deflateSync } = require("node:zlib");
-const { sameDecodedImage } = require("./lib/decoded-image.cjs");
 
 const root = resolve(__dirname, "..");
 const buildDir = join(root, "build");
@@ -557,22 +556,8 @@ function encodeIco(sourceRgba, sourceSize, sizes) {
  */
 const emitted = [];
 
-/**
- * An existing file that depicts the same image is left as it is. `deflate`
- * output depends on the zlib the runtime links, so rewriting it would change
- * the bytes of the tracked installer icons on every build and test run (as
- * Windows Node does against the committed blobs) and dirty the worktree for no
- * visible difference — which the pre-push hook then refuses as a dirty tree.
- */
-function emit(path, data) {
-  const contents = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
-  let existing = null;
-  try {
-    existing = readFileSync(path);
-  } catch {}
-  if (existing === null || !(existing.equals(contents) || sameDecodedImage(existing, contents))) {
-    writeFileSync(path, contents);
-  }
+function emit(path, contents) {
+  writeFileSync(path, contents);
   emitted.push(path);
 }
 
