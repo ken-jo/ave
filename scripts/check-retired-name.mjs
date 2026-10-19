@@ -19,9 +19,10 @@
  *
  * The same gate keeps retired plugin ids out. Their list lives in
  * `scripts/lib/retired-plugin-ids.mjs`, the one source the host-source and tour
- * audits read as well. An id may stay only on a line that RETIRED_PLUGIN_ALLOWLIST
- * names by exact text, for a use that is not the retired plugin (a third-party
- * library, a heading anchor generated from kept prose); a stale entry fails.
+ * audits read as well. An id may stay only within the exact text that
+ * RETIRED_PLUGIN_ALLOWLIST names, for a use that is not the retired plugin
+ * (a third-party library, a heading anchor generated from kept prose); a stale
+ * entry fails.
  */
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -53,11 +54,11 @@ export const RETIRED_NAME_PATTERN = new RegExp(
 export const ALLOWLIST = Object.freeze([]);
 
 /**
- * Lines where a retired plugin id may stay: `{ path, words, text, reason }`.
- * `words` names the id as `RETIRED_PLUGIN_IDS` stores it. A line of `path`
- * that carries the id is exempt only when it contains `text`, in which `{id}`
- * stands for the id as spelled and `{Id}` for its Capitalized words, so this
- * list never spells an id either.
+ * Exact text where a retired plugin id may stay: `{ path, words, text, reason }`.
+ * `words` names the id as `RETIRED_PLUGIN_IDS` stores it. Only occurrences of
+ * `text` in `path` are exempt; the rest of each line is still scanned. In `text`,
+ * `{id}` stands for the id as spelled and `{Id}` for its Capitalized words,
+ * so this list never spells an id either.
  */
 export const RETIRED_PLUGIN_ALLOWLIST = Object.freeze([
   Object.freeze({
@@ -174,13 +175,13 @@ export function scanRetiredPluginIds(repoRoot, allowlist = RETIRED_PLUGIN_ALLOWL
       const inPath = pattern.test(path);
       const hits = [];
       lines.forEach((line, index) => {
-        if (!pattern.test(line)) return;
-        const exempt = allowed.find((item) => item.path === path && item.id === id && line.includes(item.needle));
-        if (exempt) {
-          used.add(exempt);
-          return;
+        let remainder = line;
+        for (const item of allowed) {
+          if (item.path !== path || item.id !== id || !line.includes(item.needle)) continue;
+          used.add(item);
+          remainder = remainder.replaceAll(item.needle, "");
         }
-        hits.push(index + 1);
+        if (pattern.test(remainder)) hits.push(index + 1);
       });
       if (inPath || hits.length > 0) offenders.push({ path, id, inPath, lines: hits });
     }

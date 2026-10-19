@@ -37,6 +37,8 @@ export const RETIRED_PLUGIN_IDS = Object.freeze([
   Object.freeze({
     words: Object.freeze(["page", "index"]),
     join: "",
+    // The underscored spelling is the external indexing library's page_index()
+    // API, exported by its package initializer, rather than the retired plugin id.
     separator: "",
     reason: "former id of the local-indexer plugin",
   }),
