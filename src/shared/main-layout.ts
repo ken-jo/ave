@@ -20,6 +20,7 @@
  * not exist.
  */
 
+import { isRecord } from "./is-record.js";
 import { parseTabId } from "./tab-id.js";
 
 export const MAIN_LAYOUT_VERSION = 1;
@@ -63,10 +64,6 @@ export interface MainLayoutLimits {
 }
 
 const GROUP_ID = /^(main|group-[1-9]\d*)$/;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 class Refused extends Error {}
 
