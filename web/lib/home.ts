@@ -65,8 +65,8 @@ const ko: HomeCopy = {
       ["작업 패널.", "파일, 미리보기, 브라우저, 터미널, 서브에이전트, 사이드 채팅이 칸 옆 카드 하나에 모입니다."],
     ],
     pic: {
-      k: "app-tiles",
-      alt: "작업 모드에서 세 칸에 각각 다른 대화가 열려 있고, 오른쪽 아래 칸에 다음 릴리스 버전을 묻는 질문 카드가 떠 있는 화면",
+      k: "app-subagents",
+      alt: "작업 모드에서 세 칸에 각각 다른 대화가 열려 있는 화면. 왼쪽은 --json 플래그를 넣고 테스트 6개가 통과한 대화, 오른쪽 위는 서브에이전트 탭에 두 리뷰가 완료로 표시된 대화, 오른쪽 아래는 1.2.0 릴리스 체크리스트",
     },
   },
   surfaces: {
@@ -218,8 +218,8 @@ const en: HomeCopy = {
       ["The work panel.", "Files, Preview, Browser, Terminal, Sub-agents and Side chat share one card beside the tile."],
     ],
     pic: {
-      k: "app-tiles",
-      alt: "Work mode with three tiles, each holding a different conversation; the lower right tile shows a question card asking which version the next release should be",
+      k: "app-subagents",
+      alt: "Work mode with three tiles, each holding a different conversation: the --json change with six passing tests on the left, a parser review with its two finished sub-agents at the top right, and a release checklist for 1.2.0 below it",
     },
   },
   surfaces: {

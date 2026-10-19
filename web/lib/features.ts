@@ -254,7 +254,7 @@ const ko: Pages = {
         {
           title: "칸마다 따로 도는 대화",
           body: "칸마다 자기 대화 루프가 있어서, 여러 대화가 동시에 답을 받습니다.",
-          pic: { k: "app-tiles", alt: "작업 모드의 세 칸에 각각 다른 대화가 열려 있는 화면" },
+          pic: { k: "app-subagents", alt: "작업 모드의 세 칸에 각각 다른 대화가 열려 있는 화면" },
           w: 3,
         },
         {
@@ -699,7 +699,7 @@ const en: Pages = {
         {
           title: "Each tile on its own loop",
           body: "Every tile runs its own conversation loop, so several conversations get answers at once.",
-          pic: { k: "app-tiles", alt: "Work mode with three tiles, each holding a different conversation" },
+          pic: { k: "app-subagents", alt: "Work mode with three tiles, each holding a different conversation" },
           w: 3,
         },
         {
