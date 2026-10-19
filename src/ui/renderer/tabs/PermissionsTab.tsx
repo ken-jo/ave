@@ -1394,7 +1394,9 @@ export function PermissionsTab({
                   data-testid="os-sandbox-boot-degraded-detail"
                   className="whitespace-pre-line font-mono text-foreground"
                 >
-                  {t("permissionsTab.osSandboxDiagnosticHint")}
+                  {sandboxBoot.reason === "degrade-windows-init-failed"
+                    ? t("permissionsTab.osSandboxInitFailedHint")
+                    : t("permissionsTab.osSandboxDiagnosticHint")}
                 </p>
               ) : null}
               <p className="italic">
@@ -1429,6 +1431,10 @@ export function PermissionsTab({
                     reason: t(MXC_UNAVAILABLE_REASON_KEY[windowsSubstrate.mxc.reason]),
                     build: windowsSubstrate.windowsBuild ?? "?",
                   })}
+                </p>
+              ) : windowsSubstrate.mxc.state === "available" && windowsSubstrate.shells === "none" ? (
+                <p data-testid="os-sandbox-windows-mxc-unused">
+                  {t("permissionsTab.osSandboxWindowsMxcUnused", { build: windowsSubstrate.windowsBuild ?? "?" })}
                 </p>
               ) : null}
               <p data-testid="os-sandbox-windows-substrate-extensions">

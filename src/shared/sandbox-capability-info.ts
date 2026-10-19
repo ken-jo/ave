@@ -116,6 +116,8 @@ export type SandboxGateReason =
   /** Windows: srt-win not installed, ASRT runs as the proxy for agent shells in MXC containers. */
   | "activate-windows-mxc-proxy-only"
   | "degrade-windows-not-installed"
+  /** Windows: the sandbox passed its startup check but failed to start (the cause is in `dependencyErrors`). */
+  | "degrade-windows-init-failed"
   | "degrade-default-cannot-activate"
   | "abort-explicit-cannot-activate"
   | "degrade-linux-runtime-probe-failed"

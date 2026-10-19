@@ -461,7 +461,10 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             ? failDecision.action === "abort"
               ? "abort-linux-runtime-probe-failed"
               : "degrade-linux-runtime-probe-failed"
-            : failDecision.reason;
+            : process.platform === "win32"
+              // Not "not installed": the dependency check passed and the start threw.
+              ? "degrade-windows-init-failed"
+              : failDecision.reason;
           const cause = errorMessage(initErr);
           if (failDecision.action === "abort") {
             // EXPLICIT opt-in — fail-closed even on init failure.

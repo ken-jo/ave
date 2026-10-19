@@ -1359,6 +1359,24 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-bash-note")).toBeNull();
   });
 
+  it("says MXC is available but unused when the sandbox did not start", async () => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: false, kind: "none", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      boot: { action: "degrade", reason: "degrade-windows-init-failed", onSignal: "default-settings", dependencyErrors: ["x"] },
+      windowsSubstrate: {
+        mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: true,
+        shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
+      },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-windows-mxc-unused").textContent)
+      .toBe(t("permissionsTab.osSandboxWindowsMxcUnused", { build: "10.0.26300.9711" }));
+    expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
+  });
+
   it("says why MXC is unavailable and that extensions share one proxy identity", async () => {
     const { ave } = installApiWithWindows();
     ave.permission.sandboxCapability.mockResolvedValueOnce({
