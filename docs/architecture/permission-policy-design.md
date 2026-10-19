@@ -46,6 +46,14 @@ that omits `managed` or sets it to `false`.
 An invalid user file contributes no permission fields and does not create an
 administrative edit lock when the admin file is absent.
 
+### Project Rule Scope
+
+[project-rule-files.ts](../../src/permissions/rules/project-rule-files.ts) stores project rules in the application home, keyed with the same canonical realpath and platform case folding as exact approvals. Sessions below a normal repository share the nearest eligible repository root; nested repositories keep their own rules. A `.git` directory needs a valid regular `HEAD` file and `objects` and `refs` directories. A regular `.git` file must contain a single `gitdir:` path resolving to that metadata. Linked worktrees resolve their common store through `commondir` and must have a `gitdir` backlink to this checkout's marker. Their identity remains the checkout, not the shared metadata directory. Discovery bounds reads on opened regular metadata files without launching a subprocess. An invalid or unreadable marker stops discovery and leaves the session scoped to its own cwd.
+
+The canonical user home and every ancestor of home are excluded as inherited roots, including for sessions elsewhere below such an ancestor. A session whose cwd is exactly one of those directories keeps that exact identity. If the OS cannot provide an absolute home other than a filesystem root, discovery stays at the canonical cwd without walking up. Symlink resolution precedes discovery and home-boundary comparisons, and Windows comparisons use the same case folding as exact approvals.
+
+Existing rule files are retained unchanged. Rules previously keyed to home or an ancestor remain available only to sessions at that exact canonical cwd; child and sibling folders no longer load them. There is no automatic copying, deletion, or expansion of those approvals. The existing project rules UI can inspect and remove them when that exact directory is selected.
+
 ## Policy Inputs
 
 | Input | Meaning |
