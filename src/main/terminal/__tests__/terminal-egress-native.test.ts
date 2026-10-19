@@ -17,7 +17,8 @@
  * is refused by the sandbox, and a name resolving to this host is refused by
  * the proxy's resolved-address guard before any ask. The local and
  * unverified classes are covered by the unit tests (egress-ask.test.ts).
- * Without a route to the host the cases are skipped with that reason.
+ * Without a route to the host the cases are skipped with that reason, or
+ * fail where a confinement job requires them (AVE_REQUIRE_SANDBOX_CASES=1).
  */
 import { afterEach, beforeEach, describe, expect, it, type TestContext } from "vitest";
 import { existsSync, mkdtempSync, realpathSync } from "node:fs";
@@ -74,7 +75,10 @@ async function requireNativeCase(context: TestContext): Promise<void> {
   }
   // Control: unconfined, this machine reaches the host at all.
   reachable ??= await fetch(`https://${HOST}/`, { signal: AbortSignal.timeout(10_000) }).then((res) => res.ok, () => false);
-  if (!reachable) context.skip(`https://${HOST}/ is not reachable from this machine`);
+  if (!reachable) {
+    if (sandboxCasesRequired()) throw new Error(`AVE_REQUIRE_SANDBOX_CASES=1 but https://${HOST}/ is not reachable, so the terminal egress cases would measure nothing`);
+    context.skip(`https://${HOST}/ is not reachable from this machine`);
+  }
 }
 
 beforeEach(() => {
