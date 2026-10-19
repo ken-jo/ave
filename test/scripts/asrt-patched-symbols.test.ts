@@ -566,8 +566,9 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
         throw Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" });
       });
       expect(await connectThrough(front, proxy, name, "split.example.test:443")).toMatch(/^HTTP\/1\.1 403/u);
-      // Plain HTTP by name through the upstream: the absolute-form target
-      // would let the upstream resolve it, so it is refused; a literal goes.
+      // Plain HTTP by name through an upstream on this host that is not
+      // trusted to resolve names: the absolute-form target would let it
+      // resolve the name, so it is refused; a literal goes.
       setDestinationResolverForTesting(testResolver);
       expect(await plainHttpThrough(front, proxy, name, "http://plain.example.invalid/")).toMatch(/^HTTP\/1\.1 403/u);
       expect(upstream.connects).toHaveLength(1);
@@ -1171,6 +1172,42 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     } finally {
       await first.close();
       await second.close();
+    }
+  });
+
+  it("forwards a plain-HTTP request by name through a remote or trusted upstream as unverified, never through an untrusted local one", async (test) => {
+    const trusted = await recordingUpstream(200);
+    try {
+      const remote = await withUpstream(test, { http: "", https: "" }, false);
+      if (remote === undefined) return;
+      try {
+        remote.SandboxManager.setParentProxyRouter(async () => ({ routes: [{ kind: "http", host: "192.0.2.1", port: 3128 }] }));
+        expect(await plainHttpThrough(remote.front, remote.proxy, remote.name, "http://named.example.invalid/")).toMatch(/^HTTP\/1\.1 403/u);
+        expect(resolvedAsks(remote.asked)).toEqual([{
+          host: "named.example.invalid",
+          context: { attributionKey: "6".repeat(16) + "0123456789abcdef", identity: "listener", phase: "resolved", addresses: [TEST_ADDRESS], resolution: "upstream" },
+        }]);
+      } finally {
+        await remote.SandboxManager.reset();
+      }
+      const local = await withUpstream(test, { http: "", https: "" }, true);
+      if (local === undefined) return;
+      try {
+        local.SandboxManager.setParentProxyRouter(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: trusted.port }] }));
+        expect(await plainHttpThrough(local.front, local.proxy, local.name, "http://named.example.invalid/")).toMatch(/^HTTP\/1\.1 403/u);
+        expect(JSON.stringify(local.SandboxManager.getSandboxViolationStore().getViolations()))
+          .toContain("a plain-HTTP request by name is not forwarded to it");
+        expect(trusted.requests).toEqual([]);
+        local.SandboxManager.setParentProxyRouter(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: trusted.port, resolvesNames: true }] }));
+        expect(await plainHttpThrough(local.front, local.proxy, local.name, "http://named.example.invalid/")).toMatch(/^HTTP\/1\.1 200/u);
+        // By name: the upstream resolves it, as the card was told.
+        expect(trusted.requests.map((r) => r.line)).toEqual(["GET http://named.example.invalid/ HTTP/1.1"]);
+        expect(resolvedAsks(local.asked).map((a) => (a.context?.phase === "resolved" ? a.context.resolution : undefined))).toEqual(["upstream"]);
+      } finally {
+        await local.SandboxManager.reset();
+      }
+    } finally {
+      await trusted.close();
     }
   });
 

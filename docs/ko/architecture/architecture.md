@@ -1991,7 +1991,8 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   않고 보류한다. 이름 단계 허용 뒤에만 이름을 한 번 해석해 그 주소로 고정(pin)하고
   해석 단계에서 다시 판정한다(카드가 보여준 분류와 실제 분류가 다르면 카드를 다시
   띄운다). upstream proxy 에는 이름 대신 주소로 CONNECT 한다.
-  이 호스트가 해석하지 못한 이름은 원격 upstream 이면 이름 그대로 넘기고
+  이 호스트가 해석하지 못한 이름과, upstream 을 거치는 이름 기반 평문 HTTP
+  (absolute-form 대상이라 upstream 이 이름을 해석하므로 pin 불가)는 원격 upstream 이면 이름 그대로 넘기고
   `unverified`(최대 "이 대화")로 묻고, 이 호스트의 upstream(cntlm/px 등)이면
   신뢰 설정 `upstreamProxy.resolvesNames` 가 없는 한 사유와 함께 거절한다.
   상위 프록시의 출처(owner 결정 2026-10-20)는 main 소유 설정 `upstreamProxy`

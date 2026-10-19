@@ -44,9 +44,10 @@ the installed package.
    addresses in turn (IPv4 first) until the upstream opens one (SNI inside
    the tunnel is the client's). So neither DNS rebinding between the check and
    the dial nor the upstream's own resolution reaches an address the guard
-   refuses. A plain-HTTP request by name through a parent proxy is refused
-   (its absolute-form target cannot be pinned without breaking virtual
-   hosting). A name this host cannot resolve is refused without a parent
+   refuses. A plain-HTTP request by name through a parent proxy cannot be
+   pinned (its absolute-form target names the host, which the upstream
+   resolves), so it is treated like a name this host cannot resolve. A name
+   this host cannot resolve is refused without a parent
    proxy; through a remote one it is forwarded by name and the callback is
    told `resolution: 'upstream'` (unverified); through one on this host
    (loopback, localhost-style names, an interface address) it is refused
@@ -73,7 +74,8 @@ the installed package.
    `http`/`https` proxy with optional Basic `auth` and `resolvesNames`) the
    way part 3 judges the one parent proxy: a pinned name or literal goes
    direct to its vetted addresses or CONNECTs to them as literals; a
-   plain-HTTP name keeps only direct routes; a name this host cannot resolve
+   plain-HTTP name keeps its direct routes pinned and goes by name over the
+   proxy routes that may carry a name (`resolution: 'upstream'`); a name this host cannot resolve
    drops direct routes and untrusted proxies on this host and is forwarded by
    name over the rest (`resolution: 'upstream'`); a route naming one of the
    session's proxy listeners is dropped, and the socket every proxy route
@@ -1064,7 +1066,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1d61fc861a457d6147add1d87c13dc75
  //# sourceMappingURL=sandbox-manager.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4d27d6d60 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a6d220327 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -16,17 +16,21 @@ import * as fs from 'fs';
@@ -1573,7 +1575,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +899,693 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,6 +899,715 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -1684,10 +1686,11 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
 + * pin, a name could answer differently between the check and the dial (DNS
 + * rebinding), or the upstream could resolve it to something this host would
 + * refuse, such as its own loopback with another invocation's listener on it.
-+ * A name that does not resolve here is refused: nothing could be pinned. A
-+ * plain-HTTP request by name through a parent proxy is refused too: the
-+ * upstream reads the host from the absolute-form target, so it cannot be
-+ * pinned without breaking virtual hosting (an address literal still goes).
++ * A name that does not resolve here, and a plain-HTTP request by name
++ * through a parent proxy (the upstream reads the host from the absolute-form
++ * target, so it cannot be pinned without breaking virtual hosting), cannot be
++ * pinned: they go by name only through an upstream that is not on this host
++ * or is trusted to resolve names, as `resolution: 'upstream'` (unverified).
 + */
 +const resolveWithSystem = (name) => dnsPromises.lookup(name, { all: true, verbatim: true });
 +let destinationResolver = resolveWithSystem;
@@ -1782,6 +1785,8 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
 +    }, err => callback(err, []));
 +}
 +const LOCAL_UPSTREAM_REASON = 'the upstream proxy on this host resolves names itself, so a name this host cannot resolve is not forwarded ' +
++    '(the trusted network.parentProxy.resolvesNames setting lets it)';
++const LOCAL_PLAIN_HTTP_REASON = 'the upstream proxy on this host resolves names itself, so a plain-HTTP request by name is not forwarded to it ' +
 +    '(the trusted network.parentProxy.resolvesNames setting lets it)';
 +/** Ave patch (upstream routes): the refusal for a parent proxy that answered 407. */
 +const UPSTREAM_AUTH_REASON = 'upstream proxy requires authentication';
@@ -1926,9 +1931,11 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
 + *   - an address literal, or a name this host resolves (every address must
 + *     pass the resolved-address guard), is pinned: a direct route dials the
 + *     pinned addresses, a proxy route CONNECTs to them as literals. A
-+ *     plain-HTTP request by such a name cannot go through a proxy route (the
-+ *     upstream reads the absolute-form target and resolves it itself), so
-+ *     only its direct routes are kept;
++ *     plain-HTTP request by such a name cannot be pinned through a proxy
++ *     route (the upstream reads the absolute-form target and resolves it
++ *     itself): its direct routes stay pinned, and a proxy route takes the
++ *     name (`viaUpstream`) unless it is on this host and not trusted to
++ *     resolve names, as below;
 + *   - a name this host cannot resolve has no direct route; a proxy route on
 + *     this host is dropped unless it is trusted to resolve names (it would
 + *     resolve the name after the check, and could hand the connection back
@@ -1956,15 +1963,30 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
 +                    return { reason: 'sandbox proxy listener' };
 +            }
 +        }
++        if (!(plainHttp && family === 0))
++            return { addresses, viaUpstream: false, routes: candidates };
 +        // Plain HTTP through an upstream names the host in its absolute-form
-+        // target, which the upstream resolves itself: only an address
-+        // literal can go that way.
-+        const routes = plainHttp && family === 0
-+            ? candidates.filter(route => route.kind === 'direct')
-+            : candidates;
++        // target, which the upstream resolves itself, so the name cannot be
++        // pinned there. As for a name this host cannot resolve (owner
++        // decision 2026-10-19): a direct route still dials the pinned
++        // addresses; a proxy route takes the name, unverified, unless it is
++        // on this host and not trusted to resolve names.
++        const routes = [];
++        let localDropped = false;
++        let forwarded = false;
++        for (const route of candidates) {
++            if (route.kind !== 'direct') {
++                if (!route.resolvesNames && await proxyUrlOnThisHost(route.url)) {
++                    localDropped = true;
++                    continue;
++                }
++                forwarded = true;
++            }
++            routes.push(route);
++        }
 +        if (routes.length === 0)
-+            return { reason: 'plain HTTP by name cannot be pinned through the parent proxy' };
-+        return { addresses, viaUpstream: false, routes };
++            return { reason: localDropped ? LOCAL_PLAIN_HTTP_REASON : 'plain HTTP by name cannot be pinned through the parent proxy' };
++        return { addresses, viaUpstream: forwarded, routes };
 +    }
 +    const routes = [];
 +    let localDropped = false;
@@ -1999,10 +2021,12 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
 +}
 +/**
 + * The destinations a parent-proxy request may name, to try in order: an
-+ * address literal as is, a name as its pinned, re-vetted addresses (IPv4
-+ * first: an upstream that cannot reach IPv6 still gets a usable one). Throws
-+ * a ResolvedAddressDeniedError (the proxies answer it as a policy refusal)
-+ * for a name with no pin, and for any name on the plain-HTTP path.
++ * address literal as is, a name the plan forwards (`viaUpstream`) as the
++ * name, a name as its pinned, re-vetted addresses (IPv4 first: an upstream
++ * that cannot reach IPv6 still gets a usable one). Throws a
++ * ResolvedAddressDeniedError (the proxies answer it as a policy refusal) for
++ * a name with no pin, and for a name on the plain-HTTP path the plan did not
++ * forward.
 + */
 +function parentDestinationFor(socket, host, port, encodedCommand, plainHttp) {
 +    const canonical = canonicalizeHost(host) ?? host;
@@ -2267,7 +2291,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -616,7 +1614,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +1636,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -2280,7 +2304,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -1515,6 +2518,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2540,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -2290,7 +2314,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +2716,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +2738,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -2312,7 +2336,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1734,23 +2743,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1734,23 +2765,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -2347,7 +2371,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1786,6 +2803,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +2825,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -2355,7 +2379,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,6 +2839,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,6 +2861,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -2364,7 +2388,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
      const platform = getPlatform();
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
-@@ -1950,7 +2970,7 @@ function getConfig() {
+@@ -1950,7 +2992,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -2373,7 +2397,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +3009,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +3031,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -2381,7 +2405,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2222,6 +3243,8 @@ async function reset() {
+@@ -2222,6 +3265,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -2390,7 +2414,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,6 +3252,22 @@ async function reset() {
+@@ -2229,6 +3274,22 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -2413,7 +2437,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4
      maskedFileStore.dispose();
  }
  function getSandboxViolationStore() {
-@@ -2336,6 +3375,10 @@ export const SandboxManager = {
+@@ -2336,6 +3397,10 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,

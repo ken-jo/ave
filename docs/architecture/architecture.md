@@ -1414,10 +1414,11 @@ answer given on a card for one class (say public) becomes a grant only when
 the destination turned out to be that class (otherwise the card is shown
 again with what it is), and the connection is pinned to them (a direct dial does not
 resolve again; through an upstream HTTP(S) proxy the CONNECT names the
-address, trying each in turn, not the name; plain HTTP by name through an
-upstream is refused), so DNS rebinding cannot move it afterwards. A name this
-host cannot resolve (owner decision 2026-10-19) is refused without an
-upstream; through a remote upstream it is forwarded by name and the callback
+address, trying each in turn, not the name), so DNS rebinding cannot move it
+afterwards. A name this host cannot resolve (owner decision 2026-10-19), and
+a plain-HTTP request by name through an upstream (its absolute-form target
+names the host, which the upstream resolves, so it cannot be pinned), is
+refused without an upstream; through a remote upstream it is forwarded by name and the callback
 is told `resolution: "upstream"`, which Ave treats as `unverified` (at most
 This conversation, a card note that the proxy decides the address,
 persistent grants ignored); through an upstream on this host (loopback,
