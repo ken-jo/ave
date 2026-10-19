@@ -80,7 +80,7 @@ describe("buildDevProtocolArgs", () => {
     // This is the cold-start argv pollution guard — the registered command
     // must not embed the URL itself as a script path, which would corrupt
     // every subsequent OS launch.
-    const out = args({ argv1: "ave://install/agent-hub" });
+    const out = args({ argv1: "ave://install/samplehub" });
     expect(out[0]).toBe(resolve("."));
     // None of the args should contain the ave:// URL.
     for (const a of out) expect(a).not.toMatch(/^ave:\/\//i);

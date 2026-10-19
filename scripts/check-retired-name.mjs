@@ -16,12 +16,20 @@
  * that no longer matches any file is stale and fails as well, so the list can
  * only shrink. Run standalone with `node scripts/check-retired-name.mjs`; the
  * scanner is exported so `test/scripts/retired-name.test.mjs` can exercise it.
+ *
+ * The same gate keeps retired plugin ids out. Their list lives in
+ * `scripts/lib/retired-plugin-ids.mjs`, the one source the host-source and tour
+ * audits read as well. An id may stay only within the exact text that
+ * RETIRED_PLUGIN_ALLOWLIST names, for a use that is not the retired plugin
+ * (a third-party library, a heading anchor generated from kept prose); a stale
+ * entry fails.
  */
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { withoutGitContext } from "./lib/git-process-environment.mjs";
+import { RETIRED_PLUGIN_IDS, retiredPluginId, retiredPluginPattern } from "./lib/retired-plugin-ids.mjs";
 
 /** Retired internal product name; see the private workspace. Lower case. */
 export const RETIRED_NAME = String.fromCodePoint(0x6c, 0x76, 0x69, 0x73);
@@ -44,6 +52,35 @@ export const RETIRED_NAME_PATTERN = new RegExp(
  * every tracked file under it; any other entry is one exact path. Empty.
  */
 export const ALLOWLIST = Object.freeze([]);
+
+/**
+ * Exact text where a retired plugin id may stay: `{ path, words, text, reason }`.
+ * `words` names the id as `RETIRED_PLUGIN_IDS` stores it. Occurrences of `text`
+ * in `path` are masked with equal-length spaces to keep surrounding text separate;
+ * the rest of each line is still scanned. In `text`,
+ * `{id}` stands for the id as spelled and `{Id}` for its Capitalized words,
+ * so this list never spells an id either.
+ */
+export const RETIRED_PLUGIN_ALLOWLIST = Object.freeze([
+  Object.freeze({
+    path: "docs/ko/architecture/architecture.md",
+    words: Object.freeze(["agent", "hub"]),
+    text: "](#10-{id}--사용자-레플리카-메시지-보드-및-업무-보드)",
+    reason: "table-of-contents link to the kept section heading; the anchor is generated from the heading's prose name",
+  }),
+  Object.freeze({
+    path: "docs/ko/architecture/architecture.md",
+    words: Object.freeze(["page", "index"]),
+    text: "{Id}",
+    reason: "the third-party tree-indexing library of that name, not the plugin id",
+  }),
+  Object.freeze({
+    path: "docs/ko/architecture/architecture.md",
+    words: Object.freeze(["page", "index"]),
+    text: "`{id}==0.2.8`",
+    reason: "the third-party library's pip pin, not the plugin id",
+  }),
+]);
 
 const BINARY_PROBE_BYTES = 8000;
 
@@ -102,10 +139,63 @@ export function scanRetiredName(repoRoot, allowlist = ALLOWLIST) {
   return { offenders, stale };
 }
 
+function retiredEntry(words) {
+  const entry = RETIRED_PLUGIN_IDS.find((candidate) => candidate.words.join(" ") === words.join(" "));
+  if (!entry) throw new Error(`[retired-name] allowlist names an unknown retired id: ${words.join(" ")}`);
+  return entry;
+}
+
+function allowedText(entry, text) {
+  const capitalized = entry.words.map((word) => word[0].toUpperCase() + word.slice(1)).join(entry.join);
+  return text.replaceAll("{id}", retiredPluginId(entry)).replaceAll("{Id}", capitalized);
+}
+
+/**
+ * Scan the tracked files of `repoRoot` for retired plugin ids. `offenders` are
+ * `{ path, id, inPath, lines }` for each file and id outside the allowlist;
+ * `stale` are the allowlist entries (as `path: text`) that no line needs.
+ */
+export function scanRetiredPluginIds(repoRoot, allowlist = RETIRED_PLUGIN_ALLOWLIST, ids = RETIRED_PLUGIN_IDS) {
+  const patterns = ids.map((entry) => [retiredPluginId(entry), retiredPluginPattern(entry)]);
+  const allowed = allowlist.map((item) => {
+    const entry = retiredEntry(item.words);
+    return { ...item, id: retiredPluginId(entry), needle: allowedText(entry, item.text) };
+  });
+  const used = new Set();
+  const offenders = [];
+  for (const path of trackedFiles(repoRoot)) {
+    let text = "";
+    try {
+      const bytes = readFileSync(resolve(repoRoot, path));
+      if (!bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) text = bytes.toString("utf8");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    const lines = text.split("\n");
+    for (const [id, pattern] of patterns) {
+      const inPath = pattern.test(path);
+      const hits = [];
+      lines.forEach((line, index) => {
+        let remainder = line;
+        for (const item of allowed) {
+          if (item.path !== path || item.id !== id || !line.includes(item.needle)) continue;
+          used.add(item);
+          remainder = remainder.replaceAll(item.needle, " ".repeat(item.needle.length));
+        }
+        if (pattern.test(remainder)) hits.push(index + 1);
+      });
+      if (inPath || hits.length > 0) offenders.push({ path, id, inPath, lines: hits });
+    }
+  }
+  const stale = allowed.filter((item) => !used.has(item)).map((item) => `${item.path}: ${item.needle}`);
+  return { offenders, stale };
+}
+
 // Same guard shape as `check-source-text-safe.mjs`.
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
 if (import.meta.url === invokedPath) {
-  const { offenders, stale } = scanRetiredName(resolve(import.meta.dirname, ".."));
+  const repoRoot = resolve(import.meta.dirname, "..");
+  const { offenders, stale } = scanRetiredName(repoRoot);
   if (stale.length > 0) {
     console.error(
       "[retired-name] FAIL — these ALLOWLIST entries no longer match any file and\n"
@@ -120,6 +210,24 @@ if (import.meta.url === invokedPath) {
         + "Use the current name (Ave).\n"
         + offenders.map(({ path, inPath, lines }) =>
           `  ${path}${inPath ? " (path)" : ""}${lines.length > 0 ? `:${lines.slice(0, 8).join(",")}` : ""}`).join("\n"),
+    );
+    process.exit(1);
+  }
+  const plugins = scanRetiredPluginIds(repoRoot);
+  if (plugins.stale.length > 0) {
+    console.error(
+      "[retired-name] FAIL — these RETIRED_PLUGIN_ALLOWLIST entries no longer match any line and\n"
+        + "must be removed from scripts/check-retired-name.mjs:\n"
+        + plugins.stale.map((entry) => `  ${entry}`).join("\n"),
+    );
+    process.exit(1);
+  }
+  if (plugins.offenders.length > 0) {
+    console.error(
+      "[retired-name] FAIL — a retired plugin id (scripts/lib/retired-plugin-ids.mjs) appears in these tracked files.\n"
+        + "Use a neutral, hyphen-free fixture id in tests and a generic stand-in in documentation.\n"
+        + plugins.offenders.map(({ path, id, inPath, lines }) =>
+          `  ${path}${inPath ? " (path)" : ""}${lines.length > 0 ? `:${lines.slice(0, 8).join(",")}` : ""} [${id}]`).join("\n"),
     );
     process.exit(1);
   }

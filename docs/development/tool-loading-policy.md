@@ -101,7 +101,7 @@ why a high ceiling is still needed for future large surfaces:
 
 | Plugin | Tools |
 | --- | ---: |
-| `agent-hub` | 43 |
+| `hub` | 43 |
 | `mail` | 30 |
 | `meeting` | 29 |
 | `portal` | 29 |
@@ -249,9 +249,9 @@ The long-term model should add manifest-level grouping, for example:
 {
   "toolGroups": [
     {
-      "id": "agent-hub.work-items",
-      "description": "Create, list, update, and inspect Agent Hub work items.",
-      "tools": ["agent_hub_create_work_item", "agent_hub_list_work_items"]
+      "id": "hub.work-items",
+      "description": "Create, list, update, and inspect hub work items.",
+      "tools": ["hub_create_work_item", "hub_list_work_items"]
     }
   ]
 }

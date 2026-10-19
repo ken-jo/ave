@@ -88,7 +88,7 @@ function cleanupStaleWindowsDevProcesses(userDataDir) {
     "  $targets += Get-CimInstance Win32_Process -Filter \"Name = 'electron.exe'\" | Where-Object { $_.CommandLine -like \"*$mainEntryPath*\" -and $_.CommandLine -like \"*$userDataDir*\" }",
     "}",
     "if ($localIndexerWorkspace.Length -gt 0) {",
-    "  $targets += Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*pageindex_worker.py*' -and $_.CommandLine -like \"*$localIndexerWorkspace*\" }",
+    "  $targets += Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*local_indexer_worker.py*' -and $_.CommandLine -like \"*$localIndexerWorkspace*\" }",
     "}",
     "$targets = @($targets | Group-Object ProcessId | ForEach-Object { $_.Group[0] })",
     "foreach ($target in $targets) {",

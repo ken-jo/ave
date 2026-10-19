@@ -371,7 +371,7 @@ type RoutinePluginScope =
 
 interface RoutineScope {
   pluginIds: RoutinePluginScope;
-  forcedPluginIds: string[]; // 항상 system plugin (e.g., agent-hub) 만
+  forcedPluginIds: string[]; // 항상 system plugin (e.g., 업무 보드 플러그인) 만
   directories: string[];     // routine 실행 시 추가 허용 dirs
 }
 ```
