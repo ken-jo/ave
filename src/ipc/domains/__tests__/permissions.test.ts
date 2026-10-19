@@ -20,12 +20,14 @@ const USER_INTENT = { inputOrigin: "user-keyboard", userActivation: true };
 let askDeferredEntry: ((entry: unknown) => void) | null = null;
 const recordApprovalMock = vi.hoisted(() => vi.fn(async () => undefined));
 
+const resolveProxyMock = vi.hoisted(() => vi.fn(async (_url: string) => "DIRECT"));
 vi.mock("electron", () => ({
   ipcMain: {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
     }),
   },
+  session: { defaultSession: { resolveProxy: resolveProxyMock } },
 }));
 
 // `policyGet` must attach the host-derived `editable` flag. loadPolicy itself
@@ -1630,6 +1632,7 @@ describe("state-mutating permission channels refuse non-host frames", () => {
     [PERMISSIONS.approvalRespond, { requestId: "approval-1", choice: "allow-once" }],
     [PERMISSIONS.policySet, { patch: { requireExplicitApproval: false }, intent: USER_INTENT }],
     [PERMISSIONS.egressGrantRevoke, { scope: "always", host: "github.com", port: 443, intent: USER_INTENT }],
+    [PERMISSIONS.upstreamProxySet, { mode: "off", intent: USER_INTENT }],
     [
       PERMISSIONS.userApprovalRecord,
       {
@@ -1740,6 +1743,8 @@ describe("shell egress grants in Settings", () => {
     expect(await invoke(PERMISSIONS.egressGrantRevoke, { scope: "always", host: "pypi.org", port: 443 }))
       .toMatchObject({ ok: false, error: "user-keyboard-required" });
     for (const [payload, error] of [
+      [{ scope: "conversation", sessionId: "s", host: "pypi.org", port: 443, network: "reserved" }, "invalid-egress-grant-destination"],
+      [{ scope: "conversation", sessionId: "s", host: "pypi.org", port: 443, network: null }, "invalid-egress-grant-destination"],
       [{ scope: "once", host: "pypi.org", port: 443 }, "invalid-egress-grant-scope"],
       [{ scope: "conversation", host: "pypi.org", port: 443 }, "invalid-egress-grant-conversation"],
       [{ scope: "always", origin: "shell", sessionId: "s", host: "pypi.org", port: 443 }, "invalid-egress-grant-conversation"],
@@ -1758,5 +1763,212 @@ describe("shell egress grants in Settings", () => {
       expect(await invoke(PERMISSIONS.egressGrantRevoke, { ...payload, intent: USER_INTENT })).toMatchObject({ ok: false, error });
     }
     expect(egressRuntimeMock.revokeEgressGrant).not.toHaveBeenCalled();
+  });
+
+  it.each(["public", "local", "unverified"] as const)("revokes only the named %s class", async (network) => {
+    await setup();
+    const grant = { scope: "conversation", sessionId: "session-1", host: "pypi.org", port: 443, network };
+    expect(await invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: USER_INTENT })).toEqual({ ok: true });
+    expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenLastCalledWith(grant);
+  });
+});
+
+/** The settings reads/writes the upstream proxy handlers use, in memory. */
+function upstreamSettingsFake(initial: Partial<import("../../../shared/upstream-proxy.js").UpstreamProxySettings> = {}) {
+  const secrets = new Map<string, string>();
+  let upstreamProxy = { mode: "system", manualUrl: "", bypass: "", resolvesNames: false, ...initial };
+  return {
+    secrets,
+    service: {
+      get: vi.fn((key: string) => {
+        if (key !== "upstreamProxy") throw new Error(`unexpected settings read: ${key}`);
+        return structuredClone(upstreamProxy);
+      }),
+      set: vi.fn(async (key: string, value: typeof upstreamProxy) => {
+        if (key !== "upstreamProxy") throw new Error(`unexpected settings write: ${key}`);
+        upstreamProxy = structuredClone(value);
+      }),
+      getSecret: vi.fn((key: string) => secrets.get(key) ?? null),
+      hasStoredSecret: vi.fn((key: string) => secrets.has(key)),
+      setSecret: vi.fn(async (key: string, value: string) => { secrets.set(key, value); }),
+      deleteSecret: vi.fn(async (key: string) => { secrets.delete(key); }),
+    },
+  };
+}
+
+describe("upstream proxy in Settings", () => {
+  let windowSender: { mainFrame: { url: string } } | undefined;
+
+  async function setupUpstream(initial: Parameters<typeof upstreamSettingsFake>[0] = {}) {
+    const ctx = await setup();
+    const fake = upstreamSettingsFake(initial);
+    (ctx.deps as unknown as { settingsService: unknown }).settingsService = fake.service;
+    windowSender = ctx.appWindows[0].webContents as unknown as { mainFrame: { url: string } };
+    Object.assign(windowSender, { mainFrame: { url: "file:///application/index.html" } });
+    return { ...ctx, ...fake };
+  }
+
+  /** A call from the main frame of one of Ave's windows (the only sender the setter accepts). */
+  function fromAppWindow(channel: string, payload?: unknown): unknown {
+    const handler = handlers.get(channel);
+    if (!handler || !windowSender) throw new Error(`no handler or window for ${channel}`);
+    return handler({ sender: windowSender, senderFrame: windowSender.mainFrame }, payload);
+  }
+
+  it("answers the setting, whether credentials are stored, and the effective upstream from the OS resolver", async () => {
+    await setupUpstream();
+    resolveProxyMock.mockResolvedValueOnce("PROXY proxy.test:8080; DIRECT");
+    const saved = { HTTPS_PROXY: process.env.HTTPS_PROXY, https_proxy: process.env.https_proxy, ALL_PROXY: process.env.ALL_PROXY, all_proxy: process.env.all_proxy, HTTP_PROXY: process.env.HTTP_PROXY, http_proxy: process.env.http_proxy };
+    for (const name of Object.keys(saved)) delete process.env[name];
+    try {
+      expect(await invoke(PERMISSIONS.upstreamProxyGet)).toEqual({
+        settings: { mode: "system", manualUrl: "", bypass: "", resolvesNames: false },
+        hasCredentials: false,
+        diagnostic: {
+          url: "https://example.com/",
+          source: "system",
+          routes: [{ kind: "http", endpoint: "proxy.test:8080" }, { kind: "direct" }],
+          skipped: [],
+        },
+      });
+      expect(resolveProxyMock).toHaveBeenCalledWith("https://example.com/");
+    } finally {
+      for (const [name, value] of Object.entries(saved)) if (value !== undefined) process.env[name] = value;
+    }
+  });
+
+  it("stores a manual URL without its credentials, keeps them in the secret store, and never answers them", async () => {
+    const { service, secrets, deps } = await setupUpstream();
+    const result = await fromAppWindow(PERMISSIONS.upstreamProxySet, {
+      mode: "manual", manualUrl: "http://alice:p%40ss@Proxy.Test:3128", bypass: " .lan, 10.0.0.0/8 ", intent: USER_INTENT,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      view: {
+        settings: { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: " .lan, 10.0.0.0/8 ", resolvesNames: false },
+        hasCredentials: true,
+        diagnostic: { source: "manual", routes: [{ kind: "http", endpoint: "proxy.test:3128", credentials: true }] },
+      },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/alice|p%40ss|p@ss/u);
+    expect(service.set).toHaveBeenCalledWith("upstreamProxy", { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: " .lan, 10.0.0.0/8 ", resolvesNames: false });
+    expect(JSON.parse(secrets.get("upstreamProxy.manualCredentials")!)).toEqual({ username: "alice", password: "p@ss", origin: "http://proxy.test:3128" });
+    const audit = JSON.stringify((deps.auditLogger.log as ReturnType<typeof vi.fn>).mock.calls);
+    expect(audit).toContain("[upstream-proxy:set] mode=manual manual=http://proxy.test:3128 credentials=replaced bypassEntries=2 resolvesNames=false");
+    expect(audit).not.toMatch(/alice|p@ss/u);
+    // The same origin spelled again (and other changes) keeps them; clearCredentials removes them.
+    expect(await fromAppWindow(PERMISSIONS.upstreamProxySet, { manualUrl: "http://PROXY.test:3128", bypass: "", intent: USER_INTENT }))
+      .toMatchObject({ ok: true, view: { hasCredentials: true } });
+    expect(await fromAppWindow(PERMISSIONS.upstreamProxySet, { clearCredentials: true, intent: USER_INTENT })).toMatchObject({ ok: true, view: { hasCredentials: false } });
+    expect(secrets.has("upstreamProxy.manualCredentials")).toBe(false);
+  });
+
+  it("preserves bypass whitespace so only an exact singleton asterisk bypasses all", async () => {
+    const { service } = await setupUpstream();
+    const padded = await fromAppWindow(PERMISSIONS.upstreamProxySet, {
+      mode: "manual", manualUrl: "http://proxy.test:80", bypass: " * ", intent: USER_INTENT,
+    });
+    expect(padded).toMatchObject({ ok: true, view: { settings: { bypass: " * " }, diagnostic: { source: "manual", routes: [{ kind: "http", endpoint: "proxy.test:80" }] } } });
+    expect(service.set).toHaveBeenLastCalledWith("upstreamProxy", expect.objectContaining({ bypass: " * " }));
+    const singleton = await fromAppWindow(PERMISSIONS.upstreamProxySet, { bypass: "*", intent: USER_INTENT });
+    expect(singleton).toMatchObject({ ok: true, view: { settings: { bypass: "*" }, diagnostic: { source: "manual-bypass", routes: [{ kind: "direct" }] } } });
+  });
+
+  it("removes stored credentials when the manual proxy's host, port or scheme changes, and says so", async () => {
+    for (const changed of ["http://other.test:3128", "http://proxy.test:8080", "https://proxy.test:3128", ""]) {
+      const { secrets, deps } = await setupUpstream();
+      await fromAppWindow(PERMISSIONS.upstreamProxySet, { mode: "manual", manualUrl: "http://alice:pw@proxy.test:3128", intent: USER_INTENT });
+      expect(secrets.has("upstreamProxy.manualCredentials")).toBe(true);
+      const result = await fromAppWindow(PERMISSIONS.upstreamProxySet, { mode: changed === "" ? "system" : "manual", manualUrl: changed, intent: USER_INTENT });
+      expect(result, changed).toMatchObject({ ok: true, credentialsRemoved: true, view: { hasCredentials: false } });
+      expect(secrets.has("upstreamProxy.manualCredentials"), changed).toBe(false);
+      expect(JSON.stringify((deps.auditLogger.log as ReturnType<typeof vi.fn>).mock.calls)).toContain("credentials=removed");
+    }
+  });
+
+  it.each([
+    ["http://alice:pw@proxy.test:1080", "http://proxy.test:80"],
+    ["http://alice:pw@proxy.test:80", "http://proxy.test:1080"],
+    ["http://alice:pw@proxy.test", "proxy.test:80"],
+    ["alice:pw@proxy.test:80", "http://proxy.test"],
+    ["http://alice:pw@[2001:db8::1]:80", "http://[2001:db8::1]"],
+    ["http://alice:pw@[2001:db8::1]", "[2001:db8::1]:80"],
+  ])("clears credentials when effective service changes from %s to %s", async (initial, changed) => {
+    const { secrets } = await setupUpstream();
+    await fromAppWindow(PERMISSIONS.upstreamProxySet, { mode: "manual", manualUrl: initial, intent: USER_INTENT });
+    expect(secrets.has("upstreamProxy.manualCredentials")).toBe(true);
+    const result = await fromAppWindow(PERMISSIONS.upstreamProxySet, { manualUrl: changed, intent: USER_INTENT });
+    expect(result).toMatchObject({ ok: true, credentialsRemoved: true, view: { hasCredentials: false } });
+    expect(secrets.has("upstreamProxy.manualCredentials")).toBe(false);
+  });
+
+  it.each([
+    ["http://alice:pw@proxy.test:80", "proxy.test:80", "http://proxy.test:80"],
+    ["http://alice:pw@proxy.test", "http://proxy.test:1080", "http://proxy.test:1080"],
+    ["https://alice:pw@proxy.test", "https://proxy.test:443", "https://proxy.test:443"],
+    ["http://alice:pw@[2001:db8::1]", "[2001:db8::1]:1080", "http://[2001:db8::1]:1080"],
+  ])("keeps credentials when effective service is unchanged from %s to %s", async (initial, changed, origin) => {
+    const { secrets } = await setupUpstream();
+    await fromAppWindow(PERMISSIONS.upstreamProxySet, { mode: "manual", manualUrl: initial, intent: USER_INTENT });
+    expect(JSON.parse(secrets.get("upstreamProxy.manualCredentials")!)).toMatchObject({ origin });
+    const result = await fromAppWindow(PERMISSIONS.upstreamProxySet, { manualUrl: changed, intent: USER_INTENT });
+    expect(result).toMatchObject({ ok: true, view: { hasCredentials: true, settings: { manualUrl: origin } } });
+    expect(secrets.has("upstreamProxy.manualCredentials")).toBe(true);
+  });
+
+  it("treats a stored entry without its origin, or bound to another proxy, as no credentials", async () => {
+    const { secrets } = await setupUpstream({ mode: "manual", manualUrl: "http://proxy.test:3128" });
+    secrets.set("upstreamProxy.manualCredentials", JSON.stringify({ username: "u", password: "p" }));
+    expect(await invoke(PERMISSIONS.upstreamProxyGet)).toMatchObject({ hasCredentials: false, diagnostic: { routes: [{ kind: "http", endpoint: "proxy.test:3128" }] } });
+    secrets.set("upstreamProxy.manualCredentials", JSON.stringify({ username: "u", password: "p", origin: "http://elsewhere.test:3128" }));
+    expect(await invoke(PERMISSIONS.upstreamProxyGet)).toMatchObject({ hasCredentials: false, diagnostic: { routes: [{ kind: "http", endpoint: "proxy.test:3128" }] } });
+    // The next save removes the stale entry.
+    expect(await fromAppWindow(PERMISSIONS.upstreamProxySet, { resolvesNames: true, intent: USER_INTENT })).toMatchObject({ ok: true, credentialsRemoved: true });
+    expect(secrets.has("upstreamProxy.manualCredentials")).toBe(false);
+  });
+
+  it("toggles the trusted resolves-names opt-in and the mode", async () => {
+    const { service } = await setupUpstream();
+    expect(await fromAppWindow(PERMISSIONS.upstreamProxySet, { resolvesNames: true, intent: USER_INTENT })).toMatchObject({ ok: true, view: { settings: { resolvesNames: true } } });
+    expect(await fromAppWindow(PERMISSIONS.upstreamProxySet, { mode: "off", intent: USER_INTENT })).toMatchObject({ ok: true, view: { settings: { mode: "off" }, diagnostic: { source: "off", routes: [{ kind: "direct" }] } } });
+    expect(service.set).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses without user intent, and refuses invalid input before writing anything", async () => {
+    const { service } = await setupUpstream();
+    expect(await fromAppWindow(PERMISSIONS.upstreamProxySet, { mode: "off" })).toMatchObject({ ok: false, error: "user-keyboard-required" });
+    for (const [payload, error] of [
+      [{ mode: "pac" }, "invalid-upstream-proxy-mode"],
+      [{ resolvesNames: "yes" }, "invalid-upstream-proxy-resolves-names"],
+      [{ bypass: 7 }, "invalid-upstream-proxy-bypass"],
+      [{ manualUrl: "socks5://s:1080" }, "upstream-proxy-socks-unsupported"],
+      [{ manualUrl: "http://p:1/path" }, "invalid-upstream-proxy-url"],
+      [{ mode: "manual" }, "upstream-proxy-url-required"],
+      [{ mode: "manual", manualUrl: "  " }, "upstream-proxy-url-required"],
+    ] as const) {
+      expect(await fromAppWindow(PERMISSIONS.upstreamProxySet, { ...payload, intent: USER_INTENT }), JSON.stringify(payload)).toMatchObject({ ok: false, error });
+    }
+    expect(service.set).not.toHaveBeenCalled();
+    expect(service.setSecret).not.toHaveBeenCalled();
+  });
+
+  it("accepts a change only from the main frame of one of Ave's windows", async () => {
+    const { service, appWindows } = await setupUpstream();
+    const handler = handlers.get(PERMISSIONS.upstreamProxySet)!;
+    const payload = { mode: "off", intent: USER_INTENT };
+    const mainFrame = (appWindows[0].webContents as unknown as { mainFrame: { url: string } }).mainFrame;
+    // A host-renderer URL in a subframe of the window, or in another webContents.
+    expect(await handler({ sender: appWindows[0].webContents, senderFrame: { url: mainFrame.url } }, payload)).toEqual(UNAUTHORIZED_FRAME);
+    expect(await handler({ sender: { mainFrame }, senderFrame: mainFrame }, payload)).toEqual(UNAUTHORIZED_FRAME);
+    expect(await invoke(PERMISSIONS.upstreamProxySet, payload)).toEqual(UNAUTHORIZED_FRAME);
+    expect(service.set).not.toHaveBeenCalled();
+    expect(await fromAppWindow(PERMISSIONS.upstreamProxySet, payload)).toMatchObject({ ok: true });
+    expect(service.set).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a read from a plugin frame", async () => {
+    await setupUpstream();
+    expect(await invokeRegisteredHandlerWithEvent(handlers, PERMISSIONS.upstreamProxyGet, pluginShellFrameEvent(), undefined)).toEqual(UNAUTHORIZED_FRAME);
+    expect(await invokeRegisteredHandlerWithEvent(handlers, PERMISSIONS.upstreamProxyGet, foreignFrameEvent("https://attacker.example/"), undefined)).toEqual(UNAUTHORIZED_FRAME);
   });
 });

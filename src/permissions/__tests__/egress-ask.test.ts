@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
+import type { SandboxAskCallback, SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxEgressDecisionAuditEntry } from "../../audit/sandbox-audit.js";
 import {
   createEgressAskCallback,
@@ -17,7 +17,7 @@ import {
   type EgressApprovalRequest,
   type EgressApprovalAnswer,
 } from "../egress-ask.js";
-import { EgressGrantStore } from "../egress-grants.js";
+import { EgressGrantStore, egressDestinationNetwork } from "../egress-grants.js";
 import type { EgressIdentityStrength } from "../../shared/sandbox-capability-info.js";
 import type { EgressInvocationOwner, ShellEgressOwner } from "../egress-invocations.js";
 
@@ -36,11 +36,33 @@ const interactiveShell: ShellEgressOwner = {
   context: { sessionId: "session-1", workspaceRoot: "/work/project", approvalSurface: "interactive" },
 };
 
+/** A connection as ASRT decides it: who, and what the destination resolved to. */
+interface Connection {
+  attributionKey: string | undefined;
+  identity: "listener" | "username";
+  addresses: readonly string[];
+  resolution: "pinned" | "upstream";
+}
+
 const listener = (
   token: string,
   addresses: readonly string[] = [],
-  resolution: SandboxAskContext["resolution"] = "pinned",
-): SandboxAskContext => ({ attributionKey: token, identity: "listener", addresses, resolution });
+  resolution: Connection["resolution"] = "pinned",
+): Connection => ({ attributionKey: token, identity: "listener", addresses, resolution });
+
+/**
+ * Both phases of one connection, the way the patched ASRT calls them: the
+ * name phase first, and the resolved phase only after its `true`.
+ */
+function bothPhases(raw: SandboxAskCallback) {
+  return async (params: { host: string; port: number | undefined }, connection: Connection | undefined) => {
+    if (connection === undefined) return raw(params, undefined);
+    const { addresses, resolution, ...who } = connection;
+    const byName = await raw(params, { ...who, phase: "name" });
+    if (byName !== true) return byName;
+    return raw(params, { ...who, phase: "resolved", addresses, resolution });
+  };
+}
 
 let dir: string;
 let grants: EgressGrantStore;
@@ -53,7 +75,7 @@ let askEnabled: boolean;
 let requesterPresent: boolean;
 const signals = new Map<string, AbortSignal>();
 
-function callback() {
+function rawCallback() {
   return createEgressAskCallback({
     identityStrength: () => strength,
     ownerOf: (token) => owners.get(token),
@@ -70,6 +92,10 @@ function callback() {
     audit: (entry) => audit.push(entry),
     now: () => new Date("2026-10-19T00:00:00.000Z"),
   });
+}
+
+function callback() {
+  return bothPhases(rawCallback());
 }
 
 beforeEach(() => {
@@ -125,7 +151,7 @@ describe("egress ask callback — attribution", () => {
   });
 
   it("judges the identity by the kind of process (Windows: MXC shells, srt-win extensions)", async () => {
-    const ask = createEgressAskCallback({
+    const ask = bothPhases(createEgressAskCallback({
       identityStrength: (kind) => (kind === "shell" ? "kernel-channel" : "shared"),
       ownerOf: (token) => owners.get(token),
       abortSignalOf: () => undefined,
@@ -134,7 +160,7 @@ describe("egress ask callback — attribution", () => {
       shellAskEnabled: () => true,
       requester: () => undefined,
       audit: () => {},
-    });
+    }));
     expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
       .toBe(true);
     expect(await ask({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
@@ -237,18 +263,24 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
     ["local (local-network name)", "printer.local", [], "upstream", ["once", "tab"]],
     ["unverified (the upstream resolves the name)", "intranet.corp.test", [], "upstream", ["once", "tab"]],
   ] as const)("offers the %s class exactly its scopes", async (_label, host, addresses, resolution, scopes) => {
+    // Allowed by name (the class the name says), the banner is shown again
+    // when the resolution gives another class; the last banner is that class.
+    answer = async () => ({ allow: true, scope: "once" });
     await callback()({ host, port: 8443 }, listener(TERMINAL_TOKEN, addresses, resolution));
-    expect(asked).toHaveLength(1);
-    expect(asked[0]?.scopes).toEqual(scopes);
-    expect(asked[0]?.network).toBe(_label.split(" ")[0]);
+    const byName = egressDestinationNetwork(host) === _label.split(" ")[0];
+    expect(asked).toHaveLength(byName ? 1 : 2);
+    expect(asked.at(-1)?.scopes).toEqual(scopes);
+    expect(asked.at(-1)?.network).toBe(_label.split(" ")[0]);
   });
 
-  it("refuses a reserved destination without a banner", async () => {
+  it("refuses a reserved address without a banner, and a name that resolves to one after its banner by name", async () => {
+    answer = async () => ({ allow: true, scope: "once" });
     expect(await callback()({ host: "169.254.169.254", port: 80 }, listener(TERMINAL_TOKEN)))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
+    expect(asked).toEqual([]);
     expect(await callback()({ host: "meta.example", port: 80 }, listener(TERMINAL_TOKEN, ["169.254.169.254"])))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
-    expect(asked).toEqual([]);
+    expect(asked.map((request) => [request.destination.host, request.network])).toEqual([["meta.example", "public"]]);
     expect(audit.map((row) => [row.decision, row.basis, row.invocation])).toEqual([
       ["deny", "policy", { kind: "terminal", tabId: TERMINAL_TAB }],
       ["deny", "policy", { kind: "terminal", tabId: TERMINAL_TAB }],
@@ -272,7 +304,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
       ["allow", "grant", "tab", { kind: "terminal", tabId: TERMINAL_TAB }],
     ]);
     expect(grants.listTab()).toEqual([
-      { scope: "tab", tabId: TERMINAL_TAB, host: "github.com", port: 443, grantedAt: expect.any(String) },
+      { scope: "tab", tabId: TERMINAL_TAB, host: "github.com", port: 443, network: "public", grantedAt: expect.any(String) },
     ]);
     // Another tab, and a shell call in the same workspace, are asked again.
     answer = async () => ({ allow: false, reason: "denied by the user" });
@@ -338,34 +370,47 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
   });
 
   it("folds concurrent connections to one destination from one tab into one banner; other destinations ask on their own", async () => {
-    const releases: Array<(value: EgressApprovalAnswer) => void> = [];
-    answer = () => new Promise((resolve) => { releases.push(resolve); });
+    const requestKey = (tabId: string, host: string) => `${tabId}\n${host}`;
+    const releases = new Map<string, (value: EgressApprovalAnswer) => void>();
+    answer = (request) => new Promise((resolve) => {
+      if (request.origin !== "terminal") throw new Error("Expected a terminal approval");
+      releases.set(requestKey(request.tabId, request.destination.host), resolve);
+    });
+    const respond = (tabId: string, host: string, value: EgressApprovalAnswer) => {
+      const key = requestKey(tabId, host);
+      const release = releases.get(key);
+      expect(release).toBeTypeOf("function");
+      releases.delete(key);
+      release!(value);
+    };
     const ask = callback();
+    const otherHost = ask({ host: "registry.npmjs.org", port: 443 }, listener(TERMINAL_TOKEN));
+    const otherTab = ask({ host: "github.com", port: 443 }, listener(OTHER_TERMINAL_TOKEN));
+    await vi.waitFor(() => expect(asked).toHaveLength(2));
     const first = ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
     const second = ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
     const third = ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
-    const otherHost = ask({ host: "registry.npmjs.org", port: 443 }, listener(TERMINAL_TOKEN));
-    const otherTab = ask({ host: "github.com", port: 443 }, listener(OTHER_TERMINAL_TOKEN));
     await vi.waitFor(() => expect(asked).toHaveLength(3));
-    expect(asked.map((request) => [request.origin === "terminal" ? request.tabId : null, request.destination.host])).toEqual([
-      [TERMINAL_TAB, "github.com"],
-      [TERMINAL_TAB, "registry.npmjs.org"],
-      [OTHER_TERMINAL_TAB, "github.com"],
-    ]);
+    expect([...releases.keys()].sort()).toEqual([
+      requestKey(TERMINAL_TAB, "github.com"),
+      requestKey(TERMINAL_TAB, "registry.npmjs.org"),
+      requestKey(OTHER_TERMINAL_TAB, "github.com"),
+    ].sort());
     // Allow once on the shared banner lets one of the three through; the
     // other two fold into the next banner, whose This tab covers both.
-    releases[0]!({ allow: true, scope: "once" });
-    releases[1]!({ allow: false, reason: "denied by the user" });
-    releases[2]!({ allow: false, reason: "denied by the user" });
+    respond(TERMINAL_TAB, "github.com", { allow: true, scope: "once" });
+    respond(TERMINAL_TAB, "registry.npmjs.org", { allow: false, reason: "denied by the user" });
+    respond(OTHER_TERMINAL_TAB, "github.com", { allow: false, reason: "denied by the user" });
     await vi.waitFor(() => expect(asked).toHaveLength(4));
     expect(asked[3]).toMatchObject({ origin: "terminal", tabId: TERMINAL_TAB, destination: { host: "github.com", port: 443 } });
-    releases[3]!({ allow: true, scope: "tab" });
+    expect([...releases.keys()]).toEqual([requestKey(TERMINAL_TAB, "github.com")]);
+    respond(TERMINAL_TAB, "github.com", { allow: true, scope: "tab" });
     expect(await Promise.all([first, second, third])).toEqual([true, true, true]);
     expect(await otherHost).toEqual({ allow: false, reason: "denied by the user" });
     expect(await otherTab).toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toHaveLength(4);
     expect(audit.filter((row) => row.destination.host === "github.com" && row.invocation?.kind === "terminal" && (row.invocation as { tabId: string }).tabId === TERMINAL_TAB)
-      .map((row) => [row.decision, row.basis, row.scope])).toEqual([
+      .map((row) => [row.decision, row.basis, row.scope]).sort()).toEqual([
       ["allow", "prompt", "once"],
       ["allow", "prompt", "tab"],
       ["allow", "prompt", "tab"],
@@ -420,7 +465,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
   it("can take a shorter deadline (the native acceptance test's)", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     answer = answerOnlyOnAbort;
-    const ask = createEgressAskCallback({
+    const ask = bothPhases(createEgressAskCallback({
       identityStrength: () => "kernel-channel",
       ownerOf: (token) => owners.get(token),
       abortSignalOf: () => undefined,
@@ -430,7 +475,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
       requester: () => async (request) => { asked.push(request); return answer(request); },
       audit: () => {},
       terminalAskTimeoutMs: 2_000,
-    });
+    }));
     const pending = ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
     await untilAsked(1);
     await vi.advanceTimersByTimeAsync(2_000);
@@ -628,7 +673,7 @@ describe("egress ask callback — shell calls", () => {
   });
 
   it("keeps the answer when the audit row cannot be written", async () => {
-    const ask = createEgressAskCallback({
+    const ask = bothPhases(createEgressAskCallback({
       identityStrength: () => "kernel-channel",
       ownerOf: (token) => owners.get(token),
       abortSignalOf: () => undefined,
@@ -637,7 +682,7 @@ describe("egress ask callback — shell calls", () => {
       shellAskEnabled: () => true,
       requester: () => undefined,
       audit: () => { throw new Error("disk full"); },
-    });
+    }));
     expect(await ask({ host: "api.fixture.example", port: 443 }, listener(WORKER_TOKEN))).toBe(true);
   });
 });
@@ -669,7 +714,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
     ["[fd00:ec2::254]", 80],
     ["224.0.0.251", 5353],
   ])("refuses %s without asking, for shells and workers alike", async (host, port) => {
-    const ask = createEgressAskCallback({
+    const ask = bothPhases(createEgressAskCallback({
       identityStrength: () => "kernel-channel",
       ownerOf: (token) => owners.get(token),
       abortSignalOf: () => undefined,
@@ -678,7 +723,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
       shellAskEnabled: () => true,
       requester: () => async (request) => { asked.push(request); return { allow: true, scope: "once" }; },
       audit: () => {},
-    });
+    }));
     expect(await ask({ host, port }, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
     expect(await ask({ host, port }, listener(WORKER_TOKEN))).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
     expect(asked).toEqual([]);
@@ -704,13 +749,90 @@ describe("egress ask callback — local, private and reserved destinations", () 
     expect(asked[0]).toMatchObject({ destination: { host: shown, port: 8080 }, scopes: ["once", "conversation"], network: "local" });
   });
 
-  it("treats a name by what it resolved to: a private address caps it at this conversation and a reserved one refuses it", async () => {
-    await callback()({ host: "nas.corp.example", port: 445 }, listener(SHELL_TOKEN, ["10.20.30.40"]));
-    expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatchObject({ destination: { host: "nas.corp.example", port: 445 }, scopes: ["once", "conversation"], network: "local" });
+  it("asks by name, then shows the card again when the name resolves to a private address, and refuses a reserved one", async () => {
+    answer = async () => ({ allow: true, scope: "conversation" });
+    expect(await callback()({ host: "nas.example", port: 445 }, listener(SHELL_TOKEN, ["10.20.30.40"]))).toBe(true);
+    // The name card (public) came first; its answer was held, not granted,
+    // because the name turned out to be private: the local card decided.
+    expect(asked.map((request) => [request.network, request.scopes])).toEqual([
+      ["public", ["once", "conversation", "workspace", "always"]],
+      ["local", ["once", "conversation"]],
+    ]);
+    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "prompt", "conversation"]]);
     expect(await callback()({ host: "meta.example", port: 80 }, listener(SHELL_TOKEN, ["169.254.169.254"])))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
+    expect(asked.map((request) => request.destination.host)).toEqual(["nas.example", "nas.example", "meta.example"]);
+    expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const }, { host: "meta.example", port: 80 }))
+      .toBeUndefined();
+  });
+
+  it("turns an answer given by name into the grant it chose when the name resolves to what the card said", async () => {
+    answer = async () => ({ allow: true, scope: "workspace" });
+    expect(await callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN, ["140.82.112.3"]))).toBe(true);
     expect(asked).toHaveLength(1);
+    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "prompt", "workspace"]]);
+    expect(await grants.matchingScope({ token: OTHER_SHELL_TOKEN, sessionId: "session-2", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const }, { host: "github.com", port: 443 }))
+      .toBe("workspace");
+  });
+
+  it("writes no grant and no audit row for a name-phase allow the resolved phase never confirms", async () => {
+    answer = async () => ({ allow: true, scope: "always" });
+    const raw = rawCallback();
+    expect(await raw({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "name" })).toBe(true);
+    expect(audit).toEqual([]);
+    expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const }, { host: "github.com", port: 443 }))
+      .toBeUndefined();
+  });
+
+  it("ends every refusal it can make from the name in the name phase", async () => {
+    const raw = rawCallback();
+    const byName = (token: string | undefined, host: string, port = 443) =>
+      raw({ host, port }, { attributionKey: token, identity: "listener", phase: "name" });
+    expect(await byName(undefined, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+    expect(await byName("f".repeat(32), "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+    expect(await byName(WORKER_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.workerOffList });
+    expect(await byName(SHELL_TOKEN, "169.254.169.254", 80)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
+    expect(await byName(TERMINAL_TOKEN, "169.254.169.254", 80)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
+    askEnabled = false;
+    expect(await byName(SHELL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.askOff });
+    expect(await byName(TERMINAL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.askOff });
+    askEnabled = true;
+    owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, approvalSurface: "unavailable" } });
+    expect(await byName(SHELL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.headless });
+    expect(asked).toEqual([]);
+  });
+
+  it("matches grants by origin in the name phase: a shell's Always grant does not let a terminal through, nor a tab grant a shell", async () => {
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
+      { host: "github.com", port: 443 });
+    const raw = rawCallback();
+    const byName = (token: string) => raw({ host: "github.com", port: 443 }, { attributionKey: token, identity: "listener", phase: "name" });
+    // The shell passes by its grant, without a card.
+    expect(await byName(SHELL_TOKEN)).toBe(true);
+    expect(asked).toEqual([]);
+    // The terminal is asked in its banner (and refused here by the default answer).
+    expect(await byName(TERMINAL_TOKEN)).toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked.map((request) => request.origin)).toEqual(["terminal"]);
+    // A tab grant, in turn, covers that tab and never a shell call.
+    answer = async () => ({ allow: true, scope: "tab" });
+    expect(await callback()({ host: "pypi.org", port: 443 }, listener(TERMINAL_TOKEN, ["151.101.0.223"]))).toBe(true);
+    answer = async () => ({ allow: false, reason: "denied by the user" });
+    expect(await byName(TERMINAL_TOKEN)).toEqual({ allow: false, reason: "denied by the user" });
+    expect(await raw({ host: "pypi.org", port: 443 }, { attributionKey: TERMINAL_TOKEN, identity: "listener", phase: "name" })).toBe(true);
+    expect(await raw({ host: "pypi.org", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "name" }))
+      .toEqual({ allow: false, reason: "denied by the user" });
+  });
+
+  it("spends a terminal's Allow once on one connection across both phases, never as a grant", async () => {
+    answer = async () => ({ allow: true, scope: "once" });
+    const ask = callback();
+    expect(await ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN, ["140.82.112.3"]))).toBe(true);
+    expect(await ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN, ["140.82.112.3"]))).toBe(true);
+    // Each connection had its own banner: "once" is not held for the next.
+    expect(asked).toHaveLength(2);
+    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "prompt", "once"], ["allow", "prompt", "once"]]);
+    expect(await grants.matchingScope({ token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, workspaceRoot: undefined, origin: "terminal" as const }, { host: "github.com", port: 443 }))
+      .toBeUndefined();
   });
 
   it("does not let an Always grant for a name cover it once it resolves to a private address", async () => {
@@ -741,11 +863,15 @@ describe("egress ask callback — local, private and reserved destinations", () 
     expect(asked[0]).toMatchObject({ network: "local", scopes: ["once", "conversation"] });
   });
 
-  it("refuses a context without the resolved addresses (contract violation)", async () => {
-    expect(await callback()({ host: "example.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener" } as unknown as SandboxAskContext))
+  it("refuses a context without a phase, or a resolved phase without the resolved addresses (contract violation)", async () => {
+    const raw = rawCallback();
+    expect(await raw({ host: "example.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener" } as unknown as SandboxAskContext))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.malformed });
-    expect(await callback()({ host: "example.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener", addresses: [] } as unknown as SandboxAskContext))
+    expect(await raw({ host: "example.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved" } as unknown as SandboxAskContext))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.malformed });
+    expect(await raw({ host: "example.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: [] } as unknown as SandboxAskContext))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.malformed });
+    expect(asked).toEqual([]);
   });
 
   it("never lets a persistent grant cover a local destination", async () => {
@@ -756,7 +882,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
   });
 
   it("still lets a worker reach a local model endpoint its list names", async () => {
-    const ask = createEgressAskCallback({
+    const ask = bothPhases(createEgressAskCallback({
       identityStrength: () => "kernel-channel",
       ownerOf: (token) => owners.get(token),
       abortSignalOf: () => undefined,
@@ -765,7 +891,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
       shellAskEnabled: () => true,
       requester: () => undefined,
       audit: () => {},
-    });
+    }));
     expect(await ask({ host: "localhost", port: 11434 }, listener(WORKER_TOKEN))).toBe(true);
   });
 });

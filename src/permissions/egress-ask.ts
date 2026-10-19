@@ -23,6 +23,20 @@
  * is "This conversation" (`EGRESS_GRANT_SCOPE_LADDERS`); the destination
  * classes cap both the same way (`egressScopesForNetwork`).
  *
+ * It is asked twice per connection (ASRT patch, name-first decisions). The
+ * name phase sees the destination as named, before anything is resolved or
+ * routed: every refusal the table above can reach without an address ends
+ * there, so a destination that will be refused costs no DNS query and no
+ * proxy lookup, and an interactive ask (card or banner) happens by name.
+ * Only a name-phase allow leads to the resolved phase, which sees the
+ * addresses (or that the upstream proxy resolves the name) and re-checks the
+ * destination's class: a person's answer given for one class (say, public)
+ * becomes a grant only if the destination turned out to be that class;
+ * otherwise they are asked again with what it really is (this machine or a
+ * private network, or unverified). Grants are matched by origin in both
+ * phases (a shell grant never covers a terminal, nor the reverse). Only final
+ * decisions are audited.
+ *
  * It fails closed: anything that throws is a deny, and only the literal
  * `true` allows (ASRT 0.0.80 reads every other value as a deny, and
  * `{ allow: false, reason }` as a deny with that reason, which ASRT records in
@@ -46,10 +60,11 @@ import {
   egressGrantScopesFor,
   isValidEgressPort,
   type EgressDestination,
+  type EgressGrantDestination,
   type EgressGrantStore,
   type EgressGrantSubject,
 } from "./egress-grants.js";
-import type { EgressAskOrigin, EgressGrantScope } from "../shared/egress-grant-scopes.js";
+import type { EgressAskOrigin, EgressGrantNetwork, EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { auditInvocationFor, noteCallbackDecision } from "./egress-deny-monitor.js";
 
 /** What the person is asked about: for a shell tool call on its card, for a terminal in its tab. */
@@ -75,7 +90,7 @@ interface EgressApprovalRequestCommon {
   /** The scopes the card offers, narrowest first; never empty. */
   readonly scopes: readonly EgressGrantScope[];
   /** `local`: this machine or a private network; `unverified`: the upstream proxy resolves the name. The card says so for both, and offers no persistent scope. */
-  readonly network: "public" | "local" | "unverified";
+  readonly network: EgressGrantNetwork;
   /** Ends the ask (the call was cancelled, the tab closed, or the banner timed out). */
   readonly abortSignal: AbortSignal | undefined;
 }
@@ -133,12 +148,33 @@ interface Decision {
   readonly basis: EgressDecisionBasis;
   readonly scope: EgressGrantScope | null;
   readonly reason: string | null;
+  /** A name-phase allow: the resolved phase decides, and nothing is audited yet. */
+  readonly provisional?: true;
 }
+
+/** A person's allow given by name, held until the resolved phase confirms the destination's class. */
+interface HeldAnswer {
+  readonly scope: EgressGrantScope;
+  readonly scopes: readonly EgressGrantScope[];
+  readonly network: Exclude<EgressDestinationNetwork, "reserved">;
+  readonly at: number;
+}
+
+/** How long a held answer waits for its resolved phase, and how many are kept. */
+const HELD_ANSWER_TTL_MS = 120_000;
+const MAX_HELD_ANSWERS = 256;
 
 const deny = (basis: EgressDecisionBasis, reason: string, scope: EgressGrantScope | null = null): Decision =>
   ({ allow: false, basis, scope, reason });
 const allow = (basis: EgressDecisionBasis, scope: EgressGrantScope | null): Decision =>
   ({ allow: true, basis, scope, reason: null });
+const provisional = (basis: EgressDecisionBasis, scope: EgressGrantScope | null): Decision =>
+  ({ allow: true, basis, scope, reason: null, provisional: true });
+
+/** A person's answer, before it becomes a grant: the scope chosen among those offered. */
+type AskAnswer =
+  | { readonly allow: true; readonly scope: EgressGrantScope; readonly scopes: readonly EgressGrantScope[] }
+  | { readonly allow: false; readonly decision: Decision };
 
 /**
  * Whether `host:port` matches one allowlist entry, by ASRT's own
@@ -166,35 +202,64 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
    * The ask in flight per (invocation, destination). `onceTaken` marks a
    * terminal's "Allow once" as spent: it lets exactly one connection through.
    */
-  const pendingAsks = new Map<string, { readonly answer: Promise<Decision>; onceTaken: boolean }>();
+  const pendingAsks = new Map<string, { readonly answer: Promise<AskAnswer>; onceTaken: boolean }>();
   const now = deps.now ?? (() => new Date());
   const terminalAskTimeoutMs = deps.terminalAskTimeoutMs ?? TERMINAL_EGRESS_ASK_TIMEOUT_MS;
+
+  /**
+   * Answers given by name, per (invocation, destination), one per connection
+   * that asked, waiting for that connection's resolved phase.
+   */
+  const heldAnswers = new Map<string, HeldAnswer[]>();
+  let heldCount = 0;
+  const holdKey = (token: string, destination: EgressDestination): string => `${token}\n${destination.host}\n${destination.port}`;
+  const holdAnswer = (key: string, answer: HeldAnswer): void => {
+    // Bounded: past the cap the oldest held answers are dropped, and their
+    // connections are asked again in the resolved phase (never allowed).
+    while (heldCount >= MAX_HELD_ANSWERS) {
+      const oldest = heldAnswers.keys().next().value;
+      if (oldest === undefined) break;
+      heldCount -= heldAnswers.get(oldest)!.length;
+      heldAnswers.delete(oldest);
+    }
+    const list = heldAnswers.get(key) ?? [];
+    list.push(answer);
+    heldAnswers.set(key, list);
+    heldCount += 1;
+  };
+  const takeHeldAnswer = (key: string): HeldAnswer | undefined => {
+    const list = heldAnswers.get(key);
+    const held = list?.shift();
+    if (held !== undefined) heldCount -= 1;
+    if (list !== undefined && list.length === 0) heldAnswers.delete(key);
+    return held !== undefined && now().getTime() - held.at < HELD_ANSWER_TTL_MS ? held : undefined;
+  };
 
   const ask = async (
     token: string,
     owner: ShellEgressOwner | TerminalEgressOwner,
     destination: EgressDestination,
     network: Exclude<EgressDestinationNetwork, "reserved">,
-  ): Promise<Decision | typeof ASK_AGAIN> => {
-    // One card (or banner) per (invocation, destination): a client that opens
-    // several connections to one host while it is up waits on the same answer.
-    // A terminal tab's shell is one invocation, so this coalesces per tab.
-    const key = `${token}\n${destination.host}\n${destination.port}`;
+  ): Promise<AskAnswer | typeof ASK_AGAIN> => {
+    // One card (or banner) per (invocation, destination, class): a client that
+    // opens several connections to one host while it is up waits on the same
+    // answer. A terminal tab's shell is one invocation, so this coalesces per tab.
+    const key = `${token}\n${destination.host}\n${destination.port}\n${network}`;
     let pending = pendingAsks.get(key);
     if (pending === undefined) {
       const entry = { answer: startAsk(token, owner, destination, network).finally(() => pendingAsks.delete(key)), onceTaken: false };
       pendingAsks.set(key, entry);
       pending = entry;
     }
-    const decision = await pending.answer;
+    const answer = await pending.answer;
     // A terminal's "Allow once" is one connection, never a standing grant: the
     // first waiter takes it, any other connection that waited on the same
     // banner goes back to asking.
-    if (owner.kind === "terminal" && decision.allow && decision.scope === "once") {
+    if (owner.kind === "terminal" && answer.allow && answer.scope === "once") {
       if (pending.onceTaken) return ASK_AGAIN;
       pending.onceTaken = true;
     }
-    return decision;
+    return answer;
   };
 
   const startAsk = async (
@@ -202,9 +267,9 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     owner: ShellEgressOwner | TerminalEgressOwner,
     destination: EgressDestination,
     network: Exclude<EgressDestinationNetwork, "reserved">,
-  ): Promise<Decision> => {
+  ): Promise<AskAnswer> => {
     const requester = deps.requester();
-    if (requester === undefined) return deny("prompt", EGRESS_DENY_REASONS.noSurface);
+    if (requester === undefined) return { allow: false, decision: deny("prompt", EGRESS_DENY_REASONS.noSurface) };
     const subject = grantSubject(token, owner);
     const origin: EgressAskOrigin = owner.kind;
     // Terminals are confined through the same per-invocation listener as
@@ -250,14 +315,26 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       }
       if (timedOut && !answer.allow) answer = { allow: false, reason: EGRESS_DENY_REASONS.terminalTimeout };
     }
-    if (!answer.allow) return deny("prompt", answer.reason);
+    if (!answer.allow) return { allow: false, decision: deny("prompt", answer.reason) };
     // A scope the card did not offer is the requester's bug, not a grant.
     if (!scopes.includes(answer.scope)) throw new Error(`egress grant: scope ${answer.scope} was not offered`);
+    return { allow: true, scope: answer.scope, scopes };
+  };
+
+  /** Make the grant a person's answer chose, and allow. */
+  const grantAnswer = async (
+    token: string,
+    owner: ShellEgressOwner | TerminalEgressOwner,
+    destination: EgressGrantDestination,
+    scope: EgressGrantScope,
+    scopes: readonly EgressGrantScope[],
+  ): Promise<Decision> => {
     // A terminal's "Allow once" is spent on the connection that asked; it is never held.
-    if (owner.kind === "terminal" && answer.scope === "once") return allow("prompt", "once");
-    await deps.grants.grant(answer.scope, scopes, subject, destination);
-    deps.grants.noteUse(answer.scope, subject, destination);
-    return allow("prompt", answer.scope);
+    if (owner.kind === "terminal" && scope === "once") return allow("prompt", "once");
+    const subject = grantSubject(token, owner);
+    await deps.grants.grant(scope, scopes, subject, destination);
+    deps.grants.noteUse(scope, subject, destination);
+    return allow("prompt", scope);
   };
 
   const decide = async (
@@ -281,47 +358,78 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };
     }
     const destination: EgressDestination = { host: canonicalHost, port };
-    // ASRT resolved the destination once and will dial exactly these
-    // addresses, so a name is judged by what it resolved to as well.
-    const addresses: unknown = context?.addresses;
-    const resolution: unknown = context?.resolution;
-    if (!Array.isArray(addresses) || !addresses.every((a): a is string => typeof a === "string")
-      || (resolution !== "pinned" && resolution !== "upstream")) {
+    const phase: unknown = context?.phase;
+    let network: EgressDestinationNetwork;
+    if (phase === "name") {
+      // Nothing is resolved yet: the class the name alone says (an address
+      // literal, localhost, a local-network name; any other name is public
+      // until the resolved phase says otherwise).
+      network = egressDestinationNetwork(canonicalHost);
+    } else if (phase === "resolved") {
+      // ASRT resolved the destination once and will dial exactly these
+      // addresses, so a name is judged by what it resolved to as well.
+      // Read as unknown: a JavaScript caller is not bound by the declared type.
+      const raw = context as { addresses?: unknown; resolution?: unknown };
+      const addresses: unknown = raw.addresses;
+      const resolution: unknown = raw.resolution;
+      if (!Array.isArray(addresses) || !addresses.every((a): a is string => typeof a === "string")
+        || (resolution !== "pinned" && resolution !== "upstream")) {
+        return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };
+      }
+      // A name the upstream proxy resolves (this host could not, or a
+      // plain-HTTP request names it to the upstream) was never checked: it is
+      // offered at most This conversation, and no persistent grant covers it,
+      // unless its name alone already says more.
+      const judged = egressDestinationNetwork(canonicalHost, addresses);
+      network = resolution === "upstream" && judged === "public" ? "unverified" : judged;
+    } else {
       return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };
     }
-    // A name the upstream proxy resolves (this host could not) was never
-    // checked: it is offered at most This conversation, and no persistent
-    // grant covers it, unless its name alone already says more.
-    const judged = egressDestinationNetwork(canonicalHost, addresses);
-    const network = resolution === "upstream" && judged === "public" ? "unverified" : judged;
     if (network === "reserved") return { owner, decision: deny("policy", EGRESS_DENY_REASONS.reserved) };
+    const resolvedPhase = phase === "resolved";
+    const pass = (decision: Decision): Decision =>
+      resolvedPhase || !decision.allow ? decision : provisional(decision.basis, decision.scope);
     switch (owner.kind) {
       case "worker":
         return {
           owner,
           decision: egressAllowlistMatches(deps.workerAllowedDomains(owner.pluginId), destination)
-            ? allow("extension-allowlist", null)
+            ? pass(allow("extension-allowlist", null))
             : deny("policy", EGRESS_DENY_REASONS.workerOffList),
         };
       case "terminal":
       case "shell": {
+        // Matched by origin: a shell grant never covers a terminal, nor the reverse.
         const subject = grantSubject(token, owner);
+        const grantDestination = { ...destination, network };
+        const key = holdKey(token, destination);
+        if (resolvedPhase) {
+          // An answer given by name becomes a grant only for the class it was given for.
+          const held = takeHeldAnswer(key);
+          if (held !== undefined && held.network === network) {
+            return { owner, decision: await grantAnswer(token, owner, grantDestination, held.scope, held.scopes) };
+          }
+        }
         for (;;) {
-          const matched = await deps.grants.matchingScope(subject, destination);
+          const matched = await deps.grants.matchingScope(subject, grantDestination);
           // A persistent grant never covers a local or private destination (none
           // is offered for one; this also holds for a hand-edited file).
           const granted = matched !== undefined && egressScopesForNetwork([matched], network).length > 0 ? matched : undefined;
           if (granted !== undefined) {
-            deps.grants.noteUse(granted, subject, destination);
-            return { owner, decision: allow("grant", granted) };
+            if (resolvedPhase) deps.grants.noteUse(granted, subject, grantDestination);
+            return { owner, decision: pass(allow("grant", granted)) };
           }
           if (!deps.shellAskEnabled()) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.askOff) };
           // A terminal is always in the foreground lane; a shell call says.
           if (owner.kind === "shell" && owner.context.approvalSurface !== "interactive") {
             return { owner, decision: deny("policy", EGRESS_DENY_REASONS.headless) };
           }
-          const decision = await ask(token, owner, destination, network);
-          if (decision !== ASK_AGAIN) return { owner, decision };
+          const answer = await ask(token, owner, destination, network);
+          if (answer === ASK_AGAIN) continue;
+          if (!answer.allow) return { owner, decision: answer.decision };
+          if (resolvedPhase) return { owner, decision: await grantAnswer(token, owner, grantDestination, answer.scope, answer.scopes) };
+          holdAnswer(key, { scope: answer.scope, scopes: answer.scopes, network, at: now().getTime() });
+          return { owner, decision: provisional("prompt", answer.scope) };
         }
       }
     }
@@ -336,6 +444,8 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       owner = context?.attributionKey === undefined ? undefined : deps.ownerOf(context.attributionKey);
       decision = deny("policy", `${EGRESS_DENY_REASONS.failed}: ${errorMessage(error)}`);
     }
+    // A name-phase allow is not a decision yet: the resolved phase gives it.
+    if (decision.provisional === true) return true;
     // The proxy logs this refusal; the deny monitor must not write a second decision row for it.
     if (!decision.allow) noteCallbackDecision(context?.attributionKey, host, port);
     try {

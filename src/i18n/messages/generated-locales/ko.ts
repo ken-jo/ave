@@ -170,6 +170,7 @@ import { ko as ko_toolGroupCard } from "../generated/toolGroupCard.js";
 import { ko as ko_trustOriginLabel } from "../generated/trustOriginLabel.js";
 import { ko as ko_turnActionBar } from "../generated/turnActionBar.js";
 import { ko as ko_unifiedSearchPanel } from "../generated/unifiedSearchPanel.js";
+import { ko as ko_upstreamProxySettings } from "../generated/upstreamProxySettings.js";
 import { ko as ko_usageDashboard } from "../generated/usageDashboard.js";
 import { ko as ko_useChatState } from "../generated/useChatState.js";
 import { ko as ko_useMemorySearch } from "../generated/useMemorySearch.js";
@@ -357,6 +358,7 @@ export const koMessages: Record<string, string> = {
   ...ko_trustOriginLabel,
   ...ko_turnActionBar,
   ...ko_unifiedSearchPanel,
+  ...ko_upstreamProxySettings,
   ...ko_usageDashboard,
   ...ko_useChatState,
   ...ko_useMemorySearch,
