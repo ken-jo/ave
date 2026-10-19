@@ -1456,8 +1456,10 @@ helper such as cntlm or px plus the `resolvesNames` opt-in). SOCKS entries
 are skipped with an `egress-route` audit row (ASRT has no SOCKS client); an
 answer with nothing usable refuses, never falls back to direct. Answers are
 cached per (scheme, host, port) for 45 s (Electron has no proxy-change
-event); a Settings write clears the cache, so changes apply without a
-restart. Sandboxed processes see only Ave's per-invocation proxy in their
+event); a Settings write clears the cache and closes every open sandbox
+connection (`closeAllInvocationConnections`, direct ones included), so
+changes apply without a restart and no tunnel outlives the setting that
+routed it. Sandboxed processes see only Ave's per-invocation proxy in their
 environment, never the upstream or its credentials. An ended
 invocation's macOS port stays bound, refusing connections, for 30 minutes,
 longer while its process group still runs, and its number is never reused. A wrap with `network.allowLocalBinding` is

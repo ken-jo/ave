@@ -2008,7 +2008,8 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   HTTP 응답(403·5xx 등)은 최종 거절이라 다음 프록시나 DIRECT 로 우회하지 않는다. 407 은 "upstream proxy requires authentication" 으로
   거절하고(NTLM/Kerberos 는 cntlm·px 같은 로컬 도우미 + `resolvesNames`),
   SOCKS 항목은 `egress-route` 감사 행과 함께 건너뛴다. 답은 (scheme, host,
-  port)별 45 초 캐시이며 설정 변경 시 즉시 비워 재시작 없이 적용된다. 샌드박스
+  port)별 45 초 캐시이며 설정 변경 시 즉시 비우고 열린 샌드박스 연결(직접 연결 포함)을
+  모두 닫아, 재시작 없이 적용되고 이전 설정으로 열린 터널이 남지 않는다. 샌드박스
   프로세스의 환경에는 Ave 의 호출별 프록시만 보이고 상위 프록시나 자격 증명은
   들어가지 않는다.
   Linux 는 lane 소켓을 비공개 디렉터리에 두고 wrap 마다 tmpfs 로 가린 뒤 자기

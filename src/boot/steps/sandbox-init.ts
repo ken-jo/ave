@@ -47,6 +47,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       useAppOwnedSandboxTempRoot,
       checkAsrtDependencies,
       isAsrtLinuxRuntimeProbeError,
+      closeAllEgressConnections,
     } = await import("../../permissions/asrt-sandbox.js");
     const {
       setActiveSandboxCapability,
@@ -302,7 +303,13 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
                 skipped: event.skipped.map(mask),
               }).catch((error: unknown) => log.warn(`[sandbox] upstream route audit write failed: ${errorMessage(error)}`));
             }));
-            settingsService.onChanged("upstreamProxy", () => upstream.invalidate());
+            // A change applies to new connections at once (the cache is
+            // dropped) and closes the open ones, which the old setting routed.
+            settingsService.onChanged("upstreamProxy", () => {
+              upstream.invalidate();
+              const closed = closeAllEgressConnections();
+              if (closed > 0) log.info(`[sandbox] upstream proxy setting changed; closed ${closed} open sandbox connection(s)`);
+            });
             return upstream.router;
           })();
           await initializeAsrtSandbox({

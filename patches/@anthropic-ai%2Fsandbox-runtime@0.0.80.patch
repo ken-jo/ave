@@ -95,7 +95,9 @@ the installed package.
    answer refuses with the router's reason. Without a router the static
    `parentProxy` is turned into the same routes, so behaviour is unchanged.
    `parseNoProxy` is exported so the embedder matches its own bypass lists
-   with the same rules. reset() clears the router.
+   with the same rules. `closeAllInvocationConnections()` closes every open
+   connection the proxy allowed (the embedder calls it when the upstream
+   setting changes). reset() clears the router.
 
 5. Name-first decisions (Ave): the ask callback is asked in two phases.
    The name phase (`SandboxAskContext.phase: 'name'`, no addresses) runs
@@ -940,7 +942,7 @@ index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa
  /**
   * Schema for the access mode of a declared credential source.
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1d61fc861a457d6147add1d87c13dc754951e1eb 100644
+index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..82772d1ca512ea9950ba945168e33e2a8f3a1c6c 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
 @@ -45,7 +45,47 @@ export type WrapWithSandboxOptions = {
@@ -991,7 +993,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1d61fc861a457d6147add1d87c13dc75
  /**
   * Interface for the sandbox manager API
   */
-@@ -125,6 +165,58 @@ export interface ISandboxManager {
+@@ -125,6 +165,66 @@ export interface ISandboxManager {
       * none. `reset()` removes them all.
       */
      unregisterCommandNetworkLists(commandId: string): void;
@@ -1036,13 +1038,21 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1d61fc861a457d6147add1d87c13dc75
 +     */
 +    closeInvocationConnections(commandIds: readonly string[], host: string, port: number): number;
 +    /**
++     * Ave patch (upstream routes). Close every open connection the proxy
++     * allowed, for every invocation (e.g. when the upstream that routed them
++     * changes). Returns how many were closed.
++     */
++    closeAllInvocationConnections(): number;
++    /**
 +     * Ave patch (upstream routes). Install the route hook (undefined removes
 +     * it). While set it replaces `network.parentProxy` for routing: each
-+     * destination decision asks it once, before the ask callback, and the
-+     * allowed connection is dialed over the answered routes in order (a
++     * destination decision asks it once, after the ask callback allowed the
++     * name and before its resolved phase, and the
++     * allowed connection is dialed over the answered routes in order (only a
 +     * route that fails to connect hands over to the next; a policy refusal
-+     * ends it, and a 407 refuses with "upstream proxy requires
-+     * authentication"). A loopback destination is
++     * ends it, a 407 refuses with "upstream proxy requires authentication",
++     * and any other HTTP answer from an upstream refuses with "upstream proxy
++     * refused the connection (HTTP <status>)"). A loopback destination is
 +     * always direct; a hook that throws or answers a malformed route refuses
 +     * the destination. Cleared by reset().
 +     */
@@ -1050,7 +1060,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1d61fc861a457d6147add1d87c13dc75
      /**
       * True when the network filter understands an ask callback's
       * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
-@@ -150,4 +242,13 @@ export interface ISandboxManager {
+@@ -150,4 +250,13 @@ export interface ISandboxManager {
   * for this session. This runs outside of the sandbox, on the host machine.
   */
  export declare const SandboxManager: ISandboxManager;
@@ -1066,7 +1076,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1d61fc861a457d6147add1d87c13dc75
  //# sourceMappingURL=sandbox-manager.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a6d220327 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..37206617f1ea077ba63b7a54d979e8305931b78a 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -16,17 +16,21 @@ import * as fs from 'fs';
@@ -1575,7 +1585,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +899,715 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,6 +899,733 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -1663,6 +1673,24 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
 +            continue;
 +        const id = connectionKey(decodeSandboxedCommand(encodeSandboxedCommand(commandId)), host, port);
 +        for (const socket of liveConnections.get(id) ?? []) {
++            socket.destroy();
++            closed++;
++        }
++        liveConnections.delete(id);
++    }
++    return closed;
++}
++/**
++ * Ave patch (upstream routes). Close every open connection the proxy allowed,
++ * for every invocation (tunnels and keep-alive request sockets alike), e.g.
++ * when the upstream they were routed by changes: a connection opened through
++ * the old upstream (or direct, before an upstream was required) must not
++ * outlive the setting that routed it. Returns how many were closed.
++ */
++function closeAllInvocationConnections() {
++    let closed = 0;
++    for (const [id, sockets] of liveConnections) {
++        for (const socket of sockets) {
 +            socket.destroy();
 +            closed++;
 +        }
@@ -2291,7 +2319,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -616,7 +1636,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +1654,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -2304,7 +2332,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -1515,6 +2540,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2558,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -2314,7 +2342,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +2738,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +2756,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -2336,7 +2364,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1734,23 +2765,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1734,23 +2783,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -2371,7 +2399,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1786,6 +2825,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +2843,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -2379,7 +2407,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,6 +2861,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,6 +2879,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -2388,7 +2416,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
      const platform = getPlatform();
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
-@@ -1950,7 +2992,7 @@ function getConfig() {
+@@ -1950,7 +3010,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -2397,7 +2425,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +3031,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +3049,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -2405,7 +2433,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2222,6 +3265,8 @@ async function reset() {
+@@ -2222,6 +3283,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -2414,7 +2442,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,6 +3274,22 @@ async function reset() {
+@@ -2229,6 +3292,22 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -2437,13 +2465,14 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..b88166d632b1a0d75271dbeb0ab0653a
      maskedFileStore.dispose();
  }
  function getSandboxViolationStore() {
-@@ -2336,6 +3397,10 @@ export const SandboxManager = {
+@@ -2336,6 +3415,11 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
 +    openInvocationListener,
 +    closeInvocationListener,
 +    closeInvocationConnections,
++    closeAllInvocationConnections,
 +    setParentProxyRouter,
      askCallbackDenyReason: true,
      cleanupAfterCommand,

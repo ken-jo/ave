@@ -550,6 +550,16 @@ export function closeEgressConnections(tokens: readonly string[], host: string, 
   return loadedSandboxManagerForRelease?.closeInvocationConnections(tokens, host, port) ?? 0;
 }
 
+/**
+ * Close every connection the proxy allowed, for every invocation: when the
+ * upstream proxy setting changes, a tunnel opened through the old upstream
+ * (or direct, before one was required) must not outlive it, as a revoked
+ * grant's connections do not. Returns how many were closed.
+ */
+export function closeAllEgressConnections(): number {
+  return loadedSandboxManagerForRelease?.closeAllInvocationConnections() ?? 0;
+}
+
 /** Set once a listener has been opened, so a release can close it synchronously. */
 let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
 

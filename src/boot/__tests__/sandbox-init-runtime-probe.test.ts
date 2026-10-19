@@ -15,6 +15,7 @@ import {
 
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
+  closeAll: vi.fn(() => 2),
   checkDeps: vi.fn(),
   isProbeError: vi.fn(),
   logger: {
@@ -53,6 +54,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     subscribeAsrtViolations: async () => () => {},
     checkAsrtDependencies: h.checkDeps,
     isAsrtLinuxRuntimeProbeError: h.isProbeError,
+    closeAllEgressConnections: h.closeAll,
   };
 });
 
@@ -185,7 +187,7 @@ describe("initSandboxGate — shell sandbox and plugin-worker confinement scopes
     expect(getHostShellExecutionPlan()).toMatchObject({ requestedSandbox: true, mode: "asrt" });
   });
 
-  it("installs the upstream proxy route hook from the live setting, and clears its cache on a change", async () => {
+  it("installs the upstream proxy route hook from the live setting, and on a change clears its cache and closes open connections", async () => {
     const context = harness.context(true, false);
     await initSandboxGate(context);
 
@@ -193,6 +195,10 @@ describe("initSandboxGate — shell sandbox and plugin-worker confinement scopes
     expect(typeof trusted.upstreamRouter).toBe("function");
     const settings = context.settingsService as unknown as { onChanged: ReturnType<typeof vi.fn> };
     expect(settings.onChanged).toHaveBeenCalledWith("upstreamProxy", expect.any(Function));
+    h.closeAll.mockClear();
+    const onChange = settings.onChanged.mock.calls.find((call) => call[0] === "upstreamProxy")![1] as () => void;
+    onChange();
+    expect(h.closeAll).toHaveBeenCalledOnce();
   });
 
   it("skips ASRT when neither scope is requested", async () => {

@@ -1211,6 +1211,38 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     }
   });
 
+  it("closes every open tunnel on closeAllInvocationConnections (an upstream setting change)", async (test) => {
+    const upstream = await recordingUpstream(200);
+    try {
+      const setup = await withRouter(test, async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstream.port }] }));
+      if (setup === undefined) return;
+      try {
+        const { connect } = await import("node:net");
+        const authorization = Buffer.from(`${setup.name}:${decodeURIComponent(setup.proxy.password)}`).toString("base64");
+        const destination = "open.example.invalid:443";
+        const socket = typeof setup.front === "number" ? connect(setup.front, "127.0.0.1") : connect(setup.front);
+        socket.on("error", () => {});
+        const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+        const opened = new Promise<string>((resolve) => {
+          let head = "";
+          socket.on("data", (chunk: Buffer) => {
+            head += chunk.toString("latin1");
+            if (head.includes("\r\n\r\n")) resolve(head.split("\r\n")[0] ?? "");
+          });
+        });
+        socket.write(`CONNECT ${destination} HTTP/1.1\r\nHost: ${destination}\r\nProxy-Authorization: Basic ${authorization}\r\n\r\n`);
+        expect(await opened).toMatch(/^HTTP\/1\.1 200/u);
+        expect(setup.SandboxManager.closeAllInvocationConnections()).toBe(1);
+        await closed;
+        expect(setup.SandboxManager.closeAllInvocationConnections()).toBe(0);
+      } finally {
+        await setup.SandboxManager.reset();
+      }
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it("drops a route that names one of the proxy's own listeners, and refuses a plain-HTTP name through a proxy route", async (test) => {
     let listenerPort = 0;
     const setup = await withRouter(test, async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: listenerPort }] }));
@@ -1317,7 +1349,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
 
   it("exports setParentProxyRouter on SandboxManager, typed, and clears it on reset", () => {
     const manager = readInstalled("dist/sandbox/sandbox-manager.js");
-    expect(manager).toMatch(/\n\s+closeInvocationConnections,\n\s+setParentProxyRouter,\n/u);
+    expect(manager).toMatch(/\n\s+closeInvocationConnections,\n\s+closeAllInvocationConnections,\n\s+setParentProxyRouter,\n/u);
     expect(functionBody(manager, /\nasync function reset\(/u)).toMatch(/parentProxyRouter = undefined;/u);
     const declarations = readInstalled("dist/sandbox/sandbox-manager.d.ts");
     expect(declarations).toMatch(/\n\s+setParentProxyRouter\(router: ParentProxyRouter \| undefined\): void;/u);
