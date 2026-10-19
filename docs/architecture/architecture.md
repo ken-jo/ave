@@ -1413,7 +1413,7 @@ is told `resolution: "upstream"`, which Ave treats as `unverified` (at most
 This conversation, a card note that the proxy decides the address,
 persistent grants ignored); through an upstream on this host (loopback,
 `localhost`-style names, or one of this host's addresses, e.g. cntlm or px)
-it is refused with a reason, unless the trusted `corporateProxy.resolvesNames`
+it is refused with a reason, unless the trusted `upstreamProxy.resolvesNames`
 setting gives that upstream the remote treatment, which accepts the residual
 risk that the local proxy resolves the name to this host after the check. An ended
 invocation's macOS port stays bound, refusing connections, for 30 minutes,

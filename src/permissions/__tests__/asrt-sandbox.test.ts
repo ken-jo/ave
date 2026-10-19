@@ -725,7 +725,7 @@ describe("asrt-sandbox — parentProxy direct-connect floor (PR #1356 MAJOR, cor
     const prev = process.env.HTTP_PROXY;
     process.env.HTTP_PROXY = "http://host-proxy.invalid:3128";
     try {
-      // The value buildSandboxConfig emits on the DEFAULT path (no corporateProxy).
+      // The value buildSandboxConfig emits on the DEFAULT path (no upstreamProxy).
       const direct = resolveParentProxy({ http: "", https: "" });
       expect(direct).toBeUndefined(); // direct-connect, no inheritance
 
@@ -742,11 +742,11 @@ describe("asrt-sandbox — parentProxy direct-connect floor (PR #1356 MAJOR, cor
     }
   });
 
-  it("a trusted corporateProxy value is honored (still no host-env inheritance path)", () => {
+  it("a trusted upstreamProxy value is honored (still no host-env inheritance path)", () => {
     const prev = process.env.HTTP_PROXY;
     process.env.HTTP_PROXY = "http://host-proxy.invalid:3128";
     try {
-      // What buildSandboxConfig emits when corporateProxy.http is set.
+      // What buildSandboxConfig emits when upstreamProxy.http is set.
       const corp = resolveParentProxy({ http: "http://corp-proxy.example:8080", https: "" });
       expect(corp?.httpUrl?.href).toContain("corp-proxy.example");
       expect(corp?.httpUrl?.href).not.toContain("host-proxy.invalid");
@@ -757,9 +757,9 @@ describe("asrt-sandbox — parentProxy direct-connect floor (PR #1356 MAJOR, cor
   });
 
   it("passes the trusted resolvesNames opt-in for an upstream on this host, and only when set", () => {
-    const off = buildSandboxConfig({ allowedDomains: [], corporateProxy: { http: "http://127.0.0.1:3128" } });
+    const off = buildSandboxConfig({ allowedDomains: [], upstreamProxy: { http: "http://127.0.0.1:3128" } });
     expect(off.network.parentProxy).toEqual({ http: "http://127.0.0.1:3128", https: "" });
-    const on = buildSandboxConfig({ allowedDomains: [], corporateProxy: { http: "http://127.0.0.1:3128", resolvesNames: true } });
+    const on = buildSandboxConfig({ allowedDomains: [], upstreamProxy: { http: "http://127.0.0.1:3128", resolvesNames: true } });
     expect(on.network.parentProxy).toEqual({ http: "http://127.0.0.1:3128", https: "", resolvesNames: true });
     expect(buildSandboxConfig({ allowedDomains: [] }).network.parentProxy).toEqual({ http: "", https: "" });
   });

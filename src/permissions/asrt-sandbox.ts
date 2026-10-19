@@ -279,7 +279,7 @@ export interface TrustedSandboxSettings {
   };
   /**
    * Upstream HTTP/HTTPS proxy the sandbox's egress proxy should chain through
-   * for outbound connections (corporate-proxy passthrough). TRUSTED-ONLY.
+   * for outbound connections (chaining through an upstream proxy). TRUSTED-ONLY.
    *
    * SECURITY (parentProxy is passed explicitly):
    * ASRT's `resolveParentProxy` (parent-proxy.js:46) does
@@ -292,11 +292,11 @@ export interface TrustedSandboxSettings {
    * `network.parentProxy.http`/`.https` explicitly:
    *   - default (this field omitted): empty strings ⇒ ASRT connects directly
    *     and does NOT chain through the host proxy (the secure floor);
-   *   - present: only the explicit, trusted corporate-proxy URLs below are
+   *   - present: only the explicit, trusted upstream-proxy URLs below are
    *     used -- never the ambient host env.
    * This field is the ONLY way to opt a sandbox into a parent proxy.
    */
-  readonly corporateProxy?: {
+  readonly upstreamProxy?: {
     readonly http?: string;
     readonly https?: string;
     readonly noProxy?: string;
@@ -1534,18 +1534,18 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
     // `{ http: '', https: '' }`, NOT `{}`.
     //
     // We therefore always set http/https explicitly:
-    //   - default (no trusted corporateProxy): empty strings ⇒ direct-connect,
+    //   - default (no trusted upstreamProxy): empty strings ⇒ direct-connect,
     //     the secure floor — ASRT never inherits the ambient host proxy;
-    //   - present: only the explicit, trusted corporate-proxy URLs are used.
+    //   - present: only the explicit, trusted upstream-proxy URLs are used.
     // `noProxy` carries no inheritance hazard (its only effect is to BYPASS the
     // proxy, never to add egress), so it is set only when explicitly supplied.
     parentProxy: {
-      http: trustedSettings.corporateProxy?.http ?? "",
-      https: trustedSettings.corporateProxy?.https ?? "",
-      ...(trustedSettings.corporateProxy?.noProxy !== undefined
-        ? { noProxy: trustedSettings.corporateProxy.noProxy }
+      http: trustedSettings.upstreamProxy?.http ?? "",
+      https: trustedSettings.upstreamProxy?.https ?? "",
+      ...(trustedSettings.upstreamProxy?.noProxy !== undefined
+        ? { noProxy: trustedSettings.upstreamProxy.noProxy }
         : {}),
-      ...(trustedSettings.corporateProxy?.resolvesNames === true ? { resolvesNames: true } : {}),
+      ...(trustedSettings.upstreamProxy?.resolvesNames === true ? { resolvesNames: true } : {}),
     },
   };
 

@@ -26,6 +26,6 @@ export const ko: Record<keyof typeof en, string> = {
   "egressApprovalCard.allowAlways": "항상 허용",
   "egressApprovalCard.revokeHint": "워크스페이스·항상 허용은 설정 → 권한 → 네트워크에서 취소할 수 있습니다.",
   "egressApprovalCard.invalid": "이 네트워크 요청은 정보가 빠져 있어 거절만 할 수 있습니다.",
-  "egressApprovalCard.localWarning": "이 컴퓨터 또는 사설 네트워크(로컬 서비스, 사내 호스트, 공유기)입니다. 여기서 허용해도 이 대화까지만 유지됩니다.",
+  "egressApprovalCard.localWarning": "이 컴퓨터 또는 사설 네트워크(로컬 서비스, 내부망 호스트, 공유기)입니다. 여기서 허용해도 이 대화까지만 유지됩니다.",
   "egressApprovalCard.unverifiedWarning": "이 이름은 네트워크의 프록시 서버가 직접 찾기 때문에 Ave 가 연결 대상을 확인하지 못했습니다. 여기서 허용해도 이 대화까지만 유지됩니다.",
 };
