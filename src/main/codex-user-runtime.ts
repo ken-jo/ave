@@ -39,7 +39,7 @@ import {
   verifyCodexExecutableArtifact,
   type CodexExecutableArtifact,
 } from "./codex-executable-artifact.js";
-import { assertCodexExecutableLocation, CodexExecutableLocationError } from "./codex-executable-location.js";
+import { assertCodexExecutableLocation, assertCodexPrivateRuntimeDirectory, CodexExecutableLocationError } from "./codex-executable-location.js";
 import {
   CODEX_SCHEMA_FILES,
   missingCodexProtocolRequirements,
@@ -416,7 +416,7 @@ function createCodexProbeRunner(
 }
 
 export interface CodexUserRuntimeLocatorOptions {
-  /** Ave's isolated runtime directories; probes run with the same environment as the app-server. */
+  /** Ave's isolated account home; compatibility probes use a separate empty home. */
   readonly runtimeHome: string;
   /** Existing private runtime child directory, created by the feature namespace. */
   readonly runtimeDirectory: string;
@@ -548,35 +548,48 @@ export class CodexUserRuntimeLocator {
   }
 
   private async qualify(artifact: CodexExecutableArtifact): Promise<CodexResolvedRuntime> {
-    const runtimeHome = validateCodexRuntimeDirectory(this.options.runtimeHome, startFailed);
-    const sqliteHome = validateCodexRuntimeDirectory(this.options.sqliteHome, startFailed);
     const workspaceDir = validateCodexRuntimeDirectory(this.options.workspaceDir, startFailed);
     const runtimeTempDir = validateCodexRuntimeDirectory(this.options.runtimeTempDir, startFailed);
-    const env = sanitizedCodexConversationEnvironment(runtimeHome, sqliteHome, runtimeTempDir, this.env, this.platform);
-    const probe = async (args: readonly string[]): Promise<string> => {
-      let result: CodexProbeResult;
-      try {
-        await verifyCodexExecutableArtifact(artifact);
-        result = await this.run(artifact.executable, args, { cwd: workspaceDir, env, timeoutMs: PROBE_TIMEOUT_MS });
-      } catch (error) {
-        if (error instanceof CodexExecutableArtifactError || error instanceof CodexExecutableLocationError) {
-          throw invalidExecutable(error.message);
-        }
-        throw startFailed();
-      }
-      if (result.code !== 0) throw startFailed();
-      return result.stdout;
-    };
-
-    const version = parseCodexVersion(await probe(["--version"]));
-    if (!version) throw new CodexUserRuntimeError("codex-runtime-invalid-executable");
-    if (!meetsCodexMinimumVersion(version)) {
-      throw new CodexUserRuntimeError("codex-runtime-version-unsupported", version);
-    }
-    const missing = missingCodexFeatures(await probe(["features", "list"]));
-
-    const schemaDir = await fs.mkdtemp(join(runtimeTempDir, "protocol-schema-"));
+    let probeRoot: string;
     try {
+      await assertCodexPrivateRuntimeDirectory(runtimeTempDir);
+      probeRoot = await fs.mkdtemp(join(runtimeTempDir, "probe-"));
+    } catch {
+      throw startFailed();
+    }
+    try {
+      await assertCodexPrivateRuntimeDirectory(probeRoot);
+      const runtimeHome = join(probeRoot, "home");
+      const sqliteHome = join(probeRoot, "sqlite");
+      const probeTempDir = join(probeRoot, "temp");
+      const schemaDir = join(probeRoot, "schema");
+      for (const directory of [runtimeHome, sqliteHome, probeTempDir, schemaDir]) {
+        await fs.mkdir(directory, { mode: 0o700 });
+        await assertCodexPrivateRuntimeDirectory(directory);
+      }
+      const env = sanitizedCodexConversationEnvironment(runtimeHome, sqliteHome, probeTempDir, this.env, this.platform);
+      const probe = async (args: readonly string[]): Promise<string> => {
+        let result: CodexProbeResult;
+        try {
+          await verifyCodexExecutableArtifact(artifact);
+          result = await this.run(artifact.executable, args, { cwd: workspaceDir, env, timeoutMs: PROBE_TIMEOUT_MS });
+        } catch (error) {
+          if (error instanceof CodexExecutableArtifactError || error instanceof CodexExecutableLocationError) {
+            throw invalidExecutable(error.message);
+          }
+          throw startFailed();
+        }
+        if (result.code !== 0) throw startFailed();
+        return result.stdout;
+      };
+
+      const version = parseCodexVersion(await probe(["--version"]));
+      if (!version) throw new CodexUserRuntimeError("codex-runtime-invalid-executable");
+      if (!meetsCodexMinimumVersion(version)) {
+        throw new CodexUserRuntimeError("codex-runtime-version-unsupported", version);
+      }
+      const missing = missingCodexFeatures(await probe(["features", "list"]));
+
       await probe(["app-server", "generate-json-schema", "--experimental", "--out", schemaDir]);
       const read = async (name: string): Promise<unknown> => {
         try {
@@ -590,13 +603,16 @@ export class CodexUserRuntimeLocator {
         serverNotification: await read(CODEX_SCHEMA_FILES.serverNotification),
         serverRequest: await read(CODEX_SCHEMA_FILES.serverRequest),
       }));
+      if (missing.length > 0) {
+        throw new CodexUserRuntimeError("codex-runtime-incompatible", version, Object.freeze(missing));
+      }
+      return Object.freeze({ ...artifact, version });
+    } catch (error) {
+      if (error instanceof CodexUserRuntimeError) throw error;
+      throw startFailed();
     } finally {
-      await fs.rm(schemaDir, { recursive: true, force: true });
+      await fs.rm(probeRoot, { recursive: true, force: true });
     }
-    if (missing.length > 0) {
-      throw new CodexUserRuntimeError("codex-runtime-incompatible", version, Object.freeze(missing));
-    }
-    return Object.freeze({ ...artifact, version });
   }
 }
 

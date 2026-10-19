@@ -2,24 +2,20 @@
  * Main-process connection manager for the installed subscription sign-in tool.
  *
  * Ave finds the CLI itself — PATH, then the official install locations — and
- * qualifies its identity before use. Verification exercises the actual print
- * protocol; help output is not a complete capability inventory.
+ * qualifies its identity through local checks in an empty probe home. The
+ * user's real turns validate the print protocol and isolation contract.
  *
  * Credentials stay in the official CLI home under an Ave-owned CLAUDE_CONFIG_DIR.
  * This module never reads token files. It only runs the qualified executable for
- * version probes, auth status, browser login, logout, and isolation verification.
+ * local probes, auth status, browser login, and logout. It sends no model prompts.
  */
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve, win32 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { TextDecoder } from "node:util";
-import { JsonLineReader } from "../lib/json-line-reader.js";
 import { isRecord } from "../shared/is-record.js";
-import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { claudeCodePrintArgs, ClaudeCodeStream } from "./claude-code-stream.js";
 import {
   CLAUDE_CODE_SUBSCRIPTION_PROVIDER_ID,
   claudeCodeSubscriptionStatus,
@@ -27,7 +23,6 @@ import {
   type ClaudeCodeSubscriptionStatus,
 } from "../shared/claude-code-subscription.js";
 import { forceKillManagedChildProcess, spawnManaged } from "./managed-child-processes.js";
-import { writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import {
   cliEnvironmentValue,
   cliExecutableCandidates,
@@ -335,7 +330,7 @@ export class ClaudeCodeSubscriptionClient {
     }));
   }
 
-  /** Return the content artifact proved by the most recent connected print verification. */
+  /** Return the artifact admitted by local qualification and connected auth status. */
   async verifiedRuntime(): Promise<ClaudeCodeExecutable> {
     const found = await this.locate();
     if (!found) throw new ClaudeCodeSubscriptionError("claude-code-runtime-not-configured");
@@ -401,7 +396,6 @@ export class ClaudeCodeSubscriptionClient {
     const found = await this.locate();
     if (!found) throw new ClaudeCodeSubscriptionError("claude-code-runtime-not-configured");
     const epoch = this.epoch;
-    const executable = this.requireExecutable();
     this.verifiedVersion = null;
     this.verifiedIdentity = null;
     const auth = await this.readAuthStatus();
@@ -410,7 +404,6 @@ export class ClaudeCodeSubscriptionClient {
       this.assertStillFound(found);
       return this.remember(claudeCodeSubscriptionStatus("unverified", "signed-out", found.version));
     }
-    await this.probePrint(executable);
     await found.artifact.verify();
     this.assertCurrent(epoch);
     this.assertStillFound(found);
@@ -618,20 +611,24 @@ export class ClaudeCodeSubscriptionClient {
     // A probe that ran and exited non-zero is an answer about the binary (an
     // old CLI without `auth`, a different program named `claude`); one that
     // could not run, timed out or was cancelled rejects instead and is retried.
-    const probe = async (args: readonly string[]): Promise<string> => {
-      const output = await this.runCaptured(executable, args, PROBE_TIMEOUT_MS, { anyExitCode: true });
-      if (output.code !== 0) throw incompatible();
-      return output.stdout;
-    };
     this.lastVersion = null;
-    const version = parseClaudeCodeVersion(await probe(["--version"]));
-    this.lastVersion = version;
-    if (!version) throw incompatible();
-    const authHelp = await probe(["auth", "--help"]);
-    if (missingClaudeCodeAuthCommands(authHelp).length > 0) {
-      throw incompatible();
+    await validateClaudeCodeRuntimeDirectories([this.runtimeTempDir]);
+    const probeHome = await fs.mkdtemp(join(this.runtimeTempDir, "probe-"));
+    try {
+      const probe = async (args: readonly string[]): Promise<string> => {
+        const output = await this.runCaptured(executable, args, PROBE_TIMEOUT_MS, { anyExitCode: true, probeHome });
+        if (output.code !== 0) throw incompatible();
+        return output.stdout;
+      };
+      const version = parseClaudeCodeVersion(await probe(["--bare", "--version"]));
+      this.lastVersion = version;
+      if (!version) throw incompatible();
+      const authHelp = await probe(["auth", "--help"]);
+      if (missingClaudeCodeAuthCommands(authHelp).length > 0) throw incompatible();
+      return Object.freeze({ artifact, executable, identity, version });
+    } finally {
+      await fs.rm(probeHome, { recursive: true, force: true });
     }
-    return Object.freeze({ artifact, executable, identity, version });
   }
 
   private async cancelLoginQuietly(): Promise<void> {
@@ -692,39 +689,14 @@ export class ClaudeCodeSubscriptionClient {
     }
   }
 
-  private async probePrint(executable: string): Promise<void> {
-    const path = join(this.runtimeTempDir, `verify-${randomUUID()}.json`);
-    await validateClaudeCodeRuntimeDirectories([this.runtimeTempDir]);
-    try {
-      await writeFileAtomicAtPath(path, `${JSON.stringify({ mcpServers: {} })}\n`);
-      const output = await this.runCaptured(executable, claudeCodePrintArgs(path, []),
-        TOOL_TIMEOUT_POLICY.modelStreamIdleCeilingMs, { input: "Reply with exactly: AVE_OK" });
-      const stream = new ClaudeCodeStream([]);
-      let malformed = false;
-      const reader = new JsonLineReader({
-        maxLineBytes: MAX_OUTPUT_BYTES,
-        onMessage: (event) => { stream.accept(event); },
-        onError: () => { malformed = true; },
-      });
-      reader.write(output.stdout);
-      reader.write("\n");
-      reader.close();
-      if (malformed) throw new Error("invalid-print-stream");
-      stream.assertComplete();
-    } catch {
-      throw new ClaudeCodeSubscriptionError("claude-code-operation-failed");
-    } finally {
-      await fs.rm(path, { force: true });
-    }
-  }
-
   private async runCaptured(
     executable: string,
     args: ReadonlyArray<string>,
     timeoutMs: number,
-    options: { input?: string; acceptedCodes?: readonly number[]; anyExitCode?: boolean } = {},
+    options: { probeHome?: string; acceptedCodes?: readonly number[]; anyExitCode?: boolean } = {},
   ): Promise<{ stdout: string; code: number }> {
     const epoch = this.epoch;
+    if (options.probeHome) await validateClaudeCodeRuntimeDirectories([options.probeHome]);
     await this.prepareExecutable(executable, epoch);
     return await new Promise((resolvePromise, rejectPromise) => {
       let settled = false;
@@ -733,8 +705,8 @@ export class ClaudeCodeSubscriptionClient {
       const stdoutDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
       const child = this.spawn(executable, [...this.artifacts.get(executable)!.args, ...args], {
         cwd: this.workspaceDir,
-        env: sanitizedClaudeCodeEnvironment(this.runtimeHome, process.env, this.platform, this.runtimeTempDir),
-        stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+        env: sanitizedClaudeCodeEnvironment(options.probeHome ?? this.runtimeHome, process.env, this.platform, this.runtimeTempDir),
+        stdio: ["ignore", "pipe", "pipe"],
         shell: false,
         windowsHide: true,
         detached: this.platform !== "win32",
@@ -785,8 +757,7 @@ export class ClaudeCodeSubscriptionClient {
           forceKillManagedChildProcess(child, "claude-code-command-complete");
         } catch { cancel(); }
       });
-      if (!child.stdout || !child.stderr || (options.input !== undefined && !child.stdin)) { cancel(); return; }
-      if (options.input !== undefined) child.stdin!.end(options.input, (error?: Error | null) => { if (error) cancel(); });
+      if (!child.stdout || !child.stderr) cancel();
     });
   }
 }

@@ -84,23 +84,21 @@ function paths() {
   return value;
 }
 
-const QUALIFYING_HELP = "Usage: claude [options]\n";
 const QUALIFYING_AUTH_HELP = "Commands:\n  login [options]   Sign in\n  logout            Log out\n  status [options]  Show status\n";
 
 interface Qualification {
   version?: string;
-  help?: string;
   authHelp?: string;
 }
 
 function isQualificationProbe(args: readonly string[]): boolean {
-  return (args.length === 1 && (args[0] === "--version" || args[0] === "--help"))
+  return (args.length === 2 && args[0] === "--bare" && args[1] === "--version")
     || (args.length === 2 && args[0] === "auth" && args[1] === "--help");
 }
 
 /**
  * Fake CLI processes. With `qualification`, the discovery probes
- * (`--version`, `--help`, `auth --help`) are answered here and recorded in
+ * (`--bare --version`, `auth --help`) are answered here and recorded in
  * `probes`, so `calls` and `started` describe only the account and chat
  * commands a test drives.
  */
@@ -117,9 +115,9 @@ function spawnHarness(
     if (qualification && isQualificationProbe(args)) {
       probes.push([...args]);
       setImmediate(() => {
-        const output = args[0] === "--version"
+        const output = args.includes("--version")
           ? `${qualification.version ?? "2.1.0"} (Claude Code)\n`
-          : args[0] === "--help" ? qualification.help ?? QUALIFYING_HELP : qualification.authHelp ?? QUALIFYING_AUTH_HELP;
+          : qualification.authHelp ?? QUALIFYING_AUTH_HELP;
         child.stdout.write(output);
         child.close();
       });
@@ -200,9 +198,10 @@ describe("CLI conversation boundary", () => {
     ["startup hook", [{ type: "system", subtype: "hook_started", session_id: SESSION }]],
     ["plugin", [{ ...init(), plugins: [{ name: "unexpected" }] }]],
     ["extra result", [init(), result(), result()]],
-  ])("rejects %s instead of synthesizing success", async (_name, records) => {
+  ])("rejects %s instead of synthesizing success", async (name, records) => {
     const h = conversation(); const done = collect(h.runtime.streamTurn("hello"));
-    const expected = expect(done).rejects.toMatchObject({ code: "claude-code-operation-failed" });
+    const expected = expect(done).rejects.toMatchObject({ code: ["native catalog", "plugin"].includes(name)
+      ? "claude-code-runtime-incompatible" : "claude-code-operation-failed" });
     const child = await h.started; for (const record of records) child.send(record); child.close();
     await expected; expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
@@ -402,27 +401,48 @@ describe("CLI account and verification boundary", () => {
     expect(await h.client.getStatus()).toMatchObject({ runtime: "unavailable", connection: "unknown" });
   });
 
-  it("verifies the same isolated stream contract as chat", async () => {
+  it("detects and verifies a connected account without any model prompt or account-home capability probe", async () => {
     const h = clientHarness((child, args) => {
-      if (args[0] === "auth") child.send(auth);
-      else { child.send(init()); child.send(result({ result: "AVE_OK" })); }
+      expect(args).toEqual(["auth", "status"]);
+      child.send(auth);
       child.close();
     });
+    const spawn = h.spawn.getMockImplementation()!;
+    h.spawn.mockImplementation((command, args, options) => {
+      if (isQualificationProbe(args)) {
+        const home = options.env!.HOME!;
+        expect(home).not.toBe(h.runtimeHome);
+        expect(home.startsWith(join(h.runtimeTempDir, "probe-"))).toBe(true);
+        expect(options.env!.CLAUDE_CONFIG_DIR).toBe(home);
+        expect(readdirSync(home)).toEqual([]);
+        if (process.platform !== "win32") expect(statSync(home).mode & 0o777).toBe(0o700);
+      }
+      return spawn(command, args, options);
+    });
+    expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", connection: "connected" });
     expect(await h.client.verify()).toMatchObject({ runtime: "ready", connection: "connected", version: "2.1.0" });
-    const print = h.calls.find((call) => call.args[0] === "-p")!;
-    expect(print.child.input).toBe("Reply with exactly: AVE_OK");
-    expect(print.args).not.toContain("Reply with exactly: AVE_OK");
+    expect(h.probes).toEqual([["--bare", "--version"], ["auth", "--help"]]);
+    for (const [, args, options] of h.spawn.mock.calls) {
+      expect(args).not.toContain("-p"); expect(args).not.toContain("--print");
+      expect(options.stdio).toEqual(["ignore", "pipe", "pipe"]);
+    }
+    for (const call of h.calls) {
+      expect(call.args).toEqual(["auth", "status"]);
+      expect(call.options.env!.HOME).toBe(h.runtimeHome);
+      expect(call.child.input).toBe("");
+    }
     expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
 
-  it("does not retain verification after an invalid print result", async () => {
-    const h = clientHarness((child, args) => {
-      if (args[0] === "auth") child.send(auth);
-      else { child.send(init()); child.send(result({ is_error: true })); }
-      child.close();
+  it("does not retain verification after the account signs out", async () => {
+    let loggedIn = true;
+    const h = clientHarness((child) => {
+      child.send(loggedIn ? auth : { loggedIn: false }); child.close(loggedIn ? 0 : 1);
     });
-    await expect(h.client.verify()).rejects.toThrow();
-    expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", connection: "connected" });
+    await h.client.verify();
+    loggedIn = false;
+    expect(await h.client.verify()).toMatchObject({ runtime: "unverified", connection: "signed-out" });
+    await expect(h.client.verifiedRuntime()).rejects.toMatchObject({ code: "claude-code-runtime-unverified" });
     expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
 
@@ -462,7 +482,7 @@ describe("Claude Code CLI discovery", () => {
     const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
       candidates: cli.candidates, resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest });
     owners.push(client);
-    return { ...harness, ...cli, client };
+    return { ...directories, ...harness, ...cli, client };
   }
 
   it("looks on PATH first, then in the official install locations", () => {
@@ -504,7 +524,7 @@ describe("Claude Code CLI discovery", () => {
     const h = discoveryHarness();
     await h.client.getStatus();
     await h.client.getStatus();
-    expect(h.probes).toEqual([["--version"], ["auth", "--help"]]);
+    expect(h.probes).toEqual([["--bare", "--version"], ["auth", "--help"]]);
     writeCli(h.executable, "#!/bin/sh\n# updated\n");
     await h.client.getStatus();
     expect(h.probes).toHaveLength(4);
@@ -533,6 +553,7 @@ describe("Claude Code CLI discovery", () => {
     await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-incompatible" });
     expect(h.probes).toHaveLength(probed);
     expect(h.calls).toEqual([]);
+    expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
 
   it("reports a CLI whose probe exits non-zero as incompatible, not as a failed operation", async () => {
@@ -541,8 +562,7 @@ describe("Claude Code CLI discovery", () => {
     h.spawn.mockImplementation((_command, args) => {
       const child = new FakeChild(); children.push(child); h.probes.push([...args]);
       setImmediate(() => {
-        if (args[0] === "--version") child.stdout.write("1.0.3 (Claude Code)\n");
-        else if (args[0] === "--help") child.stdout.write(QUALIFYING_HELP);
+        if (args.includes("--version")) child.stdout.write("1.0.3 (Claude Code)\n");
         child.close(args[0] === "auth" ? 1 : 0);
       });
       return child as unknown as ChildProcess;
@@ -576,10 +596,11 @@ describe("Claude Code CLI discovery", () => {
       return child as unknown as ChildProcess;
     });
     await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-unavailable" });
+    expect(readdirSync(h.runtimeTempDir)).toEqual([]);
     expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified", version: "2.1.0" });
   });
 
-  it("starts chat only on the binary verify proved", async () => {
+  it("requires fresh admission when the qualified source changes", async () => {
     const h = clientHarness((child, args) => {
       if (args[0] === "auth") child.send(auth);
       else { child.send(init()); child.send(result()); }
@@ -594,16 +615,35 @@ describe("Claude Code CLI discovery", () => {
     expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified" });
   });
 
-  it("accepts incomplete help only after a real print capability proof", async () => {
+  it("does not require a complete help inventory or a model response before chat", async () => {
     const h = clientHarness((child, args) => {
       if (args[0] === "auth") child.send(auth);
       else { child.send(init()); child.send(result()); }
       child.close();
-    }, { help: "Usage: claude" });
+    });
     await h.client.verify();
     expect(h.probes).not.toContainEqual(["--help"]);
-    expect(h.calls.some((call) => call.args.includes("--strict-mcp-config") && call.args.includes("--no-chrome"))).toBe(true);
+    expect(h.calls.every((call) => call.args[0] === "auth")).toBe(true);
     await expect(h.client.verifiedRuntime()).resolves.toMatchObject({ executable: h.executable });
+  });
+
+  it("reports unsupported startup options on the first real turn without a synthetic model request", async () => {
+    const h = clientHarness((child, args) => {
+      if (args[0] === "auth") { child.send(auth); child.close(); }
+      else { child.stderr.write("error: unknown op"); child.stderr.write("tion '--strict-mcp-config'\n"); child.close(1); }
+    });
+    await h.client.verify();
+    expect(h.calls.every((call) => call.args[0] === "auth")).toBe(true);
+    const artifact = await h.client.verifiedRuntime();
+    const runtime = new ClaudeCodeConversationRuntime({ ...h.client.getRuntimePaths(), ...h,
+      bridge: new SubscriptionToolBridge([]), resolveRuntime: async () => artifact });
+    owners.push(runtime);
+    await expect(collect(runtime.streamTurn("the user's first actual request")))
+      .rejects.toMatchObject({ code: "claude-code-runtime-incompatible" });
+    const turns = h.calls.filter((call) => call.args[0] === "-p");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.child.input).toBe("the user's first actual request");
+    expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
 
   it("refuses the next turn when the verified file is replaced during a session", async () => {
@@ -680,7 +720,12 @@ describe("Claude Code CLI discovery", () => {
 });
 
 describe("Claude service integration", () => {
-  it("revokes a failed actual stream and re-verifies before the next session", async () => {
+  it.each([
+    ["failed result", "subscription-operation-failed"],
+    ["unsupported startup", "subscription-runtime-incompatible"],
+    ["unsupported catalog", "subscription-runtime-incompatible"],
+    ["provider startup", "subscription-operation-failed"],
+  ])("revokes %s and re-verifies before the next session", async (failure, code) => {
     const directories = paths(); const h = spawnHarness(); const audit = vi.fn();
     const namespace: FeatureNamespaceHandle = {
       dir: directories.runtimeHome,
@@ -703,8 +748,13 @@ describe("Claude service integration", () => {
     await service.verify("claude-code");
     const session = await service.openTextSession({ kind: "subscription", provider: "claude-code" });
     const pending = collect(session.streamTurn("hello"));
-    const expected = expect(pending).rejects.toMatchObject({ code: "subscription-operation-failed" });
-    const child = await h.started; child.send(init()); child.send(result({ is_error: true })); child.close(); await expected;
+    const expected = expect(pending).rejects.toMatchObject({ code });
+    const child = await h.started;
+    if (failure === "unsupported startup") { child.stderr.write("error: unknown option '--strict-mcp-config'\n"); child.close(1); }
+    else if (failure === "provider startup") { child.stderr.write("Error: service unavailable\n"); child.close(1); }
+    else if (failure === "unsupported catalog") child.send(init(["Bash"]));
+    else { child.send(init()); child.send(result({ is_error: true })); child.close(); }
+    await expected;
     expect(audit).toHaveBeenCalledExactlyOnceWith({ provider: "claude-code", outcome: "session-failed" });
     expect((await service.getStatus("claude-code")).capabilities.chat).toBe(false);
     await service.openTextSession({ kind: "subscription", provider: "claude-code" });

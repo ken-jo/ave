@@ -20,31 +20,37 @@ required/optional/peer dependency closure are copied through the same no-follow
 hashing and sealing primitives. Dependency directory layout is preserved, so
 nested and hoisted dependencies resolve inside the snapshot. Missing required
 dependencies, package symlinks and unsupported script interpreters fail closed.
+The manifest covers the declared transitive dependency graph. It does not
+enforce a separate direct-dependency allowlist for each package: a package may
+resolve another copied graph member when ordinary module resolution reaches it.
 
 Package entry points run only from that snapshot. A sealed preload registers
 synchronous module resolution/loading hooks before entry execution. Both import
 and require are restricted to built-ins and the copied file manifest. Global
-module search is disabled; undeclared, absolute and network module sources
-outside the manifest are rejected. JavaScript and JSON code are loaded from
+module search is disabled; module sources outside the graph manifest, including
+absolute and network imports, are rejected. JavaScript and JSON code are loaded from
 no-follow handles and checked against their digests at load time. The script
 interpreter must support synchronous loading hooks (22.15.0 or later on the 22.x
 line, 23.5.0 or later on newer lines); unsupported runtimes are rejected before the CLI probe.
 Copied package metadata is also checked around resolution and loading.
-The installed script or its dependencies are never executed by path after a
-check, so an installer replacing them cannot change the invocation's code.
+The invocation uses the private snapshot rather than reopening installed script
+paths, so ordinary installer replacements do not change its copied code.
 
 Qualification, authentication and each turn recheck the original launcher route,
 source dependency graph and the sealed private artifact immediately before
-spawn. A changed source or artifact refuses the next turn of an existing session.
-The ownership trust boundary remains the current account and root, as for native
-artifacts; it does not claim to isolate a compromised current account or replace
-the operating system's native library loader.
+spawn. Changes detected by these checks refuse the next turn of an existing session.
+The final hash check and spawn are not atomic. A same-UID or root attacker who can
+modify the private directory can replace its executable after the check for one
+invocation. That compromise is outside the current-user/root trust boundary;
+there is no unconditional exact-binary guarantee. The operating system's native
+library loader is also outside this content proof.
 
-Discovery checks the version identity and advertised authentication commands.
-Help is not a complete flag inventory. Connected verification exercises the
-actual print arguments and validates the initialization catalog and successful
-structured result before granting chat capability. A signed-out verification
-creates no transport proof. Failed identity qualification is
+Discovery runs only `--bare --version` and `auth --help` in a fresh empty private
+probe home, with stdin ignored. These local checks need no authentication or
+model request; help is not treated as a complete flag inventory. Verification
+combines that admission with the account's local `auth status` and an artifact
+recheck. It sends no prompt and consumes no subscription model usage. A signed-out
+verification creates no transport proof. Failed identity qualification is
 `claude-code-runtime-incompatible`, shown as update guidance; verdicts are
 cached by content identity and probes that cannot run are retried. An update or
 reinstall requires fresh verification. Authentication
@@ -89,10 +95,15 @@ structured result, and successful process/stdio completion. Malformed or truncat
 output, a failed result, unknown execution events, and extra records after the
 result fail explicitly. Raw stderr is drained without retention or UI projection.
 
-Verification performs version/auth checks and one short print request under the
-same stream contract without tools. Every tool-enabled invocation also validates
-its actual bridge catalog. Failures revoke the subscription service's verification
-proof; another session must verify again.
+The first real user turn performs the print protocol and isolation checks that
+require a model response. Every invocation validates its actual initialization
+and bridge catalog, successful result and process completion. A nonzero startup
+exit with a recognized argument-parser rejection before protocol initialization,
+or a rejected initialization catalog, uses the existing runtime-incompatible
+error and update guidance. Other startup/provider failures remain operation errors.
+Only fixed diagnostic match state is retained from stderr, never its raw text.
+Failures revoke the subscription service's verification proof; another session
+must verify again.
 [The subscription service](../../src/main/subscription-runtime-service.ts) owns
 that revocation and checks its safety epoch on each tracked session call.
 User cancellation stays cancellation.

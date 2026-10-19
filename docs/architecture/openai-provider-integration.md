@@ -76,6 +76,12 @@ starts it:
    location, regular-file status, permissions and content hash are checked
    immediately before every probe and app-server spawn.
 
+Capability probes use an empty private temporary home, database and output
+directory, removed on success or failure. They run only the three local commands
+above, with stdin ignored, and do not receive the persistent account home or
+send a model prompt. Account verification remains a separate auth-status read
+without starting a model turn.
+
 `src/main/codex-native-spawn.ts` preserves loader rejection as a start
 failure. Linux subscription startup requires a host runtime exposing
 `process.execve`; the [native host guide](../guides/native-server.md#build-the-artifact)
@@ -112,7 +118,10 @@ methods and a "Check again" action while no CLI is found, the same with
 and the found CLI's version otherwise. "Check again" is a status read, which
 runs discovery again. These checks do not
 defend against root or an arbitrary malicious process already running as the
-same user.
+same user. The final digest check and spawn are not atomic: a same-UID or root
+attacker able to modify the private artifact directory can swap its executable
+after that check for one invocation. The content proof assumes that ownership
+boundary holds; it is not an unconditional exact-binary guarantee.
 
 Rejected snapshots are discarded even when their negative verdict is cached.
 After a failed qualification, a cleanup failure evicts its verdict and retains

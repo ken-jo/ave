@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -313,6 +313,82 @@ describe("CodexUserRuntimeLocator", () => {
     expect(readdirSync(dirs.temp!)).toEqual([]);
   });
 
+  it("limits qualification to local metadata commands in an empty temporary account home", async () => {
+    const calls: string[][] = [];
+    const base = scriptedRunner({}, calls);
+    const probeRoots = new Set<string>();
+    const run: CodexProbeRunner = async (executable, args, options) => {
+      const home = options.env.HOME!;
+      const probeRoot = dirname(home);
+      probeRoots.add(probeRoot);
+      expect(dirname(probeRoot)).toBe(dirs.temp);
+      expect(options.env.CODEX_HOME).toBe(home);
+      expect(options.env.CODEX_SQLITE_HOME).toBe(join(probeRoot, "sqlite"));
+      expect(options.env.TMPDIR).toBe(join(probeRoot, "temp"));
+      expect(home).not.toBe(dirs.home);
+      expect(options.env.CODEX_SQLITE_HOME).not.toBe(dirs.sqlite);
+      expect(readdirSync(home)).toEqual([]);
+      expect(readdirSync(options.env.CODEX_SQLITE_HOME!)).toEqual([]);
+      for (const path of [probeRoot, home, options.env.CODEX_SQLITE_HOME!, options.env.TMPDIR!]) {
+        if (HOST !== "win32") expect(statSync(path).mode & 0o777).toBe(0o700);
+      }
+      writeFileSync(join(probeRoot, "fixture-state"), "temporary state");
+      return base(executable, args, options);
+    };
+    const { root, locator, dirs } = locatorHarness({ run });
+    writeNative(join(root, "path-bin", NATIVE_NAME));
+    writeFileSync(join(dirs.home!, "auth.json"), "fixture account state");
+    await locator.resolve();
+    expect(probeRoots.size).toBe(1);
+    const probeRoot = [...probeRoots][0]!;
+    expect(calls).toEqual([
+      ["--version"],
+      ["features", "list"],
+      ["app-server", "generate-json-schema", "--experimental", "--out", join(probeRoot, "schema")],
+    ]);
+    expect(existsSync(probeRoot)).toBe(false);
+    expect(readdirSync(dirs.temp!)).toEqual([]);
+    expect(readFileSync(join(dirs.home!, "auth.json"), "utf8")).toBe("fixture account state");
+    await locator.dispose();
+  });
+
+  it.each([
+    { fail: "version" }, { fail: "features" }, { fail: "schema" },
+    { version: "0.1.0" }, { schemas: {} },
+  ] satisfies ProbeScript[])("removes the entire temporary probe root after qualification failure %j", async (script) => {
+    const homes: string[] = [];
+    const base = scriptedRunner(script);
+    const run: CodexProbeRunner = async (executable, args, options) => {
+      homes.push(options.env.HOME!);
+      writeFileSync(join(options.env.HOME!, "fixture-state"), "temporary state");
+      return base(executable, args, options);
+    };
+    const { root, locator, dirs } = locatorHarness({ run });
+    writeNative(join(root, "path-bin", NATIVE_NAME));
+    await expect(locator.resolve()).rejects.toBeInstanceOf(CodexUserRuntimeError);
+    expect(homes.length).toBeGreaterThan(0);
+    for (const home of homes) expect(existsSync(dirname(home))).toBe(false);
+    expect(readdirSync(dirs.temp!)).toEqual([]);
+    await locator.dispose();
+  });
+
+  it("removes a partially initialized probe root when private child creation fails", async () => {
+    const calls: string[][] = [];
+    const { root, locator, dirs } = locatorHarness({ calls });
+    writeNative(join(root, "path-bin", NATIVE_NAME));
+    const mkdir = fs.mkdir.bind(fs);
+    vi.spyOn(fs, "mkdir").mockImplementation((async (...args: Parameters<typeof fs.mkdir>) => {
+      if (dirname(String(args[0])).startsWith(join(dirs.temp!, "probe-")) && String(args[0]).endsWith("sqlite")) {
+        throw Object.assign(new Error("Fixture creation failure"), { code: "EACCES" });
+      }
+      return mkdir(...args);
+    }) as typeof fs.mkdir);
+    await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-start-failed" });
+    expect(calls).toEqual([]);
+    expect(readdirSync(dirs.temp!)).toEqual([]);
+    await locator.dispose();
+  });
+
   it("probes a binary once until the file changes", async () => {
     const calls: string[][] = [];
     const { root, locator } = locatorHarness({ calls });
@@ -458,7 +534,8 @@ describe("CodexUserRuntimeLocator", () => {
       paths.push(executable);
       expect(executable).not.toBe(source);
       expect(readFileSync(executable)).toEqual(original);
-      expect(options.env.CODEX_HOME).toBe(dirname(dirname(dirname(executable))));
+      expect(options.env.CODEX_HOME).not.toBe(dirname(dirname(dirname(executable))));
+      expect(options.env.CODEX_HOME!.startsWith(join(root, "temp", "probe-"))).toBe(true);
       if (args[0] === "--version") {
         renameSync(dirname(source), `${dirname(source)}-old`);
         writeScript(source, "#!/bin/sh\necho replaced\n");

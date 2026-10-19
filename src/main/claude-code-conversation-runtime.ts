@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { TextDecoder } from "node:util";
 import type { StreamEvent, ToolSchema } from "../engine/llm/types.js";
 import { JsonLineReader } from "../lib/json-line-reader.js";
+import { isRecord } from "../shared/is-record.js";
 import { CLAUDE_CODE_SUBSCRIPTION_PROVIDER_ID } from "../shared/claude-code-subscription.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
@@ -29,6 +30,7 @@ import type { ClaudeCodeExecutable } from "./claude-code-executable.js";
 
 const MAX_QUEUED_EVENTS = 256;
 const HOST_TOOL_ACCEPTED = "Ave accepted the host tool request and will provide its result in the next model round.";
+const ARGUMENT_ERROR_MARKERS = ["error: unknown option ", "error: unknown argument ", "error: too many arguments"] as const;
 
 export interface ClaudeCodeConversationRuntimeOptions {
   readonly resolveRuntime: () => Promise<ClaudeCodeExecutable>;
@@ -154,6 +156,8 @@ export class ClaudeCodeConversationRuntime {
       timer = setTimeout(() => fail(operationFailed()), TOOL_TIMEOUT_POLICY.subAgentCeilingFloorMs);
       timer.unref();
       let outputBytes = 0;
+      const argumentErrorOffsets = ARGUMENT_ERROR_MARKERS.map(() => 0);
+      let rejectedArguments = false;
       const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
       const reader = new JsonLineReader({
         maxLineBytes: CLAUDE_CODE_MAX_OUTPUT_BYTES,
@@ -163,7 +167,10 @@ export class ClaudeCodeConversationRuntime {
             for (const value of stream.accept(message)) {
               if (!toolBoundary && value) push({ type: "text_delta", text: value });
             }
-          } catch { fail(operationFailed()); }
+          } catch {
+            fail(isRecord(message) && message.type === "system" && message.subtype === "init" && !stream.initialized
+              ? new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible") : operationFailed());
+          }
         },
         onError: () => fail(operationFailed()),
       });
@@ -184,7 +191,20 @@ export class ClaudeCodeConversationRuntime {
       spawned.stderr?.on("data", (chunk: Buffer | string) => {
         if (failure || ended) return;
         outputBytes += Buffer.byteLength(chunk);
-        if (outputBytes > CLAUDE_CODE_MAX_OUTPUT_BYTES) fail(operationFailed());
+        if (outputBytes > CLAUDE_CODE_MAX_OUTPUT_BYTES) { fail(operationFailed()); return; }
+        // Match fixed parser diagnostics across chunks without retaining stderr.
+        if (!rejectedArguments) {
+          for (const value of typeof chunk === "string" ? Buffer.from(chunk) : chunk) {
+            const byte = value >= 65 && value <= 90 ? value + 32 : value;
+            for (let index = 0; index < ARGUMENT_ERROR_MARKERS.length; index++) {
+              const marker = ARGUMENT_ERROR_MARKERS[index]!;
+              const offset = argumentErrorOffsets[index]!;
+              argumentErrorOffsets[index] = byte === marker.charCodeAt(offset) ? offset + 1 : byte === marker.charCodeAt(0) ? 1 : 0;
+              if (argumentErrorOffsets[index] === marker.length) rejectedArguments = true;
+            }
+            if (rejectedArguments) break;
+          }
+        }
       });
       spawned.once("close", (code, exitSignal) => {
         // Keep the exact handle through finally: a settled root can still
@@ -196,13 +216,17 @@ export class ClaudeCodeConversationRuntime {
           reader.write("\n");
           reader.close();
           if (failure) return;
-          if (code !== 0 || exitSignal) throw operationFailed();
+          if (exitSignal) throw operationFailed();
+          if (code !== 0) {
+            throw !stream.initialized && code !== null && rejectedArguments
+              ? new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible") : operationFailed();
+          }
           if (toolBoundary) return;
           stream.assertComplete();
           push({ type: "message_complete", stopReason: stream.stopReason });
           ended = true;
           notify();
-        } catch { fail(operationFailed()); }
+        } catch (error) { fail(error instanceof ClaudeCodeSubscriptionError ? error : operationFailed()); }
       });
       if (!spawned.stdin || !spawned.stdout || !spawned.stderr) fail(operationFailed());
       assertActive();

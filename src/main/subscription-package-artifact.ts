@@ -179,7 +179,7 @@ registerHooks({
 `;
 }
 
-/** Copy the declared dependency closure and bind module loading to those bytes. */
+/** Bind loading to the declared transitive graph, without per-package import isolation. */
 export async function copySubscriptionPackageArtifact(root: string, script: string, directory: string): Promise<SubscriptionPackageArtifact> {
   const graph = await packageGraph(root);
   const canonicalDirectory = await fs.realpath(directory);
