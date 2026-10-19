@@ -459,7 +459,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle(PERMISSIONS.upstreamProxySet, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxySet, e); return UNAUTHORIZED_FRAME; }
+    // This setter redirects all sandbox egress, and the keyboard-intent marker
+    // below is the renderer's own claim: it also requires the main frame of
+    // one of Ave's own windows (the approvalRespond rule), never a subframe
+    // or another webContents that loads a host-renderer URL.
+    const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
+    const appWindowMainFrame = e.senderFrame !== null && e.senderFrame === e.sender?.mainFrame
+      && windows.some((window) => window?.webContents === e.sender);
+    if (!validateHostRendererSender(e) || !appWindowMainFrame) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxySet, e); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
