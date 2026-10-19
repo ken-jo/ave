@@ -1026,6 +1026,28 @@ describe("one press at a time in a window", () => {
     expect(c.guest.touches).toEqual(["touchStart"]);
   });
 
+  it("frees the window from a page that stops answering inside its press, within the press budget", async () => {
+    const { pages: [a, c] } = await twoPages();
+    const send = c.cdp.send.bind(c.cdp);
+    // Page C stops answering the guard's hit test, a read made while its press holds the window.
+    let hung = false;
+    vi.spyOn(c.cdp, "send").mockImplementation((method, params) => {
+      if (method !== "DOM.getNodeForLocation") return send(method, params);
+      hung = true;
+      return new Promise(() => {});
+    });
+    // Settled into a value at once: it fails while page A's click runs.
+    const stuck = c.click().then(() => null, (err: unknown) => err);
+    await vi.waitFor(() => expect(hung).toBe(true));
+    const started = Date.now();
+    await expect(a.click()).resolves.toBeUndefined();
+    // One press budget (5 s) and margin, not the life of the hung page.
+    expect(Date.now() - started).toBeLessThan(6_500);
+    await expect(stuck).resolves.toMatchObject({ code: "input-not-delivered" });
+    expect(a.guest.touches).toEqual(["touchStart"]);
+    expect(c.guest.touches).toEqual([]);
+  }, 15_000);
+
   it("fails a touch dispatch that never returns, and frees the window for the next press", async () => {
     const { router, pages: [a, c] } = await twoPages();
     router.hang = true;

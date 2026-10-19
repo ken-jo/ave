@@ -588,6 +588,12 @@ export type HostContentOrigin = (guest: WebContents) => { x: number; y: number; 
 const POINTER_ECHO_MAX_MS = 1_000;
 /** How long one pointer or touch dispatch may take; healthy ones return in milliseconds. */
 const INPUT_DISPATCH_MAX_MS = 3_000;
+/**
+ * How long one press may hold its window: every protocol call it makes, the
+ * guard's reads included, and its delivery check share this budget. Its
+ * closing touch cancel, if needed, has its own dispatch budget after it.
+ */
+const PRESS_MAX_MS = 5_000;
 /** How long the tap derived from a press may take to be reported back. */
 const TAP_ECHO_MAX_MS = 1_000;
 const TAP_POLL_MS = 20;
@@ -627,17 +633,33 @@ async function aloneInWindow<T>(windowId: number, signal: AbortSignal, run: () =
   }
 }
 
-function withinDispatchTime<T>(dispatch: Promise<T>): Promise<T> {
-  // A dispatch that loses the race still settles later; nobody awaits it then.
-  dispatch.catch(() => undefined);
+/**
+ * `call`, or a clear failure once `ms` pass or `signal` aborts. Inside a press
+ * every protocol call is bounded this way: a page that stops answering must
+ * not hold its window's press lock (and every other page's press) with it.
+ */
+function within<T>(call: Promise<T>, ms: number, signal?: AbortSignal): Promise<T> {
+  // A call that loses the race still settles later; nobody awaits it then.
+  call.catch(() => undefined);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_resolve, reject) => {
+  let onAbort: (() => void) | undefined;
+  const cut = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new BrowserActionError(
       "input-not-delivered",
-      "the page did not take the input, so the action did not complete; close and reopen the page if this keeps happening",
-    )), INPUT_DISPATCH_MAX_MS);
+      "the page did not answer in time, so the action did not complete; close and reopen the page if this keeps happening",
+    )), Math.max(0, ms));
+    if (signal) {
+      onAbort = () => {
+        try { throwIfAborted(signal); } catch (err) { reject(err); }
+      };
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
   });
-  return Promise.race([dispatch, late]).finally(() => clearTimeout(timer));
+  return Promise.race([call, cut]).finally(() => {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+  });
 }
 
 /**
@@ -647,12 +669,12 @@ function withinDispatchTime<T>(dispatch: Promise<T>): Promise<T> {
  * the recipient: this page reported the marked touch start and end and the
  * tap derived from them, and no other page of the window took a touch.
  */
-async function confirmDelivery(watch: TouchWatch, signal: AbortSignal, requireTap: boolean): Promise<void> {
-  const started = Date.now();
+async function confirmDelivery(watch: TouchWatch, signal: AbortSignal, requireTap: boolean, deadline: number): Promise<void> {
+  const until = Math.min(Date.now() + TAP_ECHO_MAX_MS, deadline);
   // Judge once this page's sequence is complete (or never will be): its
   // derived tap arrives after the touch end.
   let delivery = watch.delivery();
-  while (!(delivery.started && delivery.ended && (delivery.tapped || !requireTap)) && Date.now() - started < TAP_ECHO_MAX_MS) {
+  while (!(delivery.started && delivery.ended && (delivery.tapped || !requireTap)) && Date.now() < until) {
     await sleep(TAP_POLL_MS, signal);
     throwIfAborted(signal);
     delivery = watch.delivery();
@@ -764,6 +786,8 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   // A touch start went out and its sequence is not ended yet.
   let touchOpen = false;
   let touchEnded = false;
+  // While a press holds the window: when its budget runs out.
+  let pressDeadline: number | null = null;
   const cdp: CdpSession = {
     onEvent: (listener) => session.onEvent(listener),
     send: async (method, params) => {
@@ -774,7 +798,9 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       const phase = method === "Input.dispatchTouchEvent" ? params?.type : undefined;
       if (phase === "touchStart") touchOpen = true;
       const sent = session.send(method, params);
-      const result = pointer ? await withinDispatchTime(sent) : await sent;
+      const result = pressDeadline !== null
+        ? await within(sent, Math.min(INPUT_DISPATCH_MAX_MS, pressDeadline - Date.now()), live.signal)
+        : pointer ? await within(sent, INPUT_DISPATCH_MAX_MS) : await sent;
       if (phase === "touchEnd" || phase === "touchCancel") {
         touchOpen = false;
         touchEnded = phase === "touchEnd";
@@ -799,6 +825,8 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       }
       return aloneInWindow(host.windowId, live.signal, async () => {
         touchEnded = false;
+        const deadline = Date.now() + PRESS_MAX_MS;
+        pressDeadline = deadline;
         const watch = attribution.watchTouches(guest.id);
         try {
           let result: Awaited<ReturnType<typeof run>>;
@@ -809,18 +837,19 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
             // completed effect (the action guard decides); it still must have
             // reached this page and no other.
             if (touchEnded && err instanceof BrowserActionError && err.code === "document-changed") {
-              await confirmDelivery(watch, new AbortController().signal, false);
+              await confirmDelivery(watch, new AbortController().signal, false, deadline);
             }
             throw err;
           }
-          await confirmDelivery(watch, live.signal, true);
+          await confirmDelivery(watch, live.signal, true, deadline);
           return result;
         } finally {
+          pressDeadline = null;
           if (touchOpen) {
             // The one dispatch made after a failure, past the document checks:
             // it presses nothing, it only ends the window's open sequence.
             touchOpen = false;
-            await withinDispatchTime(session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })).catch(() => undefined);
+            await within(session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] }), INPUT_DISPATCH_MAX_MS).catch(() => undefined);
           }
           watch.stop();
         }
