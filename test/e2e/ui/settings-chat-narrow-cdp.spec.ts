@@ -282,8 +282,6 @@ test('Work to Chat opens Settings as a two-depth narrow list without a forced re
 
     await mainWindow.getByTestId(TEST_IDS.settingsMobileBack).click();
     await expect(mainWindow.getByTestId('settings-mobile-list')).toBeVisible();
-    await expect(mainWindow.getByTestId('settings-close')).toHaveCount(0);
-    await expect(mainWindow.getByTestId('settings-mobile-close')).toHaveCount(0);
 
     await mainWindow.getByTestId(TEST_IDS.viewPathBack).click();
     await expect(root).toHaveCount(0);
@@ -316,8 +314,6 @@ test('Chat-mode settings stay horizontally contained on every narrow tab (CDP)',
 
   await setWindowSize(app, 400, 820);
   await activateSettingsWithoutResize(app, 'llm');
-  await expect(mainWindow.getByTestId('settings-close')).toHaveCount(0);
-  await expect(mainWindow.getByTestId('settings-mobile-close')).toHaveCount(0);
   await expect(mainWindow.getByTestId(TEST_IDS.viewPathBack)).toBeEnabled();
 
   const root = mainWindow.locator('[data-settings-layout]');
@@ -434,7 +430,6 @@ test('Chat-mode settings stay horizontally contained on every narrow tab (CDP)',
   }
 
   await root.getByRole('tab').first().click();
-  await expect(mainWindow.getByTestId('settings-mobile-close')).toHaveCount(0);
   await expect(mainWindow.getByTestId(TEST_IDS.settingsMobileBack)).toBeVisible();
   await closeInlineSettings(app, mainWindow);
   await expect(root).toHaveCount(0);

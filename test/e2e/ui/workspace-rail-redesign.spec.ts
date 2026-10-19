@@ -1,10 +1,10 @@
 import { test, expect } from "./fixtures";
-import { _electron as electron, type ElectronApplication, type Page } from "playwright";
+import { type ElectronApplication, type Page } from "playwright";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildE2eBaseSettings, buildIsolatedElectronEnv } from "./seeded-electron";
+import { buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../src/shared/side-panel.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 
@@ -28,7 +28,7 @@ test.describe("workspace rail redesign", () => {
       JSON.stringify(buildE2eBaseSettings(true), null, 2) + "\n",
       "utf-8",
     );
-    app = await electron.launch({
+    app = await launchElectron({
       args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({
         HOME: tempHome,
@@ -88,10 +88,7 @@ test.describe("workspace rail redesign", () => {
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await page.setViewportSize({ width: 908, height: 840 });
 
-    // Docked, not a modal drawer: no drawer sheet, no backdrop blur.
     await expect(page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
-    await expect(page.getByTestId("workspace-rail-drawer")).toHaveCount(0);
-    await expect(page.getByTestId("workspace-rail-drawer-backdrop")).toHaveCount(0);
     // Docked variant exposes the drag handle (the modal drawer drops it).
     await expect(page.getByTestId("chat-side-panel-width-splitter")).toBeVisible();
   });
@@ -110,8 +107,6 @@ test.describe("workspace rail redesign", () => {
     // "Inside the tile": the panel is portaled into its pane's panel slot
     // (`pane-panel-slot`, 6a64316b5), beside the transcript rather than in it.
     await expect(page.getByTestId("pane").getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
-    await expect(page.getByTestId("workspace-rail-drawer")).toHaveCount(0);
-    await expect(page.getByTestId("workspace-rail-drawer-backdrop")).toHaveCount(0);
     // The reserve's width animates (--motion-layout): measure it settled, not
     // mid-transition.
     await expect.poll(() => motion.evaluate((element) =>

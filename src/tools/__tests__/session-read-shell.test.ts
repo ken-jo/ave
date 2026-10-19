@@ -1,14 +1,14 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { cleanupAsrtSandboxAfterCommand, getBuiltinShellSessionReadPolicy, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, useAppOwnedSandboxTempRoot } from "../../permissions/asrt-sandbox.js";
 import { spawnConfinedChild } from "../../permissions/confined-child.js";
 import { baseAllowedDirectories } from "../../permissions/base-allowed-directories.js";
 import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability } from "../../permissions/sandbox-capability.js";
-import { asrtCanInitialize } from "../../permissions/__tests__/test-helpers.js";
+import { sandboxCasesRun } from "../../plugins/isolation/__tests__/sandbox-cases.js";
 import { sessionStorePath } from "../../shared/session-store-path.js";
 import { BashTool, spawnWithSandbox } from "../shell-tools.js";
 import { prepareSandboxFixture } from "./support/prepared-shell.js";
@@ -18,6 +18,14 @@ let root: string;
 let cwd: string;
 let profile: string;
 let sessions: string;
+
+/**
+ * Skip, with its reason, where ASRT cannot initialise; fail instead where a
+ * confinement job asks for real sandbox cases (AVE_REQUIRE_SANDBOX_CASES=1).
+ */
+async function requireSandbox(test: TestContext): Promise<void> {
+  if (!(await sandboxCasesRun())) test.skip("ASRT cannot initialize (sandbox dependencies missing)");
+}
 let transcript: string;
 const CONTENT = "saved-session-native-fixture\n";
 
@@ -43,7 +51,7 @@ afterEach(async () => {
 
 describe.runIf(process.platform === "darwin" || process.platform === "linux")("saved-session shell confinement", () => {
   it("reads default application history with the host bootstrap temp root", async (test) => {
-    if (!(await asrtCanInitialize())) return test.skip();
+    await requireSandbox(test);
     const defaultProfile = join(root, ".ave");
     const defaultSessions = sessionStorePath(defaultProfile);
     const defaultTranscript = join(defaultSessions, "conversation.jsonl");
@@ -84,7 +92,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
   });
 
   it("native sandbox reads configured history while preserving the write floor and neighboring denies", async (test) => {
-    if (!(await asrtCanInitialize())) return test.skip();
+    await requireSandbox(test);
     const neighbors = ["secrets", "audit", "routine"].map((namespace) => {
       const dir = join(profile, namespace); mkdirSync(dir);
       const path = join(dir, "private.jsonl"); writeFileSync(path, "private-neighbor-fixture");
@@ -135,7 +143,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
   });
 
   it("public BashTool reads a configured session under strict path scope", async (test) => {
-    if (!(await asrtCanInitialize())) return test.skip();
+    await requireSandbox(test);
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
     setActiveSandboxCapability({
       kind: "asrt", confidence: "verified", platform: process.platform,
@@ -153,7 +161,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
   });
 
   it("native sandbox grants builtin history reads without opening the same file to a confined child", async (test) => {
-    if (!(await asrtCanInitialize())) return test.skip();
+    await requireSandbox(test);
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
     const command = "/bin/cat " + shellQuote(transcript);
     const builtin = await spawnWithSandbox(command, cwd, [cwd], 15, prepareSandboxFixture(command, cwd));
@@ -194,7 +202,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
   });
 
   it.for(["user-data", "custom-literal", "custom-glob"] as const)("native sandbox preserves %s protection over the configured session root", async (kind, test) => {
-    if (!(await asrtCanInitialize())) return test.skip();
+    await requireSandbox(test);
     const denyRead = kind === "custom-literal" ? [profile] : kind === "custom-glob" ? [`${root}/configured-*`] : [];
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, denyRead,
       ...(kind === "user-data" ? { userDataDir: profile } : {}),
