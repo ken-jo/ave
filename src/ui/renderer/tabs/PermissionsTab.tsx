@@ -47,6 +47,7 @@ import {
 } from "../../../shared/parent-adjudication-bounds.js";
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { AuditPanel } from "../components/permissions/AuditPanel.js";
+import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { getApi } from "../api-client.js";
@@ -1460,6 +1461,15 @@ export function PermissionsTab({
               </div>
             )
           ) : null}
+        </SettingsSection>
+
+        {/* ── Network: what the sandbox proxy refused ── */}
+        <SettingsSection
+          data-settings-section="permissions-network"
+          title={t("permissionsTab.networkTitle")}
+          description={t("permissionsTab.networkDescription")}
+        >
+          <EgressDenialsList />
         </SettingsSection>
 
         {/* ── Sub-agent parent adjudication (tier 2 of the approval chain) ── */}

@@ -44,6 +44,7 @@ import { createSandboxProcessHome } from "../sandbox-process-home.js";
 import { bundledWrappedEnv, wrapBundledCommand } from "../../sandbox/wrap-bundled-command.js";
 import { getConfiguredSessionReadPolicy } from "../sensitive-paths.js";
 import { asrtCanInitialize } from "./test-helpers.js";
+import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 
 const hostPlatform = process.platform;
 const SECRET = "user-data-the-child-must-not-read";
@@ -209,8 +210,8 @@ describe("the shared layer withholds grants under the protected floor", () => {
       "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings,socketDir)));",
       "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(trustedSettings)));",
       "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(ASRT_LINUX_RUNTIME_PROBE_COMMAND,undefined,undefined,abortController.signal,process.cwd());",
-      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,buildPerCommandSandboxCustomConfig(options.filesystem),options.abortSignal);",
-      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,buildPerCommandSandboxCustomConfig(options.filesystem),options.abortSignal,undefined,wrapOptions);",
+      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,buildPerCommandSandboxCustomConfig(options.filesystem),options.abortSignal,undefined,{commandId:options.commandId,...(wrapOptions??{})});",
+      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,buildPerCommandSandboxCustomConfig(options.filesystem),options.abortSignal,undefined,{commandId:options.commandId});",
     ]);
   });
 });
@@ -341,7 +342,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     const home = createSandboxProcessHome();
     try {
       const own = `${probe()}; echo ${OWN_TEMP} > "$TMPDIR/own" && cat "$TMPDIR/own"; echo ${OWN_HOME} > "$HOME/own" && cat "$HOME/own"`;
-      const { child, confinement } = await spawnConfinedChild({
+      const { child, confinement } = await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
         command: "/bin/sh",
         args: ["-c", own],
         label: "protected-write-roots",
@@ -369,7 +370,7 @@ describe("a confined child cannot reach user data through a grant", () => {
 
   it("as a tool command", async () => {
     if (!sandboxRuns) return;
-    const { argv, env } = await wrapToolCommand(probe(), {
+    const { argv, env } = await wrapToolCommand(probe(), { commandId: TEST_COMMAND_ID,
       binShell: "/bin/sh",
       filesystem: {
         allowWrite: [partitions, work],
@@ -397,7 +398,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     // bundled hooks, MCP stdio and the terminal restate the sensitive floor
     // alone, so the wrap has to add the custom denies itself.
     if (!sandboxRuns) return;
-    const { argv, env } = await wrapToolCommand(`cat ${join(customDeny, "s")}; echo probe-finished`, {
+    const { argv, env } = await wrapToolCommand(`cat ${join(customDeny, "s")}; echo probe-finished`, { commandId: TEST_COMMAND_ID,
       binShell: "/bin/sh",
       filesystem: {
         allowRead: [work], allowWrite: [work],
@@ -417,7 +418,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     writeFileSync(join(sessions, "s.jsonl"), SECRET);
     const home = createSandboxProcessHome();
     try {
-      const { argv, env } = await wrapBundledCommand({
+      const { argv, env } = await wrapBundledCommand({ egressOwner: TEST_WORKER_EGRESS_OWNER,
         command: "/bin/sh",
         args: ["-c", `cat ${join(sessions, "s.jsonl")}; echo probe-finished`],
         sandboxHome: home,
@@ -512,7 +513,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     const layout = pluginsLayout();
     const home = createSandboxProcessHome();
     try {
-      const { child } = await spawnConfinedChild({
+      const { child } = await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
         command: "/bin/sh",
         args: ["-c", pluginsProbe(layout, [join(layout.own, "code.txt")])],
         label: "protected-write-roots",
@@ -542,7 +543,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     const layout = pluginsLayout();
     const home = createSandboxProcessHome();
     try {
-      const { argv, env } = await wrapBundledCommand({
+      const { argv, env } = await wrapBundledCommand({ egressOwner: TEST_WORKER_EGRESS_OWNER,
         command: "/bin/sh",
         args: ["-c", pluginsProbe(layout, [join(layout.generation, "hook.txt")])],
         sandboxHome: home,
@@ -569,7 +570,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     try {
       // The roots `agent-plugin-hook-runtime.ts` and `agent-plugin-mcp.ts`
       // hand the wrap: the installed version it runs from, the data it writes.
-      const { argv, env } = await wrapBundledCommand({
+      const { argv, env } = await wrapBundledCommand({ egressOwner: TEST_WORKER_EGRESS_OWNER,
         command: "/bin/sh",
         args: ["-c", pluginsProbe(layout, [join(layout.ownAgentGeneration, "hook.txt")], layout.ownAgentData)],
         sandboxHome: home,

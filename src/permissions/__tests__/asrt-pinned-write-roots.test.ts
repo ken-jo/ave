@@ -22,6 +22,7 @@ import {
   wrapWorkerCommand,
 } from "../asrt-sandbox.js";
 import { asrtCanInitialize } from "./test-helpers.js";
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 
 const MARKER = ".ave-pinned-write-root";
 let home: string;
@@ -53,7 +54,7 @@ describe("pinned write roots", () => {
       expect(existsSync(appOwnedSandboxTempRoot()), "the temp root existed before the first wrap").toBe(false);
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const { dir: tempDir } = ensureSandboxTempPrincipalDir({ kind: "plugin", id: "pinned" });
-      const { argv } = await wrapWorkerCommand("true", {
+      const { argv } = await wrapWorkerCommand("true", { commandId: TEST_COMMAND_ID,
         filesystem: {
           allowWrite: [tempDir, dataDir],
           denyRead: [],

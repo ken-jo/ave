@@ -87,6 +87,7 @@ import type {
   SandboxWindowsStatusInfo,
   SandboxWindowsInstallResult,
 } from "../../shared/sandbox-capability-info.js";
+import type { EgressDenialRow } from "../../shared/egress-denials.js";
 
 // Re-export MCP types for renderer-side consumers (type-only, no main-process runtime)
 export type { McpServerConfig, McpServerConfigDto, McpServerState };
@@ -1603,6 +1604,12 @@ export type AvePermissionApi = {
   sandboxCapability: () => Promise<SandboxCapabilityInfo>;
   /** Read-only: Windows srt-win install readiness (group + WFP + verbatim instructions). */
   sandboxWindowsStatus: () => Promise<SandboxWindowsStatusInfo>;
+  /**
+   * Read-only: the connections the sandbox proxy refused in the last 24 h,
+   * newest first, each with the tool call, terminal tab or plugin process
+   * that opened it ("unattributed" when no live invocation held its key).
+   */
+  egressDenialsRecent: () => Promise<EgressDenialRow[] | IpcErrorResult>;
   /**
    * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
    * UAC prompt). The ONLY user-consented privilege-escalation entry point —

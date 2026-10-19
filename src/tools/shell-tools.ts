@@ -33,7 +33,7 @@ import {
   type ToolExecutionResult,
 } from "./base.js";
 import { buildHostShellChildEnv, buildSafeChildEnv, buildSandboxedChildEnv } from "./safe-env.js";
-import { prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
+import { prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellToolUseId, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { POWER_SHELL_AST_PARSER, normalizePowerShellAstSummary, type PowerShellArgument, type PowerShellAstSummary } from "./powershell-ast.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { hostPathForShellPath } from "../lib/shell-resolver.js";
@@ -52,10 +52,12 @@ import {
 } from "./shell-path-policy.js";
 import {
   wrapToolCommand,
+  annotateWithSandboxViolations,
   cleanupAsrtSandboxAfterCommand,
   getBuiltinShellReadPolicy,
   getDefaultSensitiveWriteDenyPaths,
 } from "../permissions/asrt-sandbox.js";
+import { openEgressInvocation } from "../permissions/egress-invocations.js";
 import {
   getHostShellExecutionPlan,
   isIssuedHostShellExecutionPlan,
@@ -2016,6 +2018,10 @@ export async function spawnWithSandbox(
   };
 
   const abortController = new AbortController();
+  // The invocation's egress token: ASRT records this call's proxy denies under
+  // it, and the deny monitor names the tool call in the audit row. Released
+  // once the child has exited (cleanupAfterTermination) or the spawn failed.
+  const egress = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: preparedShellToolUseId(prepared) });
   let wrapped: { argv: string[]; env: NodeJS.ProcessEnv };
   try {
     const binShell = shell.cmd;
@@ -2023,8 +2029,10 @@ export async function spawnWithSandbox(
       filesystem,
       abortSignal: signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal,
       binShell,
+      commandId: egress.token,
     });
   } catch (err) {
+    egress.release();
     return {
       output: `spawn failed: ${(err as Error).message}`,
       isError: true,
@@ -2035,10 +2043,12 @@ export async function spawnWithSandbox(
   const [cmd, ...args] = wrapped.argv;
   if (signal?.aborted) {
     void cleanupAsrtSandboxAfterCommand();
+    egress.release();
     return { output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } };
   }
   if (cmd === undefined) {
     void cleanupAsrtSandboxAfterCommand();
+    egress.release();
     return {
       output: "spawn failed: ASRT returned an empty argv",
       isError: true,
@@ -2070,6 +2080,7 @@ export async function spawnWithSandbox(
       });
     } catch (err) {
       void cleanupAsrtSandboxAfterCommand();
+      egress.release();
       resolveResult({
         output: `spawn failed: ${(err as Error).message}`,
         isError: true,
@@ -2097,6 +2108,7 @@ export async function spawnWithSandbox(
       lifecycleCleaned = true;
       void cleanupAsrtSandboxAfterCommand();
       cleanupPreparedAfterTermination();
+      egress.release();
     };
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort());
 
@@ -2107,9 +2119,11 @@ export async function spawnWithSandbox(
       settled = true;
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
       // Per-command cleanup (proxy/helper state) after the wrapped command ends.
-      const formatted = lifetime.output(outputCollector.format(
+      // The violations ASRT recorded under this call's token (a refused host,
+      // a denied path) are appended so the model reads why it failed.
+      const formatted = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      ));
+      )));
       if (lifetime.timedOut) {
         resolveResult({
           output: formatTimeoutOutput(formatted, command, timeoutSeconds),
@@ -2784,6 +2798,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         writePaths,
         input.timeoutSeconds, ctx.abortSignal, captureFactoryFromContext(ctx),
         toolOutputProgressFromMetadata(ctx.metadata),
+        typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
       );
     }
 
@@ -3072,6 +3087,7 @@ async function spawnPowerShellWithSandbox(
   signal?: AbortSignal,
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
+  toolUseId?: string,
 ): Promise<ToolExecutionResult> {
   signal?.throwIfAborted();
   // Resolve before allocating the temporary profile so a missing PowerShell
@@ -3124,14 +3140,18 @@ async function spawnPowerShellWithSandbox(
   };
 
   const abortController = new AbortController();
+  // The invocation's egress token, as in spawnWithSandbox.
+  const egress = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId });
   let wrapped: { argv: string[]; env: NodeJS.ProcessEnv };
   try {
     wrapped = await wrapToolCommand(sandboxCommand, {
       filesystem,
       abortSignal: signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal,
       ...(binShell !== undefined ? { binShell } : {}),
+      commandId: egress.token,
     });
   } catch (err) {
+    egress.release();
     sandboxHome.cleanup();
     return {
       output: `PowerShell spawn failed: ${(err as Error).message}`,
@@ -3144,11 +3164,13 @@ async function spawnPowerShellWithSandbox(
   if (signal?.aborted) {
     void cleanupAsrtSandboxAfterCommand();
     sandboxHome.cleanup();
+    egress.release();
     return { output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } };
   }
   if (cmd === undefined) {
     void cleanupAsrtSandboxAfterCommand();
     sandboxHome.cleanup();
+    egress.release();
     return {
       output: "PowerShell spawn failed: ASRT returned an empty argv",
       isError: true,
@@ -3181,6 +3203,7 @@ async function spawnPowerShellWithSandbox(
     } catch (err) {
       void cleanupAsrtSandboxAfterCommand();
       sandboxHome.cleanup();
+      egress.release();
       resolveResult({
         output: `PowerShell spawn failed: ${(err as Error).message}`,
         isError: true,
@@ -3203,6 +3226,7 @@ async function spawnPowerShellWithSandbox(
       lifecycleCleaned = true;
       void cleanupAsrtSandboxAfterCommand();
       sandboxHome.cleanup();
+      egress.release();
     };
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal, () => abortController.abort());
 
@@ -3212,9 +3236,9 @@ async function spawnPowerShellWithSandbox(
       if (settled) return;
       settled = true;
       const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
-      const output = lifetime.output(outputCollector.format(
+      const output = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      ));
+      )));
       resolveResult({
         output: lifetime.timedOut
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`

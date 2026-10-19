@@ -50,6 +50,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     },
     useAppOwnedSandboxTempRoot: () => "/tmp/ave-test-sandbox-tmp",
     initializeAsrtSandbox: h.initialize,
+    subscribeAsrtViolations: async () => () => {},
     checkAsrtDependencies: h.checkDeps,
     isAsrtLinuxRuntimeProbeError: h.isProbeError,
   };

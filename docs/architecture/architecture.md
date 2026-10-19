@@ -1363,6 +1363,29 @@ The plugin effect provider requires a host-owned `Tool.workerId` and a matching
 Ordinary in-process plugin tools, degraded hosts, and sandbox-off hosts keep
 the known-safe pre-exec ask path.
 
+Every ASRT wrap carries an egress token as its `commandId`
+(`src/permissions/egress-invocations.ts`): one per Bash or PowerShell tool
+call, one per workspace terminal shell (for the life of its tab's shell), and
+one per confined plugin process — plugin child, worker, bundled hook, bundled
+MCP stdio server. The token is 16 random bytes, maps to its owner only while
+the process lives, and is never written down. ASRT records each proxy refusal
+under it; the deny monitor (`src/permissions/egress-deny-monitor.ts`),
+subscribed at boot before the proxy starts, turns each
+`deny network-outbound` (or `http-request`, `socks-tunnel`) line into one
+sandbox audit row with an `egress_attempted, blocked: true` event and the
+owner's identity, or `unattributed` for a key no live invocation holds. A
+proxy deny line of an unexpected shape (ASRT's `malformed host` refusals keep
+whatever host the process sent) still becomes a row, with the remainder as its
+host, no port and the reason `unparsed deny line`. Host, method, URL and
+reason are DLP-masked, since the confined process chooses them; rows are
+neither sampled nor dropped, so their volume is bounded only by the refused
+process's connection rate and lifetime. The shell tools append ASRT's
+`<sandbox_violations>` block to their output so the model reads why a host
+failed, and Settings → Permissions → Network lists the last 24 hours of
+refusals from that audit channel. This is attribution, not policy: the
+network policy is still the strict allow-list set at boot, with no ask
+callback.
+
 `spawnWorker` is the only host primitive that can establish that worker-backed
 plugin substrate. macOS and Linux workers use an ASRT-wrapped Unix-domain-socket
 control path. Windows workers keep TCP control, but their filesystem access is

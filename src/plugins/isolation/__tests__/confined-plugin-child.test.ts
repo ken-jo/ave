@@ -113,6 +113,7 @@ import {
   resolvePluginWorkerRunRoot,
 } from "../../plugin-storage-layout.js";
 import { aveHome } from "../../../shared/ave-home.js";
+import { TEST_WORKER_EGRESS_OWNER } from "../../../__tests__/support/egress-fixture.js";
 // The child entry is bundled by the shared module rather than here: its
 // externals, banner and target are the shipped build's, and a second copy of
 // them is a second chance for one case to prove something about a child that
@@ -4312,7 +4313,7 @@ async function runBundledWrapToExit(
 ): Promise<void> {
   const sandboxHome = home ?? createSandboxProcessHome();
   try {
-    const { argv, env } = await wrapBundledCommand({
+    const { argv, env } = await wrapBundledCommand({ egressOwner: TEST_WORKER_EGRESS_OWNER,
       command: process.execPath,
       args: [probe],
       sandboxHome,

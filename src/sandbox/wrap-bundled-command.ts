@@ -22,6 +22,7 @@ import {
 } from "../permissions/windows-acl-grant-holder.js";
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { aveHome } from "../shared/ave-home.js";
+import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "../permissions/egress-invocations.js";
 
 const log = createLogger("wrap-bundled-command");
 
@@ -39,10 +40,17 @@ export interface BundledWrapInput {
   ownPluginReads: readonly string[];
   /** Whose temp directory the process gets: its plugin for a hook, its server for an MCP stdio server. */
   tempPrincipal: SandboxTempPrincipal;
+  /** Who the process's proxy denies are audited under (`egress-invocations.ts`). */
+  egressOwner: WorkerEgressOwner;
 }
 
 /** Apply the same sensitive-path floors and egress policy to bundled processes. */
-export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ argv: string[]; env: NodeJS.ProcessEnv }> {
+/**
+ * The wrapped launch, and the egress token it carries. The caller spawns the
+ * process itself, so it owns the token too: `egress.release()` once the process
+ * has exited, or when the spawn fails.
+ */
+export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ argv: string[]; env: NodeJS.ProcessEnv; egress: EgressInvocation }> {
   if (process.platform === "win32") {
     // The macOS and Linux wrap: allow paths in the command. Windows has no
     // per-exec allow; its bundled processes go through
@@ -58,27 +66,36 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
   const temp = ensureSandboxTempPrincipalDir(input.tempPrincipal);
   const launch = sandboxTempEnvLaunch(temp.dir, input.command, input.args);
   const cmdline = [launch.command, ...launch.args].map(shellQuote).join(" ");
-  const result = await wrapWorkerCommand(cmdline, {
-    filesystem: {
-      allowWrite: [temp.dir, input.sandboxHome.path, ...input.allowWrite],
-      allowRead: [temp.dir, input.sandboxHome.path, ...input.ownPluginReads, ...input.allowWrite, ...(tmpDir ? [tmpDir] : [])],
-      denyRead: getDefaultSensitiveReadDenyPaths(),
-      denyWrite: getDefaultSensitiveWriteDenyPaths(),
-      // Bundled hooks and MCP stdio servers are plugin-owned (or third-party)
-      // code, and every root they write into is one the host created: a
-      // plugin's data root, a server's sandbox root, the process HOME.
-      pinWriteRoots: true,
-      // And none of them reads another plugin's directories: a hook writes its
-      // plugin's data root, which that plugin's child reads, so a hook that
-      // could read a neighbour's data could hand it to the child.
-      denyPluginsRoot: true,
-    },
-  });
+  const egress = openEgressInvocation(input.egressOwner);
+  let result: { argv: string[]; env: NodeJS.ProcessEnv };
+  try {
+    result = await wrapWorkerCommand(cmdline, {
+      commandId: egress.token,
+      filesystem: {
+        allowWrite: [temp.dir, input.sandboxHome.path, ...input.allowWrite],
+        allowRead: [temp.dir, input.sandboxHome.path, ...input.ownPluginReads, ...input.allowWrite, ...(tmpDir ? [tmpDir] : [])],
+        denyRead: getDefaultSensitiveReadDenyPaths(),
+        denyWrite: getDefaultSensitiveWriteDenyPaths(),
+        // Bundled hooks and MCP stdio servers are plugin-owned (or third-party)
+        // code, and every root they write into is one the host created: a
+        // plugin's data root, a server's sandbox root, the process HOME.
+        pinWriteRoots: true,
+        // And none of them reads another plugin's directories: a hook writes its
+        // plugin's data root, which that plugin's child reads, so a hook that
+        // could read a neighbour's data could hand it to the child.
+        denyPluginsRoot: true,
+      },
+    });
+  } catch (error) {
+    egress.release();
+    throw error;
+  }
   if (!result.argv[0]) {
+    egress.release();
     await cleanupAsrtSandboxAfterCommand();
     throw new Error("ASRT returned an empty argv for a bundled process");
   }
-  return result;
+  return { ...result, egress };
 }
 
 /** Preserve only ASRT's changed proxy keys over the caller's stripped environment. */
@@ -143,6 +160,7 @@ export async function spawnWindowsBundledProcess(input: {
   readonly cwd?: string;
   readonly allowRead: readonly string[];
   readonly allowWrite: readonly string[];
+  readonly egressOwner: WorkerEgressOwner;
 }): Promise<WindowsBundledSpawn> {
   if (process.platform !== "win32") {
     throw new Error(`[wrap-bundled-command] ${input.label}: spawnWindowsBundledProcess is the Windows path`);
@@ -166,6 +184,7 @@ export async function spawnWindowsBundledProcess(input: {
       command: input.command,
       args: input.args,
       label: `${input.label}:asrt-win`,
+      egressOwner: input.egressOwner,
       grantMode: "deny-only",
       baseEnv: input.baseEnv,
       extraEnv: { ...sandboxHome.env },

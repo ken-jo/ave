@@ -24,6 +24,7 @@ import type { SandboxKind, SandboxCapability } from "../permissions/sandbox-capa
 import type { UserApprovalVerdict } from "../shared/permissions-events.js";
 import type { ToolTrustOrigin } from "../tools/types.js";
 import type { RiskLevel } from "../shared/permission-review-status.js";
+import type { EgressDenial, EgressDenialSource } from "../shared/egress-denials.js";
 
 // ─── Event shapes ─────────────────────────────────────────────────────────────
 
@@ -169,5 +170,54 @@ export function buildSandboxAuditEntry(params: {
     tool: params.tool,
     sandbox: params.sandbox,
     reviewer: params.reviewer,
+  };
+}
+
+// ─── SandboxEgressDenyAuditEntry ─────────────────────────────────────────────
+
+/**
+ * Who opened a connection the ASRT proxy refused, as the audit row records
+ * it. Mirrors `EgressInvocationOwner` (`permissions/egress-invocations.ts`)
+ * without the token, which is a live label and never written down, plus
+ * "unattributed" for a deny whose key no live invocation holds: a forged or
+ * stale key, or a wrap that carried none.
+ */
+export type SandboxEgressDenyInvocation = EgressDenialSource;
+
+/**
+ * One row per ASRT proxy deny, on the same daily sandbox channel as
+ * {@link SandboxAuditEntry}. `entryKind` is the discriminator: the
+ * tool-execution rows carry `reviewer` and no `entryKind`.
+ */
+export interface SandboxEgressDenyAuditEntry {
+  timestamp: string; // ISO 8601, when ASRT recorded the deny
+  entryKind: "egress-deny";
+  sandbox: {
+    kind: SandboxKind;
+    confidence: SandboxCapability["confidence"];
+    /** Exactly one `egress_attempted` event with `blocked: true`. */
+    events: [Extract<SandboxEvent, { type: "egress_attempted" }>];
+  };
+  invocation: SandboxEgressDenyInvocation;
+  deny: EgressDenial;
+}
+
+export function buildSandboxEgressDenyAuditEntry(params: {
+  timestamp: Date;
+  sandbox: { kind: SandboxKind; confidence: SandboxCapability["confidence"] };
+  invocation: SandboxEgressDenyInvocation;
+  deny: SandboxEgressDenyAuditEntry["deny"];
+}): SandboxEgressDenyAuditEntry {
+  const target = params.deny.port === null ? params.deny.host : `${params.deny.host}:${params.deny.port}`;
+  return {
+    timestamp: params.timestamp.toISOString(),
+    entryKind: "egress-deny",
+    sandbox: {
+      kind: params.sandbox.kind,
+      confidence: params.sandbox.confidence,
+      events: [{ type: "egress_attempted", blocked: true, target }],
+    },
+    invocation: params.invocation,
+    deny: params.deny,
   };
 }

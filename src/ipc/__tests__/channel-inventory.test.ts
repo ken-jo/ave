@@ -409,6 +409,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:permissions:deferred-list",
         "ave:permissions:deferred-resolve",
         "ave:permissions:dir-dispatch",
+        "ave:permissions:egress-denials-recent",
         "ave:permissions:hook-trust-list",
         "ave:permissions:reviewer-dispatch",
         "ave:permissions:reviewer-provider-has-key",

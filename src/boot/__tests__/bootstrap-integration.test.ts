@@ -564,6 +564,7 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
   setShellSandboxRequestedAtBoot: vi.fn(),
   setPluginWorkerConfinementRequestedAtBoot: vi.fn(),
   setSandboxBootOutcome: vi.fn(),
+  detectSandboxCapability: vi.fn(() => ({ kind: "none", confidence: "verified" })),
 }));
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
   // The boot step sweeps both private roots and creates the HOME root, so they
@@ -582,6 +583,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
       return root;
     },
     initializeAsrtSandbox: vi.fn(async () => {}),
+    subscribeAsrtViolations: vi.fn(async () => () => {}),
     useAppOwnedSandboxTempRoot: vi.fn(() => "/tmp/ave-test-sandbox-tmp"),
     checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
     isAsrtLinuxRuntimeProbeError: vi.fn(() => false),

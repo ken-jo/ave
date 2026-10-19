@@ -46,6 +46,7 @@ import { sweepSandboxPrivateRoot } from "../../boot/steps/sandbox-init.js";
 import { makeTestTreeWritable } from "../../plugins/__tests__/test-helpers.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
 import { asrtCanInitialize } from "./test-helpers.js";
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 
 let home: string;
 let previousAveHome: string | undefined;
@@ -243,7 +244,7 @@ describe("the private roots in a sandbox read deny", () => {
         // `~/.ave`: an ancestor of both private roots.
         const { argv, env } = await wrapWorkerCommand(
           `/bin/cat '${join(own.path, "own")}'; echo; /bin/cat '${join(other.path, "other")}' 2>/dev/null || echo refused`,
-          {
+          { commandId: TEST_COMMAND_ID,
             filesystem: {
               allowRead: [home, own.path],
               allowWrite: [own.path],

@@ -53,6 +53,7 @@ import {
   isShellSandboxActive,
   sandboxTempEnvLaunch,
 } from "../../permissions/asrt-sandbox.js";
+import { openEgressInvocation } from "../../permissions/egress-invocations.js";
 import { isActiveSandboxShellContained } from "../../permissions/sandbox-capability.js";
 import { deriveSandboxWritePaths } from "../../permissions/sandbox-write-jail.js";
 import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
@@ -527,11 +528,15 @@ async function spawnNewTerminal(
       ownTty = ttyHandoff.ownPtySlavePath(trampolinePty);
     }
 
+    // The tab's egress token, for the life of this shell: every proxy deny of
+    // the shell and its children is audited under the tab.
+    const egress = openEgressInvocation({ kind: "terminal", tabId });
+    const releaseEgress = addCleanup(() => egress.release());
     const { argv, env } =
       ownTty === undefined
-        ? await wrapWorkerCommand(cmdline, { filesystem, abortSignal: owner.abort.signal })
-        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, abortSignal: owner.abort.signal });
-    const cleanupWrap = addCleanup(() => { void cleanupAsrtSandboxAfterCommand(); });
+        ? await wrapWorkerCommand(cmdline, { filesystem, abortSignal: owner.abort.signal, commandId: egress.token })
+        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, abortSignal: owner.abort.signal, commandId: egress.token });
+    const cleanupWrap = addCleanup(() => { void cleanupAsrtSandboxAfterCommand(); releaseEgress(); });
     owner.abort.signal.throwIfAborted();
 
     const [cmd, ...wrappedArgs] = argv;

@@ -459,6 +459,25 @@ export interface WrapOptions {
 }
 
 /**
+ * What every wrap must carry: the invocation's egress token
+ * (`egress-invocations.ts`), passed to ASRT as `commandId`. ASRT records the
+ * proxy denies of the wrapped process under it and puts it in the proxy
+ * username, so a deny can be attributed to the tool call, terminal tab or
+ * worker that opened the connection. Without it ASRT keys on the command text,
+ * which two invocations can share and which the violation store compares on
+ * its first 100 characters only, so it is required, not defaulted.
+ */
+export interface AttributedWrapOptions extends WrapOptions {
+  readonly commandId: string;
+}
+
+function assertCommandId(caller: string, commandId: string): void {
+  if (typeof commandId !== "string" || commandId.length < 22) {
+    throw new Error(`${caller}: a wrap needs the invocation's egress token as commandId (22 characters or more)`);
+  }
+}
+
+/**
  * ─────────────────────────────────────────────────────────────────────────────
  * WORKER UDS CONTROL CHANNEL — SHARED-CONFIG, NOT PER-COMMAND
  * A long-lived HTTP plugin worker the HOST connects INBOUND to needs a Unix-
@@ -1853,7 +1872,7 @@ export async function checkAsrtDependencies(): Promise<{
  */
 export async function wrapToolCommand(
   command: string,
-  options: WrapOptions = {},
+  options: AttributedWrapOptions,
 ): Promise<SandboxWrapResult> {
   // Self-enforcing gate. Do not depend on the caller to check
   // isAsrtSandboxActive() first — a wrap with no initialized SandboxManager is
@@ -1870,12 +1889,15 @@ export async function wrapToolCommand(
   // allowed to write — a broken temp directory with no visible cause. Idempotent.
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, "wrapToolCommand");
+  assertCommandId("wrapToolCommand", options.commandId);
   const SandboxManager = await loadSandboxManager();
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
     buildPerCommandSandboxCustomConfig(options.filesystem),
     options.abortSignal,
+    undefined,
+    { commandId: options.commandId },
   );
   return applyLinuxReadMaskWriteFloor(wrapped, options.filesystem, () => SandboxManager.cleanupAfterCommand());
 }
@@ -2155,7 +2177,7 @@ export function useAppOwnedSandboxTempRoot(): string {
  */
 export async function wrapWorkerCommand(
   command: string,
-  options: WrapOptions = {},
+  options: AttributedWrapOptions,
 ): Promise<SandboxWrapResult> {
   return wrapLongLivedCommand("wrapWorkerCommand", command, options, undefined);
 }
@@ -2173,7 +2195,7 @@ export async function wrapWorkerCommand(
  */
 export async function wrapTerminalCommand(
   command: string,
-  options: WrapOptions & { readonly ownTty: string },
+  options: AttributedWrapOptions & { readonly ownTty: string },
 ): Promise<SandboxWrapResult> {
   return wrapLongLivedCommand("wrapTerminalCommand", command, options, { ttys: [options.ownTty] });
 }
@@ -2181,7 +2203,7 @@ export async function wrapTerminalCommand(
 async function wrapLongLivedCommand(
   caller: string,
   command: string,
-  options: WrapOptions,
+  options: AttributedWrapOptions,
   wrapOptions: { readonly ttys: readonly string[] } | undefined,
 ): Promise<SandboxWrapResult> {
   // Self-enforcing gate — same rationale as wrapToolCommand.
@@ -2195,15 +2217,16 @@ async function wrapLongLivedCommand(
   // allowed to write — a broken temp directory with no visible cause. Idempotent.
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, caller);
+  assertCommandId(caller, options.commandId);
   const SandboxManager = await loadSandboxManager();
-  // `wrapOptions` is undefined for every wrap but the terminal's.
+  // `wrapOptions` (the tty grant) is undefined for every wrap but the terminal's.
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
     buildPerCommandSandboxCustomConfig(options.filesystem),
     options.abortSignal,
     undefined,
-    wrapOptions,
+    { commandId: options.commandId, ...(wrapOptions ?? {}) },
   );
   return applyLinuxReadMaskWriteFloor(wrapped, options.filesystem, () => SandboxManager.cleanupAfterCommand());
 }
@@ -2608,6 +2631,39 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
 export async function cleanupAsrtSandboxAfterCommand(): Promise<void> {
   const SandboxManager = await loadSandboxManager();
   SandboxManager.cleanupAfterCommand();
+}
+
+/**
+ * Append the sandbox violations ASRT recorded under `commandId` to a command's
+ * output, as a `<sandbox_violations>` block (ASRT's
+ * `annotateStderrWithSandboxFailures`), so the model reads why a host or path
+ * failed instead of a bare connection error. Returns the text unchanged when
+ * nothing was recorded. A proxy deny line names `host:port` and the reason;
+ * ASRT has already reduced a refused URL's query string to `?…`.
+ */
+export async function annotateWithSandboxViolations(commandId: string, text: string): Promise<string> {
+  const SandboxManager = await loadSandboxManager();
+  return SandboxManager.annotateStderrWithSandboxFailures(commandId, text);
+}
+
+/** One violation as ASRT's store reports it. */
+export interface AsrtViolationRecord {
+  readonly line: string;
+  readonly encodedCommand?: string;
+  readonly timestamp: Date;
+}
+
+/**
+ * Subscribe to ASRT's violation store. The listener receives the store's whole
+ * retained tail on every change (and once at subscription), not only the new
+ * entries; the caller tells new ones apart by identity, since the store keeps
+ * the same objects while they are retained.
+ */
+export async function subscribeAsrtViolations(
+  listener: (violations: readonly AsrtViolationRecord[]) => void,
+): Promise<() => void> {
+  const SandboxManager = await loadSandboxManager();
+  return SandboxManager.getSandboxViolationStore().subscribe(listener);
 }
 
 /**

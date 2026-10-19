@@ -1079,6 +1079,7 @@ export async function spawnConfinedPluginChild(
       command,
       ...launchLine,
       label: `plugin-child:${spec.pluginId}`,
+      egressOwner: { kind: "worker", role: "plugin-child", pluginId: spec.pluginId },
       grantMode: process.platform === "win32" ? "deny-only" : "allow-list",
       // The plugin's own temp directory, shared with its workers and bundled
       // hooks and with no other principal.

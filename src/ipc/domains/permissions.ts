@@ -8,6 +8,11 @@ import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import type { ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
+import {
+  RECENT_EGRESS_DENIALS_LIMIT,
+  RECENT_EGRESS_DENIALS_WINDOW_HOURS,
+  type EgressDenialRow,
+} from "../../shared/egress-denials.js";
 import { resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
   isSessionOnlyApprovalMemoryScope,
@@ -317,6 +322,19 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // enum may run ASRT's local behavioral egress verifier.
   ipcMain.handle(PERMISSIONS.sandboxWindowsStatus, async (): Promise<SandboxWindowsStatusInfo> => {
     return readAsrtWindowsStatus();
+  });
+
+  // read-only, sender-frame-guarded (it is audit data, like auditShow) — the
+  // proxy denies of the last 24 h, newest first, from the sandbox audit
+  // channel the deny monitor writes (egress-deny-monitor.ts).
+  ipcMain.handle(PERMISSIONS.egressDenialsRecent, async (e): Promise<EgressDenialRow[] | typeof UNAUTHORIZED_FRAME> => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressDenialsRecent, e); return UNAUTHORIZED_FRAME; }
+    const { readRecentSandboxEgressDenials } = await import("../../audit/sandbox-audit-sink.js");
+    const rows = await readRecentSandboxEgressDenials({
+      windowMs: RECENT_EGRESS_DENIALS_WINDOW_HOURS * 3_600_000,
+      limit: RECENT_EGRESS_DENIALS_LIMIT,
+    });
+    return rows.map((row) => ({ timestamp: row.timestamp, source: row.invocation, deny: row.deny }));
   });
 
   // MUTATING (sender-frame-guarded + user-keyboard intent) — the SINGLE

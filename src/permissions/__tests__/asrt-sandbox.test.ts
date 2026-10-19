@@ -80,6 +80,7 @@ import { preparedShellExecutableReadPaths } from "../../tools/prepared-shell-inv
 // re-implementation that could drift from the package).
 import { matchesDomainPattern } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
 import { resolveParentProxy } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 
 let originalAsrtTestHome: string | undefined;
 let originalAveHome: string | undefined;
@@ -179,8 +180,8 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
       const { argv, env } = await wrapToolCommand(
         "echo asrt-ok",
         process.platform === "win32"
-          ? {}
-          : { filesystem: { allowWrite: [writeDir], allowRead: [writeDir] } },
+          ? { commandId: TEST_COMMAND_ID }
+          : { commandId: TEST_COMMAND_ID, filesystem: { allowWrite: [writeDir], allowRead: [writeDir] } },
       );
 
       // mac/linux: [<shell>, "-c", <wrapped>]; Windows: [srt-win, "exec", ...]
@@ -292,7 +293,7 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
       if (!(await asrtCanInitialize())) return;
 
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-      const { argv } = await wrapToolCommand("true");
+      const { argv } = await wrapToolCommand("true", { commandId: TEST_COMMAND_ID });
       try {
         expect(argv[1]).toBe("-c");
         const renderedWrapper = argv[2] ?? "";
@@ -316,7 +317,7 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const helper = getVendoredApplySeccompPath()!;
       const checkout = checkoutRootAbove(helper);
-      const { argv } = await wrapToolCommand("true", { filesystem: { denyRead: [checkout], allowRead: [] } });
+      const { argv } = await wrapToolCommand("true", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [checkout], allowRead: [] } });
       try {
         const rendered = argv[2] ?? "";
         expect(rendered).toContain(`--tmpfs ${checkout} `);
@@ -411,7 +412,7 @@ describe("asrt-sandbox — per-command trust boundary (security MINOR)", () => {
     // is no `customConfig` / network / weakening channel — a call attempting to
     // smuggle `allowAppleEvents` etc. is a compile error, so the runtime call
     // simply succeeds with only the filesystem slice applied.
-    const { argv } = await wrapToolCommand("echo trust-ok", {
+    const { argv } = await wrapToolCommand("echo trust-ok", { commandId: TEST_COMMAND_ID,
       filesystem: { allowWrite: [], allowRead: [] },
     });
     expect(argv.length).toBeGreaterThanOrEqual(3);
@@ -421,12 +422,12 @@ describe("asrt-sandbox — per-command trust boundary (security MINOR)", () => {
 describe("asrt-sandbox — self-enforcing gate (PR #1356 NIT)", () => {
   it("wrapToolCommand throws when the sandbox is not active", async () => {
     expect(isAsrtSandboxActive()).toBe(false);
-    await expect(wrapToolCommand("echo nope")).rejects.toThrow(/not active/i);
+    await expect(wrapToolCommand("echo nope", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/not active/i);
   });
 
   it("wrapWorkerCommand throws when the sandbox is not active", async () => {
     expect(isAsrtSandboxActive()).toBe(false);
-    await expect(wrapWorkerCommand("echo nope")).rejects.toThrow(/not active/i);
+    await expect(wrapWorkerCommand("echo nope", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/not active/i);
   });
 });
 
@@ -451,7 +452,7 @@ describe("asrt-sandbox — a wrap begins the confined-process phase", () => {
       _resetConfinedProcessPhaseForTests();
       expect(confinedProcessesMayBeRunning()).toBe(false);
       const wrap = kind === "tool" ? wrapToolCommand : wrapWorkerCommand;
-      await wrap("true", { filesystem: { allowWrite: [], allowRead: [] } });
+      await wrap("true", { commandId: TEST_COMMAND_ID, filesystem: { allowWrite: [], allowRead: [] } });
       expect(confinedProcessesMayBeRunning()).toBe(true);
     });
   }
@@ -464,7 +465,7 @@ describe("asrt-sandbox — worker wrap carries only the filesystem jail", () => 
     // WrapOptions exposes only `filesystem` + `abortSignal` — there is no
     // `network` channel (it would be INERT per command; enforcement is the
     // shared config). The wrap succeeds with the filesystem slice only.
-    const { argv } = await wrapWorkerCommand("echo worker-ok", {
+    const { argv } = await wrapWorkerCommand("echo worker-ok", { commandId: TEST_COMMAND_ID,
       filesystem: { allowWrite: [], allowRead: [] },
     });
     expect(argv.length).toBeGreaterThanOrEqual(3);
@@ -495,7 +496,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
   const curlProbe = async (url: string) => {
     const { argv, env } = await wrapWorkerCommand(
       `curl -sS -o /dev/null -w '%{http_code}' --max-time 8 ${url}`,
-      { filesystem: { allowWrite: [], allowRead: [] } },
+      { commandId: TEST_COMMAND_ID, filesystem: { allowWrite: [], allowRead: [] } },
     );
     const res = await runArgv(argv, env);
     cleanupAsrtSandboxAfterCommand();
@@ -628,7 +629,7 @@ describe("asrt-sandbox — parentProxy explicit (PR #1356 security MINOR)", () =
     process.env.HTTP_PROXY = HOST_PROXY;
     try {
       await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true });
-      const { env } = await wrapWorkerCommand("echo proxy-check", {
+      const { env } = await wrapWorkerCommand("echo proxy-check", { commandId: TEST_COMMAND_ID,
         filesystem: { allowWrite: [], allowRead: [] },
       });
       const childEnv = buildSandboxedChildEnv(env);
