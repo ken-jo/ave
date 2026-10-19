@@ -1743,6 +1743,8 @@ describe("shell egress grants in Settings", () => {
     expect(await invoke(PERMISSIONS.egressGrantRevoke, { scope: "always", host: "pypi.org", port: 443 }))
       .toMatchObject({ ok: false, error: "user-keyboard-required" });
     for (const [payload, error] of [
+      [{ scope: "conversation", sessionId: "s", host: "pypi.org", port: 443, network: "reserved" }, "invalid-egress-grant-destination"],
+      [{ scope: "conversation", sessionId: "s", host: "pypi.org", port: 443, network: null }, "invalid-egress-grant-destination"],
       [{ scope: "once", host: "pypi.org", port: 443 }, "invalid-egress-grant-scope"],
       [{ scope: "conversation", host: "pypi.org", port: 443 }, "invalid-egress-grant-conversation"],
       [{ scope: "always", origin: "shell", sessionId: "s", host: "pypi.org", port: 443 }, "invalid-egress-grant-conversation"],
@@ -1761,6 +1763,13 @@ describe("shell egress grants in Settings", () => {
       expect(await invoke(PERMISSIONS.egressGrantRevoke, { ...payload, intent: USER_INTENT })).toMatchObject({ ok: false, error });
     }
     expect(egressRuntimeMock.revokeEgressGrant).not.toHaveBeenCalled();
+  });
+
+  it.each(["public", "local", "unverified"] as const)("revokes only the named %s class", async (network) => {
+    await setup();
+    const grant = { scope: "conversation", sessionId: "session-1", host: "pypi.org", port: 443, network };
+    expect(await invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: USER_INTENT })).toEqual({ ok: true });
+    expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenLastCalledWith(grant);
   });
 });
 

@@ -18,6 +18,7 @@ import type {
   OnboardingProposalDisposition,
   PendingOnboardingProposal,
 } from "../main/onboarding-proposal-store.js";
+import type { EgressGrantNetwork } from "../shared/egress-grant-scopes.js";
 import { parseEnvForcedSettingsPaths } from "../shared/env-backed-settings.js";
 import { ipcUserKeyboardIntent } from "./gesture-intent.js";
 import { mcpApiSurface } from "./mcp-api-surface.js";
@@ -909,6 +910,7 @@ export function buildInternalApiSurface() {
     egressGrantsList: async () => ipcRenderer.invoke(PERMISSIONS.egressGrantsList),
     /** MUTATING: revoke one shell egress grant (user-keyboard intent attached). */
     egressGrantRevoke: async (grant: {
+      network?: EgressGrantNetwork;
       scope: "conversation" | "tab" | "workspace" | "always";
       host: string;
       port: number;

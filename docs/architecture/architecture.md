@@ -1407,9 +1407,11 @@ decides (unattributed, a worker off its list, asks off, nobody to ask, a
 reserved literal) costs no DNS query and no proxy lookup: the
 proxy's lookup is the sandbox's only resolver, and a refused
 `<data>.attacker.example` must not reach the zone's server. An interactive
-card (or a terminal tab's banner) is shown by name, and its answer is held,
-not granted; grants are matched by origin in both phases. Only after that
-allow is the destination name resolved once, and refused when any address is
+card (or a terminal tab's banner) is shown by name, using the class implied by
+the literal address or local-network name, otherwise provisionally `public`.
+Its answer is held, not granted; grants are matched by origin and network class
+in both phases. Only after that provisional allow is the destination name
+resolved once, and refused when any address is
 loopback, reserved or this host's; the resolved phase sees the addresses, an
 answer given on a card for one class (say public) becomes a grant only when
 the destination turned out to be that class (otherwise the card is shown
@@ -1442,7 +1444,12 @@ lowercase first) when any is set, and otherwise the OS configuration through
 Chromium's `session.resolveProxy` (macOS system settings, Windows
 WinINET/WinHTTP, Linux environment/GNOME/KDE, PAC and WPAD); "Manual" is a
 URL plus a bypass list; "Off" is direct. `NO_PROXY` and the manual bypass list
-use comma-separated domains, IP literals and CIDR ranges. A bare domain or
+follow [current curl master `lib/proxy.c`](https://github.com/curl/curl/blob/master/lib/proxy.c):
+comma-separated domains, IP literals and CIDR ranges, with optional spaces or tabs
+around entries. Spaces alone do not separate entries. Older versions differ:
+[curl 8.7.1 `lib/noproxy.c`](https://github.com/curl/curl/blob/curl-8_7_1/lib/noproxy.c)
+accepts space-separated entries and has different IPv6 CIDR matching, including
+`/0` and prefixes that end within a byte. A bare domain or
 one leading dot matches the domain and its subdomains; `*.` has no wildcard
 meaning. Only the raw complete value `*`, without surrounding whitespace,
 bypasses everything, not a `*` token in a longer list. Entries do not support
@@ -1516,10 +1523,14 @@ terminal's Allow once lets that one connection through and is never held;
 "This tab" takes the place of "This conversation" and lasts until the tab's
 shell exits, including an exit followed by a respawn; terminals have no
 This workspace, since every tab runs in the app's one default workspace,
-which agent shell calls share). A persistent grant records its origin
-(`shell` or `terminal`) and covers only that origin, so a terminal's Always
-never lets an agent's shell call through, nor the reverse; Settings shows the
-origin. Working directories are compared after `canonicalizePathForMatch`. The
+which agent shell calls share). Every grant is bound to its origin (`shell` or
+`terminal`) and destination network class (`public`, `local` or `unverified`),
+for Allow once, conversation, tab, workspace and Always scopes. Matching,
+listing, use tracking and revocation preserve both fields, so neither another
+origin nor another class can reuse it. Settings shows the origin and preserves
+the class when revoking. A replan to a
+different class requires a fresh warning and decision before connecting.
+Working directories are compared after `canonicalizePathForMatch`. The
 connection is held while the banner is up and denied after 120 s without an
 answer, or at once when the tab closes; connections from one tab to one
 destination share one banner row. While no view of the tab is mounted the
@@ -1527,7 +1538,11 @@ ask is drawn on the focused pane's lane instead
 (`src/ui/renderer/components/permissions/TerminalEgressBanner.tsx`).
 `src/permissions/egress-grants.ts` holds the grants, the persistent ones in
 `<AVE_HOME>/permissions/shell-egress-hosts.json`, revocable in Settings →
-Permissions → Network. A background call nobody can answer, asks turned off
+Permissions → Network. Version-1 stored grants without `network` match only
+`public`; a valid recorded class is honored and an invalid explicit class is
+rejected. Only `public` destinations are eligible for persistent grants
+(This workspace and Always); recording a class does not extend that eligibility.
+A background call nobody can answer, asks turned off
 (`features.shellEgressAsk`), or an unreadable grant file is a refusal.
 Destinations are classed by `egressDestinationNetwork()` on the host and every
 address it resolved to, most restrictive first: link-local, cloud metadata,

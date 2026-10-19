@@ -89,7 +89,7 @@ import type {
   SandboxWindowsInstallResult,
 } from "../../shared/sandbox-capability-info.js";
 import type { EgressDenialRow } from "../../shared/egress-denials.js";
-import type { ListedEgressGrant } from "../../shared/egress-grant-scopes.js";
+import type { EgressGrantNetwork, ListedEgressGrant } from "../../shared/egress-grant-scopes.js";
 
 // Re-export MCP types for renderer-side consumers (type-only, no main-process runtime)
 export type { McpServerConfig, McpServerConfigDto, McpServerState };
@@ -1629,6 +1629,7 @@ export type AvePermissionApi = {
   >;
   /** MUTATING: revoke one shell egress grant. */
   egressGrantRevoke: (grant: {
+    network?: EgressGrantNetwork;
     scope: "conversation" | "tab" | "workspace" | "always";
     host: string;
     port: number;

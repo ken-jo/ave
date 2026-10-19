@@ -304,7 +304,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
       ["allow", "grant", "tab", { kind: "terminal", tabId: TERMINAL_TAB }],
     ]);
     expect(grants.listTab()).toEqual([
-      { scope: "tab", tabId: TERMINAL_TAB, host: "github.com", port: 443, grantedAt: expect.any(String) },
+      { scope: "tab", tabId: TERMINAL_TAB, host: "github.com", port: 443, network: "public", grantedAt: expect.any(String) },
     ]);
     // Another tab, and a shell call in the same workspace, are asked again.
     answer = async () => ({ allow: false, reason: "denied by the user" });

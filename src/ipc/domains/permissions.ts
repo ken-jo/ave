@@ -65,6 +65,7 @@ import {
   canonicalStringify,
 } from "../../permissions/user-approval-store.js";
 import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
+import { isEgressGrantNetwork } from "../../shared/egress-grant-scopes.js";
 import { isTerminalTabId } from "../../shared/tab-id.js";
 import type {
   SandboxWindowsStatusInfo,
@@ -407,7 +408,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
-    const { scope, origin, host, port, workspaceRoot, sessionId, tabId } = body;
+    const { scope, origin, host, port, workspaceRoot, sessionId, tabId, network } = body;
+    if (network !== undefined && !isEgressGrantNetwork(network)) {
+      return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: invalid network class" };
+    }
     if (scope !== "conversation" && scope !== "tab" && scope !== "workspace" && scope !== "always") {
       return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be conversation, tab, workspace or always" };
     }
@@ -429,13 +433,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       : origin !== undefined) {
       return { ok: false, error: "invalid-egress-grant-origin", message: "revoke: a workspace or always grant names its origin (shell, or terminal for always), no other grant does" };
     }
+    const destination = { host, port, ...(network === undefined ? {} : { network }) };
     const { revokeEgressGrant } = await import("../../permissions/egress-runtime.js");
     try {
       const { removed, closed } = await revokeEgressGrant(
-        scope === "conversation" ? { scope, sessionId: sessionId as string, host, port }
-        : scope === "tab" ? { scope, tabId: tabId as string, host, port }
-        : scope === "workspace" ? { scope, origin: "shell", workspaceRoot: workspaceRoot as string, host, port }
-        : { scope, origin: origin as "shell" | "terminal", host, port },
+        scope === "conversation" ? { scope, sessionId: sessionId as string, ...destination }
+        : scope === "tab" ? { scope, tabId: tabId as string, ...destination }
+        : scope === "workspace" ? { scope, origin: "shell", workspaceRoot: workspaceRoot as string, ...destination }
+        : { scope, origin: origin as "shell" | "terminal", ...destination },
       );
       auditLogger.log({
         timestamp: new Date().toISOString(),

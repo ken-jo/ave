@@ -60,10 +60,11 @@ import {
   egressGrantScopesFor,
   isValidEgressPort,
   type EgressDestination,
+  type EgressGrantDestination,
   type EgressGrantStore,
   type EgressGrantSubject,
 } from "./egress-grants.js";
-import type { EgressAskOrigin, EgressGrantScope } from "../shared/egress-grant-scopes.js";
+import type { EgressAskOrigin, EgressGrantNetwork, EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { auditInvocationFor, noteCallbackDecision } from "./egress-deny-monitor.js";
 
 /** What the person is asked about: for a shell tool call on its card, for a terminal in its tab. */
@@ -89,7 +90,7 @@ interface EgressApprovalRequestCommon {
   /** The scopes the card offers, narrowest first; never empty. */
   readonly scopes: readonly EgressGrantScope[];
   /** `local`: this machine or a private network; `unverified`: the upstream proxy resolves the name. The card says so for both, and offers no persistent scope. */
-  readonly network: "public" | "local" | "unverified";
+  readonly network: EgressGrantNetwork;
   /** Ends the ask (the call was cancelled, the tab closed, or the banner timed out). */
   readonly abortSignal: AbortSignal | undefined;
 }
@@ -324,7 +325,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
   const grantAnswer = async (
     token: string,
     owner: ShellEgressOwner | TerminalEgressOwner,
-    destination: EgressDestination,
+    destination: EgressGrantDestination,
     scope: EgressGrantScope,
     scopes: readonly EgressGrantScope[],
   ): Promise<Decision> => {
@@ -400,21 +401,22 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       case "shell": {
         // Matched by origin: a shell grant never covers a terminal, nor the reverse.
         const subject = grantSubject(token, owner);
+        const grantDestination = { ...destination, network };
         const key = holdKey(token, destination);
         if (resolvedPhase) {
           // An answer given by name becomes a grant only for the class it was given for.
           const held = takeHeldAnswer(key);
           if (held !== undefined && held.network === network) {
-            return { owner, decision: await grantAnswer(token, owner, destination, held.scope, held.scopes) };
+            return { owner, decision: await grantAnswer(token, owner, grantDestination, held.scope, held.scopes) };
           }
         }
         for (;;) {
-          const matched = await deps.grants.matchingScope(subject, destination);
+          const matched = await deps.grants.matchingScope(subject, grantDestination);
           // A persistent grant never covers a local or private destination (none
           // is offered for one; this also holds for a hand-edited file).
           const granted = matched !== undefined && egressScopesForNetwork([matched], network).length > 0 ? matched : undefined;
           if (granted !== undefined) {
-            if (resolvedPhase) deps.grants.noteUse(granted, subject, destination);
+            if (resolvedPhase) deps.grants.noteUse(granted, subject, grantDestination);
             return { owner, decision: pass(allow("grant", granted)) };
           }
           if (!deps.shellAskEnabled()) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.askOff) };
@@ -425,7 +427,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           const answer = await ask(token, owner, destination, network);
           if (answer === ASK_AGAIN) continue;
           if (!answer.allow) return { owner, decision: answer.decision };
-          if (resolvedPhase) return { owner, decision: await grantAnswer(token, owner, destination, answer.scope, answer.scopes) };
+          if (resolvedPhase) return { owner, decision: await grantAnswer(token, owner, grantDestination, answer.scope, answer.scopes) };
           holdAnswer(key, { scope: answer.scope, scopes: answer.scopes, network, at: now().getTime() });
           return { owner, decision: provisional("prompt", answer.scope) };
         }

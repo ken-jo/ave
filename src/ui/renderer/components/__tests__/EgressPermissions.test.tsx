@@ -173,6 +173,27 @@ describe("EgressGrantsList", () => {
     }
   });
 
+  it("keeps same-destination grants separate and forwards the selected network class", async () => {
+    const base: ConversationEgressGrant = { scope: "conversation", sessionId: "session-7", host: "data.example.test", port: 443, grantedAt: "2026-10-19T03:00:00.000Z" };
+    let grants: ConversationEgressGrant[] = [{ ...base, network: "public" }, { ...base, network: "local" }, { ...base, network: "unverified" }];
+    const egressGrantRevoke = vi.fn(async (target: { network?: string }) => {
+      grants = grants.filter(grant => grant.network !== target.network);
+      return { ok: true };
+    });
+    const previous = window.ave;
+    (window as { ave?: unknown }).ave = { permission: { egressGrantsList: async () => ({ ok: true, grants }), egressGrantRevoke } };
+    try {
+      render(<EgressGrantsList />);
+      await waitFor(() => expect(screen.getAllByTestId("egress-grant-row")).toHaveLength(3));
+      fireEvent.click(screen.getAllByTestId("egress-grant-revoke")[1]!);
+      await waitFor(() => expect(screen.getAllByTestId("egress-grant-row")).toHaveLength(2));
+      expect(egressGrantRevoke).toHaveBeenCalledWith({ scope: "conversation", sessionId: "session-7", host: base.host, port: base.port, network: "local" });
+      expect(grants.map(grant => grant.network)).toEqual(["public", "unverified"]);
+    } finally {
+      (window as { ave?: unknown }).ave = previous;
+    }
+  });
+
   it("lists a terminal tab grant and revokes it by its tab", async () => {
     const tabGrant: TabEgressGrant = {
       scope: "tab", tabId: "terminal:0a1b2c3d-1", host: "github.com", port: 443, grantedAt: "2026-10-20T03:00:00.000Z",

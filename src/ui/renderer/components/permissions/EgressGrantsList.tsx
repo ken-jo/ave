@@ -35,7 +35,7 @@ function grantKey(grant: ListedEgressGrant): string {
   const owner = grant.scope === "conversation" ? grant.sessionId
     : grant.scope === "tab" ? grant.tabId
     : `${grant.origin}\n${grant.workspaceRoot ?? ""}`;
-  return `${grant.scope}\n${owner}\n${grant.host}\n${grant.port}`;
+  return `${grant.scope}\n${owner}\n${grant.host}\n${grant.port}\n${grant.network ?? "public"}`;
 }
 
 function failureMessage(result: unknown): string | undefined {
@@ -84,6 +84,7 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
         scope: g.scope,
         host: g.host,
         port: g.port,
+        ...(g.network === undefined ? {} : { network: g.network }),
         ...(g.scope === "conversation" ? { sessionId: g.sessionId } : {}),
         ...(g.scope === "tab" ? { tabId: g.tabId } : {}),
         ...(g.scope === "workspace" || g.scope === "always" ? { origin: g.origin } : {}),

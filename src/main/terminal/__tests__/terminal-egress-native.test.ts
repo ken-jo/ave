@@ -253,7 +253,7 @@ describe.runIf(nativePlatform)("workspace terminal egress banner (native, design
       scopes: ["once", "tab", "always"],
     });
     expect(harness.grants.listTab()).toEqual([
-      { scope: "tab", tabId: TAB, host: HOST, port: PORT, grantedAt: expect.any(String) },
+      { scope: "tab", tabId: TAB, host: HOST, port: PORT, network: "public", grantedAt: expect.any(String) },
     ]);
     const second = await curlInTab("ALLOWED_SECOND");
     expect(second.status, second.text).toBe(0);
