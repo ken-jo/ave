@@ -128,7 +128,7 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
 
   const settings = view?.settings;
   return (
-    <div className="mt-4 space-y-3 rounded-md border px-3 py-3" data-testid="upstream-proxy-settings">
+    <div className="mt-3 space-y-3 border-t pt-3" data-testid="upstream-proxy-settings">
       <div className="space-y-0.5">
         <p className="text-sm font-medium">{translate("upstreamProxySettings.title")}</p>
         <p className="text-[11px] text-muted-foreground">{translate("upstreamProxySettings.description")}</p>
