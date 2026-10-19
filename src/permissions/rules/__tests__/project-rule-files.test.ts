@@ -26,7 +26,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  rmSync(root, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 describe("project rule root boundaries", () => {
@@ -44,7 +44,7 @@ describe("project rule root boundaries", () => {
     vi.stubEnv("USERPROFILE", value);
     // An unset environment uses the account's absolute home; invalid values
     // must not let this child inherit an otherwise valid repository identity.
-    expect(projectRulesLocation(root, cwd).projectRoot).toBe(inherits ? repo : cwd);
+    expect(projectRulesLocation(root, cwd).projectRoot).toBe(captureApprovalWorkingDirectory(inherits ? repo : cwd).path);
   });
 
   it.each([
@@ -80,7 +80,7 @@ describe("project rule root boundaries", () => {
       writeFileSync(join(gitDir, "commondir"), `${relative(gitDir, common)}\n`);
       writeFileSync(join(gitDir, "gitdir"), `${join(repo, ".git")}\n`);
     }
-    expect(projectRulesLocation(root, join(repo, "src")).projectRoot).toBe(repo);
+    expect(projectRulesLocation(root, join(repo, "src")).projectRoot).toBe(captureApprovalWorkingDirectory(repo).path);
   });
 
   it.each(["plain file", "empty directory", "missing gitdir", "invalid HEAD", "oversized file", "symlink"])(
@@ -101,7 +101,7 @@ describe("project rule root boundaries", () => {
         writeFileSync(join(marker, "HEAD"), "not a HEAD\n");
       }
       if (kind === "symlink") symlinkSync(join(outer, ".git"), marker, "junction");
-      expect(projectRulesLocation(root, cwd).projectRoot).toBe(cwd);
+      expect(projectRulesLocation(root, cwd).projectRoot).toBe(captureApprovalWorkingDirectory(cwd).path);
     },
   );
 
@@ -116,7 +116,7 @@ describe("project rule root boundaries", () => {
     writeFileSync(join(gitDir, "HEAD"), `${"a".repeat(40)}\n`);
     writeFileSync(join(gitDir, "commondir"), `${join(root, "common", ".git")}\n`);
     if (kind === "different checkout") writeFileSync(join(gitDir, "gitdir"), `${join(home, "other", ".git")}\n`);
-    expect(projectRulesLocation(root, cwd).projectRoot).toBe(cwd);
+    expect(projectRulesLocation(root, cwd).projectRoot).toBe(captureApprovalWorkingDirectory(cwd).path);
   });
 
   it("canonicalizes a symlinked home before enforcing its ceiling", () => {
@@ -127,7 +127,7 @@ describe("project rule root boundaries", () => {
     vi.stubEnv("USERPROFILE", alias);
     const cwd = join(home, "a");
     mkdirSync(cwd);
-    expect(projectRulesLocation(root, cwd).projectRoot).toBe(cwd);
+    expect(projectRulesLocation(root, cwd).projectRoot).toBe(captureApprovalWorkingDirectory(cwd).path);
   });
 
   it.each(["ordinary repository", "home repository"])("canonicalizes a symlinked cwd in a %s", (kind) => {
@@ -137,7 +137,7 @@ describe("project rule root boundaries", () => {
     mkdirSync(cwd);
     const alias = join(root, "alias");
     symlinkSync(cwd, alias, "junction");
-    expect(projectRulesLocation(root, alias).projectRoot).toBe(kind === "home repository" ? cwd : repo);
+    expect(projectRulesLocation(root, alias).projectRoot).toBe(captureApprovalWorkingDirectory(kind === "home repository" ? cwd : repo).path);
   });
 
   it("compares the home ceiling without case distinctions on Windows", () => {

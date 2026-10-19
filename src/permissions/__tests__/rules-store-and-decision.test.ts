@@ -16,6 +16,7 @@ import { readPermissionsFile, updatePermissionsFile } from "../permissions-store
 import { PermissionRulesFileCorruptError } from "../rules/rule-files.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
 import {
+  captureApprovalWorkingDirectory,
   UserApprovalStoreCorruptError,
   lookupApproval,
   readApprovals,
@@ -240,11 +241,11 @@ describe("decision path", () => {
     const pm = new PermissionManager(permissionsFile);
     await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: join(repo, "packages", "app") });
     expect(projectRulesLocation(dir, join(repo, "packages", "app")).filePath).toBe(projectRulesLocation(dir, repo).filePath);
-    expect(projectRulesLocation(dir, join(repo, "packages", "app")).projectRoot).toBe(realpathSync(repo));
+    expect(projectRulesLocation(dir, join(repo, "packages", "app")).projectRoot).toBe(captureApprovalWorkingDirectory(repo).path);
     await pm.ensureProjectRulesLoaded(repo);
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: repo })).toMatchObject({ decision: "allow" });
     // Outside a repository the cwd itself is the project.
-    expect(projectRulesLocation(dir, project).projectRoot).toBe(project);
+    expect(projectRulesLocation(dir, project).projectRoot).toBe(captureApprovalWorkingDirectory(project).path);
   });
 
   it("a project allow in one non-repository folder never reaches a sibling under a home repository", async () => {
@@ -298,7 +299,7 @@ describe("decision path", () => {
     ));
 
     const context = check.mock.calls[0]![4]!;
-    expect(projectRulesLocation(dir, context.projectRulesCwd!).projectRoot).toBe(realpathSync(repoB));
+    expect(projectRulesLocation(dir, context.projectRulesCwd!).projectRoot).toBe(captureApprovalWorkingDirectory(repoB).path);
     expect(context.ruleSubject).toMatchObject({ kind: "shell", cwd: join(repoA, "b-link") });
     expect(check.mock.results[0]!.value).toMatchObject({ decision: "deny" });
     expect(execute).not.toHaveBeenCalled();
