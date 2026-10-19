@@ -53,6 +53,7 @@ vi.mock("../../../main/app-state.js", async (importOriginal) => {
 import { registerSideChatHandlers } from "../sidechat.js";
 import { setSideChatOwnerContents } from "../../../main/app-state.js";
 import { browserTabRegistry } from "../../../main/browser/browser-tab-registry.js";
+import { TerminalBlockTracker, registerTerminalBlockTracker, unregisterTerminalBlockTracker } from "../../../main/terminal/terminal-blocks.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { deferred } from "../../../__tests__/test-helpers.js";
 
@@ -830,8 +831,8 @@ function makePaneStore(files: Record<string, unknown[]>, paneOf: Record<string, 
   };
 }
 
-const PANE_A = { kind: "browser", tabId: "browser:w-1" } as const;
-const PANE_B = { kind: "terminal", tabId: "terminal:w-2" } as const;
+const PANE_A = { kind: "browser", tabId: "browser:0000000a-1" } as const;
+const PANE_B = { kind: "terminal", tabId: "terminal:0000000a-2" } as const;
 const RAIL_SESSION = "11111111-1111-4111-8111-111111111111";
 const OTHER_RAIL_SESSION = "22222222-2222-4222-8222-222222222222";
 const STORED_PANE_SESSION = "33333333-3333-4333-8333-333333333333";
@@ -951,6 +952,30 @@ describe("pane chats are their own conversations", () => {
     expect(read(ev("file:///index.html"), { tabId: "" })).toEqual({ ok: false, error: "invalid-surface" });
   });
 
+  it("refuses a pane request for a tab another window holds, or a tab id that is not one", async () => {
+    const { store } = setup({ [STORED_PANE_SESSION]: [] }, { [STORED_PANE_SESSION]: PANE_B.tabId });
+    const read = handlers.get(CHANNELS.sidechat.paneHistory)!;
+    const end = handlers.get(CHANNELS.sidechat.endPaneChat)!;
+    // Window 7 asks; window 8's terminal is PANE_B's.
+    registerTerminalBlockTracker(PANE_B.tabId, new TerminalBlockTracker({ nonce: "0123456789abcdef", marksPromptEnd: true }), 8);
+    try {
+      expect(read(ev("file:///index.html"), { tabId: PANE_B.tabId })).toEqual({ ok: false, error: "invalid-surface" });
+      await expect(end(ev("file:///index.html"), { tabId: PANE_B.tabId, reason: "closed" })).resolves.toEqual({ ok: false, error: "invalid-surface" });
+      expect(store.loadSession).not.toHaveBeenCalled();
+    } finally {
+      unregisterTerminalBlockTracker(PANE_B.tabId);
+    }
+    // A page pane window 8 holds.
+    browserTabRegistry.bindConversationSurface("55555555-5555-4555-8555-555555555555", { windowId: 8, surface: PANE_A });
+    expect(read(ev("file:///index.html"), { tabId: PANE_A.tabId })).toEqual({ ok: false, error: "invalid-surface" });
+    // Not a workspace tab id at all.
+    for (const tabId of ["terminal:1", "browser:pane", "../x"]) {
+      expect(read(ev("file:///index.html"), { tabId })).toEqual({ ok: false, error: "invalid-surface" });
+    }
+    // The sender's own restored pane, held by no window yet, still reads.
+    expect(read(ev("file:///index.html"), { tabId: PANE_B.tabId })).toMatchObject({ ok: true, sessionId: STORED_PANE_SESSION });
+  });
+
   it("refuses a malformed session id and runs no turn", async () => {
     const { rail } = setup();
     await expect(sendFrom({ input: "x", sessionId: "../escape" })).resolves.toEqual({ ok: false, error: "invalid-session-id" });
@@ -973,6 +998,35 @@ describe("pane chats are their own conversations", () => {
       expect(pane(PANE_A)).toBe(loop);
       expect(loop.sessionOfTurn).toEqual([first, loop.getSessionId()]);
       expect(loop.getSessionId()).not.toBe(first);
+    });
+
+    it("refuses a send that arrives while a pane is being started afresh, even after its last turn let go", async () => {
+      const files: Record<string, unknown[]> = {};
+      const { store, pane } = setup(files);
+      await sendFrom({ input: "warm up", surface: PANE_A });
+      const loop = pane(PANE_A)!;
+      const first = loop.getSessionId();
+      files[first] = [];
+      const running = deferred<{ route: string }>();
+      loop.runTurn.mockImplementationOnce(async () => running.promise);
+      // The finished turn's row write is slow: the turn has let go of the pane
+      // (no active turn) but has not settled, so the reset is still waiting.
+      const rowWrite = deferred<void>();
+      store.saveSessionMetadata.mockImplementationOnce(async () => rowWrite.promise);
+      const writesBefore = store.saveSessionMetadata.mock.calls.length;
+      // Its first origin makes the turn write its row.
+      const turn = sendFrom({ input: "page", surface: PANE_A, originSessionId: RAIL_SESSION });
+      await vi.waitFor(() => expect(loop.runTurn).toHaveBeenCalledTimes(2));
+      const ending = endPane(PANE_A, "new");
+      running.resolve({ route: "chat" });
+      await vi.waitFor(() => expect(store.saveSessionMetadata.mock.calls.length).toBeGreaterThan(writesBefore));
+      await expect(sendFrom({ input: "between", surface: PANE_A })).resolves.toEqual({ ok: false, error: "streaming-active" });
+      rowWrite.resolve();
+      await expect(ending).resolves.toMatchObject({ ok: true });
+      await turn;
+      expect(loop.runTurn).toHaveBeenCalledTimes(2);
+      await expect(sendFrom({ input: "fresh", surface: PANE_A })).resolves.toMatchObject({ ok: true });
+      expect(loop.sessionOfTurn.at(-1)).not.toBe(first);
     });
 
     it("archives a closed pane's conversation and drops its loop", async () => {

@@ -39,7 +39,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import type { IPty } from "node-pty";
 import { createLogger } from "../../lib/logger.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -59,6 +59,7 @@ import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
 import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { installShellIntegration } from "./shell-integration.js";
+import { readTerminalForeground, type TerminalForegroundReading } from "./shell-process.js";
 import type { TerminalTtyHandoff } from "./terminal-tty-handoff.js";
 import { terminalNeedsOwnTtyGrant } from "./terminal-tty-platform.js";
 import {
@@ -132,6 +133,8 @@ interface TerminalSession {
   ownerWindowId: number | null;
   /** Command blocks parsed from this PTY's output (terminal-blocks.ts). */
   blocks: TerminalBlockTracker;
+  /** Program name of the login shell this terminal runs (`zsh`, `bash`, …). */
+  shellName: string;
   /** FIFO scrollback chunks, capped to {@link RING_MAX_BYTES}. */
   ring: string[];
   ringBytes: number;
@@ -575,6 +578,7 @@ async function spawnNewTerminal(
       pty,
       ownerWindowId: options.ownerWindowId ?? null,
       blocks: new TerminalBlockTracker({ nonce: markerNonce, marksPromptEnd }),
+      shellName: basename(shell).replace(/^-/u, ""),
       ring: [],
       ringBytes: 0,
       disposeData: () => {},
@@ -695,9 +699,89 @@ export function writeTerminal(tabId: string, data: string): void {
   session.pty.write(data);
 }
 
+export type TerminalNotTypedReason =
+  | "no-terminal"
+  | Exclude<TerminalPromptState, "ready">
+  | "no-fresh-prompt"
+  | "foreground-not-shell"
+  | "cwd-unverified"
+  | "cwd-mismatch";
+
 export type TypeTerminalCommandResult =
   | { ok: true; firstBlockId: number }
-  | { ok: false; reason: "no-terminal" | Exclude<TerminalPromptState, "ready">; message: string };
+  | { ok: false; reason: TerminalNotTypedReason; message: string };
+
+export type VerifyTerminalShellResult =
+  | { ok: true; cwd: string }
+  | { ok: false; reason: "no-terminal" | "foreground-not-shell" | "cwd-unverified" | "cwd-mismatch"; message: string };
+
+/**
+ * How long typing waits for the shell to draw a fresh prompt after the
+ * line-editor reset (Ctrl-C at an idle prompt).
+ */
+const FRESH_PROMPT_TIMEOUT_MS = 3_000;
+
+/**
+ * Check what the shell's markers say against the operating system: the
+ * terminal's foreground process must be its own shell (not a program that
+ * printed a prompt), and that shell's real working directory must be the one
+ * the markers reported. Markers are output text; the process table is not.
+ * Returns the shell's directory as the operating system resolves it.
+ */
+export async function verifyTerminalShell(tabId: string, ownerWindowId: number, reportedCwd: string): Promise<VerifyTerminalShellResult> {
+  const session = sessions.get(tabId);
+  if (!session || session.exited || session.closing || session.ownerWindowId !== ownerWindowId) {
+    return { ok: false, reason: "no-terminal", message: `no running terminal with tabId ${JSON.stringify(tabId)} in this window` };
+  }
+  return foregroundVerdict(await readTerminalForeground(session.pty.pid), session.shellName, reportedCwd);
+}
+
+/**
+ * Judge an operating-system reading of a terminal's foreground process for
+ * {@link verifyTerminalShell}: it must be `shellName`, in `reportedCwd`
+ * (compared after resolving symlinks).
+ */
+export function foregroundVerdict(reading: TerminalForegroundReading, shellName: string, reportedCwd: string): VerifyTerminalShellResult {
+  if (!reading.ok) {
+    return { ok: false, reason: "cwd-unverified", message: `the terminal's shell could not be checked: ${reading.reason}` };
+  }
+  const { foreground } = reading;
+  if (foreground.command !== shellName) {
+    return {
+      ok: false,
+      reason: "foreground-not-shell",
+      message: `the terminal's foreground process is ${JSON.stringify(foreground.command)}, not its ${shellName} shell`,
+    };
+  }
+  const actual = canonicalizePathForMatch(foreground.cwd);
+  if (canonicalizePathForMatch(reportedCwd) !== actual) {
+    return {
+      ok: false,
+      reason: "cwd-mismatch",
+      message: `the terminal reported ${JSON.stringify(reportedCwd)} as its directory, but its shell is in ${JSON.stringify(foreground.cwd)}`,
+    };
+  }
+  return { ok: true, cwd: actual };
+}
+
+/** Resolves true once the shell finishes drawing a prompt after `since`, false at the timeout or exit. */
+function waitForFreshPrompt(blocks: TerminalBlockTracker, since: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (value: boolean): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    const unsubscribe = blocks.subscribe(() => {
+      if (blocks.hasExited()) finish(false);
+      else if (blocks.promptEndCount() > since) finish(true);
+    });
+  });
+}
 
 /**
  * Type one agent command into a terminal and press Enter, as the user would:
@@ -711,24 +795,108 @@ export type TypeTerminalCommandResult =
  * join it. `line` must hold no control or invisible characters
  * (terminal-command-text.ts); one that does is a caller bug and throws.
  *
+ * A line editor can be in a state no output shows: an ESC or Ctrl-X prefix
+ * waiting for its next key, vi command mode, a key typed ahead during the
+ * last command. Text typed then is read as editing keys, and the shell runs
+ * something other than the approved line. So, in order:
+ *  1. Check the shell against the operating system
+ *     ({@link verifyTerminalShell}): its own process holds the terminal, in
+ *     `expectedCwd` — so the next key reaches the shell, not a program.
+ *  2. Ctrl-C. At an idle prompt the terminal turns it into SIGINT, whatever
+ *     the keymap or a pending prefix: the line editor drops the line and its
+ *     state and draws a fresh prompt. It cannot run anything.
+ *  3. Wait for that fresh prompt, and check it is still idle, untouched and
+ *     in the same directory.
+ *  4. Write the line as a bracketed paste (`ESC[200~ … ESC[201~`), which the
+ *     line editor inserts as text and never reads as keys, then Enter. The
+ *     shell reported bracketed paste on at this prompt (promptState).
+ *
  * Returns the id the command's block will have at least, so the caller can
- * wait for it.
+ * wait for it, and compare the command the shell ran with the approved one.
  */
-export function typeTerminalCommand(tabId: string, ownerWindowId: number, line: string): TypeTerminalCommandResult {
+export async function typeTerminalCommand(
+  tabId: string,
+  ownerWindowId: number,
+  line: string,
+  expectedCwd: string,
+): Promise<TypeTerminalCommandResult> {
+  const live = (): TerminalSession | undefined => {
+    const session = sessions.get(tabId);
+    return session && !session.exited && !session.closing && session.ownerWindowId === ownerWindowId ? session : undefined;
+  };
+  const session = live();
+  return typeLineAtPrompt(
+    {
+      blocks: session?.blocks,
+      isLive: () => live() !== undefined,
+      write: (data) => live()?.pty.write(data),
+      verify: () => verifyTerminalShell(tabId, ownerWindowId, expectedCwd),
+      missing: `no running terminal with tabId ${JSON.stringify(tabId)} in this window`,
+    },
+    line,
+    () => log.info({ tabId, chars: line.length }, "terminal: typed an approved agent command"),
+  );
+}
+
+/** The terminal {@link typeLineAtPrompt} types into. */
+export interface PromptTypingTarget {
+  /** Its block tracker, or undefined when there is no such terminal. */
+  readonly blocks: TerminalBlockTracker | undefined;
+  /** Whether it is still open (and still the caller's). */
+  isLive(): boolean;
+  write(data: string): void;
+  /** The operating-system check of its shell ({@link verifyTerminalShell}). */
+  verify(): Promise<VerifyTerminalShellResult>;
+  /** The message when there is no such terminal. */
+  readonly missing: string;
+}
+
+/**
+ * The typing protocol of {@link typeTerminalCommand}, over any terminal:
+ * check, reset (Ctrl-C), wait for the fresh prompt, paste, Enter.
+ */
+export async function typeLineAtPrompt(
+  target: PromptTypingTarget,
+  line: string,
+  onTyped: () => void = () => {},
+): Promise<TypeTerminalCommandResult> {
   if (!hasOnlyTypeableCharacters(line) || line.length > MAX_TERMINAL_COMMAND_CHARS) {
     throw new Error("typeTerminalCommand: the line holds characters that cannot be typed as one command");
   }
-  const session = sessions.get(tabId);
-  if (!session || session.exited || session.closing || session.ownerWindowId !== ownerWindowId) {
-    return { ok: false, reason: "no-terminal", message: `no running terminal with tabId ${JSON.stringify(tabId)} in this window` };
+  const notTyped = (reason: TerminalNotTypedReason, message: string): TypeTerminalCommandResult => ({ ok: false, reason, message });
+  const blocks = target.blocks;
+  const check = (): TypeTerminalCommandResult | null => {
+    if (!blocks || !target.isLive()) return notTyped("no-terminal", target.missing);
+    const state = blocks.promptState();
+    return state === "ready" ? null : notTyped(state, TERMINAL_NOT_READY_MESSAGES[state]);
+  };
+
+  const before = check();
+  if (before || !blocks) return before ?? notTyped("no-terminal", target.missing);
+
+  // 1. The operating system agrees: the shell holds the terminal, in the approved directory.
+  const verified = await target.verify();
+  if (!verified.ok) return notTyped(verified.reason, verified.message);
+  const afterCheck = check();
+  if (afterCheck) return afterCheck;
+
+  // 2–3. Reset the line editor and wait for the fresh prompt.
+  const fresh = waitForFreshPrompt(blocks, blocks.promptEndCount(), FRESH_PROMPT_TIMEOUT_MS);
+  target.write("\u0003");
+  if (!await fresh) {
+    return notTyped("no-fresh-prompt", "the terminal's shell did not draw a fresh prompt after its line was cleared");
   }
-  const state = session.blocks.promptState();
-  if (state !== "ready") {
-    return { ok: false, reason: state, message: TERMINAL_NOT_READY_MESSAGES[state] };
+  const reported = blocks.currentCwd();
+  if (reported === null || canonicalizePathForMatch(reported) !== verified.cwd) {
+    return notTyped("cwd-mismatch", "the terminal's shell changed directory while the command was being prepared");
   }
-  const firstBlockId = session.blocks.nextBlockId();
-  session.pty.write(`${line}\r`);
-  log.info({ tabId, chars: line.length }, "terminal: typed an approved agent command");
+
+  // 4. Synchronously from the last check: nothing can run in between.
+  const beforeWrite = check();
+  if (beforeWrite) return beforeWrite;
+  const firstBlockId = blocks.nextBlockId();
+  target.write(`\u001b[200~${line}\u001b[201~\r`);
+  onTyped();
   return { ok: true, firstBlockId };
 }
 
@@ -737,7 +905,9 @@ const TERMINAL_NOT_READY_MESSAGES: Record<Exclude<TerminalPromptState, "ready">,
   exited: "the terminal's shell has exited",
   "command-running": "a command is running in the foreground of the terminal; typed text would go to it",
   "between-prompts": "the terminal's shell is between commands and has not shown its prompt yet",
-  "pending-input": "the user is typing at the prompt, or it holds text they typed and have not run",
+  "pending-input": "the user is typing at the prompt, pressed a key since it was drawn, or it holds text they typed and have not run",
+  "no-bracketed-paste": "the terminal's shell does not take bracketed paste (zsh 5.1 or bash 4.4 and later do), so typed text could be read as keys",
+  "vi-editing-mode": "the terminal's shell uses vi key bindings, where typed text can be read as editing commands",
   "shell-starting": "the terminal's shell is still starting and has not finished its first prompt; retry in a moment",
   "no-prompt-end-marker": "the terminal's shell does not mark the end of its prompt, so typing there cannot be told",
 };

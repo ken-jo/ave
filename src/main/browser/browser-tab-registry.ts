@@ -450,6 +450,22 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return this.closingByAgent.has(windowTabKey(windowId, tabId));
   }
 
+  /**
+   * The windows that hold tab `tabId` now: as a page, or as a pane whose chat
+   * holds a conversation.
+   */
+  windowsHoldingTab(tabId: string): number[] {
+    const windows = new Set<number>();
+    for (const key of this.handleByWindowTab.keys()) {
+      const separator = key.indexOf("\u0000");
+      if (key.slice(separator + 1) === tabId) windows.add(Number(key.slice(0, separator)));
+    }
+    for (const bound of this.boundSurface.values()) {
+      if (bound.surface.tabId === tabId) windows.add(bound.windowId);
+    }
+    return [...windows];
+  }
+
   /** A window is gone: none of its panes holds a conversation any more. */
   releaseWindow(windowId: number): void {
     for (const [sessionId, bound] of this.boundSurface) {

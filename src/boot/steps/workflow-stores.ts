@@ -34,7 +34,7 @@ import { promptSurfaceResolver } from "../host-runtime.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
-import { typeTerminalCommand } from "../../main/terminal/pty-manager.js";
+import { typeTerminalCommand, verifyTerminalShell } from "../../main/terminal/pty-manager.js";
 import { findSessionMainWindowContents, mainWindowForContents, sideChatOwnerWindow } from "../../main/app-state.js";
 import { browserOrigin } from "../../tools/browser-tools.js";
 
@@ -185,6 +185,17 @@ export async function setupWorkflowStores(
             boundSurface: (windowId: number, hostSessionId: string) =>
               browserTabRegistry.conversationSurface(windowId, hostSessionId),
             typeCommand: typeTerminalCommand,
+            verifyShell: verifyTerminalShell,
+            auditMismatch: (mismatch) => {
+              ctx.bootAuditLogger.log({
+                timestamp: new Date().toISOString(),
+                sessionId: mismatch.sessionId ?? "unknown",
+                type: "warn",
+                // Digests, not text: a command can hold secrets.
+                output: `terminal_run: terminal ${mismatch.tabId} ran a different command from the one approved `
+                  + `(approved sha256 ${mismatch.approvedSha256}, ran sha256 ${mismatch.ranSha256})`,
+              });
+            },
           },
           browser: {
             windowIdForHostedSession,

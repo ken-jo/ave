@@ -28,7 +28,7 @@ const mark = (fields: string, terminator: "bel" | "st" = "bel"): string =>
 /** One prompt-command-output-finish cycle, as the generated zsh rc emits it. */
 function cycle(command: string, output: string, exit: number, cwd = "/work"): string {
   return [
-    mark(`P;Cwd=${encodeURIComponent(cwd).replace(/%2F/gu, "/")}`),
+    mark(`P;Cwd=${encodeURIComponent(cwd).replace(/%2F/gu, "/")};Keys=emacs;Paste=1`),
     mark("A"),
     "user@host work % ",
     mark("B"),
@@ -227,7 +227,7 @@ describe("TerminalBlockTracker — OSC 133", () => {
 describe("TerminalBlockTracker — marker nonce", () => {
   it("ignores markers a command prints: no fake block, the real exit code and cwd intact", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-    tracker.recordOutput(mark("P;Cwd=/repo"));
+    tracker.recordOutput(mark("P;Cwd=/repo;Keys=emacs;Paste=1"));
     tracker.recordOutput(mark("C;cmdline_url=cat%20evil.txt"));
     // The file's content: D;0, an OSC 7 to /etc and a C naming another command.
     tracker.recordOutput(
@@ -265,7 +265,7 @@ describe("TerminalBlockTracker — marker nonce", () => {
   it("returns the chunk for display without the nonce, and forged markers unchanged", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
     const shown = [
-      mark("P;Cwd=/repo"),
+      mark("P;Cwd=/repo;Keys=emacs;Paste=1"),
       mark("A"),
       "$ ",
       mark("B"),
@@ -364,7 +364,7 @@ describe("terminal block registry", () => {
 });
 
 describe("prompt state (whether a command may be typed now)", () => {
-  const prompt = (cwd = "/work"): string => `${mark(`P;Cwd=${cwd}`)}${mark("A")}user@host work % ${mark("B")}`;
+  const prompt = (cwd = "/work"): string => `${mark(`P;Cwd=${cwd};Keys=emacs;Paste=1`)}${mark("A")}user@host work % ${mark("B")}`;
 
   it("is ready only at an empty prompt, and names every other state", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
@@ -393,7 +393,7 @@ describe("prompt state (whether a command may be typed now)", () => {
 
   it("refuses fish's prompt, which marks no end of prompt, so the user's typing there cannot be told", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: false });
-    tracker.recordOutput(`${mark("P;Cwd=/w")}${mark("A")}user@host /w> `);
+    tracker.recordOutput(`${mark("P;Cwd=/w;Keys=emacs;Paste=1")}${mark("A")}user@host /w> `);
     expect(tracker.promptState()).toBe("no-prompt-end-marker");
     // Typed text after fish's prompt looks the same as an empty prompt.
     tracker.recordOutput("rm -rf ");
@@ -402,31 +402,46 @@ describe("prompt state (whether a command may be typed now)", () => {
 
   it("tells a zsh or bash still drawing its first prompt apart from fish, and is ready once the prompt ends", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-    tracker.recordOutput(`${mark("P;Cwd=/w")}${mark("A")}user@host w % `);
+    tracker.recordOutput(`${mark("P;Cwd=/w;Keys=emacs;Paste=1")}${mark("A")}user@host w % `);
     expect(tracker.promptState()).toBe("shell-starting");
     tracker.recordOutput(mark("B"));
     expect(tracker.promptState()).toBe("ready");
     // Later prompts between A and B are between prompts, not starting.
-    tracker.recordOutput(`ls\r\n${mark("C;cmdline_url=ls")}${mark("D;0")}${mark("P;Cwd=/w")}${mark("A")}% `);
+    tracker.recordOutput(`ls\r\n${mark("C;cmdline_url=ls")}${mark("D;0")}${mark("P;Cwd=/w;Keys=emacs;Paste=1")}${mark("A")}% `);
     expect(tracker.promptState()).toBe("between-prompts");
   });
 
-  it("counts the user's keystrokes as typing until they have been quiet for a while (keys not yet echoed)", () => {
+  it("counts any key pressed at this prompt as typing, and a fresh prompt's keys until they have been quiet for a while", () => {
     let clock = 10_000;
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true, now: () => clock });
     tracker.recordOutput(prompt());
     expect(tracker.promptState()).toBe("ready");
-    // Written to the PTY, not echoed yet: the echo is still empty.
-    tracker.recordInput("g");
+    // An ESC (a pending prefix, or vi command mode) echoes nothing, yet
+    // changes what typed text does: the prompt stays taken however long it waits.
+    tracker.recordInput("\u001b");
     expect(tracker.promptState()).toBe("pending-input");
-    clock += USER_INPUT_QUIET_MS - 1;
+    clock += USER_INPUT_QUIET_MS * 10;
     expect(tracker.promptState()).toBe("pending-input");
-    clock += 1;
-    expect(tracker.promptState()).toBe("ready");
-    // Input before this prompt counts the same way: the clock, not the prompt, decides.
+    // A fresh prompt clears it; keys just before that prompt still count until quiet.
     tracker.recordInput("\r");
     tracker.recordOutput(prompt());
     expect(tracker.promptState()).toBe("pending-input");
+    clock += USER_INPUT_QUIET_MS;
+    expect(tracker.promptState()).toBe("ready");
+  });
+
+  it("needs the shell to report bracketed paste on and emacs keys before it is ready", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    const promptWith = (fields: string): string => `${mark(`P;Cwd=/w${fields}`)}${mark("A")}% ${mark("B")}`;
+    tracker.recordOutput(promptWith(""));
+    expect(tracker.promptState()).toBe("no-bracketed-paste");
+    tracker.recordOutput(`\r\n${mark("D;0")}${promptWith(";Keys=emacs;Paste=0")}`);
+    expect(tracker.promptState()).toBe("no-bracketed-paste");
+    tracker.recordOutput(`\r\n${mark("D;0")}${promptWith(";Keys=vi;Paste=1")}`);
+    expect(tracker.promptState()).toBe("vi-editing-mode");
+    tracker.recordOutput(`\r\n${mark("D;0")}${promptWith(";Keys=emacs;Paste=1")}`);
+    expect(tracker.promptState()).toBe("ready");
+    expect(tracker.promptEndCount()).toBe(4);
   });
 
   it("does not count the terminal emulator's own replies (focus, device and cursor reports) as the user typing", () => {
@@ -448,7 +463,7 @@ describe("prompt state (whether a command may be typed now)", () => {
   it("never hands the marker nonce out in a block's command or output", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
     tracker.recordOutput(cycle(`echo ${NONCE}`, `${NONCE}\r\n`, 0));
-    tracker.recordOutput(`${mark("P;Cwd=/work")}${mark("A")}% ${mark("B")}printf x${NONCE}y\r\n${mark("C;cmdline_url=printf")}x${NONCE}y`);
+    tracker.recordOutput(`${mark("P;Cwd=/work;Keys=emacs;Paste=1")}${mark("A")}% ${mark("B")}printf x${NONCE}y\r\n${mark("C;cmdline_url=printf")}x${NONCE}y`);
     const blocks = tracker.recent(5);
     expect(blocks).toHaveLength(2);
     for (const block of blocks) {

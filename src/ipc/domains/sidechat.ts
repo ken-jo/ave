@@ -50,6 +50,8 @@ import { sendToWebContents } from "../safe-send.js";
 import { mainWindowForContents, setSideChatOwnerContents } from "../../main/app-state.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { parseActiveSurface } from "./browser.js";
+import { terminalTabOwnerWindow } from "../../main/terminal/terminal-blocks.js";
+import { parseTabId } from "../../shared/tab-id.js";
 import { createLogger } from "../../lib/logger.js";
 import { createLegacyChatStreamEventSink } from "../../api/platform-conversation-legacy-adapter.js";
 import type { GenericMessage } from "../../engine/llm/types.js";
@@ -439,12 +441,25 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     }
   });
 
-  /** `{ tabId }` from a pane-chat request, or undefined when malformed. */
+  /** `{ tabId }` from a pane-chat request, or undefined when malformed or not a workspace tab id. */
   const paneTabId = (payload: unknown): string | undefined => {
     const tabId = payload && typeof payload === "object" && !Array.isArray(payload)
       ? (payload as Record<string, unknown>).tabId
       : undefined;
-    return typeof tabId === "string" && tabId.trim().length > 0 && tabId.length <= MAX_PANE_TAB_ID_LENGTH ? tabId : undefined;
+    return typeof tabId === "string" && tabId.length <= MAX_PANE_TAB_ID_LENGTH && parseTabId(tabId) !== null ? tabId : undefined;
+  };
+
+  /**
+   * True when a window other than `windowId` holds tab `tabId` now — its
+   * terminal, its page, or its pane chat — so a request naming it from
+   * `windowId` reaches into another window. A tab no window holds yet (a
+   * restored pane before its terminal or page is back) is the sender's to
+   * ask about.
+   */
+  const heldByAnotherWindow = (windowId: number, tabId: string): boolean => {
+    const terminalOwner = terminalTabOwnerWindow(tabId);
+    if (terminalOwner !== undefined && terminalOwner !== windowId) return true;
+    return browserTabRegistry.windowsHoldingTab(tabId).some((holder) => holder !== windowId);
   };
 
   ipcMain.handle(CHANNELS.sidechat.paneHistory, (e, payload: unknown) => {
@@ -452,6 +467,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     const tabId = paneTabId(payload);
     const senderWindow = mainWindowForContents(e.sender);
     if (tabId === undefined || !senderWindow) return { ok: false as const, error: "invalid-surface" };
+    if (heldByAnotherWindow(senderWindow.id, tabId)) return { ok: false as const, error: "invalid-surface" };
     // The pane's live loop once it holds the pane's conversation; before that
     // (a reopened window, a restart) the conversation the store keeps for it.
     const loop = panes.get(senderWindow.id, tabId);
@@ -471,6 +487,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     const reason = payload && typeof payload === "object" ? (payload as Record<string, unknown>).reason : undefined;
     const senderWindow = mainWindowForContents(e.sender);
     if (tabId === undefined || !senderWindow) return { ok: false as const, error: "invalid-surface" };
+    if (heldByAnotherWindow(senderWindow.id, tabId)) return { ok: false as const, error: "invalid-surface" };
     if (reason !== "new" && reason !== "closed") return { ok: false as const, error: "invalid-input" };
     const windowId = senderWindow.id;
     const loop = panes.get(windowId, tabId);
@@ -486,10 +503,19 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     // no longer the pane's (it stays listed, unarchived).
     const previous = loop && turnsOf(loop).restored ? loop.getSessionId() : storedPaneSession(tabId);
     if (loop) {
-      if (turnsOf(loop).reserved || loop.isSessionTransitioning()) return { ok: false as const, error: "streaming-active" };
-      await abortTurnOf(loop);
-      await loop.runSessionTransition("sidechat-pane-new", (lease) => loop.newConversation("main", undefined, lease));
-      turnsOf(loop).restored = true;
+      const turns = turnsOf(loop);
+      if (turns.reserved || loop.isSessionTransitioning()) return { ok: false as const, error: "streaming-active" };
+      // Reserved across both awaits: a send arriving once the aborted turn has
+      // settled, before the fresh conversation exists, is refused instead of
+      // starting a turn the session swap would run under.
+      turns.reserved = true;
+      try {
+        await abortTurnOf(loop);
+        await loop.runSessionTransition("sidechat-pane-new", (lease) => loop.newConversation("main", undefined, lease));
+      } finally {
+        turns.reserved = false;
+      }
+      turns.restored = true;
     }
     browserTabRegistry.releasePaneConversation(windowId, tabId);
     if (previous !== undefined) await recordSideChatRow(store, previous, undefined, null);

@@ -1643,12 +1643,12 @@ export function ToolApprovalContent({
               </p>
             ) : null}
             {terminalTargetText(tHook, request) ? (
-              <p className="text-[10px] text-muted-foreground" data-testid="approval-terminal-target">
+              <p className="text-[10px] text-muted-foreground break-all" data-testid="approval-terminal-target">
                 {terminalTargetText(tHook, request)}
               </p>
             ) : null}
             {terminalCommandNotes(tHook, request).map((note) => (
-              <p key={note} className="text-[10px] text-warning" data-testid="approval-terminal-note">
+              <p key={note} className="text-[10px] text-warning break-all" data-testid="approval-terminal-note">
                 {note}
               </p>
             ))}

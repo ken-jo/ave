@@ -106,10 +106,14 @@ const ZSH_RC = (noncePath: string): string => [
   '  REPLY="$out"',
   "}",
   "__ave_precmd() {",
-  "  local ave_status=$?",
+  "  local ave_status=$? ave_keys=emacs ave_paste=0",
   "  printf '\\e]133;D;%s;%s\\a' \"$ave_status\" \"$__ave_nonce\"",
+  // How typed text will be read: vi bindings in the main keymap, and whether
+  // zle takes bracketed paste (it does unless zle_bracketed_paste is unset).
+  '  [[ "$(bindkey -lL main)" == *vi* ]] && ave_keys=vi',
+  '  [[ -n "$zle_bracketed_paste" ]] && ave_paste=1',
   '  __ave_encode "$PWD"',
-  "  printf '\\e]133;P;Cwd=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$__ave_nonce\" \"$__ave_nonce\"",
+  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$__ave_nonce\" \"$__ave_nonce\"",
   "}",
   "__ave_preexec() {",
   '  __ave_encode "${1[1,' + MAX_ENCODED_COMMAND_CHARS + ']}"',
@@ -147,11 +151,19 @@ const BASH_PROFILE = (noncePath: string): string => [
   '  REPLY="$out"',
   "}",
   "__ave_at_prompt=0",
+  // Bracketed paste (readline 7 / bash 4.4 and later; on by default from
+  // bash 5.1): pasted text is inserted, never read as keys. Older bash has
+  // none, and reports Paste=0.
+  "__ave_paste=0",
+  "if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then",
+  "  bind 'set enable-bracketed-paste on' 2>/dev/null && __ave_paste=1",
+  "fi",
   "__ave_precmd() {",
-  "  local ave_status=$?",
+  "  local ave_status=$? ave_keys=emacs",
   "  printf '\\e]133;D;%s;%s\\a' \"$ave_status\" \"$__ave_nonce\"",
+  "  [[ -o vi ]] && ave_keys=vi",
   '  __ave_encode "$PWD"',
-  "  printf '\\e]133;P;Cwd=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$__ave_nonce\" \"$__ave_nonce\"",
+  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$__ave_paste\" \"$__ave_nonce\" \"$__ave_nonce\"",
   "  __ave_at_prompt=1",
   "}",
   "__ave_preexec() {",

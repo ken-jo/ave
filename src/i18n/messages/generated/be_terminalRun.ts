@@ -5,6 +5,7 @@ export const en = {
   "be_terminalRun.commandDescription": "The single-line shell command to type and run, exactly as it should appear in the terminal.",
   "be_terminalRun.tabIdDescription": "Terminal tab id from terminal_read (for example \"terminal:3fa91c0e-2\"). Omit it to use the terminal this conversation is bound to, or else the terminal the user is looking at.",
   "be_terminalRun.waitSecondsDescription": "Seconds to wait for the command to finish before returning (default {defaultWait}, max {maxWait}; 0 returns as soon as it is typed). The command keeps running in the terminal either way.",
+  "be_terminalRun.ranDifferentCommand": "Terminal {tabId} ran a different command from the one approved (its shell's record is in block.command). This was recorded in the audit log. Do not retry; tell the user.",
   "be_terminalRun.stillRunning": "The command is still running in terminal {tabId}. Read its output later with terminal_read (tabId {tabId}, blockId {blockId}).",
   "be_terminalRun.notStarted": "The command was typed into terminal {tabId}, but the shell has not started it yet. Check with terminal_read (tabId {tabId}).",
 } as const;
@@ -14,6 +15,7 @@ export const ko: Record<keyof typeof en, string> = {
   "be_terminalRun.commandDescription": "입력해 실행할 한 줄짜리 셸 명령. 터미널에 보일 모습 그대로 적습니다.",
   "be_terminalRun.tabIdDescription": "terminal_read 에서 얻은 터미널 탭 id (예: \"terminal:3fa91c0e-2\"). 생략하면 이 대화가 연결된 터미널을, 없으면 사용자가 보고 있는 터미널을 사용합니다.",
   "be_terminalRun.waitSecondsDescription": "명령이 끝나기를 기다릴 초 (기본 {defaultWait}, 최대 {maxWait}, 0 이면 입력하자마자 반환). 어느 경우든 명령은 터미널에서 계속 실행됩니다.",
+  "be_terminalRun.ranDifferentCommand": "터미널 {tabId} 가 승인된 명령과 다른 명령을 실행했습니다 (셸의 기록은 block.command 에 있습니다). 감사 로그에 기록했습니다. 다시 시도하지 말고 사용자에게 알리세요.",
   "be_terminalRun.stillRunning": "명령이 터미널 {tabId} 에서 아직 실행 중입니다. 출력은 나중에 terminal_read (tabId {tabId}, blockId {blockId}) 로 읽으세요.",
   "be_terminalRun.notStarted": "명령을 터미널 {tabId} 에 입력했지만 셸이 아직 시작하지 않았습니다. terminal_read (tabId {tabId}) 로 확인하세요.",
 };

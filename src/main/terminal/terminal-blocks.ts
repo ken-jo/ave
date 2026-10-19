@@ -231,8 +231,14 @@ function cleanCommand(raw: string): string {
  *  - `between-prompts`: a command finished and the next prompt has not
  *    started;
  *  - `pending-input`: the user has typed at the prompt and not submitted it,
- *    or typed anything within the last {@link USER_INPUT_QUIET_MS} (keys
- *    still on their way through the shell have not been echoed yet);
+ *    pressed any key since the prompt was drawn (an ESC or Ctrl-X prefix or
+ *    a switch to vi command mode leaves no echo, yet changes what typed text
+ *    does), or typed anything within the last {@link USER_INPUT_QUIET_MS}
+ *    (keys still on their way through the shell have not been echoed yet);
+ *  - `no-bracketed-paste`: the shell did not report bracketed paste on, so
+ *    text written to it would be read as keys rather than inserted;
+ *  - `vi-editing-mode`: the shell's line editor uses vi key bindings, where
+ *    typed text can be read as editing commands;
  *  - `shell-starting`: a shell that marks the end of its prompt (zsh, bash)
  *    has begun its first prompt but not finished it yet;
  *  - `no-prompt-end-marker`: the shell marks no end of prompt (fish), so
@@ -245,6 +251,8 @@ export type TerminalPromptState =
   | "command-running"
   | "between-prompts"
   | "pending-input"
+  | "no-bracketed-paste"
+  | "vi-editing-mode"
   | "shell-starting"
   | "no-prompt-end-marker";
 
@@ -290,6 +298,15 @@ export class TerminalBlockTracker {
   private lastInputAt: number | null = null;
   /** True once the shell has marked the end of a prompt (B). */
   private sawPromptEnd = false;
+  /** How many prompts the shell has finished drawing (B markers). */
+  private promptEnds = 0;
+  /** True once the user pressed a key after the current prompt was drawn. */
+  private inputSincePromptEnd = false;
+  /**
+   * The line editor's set-up as the shell reported it at its last prompt
+   * (`Keys=` and `Paste=` on the P marker), or null when it reported none.
+   */
+  private editor: { readonly keys: string; readonly bracketedPaste: boolean } | null = null;
   /** Called after every authenticated marker and on exit (see {@link subscribe}). */
   private readonly listeners = new Set<() => void>();
 
@@ -324,8 +341,10 @@ export class TerminalBlockTracker {
     // the user's own typing. fish marks no B, so its prompt phase is the
     // steady state and typing there cannot be told from the prompt text.
     if (this.phase === "input") {
-      if (this.echo.text().trim() !== "") return "pending-input";
+      if (this.echo.text().trim() !== "" || this.inputSincePromptEnd) return "pending-input";
       if (this.lastInputAt !== null && this.now() - this.lastInputAt < USER_INPUT_QUIET_MS) return "pending-input";
+      if (this.editor?.bracketedPaste !== true) return "no-bracketed-paste";
+      if (this.editor.keys !== "emacs") return "vi-editing-mode";
       return "ready";
     }
     if (this.phase === "prompt") {
@@ -333,6 +352,11 @@ export class TerminalBlockTracker {
       return this.sawPromptEnd ? "between-prompts" : "shell-starting";
     }
     return "between-prompts";
+  }
+
+  /** How many prompts the shell has finished drawing; grows by one with each new prompt. */
+  promptEndCount(): number {
+    return this.promptEnds;
   }
 
   /** The working directory the shell last reported, or null before it reported one. */
@@ -496,7 +520,10 @@ export class TerminalBlockTracker {
    * line on screen.
    */
   recordInput(data: string): void {
-    if (!TERMINAL_REPLY.test(data)) this.lastInputAt = this.now();
+    if (!TERMINAL_REPLY.test(data)) {
+      this.lastInputAt = this.now();
+      if (this.phase === "input") this.inputSincePromptEnd = true;
+    }
     if (this.integrated || !data.includes("\r")) return;
     const line = this.open ? this.open.output.currentLine() : this.idle.currentLine();
     const command = cleanCommand(line || (this.open ? this.open.output.lastNonEmptyLine() : this.idle.lastNonEmptyLine()));
@@ -565,6 +592,9 @@ export class TerminalBlockTracker {
         if (cwd !== undefined && cwd.length > "Cwd=".length) {
           this.cwd = decodePercentEncoded(cwd.slice("Cwd=".length));
         }
+        const keys = params.find((p) => p.startsWith("Keys="))?.slice("Keys=".length);
+        const paste = params.find((p) => p.startsWith("Paste="))?.slice("Paste=".length);
+        this.editor = keys === undefined || paste === undefined ? null : { keys, bracketedPaste: paste === "1" };
         break;
       }
       case "A":
@@ -575,6 +605,8 @@ export class TerminalBlockTracker {
         break;
       case "B":
         this.sawPromptEnd = true;
+        this.promptEnds++;
+        this.inputSincePromptEnd = false;
         this.echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
         this.phase = "input";
         break;
@@ -710,6 +742,14 @@ export function getTerminalBlockTracker(tabId: string): TerminalBlockTracker | u
 export function getWindowTerminalBlockTracker(tabId: string, windowId: number): TerminalBlockTracker | undefined {
   const entry = trackers.get(tabId);
   return entry && entry.ownerWindowId === windowId ? entry.tracker : undefined;
+}
+
+/**
+ * The window a terminal tab belongs to: its id, null when the terminal was
+ * spawned without one, undefined when no terminal has that tab id.
+ */
+export function terminalTabOwnerWindow(tabId: string): number | null | undefined {
+  return trackers.get(tabId)?.ownerWindowId;
 }
 
 /** The terminal tabs of one window that have a tracker, in creation order. */

@@ -17,7 +17,7 @@
  *   - kill / killAll tear down + decrement ASRT state.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
@@ -120,6 +120,8 @@ type DataCb = (chunk: string) => void;
 type ExitCb = (e: { exitCode: number; signal?: number }) => void;
 class FakePty {
   pid = 9999;
+  /** What a test's fake shell does with each write (e.g. redraw its prompt on Ctrl-C). */
+  respond: ((data: string) => void) | null = null;
   ptsName: unknown = "/dev/ttys012";
   written: string[] = [];
   resized: Array<[number, number]> = [];
@@ -135,7 +137,10 @@ class FakePty {
     this.exitCbs.add(cb);
     return { dispose: () => { this.exitCbs.delete(cb); } };
   }
-  write(d: string) { this.written.push(d); }
+  write(d: string) {
+    this.written.push(d);
+    this.respond?.(d);
+  }
   resize(c: number, r: number) { this.resized.push([c, r]); }
   kill(signal?: string) {
     this.killed = true;
@@ -152,6 +157,16 @@ const ptySpawnMock = vi.fn<(cmd: string, args: string[], opts: unknown) => FakeP
   spawnedPtys.push(lastPty);
   return lastPty;
 });
+/** What the operating system reports as the terminal's foreground process. */
+let foregroundReading: import("../shell-process.js").TerminalForegroundReading = {
+  ok: true,
+  foreground: { pid: 9999, command: "zsh", cwd: "/w" },
+};
+const readForegroundMock = vi.fn(async (_ptyPid: number) => foregroundReading);
+vi.mock("../shell-process.js", () => ({
+  readTerminalForeground: (ptyPid: number) => readForegroundMock(ptyPid),
+}));
+
 vi.mock("node-pty", () => ({
   spawn: (cmd: string, args: string[], opts: unknown) => ptySpawnMock(cmd, args, opts),
 }));
@@ -168,6 +183,7 @@ import {
   forceKillAllTerminalsForShutdown,
   setTerminalEmitter,
   typeTerminalCommand,
+  verifyTerminalShell,
   __resetTerminalsForTest,
   __terminalSessionCountForTest,
   type TerminalEmit,
@@ -824,42 +840,116 @@ describe("pty-manager command blocks", () => {
 });
 
 describe("pty-manager typing an approved agent command", () => {
-  async function zshTerminal(ownerWindowId: number): Promise<{ pty: FakePty; mark: (fields: string) => string }> {
+  const TAB = "terminal:0000000a-1";
+  const PASTE = (line: string): string => `\u001b[200~${line}\u001b[201~\r`;
+
+  beforeEach(() => {
+    foregroundReading = { ok: true, foreground: { pid: 9999, command: "zsh", cwd: "/w" } };
+    readForegroundMock.mockClear();
+  });
+
+  async function zshTerminal(ownerWindowId: number): Promise<{ pty: FakePty; mark: (fields: string) => string; prompt: (fields?: string) => string }> {
     vi.stubEnv("SHELL", "/bin/zsh");
     try {
-      expect((await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId })).ok).toBe(true);
+      expect((await spawnTerminal({ tabId: TAB, ownerWindowId })).ok).toBe(true);
     } finally {
       vi.unstubAllEnvs();
     }
     const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
     const nonce = spawnedNonce(opts.env);
-    return { pty: lastPty!, mark: (fields) => `\u001b]133;${fields};${nonce}\u0007` };
+    const mark = (fields: string): string => `\u001b]133;${fields};${nonce}\u0007`;
+    const prompt = (fields = ";Keys=emacs;Paste=1"): string => `${mark("D;0")}${mark(`P;Cwd=/w${fields}`)}${mark("A")}% ${mark("B")}`;
+    const pty = lastPty!;
+    // The shell: Ctrl-C at its prompt drops the line and draws a fresh prompt.
+    pty.respond = (data) => {
+      if (data === "\u0003") queueMicrotask(() => pty.emitData(`\r\n${prompt()}`));
+    };
+    return { pty, mark, prompt };
   }
 
-  it("types the line and Enter only at an empty prompt of the owning window's live terminal", async () => {
-    const { pty, mark } = await zshTerminal(3);
+  it("resets the line editor, checks the shell with the operating system, then pastes the line and Enter", async () => {
+    const { pty, mark, prompt } = await zshTerminal(3);
     // Before the shell's first prompt nothing can be told: refused.
-    expect(typeTerminalCommand("terminal:0000000a-1", 3, "ls")).toMatchObject({ ok: false, reason: "no-shell-integration" });
-    pty.emitData(`${mark("D;0")}${mark("P;Cwd=/w")}${mark("A")}% ${mark("B")}`);
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-shell-integration" });
+    pty.emitData(prompt());
     // Another window's terminal answers like a missing one.
-    expect(typeTerminalCommand("terminal:0000000a-1", 4, "ls")).toMatchObject({ ok: false, reason: "no-terminal" });
-    expect(typeTerminalCommand("terminal:0000000a-1", 3, "ls -la")).toEqual({ ok: true, firstBlockId: 1 });
-    expect(pty.written).toEqual(["ls -la\r"]);
-    // Until the shell starts it, the typed line sits at the prompt: a second command is refused.
+    await expect(typeTerminalCommand(TAB, 4, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
+    await expect(typeTerminalCommand(TAB, 3, "ls -la", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
+    expect(pty.written).toEqual(["\u0003", PASTE("ls -la")]);
+    expect(readForegroundMock).toHaveBeenCalledWith(9999);
+    // Until the shell starts it, the pasted line sits at the prompt: a second command is refused.
     pty.emitData("ls -la");
-    expect(typeTerminalCommand("terminal:0000000a-1", 3, "pwd")).toMatchObject({ ok: false, reason: "pending-input" });
+    await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
     pty.emitData(`\r\n${mark("C;cmdline_url=ls%20-la")}total 0\r\n`);
-    expect(typeTerminalCommand("terminal:0000000a-1", 3, "pwd")).toMatchObject({ ok: false, reason: "command-running" });
-    expect(pty.written).toEqual(["ls -la\r"]);
+    await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "command-running" });
+    expect(pty.written).toEqual(["\u0003", PASTE("ls -la")]);
     pty.emitExit(0);
-    expect(typeTerminalCommand("terminal:0000000a-1", 3, "pwd")).toMatchObject({ ok: false, reason: "no-terminal" });
+    await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
+  });
+
+  it("types nothing when the operating system says a program, not the shell, holds the terminal, or another directory", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    foregroundReading = { ok: true, foreground: { pid: 4242, command: "python3", cwd: "/w" } };
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "foreground-not-shell" });
+    foregroundReading = { ok: true, foreground: { pid: 9999, command: "zsh", cwd: "/etc" } };
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "cwd-mismatch" });
+    foregroundReading = { ok: false, reason: "the terminal has no foreground process" };
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "cwd-unverified" });
+    // The markers alone said the prompt was ready every time: nothing reached it.
+    expect(pty.written).toEqual([]);
+  });
+
+  it("types nothing when the shell draws no fresh prompt after the reset", async () => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      pty.respond = null;
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(typing).resolves.toMatchObject({ ok: false, reason: "no-fresh-prompt" });
+      expect(pty.written).toEqual(["\u0003"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses a prompt without bracketed paste or with vi keys, before any key is sent", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt(";Keys=emacs;Paste=0"));
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-bracketed-paste" });
+    pty.emitData(`\r\n${prompt(";Keys=vi;Paste=1")}`);
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "vi-editing-mode" });
+    expect(pty.written).toEqual([]);
+  });
+
+  it("refuses a prompt the user pressed any key at, however long ago, and a fresh prompt until keys go quiet", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      // ESC: a pending prefix that echoes nothing.
+      writeTerminal(TAB, "\u001b");
+      vi.setSystemTime(Date.now() + USER_INPUT_QUIET_MS * 10);
+      await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
+      // Enter draws a fresh prompt; a key just before it still counts until quiet.
+      writeTerminal(TAB, "\r");
+      pty.emitData(`\r\n${prompt()}`);
+      await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
+      vi.setSystemTime(Date.now() + USER_INPUT_QUIET_MS);
+      await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(pty.written).toEqual(["\u001b", "\r", "\u0003", PASTE("ls")]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("knows from the shell it spawned whether a prompt without an end marker is fish or a shell still starting", async () => {
     const { pty, mark } = await zshTerminal(3);
-    pty.emitData(`${mark("P;Cwd=/w")}${mark("A")}% `);
-    expect(typeTerminalCommand("terminal:0000000a-1", 3, "ls")).toMatchObject({ ok: false, reason: "shell-starting", message: expect.stringMatching(/retry in a moment/) });
-    killTerminal("terminal:0000000a-1");
+    pty.emitData(`${mark("P;Cwd=/w;Keys=emacs;Paste=1")}${mark("A")}% `);
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "shell-starting", message: expect.stringMatching(/retry in a moment/) });
+    killTerminal(TAB);
     pty.emitExit(0);
     vi.stubEnv("SHELL", "/usr/bin/fish");
     try {
@@ -869,35 +959,35 @@ describe("pty-manager typing an approved agent command", () => {
     }
     const [, , opts] = ptySpawnMock.mock.calls.at(-1) as [string, string[], { env: Record<string, string> }];
     const fishMark = (fields: string) => `\u001b]133;${fields};${spawnedNonce(opts.env)}\u0007`;
-    lastPty!.emitData(`${fishMark("P;Cwd=/w")}${fishMark("A")}/w> `);
-    expect(typeTerminalCommand("terminal:0000000b-1", 3, "ls")).toMatchObject({ ok: false, reason: "no-prompt-end-marker" });
+    lastPty!.emitData(`${fishMark("P;Cwd=/w;Keys=emacs;Paste=1")}${fishMark("A")}/w> `);
+    await expect(typeTerminalCommand("terminal:0000000b-1", 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-prompt-end-marker" });
     expect(lastPty!.written).toEqual([]);
   });
 
-  it("refuses while the user's keystrokes may still be on their way to the echo", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const { pty, mark } = await zshTerminal(3);
-      pty.emitData(`${mark("D;0")}${mark("P;Cwd=/w")}${mark("A")}% ${mark("B")}`);
-      // Written to the PTY, not echoed back yet: the prompt still looks empty.
-      writeTerminal("terminal:0000000a-1", "r");
-      expect(typeTerminalCommand("terminal:0000000a-1", 3, "ls")).toMatchObject({ ok: false, reason: "pending-input" });
-      expect(pty.written).toEqual(["r"]);
-      vi.setSystemTime(Date.now() + USER_INPUT_QUIET_MS);
-      expect(typeTerminalCommand("terminal:0000000a-1", 3, "ls")).toEqual({ ok: true, firstBlockId: 1 });
-      expect(pty.written).toEqual(["r", "ls\r"]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("throws on a line holding characters that would act as keys (a caller bug, never typed)", async () => {
-    const { pty, mark } = await zshTerminal(3);
-    pty.emitData(`${mark("D;0")}${mark("P;Cwd=/w")}${mark("A")}% ${mark("B")}`);
-    for (const line of ["ls\nrm -rf ~", "ls\t", "echo \u001b[201~", "rm\u200b -rf x"]) {
-      expect(() => typeTerminalCommand("terminal:0000000a-1", 3, line)).toThrow(/cannot be typed as one command/);
+  it("rejects a line holding characters that would act as keys (a caller bug, never typed)", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    for (const line of ["ls\nrm -rf ~", "ls\t", "echo \u001b[201~", "rm​ -rf x"]) {
+      await expect(typeTerminalCommand(TAB, 3, line, "/w")).rejects.toThrow(/cannot be typed as one command/);
     }
     expect(pty.written).toEqual([]);
+  });
+
+  it("verifies the reported directory against the shell's real one, through symlinks", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    const real = mkdtempSync(join(tmpdir(), "ave-pty-cwd-"));
+    const link = `${real}-link`;
+    symlinkSync(real, link);
+    try {
+      foregroundReading = { ok: true, foreground: { pid: 9999, command: "zsh", cwd: realpathSync.native(real) } };
+      await expect(verifyTerminalShell(TAB, 3, link)).resolves.toEqual({ ok: true, cwd: canonicalizePathForMatch(real) });
+      await expect(verifyTerminalShell(TAB, 3, tmpdir())).resolves.toMatchObject({ ok: false, reason: "cwd-mismatch" });
+      await expect(verifyTerminalShell(TAB, 4, link)).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
+    } finally {
+      rmSync(link, { force: true });
+      rmSync(real, { recursive: true, force: true });
+    }
   });
 });
 

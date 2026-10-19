@@ -57,7 +57,7 @@ import {
 } from "../shared/terminal-command-text.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
+import { caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { t } from "../i18n/index.js";
 import { authorizedApprovalMemoryScope } from "./approval-memory-context.js";
 import { resolveSessionWindow, resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
@@ -68,12 +68,36 @@ const TERMINAL_RUN_TOOL_NAME = "terminal_run";
 const DEFAULT_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitDefaultMs / 1000;
 const MAX_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs / 1000;
 
-/** What typing a command into a terminal reports (pty-manager `typeTerminalCommand`). */
+/**
+ * Type a command into a terminal (pty-manager `typeTerminalCommand`): reset
+ * the line editor, check the shell against the operating system, paste the
+ * line, press Enter.
+ */
 export type TypeTerminalCommand = (
   tabId: string,
   ownerWindowId: number,
   line: string,
-) => { ok: true; firstBlockId: number } | { ok: false; reason: string; message: string };
+  expectedCwd: string,
+) => Promise<{ ok: true; firstBlockId: number } | { ok: false; reason: string; message: string }>;
+
+/**
+ * Check a terminal's shell against the operating system (pty-manager
+ * `verifyTerminalShell`): its own process holds the terminal, and its real
+ * directory is the one its markers reported.
+ */
+export type VerifyTerminalShell = (
+  tabId: string,
+  ownerWindowId: number,
+  reportedCwd: string,
+) => Promise<{ ok: true; cwd: string } | { ok: false; reason: string; message: string }>;
+
+/** What the audit log keeps when a terminal ran something other than the approved command. */
+export interface TerminalCommandMismatch {
+  readonly sessionId: string | undefined;
+  readonly tabId: string;
+  readonly approvedSha256: string;
+  readonly ranSha256: string;
+}
 
 export interface TerminalRunToolDeps extends SessionWindowScopeDeps {
   /** The terminal tab the user is looking at in a window, if a terminal is the active surface. */
@@ -89,6 +113,10 @@ export interface TerminalRunToolDeps extends SessionWindowScopeDeps {
   boundSurface: (windowId: number, hostSessionId: string) => { kind: "terminal" | "browser"; tabId: string } | undefined;
   /** Type one line into a terminal and press Enter. */
   typeCommand: TypeTerminalCommand;
+  /** Check a terminal's shell and directory against the operating system. */
+  verifyShell: VerifyTerminalShell;
+  /** Record, in the audit log, that a terminal ran a different command than approved. */
+  auditMismatch: (mismatch: TerminalCommandMismatch) => void;
 }
 
 /** The tools this module created — the only ones the authorization step treats as terminal commands. */
@@ -206,12 +234,14 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
    * The terminal this call types into and the directory its shell is in.
    * Throws with the reason when there is none to name.
    */
-  const resolveTarget = (input: TerminalRunInput, sessionId: string | undefined): {
+  const resolveTarget = async (input: TerminalRunInput, sessionId: string | undefined): Promise<{
     windowId: number;
     tabId: string;
     tracker: TerminalBlockTracker;
     cwd: string;
-  } => {
+    /** The directory as the operating system resolves it (realpath). */
+    verifiedCwd: string;
+  }> => {
     const scope = resolveSessionWindow(sessionId, deps);
     if (scope === null) {
       throw new Error("terminal_run is available only to a conversation in an app window (or its sub-agents); this session has no terminals");
@@ -244,12 +274,16 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     }
     const cwd = tracker.currentCwd();
     if (cwd === null) throw new Error(`terminal ${tabId} has not reported its working directory yet`);
-    return { windowId, tabId, tracker, cwd };
+    // The directory decides the rules, the project rules and the card: take
+    // it from the markers only when the operating system agrees.
+    const verified = await deps.verifyShell(tabId, windowId, cwd);
+    if (!verified.ok) throw new Error(`terminal ${tabId} cannot take a command: ${verified.message}. Nothing was typed`);
+    return { windowId, tabId, tracker, cwd, verifiedCwd: verified.cwd };
   };
 
-  const approvalMemoryScope = (raw: unknown, ctx?: ToolPolicyContext): ApprovalMemoryScope => {
+  const approvalMemoryScope = async (raw: unknown, ctx?: ToolPolicyContext): Promise<ApprovalMemoryScope> => {
     const input = parseInput(raw);
-    const target = resolveTarget(input, ctx?.sessionId);
+    const target = await resolveTarget(input, ctx?.sessionId);
     return {
       kind: "terminal-command",
       commandSha256: sha256Hex(input.command),
@@ -258,7 +292,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       // The form the allowed-directory list is kept in (allowed-directories.ts),
       // so the card can compare the two as strings: a symlinked $PWD and a
       // case-folding file system both resolve here.
-      cwdForMatch: caseFoldForMatch(canonicalizePathForMatch(target.cwd)),
+      cwdForMatch: caseFoldForMatch(target.verifiedCwd),
     };
   };
 
@@ -286,11 +320,32 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       );
     }
     ctx.abortSignal?.throwIfAborted();
-    const typed = deps.typeCommand(scope.tabId, windowId, input.command);
+    const typed = await deps.typeCommand(scope.tabId, windowId, input.command, scope.cwd);
     if (!typed.ok) {
       return terminalToolFailure(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
     }
     const { block, finished } = await waitForBlock(tracker, typed.firstBlockId, input.waitSeconds * 1000, ctx.abortSignal);
+    // The shell's own record of what it ran (its C marker) against what was
+    // approved. Typing cannot prove the line editor inserted the text as
+    // written; this can, after the fact.
+    if (block !== null && block.command.trim() !== input.command.trim()) {
+      deps.auditMismatch({
+        sessionId,
+        tabId: scope.tabId,
+        approvedSha256: sha256Hex(input.command),
+        ranSha256: sha256Hex(block.command),
+      });
+      return {
+        ...fenceTerminalData({
+          tabId: scope.tabId,
+          typed: true,
+          error: t("be_terminalRun.ranDifferentCommand", { tabId: scope.tabId }),
+          finished,
+          block: withOutputBudget([block])[0],
+        }),
+        isError: true,
+      };
+    }
     return fenceTerminalData({
       tabId: scope.tabId,
       typed: true,
@@ -344,7 +399,9 @@ const NOT_READY_REASONS: Record<Exclude<ReturnType<TerminalBlockTracker["promptS
   exited: "its shell has exited",
   "command-running": "a command or full-screen program is running in its foreground",
   "between-prompts": "its shell has not shown its next prompt yet",
-  "pending-input": "the user is typing at the prompt, or it holds text they typed and have not run",
+  "pending-input": "the user is typing at the prompt, pressed a key since it was drawn, or it holds text they typed and have not run",
+  "no-bracketed-paste": "its shell does not take bracketed paste, so typed text could be read as keys; terminal_run needs zsh 5.1 or bash 4.4 or later",
+  "vi-editing-mode": "its shell uses vi key bindings, where typed text can be read as editing commands; terminal_run needs emacs key bindings",
   "shell-starting": "its shell is still starting and has not finished its first prompt; retry in a moment",
   "no-prompt-end-marker": "its shell does not mark the end of its prompt (fish), so whether the user is typing there cannot be told; terminal_run needs zsh or bash",
 };

@@ -2,14 +2,12 @@
  * terminal_run: type one approved command into a terminal the user can see.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   createTerminalRunTool,
   isCanonicalTerminalRunTool,
   terminalCommandScopeOf,
   type TerminalRunToolDeps,
+  type TerminalCommandMismatch,
   type TypeTerminalCommand,
 } from "../terminal-run.js";
 import {
@@ -27,7 +25,7 @@ const WINDOW = 1;
 const NONCE = TERMINAL_TEST_NONCE;
 const mark = terminalMarker;
 /** A shell that finished a command and shows an empty prompt in `cwd`. */
-const promptIn = (cwd: string): string => `${mark("D;0")}${mark(`P;Cwd=${encodeURIComponent(cwd)}`)}${mark("A")}$ ${mark("B")}`;
+const promptIn = (cwd: string): string => `${mark("D;0")}${mark(`P;Cwd=${encodeURIComponent(cwd)};Keys=emacs;Paste=1`)}${mark("A")}$ ${mark("B")}`;
 
 function readyTracker(cwd = "/repo"): TerminalBlockTracker {
   const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
@@ -40,9 +38,13 @@ function runOutput(command: string, output: string, exit: number, cwd = "/repo")
   return `${command}\r\n${mark(`C;cmdline_url=${encodeURIComponent(command)}`)}${output}${promptIn(cwd).replace(mark("D;0"), mark(`D;${exit}`))}`;
 }
 
-function depsWith(overrides: Partial<TerminalRunToolDeps> = {}): TerminalRunToolDeps & { typed: Array<[string, number, string]> } {
+function depsWith(overrides: Partial<TerminalRunToolDeps> = {}): TerminalRunToolDeps & {
+  typed: Array<[string, number, string]>;
+  mismatches: TerminalCommandMismatch[];
+} {
   const typed: Array<[string, number, string]> = [];
-  const typeCommand: TypeTerminalCommand = (tabId, windowId, line) => {
+  const mismatches: TerminalCommandMismatch[] = [];
+  const typeCommand: TypeTerminalCommand = async (tabId, windowId, line) => {
     typed.push([tabId, windowId, line]);
     return { ok: true, firstBlockId: 1 };
   };
@@ -52,7 +54,11 @@ function depsWith(overrides: Partial<TerminalRunToolDeps> = {}): TerminalRunTool
     activeTerminalTabId: () => "terminal:aaaaaaaa-1",
     boundSurface: () => undefined,
     typeCommand,
+    // The operating system agrees with whatever the markers report.
+    verifyShell: async (_tabId, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
+    auditMismatch: (mismatch) => { mismatches.push(mismatch); },
     typed,
+    mismatches,
     ...overrides,
   };
 }
@@ -99,25 +105,6 @@ describe("terminal_run", () => {
         cwd: "/repo/app",
         cwdForMatch: "/repo/app",
       });
-    });
-
-    it("seals the directory as the allowed-directory check sees it: symlinks resolved, case folded where the file system folds it", async () => {
-      const real = mkdtempSync(join(tmpdir(), "ave-terminal-run-Real-"));
-      const link = `${real}-Link`;
-      symlinkSync(real, link);
-      try {
-        registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(link), WINDOW);
-        const tool = createTerminalRunTool(depsWith());
-        const scope = await Promise.resolve(tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" }));
-        const expected = realpathSync.native(real);
-        expect(scope).toMatchObject({
-          cwd: link,
-          cwdForMatch: process.platform === "darwin" || process.platform === "win32" ? expected.toLowerCase() : expected,
-        });
-      } finally {
-        rmSync(link, { force: true });
-        rmSync(real, { recursive: true, force: true });
-      }
     });
 
     it("prefers an explicit tabId, then the conversation's bound terminal, over the active one", async () => {
@@ -203,13 +190,13 @@ describe("terminal_run", () => {
 
     it("tells a shell still drawing its first prompt to retry, and fish that it is unsupported", async () => {
       const starting = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-      starting.recordOutput(`${mark("P;Cwd=/repo")}${mark("A")}$ `);
+      starting.recordOutput(`${mark("P;Cwd=/repo;Keys=emacs;Paste=1")}${mark("A")}$ `);
       registerTerminalBlockTracker("terminal:aaaaaaaa-1", starting, WINDOW);
       const tool = createTerminalRunTool(depsWith());
       const scopeOf = () => Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" }));
       await expect(scopeOf()).rejects.toThrow(/still starting.*retry in a moment/);
       const fish = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: false });
-      fish.recordOutput(`${mark("P;Cwd=/repo")}${mark("A")}$ `);
+      fish.recordOutput(`${mark("P;Cwd=/repo;Keys=emacs;Paste=1")}${mark("A")}$ `);
       registerTerminalBlockTracker("terminal:aaaaaaaa-1", fish, WINDOW);
       await expect(scopeOf()).rejects.toThrow(/\(fish\).*needs zsh or bash/);
     });
@@ -224,7 +211,7 @@ describe("terminal_run", () => {
     it("reports a terminal that became busy while the card was open, typing nothing", async () => {
       registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(), WINDOW);
       const deps = depsWith({
-        typeCommand: () => ({ ok: false, reason: "command-running", message: "a command is running in the foreground of the terminal" }),
+        typeCommand: async () => ({ ok: false, reason: "command-running", message: "a command is running in the foreground of the terminal" }),
       });
       const tool = createTerminalRunTool(deps);
       const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
@@ -378,7 +365,7 @@ describe("terminal_run", () => {
       const tracker = readyTracker();
       registerTerminalBlockTracker("terminal:aaaaaaaa-1", tracker, WINDOW);
       const deps = depsWith({
-        typeCommand: (_tabId, _windowId, line) => {
+        typeCommand: async (_tabId, _windowId, line) => {
           // The shell echoes and runs it a moment later.
           setTimeout(() => tracker.recordOutput(runOutput(line, "3 passed\r\n", 0)), 5);
           return { ok: true, firstBlockId: 1 };
@@ -389,7 +376,7 @@ describe("terminal_run", () => {
       const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
       const result = await tool.execute({ command: "npm test" }, ctxFor(scope));
       expect(result.isError).toBe(false);
-      expect(typeSpy).toHaveBeenCalledWith("terminal:aaaaaaaa-1", WINDOW, "npm test");
+      expect(typeSpy).toHaveBeenCalledWith("terminal:aaaaaaaa-1", WINDOW, "npm test", "/repo");
       const parsed = body(result.output as string);
       expect(parsed).toMatchObject({ tabId: "terminal:aaaaaaaa-1", typed: true, finished: true });
       expect(parsed.block).toMatchObject({ id: 1, command: "npm test", exitCode: 0, status: "done", cwd: "/repo", output: "3 passed\n" });
@@ -405,6 +392,52 @@ describe("terminal_run", () => {
       active = "terminal:aaaaaaaa-2";
       await tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
       expect(deps.typed).toEqual([["terminal:aaaaaaaa-1", WINDOW, "ls"]]);
+    });
+
+    it("reports, audits and fails a run whose shell record names another command than the approved one", async () => {
+      const tracker = readyTracker();
+      registerTerminalBlockTracker("terminal:aaaaaaaa-1", tracker, WINDOW);
+      const deps = depsWith({
+        // A line editor that read part of the paste as keys ran something else.
+        typeCommand: async () => {
+          setTimeout(() => tracker.recordOutput(runOutput("[200~echo hi~", "zsh: bad pattern\r\n", 1)), 5);
+          return { ok: true, firstBlockId: 1 };
+        },
+      });
+      const tool = createTerminalRunTool(deps);
+      const scope = await tool.approvalMemoryScope!({ command: "echo hi" }, { cwd: "/workspace", sessionId: "main" });
+      const result = await tool.execute({ command: "echo hi" }, ctxFor(scope));
+      expect(result.isError).toBe(true);
+      const parsed = body(result.output as string);
+      expect(parsed).toMatchObject({ typed: true, block: { command: "[200~echo hi~" } });
+      expect(String(parsed.error)).toContain("terminal:aaaaaaaa-1");
+      expect(deps.mismatches).toEqual([{
+        sessionId: "main",
+        tabId: "terminal:aaaaaaaa-1",
+        approvedSha256: sha256Hex("echo hi"),
+        ranSha256: sha256Hex("[200~echo hi~"),
+      }]);
+    });
+
+    it("refuses before any card when the operating system disagrees with the terminal's markers", async () => {
+      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker("/repo"), WINDOW);
+      for (const message of [
+        "the terminal reported \"/repo\" as its directory, but its shell is in \"/etc\"",
+        "the terminal's foreground process is \"python3\", not its zsh shell",
+      ]) {
+        const deps = depsWith({ verifyShell: async () => ({ ok: false, reason: "cwd-mismatch", message }) });
+        const tool = createTerminalRunTool(deps);
+        await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
+          .rejects.toThrow(message);
+        expect(deps.typed).toEqual([]);
+      }
+    });
+
+    it("takes the directory the card compares from the operating system", async () => {
+      registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker("/repo"), WINDOW);
+      const tool = createTerminalRunTool(depsWith({ verifyShell: async () => ({ ok: true, cwd: "/private/Repo" }) }));
+      await expect(Promise.resolve(tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
+        .resolves.toMatchObject({ cwd: "/repo", cwdForMatch: process.platform === "linux" ? "/private/Repo" : "/private/repo" });
     });
 
     it("refuses when the terminal's shell moved to another directory after approval", async () => {
@@ -438,7 +471,7 @@ describe("terminal_run", () => {
       const tracker = readyTracker();
       registerTerminalBlockTracker("terminal:aaaaaaaa-1", tracker, WINDOW);
       const deps = depsWith({
-        typeCommand: (_tabId, _windowId, line) => {
+        typeCommand: async (_tabId, _windowId, line) => {
           tracker.recordOutput(`${line}\r\n${mark(`C;cmdline_url=${encodeURIComponent(line)}`)}building…\r\n`);
           return { ok: true, firstBlockId: 1 };
         },
