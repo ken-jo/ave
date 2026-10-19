@@ -961,21 +961,38 @@ describe("common subscription runtime IPC", () => {
     expect(runtimeServiceMock.get).toHaveBeenCalled();
   });
 
-  it("lets the user choose and forget their own Codex CLI through the common runtime channels", async () => {
+  it.each(["codex", "claude-code"] as const)(
+    "never opens a file picker for %s: Ave finds that CLI itself",
+    async (provider) => {
+      const deps = makeDeps();
+      const { dialog } = await import("electron");
+      const { registerSettingsHandlers } = await import("../settings.js");
+      registerSettingsHandlers(deps as never);
+
+      await expect(invoke("ave:settings:subscription:choose-runtime", provider))
+        .resolves.toEqual({ ok: false, error: "subscription-provider-not-supported" });
+      await expect(invoke("ave:settings:subscription:forget-runtime", provider))
+        .resolves.toEqual({ ok: false, error: "subscription-provider-not-supported" });
+      expect(dialog.showOpenDialog).not.toHaveBeenCalled();
+      expect(runtime.chooseExecutable).not.toHaveBeenCalled();
+      expect(runtime.forgetExecutable).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still lets the user point an ACP runtime at its executable (control)", async () => {
     const deps = makeDeps();
     const { dialog } = await import("electron");
-    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: ["/opt/tools/codex"] });
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: ["/opt/tools/kimi"] });
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
 
-    await expect(invoke("ave:settings:subscription:choose-runtime", "codex"))
-      .resolves.toMatchObject({ ok: true, status: { provider: "codex" } });
-    expect(dialog.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({ title: "Select Codex executable" }));
-    expect(runtime.chooseExecutable).toHaveBeenCalledWith("codex", "/opt/tools/codex");
-
-    await expect(invoke("ave:settings:subscription:forget-runtime", "codex"))
-      .resolves.toMatchObject({ ok: true, status: { provider: "codex" } });
-    expect(runtime.forgetExecutable).toHaveBeenCalledWith("codex");
+    await expect(invoke("ave:settings:subscription:choose-runtime", "kimi-code"))
+      .resolves.toMatchObject({ ok: true, status: { provider: "kimi-code" } });
+    expect(dialog.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({ title: "Select Kimi Code executable" }));
+    expect(runtime.chooseExecutable).toHaveBeenCalledWith("kimi-code", "/opt/tools/kimi");
+    await expect(invoke("ave:settings:subscription:forget-runtime", "kimi-code"))
+      .resolves.toMatchObject({ ok: true, status: { provider: "kimi-code" } });
+    expect(runtime.forgetExecutable).toHaveBeenCalledWith("kimi-code");
   });
 
   it("maps a too-old or incompatible Codex CLI onto the legacy codes", async () => {

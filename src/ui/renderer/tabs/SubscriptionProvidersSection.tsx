@@ -1,11 +1,15 @@
-import { Loader2 } from "lucide-react";
+import { useId } from "react";
+import { Loader2, RefreshCw } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
+import { Label } from "../../../components/ui/label.js";
+import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
 import { useTranslation } from "../../../i18n/react.js";
 import {
   type SubscriptionConnectionState,
   type SubscriptionLoginMethod,
   type SubscriptionRuntimeCapabilities,
   type SubscriptionRuntimeErrorCode,
+  type SubscriptionRuntimeExecutableSource,
   type SubscriptionRuntimeId,
   type SubscriptionRuntimeInstallGuidance,
   type SubscriptionRuntimeState,
@@ -48,13 +52,21 @@ type SubscriptionProviderCapabilities = SubscriptionRuntimeCapabilities;
 
 interface SubscriptionProviderDescriptor {
   id: SubscriptionProviderId;
-  /** Static, browser-safe provider name, for example "Codex". */
+  /** Internal runtime name. Never drawn: the row names the company. */
   label: string;
+  /** The plan as the provider brands it, e.g. "ChatGPT" in "ChatGPT subscription". */
+  planName: string;
+  /** The CLI's own name, used only to say what to install or what was found. */
+  cliName: string;
   /** Static, browser-safe provider description. */
   description: string;
   loginMethods: readonly SubscriptionLoginMethod[];
-  /** Whether the provider requires an official local runtime selection. */
-  supportsRuntimeSelection?: boolean;
+  /**
+   * `discovered`: Ave finds the CLI and the card only reports what it found
+   * (with install guidance and "Check again" when nothing usable is there).
+   * `user-selected`: the card offers the official runtime picker.
+   */
+  executable: SubscriptionRuntimeExecutableSource;
   supportsLogout?: boolean;
   /** The oldest runtime version Ave can run, when the runtime enforces one. */
   minimumVersion?: string;
@@ -151,16 +163,38 @@ function isSafeDeviceCode(value: string | null | undefined): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9 -]{0,63}$/.test(value);
 }
 
+/** Whether a discovered CLI was found but cannot be used until it is updated. */
+function discoveredCliNeedsUpdate(errorCode: SubscriptionProviderErrorCode | null | undefined): boolean {
+  return errorCode === "subscription-runtime-version-unsupported"
+    || errorCode === "subscription-runtime-incompatible";
+}
+
+/** The error text for a discovered CLI: never "select a runtime", since there is nothing to pick. */
+function errorMessageKey(
+  descriptor: SubscriptionProviderDescriptor,
+  errorCode: SubscriptionProviderErrorCode,
+): string {
+  if (descriptor.executable === "discovered" && errorCode === "subscription-runtime-not-configured") {
+    return "subscriptionProvidersSection.errorCliNotFound";
+  }
+  return ERROR_MESSAGE_KEYS[errorCode];
+}
+
 /**
  * The sign-in half of one provider row, for the row's expanded body.
  *
  * The settings page draws every provider — subscription-backed, API-key-backed,
  * or both — with ONE row renderer, so the header, the state word, the sub-line
  * and the refresh live there. What stays here is the part that is specific to a
- * subscription runtime and has no API-key counterpart: choosing and verifying
- * the official local runtime, signing in, the one-time device code, and signing
- * out. Splitting it this way is what stops a provider having two headers, two
- * state words and two refresh buttons.
+ * subscription runtime and has no API-key counterpart: the CLI it runs on,
+ * signing in, the one-time device code, and signing out. Splitting it this way
+ * is what stops a provider having two headers, two state words and two refresh
+ * buttons.
+ *
+ * A `discovered` runtime's CLI is found by Ave: this card says what was found,
+ * or — when nothing usable is installed — how to install or update it and
+ * offers "Check again". It never offers a file picker. A `user-selected`
+ * runtime keeps the official runtime picker.
  *
  * The parent owns state refresh and all IPC calls, which keeps main-process
  * validation, browser launching, cancellation, and secret handling on the
@@ -185,6 +219,7 @@ export function SubscriptionAuthControls({
     }
   };
   const { descriptor, status } = provider;
+  const discovered = descriptor.executable === "discovered";
   const runtime = status?.runtime ?? "checking";
   const connection = status?.connection ?? "unknown";
   const chatReady = connection === "connected" && status?.capabilities?.chat === true;
@@ -198,27 +233,32 @@ export function SubscriptionAuthControls({
   const safeDeviceCode = isSafeDeviceCode(status?.pendingDeviceCode)
     ? status.pendingDeviceCode
     : null;
+  const cliMissing = discovered && needsRuntimeSelection;
+  const cliNeedsUpdate = discovered && discoveredCliNeedsUpdate(status?.errorCode);
+  const cliFound = discovered && hasRuntimeSelection && !cliNeedsUpdate && runtime !== "unavailable";
+  const showGuidance = Boolean(descriptor.installGuidance)
+    && (cliMissing || cliNeedsUpdate || (!discovered && needsRuntimeSelection));
+  const checking = provider.refreshPending === true || provider.busyAction === "refresh";
 
   return (
     <div className="space-y-3" data-testid={`subscription-provider:${descriptor.id}`}>
-      {status?.errorCode ? (
+      {status?.errorCode && !(cliMissing && status.errorCode === "subscription-runtime-not-configured") ? (
         <p
           role="alert"
           className="rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-xs text-destructive"
           data-testid={`subscription-provider:${descriptor.id}:error`}
         >
-          {t(ERROR_MESSAGE_KEYS[status.errorCode])}
-          {descriptor.minimumVersion && (status.errorCode === "subscription-runtime-version-unsupported"
-            || status.errorCode === "subscription-runtime-incompatible") ? (
+          {t(errorMessageKey(descriptor, status.errorCode))}
+          {descriptor.minimumVersion && discoveredCliNeedsUpdate(status.errorCode) ? (
             <span className="mt-1 block" data-testid={`subscription-provider:${descriptor.id}:minimum-version`}>
               {status.version
                 ? t("subscriptionProvidersSection.minimumVersionRequiredFound", {
-                  label: descriptor.label,
+                  cli: descriptor.cliName,
                   minimumVersion: descriptor.minimumVersion,
                   version: status.version,
                 })
                 : t("subscriptionProvidersSection.minimumVersionRequired", {
-                  label: descriptor.label,
+                  cli: descriptor.cliName,
                   minimumVersion: descriptor.minimumVersion,
                 })}
             </span>
@@ -226,19 +266,33 @@ export function SubscriptionAuthControls({
         </p>
       ) : null}
 
-      {needsRuntimeSelection && descriptor.installGuidance ? (
+      {cliFound && status?.version ? (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid={`subscription-provider:${descriptor.id}:cli-found`}
+        >
+          {t("subscriptionProvidersSection.cliFound", { cli: descriptor.cliName, version: status.version })}
+        </p>
+      ) : null}
+
+      {showGuidance && descriptor.installGuidance ? (
         <div
           className="space-y-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground"
-          data-testid={`subscription-provider:${descriptor.id}:install-guidance`}
+          data-testid={`subscription-provider:${descriptor.id}:${cliNeedsUpdate ? "update-guidance" : "install-guidance"}`}
         >
-          <p>
-            {descriptor.minimumVersion
-              ? t("subscriptionProvidersSection.installGuidanceWithVersion", {
-                label: descriptor.label,
-                minimumVersion: descriptor.minimumVersion,
-              })
-              : t("subscriptionProvidersSection.installGuidance", { label: descriptor.label })}
+          <p className="font-medium text-foreground">
+            {cliNeedsUpdate
+              ? t("subscriptionProvidersSection.updateGuidance", { cli: descriptor.cliName, plan: descriptor.planName })
+              : t("subscriptionProvidersSection.installGuidance", { cli: descriptor.cliName, plan: descriptor.planName })}
           </p>
+          {descriptor.minimumVersion && !cliNeedsUpdate ? (
+            <p>
+              {t("subscriptionProvidersSection.minimumVersionRequired", {
+                cli: descriptor.cliName,
+                minimumVersion: descriptor.minimumVersion,
+              })}
+            </p>
+          ) : null}
           <dl className="space-y-1">
             {descriptor.installGuidance.commands.map((entry) => (
               <div key={entry.label}>
@@ -257,7 +311,29 @@ export function SubscriptionAuthControls({
               {descriptor.installGuidance.documentationUrl}
             </code>
           </p>
-          <p>{t("subscriptionProvidersSection.installGuidanceAfter")}</p>
+          {discovered ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <p>{t("subscriptionProvidersSection.installGuidanceAfter")}</p>
+              {actions.refreshStatus ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1.5 text-xs"
+                  onClick={() => invoke(() => actions.refreshStatus?.(descriptor.id))}
+                  disabled={provider.disabled === true || isBusy || checking}
+                  data-testid={`subscription-provider:${descriptor.id}:check-again`}
+                >
+                  {checking
+                    ? <Loader2 className="size-3 animate-spin" aria-hidden={true} />
+                    : <RefreshCw className="size-3" aria-hidden={true} />}
+                  {checking
+                    ? t("subscriptionProvidersSection.checkingAgain")
+                    : t("subscriptionProvidersSection.checkAgain")}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -280,7 +356,7 @@ export function SubscriptionAuthControls({
       ) : null}
 
       <div className="flex flex-wrap gap-2">
-        {needsRuntimeSelection && descriptor.supportsRuntimeSelection && actions.configureRuntime ? (
+        {!discovered && needsRuntimeSelection && actions.configureRuntime ? (
           <Button
             type="button"
             size="sm"
@@ -294,7 +370,7 @@ export function SubscriptionAuthControls({
               : t("subscriptionProvidersSection.configureRuntime")}
           </Button>
         ) : null}
-        {hasRuntimeSelection && descriptor.supportsRuntimeSelection && actions.configureRuntime ? (
+        {!discovered && hasRuntimeSelection && actions.configureRuntime ? (
           <Button
             type="button"
             variant="outline"
@@ -310,7 +386,7 @@ export function SubscriptionAuthControls({
           </Button>
         ) : null}
 
-        {hasRuntimeSelection && descriptor.supportsRuntimeSelection && actions.forgetRuntime ? (
+        {!discovered && hasRuntimeSelection && actions.forgetRuntime ? (
           <Button
             type="button"
             variant="ghost"
@@ -408,6 +484,69 @@ export function SubscriptionAuthControls({
           </Button>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/** How a provider with two ways in is signed in to. */
+export type ProviderSignInMethod = "subscription" | "api";
+
+/**
+ * The first question on a provider card that can be reached two ways: sign in
+ * with the provider's subscription, or use an API key.
+ *
+ * One radio group, so it is reachable with Tab and moved with the arrow keys.
+ * `value: null` checks neither — a card for a provider with nothing configured
+ * yet asks rather than assumes, and shows no key field until "API key" is
+ * picked. Choosing a method never removes the other method's credential; the
+ * card offers that as its own action.
+ */
+export function SignInMethodChoice({
+  rowId,
+  planName,
+  value,
+  onChange,
+  disabled,
+}: {
+  rowId: string;
+  planName: string;
+  value: ProviderSignInMethod | null;
+  onChange: (method: ProviderSignInMethod) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  const labelId = useId();
+  const optionId = (method: ProviderSignInMethod) => `${labelId}-${method}`;
+  const options: { method: ProviderSignInMethod; label: string }[] = [
+    { method: "subscription", label: t("subscriptionProvidersSection.methodSubscription", { plan: planName }) },
+    { method: "api", label: t("subscriptionProvidersSection.methodApiKey") },
+  ];
+  return (
+    <div className="space-y-2" data-testid={`llm-tab:sign-in-method:${rowId}`}>
+      <p id={labelId} className="text-sm font-medium">{t("subscriptionProvidersSection.methodQuestion")}</p>
+      <RadioGroup
+        aria-labelledby={labelId}
+        value={value ?? ""}
+        onValueChange={(next) => {
+          if (next === "subscription" || next === "api") onChange(next);
+        }}
+        disabled={disabled}
+        className="flex flex-wrap gap-2"
+      >
+        {options.map(({ method, label }) => (
+          <div
+            key={method}
+            className="flex items-center gap-2 rounded-md border px-3 py-2 has-[[data-state=checked]]:border-primary"
+          >
+            <RadioGroupItem
+              value={method}
+              id={optionId(method)}
+              data-testid={`llm-tab:sign-in-method:${rowId}:${method}`}
+            />
+            <Label htmlFor={optionId(method)} className="cursor-pointer text-sm font-normal">{label}</Label>
+          </div>
+        ))}
+      </RadioGroup>
     </div>
   );
 }

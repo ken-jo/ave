@@ -77,7 +77,9 @@ import {
 import { useSubscriptionProviders } from "./SubscriptionProvidersController.js";
 import {
   ERROR_MESSAGE_KEYS,
+  SignInMethodChoice,
   SubscriptionAuthControls,
+  type ProviderSignInMethod,
   type SubscriptionProviderView,
 } from "./SubscriptionProvidersSection.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
@@ -1074,6 +1076,16 @@ interface ConfiguredApiRoute {
   modelListKey: string;
 }
 
+/**
+ * The name Settings gives a subscription runtime: its company's, through the
+ * API counterpart ("OpenAI" for the ChatGPT plan, "Anthropic Claude" for the
+ * Claude plan). The runtime's own name is never a provider a user picks.
+ */
+function subscriptionCompanyLabel(view: SubscriptionProviderView): string {
+  const counterpart = SUBSCRIPTION_RUNTIME_API_COUNTERPART[view.descriptor.id];
+  return counterpart ? getVendorInfo(counterpart).label : view.descriptor.planName;
+}
+
 function apiRouteRowId(route: ConfiguredApiRoute): string {
   return route.presetId ? marketplaceProviderPresetSecretId(route.presetId) : route.vendorId;
 }
@@ -1622,6 +1634,12 @@ export function LlmTab(props: LlmTabProps) {
    * and a list that closes one row to open another makes it impossible.
    */
   const [openRowIds, setOpenRowIds] = useState<readonly string[]>([]);
+  /**
+   * The sign-in method the user picked on a card that offers two (a provider
+   * with both a subscription and an API key). A pick only decides what the
+   * card shows; it never removes the other method's credential.
+   */
+  const [authMethodByRow, setAuthMethodByRow] = useState<Readonly<Record<string, ProviderSignInMethod>>>({});
   /** Rows whose last save was refused, so the row says so instead of closing. */
   const [saveFailedRowIds, setSaveFailedRowIds] = useState<readonly string[]>([]);
   const [addedRowIds, setAddedRowIds] = useState<readonly string[]>([]);
@@ -1996,7 +2014,7 @@ export function LlmTab(props: LlmTabProps) {
       rows.push({
         id: view.descriptor.id,
         // The company's name, not the runtime's: "OpenAI", not "Codex".
-        label: counterpart ? getVendorInfo(counterpart).label : view.descriptor.label,
+        label: subscriptionCompanyLabel(view),
         ...(counterpart ? { apiVendorId: counterpart } : {}),
         ...(counterpart
           ? { modelListKey: route?.modelListKey ?? llmModelListCacheKey(counterpart, "", "") }
@@ -2371,8 +2389,8 @@ export function LlmTab(props: LlmTabProps) {
         options.push({
           value: unifiedValue(view.descriptor.id, ""),
           providerId: view.descriptor.id,
-          providerLabel: view.descriptor.label,
-          vendorLabel: view.descriptor.label,
+          providerLabel: subscriptionCompanyLabel(view),
+          vendorLabel: subscriptionCompanyLabel(view),
           modelId: t("llmTab.providerDefaultModel"),
           facts: t("llmTab.modelFixedByProvider"),
           fixed: true,
@@ -2383,8 +2401,8 @@ export function LlmTab(props: LlmTabProps) {
         options.push({
           value: unifiedValue(view.descriptor.id, model.id),
           providerId: view.descriptor.id,
-          providerLabel: view.descriptor.label,
-          vendorLabel: view.descriptor.label,
+          providerLabel: subscriptionCompanyLabel(view),
+          vendorLabel: subscriptionCompanyLabel(view),
           modelId: model.label || model.id,
           // A subscription runtime answers the image question itself — the
           // model-name predicate is explicitly bypassed on this route — so the
@@ -2539,12 +2557,71 @@ export function LlmTab(props: LlmTabProps) {
     draftForRow, installedPresetById, putDraft, savedVendorBlocks,
   ]);
 
-  /** What `openRowCredentialForm` has to be handed to open this row. */
-  const rowFormTarget = (row: ProviderConnection) => ({
-    rowId: row.id,
-    vendorId: row.apiVendorId!,
-    presetId: row.presetId ?? "",
-  });
+  /**
+   * Which sign-in method a two-way card is showing, or null when it should ask.
+   *
+   * The user's pick wins. Without one the card opens on the method that is
+   * already in use — the route chat runs on, then a subscription that is signed
+   * in or signing in, then a stored or half-typed key — and with nothing
+   * configured it asks, so no key field appears until "API key" is chosen.
+   * A row reached only one way has nothing to choose and answers that way.
+   */
+  const rowAuthMethod = useCallback((row: ProviderConnection): ProviderSignInMethod | null => {
+    if (!row.subscription) return row.apiVendorId ? "api" : null;
+    if (!row.apiVendorId) return "subscription";
+    const picked = authMethodByRow[row.id];
+    if (picked) return picked;
+    if (subscription.activeRuntime.kind === "subscription") {
+      if (subscription.activeRuntime.provider === row.id) return "subscription";
+    } else if (rowIsActiveApiProvider(row) && credentialedProviderIds.has(rowCredentialId(row))) {
+      return "api";
+    }
+    const connection = row.subscription.status?.connection;
+    if (connection === "connected" || connection === "pending") return "subscription";
+    if (credentialedProviderIds.has(rowCredentialId(row)) || rowCredentialDirty(row.id)) return "api";
+    return null;
+  }, [
+    authMethodByRow, credentialedProviderIds, rowCredentialDirty, rowCredentialId,
+    rowIsActiveApiProvider, subscription.activeRuntime,
+  ]);
+
+  /** Whether this row draws the API-key form when open. */
+  const rowShowsCredentialForm = useCallback(
+    (row: ProviderConnection): boolean => Boolean(row.apiVendorId) && rowAuthMethod(row) === "api",
+    [rowAuthMethod],
+  );
+
+  /** Open a row: the key form only when the row is on (or only has) the API-key method. */
+  const openRow = useCallback((row: ProviderConnection) => {
+    if (rowShowsCredentialForm(row)) {
+      openRowCredentialForm({ rowId: row.id, vendorId: row.apiVendorId!, presetId: row.presetId ?? "" });
+    }
+    else setOpenRowIds((current) => current.includes(row.id) ? current : [...current, row.id]);
+  }, [openRowCredentialForm, rowShowsCredentialForm]);
+
+  /**
+   * Switch a two-way card to `method`. Picking "API key" starts the key form;
+   * leaving it puts away only what was typed and not saved. Stored keys and
+   * signed-in subscriptions are untouched — the card offers their removal.
+   */
+  const chooseAuthMethod = useCallback((row: ProviderConnection, method: ProviderSignInMethod) => {
+    setAuthMethodByRow((current) => ({ ...current, [row.id]: method }));
+    setSaveFailedRowIds((current) => current.filter((rowId) => rowId !== row.id));
+    if (method === "api") {
+      openRowCredentialForm({ rowId: row.id, vendorId: row.apiVendorId!, presetId: row.presetId ?? "" });
+    } else {
+      dropDraft(row.id);
+    }
+  }, [dropDraft, openRowCredentialForm]);
+
+  // A row opened on the API-key method — by default or because its method
+  // resolved after it opened — needs the draft its key form is drawn from.
+  useEffect(() => {
+    for (const row of visibleRows) {
+      if (!openRowIds.includes(row.id) || !rowShowsCredentialForm(row) || draftForRow(row.id)) continue;
+      openRowCredentialForm({ rowId: row.id, vendorId: row.apiVendorId!, presetId: row.presetId ?? "" });
+    }
+  }, [draftForRow, openRowCredentialForm, openRowIds, rowShowsCredentialForm, visibleRows]);
 
   /** Whether this row is showing its credential form. */
   const rowFormOpen = useCallback(
@@ -2572,7 +2649,7 @@ export function LlmTab(props: LlmTabProps) {
     // reveal was actually asking for. Only a row with an API route ever grows
     // one: waiting on a form a subscription-only row will never have would
     // strand the reveal, and the row it named would never be scrolled to.
-    const expectsForm = visibleRows.some((row) => row.id === rowToReveal && row.apiVendorId);
+    const expectsForm = visibleRows.some((row) => row.id === rowToReveal && rowShowsCredentialForm(row));
     const form = node.querySelector<HTMLElement>('[data-testid="llm-tab:manual-section"]');
     if (expectsForm && openRowIds.includes(rowToReveal) && !form) return;
     setRowToReveal(null);
@@ -2581,7 +2658,7 @@ export function LlmTab(props: LlmTabProps) {
       ?? node.querySelector<HTMLElement>('[data-testid="llm-api-key-input"]')
       ?? node.querySelector<HTMLElement>("button");
     focusTarget?.focus();
-  }, [openFormRowId, openRowIds, rowToReveal, visibleRowKey, visibleRows]);
+  }, [openFormRowId, openRowIds, rowShowsCredentialForm, rowToReveal, visibleRowKey, visibleRows]);
 
   /**
    * Persist ONE card. Only what this row owns is written: its secret, and the
@@ -2637,6 +2714,78 @@ export function LlmTab(props: LlmTabProps) {
     // the store holds.
     dropDraft(row.id);
     setOpenRowIds((current) => current.filter((rowId) => rowId !== row.id));
+  };
+
+  /** Remove the key this row stores. Only ever on an explicit request. */
+  const deleteRowKey = (row: ProviderConnection) => {
+    void api.deleteApiKey(rowCredentialId(row)).then(() => {
+      if (rowIsActiveApiProvider(row)) setHasKey(false);
+      // A row that existed only because of the key it held would otherwise
+      // disappear the moment the key does — taking the open card, and the
+      // field for entering a replacement, with it. Pin it so removing a key
+      // leaves somewhere to put the next one.
+      revealRow(row.id);
+      setSettingsRevision((current) => current + 1);
+      onSaved();
+    });
+  };
+
+  /**
+   * The other method's credential, on a two-way card.
+   *
+   * Switching the card to one method does not remove what the other one holds:
+   * a saved key or a signed-in subscription keeps working until the user says
+   * otherwise. The card says it is there and offers that removal.
+   */
+  const otherCredentialNote = (row: ProviderConnection) => {
+    if (!row.subscription || !row.apiVendorId) return null;
+    const method = rowAuthMethod(row);
+    if (method === "subscription" && credentialedProviderIds.has(rowCredentialId(row))) {
+      return (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/(--opacity-muted) px-3 py-2 text-xs text-muted-foreground"
+          data-testid={`llm-tab:other-credential:${row.id}:api`}
+        >
+          <span>{t("subscriptionProvidersSection.otherApiKeySaved")}</span>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 text-xs text-destructive"
+            data-testid={`llm-tab:other-credential:${row.id}:remove-api-key`}
+            onClick={() => deleteRowKey(row)}
+          >
+            {t("subscriptionProvidersSection.removeApiKey")}
+          </Button>
+        </div>
+      );
+    }
+    const view = row.subscription;
+    if (method === "api" && view.status?.connection === "connected") {
+      const logout = subscription.props.actions.logout;
+      return (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/(--opacity-muted) px-3 py-2 text-xs text-muted-foreground"
+          data-testid={`llm-tab:other-credential:${row.id}:subscription`}
+        >
+          <span>{t("subscriptionProvidersSection.otherSubscriptionSignedIn", { plan: view.descriptor.planName })}</span>
+          {view.descriptor.supportsLogout && logout ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 text-xs text-destructive"
+              disabled={Boolean(view.busyAction) || view.refreshPending === true}
+              data-testid={`llm-tab:other-credential:${row.id}:sign-out`}
+              onClick={() => void Promise.resolve(logout(view.descriptor.id)).catch(() => undefined)}
+            >
+              {t("subscriptionProvidersSection.signOut")}
+            </Button>
+          ) : null}
+        </div>
+      );
+    }
+    return null;
   };
 
   /**
@@ -2732,17 +2881,7 @@ export function LlmTab(props: LlmTabProps) {
                   size="sm"
                   variant="ghost"
                   className="h-7 text-xs text-destructive"
-                  onClick={() => void api.deleteApiKey(rowCredentialId(row)).then(() => {
-                    if (rowIsActiveApiProvider(row)) setHasKey(false);
-                    // A row that existed only because of the key it held would
-                    // otherwise disappear the moment the key does — taking the
-                    // open card, and the field for entering a replacement,
-                    // with it. Pin it so removing a key leaves somewhere to
-                    // put the next one.
-                    revealRow(row.id);
-                    setSettingsRevision((current) => current + 1);
-                    onSaved();
-                  })}
+                  onClick={() => deleteRowKey(row)}
                 >
                   {t("llmTab.delete")}
                 </Button>
@@ -2872,7 +3011,11 @@ export function LlmTab(props: LlmTabProps) {
     const status = row.subscription?.status;
     if (!row.subscription || !status) return null;
     if (status.runtime === "unavailable") return t("subscriptionProvidersSection.statusRuntimeUnavailable");
-    if (status.runtime === "not-configured") return t("subscriptionProvidersSection.statusRuntimeNotConfigured");
+    if (status.runtime === "not-configured") {
+      return row.subscription.descriptor.executable === "discovered"
+        ? t("subscriptionProvidersSection.statusCliNotFound")
+        : t("subscriptionProvidersSection.statusRuntimeNotConfigured");
+    }
     if (status.runtime === "unverified") return t("subscriptionProvidersSection.statusRuntimeUnverified");
     if (status.connection === "pending") {
       return status.pendingLoginMethod === "device-code"
@@ -3100,21 +3243,30 @@ export function LlmTab(props: LlmTabProps) {
                   closeRow(row.id);
                   return;
                 }
-                if (row.apiVendorId) openRowCredentialForm(rowFormTarget(row));
-                else setOpenRowIds((current) => [...current, row.id]);
+                openRow(row);
                 setRowToReveal(row.id);
               }}
               testId={`llm-tab:connection:${row.id}`}
             >
               <div className="space-y-3">
-                {/* Signing in, choosing the official runtime, and signing out are
-                    the half of this row that has no API-key counterpart. */}
-                {row.subscription ? (
+                {/* A provider reached two ways asks which one first, and the
+                    body shows only that method: sign-in controls for the
+                    subscription, the key form for the API key. */}
+                {row.subscription && row.apiVendorId ? (
+                  <SignInMethodChoice
+                    rowId={row.id}
+                    planName={row.subscription.descriptor.planName}
+                    value={rowAuthMethod(row)}
+                    onChange={(method) => chooseAuthMethod(row, method)}
+                  />
+                ) : null}
+                {row.subscription && rowAuthMethod(row) === "subscription" ? (
                   <SubscriptionAuthControls
                     provider={row.subscription}
                     actions={subscription.props.actions}
                   />
                 ) : null}
+                {otherCredentialNote(row)}
                 {saveFailedRowIds.includes(row.id) ? (
                   <p
                     role="alert"
@@ -3124,7 +3276,7 @@ export function LlmTab(props: LlmTabProps) {
                     {t("llmTab.connectionSaveFailed")}
                   </p>
                 ) : null}
-                {credentialFormFor(row)}
+                {rowShowsCredentialForm(row) ? credentialFormFor(row) : null}
               </div>
             </ConnectionRow>
           ))}
@@ -3161,7 +3313,7 @@ export function LlmTab(props: LlmTabProps) {
                 data-testid={`llm-tab:add-provider-item:${row.id}`}
                 onClick={() => {
                   revealRowFromAddMenu(row.id);
-                  if (row.apiVendorId) openRowCredentialForm(rowFormTarget(row));
+                  openRow(row);
                 }}
               >
                 {row.label}

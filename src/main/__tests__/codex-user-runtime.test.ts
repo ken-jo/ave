@@ -6,7 +6,6 @@ import { CODEX_CLI_MINIMUM_VERSION } from "../../shared/codex-subscription.js";
 import { CODEX_DISABLED_FEATURES } from "../codex-conversation-runtime.js";
 import {
   codexExecutableCandidates,
-  CodexExecutableConfigStore,
   CodexUserRuntimeError,
   CodexUserRuntimeLocator,
   meetsCodexMinimumVersion,
@@ -15,7 +14,6 @@ import {
   resolveCodexNativeExecutable,
   type CodexProbeRunner,
 } from "../codex-user-runtime.js";
-import type { FeatureNamespaceHandle } from "../storage/feature-namespace.js";
 import { completeCodexSchemas } from "../../__tests__/support/codex-protocol-schemas.js";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
@@ -261,15 +259,6 @@ function scriptedRunner(script: ProbeScript, calls: string[][] = []): CodexProbe
   }) as CodexProbeRunner;
 }
 
-/** A real namespace under the test's own temp root. */
-function namespaceAt(dir: string): FeatureNamespaceHandle {
-  return {
-    dir,
-    readJson: async () => { throw new Error("unused"); },
-    writeJson: async () => { throw new Error("unused"); },
-    childDir: async (name: string) => mkdirAndReturn(join(dir, name)),
-  } as unknown as FeatureNamespaceHandle;
-}
 
 function locatorHarness(input: {
   script?: ProbeScript;
@@ -280,9 +269,7 @@ function locatorHarness(input: {
 } = {}) {
   const root = tempRoot();
   const dirs = Object.fromEntries(["home", "sqlite", "workspace", "temp"].map((name) => [name, mkdirAndReturn(join(root, name))]));
-  const configStore = new CodexExecutableConfigStore(namespaceAt(join(root, "namespace")));
   const locator = new CodexUserRuntimeLocator({
-    configStore,
     runtimeHome: dirs.home!,
     runtimeDirectory: mkdirAndReturn(join(dirs.home!, "runtime")),
     sqliteHome: dirs.sqlite!,
@@ -292,7 +279,7 @@ function locatorHarness(input: {
     env: input.env?.(root) ?? { PATH: join(root, "path-bin") },
     homeDir: join(root, "user-home"),
   });
-  return { root, dirs, locator, configStore };
+  return { root, dirs, locator };
 }
 
 describe("CodexUserRuntimeLocator", () => {
@@ -418,13 +405,13 @@ describe("CodexUserRuntimeLocator", () => {
     expect(readdirSync(runtime)).toEqual([]);
   });
 
-  it.each(["resolve", "choose"] as const)("bounds private copies while %s cleanup keeps failing", async (operation) => {
+  it("bounds private copies while resolve cleanup keeps failing", async () => {
     const calls: string[][] = [];
     const script: ProbeScript = { fail: "version" };
     const { root, locator, dirs } = locatorHarness({ script, calls });
-    const native = writeNative(join(root, "path-bin", NATIVE_NAME));
-    const attempt = operation === "resolve" ? () => locator.resolve() : () => locator.choose(native);
-    const failedProbeCount = operation === "resolve" ? 1 : 0;
+    writeNative(join(root, "path-bin", NATIVE_NAME));
+    const attempt = () => locator.resolve();
+    const failedProbeCount = 1;
     const runtime = join(dirs.home!, "runtime");
     const remove = fs.rm.bind(fs);
     const failure = Object.assign(new Error("persistent cleanup failure"), { code: "EIO" });
@@ -441,7 +428,6 @@ describe("CodexUserRuntimeLocator", () => {
       expect(calls).toHaveLength(failedProbeCount);
     }
     blocked = false;
-    if (operation === "choose") await expect(locator.choose(native)).resolves.toBeUndefined();
     await expect(locator.resolve()).resolves.toMatchObject({ version: "0.153.4" });
     expect(readdirSync(runtime)).toHaveLength(1);
     expect(calls).toHaveLength(failedProbeCount + 3);
@@ -514,14 +500,11 @@ describe("CodexUserRuntimeLocator", () => {
     expect(calls).toEqual([]);
   });
 
-  it.runIf(HOST !== "win32")("refuses a world-writable PATH directory and reports an unsafe configured location clearly", async () => {
+  it.runIf(HOST !== "win32")("refuses a world-writable PATH directory and says why", async () => {
     const calls: string[][] = [];
-    const { root, locator, configStore } = locatorHarness({ calls });
+    const { root, locator } = locatorHarness({ calls });
     const source = writeNative(join(root, "path-bin", NATIVE_NAME)); chmodSync(dirname(source), 0o777);
-    await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-unsafe-location" });
-    await configStore.setExecutable(source);
     await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-unsafe-location", message: expect.stringMatching(/writable/i) });
-    await expect(locator.choose(source)).rejects.toMatchObject({ code: "codex-runtime-unsafe-location" });
     expect(calls).toEqual([]);
   });
 
@@ -586,26 +569,19 @@ describe("CodexUserRuntimeLocator", () => {
     },
   );
 
-  it("prefers an explicit choice over discovery and never falls back when it disappears", async () => {
-    const { root, locator, configStore } = locatorHarness();
-    writeNative(join(root, "path-bin", NATIVE_NAME));
-    const chosen = writeNative(join(root, "chosen", NATIVE_NAME));
-    await locator.choose(chosen);
-    await expect(configStore.getExecutable()).resolves.toBe(chosen);
-    const resolved = await locator.resolve();
-    expect(readFileSync(resolved.executable)).toEqual(readFileSync(chosen));
-    rmSync(chosen);
-    await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
-    await locator.forget();
-    await expect(configStore.getExecutable()).resolves.toBeNull();
+  it("finds a CLI installed after it reported none, without being pointed at it", async () => {
+    // "Check again" on the settings card is just another resolve: the user
+    // installs the CLI and Ave finds it where the installer put it.
+    const { root, locator } = locatorHarness();
+    await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-not-installed" });
+    writeNative(join(root, "user-home", ".local", "bin", NATIVE_NAME));
     await expect(locator.resolve()).resolves.toMatchObject({ version: "0.153.4" });
   });
 
-  it("refuses to remember a choice that is not a native CLI or its launcher", async () => {
-    const { root, locator, configStore } = locatorHarness();
-    const script = writeScript(join(root, "elsewhere", "codex-wrapper"));
-    await expect(locator.choose(script)).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
-    await expect(configStore.getExecutable()).resolves.toBeNull();
+  it("offers no way to choose or forget a path: discovery is the only source", () => {
+    const { locator } = locatorHarness();
+    expect("choose" in locator).toBe(false);
+    expect("forget" in locator).toBe(false);
   });
 
   it("stops at the first CLI found when it is unusable instead of trying the next one", async () => {
@@ -621,17 +597,15 @@ describe("CodexUserRuntimeLocator", () => {
     // A system utility reports no CLI version, so a completed real probe
     // yields an invalid-executable verdict rather than a start failure.
     const { root, locator } = locatorHarness({ realProbes: true });
-    const native = join(root, NATIVE_NAME);
+    const native = join(mkdirAndReturn(join(root, "path-bin")), NATIVE_NAME);
     copyFileSync(HOST === "win32" ? process.execPath : "/usr/bin/true", native); chmodSync(native, 0o700);
-    await locator.choose(native);
     await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
   });
 
   it.runIf(HOST !== "win32")("runs real probes from a host installed beneath a group-writable application directory", async () => {
     const { root, locator } = locatorHarness({ realProbes: true });
-    const native = join(root, NATIVE_NAME);
+    const native = join(mkdirAndReturn(join(root, "path-bin")), NATIVE_NAME);
     copyFileSync("/usr/bin/true", native); chmodSync(native, 0o700);
-    await locator.choose(native);
     const applications = join(root, "Applications");
     const hostDirectory = mkdirAndReturn(join(applications, "Ave.app", "Contents", "MacOS"));
     const execPath = join(hostDirectory, "Ave");

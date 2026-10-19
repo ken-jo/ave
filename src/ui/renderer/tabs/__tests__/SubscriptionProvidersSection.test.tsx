@@ -5,9 +5,12 @@ import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import {
   subscriptionRuntimeDescriptor,
   type SubscriptionRuntimeCapabilities,
+  type SubscriptionRuntimeId,
 } from "../../../../shared/subscription-runtime.js";
 import {
+  SignInMethodChoice,
   SubscriptionAuthControls,
+  type SubscriptionProviderStatus,
   type SubscriptionProviderView,
 } from "../SubscriptionProvidersSection.js";
 
@@ -39,6 +42,9 @@ const connectedCodex = (overrides: Partial<SubscriptionProviderView> = {}): Subs
   descriptor: {
     id: "codex",
     label: "Codex",
+    planName: "ChatGPT",
+    cliName: "Codex CLI",
+    executable: "discovered",
     description: "Use your existing ChatGPT subscription.",
     loginMethods: ["browser", "device-code"],
     supportsLogout: true,
@@ -232,69 +238,169 @@ describe("SubscriptionAuthControls", () => {
     expect(document.body).not.toHaveTextContent("https://auth.example.test/secret-token");
   });
 
-  it("shows the official install guidance while no Codex CLI is found, beside the explicit chooser", () => {
-    const codex = subscriptionRuntimeDescriptor("codex");
+  /** The view the settings controller builds from the shared descriptor. */
+  function viewFor(runtimeId: SubscriptionRuntimeId, status: SubscriptionProviderStatus): SubscriptionProviderView {
+    const descriptor = subscriptionRuntimeDescriptor(runtimeId);
+    return {
+      descriptor: {
+        id: descriptor.id,
+        label: descriptor.label,
+        planName: descriptor.planName,
+        cliName: descriptor.cliName,
+        description: "",
+        loginMethods: descriptor.loginMethods,
+        executable: descriptor.executable,
+        supportsLogout: descriptor.supportsManagedLogout,
+        ...(descriptor.minimumVersion ? { minimumVersion: descriptor.minimumVersion } : {}),
+        ...(descriptor.installGuidance ? { installGuidance: descriptor.installGuidance } : {}),
+      },
+      status,
+    };
+  }
+
+  const PICKER_TEST_IDS = ["configure-runtime", "change-runtime", "forget-runtime"] as const;
+
+  it.each([
+    ["codex", "Install the Codex CLI to sign in with your ChatGPT plan.", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
+    ["claude-code", "Install the Claude Code CLI to sign in with your Claude plan.", "curl -fsSL https://claude.ai/install.sh | bash"],
+  ] as const)("shows %s install guidance and Check again, never a file picker, while no CLI is found", (runtimeId, heading, command) => {
+    const refreshStatus = vi.fn();
     const configureRuntime = vi.fn();
     render(
       <SubscriptionProvidersSection
-        providers={[{
-          descriptor: {
-            id: "codex",
-            label: codex.label,
-            description: "",
-            loginMethods: codex.loginMethods,
-            supportsRuntimeSelection: codex.requiresExecutable,
-            minimumVersion: codex.minimumVersion!,
-            installGuidance: codex.installGuidance!,
-          },
-          status: { runtime: "not-configured", connection: "signed-out" },
-        }]}
-        actions={{ configureRuntime }}
+        providers={[viewFor(runtimeId, { runtime: "not-configured", connection: "signed-out" })]}
+        actions={{ refreshStatus, configureRuntime, forgetRuntime: vi.fn(), beginLogin: vi.fn() }}
       />,
     );
 
-    const guidance = screen.getByTestId("subscription-provider:codex:install-guidance");
-    expect(guidance).toHaveTextContent(`Codex CLI was not found. Install version ${codex.minimumVersion} or later`);
-    expect(guidance).toHaveTextContent("curl -fsSL https://chatgpt.com/codex/install.sh | sh");
-    expect(guidance).toHaveTextContent("npm install -g @openai/codex");
-    expect(guidance).toHaveTextContent("brew install --cask codex");
-    expect(guidance).toHaveTextContent("https://learn.chatgpt.com/docs/codex/cli");
-    fireEvent.click(screen.getByTestId("subscription-provider:codex:configure-runtime"));
-    expect(configureRuntime).toHaveBeenCalledWith("codex");
-    expect(screen.queryByTestId("subscription-provider:codex:login-browser")).toBeNull();
+    const guidance = screen.getByTestId(`subscription-provider:${runtimeId}:install-guidance`);
+    expect(guidance).toHaveTextContent(heading);
+    expect(guidance).toHaveTextContent(command);
+    expect(guidance).toHaveTextContent(subscriptionRuntimeDescriptor(runtimeId).installGuidance!.documentationUrl);
+    for (const id of PICKER_TEST_IDS) {
+      expect(screen.queryByTestId(`subscription-provider:${runtimeId}:${id}`)).toBeNull();
+    }
+    expect(screen.queryByTestId(`subscription-provider:${runtimeId}:login-browser`)).toBeNull();
+    // Nothing on the card asks the user to pick or browse to a file.
+    expect(document.body).not.toHaveTextContent(/select (it|official runtime)|choose a/i);
+
+    fireEvent.click(screen.getByTestId(`subscription-provider:${runtimeId}:check-again`));
+    expect(refreshStatus).toHaveBeenCalledWith(runtimeId);
+    expect(configureRuntime).not.toHaveBeenCalled();
   });
 
-  it("says which Codex CLI version is required when the found one is too old or incompatible", () => {
+  it("names the required Codex CLI version in the install guidance", () => {
     const codex = subscriptionRuntimeDescriptor("codex");
-    const view = (errorCode: "subscription-runtime-version-unsupported" | "subscription-runtime-incompatible" | "subscription-runtime-unsafe-location", version: string | null): SubscriptionProviderView => ({
-      descriptor: {
-        id: "codex",
-        label: codex.label,
-        description: "",
-        loginMethods: codex.loginMethods,
-        supportsRuntimeSelection: true,
-        minimumVersion: codex.minimumVersion!,
-        installGuidance: codex.installGuidance!,
-      },
-      status: { runtime: "unavailable", connection: "unknown", version, errorCode },
-    });
+    render(
+      <SubscriptionProvidersSection
+        providers={[viewFor("codex", { runtime: "not-configured", connection: "signed-out" })]}
+        actions={{ refreshStatus: vi.fn() }}
+      />,
+    );
+    expect(screen.getByTestId("subscription-provider:codex:install-guidance"))
+      .toHaveTextContent(`Codex CLI ${codex.minimumVersion}+ required.`);
+  });
+
+  it("says the found CLI and offers sign-in, with no runtime picker", () => {
+    const beginLogin = vi.fn();
+    render(
+      <SubscriptionProvidersSection
+        providers={[viewFor("codex", { runtime: "ready", connection: "signed-out", version: "0.163.0" })]}
+        actions={{ beginLogin, configureRuntime: vi.fn(), forgetRuntime: vi.fn(), refreshStatus: vi.fn() }}
+      />,
+    );
+    expect(screen.getByTestId("subscription-provider:codex:cli-found"))
+      .toHaveTextContent("Using the Codex CLI 0.163.0 installed on this computer.");
+    for (const id of PICKER_TEST_IDS) expect(screen.queryByTestId(`subscription-provider:codex:${id}`)).toBeNull();
+    expect(screen.queryByTestId("subscription-provider:codex:install-guidance")).toBeNull();
+    fireEvent.click(screen.getByTestId("subscription-provider:codex:login-browser"));
+    expect(beginLogin).toHaveBeenCalledWith("codex", "browser");
+  });
+
+  it("says which Codex CLI version is required when the found one is too old or incompatible, with update steps", () => {
+    const codex = subscriptionRuntimeDescriptor("codex");
+    const refreshStatus = vi.fn();
+    const view = (errorCode: "subscription-runtime-version-unsupported" | "subscription-runtime-incompatible" | "subscription-runtime-unsafe-location", version: string | null) =>
+      viewFor("codex", { runtime: "unavailable", connection: "unknown", version, errorCode });
     const { rerender } = render(
-      <SubscriptionProvidersSection providers={[view("subscription-runtime-version-unsupported", "0.151.0")]} actions={{}} />,
+      <SubscriptionProvidersSection providers={[view("subscription-runtime-version-unsupported", "0.151.0")]} actions={{ refreshStatus }} />,
     );
     expect(screen.getByTestId("subscription-provider:codex:error"))
       .toHaveTextContent("The installed CLI is older than Ave supports.");
     expect(screen.getByTestId("subscription-provider:codex:minimum-version"))
       .toHaveTextContent(`Codex CLI ${codex.minimumVersion}+ required (found 0.151.0).`);
+    expect(screen.getByTestId("subscription-provider:codex:update-guidance"))
+      .toHaveTextContent("The Codex CLI on this computer is too old for Ave.");
     expect(screen.queryByTestId("subscription-provider:codex:install-guidance")).toBeNull();
+    expect(screen.queryByTestId("subscription-provider:codex:cli-found")).toBeNull();
+    fireEvent.click(screen.getByTestId("subscription-provider:codex:check-again"));
+    expect(refreshStatus).toHaveBeenCalledWith("codex");
 
-    rerender(<SubscriptionProvidersSection providers={[view("subscription-runtime-incompatible", null)]} actions={{}} />);
+    rerender(<SubscriptionProvidersSection providers={[view("subscription-runtime-incompatible", null)]} actions={{ refreshStatus }} />);
     expect(screen.getByTestId("subscription-provider:codex:error"))
       .toHaveTextContent("does not support everything Ave needs");
     expect(screen.getByTestId("subscription-provider:codex:minimum-version"))
       .toHaveTextContent(`Codex CLI ${codex.minimumVersion}+ required.`);
-    rerender(<SubscriptionProvidersSection providers={[view("subscription-runtime-unsafe-location", null)]} actions={{}} />);
+    expect(screen.getByTestId("subscription-provider:codex:update-guidance")).toBeInTheDocument();
+    rerender(<SubscriptionProvidersSection providers={[view("subscription-runtime-unsafe-location", null)]} actions={{ refreshStatus }} />);
     expect(screen.getByTestId("subscription-provider:codex:error"))
       .toHaveTextContent("must not be writable by other users");
     expect(screen.queryByTestId("subscription-provider:codex:minimum-version")).toBeNull();
+  });
+
+  it("shows a found Claude Code CLI that lacks what Ave passes as an update, not a picker", () => {
+    render(
+      <SubscriptionProvidersSection
+        providers={[viewFor("claude-code", { runtime: "unavailable", connection: "unknown", errorCode: "subscription-runtime-incompatible" })]}
+        actions={{ refreshStatus: vi.fn(), configureRuntime: vi.fn() }}
+      />,
+    );
+    expect(screen.getByTestId("subscription-provider:claude-code:update-guidance"))
+      .toHaveTextContent("The Claude Code CLI on this computer is too old for Ave.");
+    expect(screen.getByTestId("subscription-provider:claude-code:check-again")).toBeInTheDocument();
+    for (const id of PICKER_TEST_IDS) expect(screen.queryByTestId(`subscription-provider:claude-code:${id}`)).toBeNull();
+  });
+
+  it("keeps the official runtime picker for a runtime whose executable the user selects (control)", () => {
+    const configureRuntime = vi.fn();
+    render(
+      <SubscriptionProvidersSection
+        providers={[viewFor("kimi-code", { runtime: "not-configured", connection: "signed-out" })]}
+        actions={{ configureRuntime, refreshStatus: vi.fn() }}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("subscription-provider:kimi-code:configure-runtime"));
+    expect(configureRuntime).toHaveBeenCalledWith("kimi-code");
+    expect(screen.queryByTestId("subscription-provider:kimi-code:check-again")).toBeNull();
+  });
+});
+
+describe("SignInMethodChoice", () => {
+  it("asks with nothing chosen, then reports the method picked", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<SignInMethodChoice rowId="codex" planName="ChatGPT" value={null} onChange={onChange} />);
+    const subscription = screen.getByTestId("llm-tab:sign-in-method:codex:subscription");
+    const apiKey = screen.getByTestId("llm-tab:sign-in-method:codex:api");
+    expect(screen.getByRole("radiogroup", { name: "How do you want to sign in?" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "ChatGPT subscription" })).toBe(subscription);
+    expect(screen.getByRole("radio", { name: "API key" })).toBe(apiKey);
+    expect(subscription).toHaveAttribute("aria-checked", "false");
+    expect(apiKey).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(apiKey);
+    expect(onChange).toHaveBeenLastCalledWith("api");
+    rerender(<SignInMethodChoice rowId="codex" planName="ChatGPT" value="api" onChange={onChange} />);
+    expect(apiKey).toHaveAttribute("aria-checked", "true");
+    expect(subscription).toHaveAttribute("aria-checked", "false");
+    // Both options are buttons in one radio group, so Tab reaches the group
+    // and the arrow keys move between them (driven with real key events in
+    // the CDP check; jsdom does not run Radix's roving focus).
+    expect(subscription.tagName).toBe("BUTTON");
+    expect(apiKey.tagName).toBe("BUTTON");
+  });
+
+  it("names the plan by the provider's brand", () => {
+    render(<SignInMethodChoice rowId="claude" planName="Claude" value="subscription" onChange={vi.fn()} />);
+    expect(screen.getByRole("radio", { name: "Claude subscription" })).toHaveAttribute("aria-checked", "true");
   });
 });

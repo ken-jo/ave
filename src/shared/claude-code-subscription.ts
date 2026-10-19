@@ -42,6 +42,8 @@ export interface ClaudeCodeSubscriptionStatus {
 export type ClaudeCodeSubscriptionErrorCode =
   | "claude-code-runtime-not-configured"
   | "claude-code-runtime-invalid-executable"
+  /** A CLI was found but it is not Claude Code, or lacks an option or auth command Ave uses. */
+  | "claude-code-runtime-incompatible"
   | "claude-code-runtime-unavailable"
   | "claude-code-login-in-progress"
   | "claude-code-login-failed"

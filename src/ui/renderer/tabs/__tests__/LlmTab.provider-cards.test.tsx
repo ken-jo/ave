@@ -11,6 +11,7 @@ import type {
   MarketplaceProviderModelDiscoveryPolicy,
 } from "../../../../shared/marketplace-package-assets.js";
 import type { SubscriptionProviderView } from "../SubscriptionProvidersSection.js";
+import { subscriptionRuntimeDescriptor } from "../../../../shared/subscription-runtime.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { t } from "../../../../i18n/runtime.js";
 import { freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
@@ -65,9 +66,13 @@ function codexView(
     descriptor: {
       id: "codex",
       label: "Codex",
+      planName: "ChatGPT",
+      cliName: "Codex CLI",
+      executable: "discovered",
       description: "",
       loginMethods: ["browser", "device-code"],
       supportsLogout: true,
+      installGuidance: subscriptionRuntimeDescriptor("codex").installGuidance!,
     },
     status: {
       runtime: "ready",
@@ -76,6 +81,26 @@ function codexView(
     },
     busyAction: null,
     refreshPending: false,
+    ...overrides,
+  };
+}
+
+/** The Claude plan, as the settings controller describes it: the same shape as the ChatGPT plan's. */
+function claudeCodeView(
+  overrides: Partial<SubscriptionProviderView> = {},
+): SubscriptionProviderView {
+  const base = codexView();
+  return {
+    ...base,
+    descriptor: {
+      ...base.descriptor,
+      id: "claude-code",
+      label: "Claude Code",
+      planName: "Claude",
+      cliName: "Claude Code CLI",
+      loginMethods: ["browser"],
+      installGuidance: subscriptionRuntimeDescriptor("claude-code").installGuidance!,
+    },
     ...overrides,
   };
 }
@@ -958,11 +983,14 @@ describe("LlmTab provider cards", () => {
 
     const toggle = screen.getByTestId("llm-tab:connection:codex:toggle");
     fireEvent.click(toggle);
-    const form = screen.getByTestId("llm-tab:manual-section");
     const body = screen.getByTestId("llm-tab:connection:codex:detail");
-    // ONE row, so opening it shows both ways in to this provider at once.
+    // ONE row, opened on the method already in use — here the stored key — so
+    // the key form shows and the sign-in controls wait behind the other choice.
+    await waitFor(() => expect(screen.getByTestId("llm-tab:sign-in-method:codex:api"))
+      .toHaveAttribute("aria-checked", "true"));
+    const form = await screen.findByTestId("llm-tab:manual-section");
     expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
-    expect(screen.getByTestId("subscription-provider:codex:login-browser")).toBeInTheDocument();
+    expect(screen.queryByTestId("subscription-provider:codex:login-browser")).not.toBeInTheDocument();
     expect(body).toContainElement(form);
     expect(toggle).toHaveAttribute("aria-controls", body.id);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -1265,7 +1293,9 @@ describe("LlmTab model chooser is the whole switch", () => {
     });
 
     expect(await chooserModelIds()).toContain("codex-mini");
-    expect(chooserGroupText("codex-mini")).toMatch(/Codex/);
+    // The company, not the runtime: the chooser never offers "Codex".
+    expect(chooserGroupText("codex-mini")).toMatch(/OpenAI/);
+    expect(chooserGroupText("codex-mini")).not.toMatch(/Codex/);
 
     pickChooserOption("codex-mini");
 
@@ -1624,7 +1654,129 @@ describe("LlmTab names each route's state on a row that has two", () => {
     // Which route is still unused is a question the expanded row answers, in
     // the only place that can do anything about it.
     fireEvent.click(within(card).getByTestId("llm-tab:connection:codex:toggle"));
+    fireEvent.click(await within(card).findByTestId("llm-tab:sign-in-method:codex:subscription"));
     expect(within(card).getByTestId("subscription-provider:codex:login-browser")).toBeInTheDocument();
+  });
+});
+
+describe("LlmTab asks how to sign in to a provider reached two ways", () => {
+  const method = (rowId: string, which: "subscription" | "api") =>
+    screen.getByTestId(`llm-tab:sign-in-method:${rowId}:${which}`);
+
+  it.each([
+    ["codex", "OpenAI", "ChatGPT", () => codexView()],
+    ["claude-code", "Anthropic Claude", "Claude", () => claudeCodeView()],
+  ] as const)("%s: chooses nothing until asked, then shows only the chosen method", async (rowId, company, plan, view) => {
+    installSubscription([view()], { beginLogin: vi.fn(), refreshStatus: vi.fn() });
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    fireEvent.click(await screen.findByTestId(`llm-tab:add-provider-item:${rowId}`));
+    const card = await screen.findByTestId(`llm-tab:connection:${rowId}`);
+    if (within(card).getByTestId(`llm-tab:connection:${rowId}:toggle`).getAttribute("aria-expanded") !== "true") {
+      fireEvent.click(within(card).getByTestId(`llm-tab:connection:${rowId}:toggle`));
+    }
+    expect(card).toHaveTextContent(company);
+
+    // Nothing configured: the card asks, and shows neither a key field nor sign-in.
+    expect(method(rowId, "subscription")).toHaveAttribute("aria-checked", "false");
+    expect(method(rowId, "api")).toHaveAttribute("aria-checked", "false");
+    expect(method(rowId, "subscription")).toHaveAccessibleName(
+      t("subscriptionProvidersSection.methodSubscription", { plan }),
+    );
+    expect(within(card).queryByTestId("llm-api-key-input")).toBeNull();
+    expect(within(card).queryByTestId(`subscription-provider:${rowId}:login-browser`)).toBeNull();
+
+    fireEvent.click(method(rowId, "api"));
+    expect(await within(card).findByTestId("llm-api-key-input")).toBeInTheDocument();
+    expect(within(card).queryByTestId(`subscription-provider:${rowId}`)).toBeNull();
+
+    fireEvent.click(method(rowId, "subscription"));
+    expect(within(card).queryByTestId("llm-api-key-input")).toBeNull();
+    expect(within(card).getByTestId(`subscription-provider:${rowId}:login-browser`)).toBeInTheDocument();
+    // The user never picks the CLI: there is no runtime picker on the card.
+    expect(within(card).queryByTestId(`subscription-provider:${rowId}:configure-runtime`)).toBeNull();
+    expect(within(card).queryByTestId(`subscription-provider:${rowId}:change-runtime`)).toBeNull();
+    expect(within(card).queryByTestId(`subscription-provider:${rowId}:forget-runtime`)).toBeNull();
+  });
+
+  it("opens a signed-in subscription on the subscription method, with no key field", async () => {
+    installSubscription([codexView({ status: { runtime: "ready", connection: "connected", models: [] } })], { logout: vi.fn() });
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+    fireEvent.click(await screen.findByTestId("llm-tab:connection:codex:toggle"));
+    expect(method("codex", "subscription")).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByTestId("llm-api-key-input")).toBeNull();
+    expect(screen.getByTestId("subscription-provider:codex:logout")).toBeInTheDocument();
+  });
+
+  it("keeps a saved key when switching to the subscription, and removes it only on request", async () => {
+    installSubscription([codexView()], { beginLogin: vi.fn() });
+    const api = makeApi({ hasApiKey: storedKeysFor("openai") });
+    api.deleteApiKey = vi.fn().mockResolvedValue(undefined);
+    await renderTab(api, { vendor: "openrouter", model: "" });
+    fireEvent.click(await screen.findByTestId("llm-tab:connection:codex:toggle"));
+    await waitFor(() => expect(method("codex", "api")).toHaveAttribute("aria-checked", "true"));
+
+    fireEvent.click(method("codex", "subscription"));
+    expect(api.deleteApiKey).not.toHaveBeenCalled();
+    const note = screen.getByTestId("llm-tab:other-credential:codex:api");
+    expect(note).toHaveTextContent(t("subscriptionProvidersSection.otherApiKeySaved"));
+
+    fireEvent.click(within(note).getByTestId("llm-tab:other-credential:codex:remove-api-key"));
+    await waitFor(() => expect(api.deleteApiKey).toHaveBeenCalledExactlyOnceWith("openai"));
+  });
+
+  it("keeps a signed-in subscription when switching to the API key, and signs out only on request", async () => {
+    const logout = vi.fn();
+    installSubscription([claudeCodeView({ status: { runtime: "ready", connection: "connected", models: [] } })], { logout });
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+    fireEvent.click(await screen.findByTestId("llm-tab:connection:claude-code:toggle"));
+
+    fireEvent.click(method("claude-code", "api"));
+    expect(await screen.findByTestId("llm-api-key-input")).toBeInTheDocument();
+    expect(logout).not.toHaveBeenCalled();
+    const note = screen.getByTestId("llm-tab:other-credential:claude-code:subscription");
+    expect(note).toHaveTextContent(t("subscriptionProvidersSection.otherSubscriptionSignedIn", { plan: "Claude" }));
+
+    fireEvent.click(within(note).getByTestId("llm-tab:other-credential:claude-code:sign-out"));
+    expect(logout).toHaveBeenCalledExactlyOnceWith("claude-code");
+  });
+
+  it("shows install guidance and Check again, not a file picker, when the CLI is missing", async () => {
+    const refreshStatus = vi.fn();
+    installSubscription([codexView({ status: { runtime: "not-configured", connection: "signed-out", models: [] } })], {
+      refreshStatus, configureRuntime: vi.fn(),
+    });
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:codex"));
+    const card = await screen.findByTestId("llm-tab:connection:codex");
+    if (within(card).getByTestId("llm-tab:connection:codex:toggle").getAttribute("aria-expanded") !== "true") {
+      fireEvent.click(within(card).getByTestId("llm-tab:connection:codex:toggle"));
+    }
+    expect(within(card).getByTestId("llm-tab:connection-subline:codex"))
+      .toHaveTextContent(t("subscriptionProvidersSection.statusCliNotFound"));
+    fireEvent.click(method("codex", "subscription"));
+    expect(within(card).getByTestId("subscription-provider:codex:install-guidance"))
+      .toHaveTextContent(t("subscriptionProvidersSection.installGuidance", { cli: "Codex CLI", plan: "ChatGPT" }));
+    expect(within(card).queryByTestId("subscription-provider:codex:configure-runtime")).toBeNull();
+    fireEvent.click(within(card).getByTestId("subscription-provider:codex:check-again"));
+    expect(refreshStatus).toHaveBeenCalledWith("codex");
+  });
+
+  it("offers each company once in 'add a provider', and never a runtime by name", async () => {
+    installSubscription([codexView(), claudeCodeView()]);
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    await screen.findByTestId("llm-tab:add-provider-item:codex");
+    const labels = screen.getAllByTestId(/^llm-tab:add-provider-item:/).map((item) => item.textContent ?? "");
+    expect(labels).toContain("OpenAI");
+    expect(labels).toContain("Anthropic Claude");
+    expect(labels.filter((label) => label === "Anthropic Claude")).toHaveLength(1);
+    expect(labels.filter((label) => label === "OpenAI")).toHaveLength(1);
+    expect(labels.join("\n")).not.toMatch(/Codex|Claude Code/);
+    // The Anthropic API vendor is that row's API-key method, not a second row.
+    expect(screen.queryByTestId("llm-tab:add-provider-item:claude")).toBeNull();
   });
 });
 

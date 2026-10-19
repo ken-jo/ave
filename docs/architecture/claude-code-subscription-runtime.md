@@ -1,12 +1,26 @@
 # Claude Code subscription runtime
 
-The main process launches a user-selected official CLI executable. Its auth
+The main process launches the official `claude` CLI the user installed. Ave
+finds it itself — each fully qualified PATH entry, then `~/.local/bin` (the
+native installer's launcher), `/opt/homebrew/bin`, `/usr/local/bin` and
+`/usr/bin`; on Windows PATH and `%USERPROFILE%\.local\bin\claude.exe` — and the
+user never picks the file. The first candidate that exists decides; an unusable
+one is reported rather than skipped. Before use the found CLI is qualified on
+the file it resolves to: `--version` must identify Claude Code, `--help` must
+list every option the print invocation passes (`claudeCodeRequiredOptions`), and
+`auth --help` must offer `login`, `logout` and `status`. A failure is
+`claude-code-runtime-incompatible`, shown as "update it, then check again"; the
+verdict is remembered per file identity, while a probe that could not run is
+asked again. Chat starts only the file `verify()` proved: an update or reinstall
+in between must be verified again. Its auth
 commands use a separate application-owned home and `CLAUDE_CONFIG_DIR`; Ave
 does not read OAuth tokens, reuse API keys, or forward auth output to the renderer.
 The status projection accepts the CLI's `claude.ai` first-party authentication
 with subscription metadata. Missing or contradictory metadata remains unavailable.
-Executable selection, browser login, cancellation, logout, and verification use
-the existing subscription service and UI contracts. Model selection and native
+Discovery, browser login, cancellation, logout, and verification use the
+existing subscription service and UI contracts. Settings lists Anthropic once:
+its card asks for "Claude subscription" or "API key" first, and shows the
+official install methods with "Check again" while no usable CLI is found. Model selection and native
 image attachments are not supported by this transport.
 
 `SubscriptionLlmProvider` sends the complete controlled conversation envelope for

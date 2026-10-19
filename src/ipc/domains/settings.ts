@@ -1166,7 +1166,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       auditSubscriptionMutation("choose-runtime", "invalid", "rejected", "subscription-provider-not-supported");
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
-    if (!subscriptionRuntimeDescriptor(providerValue).requiresExecutable) {
+    // A discovered CLI (codex, claude) is found by Ave, never picked: no dialog.
+    if (subscriptionRuntimeDescriptor(providerValue).executable !== "user-selected") {
       auditSubscriptionMutation("choose-runtime", providerValue, "rejected", "subscription-provider-not-supported");
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
@@ -1196,6 +1197,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     }
     if (!isSubscriptionRuntimeId(providerValue)) {
       auditSubscriptionMutation("forget-runtime", "invalid", "rejected", "subscription-provider-not-supported");
+      return { ok: false as const, error: "subscription-provider-not-supported" as const };
+    }
+    if (subscriptionRuntimeDescriptor(providerValue).executable !== "user-selected") {
+      auditSubscriptionMutation("forget-runtime", providerValue, "rejected", "subscription-provider-not-supported");
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
     const result = await runSubscriptionMutation(providerValue, (runtime, provider) => runtime.forgetExecutable(provider));

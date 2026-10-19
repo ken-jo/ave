@@ -2,8 +2,9 @@
  * Locate and qualify the user's own `codex` CLI.
  *
  * Ave ships no copy of the CLI. The app-server it talks to is the one the user
- * installed: an explicit path chosen in settings, otherwise the first `codex`
- * found on PATH or in one of the official install locations. Before anything
+ * installed: the first `codex` found on PATH or in one of the official install
+ * locations. The user never points Ave at the file; settings only reports
+ * what was found. Before anything
  * relies on it, the binary must
  *
  *   1. be a native executable (a package-manager launcher script is followed
@@ -29,7 +30,7 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { homedir } from "node:os";
-import { join, posix, win32 } from "node:path";
+import { join } from "node:path";
 import { CODEX_CLI_MINIMUM_VERSION } from "../shared/codex-subscription.js";
 import {
   CodexExecutableArtifactError,
@@ -49,18 +50,20 @@ import {
   validateCodexRuntimeDirectory,
 } from "./codex-conversation-runtime.js";
 import { forceKillManagedChildProcess } from "./managed-child-processes.js";
-import { spawnCodexNative } from "./codex-native-spawn.js";
 import {
-  openFeatureNamespace,
-  readJsonFileOrEmpty,
-  writeJsonAtomic,
-  type FeatureNamespaceHandle,
-} from "./storage/feature-namespace.js";
+  cliEnvironmentValue,
+  cliExecutableCandidates,
+  cliPathApi,
+  fullyQualifiedCliPath,
+  usableCliDirectory,
+  type CliDiscoveryEnvironment,
+} from "./user-cli-discovery.js";
+import { spawnCodexNative } from "./codex-native-spawn.js";
 
 export type CodexUserRuntimeErrorCode =
-  /** No `codex` was chosen and none was found. */
+  /** No `codex` was found. */
   | "codex-runtime-not-installed"
-  /** The chosen or first found `codex` is not a native executable Ave can run. */
+  /** The first `codex` found is not a native executable Ave can run. */
   | "codex-runtime-invalid-executable"
   | "codex-runtime-unsafe-location"
   | "codex-runtime-version-unsupported"
@@ -90,9 +93,6 @@ const MAX_PATH_LENGTH = 4_096;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 const PROBE_TIMEOUT_MS = 20_000;
 const MAX_PROBE_OUTPUT_BYTES = 256 * 1024;
-const CONFIG_DIRECTORY = "codex-config";
-const CONFIG_FILE = "executable.json";
-const CONFIG_VERSION = 1;
 const LAUNCHER_PACKAGE_NAME = "@openai/codex";
 
 interface PlatformTarget {
@@ -116,36 +116,7 @@ const LAUNCHER_PLATFORM_TARGETS: Partial<Record<NodeJS.Platform, Partial<Record<
   },
 };
 
-export interface CodexDiscoveryEnvironment {
-  readonly platform: NodeJS.Platform;
-  readonly env: NodeJS.ProcessEnv;
-  readonly homeDir: string;
-}
-
-function pathApi(platform: NodeJS.Platform): typeof posix {
-  return platform === "win32" ? win32 : posix;
-}
-
-function usableDirectory(value: string | undefined, platform: NodeJS.Platform): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = platform === "win32" ? value.trim().replace(/^"(.*)"$/, "$1") : value;
-  if (!trimmed || trimmed.length > MAX_PATH_LENGTH || CONTROL_CHARACTERS.test(trimmed)) return null;
-  return fullyQualifiedPath(trimmed, platform) ? trimmed : null;
-}
-
-function fullyQualifiedPath(value: string, platform: NodeJS.Platform): boolean {
-  if (platform !== "win32") return posix.isAbsolute(value);
-  // A rooted path without a drive inherits the process's current drive.
-  // Device namespaces are not ordinary filesystem executable locations.
-  if (/^[\\/]{2}[?.][\\/]/.test(value)) return false;
-  return /^[a-z]:[\\/]/i.test(value) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+(?:[\\/]|$)/.test(value);
-}
-
-function environmentValue(env: NodeJS.ProcessEnv, name: string, platform: NodeJS.Platform): string | undefined {
-  if (platform !== "win32") return env[name];
-  const key = Object.keys(env).find((candidate) => candidate.toUpperCase() === name.toUpperCase());
-  return key === undefined ? undefined : env[key];
-}
+export type CodexDiscoveryEnvironment = CliDiscoveryEnvironment;
 
 /**
  * Where a `codex` the user installed can be, most specific first: each
@@ -155,35 +126,26 @@ function environmentValue(env: NodeJS.ProcessEnv, name: string, platform: NodeJS
  */
 export function codexExecutableCandidates(discovery: CodexDiscoveryEnvironment): string[] {
   const { platform, env, homeDir } = discovery;
-  const paths = pathApi(platform);
-  const names = platform === "win32" ? ["codex.exe", "codex.cmd"] : ["codex"];
-  const candidates: string[] = [];
-  const pathValue = environmentValue(env, "PATH", platform) ?? "";
-  for (const entry of pathValue.split(platform === "win32" ? ";" : ":")) {
-    const directory = usableDirectory(entry, platform);
-    if (!directory) continue;
-    for (const name of names) candidates.push(paths.join(directory, name));
-  }
-  const installDir = usableDirectory(environmentValue(env, "CODEX_INSTALL_DIR", platform), platform);
+  const paths = cliPathApi(platform);
+  const installLocations: string[] = [];
+  const installDir = usableCliDirectory(cliEnvironmentValue(env, "CODEX_INSTALL_DIR", platform), platform);
   if (platform === "win32") {
-    if (installDir) candidates.push(paths.join(installDir, "codex.exe"));
-    const localAppData = usableDirectory(environmentValue(env, "LOCALAPPDATA", platform), platform);
-    if (localAppData) candidates.push(paths.join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe"));
-    const appData = usableDirectory(environmentValue(env, "APPDATA", platform), platform);
-    if (appData) candidates.push(paths.join(appData, "npm", "codex.cmd"));
+    if (installDir) installLocations.push(paths.join(installDir, "codex.exe"));
+    const localAppData = usableCliDirectory(cliEnvironmentValue(env, "LOCALAPPDATA", platform), platform);
+    if (localAppData) installLocations.push(paths.join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe"));
+    const appData = usableCliDirectory(cliEnvironmentValue(env, "APPDATA", platform), platform);
+    if (appData) installLocations.push(paths.join(appData, "npm", "codex.cmd"));
   } else {
-    if (installDir) candidates.push(paths.join(installDir, "codex"));
-    const home = usableDirectory(homeDir, platform);
-    if (home) candidates.push(paths.join(home, ".local", "bin", "codex"));
-    candidates.push("/opt/homebrew/bin/codex", "/usr/local/bin/codex");
+    if (installDir) installLocations.push(paths.join(installDir, "codex"));
+    const home = usableCliDirectory(homeDir, platform);
+    if (home) installLocations.push(paths.join(home, ".local", "bin", "codex"));
+    installLocations.push("/opt/homebrew/bin/codex", "/usr/local/bin/codex");
   }
-  const seen = new Set<string>();
-  return candidates.filter((candidate) => {
-    const key = platform === "win32" ? candidate.toLowerCase() : candidate;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  return cliExecutableCandidates(
+    discovery,
+    platform === "win32" ? ["codex.exe", "codex.cmd"] : ["codex"],
+    installLocations,
+  );
 }
 
 /** Routing hint only. Full native-format validation happens on the private copy. */
@@ -253,7 +215,7 @@ async function launcherPackageRoot(
   candidate: string,
   platform: NodeJS.Platform,
 ): Promise<string | null> {
-  const paths = pathApi(platform);
+  const paths = cliPathApi(platform);
   let root: string;
   if (platform === "win32") {
     if (paths.basename(candidate).toLowerCase() !== "codex.cmd") return null;
@@ -284,7 +246,7 @@ async function launcherNativeExecutable(
 ): Promise<string | null> {
   const target = LAUNCHER_PLATFORM_TARGETS[platform]?.[arch];
   if (!target) return null;
-  const paths = pathApi(platform);
+  const paths = cliPathApi(platform);
   const executable = platform === "win32" ? "codex.exe" : "codex";
   const packageDir = target.packageName.split("/")[1]!;
   const locations = [
@@ -335,7 +297,7 @@ export async function resolveCodexNativeExecutable(
 ): Promise<string | null> {
   if (
     !candidate || candidate.length > MAX_PATH_LENGTH || CONTROL_CHARACTERS.test(candidate)
-    || !fullyQualifiedPath(candidate, platform)
+    || !fullyQualifiedCliPath(candidate, platform)
   ) {
     throw new CodexUserRuntimeError("codex-runtime-invalid-executable");
   }
@@ -453,42 +415,7 @@ function createCodexProbeRunner(
   });
 }
 
-interface ConfigDocument {
-  readonly version: number;
-  readonly executablePath: string | null;
-}
-
-/** The explicit `codex` path chosen in settings, kept in the subscription-runtimes namespace. */
-export class CodexExecutableConfigStore {
-  constructor(private readonly namespace: FeatureNamespaceHandle = openFeatureNamespace("subscription-runtimes")) {}
-
-  async getExecutable(): Promise<string | null> {
-    const dir = await this.namespace.childDir(CONFIG_DIRECTORY);
-    const document = await readJsonFileOrEmpty<ConfigDocument>(
-      join(dir, CONFIG_FILE),
-      () => ({ version: CONFIG_VERSION, executablePath: null }),
-      (parsed) => {
-        const record = parsed as Partial<ConfigDocument> | null;
-        if (
-          typeof record !== "object" || record === null || record.version !== CONFIG_VERSION
-          || (record.executablePath !== null && typeof record.executablePath !== "string")
-        ) {
-          throw new Error("codex executable config has an unexpected shape");
-        }
-        return { version: CONFIG_VERSION, executablePath: record.executablePath ?? null };
-      },
-    );
-    return document.executablePath;
-  }
-
-  async setExecutable(path: string | null): Promise<void> {
-    const dir = await this.namespace.childDir(CONFIG_DIRECTORY);
-    await writeJsonAtomic(dir, CONFIG_FILE, { version: CONFIG_VERSION, executablePath: path });
-  }
-}
-
 export interface CodexUserRuntimeLocatorOptions {
-  readonly configStore: CodexExecutableConfigStore;
   /** Ave's isolated runtime directories; probes run with the same environment as the app-server. */
   readonly runtimeHome: string;
   /** Existing private runtime child directory, created by the feature namespace. */
@@ -577,25 +504,6 @@ export class CodexUserRuntimeLocator {
     }
   }
 
-  /**
-   * Remember an explicit choice. It must stand for a native `codex` binary
-   * (directly or through its npm launcher); qualification happens on resolve.
-   */
-  async choose(pickerPath: string): Promise<void> {
-    const native = await resolveCodexNativeExecutable(pickerPath, this.platform, this.arch);
-    if (!native) throw new CodexUserRuntimeError("codex-runtime-invalid-executable");
-    const artifact = await this.snapshot(native);
-    await this.discard(artifact);
-    await this.options.configStore.setExecutable(pickerPath);
-    this.lastVersion = null;
-  }
-
-  /** Forget the explicit choice and go back to discovery. */
-  async forget(): Promise<void> {
-    await this.options.configStore.setExecutable(null);
-    this.lastVersion = null;
-  }
-
   /** Release only this locator's copies after its transports have stopped. */
   async dispose(): Promise<void> {
     this.disposed = true;
@@ -612,13 +520,6 @@ export class CodexUserRuntimeLocator {
   }
 
   private async locate(): Promise<string> {
-    const configured = await this.options.configStore.getExecutable();
-    if (configured !== null) {
-      const native = await resolveCodexNativeExecutable(configured, this.platform, this.arch);
-      // A chosen path that has gone away is reported, never replaced by discovery.
-      if (!native) throw new CodexUserRuntimeError("codex-runtime-invalid-executable");
-      return native;
-    }
     for (const candidate of codexExecutableCandidates({ platform: this.platform, env: this.env, homeDir: this.homeDir })) {
       const native = await resolveCodexNativeExecutable(candidate, this.platform, this.arch);
       if (native) return native;
