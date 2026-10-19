@@ -117,7 +117,9 @@ export function EgressHostApprovalCard({
         ))}
       </div>
       {payload.scopes.includes("workspace") || payload.scopes.includes("always") ? (
-        <p className="min-w-0 break-words text-xs text-muted-foreground">{t("egressApprovalCard.revokeHint")}</p>
+        <p className="min-w-0 break-words text-xs text-muted-foreground">
+          {t(terminalTabId === undefined ? "egressApprovalCard.revokeHint" : "egressApprovalCard.revokeHintTerminal")}
+        </p>
       ) : null}
     </section>
   );

@@ -152,7 +152,7 @@ function TerminalEgressRow({
       </div>
       <p className="min-w-0 break-words text-muted-foreground">
         {t("terminalEgressBanner.held")}
-        {payload.scopes.includes("workspace") || payload.scopes.includes("always") ? ` ${t("egressApprovalCard.revokeHint")}` : ""}
+        {payload.scopes.includes("always") ? ` ${t("egressApprovalCard.revokeHintTerminal")}` : ""}
       </p>
     </div>
   );

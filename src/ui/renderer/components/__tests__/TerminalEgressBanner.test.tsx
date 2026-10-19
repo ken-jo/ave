@@ -65,7 +65,8 @@ describe("TerminalEgressBanner", () => {
     const buttons = within(banner).getAllByRole("button").map((button) => button.textContent);
     expect(buttons).toEqual(["Allow once", "This tab", "Always", "Deny"]);
     expect(banner.textContent).toContain("denied after 2 minutes");
-    expect(banner.textContent).toContain("Settings → Permissions → Network");
+    expect(banner.textContent).toContain("Always grants can be revoked in Settings → Permissions → Network");
+    expect(banner.textContent).not.toContain("Workspace and always");
     fireEvent.click(screen.getByTestId("terminal-egress-allow-tab"));
     fireEvent.click(screen.getByTestId("terminal-egress-deny"));
     expect(vi.mocked(value.decide).mock.calls).toEqual([
