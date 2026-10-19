@@ -24,7 +24,7 @@ unchanged into `contract/` at an app release tag, and record their hashes in
 `contract/sources.json`. An extension for app 0.14.0 or later declares
 `extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
 `requires.minAppVersion: "0.14.0"`. Protocol 3 is the `ave/*` wire; an
-extension built against protocol 2 (`ave/*`) must re-vendor the contract from
+extension built against protocol 2 (the previous wire) must re-vendor the contract from
 an Ave release tag. The retired `@ave/plugin-sdk` package is not a
 contract source.
 
@@ -33,7 +33,7 @@ Official extensions live in the official marketplace monorepo
 local-indexer, meeting); their `src/hostPlugin.ts` files are the
 current HostApi usage references. A new extension starts from
 `templates/extension/` in that repository. The former per-plugin
-`ave-plugin-*` repositories and `ave-plugin-template` are archived.
+repositories and the plugin template repository are archived.
 
 The manifest should include:
 

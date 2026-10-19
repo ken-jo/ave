@@ -2639,7 +2639,7 @@ export const createPlugin = async (context) => {
       const factory = createOutOfProcessPluginFactory({
         manifest: {
           id: "meeting",
-          name: "Ave Meeting",
+          name: "Meeting",
           version: "0.5.42",
           entry: "plugin.mjs",
           requires: { hostProtocol: "3" },
@@ -3267,7 +3267,7 @@ export default async function createPlugin(context) {
       const factory = createOutOfProcessPluginFactory({
         manifest: {
           id: "local-indexer",
-          name: "Ave Local Indexer",
+          name: "Local Indexer",
           version: "0.5.40",
           entry: "plugin.mjs",
           requires: { hostProtocol: "3" },

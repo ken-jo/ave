@@ -55,6 +55,8 @@ const DEVELOPMENT_TOMBSTONE_SET: ReadonlySet<string> = new Set(DEVELOPMENT_ENV_T
 
 /** The app sets these for something it launched; they are not configuration. */
 const INTERNAL: readonly string[] = [
+  // The host supplies inspected filesystem paths to its access-rule query child.
+  "AVE_EXECUTABLE_ACL_PATHS",
   "AVE_HOOK_EVENT",
   "AVE_HOOK_SESSION",
   // Both halves of the subscription tool bridge. The host binds an ephemeral

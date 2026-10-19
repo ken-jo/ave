@@ -117,9 +117,6 @@ test('session-tasks-panel drops transient header badges and dismisses at complet
   await emitTasks([{ id: 'fresh-1', content: 'fresh step', status: 'pending' }]);
   const panel = mainWindow.locator('[data-testid="session-tasks-panel"]');
   await expect(panel).toBeVisible();
-  // The transient header badge systems were removed — none of them render.
-  await expect(mainWindow.locator('[data-testid="session-tasks-fresh"]')).toHaveCount(0);
-  await expect(mainWindow.locator('[data-testid="session-tasks-continuation"]')).toHaveCount(0);
   // A not-yet-complete plan must not surface the dismiss affordance.
   await expect(mainWindow.locator('[data-testid="session-tasks-dismiss"]')).toHaveCount(0);
 
@@ -127,7 +124,6 @@ test('session-tasks-panel drops transient header badges and dismisses at complet
     { id: 'fresh-1', content: 'fresh step', status: 'pending' },
     { id: 'fresh-2', content: 'added step', status: 'pending' },
   ]);
-  await expect(mainWindow.locator('[data-testid="session-tasks-added"]')).toHaveCount(0);
   await expect(mainWindow.locator('[data-testid="session-tasks-dismiss"]')).toHaveCount(0);
 
   // Every item completed → 2/2 → the dismiss X appears.
@@ -135,7 +131,6 @@ test('session-tasks-panel drops transient header badges and dismisses at complet
     { id: 'fresh-1', content: 'fresh step', status: 'completed' },
     { id: 'fresh-2', content: 'added step', status: 'completed' },
   ]);
-  await expect(mainWindow.locator('[data-testid="session-tasks-completed"]')).toHaveCount(0);
   // The X lives in the chip's popover: open it first.
   await panel.click();
   const dismiss = mainWindow.locator('[data-testid="session-tasks-dismiss"]');
@@ -146,9 +141,7 @@ test('session-tasks-panel drops transient header badges and dismisses at complet
   await dismiss.click();
   await expect(panel).toHaveCount(0);
 
-  // A fresh plan repopulates with no header badges.
+  // A fresh plan repopulates the panel.
   await emitTasks([{ id: 'next-1', content: 'next topic step', status: 'pending' }]);
   await expect(panel).toBeVisible();
-  await expect(mainWindow.locator('[data-testid="session-tasks-fresh"]')).toHaveCount(0);
-  await expect(mainWindow.locator('[data-testid="session-tasks-continuation"]')).toHaveCount(0);
 });

@@ -1,14 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { buildLlmSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 
 test("keeps a requested blank tab mounted through its first navigation", async () => {
-  const legacyHome = mkdtempSync(join(tmpdir(), "ave-browser-tab-legacy-"));
   let requests = 0;
   let pageRequests = 0;
   const server = createServer((request, response) => {
@@ -27,7 +23,6 @@ test("keeps a requested blank tab mounted through its first navigation", async (
       settings: buildLlmSettings(),
       historyRows: [{ role: "user", content: "Browser tab fixture", createdAt: Date.now() }],
       sessionTitle: "Browser tab fixture",
-      launchEnv: { AVE_HOME: legacyHome },
       launchArgs: ["--remote-debugging-port=9245", "--disable-gpu"],
     });
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
@@ -57,6 +52,5 @@ test("keeps a requested blank tab mounted through its first navigation", async (
   } finally {
     if (ctx) await teardownSeededElectron(ctx);
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    rmSync(legacyHome, { recursive: true, force: true });
   }
 });

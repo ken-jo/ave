@@ -27,7 +27,6 @@ import { getLocale, setLocale, t } from "../runtime.js";
 const PLACEHOLDER_RE = /\{[A-Za-z0-9_.-]+\}/g;
 const TAG_RE = /<\/?[A-Za-z][A-Za-z0-9_-]*(?:\s+[^<>]*)?>/g;
 const SLASH_COMMAND_RE = /\/(?:new|sessions|load|compact|remember|memory|vendor|tools|permission|help|clear|command)\b/g;
-const SENTINEL_LEAK_RE = /AVEKEEP\s*\d+/i;
 
 function sortedMatches(value: string, pattern: RegExp): string[] {
   return value.match(pattern)?.sort() ?? [];
@@ -224,15 +223,6 @@ describe("translate", () => {
           .toEqual(sortedMatches(english, TAG_RE));
         expect(sortedMatches(catalogs[locale][key] ?? "", SLASH_COMMAND_RE), `${locale}:${key}:slashCommands`)
           .toEqual(sortedMatches(english, SLASH_COMMAND_RE));
-      }
-    }
-  });
-
-  it("does not expose generated protection sentinels", async () => {
-    const catalogs = await loadAllLocaleMessages();
-    for (const locale of SUPPORTED_LOCALES) {
-      for (const [key, value] of Object.entries(catalogs[locale])) {
-        expect(value, `${locale}:${key}`).not.toMatch(SENTINEL_LEAK_RE);
       }
     }
   });

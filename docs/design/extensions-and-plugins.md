@@ -1,6 +1,6 @@
 # Extensions and plugins
 
-Plugin names such as `mail`, `portal`, `assistant` and `ave-plugin-repo` in this
+Plugin names such as `mail`, `portal` and `assistant` in this
 record are generic stand-ins for plugins that are no longer part of this project.
 
 **Current contract.** The app is Ave and serves host protocol `"3"` only, the `ave/*`
@@ -10,9 +10,9 @@ An extension for app 0.14.0 or later declares
 `requires.minAppVersion: "0.14.0"`, vendors
 `schemas/plugin-host-protocol/3/protocol.schema.json`, and a package is published
 with an `ave-package.json` descriptor; the user data folder is `~/.ave`. A protocol `2`
-package (the `ave/*` wire of apps 0.12–0.13) is refused before activation. The
-`ai.agent-connector.ave` manifest key and package directory (Ave's domain reversed) replace
-Ave's `ai.agent-connector.ave` with no alias. Where §6.3-6.4 below say
+package (the protocol-2 wire of apps 0.12–0.13) is refused before activation. The
+`ai.agent-connector.ave` manifest key and package directory (Ave's domain reversed) are the
+only ones Ave reads; any other extension namespace is another vendor's data. Where §6.3-6.4 below say
 `hostProtocol: "2"`, they record the 0.12.0 Lease wave, not the current rule.
 
 Status: design, decided by owner direction of 2026-09-27 and the owner decisions
@@ -288,14 +288,14 @@ the same namespace. The complete root contract after this design:
      why it can be written at all.
    The two vocabularies stay distinct on purpose: `type` is the portable word,
    `transport` the host's, and neither is relabelled.
-6. **Unknown top-level fields are reported and ignored; unknown `extensions`
-   namespaces are ignored without validation** (Agent Plugins §5.2, §8.1, §11.3). The
-   host writes one diagnostic per unknown field per load, as the protocol design applies
+6. **Unknown top-level fields and unknown `extensions` namespaces are reported and
+   ignored; a namespace is never validated** (Agent Plugins §5.2, §8.1, §11.3). The
+   host writes one diagnostic per unknown field or namespace per load, as the protocol design applies
    the same rule to the wire (protocol design §3.3). **The package tree is checked by
    kind after classification**: a plugin tree is held to the content rules of §5.2
    (size, count, allowed files; no executable outside a skill's `scripts/` and a
-   server's package-local files) and an unsupported component directory is ignored with
-   a diagnostic naming it (§2.2); an extension tree is the artifact the receipts cover,
+   server's package-local files) and a file in an unsupported component directory is
+   rejected, naming the file (§2.2); an extension tree is the artifact the receipts cover,
    and a `ai.agent-connector.ave/` directory inside an extension is ignored with a diagnostic because
    an extension declares its contributions explicitly (§1.1).
 7. **`${PLUGIN_ROOT}` and `${PLUGIN_DATA}`** are expanded in `mcp.json` `args`, `env`
@@ -323,13 +323,13 @@ own namespace loads in Ave with that namespace ignored.
 | Routine templates | `ai.agent-connector.ave/routines.json` | `{ "version": 1, "templates": [{ id, title, description, trigger: "schedule" \| "shutdown", schedule?, execution: "llm-session" \| "notification-only", prePrompt?, notificationTitle?, notificationBody?, suggestedScope?: { pluginIds: string[] } }] }` — the `AddRoutineInput` fields (`src/shared/routines-types.ts:147-170`) minus anything runtime-owned, with `id` matching `^[a-z][a-z0-9-]{0,62}$` and at most 8 templates. A template is a prefilled form, never a record (§3.4) | slice C |
 | Hooks | `ai.agent-connector.ave/hooks.json` | the host's `hooks.json` shape (`src/hooks/hook-config.ts:49-70`): event keys from the closed set (`:91-110`), `command` in argv form only, optional `matcher`, `timeoutMs` clamped to `DEFAULT_HOOK_TIMEOUT_MS` (`src/hooks/script-hook-types.ts:261`); paths in the placeholder grammar of §3.3 | slice E |
 
-Everything else a package may contain is ignored with a diagnostic, never executed
-(Agent Plugins §11.3). The rejections that are explicit because an author will look for
+Everything else a package may contain is rejected by the content rules, naming the
+file, and never executed (`src/marketplace/content/rules.ts`). The rejections that are explicit because an author will look for
 them:
 
 | Not supported | Why |
 |---|---|
-| language-server declarations, output styles, workflows, monitors, `bin/` executables, plugin `settings.json`, `user_config` | Ave has no feature they would attach to; `bin/` and `user_config` would add an ambient executable path and a secret channel outside the host's stores. Ignored with a diagnostic naming the file |
+| language-server declarations, output styles, workflows, monitors, `bin/` executables, plugin `settings.json`, `user_config` | Ave has no feature they would attach to; `bin/` and `user_config` would add an ambient executable path and a secret channel outside the host's stores. Rejected, naming the file |
 | themes inside a plugin | themes are their own kind with their own token contract (marketplace design §5.5); a theme travels as a `theme` package |
 | a second manifest location (`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`) | the loader reads the specification's root `plugin.json` only (Agent Plugins §5.1). A package that has only a client-specific manifest is handled by the importer (§2.4), which produces a root manifest the user reviews |
 | hook types other than `command` (HTTP, MCP-tool, prompt, agent hooks) | the host's hook runner spawns argv (`src/hooks/hook-config.ts:64-66`); the other types would each be a new network or model surface. Rejected by name in the hooks parse diagnostics |
@@ -1324,7 +1324,7 @@ Vocabulary only, in the surfaces that speak to users and readers:
 | Tool names (`^[a-zA-Z_][a-zA-Z0-9_]*$`) | unchanged | They are the model-facing surface and the permission rules' keys; the three namespaces stay distinct without runtime conversion (`AGENTS.md:189-190`) |
 | IPC channels `ave:plugins:*`, `ave:marketplace:*` | unchanged | Locked by the channel inventory (`src/ipc/__tests__/channel-inventory.test.ts:1-8`) and the preload shape (`src/__tests__/preload-shape.test.ts:1-9`); a rename is a coherent handler/preload/type/caller/test change that buys nothing users see |
 | `plugin.json` file name | unchanged | Agent Plugins §5.1 mandates it for both extensions and plugins; it is the specification's name, not Ave's |
-| `extensions[...]` namespace mechanism | unchanged; the key moved once, to `ai.agent-connector.ave`, with 0.14.0's re-vendoring | The client namespace the specification reserves (§8); vendored by every extension repository and hash-checked (marketplace design §5.6). The proposal's `ave-plugin.json` rename (proposal §3.2) is rejected: the collision it feared is resolved by the namespace, which the manifest already uses (`public-contract.ts:38-39`, `:47`) |
+| `extensions[...]` namespace mechanism | unchanged; the key moved once, to `ai.agent-connector.ave`, with 0.14.0's re-vendoring | The client namespace the specification reserves (§8); vendored by every extension repository and hash-checked (marketplace design §5.6). The proposal's separate extension-manifest filename (proposal §3.2) is rejected: the collision it feared is resolved by the namespace, which the manifest already uses (`public-contract.ts:38-39`, `:47`) |
 | Install receipts (`installSource`, schema v3/v4, `artifactSha256`, `manifestSha256`) | unchanged | Persisted values that the grant chain and the Doctor read (marketplace design §2.3, §10.3); AGENTS.md treats shipped audit and persisted keys as migration decisions, not renames |
 | Descriptor and index kind literal `plugin` | unchanged | Every snapshot, ledger row, policy `requiredInstalls[].kind`, deep link and index carries it; renaming it is the older-app trap of §5.2 |
 | i18n **keys** (`sidebar.pluginsLabel`, `gitMarketplace.kind.plugin`, …) | unchanged | Keys are identifiers the catalog gates and the used-keys test match on (`src/i18n/__tests__/used-keys-exist.test.ts:35-62`); only values change |
@@ -1494,7 +1494,7 @@ Every product choice this page raised has been decided by the owner. None remain
 | 18 | The descriptor's `components` summary is a **static authority** derived from package content only — symbolic paths and placeholders, component names, per-file hashes — with a content digest per component and the execution-relevant fields (routine prompt and schedule, hook matcher and timeout, MCP `cwd`); it excludes every runtime value (absolute paths, generation and activation ids, server ids, secrets); update review diffs by digest; a changed MCP server or hook is unapproved until re-approved (§5.2) | The catalog must show what executes before any byte is fetched, and a human must be able to see which text changed; an inventory is not an authority; a digest that includes an installation path differs on every machine and would reject an unchanged install |
 | 19 | The new kind is listed only in the format-2 index and `schemaVersion: 2` descriptors; what each app actually sees is stated, including the per-entry drop on an app whose schema lacks the kind and the path-claim case the checker must prevent (the original three-cohort split is historical since 2026-10-14); slice C reorders the validator's path claim (§5.2) | The older-app trap is a renamed literal or a widened closed object; a compatibility claim must say what the old reader does, not what it never sees |
 | 20 | Delivery is the tree export with a tree digest; no artifact ladder (§5.2) | Nothing is compiled; skills already ship this way |
-| 21 | Identifiers are not renamed: IDs, tool names, channels, `plugin.json`, the namespace key, receipts, the `plugin` kind literal, i18n keys, code names (§6.2); the proposal's `ave-plugin.json` rename is rejected | Each is persisted, vendored, hash-pinned or locked; the collision the proposal feared is solved by the namespace the manifest already uses |
+| 21 | Identifiers are not renamed: IDs, tool names, channels, `plugin.json`, the namespace key, receipts, the `plugin` kind literal, i18n keys, code names (§6.2); the proposal's separate extension-manifest filename is rejected | Each is persisted, vendored, hash-pinned or locked; the collision the proposal feared is solved by the namespace the manifest already uses |
 | 22 | Existing packages become extensions by classification at load and in the catalog from slice B; no migration file, no reinstall; the installed-manifest retired-field strip is preserved; the amendment's protocol-2 cutoff is not softened or restated (§6.3) | Classification is derived from `entry`; nothing on disk changes meaning; the cutoff belongs to the amendment |
 | 23 | No dependency on the Lease wave in either direction; the wave carries the README, template and generator changes, and the kind's schema only in timeline 1 (§6.4, §7) | Extensions are extensions under any protocol version; the wave is the cheapest moment to change wording; no wave step may wait for a tag that does not exist |
 | 24 | Five slices with the gates and lock suites of §7; B in 0.12.0 (owner decision 1); C after the amendment's slice C on one of two stated timelines; D and E in 0.13.0; nothing in v0.11.0; the full validation run happens once, on the merged tree before merge | Owner constraint; each slice is coherent at its own boundary; the format-2 reader is written once; the hook owns the full run |
@@ -1531,7 +1531,7 @@ Every product choice this page raised has been decided by the owner. None remain
    owner (decision 3).
 9. **Make the injection lint a gate.** A phrase-matching gate is bypassed by rephrasing
    and would be presented as protection it does not give.
-10. **A separate `ave-plugin.json` manifest for extensions** (the 2026-08-16 proposal).
+10. **A separate extension manifest file** (the 2026-08-16 proposal).
     The namespace the manifest already uses is the specification's answer to that
     collision.
 11. **Plugin-owned routines: install disabled, switch on per template, dismiss and abort

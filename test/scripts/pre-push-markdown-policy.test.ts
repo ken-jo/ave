@@ -125,7 +125,8 @@ describe("documentation impact policy", () => {
     const packaged = new Set(packagedDocumentInputs(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")), root));
     // The hook's own policy suites name documents as fixtures, not reads.
     const codeFiles = tracked.filter((file) => /^(?:src|test|scripts|config)\//.test(file) && /\.(?:[cm]?[jt]sx?|json)$/.test(file) &&
-      file !== "scripts/hooks/documentation-references.json" && !/^test\/scripts\/pre-push-[^/]+\.test\.ts$/.test(file));
+      file !== "scripts/hooks/documentation-references.json" &&
+      !/^test\/scripts\/pre-push-[^/]+\.test\.ts$/.test(file));
     const identitySuite = "test/scripts/repository-identity.test.ts";
     const identitySource = readFileSync(resolve(root, identitySuite), "utf8");
     const notCheckedBlock = identitySource.slice(identitySource.indexOf("const NOT_CHECKED"), identitySource.indexOf("function matchesEntry"));
@@ -366,6 +367,19 @@ describe("documentation impact policy", () => {
     }
   });
 
+  it("runs the retired-name gate in every pre-push tier and in gate-core", () => {
+    const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
+    const dispatch = hook.slice(hook.indexOf("if (classification.alreadyOnRemote)"));
+    for (const tier of ["classification.docsOnly", "classification.commentOnly", "classification.testOnly", "classification.fastSource"]) {
+      const start = dispatch.indexOf(`} else if (${tier}) {`);
+      expect(start, tier).toBeGreaterThan(0);
+      const branch = dispatch.slice(start + 1, dispatch.indexOf("} else", start + 1));
+      expect(branch, tier).toContain("runRetiredNameGate(repoRoot);");
+    }
+    const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as { scripts: Record<string, string> };
+    expect(manifest.scripts["check:gate-core"]).toContain("check:retired-name");
+  });
+
   it("keeps push safety checks ahead of the shared documentation policy", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
     expect(hook).toContain("classifyDocumentationChanges(changedEntries)");
@@ -377,6 +391,19 @@ describe("documentation impact policy", () => {
     );
     expect(hook).toContain('run(commands.git, ["diff", "--cached", "--check"], repoRoot)');
     expect(hook).toContain("mergeMarkers.test(stagedContent)");
+  });
+
+  it("flags real conflict markers but not a Markdown heading underline", () => {
+    const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
+    const literal = /const mergeMarkers = \/(.+)\/m;/.exec(hook)?.[1];
+    expect(literal).toBeDefined();
+    const mergeMarkers = new RegExp(literal!, "m");
+    expect(mergeMarkers.test("a\n<<<<<<< HEAD\nb\n")).toBe(true);
+    expect(mergeMarkers.test("a\n=======\nb\n")).toBe(true);
+    expect(mergeMarkers.test("a\r\n=======\r\nb\r\n")).toBe(true);
+    expect(mergeMarkers.test("a\n>>>>>>> branch\n")).toBe(true);
+    expect(mergeMarkers.test("PCRE2 License\n=============\n")).toBe(false);
+    expect(mergeMarkers.test("text with ======= inside\n")).toBe(false);
   });
 
   it("removes hook Git context before full and targeted test runners", () => {

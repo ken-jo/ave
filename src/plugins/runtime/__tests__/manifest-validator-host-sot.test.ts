@@ -26,6 +26,9 @@ import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
 import { MAX_PLUGIN_ONBOARDING_HIGHLIGHTS } from "../../public-contract.js";
 import { TOOL_NAME_PATTERN, isValidToolName } from "../../../tools/types.js";
 
+/** A `_meta` vendor prefix the host does not own; the schema refuses it on a tool. */
+const UNKNOWN_META_PREFIX = "xyz.example/";
+
 const CRLF_GUARD_PATTERN = "[\\r\\n]";
 
 function patternNodesMissingCrlfGuard(value: unknown, path = "$"): string[] {
@@ -405,25 +408,24 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     expect(validator(manifestWithOnboarding({ highlights: tooMany }))).toBe(false);
   });
 
-    it("REJECTS a tool _meta carrying the legacy xyz.ave/pathFields key (fail-closed — the dual-read was removed)", async () => {
-    // The `_meta` vendor namespace rename (`xyz.ave/* → ave/*`) removed the
-    // transitional dual-read AND the schema's legacy property. Because tool `_meta`
-    // is `additionalProperties:false`, a manifest still declaring the legacy key is
-    // now REJECTED at the load-time schema gate — it is NOT silently accepted with
+  it("REJECTS a tool _meta carrying pathFields under an unknown vendor prefix (fail-closed)", async () => {
+    // Tool `_meta` is `additionalProperties:false`: the host owns only `ave/*`
+    // (and `ui`), so a manifest declaring pathFields under any other prefix is
+    // REJECTED at the load-time schema gate — it is NOT silently accepted with
     // the security-bearing pathFields ignored (that would be fail-OPEN: the
     // permission gate would stop seeing the plugin's filesystem effects). This is
     // the schema half of the Doctor safety net: rejection → `manifest_schema`
-    // → `manifest-validation-error` → auto-reinstall of the migrated version.
+    // → `manifest-validation-error` → reinstall.
     const validator = await buildManifestValidator();
     const result = validator(agentPluginsDocument({
-      id: "legacy-meta-plugin",
-      name: "Legacy Meta Plugin",
+      id: "unknown-meta-plugin",
+      name: "Unknown Meta Plugin",
       version: "1.0.0",
-      description: "Legacy-only _meta pathFields fixture.",
+      description: "Unknown-vendor _meta pathFields fixture.",
       entry: "dist/index.js",
       tools: [
         {
-          name: "legacy_export",
+          name: "unknown_export",
           description: "Export to a path.",
           inputSchema: {
             type: "object",
@@ -431,20 +433,20 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
           },
           _meta: {
             ui: { visibility: ["model"] },
-            "xyz.ave/pathFields": ["path"],
+            [`${UNKNOWN_META_PREFIX}pathFields`]: ["path"],
           },
         },
       ],
     }));
     expect(result).toBe(false);
-    // The rejection specifically names the legacy key as the disallowed
+    // The rejection specifically names the unknown key as the disallowed
     // additional property (not some unrelated failure).
     expect(validator.errors).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           keyword: "additionalProperties",
           params: expect.objectContaining({
-            additionalProperty: "xyz.ave/pathFields",
+            additionalProperty: `${UNKNOWN_META_PREFIX}pathFields`,
           }),
         }),
       ]),

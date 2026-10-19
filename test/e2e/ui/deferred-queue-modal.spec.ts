@@ -1,10 +1,10 @@
 import { test, expect } from "./fixtures";
-import { _electron as electron, type ElectronApplication, type Page } from "playwright";
+import { type ElectronApplication, type Page } from "playwright";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildE2eBaseSettings, buildIsolatedElectronEnv } from "./seeded-electron";
+import { buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
 import { makeTestT } from "./i18n";
 
 // This spec seeds its own Electron via beforeEach (buildE2eBaseSettings(true) →
@@ -60,7 +60,7 @@ test.describe("deferred queue modal", () => {
       "utf-8",
     );
 
-    app = await electron.launch({
+    app = await launchElectron({
       args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({
         HOME: tempHome,

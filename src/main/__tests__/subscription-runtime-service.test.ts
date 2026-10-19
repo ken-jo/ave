@@ -5,7 +5,8 @@ import {
 } from "../../shared/subscription-runtime.js";
 import type { AcpSubscriptionStatus } from "../../shared/acp-subscription.js";
 import type { CodexSubscriptionStatus } from "../../shared/codex-subscription.js";
-import type { CodexAppServerClient, CodexAppServerClientOptions } from "../codex-app-server-client.js";
+import { CodexAppServerError, type CodexAppServerClient, type CodexAppServerClientOptions } from "../codex-app-server-client.js";
+import { CodexUserRuntimeError } from "../codex-user-runtime.js";
 import type {
   CodexConversationRuntime,
   CodexConversationRuntimeOptions,
@@ -16,6 +17,7 @@ import { MAX_ACP_SUBSCRIPTION_IMAGE_BYTES } from "../acp-subscription-session-cl
 import { DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS } from "../subscription-attachment-input.js";
 import {
   SubscriptionRuntimeService,
+  subscriptionRuntimeErrorCode,
 } from "../subscription-runtime-service.js";
 import {
   SubscriptionToolBridgeClient,
@@ -30,6 +32,7 @@ const CODEX_CONNECTED: CodexSubscriptionStatus = {
   planType: "plus",
   pendingLogin: null,
   pendingDeviceCode: null,
+  version: "0.153.4",
 };
 
 const KIMI_CONNECTED: AcpSubscriptionStatus = {
@@ -1084,5 +1087,57 @@ describe("SubscriptionRuntimeService", () => {
       await service.stop();
       setHandler.mockRestore();
     }
+  });
+
+  it("routes a chosen and a forgotten user CLI through the locator and restarts the app-server", async () => {
+    const locator = {
+      resolve: vi.fn(),
+      lastKnownVersion: vi.fn(() => "0.153.4"),
+      choose: vi.fn(async () => undefined),
+      forget: vi.fn(async () => undefined),
+      dispose: vi.fn(async () => undefined),
+    };
+    const codexClient = fakeCodexClient();
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: namespace(),
+      codexClient,
+      codexRuntimeLocator: locator,
+      acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
+    });
+    try {
+      const chosen = await service.chooseExecutable("codex", "/opt/tools/codex");
+      expect(locator.choose).toHaveBeenCalledWith("/opt/tools/codex");
+      expect(codexClient.stop).toHaveBeenCalledOnce();
+      expect(chosen).toMatchObject({ provider: "codex", runtime: "ready", version: "0.153.4" });
+      await service.forgetExecutable("codex");
+      expect(locator.forget).toHaveBeenCalledOnce();
+      expect(codexClient.stop).toHaveBeenCalledTimes(2);
+    } finally {
+      await service.stop();
+      expect(locator.dispose).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("gives each user-CLI failure its own renderer-safe code", () => {
+    expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-unsafe-location")))
+      .toBe("subscription-runtime-unsafe-location");
+    expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-unsafe-location")))
+      .toBe("subscription-runtime-unsafe-location");
+    expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-not-installed")))
+      .toBe("subscription-runtime-not-configured");
+    expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-version-unsupported", "0.151.0")))
+      .toBe("subscription-runtime-version-unsupported");
+    expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-incompatible", "0.153.4", ["request turn/interrupt"])))
+      .toBe("subscription-runtime-incompatible");
+    expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-start-failed")))
+      .toBe("subscription-runtime-unavailable");
+    expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-not-configured")))
+      .toBe("subscription-runtime-not-configured");
+    expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-version-unsupported")))
+      .toBe("subscription-runtime-version-unsupported");
+    expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-incompatible")))
+      .toBe("subscription-runtime-incompatible");
+    expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-invalid-executable")))
+      .toBe("subscription-runtime-unavailable");
   });
 });

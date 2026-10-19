@@ -96,11 +96,11 @@ export type PluginMcpInvoke = (
 ) => Promise<McpToolCallOutput & { rawResult?: { value: unknown } }>;
 
 function readPathFields(meta: Record<string, unknown>): string[] | undefined {
-  // Read the SOLE Ave-proprietary wire key, `ave/pathFields`. The legacy
-  // reverse-DNS `xyz.ave/pathFields` dual-read was removed: a first-party
-  // plugin's loopback forward projection only ever emits the new key, and an
-  // installed manifest carrying the legacy key is rejected fail-closed by the
-  // manifest schema before it can reach the wire (never accepted-but-ungated).
+  // Read the SOLE Ave-proprietary wire key, `ave/pathFields`; any other `_meta`
+  // key is ignored. A first-party plugin's loopback forward projection only ever
+  // emits this key, and an installed manifest declaring `pathFields` under any
+  // other key is rejected fail-closed by the manifest schema before it can reach
+  // the wire (never accepted-but-ungated).
   const value = meta[`${AVE_META_PREFIX}pathFields`];
   if (Array.isArray(value) && value.every((v) => typeof v === "string")) {
     return value as string[];

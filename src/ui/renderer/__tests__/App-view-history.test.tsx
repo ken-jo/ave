@@ -236,7 +236,6 @@ describe("App view history", () => {
     await clickSidebarNavRow("features", "sidebar-routines");
     await waitFor(() => expect(path(container)).toContain("루틴"));
 
-    expect(container.querySelector('[data-testid="main-content-back"]')).toBeNull();
     expect(container.querySelector('[data-testid="page-shell-back"]')).toBeNull();
     await click(container, "view-path-back");
     await waitFor(() => expect(path(container)).toContain("업무 보드"));

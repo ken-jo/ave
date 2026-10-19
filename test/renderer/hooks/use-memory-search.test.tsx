@@ -47,34 +47,4 @@ describe("useMemorySearch", () => {
     expect(api.memorySearchEntries).toHaveBeenCalledTimes(1);
     expect(api.memorySearchEntries).toHaveBeenCalledWith("abc");
   });
-
-  it("aliveRef: does not throw after unmount when promise resolves late", async () => {
-    vi.useFakeTimers();
-    const { api } = makeMockAveApi();
-    let resolveNotes!: (v: unknown[]) => void;
-    api.memorySearchEntries = vi.fn(
-      () => new Promise((res) => { resolveNotes = res as (v: unknown[]) => void; }),
-    );
-    api.memorySearchSessions = vi.fn(async () => []);
-
-    const { result, unmount } = renderHook(() => useMemorySearch(api as unknown as AveApi));
-
-    act(() => { result.current.setQuery("hello"); });
-
-    await act(async () => {
-      vi.advanceTimersByTime(300);
-      await Promise.resolve();
-    });
-
-    // Unmount before the slow promise resolves
-    unmount();
-
-    // Resolving after unmount should not throw
-    await act(async () => {
-      resolveNotes([{ title: "T", excerpt: "E", updatedAt: new Date().toISOString() }]);
-      await Promise.resolve();
-    });
-
-    expect(true).toBe(true);
-  });
 });

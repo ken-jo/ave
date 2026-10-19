@@ -30,6 +30,9 @@ import {
 import { revocationRegistry } from "../revocation/revocation-registry.js";
 import { isReinstallFixableFailureKind } from "../../shared/plugin-install-failure.js";
 
+/** A `_meta` vendor prefix the host does not own; the manifest schema refuses it on a tool. */
+const UNKNOWN_META_PREFIX = "xyz.example/";
+
 async function writeProcessEntry(fixture: TestPluginRuntimeFixture): Promise<string> {
   const { manifestPath } = await writeTestPlugin(fixture, { id: "process-kit", tools: [] });
   await mkdir(join(dirname(manifestPath), "bin"), { recursive: true });
@@ -101,45 +104,43 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     expect(card?.installFailureMessage).toMatch(/schema validation failed/);
   });
 
-  it("classifies an installed legacy-`_meta` (xyz.ave/pathFields) manifest as reinstall-fixable (fail-closed → Doctor-repairable)", async () => {
-    // The load-bearing safety-net test for the `_meta` vendor-namespace rename.
-    // An installed plugin whose on-disk manifest still carries the removed legacy
-    // key `xyz.ave/pathFields` must FAIL to load (fail-closed — the schema's
-    // `_meta` is additionalProperties:false, so the key is rejected, never silently
-    // accepted-but-ungated), and that failure must classify as the reinstall-fixable
-    // `manifest-validation-error` kind so the Plugin Doctor auto-repairs it by
-    // reinstalling the migrated marketplace version. This is the terminal (tier-3)
-    // rung when auto-migration cannot run (plugin absent from / unreachable on the
-    // marketplace): a broken-until-repaired plugin, never a silently-ungated one.
+  it("classifies an installed unknown-vendor pathFields `_meta` manifest as reinstall-fixable (fail-closed → Doctor-repairable)", async () => {
+    // An installed plugin whose on-disk manifest carries `pathFields` under a
+    // `_meta` vendor prefix the host does not own must FAIL to load (fail-closed —
+    // the schema's `_meta` is additionalProperties:false, so the key is rejected,
+    // never silently accepted-but-ungated), and that failure must classify as the
+    // reinstall-fixable `manifest-validation-error` kind so the Plugin Doctor can
+    // repair it by reinstalling: a broken-until-repaired plugin, never a
+    // silently-ungated one.
     fixture = await makeTestPluginRuntimeFixture();
     const { manifestPath } = await writeTestPlugin(fixture, {
-      id: "p-legacy-meta",
+      id: "p-unknown-meta",
       tools: [],
-      entrySource: makeTestPluginEntrySource({ p_legacy_ping: JSON.stringify("hi") }),
+      entrySource: makeTestPluginEntrySource({ p_unknown_ping: JSON.stringify("hi") }),
       manifest: {
         tools: [
           {
-            name: "p_legacy_ping",
-            description: "Legacy _meta path tool.",
+            name: "p_unknown_ping",
+            description: "Unknown-vendor _meta path tool.",
             inputSchema: { type: "object", properties: { path: { type: "string" } } },
-            // Cast: the legacy key is no longer part of the `_meta` type; it is
-            // forced on to reproduce a pre-rename installed manifest on disk.
-            _meta: { ui: { visibility: ["model"] }, "xyz.ave/pathFields": ["path"] } as never,
+            // Cast: an unknown vendor key is not part of the `_meta` type; it is
+            // forced on to reproduce such a manifest on disk.
+            _meta: { ui: { visibility: ["model"] }, [`${UNKNOWN_META_PREFIX}pathFields`]: ["path"] } as never,
           },
         ],
       },
     });
-    await writeTestPluginRegistry(fixture, [{ id: "p-legacy-meta", manifestPath, enabled: true }]);
+    await writeTestPluginRegistry(fixture, [{ id: "p-unknown-meta", manifestPath, enabled: true }]);
 
     const runtime = makeTestPluginRuntime(fixture);
     await runtime.startAll();
 
-    const card = runtime.listPluginCards().find((candidate) => candidate.id === "p-legacy-meta");
+    const card = runtime.listPluginCards().find((candidate) => candidate.id === "p-unknown-meta");
     expect(card?.loadStatus).toBe("failed");
     expect(card?.installFailureKind).toBe("manifest-validation-error");
     expect(card?.installFailureMessage).toMatch(/schema validation failed/);
-    // The rejection is specifically about the removed legacy key.
-    expect(card?.installFailureMessage).toContain("xyz.ave/pathFields");
+    // The rejection is specifically about the unknown key.
+    expect(card?.installFailureMessage).toContain(`${UNKNOWN_META_PREFIX}pathFields`);
   });
 
   it("classifies a too-new minAppVersion as NOT reinstall-fixable", async () => {

@@ -197,24 +197,21 @@ following boundary; it does not reopen ph3's loopback listener contract.
   depth-1 creation hard-stop. Any delegation-depth change requires a separate
   policy decision and regression/security review after routing exists.
 - **Merge evidence (2026-07-15):** the P4-0 contract landed in
-  [`ave#1636`](https://github.com/former_org/ave/pull/1636) as merge
-  commit
-  [`6a7a777873e04e968d3338bb723fba404e26c928`](https://github.com/former_org/ave/commit/6a7a777873e04e968d3338bb723fba404e26c928),
-  and the P4-1 admission core landed in
-  [`agent-hub#15`](https://github.com/former_org/agent-hub/pull/15) as merge
-  commit
-  [`8856b193b8417e9e4b61421be47904030ab25b2e`](https://github.com/former_org/agent-hub/commit/8856b193b8417e9e4b61421be47904030ab25b2e).
+  `ave#1636` as merge commit
+  `6a7a777873e04e968d3338bb723fba404e26c928`, and the P4-1 admission core
+  landed in `agent-hub#15` as merge commit
+  `8856b193b8417e9e4b61421be47904030ab25b2e`.
   The merged implementation remains pure admission with no hidden I/O or
   execution effect: every result is `routable=false`, local
   mailbox/question/resume behavior is unchanged, and D8 remains depth-1.
 - **P4-1 hardening evidence (2026-07-15):** the DEL/C1 control-character
   follow-up landed through
-  [`agent-hub#17`](https://github.com/former_org/agent-hub/pull/17). GitHub
+  `agent-hub#17`. GitHub
   records its PR `merged_at` as `2026-07-15T07:06:51Z` and its
   `merge_commit_sha` as
-  [`f8b50e734d92b1ad4590e730820c9c4207331cab`](https://github.com/former_org/agent-hub/commit/f8b50e734d92b1ad4590e730820c9c4207331cab);
+  `f8b50e734d92b1ad4590e730820c9c4207331cab`;
   that commit's committer timestamp is `2026-07-15T07:06:50Z`. The related
-  [`agent-hub#16`](https://github.com/former_org/agent-hub/issues/16) issue
+  `agent-hub#16` issue
   was closed with state reason `completed` at `2026-07-15T07:06:52Z`. This
   closes only the P4-1
   input-validation follow-up. It adds no persistence, trust-review workflow,
