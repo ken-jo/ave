@@ -60,7 +60,7 @@ import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { t } from "../i18n/index.js";
 import { authorizedApprovalMemoryScope } from "./approval-memory-context.js";
-import { resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
+import { resolveSessionWindow, resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
 import { fenceTerminalData, terminalToolFailure, withOutputBudget } from "./terminal-read.js";
 
 const TERMINAL_RUN_TOOL_NAME = "terminal_run";
@@ -79,11 +79,14 @@ export interface TerminalRunToolDeps extends SessionWindowScopeDeps {
   /** The terminal tab the user is looking at in a window, if a terminal is the active surface. */
   activeTerminalTabId: (windowId: number) => string | undefined;
   /**
-   * The terminal a conversation is bound to (a chat docked beside that
-   * terminal), when the host binds conversations to terminals. Consulted
-   * before the active terminal; a bound tab that is gone fails the call.
+   * The pane a conversation is bound to in `windowId` (a chat docked beside a
+   * terminal or a page), by the session hosting the call: a sub-agent asks
+   * with its parent's. A conversation bound to a terminal types there (a
+   * bound tab that is gone fails the call); one bound to a page has no
+   * terminal of its own and never falls back to the active terminal; only an
+   * unbound conversation uses the active terminal.
    */
-  boundTerminalTabId?: (sessionId: string) => string | undefined;
+  boundSurface: (windowId: number, hostSessionId: string) => { kind: "terminal" | "browser"; tabId: string } | undefined;
   /** Type one line into a terminal and press Enter. */
   typeCommand: TypeTerminalCommand;
 }
@@ -209,12 +212,21 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     tracker: TerminalBlockTracker;
     cwd: string;
   } => {
-    const windowId = resolveSessionWindowId(sessionId, deps);
-    if (windowId === null) {
+    const scope = resolveSessionWindow(sessionId, deps);
+    if (scope === null) {
       throw new Error("terminal_run is available only to a conversation in an app window (or its sub-agents); this session has no terminals");
     }
-    const bound = input.tabId === undefined && sessionId !== undefined ? deps.boundTerminalTabId?.(sessionId) : undefined;
-    const tabId = input.tabId ?? bound ?? deps.activeTerminalTabId(windowId);
+    const { windowId } = scope;
+    // An explicit tabId, else the terminal this chat is docked beside, else
+    // (a chat docked beside nothing) the terminal shown in the window.
+    let tabId = input.tabId;
+    if (tabId === undefined) {
+      const bound = deps.boundSurface(windowId, scope.hostSessionId);
+      if (bound?.kind === "browser") {
+        throw new Error("this chat is bound to a page, not a terminal; pass tabId (call terminal_read with no arguments to list terminals)");
+      }
+      tabId = bound?.tabId ?? deps.activeTerminalTabId(windowId);
+    }
     if (tabId === undefined) {
       throw new Error("no terminal is bound to this conversation or shown in its window; pass tabId (call terminal_read with no arguments to list terminals)");
     }

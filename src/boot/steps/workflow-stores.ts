@@ -181,6 +181,9 @@ export async function setupWorkflowStores(
             liveOriginSessionId,
             activeTerminalTabId: (windowId: number): string | undefined =>
               browserTabRegistry.activeTerminalTabId(windowId),
+            // A pane chat's own terminal (or its page, which has none).
+            boundSurface: (windowId: number, hostSessionId: string) =>
+              browserTabRegistry.conversationSurface(windowId, hostSessionId),
             typeCommand: typeTerminalCommand,
           },
           browser: {
