@@ -611,6 +611,39 @@ const TAP_POLL_MS = 20;
  */
 const windowPresses = new Map<number, Promise<void>>();
 
+/**
+ * Windows whose touch path is wedged: a press's sequence stayed open because
+ * the page did not acknowledge its touch start or end, and the closing touch
+ * cancel did not come back either. Until that page acknowledges the cancel,
+ * or navigates, or goes away, a touch any other page of the window sends
+ * would join the open sequence and be delivered into that page when it
+ * wakes (measured), so every press in the window is refused without
+ * dispatching anything.
+ */
+const wedgedWindows = new Map<number, symbol>();
+
+/** Name `windowId` wedged until `cancelled` settles or `guest` navigates or goes away. */
+function markWedged(windowId: number, guest: WebContents, cancelled: Promise<unknown>): void {
+  const mark = Symbol("wedged");
+  wedgedWindows.set(windowId, mark);
+  const events = ["did-navigate", "destroyed", "render-process-gone"] as const;
+  const clear = () => {
+    if (wedgedWindows.get(windowId) === mark) wedgedWindows.delete(windowId);
+    for (const event of events) guest.removeListener(event as never, clear);
+  };
+  for (const event of events) guest.once(event as never, clear);
+  cancelled.then(clear, clear);
+}
+
+function refuseIfWedged(windowId: number): void {
+  if (wedgedWindows.has(windowId)) {
+    throw new BrowserActionError(
+      "window-input-busy",
+      "a page in this window has not answered an earlier press, so nothing was pressed here; try again once it responds, or close that page",
+    );
+  }
+}
+
 async function aloneInWindow<T>(windowId: number, signal: AbortSignal, run: () => Promise<T>): Promise<T> {
   const before = windowPresses.get(windowId) ?? Promise.resolve();
   let release!: () => void;
@@ -823,7 +856,9 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       if (!host) {
         throw new BrowserActionError("no-pointer-position", "could not tell where the page sits in its window, so nothing was pressed; try again");
       }
+      refuseIfWedged(host.windowId);
       return aloneInWindow(host.windowId, live.signal, async () => {
+        refuseIfWedged(host.windowId);
         touchEnded = false;
         const deadline = Date.now() + PRESS_MAX_MS;
         pressDeadline = deadline;
@@ -849,7 +884,11 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
             // The one dispatch made after a failure, past the document checks:
             // it presses nothing, it only ends the window's open sequence.
             touchOpen = false;
-            await within(session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] }), INPUT_DISPATCH_MAX_MS).catch(() => undefined);
+            const cancelled = session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+            const closed = await within(cancelled, INPUT_DISPATCH_MAX_MS).then(() => true, (err: unknown) =>
+              // A refused cancel (the page holds no sequence) leaves nothing open.
+              !(err instanceof BrowserActionError && err.code === "input-not-delivered"));
+            if (!closed) markWedged(host.windowId, guest, cancelled);
           }
           watch.stop();
         }

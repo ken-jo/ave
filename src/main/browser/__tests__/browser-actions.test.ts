@@ -4,7 +4,7 @@
  * the snapshot cap, sensitive-field refusal, cancellation, and the
  * cross-origin redirect guard of navigate.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import {
@@ -768,10 +768,23 @@ const PAGE_IN_WINDOW = { x: 40, y: 60 };
  */
 class WindowTouchRouter {
   private open: FixtureGuest | null = null;
-  /** Every touch dispatch hangs (a page that no longer takes touches). */
+  /** Touch dispatches are held unanswered (a page busy in its touch handler) until `wake`. */
   hang = false;
+  private held: Array<() => void> = [];
+  /** The busy page answers: the held dispatches are delivered, in order. */
+  wake(): void {
+    this.hang = false;
+    for (const deliver of this.held.splice(0)) deliver();
+  }
   dispatch(sender: FixtureGuest, type: string): Promise<void> {
-    if (this.hang) return new Promise(() => {});
+    if (this.hang) {
+      return new Promise((resolve) => {
+        this.held.push(() => { void this.deliver(sender, type); resolve(); });
+      });
+    }
+    return this.deliver(sender, type);
+  }
+  private deliver(sender: FixtureGuest, type: string): Promise<void> {
     const marked = { _modifiers: 1 << 23 };
     if (type === "touchStart") {
       const to = this.open ?? sender;
@@ -967,9 +980,18 @@ describe("tap placement", () => {
 });
 
 describe("one press at a time in a window", () => {
+  // A window left wedged by one test would refuse the next test's presses:
+  // every busy page answers before the next test.
+  const routers: WindowTouchRouter[] = [];
+  afterEach(async () => {
+    for (const router of routers.splice(0)) router.wake();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
   /** Two pages of one window, each with a link to press. */
   async function twoPages() {
     const router = new WindowTouchRouter();
+    routers.push(router);
     const registry = new BrowserTabRegistry() as BrowserTabRegistry<never>;
     const pages = [];
     for (const [guestId, tabId] of [[101, "page-a"], [102, "page-c"]] as const) {
@@ -1048,16 +1070,41 @@ describe("one press at a time in a window", () => {
     expect(c.guest.touches).toEqual([]);
   }, 15_000);
 
-  it("fails a touch dispatch that never returns, and frees the window for the next press", async () => {
-    const { router, pages: [a, c] } = await twoPages();
-    router.hang = true;
-    const stuck = a.click();
-    const next = c.click();
-    await expect(stuck).rejects.toMatchObject({ code: "input-not-delivered" });
-    router.hang = false;
-    await expect(next).resolves.toBeUndefined();
+  /** Page A's touch start and its closing cancel both go unanswered: A's sequence stays open. */
+  async function wedgedByA() {
+    const fixture = await twoPages();
+    fixture.router.hang = true;
+    await expect(fixture.pages[0].click()).rejects.toMatchObject({ code: "input-not-delivered" });
+    return fixture;
+  }
+
+  it("refuses at once, sending nothing, every press in a window whose open sequence was never answered", async () => {
+    const { pages: [a, c] } = await wedgedByA();
+    const before = c.cdp.calls.length;
+    const started = Date.now();
+    await expect(c.click()).rejects.toMatchObject({ code: "window-input-busy" });
+    await expect(a.click()).rejects.toMatchObject({ code: "window-input-busy" });
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(c.cdp.calls.slice(before).filter((call) => call.method.startsWith("Input."))).toEqual([]);
+    expect(c.guest.touches).toEqual([]);
+  }, 20_000);
+
+  it("takes presses again once the busy page answers its cancel", async () => {
+    const { router, pages: [a, c] } = await wedgedByA();
+    router.wake();
+    await vi.waitFor(() => expect(a.guest.touches).toEqual(["touchStart"]));
+    await expect(c.click()).resolves.toBeUndefined();
     expect(c.guest.touches).toEqual(["touchStart"]);
-  }, 15_000);
+  }, 20_000);
+
+  it.each(["did-navigate", "destroyed", "render-process-gone"])("takes presses again once the busy page is gone (%s)", async (event) => {
+    const { pages: [a, c], router } = await wedgedByA();
+    a.guest.emit(event);
+    // A's held dispatches never answer; the window no longer waits for them.
+    router.hang = false;
+    await expect(c.click()).resolves.toBeUndefined();
+    expect(c.guest.touches).toEqual(["touchStart"]);
+  }, 20_000);
 });
 
 it.each(["Enter", "Space"])("finishes after navigation on %s without releasing into the next document", async (key) => {
