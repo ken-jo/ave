@@ -283,9 +283,31 @@ describe("host protocol mirror: tags read from a real git checkout", () => {
     expect(() => checkProtocolMirror(shallow)).toThrow("this checkout is shallow");
   });
 
-  it("refuses a tree that is not a git checkout", () => {
+  it("refuses a tree that is not a git checkout, even inside another repository", () => {
     const { root } = fixture();
     expect(() => checkProtocolMirror(root)).toThrow("is not a git checkout");
+
+    // The same tree as a plain subdirectory of a tagged repository: git would
+    // answer with the parent's tags, so it must still be refused.
+    const { root: parent } = taggedRepo();
+    const nested = join(parent, "vendor", "ave");
+    mkdirSync(nested, { recursive: true });
+    for (const relative of ["package.json", "schemas/plugin-host-protocol/2/protocol.schema.json"]) {
+      put(nested, relative, readFileSync(join(root, relative), "utf8"));
+    }
+    for (const version of ["0.12.0", "0.12.1", "0.12.2"]) {
+      const relative = `${mirrorBase}/2/v${version}/protocol.schema.json`;
+      put(nested, relative, readFileSync(join(root, relative), "utf8"));
+    }
+    put(nested, `${mirrorBase}/2/protocol.schema.json`, readMirror(root, "2/protocol.schema.json").toString("utf8"));
+    put(nested, `${mirrorBase}/mirror.json`, readMirror(root, "mirror.json").toString("utf8"));
+    expect(checkProtocolMirror(nested, untagged)).toContain("3 copies");
+    expect(() => checkProtocolMirror(nested)).toThrow(`${nested} is not a git checkout`);
+  });
+
+  it("names the local remedy in the refusal", () => {
+    const { root } = taggedRepo(null);
+    expect(() => checkProtocolMirror(root)).toThrow("git fetch --unshallow --tags");
   });
 });
 

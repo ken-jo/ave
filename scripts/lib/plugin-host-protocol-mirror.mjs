@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { withoutGitContext } from "./git-process-environment.mjs";
 
@@ -93,13 +93,21 @@ export function syncPublishedSchemas(root) {
  * not running.
  */
 function requireReleaseTags(root, git) {
-  const remedy = "fetch the release tags (a full clone, or actions/checkout with fetch-depth: 0)";
+  const remedy = "fetch the release tags (a full clone, or actions/checkout with fetch-depth: 0; "
+    + "locally, git fetch --unshallow --tags, or git fetch --tags when the clone is not shallow)";
+  const notCheckout = () =>
+    fail(`${root} is not a git checkout, so tagged mirror copies cannot be verified; ${remedy}`);
+  let toplevel;
   let shallow;
   try {
+    toplevel = git(["rev-parse", "--show-toplevel"]).toString("utf8").trim();
     shallow = git(["rev-parse", "--is-shallow-repository"]).toString("utf8").trim();
   } catch {
-    fail(`${root} is not a git checkout, so tagged mirror copies cannot be verified; ${remedy}`);
+    notCheckout();
   }
+  // A tree nested inside some other repository answers git with that
+  // repository's tags, which say nothing about this tree's copies.
+  if (realpathSync(toplevel) !== realpathSync(root)) notCheckout();
   if (shallow === "true") fail(`this checkout is shallow, so tagged mirror copies cannot be verified; ${remedy}`);
   if (git(["tag", "--list", "v*"]).toString("utf8").trim() === "") {
     fail(`this checkout has no v* release tags, so tagged mirror copies cannot be verified; ${remedy}`);
