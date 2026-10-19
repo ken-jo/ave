@@ -1,0 +1,74 @@
+{
+  "$comment": "Tests every affected-only pull-request run executes whatever changed: security, permissions, sandbox, contract, IPC channel and naming. An entry ending in '/' selects every collected Vitest file under that prefix; any other entry is one collected Vitest file. scripts/run-ci-suite.mjs refuses an entry that selects nothing. Full runs (main pushes, tags, the nightly schedule and every pull request whose selection is not trusted) run the whole suite anyway. The \"out-of-process\" group lists every test that runs repo code in a child process through tsx or bundles it with esbuild, itself or through a test helper it imports: the import graph cannot see what that child or bundle loads, so these run on every pull request (test/scripts/run-ci-suite.test.ts fails when one is missing).",
+  "groups": {
+    "permissions": [
+      "src/permissions/"
+    ],
+    "sandbox": [
+      "src/sandbox/",
+      "src/plugins/isolation/",
+      "src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts",
+      "src/tools/__tests__/bash-sandbox-home-integration.test.ts",
+      "src/tools/__tests__/shell-asrt-source.test.ts",
+      "src/mcp/__tests__/mcp-stdio-sandbox-wrap.test.ts"
+    ],
+    "security": [
+      "src/audit/__tests__/hmac-chain.test.ts",
+      "src/audit/__tests__/rationale-audit-adapter.test.ts",
+      "src/audit/__tests__/dlp-mask-sensitive.test.ts",
+      "src/data/__tests__/secret-document-store.test.ts",
+      "src/plugins/__tests__/trust-boundary.test.ts",
+      "src/plugins/__tests__/plugin-contribution-trust.test.ts",
+      "src/plugins/__tests__/registry-manifest-path-trust.test.ts",
+      "src/hooks/__tests__/hook-config-trust.test.ts",
+      "src/hooks/__tests__/hook-trust-commands.test.ts",
+      "src/main/__tests__/host-allow-list.test.ts",
+      "src/main/__tests__/host-fetch-guard.test.ts",
+      "src/boot/__tests__/plugin-surface-permissions.test.ts",
+      "src/tools/__tests__/executor.test.ts",
+      "src/tools/__tests__/registry-meta-governance.test.ts",
+      "src/tools/__tests__/executor-rationale-batch.test.ts",
+      "src/tools/pipeline/__tests__/",
+      "src/engine/turn/__tests__/rationale-real-stack.integration.test.ts",
+      "src/engine/turn/__tests__/trust-origin.test.ts"
+    ],
+    "contract": [
+      "src/contract/",
+      "src/plugins/__tests__/public-contract-boundary.test.ts",
+      "src/plugins/runtime/__tests__/public-contract.test.ts",
+      "src/tools/__tests__/executor-public-contract.test.ts",
+      "src/__tests__/packaging-discipline-source.test.ts"
+    ],
+    "ipc": [
+      "src/ipc/__tests__/",
+      "src/__tests__/preload-shape.test.ts",
+      "src/__tests__/preload.test.ts",
+      "src/preload/"
+    ],
+    "naming": [
+      "src/plugins/__tests__/tool-name-policy.test.ts",
+      "src/boot/__tests__/event-namespace-policy.test.ts",
+      "src/main/storage/__tests__/feature-namespace.test.ts"
+    ],
+    "out-of-process": [
+      "src/__tests__/packaging-discipline-source.test.ts",
+      "src/audit/__tests__/hmac-chain.test.ts",
+      "src/audit/__tests__/permission-audit-proof.test.ts",
+      "src/boot/steps/__tests__/desktop-network-fetch-lease.test.ts",
+      "src/core/model-catalog/__tests__/cache-concurrency.test.ts",
+      "src/data/__tests__/secret-document-store.test.ts",
+      "src/data/__tests__/settings-store-shared-secret-lease.test.ts",
+      "src/engine/telemetry/__tests__/tracing.test.ts",
+      "src/main/__tests__/codex-conversation-runtime.test.ts",
+      "src/plugins/__tests__/registry-atomicity.test.ts",
+      "src/plugins/isolation/__tests__/host-protocol-schema-parity.test.ts",
+      "src/plugins/validate/__tests__/adversarial-fixture.test.ts",
+      "src/plugins/validate/__tests__/validate-plugin.test.ts",
+      "src/tools/__tests__/archive-entry-reader-bundle.test.ts",
+      "src/tools/__tests__/file-tools.test.ts",
+      "src/tools/__tests__/image-preparation.test.ts",
+      "test/scripts/main-bundle-budget.test.ts",
+      "test/scripts/protocol-client-check.test.ts"
+    ]
+  }
+}

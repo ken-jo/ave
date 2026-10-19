@@ -196,7 +196,8 @@ export function isFullCheckGlobalInput(relativePath) {
   );
 }
 
-function isCollectedVitestFile(relativePath) {
+/** A path Vitest collects as a test file (see the Vitest config's include globs). */
+export function isCollectedVitestFile(relativePath) {
   if (!collectedVitestPath.test(relativePath)) return false;
   const segments = relativePath.split("/");
   return !segments.some((segment) => deniedTestTreeSegments.has(segment));
