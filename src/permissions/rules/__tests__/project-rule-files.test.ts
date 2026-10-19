@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { projectRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "../project-rule-files.js";
 import { captureApprovalWorkingDirectory } from "../../user-approval-store.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 let root: string;
 let home: string;
@@ -24,9 +25,9 @@ beforeEach(() => {
   vi.stubEnv("USERPROFILE", home);
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllEnvs();
-  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  await cleanupTmpDir(root);
 });
 
 describe("project rule root boundaries", () => {
