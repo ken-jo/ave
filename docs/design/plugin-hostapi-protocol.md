@@ -2751,6 +2751,15 @@ until the next version bump**, and the bump is therefore the first change after 
 tag (`docs/development/release-process.md`, "Between releases: the next protocol
 candidate", added by #2589). Exactly what happened, and what it means for this plan:
 
+- **Enforced since 0.14.1.** The check now compares every recorded copy whose version
+  has a `v<version>` tag in the checkout with the canonical schema that tag carries,
+  published or not, and `syncProtocolMirror` refuses to write such a copy
+  (`scripts/lib/plugin-host-protocol-mirror.mjs`, `checkTaggedCopy`). Before that, a
+  candidate left at a tagged version (`3/v0.14.0`, `publishedTag: null`, with
+  `package.json` still at `0.14.0`) passed the check after being regenerated with a
+  later protocol change. CI checks out full history, so tags are present there; a
+  checkout without the tag skips the comparison for that version.
+
 - **Between the v0.12.0 tag and #2589.** With `package.json` at `0.12.0` and `2/v0.12.0`
   at `publishedTag: null`, that copy was the candidate, and the check refused any `main`
   commit whose canonical schema differed from it (`plugin-host-protocol-mirror.mjs:83-89`
