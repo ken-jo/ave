@@ -9,7 +9,7 @@
  * up); the interval handle lives on the context so `shutdown()` can clear it.
  */
 import { WorkBoardStore } from "../../main/work-board-store.js";
-import { migrateAgentHubBoardToWorkBoard } from "./work-board-migration.js";
+import { migrateLegacyPluginBoardToWorkBoard } from "./work-board-migration.js";
 import { seedSampleWorkBoard } from "../../work-board/sample-data.js";
 import { scanAndEmitDueSoon } from "../../work-board/due-soon.js";
 import { ALERT_HOST_PLUGIN_ID } from "../../shared/alerts-types.js";
@@ -27,7 +27,7 @@ export async function setupWorkBoard(ctx: BootContext): Promise<void> {
   // store loads so the store's first read picks up the migrated file. The
   // migration is a no-op once the host board exists (P2 wires the
   // runner/engine; the store is pure persistence here).
-  const workBoardMigrated = await migrateAgentHubBoardToWorkBoard();
+  const workBoardMigrated = await migrateLegacyPluginBoardToWorkBoard();
   const workBoardStore = new WorkBoardStore();
   await workBoardStore.load().catch((err) => {
     log.warn("boot: work-board load failed (non-fatal): %s", (err as Error).message);

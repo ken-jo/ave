@@ -401,7 +401,7 @@ sequenceDiagram
     participant PluginMgr as Plugin Manager
     participant PythonRT as Plugin Python Runtime
     participant Market as Marketplace Hub
-    participant AgentHub as Agent Hub
+    participant Hub as Agent Hub
     participant the LLM backend as the LLM backend (LLM)
 
     App->>HostRT: 0. Runtime coordinator wire-up
@@ -419,8 +419,8 @@ sequenceDiagram
         Market-->>PluginMgr: 신규·업데이트 플러그인
         PluginMgr->>PluginMgr: Install / Update / Remove registry/artifacts only
     and
-        Config->>AgentHub: 4b. Skill and Agent registry sync
-        AgentHub-->>App: Updated skills and agent configs
+        Config->>Hub: 4b. Skill and Agent registry sync
+        Hub-->>App: Updated skills and agent configs
     and
         Config->>the LLM backend: 4c. Session handshake
         the LLM backend-->>App: Session ID + model config + 세션 복원
@@ -3399,7 +3399,7 @@ stateDiagram-v2
         TranslationCheck --> ShareToHub: 완료
         Translate --> ShareToHub
 
-        ShareToHub --> AgentHub: 참석자 에이전트에 공유
+        ShareToHub --> Hub: 참석자 에이전트에 공유
         ShareToHub --> HostEvent: 태스크 이벤트 발행
     end
 
@@ -3414,7 +3414,7 @@ stateDiagram-v2
 |--------------------------------- |-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |--------------------------- |
 | `emitEvent(name, payload)` | 다른 플러그인·호스트 이벤트 버스에 이벤트 발행 | 전체 |
 | `onEvent(name, handler)` | 이벤트 구독 | 전체 |
-| ~~`addTask(task)`~~ | **(2026-05-05 Phase 4 제거)** host `TaskService` + SQLite 경로 삭제. task 소유권은 agent-hub 플러그인으로 완전 이전 (Phase 1–4). `agent_hub.notification.surfaced` 이벤트가 일반 알림 채널 역할, `meeting.summary.created.actionItems` 가 액션아이템 캐리어. | 제거됨 |
+| ~~`addTask(task)`~~ | **(2026-05-05 Phase 4 제거)** host `TaskService` + SQLite 경로 삭제. task 소유권은 Agent Hub 플러그인으로 완전 이전 (Phase 1–4). 그 플러그인의 `<pluginId>.notification.surfaced` 이벤트가 일반 알림 채널 역할, `meeting.summary.created.actionItems` 가 액션아이템 캐리어. | 제거됨 |
 | `saveNote(title, content)` | 플러그인 자기 dir 안에 메모리 항목 저장 (`~/.ave/plugins/<id>/notes/`) | 전체 |
 | `getSecret(key)` | 암호화된 API 키 조회 | 인증/외부 API 플러그인 |
 | `logEvent(level, message, data?)` | **[Phase 2]** 호스트 감사 로그에 플러그인 이벤트 기록. `level`: `"info"\|"warn"\|"error"` | 전체 |
@@ -3432,7 +3432,7 @@ stateDiagram-v2
 - **subscriber**: 일반 plugin 은 `hostApi.onPluginsChanged(handler)` 로만 구독. handler 는 self-event (자기 자신이 subject 인 경우) 가 자동 필터된 상태로 받는다. consumer 는 host 에 등록된 plugin id 를 역참조하지 않고 capability/manifest 계약만 사용한다.
 - **`source` discriminator**: install 시 `marketplace` / `local-dev` 구분. production consumer 는 `local-dev` 무시 권장 — 개발자의 로컬 테스트 플러그인이 downstream cascade 를 trigger 하지 않도록.
 
-**(2026-05-05 Phase 4)** `task.*` namespace 는 host-side owner 삭제로 함께 폐기됨. `TaskService`, `TaskDeadlinePoller`, `TaskView`, Tasks 탭, `ave:tasks:*` IPC 채널, preload bridge 메서드 전체 제거 완료. tasks-plugin-split 은 COMPLETE (host out, agent-hub in).
+**(2026-05-05 Phase 4)** `task.*` namespace 는 host-side owner 삭제로 함께 폐기됨. `TaskService`, `TaskDeadlinePoller`, `TaskView`, Tasks 탭, `ave:tasks:*` IPC 채널, preload bridge 메서드 전체 제거 완료. tasks-plugin-split 은 COMPLETE (host out, Agent Hub 플러그인 in).
 
 **(2026-05-11 follow-up)** `task.*` 는 `PUBLIC_EVENT_NAMESPACES` 에서도 제거되었다. 후속 task-도메인 시그널 (마감 임박 등) 은 플러그인 측 plugin-bus 이벤트로 발행되어 다른 플러그인 (예: brain detector) 이 소비한다. 플러그인-소유 namespace 는 host 가 의도적으로 모르므로 (`open-source-readiness` — 회사/벤더 specifics 는 host source 가 아닌 플러그인/매니페스트에) `PUBLIC_EVENT_NAMESPACES` 에 별도 등록하지 않는다. 구독 측 플러그인은 load-time 에 `namespace drift` warn 한 줄을 받는데, 이는 기능 결함이 아니라 의도된 "host 가 이 namespace 를 별도로 보증하지 않는다" 신호이다 (HostApi pluginId 식별로 emit 측 cross-plugin spoof 는 별도로 차단됨 — `boot/steps/plugin-runtime.ts` 의 emitEvent).
 
@@ -3519,7 +3519,7 @@ hostApi.emitEvent(`${pluginId}.auth.changed`);  // 예: "my-plugin.auth.changed"
 ```
 
 - `manifest.emittedEvents[]` 에 같은 이름을 등록해야 호스트 event-bridge 가 renderer 로 전달 (`boot/steps/ipc-bridge.ts`).
-- **이름의 `${pluginId}` 부분은 manifest `id` 필드를 그대로 사용** — `_`↔`-` 변환/정규화 없음. 호스트 hook (`use-plugin-auth-status.ts`) 이 `${manifest.id}.auth.changed` 로 strict subscribe 하므로 plugin 이 `agent_hub.auth.changed` (underscore) 로 emit 하면 manifest id `agent-hub` (dash) 와 mismatch 되어 badge refresh 가 안 걸린다 (agent-hub#131 회귀 사례).
+- **이름의 `${pluginId}` 부분은 manifest `id` 필드를 그대로 사용** — `_`↔`-` 변환/정규화 없음. 호스트 hook (`use-plugin-auth-status.ts`) 이 `${manifest.id}.auth.changed` 로 strict subscribe 하므로 plugin 이 `foo_bar.auth.changed` (underscore) 로 emit 하면 manifest id `foo-bar` (dash) 와 mismatch 되어 badge refresh 가 안 걸린다 (은퇴한 플러그인의 실제 회귀 사례).
 - `manifest-validation.ts` 의 cross-field check 가 `auth` 선언 시 `emittedEvents[]` 에 `${id}.auth.changed` 가 빠져있으면 load-time `log.warn` 발행 — drift 신호 (soft warn, hard fail 은 grace 후 별 PR 에서 전환 검토).
 - 네임스페이스는 plugin id prefix 라 `classifySubscription` 에서 `neutral` 로 떨어지지만 (private 아님), `boot/steps/ipc-bridge.ts` 가 neutral / public 둘 다 forward.
 - 호스트 `usePluginAuthStatuses` 훅이 이벤트를 받아 statusTool 를 재호출 → 뱃지 갱신. **폴링 안 함** — 폐기된 플러그인 전용 auth-change host-callback 안티패턴 회귀 방지.
@@ -3542,7 +3542,7 @@ hostApi.emitEvent(`${pluginId}.auth.changed`);  // 예: "my-plugin.auth.changed"
 
 **의도적으로 deferred 된 항목** — 별 PR 로 추적:
 - `auth.statusTool` 의 `outputSchema` 강제 검증 (Tool outputSchema 인프라 큰 작업)
-- `agent-hub` 의 connection-status 까지 흡수하는 generic `statusBadge` 일반화 (3+ consumer 룰)
+- Agent Hub 플러그인의 connection-status 까지 흡수하는 generic `statusBadge` 일반화 (3+ consumer 룰)
 - LayoutGrid 아이콘 자체에 미인증 점 뱃지 (Settings 외 발견성 강화)
 - `registry.json` 캐시 (현재 event-driven refresh 로 충분 — 풀고 싶은 flicker 문제 없음)
 
@@ -3763,10 +3763,10 @@ PluginId resolved server-side via `event.sender.id` — cross-plugin
 spoofing structurally impossible. Storage keys sanitized to `^[A-Za-z0-9._-]+$`
 to block path traversal. See `src/ipc/domains/plugins.ts:868-1067`.
 
-Reference: agent-hub plugin v0.2.0 SettingsPanel uses these namespaces;
+Reference: the retired Agent Hub plugin's v0.2.0 SettingsPanel uses these namespaces;
 prior PR #60 attempt to misuse `bridge.callTool("hostApi.config.get")`
 (dotted name violating tool naming convention) was reverted — `asPanelBridge`
-guard in agent-hub-panel-v3.tsx throws if host omits the namespaces.
+guard in that plugin's panel throws if host omits the namespaces.
 
 ---
 
@@ -3777,14 +3777,14 @@ guard in agent-hub-panel-v3.tsx throws if host omits the namespaces.
 ### 10.0 Readiness Status: Work Board Pilot + Approval/DM POC (2026-05-02)
 
 **현재 구현 범위 (작동 상태):**
-- ✅ **개인 업무 일지 조회** (Read-only): agent-hub 서버의 Work Board API와 `agent-hub` bridge를 통해 사용자 자신의 일지·일정·할일 조회 가능
-- ✅ **팀 업무 요약 조회** (Read-only): agent-hub 서버의 Work Board API와 `agent-hub` bridge를 통해 팀원 일지 통계 조회 가능
-- ✅ **웹 대시보드**: agent-hub 서버 `web/` 의 Work Board 페이지로 live 데이터 소비 가능
+- ✅ **개인 업무 일지 조회** (Read-only): Agent Hub 서버의 Work Board API와 Agent Hub bridge를 통해 사용자 자신의 일지·일정·할일 조회 가능
+- ✅ **팀 업무 요약 조회** (Read-only): Agent Hub 서버의 Work Board API와 Agent Hub bridge를 통해 팀원 일지 통계 조회 가능
+- ✅ **웹 대시보드**: Agent Hub 서버 `web/` 의 Work Board 페이지로 live 데이터 소비 가능
 - ✅ **플러그인 UI 패널**: 사이드바·detached 창에서 mock-free 실데이터 렌더링
-- ✅ **Direct Message POC**: agent-hub 서버의 기존 `/api/v1/messages` Direct 1:1 메시지 API를 `agent-hub` bridge가 호출
-- ✅ **First-class Approval POC**: agent-hub 서버의 `approval_requests` 테이블 + `pending → approved/rejected` 상태 전이를 `agent-hub` bridge가 호출
+- ✅ **Direct Message POC**: Agent Hub 서버의 기존 `/api/v1/messages` Direct 1:1 메시지 API를 Agent Hub bridge가 호출
+- ✅ **First-class Approval POC**: Agent Hub 서버의 `approval_requests` 테이블 + `pending → approved/rejected` 상태 전이를 Agent Hub bridge가 호출
 - ✅ **Approval notification/audit**: 승인 요청/결정은 Agent Hub backend에 저장되고 `notifications(kind=approval)` 및 `audit_log`에 기록됨
-- ~~✅ **Host Task 호환성**: `hostApi.addTask()` 호환 경로~~ **(2026-05-05 Phase 4 제거)** `addTask` + `TaskService` 전체 삭제. task 소유권 agent-hub 플러그인으로 완전 이전.
+- ~~✅ **Host Task 호환성**: `hostApi.addTask()` 호환 경로~~ **(2026-05-05 Phase 4 제거)** `addTask` + `TaskService` 전체 삭제. task 소유권 Agent Hub 플러그인으로 완전 이전.
 
 **아직 미구현 (Full Agent Hub 선행 조건):**
 - ❌ 팀/조직/전체 범위 게시 — 범위별 승인 정책 + UI 없음
@@ -3829,7 +3829,7 @@ graph LR
 
 ### 10.0.3 Direction Update (2026-06-16): Host-Integrated Agentic Work Board
 
-**결정**: Work Board를 **server-backed plugin POC** (agent-hub 서버 + `agent-hub` bridge) 에서 **호스트 1급 도메인 (host-integrated agentic work orchestrator)** 으로 전환한다. 이는 아래 §10.1 Roadmap 이 명시한 미구현 갭 — _"승인 후 실제 행위 실행은 아직 연결하지 않는다"_ — 을 실현하는 작업이다.
+**결정**: Work Board를 **server-backed plugin POC** (Agent Hub 서버 + Agent Hub bridge) 에서 **호스트 1급 도메인 (host-integrated agentic work orchestrator)** 으로 전환한다. 이는 아래 §10.1 Roadmap 이 명시한 미구현 갭 — _"승인 후 실제 행위 실행은 아직 연결하지 않는다"_ — 을 실현하는 작업이다.
 
 **Why host, not plugin (권한 모델 정합):**
 - agentic 오케스트레이터는 본질적으로 (a) 서브에이전트 spawn, (b) §8 ApprovalGate 구동, (c) **타 플러그인 툴(mail/calendar/meeting) 오케스트레이션** 이 필요하다.
@@ -3847,7 +3847,7 @@ graph LR
 
 **차용한 구성 요소:** Skills = agent profile, Memory = `~/.ave/work-board/memories/{USER,MEMORY}.md` (업무 흐름 학습), Crons = RoutinesScheduler 연동 예약 실행, Self-improvement = run 결과로 skill/memory 보정.
 
-**Supersedes:** agent-hub 서버 + `agent-hub` 플러그인은 Work Board 기능에 대해 디커미션(서버 2026-06-15 셧다운). 저장소 `~/.ave/plugins/agent-hub/board.json` → `~/.ave/work-board/board.json` (부팅 1회 마이그레이션). `work_item.due_soon {itemId,title,notifiedAt}` 계약은 호스트가 계속 emit (구독 플러그인 소비 보존).
+**Supersedes:** Agent Hub 서버 + Agent Hub 플러그인은 Work Board 기능에 대해 디커미션(서버 2026-06-15 셧다운). 저장소 `~/.ave/plugins/<pluginId>/data/board.json` → `~/.ave/work-board/board.json` (부팅 1회 마이그레이션). `work_item.due_soon {itemId,title,notifiedAt}` 계약은 호스트가 계속 emit (구독 플러그인 소비 보존).
 
 **Phased delivery:** P1 도메인 스켈레톤(`src/work-board/`, `~/.ave/work-board/`) + WorkItem 포팅 + 프로페셔널 칸반 UI(host renderer `activeView='work-board'`). P2 네이티브 plan→approve→execute 오케스트레이션. P3 Skills/Memory/일일·주간 reports + due_soon 계약. P4 플러그인 디커미션 + 데이터 마이그레이션 + 샘플 데이터.
 
@@ -3970,7 +3970,7 @@ sequenceDiagram
 - Personal Mailbox는 Direct 1:1 메시지 저장/조회만 가능하며 채널/지식보드 라우팅은 없음
 - Work Log Board는 개인/팀 읽기 중심이며 팀/조직/전체 공개 게시는 아직 범위별 승인 정책이 없어 차단됨
 - ApprovalRequest는 backend verdict 기록과 notification/audit까지만 가능하며 승인 후 행위 실행은 연결되지 않음
-- ~~hostApi.addTask() TaskService 경로~~ — (2026-05-05 Phase 4 에서 완전 제거됨. agent-hub 플러그인이 task ownership 보유)
+- ~~hostApi.addTask() TaskService 경로~~ — (2026-05-05 Phase 4 에서 완전 제거됨. Agent Hub 플러그인이 task ownership 보유)
 - Team Channel, Project Board, Knowledge Board, Broadcast는 구현되지 않음
 
 ---

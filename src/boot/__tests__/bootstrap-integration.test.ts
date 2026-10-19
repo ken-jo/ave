@@ -337,7 +337,7 @@ vi.mock("../steps/alerts-setup.js", () => ({
 }));
 
 vi.mock("../steps/work-board-migration.js", () => ({
-  migrateAgentHubBoardToWorkBoard: vi.fn(async () => false),
+  migrateLegacyPluginBoardToWorkBoard: vi.fn(async () => false),
 }));
 
 vi.mock("../plugin-surface-permissions.js", () => ({
