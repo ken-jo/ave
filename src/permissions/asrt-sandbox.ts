@@ -8,7 +8,7 @@ import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep, win32 as winPath } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
@@ -1333,19 +1333,6 @@ function readDenyCoversPath(denied: string, canonicalPath: string): boolean {
   }
 }
 
-function foldPath(path: string): string {
-  const normalized = winPath.normalize(path).replace(/[\\/]+$/, "");
-  return (normalized.endsWith(":") ? `${normalized}\\` : normalized).toLowerCase();
-}
-
-/** True when `child` is `parent` or lies beneath it (Windows, case-insensitive). */
-function isWindowsPathAtOrUnder(child: string, parent: string): boolean {
-  const c = foldPath(child);
-  const p = foldPath(parent);
-  if (c === p) return true;
-  return c.startsWith(p.endsWith("\\") ? p : `${p}\\`);
-}
-
 function electronUserDataDir(userDataDir: string | undefined): string {
   const home = homedir();
   return (
@@ -1393,7 +1380,7 @@ function writePersistenceDirectories(): string[] {
  *   - a POSIX-rooted row (`/etc/shadow`, `/tmp/claude`, …) is dropped. It
  *     resolves against the current drive, and srt-win materialized
  *     `C:\etc\shadow`, `C:\var\spool\cron`, `C:\tmp\claude` and the like;
- *   - a row in the user profile that no grant covers is dropped. The sandbox
+ *   - a row in the user profile disjoint from every grant is dropped. The sandbox
  *     user has no rights in the profile (its DACL is SYSTEM, Administrators
  *     and the user), so such a deny takes nothing away. It made `acl stamp`
  *     time out: srt-win also puts an inheritable `(D;OICI;FILE_DELETE_CHILD)`
@@ -1403,8 +1390,10 @@ function writePersistenceDirectories(): string[] {
  *     under the profile. A row outside the profile stays: other drives
  *     commonly let Authenticated Users in. A grant that covers the profile
  *     itself keeps every row, and the stamp is slow again. A worker's grant
- *     comes after the session stamp, so a row beneath one reaches srt-win as
- *     a per-exec deny of the worker's wrap, which restates the floor.
+ *     comes after the session stamp, so an overlapping row reaches srt-win as
+ *     a per-exec deny of the worker's wrap, which restates the floor. Ancestor
+ *     denies must keep their original priority: a child write grant must still
+ *     be downgraded by the runtime's deny ranking before stamp targets narrow.
  * Other platforms get the list unchanged.
  */
 function windowsDenyTargets(
@@ -1431,7 +1420,19 @@ function windowsDenyTargets(
   ]);
   return paths
     .filter((path) => !posixRooted.has(path))
-    .filter((path) => !isWindowsPathAtOrUnder(path, home) || grants.some((grant) => isWindowsPathAtOrUnder(path, grant)))
+    .filter((path) => {
+      try {
+        // Use admission's canonical identity, including links and native aliases.
+        // Patterns and unresolved short names cannot prove disjointness.
+        if ([path, ...grants].some((candidate) => /[\0*?\[\]%]|~\d+(?:\.|[\\/]|$)/
+          .test(candidate.replace(/^\\\\\?\\/, "")))) return true;
+        return !isGrantPathWithin(home, path)
+          || grants.some((grant) => isGrantPathWithin(grant, path) || isGrantPathWithin(path, grant));
+      } catch {
+        // An unproven identity must never remove a deny.
+        return true;
+      }
+    })
     .map((path) => (!/[\\/]$/.test(path) && directories.has(caseFoldForMatch(path)) ? `${path}\\` : path));
 }
 

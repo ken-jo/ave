@@ -45,12 +45,31 @@ describe.skipIf(process.platform !== "win32")("native shell path aliases", () =>
 
   it.each([
     "C:\\EXAMPL~1\\file.txt",
+    "report~1.txt",
     "C:\\ordinary\\file.txt:stream",
     "C:\\ordinary. \\file.txt",
     "\\\\.\\PhysicalDrive0",
     "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1\\file.txt",
   ])("refuses unresolved native authority before allowing wide reads: %s", path => {
     expect(findResolvedShellPathViolation(path, path, process.cwd(), [], "read", false)).not.toBeNull();
+  });
+
+  it.each([
+    "sort '-oC:.env' input.txt",
+    "curl '-oC:.env' https://example.invalid/",
+    "sort '--output=C:.env' input.txt",
+    "curl '--output=C:.env' https://example.invalid/",
+    "sort '-oc:foo' input.txt",
+    "curl '-oc:foo' https://example.invalid/",
+    "sort -o C:.env input.txt",
+    "curl -o C:.env https://example.invalid/",
+  ])("refuses drive-relative option paths: %s", command => {
+    expect(findShellPathPolicyViolation(command, process.cwd(), process.cwd(), [], false))
+      .toMatchObject({ kind: "invalid-path" });
+  });
+
+  it.each(["CON", "NUL", "COM1.txt"])("keeps ordinary device names distinct from sensitive files: %s", path => {
+    expect(findResolvedShellPathViolation(path, path, process.cwd(), [], "read", false)).toBeNull();
   });
 
   it("blocks sensitive network paths without contacting the share", () => {

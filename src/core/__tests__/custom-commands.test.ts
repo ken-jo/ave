@@ -72,6 +72,7 @@ describe("custom command files", () => {
   it.skipIf(!canCreateSymlinks())("skips links out of the command directory", async () => {
     const outside = join(root, "secret.md");
     await writeFile(outside, "outside body");
+    await mkdir(projectDir, { recursive: true });
     await symlink(outside, join(projectDir, "escape.md"));
     expect(await listCustomCommands(project)).toEqual([]);
     expect(await loadCustomCommand("escape", project)).toBeNull();

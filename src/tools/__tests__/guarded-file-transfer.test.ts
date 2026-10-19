@@ -79,8 +79,9 @@ describe("complete binary copy", () => {
 });
 
 describe("authority and exclusive destinations", () => {
-  it.skipIf(!canCreateSymlinks())("preserves every existing destination type", async () => {
-    for (const kind of ["file", "empty-directory", "nonempty-directory", "dangling-link"]) {
+  for (const kind of ["file", "empty-directory", "nonempty-directory", "dangling-link"]) {
+    // Only a dangling link requires unprivileged symlink creation.
+    it.skipIf(kind === "dangling-link" && !canCreateSymlinks())(`preserves an existing ${kind} destination`, async () => {
       const target = join(root, kind);
       if (kind === "file") await writeFile(target, "foreign");
       else if (kind === "dangling-link") await symlink(join(root, "missing"), target);
@@ -99,8 +100,8 @@ describe("authority and exclusive destinations", () => {
         expect((await lstat(target)).ino).toBe(before.ino);
       }
       if (kind === "nonempty-directory") expect(await readFile(join(target, "foreign"), "utf8")).toBe("keep");
-    }
-  });
+    });
+  }
 
   it("lets exactly one of two simultaneous creators keep its complete output", async () => {
     const results = await Promise.all([1, 2].map(() => copyPath({ sourcePath: source, destinationPath: destination }, context)));

@@ -122,7 +122,7 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
         env: { ASRT_PROBE_ENV: "configured" },
         shell: false,
         stdio: "ignore",
-        ...(ORIGINAL_PLATFORM === "win32" ? { windowsHide: true } : {}),
+        windowsHide: true,
       },
     );
     const spawnedBwrapCommand = h.spawn.mock.calls[0]?.[1]?.[1];

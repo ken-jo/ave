@@ -71,14 +71,18 @@ function windowsShellPathViolation(path: string, label: string, effect: PathEffe
     candidate: label,
     path,
   };
-  // Short names require filesystem expansion. Device namespaces, streams and
-  // trimmed components have no authority until their exact identity is known.
+  // Short-name-looking components stay refused, including ordinary names like
+  // report~1.txt: existence checks cannot rule out alias creation or replacement
+  // before execution. Device namespaces, streams and trimmed components have
+  // no authority until their exact identity is known.
   if (namespaced || normalized !== ordinary || components.some(part => /~\d+(?:\.|$)/.test(part))) return {
     kind: "invalid-path",
     reason: `Shell path policy: ambiguous native path is not supported: ${label}`,
     candidate: label,
     path,
   };
+  // Bare DOS device names (CON, NUL, COM1.txt) address devices, not aliases of
+  // sensitive files or directories. Explicit device namespaces stay refused.
   return null;
 }
 
@@ -1201,7 +1205,7 @@ function operandPaths(value: string, option: boolean, verb: string): string[] {
   if (option && value.startsWith("-") && value.length > 1) {
     const equals = value.indexOf("=");
     if (equals > 0) return [value.slice(equals + 1)];
-    const glued = /^-[A-Za-z]+?((?:[A-Za-z]:[\\/]|[\\/~.]).*)$/.exec(value);
+    const glued = /^-[A-Za-z]+?((?:[A-Za-z]:|[\\/~.]).*)$/.exec(value);
     return glued ? [glued[1]!] : [];
   }
   if (["awk", "gawk", "mawk", "nawk"].includes(verb)) {
