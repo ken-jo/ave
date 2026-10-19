@@ -322,6 +322,7 @@ export const en = {
   "permissionsTab.networkDenialSourceHook": "Extension {extension}, hook",
   "permissionsTab.networkDenialSourceMcp": "MCP server {server}",
   "permissionsTab.networkDenialSourceUnattributed": "Unattributed",
+  "permissionsTab.networkDenialSourceUnknown": "Unknown source ({kind})",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.interactiveAutoApproveLabel": "자동 허용 위험도",
@@ -613,4 +614,5 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.networkDenialSourceHook": "익스텐션 {extension}, 훅",
   "permissionsTab.networkDenialSourceMcp": "MCP 서버 {server}",
   "permissionsTab.networkDenialSourceUnattributed": "출처 불명",
+  "permissionsTab.networkDenialSourceUnknown": "알 수 없는 출처 ({kind})",
 };

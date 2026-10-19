@@ -6,13 +6,25 @@
  * `deny network-outbound example.com:443 (domain not allowed)`, keyed by the
  * invocation's `commandId` (`egress-invocations.ts`). Nothing read that store
  * before, so a denied host was visible to nobody: not the user, not the audit
- * log, not the model. The monitor subscribes once at boot, after the sandbox
- * is initialized, maps each new deny line to a
+ * log, not the model. The monitor subscribes once at boot, before the
+ * sandbox proxy starts (ASRT's store exists before `initialize()`, so no
+ * refusal can precede the subscription), maps each new deny line to a
  * `SandboxEvent { type: "egress_attempted", blocked: true }`, looks its key up
  * among the live invocations, and appends one row to the sandbox audit
  * channel. A key no live invocation holds is recorded as "unattributed"; the
  * key itself is never written, because it arrived over a carrier the confined
  * process can write.
+ *
+ * Every field taken from the line is DLP-masked, host included: the host
+ * arrives from the confined process (a SOCKS5 DOMAINNAME is arbitrary bytes),
+ * so it can carry whatever that process chooses to put there.
+ *
+ * Volume: one row per refused connection attempt, as ASRT records it. ASRT
+ * itself retains only the last 100 violations; the audit channel keeps every
+ * row, so a process looping on a refused host writes one row per attempt for
+ * as long as it runs. Rows are not dropped or sampled here, because every
+ * deny is to be audited (design I6); the bound is the process's own connection
+ * rate and its lifetime (a tool call's timeout, a tab's shell).
  *
  * This is observation only. Which hosts are allowed is still the strict
  * allow-list set at boot; no ask callback is involved.
@@ -41,6 +53,11 @@ export type ParsedEgressDeny = SandboxEgressDenyAuditEntry["deny"];
 const NETWORK_OUTBOUND = /^deny network-outbound (\S+):(\d+) \((.*)\)$/;
 const SOCKS_TUNNEL = /^deny socks-tunnel (\S+):(\d+) \((.*)\)$/;
 const HTTP_REQUEST = /^deny http-request (\S+) (\S+) \((.*)\)$/;
+/** The three proxy refusals ASRT records; anything else is not a network deny. */
+const PROXY_DENY_PREFIX = /^deny (network-outbound|socks-tunnel|http-request) /;
+
+/** The reason a row carries when ASRT's line did not have the expected shape. */
+export const UNPARSED_DENY_REASON = "unparsed deny line";
 
 function mask(text: string): string {
   return maskSensitiveData(text).masked;
@@ -56,13 +73,32 @@ function splitAuthority(authority: string): { host: string; port: number | null 
  * Parse one violation line, or undefined for a line that is not a proxy deny
  * (a Seatbelt or seccomp filesystem violation, for instance). ASRT has already
  * reduced the line to one display-safe physical line.
+ *
+ * A proxy deny whose line does not have the expected shape is still a deny:
+ * ASRT records `malformed host` refusals with the host as the process sent it
+ * (empty, spaces, control characters it has replaced with spaces), so such a
+ * line becomes a row with the masked remainder as its host, no port, and
+ * {@link UNPARSED_DENY_REASON}, never nothing.
  */
 export function parseEgressDenyLine(line: string): ParsedEgressDeny | undefined {
+  const prefix = PROXY_DENY_PREFIX.exec(line);
+  if (prefix === null) return undefined;
+  return parseShapedDeny(line) ?? {
+    action: prefix[1] as ParsedEgressDeny["action"],
+    host: mask(line.slice(prefix[0].length)),
+    port: null,
+    method: null,
+    url: null,
+    reason: UNPARSED_DENY_REASON,
+  };
+}
+
+function parseShapedDeny(line: string): ParsedEgressDeny | undefined {
   const outbound = NETWORK_OUTBOUND.exec(line) ?? SOCKS_TUNNEL.exec(line);
   if (outbound !== null) {
     return {
       action: line.startsWith("deny network-outbound") ? "network-outbound" : "socks-tunnel",
-      host: outbound[1]!,
+      host: mask(outbound[1]!),
       port: Number(outbound[2]),
       method: null,
       url: null,
@@ -76,7 +112,7 @@ export function parseEgressDenyLine(line: string): ParsedEgressDeny | undefined 
   if (method === "CONNECT") {
     // A refused CONNECT carries its authority, not a URL.
     const { host, port } = splitAuthority(target);
-    return { action: "http-request", host, port, method, url: null, reason: mask(request[3]!) };
+    return { action: "http-request", host: mask(host), port, method: mask(method), url: null, reason: mask(request[3]!) };
   }
   let host = target;
   let port: number | null = null;
@@ -85,13 +121,12 @@ export function parseEgressDenyLine(line: string): ParsedEgressDeny | undefined 
     host = url.hostname;
     port = url.port === "" ? null : Number(url.port);
   } catch {
-    // Not an absolute URL: there is no host to separate, so the masked target
+    // Not an absolute URL: there is no host to separate, so the target
     // stands in for it.
-    host = mask(target);
   }
   // ASRT already cut the query string to `?…`; the path can still carry a
   // token (`/hooks/<secret>`), so the URL is DLP-masked as a whole.
-  return { action: "http-request", host, port, method, url: mask(target), reason: mask(request[3]!) };
+  return { action: "http-request", host: mask(host), port, method: mask(method), url: mask(target), reason: mask(request[3]!) };
 }
 
 /** The audit form of a live owner: the token is never part of it. */

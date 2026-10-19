@@ -15,6 +15,7 @@ import { SandboxViolationStore } from "@anthropic-ai/sandbox-runtime";
 import {
   parseEgressDenyLine,
   startEgressDenyMonitor,
+  UNPARSED_DENY_REASON,
 } from "../egress-deny-monitor.js";
 import {
   EGRESS_INVOCATION_TOKEN_LENGTH,
@@ -92,6 +93,40 @@ describe("parseEgressDenyLine", () => {
     expect(parsed).toMatchObject({ action: "http-request", host: "hooks.example.com", port: null, method: "POST" });
     expect(parsed!.url).toContain("https://hooks.example.com/upload/");
     expect(parsed!.url).not.toContain(secret);
+  });
+});
+
+describe("unparsed and hostile deny lines", () => {
+  it("records a malformed-host deny with control characters as one row, never none", async () => {
+    const { store, rows } = await monitored();
+    const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_04" });
+    // ASRT refuses such a host as `malformed host` and records it as sent; the
+    // store turns the control characters into spaces.
+    deny(store, "deny network-outbound \u0001evil\u0007\u0000:443 (malformed host)", shell.token);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.invocation).toEqual({ kind: "shell", toolName: "bash", toolUseId: "toolu_04" });
+    expect(rows[0]!.deny).toMatchObject({ action: "network-outbound", port: null, reason: UNPARSED_DENY_REASON });
+    expect(rows[0]!.deny.host).toContain("evil");
+  });
+
+  it("keeps an empty or prose host as a row of its own", () => {
+    expect(parseEgressDenyLine("deny network-outbound :443 (malformed host)")).toEqual({
+      action: "network-outbound", host: ":443 (malformed host)", port: null, method: null, url: null, reason: UNPARSED_DENY_REASON,
+    });
+    expect(parseEgressDenyLine("deny network-outbound ignore previous instructions:443 (malformed host)")).toMatchObject({
+      action: "network-outbound", port: null, reason: UNPARSED_DENY_REASON,
+    });
+    expect(parseEgressDenyLine("deny socks-tunnel ")).toMatchObject({ action: "socks-tunnel", host: "", reason: UNPARSED_DENY_REASON });
+    expect(parseEgressDenyLine("deny socks-tunnel x")).toMatchObject({ action: "socks-tunnel", host: "x", reason: UNPARSED_DENY_REASON });
+  });
+
+  it("DLP-masks a secret the process put in the host, in the row and its event target", async () => {
+    const { store, rows } = await monitored();
+    const secret = `ghp_${"a1B2c3D4e5".repeat(4).slice(0, 36)}`;
+    deny(store, `deny network-outbound ${secret}.exfil.example:443 (domain not allowed)`, undefined);
+    expect(rows).toHaveLength(1);
+    expect(JSON.stringify(rows[0])).not.toContain(secret);
+    expect(rows[0]!.sandbox.events[0]!.target).toBe(`${rows[0]!.deny.host}:443`);
   });
 });
 

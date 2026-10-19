@@ -49,6 +49,19 @@ describe("EgressDenialsList", () => {
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
   });
 
+  it("shows a row of an unknown source kind instead of failing the tab", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const future = row({ source: { kind: "browser" } as unknown as EgressDenialRow["source"] });
+      render(<EgressDenialsList fetcher={async () => [future, row()]} />);
+      await waitFor(() => expect(screen.getAllByTestId("egress-denial-row")).toHaveLength(2));
+      expect(screen.getByTestId("egress-denials").textContent).toContain("Unknown source (browser)");
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("shows an IPC refusal instead of an empty list", async () => {
     render(<EgressDenialsList fetcher={async () => ({ ok: false, error: "UNAUTHORIZED_FRAME" })} />);
     expect((await screen.findByTestId("egress-denials-error")).textContent).toContain("UNAUTHORIZED_FRAME");

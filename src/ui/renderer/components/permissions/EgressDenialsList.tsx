@@ -50,7 +50,11 @@ function egressDenialSourceText(source: EgressDenialSource): string {
     case "unattributed":
       return t("permissionsTab.networkDenialSourceUnattributed");
   }
-  throw new Error(`unknown egress denial source ${JSON.stringify(source)}`);
+  // A row written by a newer build, or a damaged one: the audit file is read
+  // back, not produced here. Say so in the row instead of failing the tab.
+  const kind = String((source as { kind?: unknown }).kind);
+  console.warn("[egress-denials] unknown denial source", source);
+  return t("permissionsTab.networkDenialSourceUnknown", { kind });
 }
 
 function targetText(row: EgressDenialRow): string {

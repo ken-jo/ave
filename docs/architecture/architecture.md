@@ -1373,8 +1373,13 @@ under it; the deny monitor (`src/permissions/egress-deny-monitor.ts`),
 subscribed at boot before the proxy starts, turns each
 `deny network-outbound` (or `http-request`, `socks-tunnel`) line into one
 sandbox audit row with an `egress_attempted, blocked: true` event and the
-owner's identity, or `unattributed` for a key no live invocation holds, with
-the refused URL DLP-masked. The shell tools append ASRT's
+owner's identity, or `unattributed` for a key no live invocation holds. A
+proxy deny line of an unexpected shape (ASRT's `malformed host` refusals keep
+whatever host the process sent) still becomes a row, with the remainder as its
+host, no port and the reason `unparsed deny line`. Host, method, URL and
+reason are DLP-masked, since the confined process chooses them; rows are
+neither sampled nor dropped, so their volume is bounded only by the refused
+process's connection rate and lifetime. The shell tools append ASRT's
 `<sandbox_violations>` block to their output so the model reads why a host
 failed, and Settings → Permissions → Network lists the last 24 hours of
 refusals from that audit channel. This is attribution, not policy: the
