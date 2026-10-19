@@ -469,6 +469,50 @@ describe("session tool output artifacts", () => {
     expect(() => actualFs.fstatSync(openedFd)).toThrow();
   });
 
+  it.each([
+    [".bin", "open"], [".json", "open"], [".bin", "read"], [".json", "read"],
+  ])("rejects a %s identity differing beyond number precision after descriptor %s", async (suffix, phase) => {
+    const info = await saved("original");
+    const path = onlyFile(suffix!);
+    const originalIno = 2n ** 60n;
+    const replacementIno = originalIno + 1n;
+    expect(Number(originalIno)).toBe(Number(replacementIno));
+    let openedFd = -1;
+    let targetOpen = false;
+    let replaced = phase === "open";
+    let checkedReplacement = false;
+    vi.mocked(openSync).mockImplementation((...args) => {
+      const fd = actualFs.openSync(...args);
+      targetOpen = args[0] === path;
+      if (targetOpen) openedFd = fd;
+      return fd;
+    });
+    vi.mocked(fstatSync).mockImplementation((...args) => {
+      const stat = actualFs.fstatSync(...args);
+      if (targetOpen && args[0] === openedFd) {
+        stat.ino = args[1]?.bigint ? originalIno : Number(originalIno);
+      }
+      return stat;
+    });
+    vi.mocked(lstatSync).mockImplementation((...args) => {
+      const stat = actualFs.lstatSync(...args);
+      if (args[0] === path && stat) {
+        const ino = replaced ? replacementIno : originalIno;
+        stat.ino = args[1]?.bigint ? ino : Number(ino);
+        checkedReplacement ||= replaced;
+      }
+      return stat;
+    });
+    vi.mocked(readSync).mockImplementation((...args) => {
+      const bytesRead = actualFs.readSync(...args);
+      if (targetOpen && args[0] === openedFd) replaced = true;
+      return bytesRead;
+    });
+    expect(store.read(SESSION_ID, "tool-output", info)).toBeNull();
+    expect(checkedReplacement).toBe(true);
+    expect(() => actualFs.fstatSync(openedFd)).toThrow();
+  });
+
   it.skipIf(process.platform === "win32").each([".bin", ".json"])("rejects a FIFO %s without blocking or removing it", async (suffix) => {
     const info = await saved("original");
     const data = onlyFile(suffix);
