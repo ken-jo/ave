@@ -162,7 +162,8 @@ export type ShellSandboxUnavailableCause =
  *   `causes` says why.
  * - `pending-on` / `pending-off`: the setting changed after startup. The
  *   sandbox is initialized once at boot, so the change applies on the next
- *   start and this session keeps the state it booted with.
+ *   start and this session keeps the state it booted with. Turning off a
+ *   sandbox that never contained shells this session is plain `off`.
  * - `unsupported`: this platform has no OS sandbox.
  * - `unknown`: the boot gate has not run in this process, so nothing about
  *   effectiveness can be claimed.
@@ -221,8 +222,12 @@ export function describeShellSandboxStatus(input: ShellSandboxStatusInput): Shel
   if (input.boot === null) return { ...base, state: "unknown", causes: [] };
   // The gate runs once per process, so a setting changed after boot is a
   // restart away from taking effect, whatever the plan says now.
-  if (requestedNow !== input.requestedAtBoot) {
-    return { ...base, state: requestedNow ? "pending-on" : "pending-off", causes: [] };
+  if (requestedNow && !input.requestedAtBoot) return { ...base, state: "pending-on", causes: [] };
+  if (!requestedNow && input.requestedAtBoot) {
+    // Pending only when a restart changes something for shells: a sandbox
+    // that never contained them (a degraded boot, Windows Plan B) is already
+    // off for shells, and saying it "stays on" would be false.
+    return { ...base, state: input.shellPlanMode === "asrt" ? "pending-off" : "off", causes: [] };
   }
   if (!requestedNow) return { ...base, state: "off", causes: [] };
   if (input.shellPlanMode === "asrt") return { ...base, state: "on", causes: [] };

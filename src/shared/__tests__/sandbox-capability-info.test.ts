@@ -138,6 +138,22 @@ describe("describeShellSandboxStatus", () => {
     })).state).toBe("pending-off");
   });
 
+  it("is plainly off when the setting went off after a boot whose sandbox never contained shells", () => {
+    const degraded: SandboxBootOutcome = {
+      action: "degrade",
+      reason: "degrade-default-cannot-activate",
+      onSignal: "default-settings",
+      dependencyErrors: ["bubblewrap (bwrap) not installed"],
+      causes: ["missing-bwrap"],
+    };
+    expect(describeShellSandboxStatus(input({
+      requestedAtBoot: true, boot: degraded, shellPlanFallback: "requested-sandbox-unavailable",
+    })).state).toBe("off");
+    expect(describeShellSandboxStatus(input({
+      requestedAtBoot: true, boot: ACTIVATED, shellPlanFallback: "windows-partial-shell-acl-unsafe",
+    })).state).toBe("off");
+  });
+
   it("counts the environment override as a request", () => {
     expect(describeShellSandboxStatus(input({
       envForced: true, requestedAtBoot: true, boot: ACTIVATED, shellPlanMode: "asrt",
