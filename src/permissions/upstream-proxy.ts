@@ -4,8 +4,9 @@
  * an explicit Settings URL).
  *
  * The carried ASRT patch (part 4) asks a route hook once per destination
- * decision, before the ask callback, and dials the allowed connection over
- * the answered routes in order. This module is that hook. Per destination:
+ * decision, only after the ask callback allowed the destination by name (part
+ * 5: a destination refused by name is never looked up here), and dials the
+ * allowed connection over the answered routes in order. This module is that hook. Per destination:
  *
  *   - Settings "Off": DIRECT.
  *   - Settings "Manual": the configured proxy, or DIRECT for a host on its

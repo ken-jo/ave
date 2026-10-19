@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
+import type { SandboxAskCallback, SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxEgressDecisionAuditEntry } from "../../audit/sandbox-audit.js";
 import {
   createEgressAskCallback,
@@ -33,11 +33,33 @@ const interactiveShell: ShellEgressOwner = {
   context: { sessionId: "session-1", workspaceRoot: "/work/project", approvalSurface: "interactive" },
 };
 
+/** A connection as ASRT decides it: who, and what the destination resolved to. */
+interface Connection {
+  attributionKey: string | undefined;
+  identity: "listener" | "username";
+  addresses: readonly string[];
+  resolution: "pinned" | "upstream";
+}
+
 const listener = (
   token: string,
   addresses: readonly string[] = [],
-  resolution: SandboxAskContext["resolution"] = "pinned",
-): SandboxAskContext => ({ attributionKey: token, identity: "listener", addresses, resolution });
+  resolution: Connection["resolution"] = "pinned",
+): Connection => ({ attributionKey: token, identity: "listener", addresses, resolution });
+
+/**
+ * Both phases of one connection, the way the patched ASRT calls them: the
+ * name phase first, and the resolved phase only after its `true`.
+ */
+function bothPhases(raw: SandboxAskCallback) {
+  return async (params: { host: string; port: number | undefined }, connection: Connection | undefined) => {
+    if (connection === undefined) return raw(params, undefined);
+    const { addresses, resolution, ...who } = connection;
+    const byName = await raw(params, { ...who, phase: "name" });
+    if (byName !== true) return byName;
+    return raw(params, { ...who, phase: "resolved", addresses, resolution });
+  };
+}
 
 let dir: string;
 let grants: EgressGrantStore;
@@ -50,7 +72,7 @@ let askEnabled: boolean;
 let requesterPresent: boolean;
 const signals = new Map<string, AbortSignal>();
 
-function callback() {
+function rawCallback() {
   return createEgressAskCallback({
     identityStrength: () => strength,
     ownerOf: (token) => owners.get(token),
@@ -67,6 +89,10 @@ function callback() {
     audit: (entry) => audit.push(entry),
     now: () => new Date("2026-10-19T00:00:00.000Z"),
   });
+}
+
+function callback() {
+  return bothPhases(rawCallback());
 }
 
 beforeEach(() => {
@@ -121,7 +147,7 @@ describe("egress ask callback — attribution", () => {
   });
 
   it("judges the identity by the kind of process (Windows: MXC shells, srt-win extensions)", async () => {
-    const ask = createEgressAskCallback({
+    const ask = bothPhases(createEgressAskCallback({
       identityStrength: (kind) => (kind === "shell" ? "kernel-channel" : "shared"),
       ownerOf: (token) => owners.get(token),
       abortSignalOf: () => undefined,
@@ -130,7 +156,7 @@ describe("egress ask callback — attribution", () => {
       shellAskEnabled: () => true,
       requester: () => undefined,
       audit: () => {},
-    });
+    }));
     expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
       .toBe(true);
     expect(await ask({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
@@ -356,7 +382,7 @@ describe("egress ask callback — shell calls", () => {
   });
 
   it("keeps the answer when the audit row cannot be written", async () => {
-    const ask = createEgressAskCallback({
+    const ask = bothPhases(createEgressAskCallback({
       identityStrength: () => "kernel-channel",
       ownerOf: (token) => owners.get(token),
       abortSignalOf: () => undefined,
@@ -365,7 +391,7 @@ describe("egress ask callback — shell calls", () => {
       shellAskEnabled: () => true,
       requester: () => undefined,
       audit: () => { throw new Error("disk full"); },
-    });
+    }));
     expect(await ask({ host: "api.fixture.example", port: 443 }, listener(WORKER_TOKEN))).toBe(true);
   });
 });
@@ -397,7 +423,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
     ["[fd00:ec2::254]", 80],
     ["224.0.0.251", 5353],
   ])("refuses %s without asking, for shells and workers alike", async (host, port) => {
-    const ask = createEgressAskCallback({
+    const ask = bothPhases(createEgressAskCallback({
       identityStrength: () => "kernel-channel",
       ownerOf: (token) => owners.get(token),
       abortSignalOf: () => undefined,
@@ -406,7 +432,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
       shellAskEnabled: () => true,
       requester: () => async (request) => { asked.push(request); return { allow: true, scope: "once" }; },
       audit: () => {},
-    });
+    }));
     expect(await ask({ host, port }, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
     expect(await ask({ host, port }, listener(WORKER_TOKEN))).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
     expect(asked).toEqual([]);
@@ -432,13 +458,56 @@ describe("egress ask callback — local, private and reserved destinations", () 
     expect(asked[0]).toMatchObject({ destination: { host: shown, port: 8080 }, scopes: ["once", "conversation"], network: "local" });
   });
 
-  it("treats a name by what it resolved to: a private address caps it at this conversation and a reserved one refuses it", async () => {
-    await callback()({ host: "nas.corp.example", port: 445 }, listener(SHELL_TOKEN, ["10.20.30.40"]));
-    expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatchObject({ destination: { host: "nas.corp.example", port: 445 }, scopes: ["once", "conversation"], network: "local" });
+  it("asks by name, then shows the card again when the name resolves to a private address, and refuses a reserved one", async () => {
+    answer = async () => ({ allow: true, scope: "conversation" });
+    expect(await callback()({ host: "nas.example", port: 445 }, listener(SHELL_TOKEN, ["10.20.30.40"]))).toBe(true);
+    // The name card (public) came first; its answer was held, not granted,
+    // because the name turned out to be private: the local card decided.
+    expect(asked.map((request) => [request.network, request.scopes])).toEqual([
+      ["public", ["once", "conversation", "workspace", "always"]],
+      ["local", ["once", "conversation"]],
+    ]);
+    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "prompt", "conversation"]]);
     expect(await callback()({ host: "meta.example", port: 80 }, listener(SHELL_TOKEN, ["169.254.169.254"])))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
+    expect(asked.map((request) => request.destination.host)).toEqual(["nas.example", "nas.example", "meta.example"]);
+    expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId: "session-1", workspaceRoot: "/work/project" }, { host: "meta.example", port: 80 }))
+      .toBeUndefined();
+  });
+
+  it("turns an answer given by name into the grant it chose when the name resolves to what the card said", async () => {
+    answer = async () => ({ allow: true, scope: "workspace" });
+    expect(await callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN, ["140.82.112.3"]))).toBe(true);
     expect(asked).toHaveLength(1);
+    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "prompt", "workspace"]]);
+    expect(await grants.matchingScope({ token: OTHER_SHELL_TOKEN, sessionId: "session-2", workspaceRoot: "/work/project" }, { host: "github.com", port: 443 }))
+      .toBe("workspace");
+  });
+
+  it("writes no grant and no audit row for a name-phase allow the resolved phase never confirms", async () => {
+    answer = async () => ({ allow: true, scope: "always" });
+    const raw = rawCallback();
+    expect(await raw({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "name" })).toBe(true);
+    expect(audit).toEqual([]);
+    expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId: "session-1", workspaceRoot: "/work/project" }, { host: "github.com", port: 443 }))
+      .toBeUndefined();
+  });
+
+  it("ends every refusal it can make from the name in the name phase", async () => {
+    const raw = rawCallback();
+    const byName = (token: string | undefined, host: string, port = 443) =>
+      raw({ host, port }, { attributionKey: token, identity: "listener", phase: "name" });
+    expect(await byName(undefined, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+    expect(await byName("f".repeat(32), "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+    expect(await byName(WORKER_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.workerOffList });
+    expect(await byName(TERMINAL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.terminal });
+    expect(await byName(SHELL_TOKEN, "169.254.169.254", 80)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
+    askEnabled = false;
+    expect(await byName(SHELL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.askOff });
+    askEnabled = true;
+    owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, approvalSurface: "unavailable" } });
+    expect(await byName(SHELL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.headless });
+    expect(asked).toEqual([]);
   });
 
   it("does not let an Always grant for a name cover it once it resolves to a private address", async () => {
@@ -469,11 +538,15 @@ describe("egress ask callback — local, private and reserved destinations", () 
     expect(asked[0]).toMatchObject({ network: "local", scopes: ["once", "conversation"] });
   });
 
-  it("refuses a context without the resolved addresses (contract violation)", async () => {
-    expect(await callback()({ host: "example.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener" } as unknown as SandboxAskContext))
+  it("refuses a context without a phase, or a resolved phase without the resolved addresses (contract violation)", async () => {
+    const raw = rawCallback();
+    expect(await raw({ host: "example.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener" } as unknown as SandboxAskContext))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.malformed });
-    expect(await callback()({ host: "example.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener", addresses: [] } as unknown as SandboxAskContext))
+    expect(await raw({ host: "example.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved" } as unknown as SandboxAskContext))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.malformed });
+    expect(await raw({ host: "example.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: [] } as unknown as SandboxAskContext))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.malformed });
+    expect(asked).toEqual([]);
   });
 
   it("never lets a persistent grant cover a local destination", async () => {
@@ -484,7 +557,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
   });
 
   it("still lets a worker reach a local model endpoint its list names", async () => {
-    const ask = createEgressAskCallback({
+    const ask = bothPhases(createEgressAskCallback({
       identityStrength: () => "kernel-channel",
       ownerOf: (token) => owners.get(token),
       abortSignalOf: () => undefined,
@@ -493,7 +566,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
       shellAskEnabled: () => true,
       requester: () => undefined,
       audit: () => {},
-    });
+    }));
     expect(await ask({ host: "localhost", port: 11434 }, listener(WORKER_TOKEN))).toBe(true);
   });
 });

@@ -1,4 +1,4 @@
-Two backports and two Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
+Two backports and three Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
 Drop each part when a released version carries it, and the whole patch (and
 the patchedDependencies entry in package.json) when all are released and Ave
 pins that version.
@@ -35,9 +35,10 @@ the installed package.
    0700 directory, and every Linux wrap mounts a tmpfs over that directory and
    binds back only its own lane socket, so no wrap can reach another
    invocation's socket even when allowAllUnixSockets lifts the AF_UNIX block.
-   A destination name is resolved once, before the ask callback, and refused
-   when any address is one the resolved-address guard refuses; the callback is told the addresses
-   (`SandboxAskContext.addresses`) and the connection is pinned to them: a
+   A destination name is resolved once, after the ask callback allowed the
+   name (part 5) and before its resolved phase, and refused when any address
+   is one the resolved-address guard refuses; the resolved phase is told the
+   addresses (`SandboxAskResolvedContext.addresses`) and the connection is pinned to them: a
    direct dial uses them instead of resolving again, and a parent-proxy
    CONNECT names an address literal instead of the name, trying the vetted
    addresses in turn (IPv4 first) until the upstream opens one (SNI inside
@@ -65,8 +66,9 @@ the installed package.
 
 4. Upstream routes (Ave): `SandboxManager.setParentProxyRouter(router)`
    replaces the single static `parentProxy` with a per-destination hook. The
-   filter asks `router({ host, port, scheme })` once per decision, before the
-   ask callback (canonical host; scheme 'https' for CONNECT/SOCKS, 'http' for
+   filter asks `router({ host, port, scheme })` once per decision, after the
+   name phase allowed it (part 5) and before the resolved phase (canonical
+   host; scheme 'https' for CONNECT/SOCKS, 'http' for
    plain HTTP), and judges every answered route (`direct`, or an
    `http`/`https` proxy with optional Basic `auth` and `resolvesNames`) the
    way part 3 judges the one parent proxy: a pinned name or literal goes
@@ -88,8 +90,20 @@ the installed package.
    `parseNoProxy` is exported so the embedder matches its own bypass lists
    with the same rules. reset() clears the router.
 
+5. Name-first decisions (Ave): the ask callback is asked in two phases.
+   The name phase (`SandboxAskContext.phase: 'name'`, no addresses) runs
+   right after the configured and per-command lists, before anything is
+   resolved or routed; a denial there ends the connection with no DNS query
+   and no router call, so a destination that will be refused cannot carry
+   data out through a name lookup (the proxy's lookup is the sandbox's only
+   resolver). Only a name-phase `true` leads to the routes and the
+   resolution, and then to the resolved phase (`phase: 'resolved'` with
+   `addresses` and `resolution`), whose answer decides the connection. A
+   destination a configured or per-command list allows goes straight to the
+   routes and the resolution, as before.
+
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..a7c3b0258c2ce7ad3a641ccdba13752c152f07f6 100644
+index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -1,9 +1,9 @@
@@ -100,7 +114,7 @@ index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..a7c3b0258c2ce7ad3a641ccdba13752c
  export type { SandboxRuntimeConfig, NetworkConfig, FilesystemConfig, FilesystemPathEntry, CredentialsConfig, CredentialFileConfig, CredentialEnvVarConfig, CredentialMode, IgnoreViolationsConfig, } from './sandbox/sandbox-config.js';
  export { SandboxRuntimeConfigSchema, NetworkConfigSchema, FilesystemConfigSchema, CredentialsConfigSchema, IgnoreViolationsConfigSchema, RipgrepConfigSchema, } from './sandbox/sandbox-config.js';
 -export type { SandboxAskCallback, FsReadRestrictionConfig, FsWriteRestrictionConfig, CredentialRestrictionConfig, NetworkRestrictionConfig, NetworkHostPattern, } from './sandbox/sandbox-schemas.js';
-+export type { SandboxAskCallback, SandboxAskContext, FsReadRestrictionConfig, FsWriteRestrictionConfig, CredentialRestrictionConfig, NetworkRestrictionConfig, NetworkHostPattern, } from './sandbox/sandbox-schemas.js';
++export type { SandboxAskCallback, SandboxAskContext, SandboxAskNameContext, SandboxAskResolvedContext, FsReadRestrictionConfig, FsWriteRestrictionConfig, CredentialRestrictionConfig, NetworkRestrictionConfig, NetworkHostPattern, } from './sandbox/sandbox-schemas.js';
  export type { FilterRequestCallback, RequestDecision, RequestInfo, MutateForwardedHeaders, } from './sandbox/request-filter.js';
  export type { SandboxViolationEvent } from './sandbox/macos-sandbox-utils.js';
  export { type SandboxDependencyCheck, LinuxSandboxProfileError, type LinuxSandboxProfileErrorCode, } from './sandbox/linux-sandbox-utils.js';
@@ -1039,7 +1053,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1d61fc861a457d6147add1d87c13dc75
  //# sourceMappingURL=sandbox-manager.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2dcf441f1b 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bfeea0fc97 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -16,17 +16,21 @@ import * as fs from 'fs';
@@ -1152,16 +1166,40 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
  // Per-session sentinel↔real-value map for masked credentials. Lives only in
  // process memory; never written to disk or logged. Cleared on reset().
  const sentinelRegistry = new SentinelRegistry();
-@@ -300,7 +373,7 @@ function deniedDomainReason(entry) {
+@@ -300,11 +373,21 @@ function deniedDomainReason(entry) {
      const own = Object.prototype.hasOwnProperty.call(reasons, entry);
      return (own ? reasons[entry] : undefined) ?? 'host is on the deny list';
  }
 -async function filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain) {
-+async function filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain, identity = 'username', addresses = [], viaUpstream = false) {
++/**
++ * Ave patch (name-first decisions). The first phase of a destination
++ * decision, on the destination as named: nothing is resolved and no route is
++ * asked for until it passes, so a destination this phase refuses costs no DNS
++ * query and no proxy lookup (a lookup is itself a way out: the sandbox has no
++ * resolver of its own, and `<data>.attacker.example` would carry the data to
++ * whoever serves that zone). Resolves to 'deny' (recorded), 'config' (a
++ * configured or per-command allow list allows it; no callback phase follows)
++ * or 'ask' (the callback allowed the name; the resolved phase must confirm).
++ */
++async function decideByName(port, host, sandboxAskCallback, encodedCommand, explain, identity = 'username') {
      const denied = (reason) => {
          recordOutboundDeny(host, port, reason, encodedCommand);
          explain?.(reason);
-@@ -353,8 +426,11 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+-        return false;
++        return 'deny';
+     };
+     if (!config) {
+         logForDebugging('No config available, denying network request');
+@@ -340,7 +423,7 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+     for (const allowedDomain of config.network.allowedDomains) {
+         if (matchesDomainPatternWithPort(canonicalHost, port, allowedDomain)) {
+             logForDebugging(`Allowed by config rule: ${host}:${port}`);
+-            return true;
++            return 'config';
+         }
+     }
+     // strictAllowlist makes the configured allowlist deterministic enforcement:
+@@ -353,33 +436,70 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
      // Coming after both configured lists, it lifts the default deny for that
      // one command and never a configured deniedDomains entry. The username is
      // presented by the sandboxed client: see registerCommandNetworkLists.
@@ -1175,30 +1213,117 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
          : undefined;
      for (const allowedDomain of perCommand?.allowedDomains ?? []) {
          if (matchesDomainPatternWithPort(canonicalHost, port, allowedDomain)) {
-@@ -369,7 +445,21 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
-     logForDebugging(`No matching rule, asking user: ${host}:${port}`);
+             logForDebugging(`Allowed by per-command rule: ${host}:${port}`);
+-            return true;
++            return 'config';
+         }
+     }
+     if (!sandboxAskCallback) {
+         logForDebugging(`No matching rule, denying: ${host}:${port}`);
+         return denied('host is not on the allow list');
+     }
+-    logForDebugging(`No matching rule, asking user: ${host}:${port}`);
++    logForDebugging(`No matching rule, asking by name: ${host}:${port}`);
++    const allowed = await askSandboxCallback(sandboxAskCallback, host, port, { attributionKey, identity, phase: 'name' }, denied);
++    return allowed === true ? 'ask' : 'deny';
++}
++/**
++ * Ave patch (name-first decisions). The second phase, after the callback
++ * allowed the name: it is asked again with what the destination resolved to
++ * and how it will be reached, and its answer decides the connection.
++ */
++async function confirmResolvedDestination(port, host, sandboxAskCallback, encodedCommand, explain, identity, plan) {
++    const denied = (reason) => {
++        recordOutboundDeny(host, port, reason, encodedCommand);
++        explain?.(reason);
++        return false;
++    };
++    const attributionKey = encodedCommand
++        ? decodeSandboxedCommand(encodedCommand)
++        : undefined;
++    return askSandboxCallback(sandboxAskCallback, host, port, {
++        attributionKey,
++        identity,
++        phase: 'resolved',
++        addresses: plan.addresses.map(a => a.address),
++        resolution: plan.viaUpstream ? 'upstream' : 'pinned',
++    }, denied);
++}
++/**
++ * One call of the ask callback. Backport of anthropics/sandbox-runtime#735:
++ * `attributionKey` is the key the per-command lists and the violation store
++ * use, so the callback can tell which invocation opened the connection.
++ * Ave patch (invocation listeners): `identity` says how the key was learned.
++ * 'listener' is the port (macOS) or socket path (Linux) the connection
++ * arrived on, which the sandbox profile pins for one invocation; 'username'
++ * is what the client presented and can forge.
++ */
++async function askSandboxCallback(sandboxAskCallback, host, port, context, denied) {
      try {
-         // Held as unknown: a JavaScript caller is not bound by the declared type.
+-        // Held as unknown: a JavaScript caller is not bound by the declared type.
 -        const answer = await sandboxAskCallback({ host, port });
-+        // Backport of anthropics/sandbox-runtime#735: the key the per-command
-+        // lists and the violation store use, so the callback can tell which
-+        // invocation opened the connection.
-+        // Ave patch (invocation listeners): `identity` says how the key was
-+        // learned. 'listener' is the port (macOS) or socket path (Linux) the
-+        // connection arrived on, which the sandbox profile pins for one
-+        // invocation; 'username' is what the client presented and can forge.
-+        // `addresses` are what the connection will be dialed to (pinned);
-+        // `resolution: 'upstream'` means the upstream proxy resolves the name.
-+        const answer = await sandboxAskCallback({ host, port }, {
-+            attributionKey,
-+            identity,
-+            addresses: addresses.map(a => a.address),
-+            resolution: viaUpstream ? 'upstream' : 'pinned',
-+        });
++        const answer = await sandboxAskCallback({ host, port }, context);
          // Only `true` allows: an object is how a callback denies with a reason,
          // and a truthiness test here would read every such denial as an allow.
          if (answer === true) {
-@@ -497,11 +587,162 @@ function shouldTerminateTLSForHost(host) {
+-            logForDebugging(`User allowed: ${host}:${port}`);
++            logForDebugging(`User allowed (${context.phase}): ${host}:${port}`);
+             return true;
+         }
+         if (!isDeclaredDenial(answer)) {
+             logForDebugging(`Ask callback answered neither a boolean nor { allow: false, reason }; treating it as a denial: ${host}:${port}`, { level: 'warn' });
+         }
+-        logForDebugging(`User denied: ${host}:${port}`);
++        logForDebugging(`User denied (${context.phase}): ${host}:${port}`);
+         // The callback's own reason, when it gave one, says what to do instead.
+         return denied(denialReasonOf(answer) ?? 'user denied');
+     }
+@@ -390,6 +510,26 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+         return denied('permission prompt failed');
+     }
+ }
++/**
++ * Ave patch (name-first decisions). A destination decided in order: the
++ * name phase, then (only if it passed) the routes and the resolution, then
++ * (only if the callback allowed the name) the resolved phase. Resolves to the
++ * pinned plan, or undefined when refused (recorded).
++ */
++async function decideDestination(port, host, sandboxAskCallback, encodedCommand, explain, identity, plainHttp) {
++    const byName = await decideByName(port, host, sandboxAskCallback, encodedCommand, explain, identity);
++    if (byName === 'deny')
++        return undefined;
++    const plan = await planDestination(host, port, plainHttp === true);
++    if (plan.reason !== undefined) {
++        recordOutboundDeny(host, port, plan.reason, encodedCommand);
++        explain?.(plan.reason);
++        return undefined;
++    }
++    if (byName === 'ask' && !(await confirmResolvedDestination(port, host, sandboxAskCallback, encodedCommand, explain, identity, plan)))
++        return undefined;
++    return plan;
++}
+ /**
+  * Build the header-mutation callback that substitutes sentinel→real for
+  * masked credentials. Returns undefined when no `credentials` block is
+@@ -438,7 +578,7 @@ function buildSigv4Planner() {
+  * otherwise returns undefined.
+  *
+  * Matches the canonicalized hostname, like the allow/deny filter
+- * (filterNetworkRequest) and the tlsTerminate exclusion below. This site
++ * (decideByName) and the tlsTerminate exclusion below. This site
+  * fails OPEN on a miss — a host that matches no MITM pattern is dialed
+  * directly — so it must accept exactly the set of spellings the allowlist
+  * accepts: otherwise `api.example.com.` (trailing-dot FQDN, same name to
+@@ -468,7 +608,7 @@ function getMitmSocketPath(host) {
+  * so mTLS / cert-pinning clients can complete their own handshake.
+  *
+  * Matches the canonicalized hostname, like the allow/deny filter
+- * (filterNetworkRequest) — otherwise a spelling the allowlist accepts after
++ * (decideByName) — otherwise a spelling the allowlist accepts after
+  * canonicalization (`127.1`, a trailing-dot FQDN) would dodge the exclusion
+  * and get terminated anyway.
+  */
+@@ -497,11 +637,158 @@ function shouldTerminateTLSForHost(host) {
      }
      return true;
  }
@@ -1225,16 +1350,12 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
 +                explain?.(local);
 +                return false;
 +            }
-+            const resolved = await planDestination(host, port, plainHttp === true);
-+            if (resolved.reason !== undefined) {
-+                recordOutboundDeny(host, port, resolved.reason, encodedCommand);
-+                explain?.(resolved.reason);
++            const resolved = await decideDestination(port, host, sandboxAskCallback, encodedCommand, explain, 'username', plainHttp);
++            if (resolved === undefined)
 +                return false;
-+            }
-+            const allowed = await filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain, 'username', resolved.addresses, resolved.viaUpstream);
-+            if (allowed && socket)
++            if (socket)
 +                pinDestination(socket, host, port, resolved);
-+            return allowed;
++            return true;
 +        };
 +    // A dial from a client socket uses what its filter pinned; a name with no
 +    // pin there is refused rather than resolved again.
@@ -1364,7 +1485,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
          getMitmSocketPath,
          mitmCA,
          shouldTerminateTLS: shouldTerminateTLSForHost,
-@@ -521,7 +762,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -521,7 +808,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          onFilterRequestDenied: ({ method, url, reason, encodedCommand }) => {
              // A refused CONNECT comes with its authority (`host:port`), not a URL.
              const target = method === 'CONNECT' ? url : redactUrlForViolation(url);
@@ -1373,7 +1494,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
          },
          // TLS-terminated path always gets the injector; the plain-HTTP path
          // only when explicitly opted in. Without the opt-in, a sentinel sent
-@@ -538,19 +779,26 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -538,19 +825,26 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          // injection: the real signature must not travel over plaintext.
          planSigv4: buildSigv4Planner(),
          parentProxy,
@@ -1405,7 +1526,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
          },
          probeUnauthenticated: async (port, host) => {
              // Explicit deny rules only: an unauthenticated peer must never reach
-@@ -562,17 +810,25 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -562,17 +856,25 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
              for (const entry of config.network.deniedDomains) {
                  if (matchesDomainPatternWithPort(canonical, port, entry)) {
                      const reason = deniedDomainReason(entry);
@@ -1432,7 +1553,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +844,682 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,6 +890,682 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -1530,11 +1651,12 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
 +/**
 + * Ave patch (invocation listeners). One resolution per destination, pinned.
 + *
-+ * A name is resolved once, in the filter, before the ask callback runs; every
-+ * address must be one the resolved-address guard permits (no loopback for a
-+ * non-loopback name, link-local, metadata, unspecified, multicast, broadcast
-+ * or this host's own addresses). The callback is told the addresses
-+ * (`SandboxAskContext.addresses`), so it decides on what will be dialed, and
++ * A name is resolved once, in the filter, after the name phase allowed it
++ * (see decideByName) and before the resolved phase; every address must be
++ * one the resolved-address guard permits (no loopback for a non-loopback
++ * name, link-local, metadata, unspecified, multicast, broadcast or this
++ * host's own addresses). The resolved phase is told the addresses
++ * (`SandboxAskResolvedContext.addresses`), so it decides on what will be dialed, and
 + * an allowed connection is pinned to them: the direct dial's lookup returns
 + * the pinned addresses instead of resolving again, and a parent-proxy CONNECT
 + * carries the pinned address literal instead of the name (the client's TLS
@@ -1892,13 +2014,12 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
 +        const local = localDestinationReason(host, port);
 +        if (local !== undefined)
 +            return denied(local);
-+        const resolved = await planDestination(host, port, plainHttp === true);
-+        if (resolved.reason !== undefined)
-+            return denied(resolved.reason);
-+        const allowed = await filterNetworkRequest(port, host, sandboxAskCallback, lane.encodedKey, explain, 'listener', resolved.addresses, resolved.viaUpstream);
-+        if (allowed && socket)
++        const resolved = await decideDestination(port, host, sandboxAskCallback, lane.encodedKey, explain, 'listener', plainHttp);
++        if (resolved === undefined)
++            return false;
++        if (socket)
 +            pinDestination(socket, host, port, resolved);
-+        return allowed;
++        return true;
 +    };
 +}
 +function invocationListenerKey(commandId, caller) {
@@ -2115,7 +2236,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -616,7 +1548,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +1594,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -2128,7 +2249,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -1515,6 +2452,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2498,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -2138,7 +2259,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +2650,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +2696,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -2160,7 +2281,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1734,23 +2677,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1734,23 +2723,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -2195,7 +2316,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1786,6 +2737,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +2783,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -2203,7 +2324,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,6 +2773,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,6 +2819,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -2212,7 +2333,16 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
      const platform = getPlatform();
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
-@@ -1989,6 +2943,7 @@ function updateConfig(newConfig) {
+@@ -1950,7 +2950,7 @@ function getConfig() {
+  *
+  * **Network/allowlist changes are a live swap**: the running
+  * mux proxy reads `config.network.allowedDomains` /
+- * `deniedDomains` per-request (via `filterNetworkRequest`), so
++ * `deniedDomains` per-request (via `decideByName`), so
+  * reassigning `config` here takes effect on the next connection
+  * with no proxy rebind and no port change — on every platform,
+  * including Windows. This is what lets a host enable/deny domains
+@@ -1989,6 +2989,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -2220,7 +2350,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2222,6 +3177,8 @@ async function reset() {
+@@ -2222,6 +3223,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -2229,7 +2359,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,6 +3186,22 @@ async function reset() {
+@@ -2229,6 +3232,22 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -2252,7 +2382,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
      maskedFileStore.dispose();
  }
  function getSandboxViolationStore() {
-@@ -2336,6 +3309,10 @@ export const SandboxManager = {
+@@ -2336,6 +3355,10 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
@@ -2264,10 +2394,10 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2d
      cleanupAfterCommand,
      reset,
 diff --git a/dist/sandbox/sandbox-schemas.d.ts b/dist/sandbox/sandbox-schemas.d.ts
-index 4c0be53fa68af536b0dcf49192421651d7b51476..301490e2a46c1beb3fdaa6cb5a7ef0067a93b1b4 100644
+index 4c0be53fa68af536b0dcf49192421651d7b51476..2eb129ab7d56f8537980f1f39ccdf761c4ea77d9 100644
 --- a/dist/sandbox/sandbox-schemas.d.ts
 +++ b/dist/sandbox/sandbox-schemas.d.ts
-@@ -151,8 +151,54 @@ export type NetworkHostPattern = {
+@@ -151,8 +151,75 @@ export type NetworkHostPattern = {
   * Check `SandboxManager.askCallbackDenyReason` before returning an object:
   * a release without it reads any truthy answer as an allow.
   */
@@ -2295,7 +2425,9 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..301490e2a46c1beb3fdaa6cb5a7ef006
 + * value as unattributed. It is passed whether or not this process wrapped a
 + * command under it.
 + */
-+export type SandboxAskContext = {
++export type SandboxAskContext = SandboxAskNameContext | SandboxAskResolvedContext;
++/** What both phases of a SandboxAskCallback decision carry. */
++type SandboxAskIdentity = {
 +    attributionKey: string | undefined;
 +    /**
 +     * Ave patch (invocation listeners). How `attributionKey` was learned:
@@ -2306,6 +2438,24 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..301490e2a46c1beb3fdaa6cb5a7ef006
 +     * end and the key is only what the client presented.
 +     */
 +    identity: 'listener' | 'username';
++};
++/**
++ * Ave patch. The first phase: the destination as named, before anything is
++ * looked up for it. Nothing has been resolved, and no route asked for: a
++ * denial here ends the connection with no DNS query and no proxy lookup, so a
++ * destination that will be refused cannot carry data out through a name
++ * lookup. Only an allow here (`true`) leads to the second phase.
++ */
++export type SandboxAskNameContext = SandboxAskIdentity & {
++    phase: 'name';
++};
++/**
++ * Ave patch. The second phase, after a first-phase allow: the destination
++ * resolved and routed. The answer decides the connection; the callback
++ * re-checks what the name turned out to be.
++ */
++export type SandboxAskResolvedContext = SandboxAskIdentity & {
++    phase: 'resolved';
 +    /**
 +     * Ave patch (invocation listeners). The addresses the connection will be
 +     * dialed to: the destination resolved once, vetted by the
@@ -2315,10 +2465,11 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..301490e2a46c1beb3fdaa6cb5a7ef006
 +    addresses: readonly string[];
 +    /**
 +     * Ave patch. `'pinned'`: the connection goes to `addresses` (an address
-+     * literal, or a name resolved and vetted here). `'upstream'`: this host
-+     * could not resolve the name and a remote upstream proxy (or one trusted
-+     * with `parentProxy.resolvesNames`) will; `addresses` is empty and the
-+     * address is unverified.
++     * literal, or a name resolved and vetted here). `'upstream'`: a remote
++     * upstream proxy (or one trusted with `parentProxy.resolvesNames`) will
++     * resolve the name, either because this host could not or because a
++     * plain-HTTP request names it in its absolute-form target; the address
++     * the upstream reaches is unverified.
 +     */
 +    resolution: 'pinned' | 'upstream';
 +};

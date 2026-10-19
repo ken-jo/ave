@@ -120,42 +120,58 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(readInstalled("dist/sandbox/sandbox-manager.d.ts")).toMatch(/\n\s+ttys\?: readonly string\[\];\n/u);
   });
 
-  it("passes the decoded attribution key to the ask callback", () => {
+  it("passes the decoded attribution key to the ask callback, by name first and resolved only after a name allow", () => {
     const manager = readInstalled("dist/sandbox/sandbox-manager.js");
-    const filter = functionBody(manager, /\nasync function filterNetworkRequest\(/u);
+    const byName = functionBody(manager, /\nasync function decideByName\(/u);
     // The same `encodedCommand` the deny path hands recordOutboundDeny.
-    expect(filter).toMatch(/recordOutboundDeny\(host, port, reason, encodedCommand\)/u);
+    expect(byName).toMatch(/recordOutboundDeny\(host, port, reason, encodedCommand\)/u);
     // Decoded once; the per-command lists (0.0.80) are looked up by the same key.
-    expect(filter).toMatch(
+    expect(byName).toMatch(
       /const attributionKey = encodedCommand\s+\? decodeSandboxedCommand\(encodedCommand\)\s+: undefined;/u,
     );
-    expect(filter).toMatch(/commandNetworkListsByKey\.get\(attributionKey\)/u);
-    expect(filter).toMatch(/await sandboxAskCallback\(\{ host, port \}, \{\s+attributionKey,\s+identity,\s+addresses: addresses\.map\(a => a\.address\),\s+resolution: viaUpstream \? 'upstream' : 'pinned',\s+\}\)/u);
+    expect(byName).toMatch(/commandNetworkListsByKey\.get\(attributionKey\)/u);
+    expect(byName).toMatch(/askSandboxCallback\(sandboxAskCallback, host, port, \{ attributionKey, identity, phase: 'name' \}, denied\)/u);
+    // Nothing in the name phase resolves or routes.
+    expect(byName).not.toMatch(/planDestination|resolveAddresses|routesFor|destinationResolver/u);
     // Only an invocation listener's filter says 'listener'; the shared front
     // end's default is the forgeable username.
-    expect(filter.startsWith("async function filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain, identity = 'username', addresses = [], viaUpstream = false)")).toBe(true);
-    // 0.0.80 allows only on a literal `true` (#591); the patch must not loosen it.
-    expect(filter).toMatch(/if \(answer === true\)/u);
+    expect(byName.startsWith("async function decideByName(port, host, sandboxAskCallback, encodedCommand, explain, identity = 'username')")).toBe(true);
     // Ave runs non-strict with an empty allowlist, so the callback is the gate:
-    // without one, and when it throws, the request is refused.
-    expect(filter).toMatch(/if \(!sandboxAskCallback\) \{\n[^\n]*\n\s+return denied\('host is not on the allow list'\);/u);
-    expect(filter).toMatch(/catch \(error\) \{\n[\s\S]{0,200}?return denied\('permission prompt failed'\);\n\s+\}\n\}/u);
+    // without one the request is refused.
+    expect(byName).toMatch(/if \(!sandboxAskCallback\) \{\n[^\n]*\n\s+return denied\('host is not on the allow list'\);/u);
+    const resolved = functionBody(manager, /\nasync function confirmResolvedDestination\(/u);
+    expect(resolved).toMatch(/phase: 'resolved',\s+addresses: plan\.addresses\.map\(a => a\.address\),\s+resolution: plan\.viaUpstream \? 'upstream' : 'pinned',/u);
+    const ask = functionBody(manager, /\nasync function askSandboxCallback\(/u);
+    // 0.0.80 allows only on a literal `true` (#591); the patch must not loosen it.
+    expect(ask).toMatch(/if \(answer === true\)/u);
+    // When it throws, the request is refused.
+    expect(ask).toMatch(/catch \(error\) \{\n[\s\S]{0,200}?return denied\('permission prompt failed'\);\n\s+\}\n\}/u);
+    const decide = functionBody(manager, /\nasync function decideDestination\(/u);
+    // Order: name phase, then the plan (routes and DNS), then the resolved phase.
+    const order = ["decideByName(", "planDestination(", "confirmResolvedDestination("].map((call) => decide.indexOf(call));
+    expect(order.every((at) => at > 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(decide).toMatch(/if \(byName === 'deny'\)\s+return undefined;/u);
+    expect(decide).toMatch(/if \(byName === 'ask' && !\(await confirmResolvedDestination\(/u);
     const schemas = readInstalled("dist/sandbox/sandbox-schemas.d.ts");
+    expect(schemas).toMatch(/export type SandboxAskContext = SandboxAskNameContext \| SandboxAskResolvedContext;/u);
+    expect(schemas).toMatch(/export type SandboxAskNameContext = SandboxAskIdentity & \{\s+phase: 'name';\s+\};/u);
     expect(schemas).toMatch(
-      /export type SandboxAskContext = \{\s+attributionKey: string \| undefined;\s+\/\*\*[\s\S]*?\*\/\s+identity: 'listener' \| 'username';\s+\/\*\*[\s\S]*?\*\/\s+addresses: readonly string\[\];\s+\/\*\*[\s\S]*?\*\/\s+resolution: 'pinned' \| 'upstream';\s+\};/u,
+      /export type SandboxAskResolvedContext = SandboxAskIdentity & \{\s+phase: 'resolved';\s+\/\*\*[\s\S]*?\*\/\s+addresses: readonly string\[\];\s+\/\*\*[\s\S]*?\*\/\s+resolution: 'pinned' \| 'upstream';\s+\};/u,
     );
     expect(schemas).toMatch(
       /export type SandboxAskCallback = \(params: NetworkHostPattern, context\?: SandboxAskContext\) => Promise<boolean \| \{\s+allow: false;\s+reason: string;\s+\}>;/u,
     );
-    expect(readInstalled("dist/index.d.ts")).toMatch(/export type \{ SandboxAskCallback, SandboxAskContext,/u);
+    expect(readInstalled("dist/index.d.ts")).toMatch(/export type \{ SandboxAskCallback, SandboxAskContext, SandboxAskNameContext, SandboxAskResolvedContext,/u);
   });
 
   it("types the callback so one-parameter callers still fit and two-parameter callers see the key", async () => {
     const params = { host: "example.com", port: 443 };
     await expect(oneParameter(params)).resolves.toBe(true);
-    await expect(twoParameters(params, { attributionKey: "token", identity: "listener", addresses: [], resolution: "pinned" })).resolves.toBe(true);
-    await expect(twoParameters(params, { attributionKey: "token", identity: "username", addresses: [], resolution: "pinned" })).resolves.toBe(false);
-    await expect(twoParameters(params, { attributionKey: undefined, identity: "username", addresses: [], resolution: "pinned" })).resolves.toBe(false);
+    await expect(twoParameters(params, { attributionKey: "token", identity: "listener", phase: "resolved", addresses: [], resolution: "pinned" })).resolves.toBe(true);
+    await expect(twoParameters(params, { attributionKey: "token", identity: "listener", phase: "name" })).resolves.toBe(true);
+    await expect(twoParameters(params, { attributionKey: "token", identity: "username", phase: "name" })).resolves.toBe(false);
+    await expect(twoParameters(params, { attributionKey: undefined, identity: "username", phase: "name" })).resolves.toBe(false);
     expect(ttysOption).toEqual(["/dev/ttys001"]);
   });
 
@@ -172,8 +188,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(filter).toMatch(/if \(lane\.ended\)\s+return denied\('invocation ended'\);/u);
     expect(filter).toMatch(/if \(encodedCommand !== lane\.encodedKey\)/u);
     expect(filter).toMatch(/localDestinationReason\(host, port\)/u);
-    expect(filter).toMatch(/const resolved = await planDestination\(host, port, plainHttp === true\);/u);
-    expect(filter).toMatch(/filterNetworkRequest\(port, host, sandboxAskCallback, lane\.encodedKey, explain, 'listener', resolved\.addresses, resolved\.viaUpstream\)/u);
+    expect(filter).toMatch(/const resolved = await decideDestination\(port, host, sandboxAskCallback, lane\.encodedKey, explain, 'listener', plainHttp\);/u);
     expect(filter).toMatch(/pinDestination\(socket, host, port, resolved\);/u);
     const close = functionBody(manager, /\nfunction closeInvocationListener\(/u);
     // An ended macOS listener keeps its port (tombstone) until reset().
@@ -299,6 +314,15 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     return front!;
   }
 
+  /**
+   * The resolved-phase asks: what a destination resolved to and how it is
+   * reached, asked only after a name-phase allow. A refusal the proxy makes
+   * before that (a route, an address) shows up as no resolved ask.
+   */
+  function resolvedAsks(asked: Array<{ host: string; context: SandboxAskContext | undefined }>): Array<{ host: string; context: SandboxAskContext | undefined }> {
+    return asked.filter((entry) => entry.context?.phase === "resolved");
+  }
+
   it("passes the wrap's commandId, and undefined for the bare username", async (test) => {
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const asked: Array<SandboxAskContext | undefined> = [];
@@ -328,9 +352,10 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       expect(port).toBeTypeOf("number");
       expect(await connectThrough(port!, proxy, decodeURIComponent(proxy.username))).toMatch(/^HTTP\/1\.1 403/u);
       expect(await connectThrough(port!, proxy, "srt")).toMatch(/^HTTP\/1\.1 403/u);
+      // Refused by name: never resolved, never asked again.
       expect(asked).toEqual([
-        { attributionKey: commandId, identity: "username", addresses: [TEST_ADDRESS], resolution: "pinned" },
-        { attributionKey: undefined, identity: "username", addresses: [TEST_ADDRESS], resolution: "pinned" },
+        { attributionKey: commandId, identity: "username", phase: "name" },
+        { attributionKey: undefined, identity: "username", phase: "name" },
       ]);
     } finally {
       await SandboxManager.reset();
@@ -367,7 +392,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       const firstFront = frontOf(firstListener);
       // Its own key on its own listener: asked, as the listener's.
       expect(await connectThrough(firstFront, proxy, ownName)).toMatch(/^HTTP\/1\.1 403/u);
-      expect(asked).toEqual([{ host: "unlisted.example.invalid", context: { attributionKey: first, identity: "listener", addresses: [TEST_ADDRESS], resolution: "pinned" } }]);
+      expect(asked).toEqual([{ host: "unlisted.example.invalid", context: { attributionKey: first, identity: "listener", phase: "name" } }]);
       // Another key on this listener, and this key on another's: never asked.
       // The proxy username is `srt.` plus the base64 of the commandId.
       expect(ownName).toBe(`srt.${Buffer.from(first).toString("base64")}`);
@@ -529,9 +554,9 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       expect(await connectThrough(front, proxy, name, `rebind.example.test:${proxyPort}`)).toMatch(/^HTTP\/1\.1 200/u);
       expect(upstream.connects).toEqual([`CONNECT 198.51.100.7:${proxyPort} HTTP/1.1`]);
       expect(rebind.calls()).toBe(1);
-      expect(asked).toEqual([{
+      expect(resolvedAsks(asked)).toEqual([{
         host: "rebind.example.test",
-        context: { attributionKey: commandId, identity: "listener", addresses: ["198.51.100.7"], resolution: "pinned" },
+        context: { attributionKey: commandId, identity: "listener", phase: "resolved", addresses: ["198.51.100.7"], resolution: "pinned" },
       }]);
       // A name that resolves to this host now: refused before asking or forwarding.
       setDestinationResolverForTesting(rebinding("local.example.test", ["127.0.0.1"]).resolver);
@@ -546,8 +571,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       setDestinationResolverForTesting(testResolver);
       expect(await plainHttpThrough(front, proxy, name, "http://plain.example.invalid/")).toMatch(/^HTTP\/1\.1 403/u);
       expect(upstream.connects).toHaveLength(1);
-      // Refused before the callback: nobody is asked about a request that cannot be sent.
-      expect(asked.map((a) => a.host)).toEqual(["rebind.example.test"]);
+      // Refused before the resolved phase: nobody confirms a request that cannot be sent.
+      expect(resolvedAsks(asked).map((a) => a.host)).toEqual(["rebind.example.test"]);
     } finally {
       await SandboxManager.reset();
       await upstream.close();
@@ -631,7 +656,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
         { network: { allowedDomains: [], deniedDomains: [], parentProxy }, filesystem: { denyRead: [], allowWrite: [], denyWrite: [] } },
         async ({ host }, context) => {
           asked.push({ host, context });
-          return answer;
+          // The name phase lets every destination on, so the resolved phase is what is tested.
+          return context?.phase === "name" ? true : answer;
         },
       );
     } catch (error) {
@@ -653,10 +679,10 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     try {
       expect(await connectThrough(setup.front, setup.proxy, setup.name, "intranet.corp.test:443")).toMatch(/^HTTP\/1\.1 403/u);
       expect(await connectThrough(setup.front, setup.proxy, setup.name, "public.example.invalid:443")).toMatch(/^HTTP\/1\.1 403/u);
-      expect(setup.asked).toEqual([
-        { host: "intranet.corp.test", context: { attributionKey: "6".repeat(16) + "0123456789abcdef", identity: "listener", addresses: [], resolution: "upstream" } },
+      expect(resolvedAsks(setup.asked)).toEqual([
+        { host: "intranet.corp.test", context: { attributionKey: "6".repeat(16) + "0123456789abcdef", identity: "listener", phase: "resolved", addresses: [], resolution: "upstream" } },
         // A name this host resolves stays pinned, upstream or not.
-        { host: "public.example.invalid", context: { attributionKey: "6".repeat(16) + "0123456789abcdef", identity: "listener", addresses: [TEST_ADDRESS], resolution: "pinned" } },
+        { host: "public.example.invalid", context: { attributionKey: "6".repeat(16) + "0123456789abcdef", identity: "listener", phase: "resolved", addresses: [TEST_ADDRESS], resolution: "pinned" } },
       ]);
     } finally {
       await setup.SandboxManager.reset();
@@ -672,7 +698,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       try {
         expect(await connectThrough(refused.front, refused.proxy, refused.name, "intranet.corp.test:443"))
           .toMatch(/^HTTP\/1\.1 403 .*upstream proxy on this host resolves names itself/u);
-        expect(refused.asked).toEqual([]);
+        expect(resolvedAsks(refused.asked)).toEqual([]);
         expect(upstream.connects).toEqual([]);
       } finally {
         await refused.SandboxManager.reset();
@@ -684,7 +710,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
         expect(await plainHttpThrough(trusted.front, trusted.proxy, trusted.name, "http://wiki.corp.test/")).toMatch(/^HTTP\/1\.1 200/u);
         // Forwarded by name: the upstream resolves it.
         expect(upstream.connects).toEqual(["CONNECT intranet.corp.test:443 HTTP/1.1", "GET http://wiki.corp.test/ HTTP/1.1"]);
-        expect(trusted.asked.map((a) => [a.host, a.context?.resolution])).toEqual([
+        expect(resolvedAsks(trusted.asked).map((a) => [a.host, a.context?.phase === "resolved" ? a.context.resolution : undefined])).toEqual([
           ["intranet.corp.test", "upstream"],
           ["wiki.corp.test", "upstream"],
         ]);
@@ -721,7 +747,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
         expect(calls).toBe(2);
         // Nothing was written to the proxy the dial reached.
         expect(upstream.connects).toEqual([]);
-        expect(setup.asked.map((a) => a.context?.resolution)).toEqual(["upstream", "upstream"]);
+        expect(resolvedAsks(setup.asked).map((a) => (a.context?.phase === "resolved" ? a.context.resolution : undefined))).toEqual(["upstream", "upstream"]);
       } finally {
         await setup.SandboxManager.reset();
       }
@@ -741,7 +767,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       try {
         expect(await connectThrough(setup.front, setup.proxy, setup.name, "intranet.corp.test:443"), url)
           .toMatch(/^HTTP\/1\.1 403 .*upstream proxy on this host resolves names itself/u);
-        expect(setup.asked, url).toEqual([]);
+        expect(resolvedAsks(setup.asked), url).toEqual([]);
       } finally {
         await setup.SandboxManager.reset();
       }
@@ -802,9 +828,9 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       const name = `srt.${Buffer.from(commandId).toString("base64")}`;
       expect(await connectThrough(frontOf(listener), proxy, name, `pin.example.test:${canaryPort}`)).toMatch(/^HTTP\/1\.1 200/u);
       expect(rebind.calls()).toBe(1);
-      expect(asked).toEqual([{
+      expect(resolvedAsks(asked)).toEqual([{
         host: "pin.example.test",
-        context: { attributionKey: commandId, identity: "listener", addresses: ["127.0.0.1"], resolution: "pinned" },
+        context: { attributionKey: commandId, identity: "listener", phase: "resolved", addresses: ["127.0.0.1"], resolution: "pinned" },
       }]);
     } finally {
       await SandboxManager.reset();
@@ -978,7 +1004,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
           `CONNECT ${TEST_ADDRESS}:8443 HTTP/1.1`,
           `GET http://${TEST_ADDRESS}/x HTTP/1.1`,
         ]);
-        expect(setup.asked.map((a) => a.context?.resolution)).toEqual(["pinned", "pinned", "pinned"]);
+        expect(resolvedAsks(setup.asked).map((a) => (a.context?.phase === "resolved" ? a.context.resolution : undefined))).toEqual(["pinned", "pinned", "pinned"]);
       } finally {
         await setup.SandboxManager.reset();
       }
@@ -1060,7 +1086,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
         expect(await connectThrough(setup.front, setup.proxy, setup.name, "intranet.corp.test:443")).toMatch(/^HTTP\/1\.1 200/u);
         expect(untrusted.requests).toEqual([]);
         expect(trusted.requests.map((r) => r.line)).toEqual(["CONNECT intranet.corp.test:443 HTTP/1.1"]);
-        expect(setup.asked.map((a) => [a.host, a.context?.resolution, a.context?.addresses])).toEqual([["intranet.corp.test", "upstream", []]]);
+        expect(resolvedAsks(setup.asked).map((a) => [a.host, a.context?.phase === "resolved" ? a.context.resolution : undefined, a.context?.phase === "resolved" ? a.context.addresses : undefined])).toEqual([["intranet.corp.test", "upstream", []]]);
       } finally {
         await setup.SandboxManager.reset();
       }
@@ -1070,7 +1096,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       try {
         expect(await connectThrough(refused.front, refused.proxy, refused.name, "intranet.corp.test:443"))
           .toMatch(/^HTTP\/1\.1 403 .*upstream proxy on this host resolves names itself/u);
-        expect(refused.asked).toEqual([]);
+        expect(resolvedAsks(refused.asked)).toEqual([]);
         expect(untrusted.requests).toEqual([]);
       } finally {
         await refused.SandboxManager.reset();
@@ -1123,9 +1149,66 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       expect(listenerPort).toBeTypeOf("number");
       expect(await connectThrough(setup.front, setup.proxy, setup.name, "hop.example.invalid:443")).toBe("HTTP/1.1 403 sandbox proxy listener");
       expect(await plainHttpThrough(setup.front, setup.proxy, setup.name, "http://hop.example.invalid/")).toMatch(/^HTTP\/1\.1 403/u);
-      expect(setup.asked).toEqual([]);
+      expect(resolvedAsks(setup.asked)).toEqual([]);
     } finally {
       await setup.SandboxManager.reset();
+    }
+  });
+
+  it("decides by name before any lookup: a destination refused by name costs no DNS query and no route lookup", async (test) => {
+    const upstream = await recordingUpstream(200);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const asked: Array<{ host: string; context: SandboxAskContext | undefined }> = [];
+    const resolved: string[] = [];
+    const routed: string[] = [];
+    try {
+      try {
+        await SandboxManager.initialize(
+          { network: { allowedDomains: [], deniedDomains: [] }, filesystem: { denyRead: [], allowWrite: [], denyWrite: [] } },
+          async ({ host }, context) => {
+            asked.push({ host, context });
+            // What Ave's callback does for an unattributed connection, a worker
+            // off its list, asks turned off or no one to ask: refused by name.
+            if (context?.phase === "name" && !host.startsWith("allowed.")) return { allow: false, reason: "refused by name" };
+            return true;
+          },
+        );
+      } catch (error) {
+        if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw error;
+        test.skip(`sandbox-runtime cannot initialize here: ${String(error)}`);
+        return;
+      }
+      setDestinationResolverForTesting(async (name) => {
+        resolved.push(name);
+        return [{ address: TEST_ADDRESS, family: 4 }];
+      });
+      SandboxManager.setParentProxyRouter(async (destination) => {
+        routed.push(destination.host);
+        return { routes: [{ kind: "http", host: "127.0.0.1", port: upstream.port }] };
+      });
+      const commandId = "d".repeat(16) + "0123456789abcdef";
+      const listener = await SandboxManager.openInvocationListener(commandId);
+      const proxy = proxyUrlIn(await SandboxManager.wrapWithSandbox("true", undefined, undefined, undefined, { commandId }));
+      const name = `srt.${Buffer.from(commandId).toString("base64")}`;
+      const front = frontOf(listener);
+      expect(await connectThrough(front, proxy, name, "deny-exfil.secretdata.example:443")).toBe("HTTP/1.1 403 refused by name");
+      expect(await plainHttpThrough(front, proxy, name, "http://deny-exfil2.secretdata.example/")).toMatch(/^HTTP\/1\.1 403/u);
+      expect(resolved).toEqual([]);
+      expect(routed).toEqual([]);
+      // An allowed name is resolved and routed once, after its name phase.
+      expect(await connectThrough(front, proxy, name, "allowed.example.invalid:443")).toMatch(/^HTTP\/1\.1 200/u);
+      expect(resolved).toEqual(["allowed.example.invalid"]);
+      expect(routed).toEqual(["allowed.example.invalid"]);
+      expect(upstream.requests.map((r) => r.line)).toEqual([`CONNECT ${TEST_ADDRESS}:443 HTTP/1.1`]);
+      expect(asked.map((a) => [a.host, a.context?.phase])).toEqual([
+        ["deny-exfil.secretdata.example", "name"],
+        ["deny-exfil2.secretdata.example", "name"],
+        ["allowed.example.invalid", "name"],
+        ["allowed.example.invalid", "resolved"],
+      ]);
+    } finally {
+      await SandboxManager.reset();
+      await upstream.close();
     }
   });
 
@@ -1146,7 +1229,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       answer = async () => ({ routes: [] });
       expect(await connectThrough(setup.front, setup.proxy, setup.name, "x.example.invalid:443")).toBe("HTTP/1.1 403 no usable route to the destination");
       expect(calls).toBe(4);
-      expect(setup.asked).toEqual([]);
+      expect(resolvedAsks(setup.asked)).toEqual([]);
       // Loopback is always direct: the router is not asked (the ask callback is).
       const local = await recordingUpstream(200);
       try {

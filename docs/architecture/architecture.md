@@ -1400,10 +1400,19 @@ even when `allowAllUnixSockets` lifts the AF_UNIX block (as registering a
 worker socket directory does). On macOS `allowAllUnixSockets` would expose the
 shared bridge socket, so while it is set shell and extension identity is
 `shared`. The proxy refuses a destination that is a proxy front end's port on
-this host, so one invocation cannot hop onto another's listener. A
-destination name is resolved once, before the callback decides, and refused
-when any address is loopback, reserved or this host's; the callback sees the
-addresses, and the connection is pinned to them (a direct dial does not
+this host, so one invocation cannot hop onto another's listener. The
+callback is asked in two phases (part 5 of the patch). The name phase comes
+before anything is resolved or routed, so every refusal the name alone
+decides (unattributed, a worker off its list, the terminal, asks off, nobody
+to ask, a reserved literal) costs no DNS query and no proxy lookup: the
+proxy's lookup is the sandbox's only resolver, and a refused
+`<data>.attacker.example` must not reach the zone's server. An interactive
+card is shown by name, and its answer is held, not granted. Only after that
+allow is the destination name resolved once, and refused when any address is
+loopback, reserved or this host's; the resolved phase sees the addresses, an
+answer given on a card for one class (say public) becomes a grant only when
+the destination turned out to be that class (otherwise the card is shown
+again with what it is), and the connection is pinned to them (a direct dial does not
 resolve again; through an upstream HTTP(S) proxy the CONNECT names the
 address, trying each in turn, not the name; plain HTTP by name through an
 upstream is refused), so DNS rebinding cannot move it afterwards. A name this
@@ -1431,7 +1440,8 @@ differently per destination and with a fallback list, the carried patch's
 part 4 replaces ASRT's single static `parentProxy` with a route hook
 (`SandboxManager.setParentProxyRouter`, implemented in
 `src/permissions/upstream-proxy.ts`): asked once per destination decision
-with the canonical host, port and scheme, before the callback; every
+with the canonical host, port and scheme, after the name phase and before
+the resolved phase; every
 answered route is judged as above (a pinned name goes as its vetted literal,
 an unresolvable name skips direct routes and untrusted proxies on this host,
 a route naming one of the proxy's own listeners is dropped and every proxy
