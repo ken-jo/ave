@@ -218,9 +218,13 @@ describe("boot sandbox outcome", () => {
 
     expect(getSandboxBootOutcome()?.action).toBe("activate");
     expect(order).toEqual(["subscribe", "initialize"]);
-    // The shipped policy is unchanged: strict allow-list, no ask callback.
-    expect(h.initialize).toHaveBeenCalledWith(expect.objectContaining({ strictAllowlist: true }));
-    expect(h.initialize.mock.calls[0]).toHaveLength(1);
+    // Every connection is decided per invocation: no shared allow-list, and
+    // the ask callback (extension allowlist, grants, prompt) for each one.
+    expect(h.initialize).toHaveBeenCalledWith(
+      expect.objectContaining({ allowedDomains: [], strictAllowlist: false }),
+      expect.any(Function),
+    );
+    expect(h.initialize.mock.calls[0]).toHaveLength(2);
 
     order.length = 0;
     __resetSandboxBootOutcomeForTest();

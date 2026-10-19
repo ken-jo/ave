@@ -1586,6 +1586,16 @@ describe("SettingsService role presets", () => {
     expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
   });
 
+  it("ships shell egress asks ON and keeps a stored opt-out", async () => {
+    // With asks on, a sandboxed shell that reaches an ungranted host gets an
+    // approval card; off, it is refused and only granted hosts work.
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("features")?.shellEgressAsk)
+      .toBe(true);
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ features: { shellEgressAsk: false } }), "utf-8");
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("features")?.shellEgressAsk)
+      .toBe(false);
+  });
+
   // Per-platform TRUTH-TABLE — asserts the default EXPLICITLY on each platform
   // rather than by mirroring the impl expression, so a platform branch creeping
   // back into settings-defaults fails here by name. The default is evaluated at

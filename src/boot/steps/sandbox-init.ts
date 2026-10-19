@@ -17,7 +17,7 @@ import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
 const log = createLogger("ave");
 
 export async function initSandboxGate(ctx: BootContext): Promise<void> {
-  const { settingsService, bootAuditLogger, pluginRuntime, buildSandboxUnionDomains } = ctx;
+  const { settingsService, bootAuditLogger, buildWorkerEgressAllowlists } = ctx;
 
   // Platform policy (ALL platforms share the SAME gate — there is no separate
   // Windows opt-in):
@@ -214,49 +214,36 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           if (deps.warnings.length > 0) {
             log.warn("boot: ASRT dependency warnings: %s", deps.warnings.join("; "));
           }
-          // ENFORCED network model (corrects WIRING-A #1356 — see asrt-sandbox.ts
-          // NETWORK ENFORCEMENT MODEL header). ASRT's filterNetworkRequest
-          // reads ONLY the SHARED config; the per-command customConfig.network is
-          // inert for allow/deny. So we set the SHARED config here to:
-          //   strictAllowlist: true  ⇒ GLOBAL hard-deny on any out-of-allow-list
-          //                            host, with NO askCb fallthrough (strict
-          //                            bypasses the callback entirely). The
-          //                            WIRING-A interactive askCb prompt cannot
-          //                            coexist with strict and is removed.
-          //   allowedDomains: UNION  ⇒ every loaded, host-validated plugin's
-          //                            manifest.networkAccess.allowedDomains
-          //                            (∪ an optional trusted host baseline,
-          //                            empty by default). Computed from the
-          //                            trusted plugin-runtime seam.
-          // Because filterNetworkRequest reads this shared config, egress is
-          // genuinely ENFORCED for BOTH workers and host tools.
+          // Network model (proxy-egress PR 4, design B): ASRT runs NON-strict
+          // with an EMPTY allowedDomains, so every connection a sandboxed
+          // process opens reaches the egress ask callback (egress-ask.ts),
+          // which decides by who opened it. Each wrap gets its own proxy
+          // listener (the carried ASRT patch), so on macOS and Linux "who" is
+          // the kernel-enforced channel, not the forgeable proxy username:
+          //   - a plugin worker reaches its OWN extension's declared domains and
+          //     the configured model endpoints, nothing else, and is never asked;
+          //   - a shell reaches what a grant covers, otherwise the person is
+          //     asked on the approval dock (denied when nobody can answer);
+          //   - a terminal tab is denied until the tab banner lands (PR 5);
+          //   - anything unattributed is denied.
+          // A pre-allowed domain in ASRT config would let every shell reach it
+          // without asking, which is why the per-extension lists live in the
+          // callback (invariant I4).
           //
-          // TRADE-OFF (honest): this is a UNION allow-list, not per-worker
-          // isolation — a sandboxed process may reach any domain declared by ANY
-          // loaded plugin. Acceptable under Ave's 1st-party plugin trust model;
-          // true per-worker isolation needs a future ASRT with per-process
-          // proxies. See asrt-sandbox.ts header.
-          //
-          // This gate now runs BEFORE startPlugins() (factories spawn
-          // confined children during startAll and need ASRT active), so the
-          // manifest half of the union is EMPTY here — startPluginsOnce
-          // re-derives it via the same builder right after load() and
-          // live-swaps the shared config before startAll().
-          //
-          // Build the enforced allow-list via the SAME builder the live-refresh
-          // closure uses (buildSandboxUnionDomains): manifest UNION ∪ host-
-          // resolved DYNAMIC endpoint hostnames (user-configured vendor baseUrls
-          // a worker reaches — e.g. local-indexer's Azure OpenAI resource, whose
-          // null manifest networkAccess contributes nothing static and would be
-          // hard-denied without this). Trusted host baseline stays empty.
-          // normalizeUnionForAsrt (inside the builder) emits both `d` and `*.d`
-          // so the sandbox enforces the SAME hosts the hostFetch path advertises.
-          // Plugin count for the log — buildSandboxUnionDomains computes the
-          // actual union internally; this one-liner only supplies the count.
-          const manifestAllowLists = pluginRuntime
-            .listPluginIds()
-            .map((id) => pluginRuntime.getPluginManifest(id)?.networkAccess?.allowedDomains ?? []);
-          const unionAllowedDomains = await buildSandboxUnionDomains();
+          // This gate runs BEFORE startPlugins(), so the extension half of the
+          // allowlists is empty here; startPluginsOnce refreshes it right after
+          // load() and before startAll().
+          const workerAllowlists = await buildWorkerEgressAllowlists();
+          const { setWorkerEgressAllowlists, createEgressAskRuntimeCallback } = await import(
+            "../../permissions/egress-runtime.js"
+          );
+          setWorkerEgressAllowlists(workerAllowlists);
+          const egressAskCallback = createEgressAskRuntimeCallback({
+            approvalGate: ctx.approvalGate,
+            // Shipped on: settings-defaults sets it, and the service merges
+            // stored flags over the defaults.
+            shellAskEnabled: () => settingsService.get("features")?.shellEgressAsk === true,
+          });
           // Trust boundary: WEAKENING flags are NOT set here (deny-by-default,
           // no Apple events / weaker isolation / unix-socket opening). Only the
           // enforced allow-list + strict flag. Per-command filesystem scoping
@@ -293,13 +280,13 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             });
           }
           await initializeAsrtSandbox({
-            allowedDomains: unionAllowedDomains,
-            strictAllowlist: true,
+            allowedDomains: [],
+            strictAllowlist: false,
             // Thread the REAL Electron userData path so the deny-list is exact
             // (handles --user-data-dir, XDG_CONFIG_HOME, future renames).
             // Safe: boot.ts is main-process only and already imports electron.
             userDataDir: ctx.host.userDataPath,
-          });
+          }, egressAskCallback);
           // Publish the active capability to the SOT now that ASRT is
           // genuinely initialized (gate ON, deps present). detectSandboxCapability
           // + the reviewer/UI consumers read this; the reviewer's per-category
@@ -337,11 +324,10 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             confines,
           });
           log.info(
-            "boot: ASRT OS tool sandbox initialized (%s, %s, strict allow-list enforced, %d union domains at init across %d plugins; manifest union refreshed after plugin load; confined temp root %s)",
+            "boot: ASRT OS tool sandbox initialized (%s, %s, egress decided per connection by the ask callback; %d model endpoints at init, extension allowlists refreshed after plugin load; confined temp root %s)",
             process.platform,
             asrtBackend,
-            unionAllowedDomains.length,
-            manifestAllowLists.length,
+            workerAllowlists.modelEndpointHosts.length,
             sandboxTempRoot,
           );
           sandboxActive = true;

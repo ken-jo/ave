@@ -278,6 +278,32 @@ export interface SandboxBootOutcome {
   readonly causes: readonly SandboxStartFailureCause[];
 }
 
+/**
+ * How strongly the egress proxy knows which invocation opened a connection.
+ *
+ * - `kernel-channel`: the OS pins each confined process to its own proxy
+ *   listener, so the port a connection arrives on names the invocation
+ *   (Windows MXC per-container WFP; `egress-invocation-listener.ts`). A
+ *   process cannot present another invocation's identity.
+ * - `shared`: confined processes share one proxy endpoint and the identity is
+ *   a label the client presents (ASRT's proxy username). Attribution, not a
+ *   boundary between concurrent invocations.
+ */
+export type EgressIdentityStrength = "kernel-channel" | "shared";
+
+/** The scopes an egress grant can be given, narrowest first. */
+export type EgressGrantScope = "once" | "conversation" | "workspace" | "always";
+
+/**
+ * The widest egress-grant scope an identity strength can carry. With a shared
+ * identity another invocation of the same session can present the id a grant
+ * was given to, so a grant must not outlive the conversation it was given in.
+ * The egress ask (proxy-egress PR 4) caps the scopes it offers with this.
+ */
+export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGrantScope {
+  return strength === "kernel-channel" ? "always" : "conversation";
+}
+
 /** Runtime snapshot returned to the renderer for startup/runtime honesty. */
 export interface SandboxRuntimeCapabilityInfo {
   /** Whether the current process has an active sandbox runner registered. */

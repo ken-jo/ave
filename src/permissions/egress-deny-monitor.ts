@@ -34,6 +34,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
 import {
   buildSandboxEgressDenyAuditEntry,
+  type SandboxEgressDecisionAuditEntry,
   type SandboxEgressDenyAuditEntry,
   type SandboxEgressDenyInvocation,
 } from "../audit/sandbox-audit.js";
@@ -130,7 +131,7 @@ function parseShapedDeny(line: string): ParsedEgressDeny | undefined {
 }
 
 /** The audit form of a live owner: the token is never part of it. */
-function auditInvocationFor(owner: EgressInvocationOwner | undefined): SandboxEgressDenyInvocation {
+export function auditInvocationFor(owner: EgressInvocationOwner | undefined): SandboxEgressDenyInvocation {
   if (owner === undefined) return { kind: "unattributed" };
   switch (owner.kind) {
     case "shell":
@@ -142,11 +143,50 @@ function auditInvocationFor(owner: EgressInvocationOwner | undefined): SandboxEg
   }
 }
 
+/**
+ * Decisions the ask callback made in the last minute, so the monitor writes an
+ * `egress-decision` row only for refusals the proxy made before asking it
+ * (each callback decision writes its own row). Keyed by attribution key,
+ * DLP-masked lower-case host and port, counted so concurrent connections to
+ * one destination each match once.
+ */
+const CALLBACK_DECISION_TTL_MS = 60_000;
+const recentCallbackDecisions = new Map<string, { count: number; at: number }>();
+
+function decisionKey(attributionKey: string | undefined, host: string, port: number | null | undefined): string {
+  return `${attributionKey ?? ""}\n${mask(String(host)).toLowerCase()}\n${port ?? ""}`;
+}
+
+function pruneCallbackDecisions(now: number): void {
+  for (const [key, entry] of recentCallbackDecisions) {
+    if (now - entry.at > CALLBACK_DECISION_TTL_MS) recentCallbackDecisions.delete(key);
+  }
+}
+
+/** Called by the ask callback for each decision it makes. */
+export function noteCallbackDecision(attributionKey: string | undefined, host: string, port: number | undefined): void {
+  const now = Date.now();
+  pruneCallbackDecisions(now);
+  const key = decisionKey(attributionKey, host, port);
+  const entry = recentCallbackDecisions.get(key);
+  recentCallbackDecisions.set(key, { count: (entry?.count ?? 0) + 1, at: now });
+}
+
+function consumeCallbackDecision(attributionKey: string | undefined, host: string, port: number | null): boolean {
+  pruneCallbackDecisions(Date.now());
+  const key = decisionKey(attributionKey, host, port);
+  const entry = recentCallbackDecisions.get(key);
+  if (entry === undefined) return false;
+  if (entry.count <= 1) recentCallbackDecisions.delete(key);
+  else entry.count--;
+  return true;
+}
+
 export interface EgressDenyMonitorDeps {
   /** ASRT's violation store subscription (`subscribeAsrtViolations`). */
   readonly subscribe: (listener: (violations: readonly AsrtViolationRecord[]) => void) => Promise<() => void>;
   /** The audit sink (`emitSandboxAudit`). */
-  readonly emit: (entry: SandboxEgressDenyAuditEntry) => Promise<void>;
+  readonly emit: (entry: SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry) => Promise<void>;
   /** The active sandbox capability, recorded on every row. */
   readonly capability: () => Pick<SandboxCapability, "kind" | "confidence">;
 }
@@ -172,20 +212,37 @@ export async function startEgressDenyMonitor(deps: EgressDenyMonitorDeps): Promi
       seen.add(violation);
       const deny = parseEgressDenyLine(violation.line);
       if (deny === undefined) continue;
-      const owner = violation.encodedCommand === undefined
+      const attributionKey = violation.encodedCommand === undefined
         ? undefined
-        : egressInvocationOwner(decodeEgressAttributionKey(violation.encodedCommand));
+        : decodeEgressAttributionKey(violation.encodedCommand);
+      const owner = attributionKey === undefined ? undefined : egressInvocationOwner(attributionKey);
+      const invocation = auditInvocationFor(owner);
       const entry = buildSandboxEgressDenyAuditEntry({
         timestamp: violation.timestamp,
         sandbox: deps.capability(),
-        invocation: auditInvocationFor(owner),
+        invocation,
         deny,
       });
-      deps.emit(entry).catch((error: unknown) => {
+      const report = (error: unknown): void => {
         // Audit failure must not break the proxy or the command; it is logged
         // so a missing row has a visible cause.
         log.warn("could not record a proxy deny: %s", errorMessage(error));
-      });
+      };
+      deps.emit(entry).catch(report);
+      // The callback wrote its own decision row; a refusal the proxy made
+      // before asking it gets one here.
+      if (!consumeCallbackDecision(attributionKey, deny.host, deny.port)) {
+        deps.emit({
+          timestamp: violation.timestamp.toISOString(),
+          entryKind: "egress-decision",
+          invocation,
+          destination: { host: deny.host, port: deny.port },
+          decision: "deny",
+          basis: "sandbox",
+          scope: null,
+          reason: deny.reason,
+        }).catch(report);
+      }
     }
   });
 }
