@@ -139,7 +139,9 @@ let during = [];
 let failure;
 const logs = [];
 try {
-  withHostLock({ name, label: name, directory, timeoutMs: 40, pollMs: 5,
+  // The "absent" probe and the occupied-"full" probes wait out the timeout;
+  // the others settle on their first or second attempt.
+  withHostLock({ name, label: name, directory, timeoutMs: 400, pollMs: 5,
     ...(mode === "pool" ? { slots: 2 } : {}), log: (line) => logs.push(line) }, () => {
     ran += 1;
     during = fs.readdirSync(directory).filter((name) => name.endsWith(".lock"));
@@ -312,7 +314,10 @@ describe("pre-push host lock", () => {
     expect(report).toMatchObject({ ran: 0, ownerPreserved: false, remaining: [] });
     expect(report.error).toContain("PRE_PUSH_HOST_LOCK_TIMEOUT");
     expect(report.logs[0]).toContain("unknown PID");
-    expect(report.denied).toBeGreaterThan(3);
+    // It kept retrying until the deadline. How many attempts fit in the
+    // window depends on the host's load (a full pre-push run on a busy host
+    // saw exactly 3 in 40 ms), so the claim is "more than one", not a rate.
+    expect(report.denied).toBeGreaterThan(1);
   });
 
   it("propagates publication errors outside the contention errno set", () => {

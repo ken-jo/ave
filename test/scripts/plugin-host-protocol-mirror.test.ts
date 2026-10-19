@@ -164,6 +164,56 @@ describe("host protocol web mirror", () => {
   });
 });
 
+describe("host protocol mirror: a tagged version's copy is frozen", () => {
+  // The case that slipped through: v0.14.0 was tagged, its copy stayed an
+  // unpublished candidate because package.json was still 0.14.0, and a later
+  // protocol change regenerated it — the check accepted bytes the tag's app
+  // rejects, under that app's schema URL.
+  const atTag = (tagged: Record<string, string>) =>
+    ({ taggedSchema: (_root: string, appVersion: string) =>
+      appVersion in tagged ? Buffer.from(tagged[appVersion]) : null });
+
+  it("refuses a candidate regenerated after its version was tagged", () => {
+    const { root } = fixture();
+    const shipped = schema("0.12.2", "candidate");
+    expect(checkProtocolMirror(root, atTag({ "0.12.2": shipped }))).toContain("1 candidate");
+
+    put(root, "schemas/plugin-host-protocol/2/protocol.schema.json", schema("0.12.2", "revised"));
+    expect(() => syncProtocolMirror(root, commit, atTag({ "0.12.2": shipped })))
+      .toThrow("differs from the schema tag v0.12.2 carries");
+    // Regenerated without the guard (an older script), the check still refuses it.
+    syncProtocolMirror(root, commit, atTag({}));
+    expect(() => checkProtocolMirror(root, atTag({ "0.12.2": shipped })))
+      .toThrow("2/v0.12.2/protocol.schema.json differs from the schema tag v0.12.2 carries");
+  });
+
+  it("refuses an unpublished orphan copy that differs from its tag", () => {
+    const { root } = fixture();
+    expect(() => checkProtocolMirror(root, atTag({ "0.12.1": schema("0.12.1", "what shipped") })))
+      .toThrow("2/v0.12.1/protocol.schema.json differs from the schema tag v0.12.1 carries");
+  });
+
+  it("refuses a copy whose tag does not carry the protocol at all", () => {
+    const { root } = fixture();
+    expect(() => checkProtocolMirror(root, atTag({ "0.12.0": "" })))
+      .toThrow("differs from the schema tag v0.12.0 carries");
+  });
+
+  it("accepts every copy that matches its tag, and untagged versions", () => {
+    const { root } = fixture();
+    expect(checkProtocolMirror(root, atTag({
+      "0.12.0": schema("0.12.0", "published"),
+      "0.12.1": schema("0.12.1", "orphan"),
+    }))).toContain("3 copies, 1 aliases, 1 candidate");
+  });
+
+  it("reads the tags of this repository by default", () => {
+    // This checkout's own mirror passes against its real tags.
+    const repoRoot = resolve(import.meta.dirname, "../..");
+    expect(checkProtocolMirror(repoRoot)).toMatch(/copies/);
+  });
+});
+
 describe("host protocol mirror alias", () => {
   const twoPublished: readonly Copy[] = [
     ["0.12.0", "twelve", "v0.12.0"],
