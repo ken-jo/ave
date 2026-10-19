@@ -60,7 +60,7 @@ shows it.
     a caption of about twenty words); *choices* (three equal cards); *facts*
     (three short ruled columns); *kinds* (an icon grid); *questions* (native
     `<details>`); *next steps* (three linked cards).
-12. **Density.** Home about 1,750 English words and 19 media (the tour adds
+12. **Density.** Home about 1,700 English words and 18 media (the tour adds
     each feature page's hero lead, first three points and two shots, and the
     package stack adds seven catalog packages); feature pages 600–900
     English words and 6–7 media. Korean pages carry the same content.
@@ -97,6 +97,14 @@ shows it.
     `browser_navigate`, `terminal_read` and the agent's own shell tool). The
     agent cannot type into the terminal panel, and none of the captures
     pretends it does; `terminal-live` is to be replaced once that changes.
+    Every capture's chat was checked against the scripted model's log of
+    the real tool results (2026-10-19). `terminal-ask` and `terminal-live`
+    are kept with a caveat and are to be retaken: their scripted line about
+    the failing test follows a `terminal_read` call made without a block id,
+    which returns the blocks' commands and exit codes but not their output
+    (the failure is on screen in the terminal, and `terminal-live` confirms
+    it with its own command). The transcript capture that showed no changed
+    lines was removed; retake it with the work group expanded.
 17. **Formats.** Each capture ships as AVIF (quality 62) and WebP (quality 80)
     at full size, plus a half-width 256-colour PNG fallback, for light and
     dark: `public/media/<key>-<light|dark>.<avif|webp|png>`. The hero loop is

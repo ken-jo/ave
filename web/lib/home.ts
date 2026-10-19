@@ -99,12 +99,6 @@ const ko: HomeCopy = {
         pic: { k: "app-subagents", alt: "서브에이전트 탭에 ‘Parser edge cases’와 ‘Test coverage’ 두 서브에이전트가 완료로 표시된 화면" },
         w: 3,
       },
-      {
-        title: "바뀐 내용을 그 자리에서",
-        body: "파일을 고치면 대화에 변경 부분이 줄 단위로 남습니다. 무엇이 어떻게 바뀌었는지 따로 찾지 않아도 됩니다.",
-        pic: { k: "transcript-diff", alt: "대화 기록에 src/export.js 편집 내용이 추가 4줄, 삭제 2줄로 표시되고 테스트 결과가 이어지는 화면" },
-        w: 6,
-      },
     ],
   },
   models: {
@@ -257,12 +251,6 @@ const en: HomeCopy = {
         body: "An agent can start sub-agents one level deep to split the work. Their progress and results are in the Sub-agents tab.",
         pic: { k: "app-subagents", alt: "The Sub-agents tab listing two finished sub-agents, Parser edge cases and Test coverage" },
         w: 3,
-      },
-      {
-        title: "Changes shown where they happen",
-        body: "When the agent edits a file, the transcript keeps the changed lines, so you see what changed without going looking for it.",
-        pic: { k: "transcript-diff", alt: "The transcript showing an edit to src/export.js with four lines added and two removed, followed by the test run" },
-        w: 6,
       },
     ],
   },
