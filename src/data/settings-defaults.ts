@@ -257,8 +257,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // ASRT exactly when this is on, whatever the shell sandbox above says.
     // Its own setting (owner 2026-10-16) so that a shell sandbox default can
     // change without confining workers whose manifests under-declare the
-    // domains they reach. OFF everywhere; the split migration in
-    // `loadSettings` carries an existing `osToolSandbox: true` over to it.
+    // domains they reach. OFF everywhere; `loadSettings` derives it from a
+    // stored `osToolSandbox: true` when a file predates the split.
     pluginWorkerConfinement: false,
   },
 };

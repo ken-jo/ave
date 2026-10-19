@@ -210,7 +210,7 @@ Keep task-specific inventories in issues rather than in this instruction file.
   `TOOL_TIMEOUT_POLICY`; never hardcode them. Wire `runWithCeiling` cancellation
   through its `AbortController`.
 - The OS tool sandbox is opt-in on every platform, per the decision comment beside
-  `osToolSandbox` in [settings-defaults.ts](src/data/settings-defaults.ts#L237-L254).
+  `osToolSandbox` in [settings-defaults.ts](src/data/settings-defaults.ts#L216-L262).
   It has two scopes: `osToolSandbox` confines host shells only (bash, PowerShell,
   the workspace terminal); `pluginWorkerConfinement` confines plugin workers,
   plugin children, plugin hooks and MCP stdio servers. Neither decides the other:

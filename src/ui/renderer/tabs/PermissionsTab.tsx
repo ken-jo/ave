@@ -1357,6 +1357,11 @@ export function PermissionsTab({
                   {t("permissionsTab.osSandboxRuntimeReason", { reason: sandboxKindText(sandboxCapability.runtime?.kind) })}
                 </p>
               ) : null}
+              {sandboxCapability.workerRuntime ? (
+                <p data-testid="worker-confinement-runtime-reason">
+                  {t("permissionsTab.workerConfinementRuntimeReason", { reason: sandboxKindText(sandboxCapability.workerRuntime.kind) })}
+                </p>
+              ) : null}
             </div>
           ) : null}
           {sandboxDegraded && sandboxBoot ? (

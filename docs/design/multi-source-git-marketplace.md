@@ -2516,7 +2516,7 @@ subject in both catalogs.
 | `ARTIFACT_NOT_PINNED` | rung skipped: no sha256 in git | — | `.artifactNotPinned` |
 | `ARTIFACT_DIGEST_MISMATCH` | sha256 differs | — | `.digestMismatch` |
 | `MANIFEST_MISMATCH` | plugin.json vs descriptor | — | `.manifestMismatch` |
-| `process-entry-unconfined` | a `process` entry while the OS tool sandbox is off, or on Windows (`plugin-hostapi-protocol.md` §2.1) | — | `formatIpcError.processEntryUnconfined` |
+| `process-entry-unconfined` | a `process` entry while extension confinement (`features.pluginWorkerConfinement`) is not active, or on Windows (`plugin-hostapi-protocol.md` §2.1) | — | `formatIpcError.processEntryUnconfined` |
 | `process-entry-requires-pinned-artifact` | a `process` entry not installed from a sha256-pinned release or archive artifact (`plugin-hostapi-protocol.md` §2.1) | — | `formatIpcError.processEntryRequiresPinnedArtifact` |
 | `NO_INSTALLABLE_ARTIFACT` | every rung skipped or failed (`SOURCE_AUTH_REQUIRED` instead when every failed rung needed sign-in) | `folder-has-no-build` (name: a folder plugin without `plugin.json`, §7.7) | `.noArtifact`, `.noArtifact.folderHasNoBuild` |
 | `CONTENT_RULE_VIOLATION` | content kind file rules; a folder's reading rules (§7.7) | `link-outside-folder` (path, target), `link-to-network` (path, target), `link-to-skipped` (path, target), `special-file` (path), `case-collision` (path), `limit` (path, limit) — `path` relative to the folder; `target` the link's own text, for `link-to-skipped` the skipped entry it reaches | `.contentRule`, `.contentRule.<reason>` |

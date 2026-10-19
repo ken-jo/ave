@@ -88,6 +88,17 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       ...(workerExplicitEnv ? ["AVE_PLUGIN_WORKER_CONFINEMENT"] : []),
     ];
     const explicitEnvLabel = explicitEnvNames.map((name) => `${name}=1`).join(" and ");
+    // Before the split AVE_SANDBOX_ENABLED=1 alone also confined extension
+    // processes. A launcher that still relies on that now gets shells only, so
+    // say so loudly rather than leave workers unconfined in silence.
+    if (shellExplicitEnv && !workerRequested) {
+      log.warn(
+        "boot: AVE_SANDBOX_ENABLED=1 now confines host shells only — plugin workers, plugin children, " +
+          "plugin hooks and MCP stdio servers run WITHOUT OS confinement this session. " +
+          "Set AVE_PLUGIN_WORKER_CONFINEMENT=1 (or turn on Settings → Permissions 'Extension confinement') " +
+          "to confine them as before.",
+      );
+    }
 
     // Activation telemetry — which on-signal drove the gate. ONE event per boot
     // is emitted (below) at the terminal outcome so real-world activate/degrade/
@@ -183,7 +194,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             "boot: OS tool sandbox is ON by default but its dependencies are missing — " +
               "tools run with NO OS isolation (unsandboxed, isolation=none) until the deps are installed. " +
               "Install the sandbox dependencies (Linux: bwrap, socat, ripgrep) to activate it, or turn it off " +
-      "in Settings → Permissions 'OS tool sandbox'. (Set AVE_SANDBOX_ENABLED=1 to make this fail-closed instead.) " +
+      "in Settings → Permissions 'OS tool sandbox'. (Set AVE_SANDBOX_ENABLED=1 for shells or " +
+      "AVE_PLUGIN_WORKER_CONFINEMENT=1 for extension processes to make this fail-closed instead.) " +
               `Missing: ${detail}`,
           );
         }
@@ -348,7 +360,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           log.warn(
             "boot: OS tool sandbox is ON by default but ASRT initialization failed — " +
               "tools run with NO OS isolation (unsandboxed, isolation=none) this session. " +
-              "(Set AVE_SANDBOX_ENABLED=1 to make this fail-closed instead.) " +
+              "(Set AVE_SANDBOX_ENABLED=1 for shells or AVE_PLUGIN_WORKER_CONFINEMENT=1 for extension processes " +
+                "to make this fail-closed instead.) " +
               `Cause: ${cause}`,
           );
           recordGate("degrade", failureReason, [cause]);
@@ -363,7 +376,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       // platform so the off-rate is monitorable alongside activate/degrade/abort.
       if (process.platform === "darwin") {
         log.info(
-    "boot: OS tool sandbox gated off (enable via Settings → Permissions 'OS tool sandbox' or AVE_SANDBOX_ENABLED=1)",
+    "boot: OS tool sandbox gated off (enable via Settings → Permissions, or AVE_SANDBOX_ENABLED=1 for shells / " +
+      "AVE_PLUGIN_WORKER_CONFINEMENT=1 for extension processes)",
         );
       }
       recordGate("skip", "gate-off");

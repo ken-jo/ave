@@ -184,8 +184,8 @@ The child is confined exactly as much as the host's workers are:
 `features.pluginWorkerConfinement` decides for plugin workers, plugin children, plugin
 script hooks and MCP stdio servers alike; `features.osToolSandbox` decides only for the
 host's shells (the bash and PowerShell tools and the workspace terminal) and never for a
-child (split in 0.14.1; the one-time `plugin-worker-confinement-split` settings migration
-carried an existing `osToolSandbox: true` over to both). The environment overrides split
+child (split in 0.14.1; settings load derives `pluginWorkerConfinement` from the stored
+`osToolSandbox` whenever a file lacks the boolean, so an existing opt-in stays on for both). The environment overrides split
 the same way: `AVE_SANDBOX_ENABLED=1` forces the shell scope only, and
 `AVE_PLUGIN_WORKER_CONFINEMENT=1` forces the worker scope. When worker confinement is off
 the child is spawned unwrapped and nothing marks it confined, so the reviewer grants no

@@ -185,7 +185,6 @@ function installApi(
       sandboxCapability: vi.fn(async () => ({
         platform: "linux" as NodeJS.Platform,
         enabled: false,
-        pluginWorkerConfinementEnabled: false,
         available: true,
         kind: "full" as const,
         reason: "ASRT (bwrap) confines filesystem, process, and network egress when enabled",
@@ -193,6 +192,11 @@ function installApi(
         runtime: {
           available: false,
           kind: "none" as const,
+          reason: "no OS sandbox configured for the host process",
+        },
+        workerRuntime: {
+          available: false,
+          kind: "none" as "none" | "full" | "partial",
           reason: "no OS sandbox configured for the host process",
         },
         confines: { filesystem: true, process: true, network: true },
@@ -1082,6 +1086,28 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     expect(screen.getByTestId("worker-confinement-toggle")).toHaveAttribute("aria-checked", "true");
   });
 
+  it("shows each scope's runtime on its own line, so a worker-only boot does not read as a sandboxed shell", async () => {
+    const api = installApi([[]]);
+    api.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "darwin" as NodeJS.Platform,
+      enabled: false,
+      available: true,
+      kind: "full" as const,
+      reason: "summary",
+      potentialReason: "platform can confine",
+      runtime: { available: false, kind: "none" as const, reason: "shell sandbox not requested at boot" },
+      workerRuntime: { available: true, kind: "full" as const, reason: "ASRT (Seatbelt) active" },
+      confines: { filesystem: true, process: true, network: true },
+    });
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+
+    expect(screen.getByTestId("os-sandbox-runtime-reason")).toHaveTextContent(t("permissionsTab.osSandboxKindNone"));
+    expect(screen.getByTestId("worker-confinement-runtime-reason")).toHaveTextContent(t("permissionsTab.osSandboxKindFull"));
+  });
+
   it("says the environment is deciding worker confinement when its variable is set", async () => {
     installApi([[]], ["features.pluginWorkerConfinement"]);
 
@@ -1100,7 +1126,6 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     api.permission.sandboxCapability.mockResolvedValueOnce({
       platform: "linux" as NodeJS.Platform,
       enabled: true,
-      pluginWorkerConfinementEnabled: false,
       available: true,
       kind: "full" as const,
       reason: "legacy summary",
@@ -1160,7 +1185,6 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     api.permission.sandboxCapability.mockResolvedValueOnce({
       platform: "freebsd" as NodeJS.Platform,
       enabled: false,
-      pluginWorkerConfinementEnabled: false,
       available: false,
       kind: "none" as const,
       reason: "OS sandbox is fail-closed on this platform; tools run unconfined",
@@ -1237,7 +1261,6 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         sandboxCapability: vi.fn(async () => ({
           platform: "win32" as NodeJS.Platform,
           enabled: true,
-          pluginWorkerConfinementEnabled: false,
           available: true,
           kind: "partial" as const,
           reason: "ASRT (srt-win) confines filesystem access and network egress against the host; every confined process, plugins included, runs as one shared sandbox account, so plugins are not isolated from each other; process isolation is unavailable on Windows; needs a one-time admin install",

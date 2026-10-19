@@ -66,7 +66,6 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
       sandboxCapability: vi.fn(async () => ({
         platform: "darwin" as NodeJS.Platform,
         enabled: false,
-        pluginWorkerConfinementEnabled: false,
         available: true,
         kind: "full" as const,
         reason: "",

@@ -1968,10 +1968,11 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   (`pluginWorkerConfinement`, 또는 `AVE_PLUGIN_WORKER_CONFINEMENT=1`)는 플러그인
   워커·플러그인 자식 프로세스·플러그인 훅·MCP stdio 서버를 격리한다. 둘 다 기본값은
   **전 플랫폼 OFF(opt-in)**다
-  ([settings-defaults.ts의 결정 주석](../../../src/data/settings-defaults.ts#L237-L254)).
+  ([settings-defaults.ts의 결정 주석](../../../src/data/settings-defaults.ts#L216-L262)).
   어느 한쪽이 켜지면 ASRT 가 초기화되고, 각 spawn 경로는 자기 범위만 읽는다.
-  일회성 `plugin-worker-confinement-split` 마이그레이션은 `osToolSandbox: true` 였던
-  설치에 두 범위를 모두 켜고, 나머지 설치는 둘 다 끈 상태로 둔다.
+  설정 파일에 `pluginWorkerConfinement` 불리언이 없으면(분리 이전 빌드가 쓴 파일, 다운그레이드
+  후 재업그레이드 포함) 로드할 때 저장된 `osToolSandbox` 에서 유도한다. `osToolSandbox: true`
+  였던 설치는 두 범위가 모두 켜지고, 나머지 설치는 둘 다 꺼진 상태로 남는다.
   `hostClassifiesRisk`는 **전 플랫폼 default ON**이다. 파일시스템 격리가 실제로
   활성화되지 않으면 플러그인 읽기의 승인 생략 대신 실행 전 승인을 요청한다.
   활성 불가 시 동작은 on-signal 출처로 갈린다:
@@ -1981,8 +1982,11 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   (loud `log.warn` + `isAsrtSandboxActive()=false` + boot 계속, non-bricking).
   Windows (srt-win 미설치) 는 explicit 이어도 항상 degrade (first-run brick
   방지). 결정은 `src/boot/steps/sandbox-gate.ts` `decideSandboxGate(
-  skip|activate|degrade|abort)` 한 곳. host-classify가 켜져 있고 실제
-  `sandboxActive`가 꺼져 있으면 interlock 경고를 표시한다(degrade 경로 포함).
+  skip|activate|degrade|abort)` 한 곳. host-classify가 켜져 있는데 익스텐션 격리가 실제로
+  활성화되지 않았으면(`sandboxActive && workerRequested` 가 거짓, degrade 경로와 셸 범위만
+  켜진 경우 포함) interlock 경고를 표시한다. 잔여 위험이 플러그인 코드이기 때문이다.
+  `AVE_SANDBOX_ENABLED=1` 만 설정하고 익스텐션 격리를 요청하지 않으면 익스텐션 프로세스가
+  격리되지 않는다는 경고도 기록한다.
   Gate는 호스트 부팅 시
   _정확히 한 번_ 결정되며 runtime 변경 채널은 없다.
 - **Read-relaxation ↔ plugin effect-boundary FILESYSTEM-CONTAINMENT 커플링

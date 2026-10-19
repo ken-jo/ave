@@ -5,8 +5,8 @@
  * own scope's gate, so turning one setting on never confines the other kind of
  * process.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -93,6 +93,36 @@ describe("each spawn path reads only its own scope's gate", () => {
     expect(text).toMatch(/\bisShellSandboxActive\(\)/);
     expect(text).not.toMatch(/\bisAsrtSandboxActive\b/);
     expect(text).not.toMatch(/\bisPluginWorkerConfinementActive\b/);
+  });
+
+  it("no source outside the ASRT runtime and its boot steps reads the raw gate", () => {
+    // The inverse of the allow-lists above: a NEW spawn path that reaches for
+    // the raw state would confine (or not) by the wrong scope.
+    const allowed = new Set([
+      "permissions/asrt-sandbox.ts",
+      "boot/steps/marketplace-setup.ts",
+      "boot/steps/sandbox-init.ts",
+    ]);
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== "__tests__") walk(full);
+          continue;
+        }
+        if (!/\.(ts|tsx|mts)$/.test(entry.name)) continue;
+        const rel = relative(srcRoot, full).split(sep).join("/");
+        if (allowed.has(rel)) continue;
+        const code = readFileSync(full, "utf8").split("\n").filter((line) => {
+          const trimmed = line.trim();
+          return !trimmed.startsWith("//") && !trimmed.startsWith("*") && !trimmed.startsWith("/*");
+        });
+        if (code.some((line) => /\bisAsrtSandboxActive\b/.test(line))) offenders.push(rel);
+      }
+    };
+    walk(srcRoot);
+    expect(offenders).toEqual([]);
   });
 
   it("the host-shell plan reads the shell-scoped capability and the shell seal", () => {

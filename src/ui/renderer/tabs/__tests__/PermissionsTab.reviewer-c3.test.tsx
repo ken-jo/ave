@@ -99,7 +99,6 @@ function installApi(providerKeys: Partial<Record<string, boolean>> = {}) {
       sandboxCapability: vi.fn(async () => ({
         platform: "linux" as NodeJS.Platform,
         enabled: false,
-        pluginWorkerConfinementEnabled: false,
         available: true,
         kind: "full" as const,
         reason: "",

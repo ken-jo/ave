@@ -159,10 +159,6 @@ export interface SandboxCapabilityInfo {
   /** Whether the shell sandbox setting (`features.osToolSandbox`, or its env
    *  escape-hatch `AVE_SANDBOX_ENABLED=1`) is currently enabled. */
   enabled: boolean;
-  /** Whether plugin-worker confinement (`features.pluginWorkerConfinement`, or
-   *  `AVE_PLUGIN_WORKER_CONFINEMENT=1`) is currently enabled. Independent of
-   *  {@link enabled}: neither setting decides the other. */
-  pluginWorkerConfinementEnabled: boolean;
   /** Whether THIS PLATFORM can confine tools (its potential), independent of
    * whether a runner is currently registered — so the toggle can be shown
    * before the user opts in. macOS/Linux/Windows → true, others → false. */
@@ -174,8 +170,12 @@ export interface SandboxCapabilityInfo {
   reason: string;
   /** Human-readable reason for this platform's potential capability. */
   potentialReason?: string;
-  /** Last runtime SOT snapshot for the current process. */
+  /** What host SHELLS run under in this process (the shell sandbox scope). */
   runtime?: SandboxRuntimeCapabilityInfo;
+  /** What EXTENSION processes run under in this process (the plugin-worker
+   *  confinement scope). ASRT is one runtime, so either scope can be active
+   *  while the other reports none. */
+  workerRuntime?: SandboxRuntimeCapabilityInfo;
   /**
    * What the boot gate decided for this process. `null` when boot has not run
    * the gate (tests, or a host that never called sandbox init) — absence is not

@@ -150,15 +150,6 @@ const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
  */
 const MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION = "marketplace-server-settings-removed";
 /**
- * One-time split of the single OS sandbox setting into the shell sandbox
- * (`features.osToolSandbox`) and plugin-worker confinement
- * (`features.pluginWorkerConfinement`). Before the split one setting confined
- * shells and workers together, so an install that had opted in keeps both
- * confined and every other install keeps neither. See
- * {@link withPluginWorkerConfinementSplit}.
- */
-const PLUGIN_WORKER_CONFINEMENT_SPLIT_MIGRATION = "plugin-worker-confinement-split";
-/**
  * The value every saved vendor block carried before the default stopped
  * being written. A stored `outputTokenLimit` of exactly this, without the
  * `outputTokenLimitSetByUser` stamp this build writes with a user's value, is
@@ -226,20 +217,27 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   PROVIDER_PRESET_MODEL_SLOT_MIGRATION,
   LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION,
   MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION,
-  PLUGIN_WORKER_CONFINEMENT_SPLIT_MIGRATION,
 ];
 
 /**
- * The stored feature flags with `pluginWorkerConfinement` derived from the
- * pre-split `osToolSandbox`, which until the split also decided worker
- * confinement. Only the STORED value counts: an absent or non-`true`
- * `osToolSandbox` was not an opt-in, so it never confines workers, whatever
- * the shell default later becomes. A `pluginWorkerConfinement` already on disk
- * (a file written by a build that has the setting) is the user's and is kept.
+ * The split of the single OS sandbox setting into the shell sandbox
+ * (`osToolSandbox`) and plugin-worker confinement (`pluginWorkerConfinement`):
+ * before it, `osToolSandbox` also decided worker confinement. A stored file
+ * without a boolean `pluginWorkerConfinement` was last written by a build that
+ * predates the split, so its worker value is derived from the STORED
+ * `osToolSandbox` — an opt-in keeps workers confined, anything else (absent or
+ * not `true`) was not an opt-in and leaves them unconfined, whatever the shell
+ * default later becomes. A boolean already on disk is the user's and is kept.
+ *
+ * Applied on every load rather than once behind an `appliedMigrations` marker:
+ * every build since the split writes the boolean, so its absence always means
+ * an older build wrote the file — including a downgrade that kept a marker but
+ * dropped the unknown key on save, which a marker would have misread as "the
+ * user turned worker confinement off".
  */
-function withPluginWorkerConfinementSplit(features: FeatureFlags): FeatureFlags {
-  if (typeof features.pluginWorkerConfinement === "boolean") return features;
-  return { ...features, pluginWorkerConfinement: features.osToolSandbox === true };
+function withPluginWorkerConfinementSplit(features: FeatureFlags): { features: FeatureFlags; changed: boolean } {
+  if (typeof features.pluginWorkerConfinement === "boolean") return { features, changed: false };
+  return { features: { ...features, pluginWorkerConfinement: features.osToolSandbox === true }, changed: true };
 }
 
 /** The stored `llm` object with every unstamped fossil default output limit removed, and whether one was. */
@@ -640,8 +638,9 @@ export interface FeatureFlags {
    * external MCP stdio servers) are spawned under ASRT. Separate from
    * {@link osToolSandbox} so that turning the shell sandbox on does not by
    * itself confine workers whose manifests under-declare their network
-   * domains. Off by default; the one-time split migration in `loadSettings`
-   * carries an existing `osToolSandbox: true` opt-in over to this setting.
+   * domains. Off by default; `loadSettings` derives it from a stored
+   * `osToolSandbox: true` whenever a file lacks this boolean (one written by a
+   * build that predates the split), so an existing opt-in stays on for both.
    *
    * `AVE_PLUGIN_WORKER_CONFINEMENT=1` is this setting's environment override
    * and, like `AVE_SANDBOX_ENABLED=1` for the shell sandbox, the explicit
@@ -2258,13 +2257,12 @@ export class SettingsService {
         migrationWriteBack = true;
       }
 
-      // One-time split: `osToolSandbox` used to confine shells AND workers.
-      // Written to disk once, so the worker side of an existing opt-in is the
-      // user's own value from here on and a later shell default flip cannot
-      // reach it.
-      if (!appliedMigrations.includes(PLUGIN_WORKER_CONFINEMENT_SPLIT_MIGRATION)) {
-        normalizedFeatures = withPluginWorkerConfinementSplit(normalizedFeatures);
-        appliedMigrations.push(PLUGIN_WORKER_CONFINEMENT_SPLIT_MIGRATION);
+      // The sandbox split: `osToolSandbox` used to confine shells AND workers.
+      // Written back, so the worker side of an existing opt-in is the user's
+      // own value from here on and a later shell default flip cannot reach it.
+      const split = withPluginWorkerConfinementSplit(normalizedFeatures);
+      if (split.changed) {
+        normalizedFeatures = split.features;
         migrationWriteBack = true;
       }
 

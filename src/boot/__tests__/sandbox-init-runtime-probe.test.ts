@@ -193,12 +193,22 @@ describe("initSandboxGate — shell sandbox and plugin-worker confinement scopes
     expect(harness.logSandboxGate).toHaveBeenCalledWith(expect.objectContaining({ outcome: "skip" }));
   });
 
-  it("AVE_SANDBOX_ENABLED=1 forces the shell scope only", async () => {
+  it("AVE_SANDBOX_ENABLED=1 forces the shell scope only, and warns that extension processes are unconfined", async () => {
     vi.stubEnv("AVE_SANDBOX_ENABLED", "1");
     await initSandboxGate(harness.context(false, false));
 
     expect(isShellSandboxRequestedAtBoot()).toBe(true);
     expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringMatching(
+      /AVE_SANDBOX_ENABLED=1 now confines host shells only[\s\S]*AVE_PLUGIN_WORKER_CONFINEMENT=1/,
+    ));
+  });
+
+  it("does not warn about the env split when worker confinement is also requested", async () => {
+    vi.stubEnv("AVE_SANDBOX_ENABLED", "1");
+    await initSandboxGate(harness.context(false, true));
+
+    expect(h.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("now confines host shells only"));
   });
 
   it("AVE_PLUGIN_WORKER_CONFINEMENT=1 forces the worker scope only, and is fail-closed", async () => {

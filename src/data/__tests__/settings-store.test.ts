@@ -3595,7 +3595,6 @@ describe("subAgentAutonomousWake un-fossilize migration", () => {
 });
 
 describe("plugin-worker confinement split migration", () => {
-  const MARKER = "plugin-worker-confinement-split";
   let userDataPath: string;
   let path: string;
 
@@ -3622,7 +3621,6 @@ describe("plugin-worker confinement split migration", () => {
 
     await service.patch({} as never);
     expect(onDisk().features).toMatchObject({ osToolSandbox: true, pluginWorkerConfinement: true });
-    expect(onDisk().appliedMigrations).toContain(MARKER);
   });
 
   it.each([
@@ -3638,7 +3636,6 @@ describe("plugin-worker confinement split migration", () => {
     await service.patch({} as never);
     // Written as the user's own value, so a later shell default cannot reach it.
     expect(onDisk().features?.pluginWorkerConfinement).toBe(false);
-    expect(onDisk().appliedMigrations).toContain(MARKER);
   });
 
   it("keeps a worker value already on disk", () => {
@@ -3671,13 +3668,26 @@ describe("plugin-worker confinement split migration", () => {
     expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("features")).toMatchObject({ osToolSandbox: false, pluginWorkerConfinement: false });
   });
 
-  it("starts a fresh install post-migration, so a first-session opt-in is not rewritten", async () => {
+  it("does not rewrite a fresh install's first-session shell opt-in into worker confinement", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ features: { osToolSandbox: true } });
+    expect(onDisk().features?.pluginWorkerConfinement).toBe(false);
 
     const rebooted = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(rebooted.get("appliedMigrations")).toContain(MARKER);
     expect(rebooted.get("features")?.pluginWorkerConfinement).toBe(false);
+  });
+
+  it("re-derives after a downgrade dropped the worker key, even when a marker survived", () => {
+    // An older build keeps unknown `appliedMigrations` entries but drops the
+    // unknown `pluginWorkerConfinement` key on save; the shell opt-in it kept
+    // must still confine workers after the re-upgrade.
+    writeFileSync(path, JSON.stringify({
+      appliedMigrations: ["plugin-worker-confinement-split"],
+      features: { osToolSandbox: true },
+    }), "utf-8");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("features")).toMatchObject({ osToolSandbox: true, pluginWorkerConfinement: true });
   });
 });
 

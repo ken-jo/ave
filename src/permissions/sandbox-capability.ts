@@ -314,6 +314,24 @@ export function detectShellSandboxCapability(): SandboxCapability {
   };
 }
 /**
+ * The OS sandbox extension processes (plugin workers, plugin children, plugin
+ * hooks, MCP stdio servers) get when wrapped: the ASRT capability when
+ * plugin-worker confinement was requested at boot, `none` otherwise —
+ * including when ASRT is active only for the shell sandbox. A per-process
+ * claim still needs that process's wrapped registry
+ * ({@link resolveReviewerSandboxCapability}); this is the scope-level view the
+ * settings surface reports.
+ */
+export function detectPluginWorkerSandboxCapability(): SandboxCapability {
+  if (_pluginWorkerConfinementRequestedAtBoot) return detectSandboxCapability();
+  return {
+    kind: "none",
+    confidence: "verified",
+    platform: process.platform,
+    reason: "extension confinement not requested at boot (features.pluginWorkerConfinement off)",
+  };
+}
+/**
  * Resolve the boot-sealed execution plan for builtin host shell tools.
  * It is intentionally separate from detectSandboxCapability(): Windows Plan B
  * selects a plain child and must not present the process-global partial ASRT
