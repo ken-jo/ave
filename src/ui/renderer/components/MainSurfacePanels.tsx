@@ -252,7 +252,10 @@ function PaneChatPanel({
       data-testid="pane-chat"
       data-tab-id={surface.tabId}
     >
+      {/* Keyed by the tab: a pane that comes to hold another surface shows
+          that surface's own conversation, never the last one's transcript. */}
       <SideChatView
+        key={surface.tabId}
         api={api}
         boundSurface={surface}
         runtime={runtime}

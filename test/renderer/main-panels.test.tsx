@@ -525,6 +525,37 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(document.querySelector('[data-testid="side-chat-target"]')).toBeNull());
   });
 
+  it("shows a pane's chat for the surface it holds now: a page put in a terminal's pane gets its own conversation", async () => {
+    const { container } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true, browserTabs: true });
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    const terminal = shownSurfaces(container)[0]!.tabId!;
+    const pane = () => container.querySelector('[data-testid="surface-pane"]')!.closest('[data-testid="pane"]')!;
+    await act(async () => { fireEvent.click(pane().querySelector('[data-testid="pane-action-surface.chat"]')!); });
+    const chat = () => pane().querySelector<HTMLElement>('[data-testid="pane-chat"]');
+    await waitFor(() => expect(chat()).not.toBeNull());
+    const input = chat()!.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => { fireEvent.change(input, { target: { value: "what did the build print?" } }); });
+    await act(async () => {
+      fireEvent.click(chat()!.querySelector<HTMLButtonElement>('[data-testid="side-chat-action-row"] button:last-child')!);
+    });
+    await waitFor(() => expect(chat()!.textContent).toContain("what did the build print?"));
+
+    // The same pane now shows a page: its chat is the page's, not the terminal's.
+    await clickSidebarNavRow("features", "sidebar-web");
+    const page = await waitFor(() => {
+      const tab = shownSurfaces(container)[0]!.tabId!;
+      expect(tab).not.toBe(terminal);
+      return tab;
+    });
+    const pageChat = await waitFor(() => {
+      const el = pane().querySelector<HTMLElement>(`[data-testid="pane-chat"][data-tab-id="${page}"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(pageChat.textContent).not.toContain("what did the build print?");
+  });
+
   it("gives a web pane's chat the page's tab and names it by the page", async () => {
     const { container } = await renderApp({ hasApiKey: true, sideChat: true, browserTabs: true });
     await clickSidebarNavRow("features", "sidebar-web");
