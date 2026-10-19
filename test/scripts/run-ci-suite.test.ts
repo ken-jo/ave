@@ -21,6 +21,7 @@ import {
   planCiSuite,
   runsRepoCodeOutOfProcess,
   selectCiTests,
+  testRunsRepoCodeOutOfProcess,
 } from "../../scripts/run-ci-suite.mjs";
 import { parseGitRawDiff } from "../../scripts/hooks/pre-push-ref-updates.mjs";
 import { isCollectedVitestFile } from "../../scripts/hooks/pre-push-source-policy.mjs";
@@ -236,10 +237,28 @@ describe("the must-run set", () => {
     // graph: changing src/core/model-catalog/refresh.ts, which only
     // cache-concurrency's spawned fixture imports, selected 238 files without
     // that test before this group existed.
-    const outOfProcess = trackedTests.filter((test) => runsRepoCodeOutOfProcess(readText(test) ?? ""));
+    const outOfProcess = trackedTests.filter((test) => testRunsRepoCodeOutOfProcess(test, readText));
     expect(outOfProcess).toContain("src/core/model-catalog/__tests__/cache-concurrency.test.ts");
     expect(outOfProcess).toContain("src/tools/__tests__/archive-entry-reader-bundle.test.ts");
+    // These two bundle the image-preparation child only through
+    // src/__tests__/support/image-preparation-runtime.ts.
+    expect(outOfProcess).toContain("src/tools/__tests__/file-tools.test.ts");
+    expect(outOfProcess).toContain("src/main/__tests__/codex-conversation-runtime.test.ts");
     expect(outOfProcess.filter((test) => !mustRunTests.includes(test))).toEqual([]);
+  });
+
+  it("follows a test's helper imports, but not its production imports", () => {
+    const loader = ["t", "sx"].join("");
+    const files: Record<string, string> = {
+      "src/a/__tests__/uses-helper.test.ts": 'import { run } from "./support/runner.js";',
+      "src/a/__tests__/support/runner.ts": 'import { spawnIt } from "../../../__tests__/support/deep.js";',
+      "src/__tests__/support/deep.ts": `spawn(node, ["--import", "${loader}", child]);`,
+      "src/a/__tests__/uses-module.test.ts": 'import { spawnIt } from "../spawner.js";',
+      "src/a/spawner.ts": `spawn(node, ["--import", "${loader}", child]);`,
+    };
+    const read = (path: string) => files[path] ?? null;
+    expect(testRunsRepoCodeOutOfProcess("src/a/__tests__/uses-helper.test.ts", read)).toBe(true);
+    expect(testRunsRepoCodeOutOfProcess("src/a/__tests__/uses-module.test.ts", read)).toBe(false);
   });
 
   it("recognizes the tsx and esbuild spellings, and not a plain import", () => {

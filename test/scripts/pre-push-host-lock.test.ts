@@ -139,8 +139,8 @@ let during = [];
 let failure;
 const logs = [];
 try {
-  // Only the "absent" probe waits out the timeout; the others settle on
-  // their first or second attempt.
+  // The "absent" probe and the occupied-"full" probes wait out the timeout;
+  // the others settle on their first or second attempt.
   withHostLock({ name, label: name, directory, timeoutMs: 400, pollMs: 5,
     ...(mode === "pool" ? { slots: 2 } : {}), log: (line) => logs.push(line) }, () => {
     ran += 1;

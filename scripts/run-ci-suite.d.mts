@@ -21,6 +21,7 @@ export declare function selectCiTests(input: {
   discoverRelated: (paths: string[]) => { source: string; tests: string[] }[] | null;
 }): CiSuitePlan;
 export declare function runsRepoCodeOutOfProcess(text: string): boolean;
+export declare function testRunsRepoCodeOutOfProcess(testPath: string, readText: (path: string) => string | null): boolean;
 export declare function isCategoryMergeToMain(headRef: string | undefined, baseRef: string | undefined): boolean;
 export declare function planCiSuite(
   eventName: string | undefined,

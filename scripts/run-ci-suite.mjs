@@ -104,12 +104,50 @@ export function namesChangedPath(named, changedPath) {
  * process loaded through tsx (`--import tsx`, `tsx/esm`) or an esbuild bundle
  * (`entryPoints:`). Whatever that child or bundle imports is invisible to
  * `vitest related`, so every such test belongs to the must-run set
- * (test/scripts/run-ci-suite.test.ts holds the set to this).
+ * (test/scripts/run-ci-suite.test.ts holds the set to this, through
+ * testRunsRepoCodeOutOfProcess).
  */
 const OUT_OF_PROCESS_CODE = /["'`]--import["'`]\s*,\s*["'`]tsx["'`]|--import[= ]tsx\b|\btsx\/(?:esm|cjs)\b|require\.resolve\(\s*["'`]tsx["'`]|\bentryPoints\s*:/u;
 
 export function runsRepoCodeOutOfProcess(text) {
   return OUT_OF_PROCESS_CODE.test(text);
+}
+
+const RELATIVE_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\bvi\.(?:mock|doMock|importActual)\s*(?:<[^>]*>)?\(\s*)["'](\.{1,2}\/[^"']+)["']/gu;
+const HELPER_EXTENSIONS = ["", ".ts", ".tsx", ".mts", ".mjs", ".js"];
+
+/**
+ * Whether a test runs repository code out of process itself or through a
+ * test helper it imports: a non-test module under a `__tests__/` directory
+ * (support code, fixtures), followed through the helpers it imports in turn.
+ * src/__tests__/support/image-preparation-runtime.ts bundles a child with
+ * esbuild for the tests that import it, which a scan of the test body alone
+ * misses. Production modules are not followed: the import graph sees them.
+ */
+export function testRunsRepoCodeOutOfProcess(testPath, readText) {
+  const seen = new Set();
+  const pending = [testPath];
+  while (pending.length > 0) {
+    const path = pending.pop();
+    if (seen.has(path)) continue;
+    seen.add(path);
+    const text = readText(path);
+    if (typeof text !== "string") continue;
+    if (runsRepoCodeOutOfProcess(text)) return true;
+    for (const [, specifier] of text.matchAll(RELATIVE_IMPORT)) {
+      const target = posix.normalize(posix.join(posix.dirname(path), specifier));
+      if (!target.includes("/__tests__/") || /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(target)) continue;
+      const base = target.replace(/\.[cm]?js$/u, "");
+      for (const extension of HELPER_EXTENSIONS) {
+        const candidate = `${extension === "" ? target : base}${extension}`;
+        if (typeof readText(candidate) === "string") {
+          pending.push(candidate);
+          break;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 /**
