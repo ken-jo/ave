@@ -439,6 +439,14 @@
         {
           "from": "resources/windows-path-kind/${arch}/ave-path-kind.exe",
           "to": "windows-path-kind/${arch}/ave-path-kind.exe"
+        },
+        {
+          "from": "resources/mxc/${arch}/wxc-exec.exe",
+          "to": "mxc/${arch}/wxc-exec.exe"
+        },
+        {
+          "from": "resources/licenses/mxc",
+          "to": "licenses/mxc"
         }
       ]
     },

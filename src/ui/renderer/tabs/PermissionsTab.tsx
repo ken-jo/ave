@@ -35,6 +35,7 @@ import type {
 } from "../types.js";
 import type {
   SandboxCapabilityInfo,
+  SandboxMxcUnavailableReason,
   SandboxWindowsStatusInfo,
 } from "../../../shared/sandbox-capability-info.js";
 import {
@@ -182,6 +183,16 @@ function describeWindowsInstallResult(result: unknown): WindowsInstallOutcomeVie
       return UNEXPECTED_WINDOWS_INSTALL_VIEW();
   }
 }
+
+/** Settings text for each reason MXC cannot carry agent shells (`mxc-windows.ts`). */
+const MXC_UNAVAILABLE_REASON_KEY = {
+  "not-windows": "permissionsTab.osSandboxWindowsMxcReasonNotWindows",
+  "unsupported-arch": "permissionsTab.osSandboxWindowsMxcReasonUnsupportedArch",
+  "binary-missing": "permissionsTab.osSandboxWindowsMxcReasonBinaryMissing",
+  "probe-failed": "permissionsTab.osSandboxWindowsMxcReasonProbeFailed",
+  "tier-unsupported": "permissionsTab.osSandboxWindowsMxcReasonTierUnsupported",
+  "request-rejected": "permissionsTab.osSandboxWindowsMxcReasonRequestRejected",
+} as const satisfies Record<SandboxMxcUnavailableReason, string>;
 
 const WINDOWS_INSTALL_OUTCOME_TONE: Record<WindowsInstallOutcomeView["tone"], string> = {
   success: "border-success/(--opacity-medium) bg-success/(--opacity-faint) text-success",
@@ -979,6 +990,9 @@ export function PermissionsTab({
   const sandboxBoot = sandboxCapability?.boot ?? null;
   const sandboxDegraded =
     sandboxBoot !== null && (sandboxBoot.action === "degrade" || sandboxBoot.action === "abort");
+  // Windows: which substrate carries shells and extensions this session.
+  // Shown whenever boot recorded one, so an unavailable MXC is never silent.
+  const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
 
   return (
     <div className="pr-1">
@@ -1383,6 +1397,43 @@ export function PermissionsTab({
               <p className="italic">
                 {t("permissionsTab.osSandboxBootDegradedReason", { reason: ipcErrorCode(sandboxBoot.reason) ?? "unknown" })}
               </p>
+            </div>
+          ) : null}
+          {windowsSubstrate ? (
+            <div
+              data-testid="os-sandbox-windows-substrate"
+              data-shells={windowsSubstrate.shells}
+              data-extensions={windowsSubstrate.extensions}
+              data-mxc={windowsSubstrate.mxc.state}
+              className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-[11px] text-muted-foreground"
+            >
+              <p className="font-medium text-foreground">{t("permissionsTab.osSandboxWindowsSubstrateHeading")}</p>
+              <p data-testid="os-sandbox-windows-substrate-shells">
+                {windowsSubstrate.shells === "mxc"
+                  ? t("permissionsTab.osSandboxWindowsShellsMxc")
+                  : windowsSubstrate.shells === "approved-host"
+                    ? t("permissionsTab.osSandboxWindowsShellsApprovedHost")
+                    : t("permissionsTab.osSandboxWindowsShellsNone")}
+              </p>
+              {windowsSubstrate.shells === "mxc" ? (
+                <p data-testid="os-sandbox-windows-bash-note">{t("permissionsTab.osSandboxWindowsBashNote")}</p>
+              ) : null}
+              {windowsSubstrate.mxc.state === "unavailable" ? (
+                <p data-testid="os-sandbox-windows-mxc-reason" data-reason={windowsSubstrate.mxc.reason}>
+                  {t("permissionsTab.osSandboxWindowsMxcUnavailable", {
+                    reason: t(MXC_UNAVAILABLE_REASON_KEY[windowsSubstrate.mxc.reason]),
+                    build: windowsSubstrate.windowsBuild ?? "?",
+                  })}
+                </p>
+              ) : null}
+              <p data-testid="os-sandbox-windows-substrate-extensions">
+                {windowsSubstrate.extensions === "srt-win"
+                  ? t("permissionsTab.osSandboxWindowsExtensionsSrtWin")
+                  : t("permissionsTab.osSandboxWindowsExtensionsNone")}
+              </p>
+              {windowsSubstrate.extensionEgressIdentity === "shared" && windowsSubstrate.extensions === "srt-win" ? (
+                <p data-testid="os-sandbox-windows-grant-cap">{t("permissionsTab.osSandboxWindowsSharedIdentity")}</p>
+              ) : null}
             </div>
           ) : null}
           {/* ── Windows srt-win consent flow ── */}

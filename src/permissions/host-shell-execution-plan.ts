@@ -20,6 +20,15 @@ export type HostShellExecutionRequest = "default" | "host";
 
 export type HostShellExecutionMode = "asrt" | "plain" | "blocked";
 
+/**
+ * What confines a sandboxed (`mode: "asrt"`) shell child: the ASRT wrap
+ * (Seatbelt, bubblewrap), or — on Windows hosts that offer it — a Microsoft
+ * Execution Containers container per command (`mxc-windows.ts`), whose
+ * network reaches only the invocation's own proxy port. `none` for every
+ * other mode.
+ */
+type HostShellSubstrate = "asrt" | "mxc" | "none";
+
 /** Machine-readable, host-owned fallback state. Never derive authority from UI text. */
 export type HostShellFallbackReason =
   | "none"
@@ -36,6 +45,8 @@ export interface HostShellExecutionPlan {
   readonly executionRequest: HostShellExecutionRequest;
   /** Actual route selected before permission/reviewer processing. */
   readonly mode: HostShellExecutionMode;
+  /** What confines the child when `mode` is `asrt`; `none` otherwise. */
+  readonly substrate: HostShellSubstrate;
   /** Honest capability of the child selected by this plan. */
   readonly capability: SandboxCapability;
   readonly fallbackReason: HostShellFallbackReason;
@@ -65,6 +76,7 @@ export interface HostShellExecutionPlanAuditProjection {
   /** Explicit per-invocation request, separate from sandbox availability. */
   readonly executionRequest: HostShellExecutionRequest;
   readonly mode: HostShellExecutionMode;
+  readonly substrate: HostShellSubstrate;
   readonly fallbackReason: HostShellFallbackReason;
   readonly requiresExplicitUserApproval: boolean;
   readonly capability: Readonly<{
@@ -102,6 +114,7 @@ export function getHostShellExecutionPlanAuditProjection(
     requestedSandbox: plan.requestedSandbox,
     executionRequest: plan.executionRequest,
     mode: plan.mode,
+    substrate: plan.substrate,
     fallbackReason: plan.fallbackReason,
     requiresExplicitUserApproval: plan.requiresExplicitUserApproval,
     capability: Object.freeze({
@@ -160,6 +173,7 @@ export function getHostShellExecutionPlanCacheIdentity(
     fallbackReason: projection.fallbackReason,
     identity: projection.identity,
     mode: projection.mode,
+    substrate: projection.substrate,
     platform: projection.platform,
     requestedSandbox: projection.requestedSandbox,
     executionRequest: projection.executionRequest,
@@ -213,8 +227,18 @@ export function buildHostShellExecutionPlan(input: {
   platform: NodeJS.Platform;
   requestedSandbox: boolean;
   activeCapability: SandboxCapability;
+  /**
+   * What would confine a sandboxed child: `mxc` only when the host's MXC
+   * route is live and `activeCapability` is that route's capability.
+   * Defaults to the ASRT wrap.
+   */
+  shellSubstrate?: "asrt" | "mxc";
   executionMode?: HostShellExecutionRequest;
 }): HostShellExecutionPlan {
+  const shellSubstrate = input.shellSubstrate ?? "asrt";
+  if (shellSubstrate === "mxc" && input.platform !== "win32") {
+    throw new Error("The MXC shell substrate exists only on Windows");
+  }
   const executionRequest = input.executionMode ?? "default";
   if (executionRequest !== "default" && executionRequest !== "host") {
     throw new Error("Invalid host shell execution request");
@@ -228,6 +252,7 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "plain" as const,
+      substrate: "none" as const,
       capability: noneCapability(input.platform, "Explicit host execution runs as the current user without OS confinement."),
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: true,
@@ -255,6 +280,7 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "plain" as const,
+      substrate: "none" as const,
       capability,
       fallbackReason,
       requiresExplicitUserApproval: false,
@@ -270,10 +296,11 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "asrt" as const,
+      substrate: shellSubstrate,
       capability,
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: false,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":asrt",
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + shellSubstrate,
     });
   }
 
@@ -295,6 +322,7 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "plain" as const,
+      substrate: "none" as const,
       capability,
       fallbackReason,
       requiresExplicitUserApproval: true,
@@ -318,6 +346,7 @@ export function buildHostShellExecutionPlan(input: {
       requestedSandbox,
       executionRequest,
       mode: "blocked" as const,
+      substrate: "none" as const,
       capability,
       fallbackReason,
       requiresExplicitUserApproval: false,
@@ -335,6 +364,7 @@ export function buildHostShellExecutionPlan(input: {
     requestedSandbox,
     executionRequest,
     mode: "plain" as const,
+    substrate: "none" as const,
     capability,
     fallbackReason: "none" as const,
     requiresExplicitUserApproval: false,

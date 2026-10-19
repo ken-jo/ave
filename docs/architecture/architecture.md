@@ -1396,6 +1396,77 @@ binary and its lifecycle is part of the worker's confinement proof: if the
 holder exits or errors, the host must revoke grants, unmark the worker, and
 terminate the wrapped worker.
 
+### Windows agent shells in Microsoft Execution Containers
+
+By owner decision (2026-10-19, proxy-egress PR 9) a Bash or PowerShell tool
+command on Windows runs in its own Microsoft Execution Containers (MXC)
+BaseContainer where the host offers one. Ave ships only the MIT-licensed
+`wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.0.0 at
+`<resources>/mxc/<arch>/wxc-exec.exe` (x64, arm64), staged at build time by
+`scripts/fetch-mxc.mjs`, which checks the npm tarball's sha512 and each
+launcher's sha256. Ave does not load the SDK's JavaScript: its Windows stdio
+path needs Node 24.21, newer than the Node Electron bundles. Each command
+spawns `wxc-exec.exe --config-base64 <request>` (`mxc-windows.ts`,
+`mxc-shell-launch.ts`); no administrator rights or UAC prompt are needed per
+run or at install.
+
+- **Detection.** At boot, `--probe` must report the `base-container` tier and
+  `--dry-run` of a request shaped like a real one (loopback proxy, default-deny
+  egress) must pass. Detection reads what the launcher accepts, not the build
+  number: identity-less loopback proxying needs PSEC 1.1 in MXC 1.0.0.
+- **Boot plan** (`windows-sandbox-plan.ts`). MXC and srt-win are independent.
+  With MXC, shells run in containers whether or not srt-win is installed;
+  without srt-win, ASRT starts as the proxy only (`windows.externalConfinement`,
+  patch part 3), the process-wide capability confines nothing, and extensions
+  run unconfined with a boot warning. Without MXC, shells keep the approved
+  host route. Without either, the gate degrades as before. The workspace
+  terminal never runs in MXC (it is the user's surface, and MXC ends background
+  descendants with the command), and reads only the process-wide capability.
+- **Filesystem.** The per-command ASRT lists are ranked for MXC
+  (`rankMxcFilesystem`): the protected read floor drops grants not under a
+  pierce, a write grant under a `denyWrite` path becomes read-only, a deny
+  strictly inside a grant becomes an explicit `denied` entry when the path
+  exists, and grants that do not exist are dropped. Measured: a more specific
+  grant wins over a denied parent, a missing `denied` file path still blocks its
+  creation, and a missing `readonly` directory does not block its creation, so
+  a `denyWrite` path that does not exist is written as `denied`.
+- **Network and identity.** Each command gets its own loopback proxy listener
+  (`egress-invocation-listener.ts`). The container's only network path is that
+  port: MXC's per-container WFP filter, with `egress.default: "deny"` and
+  `hostLoopback: "allow"`. The listener forwards to ASRT's proxy and stamps the
+  command's egress token on every request it forwards, replacing any
+  `Proxy-Authorization` the client sent, so refusals are attributed to the
+  command that made them. It refuses loopback and unspecified destinations in
+  any numeric spelling. Measured on Windows 11 26H2 (build 26300): a container
+  reached its own port, and could not reach another command's port, another
+  loopback listener, `localhost` or an external host directly; a forged
+  identity was replaced by the listener's; a container could not terminate a
+  host process of the same user; and when its process timeout fires or
+  `wxc-exec.exe` is killed, every process in the container ends with it. Shell
+  egress identity is therefore `kernel-channel`, extension identity stays
+  `shared`, and `maxEgressGrantScope` caps grants for a `shared` identity at
+  the conversation.
+- **Shells.** PowerShell runs as System32 Windows PowerShell 5.1 with
+  `-EncodedCommand`. Git Bash cannot start in a container: MSYS2 is denied the
+  named-object directory it creates at startup (`0xC0000022`, in every
+  session), so a sandboxed Bash command is refused with guidance to use the
+  PowerShell tool or an approved host run. .NET Framework's
+  `Invoke-WebRequest` ignores the injected `HTTP(S)_PROXY` variables and fails
+  closed.
+- **Settings.** Permissions shows the substrate chosen for shells and
+  extensions, the MXC unavailable reason with the Windows build, the Bash
+  limit, and the conversation cap for a shared identity.
+
+Not covered: plugin workers stay on srt-win. MXC's proxy mode forbids direct
+egress rules, so the TCP worker control channel cannot reach a container; a
+container worker needs a stdio control path or control over its own proxy
+port. Windows PowerShell 5.1 and Node inside a container start only in an
+interactive session: in the SSH session-0 window station both fail with
+`0xC0000142`. An interactive-session probe (2026-10-16) ran both with
+`ui.disable: false`, which the containers use. The PR 9 measurements ran
+`cmd.exe` and `curl.exe` from session 0 through the same request builder and
+listener; the PowerShell 5.1 launch itself awaits an interactive-session run.
+
 ## Security And Audit
 
 Security-sensitive areas are intentionally centralized:

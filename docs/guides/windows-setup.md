@@ -33,6 +33,8 @@ Plugins are not taken from sibling checkouts. Install them from a marketplace, o
 
 Success: the log shows `boot: ready (N tools, N plugins, N mcp)` and the window opens.
 
+With the OS sandbox on, agent shell commands run in Microsoft Execution Containers when the launcher is present. Installers include it; a source checkout stages it once with `node scripts/fetch-mxc.mjs --arch x64` (or `arm64`). Without it, Settings → Permissions reports `binary-missing` and shells use the approved host route. See the architecture document, "Windows agent shells in Microsoft Execution Containers".
+
 ## 3. What the Windows launcher sets
 
 `scripts/run-electron.mjs` (with `scripts/lib/electron-launch-options.mjs` and `scripts/electron-flags.mjs`) applies these on `win32`:

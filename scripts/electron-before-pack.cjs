@@ -10,4 +10,6 @@ module.exports = async function beforePack(context) {
     execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
       join(context.packager.projectDir, "scripts", "build-windows-job.ps1"), "-Arch", arch, "-Helper", helper], { stdio: "inherit" });
   }
+  // Microsoft Execution Containers' launcher for agent shell commands, hash-pinned.
+  execFileSync(process.execPath, [join(context.packager.projectDir, "scripts", "fetch-mxc.mjs"), "--arch", arch], { stdio: "inherit" });
 };

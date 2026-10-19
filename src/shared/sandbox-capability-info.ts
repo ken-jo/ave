@@ -113,6 +113,8 @@ export type SandboxGateAction = "skip" | "activate" | "degrade" | "abort";
 export type SandboxGateReason =
   | "gate-off"
   | "deps-present"
+  /** Windows: srt-win not installed, ASRT runs as the proxy for agent shells in MXC containers. */
+  | "activate-windows-mxc-proxy-only"
   | "degrade-windows-not-installed"
   | "degrade-default-cannot-activate"
   | "abort-explicit-cannot-activate"
@@ -141,6 +143,66 @@ export interface SandboxBootOutcome {
    * did not fail on dependencies.
    */
   readonly dependencyErrors: readonly string[];
+}
+
+/**
+ * How strongly the egress proxy knows which invocation opened a connection.
+ *
+ * - `kernel-channel`: the OS pins each confined process to its own proxy
+ *   listener, so the port a connection arrives on names the invocation
+ *   (Windows MXC per-container WFP; `egress-invocation-listener.ts`). A
+ *   process cannot present another invocation's identity.
+ * - `shared`: confined processes share one proxy endpoint and the identity is
+ *   a label the client presents (ASRT's proxy username). Attribution, not a
+ *   boundary between concurrent invocations.
+ */
+export type EgressIdentityStrength = "kernel-channel" | "shared";
+
+/** The scopes an egress grant can be given, narrowest first. */
+export type EgressGrantScope = "once" | "conversation" | "workspace" | "always";
+
+/**
+ * The widest egress-grant scope an identity strength can carry. With a shared
+ * identity another invocation of the same session can present the id a grant
+ * was given to, so a grant must not outlive the conversation it was given in.
+ * The egress ask (proxy-egress PR 4) caps the scopes it offers with this.
+ */
+export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGrantScope {
+  return strength === "kernel-channel" ? "always" : "conversation";
+}
+
+/** Why Microsoft Execution Containers cannot carry agent shells on this host (`mxc-windows.ts`). */
+export type SandboxMxcUnavailableReason =
+  | "not-windows"
+  | "unsupported-arch"
+  | "binary-missing"
+  | "probe-failed"
+  | "tier-unsupported"
+  | "request-rejected";
+
+/**
+ * Windows only: which substrate carries each kind of process this boot, and
+ * how strongly their egress is attributed. Sealed at boot, like the gate.
+ */
+export interface SandboxWindowsSubstrateInfo {
+  /** Whether MXC can confine agent shells here, with the stable reason when not. */
+  readonly mxc:
+    | { readonly state: "available" }
+    | { readonly state: "unavailable"; readonly reason: SandboxMxcUnavailableReason };
+  /** `major.minor.build.ubr` of the host, for the reason text; null if unread. */
+  readonly windowsBuild: string | null;
+  /** Whether srt-win (the one-time administrator install) was ready at boot. */
+  readonly srtWinReady: boolean;
+  /**
+   * Bash/PowerShell tool commands: each in its own MXC container (`mxc`), or —
+   * with srt-win active and no MXC — as an ordinary process after a per-command
+   * approval (`approved-host`), or without the sandbox at all (`none`).
+   */
+  readonly shells: "mxc" | "approved-host" | "none";
+  /** Plugin processes: under srt-win's shared account, or not confined. */
+  readonly extensions: "srt-win" | "none";
+  readonly shellEgressIdentity: EgressIdentityStrength;
+  readonly extensionEgressIdentity: EgressIdentityStrength;
 }
 
 /** Runtime snapshot returned to the renderer for startup/runtime honesty. */
@@ -182,6 +244,12 @@ export interface SandboxCapabilityInfo {
    * "off", so the renderer must not render it as such.
    */
   boot?: SandboxBootOutcome | null;
+  /**
+   * Windows: which substrate carries shells and extensions this boot, and how
+   * strongly their egress is attributed. `null` off Windows, and on Windows
+   * when boot never ran the gate.
+   */
+  windowsSubstrate?: SandboxWindowsSubstrateInfo | null;
   /** What the sandbox actually confines on this platform when active. */
   confines: SandboxConfinement;
 }

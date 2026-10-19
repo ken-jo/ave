@@ -1318,6 +1318,52 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(document.body.textContent).not.toContain("AppData");
   });
 
+  it("shows MXC shells, the Bash note and unconfined extensions when ASRT runs only as the containers' proxy", async () => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: true, kind: "none", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", dependencyErrors: [] },
+      windowsSubstrate: {
+        mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false,
+        shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel", extensionEgressIdentity: "shared",
+      },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    const block = screen.getByTestId("os-sandbox-windows-substrate");
+    expect(block.dataset.shells).toBe("mxc");
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsMxc"));
+    expect(screen.getByTestId("os-sandbox-windows-bash-note")).toBeTruthy();
+    expect(screen.getByTestId("os-sandbox-windows-substrate-extensions").textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
+    expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
+    expect(screen.queryByTestId("os-sandbox-windows-grant-cap")).toBeNull();
+  });
+
+  it("says why MXC is unavailable and that shared-identity grants stop at the conversation", async () => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: true, kind: "partial", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      boot: { action: "activate", reason: "deps-present", onSignal: "default-settings", dependencyErrors: [] },
+      windowsSubstrate: {
+        mxc: { state: "unavailable", reason: "tier-unsupported" }, windowsBuild: "10.0.22631.4317", srtWinReady: true,
+        shells: "approved-host", extensions: "srt-win", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
+      },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsApprovedHost"));
+    const reason = screen.getByTestId("os-sandbox-windows-mxc-reason");
+    expect(reason.dataset.reason).toBe("tier-unsupported");
+    expect(reason.textContent).toBe(t("permissionsTab.osSandboxWindowsMxcUnavailable", {
+      reason: t("permissionsTab.osSandboxWindowsMxcReasonTierUnsupported"),
+      build: "10.0.22631.4317",
+    }));
+    expect(screen.getByTestId("os-sandbox-windows-grant-cap").textContent).toBe(t("permissionsTab.osSandboxWindowsSharedIdentity"));
+    expect(screen.queryByTestId("os-sandbox-windows-bash-note")).toBeNull();
+  });
+
   it("does not claim a timeout or an unverified install proves isolation or an unchanged machine", async () => {
     for (const outcome of ["timed-out", "installed-unverified"]) {
       const { outcome: view } = await clickInstall(async () => ({ outcome, ready: false }));

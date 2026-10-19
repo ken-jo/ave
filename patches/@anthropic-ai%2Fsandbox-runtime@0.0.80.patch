@@ -1,7 +1,8 @@
-Two backports onto @anthropic-ai/sandbox-runtime 0.0.80. Drop each part when a
-released version carries it, and the whole patch (and the patchedDependencies
-entry in package.json) when both are released and Ave pins that version.
-test/scripts/asrt-patched-symbols.test.ts fails if either part is missing from
+Two backports and one Ave-only change onto @anthropic-ai/sandbox-runtime
+0.0.80. Drop each part when a released version carries it (or, for part 3,
+when Ave adopts an upstream MXC backend), and the whole patch (and the
+patchedDependencies entry in package.json) when every part is gone.
+test/scripts/asrt-patched-symbols.test.ts fails if any part is missing from
 the installed package.
 
 1. https://github.com/anthropics/sandbox-runtime/pull/722 (issue #721): a
@@ -17,8 +18,17 @@ the installed package.
    one process-wide proxy cannot tell which of them opened the connection it
    is asked about. Carried regardless of upstream review (owner 2026-10-19).
 
+3. Ave-only (no upstream PR yet; upstream's MXC backend is draft #427/#713):
+   `windows.externalConfinement: "embedder"` lets initialize() run the proxy
+   on Windows without the srt-win account, its WFP fence or its session
+   ACLs, for an embedder that confines its Windows children itself. Ave sets
+   it only on a host where Microsoft Execution Containers carry the agent
+   shells and srt-win is not installed (proxy-egress PR 9). In that mode
+   wrapWithSandboxArgv() throws rather than run srt-win unprovisioned. Drop
+   it when upstream ships an MXC backend Ave adopts.
+
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 46dc273..fe6a09e 100644
+index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..fe6a09e229bba2148903856733a5f9f9049329b9 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -3,7 +3,7 @@ export type { WrapWithSandboxOptions } from './sandbox/sandbox-manager.js';
@@ -31,7 +41,7 @@ index 46dc273..fe6a09e 100644
  export type { SandboxViolationEvent } from './sandbox/macos-sandbox-utils.js';
  export { type SandboxDependencyCheck, LinuxSandboxProfileError, type LinuxSandboxProfileErrorCode, } from './sandbox/linux-sandbox-utils.js';
 diff --git a/dist/sandbox/macos-sandbox-utils.d.ts b/dist/sandbox/macos-sandbox-utils.d.ts
-index 8af5e03..cb47568 100644
+index 8af5e03041b27d060b0027278fb0567745b06f2f..cb475685df0ae8d5ae7d00d9009ba2f1f1679ad6 100644
 --- a/dist/sandbox/macos-sandbox-utils.d.ts
 +++ b/dist/sandbox/macos-sandbox-utils.d.ts
 @@ -48,6 +48,8 @@ export interface MacOSSandboxParams {
@@ -51,7 +61,7 @@ index 8af5e03..cb47568 100644
  //# sourceMappingURL=macos-sandbox-utils.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/macos-sandbox-utils.js b/dist/sandbox/macos-sandbox-utils.js
-index 0e598b6..f176ead 100644
+index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..f176ead01242377afdf2ef9d35a6f9bb14841d70 100644
 --- a/dist/sandbox/macos-sandbox-utils.js
 +++ b/dist/sandbox/macos-sandbox-utils.js
 @@ -750,7 +750,7 @@ function generateWriteRules(config, logTag, allowGitConfig, writeRoots) {
@@ -118,7 +128,7 @@ index 0e598b6..f176ead 100644
          enableWeakerNetworkIsolation,
          allowAppleEvents,
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a..fc7e15a 100644
+index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..fc7e15a055880253139097ca93dc93258e35a4d4 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
 @@ -45,6 +45,13 @@ export type WrapWithSandboxOptions = {
@@ -136,7 +146,7 @@ index 5c46e7a..fc7e15a 100644
  /**
   * Interface for the sandbox manager API
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa..a941d40 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..5213faef167d9802a52292bec0a0b123187a7b45 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -16,7 +16,7 @@ import * as fs from 'fs';
@@ -174,7 +184,26 @@ index 810b0aa..a941d40 100644
          // Only `true` allows: an object is how a callback denies with a reason,
          // and a truthiness test here would read every such denial as an allow.
          if (answer === true) {
-@@ -1515,6 +1521,9 @@ async function waitToWalk(signal) {
+@@ -705,7 +711,17 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+     // sandboxed child can be spawned. Doing this at initialize() (not
+     // wrap-time) means the host gets a single actionable error before
+     // any per-exec work happens, instead of exit-15 on every command.
+-    if (getPlatform() === 'windows') {
++    if (getPlatform() === 'windows' &&
++        runtimeConfig.windows?.externalConfinement === 'embedder') {
++        // Ave patch: the embedder confines its Windows children itself (MXC
++        // containers pinned by the OS to a loopback proxy port) and runs only
++        // the proxy here. The srt-win account, its WFP fence and its session
++        // ACLs are not used, so they are neither required nor touched, and
++        // wrapWithSandboxArgv() refuses (see there).
++        logForDebugging('[Sandbox Windows] external confinement: srt-win provisioning, ' +
++            'WFP verification and session ACLs skipped');
++    }
++    else if (getPlatform() === 'windows') {
+         // Resolve once (stats disk); captured module-level for wrap/reset.
+         srtWinSpawn = resolveSrtWin(runtimeConfig.windows?.srtWin);
+         const srtWin = srtWinSpawn;
+@@ -1515,6 +1531,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -184,7 +213,7 @@ index 810b0aa..a941d40 100644
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1734,6 +1743,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1734,6 +1753,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -192,17 +221,25 @@ index 810b0aa..a941d40 100644
                  allowGitConfig: getAllowGitConfig(),
                  gitSafeDirectories,
                  enableWeakerNetworkIsolation: getEnableWeakerNetworkIsolation(),
-@@ -1821,6 +1831,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,7 +1841,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
 +    // Backport of anthropics/sandbox-runtime#722: before the Windows branch.
 +    assertPtySlavePaths(options?.ttys ?? []);
      const platform = getPlatform();
++    if (platform === 'windows' &&
++        config?.windows?.externalConfinement === 'embedder') {
++        // Ave patch: initialize() skipped srt-win (external confinement), so
++        // an srt-win wrap would run unprovisioned. Refuse instead.
++        throw new Error('wrapWithSandboxArgv() is unavailable: this sandbox was initialized ' +
++            'with windows.externalConfinement, so the embedder confines Windows children itself');
++    }
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
+             config?.network?.allowedDomains !== undefined;
 diff --git a/dist/sandbox/sandbox-schemas.d.ts b/dist/sandbox/sandbox-schemas.d.ts
-index 4c0be53..1e41362 100644
+index 4c0be53fa68af536b0dcf49192421651d7b51476..1e413625b79c4ef43d011f5ac9bfed46e40cdea7 100644
 --- a/dist/sandbox/sandbox-schemas.d.ts
 +++ b/dist/sandbox/sandbox-schemas.d.ts
 @@ -151,8 +151,30 @@ export type NetworkHostPattern = {

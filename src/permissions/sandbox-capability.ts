@@ -36,6 +36,7 @@ import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
   SandboxBootOutcome,
   SandboxConfinement,
+  SandboxWindowsSubstrateInfo,
 } from "../shared/sandbox-capability-info.js";
 import {
   buildHostShellExecutionPlan,
@@ -170,6 +171,8 @@ let _sandboxGeneration = 0;
 let _shellSandboxRequestedAtBoot = false;
 let _pluginWorkerConfinementRequestedAtBoot = false;
 let _bootOutcome: SandboxBootOutcome | null = null;
+let _windowsSubstrate: SandboxWindowsSubstrateInfo | null = null;
+let _mxcShellCapability: SandboxCapability | undefined;
 const _issuedHostShellExecutionPlans = new WeakMap<HostShellExecutionPlan, string>();
 
 /** Monotonic identity for capability and wrapped-worker membership changes. */
@@ -256,6 +259,56 @@ export function __resetSandboxBootOutcomeForTest(): void {
   _bootOutcome = null;
 }
 
+/**
+ * Record which substrate carries Windows shells and extensions this boot
+ * (`sandbox-init.ts`), and — when MXC carries the agent shells — the
+ * capability their host-shell plans get. That capability is published here and
+ * NOT through {@link setActiveSandboxCapability}: it describes one launch path
+ * (Bash/PowerShell tool commands in an MXC container), not the process-wide
+ * runtime, so the workspace terminal and the plugin surfaces, which read the
+ * process-wide capability, never inherit it.
+ *
+ * @internal — only the boot-time sandbox init path and tests should call this.
+ */
+export function setWindowsSandboxSubstrate(
+  info: SandboxWindowsSubstrateInfo,
+  mxcShellCapability?: SandboxCapability,
+): void {
+  if (info.shells === "mxc" && mxcShellCapability === undefined) {
+    throw new Error("setWindowsSandboxSubstrate: shells run in MXC but no MXC shell capability was given");
+  }
+  if (info.shells !== "mxc" && mxcShellCapability !== undefined) {
+    throw new Error("setWindowsSandboxSubstrate: an MXC shell capability needs shells: \"mxc\"");
+  }
+  _windowsSubstrate = Object.freeze({ ...info, mxc: Object.freeze({ ...info.mxc }) });
+  _mxcShellCapability = mxcShellCapability === undefined ? undefined : Object.freeze({ ...mxcShellCapability });
+  _sandboxGeneration += 1;
+}
+
+/** What boot recorded for Windows, or null (off Windows, or before the gate ran). */
+export function getWindowsSandboxSubstrate(): SandboxWindowsSubstrateInfo | null {
+  return _windowsSubstrate;
+}
+
+/**
+ * The capability of a Bash/PowerShell tool command launched in an MXC
+ * container, or undefined when that route is not live: MXC carries the shells
+ * this boot, the shell sandbox was requested, and the process-wide ASRT
+ * runtime (whose proxy the containers reach) is still published.
+ */
+export function detectMxcShellCapability(): SandboxCapability | undefined {
+  if (_mxcShellCapability === undefined || !_shellSandboxRequestedAtBoot) return undefined;
+  if (_activeCapability?.kind !== "asrt") return undefined;
+  return _mxcShellCapability;
+}
+
+/** @internal — test teardown only. */
+export function __resetWindowsSandboxSubstrateForTest(): void {
+  if (_windowsSubstrate !== null || _mxcShellCapability !== undefined) _sandboxGeneration += 1;
+  _windowsSubstrate = null;
+  _mxcShellCapability = undefined;
+}
+
 /** @internal — test teardown only. */
 export function __resetSandboxRequestedAtBootForTest(): void {
   if (_shellSandboxRequestedAtBoot || _pluginWorkerConfinementRequestedAtBoot) _sandboxGeneration += 1;
@@ -323,6 +376,18 @@ export function detectShellSandboxCapability(): SandboxCapability {
  * settings surface reports.
  */
 export function detectPluginWorkerSandboxCapability(): SandboxCapability {
+  if (_pluginWorkerConfinementRequestedAtBoot && _windowsSubstrate?.extensions === "none" && _activeCapability !== undefined) {
+    // Windows with ASRT running as the MXC shells' proxy only: there is no
+    // substrate that confines plugin processes this boot.
+    return {
+      kind: "none",
+      confidence: "verified",
+      platform: process.platform,
+      reason:
+        "extension confinement needs the one-time Windows sandbox install (srt-win); " +
+        "Microsoft Execution Containers confine agent shells only",
+    };
+  }
   if (_pluginWorkerConfinementRequestedAtBoot) return detectSandboxCapability();
   return {
     kind: "none",
@@ -339,10 +404,12 @@ export function detectPluginWorkerSandboxCapability(): SandboxCapability {
  */
 export function getHostShellExecutionPlan(executionMode: HostShellExecutionRequest = "default"): HostShellExecutionPlan {
   const generation = getSandboxGeneration();
+  const mxc = detectMxcShellCapability();
   const plan = buildHostShellExecutionPlan({
     platform: process.platform,
     requestedSandbox: isShellSandboxRequestedAtBoot(),
-    activeCapability: detectShellSandboxCapability(),
+    activeCapability: mxc ?? detectShellSandboxCapability(),
+    shellSubstrate: mxc === undefined ? "asrt" : "mxc",
     executionMode,
   });
   _issuedHostShellExecutionPlans.set(plan, generation);

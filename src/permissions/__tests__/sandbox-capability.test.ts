@@ -25,8 +25,18 @@ import {
   isPluginWorkerConfinementRequestedAtBoot,
   detectShellSandboxCapability,
   unmarkPluginWorkerWrapped,
+  setWindowsSandboxSubstrate,
+  getWindowsSandboxSubstrate,
+  detectMxcShellCapability,
+  detectPluginWorkerSandboxCapability,
+  __resetWindowsSandboxSubstrateForTest,
   type SandboxCapability,
 } from "../sandbox-capability.js";
+import {
+  mxcShellCapability,
+  planWindowsSandbox,
+  windowsProxyOnlyCapability,
+} from "../../boot/steps/windows-sandbox-plan.js";
 import type { ToolCategory } from "../../tools/types.js";
 
 describe("sandbox-capability", () => {
@@ -636,5 +646,89 @@ describe("sandbox-eval-verdicts fixture", () => {
     expect(fixture["kind=partial + risky tool"]).toEqual({ rule: "medium", llm: "low", final: "medium" });
     expect(fixture["kind=fs-only + high-risk write"]).toEqual({ rule: "high", llm: "medium", final: "high" });
     expect(fixture["weak context + benign tool"]).toEqual({ rule: "medium", llm: "low", final: "medium" });
+  });
+});
+
+describe("sandbox-capability — Windows MXC substrate", () => {
+  const hostPlatform = process.platform;
+  afterEach(() => {
+    __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
+    __resetWindowsSandboxSubstrateForTest();
+    setProcessPlatform(hostPlatform);
+  });
+
+  function bootProxyOnly(): void {
+    setProcessPlatform("win32");
+    setShellSandboxRequestedAtBoot(true);
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    const plan = planWindowsSandbox({
+      shellRequested: true,
+      workerRequested: true,
+      mxc: { state: "available" },
+      windowsBuild: "10.0.26300.9711",
+      srtWinReady: false,
+    });
+    setActiveSandboxCapability(windowsProxyOnlyCapability());
+    setWindowsSandboxSubstrate(plan.substrate, mxcShellCapability());
+  }
+
+  it("issues MXC shell plans while the process-wide capability confines nothing", () => {
+    bootProxyOnly();
+    const plan = getHostShellExecutionPlan();
+    expect(plan).toMatchObject({ mode: "asrt", substrate: "mxc", requiresExplicitUserApproval: false });
+    // The workspace terminal reads the process-wide capability, which must not
+    // inherit the containers' confinement.
+    expect(detectShellSandboxCapability().confines).toEqual({ filesystem: false, process: false, network: false });
+    expect(isActiveSandboxShellContained()).toBe(false);
+  });
+
+  it("reports extensions unconfined when ASRT runs only as the containers' proxy", () => {
+    bootProxyOnly();
+    expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
+    expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" });
+  });
+
+  it("drops the MXC route once the ASRT runtime (the containers' proxy) is gone", () => {
+    bootProxyOnly();
+    expect(detectMxcShellCapability()).toBeDefined();
+    __resetActiveSandboxCapabilityForTest();
+    expect(detectMxcShellCapability()).toBeUndefined();
+    expect(getHostShellExecutionPlan().substrate).not.toBe("mxc");
+  });
+
+  it("rejects a substrate record that contradicts its MXC capability", () => {
+    const { substrate } = planWindowsSandbox({
+      shellRequested: true,
+      workerRequested: false,
+      mxc: { state: "unavailable", reason: "tier-unsupported" },
+      windowsBuild: null,
+      srtWinReady: true,
+    });
+    expect(() => setWindowsSandboxSubstrate(substrate, mxcShellCapability())).toThrow(/needs shells/);
+    expect(() => setWindowsSandboxSubstrate({ ...substrate, shells: "mxc" })).toThrow(/no MXC shell capability/);
+  });
+
+  it("keeps the srt-win plan when MXC is unavailable: approved host route, no MXC substrate", () => {
+    setProcessPlatform("win32");
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability({
+      kind: "asrt",
+      confidence: "verified",
+      platform: "win32",
+      reason: "srt-win",
+      confines: { filesystem: true, process: false, network: true },
+    });
+    const { substrate } = planWindowsSandbox({
+      shellRequested: true,
+      workerRequested: false,
+      mxc: { state: "unavailable", reason: "request-rejected" },
+      windowsBuild: "10.0.22631.1",
+      srtWinReady: true,
+    });
+    setWindowsSandboxSubstrate(substrate);
+    const plan = getHostShellExecutionPlan();
+    expect(plan.substrate).toBe("none");
+    expect(plan.requiresExplicitUserApproval).toBe(true);
   });
 });
