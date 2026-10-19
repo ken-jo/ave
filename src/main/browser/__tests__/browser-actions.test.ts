@@ -42,6 +42,8 @@ function page(children: AXNode[]): AXNode[] {
 class FakeCdp implements CdpSession {
   frameTree = { frame: { id: "main", loaderId: "loader-1", url: "https://a.example/form", securityOrigin: "https://a.example" }, childFrames: [] as unknown[] };
   hit = { backendNodeId: 0, frameId: "main" };
+  /** How far the page is scrolled, as the layout metrics report it. */
+  scroll = { x: 0, y: 0 };
   readonly events = new EventEmitter();
   onEvent(listener: (method: string, params: Record<string, unknown>) => void): () => void {
     this.events.on("message", listener);
@@ -68,6 +70,7 @@ class FakeCdp implements CdpSession {
         if (params?.type === "touchEnd") this.pressed = true;
         return {};
       case "Page.getFrameTree": return { frameTree: this.frameTree };
+      case "Page.getLayoutMetrics": return { cssVisualViewport: { pageX: this.scroll.x, pageY: this.scroll.y } };
       case "DOM.getNodeForLocation": return { ...this.hit, backendNodeId: this.hit.backendNodeId || this.nodes.find((node) => node.backendDOMNodeId)?.backendDOMNodeId };
       case "Input.dispatchMouseEvent":
         if (params?.type === "mousePressed") this.pressed = true;
@@ -872,6 +875,15 @@ describe("tap placement", () => {
     const start = cdp.calls.find((call) => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchStart")!.params!;
     // The pointer move stays a page point; the tap is the same point in window space.
     expect(start.touchPoints).toEqual([{ x: (move.x as number) + PAGE_IN_WINDOW.x, y: (move.y as number) + PAGE_IN_WINDOW.y, id: 1 }]);
+  });
+
+  it("hit-tests the press point in document space on a scrolled page", async () => {
+    const { cdp, run } = await clickLink();
+    cdp.scroll = { x: 236, y: 40 };
+    await run();
+    const move = cdp.calls.find((call) => call.method === "Input.dispatchMouseEvent")!.params!;
+    const hit = cdp.calls.find((call) => call.method === "DOM.getNodeForLocation")!.params!;
+    expect([hit.x, hit.y]).toEqual([(move.x as number) + 236, (move.y as number) + 40]);
   });
 
   it("refuses to press when the page's place in its window is unknown", async () => {

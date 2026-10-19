@@ -133,8 +133,15 @@ export async function withGuardedAction(
               }
               const position = method === "Input.dispatchTouchEvent" ? touchPoint : params as { x: number; y: number } | undefined;
               if (!position) wrongTarget();
+              // Input points are in the viewport; the hit test takes document
+              // points (measured: on a page scrolled sideways the viewport point
+              // found nothing). The scroll offset turns one into the other.
+              const metrics = await read("Page.getLayoutMetrics") as { cssVisualViewport?: { pageX?: unknown; pageY?: unknown } };
+              const scrollX = metrics.cssVisualViewport?.pageX;
+              const scrollY = metrics.cssVisualViewport?.pageY;
+              if (typeof scrollX !== "number" || typeof scrollY !== "number") wrongTarget();
               const point = await read("DOM.getNodeForLocation", {
-                x: position.x, y: position.y,
+                x: position.x + scrollX, y: position.y + scrollY,
                 includeUserAgentShadowDOM: true, ignorePointerEventsNone: false,
               }) as { backendNodeId?: number; frameId?: string };
               // A child frame is represented by a placeholder, never a ref.

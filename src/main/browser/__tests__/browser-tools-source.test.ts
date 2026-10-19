@@ -39,6 +39,7 @@ const ALLOWED_CDP_METHODS = new Set([
   "Page.enable",
   "Page.captureScreenshot",
   "Page.getFrameTree",
+  "Page.getLayoutMetrics",
   "Page.frameNavigated",
   "Page.frameDetached",
   "DOM.documentUpdated",
