@@ -647,6 +647,24 @@ execution:
   reports it while readline has `enable-bracketed-paste on`, which the
   startup file turns on for bash 4.4 and later. Bash before 4.4, such as
   macOS `/bin/bash` 3.2, has none.
+- a shell with a command-not-found handler (`command_not_found_handle` in
+  bash, `command_not_found_handler` in zsh), reported as `NotFound=` in the
+  `P` marker; a shell that does not report it counts as having one
+  (`not-found-handler`). The shell runs the handler for any word that is not
+  a command, so a line the rules read as running nothing would run the
+  handler's code. Ubuntu's `/etc/bash.bashrc` defines one for every
+  interactive bash when the `command-not-found` package is installed (it runs
+  `/usr/lib/command-not-found`). Ave neither removes nor wraps the handler:
+  the user's own typing keeps it, and the refusal tells the model to ask the
+  user to run `unset -f command_not_found_handle` (bash) or
+  `unfunction command_not_found_handler` (zsh) in that terminal, which
+  removes it for that shell only. Wrapping it for typed lines alone was
+  rejected: the shell cannot tell a pasted line from the user's own.
+
+Executable shell registries (functions, aliases, command hashes and widgets)
+cannot be assigned or appended to by an agent line, including indirect writes
+and declaration or registration builtins. A handler cannot be installed earlier
+on the same approved line after a prompt reported no handler.
 
 Typing is a fixed protocol (pty-manager `typeLineAtPrompt`):
 1. Check the prompt state.
@@ -654,8 +672,18 @@ Typing is a fixed protocol (pty-manager `typeLineAtPrompt`):
 3. Write Ctrl-C. The tty (on Linux, the shell's own pty inside the sandbox)
    turns it into SIGINT, which clears the line editor
    whatever its state: an ESC or Ctrl-X prefix waiting for its next key, a
-   half-typed line. It cannot run anything.
+   half-typed line.
 4. Wait for the fresh prompt, then check the directory and the state again.
+   bash 5.2 clears the line at once but draws the fresh prompt only when the
+   interrupt breaks its wait for a key, so a Ctrl-C that arrives while the
+   prompt is still being drawn leaves no fresh prompt until the next key.
+   Ctrl-C is sent again every half second until a fresh prompt is drawn
+   (3 seconds in all), and after more than one, typing waits until no further
+   prompt arrives for a full 500 ms inside that same 3-second budget. Each
+   resend checks unchanged user-input generation, foreground shell identity,
+   absence of shell children, and the approved directory with the OS. A user
+   keystroke aborts immediately, even if the shell redraws its prompt. The OS
+   check runs again immediately before pasting.
 5. Paste the line between bracketed-paste markers, without Enter.
 6. Wait until the line editor's echo of its edit line (wrapping removed) is
    exactly the approved line, with no key from the user since the prompt. Only
@@ -772,6 +800,11 @@ before any card, with no mode that lets them through:
   - builtins that install aliases, traps, hooks, options, key bindings,
     limits, a umask, terminal settings or scheduled commands, edit the
     history, or source code;
+  - callback text passed to `mapfile`/`readarray -C`, completion or style
+    callbacks, and other builtins that evaluate strings outside the parsed
+    command. Formatted printing cannot assign through `%n` or evaluate
+    nonliteral numeric operands; variable-name operands cannot hide arithmetic
+    or command substitutions in subscripts;
 - references to the shell integration's `__ave_*` names; block records also
   redact the marker nonce, so printed text cannot forge markers;
 - anything that prints the shell's own state:
@@ -842,6 +875,21 @@ conversation loop adds them to its per-turn base set
 where the world-writable `/tmp` tradeoff is stated. Layer 0 still hard-blocks
 sensitive leaves beneath any default root, and `permissions.additionalDirectories`
 extends the list rather than replacing it.
+
+The pinned `@anthropic-ai/sandbox-runtime` patch removes unconditional write
+grants for `/tmp/claude`, `/private/tmp/claude`, `<real home>/.npm/_logs` and
+`<real home>/.claude/debug` on every platform. Device write defaults remain.
+The four paths follow Ave's configured write grants, symlink resolution and
+generic sensitive-path floors; they have no dedicated compensating write denies.
+Runtime `TMPDIR` stays under the application-owned sandbox temp root, and
+plugin-owned processes receive only their principal's temp directory.
+
+Linux wraps keep the host temp tree visible. A shell granted `/tmp` can create
+a top-level entry that the host and later sandboxed commands see. The legacy
+`/tmp/claude` path follows that same grant. A plugin without a covering write
+grant cannot write there. Its existence, type or owner does not require host
+reservation or prevent the workload from starting. Normal filesystem access
+checks still apply.
 
 ## Saved-Session Reads
 

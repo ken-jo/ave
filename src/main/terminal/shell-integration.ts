@@ -8,12 +8,14 @@
  *
  * Each shell reports, around every command it runs (`<n>` is the nonce):
  *   OSC 133;D;<exit>;<n>            the previous command finished (first prompt: nothing open)
- *   OSC 133;P;Cwd=<encoded path>;Keys=<emacs|vi>;Paste=<0|1>;B=<token>;Pid=<$$>;<n>
+ *   OSC 133;P;Cwd=<encoded path>;Keys=<emacs|vi>;Paste=<0|1>;NotFound=<0|1>;B=<token>;Pid=<$$>;<n>
  *                                   the working directory, the line editor's
  *                                   key bindings, whether it takes bracketed
- *                                   paste, the token of this prompt's B, and
- *                                   the shell's own pid in its pid namespace
- *                                   (zsh, bash; fish: Cwd only)
+ *                                   paste, whether a command-not-found handler
+ *                                   is defined (it runs code for any word that
+ *                                   is not a command), the token of this
+ *                                   prompt's B, and the shell's own pid in its
+ *                                   pid namespace (zsh, bash; fish: Cwd only)
  *   OSC 133;A;<n>                   prompt start
  *   OSC 133;B;<token>               end of prompt / start of typed input (zsh, bash)
  *   OSC 133;C;cmdline_url=<percent-encoded command>;<n>  output starts
@@ -132,8 +134,10 @@ const ZSH_RC = (noncePath: string): string => [
   '  REPLY="$out"',
   "}",
   "__ave_precmd() {",
-  "  local ave_status=$? ave_keys=emacs ave_paste=0 ave_token",
+  "  local ave_status=$? ave_keys=emacs ave_paste=0 ave_not_found=0 ave_token",
   "  printf '\\e]133;D;%s;%s\\a' \"$ave_status\" \"$__ave_nonce\"",
+  // A command-not-found handler runs code for any word that is not a command.
+  "  (( ${+functions[command_not_found_handler]} )) && ave_not_found=1",
   // How typed text will be read: vi bindings in the main keymap, and whether
   // zle takes bracketed paste as plain text: zle_bracketed_paste set, and the
   // paste and self-insert widgets still the builtins (bracketed-paste-magic or
@@ -147,7 +151,7 @@ const ZSH_RC = (noncePath: string): string => [
   '  ave_token="${ave_token//[^0-9a-f]/}"',
   "  __ave_b=$'\\e]133;B;'\"$ave_token\"$'\\a'",
   '  __ave_encode "$PWD"',
-  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;B=%s;Pid=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_token\" \"$$\" \"$__ave_nonce\" \"$__ave_nonce\"",
+  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;NotFound=%s;B=%s;Pid=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_not_found\" \"$ave_token\" \"$$\" \"$__ave_nonce\" \"$__ave_nonce\"",
   "}",
   "__ave_preexec() {",
   '  __ave_encode "${1[1,' + MAX_ENCODED_COMMAND_CHARS + ']}"',
@@ -194,9 +198,12 @@ const BASH_PROFILE = (noncePath: string): string => [
   "  bind 'set enable-bracketed-paste on' 2>/dev/null && __ave_paste=1",
   "fi",
   "__ave_precmd() {",
-  "  local ave_status=$? ave_keys=emacs ave_paste=0 ave_token",
+  "  local ave_status=$? ave_keys=emacs ave_paste=0 ave_not_found=0 ave_token",
   "  printf '\\e]133;D;%s;%s\\a' \"$ave_status\" \"$__ave_nonce\"",
   "  [[ -o vi ]] && ave_keys=vi",
+  // A command-not-found handler (Ubuntu's /etc/bash.bashrc defines one) runs
+  // code for any word that is not a command.
+  "  declare -F command_not_found_handle >/dev/null && ave_not_found=1",
   // Bracketed paste as readline has it now (a user can turn it off by hand).
   '  [[ "$__ave_paste" = 1 && "$(bind -v)" == *"enable-bracketed-paste on"* ]] && ave_paste=1',
   // A fresh token for this prompt's B, which the prompt string prints.
@@ -204,7 +211,7 @@ const BASH_PROFILE = (noncePath: string): string => [
   '  ave_token="${ave_token//[^0-9a-f]/}"',
   "  __ave_b=$'\\e]133;B;'\"$ave_token\"$'\\a'",
   '  __ave_encode "$PWD"',
-  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;B=%s;Pid=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_token\" \"$$\" \"$__ave_nonce\" \"$__ave_nonce\"",
+  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;NotFound=%s;B=%s;Pid=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_not_found\" \"$ave_token\" \"$$\" \"$__ave_nonce\" \"$__ave_nonce\"",
   "  __ave_at_prompt=1",
   "}",
   "__ave_preexec() {",

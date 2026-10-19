@@ -889,7 +889,7 @@ describe("pty-manager typing an approved agent command", () => {
     const mark = (fields: string): string => `\u001b]133;${fields};${nonce}\u0007`;
     // Each prompt announces a fresh B token in P; B carries it, not the nonce.
     let prompts = 0;
-    const prompt = (fields = ";Keys=emacs;Paste=1"): string => {
+    const prompt = (fields = ";Keys=emacs;Paste=1;NotFound=0"): string => {
       const token = `${(++prompts).toString(16).padStart(2, "0")}`.repeat(16);
       return `${mark("D;0")}${mark(`P;Cwd=/w${fields};B=${token}`)}${mark("A")}% \u001b]133;B;${token}\u0007`;
     };
@@ -940,7 +940,7 @@ describe("pty-manager typing an approved agent command", () => {
       if (data.startsWith("\u001b[200~")) writeTerminal(TAB, "x");
     })(pty.respond);
     await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
-    expect(pty.written.at(-1)).toBe("\u0003");
+    expect(pty.written.at(-1)).toBe("x");
     expect(pty.written).not.toContain("\r");
   });
 
@@ -969,18 +969,110 @@ describe("pty-manager typing an approved agent command", () => {
       const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
       await vi.advanceTimersByTimeAsync(3_000);
       await expect(typing).resolves.toMatchObject({ ok: false, reason: "no-fresh-prompt" });
-      expect(pty.written).toEqual(["\u0003"]);
+      // A Ctrl-C every half second for the three seconds, and nothing else.
+      expect(pty.written).toEqual(Array.from({ length: 6 }, () => "\u0003"));
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("refuses a prompt without bracketed paste or with vi keys, before any key is sent", async () => {
+  it("stops immediately when the user types during a reset, even across prompt redraws", async () => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      pty.respond = null;
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(pty.written).toEqual(["\u0003"]);
+      writeTerminal(TAB, "x");
+      pty.emitData(prompt());
+      await expect(typing).resolves.toMatchObject({ ok: false, reason: "pending-input" });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(pty.written).toEqual(["\u0003", "x"]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["foreground", "children", "cwd"])("stops resending when the OS reports a change in %s", async (change) => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      pty.respond = null;
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(100);
+      foregroundReading = change === "children"
+        ? { ok: false, reason: "the terminal shell has child processes" }
+        : { ok: true, foreground: { pid: change === "foreground" ? 4242 : 9999, command: change === "foreground" ? "sleep" : "zsh", cwd: change === "cwd" ? "/etc" : "/w" } };
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(typing).resolves.toMatchObject({ ok: false, reason: change === "children" ? "cwd-unverified" : change === "cwd" ? "cwd-mismatch" : "foreground-not-shell" });
+      expect(pty.written).toEqual(["\u0003"]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("rechecks the OS immediately before pasting after a fresh prompt", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    pty.respond = () => {
+      foregroundReading = { ok: true, foreground: { pid: 4242, command: "sleep", cwd: "/w" } };
+      queueMicrotask(() => pty.emitData(prompt()));
+    };
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "foreground-not-shell" });
+    expect(pty.written).toEqual(["\u0003"]);
+  });
+
+  it.each([2_499, 2_500, 2_501, 2_990])("requires the full quiet window inside the budget after a prompt at %i ms", async (at) => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      pty.respond = (data) => {
+        const paste = /^\u001b\[200~(.*)\u001b\[201~$/u.exec(data);
+        if (paste) queueMicrotask(() => pty.emitData(paste[1]!));
+      };
+      setTimeout(() => pty.emitData(prompt()), at);
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(3_100);
+      await expect(typing).resolves.toMatchObject(at <= 2_500 ? { ok: true } : { ok: false, reason: "no-fresh-prompt" });
+      expect(pty.written.some((data) => data.startsWith("\u001b[200~"))).toBe(at <= 2_500);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("sends Ctrl-C again when bash cleared its line but waits for a key to draw the fresh prompt", async () => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      // bash 5.2 when the Ctrl-C arrives before readline waits for a key: the
+      // line is cleared and `^C` echoed after the prompt, and the fresh prompt
+      // comes with the next key.
+      const respond = pty.respond;
+      let interruptPending = false;
+      pty.respond = (data) => {
+        if (data === "\u0003" && !interruptPending) {
+          interruptPending = true;
+          queueMicrotask(() => pty.emitData("^C\u001b[?2004l\r\u001b[?2004h"));
+          return;
+        }
+        respond?.(data);
+      };
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(pty.written).toEqual(["\u0003", "\u0003", PASTE("ls"), "\r"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses a prompt without bracketed paste, with vi keys, or with a command-not-found handler, before any key is sent", async () => {
     const { pty, prompt } = await zshTerminal(3);
     pty.emitData(prompt(";Keys=emacs;Paste=0"));
     await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-bracketed-paste" });
     pty.emitData(`\r\n${prompt(";Keys=vi;Paste=1")}`);
     await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "vi-editing-mode" });
+    pty.emitData(`\r\n${prompt(";Keys=emacs;Paste=1;NotFound=1")}`);
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "not-found-handler" });
     expect(pty.written).toEqual([]);
   });
 
@@ -1412,7 +1504,7 @@ describe("pty-manager on Linux: the shell gets a pty of its own inside the sandb
     const pty = lastPty!;
     return {
       pty,
-      prompt: (pid = "3") => `${mark("D;0")}${mark(`P;Cwd=/w;Keys=emacs;Paste=1;B=${"ab".repeat(16)};Pid=${pid}`)}${mark("A")}% \u001b]133;B;${"ab".repeat(16)}\u0007`,
+      prompt: (pid = "3") => `${mark("D;0")}${mark(`P;Cwd=/w;Keys=emacs;Paste=1;NotFound=0;B=${"ab".repeat(16)};Pid=${pid}`)}${mark("A")}% \u001b]133;B;${"ab".repeat(16)}\u0007`,
     };
   }
 

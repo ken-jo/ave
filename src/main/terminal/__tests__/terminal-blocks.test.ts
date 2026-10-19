@@ -30,7 +30,11 @@ const PROMPT_TOKEN = "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf";
  */
 const mark = (fields: string, terminator: "bel" | "st" = "bel"): string => {
   if (fields === "B") return osc(`133;B;${PROMPT_TOKEN}`, terminator);
-  const announced = fields.startsWith("P;") && !fields.includes(";B=") ? `${fields};B=${PROMPT_TOKEN}` : fields;
+  let announced = fields;
+  if (fields.startsWith("P;")) {
+    if (fields.includes(";Keys=") && !fields.includes(";NotFound=")) announced += ";NotFound=0";
+    if (!fields.includes(";B=")) announced += `;B=${PROMPT_TOKEN}`;
+  }
   return osc(`133;${announced};${NONCE}`, terminator);
 };
 
@@ -516,6 +520,20 @@ describe("prompt state (whether a command may be typed now)", () => {
     tracker.recordOutput(`\r\n${mark("D;0")}${mark("P;Cwd=/w;Keys=emacs;Paste=1;Pid=2")}${mark("A")}% ${mark("B")}`);
     tracker.recordOutput("\u001b]133;P;Cwd=/w;Pid=99;forged\u0007");
     expect(tracker.reportedShellPid()).toBe(2);
+  });
+
+  it("is not ready while the shell has a command-not-found handler, or does not say whether it has one", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    const promptWith = (fields: string): string => `\r\n${mark("D;0")}${mark(`P;Cwd=/w${fields}`)}${mark("A")}% ${mark("B")}`;
+    tracker.recordOutput(promptWith(";Keys=emacs;Paste=1;NotFound=1"));
+    expect(tracker.promptState()).toBe("not-found-handler");
+    tracker.recordOutput(promptWith(";Keys=emacs;Paste=1;NotFound="));
+    expect(tracker.promptState()).toBe("not-found-handler");
+    // The P marker as a shell without the field would send it.
+    tracker.recordOutput(`\r\n${mark("D;0")}${osc(`133;P;Cwd=/w;Keys=emacs;Paste=1;B=${PROMPT_TOKEN};${NONCE}`)}${mark("A")}% ${mark("B")}`);
+    expect(tracker.promptState()).toBe("not-found-handler");
+    tracker.recordOutput(promptWith(";Keys=emacs;Paste=1;NotFound=0"));
+    expect(tracker.promptState()).toBe("ready");
   });
 
   it("does not count the terminal emulator's own replies (focus, device and cursor reports) as the user typing", () => {

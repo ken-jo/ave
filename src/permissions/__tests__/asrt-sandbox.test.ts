@@ -80,6 +80,7 @@ import { preparedShellExecutableReadPaths } from "../../tools/prepared-shell-inv
 // re-implementation that could drift from the package).
 import { matchesDomainPattern } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
 import { resolveParentProxy } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
+import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 
 let originalAsrtTestHome: string | undefined;
 let originalAveHome: string | undefined;
@@ -318,16 +319,15 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
       const checkout = checkoutRootAbove(helper);
       const { argv } = await wrapToolCommand("true", { filesystem: { denyRead: [checkout], allowRead: [] } });
       try {
-        const rendered = argv[2] ?? "";
-        expect(rendered).toContain(`--tmpfs ${checkout} `);
-        const reboundUnderDeny = [...rendered.matchAll(/--ro-bind (\S+) (\S+)/g)]
-          .filter(([, , target]) => target!.startsWith(`${checkout}/`))
-          .map(([, source, target]) => [source, target]);
+        const words = execFileSync("/bin/bash", ["-c", `set -- ${argv[2].split("\n# Run the confined command\n").at(-1)!.split("\naveTmpStatus=")[0]}; printf '%s\\n' "$@"`], { encoding: "utf8" }).trimEnd().split("\n");
+        expect(words.some((word, index) => word === "--tmpfs" && words[index + 1] === checkout)).toBe(true);
+        const reboundUnderDeny = words.flatMap((word, index) => word === "--ro-bind" && words[index + 2]!.startsWith(`${checkout}/`)
+          ? [[words[index + 1], words[index + 2]]] : []);
         // The helper is the one file this wrap re-allows; ASRT itself re-allows
         // its JVM proxy agent jar. No directory of the package comes back.
         const jar = getVendoredJavaProxyAgentJarPath();
         expect(reboundUnderDeny.sort()).toEqual([[helper, helper], [jar, jar]].sort());
-        expect(rendered).toContain(`${helper} `);
+        expect(words).toContain(helper);
       } finally {
         await cleanupAsrtSandboxAfterCommand();
       }
@@ -1329,4 +1329,45 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
     },
     60_000,
   );
+});
+
+describe("runtime write defaults", () => {
+  it("grants only device defaults before caller policy is applied", () => {
+    expect(getDefaultWritePaths()).toEqual([
+      "/dev/stdout", "/dev/stderr", "/dev/null", "/dev/tty", "/dev/dtracehelper", "/dev/autofs_nowait",
+    ]);
+    expect(buildSandboxConfig({ allowWrite: [] }).filesystem.allowWrite).toEqual([]);
+  });
+
+  it("does not add compensating denies for paths without an implicit grant", () => {
+    const floor = getDefaultSensitiveWriteDenyPaths();
+    for (const target of ["/tmp/claude", "/private/tmp/claude", join(homedir(), ".npm", "_logs"), join(homedir(), ".claude", "debug")]) {
+      expect(floor).not.toContain(target);
+    }
+  });
+});
+
+describe.runIf(process.platform === "linux")("ordinary temporary write policy", () => {
+  it("shares explicitly granted temp writes with the host and later commands", async () => {
+    expect(await asrtCanInitialize()).toBe(true);
+    const root = mkdtempSync("/tmp/ave-ordinary-temp-");
+    try {
+      await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp"] });
+      const target = join(root, "shared.txt");
+      const first = await wrapToolCommand(`printf shared > ${shellQuote(target)}`);
+      expect(first.argv[1]).toBe("-c");
+      expect(/--tmpfs'?\s+'?\/tmp\/claude(?:'|\s|$)/u.test(first.argv[2] ?? "")).toBe(false);
+      const written = await runArgv(first.argv, first.env, process.cwd());
+      cleanupAsrtSandboxAfterCommand();
+      expect(written.code, written.stderr).toBe(0);
+      expect(readFileSync(target, "utf8")).toBe("shared");
+      const next = await wrapToolCommand(`cat ${shellQuote(target)}`);
+      const read = await runArgv(next.argv, next.env, process.cwd());
+      cleanupAsrtSandboxAfterCommand();
+      expect(read.code, read.stderr).toBe(0);
+      expect(read.stdout).toBe("shared");
+    } finally {
+      await cleanupTmpDir(root);
+    }
+  });
 });

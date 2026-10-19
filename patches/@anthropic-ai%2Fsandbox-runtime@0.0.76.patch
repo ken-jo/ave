@@ -1,10 +1,11 @@
-Backport of https://github.com/anthropics/sandbox-runtime/pull/722 (issue #721):
-a per-wrap `ttys` option that grants file-ioctl on the named pty slave
-only, so the workspace terminal's shell can set its own tty (no double echo,
-working job control) without allowPty's grant on every /dev/ttys*.
-Drop this patch, and the patchedDependencies entry in package.json, when a
-released @anthropic-ai/sandbox-runtime includes PR #722 (or an equivalent
-explicit-tty option) and Ave pins that version.
+Per-wrap tty access and caller-owned filesystem write scope.
+
+The tty parts grant ioctl access only to named pty slaves. Remove those parts
+when the pinned runtime provides per-wrap tty support.
+
+The separate default-write-path part keeps only device defaults. All other
+write roots come from caller policy; retain it until that guarantee is
+available without the patch.
 
 diff --git a/dist/sandbox/macos-sandbox-utils.d.ts b/dist/sandbox/macos-sandbox-utils.d.ts
 index 93b1106..06c5a52 100644
@@ -150,3 +151,26 @@ index 753c754..9184f89 100644
      const platform = getPlatform();
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
+diff --git a/dist/sandbox/sandbox-utils.js b/dist/sandbox/sandbox-utils.js
+index bfe0e44a6c88c471de2e917e93416a9670b23576..c571b038e2501e61d54e4012188e1ef77585a0e8 100644
+--- a/dist/sandbox/sandbox-utils.js
++++ b/dist/sandbox/sandbox-utils.js
+@@ -378,7 +378,6 @@ export function normalizePathForSandbox(pathPattern) {
+  * environments, you should configure more restrictive write paths.
+  */
+ export function getDefaultWritePaths() {
+-    const homeDir = homedir();
+     const recommendedPaths = [
+         '/dev/stdout',
+         '/dev/stderr',
+@@ -386,10 +385,6 @@ export function getDefaultWritePaths() {
+         '/dev/tty',
+         '/dev/dtracehelper',
+         '/dev/autofs_nowait',
+-        '/tmp/claude',
+-        '/private/tmp/claude',
+-        path.join(homeDir, '.npm/_logs'),
+-        path.join(homeDir, '.claude/debug'),
+     ];
+     return recommendedPaths;
+ }

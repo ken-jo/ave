@@ -27,9 +27,10 @@
  *    child is a real process on pipes the test spawns and owns (§9.7 P5).
  *
  * Frames are compared after canonical key ordering and id normalisation: a
- * UUID becomes `<uuid-N>` by first appearance, so a transcript does not change
- * because a random id did. Regenerate with `-u` after a deliberate wire change
- * and read the diff — it IS the protocol change.
+ * UUID or request-derived worker handle becomes `<uuid-N>` by first appearance,
+ * so a transcript does not depend on its opaque identity allocation. Regenerate
+ * with `-u` after a deliberate wire change and read the diff — it IS the
+ * protocol change.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
@@ -204,7 +205,7 @@ async function openSession(
   };
 }
 
-const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const TRANSCRIPT_ID = /\bworker_\d+\b|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
 /**
  * A path under the golden root, as `<golden>/` and `/`-separated segments.
@@ -223,7 +224,7 @@ function goldenPath(text: string): string {
 }
 
 /**
- * Canonical JSON: keys sorted at every depth, every UUID replaced by
+ * Canonical JSON: keys sorted at every depth, each opaque identity replaced by
  * `<uuid-N>` in order of first appearance across the whole golden, and the
  * checkout's own path replaced, so a golden reads the same on every machine.
  */
@@ -237,8 +238,8 @@ function canonicalise(value: unknown, ids: Map<string, string>): unknown {
       throw new Error(`a golden kept a checkout path: ${pathed}`);
     }
     return pathed
-      .replace(UUID, (uuid) => {
-        const key = uuid.toLowerCase();
+      .replace(TRANSCRIPT_ID, (id) => {
+        const key = id.toLowerCase();
         if (!ids.has(key)) ids.set(key, `<uuid-${ids.size + 1}>`);
         return ids.get(key)!;
       });
@@ -768,6 +769,24 @@ describe("a process launch's construct", () => {
 });
 
 describe("a golden reads the same on every machine", () => {
+  it("preserves opaque worker identity equality without changing request ids or payloads", () => {
+    const first = "01234567-89ab-4cde-8123-456789abcdef";
+    const canonical = JSON.parse(goldenJson([
+      { id: first, result: null },
+      { id: 42, result: { handleId: "worker_42" } },
+      { id: 43, result: { handleId: "worker_43" } },
+      { params: { subscriptionId: "worker_42", payload: { code: 42, chunk: "worker_count" } } },
+      { params: { subscriptionId: "worker_43" } },
+    ]));
+    expect(canonical).toEqual([
+      { id: "<uuid-1>", result: null },
+      { id: 42, result: { handleId: "<uuid-2>" } },
+      { id: 43, result: { handleId: "<uuid-3>" } },
+      { params: { subscriptionId: "<uuid-2>", payload: { code: 42, chunk: "worker_count" } } },
+      { params: { subscriptionId: "<uuid-3>" } },
+    ]);
+  });
+
   it("records a path under the golden root with `/`, whatever separator the platform used", () => {
     // What a Windows checkout records: the root in its own spelling, then `\`.
     expect(goldenPath(`${GOLDEN_ROOT}plugins\\sampleportal\\entry.mjs`)).toBe("<golden>/plugins/sampleportal/entry.mjs");

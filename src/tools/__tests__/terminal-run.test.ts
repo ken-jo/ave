@@ -21,6 +21,59 @@ import type { ApprovalMemoryScope } from "../../shared/permissions-events.js";
 import type { ToolExecutionContext } from "../types.js";
 import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
 
+import { TERMINAL_CALLBACK_COMMANDS, TERMINAL_PRINT_DATA_COMMANDS, TERMINAL_PRINT_FORMAT_COMMANDS, TERMINAL_PRINT_TARGET_COMMANDS, TERMINAL_PRINTF_DATA_COMMANDS, TERMINAL_PRINTF_UNCHECKED_COMMANDS, TERMINAL_REGISTRY_COMMANDS } from "../../__tests__/support/terminal-registry-commands.js";
+import { terminalCommandTextProblem } from "../../shared/terminal-command-text.js";
+import { getLocale, setLocale } from "../../i18n/runtime.js";
+import { loadLocaleMessages } from "../../i18n/messages/index.js";
+
+describe("terminal executable registries", () => {
+  it.each(TERMINAL_REGISTRY_COMMANDS)("refuses mutation: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).not.toBeNull();
+  });
+});
+
+describe("terminal shell callbacks", () => {
+  it.each(TERMINAL_CALLBACK_COMMANDS)("refuses callback execution or assignment: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).not.toBeNull();
+  });
+
+  it.each([
+    "mapfile -t -n1 lines < list",
+    "readarray -tn1 lines < list",
+    "mapfile -dC lines < list",
+    "readarray -d C lines < list",
+    "mapfile -- lines < list",
+    "printf '%%n %s' PATH",
+    "printf '%d' 42",
+    "printf '%.2f' 1.25",
+    "printf -v 'values[0]' '%s' value",
+  ])("allows data without callback evaluation: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).toBeNull();
+  });
+});
+
+describe("terminal formatted output", () => {
+  it.each(TERMINAL_PRINT_DATA_COMMANDS)("allows print data after option operands: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).toBeNull();
+  });
+
+  it.each(TERMINAL_PRINT_FORMAT_COMMANDS)("refuses formatted print after option operands: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).toBe("unchecked-construct");
+  });
+
+  it.each(TERMINAL_PRINT_TARGET_COMMANDS)("refuses unsafe parsed print targets: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).toBe("shell-state");
+  });
+
+  it.each(TERMINAL_PRINTF_DATA_COMMANDS)("allows numeric and text operands in their consumed positions: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).toBeNull();
+  });
+
+  it.each(TERMINAL_PRINTF_UNCHECKED_COMMANDS)("refuses unchecked format evaluation: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).toBe("shell-state");
+  });
+});
+
 const WINDOW = 1;
 const NONCE = TERMINAL_TEST_NONCE;
 const mark = terminalMarker;
@@ -350,6 +403,10 @@ describe("terminal_run", () => {
       ["zsh read of a prompt variable", "read 'PS1?go'", /change the shell/],
       ["mapfile PATH", "mapfile PATH", /change the shell/],
       ["readarray -t IFS", "readarray -t IFS", /change the shell/],
+      ["an array read callback", "mapfile -C 'PATH=/tmp; :' -c1 lines < list", /change the shell/],
+      ["a clustered array read callback", "readarray -tC'PATH=/tmp; :' -c1 lines < list", /change the shell/],
+      ["a numeric format assignment", "printf '%d' 'PATH=0'", /change the shell/],
+      ["a variable subscript callback", "printf -v 'values[$(echo callback-ran)]' '%s' value", /change the shell/],
       ["getopts into PATH", "getopts a PATH", /change the shell/],
       ["read into a name from a variable", "read \"$v\"", /change the shell/],
       ["printf -v into a name from a variable", "printf -v \"$v\" x", /change the shell/],
@@ -391,7 +448,7 @@ describe("terminal_run", () => {
         "echo ${#x}",
         "echo $'it\\'s' ok",
         "read -r line",
-        "read -p prompt answer",
+        "read -p message answer",
         "printf '%s\\n' PATH",
         "getopts ab opt",
         "echo ${x#p}",
@@ -492,6 +549,25 @@ describe("terminal_run", () => {
         approvedSha256: sha256Hex("echo hi"),
         ranSha256: sha256Hex("[200~echo hi~"),
       }]);
+    });
+
+    it.each(["en", "ko"])("keeps the handler and explains its removal in %s", async (locale) => {
+      const previous = getLocale();
+      try {
+        await loadLocaleMessages(locale);
+        setLocale(locale);
+        const tracker = readyTracker("/repo");
+        tracker.recordOutput(promptIn("/repo").replace("NotFound=0", "NotFound=1"));
+        registerTerminalBlockTracker("terminal:aaaaaaaa-1", tracker, WINDOW);
+        const deps = depsWith();
+        const tool = createTerminalRunTool(deps);
+        const request = () => Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" }));
+        await expect(request()).rejects.toThrow("unset -f command_not_found_handle");
+        await expect(request()).rejects.toThrow("unfunction command_not_found_handler");
+        await expect(request()).rejects.toThrow(locale === "ko" ? "사용자에게" : "Ask the user");
+        expect(deps.typed).toEqual([]);
+        expect(tracker.promptState()).toBe("not-found-handler");
+      } finally { setLocale(previous); }
     });
 
     it("refuses before any card when the operating system disagrees with the terminal's markers", async () => {
