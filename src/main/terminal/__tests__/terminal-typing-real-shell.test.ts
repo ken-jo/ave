@@ -146,7 +146,7 @@ for (const { path, enableVi } of SHELLS) {
       const shell = await startShell(path!);
       const reading = await readTerminalForeground(shell.pty.pid);
       expect(reading).toMatchObject({ ok: true, foreground: { command: basename(path!), cwd: shell.home } });
-      const sleeping = await shell.type("sleep 3");
+      expect(await shell.type("sleep 3")).toMatchObject({ ok: true });
       await until(() => shell.tracker.promptState() === "command-running");
       await sleep(300);
       const during = await readTerminalForeground(shell.pty.pid);

@@ -157,7 +157,7 @@ const TEXT_PROBLEM_MESSAGES: Record<TerminalCommandTextProblem, string> = {
   "whitespace-run": `command holds more than ${MAX_TERMINAL_COMMAND_WHITESPACE_RUN} whitespace characters in a row, which would push the rest of it out of view`,
   "history-expansion": "command uses shell history expansion (a ! before a word, or a leading ^), which would run text nobody approved; quote or rephrase it",
   comment: "command holds a # comment, which some interactive shells run as text; remove it",
-  "shell-divergent": "command uses a construct an interactive zsh and bash run differently (a command word starting with =, nocorrect, noglob, or the r/fc history re-run); rephrase it",
+  "shell-divergent": "command uses a construct an interactive zsh and bash run differently (a word starting with =, a zsh parameter flag such as $=x or $+x, nocorrect, noglob, -, repeat, an assignment after command or builtin, a command of redirections alone, or the r/fc history re-run); rephrase it",
   "shell-state": "command would change the shell for the user's later commands (a function definition, an alias, trap, hook, option or key binding, sourced code, or an assignment to a prompt, hook, PATH or IFS variable); terminal_run does not do that",
   "shell-integration": "command refers to the terminal's own shell-integration names (__ave_*), which terminal_run does not expose",
   "unchecked-construct": "command uses a construct terminal_run cannot check (case, declare, typeset, local, let, ((...)), select, coproc, a command name taken from a variable, or a parameter expansion with zsh flags or bash indirection such as ${(P)x} or ${!x}); rephrase it with plain commands",

@@ -24,8 +24,16 @@
  *    zsh without `interactivecomments`, so `ls # ; rm -rf x` would run the
  *    `rm` the rules never saw; an unquoted `#` that starts a word is refused
  *    whatever the shell's options;
- *  - zsh reads a command word starting with `=` as a path lookup and
- *    `nocorrect`/`noglob` as precommand modifiers, which bash does not;
+ *  - zsh reads constructs bash reads as plain text, found by running every
+ *    accepted command of a corpus in both shells and comparing what ran with
+ *    what the rules read (terminal-command-differential.test.ts): a word
+ *    starting with `=` is a path lookup (`ls =rm` passes `/bin/rm`; as a
+ *    redirect target it names that file), `$=x`, `$+x`, `$~x`, `$^x` and
+ *    their `${…}` forms are parameter flags, `>!` is a clobbering redirect,
+ *    `nocorrect`, `noglob` and `-` are precommand modifiers, `repeat N cmd` runs `cmd` (bash runs a program
+ *    named `repeat`), `command NAME=v cmd` assigns and runs `cmd` (bash runs
+ *    a program named `NAME=v`), and a command of redirections alone runs
+ *    `$NULLCMD` or `$READNULLCMD` (`cat`, a pager) where bash runs nothing;
  *  - a construct the shell analysis does not model (`case`,
  *    `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`), or a
  *    command name taken from a variable, cannot be checked for any of this,
@@ -47,7 +55,7 @@
  * Pure: shared by the tool (before any approval is asked) and the PTY write
  * (which re-checks the characters it is handed).
  */
-import { analyzeShell, staticShellWord, type ShellStatement, type ShellWord } from "./shell-analysis.js";
+import { analyzeShell, staticShellWord, type ShellRedirect, type ShellStatement, type ShellWord } from "./shell-analysis.js";
 
 /** Characters one command may hold — the length a block records (terminal-blocks.ts). */
 export const MAX_TERMINAL_COMMAND_CHARS = 4096;
@@ -86,7 +94,7 @@ const NON_ASCII = /[^\u0000-\u007f]/u;
 const HISTORY_EXPANSION = /!(?![\s=(]|$)/u;
 
 /** Command words that run differently, or re-run history, in an interactive zsh or bash. */
-const DIVERGENT_COMMAND_WORDS: ReadonlySet<string> = new Set(["nocorrect", "noglob", "r", "fc"]);
+const DIVERGENT_COMMAND_WORDS: ReadonlySet<string> = new Set(["nocorrect", "noglob", "-", "repeat", "foreach", "r", "fc"]);
 /** Builtins whose effect outlives the command: aliases, traps, hooks, options, bindings, sourced code. */
 const STATE_CHANGING_COMMAND_WORDS: ReadonlySet<string> = new Set([
   "alias", "unalias", "trap", "add-zsh-hook", "autoload", "setopt", "unsetopt", "shopt", "set", "bindkey",
@@ -127,6 +135,7 @@ export function terminalCommandTextProblem(command: string): TerminalCommandText
   // `${(e)…}`, bash's `${!name}` — could read any variable, the shell
   // integration's among them, whatever its spelling here.
   if (/\$\{[(!]/u.test(command)) return "unchecked-construct";
+  if (hasZshParameterFlag(command)) return "shell-divergent";
   // An odd run of trailing backslashes escapes the Enter that submits the line.
   const trailingBackslashes = /\\*$/u.exec(command)?.[0].length ?? 0;
   if (trailingBackslashes % 2 === 1) return "incomplete";
@@ -244,6 +253,63 @@ function hasUnquotedComment(command: string): boolean {
   return open.length > 0 || singleQuoted || ansiQuoted;
 }
 
+/**
+ * True when an unquoted or double-quoted `$` starts one of zsh's parameter
+ * flags (`$=x` splits, `$+x` tests, `$~x` globs, `$^x` distributes; also in
+ * `${…}` form): bash reads `$=x` as the text `$=x`, and the rules with it.
+ */
+function hasZshParameterFlag(command: string): boolean {
+  let quote: "none" | "double" | "single" | "ansi" = "none";
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote === "single") {
+      if (ch === "'") quote = "none";
+      continue;
+    }
+    if (quote === "ansi") {
+      if (ch === "\\") i++;
+      else if (ch === "'") quote = "none";
+      continue;
+    }
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
+    if (quote === "double") {
+      if (ch === "\"") {
+        quote = "none";
+        continue;
+      }
+    } else if (ch === "'") {
+      quote = "single";
+      continue;
+    } else if (ch === "\"") {
+      quote = "double";
+      continue;
+    } else if (ch === "$" && command[i + 1] === "'") {
+      quote = "ansi";
+      i++;
+      continue;
+    }
+    if (ch === "$" && /^\{?[=+~^]/u.test(command.slice(i + 1, i + 3))) return true;
+  }
+  return false;
+}
+
+/** zsh's `=cmd` path lookup: an unquoted word starting with `=` and more. */
+function startsWithEquals(word: ShellWord): boolean {
+  return /^=./u.test(word.source.raw);
+}
+
+/**
+ * A redirect target zsh reads differently: `=cmd`, or the `!` of zsh's
+ * clobbering `>!`/`>>!` (bash writes to a file named `!` and passes the
+ * next word to the command).
+ */
+function zshRedirectTarget(redirect: ShellRedirect): boolean {
+  return redirect.target !== undefined && (startsWithEquals(redirect.target) || redirect.target.source.raw.startsWith("!"));
+}
+
 function statementProblem(statement: ShellStatement): TerminalCommandTextProblem | null {
   switch (statement.kind) {
     case "command":
@@ -265,8 +331,11 @@ function statementProblem(statement: ShellStatement): TerminalCommandTextProblem
     case "negate":
       return statementProblem(statement.body);
     case "redirected":
+      if (statement.body.kind === "command" && statement.body.words.length === 0) return "shell-divergent";
+      if (statement.redirects.some(zshRedirectTarget)) return "shell-divergent";
       return statementProblem(statement.body) ?? firstWordsProblem(statement.redirects.flatMap((r) => [r.target, r.data].filter((w): w is ShellWord => w !== undefined)));
     case "for":
+      if ((statement.values ?? []).some(startsWithEquals)) return "shell-divergent";
       return firstWordsProblem(statement.values ?? []) ?? statementProblem(statement.body);
     case "if":
       return statementProblem(statement.condition) ?? statementProblem(statement.consequent) ?? statementProblem(statement.alternate);
@@ -299,6 +368,11 @@ function firstWordsProblem(words: readonly ShellWord[]): TerminalCommandTextProb
 function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): TerminalCommandTextProblem | null {
   const nested = firstWordsProblem([...command.words, ...command.assignments.map((a) => a.value), ...command.assignments.flatMap((a) => a.elements ?? [])]);
   if (nested !== null) return nested;
+  // Redirections alone: zsh runs `$NULLCMD`/`$READNULLCMD` (cat, a pager).
+  if (command.words.length === 0 && command.redirects.length > 0) return "shell-divergent";
+  // `[[ … ]]` takes its words as operands; everywhere else zsh looks `=word` up.
+  if (command.testForm !== "double-bracket" && command.words.some(startsWithEquals)) return "shell-divergent";
+  if (command.redirects.some(zshRedirectTarget)) return "shell-divergent";
   // `NAME=value` with no command assigns in the shell itself and persists.
   if (command.assignmentScope === "current" && command.assignments.some((a) => SHELL_STATE_VARIABLES.test(a.name))) {
     return "shell-state";
@@ -316,6 +390,8 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
   // (`c=alias; $c ls=rm`), so none of the checks below could hold.
   if (staticWords[index] === undefined) return "unchecked-construct";
   if (head.startsWith("=") || DIVERGENT_COMMAND_WORDS.has(head)) return "shell-divergent";
+  // `command NAME=v cmd`: zsh assigns and runs cmd, bash runs a program named `NAME=v`.
+  if (index > 0 && ASSIGNMENT_WORD.test(head)) return "shell-divergent";
   if (STATE_CHANGING_COMMAND_WORDS.has(head)) return "shell-state";
   if (VARIABLE_SETTING_COMMAND_WORDS.has(head) || DECLARATION_COMMAND_WORDS.has(head)) {
     // A variable name only known at run time could be any of them.
