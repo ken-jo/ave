@@ -53,11 +53,42 @@ const SHELL_DEVICE_PATHS: ReadonlySet<string> = new Set([
   "/dev/null", "/dev/stdin", "/dev/stdout", "/dev/stderr",
 ]);
 
+/** Native aliases must not evade the deny floor or acquire wider path authority. */
+function windowsShellPathViolation(path: string, label: string, effect: PathEffect): ShellPathPolicyViolation | null {
+  if (process.platform !== "win32") return null;
+  const slashed = path.replaceAll("\\", "/");
+  const namespaced = /^\/\/[?.]\//.test(slashed);
+  const ordinary = slashed.replace(/^\/\/[?.]\//, "").replace(/^UNC\//i, "//");
+  const components = ordinary.split("/");
+  const normalized = components.map((part, index) => {
+    if (part === "." || part === ".." || (index === 0 && /^[a-z]:$/i.test(part))) return part;
+    return part.split(":", 1)[0]!.replace(/[. ]+$/, "");
+  }).join("/");
+  const sensitive = isSensitivePath(caseFoldForMatch(normalized), effect);
+  if (sensitive) return {
+    kind: "sensitive-path",
+    reason: `Sensitive path: command operand ${label} matches ${sensitive}`,
+    candidate: label,
+    path,
+  };
+  // Short names require filesystem expansion. Device namespaces, streams and
+  // trimmed components have no authority until their exact identity is known.
+  if (namespaced || normalized !== ordinary || components.some(part => /~\d+(?:\.|$)/.test(part))) return {
+    kind: "invalid-path",
+    reason: `Shell path policy: ambiguous native path is not supported: ${label}`,
+    candidate: label,
+    path,
+  };
+  return null;
+}
+
 export function validateShellWorkingDirectory(
   cwd: string,
   sandboxRoot: string,
   extraAllowedDirectories: readonly string[],
 ): string | null {
+  const nativeViolation = windowsShellPathViolation(cwd, cwd, "write");
+  if (nativeViolation) return nativeViolation.reason;
   const sensitive = isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(cwd)));
   if (sensitive) {
     return `Sensitive path: cwd ${cwd} matches ${sensitive}`;
@@ -74,6 +105,8 @@ export function findResolvedShellPathViolation(
   effect: PathEffect,
   blockReadsOutsideWorkingDirectories: boolean,
 ): ShellPathPolicyViolation | null {
+  const nativeViolation = windowsShellPathViolation(absolute, label, effect);
+  if (nativeViolation) return nativeViolation;
   const canonicalPath = caseFoldForMatch(canonicalizePathForMatch(absolute));
   const sensitive = isSensitivePath(canonicalPath, effect);
   if (sensitive) {
@@ -780,6 +813,11 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
       continue;
     }
     if (!optionsEnded && token.startsWith("-") && token.length > 1) {
+      // The numeric key-size form is data; other algorithm operands can load files.
+      if (verb === "openssl" && token === "-newkey" && /^rsa:\d+$/.test(argv[i + 1] ?? "")) {
+        skip.add(++i);
+        continue;
+      }
       if (verb === "curl" && spec.valueOptions) {
         // The same option arity applies to separate, equals and short attached
         // values. A glued @file must retain its original operand span.
@@ -1042,12 +1080,16 @@ export function findShellPathPolicyViolation(
   blockReadsOutsideWorkingDirectories: boolean,
   facts: ShellExecutionFacts = { dialect: "bash", environment: {} },
 ): ShellPathPolicyViolation | null {
+  const nativeCwdViolation = windowsShellPathViolation(cwd, cwd, "write");
+  if (nativeCwdViolation) return nativeCwdViolation;
   const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories);
   if (cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
   const checkPath = (path: string, label: string, cwd: string | null, effect: PathEffect): void => {
     // These exact public standard-stream operands name the child descriptors;
     // resolving them in the host process would inspect different descriptors.
     if (SHELL_DEVICE_PATHS.has(path)) return;
+    const nativeViolation = windowsShellPathViolation(path, label, effect);
+    if (nativeViolation) throw new PathPolicyError(nativeViolation);
     if (!isAbsolute(path) && cwd === null) decline("working directory is unresolved");
     let absolute: string;
     try { absolute = resolveShellFilesystemPath(path, cwd ?? sandboxRoot); }
@@ -1159,7 +1201,7 @@ function operandPaths(value: string, option: boolean, verb: string): string[] {
   if (option && value.startsWith("-") && value.length > 1) {
     const equals = value.indexOf("=");
     if (equals > 0) return [value.slice(equals + 1)];
-    const glued = /^-[A-Za-z]+?([/~.].*)$/.exec(value);
+    const glued = /^-[A-Za-z]+?((?:[A-Za-z]:[\\/]|[\\/~.]).*)$/.exec(value);
     return glued ? [glued[1]!] : [];
   }
   if (["awk", "gawk", "mawk", "nawk"].includes(verb)) {

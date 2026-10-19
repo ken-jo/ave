@@ -1,6 +1,7 @@
 import { mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join as nativeJoin } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
@@ -35,6 +36,10 @@ function validateShellCommandPathPolicy(
   );
 }
 
+// Command fixtures use separators that retain their meaning in Bash.
+const join = (...parts: string[]): string => nativeJoin(...parts).replaceAll("\\", "/");
+const shellTmp = (): string => realpathSync(tmpdir()).replaceAll("\\", "/");
+
 describe("shell-path-policy", () => {
   const roots: string[] = [];
 
@@ -45,7 +50,7 @@ describe("shell-path-policy", () => {
   });
 
   function withRoot<T>(fn: (root: string) => T): T {
-    const root = mkdtempSync(join(tmpdir(), "ave-shell-policy-"));
+    const root = mkdtempSync(join(tmpdir(), "ave-shell-policy-")).replaceAll("\\", "/");
     roots.push(root);
     return fn(root);
   }
@@ -185,7 +190,7 @@ describe("shell-path-policy", () => {
 
   it("applies the optional read fence to the archive file itself", () => {
     withRoot((root) => {
-      const command = `tar -tf ${join(realpathSync(tmpdir()), "outside.tar")}`;
+      const command = "tar -tf ../outside.tar";
       expect(validateShellCommandPathPolicy(command, root, root, [])).toBeNull();
       expect(validateShellCommandPathPolicy(command, root, root, [], true)).toContain("Sandbox:");
     });
@@ -193,7 +198,7 @@ describe("shell-path-policy", () => {
 
   it("rejects path operands outside the sandbox", () => {
     withRoot((root) => {
-      const outside = realpathSync(tmpdir());
+      const outside = shellTmp();
       const result = validateShellCommandPathPolicy(`cp ./staged ${outside}/ave-outside.txt`, root, root, []);
       expect(result).toContain("Sandbox:");
     });
@@ -573,10 +578,16 @@ describe("shell-path-policy", () => {
     },
   );
 
-  it("denies writing through a dangling symlink outside the workspace", () => {
+  it("denies writing through a dangling symlink outside the workspace", ({ skip }) => {
     withRoot((root) => {
       const link = join(root, "dangling");
-      symlinkSync(join(root, "..", "uncreated-target.txt"), link, "file");
+      try {
+        symlinkSync(join(root, "..", "uncreated-target.txt"), link, "file");
+      } catch (error) {
+        // File symlinks require a capability this host may not grant.
+        if ((error as NodeJS.ErrnoException).code === "EPERM") { skip(); return; }
+        throw error;
+      }
       expect(validateShellCommandPathPolicy(`printf hello > "${link}"`, root, root, []))
         .toContain("cannot resolve command operand");
     });
@@ -596,7 +607,7 @@ describe("shell-path-policy", () => {
 
   it("allows explicit extra directories but still applies sensitive-path policy", () => {
     withRoot((root) => {
-      const outside = realpathSync(tmpdir());
+      const outside = shellTmp();
       expect(validateShellCommandPathPolicy(`cat ${outside}/allowed.txt`, root, root, [outside])).toBeNull();
       expect(validateShellCommandPathPolicy(`cat ${outside}/.env`, root, root, [outside])).toContain("Sensitive path:");
     });
@@ -1068,7 +1079,7 @@ describe("shell-path-policy", () => {
         ["shell payload", "uv run sh -c 'cat /etc/shadow'"],
         ["bash payload", "uv run bash -c '[[ -f /etc/shadow ]]'"],
         ["dd input", "uv run dd if=/etc/shadow of=./copy"],
-        ["curl file URL", "uv run curl file:///etc/shadow"],
+        ["curl file URL", `uv run curl '${pathToFileURL(join("/etc", "shadow")).href}'`],
         ["explicit child path", "uv run /etc/shadow"],
       ])("checks child path semantics for %s", (_label, command) => {
         withRoot((root) => {
@@ -1498,7 +1509,7 @@ describe("shell-path-policy", () => {
 
     it("admits the whole command once the write target's directory is granted", () => {
       withRoot((root) => {
-        const grant = realpathSync(mkdtempSync(join(tmpdir(), "ave-grant-")));
+        const grant = realpathSync(mkdtempSync(join(tmpdir(), "ave-grant-"))).replaceAll("\\", "/");
         roots.push(grant);
         // The read half was never the obstacle; granting the directory the
         // WRITE lands in is what clears the command.
@@ -1507,11 +1518,19 @@ describe("shell-path-policy", () => {
       });
     });
 
-    it("refuses a write that reaches outside through a symlink inside a granted directory", () => {
+    it("refuses a write that reaches outside through a symlink inside a granted directory", ({ skip }) => {
       withRoot((root) => {
-        const grant = realpathSync(mkdtempSync(join(tmpdir(), "ave-grant-")));
+        const grant = realpathSync(mkdtempSync(join(tmpdir(), "ave-grant-"))).replaceAll("\\", "/");
         roots.push(grant);
-        symlinkSync("/etc", join(grant, "to-etc"));
+        const outside = mkdtempSync(join(tmpdir(), "ave-outside-"));
+        roots.push(outside);
+        try {
+          symlinkSync(outside, join(grant, "to-etc"), "dir");
+        } catch (error) {
+          // Directory symlinks require a capability this host may not grant.
+          if ((error as NodeJS.ErrnoException).code === "EPERM") { skip(); return; }
+          throw error;
+        }
         // Canonicalization resolves the link before the boundary compare, so
         // the grant covers the directory and not what it points at.
         expect(validateShellCommandPathPolicy(`echo hi > ${grant}/to-etc/x`, root, root, [grant]))

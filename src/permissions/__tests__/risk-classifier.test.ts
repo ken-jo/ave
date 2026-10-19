@@ -21,6 +21,7 @@ import {
   type LlmReviewerProvider,
   type RiskVerdict,
 } from "../reviewer/risk-classifier.js";
+import { foldPathForMatch } from "./test-helpers.js";
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../shared/permission-reviewer-framework.js";
 import { disposableContainerCapability } from "../sandbox-capability.js";
 import { makeRiskClassifierContext as ctx } from "./test-helpers.js";
@@ -46,8 +47,8 @@ describe("DisabledRiskClassifier", () => {
 
 describe("RuleBasedRiskClassifier — application scratch directory", () => {
   const rb = new RuleBasedRiskClassifier();
-  const scratch = "/users/example/scratch";
-  const project = "/users/example/work";
+  const scratch = foldPathForMatch("/users/example/scratch");
+  const project = foldPathForMatch("/users/example/work");
 
   it("does not read depth below the verified scratch root as a signal, while other deep writes stay MEDIUM", () => {
     vi.mocked(verifyAveScratchDir).mockReturnValue({ ok: true, path: scratch });

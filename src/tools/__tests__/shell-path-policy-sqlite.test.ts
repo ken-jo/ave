@@ -125,7 +125,8 @@ describe("database CLI argument roles", () => {
     ]) expect(policy(command)?.kind).toBe("sandbox-boundary");
   });
 
-  it("keeps memory database names as filenames in explicit file-loading modes", () => {
+  // A colon cannot name this directory in the native filesystem.
+  it.skipIf(process.platform === "win32")("keeps memory database names as filenames in explicit file-loading modes", () => {
     symlinkSync(outside, join(cwd, ":memory:"), "junction");
     expect(policy("sqlite3 :memory: 'SELECT 1;'")).toBeNull();
     for (const command of [

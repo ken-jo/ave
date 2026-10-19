@@ -1,6 +1,6 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -79,6 +79,7 @@ vi.mock("../../workload/runtime.js", async (importOriginal) => {
     ...actual,
     isWorkloadBrokerActive: () => broker.active,
     acquireBrokeredWorkloadCapability: broker.acquire,
+    resolveBrokeredWorkloadPath: (_capability: unknown, input: string) => posix.resolve(broker.capability.workload.cwd, input),
     isIssuedActiveBrokeredWorkloadCapability: (value: unknown) =>
       broker.active && value === broker.capability,
     executeBrokeredWorkloadRequest: broker.execute,

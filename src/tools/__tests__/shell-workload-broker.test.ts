@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { posix } from "node:path";
 
 import {
   __resetActiveSandboxCapabilityForTest,
@@ -57,6 +58,8 @@ vi.mock("../../workload/runtime.js", async (importOriginal) => {
   return {
     ...actual,
     isWorkloadBrokerActive: () => broker.active,
+    acquireBrokeredWorkloadCapability: async () => broker.capability,
+    resolveBrokeredWorkloadPath: (_capability: unknown, input: string) => posix.resolve(broker.capability.workload.cwd, input),
     isIssuedActiveBrokeredWorkloadCapability: (value: unknown) =>
       broker.active && broker.issued && value === broker.capability,
     executeBrokeredWorkloadRequest: broker.execute,
@@ -190,6 +193,23 @@ afterEach(() => {
 });
 
 describe("brokered workload shell execution", () => {
+  it.each([undefined, "subdir"])("resolves cwd %s inside the guest workload, independent of the host cwd", async (cwd) => {
+    const command = "pwd";
+    const expectedCwd = cwd === undefined ? "/app" : "/app/subdir";
+    const binding = issueBrokerShellGrant({ command, cwd: expectedCwd });
+    broker.execute.mockResolvedValueOnce(successfulRun(expectedCwd));
+    const result = await new BashTool().execute(
+      { command, ...(cwd === undefined ? {} : { cwd }), timeoutSeconds: 10 },
+      context({ ...binding, cwd: process.cwd() }),
+    );
+    expect(result.isError).toBe(false);
+    expect(broker.execute).toHaveBeenCalledWith(
+      broker.capability, "shell.run", { command, cwd: expectedCwd, timeoutMs: 10_000 },
+      expect.objectContaining({ operation: "shell.run", toolName: "bash" }), undefined,
+    );
+    expect(spawnSpy).not.toHaveBeenCalled();
+  });
+
   it("uses the exact grant capability and accepts a clean non-default guest cwd", async () => {
     const command = "pwd";
     const cwd = "/tmp";

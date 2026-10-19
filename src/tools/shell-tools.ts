@@ -1408,7 +1408,18 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       };
     }
 
-    const resolvedCwd = resolveHostShellWorkingDirectory(ctx.cwd, input.cwd);
+    let resolvedCwd: string;
+    try {
+      if (isWorkloadBrokerActive()) {
+        const runtime = await import("../workload/runtime.js");
+        const capability = await runtime.acquireBrokeredWorkloadCapability(ctx.abortSignal);
+        resolvedCwd = runtime.resolveBrokeredWorkloadPath(capability, input.cwd ?? ".");
+      } else {
+        resolvedCwd = resolveHostShellWorkingDirectory(ctx.cwd, input.cwd);
+      }
+    } catch (error) {
+      return brokerFailureResult(error);
+    }
     // §691: the executor seals the host-shell substrate before permission
     // routing. The supplied plan must come from the live host provider; a
     // structural lookalike cannot downgrade an active ASRT route to plain spawn.
