@@ -302,6 +302,68 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     }
   }
 
+  /** Exchange actual SOCKS5 username/password and CONNECT frames through the invocation front end. */
+  async function socksThrough(
+    front: number | string,
+    proxy: URL,
+    username: string,
+    host: string,
+    port: number,
+    password = decodeURIComponent(proxy.password),
+  ): Promise<{ authentication: number; reply?: number }> {
+    const { connect } = await import("node:net");
+    const socket = typeof front === "number" ? connect(front, "127.0.0.1") : connect(front);
+    socket.on("error", () => {});
+    socket.setTimeout(10_000, () => socket.destroy(new Error("SOCKS exchange timed out")));
+    const read = async (length: number): Promise<Buffer> => {
+      for (;;) {
+        const bytes = socket.read(length) as Buffer | null;
+        if (bytes !== null) {
+          if (bytes.length !== length) throw new Error("SOCKS exchange ended early");
+          return bytes;
+        }
+        if (socket.destroyed || socket.readableEnded) throw new Error("SOCKS exchange ended early");
+        await new Promise<void>((resolve, reject) => {
+          const cleanup = (): void => {
+            socket.off("readable", readable);
+            socket.off("close", closed);
+            socket.off("error", failed);
+          };
+          const readable = (): void => { cleanup(); resolve(); };
+          const closed = (): void => { cleanup(); reject(new Error("SOCKS exchange ended early")); };
+          const failed = (error: Error): void => { cleanup(); reject(error); };
+          socket.once("readable", readable);
+          socket.once("close", closed);
+          socket.once("error", failed);
+        });
+      }
+    };
+    try {
+      socket.write(Buffer.from([5, 1, 2]));
+      expect(await read(2)).toEqual(Buffer.from([5, 2]));
+      const user = Buffer.from(username);
+      const pass = Buffer.from(password);
+      socket.write(Buffer.concat([Buffer.from([1, user.length]), user, Buffer.from([pass.length]), pass]));
+      const auth = await read(2);
+      expect(auth[0]).toBe(1);
+      const authentication = auth[1]!;
+      if (authentication !== 0) return { authentication };
+      const name = Buffer.from(host);
+      const destinationPort = Buffer.alloc(2);
+      destinationPort.writeUInt16BE(port);
+      socket.write(Buffer.concat([Buffer.from([5, 1, 0, 3, name.length]), name, destinationPort]));
+      const head = await read(4);
+      expect(head[0]).toBe(5);
+      expect(head[2]).toBe(0);
+      const addressLength = head[3] === 1 ? 4 : head[3] === 4 ? 16 : head[3] === 3 ? (await read(1))[0]! : undefined;
+      if (addressLength === undefined) throw new Error("SOCKS reply has an unknown address kind");
+      await read(addressLength + 2);
+      return { authentication, reply: head[1]! };
+    } finally {
+      socket.destroy();
+    }
+  }
+
   function proxyUrlIn(wrapped: string): URL {
     const spelled = /(http:\/\/srt\.[^'"\s:@]+:[^'"\s@]+@[^'"\s/]+)/u.exec(wrapped)?.[1];
     expect(spelled, "wrapped command carries no attributed proxy URL").toBeTypeOf("string");
@@ -1166,6 +1228,77 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       await SandboxManager.reset();
       await old.close();
       await next.close();
+    }
+  });
+
+  it("switches an authenticated SOCKS connection to the current upstream with its bound credentials", async (test) => {
+    const { createUpstreamProxyRouter } = await import("../../src/permissions/upstream-proxy.js");
+    const { DEFAULT_UPSTREAM_PROXY } = await import("../../src/shared/upstream-proxy.js");
+    const old = await recordingUpstream(200);
+    let next: Awaited<ReturnType<typeof recordingUpstream>> | undefined;
+    let setup: Awaited<ReturnType<typeof withRouter>>;
+    let pending: ReturnType<typeof socksThrough> | undefined;
+    let release!: () => void;
+    let enter!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    try {
+      next = await recordingUpstream(200);
+      const oldOrigin = `http://old-proxy.example.test:${old.port}`;
+      const nextOrigin = `http://127.0.0.1:${next.port}`;
+      let settings = { ...DEFAULT_UPSTREAM_PROXY, mode: "manual" as const, manualUrl: oldOrigin };
+      // Different throwaway credentials identify which service receives the handshake.
+      let credentials = { username: "old-wire-user", password: "old-wire-only", origin: oldOrigin };
+      const upstream = createUpstreamProxyRouter({ settings: () => settings, manualCredentials: () => credentials, env: () => ({}) });
+      setup = await withRouter(test, upstream.router);
+      if (setup === undefined) return;
+      setDestinationResolverForTesting(async name => {
+        if (name === "old-proxy.example.test") { enter(); await held; return [{ address: "127.0.0.1", family: 4 }]; }
+        return testResolver(name);
+      });
+      pending = socksThrough(setup.front, setup.proxy, setup.name, "switch.example.invalid", 443);
+      await Promise.race([entered, pending.then(() => { throw new Error("SOCKS exchange finished before the DNS hold"); })]);
+      expect(old.requests).toHaveLength(0);
+      expect(next.requests).toHaveLength(0);
+      settings = { ...settings, manualUrl: nextOrigin };
+      credentials = { username: "new-wire-user", password: "new-wire-only", origin: nextOrigin };
+      // Keep this client open to exercise rerouting independently of tunnel closure.
+      upstream.invalidate();
+      release();
+      expect(await pending).toEqual({ authentication: 0, reply: 0 });
+      expect(old.requests).toHaveLength(0);
+      expect(next.requests.map(request => request.line)).toEqual([`CONNECT ${TEST_ADDRESS}:443 HTTP/1.1`]);
+      const expectedAuth = `Basic ${Buffer.from(`${credentials.username}:${credentials.password}`).toString("base64")}`;
+      expect(next.requests[0]?.authorization === expectedAuth).toBe(true);
+      expect(setup.asked.map(ask => ask.context?.phase)).toEqual(["name", "resolved"]);
+      expect(setup.asked.every(ask => ask.context?.identity === "listener")).toBe(true);
+    } finally {
+      release();
+      await pending?.catch(() => {});
+      try {
+        await setup?.SandboxManager.reset();
+      } finally {
+        await Promise.all([old.close(), next?.close()]);
+      }
+    }
+  });
+
+  it.for(["bad-password", "foreign-invocation"] as const)("refuses SOCKS %s before route lookup or DNS", async (kind, test) => {
+    let routes = 0;
+    let resolutions = 0;
+    const setup = await withRouter(test, async () => { routes++; return { routes: [{ kind: "direct" }] }; });
+    if (setup === undefined) return;
+    try {
+      setDestinationResolverForTesting(async name => { resolutions++; return testResolver(name); });
+      const user = kind === "foreign-invocation" ? `srt.${Buffer.from("f".repeat(32)).toString("base64")}` : setup.name;
+      const password = `${kind === "bad-password" ? "invalid-" : ""}${decodeURIComponent(setup.proxy.password)}`;
+      const result = await socksThrough(setup.front, setup.proxy, user, "refused.example.invalid", 443, password);
+      expect(result).toEqual(kind === "bad-password" ? { authentication: 1 } : { authentication: 0, reply: 2 });
+      expect(routes).toBe(0);
+      expect(resolutions).toBe(0);
+      expect(setup.asked).toHaveLength(0);
+    } finally {
+      await setup.SandboxManager.reset();
     }
   });
 
