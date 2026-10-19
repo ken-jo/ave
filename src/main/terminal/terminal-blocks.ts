@@ -233,6 +233,8 @@ function cleanCommand(raw: string): string {
  *  - `pending-input`: the user has typed at the prompt and not submitted it,
  *    or typed anything within the last {@link USER_INPUT_QUIET_MS} (keys
  *    still on their way through the shell have not been echoed yet);
+ *  - `shell-starting`: a shell that marks the end of its prompt (zsh, bash)
+ *    has begun its first prompt but not finished it yet;
  *  - `no-prompt-end-marker`: the shell marks no end of prompt (fish), so
  *    typing at its prompt cannot be told from the prompt itself.
  */
@@ -243,6 +245,7 @@ export type TerminalPromptState =
   | "command-running"
   | "between-prompts"
   | "pending-input"
+  | "shell-starting"
   | "no-prompt-end-marker";
 
 /**
@@ -274,18 +277,21 @@ export class TerminalBlockTracker {
   private exited = false;
   /** When the user last wrote to this terminal ({@link recordInput}), or null. */
   private lastInputAt: number | null = null;
-  /** True once the shell has marked the end of a prompt (B): zsh and bash do, fish does not. */
-  private marksPromptEnd = false;
+  /** True once the shell has marked the end of a prompt (B). */
+  private sawPromptEnd = false;
   /** Called after every authenticated marker and on exit (see {@link subscribe}). */
   private readonly listeners = new Set<() => void>();
 
   private readonly nonce: string;
   private readonly now: () => number;
+  /** Whether this terminal's shell integration marks the end of its prompt (B): zsh and bash do, fish does not. */
+  private readonly marksPromptEnd: boolean;
 
-  constructor(options: { nonce: string; now?: () => number }) {
+  constructor(options: { nonce: string; marksPromptEnd: boolean; now?: () => number }) {
     // An empty nonce would make every bare marker "authenticated".
     if (!options.nonce) throw new Error("TerminalBlockTracker requires a nonce");
     this.nonce = options.nonce;
+    this.marksPromptEnd = options.marksPromptEnd;
     this.now = options.now ?? Date.now;
   }
 
@@ -311,7 +317,10 @@ export class TerminalBlockTracker {
       if (this.lastInputAt !== null && this.now() - this.lastInputAt < USER_INPUT_QUIET_MS) return "pending-input";
       return "ready";
     }
-    if (this.phase === "prompt") return this.marksPromptEnd ? "between-prompts" : "no-prompt-end-marker";
+    if (this.phase === "prompt") {
+      if (!this.marksPromptEnd) return "no-prompt-end-marker";
+      return this.sawPromptEnd ? "between-prompts" : "shell-starting";
+    }
     return "between-prompts";
   }
 
@@ -552,7 +561,7 @@ export class TerminalBlockTracker {
         this.phase = "prompt";
         break;
       case "B":
-        this.marksPromptEnd = true;
+        this.sawPromptEnd = true;
         this.echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
         this.phase = "input";
         break;

@@ -26,7 +26,7 @@ const NONCE = TERMINAL_TEST_NONCE;
 const mark = terminalMarker;
 
 function trackerWith(commands: Array<{ command: string; output: string; exit: number }>): TerminalBlockTracker {
-  const tracker = new TerminalBlockTracker({ nonce: NONCE });
+  const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
   for (const { command, output, exit } of commands) {
     tracker.recordOutput(`${mark("P;Cwd=/repo")}${mark(`C;cmdline_url=${encodeURIComponent(command)}`)}${output}${mark(`D;${exit}`)}`);
   }

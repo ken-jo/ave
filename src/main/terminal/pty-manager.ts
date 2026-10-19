@@ -466,11 +466,15 @@ async function spawnNewTerminal(
   const shell = resolveLoginShell();
   const markerNonce = randomBytes(16).toString("hex");
   let integrationEnv: Record<string, string>;
+  let marksPromptEnd: boolean;
   try {
-    integrationEnv = installShellIntegration(sandboxHome.path, shell, {
+    const integration = installShellIntegration(sandboxHome.path, shell, {
       nonce: markerNonce,
       sandboxEnv: sandboxHome.env,
-    }).env;
+    });
+    integrationEnv = integration.env;
+    // fish's integration marks no end of prompt (shell-integration.ts).
+    marksPromptEnd = integration.shell !== "fish";
   } catch (err) {
     disposeResources();
     return {
@@ -570,7 +574,7 @@ async function spawnNewTerminal(
     const session: TerminalSession = {
       pty,
       ownerWindowId: options.ownerWindowId ?? null,
-      blocks: new TerminalBlockTracker({ nonce: markerNonce }),
+      blocks: new TerminalBlockTracker({ nonce: markerNonce, marksPromptEnd }),
       ring: [],
       ringBytes: 0,
       disposeData: () => {},
@@ -734,6 +738,7 @@ const TERMINAL_NOT_READY_MESSAGES: Record<Exclude<TerminalPromptState, "ready">,
   "command-running": "a command is running in the foreground of the terminal; typed text would go to it",
   "between-prompts": "the terminal's shell is between commands and has not shown its prompt yet",
   "pending-input": "the user is typing at the prompt, or it holds text they typed and have not run",
+  "shell-starting": "the terminal's shell is still starting and has not finished its first prompt; retry in a moment",
   "no-prompt-end-marker": "the terminal's shell does not mark the end of its prompt, so typing there cannot be told",
 };
 

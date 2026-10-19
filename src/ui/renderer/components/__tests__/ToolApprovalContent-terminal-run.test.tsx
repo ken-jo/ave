@@ -81,13 +81,20 @@ describe("ToolApprovalContent terminal_run card", () => {
     expect(target).not.toHaveTextContent("Terminal 1");
   });
 
-  it("lists each non-ASCII character by code point, so a look-alike cannot pass as the letter it imitates", () => {
+  it("names a look-alike letter in a mixed-script word by code point, so it cannot pass as the letter it imitates", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
     // A Cyrillic a in place of the Latin one.
-    render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest({ args: { command: "c\u0430t notes.txt" } })} onDecide={vi.fn()} />);
+    render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest({ args: { command: "open p\u0430ypal.com" } })} onDecide={vi.fn()} />);
     const notes = screen.getAllByTestId("approval-terminal-note");
     expect(notes).toHaveLength(1);
     expect(notes[0]).toHaveTextContent("U+0430");
+  });
+
+  it("does not warn about a word written in one script, such as a Korean filename", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest({ args: { command: "cat \ubcf4\uace0\uc11c.txt" } })} onDecide={vi.fn()} />);
+    expect(screen.getByTestId("approval-terminal-target")).toHaveTextContent("cat \ubcf4\uace0\uc11c.txt");
+    expect(screen.queryByTestId("approval-terminal-note")).toBeNull();
   });
 
   it("says when the terminal's directory is outside the allowed folders, and only then", () => {

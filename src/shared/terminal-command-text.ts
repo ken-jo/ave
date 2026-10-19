@@ -112,7 +112,6 @@ export function terminalCommandTextProblem(command: string): TerminalCommandText
   if (new RegExp(`\\s{${MAX_TERMINAL_COMMAND_WHITESPACE_RUN + 1},}`, "u").test(command)) return "whitespace-run";
   if (HISTORY_EXPANSION.test(command) || command.trimStart().startsWith("^")) return "history-expansion";
   if (command.includes("__ave_")) return "shell-integration";
-  if (hasUnquotedComment(command)) return "comment";
   // An odd run of trailing backslashes escapes the Enter that submits the line.
   const trailingBackslashes = /\\*$/u.exec(command)?.[0].length ?? 0;
   if (trailingBackslashes % 2 === 1) return "incomplete";
@@ -123,6 +122,7 @@ export function terminalCommandTextProblem(command: string): TerminalCommandText
     return "incomplete";
   }
   if (!analysis.ok) return "incomplete";
+  if (hasUnquotedComment(command)) return "comment";
   return statementProblem(analysis.program);
 }
 
@@ -158,39 +158,62 @@ function hasHiddenCombiningMark(command: string): boolean {
 
 /**
  * An unquoted `#` at the start of a word: a comment to bash, text to a zsh
- * without `interactivecomments`.
+ * without `interactivecomments`. Inside a `${…}` parameter expansion a `#`
+ * is an operator (`${#x}`, `${x#p}`, `${x##p}`), never a comment. A line
+ * whose quotes or expansions this scan cannot close is counted as holding
+ * one, so an odd construct never hides a comment from it.
  */
 function hasUnquotedComment(command: string): boolean {
-  let quote: "'" | "\"" | null = null;
+  const chars = [...command];
+  /** Open double quotes and `${` expansions, innermost last. */
+  const open: Array<"double-quote" | "parameter"> = [];
+  let singleQuoted = false;
   let escaped = false;
   let wordStart = true;
-  for (const ch of command) {
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i]!;
+    const inside = open.at(-1);
+    if (singleQuoted) {
+      if (ch === "'") singleQuoted = false;
+      continue;
+    }
     if (escaped) {
       escaped = false;
       wordStart = false;
-      continue;
-    }
-    if (quote === "'") {
-      if (ch === "'") quote = null;
       continue;
     }
     if (ch === "\\") {
       escaped = true;
       continue;
     }
-    if (quote === "\"") {
-      if (ch === "\"") quote = null;
+    if (ch === "$" && chars[i + 1] === "{") {
+      open.push("parameter");
+      i++;
+      wordStart = false;
       continue;
     }
-    if (ch === "'" || ch === "\"") {
-      quote = ch;
+    if (inside === "double-quote") {
+      if (ch === "\"") open.pop();
+      continue;
+    }
+    if (ch === "\"") {
+      open.push("double-quote");
       wordStart = false;
+      continue;
+    }
+    if (ch === "'") {
+      singleQuoted = true;
+      wordStart = false;
+      continue;
+    }
+    if (inside === "parameter") {
+      if (ch === "}") open.pop();
       continue;
     }
     if (ch === "#" && wordStart) return true;
     wordStart = /[\s;&|()<>`{}]/u.test(ch);
   }
-  return false;
+  return open.length > 0 || singleQuoted;
 }
 
 function statementProblem(statement: ShellStatement): TerminalCommandTextProblem | null {

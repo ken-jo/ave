@@ -39,7 +39,7 @@ function runInteractive(shell: string, script: string) {
     encoding: "utf-8",
     timeout: 20_000,
   });
-  const tracker = new TerminalBlockTracker({ nonce: NONCE });
+  const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
   const display = tracker.recordOutput(result.stdout);
   return { home, tracker, status: result.status, raw: result.stdout, display };
 }

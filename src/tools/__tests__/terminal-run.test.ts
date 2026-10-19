@@ -27,7 +27,7 @@ const mark = terminalMarker;
 const promptIn = (cwd: string): string => `${mark("D;0")}${mark(`P;Cwd=${encodeURIComponent(cwd)}`)}${mark("A")}$ ${mark("B")}`;
 
 function readyTracker(cwd = "/repo"): TerminalBlockTracker {
-  const tracker = new TerminalBlockTracker({ nonce: NONCE });
+  const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
   tracker.recordOutput(promptIn(cwd));
   return tracker;
 }
@@ -143,8 +143,21 @@ describe("terminal_run", () => {
         .rejects.toThrow(reason);
     });
 
+    it("tells a shell still drawing its first prompt to retry, and fish that it is unsupported", async () => {
+      const starting = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      starting.recordOutput(`${mark("P;Cwd=/repo")}${mark("A")}$ `);
+      registerTerminalBlockTracker("terminal:aaaaaaaa-1", starting, WINDOW);
+      const tool = createTerminalRunTool(depsWith());
+      const scopeOf = () => Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" }));
+      await expect(scopeOf()).rejects.toThrow(/still starting.*retry in a moment/);
+      const fish = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: false });
+      fish.recordOutput(`${mark("P;Cwd=/repo")}${mark("A")}$ `);
+      registerTerminalBlockTracker("terminal:aaaaaaaa-1", fish, WINDOW);
+      await expect(scopeOf()).rejects.toThrow(/\(fish\).*needs zsh or bash/);
+    });
+
     it("refuses a shell without command markers", async () => {
-      registerTerminalBlockTracker("terminal:aaaaaaaa-1", new TerminalBlockTracker({ nonce: NONCE }), WINDOW);
+      registerTerminalBlockTracker("terminal:aaaaaaaa-1", new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true }), WINDOW);
       const tool = createTerminalRunTool(depsWith());
       await expect(Promise.resolve().then(() => tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" })))
         .rejects.toThrow(/reports no command markers/);
@@ -195,6 +208,10 @@ describe("terminal_run", () => {
       ["a # comment zsh may run as text", "echo SAFE # ; echo PWNED", /# comment/],
       ["a # comment hiding an rm", "ls # ; rm -rf build", /# comment/],
       ["a comment after an operator", "ls;#x", /# comment/],
+      ["a comment after a word", "a #b", /# comment/],
+      ["a comment directly after ;", "a;#b", /# comment/],
+      ["a comment after a quoted expansion", "echo \"${x#p}\" # ; rm -rf build", /# comment/],
+      ["a comment after an expansion holding a quoted brace", "echo ${x:-\"}\"} # ; rm -rf build", /# comment/],
       ["an =command path lookup", "=rm -rf build", /starting with =/],
       ["an =command behind builtin", "builtin =rm x", /starting with =/],
       ["nocorrect", "nocorrect rm -rf build", /nocorrect/],
@@ -257,6 +274,10 @@ describe("terminal_run", () => {
         "FOO=1 npm test",
         "export FOO=1",
         "echo $((1 + 2))",
+        "echo ${#x}",
+        "echo ${x#p}",
+        "echo ${x##p}",
+        "echo \"${x%%p}\" ${y:-${z#q}}",
       ]) {
         await expect(Promise.resolve(tool.approvalMemoryScope!({ command }, { cwd: "/workspace", sessionId: "main" }))).resolves.toMatchObject({ kind: "terminal-command" });
       }

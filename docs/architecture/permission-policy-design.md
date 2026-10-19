@@ -578,11 +578,23 @@ directory since approval.
 
 The command is typed only at an empty prompt, as the shell's own command
 markers report it ([terminal-blocks.ts](../../src/main/terminal/terminal-blocks.ts)
-`promptState`). A running command or full-screen program, the user's unsent
-typing at the prompt or any keystroke in the last 1.5 seconds (keys not yet
-echoed), a shell between prompts, an exited shell, a shell that emits no
-markers and a shell that does not mark the end of its prompt (fish) are refused
-with the reason, before the card and again at execution.
+`promptState`). Refused with the reason, before the card and again at
+execution:
+
+- a running command or full-screen program;
+- the user's unsent typing at the prompt, or any keystroke in the last 1.5
+  seconds;
+- a shell between prompts, or a zsh or bash still drawing its first prompt
+  (the model is told to retry in a moment);
+- an exited shell or a shell that emits no markers;
+- a shell that does not mark the end of its prompt (fish), which is not
+  supported.
+
+The 1.5-second quiet window is a heuristic. A key written to the PTY shows in
+the echo only after the shell reads it, so an empty echo just after typing
+proves nothing; the window covers that gap. A key the user presses after the
+final check, while the approved line is being written, can still mix with
+it.
 
 The text must be one line that every supported shell runs exactly as shown and
 as the rules read it
@@ -595,18 +607,28 @@ before any card, with no mode that lets them through:
   whitespace runs longer than 16;
 - history expansion (`!word`, a leading `^`, the `r` and `fc` re-run commands);
 - constructs zsh and bash read differently: an unquoted `#` comment, a command
-  word starting with `=`, `nocorrect` and `noglob`. The terminal's zsh also
-  runs with `interactivecomments`;
+  word starting with `=`, `nocorrect` and `noglob`. A `#` inside a `${…}`
+  expansion (`${#x}`, `${x#p}`) is an operator, not a comment. The terminal's
+  zsh also runs with `interactivecomments`;
 - anything that would change the shell for the user's later commands: function
   definitions; assignments to prompt and hook variables, `PATH`, `IFS` and
   similar; builtins that install aliases, traps, hooks, options or key
   bindings or source code;
 - references to the shell integration's `__ave_*` names; block records also
   redact the marker nonce, so printed text cannot forge markers;
+- a construct the shell analysis does not model (`case`,
+  `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`);
 - an incomplete construct.
 
-The card shows the exact command, each non-ASCII character by code point, and
-a note when the terminal's directory is outside the allowed folders.
+The card shows the exact command. It names by code point each character that
+can look like another
+([terminal-command-lookalikes.ts](../../src/shared/terminal-command-lookalikes.ts)).
+That covers a non-ASCII character that is not a letter, fullwidth and
+halfwidth forms, and the letters of a word that mixes scripts the way no
+writing system does, such as Latin with Cyrillic or Greek. This follows the
+"highly restrictive" mixed-script level of Unicode TS #39. A word in a single
+script, such as a Korean filename, gets no warning. The card also notes when
+the terminal's directory is outside the allowed folders.
 
 ## Default Allowed Roots
 

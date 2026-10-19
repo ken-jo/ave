@@ -844,6 +844,25 @@ describe("pty-manager typing an approved agent command", () => {
     expect(typeTerminalCommand("terminal:0000000a-1", 3, "pwd")).toMatchObject({ ok: false, reason: "no-terminal" });
   });
 
+  it("knows from the shell it spawned whether a prompt without an end marker is fish or a shell still starting", async () => {
+    const { pty, mark } = await zshTerminal(3);
+    pty.emitData(`${mark("P;Cwd=/w")}${mark("A")}% `);
+    expect(typeTerminalCommand("terminal:0000000a-1", 3, "ls")).toMatchObject({ ok: false, reason: "shell-starting", message: expect.stringMatching(/retry in a moment/) });
+    killTerminal("terminal:0000000a-1");
+    pty.emitExit(0);
+    vi.stubEnv("SHELL", "/usr/bin/fish");
+    try {
+      expect((await spawnTerminal({ tabId: "terminal:0000000b-1", ownerWindowId: 3 })).ok).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const [, , opts] = ptySpawnMock.mock.calls.at(-1) as [string, string[], { env: Record<string, string> }];
+    const fishMark = (fields: string) => `\u001b]133;${fields};${opts.env.AVE_TERMINAL_NONCE}\u0007`;
+    lastPty!.emitData(`${fishMark("P;Cwd=/w")}${fishMark("A")}/w> `);
+    expect(typeTerminalCommand("terminal:0000000b-1", 3, "ls")).toMatchObject({ ok: false, reason: "no-prompt-end-marker" });
+    expect(lastPty!.written).toEqual([]);
+  });
+
   it("refuses while the user's keystrokes may still be on their way to the echo", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {

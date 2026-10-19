@@ -60,6 +60,7 @@ import { isRecord } from "../../../shared/is-record.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 import type { RiskLevel, ToolCategory } from "../../../shared/permission-review-status.js";
 import { shellExecutionEnvironmentLines } from "../../../shared/shell-execution-environment.js";
+import { terminalCommandLookalikes } from "../../../shared/terminal-command-lookalikes.js";
 
 type ElicitationFieldKind = ElicitationSchemaFieldKind;
 type ElicitationFormValue = string | boolean;
@@ -592,9 +593,11 @@ function terminalTargetText(
 
 /**
  * Facts about a `terminal_run` command a reader could miss in its text: each
- * non-ASCII character by code point (a look-alike reads as the letter it
- * imitates), and a terminal directory outside the allowed folders (the
- * command still runs there, inside the terminal's sandbox).
+ * character that could pass for another, by code point (a look-alike reads as
+ * the letter it imitates; words in one script, such as Korean filenames, are
+ * not listed — see terminalCommandLookalikes), and a terminal directory
+ * outside the allowed folders (the command still runs there, inside the
+ * terminal's sandbox).
  */
 function terminalCommandNotes(
   t: (key: string, params?: Record<string, string>) => string,
@@ -605,13 +608,13 @@ function terminalCommandNotes(
   const notes: string[] = [];
   const command = parseArgs(request.args)?.command;
   if (typeof command === "string") {
-    const nonAscii = [...new Set([...command].filter((ch) => ch.codePointAt(0)! > 0x7e))];
-    if (nonAscii.length > 0) {
-      const list = nonAscii
+    const lookalikes = terminalCommandLookalikes(command);
+    if (lookalikes.length > 0) {
+      const list = lookalikes
         .slice(0, 12)
         .map((ch) => `${ch} U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`)
         .join(", ");
-      notes.push(t("toolApprovalDialog.terminalNonAscii", { list: nonAscii.length > 12 ? `${list}, …` : list }));
+      notes.push(t("toolApprovalDialog.terminalLookalike", { list: lookalikes.length > 12 ? `${list}, …` : list }));
     }
   }
   const context = request.evaluationContext;

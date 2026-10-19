@@ -48,7 +48,7 @@ async function run(
   command: string,
   options: { mode?: "allow" | "default"; rules?: Array<{ pattern: string; action: "allow" | "deny" | "ask" }>; choice?: ApprovalChoice; busy?: boolean } = {},
 ) {
-  const tracker = new TerminalBlockTracker({ nonce: NONCE });
+  const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
   tracker.recordOutput(`${mark("D;0")}${mark(`P;Cwd=${terminalCwd}`)}${mark("A")}% ${mark("B")}`);
   if (options.busy) tracker.recordOutput(`sleep 60\r\n${mark("C;cmdline_url=sleep%2060")}`);
   registerTerminalBlockTracker(TAB, tracker, WINDOW);
