@@ -1,10 +1,11 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
-import { cleanupAsrtSandboxAfterCommand, getBuiltinShellSessionReadPolicy, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, useAppOwnedSandboxTempRoot } from "../../permissions/asrt-sandbox.js";
+import { cleanupAsrtSandboxAfterCommand, getBuiltinShellSessionReadPolicy, initializeAsrtSandbox, isAsrtSandboxActive, registerWorkerUnixSocketDir, resetAsrtSandbox, unregisterWorkerUnixSocketDir, useAppOwnedSandboxTempRoot } from "../../permissions/asrt-sandbox.js";
 import { spawnConfinedChild } from "../../permissions/confined-child.js";
 import { baseAllowedDirectories } from "../../permissions/base-allowed-directories.js";
 import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability } from "../../permissions/sandbox-capability.js";
@@ -215,5 +216,34 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     const result = await spawnWithSandbox(command, cwd, [cwd], 15, prepareSandboxFixture(command, cwd));
     expect(result.isError, result.output).toBe(true);
     expect(result.output).not.toContain(CONTENT.trim());
+  });
+
+  // A registered worker socket turns on `allowAllUnixSockets` on Linux, which
+  // takes the seccomp helper out of the chain; ASRT 0.0.80 then asks
+  // bubblewrap 0.8+ for `--disable-userns` (#588). Every shell wrap after a
+  // worker starts carries that wrap shape, so it must still run, and a command
+  // inside it must not get a user namespace of its own.
+  it("runs a sandboxed shell after a worker socket is registered", async (test) => {
+    await requireSandbox(test);
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    const socketDir = join(root, "worker-sockets");
+    mkdirSync(socketDir);
+    const holder = {};
+    await registerWorkerUnixSocketDir(socketDir, holder);
+    try {
+      const run = (command: string) => spawnWithSandbox(command, cwd, [cwd], 15, prepareSandboxFixture(command, cwd));
+      const read = await run("/bin/cat " + shellQuote(transcript));
+      expect(read.isError, read.output).toBe(false);
+      expect(read.metadata.sandboxed).toBe(true);
+      expect(read.output).toContain(CONTENT.trim());
+      const bwrapHelp = process.platform === "linux" ? spawnSync("bwrap", ["--help"], { encoding: "utf8" }) : undefined;
+      const unshare = ["/usr/bin/unshare", "/bin/unshare"].find((path) => existsSync(path));
+      if (bwrapHelp !== undefined && `${bwrapHelp.stdout}${bwrapHelp.stderr}`.includes("--disable-userns") && unshare !== undefined) {
+        const nested = await run(`${unshare} -U /bin/true && echo nested-userns-created`);
+        expect(nested.output).not.toContain("nested-userns-created");
+      }
+    } finally {
+      await unregisterWorkerUnixSocketDir(socketDir, holder);
+    }
   });
 });

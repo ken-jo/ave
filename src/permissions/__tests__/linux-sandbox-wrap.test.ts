@@ -1,9 +1,10 @@
 import { afterEach, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
+import { capabilityArgs, wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { buildSandboxConfig, getBuiltinShellReadPolicy } from "../asrt-sandbox.js";
 import { hardenLinuxSandboxWrap } from "../linux-sandbox-wrap.js";
@@ -334,4 +335,104 @@ it.runIf(process.platform !== "win32")("does not put back a write root that one 
   // A read-only bind that is not one of the wrap's re-allows is not a re-allow.
   const notReallowed = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} }, { allowRead: [pluginData] });
   expect(notReallowed.argv[2]).not.toMatch(new RegExp(`'${pluginRoot}' '${pluginRoot}' '--bind'`));
+});
+
+/** A stand-in bubblewrap whose `--help` lists `--disable-userns`, as 0.8+ does. */
+function fakeBwrapWithDisableUserns(): string {
+  const root = mkdtempSync(join(tmpdir(), "ave-fake-bwrap-"));
+  temporaryRoots.push(root);
+  const bwrap = join(root, "bwrap");
+  writeFileSync(bwrap, "#!/bin/sh\necho 'usage: bwrap [OPTIONS...] [--] COMMAND\n    --disable-userns  Disable further use of user namespaces'\n");
+  chmodSync(bwrap, 0o755);
+  return bwrap;
+}
+
+// ASRT 0.0.80 (#588): with no seccomp helper in the chain, which is what
+// `allowAllUnixSockets` means and what a registered worker socket turns on,
+// bubblewrap 0.8+ is asked for `--disable-userns`. The hardener must accept
+// that wrap, or every wrap fails once a worker starts.
+it.runIf(process.platform !== "win32")("accepts the --disable-userns a socket-permitting wrap carries", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-floor-userns-")));
+  temporaryRoots.push(root);
+  const workspace = join(root, "workspace");
+  const secrets = join(root, "secrets");
+  mkdirSync(workspace, { recursive: true });
+  mkdirSync(secrets, { recursive: true });
+  const generated = await wrapCommandWithSandboxLinux({
+    command: "printf 'worker command'",
+    needsNetworkRestriction: false,
+    readConfig: { denyOnly: [root], allowWithinDeny: [workspace] },
+    writeConfig: { allowOnly: [workspace], denyWithinAllow: [secrets] },
+    allowAllUnixSockets: true,
+    bwrapPath: fakeBwrapWithDisableUserns(),
+  });
+  try {
+    expect(generated).toMatch(/(^|\s)'?--disable-userns'?(\s|$)/);
+    const wrapped = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", generated], env: {} });
+    expect(wrapped.argv[2]).toContain("--disable-userns");
+    // The replay pass parses the same options when the wrap's filesystem is known.
+    expect(() => hardenLinuxSandboxWrap(
+      { argv: ["/bin/bash", "-c", generated], env: {} },
+      { allowRead: [workspace], denyWrite: [secrets] },
+    )).not.toThrow();
+  } finally {
+    cleanupBwrapMountPoints();
+  }
+});
+
+it("accepts the --cap-add a uid-0 caller with the seccomp helper carries", () => {
+  const capabilities = capabilityArgs({ euid: 0, hasSetfcap: true, usesSeccompHelper: true });
+  expect(capabilities).toEqual(["--cap-drop", "ALL", "--cap-add", "CAP_SETFCAP"]);
+  const command = `bwrap --new-session --unshare-user ${capabilities.join(" ")} --ro-bind / / -- /bin/sh -c 'true'`;
+  expect(() => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} })).not.toThrow();
+});
+
+/**
+ * Every `'--option'` literal in the installed Linux wrapper, sorted into the
+ * ones that reach bubblewrap's command line (each must be accepted by the
+ * hardener) and the ones that do not. A bump that adds an option fails here
+ * until it is placed, rather than on a Linux host once a wrap carries it.
+ */
+it("knows every option the installed Linux wrapper can emit", () => {
+  const source = readFileSync(
+    createRequire(import.meta.url).resolve("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js"),
+    "utf8",
+  );
+  const literals = new Set([...source.matchAll(/'(--[a-z][a-z-]*)'/g)].map((match) => match[1]!));
+  /** Options on the bwrap command line, with sample operands. */
+  const emitted: Record<string, readonly string[]> = {
+    "--new-session": [],
+    "--die-with-parent": [],
+    "--unshare-net": [],
+    "--unshare-pid": [],
+    "--unshare-user": [],
+    "--disable-userns": [],
+    "--cap-drop": ["ALL"],
+    "--cap-add": ["CAP_SETFCAP"],
+    "--unsetenv": ["NAME"],
+    "--setenv": ["NAME", "value"],
+    "--ro-bind": ["/", "/"],
+    "--bind": ["/tmp", "/tmp"],
+    "--tmpfs": ["/tmp/mask"],
+    "--dev": ["/dev"],
+    "--proc": ["/proc"],
+  };
+  /** Not on the command line the hardener reads, or refused on purpose. */
+  const elsewhere = new Set([
+    "--args", // mounts passed through a file: refused (see above)
+    "--dev-bind", // the bwrap user-namespace probe, spawned on its own
+    "--help", // the --disable-userns probe
+    "--version", // the bwrap version probe
+    "--files", "--hidden", "--iglob", "--line-buffered", "--max-depth", "--no-config", "--no-ignore", // ripgrep
+  ]);
+  const unplaced = [...literals].filter((option) => !Object.hasOwn(emitted, option) && !elsewhere.has(option));
+  expect(unplaced, "new option literal in the Linux wrapper: place it").toEqual([]);
+  for (const option of literals) {
+    if (!Object.hasOwn(emitted, option)) continue;
+    const words = [option, ...emitted[option]!].map((word) => `'${word}'`).join(" ");
+    expect(
+      () => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", `bwrap ${words} -- /bin/sh -c 'true'`], env: {} }),
+      option,
+    ).not.toThrow();
+  }
 });

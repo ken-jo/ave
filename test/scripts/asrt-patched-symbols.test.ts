@@ -121,3 +121,68 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(ttysOption).toEqual(["/dev/ttys001"]);
   });
 });
+
+/**
+ * Behavioural half: through the real proxy, the key a wrap's proxy username
+ * names reaches the ask callback's second argument. The proxy URL (with the
+ * per-process credential) is read out of the wrapped command and used only
+ * inside this process.
+ */
+describe.runIf(process.platform === "darwin" || process.platform === "linux")("ask callback attribution through the proxy", () => {
+  /** CONNECT through the host-side proxy at `port`; `proxy` gives only the credential. */
+  async function connectThrough(port: number, proxy: URL, username: string): Promise<string> {
+    const { connect } = await import("node:net");
+    const authorization = Buffer.from(`${username}:${decodeURIComponent(proxy.password)}`).toString("base64");
+    return new Promise((resolve, reject) => {
+      const socket = connect(port, "127.0.0.1", () => {
+        socket.write(
+          "CONNECT unlisted.example.invalid:443 HTTP/1.1\r\nHost: unlisted.example.invalid:443\r\n"
+            + `Proxy-Authorization: Basic ${authorization}\r\n\r\n`,
+        );
+      });
+      let head = "";
+      socket.setTimeout(10_000, () => socket.destroy(new Error("proxy did not answer")));
+      socket.on("data", (chunk: Buffer) => {
+        head += chunk.toString("latin1");
+        if (head.includes("\r\n")) socket.end();
+      });
+      socket.on("close", () => resolve(head.split("\r\n")[0] ?? ""));
+      socket.on("error", reject);
+    });
+  }
+
+  it("passes the wrap's commandId, and undefined for the bare username", async (test) => {
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const asked: Array<SandboxAskContext | undefined> = [];
+    try {
+      await SandboxManager.initialize(
+        { network: { allowedDomains: [], deniedDomains: [] }, filesystem: { denyRead: [], allowWrite: [], denyWrite: [] } },
+        async (_params, context) => {
+          asked.push(context);
+          return false;
+        },
+      );
+    } catch (error) {
+      if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw error;
+      test.skip(`sandbox-runtime cannot initialize here: ${String(error)}`);
+    }
+    try {
+      const commandId = "0123456789abcdef0123456789abcdef";
+      const wrapped = await SandboxManager.wrapWithSandbox("true", undefined, undefined, undefined, { commandId });
+      // `'HTTP_PROXY=http://…'` on macOS, `--setenv HTTP_PROXY 'http://…'` on Linux.
+      const spelled = /(http:\/\/srt\.[^'"\s:@]+:[^'"\s@]+@[^'"\s/]+)/u.exec(wrapped)?.[1];
+      expect(spelled, "wrapped command carries no attributed proxy URL").toBeTypeOf("string");
+      const proxy = new URL(spelled!);
+      expect(proxy.username.startsWith("srt.")).toBe(true);
+      // On Linux the URL names the relay inside the sandbox's network
+      // namespace; the host side listens on the proxy's own port.
+      const port = SandboxManager.getProxyPort();
+      expect(port).toBeTypeOf("number");
+      expect(await connectThrough(port!, proxy, decodeURIComponent(proxy.username))).toMatch(/^HTTP\/1\.1 403/u);
+      expect(await connectThrough(port!, proxy, "srt")).toMatch(/^HTTP\/1\.1 403/u);
+      expect(asked).toEqual([{ attributionKey: commandId }, { attributionKey: undefined }]);
+    } finally {
+      await SandboxManager.reset();
+    }
+  });
+});

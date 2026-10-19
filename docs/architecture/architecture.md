@@ -1279,6 +1279,29 @@ Windows srt-win provides filesystem and network confinement but no process
 confinement, so shell/process relaxation must remain stricter than filesystem
 or network-bearing tool relaxation.
 
+Two ASRT 0.0.80 rules shape what a confined command can do:
+
+- Linux: a sandboxed command cannot create a user namespace or a mount
+  namespace of its own. The seccomp helper refuses those calls. Where the
+  helper is not in the chain, bubblewrap 0.8 or later is passed
+  `--disable-userns`. The helper is out of the chain whenever a worker control
+  socket is registered, because that turns on `allowAllUnixSockets`. So
+  anything that sandboxes itself that way fails inside Ave's sandbox:
+  Chromium's or Electron's namespace sandbox, rootless podman or buildah, a
+  nested bubblewrap, `unshare -U`. Plugin workers are not affected, because
+  they run as Node through `ELECTRON_RUN_AS_NODE` and start no Chromium
+  sandbox. Ave does not set `allowNestedUserNamespaces`. The wrap hardener
+  (`linux-sandbox-wrap.ts`) accepts only the bubblewrap options its arity table
+  lists. `linux-sandbox-wrap.test.ts` fails when the installed wrapper gains an
+  option the table does not list.
+- Windows: ASRT ranks the filesystem lists in JavaScript before `srt-win` sees
+  them. A write grant at or beneath a `denyWrite` path is handed to `srt-win`
+  as a read grant, and a grant at or beneath a `credentials.files` entry is
+  dropped. So a workspace or plugin root under one of Ave's write-floor paths
+  is read-only on Windows too, as it already is on macOS and Linux.
+  `windows-sandbox-logic.test.ts` pins this ranking. The NSIS drift guard
+  covers only the `srt-win` Rust sources.
+
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
 stdio server — refuses the plugin roots (`<AVE_HOME>/plugins`,
