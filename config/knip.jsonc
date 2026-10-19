@@ -121,6 +121,9 @@
     "shadcn"
   ],
   "ignoreBinaries": [
+    // Linux bubblewrap, which sandbox-runtime runs; the session-read test asks
+    // its --help whether this build knows --disable-userns.
+    "bwrap",
     // The system C compiler that builds the confined-child preload library.
     "cc",
     // Sigstore cosign: the contract bundle uploader verifies a published
