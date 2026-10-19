@@ -107,8 +107,8 @@ function installApi(boot: unknown, sandboxOn = true, shell: unknown = undefined)
     },
   };
   (globalThis as unknown as { window: typeof window }).window.ave = ave as never;
-  installMockAveApi({ settings: { features: { osToolSandbox: sandboxOn } } });
-  return ave;
+  const api = installMockAveApi({ settings: { features: { osToolSandbox: sandboxOn } } });
+  return Object.assign(ave, { aveApi: api });
 }
 
 async function renderTab(): Promise<void> {
@@ -200,12 +200,20 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
     await renderTab();
 
     expect(screen.getByTestId("os-sandbox-shell-status-error")).toHaveTextContent("호스트 오류");
-    expect(screen.getByTestId("os-sandbox-toggle")).toBeDisabled();
+    // Turning the setting off clears the fault, so the toggle stays usable.
+    expect(screen.getByTestId("os-sandbox-toggle")).not.toBeDisabled();
     // The rest of the snapshot and the sections loaded beside it still render.
     expect(screen.getByTestId("worker-confinement-toggle")).not.toBeDisabled();
     expect(screen.getByTestId("os-sandbox-runtime-reason")).toBeInTheDocument();
     expect(ave.permission.listRules).toHaveBeenCalled();
     expect(ave.permission.dirDispatch).toHaveBeenCalledWith("list");
     expect(screen.queryByText("데이터를 불러오지 못했습니다.")).toBeNull();
+
+    await act(async () => {
+      screen.getByTestId("os-sandbox-toggle").click();
+    });
+    await waitFor(() =>
+      expect(ave.aveApi.updateSettings).toHaveBeenCalledWith({ features: { osToolSandbox: false } }),
+    );
   });
 });

@@ -980,6 +980,7 @@ export function PermissionsTab({
   const sandboxBoot = sandboxCapability?.boot ?? null;
   // The host could not reconcile its own shell sandbox observations. Only the
   // shell row reports it; the rest of the panel still renders the snapshot.
+  // The toggle stays usable: turning the setting off is what clears it.
   const shellStatusError = sandboxCapability?.shell?.state === "error";
   const sandboxDegraded =
     sandboxBoot !== null && (sandboxBoot.action === "degrade" || sandboxBoot.action === "abort");
@@ -1286,7 +1287,7 @@ export function PermissionsTab({
               checked={sandboxEnabled}
               data-testid="os-sandbox-toggle"
               aria-label={t("permissionsTab.osSandboxCheckboxAriaLabel")}
-              disabled={sandboxBusy || !(sandboxCapability?.available ?? false) || shellStatusError}
+              disabled={sandboxBusy || !(sandboxCapability?.available ?? false)}
               className="mt-0.5 size-5"
               onCheckedChange={() => void handleSandboxToggle()}
             />

@@ -959,13 +959,22 @@ describe("permission card sandbox checkbox", () => {
     expect(getByRole("checkbox", { name: "샌드박스" }).hasAttribute("disabled")).toBe(true);
   });
 
-  it("shows a host status fault with a destructive tone and no toggle", async () => {
-    sandboxCapability.mockResolvedValue(shellStatus({ state: "error", setting: true }));
+  it("shows a host status fault in red and still lets the user turn the setting off, which clears it", async () => {
+    sandboxCapability
+      .mockResolvedValueOnce(shellStatus({ state: "error", setting: true }))
+      .mockResolvedValue(shellStatus({ state: "off", setting: false }));
+    updateSettings.mockResolvedValue({ ok: true });
     const { getByRole, getByTestId } = await openCard();
-    expect(getByRole("checkbox", { name: "샌드박스" }).hasAttribute("disabled")).toBe(true);
+    const checkbox = getByRole("checkbox", { name: "샌드박스" });
+    expect(checkbox.hasAttribute("disabled")).toBe(false);
     const status = getByTestId("permission-quick-picker-sandbox-status");
     expect(status.textContent).toBe("상태 오류 — Ave가 샌드박스 상태를 판단하지 못했습니다. 로그를 확인하세요.");
     expect(status.className).toContain("text-destructive");
+
+    fireEvent.click(checkbox);
+
+    await waitFor(() => expect(getByTestId("permission-quick-picker-sandbox").getAttribute("data-state")).toBe("off"));
+    expect(updateSettings).toHaveBeenCalledWith({ features: { osToolSandbox: false } });
   });
 
   it("leads to the Settings setup when the Windows sandbox setup is incomplete", async () => {

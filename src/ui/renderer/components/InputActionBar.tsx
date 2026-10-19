@@ -681,7 +681,7 @@ function SandboxCheckboxRow({ onOpenPermissions }: { onOpenPermissions?: () => v
       : sandboxStatusText(status);
   const checked = status !== null && (status.setting || status.envForced);
   const disabled =
-    busy || status === null || status.state === "unsupported" || status.state === "error" || status.envForced;
+    busy || status === null || status.state === "unsupported" || status.envForced;
   // The one-time Windows administrator setup lives in Settings → Permissions
   // (it raises a UAC prompt on an explicit click there), so a card that says
   // the setup is incomplete leads to it rather than leaving the user stuck.
