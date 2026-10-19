@@ -27,6 +27,7 @@ import {
 import type { SandboxEgressDenyAuditEntry } from "../../audit/sandbox-audit.js";
 import { emitSandboxAudit, readRecentSandboxEgressDenials } from "../../audit/sandbox-audit-sink.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { TEST_SHELL_EGRESS_CONTEXT } from "../../__tests__/support/egress-fixture.js";
 
 /** What ASRT puts in `encodedCommand` for a key (`encodeSandboxedCommand`). */
 const encode = (key: string): string => Buffer.from(key.slice(0, 100)).toString("base64");
@@ -99,7 +100,7 @@ describe("parseEgressDenyLine", () => {
 describe("unparsed and hostile deny lines", () => {
   it("records a malformed-host deny with control characters as one row, never none", async () => {
     const { store, rows } = await monitored();
-    const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_04" });
+    const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_04", context: TEST_SHELL_EGRESS_CONTEXT });
     // ASRT refuses such a host as `malformed host` and records it as sent; the
     // store turns the control characters into spaces.
     deny(store, "deny network-outbound \u0001evil\u0007\u0000:443 (malformed host)", shell.token);
@@ -133,7 +134,7 @@ describe("unparsed and hostile deny lines", () => {
 describe("startEgressDenyMonitor", () => {
   it("records a strict-allowlist deny of a Bash call under that call's toolUseId", async () => {
     const { store, rows } = await monitored();
-    const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_01FIXTURE" });
+    const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_01FIXTURE", context: TEST_SHELL_EGRESS_CONTEXT });
     deny(store, "deny network-outbound example.com:443 (domain not allowed)", shell.token);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual({
@@ -163,7 +164,7 @@ describe("startEgressDenyMonitor", () => {
 
   it("records an unknown, released or absent key as unattributed", async () => {
     const { store, rows } = await monitored();
-    const gone = invocation({ kind: "shell", toolName: "powershell", toolUseId: undefined });
+    const gone = invocation({ kind: "shell", toolName: "powershell", toolUseId: undefined, context: TEST_SHELL_EGRESS_CONTEXT });
     gone.release();
     deny(store, "deny network-outbound a.example:443 (domain not allowed)", "f".repeat(32));
     deny(store, "deny network-outbound b.example:443 (domain not allowed)", gone.token);
@@ -176,7 +177,7 @@ describe("startEgressDenyMonitor", () => {
 
   it("writes one row per deny although the store re-notifies its whole tail, and skips non-network lines", async () => {
     const store = new SandboxViolationStore();
-    const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_02" });
+    const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_02", context: TEST_SHELL_EGRESS_CONTEXT });
     // Present before the monitor starts: refused in this process, not yet audited.
     deny(store, "deny network-outbound early.example:80 (domain not allowed)", shell.token);
     const rows: SandboxEgressDenyAuditEntry[] = [];
@@ -212,7 +213,7 @@ describe("readRecentSandboxEgressDenials", () => {
         emit: emitSandboxAudit,
         capability: () => ({ kind: "asrt", confidence: "verified" }),
       });
-      const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_03" });
+      const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_03", context: TEST_SHELL_EGRESS_CONTEXT });
       const now = new Date();
       store.addViolation({ line: "deny network-outbound older.example:443 (domain not allowed)", encodedCommand: encode(shell.token), timestamp: new Date(now.getTime() - 60_000) });
       store.addViolation({ line: "deny network-outbound newer.example:443 (domain not allowed)", encodedCommand: encode(shell.token), timestamp: now });

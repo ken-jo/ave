@@ -14,7 +14,7 @@ import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../types
 import type { ReviewerSuggestion } from "./use-permission-signals.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
-export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent">;
+export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent" | "egressScope">;
 
 /**
  * Which surface draws the card for a session.
@@ -264,6 +264,9 @@ export function useApproval(): ApprovalQueueApi {
           ...(extras && "elicitationContent" in extras
             ? { elicitationContent: extras.elicitationContent }
             : {}),
+          // The scope an egress-host allow lasts for; the host checks it
+          // against the scopes the card offered.
+          ...(extras?.egressScope !== undefined ? { egressScope: extras.egressScope } : {}),
         });
       } catch (err) {
         // Log only — do NOT re-push. See JSDoc above.

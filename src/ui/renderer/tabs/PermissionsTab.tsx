@@ -48,6 +48,7 @@ import {
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { AuditPanel } from "../components/permissions/AuditPanel.js";
 import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
+import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { getApi } from "../api-client.js";
@@ -1469,6 +1470,7 @@ export function PermissionsTab({
           title={t("permissionsTab.networkTitle")}
           description={t("permissionsTab.networkDescription")}
         >
+          <EgressGrantsList />
           <EgressDenialsList />
         </SettingsSection>
 

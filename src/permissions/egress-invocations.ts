@@ -9,8 +9,13 @@
  * to the ask callback. This module mints those ids and maps them back to the
  * invocation that owns them.
  *
- * The id is a label, not a credential (anthropics/sandbox-runtime#591): a
- * confined process that learns another live id can present it. It is 16
+ * In the proxy username the id is a label, not a credential
+ * (anthropics/sandbox-runtime#591): a confined process that learns another
+ * live id can present it. So on macOS and Linux each id also gets its own
+ * proxy listener (the carried ASRT patch's `openInvocationListener`, opened by
+ * the wrap): the sandbox profile lets only that invocation reach it, and the
+ * ask callback trusts the listener, not the username (see
+ * `egress-identity.ts`). It is 16
  * random bytes as 32 hex characters, so it cannot be guessed, it is longer
  * than ASRT's 22-character floor for per-command network lists, and it stays
  * well inside the 100 characters ASRT keys violations on. Provider tool-use
@@ -23,11 +28,26 @@
 import { randomBytes } from "node:crypto";
 
 /** A Bash or PowerShell tool call. */
-interface ShellEgressOwner {
+export interface ShellEgressOwner {
   readonly kind: "shell";
   readonly toolName: "bash" | "powershell";
   /** The provider's tool-use id, when the call carried one. Never the key. */
   readonly toolUseId: string | undefined;
+  /**
+   * What an egress ask for this call needs to know. Required: a shell call
+   * that cannot say whether anyone can answer is treated as one nobody can.
+   */
+  readonly context: ShellEgressContext;
+}
+
+/** Where a shell call runs, for the egress ask and its grants. */
+export interface ShellEgressContext {
+  /** The conversation the call belongs to; undefined outside a conversation. */
+  readonly sessionId: string | undefined;
+  /** The conversation's working directory: what "This workspace" grants key on. */
+  readonly workspaceRoot: string | undefined;
+  /** Whether a person can answer an ask for this call right now. */
+  readonly approvalSurface: "interactive" | "unavailable";
 }
 
 /** One workspace terminal tab, for the life of the shell it runs. */
@@ -55,6 +75,11 @@ export interface WorkerEgressOwner {
 
 export type EgressInvocationOwner = ShellEgressOwner | TerminalEgressOwner | WorkerEgressOwner;
 
+export interface EgressInvocationOptions {
+  /** Ends a pending egress ask for this invocation (the call was cancelled). */
+  readonly abortSignal?: AbortSignal;
+}
+
 export interface EgressInvocation {
   /** The value passed to ASRT as `commandId`. */
   readonly token: string;
@@ -63,17 +88,23 @@ export interface EgressInvocation {
   release(): void;
 }
 
-const live = new Map<string, EgressInvocationOwner>();
+interface LiveInvocation {
+  readonly owner: EgressInvocationOwner;
+  readonly abortSignal: AbortSignal | undefined;
+}
+
+const live = new Map<string, LiveInvocation>();
+const releaseListeners = new Set<(token: string) => void>();
 
 /** The token length in characters: 16 random bytes, hex-encoded. */
 export const EGRESS_INVOCATION_TOKEN_LENGTH = 32;
 
-export function openEgressInvocation(owner: EgressInvocationOwner): EgressInvocation {
+export function openEgressInvocation(owner: EgressInvocationOwner, options: EgressInvocationOptions = {}): EgressInvocation {
   let token = randomBytes(EGRESS_INVOCATION_TOKEN_LENGTH / 2).toString("hex");
   // 128 random bits do not collide in practice; a collision would silently
   // merge two owners, so it is re-drawn rather than assumed away.
   while (live.has(token)) token = randomBytes(EGRESS_INVOCATION_TOKEN_LENGTH / 2).toString("hex");
-  live.set(token, owner);
+  live.set(token, { owner, abortSignal: options.abortSignal });
   let released = false;
   return {
     token,
@@ -82,13 +113,29 @@ export function openEgressInvocation(owner: EgressInvocationOwner): EgressInvoca
       if (released) return;
       released = true;
       live.delete(token);
+      for (const listener of releaseListeners) listener(token);
     },
   };
 }
 
 /** The live owner of a token, or undefined for a released or foreign key. */
 export function egressInvocationOwner(token: string): EgressInvocationOwner | undefined {
-  return live.get(token);
+  return live.get(token)?.owner;
+}
+
+/** The abort signal a live invocation was opened with, if any. */
+export function egressInvocationAbortSignal(token: string): AbortSignal | undefined {
+  return live.get(token)?.abortSignal;
+}
+
+/**
+ * Run `listener` with each token as it is released, after it is forgotten.
+ * The sandbox adapter closes the invocation's proxy listener here and the
+ * grant store drops its "Allow once" hosts. Returns the unsubscribe.
+ */
+export function onEgressInvocationReleased(listener: (token: string) => void): () => void {
+  releaseListeners.add(listener);
+  return () => releaseListeners.delete(listener);
 }
 
 /**

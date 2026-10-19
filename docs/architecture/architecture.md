@@ -1382,9 +1382,40 @@ neither sampled nor dropped, so their volume is bounded only by the refused
 process's connection rate and lifetime. The shell tools append ASRT's
 `<sandbox_violations>` block to their output so the model reads why a host
 failed, and Settings → Permissions → Network lists the last 24 hours of
-refusals from that audit channel. This is attribution, not policy: the
-network policy is still the strict allow-list set at boot, with no ask
-callback.
+refusals from that audit channel.
+
+The token is a label; what identifies an invocation to the policy is the
+channel its connections arrive on (`src/permissions/egress-identity.ts`). On
+macOS and Linux every wrap first opens its own proxy front end
+(`SandboxManager.openInvocationListener`, part 3 of the carried 0.0.80 bun
+patch): a loopback port that the wrap's Seatbelt profile alone may reach, or a
+socket path bound into that wrap's bwrap in place of the shared bridge socket.
+A connection that arrives there reaches the ask callback with
+`identity: "listener"`, and the callback (`src/permissions/egress-ask.ts`)
+denies anything that did not, so a token read off another process opens
+nothing. The proxy refuses a destination that is a proxy front end's port on
+this host, so one invocation cannot hop onto another's listener; an ended
+invocation's macOS port stays bound, refusing connections, until the app
+restarts; a wrap with `network.allowLocalBinding` is refused, and Ave never
+sets it. The macOS profile also denies process-info on other processes and
+the `kern.procargs` sysctls, and each non-PTY wrap starts in its own session
+(node-pty already starts one), so a sandboxed process cannot read another
+process's environment.
+
+ASRT runs non-strict with an empty `allowedDomains`, so the callback decides
+every connection: a plugin worker reaches its own extension's declared
+domains and the configured model endpoints, nothing else, and is never asked;
+a workspace terminal is refused with a fixed reason until the tab banner
+lands; a Bash or PowerShell call reaches a host a grant covers, and otherwise
+the person is asked on the approval dock (Deny, Allow once, This
+conversation, This workspace, Always; `src/permissions/egress-grants.ts`
+holds the grants, the persistent ones in
+`<AVE_HOME>/permissions/shell-egress-hosts.json`, revocable in Settings →
+Permissions → Network). A background call nobody can answer, asks turned off
+(`features.shellEgressAsk`), or an unreadable grant file is a refusal. Each
+decision writes an `egress-decision` sandbox audit row. Where the identity is
+only the proxy username (Windows srt-win, `egressIdentityStrength() ===
+"shared"`), grants stop at This conversation.
 
 `spawnWorker` is the only host primitive that can establish that worker-backed
 plugin substrate. macOS and Linux workers use an ASRT-wrapped Unix-domain-socket

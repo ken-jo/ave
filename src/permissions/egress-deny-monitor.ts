@@ -130,7 +130,7 @@ function parseShapedDeny(line: string): ParsedEgressDeny | undefined {
 }
 
 /** The audit form of a live owner: the token is never part of it. */
-function auditInvocationFor(owner: EgressInvocationOwner | undefined): SandboxEgressDenyInvocation {
+export function auditInvocationFor(owner: EgressInvocationOwner | undefined): SandboxEgressDenyInvocation {
   if (owner === undefined) return { kind: "unattributed" };
   switch (owner.kind) {
     case "shell":

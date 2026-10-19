@@ -1,0 +1,133 @@
+/**
+ * Settings → Permissions → Network: the hosts a sandboxed shell may reach
+ * without asking because someone chose "This workspace" or "Always" on an
+ * egress ask, each with a Revoke button. "Allow once" and "This conversation"
+ * grants end on their own (with the call, or when the app restarts), so they
+ * are not listed. Plugin workers never use these grants.
+ */
+import { useCallback, useEffect, useState, type ReactElement } from "react";
+import { Button } from "../../../../components/ui/button.js";
+import { useTranslation } from "../../../../i18n/react.js";
+import type { PersistentEgressGrant } from "../../../../shared/egress-grant-scopes.js";
+import { formatDateTime } from "../../../../shared/format-time.js";
+import { errorMessage } from "../../../../shared/error-message.js";
+import { formatIpcError } from "../../format-ipc-error.js";
+import { isIpcErrorResult } from "../../types.js";
+
+interface EgressGrantsListProps {
+  /** Override fetcher for tests. Defaults to window.ave.permission.egressGrantsList. */
+  readonly fetcher?: () => Promise<unknown>;
+  /** Override revoker for tests. Defaults to window.ave.permission.egressGrantRevoke. */
+  readonly revoker?: (grant: PersistentEgressGrant) => Promise<unknown>;
+}
+
+function grantKey(grant: PersistentEgressGrant): string {
+  return `${grant.scope}\n${grant.workspaceRoot ?? ""}\n${grant.host}\n${grant.port}`;
+}
+
+function failureMessage(result: unknown): string | undefined {
+  if (isIpcErrorResult(result)) return formatIpcError(result.error, result.message);
+  if (result !== null && typeof result === "object" && (result as { ok?: unknown }).ok === false) {
+    const failed = result as { message?: unknown; error?: unknown };
+    return formatIpcError(
+      typeof failed.error === "string" ? failed.error : undefined,
+      typeof failed.message === "string" ? failed.message : undefined,
+    );
+  }
+  return undefined;
+}
+
+export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): ReactElement {
+  const { t: translate } = useTranslation();
+  const [grants, setGrants] = useState<PersistentEgressGrant[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await (fetcher ?? (() => window.ave!.permission!.egressGrantsList()))();
+      const failed = failureMessage(result);
+      if (failed !== undefined) {
+        setError(failed);
+      } else if (result !== null && typeof result === "object" && Array.isArray((result as { grants?: unknown }).grants)) {
+        setGrants((result as { grants: PersistentEgressGrant[] }).grants);
+      } else {
+        setError(translate("permissionsTab.networkDenialsLoadFailed"));
+      }
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [fetcher, translate]);
+
+  const revoke = useCallback(async (grant: PersistentEgressGrant) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await (revoker ?? ((g: PersistentEgressGrant) => window.ave!.permission!.egressGrantRevoke({
+        scope: g.scope,
+        host: g.host,
+        port: g.port,
+        ...(g.workspaceRoot === undefined ? {} : { workspaceRoot: g.workspaceRoot }),
+      })))(grant);
+      const failed = failureMessage(result);
+      if (failed !== undefined) setError(failed);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+    await refresh();
+  }, [revoker, refresh]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  return (
+    <div className="space-y-2" data-testid="egress-grants">
+      <p className="text-[12px] font-medium">{translate("permissionsTab.networkGrantsHeading")}</p>
+      {error !== null ? (
+        <p role="alert" className="text-[11px] text-destructive" data-testid="egress-grants-error">
+          {translate("permissionsTab.networkGrantsError", { message: error })}
+        </p>
+      ) : null}
+      {grants === null ? (
+        error === null ? <p className="text-[11px] text-muted-foreground">{translate("permissionsTab.networkDenialsLoading")}</p> : null
+      ) : grants.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground" data-testid="egress-grants-empty">
+          {translate("permissionsTab.networkGrantsEmpty")}
+        </p>
+      ) : (
+        <ul className="divide-y divide-border/(--opacity-medium) rounded-md border border-border/(--opacity-medium)">
+          {grants.map((grant) => (
+            <li key={grantKey(grant)} className="flex min-w-0 items-center justify-between gap-3 px-3 py-2" data-testid="egress-grant-row">
+              <div className="min-w-0 space-y-0.5">
+                <span className="block min-w-0 break-all font-mono text-[12px]">{`${grant.host}:${grant.port}`}</span>
+                <p className="min-w-0 break-words text-[11px] text-muted-foreground">
+                  {grant.scope === "always"
+                    ? translate("permissionsTab.networkGrantScopeAlways", { time: formatDateTime(grant.grantedAt) })
+                    : translate("permissionsTab.networkGrantScopeWorkspace", {
+                        workspace: grant.workspaceRoot ?? "",
+                        time: formatDateTime(grant.grantedAt),
+                      })}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 shrink-0 px-2 text-[12px]"
+                disabled={busy}
+                data-testid="egress-grant-revoke"
+                onClick={() => void revoke(grant)}
+              >
+                {translate("permissionsTab.networkGrantRevoke")}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}

@@ -260,5 +260,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // domains they reach. OFF everywhere; `loadSettings` derives it from a
     // stored `osToolSandbox: true` when a file predates the split.
     pluginWorkerConfinement: false,
+    // Shell egress asks: a sandboxed shell's connection to a host no grant
+    // covers asks the person (denied when nobody can answer). Off denies such
+    // connections outright. On with the proxy-egress ask (design B, PR 4).
+    shellEgressAsk: true,
   },
 };

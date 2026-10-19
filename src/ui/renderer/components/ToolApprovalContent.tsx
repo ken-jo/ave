@@ -20,6 +20,7 @@ import { ChevronDown } from "lucide-react";
 import { buildApprovalScopeOptions } from "../../../permissions/approval-scope-options.js";
 import { SOURCE_BADGE } from "../constants.js";
 import type { ApprovalDecisionExtras } from "../hooks/use-approval.js";
+import { EgressHostApprovalCard } from "./permissions/EgressHostApprovalCard.js";
 import type { ReviewerSuggestion } from "../hooks/use-permission-signals.js";
 import type { ApprovalChoice, ApprovalRequest } from "../types.js";
 import type {
@@ -1009,6 +1010,16 @@ export function ToolApprovalContent({
   ]);
 
   if (!open || !request) return null;
+  if (request.kind === "egress-host") {
+    return (
+      <EgressHostApprovalCard
+        request={request}
+        conversationLabel={conversationLabel}
+        interactionLocked={interactionLocked}
+        onDecide={onDecide}
+      />
+    );
+  }
 
   // NOTE: argsStr uses JSON.stringify for human-readable display (pretty-printed,
   // insertion-order keys). The IPC approval record uses canonicalStringify (#828)

@@ -214,6 +214,11 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
 
   // ── Deferred queue lifecycle ──
   "not-found": "formatIpcError.notFound",
+  // ── Shell egress grants (ave:permissions:egress-grant*) ──
+  "egress-grant-store-unreadable": "formatIpcError.egressGrantStoreUnreadable",
+  "invalid-egress-grant-scope": "formatIpcError.invalidEgressGrantScope",
+  "invalid-egress-grant-destination": "formatIpcError.invalidEgressGrantDestination",
+  "invalid-egress-grant-workspace": "formatIpcError.invalidEgressGrantWorkspace",
   // A terminal tab driven from a window other than the one that started its shell.
   "not-owner": "formatIpcError.notOwner",
   "no-such-request": "formatIpcError.noSuchRequest",

@@ -1974,14 +1974,14 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
 - **Filesystem jail (per-wrap)**: write-jail 은 owner plugin sandbox root ∪
   허용 디렉토리로 canonicalize 한 union (bare cwd 아님). read-jail 은
   `denyRead: [$HOME]` 후 cwd + write paths 만 re-allow 한다.
-- **Network floor (shared, deny-by-default)**: ASRT 의 loopback proxy network
-  floor 는 _모듈-레벨 SHARED config_ 를 읽으므로, egress 는
-  boot 에서 `strictAllowlist: true` + 모든 로드된 plugin manifest 의
-  `networkAccess.allowedDomains` UNION 을 SHARED config 로 설정해 강제한다
-  (loopback proxy 가 strict-union 바닥). 이는 _per-worker_ 격리가 아니라
-  UNION allow-list 다 — sandboxed process 는 _임의의_ 로드된 plugin 이 선언한
-  도메인에 도달할 수 있다. Ave 1st-party plugin 신뢰 모델 하에서 허용되며,
-  true per-worker 격리는 per-process proxy 를 갖춘 future ASRT 가 필요하다.
+- **Network (호출별 결정, deny-by-default)**: ASRT 는 `strictAllowlist: false` +
+  빈 `allowedDomains` 로 돌고, ask callback(`permissions/egress-ask.ts`)이 모든
+  연결을 그 연결을 연 호출 기준으로 결정한다. 호출의 신원은 proxy username 이
+  아니라 호출별 proxy listener(macOS 는 그 wrap 의 Seatbelt 프로필만 닿는
+  loopback 포트, Linux 는 그 bwrap 에 바인드한 소켓 경로)다. plugin 워커는 자기
+  익스텐션이 선언한 도메인과 모델 엔드포인트만, 셸 호출은 허용(grant)된 호스트만
+  닿고 나머지는 승인 카드로 묻는다(한 번 / 이 대화 / 이 워크스페이스 / 항상).
+  작업 공간 터미널은 탭 배너가 들어오기 전까지 고정 사유로 거절한다.
 - **Gate**: 두 범위가 하나의 ASRT 런타임을 공유한다. 셸 샌드박스
   (`osToolSandbox`, Settings → 권한, 또는 `AVE_SANDBOX_ENABLED=1`)는 호스트 셸
   (bash·PowerShell 도구, 작업 공간 터미널)을, 익스텐션 격리
@@ -3113,14 +3113,11 @@ Plugin 도구/워커 spawn 도 §6.3.9 의 OS 실행 샌드박스(ASRT) 경로�
 샌드박스가 켜지면(gate, DEFAULT-OFF) host 가 spawn 하는 child argv 를 ASRT
 wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 
-- **Network egress floor**: deny-by-default. egress 허용 도메인은 boot 에서
-  로드된 _모든_ plugin manifest 의 `networkAccess.allowedDomains` UNION 으로
-  계산되어 ASRT SHARED config 에 `strictAllowlist: true` 와 함께 설정된다
-  (loopback proxy strict-union 바닥). manifest 에 도메인을 선언하지 않은
-  plugin 의 sandboxed 자식은 네트워크 egress 가 없다. 단 이는 _per-worker_
-  격리가 아니라 UNION 이므로, sandboxed 자식은 임의의 로드된 plugin 이 선언한
-  도메인에 도달 가능하다 (Ave 1st-party 신뢰 모델 하에서 허용; per-worker
-  격리는 future ASRT 필요).
+- **Network egress**: deny-by-default. 각 plugin 워커는 자기 익스텐션 manifest 의
+  `networkAccess.allowedDomains` 와 설정된 모델 엔드포인트에만 닿는다(다른
+  익스텐션의 도메인이나 셸 허용은 닿지 않는다). 워커의 신원은 그 워커의 proxy
+  listener 로 정해지고, manifest 에 도메인을 선언하지 않은 plugin 의 sandboxed
+  자식은 모델 엔드포인트 외 egress 가 없다.
 - **Windows (srt-win, fs+network partial)**: §6.3.9 와 동일 — 동일 gate,
   fs+network partial capability, win32-not-ready 시 non-bricking 신호
   (hard-throw 안 함).

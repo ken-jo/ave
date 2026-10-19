@@ -67,6 +67,7 @@ import {
   type HostShellExecutionPlanAuditProjection,
 } from "./host-shell-execution-plan.js";
 import { errorMessage } from "../shared/error-message.js";
+import { isEgressGrantScope, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
 
 // ─── Args DLP masking ────────────────────────────────
 
@@ -207,7 +208,19 @@ export type ApprovalMode = "default" | "ask_all" | "full_auto";
  * not correspond to a host tool execution.
  */
 export type ApprovalKind =
-  "tool" | "out-of-allowed-dir" | "agent-action" | "rationale";
+  "tool" | "out-of-allowed-dir" | "agent-action" | "rationale" | "egress-host";
+
+/**
+ * The egress-host ask's payload (`kind: "egress-host"`): a sandboxed shell
+ * call wants to reach `host:port`, and the person picks how long an allow
+ * lasts from `scopes`. Built by `egress-approval.ts`.
+ */
+interface EgressHostApproval {
+  readonly host: string;
+  readonly port: number;
+  /** Offered scopes, narrowest first; the answer must name one of them. */
+  readonly scopes: readonly EgressGrantScope[];
+}
 
 export interface ApprovalRequest {
   id: string;
@@ -286,6 +299,8 @@ export interface ApprovalRequest {
     currentAllowed: readonly string[];
     adjacencyWarnings: readonly string[];
   };
+  /** Present iff `kind === "egress-host"`. */
+  egressHost?: EgressHostApproval;
   /**
    * Permission policy P2.5 §9 — trust origin classification
    * (user-keyboard / plugin-emitted / app-emitted / llm-tool-arg / file-content).
@@ -807,6 +822,12 @@ export type ApprovalChoice =
 export interface ApprovalDecision {
   requestId: string;
   choice: ApprovalChoice;
+  /**
+   * For an `egress-host` ask answered `allow-once`: how long the allow lasts,
+   * one of the request's `egressHost.scopes`. Required there, ignored
+   * everywhere else; a missing or unoffered scope makes the answer a deny.
+   */
+  egressScope?: EgressGrantScope;
 
   rememberPattern?: string;
   /**
@@ -868,6 +889,30 @@ export function isHostApprovalRejectedDecision(
     decision !== undefined &&
     hostRejectedApprovalDecisions.has(decision)
   );
+}
+
+/**
+ * An `egress-host` request is fully specified or it is a bug: it carries its
+ * payload with at least one offered scope, offers exactly allow-once and
+ * deny-once, and is never recorded in the user-approval store. Any other kind
+ * carrying the payload is a bug too.
+ */
+function assertEgressHostRequestShape(req: ApprovalRequestInput): void {
+  if (req.kind !== "egress-host") {
+    if (req.egressHost !== undefined) throw new Error("approval: egressHost is only valid on an egress-host request");
+    return;
+  }
+  const payload = req.egressHost;
+  if (payload === undefined || payload.scopes.length === 0 || !payload.scopes.every(isEgressGrantScope)) {
+    throw new Error("approval: an egress-host request needs egressHost with at least one valid scope");
+  }
+  const choices = req.allowedChoices ?? [];
+  if (choices.length !== 2 || !choices.includes("allow-once") || !choices.includes("deny-once")) {
+    throw new Error("approval: an egress-host request offers exactly allow-once and deny-once");
+  }
+  if (req.durableApprovalRecordAllowed !== false) {
+    throw new Error("approval: an egress-host request is never recorded in the user-approval store");
+  }
 }
 
 function markHostApprovalRejectedDecision(
@@ -1012,6 +1057,8 @@ interface PendingEntry {
     candidatePath: string;
     suggestedParent: string | null;
   };
+  /** The scopes an `egress-host` ask offered, kept host-side for the answer check. */
+  egressScopes?: readonly EgressGrantScope[];
   /**
    * Issue #799 — approval cache key captured server-side at request emit
    * time. The userApprovalRecord IPC handler reads this via
@@ -2203,6 +2250,7 @@ export class ApprovalGate {
    * The requireExplicit field controls renderer dismiss behavior.
    */
   async requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision> {
+    assertEgressHostRequestShape(req);
     const {
       forceExplicit = false,
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
@@ -2869,6 +2917,9 @@ export class ApprovalGate {
                 suggestedParent: fullReq.outOfAllowedDir.suggestedParent,
               },
             }),
+        ...(fullReq.egressHost === undefined
+          ? {}
+          : { egressScopes: [...fullReq.egressHost.scopes] }),
         approvalCacheKey: fullReq.approvalCacheKey,
         approvalMemory: fullReq.approvalMemory,
         durableApprovalRecordAllowed,
@@ -3084,6 +3135,33 @@ export class ApprovalGate {
       entry.resolve(forcedDecision);
       return forcedDecision;
     }
+    // An egress-host allow names how long it lasts. Only the desktop window
+    // may answer one (a grant can outlive the conversation), and the scope
+    // must be one the card offered: anything else is a deny, never a guess.
+    if (entry.kind === "egress-host" && decision.choice !== "deny-once") {
+      const offered = entry.egressScopes ?? [];
+      const problem = !nativeRenderer
+        ? "egress approval must be answered in the desktop window"
+        : decision.choice !== "allow-once"
+          ? "egress approval choice must be allow-once with a scope"
+          : decision.egressScope === undefined || !offered.includes(decision.egressScope)
+            ? "egress approval scope not offered"
+            : undefined;
+      if (problem !== undefined) {
+        clearTimeout(entry.timer);
+        this.pending.delete(requestId);
+        this.auditLogger?.log({
+          timestamp: new Date().toISOString(),
+          sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:egress-scope-rejected] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${decision.choice} scope=${decision.egressScope ?? "none"} → deny-once (forced)`,
+        });
+        const forcedDecision: ApprovalDecision = { requestId, choice: "deny-once", rememberPattern: problem };
+        hostRejectedApprovalDecisions.add(forcedDecision);
+        entry.resolve(forcedDecision);
+        return forcedDecision;
+      }
+    }
     // A rationale response is a sealed, one-shot verdict. Do not pass any
     // renderer-provided auxiliary text or structured content to audit or the
     // caller after the authenticated choice has been accepted.
@@ -3119,7 +3197,7 @@ export class ApprovalGate {
       timestamp: new Date().toISOString(),
       sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
       type: "approval",
-      output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}`,
+      output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}${entry.kind === "egress-host" ? ` egressScope=${resolvedDecision.egressScope ?? "none"}` : ""}`,
     });
     entry.resolve(resolvedDecision);
     return resolvedDecision;

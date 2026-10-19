@@ -2263,6 +2263,9 @@ class StdioTransport implements McpTransport {
         stdio: ["pipe", "pipe", "pipe"],
         shell: false,
         windowsHide: true,
+        // Its own process session, as for every wrapped child
+        // (confined-child.ts): the sandbox's cross-session process-info deny.
+        detached: true,
         env: bundledWrappedEnv(baseEnv, env, { ...sandboxHome.env }),
         ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
       });

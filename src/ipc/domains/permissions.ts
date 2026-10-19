@@ -8,6 +8,7 @@ import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import type { ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
+import { errorMessage } from "../../shared/error-message.js";
 import {
   RECENT_EGRESS_DENIALS_LIMIT,
   RECENT_EGRESS_DENIALS_WINDOW_HOURS,
@@ -335,6 +336,55 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       limit: RECENT_EGRESS_DENIALS_LIMIT,
     });
     return rows.map((row) => ({ timestamp: row.timestamp, source: row.invocation, deny: row.deny }));
+  });
+
+  // read-only, sender-frame-guarded — the shell egress grants that outlive a
+  // conversation, for Settings → Permissions → Network.
+  ipcMain.handle(PERMISSIONS.egressGrantsList, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantsList, e); return UNAUTHORIZED_FRAME; }
+    const { egressGrantStore } = await import("../../permissions/egress-runtime.js");
+    try {
+      return { ok: true as const, grants: await egressGrantStore().listPersistent() };
+    } catch (error) {
+      return { ok: false as const, error: "egress-grant-store-unreadable", message: errorMessage(error) };
+    }
+  });
+
+  // MUTATING (sender-frame-guarded + user-keyboard intent): revoke one shell
+  // egress grant. The payload names it exactly; anything else is refused.
+  ipcMain.handle(PERMISSIONS.egressGrantRevoke, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantRevoke, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const { scope, host, port, workspaceRoot } = body;
+    if (scope !== "workspace" && scope !== "always") {
+      return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be workspace or always" };
+    }
+    if (typeof host !== "string" || host.length === 0 || typeof port !== "number" || !Number.isInteger(port)) {
+      return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: host and port are required" };
+    }
+    if (scope === "workspace" ? typeof workspaceRoot !== "string" : workspaceRoot !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-workspace", message: "revoke: a workspace grant names its workspaceRoot, an always grant none" };
+    }
+    const { egressGrantStore } = await import("../../permissions/egress-runtime.js");
+    try {
+      const removed = await egressGrantStore().revokePersistent({
+        scope,
+        host,
+        port,
+        ...(scope === "workspace" ? { workspaceRoot: workspaceRoot as string } : {}),
+      });
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "settings",
+        type: "approval",
+        output: `[egress-grant:revoke] scope=${scope} host=${host} port=${port} removed=${removed}`,
+      });
+      return removed ? { ok: true } : { ok: false, error: "not-found", message: "revoke: no such grant" };
+    } catch (error) {
+      return { ok: false, error: "egress-grant-store-unreadable", message: errorMessage(error) };
+    }
   });
 
   // MUTATING (sender-frame-guarded + user-keyboard intent) — the SINGLE

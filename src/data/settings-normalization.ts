@@ -1685,6 +1685,9 @@ export function normalizeFeatureFlags(input: unknown): FeatureFlags {
   if (typeof obj.pluginWorkerConfinement === "boolean") {
     result.pluginWorkerConfinement = obj.pluginWorkerConfinement;
   }
+  if (typeof obj.shellEgressAsk === "boolean") {
+    result.shellEgressAsk = obj.shellEgressAsk;
+  }
   return result;
 }
 
