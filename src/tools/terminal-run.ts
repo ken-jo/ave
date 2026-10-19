@@ -213,7 +213,12 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       throw new Error(`no terminal with tabId ${JSON.stringify(tabId)}; call terminal_read with no arguments to list terminals`);
     }
     const state = tracker.promptState();
-    if (state !== "ready") throw new Error(`terminal ${tabId} is not waiting at an empty prompt: ${NOT_READY_REASONS[state]}`);
+    if (state !== "ready") {
+      throw new Error(
+        `terminal ${tabId} is not waiting at an empty prompt: ${NOT_READY_REASONS[state]}. `
+          + "Nothing was typed; the arguments are fine — call again only after terminal_read shows the terminal idle",
+      );
+    }
     const cwd = tracker.currentCwd();
     if (cwd === null) throw new Error(`terminal ${tabId} has not reported its working directory yet`);
     return { windowId, tabId, tracker, cwd };

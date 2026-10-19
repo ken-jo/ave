@@ -552,8 +552,12 @@ separate classifier:
   rules (user and project), the credential-exfiltration floor and the
   sensitive-path floor read it exactly as they read a `bash` command. The
   executor's shape-based shell checks (path containment and the structural
-  validator) read its `command` argument against the session working
-  directory, as they do for a `bash` call without `cwd`.
+  validator) read its `command` argument with the terminal's directory as its
+  working directory, as they read a `bash` call's `cwd`: a relative operand
+  that resolves outside the allowed directories asks for the directory grant.
+  Unlike a `bash` `cwd`, the terminal's own directory is not refused for being
+  outside them — the user may have moved the shell anywhere its sandbox
+  allows — so only the operands are judged.
 - A remembered decision covers the exact command in that directory, and only
   for the app session (`terminal-command` scope). A bare `terminal_run` allow
   pattern does not cover every command, because the tool keys policy on its

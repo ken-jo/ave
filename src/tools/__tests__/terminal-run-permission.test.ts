@@ -131,6 +131,21 @@ describe("terminal_run permission", () => {
     expect(typed).toEqual([]);
   });
 
+  it("resolves relative operands in the terminal's directory, not the session's", async () => {
+    // The terminal's shell is outside the session's allowed directories, so
+    // `cat notes.txt` reads a file there and needs the directory grant.
+    const outside = mkdtempSync(join(tmpdir(), "ave-terminal-run-outside-"));
+    terminalCwd = outside;
+    try {
+      const { request, typed } = await run("cat notes.txt", { mode: "allow" });
+      expect(request).toMatchObject({ kind: "out-of-allowed-dir" });
+      expect(JSON.stringify(request)).toContain("notes.txt");
+      expect(typed).toEqual([]);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it("a busy terminal is refused before any decision or card", async () => {
     const { decision, requestAndWait, typed, result } = await run("npm test", { mode: "allow", busy: true });
     expect(decision).toBeUndefined();
