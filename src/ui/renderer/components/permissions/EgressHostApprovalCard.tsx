@@ -69,6 +69,11 @@ export function EgressHostApprovalCard({
             {t("egressApprovalCard.localWarning")}
           </p>
         ) : null}
+        {payload.network === "unverified" ? (
+          <p role="note" className="min-w-0 break-words text-xs font-medium text-warning" data-testid="egress-approval-unverified-warning">
+            {t("egressApprovalCard.unverifiedWarning")}
+          </p>
+        ) : null}
         <p className="min-w-0 break-words text-xs text-muted-foreground">
           {t("egressApprovalCard.conversation", { conversation: conversationLabel })}
         </p>

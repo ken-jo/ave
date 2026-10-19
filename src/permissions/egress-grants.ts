@@ -96,8 +96,12 @@ export function canonicalEgressHost(host: string): string | undefined {
  *     but a grant for it never outlives the conversation and the card says
  *     what it is.
  *   - `public`: everything else.
+ *   - `unverified` (judged in egress-ask, not here): a name this host could not
+ *     resolve that a remote upstream proxy resolves instead, so its address
+ *     was never checked. Like `local`, a grant for it never outlives the
+ *     conversation and the card says why.
  */
-export type EgressDestinationNetwork = "public" | "local" | "reserved";
+export type EgressDestinationNetwork = "public" | "local" | "unverified" | "reserved";
 
 const RESERVED_RANGES = [
   "169.254.0.0/16", "fe80::/10", // link-local, incl. most instance metadata
@@ -160,7 +164,7 @@ export function egressScopesForNetwork(
   network: EgressDestinationNetwork,
 ): readonly EgressGrantScope[] {
   if (network === "reserved") return [];
-  return network === "local" ? scopes.filter((s) => s === "once" || s === "conversation") : scopes;
+  return network === "public" ? scopes : scopes.filter((s) => s === "once" || s === "conversation");
 }
 
 export function isValidEgressPort(port: unknown): port is number {

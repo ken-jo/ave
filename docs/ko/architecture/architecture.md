@@ -1986,6 +1986,9 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   `*.localhost`·사설망(RFC1918/CGNAT/ULA)은 경고와 함께 최대 "이 대화"까지만
   허용한다(이름은 해석된 주소로도 판정). 이름은 묻기 전에 한 번만 해석해 그
   주소로 고정(pin)하고, upstream proxy 에는 이름 대신 주소로 CONNECT 한다.
+  이 호스트가 해석하지 못한 이름은 원격 upstream 이면 이름 그대로 넘기고
+  `unverified`(최대 "이 대화")로 묻고, 이 호스트의 upstream(cntlm/px 등)이면
+  신뢰 설정 `corporateProxy.resolvesNames` 가 없는 한 사유와 함께 거절한다.
   Linux 는 lane 소켓을 비공개 디렉터리에 두고 wrap 마다 tmpfs 로 가린 뒤 자기
   소켓만 다시 바인드한다.
 - **Gate**: 두 범위가 하나의 ASRT 런타임을 공유한다. 셸 샌드박스

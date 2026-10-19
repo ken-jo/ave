@@ -300,6 +300,17 @@ export interface TrustedSandboxSettings {
     readonly http?: string;
     readonly https?: string;
     readonly noProxy?: string;
+    /**
+     * Trust an upstream proxy that runs on this host (cntlm, px, …) to
+     * resolve names this host cannot. Off (the default), such a name is
+     * refused, with a reason saying so: a proxy on this host resolves the
+     * name itself after Ave's check and could connect back to this host (DNS
+     * rebinding). On, the name is forwarded like to a remote upstream and
+     * treated as unverified (at most This conversation) — accepting that
+     * residual risk. A remote upstream always gets that treatment; names this
+     * host resolves are pinned either way. TRUSTED-ONLY, like the URLs.
+     */
+    readonly resolvesNames?: boolean;
   };
   /**
    * Windows-only sandbox settings (srt-win network backend). TRUSTED-ONLY —
@@ -1534,6 +1545,7 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
       ...(trustedSettings.corporateProxy?.noProxy !== undefined
         ? { noProxy: trustedSettings.corporateProxy.noProxy }
         : {}),
+      ...(trustedSettings.corporateProxy?.resolvesNames === true ? { resolvesNames: true } : {}),
     },
   };
 

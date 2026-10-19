@@ -169,6 +169,9 @@ describe("egress-host approval requests", () => {
     await expect(gate.requestAndWait({
       ...base, egressHost: { host: "127.0.0.1", port: 8080, scopes: ["once", "workspace"], network: "local" },
     })).rejects.toThrow(/never offered a persistent scope/u);
+    await expect(gate.requestAndWait({
+      ...base, egressHost: { host: "intranet.corp.test", port: 443, scopes: ["once", "always"], network: "unverified" },
+    })).rejects.toThrow(/never offered a persistent scope/u);
     await expect(gate.requestAndWait({ ...base, allowedChoices: ["allow-once", "allow-always", "deny-once"] }))
       .rejects.toThrow(/exactly allow-once and deny-once/u);
     await expect(gate.requestAndWait({ ...base, durableApprovalRecordAllowed: true }))

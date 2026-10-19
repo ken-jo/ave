@@ -755,6 +755,14 @@ describe("asrt-sandbox — parentProxy direct-connect floor (PR #1356 MAJOR, cor
       else process.env.HTTP_PROXY = prev;
     }
   });
+
+  it("passes the trusted resolvesNames opt-in for an upstream on this host, and only when set", () => {
+    const off = buildSandboxConfig({ allowedDomains: [], corporateProxy: { http: "http://127.0.0.1:3128" } });
+    expect(off.network.parentProxy).toEqual({ http: "http://127.0.0.1:3128", https: "" });
+    const on = buildSandboxConfig({ allowedDomains: [], corporateProxy: { http: "http://127.0.0.1:3128", resolvesNames: true } });
+    expect(on.network.parentProxy).toEqual({ http: "http://127.0.0.1:3128", https: "", resolvesNames: true });
+    expect(buildSandboxConfig({ allowedDomains: [] }).network.parentProxy).toEqual({ http: "", https: "" });
+  });
 });
 
 describe("asrt-sandbox — normalizeUnionForAsrt (domain-matching alignment, PR #1356 MINOR)", () => {

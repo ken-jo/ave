@@ -73,6 +73,19 @@ describe("EgressHostApprovalCard", () => {
     expect(screen.queryByTestId("egress-approval-allow-workspace")).toBeNull();
   });
 
+  it("says when the upstream proxy resolves the name and Ave could not check it", () => {
+    render(
+      <EgressHostApprovalCard
+        request={egressRequest({ egressHost: { host: "intranet.corp.test", port: 443, network: "unverified", scopes: ["once", "conversation"] } })}
+        conversationLabel="x"
+        onDecide={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("egress-approval-unverified-warning").textContent).toContain("proxy server");
+    expect(screen.queryByTestId("egress-approval-local-warning")).toBeNull();
+    expect(screen.queryByTestId("egress-approval-allow-always")).toBeNull();
+  });
+
   it("shows no local warning for a public destination", () => {
     render(<EgressHostApprovalCard request={egressRequest({ egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once"] } })} conversationLabel="x" onDecide={vi.fn()} />);
     expect(screen.queryByTestId("egress-approval-local-warning")).toBeNull();

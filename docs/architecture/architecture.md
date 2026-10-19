@@ -1402,11 +1402,20 @@ shared bridge socket, so while it is set shell and extension identity is
 `shared`. The proxy refuses a destination that is a proxy front end's port on
 this host, so one invocation cannot hop onto another's listener. A
 destination name is resolved once, before the callback decides, and refused
-when it does not resolve or any address is loopback, reserved or this host's;
-the callback sees the addresses, and the connection is pinned to them (a
-direct dial does not resolve again; through an upstream HTTP(S) proxy the
-CONNECT names the address, not the name; plain HTTP by name through an
-upstream is refused), so DNS rebinding cannot move it afterwards. An ended
+when any address is loopback, reserved or this host's; the callback sees the
+addresses, and the connection is pinned to them (a direct dial does not
+resolve again; through an upstream HTTP(S) proxy the CONNECT names the
+address, trying each in turn, not the name; plain HTTP by name through an
+upstream is refused), so DNS rebinding cannot move it afterwards. A name this
+host cannot resolve (owner decision 2026-10-19) is refused without an
+upstream; through a remote upstream it is forwarded by name and the callback
+is told `resolution: "upstream"`, which Ave treats as `unverified` (at most
+This conversation, a card note that the proxy decides the address,
+persistent grants ignored); through an upstream on this host (loopback,
+`localhost`-style names, or one of this host's addresses, e.g. cntlm or px)
+it is refused with a reason, unless the trusted `corporateProxy.resolvesNames`
+setting gives that upstream the remote treatment, which accepts the residual
+risk that the local proxy resolves the name to this host after the check. An ended
 invocation's macOS port stays bound, refusing connections, for 30 minutes,
 longer while its process group still runs, and its number is never reused. A wrap with `network.allowLocalBinding` is
 refused, and Ave never sets it. The macOS profile also denies process-info on other processes and

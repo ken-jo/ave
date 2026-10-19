@@ -222,9 +222,11 @@ interface EgressHostApproval {
   readonly scopes: readonly EgressGrantScope[];
   /**
    * `local`: this machine or a private network (loopback, RFC 1918, ULA…).
-   * The card warns, and only Allow once / This conversation are offered.
+   * `unverified`: the upstream proxy resolves the name; Ave could not check
+   * the address. For both the card warns, and only Allow once / This
+   * conversation are offered.
    */
-  readonly network: "public" | "local";
+  readonly network: "public" | "local" | "unverified";
 }
 
 export interface ApprovalRequest {
@@ -911,11 +913,11 @@ function assertEgressHostRequestShape(req: ApprovalRequestInput): void {
   if (payload === undefined || payload.scopes.length === 0 || !payload.scopes.every(isEgressGrantScope)) {
     throw new Error("approval: an egress-host request needs egressHost with at least one valid scope");
   }
-  if (payload.network !== "public" && payload.network !== "local") {
-    throw new Error("approval: an egress-host request names its network (public or local)");
+  if (payload.network !== "public" && payload.network !== "local" && payload.network !== "unverified") {
+    throw new Error("approval: an egress-host request names its network (public, local or unverified)");
   }
-  if (payload.network === "local" && payload.scopes.some((scope) => scope === "workspace" || scope === "always")) {
-    throw new Error("approval: a local or private destination is never offered a persistent scope");
+  if (payload.network !== "public" && payload.scopes.some((scope) => scope === "workspace" || scope === "always")) {
+    throw new Error("approval: a local, private or unverified destination is never offered a persistent scope");
   }
   const choices = req.allowedChoices ?? [];
   if (choices.length !== 2 || !choices.includes("allow-once") || !choices.includes("deny-once")) {

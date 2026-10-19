@@ -30,6 +30,10 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { SandboxManager, type SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
 import {
+  setDestinationResolverForTesting,
+  setListenerQuarantineForTesting,
+} from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
+import {
   cleanupAsrtSandboxAfterCommand,
   initializeAsrtSandbox,
   isAsrtSandboxActive,
@@ -207,7 +211,7 @@ async function withPair(
     });
     // The proxy resolves a destination once before asking; the probe's name
     // answers with a documentation address so the callback is reached.
-    SandboxManager.setDestinationResolverForTesting(async (name) => {
+    setDestinationResolverForTesting(async (name) => {
       if (name !== R1_HOST) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${name}`), { code: "ENOTFOUND" });
       return [{ address: R1_ADDRESS, family: 4 }];
     });
@@ -231,7 +235,7 @@ async function withPair(
     cleanupAsrtSandboxAfterCommand();
     cleanupAsrtSandboxAfterCommand();
   } finally {
-    SandboxManager.setDestinationResolverForTesting(undefined);
+    setDestinationResolverForTesting(undefined);
     sleeper?.kill();
     await sleeper?.done;
     victim.release();
@@ -300,7 +304,7 @@ async function impersonationCase(
     // Only the prober's own key on its own listener reaches the callback,
     // which is told the listener vouches for it.
     expect(await connectThrough(proberTarget, proberProxy, ownKey)).toMatch(/^HTTP\/1\.1 403/u);
-    expect(asked).toEqual([{ host: R1_HOST, context: { attributionKey: prober.token, identity: "listener", addresses: [R1_ADDRESS] } }]);
+    expect(asked).toEqual([{ host: R1_HOST, context: { attributionKey: prober.token, identity: "listener", addresses: [R1_ADDRESS], resolution: "pinned" } }]);
 
     if (process.platform === "darwin") {
       // From inside the sandbox the victim's listener is not reachable at
@@ -383,7 +387,7 @@ describe.runIf(process.platform === "darwin")("ended invocation listener quarant
     const group = spawn("/bin/sleep", ["30"], { detached: true, stdio: "ignore" });
     try {
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: false }, async () => false);
-      SandboxManager.setListenerQuarantineForTesting(100);
+      setListenerQuarantineForTesting(100);
       await wrapToolCommand("true", { commandId: egress.token, filesystem: { allowWrite: [], allowRead: [] } });
       const { port } = await SandboxManager.openInvocationListener(egress.token);
       expect(port).toBeTypeOf("number");
@@ -403,7 +407,7 @@ describe.runIf(process.platform === "darwin")("ended invocation listener quarant
       expect(released).toBe(true);
       cleanupAsrtSandboxAfterCommand();
     } finally {
-      SandboxManager.setListenerQuarantineForTesting(undefined);
+      setListenerQuarantineForTesting(undefined);
       if (group.exitCode === null && group.signalCode === null) process.kill(-group.pid!, "SIGKILL");
       egress.release();
     }

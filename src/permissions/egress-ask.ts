@@ -53,8 +53,8 @@ export interface EgressApprovalRequest {
   readonly destination: EgressDestination;
   /** The scopes the card offers, narrowest first; never empty. */
   readonly scopes: readonly EgressGrantScope[];
-  /** `local`: this machine or a private network; the card says so, and offers no persistent scope. */
-  readonly network: "public" | "local";
+  /** `local`: this machine or a private network; `unverified`: the upstream proxy resolves the name. The card says so for both, and offers no persistent scope. */
+  readonly network: "public" | "local" | "unverified";
   /** Ends the ask (the call was cancelled or timed out). */
   readonly abortSignal: AbortSignal | undefined;
 }
@@ -191,10 +191,16 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     // ASRT resolved the destination once and will dial exactly these
     // addresses, so a name is judged by what it resolved to as well.
     const addresses: unknown = context?.addresses;
-    if (!Array.isArray(addresses) || !addresses.every((a): a is string => typeof a === "string")) {
+    const resolution: unknown = context?.resolution;
+    if (!Array.isArray(addresses) || !addresses.every((a): a is string => typeof a === "string")
+      || (resolution !== "pinned" && resolution !== "upstream")) {
       return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };
     }
-    const network = egressDestinationNetwork(canonicalHost, addresses);
+    // A name the upstream proxy resolves (this host could not) was never
+    // checked: it is offered at most This conversation, and no persistent
+    // grant covers it, unless its name alone already says more.
+    const judged = egressDestinationNetwork(canonicalHost, addresses);
+    const network = resolution === "upstream" && judged === "public" ? "unverified" : judged;
     if (network === "reserved") return { owner, decision: deny("policy", EGRESS_DENY_REASONS.reserved) };
     switch (owner.kind) {
       case "worker":
