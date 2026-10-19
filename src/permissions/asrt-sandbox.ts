@@ -850,21 +850,27 @@ export function buildPerCommandSandboxCustomConfig(
     const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
     const denyRead = [...new Set([...filesystem.denyRead, ...pluginRoots, ...(_baseTrustedSettings?.denyRead ?? [])])];
     hiddenSeccompHelper = seccompHelperHiddenBy(denyRead);
-    fs.denyRead = asrtReadDenyPaths(
-      denyRead,
-      // The plugin roots are spelled exactly for the reason the private roots
-      // are: a wrap whose reads include an ancestor of one (a worker's or a
-      // bundled process's host temp directory, above a test `AVE_HOME`) would
-      // otherwise lose its own plugin directories to the re-emitted deny.
-      [...appOwnedSandboxPrivateRoots(), ...pluginRoots],
+    fs.denyRead = windowsDenyTargets(
+      asrtReadDenyPaths(
+        denyRead,
+        // The plugin roots are spelled exactly for the reason the private roots
+        // are: a wrap whose reads include an ancestor of one (a worker's or a
+        // bundled process's host temp directory, above a test `AVE_HOME`) would
+        // otherwise lose its own plugin directories to the re-emitted deny.
+        [...appOwnedSandboxPrivateRoots(), ...pluginRoots],
+      ),
+      _baseTrustedSettings?.userDataDir,
     );
   }
   if (filesystem.allowWrite !== undefined) fs.allowWrite = writeRootsOutsideReadDenies(filesystem.allowWrite, floor);
   if (filesystem.denyWrite !== undefined) {
-    fs.denyWrite = [
-      ...filesystem.denyWrite,
-      ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite ?? []) : []),
-    ];
+    fs.denyWrite = windowsDenyTargets(
+      [
+        ...filesystem.denyWrite,
+        ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite ?? []) : []),
+      ],
+      _baseTrustedSettings?.userDataDir,
+    );
   }
   if (filesystem.allowRead !== undefined || hiddenSeccompHelper !== undefined) {
     // A per-command allowRead REPLACES the shared one, so a wrap that only
@@ -1284,15 +1290,9 @@ function readDenyCoversPath(denied: string, canonicalPath: string): boolean {
   }
 }
 
-function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string): string[] {
+function electronUserDataDir(userDataDir: string | undefined): string {
   const home = homedir();
-  const ave = aveHome();
-  // Electron userData dir — exact path when provided by a trusted caller;
-  // otherwise derived from os.homedir() + per-platform literal (NO `electron`
-  // import — keeps this module safe for any non-renderer context).
-  // FIX 1 (security MINOR): Linux base honors XDG_CONFIG_HOME, mirroring
-  // Electron's own resolution: `process.env.XDG_CONFIG_HOME || ~/.config`.
-  const electronUserData =
+  return (
     userDataDir ??
     (process.platform === "darwin"
       ? join(home, "Library", "Application Support", "Ave")
@@ -1302,7 +1302,75 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
             // Linux: mirror Electron's XDG_CONFIG_HOME resolution.
             process.env.XDG_CONFIG_HOME ?? join(home, ".config"),
             "Ave",
-          ));
+          ))
+  );
+}
+
+const POSIX_CRON_DENIES = [
+  "/usr/lib/cron/tabs", // macOS user crontab spool
+  "/var/spool/cron/crontabs", // Linux (Debian/Ubuntu) user crontab spool
+  "/var/spool/cron", // Linux (RHEL/Fedora) user crontab spool
+  "/etc/cron.d", // system cron drop-in dir
+] as const;
+const POSIX_ASRT_TEMP_DENIES = ["/tmp/claude", "/private/tmp/claude"] as const;
+
+/** The directories among the write-persistence denies (see getDefaultSensitiveWriteDenyPaths). */
+function writePersistenceDirectories(): string[] {
+  const home = homedir();
+  return [
+    join(home, ".config"),
+    join(home, "Library", "LaunchAgents"),
+    dirname(dirname(getVendoredSrtWinExePath())),
+    join(home, ".npm", "_logs"),
+    join(home, ".claude", "debug"),
+  ];
+}
+
+/**
+ * The deny lists as `srt-win acl stamp` must receive them. srt-win creates a
+ * deny target that does not exist yet, so the deny lands on the exact path:
+ * an empty FILE, unless the path ends in a separator, then a directory. So on
+ * Windows:
+ *   - a directory row gets its trailing `\`. Without it `~/.ave/keys`,
+ *     `~/.config` or `~/.claude/debug` became 0-byte files (measured on
+ *     Windows 26300), and every later `mkdir` of them failed;
+ *   - a POSIX-rooted row (`/etc/shadow`, `/tmp/claude`, …) is dropped. It
+ *     resolves against the current drive, and srt-win materialized
+ *     `C:\etc\shadow`, `C:\var\spool\cron`, `C:\tmp\claude` and the like.
+ * Other platforms get the list unchanged.
+ */
+function windowsDenyTargets(paths: readonly string[], userDataDir: string | undefined): string[] {
+  if (process.platform !== "win32") return [...paths];
+  const home = homedir();
+  const ave = aveHome();
+  const directories = new Set(
+    [
+      ...SENSITIVE_PATH_ENTRIES.filter((entry) => entry.kind === "dir" && entry.anchor !== "root").map((entry) =>
+        join(entry.anchor === "ave-home" ? ave : home, ...entry.segments),
+      ),
+      electronUserDataDir(userDataDir),
+      ...writePersistenceDirectories(),
+    ].map(caseFoldForMatch),
+  );
+  const posixRooted = new Set<string>([
+    ...SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor === "root").map((entry) => "/" + entry.segments.join("/")),
+    ...POSIX_CRON_DENIES,
+    ...POSIX_ASRT_TEMP_DENIES,
+  ]);
+  return paths
+    .filter((path) => !posixRooted.has(path))
+    .map((path) => (!/[\\/]$/.test(path) && directories.has(caseFoldForMatch(path)) ? `${path}\\` : path));
+}
+
+function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string): string[] {
+  const home = homedir();
+  const ave = aveHome();
+  // Electron userData dir — exact path when provided by a trusted caller;
+  // otherwise derived from os.homedir() + per-platform literal (NO `electron`
+  // import — keeps this module safe for any non-renderer context).
+  // FIX 1 (security MINOR): Linux base honors XDG_CONFIG_HOME, mirroring
+  // Electron's own resolution: `process.env.XDG_CONFIG_HOME || ~/.config`.
+  const electronUserData = electronUserDataDir(userDataDir);
   const raw = [
     // ── The sensitive-path table, projected to literal absolute paths ──
     // Projected from the single authority, SENSITIVE_PATH_ENTRIES in
@@ -1322,8 +1390,8 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
         case "root":
           // POSIX-rooted (`/etc/…`). Kept literal rather than `join`ed so the
           // string stays a seatbelt/bwrap subpath on the platforms that have
-          // it; on win32 it names nothing and ASRT skips it (No-Fallback: a
-          // path that does not exist is harmless to list).
+          // it. On win32 srt-win would create it on the current drive, so
+          // windowsDenyTargets drops it at the ASRT boundary.
           return "/" + entry.segments.join("/");
         default: {
           // Fail closed: an unrecognised anchor must not silently push
@@ -1420,10 +1488,7 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     join(home, "Library", "LaunchAgents"),
     // ── User crontab spool + system cron drop-ins (a crontab edit re-executes
     //    outside the sandbox) ──
-    "/usr/lib/cron/tabs", // macOS user crontab spool
-    "/var/spool/cron/crontabs", // Linux (Debian/Ubuntu) user crontab spool
-    "/var/spool/cron", // Linux (RHEL/Fedora) user crontab spool
-    "/etc/cron.d", // system cron drop-in dir
+    ...POSIX_CRON_DENIES,
     // ── ASRT vendored srt-win backend dir (re-exec vector) ──
     // A sandboxed process must never be able to WRITE/overwrite the broker binary
     // it is itself spawned through. 0.0.67's explicit srt-win path closes the
@@ -1450,8 +1515,7 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     // this list, so denying it also broke every `writeFileSync(join(tmpdir(),
     // …))` in every confined child. `useAppOwnedSandboxTempRoot` moved the temp
     // root under `~/.ave` first, which is what makes the deny survivable.
-    "/tmp/claude",
-    "/private/tmp/claude",
+    ...POSIX_ASRT_TEMP_DENIES,
     join(home, ".npm", "_logs"),
     join(home, ".claude", "debug"),
   ];
@@ -1554,9 +1618,9 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
   }
   const sharedFloor = getProtectedReadDenyPaths(trustedSettings.userDataDir, trustedSettings.denyRead);
   const filesystem: FilesystemConfig = {
-    denyRead: asrtReadDenyPaths(denyReadUnion, appOwnedSandboxPrivateRoots()),
+    denyRead: windowsDenyTargets(asrtReadDenyPaths(denyReadUnion, appOwnedSandboxPrivateRoots()), trustedSettings.userDataDir),
     allowWrite: writeRootsOutsideReadDenies(trustedSettings.allowWrite ?? [], sharedFloor),
-    denyWrite: denyWriteUnion,
+    denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir),
     ...(trustedSettings.allowRead !== undefined
       ? { allowRead: readGrantsOutsideReadDenies(trustedSettings.allowRead, sharedFloor, []) }
       : {}),
