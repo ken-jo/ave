@@ -148,7 +148,7 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
               data-testid={`upstream-proxy-mode-${entry.mode}`}
               className="mt-0.5"
             />
-            <Label htmlFor={`upstream-proxy-mode-${entry.mode}`} className="cursor-pointer">
+            <Label htmlFor={`upstream-proxy-mode-${entry.mode}`} className="cursor-pointer flex-col items-start gap-0.5">
               <div className="text-sm">{translate(entry.label)}</div>
               <div className="text-[11px] font-normal text-muted-foreground">{translate(entry.hint)}</div>
             </Label>
