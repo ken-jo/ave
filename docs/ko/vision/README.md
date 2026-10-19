@@ -45,9 +45,11 @@ Ave 가 무엇이고 어디로 가는지에 대한 정식 문장은 영문 문�
   브라우징하는 것은 아직 목표입니다.
 - **터미널.** xterm.js 로 그리는 실제 대화형 PTY 터미널 탭이 OS 샌드박스 안에서
   동작합니다 (`src/main/terminal/pty-manager.ts`,
-  `src/ui/renderer/components/PtyTerminalView.tsx`). 에이전트는 셸 도구로 명령을
-  실행합니다 (`src/tools/shell-tools.ts`). 명령 블록, 터미널 히스토리 검색, 터미널
-  안의 에이전트는 아직 목표입니다.
+  `src/ui/renderer/components/PtyTerminalView.tsx`). 명령은 하나씩 블록으로
+  기록됩니다. 에이전트는 셸 도구로 명령을 실행하고 (`src/tools/shell-tools.ts`),
+  `terminal_read` 로 터미널 블록을 읽으며, 승인된 명령을 `terminal_run` 으로
+  보이는 터미널에서 실행합니다 (`src/tools/terminal-read.ts`,
+  `src/tools/terminal-run.ts`). 터미널 히스토리 검색은 아직 목표입니다.
 - **확장.** 매니페스트 기반 플러그인, 관리형 마켓플레이스, git 마켓플레이스, MCP
   서버와 MCP 앱 카드, 스킬.
 - **에이전트와 원격.** 서브에이전트, 에이전트 간(A2A) 원격 접근, 헤드리스 호스트,

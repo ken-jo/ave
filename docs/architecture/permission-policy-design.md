@@ -540,6 +540,121 @@ credential files. The actual environment remains owned by
 provides shared descriptions for the system prompt and approval UI; the prompt
 describes the default route, while the approval describes the final call's plan.
 
+## Commands Typed Into A Workspace Terminal
+
+`terminal_run` ([terminal-run.ts](../../src/tools/terminal-run.ts)) types one
+command into a workspace terminal the user can see and presses Enter. It is a
+builtin in the `shell` category and takes the same lane as `bash`; there is no
+separate classifier:
+
+- The command is the permission manager's bash rule subject, in the directory
+  the target terminal's shell last reported. `Bash(...)` deny, ask and allow
+  rules (user and project), the credential-exfiltration floor and the
+  sensitive-path floor read it exactly as they read a `bash` command. The
+  executor's shape-based shell checks (path containment and the structural
+  validator) read its `command` argument with the terminal's directory as its
+  working directory, as they read a `bash` call's `cwd`: a relative operand
+  that resolves outside the allowed directories asks for the directory grant.
+  Unlike a `bash` `cwd`, the terminal's own directory is not refused for being
+  outside them — the user may have moved the shell anywhere its sandbox
+  allows — so only the operands are judged.
+- A remembered decision covers the exact command in that directory, and only
+  for the app session (`terminal-command` scope). A bare `terminal_run` allow
+  pattern does not cover every command, because the tool keys policy on its
+  command as `bash` does.
+- The reviewer sees the terminal's own substrate: the active ASRT capability
+  while the sandbox still contains shells (a terminal can only be spawned under
+  such a sandbox and keeps its wrap for life), otherwise `none`. That is the
+  sandbox as it is now; the terminal's jail (its write paths, deny floors and
+  egress allow-list) was fixed when its shell spawned, so later changes to
+  allowed directories or the allow-list do not reach a running terminal.
+
+The target terminal is resolved once, before any decision, and sealed into the
+approval scope: an explicit `tabId`, then the terminal the conversation is
+bound to when the host binds one, then the window's active terminal. With none
+of them the call fails; it never chooses a terminal itself. Execute types into
+the sealed terminal and refuses when that terminal's shell has moved to another
+directory since approval.
+
+The command is typed only at an empty prompt, as the shell's own command
+markers report it ([terminal-blocks.ts](../../src/main/terminal/terminal-blocks.ts)
+`promptState`). Refused with the reason, before the card and again at
+execution:
+
+- a running command or full-screen program;
+- the user's unsent typing at the prompt, or any keystroke in the last 1.5
+  seconds;
+- a shell between prompts, or a zsh or bash still drawing its first prompt
+  (the model is told to retry in a moment);
+- an exited shell or a shell that emits no markers;
+- a shell that does not mark the end of its prompt (fish), which is not
+  supported.
+
+The 1.5-second quiet window is a heuristic. A key written to the PTY shows in
+the echo only after the shell reads it, so an empty echo just after typing
+proves nothing; the window covers that gap. A key the user presses after the
+final check, while the approved line is being written, can still mix with
+it. Replies the terminal emulator sends by itself on the same channel (focus
+in/out, device-attribute, status and cursor-position reports, OSC/DCS
+answers) do not count as typing. A cursor-position report and Shift+F3 have
+the same shape, so that key does not count either.
+
+The text must be one line that every supported shell runs exactly as shown and
+as the rules read it
+([terminal-command-text.ts](../../src/shared/terminal-command-text.ts)). Refused
+before any card, with no mode that lets them through:
+
+- control characters (newline, tab, ESC and bracketed-paste markers included);
+- characters a reader cannot see: format and default-ignorable characters,
+  non-ASCII spaces, the braille blank, combining marks on ASCII, and
+  whitespace runs longer than 16;
+- history expansion (`!word`, a leading `^`, the `r` and `fc` re-run commands);
+- constructs zsh and bash read differently: an unquoted `#` comment, a command
+  word starting with `=`, `nocorrect` and `noglob`. A `#` inside a `${…}`
+  expansion (`${#x}`, `${x#p}`) is an operator, not a comment. The terminal's
+  zsh also runs with `interactivecomments`;
+- anything that would change the shell for the user's later commands:
+  - function definitions;
+  - assignments to prompt and hook variables, `PATH`, `IFS`, `TMOUT` and
+    similar, written as `NAME=value` or made through `read`, `mapfile`,
+    `readarray`, `getopts` or `printf -v` (a variable name taken from a
+    variable counts as one of them);
+  - builtins that install aliases, traps, hooks, options, key bindings,
+    limits, a umask, terminal settings or scheduled commands, edit the
+    history, or source code;
+- references to the shell integration's `__ave_*` names; block records also
+  redact the marker nonce, so printed text cannot forge markers;
+- a construct the shell analysis does not model (`case`,
+  `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`), and a
+  command name taken from a variable;
+- an incomplete construct.
+
+The card shows the exact command. It names by code point each character that
+can look like another
+([terminal-command-lookalikes.ts](../../src/shared/terminal-command-lookalikes.ts)).
+That covers a non-ASCII character that is not a letter, fullwidth and
+halfwidth forms, and the letters of a word that mixes scripts the way no
+writing system does, such as Latin with Cyrillic or Greek. This follows the
+"highly restrictive" mixed-script level of Unicode TS #39. A word in a single
+script, such as a Korean filename, gets no warning.
+
+Within the script mixes that are allowed, some characters still pass for ASCII
+or for each other, and the card names these too:
+
+- standalone Hangul jamo, such as U+3161 for a dash or U+3163 for `l` or `|`;
+  a Korean word is written in syllables, so these are named wherever they
+  appear;
+- a short list of one- and two-stroke Han and kana characters drawn from the
+  TS #39 confusables, such as U+4E00, U+4E28, U+53E3 and U+30A8. These are
+  named only in a word that also holds ASCII letters or digits, or that is
+  made of nothing else. Inside ordinary Chinese or Japanese words they are
+  not flagged.
+
+The card also notes when the terminal's directory is outside the allowed
+folders. The host seals that directory as the allowed-directory check compares
+it: symlinks resolved, and case folded where the file system folds case. The
+card can therefore compare it with the allowed folders as plain strings.
+
 ## Default Allowed Roots
 
 Layer 1 seeds its allow-list from the project root, the application data root

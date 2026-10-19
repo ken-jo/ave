@@ -39,7 +39,7 @@ function runInteractive(shell: string, script: string) {
     encoding: "utf-8",
     timeout: 20_000,
   });
-  const tracker = new TerminalBlockTracker({ nonce: NONCE });
+  const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
   const display = tracker.recordOutput(result.stdout);
   return { home, tracker, status: result.status, raw: result.stdout, display };
 }
@@ -104,6 +104,12 @@ describe("installShellIntegration", () => {
       expect(blocks[0]!.cwd?.endsWith(home.split("/").pop()!)).toBe(true);
       expect(blocks[3]).toMatchObject({ cwd: "/", output: "/\n" });
       expect(blocks.every((block) => block.source === "osc133")).toBe(true);
+    });
+
+    it.runIf(existsSync(shell))(`${shell}: reads # as a comment, as the bash-dialect permission rules do`, () => {
+      const { tracker } = runInteractive(shell, ["echo SAFE # ; echo PWNED", "exit", ""].join("\n"));
+      const [first] = tracker.recent(10).reverse();
+      expect(first).toMatchObject({ command: "echo SAFE # ; echo PWNED", output: "SAFE\n" });
     });
 
     it.runIf(existsSync(shell))(`${shell}: unsets the nonce before any command runs and keeps markers out of forged output`, () => {

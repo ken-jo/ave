@@ -66,8 +66,10 @@ import {
   registerTerminalBlockTracker,
   unregisterTerminalBlockTracker,
   __resetTerminalBlocksForTest,
+  type TerminalPromptState,
 } from "./terminal-blocks.js";
 import { isTerminalTabId } from "../../shared/tab-id.js";
+import { hasOnlyTypeableCharacters, MAX_TERMINAL_COMMAND_CHARS } from "../../shared/terminal-command-text.js";
 
 const log = createLogger("ave");
 
@@ -464,11 +466,15 @@ async function spawnNewTerminal(
   const shell = resolveLoginShell();
   const markerNonce = randomBytes(16).toString("hex");
   let integrationEnv: Record<string, string>;
+  let marksPromptEnd: boolean;
   try {
-    integrationEnv = installShellIntegration(sandboxHome.path, shell, {
+    const integration = installShellIntegration(sandboxHome.path, shell, {
       nonce: markerNonce,
       sandboxEnv: sandboxHome.env,
-    }).env;
+    });
+    integrationEnv = integration.env;
+    // fish's integration marks no end of prompt (shell-integration.ts).
+    marksPromptEnd = integration.shell !== "fish";
   } catch (err) {
     disposeResources();
     return {
@@ -568,7 +574,7 @@ async function spawnNewTerminal(
     const session: TerminalSession = {
       pty,
       ownerWindowId: options.ownerWindowId ?? null,
-      blocks: new TerminalBlockTracker({ nonce: markerNonce }),
+      blocks: new TerminalBlockTracker({ nonce: markerNonce, marksPromptEnd }),
       ring: [],
       ringBytes: 0,
       disposeData: () => {},
@@ -688,6 +694,53 @@ export function writeTerminal(tabId: string, data: string): void {
   session.blocks.recordInput(data);
   session.pty.write(data);
 }
+
+export type TypeTerminalCommandResult =
+  | { ok: true; firstBlockId: number }
+  | { ok: false; reason: "no-terminal" | Exclude<TerminalPromptState, "ready">; message: string };
+
+/**
+ * Type one agent command into a terminal and press Enter, as the user would:
+ * the shell echoes it and runs it in the visible terminal. Only for
+ * `terminal_run`, after the invocation was authorized.
+ *
+ * Refused unless the terminal is `ownerWindowId`'s, alive, and its shell is
+ * at an empty prompt ({@link TerminalBlockTracker.promptState}): text typed
+ * while a command or a full-screen program is in the foreground would go to
+ * that program, and text typed after the user's own unfinished input would
+ * join it. `line` must hold no control or invisible characters
+ * (terminal-command-text.ts); one that does is a caller bug and throws.
+ *
+ * Returns the id the command's block will have at least, so the caller can
+ * wait for it.
+ */
+export function typeTerminalCommand(tabId: string, ownerWindowId: number, line: string): TypeTerminalCommandResult {
+  if (!hasOnlyTypeableCharacters(line) || line.length > MAX_TERMINAL_COMMAND_CHARS) {
+    throw new Error("typeTerminalCommand: the line holds characters that cannot be typed as one command");
+  }
+  const session = sessions.get(tabId);
+  if (!session || session.exited || session.closing || session.ownerWindowId !== ownerWindowId) {
+    return { ok: false, reason: "no-terminal", message: `no running terminal with tabId ${JSON.stringify(tabId)} in this window` };
+  }
+  const state = session.blocks.promptState();
+  if (state !== "ready") {
+    return { ok: false, reason: state, message: TERMINAL_NOT_READY_MESSAGES[state] };
+  }
+  const firstBlockId = session.blocks.nextBlockId();
+  session.pty.write(`${line}\r`);
+  log.info({ tabId, chars: line.length }, "terminal: typed an approved agent command");
+  return { ok: true, firstBlockId };
+}
+
+const TERMINAL_NOT_READY_MESSAGES: Record<Exclude<TerminalPromptState, "ready">, string> = {
+  "no-shell-integration": "the terminal's shell reports no command markers, so whether it is waiting at its prompt cannot be told",
+  exited: "the terminal's shell has exited",
+  "command-running": "a command is running in the foreground of the terminal; typed text would go to it",
+  "between-prompts": "the terminal's shell is between commands and has not shown its prompt yet",
+  "pending-input": "the user is typing at the prompt, or it holds text they typed and have not run",
+  "shell-starting": "the terminal's shell is still starting and has not finished its first prompt; retry in a moment",
+  "no-prompt-end-marker": "the terminal's shell does not mark the end of its prompt, so typing there cannot be told",
+};
 
 /** Resize the PTY (FitAddon / ResizeObserver). Clamped, no-op for unknown tab. */
 export function resizeTerminal(tabId: string, cols: number, rows: number): void {
