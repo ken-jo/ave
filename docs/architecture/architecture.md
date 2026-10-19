@@ -818,6 +818,19 @@ Key boundaries:
   Bundled `manifest.skills` contribute instructions, while host-selected extension
   scope and `tool_search` control model-visible Tool discovery;
 - extension UI can render in host slots but cannot bypass permission review;
+- the text a host renders from a manifest can be localized per entry. A `ui[]`
+  entry may carry `locales: { [tag]: { displayName?, title?, description? } }`
+  (normalized lower-case BCP-47 tags, 1 to 16; empty entries, blank strings and
+  unknown fields are refused). The host resolves against its current UI
+  language: the exact tag, then its base language (`pt-br` → `pt`), then the
+  entry's own fields, then the plugin id; for the label, `displayName` precedes
+  `title` within each language step. The sidebar and its Extensions menu, the
+  plugin pane header, the command list, the native app menu and the floating
+  dock's slot titles share `src/shared/plugin-view-label.ts` and re-render on a
+  language switch. `configSchema` properties (`title`, `description`) and
+  `auth` (`label`) accept the same `locales` shape. A host that predates the
+  field refuses the manifest as an unknown key, so an extension declaring it
+  raises `requires.minAppVersion` to a release that reads it;
 - optional `manifest.onboarding` copy is inert, localized metadata. An extension
   declares one `firstTask` and up to five `highlights`; the host asks each as a
   tile overlay card once and remembers the answer — accept, later, or never — in

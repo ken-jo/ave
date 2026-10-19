@@ -750,9 +750,9 @@ function PluginNavItem({
   collapsed: boolean;
   role?: "menuitem";
 }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const viewKey = toViewKey(view);
-  const label = getPluginViewLabel(view);
+  const label = getPluginViewLabel(view, locale);
   const IconComponent = pluginIconFor({
     icon: view.icon,
     iconText: view.iconText,

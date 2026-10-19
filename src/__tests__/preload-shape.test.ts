@@ -731,6 +731,7 @@ describe("floating dock preload world shape lock", () => {
         "onActivity": "function",
         "onMount": "function",
         "onResize": "function",
+        "onRetitle": "function",
         "onTheme": "function",
         "onUnmount": "function",
         "pluginPreloadUrl": "string",

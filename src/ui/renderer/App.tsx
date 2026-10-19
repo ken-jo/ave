@@ -57,7 +57,7 @@ import type { UserApprovalVerdict } from "../../shared/permissions-events.js";
 import type { ExactDenyDraft } from "./exact-permission-decision.js";
 
 // ─── Imports: types / constants / helpers / components / tabs ────────
-import { getApi, getPluginViewLabel, isDarwin, toViewKey } from "./api-client.js";
+import { getApi, getPluginViewDescription, getPluginViewLabel, isDarwin, toViewKey } from "./api-client.js";
 import type { PluginEntry } from "./types.js";
 import { pluginIconFor } from "./utils/plugin-icon.js";
 import {
@@ -1210,7 +1210,7 @@ export function App() {
       t,
       pluginViewLabel: (viewKey: string) => {
         const view = pluginViews.find((candidate) => toViewKey(candidate) === viewKey);
-        return view ? getPluginViewLabel(view) : undefined;
+        return view ? getPluginViewLabel(view, locale) : undefined;
       },
       // A session on the workspace default is a plain chat (the sidebar's own
       // rule for its Chats tab); only a named project names the root crumb.
@@ -1231,7 +1231,7 @@ export function App() {
       onForward: viewHistory.goForward,
       onSelectSegment: navigateToLocation,
     };
-  }, [location, t, pluginViews, viewHistory, navigateToLocation, activeProject]);
+  }, [location, t, locale, pluginViews, viewHistory, navigateToLocation, activeProject]);
 
   // The conversation action set. Built once so the pane header and the
   // sidebar row's context menu cannot drift apart about what is offered.
@@ -1248,7 +1248,7 @@ export function App() {
         pluginId: view.pluginId,
         loadStatus: card?.loadStatus,
         preparationStatus: card?.preparationStatus,
-        label: getPluginViewLabel(view),
+        label: getPluginViewLabel(view, locale),
         icon: view.icon,
         iconText: view.iconText,
         unauthed: pluginAuthStatuses.get(view.pluginId)?.kind === "unauthed",
@@ -1271,7 +1271,8 @@ export function App() {
             pluginId: card.id,
             loadStatus: card.loadStatus,
             preparationStatus: card.preparationStatus,
-            label: extension.displayName?.trim() || extension.title || card.name,
+            // The card's name is this entry's last resort, ahead of its id.
+            label: getPluginViewLabel({ pluginId: card.name, extension }, locale),
             icon: card.icon,
             iconText: card.iconText,
             unauthed: false,
@@ -1293,7 +1294,7 @@ export function App() {
       }];
     });
     return [...viewEntries, ...preparingCardEntries, ...failedCardEntries];
-  }, [pluginViews, pluginAuthStatuses, pluginCards]);
+  }, [pluginViews, pluginAuthStatuses, pluginCards, locale]);
 
   const failedPluginCards = useMemo(() => {
     const pluginIdsWithViews = new Set(pluginViews.map((view) => view.pluginId));
@@ -1672,12 +1673,13 @@ export function App() {
         handleNewChat,
         openNewSurface: (view) => showInstanceView(chatGroupsRef.current.focusedId, view, true),
         pluginViews,
+        locale,
       }).concat(PANEL_COMMANDS.map((command) => ({
         id: command.id,
         label: isDarwin() ? `${t(command.labelKey)}  ${command.hint}` : t(command.labelKey),
         run: () => runPanelCommand(command.id),
       }))),
-    [pluginViews, handleNewChat, handleViewSelect, onOpenSettings, showInstanceView, runPanelCommand, t],
+    [pluginViews, locale, handleNewChat, handleViewSelect, onOpenSettings, showInstanceView, runPanelCommand, t],
   );
 
   const onNewChat = useCallback(() => { void handleNewChat(); }, [handleNewChat]);
@@ -2137,12 +2139,12 @@ export function App() {
       iconText: pluginPane.view?.iconText,
     });
     const pluginTitle = pluginPane.view
-      ? getPluginViewLabel(pluginPane.view)
+      ? getPluginViewLabel(pluginPane.view, locale)
       : t("be_pluginUiHost.pluginUiTitle");
     return paneShell(view, (
       <PaneFrame
         title={pluginTitle}
-        description={pluginPane.view?.extension.description
+        description={(pluginPane.view && getPluginViewDescription(pluginPane.view.extension, locale))
           ?? t("be_pluginUiHost.pluginUiLoadingDesc")}
         icon={(
           <Suspense fallback={<span className="h-4 w-4" />}>

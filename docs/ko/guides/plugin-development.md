@@ -124,6 +124,10 @@ interface Tool {
 
 - **플러그인 식별자는 최상위 `name`** 이다. 예전 `id` 필드는 없어졌다.
 - **사람이 읽는 표시 이름은 `displayName`** (namespace 안). 생략하면 `name` 이 쓰인다.
+- `ui[]` 항목, `configSchema` 속성, `auth` 의 표시 문자열은 `locales` 로 언어별 값을 줄 수 있다
+  (예: `"locales": { "en": { "displayName": "Meeting" } }`). 항목 자체 필드는 지정하지 않은
+  언어의 기본값이다. 이 키를 쓰면 `requires.minAppVersion` 을 이 필드를 읽는 앱 릴리스로 올린다 —
+  이전 앱은 모르는 키로 manifest 를 거부한다.
 - 다른 클라이언트의 namespace (`com.example` 등) 는 그대로 둬도 된다 — 호스트는
   읽지 않고 통과시킨다.
 - `author`/`homepage`/`repository`/`license`/`keywords` 는 스키마가 받지만 호스트는

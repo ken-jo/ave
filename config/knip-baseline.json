@@ -264,16 +264,6 @@
     },
     {
       "type": "exports",
-      "file": "src/i18n/index.ts",
-      "name": "onLocaleChange"
-    },
-    {
-      "type": "exports",
-      "file": "src/i18n/runtime.ts",
-      "name": "onLocaleChange"
-    },
-    {
-      "type": "exports",
       "file": "src/ipc/handlers/chat.ts",
       "name": "normalizePersonaPromptId"
     },

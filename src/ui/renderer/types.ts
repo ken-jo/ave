@@ -147,6 +147,8 @@ export type PluginConfigSchemaPropertySummary = {
   pattern?: string;
   format?: "secret" | "uri" | "email" | "date-time";
   items?: { type: "string" | "number" | "integer" | "boolean"; enum?: Array<string | number | boolean> };
+  /** Per-language `title` / `description` overrides (normalized BCP-47 tag → text). */
+  locales?: Record<string, { title?: string; description?: string }>;
 };
 
 export type PluginConfigSchemaSummary = {
@@ -229,6 +231,8 @@ interface RestoredSubAgentPayload {
  */
 export type PluginAuthSummary = {
   label?: string;
+  /** Per-language `label` overrides (normalized BCP-47 tag → text). */
+  locales?: Record<string, { label: string }>;
   statusTool: string;
   loginTool: string;
   logoutTool?: string;

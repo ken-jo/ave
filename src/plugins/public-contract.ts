@@ -334,6 +334,13 @@ export interface PluginAccessSpec {
 export interface PluginAuthSpec {
   /** Human-readable label shown next to the badge (defaults to plugin `name`). */
   label?: string;
+  /**
+   * Per-language overrides of `label`, keyed by a normalized lower-case
+   * BCP-47 tag; resolved like {@link PluginUiExtension.locales}
+   * (exact tag → base language → own `label` → the plugin name).
+   * @optional
+   */
+  locales?: Record<string, { label: string }>;
   /** Name of an app-visible tool returning {@link PluginAuthStatus}. */
   statusTool: string;
 
@@ -866,6 +873,14 @@ export interface PluginConfigSchema {
   customPanel?: { entry: string; exportName: string };
 }
 
+/** One language's overrides for a {@link PluginConfigSchemaProperty}'s text. At least one field. */
+export interface PluginConfigSchemaPropertyLocalizedText {
+  /** @optional */
+  title?: string;
+  /** @optional */
+  description?: string;
+}
+
 /** Schema for a single configuration property. */
 export interface PluginConfigSchemaProperty {
   /** JSON Schema-compatible value type. */
@@ -874,6 +889,13 @@ export interface PluginConfigSchemaProperty {
   title?: string;
   /** Long-form description rendered as helper text. @optional */
   description?: string;
+  /**
+   * Per-language overrides of `title` / `description`, keyed by a normalized
+   * lower-case BCP-47 tag; resolved like {@link PluginUiExtension.locales}
+   * (exact tag → base language → own field → the config key).
+   * @optional
+   */
+  locales?: Record<string, PluginConfigSchemaPropertyLocalizedText>;
   /** Default value used when the saved config has no entry for this key. @optional */
   default?: unknown;
   /** Closed list of allowed values; renders a select. @optional */
@@ -902,6 +924,16 @@ export interface PluginConfigSchemaProperty {
   };
 }
 
+/** One language's overrides for a {@link PluginUiExtension}'s text. At least one field. */
+export interface PluginUiExtensionLocalizedText {
+  /** @optional */
+  displayName?: string;
+  /** @optional */
+  title?: string;
+  /** @optional */
+  description?: string;
+}
+
 export interface PluginUiExtension {
   id: string;
   /**
@@ -920,9 +952,20 @@ export interface PluginUiExtension {
    * app-invokable behavior is now expressed by a tool's `_meta.ui.visibility`.
    */
   kind: "embedded-module" | "embedded-page" | "info-card";
+  /** Short label for menus and the sidebar. Falls back to `title`. */
   displayName?: string;
   title: string;
   description?: string;
+  /**
+   * Per-language overrides of `displayName` / `title` / `description`, keyed
+   * by a normalized lower-case BCP-47 tag (`en`, `ko`, `pt-br`). The host
+   * resolves against its UI language: the exact tag, then its base language,
+   * then this entry's own fields, then the plugin id. Hosts before this field
+   * reject the key, so a plugin declaring it sets `requires.minAppVersion` to
+   * a release that reads it.
+   * @optional
+   */
+  locales?: Record<string, PluginUiExtensionLocalizedText>;
   defaults?: Record<string, unknown>;
   entry?: string;
   exportName?: string;
