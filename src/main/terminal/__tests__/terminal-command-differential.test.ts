@@ -450,7 +450,12 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
     env: { PATH: "/usr/bin:/bin", HOME: home, TERM: "xterm-256color", LANG: TERMINAL_TEST_UTF8_LOCALE, ...env },
   });
   const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-  pty.onData((data) => { tracker.recordOutput(data); });
+  // The shell's latest output, for the report of a command that left it not ready.
+  let recentOutput = "";
+  pty.onData((data) => {
+    tracker.recordOutput(data);
+    recentOutput = (recentOutput + data).slice(-600);
+  });
   const exited = new Promise<void>((resolve) => pty.onExit(() => { tracker.recordExit(); resolve(); }));
   if (!await until(() => tracker.promptEndCount() > 0, 10_000)) throw new Error(`${name} did not start`);
   await sleep(100);
@@ -473,7 +478,7 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
     if (!typed.ok) {
       // The previous command left the shell not ready for the next one:
       // a failure of its own; clear the line and go on.
-      stuck.push(`${name}: ${JSON.stringify(previous)} left the shell ${typed.reason}`);
+      stuck.push(`${name}: ${JSON.stringify(previous)} left the shell ${typed.reason} (edit line ${JSON.stringify(tracker.editLineText())}; output ${JSON.stringify(recentOutput)})`);
       const prompts = tracker.promptEndCount();
       pty.write("\u0003");
       await until(() => tracker.promptEndCount() > prompts, 3_000);

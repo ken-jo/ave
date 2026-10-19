@@ -813,7 +813,9 @@ function waitForFreshPrompt(blocks: TerminalBlockTracker, since: number, timeout
  *     `expectedCwd` — so the next key reaches the shell, not a program.
  *  2. Ctrl-C. At an idle prompt the terminal turns it into SIGINT, whatever
  *     the keymap or a pending prefix: the line editor drops the line and its
- *     state and draws a fresh prompt. It cannot run anything.
+ *     state and draws a fresh prompt. It cannot run anything. bash may wait
+ *     for one more key before it draws that prompt, so Ctrl-C is sent again
+ *     until it does ({@link resetToFreshPrompt}).
  *  3. Wait for that fresh prompt, and check it is still idle, untouched and
  *     in the same directory.
  *  4. Write the line as a bracketed paste (`ESC[200~ … ESC[201~`), which the
@@ -894,9 +896,7 @@ export async function typeLineAtPrompt(
   if (afterCheck) return afterCheck;
 
   // 2–3. Reset the line editor and wait for the fresh prompt.
-  const fresh = waitForFreshPrompt(blocks, blocks.promptEndCount(), FRESH_PROMPT_TIMEOUT_MS);
-  target.write("\u0003");
-  if (!await fresh) {
+  if (!await resetToFreshPrompt(blocks, target)) {
     return notTyped("no-fresh-prompt", "the terminal's shell did not draw a fresh prompt after its line was cleared");
   }
   const reported = blocks.currentCwd();
@@ -921,6 +921,48 @@ export async function typeLineAtPrompt(
   target.write("\r");
   onTyped();
   return { ok: true, firstBlockId };
+}
+
+/**
+ * How long typing waits for a fresh prompt after one Ctrl-C before it sends
+ * another, and how long the prompts must then stay still.
+ */
+const RESET_REPEAT_MS = 500;
+
+/**
+ * Ctrl-C until the shell draws a fresh prompt; false if none comes within
+ * {@link FRESH_PROMPT_TIMEOUT_MS}.
+ *
+ * One is not always enough. bash 5.2 (readline 8.2) clears its line on SIGINT
+ * at once, echoing `^C`, but draws the fresh prompt only when the interrupt
+ * breaks its wait for a key. A Ctrl-C that arrives while readline is still
+ * drawing the prompt, before that wait, leaves the cleared line and the `^C`
+ * after the prompt's end marker, and no fresh prompt until the next key
+ * (measured: an ubuntu:24.04 container under load, 20 of 3,017 commands; the
+ * output stopped at `^C ESC[?2004l CR ESC[?2004h`). The next Ctrl-C is that
+ * key. A Ctrl-C cannot run anything, so another one is safe; when more than
+ * one was sent, a prompt drawn for an earlier one can arrive before the last
+ * one's, so the prompts must stay still for a moment before anything is
+ * pasted.
+ */
+async function resetToFreshPrompt(blocks: TerminalBlockTracker, target: PromptTypingTarget): Promise<boolean> {
+  const deadline = Date.now() + FRESH_PROMPT_TIMEOUT_MS;
+  let sent = 0;
+  let drawn = false;
+  while (!drawn) {
+    const left = deadline - Date.now();
+    if (left <= 0 || !target.isLive()) return false;
+    const fresh = waitForFreshPrompt(blocks, blocks.promptEndCount(), Math.min(RESET_REPEAT_MS, left));
+    target.write("\u0003");
+    sent += 1;
+    drawn = await fresh;
+  }
+  if (sent > 1) {
+    while (await waitForFreshPrompt(blocks, blocks.promptEndCount(), Math.max(0, Math.min(RESET_REPEAT_MS, deadline - Date.now())))) {
+      if (Date.now() >= deadline) return false;
+    }
+  }
+  return target.isLive();
 }
 
 /** How long typing waits for the pasted line to show in the line editor. */

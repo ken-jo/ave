@@ -947,7 +947,35 @@ describe("pty-manager typing an approved agent command", () => {
       const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
       await vi.advanceTimersByTimeAsync(3_000);
       await expect(typing).resolves.toMatchObject({ ok: false, reason: "no-fresh-prompt" });
-      expect(pty.written).toEqual(["\u0003"]);
+      // A Ctrl-C every half second for the three seconds, and nothing else.
+      expect(pty.written).toEqual(Array.from({ length: 6 }, () => "\u0003"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends Ctrl-C again when bash cleared its line but waits for a key to draw the fresh prompt", async () => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      // bash 5.2 when the Ctrl-C arrives before readline waits for a key: the
+      // line is cleared and `^C` echoed after the prompt, and the fresh prompt
+      // comes with the next key.
+      const respond = pty.respond;
+      let interruptPending = false;
+      pty.respond = (data) => {
+        if (data === "\u0003" && !interruptPending) {
+          interruptPending = true;
+          queueMicrotask(() => pty.emitData("^C\u001b[?2004l\r\u001b[?2004h"));
+          return;
+        }
+        respond?.(data);
+      };
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(pty.written).toEqual(["\u0003", "\u0003", PASTE("ls"), "\r"]);
     } finally {
       vi.useRealTimers();
     }

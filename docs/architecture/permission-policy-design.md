@@ -647,6 +647,12 @@ Typing is a fixed protocol (pty-manager `typeLineAtPrompt`):
    whatever its state: an ESC or Ctrl-X prefix waiting for its next key, a
    half-typed line. It cannot run anything.
 4. Wait for the fresh prompt, then check the directory and the state again.
+   bash 5.2 clears the line at once but draws the fresh prompt only when the
+   interrupt breaks its wait for a key, so a Ctrl-C that arrives while the
+   prompt is still being drawn leaves no fresh prompt until the next key.
+   Ctrl-C is sent again every half second until a fresh prompt is drawn
+   (3 seconds in all), and after more than one, typing waits until no further
+   prompt arrives.
 5. Paste the line between bracketed-paste markers, without Enter.
 6. Wait until the line editor's echo of its edit line (wrapping removed) is
    exactly the approved line, with no key from the user since the prompt. Only
