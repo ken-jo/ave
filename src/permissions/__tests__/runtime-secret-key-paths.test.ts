@@ -85,8 +85,10 @@ describe("native host external key path protection", () => {
     expect(shellViolation("rm -f ./host-runtime/instance.sqlite", false)).toContain("Sensitive path:");
     expect(shellViolation("printf x > ./host-runtime/instance.sqlite", false)).toContain("Sensitive path:");
     const config = buildSandboxConfig({ allowedDomains: [], allowRead: [root], allowWrite: [root], denyRead: [], denyWrite: [] });
-    expect(config.filesystem.denyWrite).toContain(directory);
-    expect(config.filesystem.denyRead).toContain(directory);
+    // A trailing separator preserves a directory deny at the Windows boundary.
+    const deniedDirectory = process.platform === "win32" ? `${directory}\\` : directory;
+    expect(config.filesystem.denyWrite).toContain(deniedDirectory);
+    expect(config.filesystem.denyRead).toContain(deniedDirectory);
   });
 
   it("protects canonical aliases and retains the original target after an ancestor link changes", () => {
