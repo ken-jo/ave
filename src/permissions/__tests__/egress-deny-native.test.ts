@@ -61,7 +61,7 @@ async function startStrictSandboxWithMonitor(): Promise<SandboxEgressDenyAuditEn
   const rows: SandboxEgressDenyAuditEntry[] = [];
   stopMonitor = await startEgressDenyMonitor({
     subscribe: subscribeAsrtViolations,
-    emit: async (entry) => { rows.push(entry); },
+    emit: async (entry) => { if (entry.entryKind === "egress-deny") rows.push(entry); },
     capability: () => ({ kind: "asrt", confidence: "verified" }),
   });
   await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });

@@ -19,6 +19,24 @@ export function isEgressGrantScope(value: unknown): value is EgressGrantScope {
   return typeof value === "string" && (EGRESS_GRANT_SCOPES as readonly string[]).includes(value);
 }
 
+/** A "This conversation" grant (held in memory until the app restarts), as Settings lists it. */
+export interface ConversationEgressGrant {
+  readonly scope: "conversation";
+  readonly sessionId: string;
+  readonly host: string;
+  readonly port: number;
+  /** ISO time the grant was made. */
+  readonly grantedAt: string;
+}
+
+/** Every grant Settings lists and can revoke. */
+export type ListedEgressGrant = ConversationEgressGrant | PersistentEgressGrant;
+
+/** Which grant a revoke names. */
+export type RevocableEgressGrant =
+  | Pick<PersistentEgressGrant, "scope" | "host" | "port" | "workspaceRoot">
+  | Pick<ConversationEgressGrant, "scope" | "sessionId" | "host" | "port">;
+
 /** A persistent grant, as Settings lists it. */
 export interface PersistentEgressGrant {
   readonly scope: "workspace" | "always";

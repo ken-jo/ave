@@ -9,12 +9,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   canonicalEgressHost,
+  egressDestinationNetwork,
+  egressScopesForNetwork,
   egressGrantScopesFor,
   EgressGrantFileError,
   EgressGrantStore,
   isValidEgressPort,
 } from "../egress-grants.js";
-import { egressIdentityStrength } from "../egress-identity.js";
+import { egressIdentityStrength, noteAsrtUnixSocketPolicy } from "../egress-identity.js";
 import { maxEgressGrantScope } from "../../shared/sandbox-capability-info.js";
 import { setWorkerEgressAllowlists, workerEgressAllowedDomains } from "../egress-runtime.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -89,12 +91,12 @@ describe("EgressGrantStore", () => {
     await store.grant("workspace", ALL, subject, github);
     await store.grant("always", ALL, subject, github);
     expect((await store.listPersistent()).map((g) => g.scope)).toEqual(["workspace", "always"]);
-    expect(await store.revokePersistent({ scope: "workspace", host: "github.com", port: 443, workspaceRoot: "/work/other" }))
+    expect((await store.revoke({ scope: "workspace", host: "github.com", port: 443, workspaceRoot: "/work/other" })).removed)
       .toBe(false);
-    expect(await store.revokePersistent({ scope: "workspace", host: "github.com", port: 443, workspaceRoot: "/work/project" }))
+    expect((await store.revoke({ scope: "workspace", host: "github.com", port: 443, workspaceRoot: "/work/project" })).removed)
       .toBe(true);
     expect(await store.matchingScope(subject, github)).toBe("always");
-    expect(await store.revokePersistent({ scope: "always", host: "github.com", port: 443, workspaceRoot: undefined })).toBe(true);
+    expect((await store.revoke({ scope: "always", host: "github.com", port: 443 })).removed).toBe(true);
     expect(await store.matchingScope(subject, github)).toBeUndefined();
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ version: 1, grants: [] });
   });
@@ -120,6 +122,55 @@ describe("EgressGrantStore", () => {
     // A write never replaces a file it could not read.
     await expect(store.grant("always", ALL, subject, github)).rejects.toThrow(problem);
     expect(readFileSync(file, "utf8")).toBe(content);
+  });
+});
+
+describe("conversation grants and what a revoke closes", () => {
+  it("lists and revokes This conversation grants", async () => {
+    const store = new EgressGrantStore(file);
+    await store.grant("conversation", ALL, subject, github, new Date("2026-10-19T03:00:00.000Z"));
+    expect(store.listConversation()).toEqual([
+      { scope: "conversation", sessionId: "session-1", host: "github.com", port: 443, grantedAt: "2026-10-19T03:00:00.000Z" },
+    ]);
+    expect((await store.revoke({ scope: "conversation", sessionId: "session-2", host: "github.com", port: 443 })).removed).toBe(false);
+    expect((await store.revoke({ scope: "conversation", sessionId: "session-1", host: "github.com", port: 443 })).removed).toBe(true);
+    expect(store.listConversation()).toEqual([]);
+    expect(await store.matchingScope({ ...subject, token: "9".repeat(32) }, github)).toBeUndefined();
+  });
+
+  it("hands back the live calls a revoked grant let through, and forgets released ones", async () => {
+    const store = new EgressGrantStore(file);
+    const other = { ...subject, token: "2".repeat(32) };
+    const ended = { ...subject, token: "3".repeat(32) };
+    await store.grant("workspace", ALL, subject, github);
+    for (const s of [subject, other, ended]) store.noteUse("workspace", s, github);
+    store.noteUse("always", subject, github);
+    store.noteUse("once", subject, github);
+    store.releaseToken(ended.token);
+    const { removed, tokens } = await store.revoke({ scope: "workspace", workspaceRoot: "/work/project", host: "github.com", port: 443 });
+    expect(removed).toBe(true);
+    expect([...tokens].sort()).toEqual([subject.token, other.token].sort());
+    // The always grant's use is its own.
+    expect((await store.revoke({ scope: "always", host: "github.com", port: 443 })).tokens).toEqual([subject.token]);
+  });
+});
+
+describe("destination networks", () => {
+  it.each([
+    ["github.com", "public"], ["8.8.8.8", "public"], ["2606:4700::1111", "public"],
+    ["127.0.0.1", "local"], ["::1", "local"], ["localhost", "local"], ["api.localhost", "local"],
+    ["10.0.0.1", "local"], ["172.16.5.5", "local"], ["192.168.0.1", "local"], ["100.64.1.1", "local"], ["fd12::1", "local"],
+    ["169.254.169.254", "reserved"], ["fe80::1", "reserved"], ["0.0.0.0", "reserved"], ["::", "reserved"],
+    ["224.0.0.1", "reserved"], ["255.255.255.255", "reserved"], ["168.63.129.16", "reserved"], ["fd00:ec2::254", "reserved"],
+    ["64:ff9b::a9fe:a9fe", "reserved"],
+  ] as const)("%s is %s", (host, network) => {
+    expect(egressDestinationNetwork(host)).toBe(network);
+  });
+
+  it("caps the scopes for a local destination and offers none for a reserved one", () => {
+    expect(egressScopesForNetwork(ALL, "public")).toEqual(ALL);
+    expect(egressScopesForNetwork(ALL, "local")).toEqual(["once", "conversation"]);
+    expect(egressScopesForNetwork(ALL, "reserved")).toEqual([]);
   });
 });
 
@@ -159,6 +210,22 @@ describe("identity strength and the scopes it allows", () => {
     expect(egressGrantScopesFor("shared")).toEqual(["once", "conversation"]);
     expect(maxEgressGrantScope("kernel-channel")).toBe("always");
     expect(maxEgressGrantScope("shared")).toBe("conversation");
+  });
+
+  it("is shared on macOS when the session allows every Unix socket (the proxy's own sockets included)", () => {
+    const original = process.platform;
+    try {
+      setProcessPlatform("darwin");
+      noteAsrtUnixSocketPolicy(true);
+      expect(egressIdentityStrength("shell")).toBe("shared");
+      setProcessPlatform("linux");
+      noteAsrtUnixSocketPolicy(true);
+      // Linux wraps hide the proxy's socket directory whatever the flag says.
+      expect(egressIdentityStrength("shell")).toBe("kernel-channel");
+    } finally {
+      noteAsrtUnixSocketPolicy(false);
+      setProcessPlatform(original);
+    }
   });
 });
 

@@ -24,8 +24,21 @@ export function asrtInvocationListenersSupported(): boolean {
   return process.platform === "darwin" || process.platform === "linux";
 }
 
+let macUnixSocketsOpen = false;
+
+/**
+ * Record the session's `network.allowAllUnixSockets` (set at sandbox init).
+ * On macOS it lets a sandboxed process open any Unix socket, the proxy's own
+ * backend sockets included, so the listener no longer identifies an
+ * invocation by itself. (Linux wraps hide the proxy's socket directory
+ * whatever that flag says, so it does not matter there.)
+ */
+export function noteAsrtUnixSocketPolicy(allowAllUnixSockets: boolean): void {
+  macUnixSocketsOpen = allowAllUnixSockets && process.platform === "darwin";
+}
+
 /** The identity strength of one kind of confined process on this host. */
 export function egressIdentityStrength(kind: "shell" | "extension"): EgressIdentityStrength {
   void kind;
-  return asrtInvocationListenersSupported() ? "kernel-channel" : "shared";
+  return asrtInvocationListenersSupported() && !macUnixSocketsOpen ? "kernel-channel" : "shared";
 }

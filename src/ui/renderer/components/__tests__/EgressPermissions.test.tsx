@@ -6,7 +6,7 @@ import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import { EgressHostApprovalCard } from "../permissions/EgressHostApprovalCard.js";
 import { EgressGrantsList } from "../permissions/EgressGrantsList.js";
 import type { ApprovalRequest } from "../../types.js";
-import type { PersistentEgressGrant } from "../../../../shared/egress-grant-scopes.js";
+import type { ConversationEgressGrant, ListedEgressGrant, PersistentEgressGrant } from "../../../../shared/egress-grant-scopes.js";
 
 function egressRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
   return {
@@ -18,7 +18,7 @@ function egressRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalReques
     reason: "The sandboxed bash command wants to connect to github.com:443.",
     createdAt: 0,
     allowedChoices: ["allow-once", "deny-once"],
-    egressHost: { host: "github.com", port: 443, scopes: ["once", "conversation", "workspace", "always"] },
+    egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once", "conversation", "workspace", "always"] },
     ...overrides,
   } as ApprovalRequest;
 }
@@ -49,7 +49,7 @@ describe("EgressHostApprovalCard", () => {
   it("offers only the scopes the host sent, brackets an IPv6 target, and omits the revoke hint for short grants", () => {
     render(
       <EgressHostApprovalCard
-        request={egressRequest({ egressHost: { host: "::1", port: 8080, scopes: ["once", "conversation"] } })}
+        request={egressRequest({ egressHost: { host: "::1", port: 8080, network: "local", scopes: ["once", "conversation"] } })}
         conversationLabel="x"
         onDecide={vi.fn()}
       />,
@@ -58,6 +58,24 @@ describe("EgressHostApprovalCard", () => {
     expect(screen.queryByTestId("egress-approval-allow-workspace")).toBeNull();
     expect(screen.queryByTestId("egress-approval-allow-always")).toBeNull();
     expect(screen.getByTestId("egress-approval-card").textContent).not.toContain("Settings → Permissions → Network");
+  });
+
+  it("warns that a local or private destination is one, and shows it in canonical form", () => {
+    render(
+      <EgressHostApprovalCard
+        request={egressRequest({ egressHost: { host: "127.0.0.1", port: 11434, network: "local", scopes: ["once", "conversation"] } })}
+        conversationLabel="x"
+        onDecide={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("egress-approval-target").textContent).toBe("127.0.0.1:11434");
+    expect(screen.getByTestId("egress-approval-local-warning").textContent).toContain("private network");
+    expect(screen.queryByTestId("egress-approval-allow-workspace")).toBeNull();
+  });
+
+  it("shows no local warning for a public destination", () => {
+    render(<EgressHostApprovalCard request={egressRequest({ egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once"] } })} conversationLabel="x" onDecide={vi.fn()} />);
+    expect(screen.queryByTestId("egress-approval-local-warning")).toBeNull();
   });
 
   it("can only deny a request that carries no destination", () => {
@@ -87,7 +105,7 @@ describe("EgressGrantsList", () => {
   it("lists persistent grants and revokes the one picked", async () => {
     let grants = [workspaceGrant, alwaysGrant];
     const fetcher = vi.fn(async () => ({ ok: true, grants }));
-    const revoker = vi.fn(async (grant: PersistentEgressGrant) => {
+    const revoker = vi.fn(async (grant: ListedEgressGrant) => {
       grants = grants.filter((g) => g !== grant && !(g.scope === grant.scope && g.host === grant.host));
       return { ok: true };
     });
@@ -101,6 +119,27 @@ describe("EgressGrantsList", () => {
     fireEvent.click(screen.getAllByTestId("egress-grant-revoke")[1]!);
     await waitFor(() => expect(screen.getAllByTestId("egress-grant-row")).toHaveLength(1));
     expect(revoker).toHaveBeenCalledWith(alwaysGrant);
+  });
+
+  it("lists a conversation grant and revokes it by its conversation", async () => {
+    const conversationGrant: ConversationEgressGrant = {
+      scope: "conversation", sessionId: "session-7", host: "registry.npmjs.org", port: 443, grantedAt: "2026-10-19T03:00:00.000Z",
+    };
+    let grants: ConversationEgressGrant[] = [conversationGrant];
+    const egressGrantRevoke = vi.fn(async () => { grants = []; return { ok: true, removed: true, closed: 1 }; });
+    const previous = (window as { ave?: unknown }).ave;
+    (window as { ave?: unknown }).ave = { permission: { egressGrantsList: async () => ({ ok: true, grants }), egressGrantRevoke } };
+    try {
+      render(<EgressGrantsList />);
+      const row = await screen.findByTestId("egress-grant-row");
+      expect(row.textContent).toContain("registry.npmjs.org:443");
+      expect(row.textContent).toContain("Conversation session-7");
+      fireEvent.click(screen.getByTestId("egress-grant-revoke"));
+      await screen.findByTestId("egress-grants-empty");
+      expect(egressGrantRevoke).toHaveBeenCalledWith({ scope: "conversation", host: "registry.npmjs.org", port: 443, sessionId: "session-7" });
+    } finally {
+      (window as { ave?: unknown }).ave = previous;
+    }
   });
 
   it("says when nothing is granted", async () => {

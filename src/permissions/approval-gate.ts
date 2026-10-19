@@ -220,6 +220,11 @@ interface EgressHostApproval {
   readonly port: number;
   /** Offered scopes, narrowest first; the answer must name one of them. */
   readonly scopes: readonly EgressGrantScope[];
+  /**
+   * `local`: this machine or a private network (loopback, RFC 1918, ULA…).
+   * The card warns, and only Allow once / This conversation are offered.
+   */
+  readonly network: "public" | "local";
 }
 
 export interface ApprovalRequest {
@@ -905,6 +910,12 @@ function assertEgressHostRequestShape(req: ApprovalRequestInput): void {
   const payload = req.egressHost;
   if (payload === undefined || payload.scopes.length === 0 || !payload.scopes.every(isEgressGrantScope)) {
     throw new Error("approval: an egress-host request needs egressHost with at least one valid scope");
+  }
+  if (payload.network !== "public" && payload.network !== "local") {
+    throw new Error("approval: an egress-host request names its network (public or local)");
+  }
+  if (payload.network === "local" && payload.scopes.some((scope) => scope === "workspace" || scope === "always")) {
+    throw new Error("approval: a local or private destination is never offered a persistent scope");
   }
   const choices = req.allowedChoices ?? [];
   if (choices.length !== 2 || !choices.includes("allow-once") || !choices.includes("deny-once")) {
@@ -3138,11 +3149,21 @@ export class ApprovalGate {
     // An egress-host allow names how long it lasts. Only the desktop window
     // may answer one (a grant can outlive the conversation), and the scope
     // must be one the card offered: anything else is a deny, never a guess.
+    if (entry.kind === "egress-host" && decision.choice !== "deny-once" && !nativeRenderer) {
+      // A grant can outlive the conversation, so only the desktop window may
+      // allow one. Any other surface's allow is ignored and the request stays
+      // pending for the desktop, as for a host-shell execution permit.
+      this.auditLogger?.log({
+        timestamp: new Date().toISOString(),
+        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:native-desktop-required] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} -> response-rejected`,
+      });
+      return null;
+    }
     if (entry.kind === "egress-host" && decision.choice !== "deny-once") {
       const offered = entry.egressScopes ?? [];
-      const problem = !nativeRenderer
-        ? "egress approval must be answered in the desktop window"
-        : decision.choice !== "allow-once"
+      const problem = decision.choice !== "allow-once"
           ? "egress approval choice must be allow-once with a scope"
           : decision.egressScope === undefined || !offered.includes(decision.egressScope)
             ? "egress approval scope not offered"

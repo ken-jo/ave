@@ -2265,6 +2265,9 @@ class StdioTransport implements McpTransport {
         windowsHide: true,
         // Its own process session, as for every wrapped child
         // (confined-child.ts): the sandbox's cross-session process-info deny.
+        // close() then signals the whole group. This path is POSIX-only: a
+        // Windows server returned to the srt-win path above, where
+        // `detached` would open a console instead.
         detached: true,
         env: bundledWrappedEnv(baseEnv, env, { ...sandboxHome.env }),
         ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
@@ -2375,6 +2378,8 @@ class StdioTransport implements McpTransport {
     // `this.process?.kill("SIGKILL")` as a no-op.
     const proc = this.process;
     const procStdin = this.processStdin;
+    // A wrapped server leads its own process group on POSIX (spawn above).
+    const wrappedGroup = this.wrappedThroughAsrt;
     this.process = null;
     this.processStdin = null;
     if (!proc) return;
@@ -2383,7 +2388,7 @@ class StdioTransport implements McpTransport {
     } catch {
       // A broken stdin must not suppress process termination below.
     }
-    const forceKillTimer = terminateChildProcess(proc, 3_000);
+    const forceKillTimer = terminateChildProcess(proc, 3_000, { processGroup: wrappedGroup });
     const clearForceKill = (): void => clearTimeout(forceKillTimer);
     proc.once("exit", clearForceKill);
     proc.once("close", clearForceKill);

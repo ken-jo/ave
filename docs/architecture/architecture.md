@@ -1393,11 +1393,19 @@ socket path bound into that wrap's bwrap in place of the shared bridge socket.
 A connection that arrives there reaches the ask callback with
 `identity: "listener"`, and the callback (`src/permissions/egress-ask.ts`)
 denies anything that did not, so a token read off another process opens
-nothing. The proxy refuses a destination that is a proxy front end's port on
-this host, so one invocation cannot hop onto another's listener; an ended
-invocation's macOS port stays bound, refusing connections, until the app
-restarts; a wrap with `network.allowLocalBinding` is refused, and Ave never
-sets it. The macOS profile also denies process-info on other processes and
+nothing. On Linux every lane socket and every proxy backend socket lives in
+one private 0700 directory, and each wrap mounts a tmpfs over that directory
+and binds back only its own lane socket, so no wrap can see another's socket
+even when `allowAllUnixSockets` lifts the AF_UNIX block (as registering a
+worker socket directory does). On macOS `allowAllUnixSockets` would expose the
+shared bridge socket, so while it is set shell and extension identity is
+`shared`. The proxy refuses a destination that is a proxy front end's port on
+this host, so one invocation cannot hop onto another's listener; with an
+upstream HTTP(S) proxy configured it first resolves the name locally and
+refuses it when any address is loopback or otherwise not permitted. An ended
+invocation's macOS port stays bound, refusing connections, for 30 minutes, and
+its number is never reused. A wrap with `network.allowLocalBinding` is
+refused, and Ave never sets it. The macOS profile also denies process-info on other processes and
 the `kern.procargs` sysctls, and each non-PTY wrap starts in its own session
 (node-pty already starts one), so a sandboxed process cannot read another
 process's environment.
@@ -1412,8 +1420,16 @@ conversation, This workspace, Always; `src/permissions/egress-grants.ts`
 holds the grants, the persistent ones in
 `<AVE_HOME>/permissions/shell-egress-hosts.json`, revocable in Settings →
 Permissions → Network). A background call nobody can answer, asks turned off
-(`features.shellEgressAsk`), or an unreadable grant file is a refusal. Each
-decision writes an `egress-decision` sandbox audit row. Where the identity is
+(`features.shellEgressAsk`), or an unreadable grant file is a refusal.
+Destinations are classed by `egressDestinationNetwork()`: link-local, cloud
+metadata, unspecified, multicast and broadcast addresses are refused without
+asking; loopback, `localhost`/`*.localhost`, RFC1918, CGNAT and ULA addresses
+are offered at most This conversation, with a local-network warning on the
+card, and persistent grants never apply to them. Conversation grants are
+listed and revocable in Settings too, and revoking a grant closes the
+connections it let through that are still open. Each decision, including a
+refusal the proxy made before asking, writes an `egress-decision` sandbox audit
+row. Where the identity is
 only the proxy username (Windows srt-win, `egressIdentityStrength() ===
 "shared"`), grants stop at This conversation.
 

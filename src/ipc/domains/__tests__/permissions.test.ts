@@ -32,11 +32,11 @@ vi.mock("electron", () => ({
 // reads real OS paths (/etc/ave, %ProgramData%), so the file layer is stubbed
 // while the handler under test — and the predicate it calls — stay real.
 const loadPolicyMock = vi.hoisted(() => vi.fn());
-const egressGrantStoreMock = vi.hoisted(() => ({
-  listPersistent: vi.fn(async (): Promise<unknown[]> => []),
-  revokePersistent: vi.fn(async (_target: unknown) => true),
+const egressRuntimeMock = vi.hoisted(() => ({
+  listEgressGrants: vi.fn(async (): Promise<unknown[]> => []),
+  revokeEgressGrant: vi.fn(async (_target: unknown) => ({ removed: true, closed: 0 })),
 }));
-vi.mock("../../../permissions/egress-runtime.js", () => ({ egressGrantStore: () => egressGrantStoreMock }));
+vi.mock("../../../permissions/egress-runtime.js", () => egressRuntimeMock);
 
 vi.mock("../../../permissions/policy-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../permissions/policy-store.js")>();
@@ -1696,37 +1696,44 @@ describe("shell egress grants in Settings", () => {
   it("lists persistent grants, and reports an unreadable store as an error", async () => {
     await setup();
     const grant = { scope: "always", host: "github.com", port: 443, grantedAt: "2026-10-19T00:00:00.000Z" };
-    egressGrantStoreMock.listPersistent.mockResolvedValueOnce([grant]);
+    egressRuntimeMock.listEgressGrants.mockResolvedValueOnce([grant]);
     expect(await invoke(PERMISSIONS.egressGrantsList)).toEqual({ ok: true, grants: [grant] });
-    egressGrantStoreMock.listPersistent.mockRejectedValueOnce(new Error("grant file is not valid"));
+    egressRuntimeMock.listEgressGrants.mockRejectedValueOnce(new Error("grant file is not valid"));
     expect(await invoke(PERMISSIONS.egressGrantsList)).toEqual({
       ok: false, error: "egress-grant-store-unreadable", message: "grant file is not valid",
     });
   });
 
-  it("revokes exactly the named grant and audits it", async () => {
+  it("revokes exactly the named grant, closes what it let through, and audits it", async () => {
     const { deps } = await setup();
+    egressRuntimeMock.revokeEgressGrant.mockResolvedValueOnce({ removed: true, closed: 2 });
     expect(await invoke(PERMISSIONS.egressGrantRevoke, {
       scope: "workspace", workspaceRoot: "/work/project", host: "pypi.org", port: 443, intent: USER_INTENT,
     })).toEqual({ ok: true });
-    expect(egressGrantStoreMock.revokePersistent).toHaveBeenCalledWith({
+    expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenCalledWith({
       scope: "workspace", workspaceRoot: "/work/project", host: "pypi.org", port: 443,
     });
     expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-      output: "[egress-grant:revoke] scope=workspace host=pypi.org port=443 removed=true",
+      output: "[egress-grant:revoke] scope=workspace host=pypi.org port=443 removed=true closedConnections=2",
     }));
-    egressGrantStoreMock.revokePersistent.mockResolvedValueOnce(false);
+    expect(await invoke(PERMISSIONS.egressGrantRevoke, {
+      scope: "conversation", sessionId: "session-1", host: "pypi.org", port: 443, intent: USER_INTENT,
+    })).toEqual({ ok: true });
+    expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenLastCalledWith({ scope: "conversation", sessionId: "session-1", host: "pypi.org", port: 443 });
+    egressRuntimeMock.revokeEgressGrant.mockResolvedValueOnce({ removed: false, closed: 0 });
     expect(await invoke(PERMISSIONS.egressGrantRevoke, { scope: "always", host: "pypi.org", port: 443, intent: USER_INTENT }))
       .toMatchObject({ ok: false, error: "not-found" });
   });
 
   it("refuses a revoke without user intent or with a malformed grant, before touching the store", async () => {
     await setup();
-    egressGrantStoreMock.revokePersistent.mockClear();
+    egressRuntimeMock.revokeEgressGrant.mockClear();
     expect(await invoke(PERMISSIONS.egressGrantRevoke, { scope: "always", host: "pypi.org", port: 443 }))
       .toMatchObject({ ok: false, error: "user-keyboard-required" });
     for (const [payload, error] of [
       [{ scope: "once", host: "pypi.org", port: 443 }, "invalid-egress-grant-scope"],
+      [{ scope: "conversation", host: "pypi.org", port: 443 }, "invalid-egress-grant-conversation"],
+      [{ scope: "always", sessionId: "s", host: "pypi.org", port: 443 }, "invalid-egress-grant-conversation"],
       [{ scope: "always", host: "", port: 443 }, "invalid-egress-grant-destination"],
       [{ scope: "always", host: "pypi.org", port: "443" }, "invalid-egress-grant-destination"],
       [{ scope: "workspace", host: "pypi.org", port: 443 }, "invalid-egress-grant-workspace"],
@@ -1734,6 +1741,6 @@ describe("shell egress grants in Settings", () => {
     ] as const) {
       expect(await invoke(PERMISSIONS.egressGrantRevoke, { ...payload, intent: USER_INTENT })).toMatchObject({ ok: false, error });
     }
-    expect(egressGrantStoreMock.revokePersistent).not.toHaveBeenCalled();
+    expect(egressRuntimeMock.revokeEgressGrant).not.toHaveBeenCalled();
   });
 });

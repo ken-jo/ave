@@ -233,7 +233,14 @@ export type EgressDecisionBasis =
   /** The person was asked. */
   | "prompt"
   /** Refused before any lookup: unattributed, wrong kind of identity, or a rule. */
-  | "policy";
+  | "policy"
+  /**
+   * Refused by the sandbox proxy itself before the callback was asked (a
+   * deny-listed or malformed host, another invocation's listener, a name
+   * resolving to this host through an upstream proxy). Written by the deny
+   * monitor from ASRT's violation line.
+   */
+  | "sandbox";
 
 /**
  * One row per decision the egress ask callback makes, on the same daily

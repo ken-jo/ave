@@ -26,6 +26,7 @@ const egressRequest = (overrides: Partial<EgressApprovalRequest> = {}): EgressAp
   toolUseId: "toolu_1",
   destination: { host: "github.com", port: 443 },
   scopes: ["once", "conversation", "workspace", "always"],
+  network: "public",
   abortSignal: undefined,
   ...overrides,
 });
@@ -53,7 +54,7 @@ describe("egress-host approval requests", () => {
       toolName: "bash",
       args: { host: "github.com", port: 443 },
       allowedChoices: ["allow-once", "deny-once"],
-      egressHost: { host: "github.com", port: 443, scopes: ["once", "conversation", "workspace", "always"] },
+      egressHost: { host: "github.com", port: 443, scopes: ["once", "conversation", "workspace", "always"], network: "public" },
       sessionId: "session-1",
     });
     gate.resolveFromDesktopRenderer(card.id, {
@@ -70,8 +71,27 @@ describe("egress-host approval requests", () => {
     await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied });
   });
 
-  it("refuses an allow with a scope the card did not offer, without one, or from outside the desktop window", async () => {
-    for (const [scope, fromDesktop] of [["always", true], [undefined, true], ["once", false]] as const) {
+  it("ignores an allow from outside the desktop window and keeps the card pending for the desktop", async () => {
+    const { wc, gate, auditLogger } = makeGate();
+    const answer = createApprovalGateEgressRequester(gate)(egressRequest());
+    const card = await cardSent(wc);
+    let settled = false;
+    void answer.then(() => { settled = true; });
+    expect(gate.resolve(card.id, {
+      requestId: card.id, choice: "allow-once", egressScope: "always", nonce: card.nonce, hmac: card.hmac,
+    })).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    const rows = auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
+    expect(rows.some((row) => row.startsWith(`[approval:native-desktop-required] ${card.id}`))).toBe(true);
+    gate.resolveFromDesktopRenderer(card.id, {
+      requestId: card.id, choice: "allow-once", egressScope: "once", nonce: card.nonce, hmac: card.hmac,
+    });
+    await expect(answer).resolves.toEqual({ allow: true, scope: "once" });
+  });
+
+  it("refuses an allow with a scope the card did not offer, or without one", async () => {
+    for (const scope of ["always", undefined] as const) {
       const { wc, gate, auditLogger } = makeGate();
       const answer = createApprovalGateEgressRequester(gate)(egressRequest({ scopes: ["once", "conversation"] }));
       const card = await cardSent(wc);
@@ -82,8 +102,7 @@ describe("egress-host approval requests", () => {
         nonce: card.nonce,
         hmac: card.hmac,
       };
-      if (fromDesktop) gate.resolveFromDesktopRenderer(card.id, decision);
-      else gate.resolve(card.id, decision);
+      gate.resolveFromDesktopRenderer(card.id, decision);
       await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
       const rows = auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
       expect(rows.some((row) => row.startsWith(`[approval:egress-scope-rejected] ${card.id}`))).toBe(true);
@@ -123,11 +142,16 @@ describe("egress-host approval requests", () => {
       durableApprovalRecordAllowed: false,
       forceExplicit: true,
       isReadOnly: false,
-      egressHost: { host: "github.com", port: 443, scopes: ["once"] },
+      egressHost: { host: "github.com", port: 443, scopes: ["once"], network: "public" },
     };
     await expect(gate.requestAndWait({ ...base, egressHost: undefined })).rejects.toThrow(/needs egressHost/u);
-    await expect(gate.requestAndWait({ ...base, egressHost: { host: "github.com", port: 443, scopes: [] } }))
+    await expect(gate.requestAndWait({ ...base, egressHost: { host: "github.com", port: 443, scopes: [], network: "public" } }))
       .rejects.toThrow(/needs egressHost/u);
+    await expect(gate.requestAndWait({ ...base, egressHost: { host: "github.com", port: 443, scopes: ["once"], network: "lan" as never } }))
+      .rejects.toThrow(/names its network/u);
+    await expect(gate.requestAndWait({
+      ...base, egressHost: { host: "127.0.0.1", port: 8080, scopes: ["once", "workspace"], network: "local" },
+    })).rejects.toThrow(/never offered a persistent scope/u);
     await expect(gate.requestAndWait({ ...base, allowedChoices: ["allow-once", "allow-always", "deny-once"] }))
       .rejects.toThrow(/exactly allow-once and deny-once/u);
     await expect(gate.requestAndWait({ ...base, durableApprovalRecordAllowed: true }))

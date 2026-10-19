@@ -905,14 +905,15 @@ export function buildInternalApiSurface() {
     sandboxWindowsStatus: async () => ipcRenderer.invoke(PERMISSIONS.sandboxWindowsStatus),
     /** Read-only: the ASRT proxy denies of the last 24 h, newest first. */
     egressDenialsRecent: async () => ipcRenderer.invoke(PERMISSIONS.egressDenialsRecent),
-    /** Read-only: the shell egress grants for a workspace or for always. */
+    /** Read-only: the shell egress grants for a conversation, a workspace or always. */
     egressGrantsList: async () => ipcRenderer.invoke(PERMISSIONS.egressGrantsList),
     /** MUTATING: revoke one shell egress grant (user-keyboard intent attached). */
     egressGrantRevoke: async (grant: {
-      scope: "workspace" | "always";
+      scope: "conversation" | "workspace" | "always";
       host: string;
       port: number;
       workspaceRoot?: string;
+      sessionId?: string;
     }) => ipcRenderer.invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: ipcUserKeyboardIntent() }),
     /**
      * MUTATING: trigger the one-time Windows srt-win install (one self-elevating

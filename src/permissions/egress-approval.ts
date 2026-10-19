@@ -40,7 +40,7 @@ export function createApprovalGateEgressRequester(
       durableApprovalRecordAllowed: false,
       forceExplicit: true,
       isReadOnly: false,
-      egressHost: { host, port, scopes: [...request.scopes] },
+      egressHost: { host, port, scopes: [...request.scopes], network: request.network },
       ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
       ...(request.abortSignal === undefined ? {} : { abortSignal: request.abortSignal }),
     });

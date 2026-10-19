@@ -26,8 +26,20 @@ the installed package.
    forgeable proxy username (`SandboxAskContext.identity`), refuses requests
    for any proxy listener's own port on loopback or this host's own
    addresses (so one invocation cannot hop onto another's listener through
-   the proxy), keeps an ended listener's macOS port bound until reset(), and
-   bounds the count. The macOS profile also
+   the proxy), and bounds the count. An ended listener's macOS port stays
+   bound for a quarantine period (30 minutes) and is then released; its number
+   is never handed out again and is still refused as a hop target. On Linux
+   every lane socket and every mux HTTP backend socket lives in one private
+   0700 directory, and every Linux wrap mounts a tmpfs over that directory and
+   binds back only its own lane socket, so no wrap can reach another
+   invocation's socket even when allowAllUnixSockets lifts the AF_UNIX block.
+   With an upstream HTTP(S) proxy configured, a destination name is resolved
+   locally first and refused when any address it resolves to is loopback or
+   otherwise not permitted, since the upstream would resolve it beyond the
+   resolved-address guard. `closeInvocationConnections(commandIds, host,
+   port)` closes the open client connections those invocations made to a
+   destination (the embedder calls it when it revokes a grant). The macOS
+   profile also
    denies process-info on other processes and the kern.procargs sysctls
    (defense in depth for #160, which the embedder pairs with a new session per
    wrap).
@@ -45,6 +57,55 @@ index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..fe6a09e229bba2148903856733a5f9f9
  export type { FilterRequestCallback, RequestDecision, RequestInfo, MutateForwardedHeaders, } from './sandbox/request-filter.js';
  export type { SandboxViolationEvent } from './sandbox/macos-sandbox-utils.js';
  export { type SandboxDependencyCheck, LinuxSandboxProfileError, type LinuxSandboxProfileErrorCode, } from './sandbox/linux-sandbox-utils.js';
+diff --git a/dist/sandbox/linux-sandbox-utils.d.ts b/dist/sandbox/linux-sandbox-utils.d.ts
+index 53c4a26438ebb3658b6ec0c64a28580f6010f407..3a43a5fd751742ffb876783aeba73f18f0d4ed69 100644
+--- a/dist/sandbox/linux-sandbox-utils.d.ts
++++ b/dist/sandbox/linux-sandbox-utils.d.ts
+@@ -16,6 +16,12 @@ export interface LinuxSandboxParams {
+      *  `command`. See MacOSSandboxParams.commandId. */
+     commandId?: string;
+     needsNetworkRestriction: boolean;
++    /**
++     * Ave patch (invocation listeners): the proxy's private socket directory.
++     * The wrap mounts an empty tmpfs over it and binds back only
++     * `httpSocketPath` when that lies inside it.
++     */
++    privateSocketDir?: string;
+     httpSocketPath?: string;
+     socksSocketPath?: string;
+     httpProxyPort?: number;
+diff --git a/dist/sandbox/linux-sandbox-utils.js b/dist/sandbox/linux-sandbox-utils.js
+index b3acba671fe6356ad5d9e187ca13753f345f931b..e5376da65ef4dbb9f26fa3e10d509995116c3f8b 100644
+--- a/dist/sandbox/linux-sandbox-utils.js
++++ b/dist/sandbox/linux-sandbox-utils.js
+@@ -2851,7 +2851,7 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
+  * inheritable sets.
+  */
+ export async function wrapCommandWithSandboxLinux(params) {
+-    const { command, commandId, needsNetworkRestriction, httpSocketPath, socksSocketPath, httpProxyPort, socksProxyPort, proxyAuthToken, caCertPath, javaAgentJarPath, unsetEnvVars, setEnvVars, maskedFileBinds, maskedFileStoreDir, enableWeakerNestedSandbox, allowNestedUserNamespaces, allowAllUnixSockets, binShell, ripgrepConfig = { command: 'rg' }, mandatoryDenySearchDepth = DEFAULT_MANDATORY_DENY_SEARCH_DEPTH, allowGitConfig = false, gitSafeDirectories, seccompConfig, bwrapPath, socatPath, observeSocketPath, abortSignal, } = params;
++    const { command, commandId, needsNetworkRestriction, privateSocketDir, httpSocketPath, socksSocketPath, httpProxyPort, socksProxyPort, proxyAuthToken, caCertPath, javaAgentJarPath, unsetEnvVars, setEnvVars, maskedFileBinds, maskedFileStoreDir, enableWeakerNestedSandbox, allowNestedUserNamespaces, allowAllUnixSockets, binShell, ripgrepConfig = { command: 'rg' }, mandatoryDenySearchDepth = DEFAULT_MANDATORY_DENY_SEARCH_DEPTH, allowGitConfig = false, gitSafeDirectories, seccompConfig, bwrapPath, socatPath, observeSocketPath, abortSignal, } = params;
+     // bubblewrap takes no patterns, so every path here is a name. The literal
+     // lists are folded into the lists they belong to, once, so that nothing
+     // below can read a list and miss them; a pattern in `allowOnly` that is no
+@@ -3029,6 +3029,18 @@ export async function wrapCommandWithSandboxLinux(params) {
+         };
+         // Always bind /dev
+         bwrapArgs.push('--dev', '/dev');
++        // Ave patch (invocation listeners): after every filesystem bind, so no
++        // allowWrite/allowRead entry can re-expose it. The proxy's private
++        // socket directory becomes an empty tmpfs, and only this wrap's own
++        // listener socket (when it has one) is bound back: another
++        // invocation's listener or a proxy backend cannot be opened from here,
++        // even with AF_UNIX sockets allowed.
++        if (privateSocketDir) {
++            bwrapArgs.push('--tmpfs', privateSocketDir);
++            if (needsNetworkRestriction && httpSocketPath?.startsWith(`${privateSocketDir}/`)) {
++                bwrapArgs.push('--bind', httpSocketPath, httpSocketPath);
++            }
++        }
+         // ========== PID NAMESPACE ISOLATION ==========
+         // IMPORTANT: These must come AFTER filesystem binds for nested bwrap to work
+         // By default, always unshare PID namespace and mount fresh /proc.
 diff --git a/dist/sandbox/macos-sandbox-utils.d.ts b/dist/sandbox/macos-sandbox-utils.d.ts
 index 8af5e03041b27d060b0027278fb0567745b06f2f..cb475685df0ae8d5ae7d00d9009ba2f1f1679ad6 100644
 --- a/dist/sandbox/macos-sandbox-utils.d.ts
@@ -146,8 +207,48 @@ index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..2743f0463df672bfbc02d8f2035ab31e
          allowGitConfig,
          enableWeakerNetworkIsolation,
          allowAppleEvents,
+diff --git a/dist/sandbox/mux-proxy.d.ts b/dist/sandbox/mux-proxy.d.ts
+index 7034511ff3a57aa653950dc8f267bf6d37c82d93..6b1678f3d12d98ced508fa0999e347bd078a9245 100644
+--- a/dist/sandbox/mux-proxy.d.ts
++++ b/dist/sandbox/mux-proxy.d.ts
+@@ -24,6 +24,8 @@ export interface MuxProxyOptions {
+      * platforms (unix socket needs no port).
+      */
+     httpBackendPortRange?: readonly [number, number];
++    /** Ave patch (invocation listeners): where the HTTP backend's unix socket lives (default: the OS temp dir). */
++    backendSocketDir?: string;
+ }
+ export interface MuxProxyServer {
+     /** The front-end TCP listener. Call `.listen()` on this. */
+diff --git a/dist/sandbox/mux-proxy.js b/dist/sandbox/mux-proxy.js
+index 18e2472cb5b5f40b74c31ed9181aaa51b7f3b73a..43c61511641d87c89a005118a2cd388f9a509317 100644
+--- a/dist/sandbox/mux-proxy.js
++++ b/dist/sandbox/mux-proxy.js
+@@ -19,9 +19,9 @@ import { closeAfterFlush } from './tls-terminate-proxy.js';
+ const SOCKS_FIRST_BYTES = new Set([0x04, 0x05]);
+ const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 10000;
+ let backendSeq = 0;
+-function unixSocketPath() {
++function unixSocketPath(dir = tmpdir()) {
+     // Keep it short — macOS sun_path is 104 bytes.
+-    return join(tmpdir(), `srt-mux-${process.pid}-${(backendSeq++).toString(36)}.sock`);
++    return join(dir, `srt-mux-${process.pid}-${(backendSeq++).toString(36)}.sock`);
+ }
+ /**
+  * Single-port proxy front-end that dispatches each connection to either the
+@@ -123,7 +123,9 @@ export function createMuxProxyServer(opts) {
+         },
+         async listenHttpBackend() {
+             if (!isWindows) {
+-                const path = unixSocketPath();
++                // Ave patch (invocation listeners): `backendSocketDir` keeps the
++                // backend in the private socket directory a Linux wrap hides.
++                const path = unixSocketPath(opts.backendSocketDir);
+                 // A prior process with the same PID may have crashed without
+                 // unlinking; clear any stale file so listen() doesn't EADDRINUSE.
+                 await unlink(path).catch(() => { });
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..0870b784760fbd8aaef1481e852f90495b515733 100644
+index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..ab81084d45004b2af3419d8aa86fa6fe9a5ca42e 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
 @@ -45,6 +45,13 @@ export type WrapWithSandboxOptions = {
@@ -164,7 +265,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..0870b784760fbd8aaef1481e852f9049
  };
  /**
   * Interface for the sandbox manager API
-@@ -125,6 +132,32 @@ export interface ISandboxManager {
+@@ -125,6 +132,38 @@ export interface ISandboxManager {
       * none. `reset()` removes them all.
       */
      unregisterCommandNetworkLists(commandId: string): void;
@@ -194,11 +295,17 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..0870b784760fbd8aaef1481e852f9049
 +     * unknown id.
 +     */
 +    closeInvocationListener(commandId: string): void;
++    /**
++     * Ave patch (invocation listeners). Close every open connection the proxy
++     * allowed to `host:port` for these commandIds (CONNECT and SOCKS tunnels,
++     * keep-alive request sockets). Returns how many were closed.
++     */
++    closeInvocationConnections(commandIds: readonly string[], host: string, port: number): number;
      /**
       * True when the network filter understands an ask callback's
       * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019ee9b1601 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..3e53e653094fb7e33f1b58c68ac1220c55f77b33 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -16,7 +16,7 @@ import * as fs from 'fs';
@@ -210,7 +317,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
  import { startLinuxSandboxViolationMonitor, } from './linux-violation-monitor.js';
  import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
  import { getDefaultWritePaths, containsGlobChars, globBaseDirIsRoot, globPatternBaseDir, normalizePathForSandbox, removeTrailingGlobSuffix, walkGlobPatternSteps, workingDirectory, finish, finishInTurns, attributionKeyFor, decodeSandboxedCommand, encodeSandboxedCommand, } from './sandbox-utils.js';
-@@ -25,8 +25,11 @@ import { SandboxViolationStore, sanitizeDenialReason, sanitizeUnregisteredComman
+@@ -25,8 +25,12 @@ import { SandboxViolationStore, sanitizeDenialReason, sanitizeUnregisteredComman
  import { canonicalizeHost, isValidHost, redactUrl, resolveParentProxy, } from './parent-proxy.js';
  import { ALLOWED_DOMAIN_ENTRY_MESSAGE, isValidAllowedDomainEntry, matchesDomainPattern, matchesDomainPatternWithPort, stripDomainPatternPort, } from './domain-pattern.js';
  import { createResolvedAddressGuard, isResolvedAddressDenied, } from './resolved-address-guard.js';
@@ -219,12 +326,13 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
 +import { EOL, tmpdir } from 'node:os';
 +import { dirname, join as joinPath } from 'node:path';
 +import { BlockList, isIP } from 'node:net';
++import { promises as dnsPromises } from 'node:dns';
 +import { addRange, embeddedIPv4, isLoopbackAddress, isLoopbackName, LOOPBACK_RANGES } from './address.js';
 +import { localInterfaceAddresses } from './resolved-address-guard.js';
  import { getJavaProxyAgentJarPathAsync } from './java-proxy-agent.js';
  import { getApplySeccompBinaryPathAsync } from './generate-seccomp-filter.js';
  // ============================================================================
-@@ -84,6 +87,28 @@ let windowsWfpVerified = false;
+@@ -84,6 +88,53 @@ let windowsWfpVerified = false;
  // grants/stamps were applied with even if `config` mutated between.
  let srtWinSpawn;
  const sandboxViolationStore = new SandboxViolationStore();
@@ -250,10 +358,35 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
 + * gets a clear error rather than descriptor exhaustion somewhere else.
 + */
 +const MAX_INVOCATION_LISTENERS = 4096;
++/**
++ * How long an ended macOS listener keeps its port bound before it is closed:
++ * longer than any process the ended invocation left behind is expected to
++ * live. Its port number is kept in retiredListenerPorts after that, so no
++ * later listener is ever given it.
++ */
++const INVOCATION_LISTENER_QUARANTINE_MS = 30 * 60 * 1000;
++/** macOS ports of listeners that have ended: never handed to another listener. */
++const retiredListenerPorts = new Set();
++/**
++ * Ave patch (invocation listeners). The private directory (mode 0700) that
++ * holds every proxy socket this session serves on macOS and Linux: Linux
++ * listener sockets and the HTTP backends behind every front end. A Linux wrap
++ * mounts an empty tmpfs over it and binds only its own listener socket back,
++ * so no sandboxed process can open another invocation's socket even when
++ * AF_UNIX sockets are allowed.
++ */
++let privateSocketDir;
++function ensurePrivateSocketDir() {
++    if (privateSocketDir === undefined) {
++        privateSocketDir = fs.mkdtempSync(joinPath(tmpdir(), 'srt-sock-'));
++        fs.chmodSync(privateSocketDir, 0o700);
++    }
++    return privateSocketDir;
++}
  // Per-session sentinel↔real-value map for masked credentials. Lives only in
  // process memory; never written to disk or logged. Cleared on reset().
  const sentinelRegistry = new SentinelRegistry();
-@@ -300,7 +325,7 @@ function deniedDomainReason(entry) {
+@@ -300,7 +351,7 @@ function deniedDomainReason(entry) {
      const own = Object.prototype.hasOwnProperty.call(reasons, entry);
      return (own ? reasons[entry] : undefined) ?? 'host is on the deny list';
  }
@@ -262,7 +395,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
      const denied = (reason) => {
          recordOutboundDeny(host, port, reason, encodedCommand);
          explain?.(reason);
-@@ -353,8 +378,11 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+@@ -353,8 +404,11 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
      // Coming after both configured lists, it lifts the default deny for that
      // one command and never a configured deniedDomains entry. The username is
      // presented by the sandboxed client: see registerCommandNetworkLists.
@@ -276,7 +409,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
          : undefined;
      for (const allowedDomain of perCommand?.allowedDomains ?? []) {
          if (matchesDomainPatternWithPort(canonicalHost, port, allowedDomain)) {
-@@ -369,7 +397,14 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+@@ -369,7 +423,14 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
      logForDebugging(`No matching rule, asking user: ${host}:${port}`);
      try {
          // Held as unknown: a JavaScript caller is not bound by the declared type.
@@ -292,7 +425,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
          // Only `true` allows: an object is how a callback denies with a reason,
          // and a truthiness test here would read every such denial as an allow.
          if (answer === true) {
-@@ -497,11 +532,31 @@ function shouldTerminateTLSForHost(host) {
+@@ -497,11 +558,43 @@ function shouldTerminateTLSForHost(host) {
      }
      return true;
  }
@@ -311,9 +444,9 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
 +    const attribution = (encodedCommand) => lane ? lane.encodedKey : encodedCommand;
 +    const filter = lane
 +        ? invocationListenerFilter(lane, sandboxAskCallback)
-+        : (port, host, encodedCommand, explain) => {
++        : async (port, host, encodedCommand, explain) => {
 +            // A proxy front end is never a destination, through any front end.
-+            const local = localDestinationReason(host, port);
++            const local = localDestinationReason(host, port) ?? await upstreamNameRefusal(host, port);
 +            if (local !== undefined) {
 +                recordOutboundDeny(host, port, local, encodedCommand);
 +                explain?.(local);
@@ -322,12 +455,24 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
 +            return filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain, 'username');
 +        };
 +    const lookupFor = (port, encodedCommand) => directLookup(port, attribution(encodedCommand));
++    // Ave patch (invocation listeners): every allowed client socket is kept
++    // under (key, host, port) so the embedder can close it when the grant
++    // that allowed it is revoked.
++    const trackedFilter = async (port, host, encodedCommand, explain, socket) => {
++        const allowed = await filter(port, host, encodedCommand, explain);
++        if (allowed && socket) {
++            const encoded = attribution(encodedCommand);
++            if (encoded)
++                trackConnection(decodeSandboxedCommand(encoded), host, port, socket);
++        }
++        return allowed;
++    };
 +    const http = createHttpProxyServer({
-+        filter: (port, host, _socket, encodedCommand, explain) => filter(port, host, encodedCommand, explain),
++        filter: (port, host, socket, encodedCommand, explain) => trackedFilter(port, host, encodedCommand, explain, socket),
          getMitmSocketPath,
          mitmCA,
          shouldTerminateTLS: shouldTerminateTLSForHost,
-@@ -521,7 +576,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -521,7 +614,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          onFilterRequestDenied: ({ method, url, reason, encodedCommand }) => {
              // A refused CONNECT comes with its authority (`host:port`), not a URL.
              const target = method === 'CONNECT' ? url : redactUrlForViolation(url);
@@ -336,7 +481,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
          },
          // TLS-terminated path always gets the injector; the plain-HTTP path
          // only when explicitly opted in. Without the opt-in, a sentinel sent
-@@ -538,19 +593,19 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -538,19 +631,19 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          // injection: the real signature must not travel over plaintext.
          planSigv4: buildSigv4Planner(),
          parentProxy,
@@ -347,7 +492,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
 -    socksProxyServer = createSocksProxyServer({
 -        filter: (port, host, encodedCommand) => filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand),
 +    const socks = createSocksProxyServer({
-+        filter: (port, host, encodedCommand) => filter(port, host, encodedCommand),
++        filter: (port, host, encodedCommand, socket) => trackedFilter(port, host, encodedCommand, undefined, socket),
          parentProxy,
 -        lookupFor: directLookup,
 +        lookupFor,
@@ -361,7 +506,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
          },
          probeUnauthenticated: async (port, host) => {
              // Explicit deny rules only: an unauthenticated peer must never reach
-@@ -562,13 +617,20 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -562,17 +655,25 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
              for (const entry of config.network.deniedDomains) {
                  if (matchesDomainPatternWithPort(canonical, port, entry)) {
                      const reason = deniedDomainReason(entry);
@@ -383,7 +528,12 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
      muxProxyServer = createMuxProxyServer({
          httpServer: httpProxyServer,
          handleSocksConnection: s => socksProxyServer.handleConnection(s),
-@@ -588,6 +650,255 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+         httpBackendPortRange: portRange,
++        backendSocketDir: getPlatform() === 'windows' ? undefined : ensurePrivateSocketDir(),
+     });
+     const mux = muxProxyServer;
+     // Backend first so the front-end never accepts a connection that would
+@@ -588,6 +689,344 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -415,6 +565,8 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
 +        if (lane.port !== undefined)
 +            ports.add(lane.port);
 +    }
++    for (const port of retiredListenerPorts)
++        ports.add(port);
 +    return ports;
 +}
 +function localDestinationReason(host, port) {
@@ -439,6 +591,72 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
 +    }
 +    return undefined;
 +}
++/** Ave patch (invocation listeners): open allowed client sockets by `key\nhost\nport`. */
++const liveConnections = new Map();
++function connectionKey(key, host, port) {
++    return `${key}\n${canonicalizeHost(host) ?? host}\n${port}`;
++}
++function trackConnection(key, host, port, socket) {
++    const id = connectionKey(key, host, port);
++    let set = liveConnections.get(id);
++    if (!set)
++        liveConnections.set(id, (set = new Set()));
++    set.add(socket);
++    socket.once('close', () => {
++        set.delete(socket);
++        if (set.size === 0 && liveConnections.get(id) === set)
++            liveConnections.delete(id);
++    });
++}
++/**
++ * Ave patch (invocation listeners). Close every open connection the proxy
++ * allowed to `host:port` for the given commandIds (tunnels and keep-alive
++ * request sockets alike), e.g. when the grant that allowed them is revoked.
++ * Resolves to how many were closed.
++ */
++function closeInvocationConnections(commandIds, host, port) {
++    let closed = 0;
++    for (const commandId of commandIds) {
++        if (typeof commandId !== 'string')
++            continue;
++        const id = connectionKey(decodeSandboxedCommand(encodeSandboxedCommand(commandId)), host, port);
++        for (const socket of liveConnections.get(id) ?? []) {
++            socket.destroy();
++            closed++;
++        }
++        liveConnections.delete(id);
++    }
++    return closed;
++}
++/**
++ * Ave patch (invocation listeners). With a parent proxy the upstream resolves
++ * a name, so the resolved-address guard that refuses loopback, link-local,
++ * metadata and this host's own addresses for direct connections never sees
++ * it: `localtest.me:<a listener's port>` would reach another invocation's
++ * listener through the upstream. So a name is resolved here first and
++ * refused when any address it resolves to is one the guard refuses. A name
++ * that does not resolve here is left to the upstream (split-horizon DNS);
++ * nothing on this host is behind it.
++ */
++async function upstreamNameRefusal(host, port) {
++    if (!parentProxy)
++        return undefined;
++    const canonical = canonicalizeHost(host) ?? host;
++    if (isIP(canonical))
++        return undefined;
++    let addresses;
++    try {
++        addresses = await dnsPromises.lookup(canonical, { all: true });
++    }
++    catch {
++        return undefined;
++    }
++    for (const { address } of addresses) {
++        if (!resolvedAddressGuard.permits(canonical, address, port) || isLoopbackAddress(address))
++            return 'destination resolves to this host or a reserved address';
++    }
++    return undefined;
++}
 +/**
 + * Ave patch (invocation listeners). The filter for connections that arrived
 + * on one invocation's listener. The listener is the identity: the client's
@@ -457,7 +675,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
 +            return denied('invocation ended');
 +        if (encodedCommand !== lane.encodedKey)
 +            return denied('proxy username does not match the listener');
-+        const local = localDestinationReason(host, port);
++        const local = localDestinationReason(host, port) ?? await upstreamNameRefusal(host, port);
 +        if (local !== undefined)
 +            return denied(local);
 +        return filterNetworkRequest(port, host, sandboxAskCallback, lane.encodedKey, explain, 'listener');
@@ -525,17 +743,27 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
 +        const mux = createMuxProxyServer({
 +            httpServer: http,
 +            handleSocksConnection: s => socks.handleConnection(s),
++            backendSocketDir: ensurePrivateSocketDir(),
 +        });
 +        Object.assign(lane, { http, socks, mux });
 +        await mux.listenHttpBackend();
 +        if (platform === 'macos') {
-+            await listenOn(mux.server, 0, '127.0.0.1');
-+            lane.port = mux.getPort();
-+            if (lane.port === undefined)
-+                throw new Error('openInvocationListener: listener has no port');
++            // A port an ended listener held is never given to another one: a
++            // process the ended invocation left behind may still dial it.
++            for (let attempt = 0;; attempt++) {
++                await listenOn(mux.server, 0, '127.0.0.1');
++                lane.port = mux.getPort();
++                if (lane.port === undefined)
++                    throw new Error('openInvocationListener: listener has no port');
++                if (!retiredListenerPorts.has(lane.port))
++                    break;
++                await new Promise(resolve => mux.server.close(() => resolve()));
++                if (attempt >= 32)
++                    throw new Error('openInvocationListener: no unretired loopback port');
++            }
 +        }
 +        else {
-+            const socketPath = joinPath(tmpdir(), `srt-lane-${process.pid}-${randomBytes(12).toString('hex')}.sock`);
++            const socketPath = joinPath(ensurePrivateSocketDir(), `${randomBytes(12).toString('hex')}.sock`);
 +            await listenOn(mux.server, socketPath);
 +            lane.socketPath = socketPath;
 +        }
@@ -604,8 +832,19 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
 +                closing.push(lane.socks.close().catch(() => { }));
 +            await Promise.all(closing);
 +            // The backend's socket file goes with its server; only the front
-+            // end's port is kept.
++            // end's port is kept, for the quarantine.
 +            lane.mux.removeBackendSocketSync();
++            const release = setTimeout(() => {
++                if (invocationListeners.get(key) !== lane)
++                    return;
++                invocationListeners.delete(key);
++                retiredInvocationKeys.add(key);
++                if (lane.port !== undefined)
++                    retiredListenerPorts.add(lane.port);
++                lane.mux.server.close();
++            }, INVOCATION_LISTENER_QUARANTINE_MS);
++            release.unref?.();
++            lane.quarantine = release;
 +            return;
 +        }
 +        invocationListeners.delete(key);
@@ -639,7 +878,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -1515,6 +1826,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +1954,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -649,7 +888,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +2024,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +2152,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -671,7 +910,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1734,23 +2051,28 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1734,23 +2179,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -692,6 +931,9 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
                  command,
                  commandId,
                  needsNetworkRestriction,
++                // Ave patch (invocation listeners): hidden in every wrap; the
++                // wrap's own listener socket, if any, is bound back into it.
++                privateSocketDir,
                  // Only pass socket paths if proxy is running (when there are domains to filter)
                  httpSocketPath: needsNetworkProxy
 -                    ? getLinuxHttpSocketPath()
@@ -703,7 +945,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1786,6 +2108,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +2239,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -711,7 +953,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,6 +2144,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,6 +2275,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -720,7 +962,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
      const platform = getPlatform();
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
-@@ -2229,6 +2554,13 @@ async function reset() {
+@@ -2229,6 +2685,22 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -729,17 +971,27 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f818868816a0286fa2a3fd1ce8730019
 +    const lanes = [...invocationListeners.values()];
 +    invocationListeners.clear();
 +    retiredInvocationKeys.clear();
++    retiredListenerPorts.clear();
++    liveConnections.clear();
++    for (const lane of lanes)
++        if (lane.quarantine)
++            clearTimeout(lane.quarantine);
 +    invocationAskCallback = undefined;
 +    await Promise.all(lanes.map(lane => lane.ready?.catch(() => { }).then(() => disposeInvocationListener(lane))));
++    if (privateSocketDir !== undefined) {
++        fs.rmSync(privateSocketDir, { recursive: true, force: true });
++        privateSocketDir = undefined;
++    }
      maskedFileStore.dispose();
  }
  function getSandboxViolationStore() {
-@@ -2336,6 +2668,8 @@ export const SandboxManager = {
+@@ -2336,6 +2808,9 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
 +    openInvocationListener,
 +    closeInvocationListener,
++    closeInvocationConnections,
      askCallbackDenyReason: true,
      cleanupAfterCommand,
      reset,
@@ -789,3 +1041,31 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..2f1969abbcaf5d941b9633241f2c2ca3
 +};
  //# sourceMappingURL=sandbox-schemas.d.ts.map
 \ No newline at end of file
+diff --git a/dist/sandbox/socks-proxy.d.ts b/dist/sandbox/socks-proxy.d.ts
+index a4ba5d4f755ff3c47e3c0b005e97eb1e87ea0c2a..4417f6f0a82e1806576ed9b1706b7db070fccf8e 100644
+--- a/dist/sandbox/socks-proxy.d.ts
++++ b/dist/sandbox/socks-proxy.d.ts
+@@ -6,7 +6,7 @@ export interface SocksProxyServerOptions {
+      * parsed from the SOCKS5 username (`srt.<encodedCommand>`), so the
+      * manager can attribute a denial to the invocation that made it.
+      */
+-    filter(port: number, host: string, encodedCommand?: string): Promise<boolean> | boolean;
++    filter(port: number, host: string, encodedCommand?: string, socket?: import("node:net").Socket): Promise<boolean> | boolean;
+     /**
+      * Optional upstream HTTP proxy. When present, SOCKS CONNECT requests are
+      * tunnelled through the parent's HTTP CONNECT instead of dialing directly.
+diff --git a/dist/sandbox/socks-proxy.js b/dist/sandbox/socks-proxy.js
+index 760a10b1d1c475a7636ff78092d3c9daaafe7335..6d4a6a34463a6b87a56d638a30733318b3af6209 100644
+--- a/dist/sandbox/socks-proxy.js
++++ b/dist/sandbox/socks-proxy.js
+@@ -44,7 +44,9 @@ export function createSocksProxyServer(options) {
+                 return false;
+             }
+             logForDebugging(`Connection request to ${hostname}:${port}`);
+-            const allowed = await options.filter(port, hostname, encodedCommandFromProxyUser(conn.username));
++            // Ave patch (invocation listeners): the client socket, so an allowed
++            // tunnel can be closed later (closeInvocationConnections).
++            const allowed = await options.filter(port, hostname, encodedCommandFromProxyUser(conn.username), conn.socket);
+             if (!allowed) {
+                 logForDebugging(`Connection blocked to ${hostname}:${port}`, {
+                     level: 'error',

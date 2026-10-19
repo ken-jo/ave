@@ -8,7 +8,8 @@ import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { emitSandboxAudit } from "../audit/sandbox-audit-sink.js";
 import type { ApprovalGate } from "./approval-gate.js";
-import { normalizeUnionForAsrt } from "./asrt-sandbox.js";
+import { closeEgressConnections, normalizeUnionForAsrt } from "./asrt-sandbox.js";
+import type { ListedEgressGrant, RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
 import { createApprovalGateEgressRequester } from "./egress-approval.js";
 import { createEgressAskCallback } from "./egress-ask.js";
 import { EgressGrantStore } from "./egress-grants.js";
@@ -27,13 +28,28 @@ let grantStore: EgressGrantStore | undefined;
  * The process's shell egress grant store (Settings lists and revokes through
  * it). Created on first use; its "Allow once" hosts go with their invocation.
  */
-export function egressGrantStore(): EgressGrantStore {
+function egressGrantStore(): EgressGrantStore {
   if (grantStore === undefined) {
     const store = new EgressGrantStore();
     onEgressInvocationReleased((token) => store.releaseToken(token));
     grantStore = store;
   }
   return grantStore;
+}
+
+/** Every grant Settings lists: this run's conversation grants, then the persistent ones. */
+export async function listEgressGrants(): Promise<readonly ListedEgressGrant[]> {
+  const store = egressGrantStore();
+  return [...store.listConversation(), ...(await store.listPersistent())];
+}
+
+/**
+ * Revoke one grant and close the connections it had let through that are
+ * still open. Resolves whether it existed and how many connections closed.
+ */
+export async function revokeEgressGrant(target: RevocableEgressGrant): Promise<{ readonly removed: boolean; readonly closed: number }> {
+  const { removed, tokens } = await egressGrantStore().revoke(target);
+  return { removed, closed: closeEgressConnections(tokens, target.host, target.port) };
 }
 
 /**

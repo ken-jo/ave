@@ -25,6 +25,15 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { canonicalizeHost } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
+import {
+  addRange,
+  addressInSet,
+  embeddedIPv4,
+  isLoopbackAddress,
+  isLoopbackName,
+  LOOPBACK_RANGES,
+} from "@anthropic-ai/sandbox-runtime/dist/sandbox/address.js";
+import { BlockList, isIP } from "node:net";
 import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
@@ -34,7 +43,9 @@ import {
   EGRESS_GRANT_SCOPES,
   isEgressGrantScope,
   type EgressGrantScope,
+  type ConversationEgressGrant,
   type PersistentEgressGrant,
+  type RevocableEgressGrant,
 } from "../shared/egress-grant-scopes.js";
 
 /**
@@ -64,6 +75,69 @@ export function canonicalEgressHost(host: string): string | undefined {
   if (typeof host !== "string" || host.length === 0 || host.length > 253) return undefined;
   const canonical = canonicalizeHost(host)?.toLowerCase();
   return canonical === undefined || canonical.length === 0 ? undefined : canonical;
+}
+
+/**
+ * What kind of network a canonical destination host is on, judged from the
+ * host alone (an IP literal or a loopback name; ASRT's resolved-address
+ * guard judges the names a direct connection resolves):
+ *
+ *   - `reserved`: never reachable through the ask, whatever anyone answers —
+ *     link-local (where most instance-metadata endpoints live), the cloud
+ *     metadata addresses outside it, the unspecified address, multicast and
+ *     broadcast.
+ *   - `local`: this machine or a private network — loopback and
+ *     `localhost`/`*.localhost`, RFC 1918, CGNAT (100.64/10), IPv6 ULA. An
+ *     intranet host is a legitimate destination, so it may be asked about,
+ *     but a grant for it never outlives the conversation and the card says
+ *     what it is.
+ *   - `public`: everything else.
+ */
+export type EgressDestinationNetwork = "public" | "local" | "reserved";
+
+const RESERVED_RANGES = [
+  "169.254.0.0/16", "fe80::/10", // link-local, incl. most instance metadata
+  "0.0.0.0/8", "::/128", // unspecified: connects to this host on common stacks
+  "224.0.0.0/4", "ff00::/8", "255.255.255.255/32",
+  // Cloud metadata endpoints outside link-local (as ASRT's resolved-address guard lists them).
+  "100.100.100.200/32", "168.63.129.16/32", "192.0.0.192/32", "fd00:ec2::/32", "fd20:ce::254/128",
+  "fd00:c1::a9fe:a9fe/128", "fd00:42::42/128", "fd00:a9fe:a9fe::1/128", "fd00:100::100:200/128",
+];
+const LOCAL_RANGES = [
+  ...LOOPBACK_RANGES,
+  "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7",
+];
+
+function rangeList(ranges: readonly string[]): BlockList {
+  const list = new BlockList();
+  for (const range of ranges) {
+    if (!addRange(list, range)) throw new Error(`egress destination ranges: invalid range ${range}`);
+  }
+  return list;
+}
+const RESERVED = rangeList(RESERVED_RANGES);
+const LOCAL = rangeList(LOCAL_RANGES);
+
+export function egressDestinationNetwork(canonicalHost: string): EgressDestinationNetwork {
+  if (isLoopbackName(canonicalHost)) return "local";
+  if (isIP(canonicalHost) === 0) return "public";
+  // Before the embedded-IPv4 rule: `::1`'s IPv4-compatible form is 0.0.0.1.
+  if (isLoopbackAddress(canonicalHost)) return "local";
+  // An address that carries an IPv4 address (NAT64, 6to4, IPv4-compatible)
+  // is delivered to that address, so it is judged by it as well.
+  const addresses = [canonicalHost, embeddedIPv4(canonicalHost)].filter((a): a is string => a !== undefined);
+  if (addresses.some((a) => addressInSet(RESERVED, a))) return "reserved";
+  if (addresses.some((a) => isLoopbackAddress(a) || addressInSet(LOCAL, a))) return "local";
+  return "public";
+}
+
+/** The scopes a grant for this kind of destination may take. */
+export function egressScopesForNetwork(
+  scopes: readonly EgressGrantScope[],
+  network: EgressDestinationNetwork,
+): readonly EgressGrantScope[] {
+  if (network === "reserved") return [];
+  return network === "local" ? scopes.filter((s) => s === "once" || s === "conversation") : scopes;
 }
 
 export function isValidEgressPort(port: unknown): port is number {
@@ -139,9 +213,19 @@ function defaultEgressGrantFilePath(): string {
   return join(aveHome(), "permissions", "shell-egress-hosts.json");
 }
 
+
+/** The identity of one grant, for the tokens that used it. */
+function grantUseKey(grant: RevocableEgressGrant): string {
+  const owner = grant.scope === "conversation" ? grant.sessionId : grant.scope === "workspace" ? grant.workspaceRoot ?? "" : "";
+  return `${grant.scope}\n${owner}\n${grant.host} ${grant.port}`;
+}
+
 export class EgressGrantStore {
   private readonly once = new Map<string, Set<string>>();
-  private readonly conversation = new Map<string, Set<string>>();
+  /** Session id to destination key to the time it was granted. */
+  private readonly conversation = new Map<string, Map<string, string>>();
+  /** Grant identity to the invocation tokens it let through (for closing them on revoke). */
+  private readonly uses = new Map<string, Set<string>>();
   private persistent: PersistentEgressGrant[] | undefined;
   private readonly writes = createSerialQueue();
 
@@ -190,10 +274,13 @@ export class EgressGrantStore {
       case "once":
         addTo(this.once, subject.token, key);
         return;
-      case "conversation":
+      case "conversation": {
         if (subject.sessionId === undefined) throw new Error("egress grant: no conversation to grant for");
-        addTo(this.conversation, subject.sessionId, key);
+        let grants = this.conversation.get(subject.sessionId);
+        if (grants === undefined) this.conversation.set(subject.sessionId, (grants = new Map()));
+        if (!grants.has(key)) grants.set(key, now.toISOString());
         return;
+      }
       case "workspace": {
         if (subject.workspaceRoot === undefined) throw new Error("egress grant: no workspace to grant for");
         const workspaceRoot = resolve(subject.workspaceRoot);
@@ -212,9 +299,70 @@ export class EgressGrantStore {
     }
   }
 
-  /** Forget a released invocation's "Allow once" hosts. */
+  /**
+   * Record that `subject.token` was let through to `destination` under this
+   * scope's grant, so revoking the grant can close what it let through.
+   * "Allow once" ends with its call and is not recorded.
+   */
+  noteUse(scope: EgressGrantScope, subject: EgressGrantSubject, destination: EgressDestination): void {
+    let grant: RevocableEgressGrant;
+    switch (scope) {
+      case "once":
+        return;
+      case "conversation":
+        if (subject.sessionId === undefined) return;
+        grant = { scope, sessionId: subject.sessionId, host: destination.host, port: destination.port };
+        break;
+      case "workspace":
+        if (subject.workspaceRoot === undefined) return;
+        grant = { scope, workspaceRoot: resolve(subject.workspaceRoot), host: destination.host, port: destination.port };
+        break;
+      case "always":
+        grant = { scope, host: destination.host, port: destination.port };
+        break;
+    }
+    addTo(this.uses, grantUseKey(grant), subject.token);
+  }
+
+  /** Forget a released invocation's "Allow once" hosts and its grant uses. */
   releaseToken(token: string): void {
     this.once.delete(token);
+    for (const [key, tokens] of this.uses) {
+      tokens.delete(token);
+      if (tokens.size === 0) this.uses.delete(key);
+    }
+  }
+
+  /** The "This conversation" grants held now, for Settings. */
+  listConversation(): readonly ConversationEgressGrant[] {
+    const out: ConversationEgressGrant[] = [];
+    for (const [sessionId, grants] of this.conversation) {
+      for (const [key, grantedAt] of grants) {
+        const space = key.lastIndexOf(" ");
+        out.push({ scope: "conversation", sessionId, host: key.slice(0, space), port: Number(key.slice(space + 1)), grantedAt });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Revoke one grant of any revocable scope. Resolves whether it existed and
+   * the live invocation tokens it had let through, whose open connections to
+   * that destination the caller closes.
+   */
+  async revoke(target: RevocableEgressGrant): Promise<{ readonly removed: boolean; readonly tokens: readonly string[] }> {
+    let removed: boolean;
+    if (target.scope === "conversation") {
+      const grants = this.conversation.get(target.sessionId);
+      removed = grants?.delete(destinationKey(target)) ?? false;
+      if (grants !== undefined && grants.size === 0) this.conversation.delete(target.sessionId);
+    } else {
+      removed = await this.revokePersistent(target);
+    }
+    const key = grantUseKey(target);
+    const tokens = [...(this.uses.get(key) ?? [])];
+    this.uses.delete(key);
+    return { removed, tokens };
   }
 
   /** The workspace and always grants, for Settings. */
@@ -223,7 +371,7 @@ export class EgressGrantStore {
   }
 
   /** Remove one persistent grant. Resolves true when it existed. */
-  async revokePersistent(target: Pick<PersistentEgressGrant, "scope" | "host" | "port" | "workspaceRoot">): Promise<boolean> {
+  private async revokePersistent(target: Pick<PersistentEgressGrant, "scope" | "host" | "port" | "workspaceRoot">): Promise<boolean> {
     let removed = false;
     await this.mutatePersistent((grants) => {
       const kept = grants.filter((g) => {

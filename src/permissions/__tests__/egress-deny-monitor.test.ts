@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { SandboxViolationStore } from "@anthropic-ai/sandbox-runtime";
 import {
   parseEgressDenyLine,
+  noteCallbackDecision,
   startEgressDenyMonitor,
   UNPARSED_DENY_REASON,
 } from "../egress-deny-monitor.js";
@@ -24,7 +25,7 @@ import {
   type EgressInvocation,
   type EgressInvocationOwner,
 } from "../egress-invocations.js";
-import type { SandboxEgressDenyAuditEntry } from "../../audit/sandbox-audit.js";
+import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry } from "../../audit/sandbox-audit.js";
 import { emitSandboxAudit, readRecentSandboxEgressDenials } from "../../audit/sandbox-audit-sink.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TEST_SHELL_EGRESS_CONTEXT } from "../../__tests__/support/egress-fixture.js";
@@ -44,15 +45,24 @@ function invocation(owner: EgressInvocationOwner): EgressInvocation {
   return opened;
 }
 
-async function monitored(): Promise<{ store: SandboxViolationStore; rows: SandboxEgressDenyAuditEntry[]; stop: () => void }> {
+async function monitored(): Promise<{
+  store: SandboxViolationStore;
+  rows: SandboxEgressDenyAuditEntry[];
+  decisions: SandboxEgressDecisionAuditEntry[];
+  stop: () => void;
+}> {
   const store = new SandboxViolationStore();
   const rows: SandboxEgressDenyAuditEntry[] = [];
+  const decisions: SandboxEgressDecisionAuditEntry[] = [];
   const stop = await startEgressDenyMonitor({
     subscribe: async (listener) => store.subscribe(listener),
-    emit: async (entry) => { rows.push(entry); },
+    emit: async (entry) => {
+      if (entry.entryKind === "egress-deny") rows.push(entry);
+      else decisions.push(entry);
+    },
     capability: () => ({ kind: "asrt", confidence: "verified" }),
   });
-  return { store, rows, stop };
+  return { store, rows, decisions, stop };
 }
 
 function deny(store: SandboxViolationStore, line: string, key: string | undefined): void {
@@ -148,6 +158,27 @@ describe("startEgressDenyMonitor", () => {
     expect(JSON.stringify(rows[0])).not.toContain(shell.token);
   });
 
+  it("writes a decision row for a refusal the proxy made before asking, and none for one the callback made", async () => {
+    const { store, decisions } = await monitored();
+    const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_03", context: TEST_SHELL_EGRESS_CONTEXT });
+    deny(store, "deny network-outbound 127.0.0.1:52011 (sandbox proxy listener)", shell.token);
+    noteCallbackDecision(shell.token, "Asked.Example", 443);
+    deny(store, "deny network-outbound asked.example:443 (denied by the user)", shell.token);
+    expect(decisions).toEqual([{
+      timestamp: "2026-10-19T03:00:00.000Z",
+      entryKind: "egress-decision",
+      invocation: { kind: "shell", toolName: "bash", toolUseId: "toolu_03" },
+      destination: { host: "127.0.0.1", port: 52011 },
+      decision: "deny",
+      basis: "sandbox",
+      scope: null,
+      reason: "sandbox proxy listener",
+    }]);
+    // A noted decision is used once: a second refusal of the same destination is the proxy's own.
+    deny(store, "deny network-outbound asked.example:443 (malformed host)", shell.token);
+    expect(decisions.map((d) => d.destination.host)).toEqual(["127.0.0.1", "asked.example"]);
+  });
+
   it("labels a worker deny with the plugin and worker", async () => {
     const { store, rows } = await monitored();
     const worker = invocation({ kind: "worker", role: "worker", pluginId: "acme_notes", instanceId: "indexer" });
@@ -183,7 +214,7 @@ describe("startEgressDenyMonitor", () => {
     const rows: SandboxEgressDenyAuditEntry[] = [];
     await startEgressDenyMonitor({
       subscribe: async (listener) => store.subscribe(listener),
-      emit: async (entry) => { rows.push(entry); },
+      emit: async (entry) => { if (entry.entryKind === "egress-deny") rows.push(entry); },
       capability: () => ({ kind: "asrt", confidence: "verified" }),
     });
     deny(store, "deny file-read-data /Users/example/.ssh/id_ed25519", shell.token);

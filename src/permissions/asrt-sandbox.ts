@@ -22,7 +22,7 @@ import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
 import { errorMessage } from "../shared/error-message.js";
 import { onEgressInvocationReleased } from "./egress-invocations.js";
-import { asrtInvocationListenersSupported } from "./egress-identity.js";
+import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
 import {
   isPluginWorkerConfinementRequestedAtBoot,
   isShellSandboxRequestedAtBoot,
@@ -515,6 +515,16 @@ async function openEgressListener(
     throw new Error(`${caller}: could not open the invocation's egress listener: ${message}${hint}`);
   }
   loadedSandboxManagerForRelease = SandboxManager;
+}
+
+/**
+ * Close every open connection the proxy let through to `host:port` for these
+ * invocations (a revoked grant's tunnels). Returns how many were closed; 0
+ * before any listener was opened (nothing can be open then).
+ */
+export function closeEgressConnections(tokens: readonly string[], host: string, port: number): number {
+  if (tokens.length === 0) return 0;
+  return loadedSandboxManagerForRelease?.closeInvocationConnections(tokens, host, port) ?? 0;
 }
 
 /** Set once a listener has been opened, so a release can close it synchronously. */
@@ -1862,6 +1872,7 @@ export async function initializeAsrtSandbox(
   _workerUnixSocketDirs.clear();
   const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings));
   assertNoLocalBinding(config);
+  noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
   await SandboxManager.initialize(config, askCb, enableLogMonitor);
   try {
     // Linux's ASRT dependency check only proves executables are installed. Run

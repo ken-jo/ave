@@ -201,6 +201,7 @@ describe("egress ask callback — shell calls", () => {
       toolUseId: "toolu_1",
       destination: { host: "github.com", port: 443 },
       scopes: ["once", "conversation", "workspace", "always"],
+      network: "public",
       abortSignal: undefined,
     }]);
     expect(audit.at(-1)).toMatchObject({
@@ -379,5 +380,72 @@ describe("egressAllowlistMatches (ASRT's allowedDomains matcher)", () => {
     [[], "example.com", 443, false],
   ] as const)("%j matches %s:%d → %s", (entries, host, port, expected) => {
     expect(egressAllowlistMatches(entries, { host, port })).toBe(expected);
+  });
+});
+
+describe("egress ask callback — local, private and reserved destinations", () => {
+  it.each([
+    ["169.254.169.254", 80],
+    ["[fe80::1]", 443],
+    ["0.0.0.0", 8080],
+    ["[::]", 8080],
+    ["168.63.129.16", 80],
+    ["[fd00:ec2::254]", 80],
+    ["224.0.0.251", 5353],
+  ])("refuses %s without asking, for shells and workers alike", async (host, port) => {
+    const ask = createEgressAskCallback({
+      identityStrength: () => "kernel-channel",
+      ownerOf: (token) => owners.get(token),
+      abortSignalOf: () => undefined,
+      workerAllowedDomains: () => [host.replace(/^\[|\]$/gu, "")],
+      grants,
+      shellAskEnabled: () => true,
+      requester: () => async (request) => { asked.push(request); return { allow: true, scope: "once" }; },
+      audit: () => {},
+    });
+    expect(await ask({ host, port }, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
+    expect(await ask({ host, port }, listener(WORKER_TOKEN))).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
+    expect(asked).toEqual([]);
+  });
+
+  it.each([
+    ["127.0.0.1", "127.0.0.1"],
+    ["2130706433", "127.0.0.1"],
+    ["0x7f000001", "127.0.0.1"],
+    ["0177.0.0.1", "127.0.0.1"],
+    ["[::ffff:7f00:1]", "127.0.0.1"],
+    ["[::1]", "::1"],
+    ["localhost", "localhost"],
+    ["foo.localhost", "foo.localhost"],
+    ["10.1.2.3", "10.1.2.3"],
+    ["172.20.0.1", "172.20.0.1"],
+    ["192.168.1.10", "192.168.1.10"],
+    ["100.64.0.7", "100.64.0.7"],
+    ["[fd12:3456::1]", "fd12:3456::1"],
+  ])("asks about %s as a local destination, shown as %s, with no persistent scope", async (host, shown) => {
+    await callback()({ host, port: 8080 }, listener(SHELL_TOKEN));
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ destination: { host: shown, port: 8080 }, scopes: ["once", "conversation"], network: "local" });
+  });
+
+  it("never lets a persistent grant cover a local destination", async () => {
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, workspaceRoot: undefined },
+      { host: "127.0.0.1", port: 8080 });
+    expect(await callback()({ host: "127.0.0.1", port: 8080 }, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked).toHaveLength(1);
+  });
+
+  it("still lets a worker reach a local model endpoint its list names", async () => {
+    const ask = createEgressAskCallback({
+      identityStrength: () => "kernel-channel",
+      ownerOf: (token) => owners.get(token),
+      abortSignalOf: () => undefined,
+      workerAllowedDomains: () => ["localhost:11434"],
+      grants,
+      shellAskEnabled: () => true,
+      requester: () => undefined,
+      audit: () => {},
+    });
+    expect(await ask({ host: "localhost", port: 11434 }, listener(WORKER_TOKEN))).toBe(true);
   });
 });

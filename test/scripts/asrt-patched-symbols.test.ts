@@ -158,6 +158,27 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(declarations).toMatch(/\n\s+closeInvocationListener\(commandId: string\): void;/u);
   });
 
+  it("hides the proxy's socket directory in every Linux wrap and keeps proxy backends in it", () => {
+    const linux = readInstalled("dist/sandbox/linux-sandbox-utils.js");
+    const wrap = functionBody(linux, /\nexport async function wrapCommandWithSandboxLinux\(/u);
+    expect(wrap).toMatch(/bwrapArgs\.push\('--dev', '\/dev'\);\s+(?:\/\/[^\n]*\n\s+)*if \(privateSocketDir\) \{\s+bwrapArgs\.push\('--tmpfs', privateSocketDir\);/u);
+    expect(wrap).toMatch(/bwrapArgs\.push\('--bind', httpSocketPath, httpSocketPath\);\s+\}\s+\}/u);
+    const manager = readInstalled("dist/sandbox/sandbox-manager.js");
+    expect(manager).toMatch(/backendSocketDir: getPlatform\(\) === 'windows' \? undefined : ensurePrivateSocketDir\(\),/u);
+    expect(manager).toMatch(/const socketPath = joinPath\(ensurePrivateSocketDir\(\), /u);
+    expect(manager).toMatch(/\n\s+privateSocketDir,\n/u);
+    expect(readInstalled("dist/sandbox/mux-proxy.js")).toContain("const path = unixSocketPath(opts.backendSocketDir);");
+  });
+
+  it("quarantines an ended macOS listener's port and never hands it out again", () => {
+    const manager = readInstalled("dist/sandbox/sandbox-manager.js");
+    expect(manager).toMatch(/\nconst INVOCATION_LISTENER_QUARANTINE_MS = \d+ \* 60 \* 1000;/u);
+    const close = functionBody(manager, /\nfunction closeInvocationListener\(/u);
+    expect(close).toMatch(/retiredListenerPorts\.add\(lane\.port\);/u);
+    const open = functionBody(manager, /\nasync function openInvocationListener\(/u);
+    expect(open).toMatch(/if \(!retiredListenerPorts\.has\(lane\.port\)\)\s+break;/u);
+  });
+
   it("denies process-info on other processes and the kern.procargs sysctls in the macOS profile", () => {
     const profile = functionBody(readInstalled("dist/sandbox/macos-sandbox-utils.js"), /\nfunction generateSandboxProfile\(/u);
     const allowSame = profile.indexOf("'(allow process-info* (target same-sandbox))',");
@@ -368,6 +389,142 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       ).rejects.toThrow(/allowLocalBinding cannot be combined with an invocation listener/u);
     } finally {
       await SandboxManager.reset();
+    }
+  });
+
+  /** A stand-in upstream proxy: answers every CONNECT 200 and keeps the tunnel open. */
+  async function fakeUpstream(): Promise<{ port: number; connects: string[]; close: () => Promise<void> }> {
+    const { createServer } = await import("node:net");
+    const connects: string[] = [];
+    const sockets = new Set<import("node:net").Socket>();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      socket.once("data", (chunk: Buffer) => {
+        connects.push(chunk.toString("latin1").split("\r\n")[0] ?? "");
+        socket.write("HTTP/1.1 200 Connection established\r\n\r\n");
+      });
+      socket.on("error", () => {});
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address !== "object") throw new Error("no upstream port");
+    return {
+      port: address.port,
+      connects,
+      close: async () => {
+        for (const socket of sockets) socket.destroy();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      },
+    };
+  }
+
+  /** A name that resolves here to a loopback or own-interface address, or undefined. */
+  async function localResolvingName(): Promise<string | undefined> {
+    const { lookup } = await import("node:dns/promises");
+    const { hostname, networkInterfaces } = await import("node:os");
+    const own = new Set(Object.values(networkInterfaces()).flat().map((i) => i?.address.toLowerCase()));
+    for (const name of ["localtest.me", "127.0.0.1.nip.io", hostname()]) {
+      try {
+        const answers = await lookup(name, { all: true });
+        if (answers.some(({ address }) => address.startsWith("127.") || address === "::1" || own.has(address.toLowerCase()))) return name;
+      } catch {
+        // not resolvable here; try the next
+      }
+    }
+    return undefined;
+  }
+
+  it("with an upstream proxy, refuses a name that resolves to this host before asking or forwarding", async (test) => {
+    const upstream = await fakeUpstream();
+    const asked: Array<{ host: string; context: SandboxAskContext | undefined }> = [];
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    try {
+      try {
+        await SandboxManager.initialize(
+          {
+            network: {
+              allowedDomains: [],
+              deniedDomains: [],
+              parentProxy: { http: `http://127.0.0.1:${upstream.port}`, https: `http://127.0.0.1:${upstream.port}` },
+            },
+            filesystem: { denyRead: [], allowWrite: [], denyWrite: [] },
+          },
+          async ({ host }, context) => {
+            asked.push({ host, context });
+            return host === "allowed.example.invalid";
+          },
+        );
+      } catch (error) {
+        if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw error;
+        test.skip(`sandbox-runtime cannot initialize here: ${String(error)}`);
+        return;
+      }
+      const commandId = "d".repeat(16) + "0123456789abcdef";
+      const listener = await SandboxManager.openInvocationListener(commandId);
+      const proxy = proxyUrlIn(await SandboxManager.wrapWithSandbox("true", undefined, undefined, undefined, { commandId }));
+      const name = `srt.${Buffer.from(commandId).toString("base64")}`;
+      const front = frontOf(listener);
+      // Control: an allowed public name goes to the upstream.
+      expect(await connectThrough(front, proxy, name, "allowed.example.invalid:443")).toMatch(/^HTTP\/1\.1 200/u);
+      expect(upstream.connects).toEqual(["CONNECT allowed.example.invalid:443 HTTP/1.1"]);
+      const local = await localResolvingName();
+      if (local === undefined) {
+        if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("no name resolves to this host here");
+        test.skip("no name resolves to this host here");
+        return;
+      }
+      const target = `${local}:${SandboxManager.getProxyPort()}`;
+      expect(await connectThrough(front, proxy, name, target)).toMatch(/^HTTP\/1\.1 403/u);
+      expect(upstream.connects).toHaveLength(1);
+      expect(asked.map((a) => a.host)).toEqual(["allowed.example.invalid"]);
+    } finally {
+      await SandboxManager.reset();
+      await upstream.close();
+    }
+  });
+
+  it("closes an invocation's open tunnels to a destination on request", async (test) => {
+    const upstream = await fakeUpstream();
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const { connect } = await import("node:net");
+    try {
+      try {
+        await SandboxManager.initialize(
+          {
+            network: {
+              allowedDomains: ["kept.example.invalid"],
+              deniedDomains: [],
+              parentProxy: { http: `http://127.0.0.1:${upstream.port}`, https: `http://127.0.0.1:${upstream.port}` },
+            },
+            filesystem: { denyRead: [], allowWrite: [], denyWrite: [] },
+          },
+          async () => false,
+        );
+      } catch (error) {
+        if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw error;
+        test.skip(`sandbox-runtime cannot initialize here: ${String(error)}`);
+        return;
+      }
+      const commandId = "e".repeat(16) + "0123456789abcdef";
+      const listener = await SandboxManager.openInvocationListener(commandId);
+      const proxy = proxyUrlIn(await SandboxManager.wrapWithSandbox("true", undefined, undefined, undefined, { commandId }));
+      const authorization = Buffer.from(`srt.${Buffer.from(commandId).toString("base64")}:${decodeURIComponent(proxy.password)}`).toString("base64");
+      const front = frontOf(listener);
+      const tunnel = typeof front === "number" ? connect(front, "127.0.0.1") : connect(front);
+      const closed = new Promise<void>((resolve) => tunnel.once("close", () => resolve()));
+      tunnel.on("error", () => {});
+      await new Promise<void>((resolve) => {
+        tunnel.once("data", () => resolve());
+        tunnel.write(`CONNECT kept.example.invalid:443 HTTP/1.1\r\nHost: kept.example.invalid:443\r\nProxy-Authorization: Basic ${authorization}\r\n\r\n`);
+      });
+      expect(SandboxManager.closeInvocationConnections([commandId], "other.example.invalid", 443)).toBe(0);
+      expect(SandboxManager.closeInvocationConnections([commandId], "KEPT.example.invalid", 443)).toBe(1);
+      await closed;
+      expect(SandboxManager.closeInvocationConnections([commandId], "kept.example.invalid", 443)).toBe(0);
+    } finally {
+      await SandboxManager.reset();
+      await upstream.close();
     }
   });
 });

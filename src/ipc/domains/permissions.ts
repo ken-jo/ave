@@ -339,12 +339,12 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   // read-only, sender-frame-guarded — the shell egress grants that outlive a
-  // conversation, for Settings → Permissions → Network.
+  // call (conversation, workspace, always), for Settings → Permissions → Network.
   ipcMain.handle(PERMISSIONS.egressGrantsList, async (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantsList, e); return UNAUTHORIZED_FRAME; }
-    const { egressGrantStore } = await import("../../permissions/egress-runtime.js");
+    const { listEgressGrants } = await import("../../permissions/egress-runtime.js");
     try {
-      return { ok: true as const, grants: await egressGrantStore().listPersistent() };
+      return { ok: true as const, grants: await listEgressGrants() };
     } catch (error) {
       return { ok: false as const, error: "egress-grant-store-unreadable", message: errorMessage(error) };
     }
@@ -357,29 +357,31 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
-    const { scope, host, port, workspaceRoot } = body;
-    if (scope !== "workspace" && scope !== "always") {
-      return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be workspace or always" };
+    const { scope, host, port, workspaceRoot, sessionId } = body;
+    if (scope !== "conversation" && scope !== "workspace" && scope !== "always") {
+      return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be conversation, workspace or always" };
     }
     if (typeof host !== "string" || host.length === 0 || typeof port !== "number" || !Number.isInteger(port)) {
       return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: host and port are required" };
     }
     if (scope === "workspace" ? typeof workspaceRoot !== "string" : workspaceRoot !== undefined) {
-      return { ok: false, error: "invalid-egress-grant-workspace", message: "revoke: a workspace grant names its workspaceRoot, an always grant none" };
+      return { ok: false, error: "invalid-egress-grant-workspace", message: "revoke: a workspace grant names its workspaceRoot, no other grant does" };
     }
-    const { egressGrantStore } = await import("../../permissions/egress-runtime.js");
+    if (scope === "conversation" ? typeof sessionId !== "string" || sessionId.length === 0 : sessionId !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-conversation", message: "revoke: a conversation grant names its sessionId, no other grant does" };
+    }
+    const { revokeEgressGrant } = await import("../../permissions/egress-runtime.js");
     try {
-      const removed = await egressGrantStore().revokePersistent({
-        scope,
-        host,
-        port,
-        ...(scope === "workspace" ? { workspaceRoot: workspaceRoot as string } : {}),
-      });
+      const { removed, closed } = await revokeEgressGrant(
+        scope === "conversation" ? { scope, sessionId: sessionId as string, host, port }
+        : scope === "workspace" ? { scope, workspaceRoot: workspaceRoot as string, host, port }
+        : { scope, host, port },
+      );
       auditLogger.log({
         timestamp: new Date().toISOString(),
         sessionId: "settings",
         type: "approval",
-        output: `[egress-grant:revoke] scope=${scope} host=${host} port=${port} removed=${removed}`,
+        output: `[egress-grant:revoke] scope=${scope} host=${host} port=${port} removed=${removed} closedConnections=${closed}`,
       });
       return removed ? { ok: true } : { ok: false, error: "not-found", message: "revoke: no such grant" };
     } catch (error) {

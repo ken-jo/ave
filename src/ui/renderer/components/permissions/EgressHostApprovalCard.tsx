@@ -64,6 +64,11 @@ export function EgressHostApprovalCard({
         <code className="block min-w-0 break-all font-mono text-xs font-semibold" data-testid="egress-approval-target">
           {target}
         </code>
+        {payload.network === "local" ? (
+          <p role="note" className="min-w-0 break-words text-xs font-medium text-warning" data-testid="egress-approval-local-warning">
+            {t("egressApprovalCard.localWarning")}
+          </p>
+        ) : null}
         <p className="min-w-0 break-words text-xs text-muted-foreground">
           {t("egressApprovalCard.conversation", { conversation: conversationLabel })}
         </p>

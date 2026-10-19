@@ -24,15 +24,16 @@
  */
 import { afterEach, describe, expect, it, type TestContext } from "vitest";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { SandboxManager, type SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
 import {
   cleanupAsrtSandboxAfterCommand,
   initializeAsrtSandbox,
   isAsrtSandboxActive,
+  registerWorkerUnixSocketDir,
   resetAsrtSandbox,
   wrapToolCommand,
   wrapWorkerCommand,
@@ -176,11 +177,18 @@ interface Pair {
   };
 }
 
+/**
+ * `workerSockets`: a plugin worker's control-socket directory is registered,
+ * as in normal operation. On Linux that turns on `allowAllUnixSockets` for
+ * every wrap (the AF_UNIX seccomp block is lifted), so only the wrap's own
+ * mounts keep another invocation's socket out of reach.
+ */
 async function withPair(
   victimSide: ProbeSide,
   proberSide: ProbeSide,
   context: TestContext,
   body: (pair: Pair) => Promise<void>,
+  options: { readonly workerSockets?: boolean } = {},
 ): Promise<void> {
   await requireNativeCase(context);
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "egress-token-r1-")));
@@ -195,6 +203,11 @@ async function withPair(
       asked.push({ host, context: askContext });
       return { allow: false, reason: "r1 probe" };
     });
+    if (options.workerSockets === true) {
+      const socketDir = join(dir, "worker-sockets");
+      mkdirSync(socketDir);
+      await registerWorkerUnixSocketDir(socketDir, {});
+    }
     const filesystem = { allowWrite: [dir], allowRead: [dir] };
     const victimWrap = await victimSide.wrap("sleep 10; echo victim-done", { commandId: victim.token, filesystem });
     sleeper = run(victimWrap.argv, victimWrap.env, dir);
@@ -248,7 +261,12 @@ async function readCase(victimSide: ProbeSide, proberSide: ProbeSide, context: T
   });
 }
 
-async function impersonationCase(victimSide: ProbeSide, proberSide: ProbeSide, context: TestContext): Promise<void> {
+async function impersonationCase(
+  victimSide: ProbeSide,
+  proberSide: ProbeSide,
+  context: TestContext,
+  options: { readonly workerSockets?: boolean } = {},
+): Promise<void> {
   await withPair(victimSide, proberSide, context, async ({ dir, asked, victim, prober }) => {
     const victimProxy = proxyUrlOf(victim.wrap);
     const proberWrap = await prober.wrap("true");
@@ -283,23 +301,29 @@ async function impersonationCase(victimSide: ProbeSide, proberSide: ProbeSide, c
       );
       const reach = await run(probe.argv, probe.env, dir).done;
       expect(reach).toMatch(/000 exit=[1-9]\d*/u);
-    } else if ("path" in victimTarget) {
-      // Linux: from inside the prober's bwrap, try the victim's socket path
-      // with the prober's own credential and with the victim's key. Either
-      // the socket cannot be opened at all, or the proxy refuses the
-      // mismatch; the callback is never asked on the victim's behalf.
+    } else if ("path" in victimTarget && "path" in proberTarget) {
+      // Linux: from inside the prober's bwrap, open the victim's socket path
+      // with the prober's own credential and with the victim's key. Without
+      // worker sockets the AF_UNIX seccomp filter refuses the socket itself
+      // (EPERM); with them (allowAllUnixSockets) the path is simply not there,
+      // because the wrap mounts an empty tmpfs over the proxy's socket
+      // directory and binds back only its own listener (ENOENT).
       const script = join(dir, "hop.py");
       writeFileSync(script, LINUX_HOP_PROBE);
       const password = decodeURIComponent(proberProxy.password);
+      const expected = options.workerSockets === true ? "connect-failed 2" : "connect-failed 1";
       for (const key of [ownKey, stolenKey]) {
         const probe = await prober.wrap(`python3 ${shellQuote(script)} ${shellQuote(victimTarget.path)} ${shellQuote(key)} ${shellQuote(password)}`);
-        const reach = (await run(probe.argv, probe.env, dir).done).trim();
-        expect(reach).toMatch(/^(reply HTTP\/1\.1 403|connect-failed \d+)/u);
-        console.info(`[R1] linux hop onto another invocation's socket: ${reach.split(" ").slice(0, 2).join(" ")}`);
+        expect((await run(probe.argv, probe.env, dir).done).trim()).toBe(expected);
       }
+      // What the prober can see of the proxy's socket directory: its own
+      // listener and nothing else (no other listener, no proxy backend).
+      const listing = await prober.wrap(`ls -A ${shellQuote(dirname(proberTarget.path))}; echo "exit=$?"`);
+      const seen = (await run(listing.argv, listing.env, dir).done).trim().split("\n");
+      expect(seen).toEqual([basename(proberTarget.path), "exit=0"]);
       expect(asked).toHaveLength(1);
     }
-  });
+  }, options);
 }
 
 /** Opens a Unix socket path and sends one CONNECT; prints only the status line or the errno. */
@@ -323,4 +347,10 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("e
   it("a shell cannot read a concurrent worker's egress key", (context) => readCase(WORKER, SHELL, context), 120_000);
   it("a worker holding a concurrent shell's key is not attributed as that shell", (context) => impersonationCase(SHELL, WORKER, context), 120_000);
   it("a shell holding a concurrent worker's key is not attributed as that worker", (context) => impersonationCase(WORKER, SHELL, context), 120_000);
+  // Normal operation registers worker control sockets, which on Linux lifts
+  // the AF_UNIX seccomp block for every wrap.
+  it("with worker sockets registered, a worker holding a shell's key is still not attributed as that shell", (context) =>
+    impersonationCase(SHELL, WORKER, context, { workerSockets: true }), 120_000);
+  it("with worker sockets registered, a shell holding a worker's key is still not attributed as that worker", (context) =>
+    impersonationCase(WORKER, SHELL, context, { workerSockets: true }), 120_000);
 });

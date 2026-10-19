@@ -11,6 +11,7 @@ export const en = {
   "egressApprovalCard.allowAlways": "Always",
   "egressApprovalCard.revokeHint": "Workspace and always grants can be revoked in Settings → Permissions → Network.",
   "egressApprovalCard.invalid": "This network request is incomplete and can only be denied.",
+  "egressApprovalCard.localWarning": "This is this computer or a private network (local services, intranet hosts, routers). An allow here lasts at most for this conversation.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "egressApprovalCard.dockTitle": "네트워크 접근 승인",
@@ -24,4 +25,5 @@ export const ko: Record<keyof typeof en, string> = {
   "egressApprovalCard.allowAlways": "항상 허용",
   "egressApprovalCard.revokeHint": "워크스페이스·항상 허용은 설정 → 권한 → 네트워크에서 취소할 수 있습니다.",
   "egressApprovalCard.invalid": "이 네트워크 요청은 정보가 빠져 있어 거절만 할 수 있습니다.",
+  "egressApprovalCard.localWarning": "이 컴퓨터 또는 사설 네트워크(로컬 서비스, 사내 호스트, 공유기)입니다. 여기서 허용해도 이 대화까지만 유지됩니다.",
 };

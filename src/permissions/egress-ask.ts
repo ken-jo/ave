@@ -34,13 +34,16 @@ import type { EgressIdentityStrength } from "../shared/sandbox-capability-info.j
 import type { EgressInvocationOwner, ShellEgressOwner } from "./egress-invocations.js";
 import {
   canonicalEgressHost,
+  egressDestinationNetwork,
+  egressScopesForNetwork,
+  type EgressDestinationNetwork,
   egressGrantScopesFor,
   isValidEgressPort,
   type EgressDestination,
   type EgressGrantStore,
 } from "./egress-grants.js";
 import type { EgressGrantScope } from "../shared/egress-grant-scopes.js";
-import { auditInvocationFor } from "./egress-deny-monitor.js";
+import { auditInvocationFor, noteCallbackDecision } from "./egress-deny-monitor.js";
 
 /** What the person is asked about. */
 export interface EgressApprovalRequest {
@@ -50,6 +53,8 @@ export interface EgressApprovalRequest {
   readonly destination: EgressDestination;
   /** The scopes the card offers, narrowest first; never empty. */
   readonly scopes: readonly EgressGrantScope[];
+  /** `local`: this machine or a private network; the card says so, and offers no persistent scope. */
+  readonly network: "public" | "local";
   /** Ends the ask (the call was cancelled or timed out). */
   readonly abortSignal: AbortSignal | undefined;
 }
@@ -94,6 +99,7 @@ export const EGRESS_DENY_REASONS = {
   headless: "host needs approval; unavailable in background run",
   noSurface: "host needs approval; no approval surface is available",
   failed: "network approval failed",
+  reserved: "link-local, metadata, unspecified, multicast and broadcast addresses are never reachable from the sandbox",
 } as const;
 
 interface Decision {
@@ -123,7 +129,12 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
   const pendingAsks = new Map<string, Promise<Decision>>();
   const now = deps.now ?? (() => new Date());
 
-  const askShell = (token: string, owner: ShellEgressOwner, destination: EgressDestination): Promise<Decision> => {
+  const askShell = (
+    token: string,
+    owner: ShellEgressOwner,
+    destination: EgressDestination,
+    network: Exclude<EgressDestinationNetwork, "reserved">,
+  ): Promise<Decision> => {
     // One card per (invocation, destination): a client that opens several
     // connections to one host while the card is up waits on the same answer.
     const key = `${token}\n${destination.host}\n${destination.port}`;
@@ -132,7 +143,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     const asking = (async (): Promise<Decision> => {
       const requester = deps.requester();
       if (requester === undefined) return deny("prompt", EGRESS_DENY_REASONS.noSurface);
-      const scopes = egressGrantScopesFor(deps.identityStrength("shell")).filter((scope) =>
+      const scopes = egressScopesForNetwork(egressGrantScopesFor(deps.identityStrength("shell")), network).filter((scope) =>
         scope === "conversation" ? owner.context.sessionId !== undefined
         : scope === "workspace" ? owner.context.workspaceRoot !== undefined
         : true);
@@ -142,15 +153,14 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         toolUseId: owner.toolUseId,
         destination,
         scopes,
+        network,
         abortSignal: deps.abortSignalOf(token),
       });
       if (!answer.allow) return deny("prompt", answer.reason);
       // A scope the card did not offer is the requester's bug, not a grant.
-      await deps.grants.grant(answer.scope, scopes, {
-        token,
-        sessionId: owner.context.sessionId,
-        workspaceRoot: owner.context.workspaceRoot,
-      }, destination);
+      const subject = { token, sessionId: owner.context.sessionId, workspaceRoot: owner.context.workspaceRoot };
+      await deps.grants.grant(answer.scope, scopes, subject, destination);
+      deps.grants.noteUse(answer.scope, subject, destination);
       return allow("prompt", answer.scope);
     })().finally(() => pendingAsks.delete(key));
     pendingAsks.set(key, asking);
@@ -178,6 +188,8 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };
     }
     const destination: EgressDestination = { host: canonicalHost, port };
+    const network = egressDestinationNetwork(canonicalHost);
+    if (network === "reserved") return { owner, decision: deny("policy", EGRESS_DENY_REASONS.reserved) };
     switch (owner.kind) {
       case "worker":
         return {
@@ -189,17 +201,20 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       case "terminal":
         return { owner, decision: deny("policy", EGRESS_DENY_REASONS.terminal) };
       case "shell": {
-        const granted = await deps.grants.matchingScope({
-          token,
-          sessionId: owner.context.sessionId,
-          workspaceRoot: owner.context.workspaceRoot,
-        }, destination);
-        if (granted !== undefined) return { owner, decision: allow("grant", granted) };
+        const subject = { token, sessionId: owner.context.sessionId, workspaceRoot: owner.context.workspaceRoot };
+        const matched = await deps.grants.matchingScope(subject, destination);
+        // A persistent grant never covers a local or private destination (none
+        // is offered for one; this also holds for a hand-edited file).
+        const granted = matched !== undefined && egressScopesForNetwork([matched], network).length > 0 ? matched : undefined;
+        if (granted !== undefined) {
+          deps.grants.noteUse(granted, subject, destination);
+          return { owner, decision: allow("grant", granted) };
+        }
         if (!deps.shellAskEnabled()) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.askOff) };
         if (owner.context.approvalSurface !== "interactive") {
           return { owner, decision: deny("policy", EGRESS_DENY_REASONS.headless) };
         }
-        return { owner, decision: await askShell(token, owner, destination) };
+        return { owner, decision: await askShell(token, owner, destination, network) };
       }
     }
   };
@@ -213,6 +228,8 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       owner = context?.attributionKey === undefined ? undefined : deps.ownerOf(context.attributionKey);
       decision = deny("policy", `${EGRESS_DENY_REASONS.failed}: ${errorMessage(error)}`);
     }
+    // The proxy logs this refusal; the deny monitor must not write a second decision row for it.
+    if (!decision.allow) noteCallbackDecision(context?.attributionKey, host, port);
     try {
       deps.audit({
         timestamp: now().toISOString(),
