@@ -19,7 +19,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
 }));
 
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
-import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { POWER_SHELL_AST_PARSER } from "../powershell-ast.js";
 import { BashTool, PowerShellTool, backgroundShellManager as manager, createBashOutputTool } from "../shell-tools.js";
 
@@ -44,7 +44,7 @@ afterEach(() => {
 describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
   describe.each(["bash", "powershell"] as const)("%s", (dialect) => {
     async function start(captureFactory?: () => ToolOutputCapture) {
-      setSandboxRequestedAtBoot(route === "sandbox");
+      setShellSandboxRequestedAtBoot(route === "sandbox");
       if (route === "sandbox") setActiveSandboxCapability({
         kind: "asrt", confidence: "verified", platform: process.platform,
         reason: "Controlled wrapper", confines: { filesystem: true, process: true, network: true },

@@ -156,8 +156,13 @@ export interface SandboxRuntimeCapabilityInfo {
 /** Capability snapshot returned to the renderer for the settings toggle. */
 export interface SandboxCapabilityInfo {
   platform: NodeJS.Platform;
-  /** Whether the user setting (or env escape-hatch) currently has the sandbox enabled. */
+  /** Whether the shell sandbox setting (`features.osToolSandbox`, or its env
+   *  escape-hatch `AVE_SANDBOX_ENABLED=1`) is currently enabled. */
   enabled: boolean;
+  /** Whether plugin-worker confinement (`features.pluginWorkerConfinement`, or
+   *  `AVE_PLUGIN_WORKER_CONFINEMENT=1`) is currently enabled. Independent of
+   *  {@link enabled}: neither setting decides the other. */
+  pluginWorkerConfinementEnabled: boolean;
   /** Whether THIS PLATFORM can confine tools (its potential), independent of
    * whether a runner is currently registered — so the toggle can be shown
    * before the user opts in. macOS/Linux/Windows → true, others → false. */

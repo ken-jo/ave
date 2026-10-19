@@ -246,12 +246,19 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       "../../shared/sandbox-capability-info.js"
     );
     const platform = process.platform;
-    // Must answer the same question boot answered (`sandboxOptIn` in
-    // sandbox-init.ts), so it resolves through the registry rather than
-    // re-stating which variable forces it on.
+    // Must answer the same questions boot answered (`shellRequested` and
+    // `workerRequested` in sandbox-init.ts), so each resolves through the
+    // registry rather than re-stating which variable forces it on.
+    const features = deps.settingsService.get("features");
     const enabled = resolveEnvBackedBoolean(
       "features.osToolSandbox",
-      deps.settingsService.get("features")?.osToolSandbox ?? false,
+      features?.osToolSandbox ?? false,
+      process.env,
+      false,
+    );
+    const pluginWorkerConfinementEnabled = resolveEnvBackedBoolean(
+      "features.pluginWorkerConfinement",
+      features?.pluginWorkerConfinement ?? false,
       process.env,
       false,
     );
@@ -290,6 +297,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     return {
       platform,
       enabled,
+      pluginWorkerConfinementEnabled,
       available,
       kind,
       reason: potentialReason,

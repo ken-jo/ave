@@ -22,6 +22,13 @@ describe("env-backed settings registry", () => {
     expect(envForcedSettingsPaths({})).toEqual([]);
   });
 
+  it("forces each confinement scope only by its own variable", () => {
+    expect(envForcedSettingsPaths({ AVE_SANDBOX_ENABLED: "1" })).toEqual(["features.osToolSandbox"]);
+    expect(envForcedSettingsPaths({ AVE_PLUGIN_WORKER_CONFINEMENT: "1" }))
+      .toEqual(["features.pluginWorkerConfinement"]);
+    expect(envVarForSettingsPath("features.pluginWorkerConfinement")).toBe("AVE_PLUGIN_WORKER_CONFINEMENT");
+  });
+
   it("names the variable a surface should show for a forced setting", () => {
     expect(envVarForSettingsPath("features.a2aRemoteReceiver")).toBe("AVE_A2A_REMOTE_RECEIVER");
     expect(envVarForSettingsPath("features.notARealGate")).toBeNull();

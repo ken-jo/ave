@@ -7,8 +7,11 @@ export interface SandboxBootHarness {
   readonly logSandboxGate: ReturnType<typeof vi.fn>;
   /** The audit drain the abort paths must await before throwing. */
   readonly flush: ReturnType<typeof vi.fn>;
-  /** A boot context whose only knob is the sandbox setting. */
-  context(settingOn: boolean): BootContext;
+  /**
+   * A boot context whose knobs are the shell sandbox setting and, optionally,
+   * the plugin-worker confinement setting (off unless given).
+   */
+  context(settingOn: boolean, pluginWorkerConfinement?: boolean): BootContext;
 }
 
 /**
@@ -28,13 +31,13 @@ export function createSandboxBootHarness(): SandboxBootHarness {
   return {
     logSandboxGate,
     flush,
-    context: (settingOn: boolean): BootContext =>
+    context: (settingOn: boolean, pluginWorkerConfinement = false): BootContext =>
       ({
         host: createBootHostFixture(),
         settingsService: {
           get: vi.fn((key: string) =>
             key === "features"
-              ? { osToolSandbox: settingOn, hostClassifiesRisk: false }
+              ? { osToolSandbox: settingOn, pluginWorkerConfinement, hostClassifiesRisk: false }
               : undefined,
           ),
         },

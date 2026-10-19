@@ -11,10 +11,12 @@
  * enabling the host sandbox would SILENTLY relax the approval gate for
  * unsandboxed plugin/MCP tools — the opposite of intent.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   __resetActiveSandboxCapabilityForTest,
+  __resetSandboxRequestedAtBootForTest,
+  setShellSandboxRequestedAtBoot,
   isWeakSandbox,
   resolveReviewerSandboxCapability,
   setActiveSandboxCapability,
@@ -27,8 +29,12 @@ import {
 import { makeRiskClassifierContext as ctx } from "./test-helpers.js";
 
 describe("resolveReviewerSandboxCapability — execution-substrate awareness", () => {
+  // The host-shell view of the capability exists only while the shell
+  // sandbox was requested at boot.
+  beforeEach(() => setShellSandboxRequestedAtBoot(true));
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
   });
 
   it("returns the genuine asrt capability for the ASRT-wrapped host-shell tools when the gate is ON", () => {
@@ -94,8 +100,12 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
 });
 
 describe("substrate-aware capability — end-to-end reviewer prompt + downgrade guard", () => {
+  // The host-shell view of the capability exists only while the shell
+  // sandbox was requested at boot.
+  beforeEach(() => setShellSandboxRequestedAtBoot(true));
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
   });
 
   // Capture the userPrompt the reviewer hands the LLM so we can prove which

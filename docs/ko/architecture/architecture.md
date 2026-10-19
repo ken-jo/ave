@@ -1962,16 +1962,20 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   UNION allow-list 다 — sandboxed process 는 _임의의_ 로드된 plugin 이 선언한
   도메인에 도달할 수 있다. Ave 1st-party plugin 신뢰 모델 하에서 허용되며,
   true per-worker 격리는 per-process proxy 를 갖춘 future ASRT 가 필요하다.
-- **Gate**: `osToolSandbox` feature flag (Settings → 권한) 또는
-  `AVE_SANDBOX_ENABLED=1`. `osToolSandbox` 기본값은 **전 플랫폼 OFF(opt-in)**다.
-  [settings-defaults.ts의 결정 주석](../../../src/data/settings-defaults.ts#L237-L254)에
-  따라 호스트, 워커, 플러그인 자식 프로세스는 이 설정이 꺼져 있으면 OS 샌드박스
-  없이 실행되고, 켜져 있으면 같은 활성화 정책을 따른다. Settings 토글 또는
-  명시적 환경 변수로 활성화한다.
+- **Gate**: 두 범위가 하나의 ASRT 런타임을 공유한다. 셸 샌드박스
+  (`osToolSandbox`, Settings → 권한, 또는 `AVE_SANDBOX_ENABLED=1`)는 호스트 셸
+  (bash·PowerShell 도구, 작업 공간 터미널)을, 익스텐션 격리
+  (`pluginWorkerConfinement`, 또는 `AVE_PLUGIN_WORKER_CONFINEMENT=1`)는 플러그인
+  워커·플러그인 자식 프로세스·플러그인 훅·MCP stdio 서버를 격리한다. 둘 다 기본값은
+  **전 플랫폼 OFF(opt-in)**다
+  ([settings-defaults.ts의 결정 주석](../../../src/data/settings-defaults.ts#L237-L254)).
+  어느 한쪽이 켜지면 ASRT 가 초기화되고, 각 spawn 경로는 자기 범위만 읽는다.
+  일회성 `plugin-worker-confinement-split` 마이그레이션은 `osToolSandbox: true` 였던
+  설치에 두 범위를 모두 켜고, 나머지 설치는 둘 다 끈 상태로 둔다.
   `hostClassifiesRisk`는 **전 플랫폼 default ON**이다. 파일시스템 격리가 실제로
   활성화되지 않으면 플러그인 읽기의 승인 생략 대신 실행 전 승인을 요청한다.
   활성 불가 시 동작은 on-signal 출처로 갈린다:
-  **EXPLICIT** (`AVE_SANDBOX_ENABLED=1`, 명시적 power-user/CI 강제) +
+  **EXPLICIT** (`AVE_SANDBOX_ENABLED=1` 또는 `AVE_PLUGIN_WORKER_CONFINEMENT=1`, 명시적 power-user/CI 강제) +
   mac/linux 의존성 누락 또는 초기화 실패 → boot **fail-closed abort** (no-fallback 보존);
   **settings-on** (env 없이 토글로 ON) → **graceful degrade**
   (loud `log.warn` + `isAsrtSandboxActive()=false` + boot 계속, non-bricking).

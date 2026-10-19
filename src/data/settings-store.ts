@@ -150,6 +150,15 @@ const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
  */
 const MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION = "marketplace-server-settings-removed";
 /**
+ * One-time split of the single OS sandbox setting into the shell sandbox
+ * (`features.osToolSandbox`) and plugin-worker confinement
+ * (`features.pluginWorkerConfinement`). Before the split one setting confined
+ * shells and workers together, so an install that had opted in keeps both
+ * confined and every other install keeps neither. See
+ * {@link withPluginWorkerConfinementSplit}.
+ */
+const PLUGIN_WORKER_CONFINEMENT_SPLIT_MIGRATION = "plugin-worker-confinement-split";
+/**
  * The value every saved vendor block carried before the default stopped
  * being written. A stored `outputTokenLimit` of exactly this, without the
  * `outputTokenLimitSetByUser` stamp this build writes with a user's value, is
@@ -217,7 +226,21 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   PROVIDER_PRESET_MODEL_SLOT_MIGRATION,
   LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION,
   MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION,
+  PLUGIN_WORKER_CONFINEMENT_SPLIT_MIGRATION,
 ];
+
+/**
+ * The stored feature flags with `pluginWorkerConfinement` derived from the
+ * pre-split `osToolSandbox`, which until the split also decided worker
+ * confinement. Only the STORED value counts: an absent or non-`true`
+ * `osToolSandbox` was not an opt-in, so it never confines workers, whatever
+ * the shell default later becomes. A `pluginWorkerConfinement` already on disk
+ * (a file written by a build that has the setting) is the user's and is kept.
+ */
+function withPluginWorkerConfinementSplit(features: FeatureFlags): FeatureFlags {
+  if (typeof features.pluginWorkerConfinement === "boolean") return features;
+  return { ...features, pluginWorkerConfinement: features.osToolSandbox === true };
+}
 
 /** The stored `llm` object with every unstamped fossil default output limit removed, and whether one was. */
 function withoutFossilOutputTokenLimits(stored: Record<string, any>): { stored: Record<string, any>; changed: boolean } {
@@ -577,14 +600,15 @@ export interface FeatureFlags {
    */
   hostClassifiesRisk?: boolean;
   /**
-   * OS tool sandbox — when `true` (and the platform is supported), shell and
-   * tool spawns are confined by the Anthropic Sandbox Runtime (ASRT; macOS
-   * Seatbelt / Linux bwrap backends). STAGED default (macOS-first): ships `true`
-   * on `darwin` and `false` on `linux`/`win32` (opt-in via Settings) until the
-   * C/D-series sandbox QA is green, after which the Linux/Windows default flips
-   * to `true`. See DEFAULT_SETTINGS for the convergence plan.
+   * Shell sandbox — when `true` (and the platform is supported), the host's
+   * shell tool spawns (bash / powershell) and the workspace terminal are
+   * confined by the Anthropic Sandbox Runtime (ASRT; macOS Seatbelt / Linux
+   * bwrap backends). It governs host shells ONLY: plugin workers, plugin
+   * children, plugin hooks and MCP stdio servers follow
+   * {@link pluginWorkerConfinement}. Off by default on every platform; see
+   * DEFAULT_SETTINGS for the decision.
    *
-   * Because the default is ON (on macOS), the boot gate distinguishes how the ON-signal
+   * The boot gate distinguishes how the ON-signal
    * arrived (see boot.ts + boot/steps/sandbox-gate.ts): the DEFAULT/settings-on
    * path degrades GRACEFULLY (loud warning, unsandboxed, non-bricking) when the
    * sandbox cannot activate, whereas the EXPLICIT `AVE_SANDBOX_ENABLED=1` env
@@ -610,6 +634,20 @@ export interface FeatureFlags {
    * user-discoverable control.
    */
   osToolSandbox?: boolean;
+  /**
+   * Plugin-worker confinement — when `true`, the processes extensions run
+   * (plugin workers, out-of-process plugin children, plugin script hooks and
+   * external MCP stdio servers) are spawned under ASRT. Separate from
+   * {@link osToolSandbox} so that turning the shell sandbox on does not by
+   * itself confine workers whose manifests under-declare their network
+   * domains. Off by default; the one-time split migration in `loadSettings`
+   * carries an existing `osToolSandbox: true` opt-in over to this setting.
+   *
+   * `AVE_PLUGIN_WORKER_CONFINEMENT=1` is this setting's environment override
+   * and, like `AVE_SANDBOX_ENABLED=1` for the shell sandbox, the explicit
+   * fail-closed signal.
+   */
+  pluginWorkerConfinement?: boolean;
 }
 
 /**
@@ -2211,12 +2249,22 @@ export class SettingsService {
       // this migration ran is a real opt-out and sticks, because the marker
       // suppresses any re-run. Remove this block (and the marker constant)
       // once no pre-flip installs remain — target 2026-10.
-      const normalizedFeatures = normalizeFeatureFlags(parsed.features);
+      let normalizedFeatures = normalizeFeatureFlags(parsed.features);
       if (!appliedMigrations.includes(SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION)) {
         if (normalizedFeatures.subAgentAutonomousWake === false) {
           delete normalizedFeatures.subAgentAutonomousWake;
         }
         appliedMigrations.push(SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION);
+        migrationWriteBack = true;
+      }
+
+      // One-time split: `osToolSandbox` used to confine shells AND workers.
+      // Written to disk once, so the worker side of an existing opt-in is the
+      // user's own value from here on and a later shell default flip cannot
+      // reach it.
+      if (!appliedMigrations.includes(PLUGIN_WORKER_CONFINEMENT_SPLIT_MIGRATION)) {
+        normalizedFeatures = withPluginWorkerConfinementSplit(normalizedFeatures);
+        appliedMigrations.push(PLUGIN_WORKER_CONFINEMENT_SPLIT_MIGRATION);
         migrationWriteBack = true;
       }
 

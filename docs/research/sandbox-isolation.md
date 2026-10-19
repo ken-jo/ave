@@ -64,10 +64,10 @@ The write jail for a spawn comes from `src/permissions/sandbox-write-jail.ts` (t
 
 `src/boot/steps/sandbox-init.ts` decides once per process, with `decideSandboxGate` in `sandbox-gate.ts`:
 
-- Off by default. It turns on with Settings, Permissions, "OS tool sandbox" (`features.osToolSandbox`) or with `AVE_SANDBOX_ENABLED=1`.
+- Two scopes over one ASRT runtime, both off by default. The shell sandbox (`features.osToolSandbox`, or `AVE_SANDBOX_ENABLED=1`) confines host shells: the bash and PowerShell tools and the workspace terminal. Extension confinement (`features.pluginWorkerConfinement`, or `AVE_PLUGIN_WORKER_CONFINEMENT=1`) confines plugin workers, plugin children, plugin hooks and MCP stdio servers. ASRT initializes when either scope is requested; each spawn path reads only its own scope (`isShellSandboxActive`, `isPluginWorkerConfinementActive`), and the host-shell plan reads `detectShellSandboxCapability`. The one-time `plugin-worker-confinement-split` settings migration gives an install that had `osToolSandbox: true` both scopes, and every other install neither.
 - Dependencies present: initialize and publish the capability (`activate`).
 - Dependencies missing with the Settings toggle: stay unconfined, report `none`, warn loudly (`degrade`).
-- Dependencies missing with `AVE_SANDBOX_ENABLED=1` on macOS or Linux: refuse to start (`abort`). Windows never aborts, so first run can reach the install step.
+- Dependencies missing with `AVE_SANDBOX_ENABLED=1` or `AVE_PLUGIN_WORKER_CONFINEMENT=1` on macOS or Linux: refuse to start (`abort`). Windows never aborts, so first run can reach the install step.
 
 The outcome is written to the boot audit log and shown in the Permissions tab.
 

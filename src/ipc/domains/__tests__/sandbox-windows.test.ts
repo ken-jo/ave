@@ -118,22 +118,24 @@ vi.mock("../../../permissions/asrt-windows-support.js", async (importOriginal) =
 
 const invoke = makeRegisteredHandlerInvoker(handlers);
 
-function makeDeps() {
+type FeatureFixture = { osToolSandbox?: boolean; pluginWorkerConfinement?: boolean };
+
+function makeDeps(features: FeatureFixture) {
   return {
     conversationLoop: { permissionManager: { getMode: () => "default", setDeferredEntryAsk: vi.fn() } },
     approvalGate: {},
     auditLogger: { log: vi.fn() },
     toolRegistry: { setDenyRules: vi.fn() },
-    settingsService: { get: vi.fn(() => ({ osToolSandbox: false })) },
+    settingsService: { get: vi.fn(() => features) },
     getAppWindows: vi.fn(() => []),
   };
 }
 
-async function setup() {
+async function setup(features: FeatureFixture = { osToolSandbox: false }) {
   handlers.clear();
   vi.clearAllMocks();
   const { registerPermissionsHandlers } = await import("../permissions.js");
-  registerPermissionsHandlers(makeDeps() as never);
+  registerPermissionsHandlers(makeDeps(features) as never);
 }
 
 const ORIGINAL_PLATFORM = process.platform;
@@ -347,6 +349,22 @@ describe("sandboxCapability win32 reconcile", () => {
     expect(result.runtime.reason).toContain("no OS sandbox configured");
     // Partial — fs + egress confined, process not confined.
     expect(result.confines).toEqual({ filesystem: true, process: false, network: true });
+  });
+
+  it.each([
+    [{ osToolSandbox: true, pluginWorkerConfinement: false }, true, false],
+    [{ osToolSandbox: false, pluginWorkerConfinement: true }, false, true],
+    [{ osToolSandbox: true, pluginWorkerConfinement: true }, true, true],
+    [{ osToolSandbox: false, pluginWorkerConfinement: false }, false, false],
+  ])("reports each confinement setting from its own key: %o", async (features, shell, workers) => {
+    setProcessPlatform("darwin");
+    await setup(features);
+    const result = (await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())) as {
+      enabled: boolean;
+      pluginWorkerConfinementEnabled: boolean;
+    };
+    expect(result.enabled).toBe(shell);
+    expect(result.pluginWorkerConfinementEnabled).toBe(workers);
   });
 
   it("still reports darwin as full-confine available", async () => {

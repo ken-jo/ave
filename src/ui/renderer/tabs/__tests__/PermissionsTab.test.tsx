@@ -185,6 +185,7 @@ function installApi(
       sandboxCapability: vi.fn(async () => ({
         platform: "linux" as NodeJS.Platform,
         enabled: false,
+        pluginWorkerConfinementEnabled: false,
         available: true,
         kind: "full" as const,
         reason: "ASRT (bwrap) confines filesystem, process, and network egress when enabled",
@@ -1034,11 +1035,72 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     expect(screen.queryByText("저장 실패")).toBeNull();
   });
 
+  it("writes only the shell setting from the shell toggle and only the worker setting from the worker toggle", async () => {
+    installApi([[]]);
+    settingsApi().updateSettings.mockResolvedValue({ ok: true });
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+
+    const shellToggle = screen.getByTestId("os-sandbox-toggle");
+    const workerToggle = screen.getByTestId("worker-confinement-toggle");
+    expect(screen.getByLabelText(t("permissionsTab.osSandboxCheckboxAriaLabel"))).toBe(shellToggle);
+    expect(screen.getByLabelText(t("permissionsTab.workerConfinementCheckboxAriaLabel"))).toBe(workerToggle);
+    expect(workerToggle).toHaveAttribute("aria-checked", "false");
+
+    await act(async () => {
+      fireEvent.click(workerToggle);
+    });
+    expect(settingsApi().updateSettings).toHaveBeenLastCalledWith({
+      features: { pluginWorkerConfinement: true },
+    });
+    expect(workerToggle).toHaveAttribute("aria-checked", "true");
+    expect(shellToggle).toHaveAttribute("aria-checked", "false");
+
+    await act(async () => {
+      fireEvent.click(shellToggle);
+    });
+    expect(settingsApi().updateSettings).toHaveBeenLastCalledWith({
+      features: { osToolSandbox: true },
+    });
+    expect(settingsApi().updateSettings).toHaveBeenCalledTimes(2);
+    expect(workerToggle).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("loads the worker toggle from its own setting", async () => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValueOnce({
+      features: { osToolSandbox: false, pluginWorkerConfinement: true },
+    });
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+
+    expect(screen.getByTestId("os-sandbox-toggle")).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByTestId("worker-confinement-toggle")).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("says the environment is deciding worker confinement when its variable is set", async () => {
+    installApi([[]], ["features.pluginWorkerConfinement"]);
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-confinement-forced")).toHaveTextContent("AVE_PLUGIN_WORKER_CONFINEMENT");
+    });
+    expect(screen.queryByTestId("os-sandbox-forced")).toBeNull();
+  });
+
   it("renders platform potential, runtime reason, and restart note as separate branches", async () => {
     const api = installApi([[]]);
     api.permission.sandboxCapability.mockResolvedValueOnce({
       platform: "linux" as NodeJS.Platform,
       enabled: true,
+      pluginWorkerConfinementEnabled: false,
       available: true,
       kind: "full" as const,
       reason: "legacy summary",
@@ -1098,6 +1160,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     api.permission.sandboxCapability.mockResolvedValueOnce({
       platform: "freebsd" as NodeJS.Platform,
       enabled: false,
+      pluginWorkerConfinementEnabled: false,
       available: false,
       kind: "none" as const,
       reason: "OS sandbox is fail-closed on this platform; tools run unconfined",
@@ -1174,6 +1237,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         sandboxCapability: vi.fn(async () => ({
           platform: "win32" as NodeJS.Platform,
           enabled: true,
+          pluginWorkerConfinementEnabled: false,
           available: true,
           kind: "partial" as const,
           reason: "ASRT (srt-win) confines filesystem access and network egress against the host; every confined process, plugins included, runs as one shared sandbox account, so plugins are not isolated from each other; process isolation is unavailable on Windows; needs a one-time admin install",

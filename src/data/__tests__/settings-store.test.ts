@@ -1576,14 +1576,14 @@ describe("SettingsService role presets", () => {
     // FILESYSTEM-CONTAINING the host — where it is not filesystem-contained it
     // falls back to the pre-exec ask.
     //
-    // osToolSandbox ships OFF everywhere. One setting governs the host, its
-    // workers and its plugin children alike, so a platform-specific default
-    // here would be a platform-specific plugin-isolation policy — which is what
-    // the former darwin-only default was, and it left Windows and Linux with a
-    // plugin path that required a sandbox the host never asked for.
+    // osToolSandbox (host shells) and pluginWorkerConfinement (workers,
+    // plugin children, plugin hooks, MCP servers) both ship OFF everywhere.
+    // They are separate settings so a later shell default cannot confine
+    // workers on its own.
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("features")?.hostClassifiesRisk ?? false).toBe(true);
-    expect(service.get("features")?.osToolSandbox ?? false).toBe(false);
+    expect(service.get("features")?.osToolSandbox).toBe(false);
+    expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
   });
 
   // Per-platform TRUTH-TABLE — asserts the default EXPLICITLY on each platform
@@ -3591,6 +3591,93 @@ describe("subAgentAutonomousWake un-fossilize migration", () => {
 
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("features")?.subAgentAutonomousWake).toBe(false);
+  });
+});
+
+describe("plugin-worker confinement split migration", () => {
+  const MARKER = "plugin-worker-confinement-split";
+  let userDataPath: string;
+  let path: string;
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-worker-split-"));
+    path = join(userDataPath, "ave-settings.json");
+  });
+
+  afterEach(async () => {
+    await cleanupTmpDir(userDataPath);
+  });
+
+  const onDisk = () => JSON.parse(readFileSync(path, "utf-8")) as {
+    appliedMigrations?: string[];
+    features?: { osToolSandbox?: boolean; pluginWorkerConfinement?: boolean };
+  };
+
+  it("keeps an existing sandbox opt-in on for both shells and workers, and persists it", async () => {
+    writeFileSync(path, JSON.stringify({ features: { osToolSandbox: true } }), "utf-8");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("features")?.osToolSandbox).toBe(true);
+    expect(service.get("features")?.pluginWorkerConfinement).toBe(true);
+
+    await service.patch({} as never);
+    expect(onDisk().features).toMatchObject({ osToolSandbox: true, pluginWorkerConfinement: true });
+    expect(onDisk().appliedMigrations).toContain(MARKER);
+  });
+
+  it.each([
+    ["an explicit false", { osToolSandbox: false }],
+    ["no stored value", {}],
+  ])("keeps a default install (%s) off for both", async (_label, features) => {
+    writeFileSync(path, JSON.stringify({ features }), "utf-8");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("features")?.osToolSandbox).toBe(false);
+    expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
+
+    await service.patch({} as never);
+    // Written as the user's own value, so a later shell default cannot reach it.
+    expect(onDisk().features?.pluginWorkerConfinement).toBe(false);
+    expect(onDisk().appliedMigrations).toContain(MARKER);
+  });
+
+  it("keeps a worker value already on disk", () => {
+    writeFileSync(path, JSON.stringify({ features: { osToolSandbox: true, pluginWorkerConfinement: false } }), "utf-8");
+
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("features")?.osToolSandbox).toBe(true);
+    expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
+  });
+
+  it("does not re-derive after it ran: turning the shell sandbox on later leaves workers alone", async () => {
+    writeFileSync(path, JSON.stringify({ features: { osToolSandbox: false } }), "utf-8");
+    const first = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await first.patch({ features: { osToolSandbox: true } });
+
+    const rebooted = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(rebooted.get("features")?.osToolSandbox).toBe(true);
+    expect(rebooted.get("features")?.pluginWorkerConfinement).toBe(false);
+  });
+
+  it("each setting changes only itself", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ features: { pluginWorkerConfinement: true } });
+    expect(service.get("features")?.osToolSandbox).toBe(false);
+    expect(service.get("features")?.pluginWorkerConfinement).toBe(true);
+
+    await service.patch({ features: { osToolSandbox: true, pluginWorkerConfinement: false } });
+    await service.patch({ features: { osToolSandbox: false } });
+    expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("features")).toMatchObject({ osToolSandbox: false, pluginWorkerConfinement: false });
+  });
+
+  it("starts a fresh install post-migration, so a first-session opt-in is not rewritten", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ features: { osToolSandbox: true } });
+
+    const rebooted = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(rebooted.get("appliedMigrations")).toContain(MARKER);
+    expect(rebooted.get("features")?.pluginWorkerConfinement).toBe(false);
   });
 });
 

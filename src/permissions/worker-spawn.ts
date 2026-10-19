@@ -49,7 +49,8 @@
  * <workerId>/` — host-allocated from the host-bound pluginId and sanitized
  * workerId. mkdir 0o700; the worker binds the socket 0o600.
  *
- * GATE DEFAULT-OFF: when {@link isAsrtSandboxActive} is false, this is a plain
+ * GATE DEFAULT-OFF: when {@link isPluginWorkerConfinementActive} is false (ASRT off, or
+ * `features.pluginWorkerConfinement` off while ASRT serves shells), this is a plain
  * spawn of the exact command with the same secret-stripped worker env and returns
  * `socketPath: null` so the consumer falls back to the legacy TCP channel. No
  * UDS dir is created, nothing is wrapped.
@@ -80,7 +81,7 @@ import {
   terminateChildBestEffort,
 } from "./windows-acl-grant-holder.js";
 import {
-  isAsrtSandboxActive,
+  isPluginWorkerConfinementActive,
   cleanupAsrtSandboxAfterCommand,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
@@ -278,7 +279,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   const baseEnv: NodeJS.ProcessEnv = buildSafeChildEnv(definedEnv(spec.env));
 
   // ── Gate OFF → plain unwrapped spawn ────────────────────────────────
-  if (!isAsrtSandboxActive()) {
+  if (!isPluginWorkerConfinementActive()) {
     assertManagedChildProcessAdmissionOpen(`worker:${safePlugin}:${safeWorker}`);
     const child = spawn(spec.command, args, {
       stdio: WORKER_STDIO,

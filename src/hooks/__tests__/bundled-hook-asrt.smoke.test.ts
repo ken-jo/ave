@@ -2,9 +2,13 @@ import { createServer } from "node:net";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, getDefaultSensitiveReadDenyPaths } from "../../permissions/asrt-sandbox.js";
+import {
+  __resetSandboxRequestedAtBootForTest,
+  setPluginWorkerConfinementRequestedAtBoot,
+} from "../../permissions/sandbox-capability.js";
 import { sandboxCasesRun } from "../../plugins/isolation/__tests__/sandbox-cases.js";
 import { runOneHookScript } from "../script-hook-runner.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
@@ -20,8 +24,12 @@ const payload: ScriptHookStdin = { hookType: "pre", event: "pre", toolName: "rea
 
 const NEIGHBOUR = "neighbour-plugin-bytes";
 
+// A plugin hook is wrapped only while plugin-worker confinement was requested at boot.
+beforeEach(() => setPluginWorkerConfinementRequestedAtBoot(true));
+
 afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
+  __resetSandboxRequestedAtBootForTest();
   testHome.path = undefined;
   vi.unstubAllEnvs();
 });

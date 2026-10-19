@@ -45,8 +45,12 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       checkAsrtDependencies,
       isAsrtLinuxRuntimeProbeError,
     } = await import("../../permissions/asrt-sandbox.js");
-    const { setActiveSandboxCapability, setSandboxRequestedAtBoot, setSandboxBootOutcome } =
-      await import("../../permissions/sandbox-capability.js");
+    const {
+      setActiveSandboxCapability,
+      setShellSandboxRequestedAtBoot,
+      setPluginWorkerConfinementRequestedAtBoot,
+      setSandboxBootOutcome,
+    } = await import("../../permissions/sandbox-capability.js");
     const { sandboxConfinementForPlatform } = await import(
       "../../shared/sandbox-capability-info.js"
     );
@@ -54,17 +58,36 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       "./sandbox-gate.js"
     );
 
-    // Two independent on-signals. `explicitEnv` (AVE_SANDBOX_ENABLED=1) is the
-    // deliberate "I really mean it" override; `settingOn` is the Settings toggle
-    // (off by default). The DISTINCTION drives degrade-vs-abort: see
-    // decideSandboxGate.
-    const explicitEnv = process.env["AVE_SANDBOX_ENABLED"] === "1";
-    const settingOn = settingsService.get("features")?.osToolSandbox ?? false;
-    const sandboxOptIn = settingOn || explicitEnv;
-    // Seal request intent once for this process. Execution paths must not
-    // re-read the mutable settings UI: requested-on-but-degraded is security
-    // relevant for the Windows partial-shell Plan-B policy.
-    setSandboxRequestedAtBoot(sandboxOptIn);
+    // Two scopes, each with two independent on-signals. The shell sandbox
+    // (`features.osToolSandbox` / AVE_SANDBOX_ENABLED=1) confines host shells;
+    // plugin-worker confinement (`features.pluginWorkerConfinement` /
+    // AVE_PLUGIN_WORKER_CONFINEMENT=1) confines plugin workers, plugin
+    // children, plugin hooks and MCP stdio servers. Neither scope's signals
+    // decide the other. ASRT itself is one runtime, initialized when either
+    // scope asks for it. `explicitEnv` is the deliberate "I really mean it"
+    // override; `settingOn` is a Settings toggle (off by default). The
+    // DISTINCTION drives degrade-vs-abort: see decideSandboxGate.
+    const features = settingsService.get("features");
+    const shellExplicitEnv = process.env["AVE_SANDBOX_ENABLED"] === "1";
+    const workerExplicitEnv = process.env["AVE_PLUGIN_WORKER_CONFINEMENT"] === "1";
+    const shellRequested = (features?.osToolSandbox ?? false) || shellExplicitEnv;
+    const workerRequested = (features?.pluginWorkerConfinement ?? false) || workerExplicitEnv;
+    const explicitEnv = shellExplicitEnv || workerExplicitEnv;
+    const settingOn = (features?.osToolSandbox ?? false) || (features?.pluginWorkerConfinement ?? false);
+    const sandboxOptIn = shellRequested || workerRequested;
+    // Seal request intent once for this process, per scope. Execution paths
+    // must not re-read the mutable settings UI: requested-on-but-degraded is
+    // security relevant for the host-shell plan, and a worker spawn must not
+    // follow a toggle flipped after boot.
+    setShellSandboxRequestedAtBoot(shellRequested);
+    setPluginWorkerConfinementRequestedAtBoot(workerRequested);
+    // The variables that made this boot an explicit (fail-closed) opt-in, for
+    // the abort messages below.
+    const explicitEnvNames = [
+      ...(shellExplicitEnv ? ["AVE_SANDBOX_ENABLED"] : []),
+      ...(workerExplicitEnv ? ["AVE_PLUGIN_WORKER_CONFINEMENT"] : []),
+    ];
+    const explicitEnvLabel = explicitEnvNames.map((name) => `${name}=1`).join(" and ");
 
     // Activation telemetry — which on-signal drove the gate. ONE event per boot
     // is emitted (below) at the terminal outcome so real-world activate/degrade/
@@ -118,7 +141,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       });
 
       if (decision.action === "abort") {
-        // EXPLICIT opt-in (AVE_SANDBOX_ENABLED=1) on mac/linux + the sandbox
+        // EXPLICIT opt-in (AVE_SANDBOX_ENABLED=1 or AVE_PLUGIN_WORKER_CONFINEMENT=1)
+        // on mac/linux + the sandbox
         // cannot activate (bwrap/socat/ripgrep missing). The operator demanded
         // the sandbox by name; the no-fallback rule forbids silently dropping to
         // an unsandboxed plain spawn — that would honor the opt-in name while
@@ -127,8 +151,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
         // instead (decideSandboxGate), and Windows never aborts (a throw would
         // brick first-run before the install can happen).
         const message =
-          "boot: OS tool sandbox is ON via AVE_SANDBOX_ENABLED=1 but its dependencies are missing — refusing to start. " +
-          "Install the sandbox dependencies (Linux: bwrap, socat, ripgrep) or unset AVE_SANDBOX_ENABLED. " +
+          `boot: OS tool sandbox is ON via ${explicitEnvLabel} but its dependencies are missing — refusing to start. ` +
+          `Install the sandbox dependencies (Linux: bwrap, socat, ripgrep) or unset ${explicitEnvNames.join(" and ")}. ` +
           `Missing: ${deps.errors.join("; ")}`;
         log.error(message);
         recordGate("abort", decision.reason, deps.errors);
@@ -313,7 +337,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           if (failDecision.action === "abort") {
             // EXPLICIT opt-in — fail-closed even on init failure.
             log.error(
-              "boot: OS tool sandbox is ON via AVE_SANDBOX_ENABLED=1 but ASRT initialization failed — refusing to start. " +
+              `boot: OS tool sandbox is ON via ${explicitEnvLabel} but ASRT initialization failed — refusing to start. ` +
                 `Cause: ${cause}`,
             );
             recordGate("abort", failureReason, [cause]);
@@ -357,11 +381,13 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
     if (
       shouldWarnHostClassifyInterlock({
         hostClassifiesRisk: settingsService.get("features")?.hostClassifiesRisk ?? false,
-        sandboxActive,
+        // The residual is plugin code, so only plugin-worker confinement
+        // contains it: ASRT active for shells alone leaves it uncontained.
+        sandboxActive: sandboxActive && workerRequested,
       })
     ) {
       log.warn(
-        "boot: hostClassifiesRisk is ON but the OS tool sandbox (osToolSandbox / AVE_SANDBOX_ENABLED) is NOT active — " +
+        "boot: hostClassifiesRisk is ON but plugin-worker confinement (pluginWorkerConfinement / AVE_PLUGIN_WORKER_CONFINEMENT) is NOT active — " +
           "effect-boundary classification does NOT contain off-hostApi mutations (direct node:fs, bare fetch, " +
           "detached async frames) without the OS sandbox. For that residual, host-classify WITHOUT the sandbox is " +
           "weaker than the pre-exec ask it replaces. Install/enable the OS sandbox to contain it, or keep the " +

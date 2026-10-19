@@ -13,7 +13,7 @@ import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { authorizationRequiredStateOf } from "../../shared/authorization-required.js";
 import { createDynamicTool } from "../base.js";
@@ -595,7 +595,7 @@ describe("ToolExecutor authorization-required control", () => {
     // Design I3: an unavailable sandbox follows the normal rules, so an ask
     // without an approval surface is the ordinary tool control, not the
     // host-execution one. The plan still says why the shell is uncontained.
-    setSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "none",
       confidence: "verified",
@@ -642,7 +642,7 @@ describe("ToolExecutor authorization-required control", () => {
   });
 
   it("returns host authorization for an explicit host request", async () => {
-    setSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -691,7 +691,7 @@ describe("ToolExecutor authorization-required control", () => {
   });
 
   it("keeps a routine requested-sandbox fallback on the existing headless denial lane", async () => {
-    setSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "none",
       confidence: "verified",

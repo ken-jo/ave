@@ -62,6 +62,7 @@ function installApi(boot: unknown, sandboxOn = true) {
       sandboxCapability: vi.fn(async () => ({
         platform: "win32" as NodeJS.Platform,
         enabled: sandboxOn,
+        pluginWorkerConfinementEnabled: false,
         available: true,
         kind: "partial" as const,
         reason: "",

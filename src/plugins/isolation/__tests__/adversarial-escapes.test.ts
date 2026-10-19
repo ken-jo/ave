@@ -64,6 +64,10 @@ import { AuditLogger } from "../../../audit/audit-logger.js";
 import { createBootHostFixture, stationaryLeaseState } from "../../../__tests__/support/host-runtime.js";
 import { createHostApiFactory } from "../../../boot/steps/plugin-runtime/host-api-factory.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
+import {
+  __resetSandboxRequestedAtBootForTest,
+  setPluginWorkerConfinementRequestedAtBoot,
+} from "../../../permissions/sandbox-capability.js";
 import { HostApiGenerationScope } from "../../plugin-host-effect-scope.js";
 import { admittedGenerationAccess } from "../../__tests__/test-helpers.js";
 import { resolvePluginHostStorageDir, resolvePluginSocketDir } from "../../plugin-storage-layout.js";
@@ -168,6 +172,9 @@ const controls: Record<"secrets" | "network" | "electron" | "patch", "held" | un
 };
 
 beforeAll(async () => {
+  // The harness confines plugin children and workers, which are wrapped only
+  // while plugin-worker confinement was requested at boot.
+  setPluginWorkerConfinementRequestedAtBoot(true);
   // Short on macOS, whose temp directory is deep: escape 1a's worker binds its
   // control socket under `<AVE_HOME>/plugins/<id>/run/<worker>/`, and a path
   // past `sun_path` is refused before any worker starts.
@@ -217,6 +224,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  __resetSandboxRequestedAtBootForTest();
   if (liveControl !== undefined) killControl(liveControl.child, liveControl.group);
   await controlExit;
   await new Promise<void>((resolve) => listener.close(() => resolve()));

@@ -15,7 +15,7 @@ import { isDeepStrictEqual } from "node:util";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { createHmac, randomBytes } from "node:crypto";
-import { isAsrtSandboxActive } from "../../permissions/asrt-sandbox.js";
+import { isPluginWorkerConfinementActive } from "../../permissions/asrt-sandbox.js";
 import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { appVersionSatisfiesMin } from "../../shared/semver-compare.js";
@@ -1764,7 +1764,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       runsCode: runsCode(row.kind, version.components),
       authority: version.authority ? authorityView(version.authority) : null,
       components: version.components ?? null,
-      hookConfinement: isAsrtSandboxActive()
+      hookConfinement: isPluginWorkerConfinementActive()
         ? process.platform === "win32" ? "unavailable" : "sandboxed"
         : "user-permissions",
       rungs,
