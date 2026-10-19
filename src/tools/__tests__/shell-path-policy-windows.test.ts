@@ -61,6 +61,9 @@ describe.skipIf(process.platform !== "win32")("native shell path aliases", () =>
     "curl '--output=C:.env' https://example.invalid/",
     "sort '-oc:foo' input.txt",
     "curl '-oc:foo' https://example.invalid/",
+    "sort '-oC:.env.local=value' input.txt",
+    'sort -o"C:.env.local=value" input.txt',
+    "curl '-oC:.aws/credentials=foo' https://example.invalid/",
     "sort -o C:.env input.txt",
     "curl -o C:.env https://example.invalid/",
   ])("refuses drive-relative option paths: %s", command => {

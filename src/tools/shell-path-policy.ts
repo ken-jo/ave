@@ -288,7 +288,10 @@ const NON_PATH_OPERAND_SPECS: ReadonlyMap<string, NonPathOperandSpec> = new Map<
     firstPositionalIsProgram: true,
     programSuppliedBy: new Set(["-e", "--regexp", "-f", "--file"]),
   }] as [string, NonPathOperandSpec]),
-  ["curl", { valueOptions: new Set(["-w", "--write-out", "-H", "--header", "-d", "--data", "--data-ascii", "--data-binary", "--json"]) }],
+  ["curl", {
+    valueOptions: new Set(["-w", "--write-out", "-H", "--header", "-d", "--data", "--data-ascii", "--data-binary", "--json"]),
+    pathValueOptions: new Set(["-o", "--output", "-D", "--dump-header", "-K", "--config", "-c", "--cookie-jar", "-T", "--upload-file", "-b", "--cookie", "-E", "--cert"]),
+  }],
   // Passphrase option values are data except their documented file: source.
   ["openssl", { valueOptions: new Set(["-subj", ...OPENSSL_PASSPHRASE_OPTIONS]) }],
   // Data-only builtins are handled by the execution role. Their executed
@@ -825,7 +828,7 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
       if (verb === "curl" && spec.valueOptions) {
         // The same option arity applies to separate, equals and short attached
         // values. A glued @file must retain its original operand span.
-        const carried = readOptionValue(argv, i, spec.valueOptions);
+        const carried = readOptionValue(argv, i, spec.valueOptions, spec.pathValueOptions);
         if (carried) {
           const index = carried.consumedNext ? i + 1 : i;
           if (exempts(carried.value, index)) skip.add(index);
@@ -1002,6 +1005,7 @@ function readOptionValue(
   argv: readonly string[],
   index: number,
   options: ReadonlySet<string>,
+  otherValueOptions?: ReadonlySet<string>,
 ): { value: string; consumedNext: boolean } | null {
   const token = argv[index]!;
   const equals = token.indexOf("=");
@@ -1017,7 +1021,10 @@ function readOptionValue(
   // is excluded rather than being read letter by letter.
   if (!token.startsWith("-") || token.startsWith("--")) return null;
   for (let i = 1; i < token.length; i += 1) {
-    if (!options.has(`-${token[i]!}`)) continue;
+    const option = `-${token[i]!}`;
+    // A different value-taking option owns the entire remaining suffix.
+    if (otherValueOptions?.has(option)) return null;
+    if (!options.has(option)) continue;
     const attached = token.slice(i + 1);
     return attached.length > 0 ? { value: attached, consumedNext: false } : takeNext();
   }
@@ -1204,7 +1211,7 @@ function operandPaths(value: string, option: boolean, verb: string): string[] {
   if (value === "-" && ["cat", "sed", "awk", "head", "tail", "sort", "diff", "tee"].includes(verb)) return [];
   if (option && value.startsWith("-") && value.length > 1) {
     const equals = value.indexOf("=");
-    if (equals > 0) return [value.slice(equals + 1)];
+    if (value.startsWith("--") && equals > 0) return [value.slice(equals + 1)];
     const glued = /^-[A-Za-z]+?((?:[A-Za-z]:|[\\/~.]).*)$/.exec(value);
     return glued ? [glued[1]!] : [];
   }

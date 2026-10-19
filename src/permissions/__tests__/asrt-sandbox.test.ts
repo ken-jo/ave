@@ -1239,6 +1239,29 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     }
   });
 
+  it.each(["~", "~/.config/project", "~\\.config\\project"])("Windows: raw home grant %s keeps the parent deny", (grant) => {
+    const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
+    const profile = join(tmpdir(), "ave-windeny-profile");
+    process.env.AVE_ASRT_TEST_HOME = profile;
+    setProcessPlatform("win32");
+    try {
+      const target = join(profile, ".config");
+      for (const access of ["allowRead", "allowWrite"] as const) {
+        const config = buildSandboxConfig({
+          allowedDomains: [],
+          [access]: [grant],
+          denyRead: [target],
+        });
+        expect(bare(config.filesystem.denyRead), access).toContain(target);
+        expect(bare(config.filesystem.denyWrite), access).toContain(target);
+      }
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+    }
+  });
+
   it("Windows: an unproven canonical identity keeps the deny", () => {
     const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
     const profile = join(tmpdir(), "ave-windeny-profile");

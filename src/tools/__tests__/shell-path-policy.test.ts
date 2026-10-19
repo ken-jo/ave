@@ -211,6 +211,13 @@ describe("shell-path-policy", () => {
     });
   });
 
+  it("preserves equals signs in glued short-option paths", () => {
+    withRoot((root) => {
+      expect(validateShellCommandPathPolicy("sort '-o~/.ssh/id_rsa=x' in", root, root, []))
+        .toContain("Sensitive path:");
+    });
+  });
+
   it("rejects unsupported home expansion before shell execution", () => {
     withRoot((root) => {
       const result = validateShellCommandPathPolicy("cat ~someone/.ssh/id_rsa", root, root, []);

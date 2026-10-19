@@ -1403,6 +1403,9 @@ function windowsDenyTargets(
 ): string[] {
   if (process.platform !== "win32") return [...paths];
   const home = homedir();
+  // Match runtime home expansion before judging whether a deny is disjoint.
+  const expandedGrants = grants.map((grant) => grant === "~" ? home
+    : /^~[\\/]/.test(grant) ? home + grant.slice(1) : grant);
   const ave = aveHome();
   const directories = new Set(
     [
@@ -1424,10 +1427,10 @@ function windowsDenyTargets(
       try {
         // Use admission's canonical identity, including links and native aliases.
         // Patterns and unresolved short names cannot prove disjointness.
-        if ([path, ...grants].some((candidate) => /[\0*?\[\]%]|~\d+(?:\.|[\\/]|$)/
+        if ([path, ...expandedGrants].some((candidate) => /[\0*?\[\]%]|~\d+(?:\.|[\\/]|$)/
           .test(candidate.replace(/^\\\\\?\\/, "")))) return true;
         return !isGrantPathWithin(home, path)
-          || grants.some((grant) => isGrantPathWithin(grant, path) || isGrantPathWithin(path, grant));
+          || expandedGrants.some((grant) => isGrantPathWithin(grant, path) || isGrantPathWithin(path, grant));
       } catch {
         // An unproven identity must never remove a deny.
         return true;
