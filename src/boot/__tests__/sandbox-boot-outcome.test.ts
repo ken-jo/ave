@@ -118,6 +118,7 @@ describe("boot sandbox outcome", () => {
       reason: "degrade-windows-not-installed",
       onSignal: "default-settings",
       dependencyErrors: [depError],
+      causes: ["windows-setup-incomplete"],
     });
   });
 
@@ -129,6 +130,35 @@ describe("boot sandbox outcome", () => {
       reason: "gate-off",
       onSignal: "off",
       dependencyErrors: [],
+      causes: [],
+    });
+  });
+
+  it("classifies each missing Linux dependency so the permission card can name it", async () => {
+    h.checkDeps.mockResolvedValue({
+      errors: ["bubblewrap (bwrap) not installed", "socat not executable at /opt/bin/socat"],
+      warnings: [],
+    });
+
+    await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
+
+    expect(getSandboxBootOutcome()).toMatchObject({
+      action: "degrade",
+      reason: "degrade-default-cannot-activate",
+      causes: ["missing-bwrap", "missing-socat"],
+    });
+  });
+
+  it("names a Linux runtime-probe failure apart from a generic start failure", async () => {
+    h.initialize.mockRejectedValue(new Error("probe exited 1"));
+    h.isProbeError.mockReturnValue(true);
+
+    await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
+
+    expect(getSandboxBootOutcome()).toMatchObject({
+      action: "degrade",
+      reason: "degrade-linux-runtime-probe-failed",
+      causes: ["linux-runtime-probe-failed"],
     });
   });
 
@@ -142,6 +172,7 @@ describe("boot sandbox outcome", () => {
       action: "abort",
       onSignal: "explicit-env",
       dependencyErrors: ["missing bwrap"],
+      causes: ["dependency-check-failed"],
     });
   });
 
@@ -153,6 +184,7 @@ describe("boot sandbox outcome", () => {
     expect(getSandboxBootOutcome()).toMatchObject({
       action: "degrade",
       dependencyErrors: ["wrapper refused to start"],
+      causes: ["init-failed"],
     });
   });
 

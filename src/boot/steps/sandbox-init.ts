@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import type { SandboxGateAction, SandboxGateReason } from "./sandbox-gate.js";
+import type { SandboxStartFailureCause } from "../../shared/sandbox-capability-info.js";
+import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start-failure.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
@@ -124,6 +126,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       outcome: SandboxGateAction,
       reason: SandboxGateReason,
       dependencyErrors: readonly string[] = [],
+      causes: readonly SandboxStartFailureCause[] = [],
     ): void => {
       bootAuditLogger.logSandboxGate({
         platform: process.platform,
@@ -136,6 +139,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
         reason,
         onSignal: sandboxGateOnSignal,
         dependencyErrors,
+        causes,
       });
     };
 
@@ -168,7 +172,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           `Install the sandbox dependencies (Linux: bwrap, socat, ripgrep) or unset ${explicitEnvNames.join(" and ")}. ` +
           `Missing: ${deps.errors.join("; ")}`;
         log.error(message);
-        recordGate("abort", decision.reason, deps.errors);
+        recordGate("abort", decision.reason, deps.errors, classifySandboxDependencyErrors(process.platform, deps.errors));
         await bootAuditLogger.flush();
         throw new Error(message);
       } else if (decision.action === "degrade") {
@@ -201,7 +205,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
               `Missing: ${detail}`,
           );
         }
-        recordGate("degrade", decision.reason, deps.errors);
+        recordGate("degrade", decision.reason, deps.errors, classifySandboxDependencyErrors(process.platform, deps.errors));
       } else {
         // decision.action === "activate" — deps present, initialize ASRT. Wrapped
         // so a runtime init FAILURE degrades-or-aborts by the SAME explicit-vs-
@@ -375,13 +379,16 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
               : "degrade-linux-runtime-probe-failed"
             : failDecision.reason;
           const cause = errorMessage(initErr);
+          const failureCauses: SandboxStartFailureCause[] = [
+            runtimeProbeFailed ? "linux-runtime-probe-failed" : "init-failed",
+          ];
           if (failDecision.action === "abort") {
             // EXPLICIT opt-in — fail-closed even on init failure.
             log.error(
               `boot: OS tool sandbox is ON via ${explicitEnvLabel} but ASRT initialization failed — refusing to start. ` +
                 `Cause: ${cause}`,
             );
-            recordGate("abort", failureReason, [cause]);
+            recordGate("abort", failureReason, [cause], failureCauses);
             await bootAuditLogger.flush();
             throw initErr;
           }
@@ -393,7 +400,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
                 "to make this fail-closed instead.) " +
               `Cause: ${cause}`,
           );
-          recordGate("degrade", failureReason, [cause]);
+          recordGate("degrade", failureReason, [cause], failureCauses);
           // sandboxActive stays false: a Linux runtime-probe failure never
           // publishes a verified capability, so UI/reviewer remain kind="none".
         }

@@ -1299,7 +1299,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       platform: "win32", enabled: true, available: true, kind: "partial", reason: raw,
       potentialReason: raw, runtime: { available: false, kind: "none", reason: raw },
       confines: { filesystem: true, process: false, network: true },
-      boot: { action: "degrade", reason: "degrade-windows-not-installed", onSignal: "default-settings", dependencyErrors: [raw] },
+      boot: { action: "degrade", reason: "degrade-windows-not-installed", onSignal: "default-settings", causes: ["windows-setup-incomplete"] },
     } as never);
     await act(async () => { render(<PermissionsTab />); });
     expect(document.body.textContent).not.toContain("EACCES");

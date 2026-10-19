@@ -1938,9 +1938,16 @@ export async function checkAsrtDependencies(): Promise<{
 }> {
   if (process.platform === "win32") {
     const mod = await import("@anthropic-ai/sandbox-runtime");
-    return mod.checkWindowsDependenciesAsync({
-      srtWin: mod.resolveSrtWin({ path: getVendoredSrtWinExePath() }),
-    });
+    // A missing bundled binary is a failed check, not a boot crash: ASRT's own
+    // implicit-resolve path reports it the same way, and the gate turns it
+    // into `windows-sandbox-missing` (sandbox-start-failure.ts).
+    let srtWin: ReturnType<typeof mod.resolveSrtWin>;
+    try {
+      srtWin = mod.resolveSrtWin({ path: getVendoredSrtWinExePath() });
+    } catch (error) {
+      return { errors: [errorMessage(error)], warnings: [] };
+    }
+    return mod.checkWindowsDependenciesAsync({ srtWin });
   }
   const SandboxManager = await loadSandboxManager();
   return SandboxManager.checkDependenciesAsync();
