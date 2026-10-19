@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { withoutGitContext } from "./git-process-environment.mjs";
 
@@ -87,16 +87,47 @@ export function syncPublishedSchemas(root) {
 }
 
 /**
+ * Refuse a checkout that cannot answer "is this version tagged?": a shallow
+ * clone, a tree with no release tags, or no git repository at all. Without
+ * the tags every copy would look untagged and the freeze below would pass by
+ * not running.
+ */
+function requireReleaseTags(root, git) {
+  const remedy = "fetch the release tags (a full clone, or actions/checkout with fetch-depth: 0; "
+    + "locally, git fetch --unshallow --tags, or git fetch --tags when the clone is not shallow)";
+  const notCheckout = () =>
+    fail(`${root} is not a git checkout, so tagged mirror copies cannot be verified; ${remedy}`);
+  let toplevel;
+  let shallow;
+  try {
+    toplevel = git(["rev-parse", "--show-toplevel"]).toString("utf8").trim();
+    shallow = git(["rev-parse", "--is-shallow-repository"]).toString("utf8").trim();
+  } catch {
+    notCheckout();
+  }
+  // A tree nested inside some other repository answers git with that
+  // repository's tags, which say nothing about this tree's copies.
+  if (realpathSync(toplevel) !== realpathSync(root)) notCheckout();
+  if (shallow === "true") fail(`this checkout is shallow, so tagged mirror copies cannot be verified; ${remedy}`);
+  if (git(["tag", "--list", "v*"]).toString("utf8").trim() === "") {
+    fail(`this checkout has no v* release tags, so tagged mirror copies cannot be verified; ${remedy}`);
+  }
+}
+
+/**
  * The canonical protocol schema bytes the release tag `v<appVersion>` carries,
- * or `null` when this checkout has no such tag (a shallow clone fetches none;
- * an unreleased version has none yet). A tag that exists but does not carry the
- * protocol is answered with empty bytes, which match no recorded copy.
+ * or `null` when that version is not tagged (yet) — the normal case for the
+ * open candidate, including the release script's pre-tag sync. A tag that
+ * exists but does not carry the protocol is answered with empty bytes, which
+ * match no recorded copy. A checkout that has no release tags to consult is
+ * refused ({@link requireReleaseTags}).
  */
 function gitTaggedSchema(root, appVersion, protocol) {
   const tag = `v${appVersion}`;
   const git = (args) => execFileSync("git", ["-C", root, ...args], {
     env: withoutGitContext(), stdio: ["ignore", "pipe", "ignore"],
   });
+  requireReleaseTags(root, git);
   try {
     git(["rev-parse", "-q", "--verify", `refs/tags/${tag}^{commit}`]);
   } catch {

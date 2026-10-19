@@ -2757,8 +2757,11 @@ candidate", added by #2589). Exactly what happened, and what it means for this p
   (`scripts/lib/plugin-host-protocol-mirror.mjs`, `checkTaggedCopy`). Before that, a
   candidate left at a tagged version (`3/v0.14.0`, `publishedTag: null`, with
   `package.json` still at `0.14.0`) passed the check after being regenerated with a
-  later protocol change. CI checks out full history, so tags are present there; a
-  checkout without the tag skips the comparison for that version.
+  later protocol change. A version with no tag yet (the open candidate, including
+  the release script's pre-tag sync) is not compared; a checkout that cannot say
+  whether a version is tagged — shallow, without any `v*` tag, or not a git
+  repository — is refused, so CI checks out full history (`fetch-depth: 0`) in
+  every job that builds or checks the mirror.
 
 - **Between the v0.12.0 tag and #2589.** With `package.json` at `0.12.0` and `2/v0.12.0`
   at `publishedTag: null`, that copy was the candidate, and the check refused any `main`
