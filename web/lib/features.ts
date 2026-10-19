@@ -1,4 +1,4 @@
-import type { BentoBlock, Faq, Picture, SplitBlock } from "./content";
+import type { BentoBlock, Faq, Picture, Point, SplitBlock } from "./content";
 import type { Locale } from "./i18n";
 import type { Feature } from "./nav";
 
@@ -19,6 +19,25 @@ export interface FeaturePage {
   facts?: { title: string; items: { title: string; body: string }[] };
   /** Models only: the three ways to connect. */
   ways?: { title: string; body: string; items: { tag: string; title: string; points: string[] }[] };
+  /** Models only: every provider in the app's provider list (lib/providers.ts). */
+  providers?: {
+    eyebrow: string;
+    title: string;
+    body: string;
+    builtIn: string;
+    packages: string;
+    tags: { gateway: string; noKey: string; pkg: (v: string) => string; notListed: string };
+  };
+  /** Plugins only: what the official marketplace's catalog holds (lib/marketplace.ts). */
+  catalog?: {
+    eyebrow: string;
+    title: string;
+    body: string;
+    meta: (total: number, commit: string) => string;
+    kinds: Record<string, string>;
+    more: (n: number) => string;
+    points: Point[];
+  };
   faqTitle: string;
   faqs: Faq[];
   next: { doc: string; feature: string; download: string };
@@ -259,6 +278,14 @@ const ko: Pages = {
       pic: { k: "app-conversation", alt: "작업 모드에서 local-model이 export 명령에 --json 플래그를 넣고 테스트 6개가 통과했다고 답한 대화" },
       flip: true,
     },
+    providers: {
+      eyebrow: "제공자",
+      title: "앱이 아는 제공자 전부",
+      body: "앱의 제공자 목록에서 빌드할 때 그대로 읽어 옵니다. 다섯은 앱에 들어 있고, 나머지는 공식 마켓플레이스의 제공자 패키지로 추가한 뒤 설정 → 모델에서 연결합니다.",
+      builtIn: "앱에 포함",
+      packages: "제공자 패키지로 추가",
+      tags: { gateway: "게이트웨이", noKey: "키 없이 연결", pkg: (v) => `패키지 ${v}`, notListed: "공식 카탈로그에 없음" },
+    },
     faqTitle: "자주 묻는 질문",
     faqs: [
       { q: "Claude 구독으로 연결하면 무엇이 달라지나요?", a: "Ave는 내가 고른 공식 claude CLI를 앱 전용 설정 폴더로 실행하고, OAuth 토큰을 읽거나 API 키를 재사용하지 않습니다. CLI 자체 도구는 꺼지고 Ave의 도구만 MCP 브리지로 제공됩니다. 이 경로는 모델 선택과 이미지 첨부가 없습니다." },
@@ -335,6 +362,20 @@ const ko: Pages = {
         { title: "두 가지 실행 방식", body: "entry는 JavaScript 모듈, process는 표준 입출력의 JSON-RPC로 호스트와 대화하는 아무 언어의 프로그램입니다. process는 OS 샌드박스가 켜져 있어야 돌고 Windows에서는 지원하지 않습니다." },
         { title: "나눠서 내보내기", body: "게시자는 특정 버전을 회수하거나 설치본의 일부에 먼저 내보낼 수 있고, 사용자는 canaryOptIn 설정으로 카나리 버전을 받을 수 있습니다." },
         { title: "알림은 종류별로", body: "플러그인이 선언한 알림 종류는 설치할 때 플러그인이 정한 기본값으로 켜지거나 꺼지고, 종류마다 따로 끌 수 있습니다. 쿨다운과 빈도 제한을 지켜 카드나 OS 알림으로 옵니다. 플러그인이 제안한 대화는 수락해야 시작합니다." },
+      ],
+    },
+    catalog: {
+      eyebrow: "공식 마켓플레이스",
+      title: "공식 카탈로그에 있는 것",
+      body: "공식 마켓플레이스는 git 저장소 ken-jo/agent-marketplace이고, 그 안의 marketplace.json이 모든 패키지를 나열합니다. 아래 숫자와 이름은 그 파일을 기록한 커밋에서 그대로 읽었습니다.",
+      meta: (total, commit) => `패키지 ${total}개 · 카탈로그 커밋 ${commit}`,
+      kinds: { plugin: "플러그인", "agent-plugin": "에이전트 플러그인", mcp: "MCP 서버", skill: "스킬", agent: "에이전트", theme: "테마", language: "언어", provider: "모델 제공자" },
+      more: (n) => `외 ${n}개`,
+      points: [
+        ["커밋에 고정.", "카탈로그의 버전마다 설치할 git 커밋이 적혀 있고, 설치는 그 커밋에 묶입니다."],
+        ["코드는 릴리스 압축 파일로.", "플러그인 버전은 릴리스 압축 파일과 그 SHA-256을 적어 둬서, 카탈로그가 설치할 바이트를 정확히 고정합니다."],
+        ["필요한 버전을 선언.", "버전마다 필요한 가장 낮은 Ave 버전을 적고, 더 새 Ave가 필요한 버전은 설치하지 않습니다."],
+        ["네트워크도 선언.", "플러그인은 접속할 수 있는 주소를 적어 두고(최대 16개), 카탈로그가 그 목록을 함께 싣습니다."],
       ],
     },
     faqTitle: "자주 묻는 질문",
@@ -682,6 +723,14 @@ const en: Pages = {
       pic: { k: "app-conversation", alt: "Work mode where local-model added a --json flag to the export command and reports that all six tests pass" },
       flip: true,
     },
+    providers: {
+      eyebrow: "Providers",
+      title: "Every provider the app knows",
+      body: "Read at build time from the app’s own provider list. Five ship in the app; the rest are added as provider packages from the official marketplace and then connected in Settings → Model.",
+      builtIn: "Built in",
+      packages: "Added as a provider package",
+      tags: { gateway: "Gateway", noKey: "No key needed", pkg: (v) => `package ${v}`, notListed: "not in the official catalog" },
+    },
     faqTitle: "Questions",
     faqs: [
       { q: "What changes when I connect a Claude subscription?", a: "Ave launches the official claude CLI you select with an app-owned config folder, and never reads OAuth tokens or reuses API keys. The CLI’s own tools are off; only Ave’s tools are offered, through its MCP bridge. This route has no model choice and no image attachments." },
@@ -758,6 +807,20 @@ const en: Pages = {
         { title: "Two ways to run", body: "An entry plugin is a JavaScript module; a process plugin is a program in any language that talks to the host over JSON-RPC on standard input and output. Process plugins need the OS sandbox and are not supported on Windows." },
         { title: "Staged releases", body: "Publishers can yank a version or roll it out to a share of installs first, and you can opt into canary versions with the canaryOptIn setting." },
         { title: "Alerts by kind", body: "Each alert kind a plugin declares starts on or off at install as the plugin chooses, and you can switch each kind off. Alerts keep to cooldowns and rate limits, as cards or system notifications. A conversation a plugin suggests starts only when you accept it." },
+      ],
+    },
+    catalog: {
+      eyebrow: "Official marketplace",
+      title: "What the official catalog holds",
+      body: "The official marketplace is the git repository ken-jo/agent-marketplace, and its marketplace.json lists every package. The counts and names below are read from that file at a recorded commit.",
+      meta: (total, commit) => `${total} packages · catalog commit ${commit}`,
+      kinds: { plugin: "Plugins", "agent-plugin": "Agent plugins", mcp: "MCP servers", skill: "Skills", agent: "Agents", theme: "Themes", language: "Languages", provider: "Model providers" },
+      more: (n) => `and ${n} more`,
+      points: [
+        ["Pinned to commits.", "Every catalog version names the git commit it installs from, and the install is bound to that commit."],
+        ["Code ships as a release archive.", "A plugin version names its release archive and that archive’s SHA-256, so the catalog pins the exact bytes."],
+        ["Compatibility is declared.", "Each version states the oldest Ave it needs; a version that needs a newer Ave is not installed."],
+        ["So is network access.", "A plugin lists the hosts it may reach (sixteen at most), and the catalog carries that list."],
       ],
     },
     faqTitle: "Questions",

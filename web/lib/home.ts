@@ -23,7 +23,7 @@ export interface HomeCopy {
   };
   safety: BentoBlock;
   safetyFacts: { title: string; body: string }[];
-  plugins: { eyebrow: string; title: string; body: string; kinds: { name: string; body: string }[]; pic: Picture; cap: string };
+  plugins: { eyebrow: string; title: string; body: string; kinds: { name: string; body: string }[]; cap: string };
   changes: { eyebrow: string; title: string; body: string };
   get: { eyebrow: string; title: string; body: string; cta: string };
   footer: { tagline: string; copy: string; menu: string; skip: string };
@@ -167,8 +167,7 @@ const ko: HomeCopy = {
       { name: "메시징 연결", body: "원격 대화 창구" },
       { name: "로컬 폴더", body: "개발 중인 패키지" },
     ],
-    pic: { k: "install-review", alt: "Nord 테마 패키지의 설치 검토 창. 출처 폴더, 내용 해시, 호환 버전, 설치할 버전 1.0.1이 보이는 화면" },
-    cap: "설치하기 전에 출처, 내용 해시, 호환 버전을 검토합니다.",
+    cap: "공식 마켓플레이스 카탈로그에 실제로 있는 패키지를 종류마다 하나씩, 설치 검토 창에 나오는 항목(출처, 커밋, 호환, 버전)으로 보여 줍니다. 글꼴, 메시징 연결, 로컬 폴더는 공식 카탈로그에 패키지가 없습니다.",
   },
   changes: {
     eyebrow: "변경 기록",
@@ -327,13 +326,12 @@ const en: HomeCopy = {
       { name: "Messaging", body: "Remote chat connections" },
       { name: "Local folders", body: "Packages you are building" },
     ],
-    pic: { k: "install-review", alt: "The install review for the Nord theme package showing its source folder, contents hash, compatibility and version 1.0.1" },
-    cap: "Before installing, review the source, the contents hash and the compatible version.",
+    cap: "One real package of each kind from the official marketplace’s catalog, with what the install review shows: source, commit, compatibility and version. Fonts, messaging connections and local folders have no package in the official catalog.",
   },
   changes: {
     eyebrow: "Changelog",
     title: "The latest release",
-    body: "Every version’s changes, as written in the repository’s CHANGELOG.md.",
+    body: "Every version’s changes, from the repository’s CHANGELOG.md.",
   },
   get: {
     eyebrow: "Download",

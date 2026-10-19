@@ -26,6 +26,27 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
  * `MotionConfig reducedMotion="user"` turns transform animations off for
  * visitors who ask for reduced motion.
  */
+/**
+ * Wide screen, script on, motion allowed: where the home page's scroll-linked
+ * layouts (the feature tour, the package stack) switch on. Kept equal to the
+ * media query in app/globals.css.
+ */
+export const PINNED = "(min-width: 1024px) and (prefers-reduced-motion: no-preference) and (scripting: enabled)";
+
+/** Whether PINNED matches now (false on the server and before hydration), following changes. */
+export function usePinned(): boolean {
+  const reduce = useReducedMotion();
+  const [wide, setWide] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia(PINNED);
+    const sync = () => setWide(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  return wide && !reduce;
+}
+
 const loadFeatures = () => import("./motion-features").then((mod) => mod.default);
 
 export function MotionRoot({ children }: { children: ReactNode }) {

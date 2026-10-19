@@ -82,7 +82,7 @@ function run(toks: Tok[], i: number, closer: string | null): { out: Inline[]; ne
   return { out, next: i, closed: false };
 }
 
-function inline(source: string): Inline[] {
+export function inline(source: string): Inline[] {
   return run(tokens(source), 0, null).out;
 }
 

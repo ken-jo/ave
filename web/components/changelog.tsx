@@ -1,4 +1,5 @@
 import { releases, type ChangeBlock, type Inline, type ListItem, type Release } from "@/lib/changelog";
+import { englishRelease, staleEnglishNotes } from "@/lib/changelog-en";
 import { href, type Locale } from "@/lib/i18n";
 import { page } from "@/lib/nav";
 import { pagesCopy } from "@/lib/pages";
@@ -45,7 +46,30 @@ function Block({ b }: { b: ChangeBlock }) {
   }
 }
 
-function ReleaseEntry({ r }: { r: Release }) {
+/** One release in English: a bullet per item, its headline in bold and its points beneath. */
+function EnglishBody({ r }: { r: Release }) {
+  const { items } = englishRelease(r);
+  return (
+    <ul className="cl-items">
+      {items.map((it, i) => (
+        <li key={i}>
+          <strong>
+            <Text parts={it.title} />
+          </strong>
+          <ul>
+            {it.points.map((p, j) => (
+              <li key={j}>
+                <Text parts={p} />
+              </li>
+            ))}
+          </ul>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ReleaseEntry({ r, locale }: { r: Release; locale: Locale }) {
   return (
     <section className="cl-version" id={r.id} aria-labelledby={`h-${r.id}`}>
       <div>
@@ -53,9 +77,7 @@ function ReleaseEntry({ r }: { r: Release }) {
         <p className="cl-date">{r.date}</p>
       </div>
       <div className="cl-body">
-        {r.blocks.map((b, i) => (
-          <Block key={i} b={b} />
-        ))}
+        {locale === "en" ? <EnglishBody r={r} /> : r.blocks.map((b, i) => <Block key={i} b={b} />)}
       </div>
     </section>
   );
@@ -64,6 +86,8 @@ function ReleaseEntry({ r }: { r: Release }) {
 export function ChangelogPage({ locale }: { locale: Locale }) {
   const c = pagesCopy(locale).changelog;
   const all = releases();
+  const stale = staleEnglishNotes(all.map((r) => r.name));
+  if (stale.length) throw new Error(`lib/changelog-en.ts has notes for releases CHANGELOG.md does not list: ${stale.join(", ")}`);
   return (
     <main id="main">
       <section className="hero" aria-labelledby="title">
@@ -73,9 +97,9 @@ export function ChangelogPage({ locale }: { locale: Locale }) {
           {c.note ? <p className="hero-note">{c.note}</p> : null}
         </div>
       </section>
-      <div className="wrap" lang={locale === "en" ? "ko" : undefined}>
+      <div className="wrap">
         {all.map((r) => (
-          <ReleaseEntry key={r.id} r={r} />
+          <ReleaseEntry key={r.id} r={r} locale={locale} />
         ))}
       </div>
     </main>
@@ -88,15 +112,18 @@ export function ChangelogTeaser({ locale, eyebrow, title, body }: { locale: Loca
   const latest = releases()[0]!;
   const list = latest.blocks.find((b): b is Extract<ChangeBlock, { kind: "list" }> => b.kind === "list");
   if (!list) throw new Error(`${latest.name} has no list of changes`);
-  const heads = list.items.slice(0, 4).map((it) => {
-    const first = it.text[0];
-    if (!first || first.t !== "strong") throw new Error(`${latest.name}: an item does not start with a bold headline`);
-    return first.c;
-  });
+  const heads =
+    locale === "en"
+      ? englishRelease(latest).items.slice(0, 4).map((it) => it.title)
+      : list.items.slice(0, 4).map((it) => {
+          const first = it.text[0];
+          if (!first || first.t !== "strong") throw new Error(`${latest.name}: an item does not start with a bold headline`);
+          return first.c;
+        });
   return (
     <>
       <SecHead id="changes" eyebrow={eyebrow} title={title} body={body} />
-      <article className="release" lang={locale === "en" ? "ko" : undefined}>
+      <article className="release">
         <p className="release-meta">
           {w.latest} · {latest.name} · {latest.date}
         </p>
@@ -108,7 +135,7 @@ export function ChangelogTeaser({ locale, eyebrow, title, body }: { locale: Loca
           ))}
         </ul>
         <p>
-          <a className="more" href={`${href(locale, "/changelog/")}#${latest.id}`} lang={locale}>
+          <a className="more" href={`${href(locale, "/changelog/")}#${latest.id}`}>
             {w.readRelease(latest.name)}
           </a>
         </p>
