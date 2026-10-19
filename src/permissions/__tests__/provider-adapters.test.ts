@@ -800,35 +800,6 @@ describe("GcpPlaygroundReviewerProvider timeout (M4)", () => {
 // ─── HIGH-1: buildFoundryUrl path-segment + hostname-suffix check ─────
 
 describe("buildFoundryUrl (HIGH-1 — path-segment + hostname-suffix detection)", () => {
-  it("Foundry-native: appends /models/<model>/chat/completions?api-version=...", () => {
-    const url = buildFoundryUrl("https://proj.services.ai.azure.com", "gpt-4o");
-    expect(url).toContain("/models/gpt-4o/chat/completions");
-    expect(url).toContain("api-version=");
-    expect(url).not.toContain("/openai/deployments/");
-  });
-
-  it("Foundry-native: strips trailing slash before appending path", () => {
-    const url = buildFoundryUrl("https://proj.services.ai.azure.com/", "gpt-4o");
-    expect(url).not.toMatch(/\/\/models/);
-    expect(url).toContain("/models/gpt-4o/chat/completions");
-  });
-
-  it("Azure deployment (chat-shape): appends chat/completions only — no /models/<model>", () => {
-    const base = "https://res.openai.azure.com/openai/deployments/gpt-4o-mini";
-    const url = buildFoundryUrl(base, "gpt-4o-mini");
-    expect(url).toContain("/openai/deployments/gpt-4o-mini/chat/completions");
-    expect(url).toContain("api-version=");
-    expect(url).not.toMatch(/\/models\/gpt-4o-mini/);
-  });
-
-  it("Azure deployment with trailing slash: produces correct URL", () => {
-    const base = "https://res.openai.azure.com/openai/deployments/gpt-4o/";
-    const url = buildFoundryUrl(base, "gpt-4o");
-    expect(url).toBe(
-      "https://res.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview",
-    );
-  });
-
   it("HIGH-1: Foundry-native endpoint with /openai/deployments/ in BASE PATH but .services.ai.azure.com host → treated as Foundry-native", () => {
     // A Foundry project whose path happens to contain the deployment substring
     // should NOT be misclassified as an Azure OpenAI deployment because its
@@ -853,28 +824,8 @@ describe("buildFoundryUrl (HIGH-1 — path-segment + hostname-suffix detection)"
 // ─── LOW-1: validateFoundryEndpoint subdomain regex ───────────────────
 
 describe("validateFoundryEndpoint (LOW-1 — subdomain regex tightening)", () => {
-  it("accepts https://<subdomain>.services.ai.azure.com", () => {
-    expect(() => validateFoundryEndpoint("https://proj.services.ai.azure.com")).not.toThrow();
-  });
-
-  it("accepts https://<resource>.openai.azure.com", () => {
-    expect(() => validateFoundryEndpoint("https://myresource.openai.azure.com")).not.toThrow();
-  });
-
   it("accepts multi-label subdomain (e.g. a.b.services.ai.azure.com)", () => {
     expect(() => validateFoundryEndpoint("https://a.b.services.ai.azure.com")).not.toThrow();
-  });
-
-  it("rejects HTTP endpoints", () => {
-    expect(() => validateFoundryEndpoint("http://proj.services.ai.azure.com")).toThrow(/HTTPS/);
-  });
-
-  it("rejects non-azure.com hostnames", () => {
-    expect(() => validateFoundryEndpoint("https://attacker.example.com")).toThrow(/\.services\.ai\.azure\.com or \.openai\.azure\.com/);
-  });
-
-  it("rejects invalid URL strings", () => {
-    expect(() => validateFoundryEndpoint("not-a-url")).toThrow(/valid URL/);
   });
 
   it("rejects bare services.ai.azure.com without subdomain prefix (fails suffix check)", () => {

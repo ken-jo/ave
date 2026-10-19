@@ -30,8 +30,15 @@ describe("validateSender", () => {
     expect(validateSender(foreignFrameEvent("http://127.0.0.1:5173/"))).toBe(true);
   });
 
+  // The frame origin is URL-parsed, not substring-matched: a former
+  // `startsWith("http://localhost")` check accepted attacker hosts like these.
   it("rejects attacker host that starts with 'localhost'", () => {
     expect(validateSender(foreignFrameEvent("http://localhost.attacker.com/"))).toBe(false);
+    expect(validateSender(foreignFrameEvent("https://localhost.attacker.com/"))).toBe(false);
+  });
+
+  it("rejects https://localhost (non-http scheme not in allowlist)", () => {
+    expect(validateSender(foreignFrameEvent("https://localhost/"))).toBe(false);
   });
 
   it("rejects arbitrary remote origin", () => {

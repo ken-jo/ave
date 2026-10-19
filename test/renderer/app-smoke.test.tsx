@@ -24,14 +24,6 @@ describe("App smoke (Phase 1 infra)", () => {
     await waitFor(() => expect(api.onChatStream).toHaveBeenCalled());
   });
 
-  it("receives stream events via emitChatStream without throwing", async () => {
-    const { emitChatStream } = await renderApp();
-    await act(async () => {
-      emitChatStream({ type: "text", text: "hello" });
-    });
-    expect(true).toBe(true);
-  });
-
   it("OverlayCard appears when onRoutineFired fires", async () => {
     // Routine cards are addressed to the Suggestions conversation; it is the one open here.
     const { container, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });

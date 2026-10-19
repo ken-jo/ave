@@ -38,6 +38,7 @@ export interface BaseCandidate {
 export interface GitResult {
   status: number | null;
   stdout?: string;
+  stderr?: string;
 }
 export type GitRunner = (args: string[]) => GitResult;
 
