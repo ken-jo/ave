@@ -1384,6 +1384,8 @@ export class MemoryManager implements PromptMemorySource {
    * swap handlers, or downgrade the task into an ordinary resumable sub-agent.
    */
   private readonly detachedWireTerminalTombstones = new Map<string, DetachedWireTerminalTombstone>();
+  /** Pane tab → its unarchived sessions; null until `findPaneSession` first asks. */
+  private paneSessions: Map<string, Set<string>> | null = null;
   private persistentContextWatchers: FSWatcher[] = [];
   private persistentContextReloadTimer: ReturnType<typeof setTimeout> | undefined;
   private persistentContextPollTimer: ReturnType<typeof setInterval> | undefined;
@@ -2732,6 +2734,7 @@ export class MemoryManager implements PromptMemorySource {
         this.rememberDetachedWireTerminal(sessionId, safe);
       }
       writeUtf8FileAtomicSync(targetPath, JSON.stringify(safe, null, 2));
+      this.notePaneSession(sessionId, safe);
     });
     // Metadata (sessionKind/routineId/projectRoot/title) is denormalized into
     // the FTS row (#1500 / E3) — re-index whenever it changes, not just on
@@ -3012,6 +3015,49 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   /**
+   * The conversation of the pane chat for workspace tab `paneTabId`: the newest
+   * unarchived session whose metadata names that tab, or undefined. Answered
+   * from an index of pane tabs built by one metadata scan on first use and
+   * kept by every metadata write and session delete; only the candidates'
+   * transcript files are stat'ed, never read.
+   */
+  findPaneSession(paneTabId: string): string | undefined {
+    let newest: { id: string; mtimeMs: number } | undefined;
+    for (const id of this.paneSessionIndex().get(paneTabId) ?? []) {
+      const stat = statPathIfPresent(join(this.sessionsDir, `${id}.jsonl`));
+      if (!stat) continue;
+      if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { id, mtimeMs: stat.mtimeMs };
+    }
+    return newest?.id;
+  }
+
+  private paneSessionIndex(): Map<string, Set<string>> {
+    if (this.paneSessions) return this.paneSessions;
+    const index = new Map<string, Set<string>>();
+    this.paneSessions = index;
+    for (const file of readdirIfPresent(this.sessionsDir)) {
+      if (!file.endsWith(".meta.json")) continue;
+      const id = file.slice(0, -".meta.json".length);
+      if (isValidSessionId(id)) this.notePaneSession(id, this.loadSessionMetadata(id));
+    }
+    return index;
+  }
+
+  /** Keep the pane index on `sessionId`'s metadata as just written (null: removed). */
+  private notePaneSession(sessionId: string, metadata: SessionMetadata | null): void {
+    const index = this.paneSessions;
+    if (!index) return;
+    for (const [tabId, ids] of index) {
+      if (ids.delete(sessionId) && ids.size === 0) index.delete(tabId);
+    }
+    const tabId = metadata?.paneTabId;
+    if (!tabId || metadata.archivedAt !== undefined) return;
+    const ids = index.get(tabId) ?? new Set<string>();
+    ids.add(sessionId);
+    index.set(tabId, ids);
+  }
+
+  /**
    * Sub-agents spawned by one parent session, newest first.
    *
    * The renderer's sub-agent panel is fed entirely by the live `agent_spawn`
@@ -3025,25 +3071,6 @@ export class MemoryManager implements PromptMemorySource {
    * children, and reading every child's `.jsonl` to render a list would make
    * session load pay for transcripts the user may never open.
    */
-  /**
-   * The conversation of the pane chat for workspace tab `paneTabId`: the newest
-   * unarchived session whose metadata names that tab, or undefined. Metadata
-   * only — no transcript is read to answer it.
-   */
-  findPaneSession(paneTabId: string): string | undefined {
-    let newest: { id: string; mtimeMs: number } | undefined;
-    for (const file of readdirIfPresent(this.sessionsDir)) {
-      if (!file.endsWith(".jsonl")) continue;
-      const id = file.slice(0, -".jsonl".length);
-      if (!isValidSessionId(id)) continue;
-      const metadata = this.loadSessionMetadata(id);
-      if (metadata?.paneTabId !== paneTabId || metadata.archivedAt !== undefined) continue;
-      const stat = statPathIfPresent(join(this.sessionsDir, file));
-      if (!stat) continue;
-      if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { id, mtimeMs: stat.mtimeMs };
-    }
-    return newest?.id;
-  }
 
   listSubAgentSessionsForOrigin(originSessionId: string): RestoredSubAgentSession[] {
     if (!originSessionId) return [];
@@ -3271,6 +3298,7 @@ export class MemoryManager implements PromptMemorySource {
       unlinkIfPresent(jsonlPath);
       const metaPath = join(this.sessionsDir, `${sessionId}.meta.json`);
       unlinkIfPresent(metaPath);
+      this.notePaneSession(sessionId, null);
       const sessionDir = join(this.sessionsDir, sessionId);
       try {
         rmSync(sessionDir, { recursive: true, force: true });
