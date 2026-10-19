@@ -49,7 +49,33 @@ import { dlpSafeCandidate } from "../shared/dlp-safe-id.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { SHA256_HEX, sha256Hex } from "../lib/hex-digest-equal.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
+import {
+  appendJsonlRecords,
+  isIdPrefix,
+  parseTurnInflightRecord,
+  recoverInterruptedTurn,
+  removeTurnInflightRecord,
+  rowIdsOf,
+  turnInflightPath,
+  writeTurnInflightRecord,
+  type TurnInflightPartial,
+} from "./session-turn-journal.js";
 const log = createLogger("memory");
+/**
+ * What this process last wrote to each session transcript: the row ids in
+ * file order plus the file's size and mtime right after the write. An append
+ * is only taken when the ids it was given extend this list AND the file is
+ * still exactly what was written — any other writer (another manager on the
+ * same directory, a hand edit) changes size or mtime and forces a rewrite.
+ * Keyed by transcript path because auxiliary managers share session dirs.
+ */
+const transcriptWriteStates = new Map<string, { ids: string[]; size: number; mtimeMs: number }>();
+/**
+ * Sessions whose turn journal is open in THIS process, keyed by sidecar path.
+ * A sidecar for one of these is the running turn's, not an orphan, so a read
+ * of the session must not fold it in as an interrupted turn.
+ */
+const liveTurnJournals = new Map<string, number>();
 // Auxiliary managers can share the same host-owned session directory.
 const unpublishedCapturesByDirectory = new Map<string, Map<string, Set<string>>>();
 
@@ -801,6 +827,20 @@ function legacyRowId(sessionId: string, index: number, taken: ReadonlySet<string
     if (!taken.has(candidate)) return candidate;
   }
   throw new Error("[legacy-row-id] could not derive a redaction-safe row identity");
+}
+
+/**
+ * Deterministic id for a row that turn recovery synthesizes on read. Same
+ * reasoning as {@link legacyRowId}: the row is derived from files, two readers
+ * must name it identically, and the next save persists it under that name.
+ */
+function derivedRowId(sessionId: string, seed: string): string {
+  const candidate = dlpSafeCandidate(
+    (attempt) => `row-${sha256Hex(`${sessionId}:${seed}:${attempt}`).slice(0, 32)}`,
+    LEGACY_ROW_ID_MAX_DLP_ATTEMPTS,
+  );
+  if (candidate === null) throw new Error("[derived-row-id] could not derive a redaction-safe row identity");
+  return candidate;
 }
 
 /**
@@ -2182,13 +2222,156 @@ export class MemoryManager implements PromptMemorySource {
     }
     const targetPath = join(this.sessionsDir, `${sessionId}.jsonl`);
     await withFileLock(targetPath, async () => {
-      const prepared = this.prepareSessionMessagesForDisk(sessionId, messages);
-      const lines = prepared.messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
-      writeFileSync(targetPath, lines, "utf-8");
-      this.cleanupToolResultArtifacts(sessionId, prepared.keepArtifactKeys);
-      this.cleanupToolOutputArtifacts(sessionId, prepared.keepCaptureIds);
+      this.writeSessionTranscriptLocked(sessionId, targetPath, messages);
     });
+    // A whole-history save is authoritative for everything a crashed turn left
+    // behind: the recovered rows are in `messages` now, so the orphaned
+    // sidecar has nothing more to say. A running turn's sidecar stays.
+    if (!this.isTurnJournalLive(sessionId)) {
+      removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
+    }
     this.indexSessionForSearch(sessionId, messages);
+  }
+
+  /**
+   * Rewrite the transcript from `messages`. Temp + fsync + rename, so a process
+   * killed mid-rewrite leaves the previous complete file rather than a
+   * truncated one — the rewrite is what every append is eventually compacted
+   * into, so it must be at least as crash-safe as the appends. Caller holds the
+   * transcript's file lock.
+   */
+  private writeSessionTranscriptLocked(sessionId: string, targetPath: string, messages: unknown[]): void {
+    const prepared = this.prepareSessionMessagesForDisk(sessionId, messages);
+    const lines = prepared.messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
+    writeUtf8FileAtomicSync(targetPath, lines);
+    this.cleanupToolResultArtifacts(sessionId, prepared.keepArtifactKeys);
+    this.cleanupToolOutputArtifacts(sessionId, prepared.keepCaptureIds);
+    const ids = rowIdsOf(messages);
+    const stat = statPathIfPresent(targetPath);
+    if (ids && stat) {
+      transcriptWriteStates.set(targetPath, { ids, size: stat.size, mtimeMs: stat.mtimeMs });
+    } else {
+      transcriptWriteStates.delete(targetPath);
+    }
+  }
+
+  /**
+   * Make a running turn's progress durable without the cost of a save.
+   *
+   * `readMessages` yields the whole in-memory history (pass the reader, not a
+   * snapshot, from a live turn). When it extends what this
+   * process last wrote (same row ids, in order, file untouched since), only
+   * the new rows are appended — through the same disk transform a save uses,
+   * so an oversized or image-bearing tool_result is stored exactly as a save
+   * would store it. Otherwise (compaction rewrote the prefix, a host
+   * injection was rolled back, another writer touched the file) the transcript
+   * is rewritten from history. Either way the file then equals history, and
+   * the turn's final `saveSession` rewrites it with the same row ids, so a
+   * completed turn never carries a duplicate.
+   *
+   * No search reindex here: that is a full-text rebuild of the session row and
+   * stays with `saveSession` at the turn's end.
+   */
+  async appendSessionProgress(
+    sessionId: string,
+    readMessages: unknown[] | (() => unknown[]),
+  ): Promise<"appended" | "rewritten" | "unchanged"> {
+    if (!isValidSessionId(sessionId)) {
+      throw new Error(`appendSessionProgress: invalid sessionId "${sessionId}"`);
+    }
+    const targetPath = join(this.sessionsDir, `${sessionId}.jsonl`);
+    return withFileLock(targetPath, async () => {
+      // Read history only once the lock is held. A snapshot taken before
+      // waiting could be older than a save that won the lock first, and
+      // writing it would undo that save (a rolled-back host injection
+      // reappearing on disk).
+      const messages = typeof readMessages === "function" ? readMessages() : readMessages;
+      const ids = rowIdsOf(messages);
+      const known = transcriptWriteStates.get(targetPath);
+      const onDisk = statPathIfPresent(targetPath);
+      if (
+        ids
+        && known
+        && onDisk
+        && onDisk.size === known.size
+        && onDisk.mtimeMs === known.mtimeMs
+        && isIdPrefix(known.ids, ids)
+      ) {
+        if (ids.length === known.ids.length) return "unchanged";
+        const prepared = this.prepareSessionMessagesForDisk(sessionId, messages.slice(known.ids.length));
+        const after = await appendJsonlRecords(targetPath, prepared.messages);
+        transcriptWriteStates.set(targetPath, { ids, ...after });
+        return "appended";
+      }
+      this.writeSessionTranscriptLocked(sessionId, targetPath, messages);
+      return "rewritten";
+    });
+  }
+
+  /**
+   * Open the turn journal for a session: from here until
+   * {@link endTurnJournal}, the sidecar is the running turn's in-flight
+   * marker. Written before the first provider call, so a process that dies
+   * at any later point leaves evidence that the turn did not finish.
+   */
+  async beginTurnJournal(sessionId: string, startedAt: number): Promise<void> {
+    if (!isValidSessionId(sessionId)) {
+      throw new Error(`beginTurnJournal: invalid sessionId "${sessionId}"`);
+    }
+    const path = turnInflightPath(this.sessionsDir, sessionId);
+    liveTurnJournals.set(path, (liveTurnJournals.get(path) ?? 0) + 1);
+    await writeTurnInflightRecord(path, { v: 1, startedAt });
+  }
+
+  /** Replace the running turn's partial-round snapshot; `undefined` keeps only the in-flight marker. */
+  async writeTurnPartial(sessionId: string, startedAt: number, partial: TurnInflightPartial | undefined): Promise<void> {
+    if (!isValidSessionId(sessionId)) {
+      throw new Error(`writeTurnPartial: invalid sessionId "${sessionId}"`);
+    }
+    await writeTurnInflightRecord(
+      turnInflightPath(this.sessionsDir, sessionId),
+      partial ? { v: 1, startedAt, partial } : { v: 1, startedAt },
+    );
+  }
+
+  /** Close the turn journal: the turn reached its end and its rows are in the transcript. */
+  endTurnJournal(sessionId: string): void {
+    if (!isValidSessionId(sessionId)) return;
+    const path = turnInflightPath(this.sessionsDir, sessionId);
+    const remaining = (liveTurnJournals.get(path) ?? 1) - 1;
+    if (remaining > 0) {
+      liveTurnJournals.set(path, remaining);
+      return;
+    }
+    liveTurnJournals.delete(path);
+    removeTurnInflightRecord(path);
+  }
+
+  private isTurnJournalLive(sessionId: string): boolean {
+    return liveTurnJournals.has(turnInflightPath(this.sessionsDir, sessionId));
+  }
+
+  /**
+   * The transcript as the user should see it after the process that ran its
+   * last turn died: an orphaned sidecar is folded in by
+   * {@link recoverInterruptedTurn}. A sidecar whose turn is running in this
+   * process is left alone.
+   */
+  private withRecoveredInterruptedTurn(sessionId: string, messages: unknown[]): unknown[] {
+    if (this.isTurnJournalLive(sessionId)) return messages;
+    const raw = readUtf8FileIfPresent(turnInflightPath(this.sessionsDir, sessionId));
+    if (raw === null) return messages;
+    const record = parseTurnInflightRecord(raw);
+    if (!record) {
+      log.warn({ sessionId }, "ignoring unreadable turn in-flight record");
+      return messages;
+    }
+    return recoverInterruptedTurn(
+      messages,
+      record,
+      (seed) => derivedRowId(sessionId, seed),
+      { toolResultUnknown: t("be_conversationLoop.hostExitToolResultUnknown") },
+    );
   }
 
   /**
@@ -2439,7 +2622,10 @@ export class MemoryManager implements PromptMemorySource {
     }
     return stampLegacyRowIds(
       sessionId,
-      this.recoverLatestCheckpointUserIfMissing(sessionId, messages).map((message) => this.normalizeStoredOutputCapture(sessionId, message)),
+      this.recoverLatestCheckpointUserIfMissing(
+        sessionId,
+        this.withRecoveredInterruptedTurn(sessionId, messages),
+      ).map((message) => this.normalizeStoredOutputCapture(sessionId, message)),
     );
   }
 
@@ -3242,6 +3428,7 @@ export class MemoryManager implements PromptMemorySource {
       this.detachedWireTerminalTombstones.delete(sessionId);
       const jsonlPath = join(this.sessionsDir, `${sessionId}.jsonl`);
       unlinkIfPresent(jsonlPath);
+      transcriptWriteStates.delete(jsonlPath);
       const metaPath = join(this.sessionsDir, `${sessionId}.meta.json`);
       unlinkIfPresent(metaPath);
       const sessionDir = join(this.sessionsDir, sessionId);
@@ -4343,6 +4530,11 @@ export class MemoryManager implements PromptMemorySource {
       const role = (message as Record<string, unknown>)?.role;
       const content = (message as Record<string, unknown>)?.content;
       if (typeof content !== "string" || content.trim().length === 0) continue;
+      // Continue after an interrupted turn stores the host's resume
+      // instruction as the user row; the session is still about what the user
+      // asked before it, so that row names neither the title nor the preview.
+      const meta = (message as Record<string, unknown>)?.meta;
+      if (isRecord(meta) && meta.resumesInterruptedTurn === true) continue;
       const normalized = content.replace(/\s+/g, " ").trim();
       lastContent = normalized;
       if (role === "user") lastUser = normalized;

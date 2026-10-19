@@ -280,6 +280,13 @@ export type ChatEntry =
        * `historyToEntries` never sets it, so a reloaded transcript has none.
        */
       awaitingHostId?: true;
+      /**
+       * Rebuilt from persisted history (`historyToEntries`), not typed or
+       * announced in this renderer's lifetime. A restored question with nothing
+       * after it is a turn the previous app run never answered. Display state
+       * only — never persisted.
+       */
+      restored?: true;
     }
   | {
       kind: "reasoning";
@@ -310,6 +317,8 @@ export type ChatEntry =
       /** The renderer settled because the turn failed, not because it completed. */
       terminalError?: true;
       interrupted?: boolean;
+      /** The interruption was the app exiting mid-turn (see MessageMeta.interruptedBy). */
+      interruptedBy?: "host-exit";
       /**
        * Entry was rebuilt from persisted history rather than produced by the
        * live stream. Stamped ONLY by the disk-replay path (historyToEntries);
@@ -869,6 +878,8 @@ export function finalizeStreamingAssistant(
      * clears it (an abort is a fact about the turn, not about the render).
      */
     interrupted?: boolean;
+    /** Sticky like `interrupted`: the app exiting is what cut this turn short. */
+    interruptedBy?: "host-exit";
     /**
      * Issue #2113 — the entry is being rebuilt from persisted history.
      * Passed ONLY by the disk-replay caller (historyToEntries); live
@@ -921,6 +932,9 @@ export function finalizeStreamingAssistant(
           ...(opts?.interrupted === true || assistant.interrupted === true
             ? { interrupted: true }
             : {}),
+          ...(opts?.interruptedBy ?? assistant.interruptedBy
+            ? { interruptedBy: opts?.interruptedBy ?? assistant.interruptedBy }
+            : {}),
           ...(opts?.restored === true || assistant.restored === true
             ? { restored: true }
             : {}),
@@ -957,6 +971,9 @@ export function finalizeStreamingAssistant(
       ...(opts?.interrupted === true || assistant.interrupted === true
         ? { interrupted: true }
         : {}),
+      ...(opts?.interruptedBy ?? assistant.interruptedBy
+        ? { interruptedBy: opts?.interruptedBy ?? assistant.interruptedBy }
+        : {}),
       ...(opts?.restored === true || assistant.restored === true
         ? { restored: true }
         : {}),
@@ -964,7 +981,11 @@ export function finalizeStreamingAssistant(
     return next;
   }
 
-  if (!fallbackText) {
+  // A replayed host-exit marker has no text by design — it only says where
+  // the app's exit stopped the turn — and still needs its card: the badge is
+  // the record, and the composer's Continue offer keys off it.
+  const isRestoredExitMarker = opts?.restored === true && opts.interruptedBy === "host-exit";
+  if (!fallbackText && !isRestoredExitMarker) {
     return next;
   }
 
@@ -987,6 +1008,7 @@ export function finalizeStreamingAssistant(
     ...(opts?.messageId !== undefined ? { messageId: opts.messageId } : {}),
     ...(opts?.systemNotice !== undefined ? { systemNotice: opts.systemNotice } : {}),
     ...(opts?.interrupted === true ? { interrupted: true } : {}),
+    ...(opts?.interruptedBy !== undefined ? { interruptedBy: opts.interruptedBy } : {}),
     ...(opts?.restored === true ? { restored: true } : {}),
   });
   return next;

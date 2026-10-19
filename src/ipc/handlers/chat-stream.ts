@@ -73,6 +73,8 @@ export async function runStreamedTurn(
     unattendedAuthority?: UnattendedTurnAuthority;
     /** Carried by the replay paths so a folded turn keeps the row the user saw. */
     displayText?: string;
+    /** This turn's user row is Continue after an interrupted turn, not a new request. */
+    resumesInterruptedTurn?: true;
     /**
      * The host started this turn on its own (a session goal reviving itself),
      * so no surface echoed a row for it and each must draw the announced one.
@@ -350,6 +352,7 @@ export async function runStreamedTurn(
         ? { unattendedAuthority: options.unattendedAuthority }
         : {}),
       ...(options.displayText !== undefined ? { displayText: options.displayText } : {}),
+      ...(options.resumesInterruptedTurn ? { resumesInterruptedTurn: true as const } : {}),
       userMessageId,
     },
   );

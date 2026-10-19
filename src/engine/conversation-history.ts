@@ -39,7 +39,20 @@ export class ConversationHistory {
     const stored = stampMessageId(stampCreatedAt(applyToolResultCap(message)));
     this.messages.push(stored);
     this.trim();
+    this.appendObserver?.(stored);
     return stored;
+  }
+
+  private appendObserver: ((message: StoredMessage) => void) | undefined;
+
+  /**
+   * Observe every row appended from here on — the turn journal's hook for
+   * making each completed row durable the moment it exists. One observer at a
+   * time (a history belongs to one running turn); `undefined` detaches. The
+   * observer must not throw or mutate history: it only schedules a write.
+   */
+  setAppendObserver(observer: ((message: StoredMessage) => void) | undefined): void {
+    this.appendObserver = observer;
   }
 
   /**

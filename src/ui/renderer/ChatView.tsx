@@ -44,6 +44,8 @@ import { createPortal } from "react-dom";
 import { usePanePanelSlot } from "./components/PaneFrame.js";
 import { computeToolActivity } from "./utils/tool-activity.js";
 import { collectPromptHistory } from "./utils/prompt-history.js";
+import { interruptedTurnOffer } from "./utils/history.js";
+import { InterruptedTurnBanner } from "./components/InterruptedTurnBanner.js";
 import { SuggestedTasksPanel } from "./components/SuggestedTasksPanel.js";
 import type { SuggestedTask } from "./suggested-tasks/provider.js";
 import { sidePanelLayout, useContainerNarrow } from "./hooks/use-container-narrow.js";
@@ -85,7 +87,12 @@ export interface ChatViewProps {
   onReturnHere: (idx: number) => Promise<{ ok: boolean }>;
   onToggleStar: (idx: number) => void | Promise<void>;
   onRetryEffort: () => void | Promise<void>;
-  onContinueFromLastUser?: (sessionId: string) => void | Promise<void>;
+  /**
+   * `userBubble`: the bubble to show for the turn Continue starts. Set when the
+   * host appends a new user row (resuming an interrupted turn) rather than
+   * re-running the existing one.
+   */
+  onContinueFromLastUser?: (sessionId: string, opts?: { userBubble?: string }) => void | Promise<void>;
   isEntryStarred: (idx: number) => string | null;
   /** Abort current streaming turn */
   onAbort: () => void | Promise<void>;
@@ -418,6 +425,14 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // OS-open channel, so that menu item is hidden for files).
   const toolActivity = useMemo(() => computeToolActivity(entries), [entries]);
   const promptHistory = useMemo(() => collectPromptHistory(entries), [entries]);
+  // A session whose last turn the previous app run never finished. Offered,
+  // never auto-run: the user decides whether the model picks it back up.
+  const interruptedOffer = useMemo(
+    () => (streaming || viewMode || !currentSessionId || !onContinueFromLastUser
+      ? null
+      : interruptedTurnOffer(entries)),
+    [entries, streaming, viewMode, currentSessionId, onContinueFromLastUser],
+  );
   // A suggested task fills the composer and focuses it; the user reviews
   // (and replaces any `[placeholder]`) before sending.
   const handleChooseSuggestedTask = useCallback((task: SuggestedTask) => {
@@ -936,6 +951,18 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
           surface, so there is no hard line / pink bar between the messages and
           the composer. The composer box (border + bg-input-bar) still reads as a
           distinct surface on its own. */}
+      <InterruptedTurnBanner
+        offer={interruptedOffer}
+        onContinue={() => {
+          if (!currentSessionId || !onContinueFromLastUser) return;
+          // "resume" appends a new user row ("Continue") after the interrupted
+          // answer; "rerun" re-asks the user's own last message, already on screen.
+          void onContinueFromLastUser(
+            currentSessionId,
+            interruptedOffer === "resume" ? { userBubble: t("chatView.interruptedTurnContinue") } : undefined,
+          );
+        }}
+      />
       <ChatComposerDock
         dockColumnClass={dockColumnClass}
         emptyConversation={emptyConversation}
