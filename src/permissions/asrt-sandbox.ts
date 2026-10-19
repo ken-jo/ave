@@ -2065,8 +2065,8 @@ export function useAppOwnedSandboxTempRoot(): string {
 }
 
 /**
- * The Linux adapter supplies this deny with a private /tmp mount instead of
- * handing a shared host path to the runtime's mount-point lifecycle.
+ * The Linux adapter supplies this deny with a namespace-local mount at the
+ * denied leaf, outside the runtime's shared host mount-point lifecycle.
  * The public policy retains the deny; only runtime-bound arrays omit it.
  */
 function linuxRuntimeConfig<T extends Partial<SandboxRuntimeConfig> | undefined>(config: T): T {

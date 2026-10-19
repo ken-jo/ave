@@ -3675,7 +3675,9 @@ interface TreeMeasurement {
 
 /**
  * Sample the process tree rooted at `rootPid` — the spawned wrapper, as
- * `observeChild` reports it — every 50 ms with `ps`, until `exited` settles.
+ * `observeChild` reports it — every 50 ms, until `exited` settles. Linux
+ * reads only this tree through procfs, including an immediate first sample;
+ * other platforms use the process table.
  * RSS is in KiB on both platforms. `process.resourceUsage()` is not used: it
  * reports the test runner.
  */
@@ -3687,6 +3689,39 @@ function sampleProcessTree(rootPid: number, exited: Promise<unknown>): Promise<T
     done = true;
   });
   const sample = async (): Promise<void> => {
+    if (process.platform === "linux") {
+      const seen = new Set<number>();
+      const pending = [rootPid];
+      let rootPresent = false;
+      let total = 0;
+      while (pending.length > 0) {
+        const pid = pending.pop()!;
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        try {
+          const status = readFileSync(`/proc/${pid}/status`, "utf8");
+          const rss = /^VmRSS:\s+(\d+)\s+kB$/mu.exec(status);
+          if (!rss) continue;
+          if (pid === rootPid) rootPresent = true;
+          total += Number(rss[1]);
+          for (const task of readdirSync(`/proc/${pid}/task`)) {
+            try {
+              const children = readFileSync(`/proc/${pid}/task/${task}/children`, "utf8");
+              pending.push(...children.trim().split(/\s+/u).filter(Boolean).map(Number));
+            } catch {
+              // A thread can exit between the directory listing and the read.
+            }
+          }
+        } catch {
+          // A process can exit while its tree is being sampled.
+        }
+      }
+      if (rootPresent) {
+        samples += 1;
+        peakKiB = Math.max(peakKiB, total);
+      }
+      return;
+    }
     const { stdout } = await execFileAsync("ps", ["-o", "pid=,ppid=,rss=", "-A"]);
     const children = new Map<number, number[]>();
     const rss = new Map<number, number>();
@@ -3714,6 +3749,27 @@ function sampleProcessTree(rootPid: number, exited: Promise<unknown>): Promise<T
     return { peakRssBytes: peakKiB * 1024, samples };
   })();
 }
+
+it.runIf(process.platform === "linux")("samples a live child before its immediate exit", async () => {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    stdio: "ignore",
+  });
+  const exited = new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", () => resolve());
+  });
+  try {
+    const measurement = sampleProcessTree(child.pid!, exited);
+    child.kill();
+    const result = await measurement;
+    expect(result.samples).toBeGreaterThan(0);
+    expect(result.peakRssBytes).toBeGreaterThan(0);
+  } finally {
+    child.kill();
+    await exited;
+  }
+});
 
 /**
  * The cross-language smoke under the real wrap (§9.7 P5, §10.1): the Python

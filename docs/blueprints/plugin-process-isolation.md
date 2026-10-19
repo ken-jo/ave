@@ -337,9 +337,34 @@ onStdout(), onStderr(), onExit() }` — live process control.
 - The host **keeps owning the worker process**. It must: the ASRT grant machinery,
   the wrapped-worker registry (`markPluginWorkerWrapped`), the Windows holder-PID
   ACL lifecycle, and `trackManagedChildProcess` all live in main.
-- Reply: `{ workerHandleId, socketPath, pid }`. The child stub's `stop()` sends a
+- Reply: `{ handleId, socketPath, pid }`. The child stub's `stop()` sends a
   notification; `onStdout` / `onStderr` / `onExit` register **child-local**
-  listeners fed by host notifications keyed by `workerHandleId`.
+  listeners fed by host notifications keyed by `handleId`.
+- Both sides derive the internal `handleId` as `worker_<request id>` from the
+  existing RPC id. The child registers its handler before writing the request;
+  the host adopts that identity when opening the worker registration. No
+  request/reply field or protocol version changes. Reply, output, exit and close
+  frames decoded in the same read therefore reach an owned handler immediately.
+  Unknown or already-closed worker identities are dropped without buffering.
+- While the spawn call awaits its handoff, the child retains at most 256 output
+  events and 1 MiB of decoded text total per handle (two bytes per string code
+  unit). The returned handle retains that bounded handoff backlog for its first
+  listeners; subsequent live output without a listener is dropped, matching
+  ordinary in-process listener behavior. The host process handle independently
+  retains at most 256 events and 1 MiB per output stream until the dispatcher
+  attaches. Queues drain on listener attachment and clear on explicit stop,
+  failed spawn, overflow, or replay listener failure. A throwing replay listener
+  also releases/stops the worker and rethrows. Host completion closes the
+  registration while preserving captured handoff output and terminal state for
+  the returned public handle.
+- The host records process death immediately to avoid signaling a reused pid,
+  but publishes completion only after actual stdout and stderr reach EOF or
+  close, including relayed stdout. Actual exit status is retained and replayed
+  once to each late listener. Child handoff overflow stores `payload-too-large`,
+  releases the registration, requests worker stop and rejects the spawn call;
+  notification delivery itself does not throw. Host backlog overflow terminates
+  the worker and fails output listener setup. Neither failure synthesizes a
+  process exit status or reports truncated output as a successful spawn.
 - *This is a security improvement, not just a port.* Today `spawnWorker` hands the
   plugin a live `ChildProcess`-derived handle in the same heap. Afterwards the
   plugin holds an opaque id.
