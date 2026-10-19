@@ -1340,6 +1340,25 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
   });
 
+  it("says the container check is still running instead of claiming MXC or a failure", async () => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: true, kind: "none", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", dependencyErrors: [] },
+      windowsSubstrate: {
+        mxc: { state: "checking" }, windowsBuild: "10.0.26300", srtWinReady: false,
+        shells: "approved-host", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
+      },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-windows-substrate").dataset.mxc).toBe("checking");
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsChecking"));
+    expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
+    expect(screen.queryByTestId("os-sandbox-windows-bash-note")).toBeNull();
+  });
+
   it("says why MXC is unavailable and that extensions share one proxy identity", async () => {
     const { ave } = installApiWithWindows();
     ave.permission.sandboxCapability.mockResolvedValueOnce({

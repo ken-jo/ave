@@ -4,12 +4,14 @@ import {
   MXC_BASH_UNAVAILABLE_MESSAGE,
   buildMxcShellRequest,
   classifyMxcStartProbe,
+  detectMxcPrerequisites,
   detectMxcSupport,
   isWindowsPathAtOrUnder,
   mxcRequestArgs,
   parseMxcDryRunOutput,
   parseMxcProbeOutput,
   pinnedWxcExecSha256,
+  probeMxcPowerShellStart,
   powerShellMxcCommandLine,
   rankMxcFilesystem,
   wxcExecPathFor,
@@ -127,6 +129,15 @@ describe("detectMxcSupport", () => {
     expect(start.runtimeConfig.networkProxy).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(start.network).toEqual(request.network);
     expect(start.filesystem.readwritePaths).toEqual(["C:\\Users\\u\\AppData\\Local\\Temp\\ave-mxc-probe-x"]);
+  });
+
+  it("splits into a boot-path half without the container start and a start half", async () => {
+    const boot = deps();
+    await expect(detectMxcPrerequisites(boot)).resolves.toEqual({ state: "available", windowsBuild: "10.0.26300" });
+    expect(boot.calls.map((c) => c[0])).toEqual(["--probe", "--dry-run"]);
+    const later = deps({ runs: { "--config-base64": { code: 0xc0000142, stdout: "", stderr: START_DLL_INIT_FAILED } } });
+    await expect(probeMxcPowerShellStart(later)).resolves.toMatchObject({ state: "unavailable", reason: "unverified-session" });
+    expect(later.calls.map((c) => c[0])).toEqual(["--config-base64"]);
   });
 
   it("refuses a launcher that is not the pinned build before running it", async () => {

@@ -1414,9 +1414,11 @@ export function PermissionsTab({
               <p data-testid="os-sandbox-windows-substrate-shells">
                 {windowsSubstrate.shells === "mxc"
                   ? t("permissionsTab.osSandboxWindowsShellsMxc")
-                  : windowsSubstrate.shells === "approved-host"
-                    ? t("permissionsTab.osSandboxWindowsShellsApprovedHost")
-                    : t("permissionsTab.osSandboxWindowsShellsNone")}
+                  : windowsSubstrate.mxc.state === "checking" && windowsSubstrate.shells === "approved-host"
+                    ? t("permissionsTab.osSandboxWindowsShellsChecking")
+                    : windowsSubstrate.shells === "approved-host"
+                      ? t("permissionsTab.osSandboxWindowsShellsApprovedHost")
+                      : t("permissionsTab.osSandboxWindowsShellsNone")}
               </p>
               {windowsSubstrate.shells === "mxc" ? (
                 <p data-testid="os-sandbox-windows-bash-note">{t("permissionsTab.osSandboxWindowsBashNote")}</p>

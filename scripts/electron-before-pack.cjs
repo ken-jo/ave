@@ -14,5 +14,6 @@ module.exports = async function beforePack(context) {
   // Microsoft Execution Containers' launcher for agent shell commands,
   // hash-pinned; any mismatch rejects and fails the build.
   const { stageMxcLauncher } = await import(pathToFileURL(join(context.packager.projectDir, "scripts", "fetch-mxc.mjs")).href);
-  await stageMxcLauncher({ arch, projectRoot: context.packager.projectDir });
+  const staged = await stageMxcLauncher({ arch, projectRoot: context.packager.projectDir });
+  console.log(`fetch-mxc: ${staged} verified against src/permissions/mxc-launcher-pins.json`);
 };

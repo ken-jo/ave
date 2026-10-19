@@ -200,6 +200,19 @@ export function classifyMxcStartProbe(
  * that shape. Any failure leaves the shells on the approved-host route.
  */
 export async function detectMxcSupport(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
+  const prerequisites = await detectMxcPrerequisites(deps);
+  if (prerequisites.state === "unavailable") return prerequisites;
+  return await probeMxcPowerShellStart(deps);
+}
+
+/**
+ * The fast half of {@link detectMxcSupport}, run on the boot path: platform,
+ * arch, launcher present and pinned, `--probe` tier, `--dry-run` of the
+ * shipped request shape. "available" here means only that the start probe is
+ * worth running; MXC is not claimed until {@link probeMxcPowerShellStart}
+ * passes.
+ */
+export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
   const unavailable = (reason: MxcUnavailableReason, detail: string): MxcSupport => ({
     state: "unavailable",
     reason,
@@ -244,7 +257,22 @@ export async function detectMxcSupport(deps: DetectMxcSupportDeps): Promise<MxcS
   }
   const verdict = parseMxcDryRunOutput(dryRun.code, dryRun.stdout, dryRun.stderr);
   if (!verdict.ok) return unavailable("request-rejected", verdict.detail);
+  return { state: "available", windowsBuild: deps.windowsBuild };
+}
 
+/**
+ * The slow half of {@link detectMxcSupport} (a cold container start; up to a
+ * minute): run after {@link detectMxcPrerequisites} passed, off the boot path.
+ */
+export async function probeMxcPowerShellStart(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
+  const unavailable = (reason: MxcUnavailableReason, detail: string): MxcSupport => ({
+    state: "unavailable",
+    reason,
+    windowsBuild: deps.windowsBuild,
+    detail,
+  });
+  const wxcExec = wxcExecPathFor(deps.resourcePath, deps.arch);
+  if (wxcExec === undefined) return unavailable("unsupported-arch", `arch ${deps.arch}`);
   // A dry run proves the request is accepted, not that the shell starts. Start
   // the real thing once: System32 Windows PowerShell 5.1 in a container of the
   // shape every command gets (caller-owned reduced environment, proxy mode).
@@ -547,8 +575,10 @@ export async function resolveHostWxcExecPath(): Promise<string> {
   return await verified;
 }
 
-/** {@link detectMxcSupport} against this host's shipped binary. */
-export async function detectHostMxcSupport(): Promise<MxcSupport> {
+type HostProbe = (deps: DetectMxcSupportDeps) => Promise<MxcSupport>;
+
+/** Run one detection step against this host's shipped binary, in a fresh probe directory. */
+async function withHostMxcDeps(step: HostProbe): Promise<MxcSupport> {
   const [{ execFile }, { existsSync }, { mkdtemp, rm }, os, path, { getHostResources }] = await Promise.all([
     import("node:child_process"),
     import("node:fs"),
@@ -560,7 +590,7 @@ export async function detectHostMxcSupport(): Promise<MxcSupport> {
   // The probe containers write only into a fresh directory of their own.
   const probeDirectory = process.platform === "win32" ? await mkdtemp(path.join(os.tmpdir(), "ave-mxc-probe-")) : os.tmpdir();
   try {
-    return await detectMxcSupport({
+    return await step({
       platform: process.platform,
       arch: process.arch,
       resourcePath: getHostResources().resourcePath,
@@ -584,4 +614,14 @@ export async function detectHostMxcSupport(): Promise<MxcSupport> {
   } finally {
     if (probeDirectory !== os.tmpdir()) await rm(probeDirectory, { recursive: true, force: true });
   }
+}
+
+/** {@link detectMxcPrerequisites} against this host's shipped binary (boot path). */
+export async function detectHostMxcPrerequisites(): Promise<MxcSupport> {
+  return await withHostMxcDeps(detectMxcPrerequisites);
+}
+
+/** {@link probeMxcPowerShellStart} against this host's shipped binary (after boot). */
+export async function probeHostMxcPowerShellStart(): Promise<MxcSupport> {
+  return await withHostMxcDeps(probeMxcPowerShellStart);
 }

@@ -191,6 +191,37 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a running launcher's abort watch after an error and releases only on close", async () => {
+    bootMxcShells();
+    let launcher: (EventEmitter & Record<string, unknown>) | undefined;
+    childProcessMock.spawn.mockImplementation((command: string, _args: readonly string[], options?: { stdio?: unknown }) => {
+      if (command !== WXC_EXEC) {
+        const parser = Array.isArray(options?.stdio) && options.stdio[0] === "pipe";
+        return fakeChild(parser ? PARSED : "", 0);
+      }
+      // A running child (it has a pid) that reports an error and keeps running.
+      const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
+      Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null, pid: 4242, kill: vi.fn(() => true) });
+      queueMicrotask(() => child.emit("error", Object.assign(new Error("kill EPERM"), { code: "EPERM" })));
+      launcher = child;
+      return child;
+    });
+    const abort = new AbortController();
+    const result = await new PowerShellTool().execute(
+      { command: "Write-Output hi", timeoutSeconds: 30 },
+      { ...context("ps-mxc-running-error"), abortSignal: abort.signal },
+    );
+    expect(result.isError).toBe(true);
+    // Still running: nothing released yet, and the abort watch is still armed.
+    expect(mxcLaunchMock.release).not.toHaveBeenCalled();
+    abort.abort();
+    expect((launcher!["stdout"] as PassThrough).destroyed).toBe(true);
+    launcher!["exitCode"] = 1;
+    launcher!.emit("exit", 1, null);
+    launcher!.emit("close", 1, null);
+    await vi.waitFor(() => expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1));
+  });
+
   it("refuses a sandboxed Bash command with the PowerShell guidance instead of running it", async () => {
     bootMxcShells();
     const result = await new BashTool().execute({ command: "echo hi", timeoutSeconds: 7 }, context("bash-mxc"));

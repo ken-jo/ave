@@ -3441,9 +3441,12 @@ async function spawnPowerShellInMxc(
       void (async () => {
         // A spawn that fails (no pid) may never emit "close": release the
         // listener, the egress token and the sandbox HOME here. A running
-        // child's error leaves that to "close" (the guard keeps it).
-        lifetime.dispose();
-        await cleanupAfterTermination();
+        // child keeps its timeout and abort watch, and "close" releases its
+        // resources (cleanupAfterTermination's guard waits for the exit).
+        if (child.pid === undefined) {
+          lifetime.dispose();
+          await cleanupAfterTermination();
+        }
         if (settled) return;
         settled = true;
         const artifactMetadata = await outputCollector.finish(true);

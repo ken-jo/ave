@@ -196,9 +196,14 @@ export type SandboxMxcUnavailableReason =
  * how strongly their egress is attributed. Sealed at boot, like the gate.
  */
 export interface SandboxWindowsSubstrateInfo {
-  /** Whether MXC can confine agent shells here, with the stable reason when not. */
+  /**
+   * Whether MXC can confine agent shells here, with the stable reason when
+   * not. `checking`: the boot-path checks passed and the PowerShell start
+   * probe is still running; shells use the non-MXC route until it settles.
+   */
   readonly mxc:
     | { readonly state: "available" }
+    | { readonly state: "checking" }
     | { readonly state: "unavailable"; readonly reason: SandboxMxcUnavailableReason };
   /** `major.minor.build.ubr` of the host, for the reason text; null if unread. */
   readonly windowsBuild: string | null;

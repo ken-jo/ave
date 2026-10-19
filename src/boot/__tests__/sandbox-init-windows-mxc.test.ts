@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   initialize: vi.fn(),
   checkDeps: vi.fn(),
   detectMxc: vi.fn(),
+  startProbe: vi.fn(),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
@@ -26,7 +27,8 @@ vi.mock("../../lib/logger.js", () => ({
 }));
 
 vi.mock("../../permissions/mxc-windows.js", () => ({
-  detectHostMxcSupport: h.detectMxc,
+  detectHostMxcPrerequisites: h.detectMxc,
+  probeHostMxcPowerShellStart: h.startProbe,
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
@@ -65,6 +67,7 @@ import {
 
 const ORIGINAL_PLATFORM = process.platform;
 const SRT_WIN_MISSING = { errors: ["srt-win is not installed"], warnings: [] };
+// Boot-path checks passed; the PowerShell start probe (h.startProbe) decides.
 const MXC_OK = { state: "available", windowsBuild: "10.0.26300.9711" };
 const MXC_OLD = { state: "unavailable", reason: "tier-unsupported", windowsBuild: "10.0.22631.4317", detail: "tier none" };
 
@@ -81,6 +84,8 @@ beforeEach(() => {
   h.initialize.mockResolvedValue(undefined);
   h.checkDeps.mockReset();
   h.detectMxc.mockReset();
+  h.startProbe.mockReset();
+  h.startProbe.mockResolvedValue({ state: "available", windowsBuild: "10.0.26300.9711" });
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
   vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "");
 });
@@ -105,7 +110,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(h.initialize).toHaveBeenCalledOnce();
     expect(h.initialize.mock.calls[0]?.[0]).toMatchObject({ windows: { externalConfinement: true } });
     expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only" });
-    expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel" });
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel" }));
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", substrate: "mxc" });
     // Nothing outside the containers is claimed as confined.
     expect(detectShellSandboxCapability().confines).toEqual({ filesystem: false, process: false, network: false });
@@ -120,7 +125,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
 
     expect(h.initialize.mock.calls[0]?.[0]).not.toHaveProperty("windows");
     expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "deps-present" });
-    expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "srt-win" });
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "srt-win" }));
     expect(getHostShellExecutionPlan().substrate).toBe("mxc");
   });
 
@@ -163,7 +168,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     await initSandboxGate(harness.context(true, false));
 
     expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "explicit-env" });
-    expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" });
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" }));
     expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
     expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("plugin workers, plugin children, plugin hooks and MCP stdio servers run with NO OS isolation"));
   });
@@ -176,7 +181,61 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     await initSandboxGate(harness.context(true, false));
 
     expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade" });
-    expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "none", extensions: "none", mxc: { state: "available" } });
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "none", extensions: "none", mxc: { state: "available" } }));
     expect(getHostShellExecutionPlan().substrate).not.toBe("mxc");
+  });
+
+  it("does not wait for the PowerShell start probe: shells take the approved route while it is checking", async () => {
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    let finishProbe!: (value: unknown) => void;
+    h.startProbe.mockReturnValue(new Promise((resolve) => { finishProbe = resolve; }));
+
+    await initSandboxGate(harness.context(true, false));
+
+    // Boot finished with the probe started and still pending.
+    await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only" });
+    expect(getWindowsSandboxSubstrate()).toMatchObject({ mxc: { state: "checking" }, shells: "approved-host", shellEgressIdentity: "shared" });
+    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
+
+    finishProbe({ state: "available", windowsBuild: "10.0.26300.9711" });
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ mxc: { state: "available" }, shells: "mxc" }));
+    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", substrate: "mxc", requiresExplicitUserApproval: false });
+  });
+
+  it("keeps the approved route and records the reason when PowerShell cannot start in a container", async () => {
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    h.startProbe.mockResolvedValue({ state: "unavailable", reason: "unverified-session", windowsBuild: "10.0.26300.9711", detail: "0xC0000142" });
+
+    await initSandboxGate(harness.context(true, false));
+
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({
+      mxc: { state: "unavailable", reason: "unverified-session" },
+      // The proxy-only boot cannot change mode mid-session: shells ask.
+      shells: "approved-host",
+    }));
+    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", requiresExplicitUserApproval: true });
+    expect(h.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Microsoft Execution Containers cannot confine agent shells"),
+      "unverified-session",
+      "10.0.26300.9711",
+      "0xC0000142",
+    );
+  });
+
+  it("drops a probe result that arrives after the record was replaced", async () => {
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    let finishProbe!: (value: unknown) => void;
+    h.startProbe.mockReturnValue(new Promise((resolve) => { finishProbe = resolve; }));
+
+    await initSandboxGate(harness.context(true, false));
+    __resetWindowsSandboxSubstrateForTest();
+    finishProbe({ state: "available", windowsBuild: "10.0.26300.9711" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(getWindowsSandboxSubstrate()).toBeNull();
   });
 });

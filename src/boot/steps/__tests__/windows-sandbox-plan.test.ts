@@ -5,6 +5,7 @@ import {
   mxcShellCapability,
   planWindowsSandbox,
   windowsProxyOnlyCapability,
+  windowsSubstrateFor,
   windowsSubstrateWithoutAsrt,
 } from "../windows-sandbox-plan.js";
 
@@ -56,6 +57,24 @@ describe("planWindowsSandbox — the four MXC × srt-win rows", () => {
     expect(workerOnly.substrate.shells).toBe("none");
     const shellOnly = planWindowsSandbox({ shellRequested: true, workerRequested: false, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: true });
     expect(shellOnly.substrate.extensions).toBe("none");
+  });
+});
+
+describe("planWindowsSandbox — MXC still checking", () => {
+  const CHECKING = { state: "checking" } as const;
+
+  it("starts ASRT as if MXC were there but keeps shells off MXC until the probe passes", () => {
+    const plan = planWindowsSandbox({ shellRequested: true, workerRequested: false, mxc: CHECKING, windowsBuild: BUILD, srtWinReady: false });
+    expect(plan.start).toBe("proxy-only");
+    expect(plan.substrate).toMatchObject({ mxc: { state: "checking" }, shells: "approved-host", shellEgressIdentity: "shared" });
+  });
+
+  it("settles against the mode ASRT actually started in", () => {
+    const input = { shellRequested: true, workerRequested: true, windowsBuild: BUILD, srtWinReady: false } as const;
+    expect(windowsSubstrateFor({ ...input, mxc: AVAILABLE }, "proxy-only")).toMatchObject({ shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel" });
+    // A failed probe on a proxy-only boot: the proxy keeps running and shells ask.
+    expect(windowsSubstrateFor({ ...input, mxc: { state: "unavailable", reason: "unverified-session" } }, "proxy-only")).toMatchObject({ shells: "approved-host", extensions: "none" });
+    expect(windowsSubstrateFor({ ...input, mxc: AVAILABLE }, "none")).toMatchObject({ shells: "none", extensions: "none" });
   });
 });
 

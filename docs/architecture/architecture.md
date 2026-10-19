@@ -1420,14 +1420,19 @@ host-prep binaries serve the WSL-container, Windows Sandbox, isolation-session
 and AppContainer+DACL backends. Every PR 9 measurement ran the launcher alone
 in its directory.
 
-- **Detection.** At boot the launcher's sha256 must match the pin, `--probe`
-  must report the `base-container` tier, `--dry-run` of a request shaped like
-  a real one (loopback proxy, default-deny egress, no DACL fallback) must pass,
-  and System32 Windows PowerShell 5.1 must start (`exit 0`) in a real container
-  of that shape (reduced caller-owned environment, proxy mode). Detection reads
-  what the launcher does, not the build number: identity-less loopback
-  proxying needs PSEC 1.1 in MXC 1.0.0. Any failure leaves the shells on the
-  approved-host route with its reason in Settings. A PowerShell start that
+- **Detection.** On the boot path the launcher's sha256 must match the pin,
+  `--probe` must report the `base-container` tier, and `--dry-run` of a request
+  shaped like a real one (loopback proxy, default-deny egress, no DACL
+  fallback) must pass. ASRT then starts as if MXC were available, and MXC is
+  `checking`: after boot, off the critical path, System32 Windows PowerShell
+  5.1 must start (`exit 0`) in a real container of that shape (reduced
+  caller-owned environment, proxy mode; a cold start can take tens of
+  seconds). Until it settles, shells take the approved-host route and Settings
+  says the check is running; when it passes the record switches to MXC, unless
+  something re-recorded it meanwhile. Detection reads what the launcher does,
+  not the build number: identity-less loopback proxying needs PSEC 1.1 in MXC
+  1.0.0. Any failure leaves the shells on the approved-host route with its
+  reason in Settings (a proxy-only boot keeps its proxy). A PowerShell start that
   fails with `STATUS_DLL_INIT_FAILED` (`0xC0000142`), which a non-interactive
   session such as SSH causes, is reported as `unverified-session`, not as MXC.
 - **Integrity.** Detection hashes the launcher at boot, and the first command
@@ -1479,9 +1484,11 @@ in its directory.
   calls it yet, and no surface claims a grant cap.
 - **DNS is not confined.** Name resolution goes through the host's DNS client
   service, outside the container's WFP filter: inside a container
-  `example.com` resolved and an unknown name came back NXDOMAIN (measured). A
-  command can therefore signal through lookups of names it chooses without
-  touching the proxy. Settings says so.
+  `example.com` resolved and an unknown name came back NXDOMAIN (measured), so
+  the query left the host. A command can therefore carry data out to an
+  external authoritative DNS server by looking up names it chooses under a
+  domain that server answers for, without touching the proxy: an exfiltration
+  channel the proxy never sees. Settings says so.
 - **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants
   the container `privateNetworkClientServer`, and MXC documents that its proxy
   mapping does not complete the host-loopback ingress contract. Measured with

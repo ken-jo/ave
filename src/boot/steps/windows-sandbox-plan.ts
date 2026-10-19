@@ -2,6 +2,10 @@
  * Which substrate carries each kind of process on a Windows boot, decided once
  * from what the host offers (proxy-egress PR 9, owner decision 2026-10-19).
  *
+ * MXC is decided in two steps: the boot-path checks (launcher pin, probe, dry
+ * run) and, after boot, a real PowerShell start (`checking` until it settles;
+ * shells use the non-MXC route meanwhile). The table is the settled state.
+ *
  * | MXC (agent shells requested) | srt-win ready | ASRT runs as             | shells        | extensions |
  * |------------------------------|---------------|--------------------------|---------------|------------|
  * | available                    | yes           | srt-win (as before)      | MXC           | srt-win    |
@@ -24,12 +28,20 @@ import type {
 
 type WindowsAsrtStart = "srt-win" | "proxy-only" | "none";
 
+type WindowsMxcState =
+  | { readonly state: "available" }
+  | { readonly state: "checking" }
+  | { readonly state: "unavailable"; readonly reason: SandboxMxcUnavailableReason };
+
 export interface WindowsSandboxPlanInputs {
   readonly shellRequested: boolean;
   readonly workerRequested: boolean;
-  readonly mxc:
-    | { readonly state: "available" }
-    | { readonly state: "unavailable"; readonly reason: SandboxMxcUnavailableReason };
+  /**
+   * `checking`: the boot-path checks passed and the PowerShell start probe
+   * runs after boot. ASRT starts as if MXC were available (so a later pass
+   * needs no restart), but shells do not use MXC until the probe passes.
+   */
+  readonly mxc: WindowsMxcState;
   readonly windowsBuild: string | null;
   /** ASRT's Windows dependency check passed (srt-win provisioned, WFP fence usable). */
   readonly srtWinReady: boolean;
@@ -43,26 +55,31 @@ export interface WindowsSandboxPlan {
 }
 
 export function planWindowsSandbox(input: WindowsSandboxPlanInputs): WindowsSandboxPlan {
-  const mxcShells = input.mxc.state === "available" && input.shellRequested;
-  const start: WindowsAsrtStart = input.srtWinReady ? "srt-win" : mxcShells ? "proxy-only" : "none";
-  const shells: SandboxWindowsSubstrateInfo["shells"] = mxcShells
-    ? "mxc"
-    : start === "srt-win" && input.shellRequested
-      ? "approved-host"
-      : "none";
+  const mxcCandidate = input.mxc.state !== "unavailable" && input.shellRequested;
+  const start: WindowsAsrtStart = input.srtWinReady ? "srt-win" : mxcCandidate ? "proxy-only" : "none";
+  return { start, substrate: windowsSubstrateFor(input, start) };
+}
+
+/**
+ * What carries shells and extensions once ASRT has started as `started`. Used
+ * at boot and again when the PowerShell start probe settles, since the start
+ * mode cannot change mid-session: a proxy-only boot whose probe fails keeps
+ * the proxy running and its shells take the approved host route (the
+ * process-wide capability confines nothing, so the host-shell plan asks).
+ */
+export function windowsSubstrateFor(input: WindowsSandboxPlanInputs, started: WindowsAsrtStart): SandboxWindowsSubstrateInfo {
+  const shells: SandboxWindowsSubstrateInfo["shells"] =
+    started === "none" || !input.shellRequested ? "none" : input.mxc.state === "available" ? "mxc" : "approved-host";
   const extensions: SandboxWindowsSubstrateInfo["extensions"] =
-    start === "srt-win" && input.workerRequested ? "srt-win" : "none";
+    started === "srt-win" && input.workerRequested ? "srt-win" : "none";
   return {
-    start,
-    substrate: {
-      mxc: input.mxc.state === "available" ? { state: "available" } : { state: "unavailable", reason: input.mxc.reason },
-      windowsBuild: input.windowsBuild,
-      srtWinReady: input.srtWinReady,
-      shells,
-      extensions,
-      shellEgressIdentity: shells === "mxc" ? "kernel-channel" : "shared",
-      extensionEgressIdentity: "shared",
-    },
+    mxc: input.mxc.state === "unavailable" ? { state: "unavailable", reason: input.mxc.reason } : { state: input.mxc.state },
+    windowsBuild: input.windowsBuild,
+    srtWinReady: input.srtWinReady,
+    shells,
+    extensions,
+    shellEgressIdentity: shells === "mxc" ? "kernel-channel" : "shared",
+    extensionEgressIdentity: "shared",
   };
 }
 

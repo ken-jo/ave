@@ -38,7 +38,7 @@ vi.mock("../../lib/logger.js", () => ({
 // A Windows host without Microsoft Execution Containers: the srt-win degrade
 // this suite pins is the row of the Windows plan where neither substrate runs.
 vi.mock("../../permissions/mxc-windows.js", () => ({
-  detectHostMxcSupport: async () => ({ state: "unavailable", reason: "tier-unsupported", windowsBuild: null, detail: "test host" }),
+  detectHostMxcPrerequisites: async () => ({ state: "unavailable", reason: "tier-unsupported", windowsBuild: null, detail: "test host" }),
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {

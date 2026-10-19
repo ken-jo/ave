@@ -565,6 +565,7 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
   setPluginWorkerConfinementRequestedAtBoot: vi.fn(),
   setSandboxBootOutcome: vi.fn(),
   setWindowsSandboxSubstrate: vi.fn(),
+  getWindowsSandboxSubstrate: vi.fn(() => null),
   detectSandboxCapability: vi.fn(() => ({ kind: "none", confidence: "verified" })),
 }));
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
