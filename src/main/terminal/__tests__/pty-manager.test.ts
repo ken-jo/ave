@@ -177,6 +177,17 @@ import {
 // validates a renderer-supplied cwd against it, so the test computes the same.
 import { canonicalizePathForMatch } from "../../../permissions/sensitive-paths.js";
 import { USER_INPUT_QUIET_MS, getTerminalBlockTracker, listTerminalBlockTabs } from "../terminal-blocks.js";
+import { SHELL_INTEGRATION_NONCE_FILE } from "../shell-integration.js";
+
+/**
+ * The marker nonce a spawned terminal's startup file would read: the file in
+ * its sandbox HOME (no shell runs here, so nothing deleted it). It is never
+ * in the shell's environment.
+ */
+function spawnedNonce(env: Record<string, string>): string {
+  expect(Object.keys(env).some((key) => /NONCE/u.test(key))).toBe(false);
+  return readFileSync(join(env.ZDOTDIR ?? env.HOME!, SHELL_INTEGRATION_NONCE_FILE), "utf-8");
+}
 
 /** The workspace root the module anchors the write-jail to by default. */
 const ROOT = canonicalizePathForMatch(process.cwd());
@@ -745,7 +756,7 @@ describe("pty-manager command blocks", () => {
       vi.unstubAllEnvs();
     }
     const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
-    const nonce = opts.env.AVE_TERMINAL_NONCE;
+    const nonce = spawnedNonce(opts.env);
     expect(nonce).toMatch(/^[0-9a-f]{32}$/u);
     const tracker = getTerminalBlockTracker("terminal:0000000a-1");
     expect(tracker).toBeDefined();
@@ -821,7 +832,7 @@ describe("pty-manager typing an approved agent command", () => {
       vi.unstubAllEnvs();
     }
     const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
-    const nonce = opts.env.AVE_TERMINAL_NONCE;
+    const nonce = spawnedNonce(opts.env);
     return { pty: lastPty!, mark: (fields) => `\u001b]133;${fields};${nonce}\u0007` };
   }
 
@@ -857,7 +868,7 @@ describe("pty-manager typing an approved agent command", () => {
       vi.unstubAllEnvs();
     }
     const [, , opts] = ptySpawnMock.mock.calls.at(-1) as [string, string[], { env: Record<string, string> }];
-    const fishMark = (fields: string) => `\u001b]133;${fields};${opts.env.AVE_TERMINAL_NONCE}\u0007`;
+    const fishMark = (fields: string) => `\u001b]133;${fields};${spawnedNonce(opts.env)}\u0007`;
     lastPty!.emitData(`${fishMark("P;Cwd=/w")}${fishMark("A")}/w> `);
     expect(typeTerminalCommand("terminal:0000000b-1", 3, "ls")).toMatchObject({ ok: false, reason: "no-prompt-end-marker" });
     expect(lastPty!.written).toEqual([]);

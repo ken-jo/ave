@@ -21,10 +21,16 @@
  * shellIntegration-bash.sh and shellIntegration-rc.zsh: `__vsc_nonce=
  * "$VSCODE_NONCE"; unset VSCODE_NONCE`, then `OSC 633 ; E ; <cmd> ; <nonce>`;
  * shellIntegrationAddon.ts trusts a command line or a `P;Cwd=` only when its
- * last field equals the nonce, and never trusts OSC 7). Like VS Code the nonce
- * arrives in an environment variable that the startup file copies into an
- * unexported shell variable and unsets at once — it is not written into the
- * file, which the shell can read. Unlike VS Code, where only E and P carry it,
+ * last field equals the nonce, and never trusts OSC 7). Unlike VS Code the
+ * nonce does not arrive in the environment: a process's initial environment
+ * stays readable after the shell unsets the variable (`ps -E`,
+ * `/proc/<pid>/environ`), so any program the shell runs could read it. It
+ * arrives in an owner-only file in the sandbox HOME that the startup file
+ * reads into an unexported shell variable and deletes before the first
+ * prompt. The prompt string refers to that variable rather than holding the
+ * nonce, so printing `$PS1` (or any transformation of it) reveals nothing.
+ * Only the shell's own hook functions read it. Unlike VS Code, where only E
+ * and P carry it,
  * every marker here does: a forged A, B, C or D would split blocks just as well.
  * The working directory moved from OSC 7 to `P;Cwd=` because OSC 7 has no
  * field for a nonce.
@@ -54,22 +60,32 @@ export function detectIntegratedShell(shellPath: string): IntegratedShell | null
   return null;
 }
 
+/** A path as one single-quoted word for the startup files. */
+function shellQuoteForRc(value: string): string {
+  return `'${value.replace(/'/gu, "'\\''")}'`;
+}
+
 const HEADER = "# Ave terminal shell integration (generated; this HOME is discarded when the terminal closes).";
 
 /**
- * Environment variable that hands the nonce to the startup file. Each script
- * copies it into an unexported shell variable and unsets it before anything
- * else runs, so no command the user starts inherits it.
+ * File in the sandbox HOME that hands the nonce to the startup file, which
+ * reads it into an unexported shell variable and deletes it before anything
+ * else runs. Nothing the shell later starts can find it: not in the
+ * environment, not on disk.
  */
-const SHELL_INTEGRATION_NONCE_ENV = "AVE_TERMINAL_NONCE";
+export const SHELL_INTEGRATION_NONCE_FILE = ".ave-terminal-nonce";
 
 /** Characters of command text a script encodes into its C marker. */
 const MAX_ENCODED_COMMAND_CHARS = 4096;
 
-const ZSH_RC = [
+const ZSH_RC = (noncePath: string): string => [
   HEADER,
-  '__ave_nonce="$' + SHELL_INTEGRATION_NONCE_ENV + '"',
-  'unset ' + SHELL_INTEGRATION_NONCE_ENV,
+  // Read and delete the nonce file first; a nested shell finds none.
+  "__ave_nonce=''",
+  "if [[ -f " + shellQuoteForRc(noncePath) + " ]]; then",
+  "  __ave_nonce=\"$(<" + shellQuoteForRc(noncePath) + ")\"",
+  "  /bin/rm -f -- " + shellQuoteForRc(noncePath),
+  "fi",
   // `#` starts a comment, as in bash: the permission rules read a typed
   // command as bash, and without this option zsh runs the text after `#`.
   // Set before anything can return, so every shell of the terminal has it.
@@ -102,14 +118,21 @@ const ZSH_RC = [
   "autoload -Uz add-zsh-hook",
   "add-zsh-hook precmd __ave_precmd",
   "add-zsh-hook preexec __ave_preexec",
-  "PS1=\"${PS1:-%m%# }%{\"$'\\e]133;B;'\"${__ave_nonce}\"$'\\a'\"%}\"",
+  // The prompt names the variable, not its value: `$PS1` never shows the nonce.
+  "__ave_b=$'\\e]133;B;'\"${__ave_nonce}\"$'\\a'",
+  "setopt prompt_subst",
+  "PS1=\"${PS1:-%m%# }\"'%{${__ave_b}%}'",
   "",
 ].join("\n");
 
-const BASH_PROFILE = [
+const BASH_PROFILE = (noncePath: string): string => [
   HEADER,
-  '__ave_nonce="$' + SHELL_INTEGRATION_NONCE_ENV + '"',
-  'unset ' + SHELL_INTEGRATION_NONCE_ENV,
+  // Read and delete the nonce file first; a nested shell finds none.
+  "__ave_nonce=''",
+  "if [ -f " + shellQuoteForRc(noncePath) + " ]; then",
+  "  IFS= read -r __ave_nonce < " + shellQuoteForRc(noncePath),
+  "  /bin/rm -f -- " + shellQuoteForRc(noncePath),
+  "fi",
   "shopt -s interactive_comments",
   '[ -n "$__ave_nonce" ] || return 0',
   "__ave_encode() {",
@@ -146,16 +169,23 @@ const BASH_PROFILE = [
   "  printf '\\e]133;C;cmdline_url=%s;%s\\a' \"$REPLY\" \"$__ave_nonce\"",
   "}",
   'PROMPT_COMMAND="__ave_precmd"',
-  "PS1=\"${PS1:-\\s-\\v\\$ }\\[\\e]133;B;${__ave_nonce}\\a\\]\"",
+  // The prompt names the variable, not its value (bash expands variables in
+  // PS1 after decoding its escapes, so the variable holds the raw ESC/BEL).
+  "__ave_b=$'\\e]133;B;'\"${__ave_nonce}\"$'\\a'",
+  "shopt -s promptvars",
+  "PS1=\"${PS1:-\\s-\\v\\$ }\"'\\[${__ave_b}\\]'",
   "trap '__ave_preexec' DEBUG",
   "",
 ].join("\n");
 
-const FISH_CONF = [
+const FISH_CONF = (noncePath: string): string => [
   HEADER,
-  'if set -q ' + SHELL_INTEGRATION_NONCE_ENV + '; and test -n "$' + SHELL_INTEGRATION_NONCE_ENV + '"',
-  '    set -g __ave_nonce $' + SHELL_INTEGRATION_NONCE_ENV,
-  '    set -e ' + SHELL_INTEGRATION_NONCE_ENV,
+  "set -g __ave_nonce ''",
+  "if test -f " + shellQuoteForRc(noncePath),
+  "    read -g __ave_nonce < " + shellQuoteForRc(noncePath),
+  "    /bin/rm -f -- " + shellQuoteForRc(noncePath),
+  "end",
+  'if test -n "$__ave_nonce"',
   "    function __ave_postexec --on-event fish_postexec",
   "        printf '\\e]133;D;%s;%s\\a' $status $__ave_nonce",
   "    end",
@@ -192,17 +222,21 @@ export function installShellIntegration(
   if (!/^[0-9a-f]{16,}$/u.test(options.nonce)) {
     throw new Error("shell integration nonce must be at least 16 lowercase hex characters");
   }
-  const nonceEnv = { [SHELL_INTEGRATION_NONCE_ENV]: options.nonce };
   const shell = detectIntegratedShell(shellPath);
+  const noncePath = join(homePath, SHELL_INTEGRATION_NONCE_FILE);
+  // Owner-only, read and deleted by the startup file before the first prompt.
+  const writeNonce = (): void => writeFileSync(noncePath, options.nonce, { mode: 0o600 });
   switch (shell) {
     case "zsh":
-      writeFileSync(join(homePath, ".zshrc"), ZSH_RC, { mode: 0o600 });
+      writeFileSync(join(homePath, ".zshrc"), ZSH_RC(noncePath), { mode: 0o600 });
+      writeNonce();
       // zsh reads its startup files from ZDOTDIR when set; pin it to this HOME
       // so the file just written is the one read.
-      return { shell, env: { ZDOTDIR: homePath, ...nonceEnv } };
+      return { shell, env: { ZDOTDIR: homePath } };
     case "bash":
-      writeFileSync(join(homePath, ".bash_profile"), BASH_PROFILE, { mode: 0o600 });
-      return { shell, env: nonceEnv };
+      writeFileSync(join(homePath, ".bash_profile"), BASH_PROFILE(noncePath), { mode: 0o600 });
+      writeNonce();
+      return { shell, env: {} };
     case "fish": {
       const configHome = options.sandboxEnv.XDG_CONFIG_HOME;
       // Without it fish would look in ~/.config, a directory the sandbox
@@ -210,11 +244,12 @@ export function installShellIntegration(
       if (!configHome) throw new Error("fish shell integration needs XDG_CONFIG_HOME in the sandbox environment");
       const dir = join(configHome, "fish", "conf.d");
       mkdirSync(dir, { recursive: true, mode: 0o700 });
-      writeFileSync(join(dir, "ave-shell-integration.fish"), FISH_CONF, { mode: 0o600 });
-      return { shell, env: nonceEnv };
+      writeFileSync(join(dir, "ave-shell-integration.fish"), FISH_CONF(noncePath), { mode: 0o600 });
+      writeNonce();
+      return { shell, env: {} };
     }
     default:
-      // No startup file reads the nonce, so it is not handed to the shell.
+      // No startup file reads the nonce, so none is written.
       return { shell: null, env: {} };
   }
 }

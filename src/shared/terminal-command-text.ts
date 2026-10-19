@@ -123,6 +123,10 @@ export function terminalCommandTextProblem(command: string): TerminalCommandText
   if (new RegExp(`\\s{${MAX_TERMINAL_COMMAND_WHITESPACE_RUN + 1},}`, "u").test(command)) return "whitespace-run";
   if (HISTORY_EXPANSION.test(command) || command.trimStart().startsWith("^")) return "history-expansion";
   if (command.includes("__ave_")) return "shell-integration";
+  // A parameter named at run time — zsh flags such as `${(P)name}` and
+  // `${(e)…}`, bash's `${!name}` — could read any variable, the shell
+  // integration's among them, whatever its spelling here.
+  if (/\$\{[(!]/u.test(command)) return "unchecked-construct";
   // An odd run of trailing backslashes escapes the Enter that submits the line.
   const trailingBackslashes = /\\*$/u.exec(command)?.[0].length ?? 0;
   if (trailingBackslashes % 2 === 1) return "incomplete";
