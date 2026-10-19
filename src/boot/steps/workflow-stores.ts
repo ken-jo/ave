@@ -150,7 +150,7 @@ export async function setupWorkflowStores(
     // The workspace terminal and the browser tabs exist only in the desktop
     // host. A conversation reaches the window that shows it: a chat tile's
     // session the window whose tile holds it, the side chat the window it was
-    // last typed in. A sub-agent inherits its parent's (session-window-scope.ts);
+    // last typed in, a pane chat its pane's window. A sub-agent inherits its parent's (session-window-scope.ts);
     // routine and work-board loops are shown nowhere and get neither. Read at
     // call time: the loops are wired after this step.
     ...(ctx.host.desktop !== undefined
@@ -163,7 +163,8 @@ export async function setupWorkflowStores(
           if (ctx.sideChatConversationLoop.getSessionId() === sessionId) {
             return sideChatOwnerWindow()?.id ?? null;
           }
-          return null;
+          // A pane chat reaches the window its pane is in.
+          return ctx.paneChatLoops.holding(sessionId)?.windowId ?? null;
         };
         const liveOriginSessionId = (sessionId: string): string | undefined =>
           subAgentRunnerRef.fn?.liveOriginSessionId(sessionId);

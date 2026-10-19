@@ -151,6 +151,15 @@ async function setup() {
   const deps = {
     conversationLoop: primaryLoop,
     sideChatConversationLoop: sideLoop,
+    // No pane chat is open in these flows.
+    paneChatLoops: {
+      resolve: () => { throw new Error("no pane chat in this test"); },
+      get: () => undefined,
+      release: () => undefined,
+      inWindow: () => [],
+      holding: () => undefined,
+      all: () => [],
+    },
     memoryManager: mainStore,
     resolveChatGroupLoop: (group: string) => {
       if (group !== TILE_GROUP) throw new Error("Unknown test chat group");
@@ -212,18 +221,21 @@ describe("side-chat session transition boundary", () => {
     }));
   });
 
-  it("does not show the previous session's rows under a peer's new host session", async () => {
+  it("continues the conversation its view shows after a peer started a new host session", async () => {
     const { api, sideLoop } = await setup();
     sideLoop.getHistory().getMessages().push({ role: "user", content: "Old transcript" });
     const { result } = renderHook(() => useSideChat(api));
     await act(async () => { await result.current.loadSession(sideSessionId); });
     expect(result.current.entries).toContainEqual(expect.objectContaining({ kind: "user", text: "Old transcript" }));
     await api.sideChat!.new();
-    sideLoop.getHistory().getMessages().splice(0);
+    expect(sideLoop.getSessionId()).toBe(replacementSessionId);
     await act(async () => { await result.current.send("New prompt"); });
-    expect(result.current.sessionId).toBe(sideLoop.getSessionId());
-    expect(result.current.sessionId).toBe(replacementSessionId);
-    expect(result.current.entries.filter((entry) => entry.kind === "user")).toMatchObject([{ text: "New prompt" }]);
+    // The send names the session this view shows, so the host moves back onto
+    // it rather than writing this view's prompt into the peer's new session.
+    expect(sideLoop.getSessionId()).toBe(sideSessionId);
+    expect(result.current.sessionId).toBe(sideSessionId);
+    expect(result.current.entries.filter((entry) => entry.kind === "user").map((entry) => entry.text))
+      .toEqual(["Old transcript", "New prompt"]);
   });
 });
 

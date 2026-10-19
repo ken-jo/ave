@@ -753,19 +753,24 @@ conversation since deleted — is listed in its own right rather than dropped.
 
 A terminal or web pane opens the side chat in its own panel (the header's
 panel toggle), beside the page or terminal, as that pane's own conversation.
-The side loop is one per app, so a pane's conversation is a side-chat session
-main keys by the pane's tab (`browserTabRegistry` bound conversations). Each
-turn sent there names the tab (`ave:sidechat:send` `surface`), and main first
-moves the loop onto that pane's session, or a fresh one it binds to the pane.
-A turn from a conversation's side panel names the session its view shows and
-never runs in a pane's session or changes a pane's binding. Reopening a pane's
-chat reads its history without moving the loop (`ave:sidechat:pane-history`);
-the chat's New and the pane's close end it (`ave:sidechat:end-pane-chat`),
-stopping only that conversation's turn, and a closed pane's conversation is
-archived. Bindings live in main's memory: a reloaded window keeps them, since
-restored tabs keep their ids, and a restart starts each pane afresh. Only one
-side turn runs at a time across the app, so a send while another chat's turn
-streams is refused (`streaming-active`).
+Each open pane chat has its own conversation loop, made on its first turn and
+kept by main per window and pane tab (`paneChatLoops`); the side panel's chat
+keeps the app's side loop. Pane chats and the side panel therefore stream at
+the same time, and each refuses only a second send on its own loop
+(`streaming-active`). There is no cap: a pane loop lives only while its pane
+is open, and ends with the pane, its window, or the app. All of them write the
+side-chat store. A pane's turn binds its session to the pane's tab
+(`browserTabRegistry` bound conversations), and the session's row records the
+tab (`paneTabId`), so a restart reopens each restored pane on its conversation
+(restored tabs keep their ids). A turn from a conversation's side panel runs
+on the side loop in the session its view shows; a conversation a pane holds
+is refused there (`session-open-in-pane`). Reopening a pane's chat reads its
+history (`ave:sidechat:pane-history`); the chat's New starts the pane afresh
+and the pane's close ends it (`ave:sidechat:end-pane-chat`), stopping only
+that pane's turn and archiving a closed pane's conversation. A pane that ends
+while its conversation is loading sends nothing (`pane-chat-ended`). A turn
+that closes its own pane's page (`browser_tab_close`) runs to its end before
+its pane chat ends.
 
 The browser tools and `terminal_read` called without a tab id act on the bound
 tab, and sub-agents inherit it through their hosting session; a bound tab that

@@ -420,4 +420,43 @@ describe("a conversation bound to a pane's tab", () => {
     expect(registry.isPaneConversation("first")).toBe(false);
     expect(registry.paneConversation(1, "browser:side")).toBe("other-pane");
   });
+
+  it("knows an agent is closing a bound pane's tab, and forgets it once the pane chat ends", async () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    const closing = registry.requestTabOp(1, { op: "close", tabId: "tab-1" });
+    expect(registry.isClosedByAgent(1, "browser:pane")).toBe(true);
+    // Another window's pane with the same id is not the one closing.
+    expect(registry.isClosedByAgent(2, "browser:pane")).toBe(false);
+    registry.guestDestroyed(11);
+    await expect(closing).resolves.toEqual({ ok: true, tabId: "tab-1" });
+    expect(registry.isClosedByAgent(1, "browser:pane")).toBe(true);
+    registry.releasePaneConversation(1, "browser:pane");
+    expect(registry.isClosedByAgent(1, "browser:pane")).toBe(false);
+  });
+
+  it("takes the mark back when the close does not happen, and never marks an unbound tab", async () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    const abort = new AbortController();
+    const closing = registry.requestTabOp(1, { op: "close", tabId: "tab-1" }, { signal: abort.signal });
+    abort.abort();
+    await expect(closing).resolves.toEqual({ ok: false, error: "aborted" });
+    expect(registry.isClosedByAgent(1, "browser:pane")).toBe(false);
+    void registry.requestTabOp(1, { op: "close", tabId: "tab-2" });
+    expect(registry.isClosedByAgent(1, "browser:side")).toBe(false);
+  });
+
+  it("drops every pane binding of a window that is gone, and only that window's", () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("pane-one", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    registry.bindConversationSurface("pane-two", { windowId: 1, surface: { kind: "terminal", tabId: "terminal:pane" } });
+    registry.bindConversationSurface("elsewhere", { windowId: 2, surface: { kind: "browser", tabId: "browser:pane" } });
+    void registry.requestTabOp(1, { op: "close", tabId: "tab-1" });
+    registry.releaseWindow(1);
+    expect(registry.isPaneConversation("pane-one")).toBe(false);
+    expect(registry.isPaneConversation("pane-two")).toBe(false);
+    expect(registry.isClosedByAgent(1, "browser:pane")).toBe(false);
+    expect(registry.paneConversation(2, "browser:pane")).toBe("elsewhere");
+  });
 });

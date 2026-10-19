@@ -136,6 +136,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   private readonly userOwnedTabs = new Set<string>();
   private readonly activeSurface = new Map<number, ActiveWorkspaceSurface>();
   private readonly boundSurface = new Map<string, { windowId: number; surface: ActiveWorkspaceSurface }>();
+  // Pane tabs an agent asked to close while a conversation was bound to them.
+  private readonly closingByAgent = new Set<string>();
   private readonly pending = new Map<string, PendingTabOp>();
   private nextAttachment = 0;
   private readonly injectedTouches = new Map<number, { pressed: boolean; down: boolean; shown: boolean }>();
@@ -377,9 +379,28 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
    * user started it afresh): unbind its conversation and say which it was.
    */
   releasePaneConversation(windowId: number, tabId: string): string | undefined {
+    this.closingByAgent.delete(windowTabKey(windowId, tabId));
     const sessionId = this.paneConversation(windowId, tabId);
     if (sessionId !== undefined) this.boundSurface.delete(sessionId);
     return sessionId;
+  }
+
+  /**
+   * An agent's `browser_tab_close` is closing pane tab `tabId`: the turn that
+   * asked keeps running to its end, and the pane chat ends after it.
+   */
+  isClosedByAgent(windowId: number, tabId: string): boolean {
+    return this.closingByAgent.has(windowTabKey(windowId, tabId));
+  }
+
+  /** A window is gone: none of its panes holds a conversation any more. */
+  releaseWindow(windowId: number): void {
+    for (const [sessionId, bound] of this.boundSurface) {
+      if (bound.windowId === windowId) this.boundSurface.delete(sessionId);
+    }
+    for (const key of this.closingByAgent) {
+      if (key.startsWith(`${windowId}\u0000`)) this.closingByAgent.delete(key);
+    }
   }
 
   /** The surface conversation `sessionId` is bound to in `windowId`, if any. */
@@ -464,6 +485,18 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (op.op !== "new" && !this.liveTabInWindow(op.tabId, windowId)) {
       return Promise.resolve({ ok: false, error: "no-such-tab" });
     }
+    // Closing a pane's page from an agent turn ends that pane's chat only once
+    // the turn is over (see `isClosedByAgent`); a close that does not happen
+    // takes the mark back.
+    let closingKey: string | undefined;
+    if (op.op === "close") {
+      const rendererTabId = this.tabs.get(op.tabId)!.rendererTabId;
+      const key = windowTabKey(windowId, rendererTabId);
+      if (this.paneConversation(windowId, rendererTabId) !== undefined && !this.closingByAgent.has(key)) {
+        this.closingByAgent.add(key);
+        closingKey = key;
+      }
+    }
     const requestId = `browser-op-${this.nextRequest++}`;
     const request: BrowserTabOpRequest = op.op === "new"
       ? { requestId, op: "new", url: "about:blank", ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }) }
@@ -475,6 +508,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         if (timer !== undefined) clearTimeout(timer);
         options.signal?.removeEventListener("abort", onAbort);
         this.pending.delete(requestId);
+        if (!outcome.ok && closingKey !== undefined) this.closingByAgent.delete(closingKey);
         resolve(outcome);
       };
       // Keep the handle main knows (not the renderer id) for close/select.
@@ -539,6 +573,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.userOwnedTabs.clear();
     this.activeSurface.clear();
     this.boundSurface.clear();
+    this.closingByAgent.clear();
     this.pending.clear();
     this.injectedTouches.clear();
     this.link = null;

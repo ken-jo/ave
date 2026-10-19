@@ -522,6 +522,12 @@ export interface SessionMetadata {
    */
   unreadSince?: string;
   /**
+   * The workspace tab (a terminal or page) whose pane chat this side chat is.
+   * Host-written on the pane's first turn, cleared when the user starts the
+   * pane's chat afresh; a restored pane reopens on the newest unarchived match.
+   */
+  paneTabId?: string;
+  /**
    * Compact number of the checkpoint this session was branched from.
    * Set when a session is created via branchFromCheckpoint().
    * Absent for normal (non-branched) sessions.
@@ -1316,6 +1322,7 @@ function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata
     goal,
     archivedAt: typeof raw.archivedAt === "string" ? raw.archivedAt : undefined,
     unreadSince: typeof raw.unreadSince === "string" ? raw.unreadSince : undefined,
+    paneTabId: typeof raw.paneTabId === "string" && raw.paneTabId.length > 0 ? raw.paneTabId : undefined,
   };
 }
 
@@ -3018,6 +3025,26 @@ export class MemoryManager implements PromptMemorySource {
    * children, and reading every child's `.jsonl` to render a list would make
    * session load pay for transcripts the user may never open.
    */
+  /**
+   * The conversation of the pane chat for workspace tab `paneTabId`: the newest
+   * unarchived session whose metadata names that tab, or undefined. Metadata
+   * only — no transcript is read to answer it.
+   */
+  findPaneSession(paneTabId: string): string | undefined {
+    let newest: { id: string; mtimeMs: number } | undefined;
+    for (const file of readdirIfPresent(this.sessionsDir)) {
+      if (!file.endsWith(".jsonl")) continue;
+      const id = file.slice(0, -".jsonl".length);
+      if (!isValidSessionId(id)) continue;
+      const metadata = this.loadSessionMetadata(id);
+      if (metadata?.paneTabId !== paneTabId || metadata.archivedAt !== undefined) continue;
+      const stat = statPathIfPresent(join(this.sessionsDir, file));
+      if (!stat) continue;
+      if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { id, mtimeMs: stat.mtimeMs };
+    }
+    return newest?.id;
+  }
+
   listSubAgentSessionsForOrigin(originSessionId: string): RestoredSubAgentSession[] {
     if (!originSessionId) return [];
     return readdirIfPresent(this.sessionsDir)
