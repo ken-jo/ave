@@ -64,7 +64,7 @@
  * Pure: shared by the tool (before any approval is asked) and the PTY write
  * (which re-checks the characters it is handed).
  */
-import { analyzeShell, staticShellWord, type ShellRedirect, type ShellStatement, type ShellWord } from "./shell-analysis.js";
+import { analyzeShell, shellWordHasSingleField, staticShellWord, type ShellRedirect, type ShellStatement, type ShellWord } from "./shell-analysis.js";
 import { analyzeShellTestExpression } from "./shell-test-expression.js";
 
 /** Characters one command may hold — the length a block records (terminal-blocks.ts). */
@@ -120,7 +120,7 @@ const UNCHECKED_COMMAND_WORDS: ReadonlySet<string> = new Set(["zpty", "zregexpar
  * `printf -v NAME`. Every argument naming a variable is judged like the left
  * side of `NAME=value`.
  */
-const VARIABLE_SETTING_COMMAND_WORDS: ReadonlySet<string> = new Set(["read", "mapfile", "readarray", "getopts", "printf", "print", "zparseopts", "wait"]);
+const VARIABLE_SETTING_COMMAND_WORDS: ReadonlySet<string> = new Set(["read", "mapfile", "readarray", "getopts", "printf", "zparseopts", "wait"]);
 /** Builtins that list the shell's variables or completions, or edit a variable in the line editor. */
 const INTROSPECTION_COMMAND_WORDS: ReadonlySet<string> = new Set(["compgen", "vared"]);
 /** Declaration builtins that list every variable (and its value) when given nothing to declare, or `-p`. */
@@ -468,6 +468,7 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
   if (UNCHECKED_COMMAND_WORDS.has(head)) return "unchecked-construct";
   const args = words.slice(index + 1);
   const staticArgs = staticWords.slice(index + 1);
+  if (head === "print") return printOptionsProblem(staticArgs, command.words.slice(index + 1));
   if (head === "test" || head === "[") {
     const form = command.testForm ?? (head === "[" ? "bracket" : "test");
     if (!analyzeShellTestExpression(form, command.words.slice(index), staticWords.slice(index), "bash").ok) return "unchecked-construct";
@@ -478,12 +479,9 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
   if (INTROSPECTION_COMMAND_WORDS.has(head)) return "shell-introspection";
   // `print -P` and `echo -P` expand prompt escapes; `print -z` pushes onto
   // the line editor's buffer stack and `print -s`/`-S` onto the history.
-  if ((head === "print" || head === "echo") && leadingOptions(args).some((option) => /^-[A-Za-z]*[PzsS]/u.test(option))) {
+  if (head === "echo" && leadingOptions(args).some((option) => /^-[A-Za-z]*[PzsS]/u.test(option))) {
     return "shell-introspection";
   }
-  // Formatted print evaluates numeric arguments as arithmetic and %n as
-  // an assignment; its option clusters are not a plain data-printing form.
-  if (head === "print" && leadingOptions(args).some((option) => /^-[A-Za-z]*f/u.test(option))) return "unchecked-construct";
   // `export`, `readonly`, `integer`, `float` with nothing to declare, or with
   // `-p`, list every such variable with its value.
   if (LISTING_DECLARATION_WORDS.has(head)) {
@@ -492,25 +490,19 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
     const declares = command.assignments.length > 0 || options.length < args.length;
     if (!declares || options.some((option) => /^-[A-Za-z]*p/u.test(option))) return "shell-introspection";
   }
-  if (head === "printf" || head === "print") {
+  if (head === "printf") {
     // Only the `-v` operand names a variable; an option taken from a
     // variable could be `-v` itself.
     if (staticArgs[0] === undefined && args.length > 0) return "shell-state";
     const v = args.findIndex((arg, i) => i < leadingOptions(args).length && /^-[A-Za-z]*v$/u.test(arg));
     if (v >= 0 && staticArgs[v + 1] === undefined) return "shell-state";
-    if (head === "printf" && hasUncheckedPrintfFormat(staticArgs)) return "shell-state";
+    if (hasUncheckedPrintfFormat(staticArgs, command.words.slice(index + 1))) return "shell-state";
   } else if (VARIABLE_SETTING_COMMAND_WORDS.has(head) || DECLARATION_COMMAND_WORDS.has(head)) {
     // A variable name only known at run time could be any of them.
     if (staticArgs.some((word) => word === undefined)) return "shell-state";
   }
   if (VARIABLE_SETTING_COMMAND_WORDS.has(head)) {
-    return assignedVariableNames(head, args).some((name) => {
-      // Subscripts are arithmetic, even when the name was single quoted:
-      // assigning values[$(cmd)] runs cmd inside the builtin itself.
-      if (/[\[\]$`]/u.test(name.replace(/\[[0-9]+\]$/u, ""))) return true;
-      const base = name.split("[")[0]!;
-      return SHELL_STATE_VARIABLES.test(base) || EXECUTABLE_REGISTRY_VARIABLE.test(base);
-    }) ? "shell-state" : null;
+    return assignedVariableNames(head, args).some(isUnsafeAssignedVariableName) ? "shell-state" : null;
   }
   if (DECLARATION_COMMAND_WORDS.has(head)) {
     for (const argument of words.slice(index + 1)) {
@@ -539,8 +531,46 @@ function hasUncheckedArrayReadOptions(args: readonly string[]): boolean {
   return false;
 }
 
+/** Read option operands before judging formatted output or prompt/history effects. */
+function printOptionsProblem(args: readonly (string | undefined)[], words: readonly ShellWord[]): TerminalCommandTextProblem | null {
+  let echoOptions = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    // The restricted mode applies to later words, not the rest of this cluster.
+    if (echoOptions && (arg === undefined || !/^-[en]+$/u.test(arg))) break;
+    if (arg === undefined) return "shell-state";
+    if (arg === "--" || arg === "-" || !arg.startsWith("-")) break;
+    for (let offset = 1; offset < arg.length; offset++) {
+      const option = arg[offset]!;
+      if (option === "f") return "unchecked-construct";
+      if ("PzsS".includes(option)) return "shell-introspection";
+      if (option === "R") { echoOptions = true; continue; }
+      if ("uCvxX".includes(option)) {
+        let operand: string | undefined = arg.slice(offset + 1);
+        if (offset === arg.length - 1) {
+          index++;
+          if (index >= args.length || !shellWordHasSingleField(words[index]!)) return "shell-state";
+          operand = args[index];
+        }
+        if (option === "v" && (operand === undefined || isUnsafeAssignedVariableName(operand))) return "shell-state";
+        break;
+      }
+      if (!"abcDeilmnNoOpr".includes(option)) return "unchecked-construct";
+    }
+  }
+  return null;
+}
+
+function isUnsafeAssignedVariableName(name: string): boolean {
+  // Subscripts are arithmetic, even when the name was single quoted:
+  // assigning values[$(cmd)] runs cmd inside the builtin itself.
+  if (/[\[\]$`]/u.test(name.replace(/\[[0-9]+\]$/u, ""))) return true;
+  const base = name.split("[")[0]!;
+  return SHELL_STATE_VARIABLES.test(base) || EXECUTABLE_REGISTRY_VARIABLE.test(base);
+}
+
 /** Formats may assign with %n or evaluate numeric operands as arithmetic. */
-function hasUncheckedPrintfFormat(args: readonly (string | undefined)[]): boolean {
+function hasUncheckedPrintfFormat(args: readonly (string | undefined)[], words: readonly ShellWord[]): boolean {
   let index = 0;
   while (index < args.length) {
     const arg = args[index];
@@ -553,12 +583,33 @@ function hasUncheckedPrintfFormat(args: readonly (string | undefined)[]): boolea
   if (index === args.length) return false;
   const format = args[index];
   if (format === undefined) return true;
-  const conversions = format.replace(/%%/gu, "");
-  if (/%(?:\d+\$)?[-+ #0'.\d*$hlLjzt]*n/u.test(conversions)) return true;
-  if (/%(?:\d+\$)?[-+ #0'.\d*$hlLjzt]*[diouxXeEfFgGaA]/u.test(conversions) || /%[^%]*\*/u.test(conversions)) {
-    // A static numeric literal cannot name or mutate another parameter.
-    return args.slice(index + 1).some((arg) => arg === undefined
-      || !/^(?:['"][\s\S]*|[+-]?(?:0[xX][\da-fA-F]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?))$/u.test(arg));
+  const operands: Array<"field" | "number" | "text"> = [];
+  for (let offset = 0; offset < format.length; offset++) {
+    if (format[offset] !== "%") continue;
+    if (format[offset + 1] === "%") { offset++; continue; }
+    // Positional operands and extensions with another format grammar are not
+    // shared by both shells. Unknown or unfinished directives fail closed.
+    const directive = /^%[-+ #0']*(\*|[0-9]+)?(?:\.(\*|[0-9]*))?[hlL]?([diouxXeEfFgGaAbcsqn])/u.exec(format.slice(offset));
+    if (directive === null || directive[3] === "n") return true;
+    if (directive[1] === "*") operands.push("field");
+    if (directive[2] === "*") operands.push("field");
+    operands.push(/[diouxXeEfFgGaA]/u.test(directive[3]!) ? "number" : "text");
+    offset += directive[0].length - 1;
+  }
+  if (operands.every((operand) => operand === "text")) return false;
+  for (let argument = index + 1; argument < args.length; argument++) {
+    // Splitting or removing a text operand could shift later data into a
+    // numeric slot. The format repeats while surplus arguments remain.
+    if (!shellWordHasSingleField(words[argument]!)) return true;
+    const operand = operands[(argument - index - 1) % operands.length];
+    if (operand === "text") continue;
+    const value = args[argument];
+    if (value === undefined) return true;
+    // Width and precision use arithmetic directly; only conversion operands
+    // share the quote-prefixed character literal form in both shells.
+    if (operand === "field") {
+      if (!/^[+-]?(?:0[xX][\da-fA-F]+|[0-9]+)$/u.test(value)) return true;
+    } else if (!/^(?:['"][\s\S]*|[+-]?(?:0[xX][\da-fA-F]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?))$/u.test(value)) return true;
   }
   return false;
 }
@@ -583,7 +634,7 @@ function leadingOptions(args: readonly string[]): string[] {
  */
 function assignedVariableNames(head: string, args: readonly string[]): string[] {
   const nameOf = (word: string): string => word.replace(/^-[A-Za-z]*/u, "").split("?")[0]!;
-  if (head === "printf" || head === "print") {
+  if (head === "printf") {
     const names: string[] = [];
     for (let i = 0; i < args.length; i++) {
       const arg = args[i]!;

@@ -85,8 +85,115 @@ export const TERMINAL_REGISTRY_COMMANDS: readonly string[] = [
   "echo $(( functions = 1 )); no_such_ave_word"
 ];
 
+/** Formats whose numeric fields consume only fixed literals. */
+export const TERMINAL_PRINTF_DATA_COMMANDS: readonly string[] = [
+  "printf '%d %s' 42 hello",
+  "printf '%s %d' hello 42",
+  "printf '%s %d' 'PATH=0' 42",
+  "printf '%d %% %s' 42 hello 43 world",
+  "printf '%s %d' hello 42 world 43",
+  "printf '%*s %d' 8 hello 42",
+  "printf '%s %.*f' hello 2 1.25",
+  "printf '%*.*f %s' 8 2 1.25 hello",
+  "printf '%s %*.*f' hello 8 2 1.25 world 9 3 2.5",
+  "printf '%d %s' \"'a\" hello",
+  "printf '%d %s' '\"a' hello",
+  "printf '%d %s' \"'PATH=0\" hello",
+  "printf '%d %s' '\"PATH=0' hello",
+  "printf '%ld %s' 42 hello",
+  "printf '%s %d' \"$text\" 42",
+  "printf '%s %d' hello",
+  "printf '%%n %s' 'PATH=0'",
+  "printf '%%' 'PATH=0'",
+];
+
+/** Formats with unchecked arithmetic, assignment, argument positions or grammar. */
+export const TERMINAL_PRINTF_UNCHECKED_COMMANDS: readonly string[] = [
+  "printf '%d %s' 'PATH=0' hello",
+  "printf '%s %d' hello 'PATH=0'",
+  "printf '%s %d' hello 42 world 'PATH=0'",
+  "printf '%d %% %s' 42 hello 'PATH=0' world",
+  "printf '%s %*s' hello 'PATH=0' world",
+  "printf '%s %.*s' hello 'PATH=0' world",
+  "printf '%s %*.*f' hello 8 2 1.25 world 'PATH=0' 3 2.5",
+  "printf '%s %*.*f' hello 8 2 1.25 world 9 'PATH=0' 2.5",
+  "printf '%s %*.*f' hello 8 2 1.25 world 9 3 'PATH=0'",
+  "printf '%s %d' hello \"$number\"",
+  "printf '%s %d' $text 42 'PATH=0' 43",
+  "printf '%s %d' \"$@\" 42 'PATH=0' 43",
+  "printf '%s %*s' hello \"'a\" world",
+  "printf '%s %.*s' hello '\"a' world",
+  "printf '%s %n' hello PATH",
+  "printf '%2$d %1$s' hello 'PATH=0'",
+  "printf '%2$*1$d' 8 'PATH=0'",
+  "printf '%1$.*2$f' 'PATH=0' 2",
+  "printf '%s %' hello 'PATH=0'",
+  "printf '%s %*' hello 'PATH=0'",
+  "printf '%lls %d' hello 'PATH=0'",
+  "printf '%(date)T %d' 42 'PATH=0'",
+  "printf \"$format\" hello 42",
+];
+
+/** Option operands and restricted option processing keep the rest as data. */
+export const TERMINAL_PRINT_DATA_COMMANDS: readonly string[] = [
+  "print -u 1 -r -- hello",
+  "print -ru1 -- hello",
+  "print -C 1 -- hello",
+  "print -x 8 -r -- hello",
+  "print -X8 -- hello",
+  "print -R -f '%d' 'PATH=0'",
+  "print -R \"$text\"",
+  "print -rvoutput value",
+  "print -nrvoutput value",
+  "print -rv'values[0]' value",
+  "print -vrPATH value",
+  "print -R -vPATH changed",
+  "print -R -rvPATH changed",
+];
+
+/** Variable targets are parsed after flags before applying shared assignment policy. */
+export const TERMINAL_PRINT_TARGET_COMMANDS: readonly string[] = [
+  "print -rvPATH changed",
+  "print -nrvPATH changed",
+  "print -C1 -rvPATH changed",
+  "print -RvPATH changed",
+  "print -rvPROMPT_COMMAND changed",
+  "print -rv'PATH[0]' changed",
+  "print -rv'functions[handler]' changed",
+  "print -rv'values[printfProbe=7]' changed",
+  "print -rv'values[$(printf target-ran)]' changed",
+  "print -rv\"$variable\" changed",
+  "print -nrv\"$variable\" changed",
+];
+
+/** Formatted output remains active after attached or separate option operands. */
+export const TERMINAL_PRINT_FORMAT_COMMANDS: readonly string[] = [
+  "print -u 1 -f '%d' 'PATH=0'",
+  "print -u1 -f '%d' 'PATH=0'",
+  "builtin print -u 1 -f '%d' 'PATH=0'",
+  "print -C 1 -f '%d' 'PATH=0'",
+  "print -C1 -f '%d' 'PATH=0'",
+  "print -x 8 -f '%d' 'PATH=0'",
+  "print -x8 -f '%d' 'PATH=0'",
+  "print -X 8 -f '%d' 'PATH=0'",
+  "print -X8 -f '%d' 'PATH=0'",
+  "print -v output -f '%d' 'PATH=0'",
+  "print -voutput -f '%d' 'PATH=0'",
+  "print -nru1 -f '%d' 'PATH=0'",
+  "print -Rf '%d' 'PATH=0'",
+];
+
 /** Builtins and assignments that run code beyond the command's parsed words. */
 export const TERMINAL_CALLBACK_COMMANDS: readonly string[] = [
+  ...TERMINAL_PRINT_FORMAT_COMMANDS,
+  ...TERMINAL_PRINT_TARGET_COMMANDS,
+  "print -u 1 -P '%~'",
+  "print -C1 -s hidden-history",
+  "print -x 8 -S hidden-history",
+  "print -X8 -z hidden-buffer",
+  "print -u 1 \"$option\" '%d' 'PATH=0'",
+  "print -u $descriptor 1 '%d' 'PATH=0'",
+  "print -u 1 -v \"$variable\" value",
   "mapfile -C 'command_not_found_handle() { /usr/bin/printf callback-ran; }; :' -c1 lines <<< x; no_such_ave_word",
   "readarray -C 'command_not_found_handle() { /usr/bin/printf callback-ran; }; :' -c1 lines <<< x; no_such_ave_word",
   "mapfile -C 'eval \"PROMPT_COMMAND=echo\"; :' -c 1 lines < list",

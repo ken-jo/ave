@@ -21,7 +21,7 @@ import type { ApprovalMemoryScope } from "../../shared/permissions-events.js";
 import type { ToolExecutionContext } from "../types.js";
 import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
 
-import { TERMINAL_CALLBACK_COMMANDS, TERMINAL_REGISTRY_COMMANDS } from "../../__tests__/support/terminal-registry-commands.js";
+import { TERMINAL_CALLBACK_COMMANDS, TERMINAL_PRINT_DATA_COMMANDS, TERMINAL_PRINT_FORMAT_COMMANDS, TERMINAL_PRINT_TARGET_COMMANDS, TERMINAL_PRINTF_DATA_COMMANDS, TERMINAL_PRINTF_UNCHECKED_COMMANDS, TERMINAL_REGISTRY_COMMANDS } from "../../__tests__/support/terminal-registry-commands.js";
 import { terminalCommandTextProblem } from "../../shared/terminal-command-text.js";
 import { getLocale, setLocale } from "../../i18n/runtime.js";
 import { loadLocaleMessages } from "../../i18n/messages/index.js";
@@ -49,6 +49,28 @@ describe("terminal shell callbacks", () => {
     "printf -v 'values[0]' '%s' value",
   ])("allows data without callback evaluation: %s", (command) => {
     expect(terminalCommandTextProblem(command)).toBeNull();
+  });
+});
+
+describe("terminal formatted output", () => {
+  it.each(TERMINAL_PRINT_DATA_COMMANDS)("allows print data after option operands: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).toBeNull();
+  });
+
+  it.each(TERMINAL_PRINT_FORMAT_COMMANDS)("refuses formatted print after option operands: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).toBe("unchecked-construct");
+  });
+
+  it.each(TERMINAL_PRINT_TARGET_COMMANDS)("refuses unsafe parsed print targets: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).toBe("shell-state");
+  });
+
+  it.each(TERMINAL_PRINTF_DATA_COMMANDS)("allows numeric and text operands in their consumed positions: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).toBeNull();
+  });
+
+  it.each(TERMINAL_PRINTF_UNCHECKED_COMMANDS)("refuses unchecked format evaluation: %s", (command) => {
+    expect(terminalCommandTextProblem(command)).toBe("shell-state");
   });
 });
 
