@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
@@ -9,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToolOutputArtifactStore } from "../tool-output-artifact-store.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
   MAX_SESSION_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_PENDING_BYTES, MAX_TOOL_RESULT_ARTIFACT_BYTES,
   type ToolOutputArtifactInfo, type ToolOutputCapture,
@@ -40,7 +42,7 @@ beforeEach(() => {
   store = new ToolOutputArtifactStore(sessions);
 });
 
-afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => { await cleanupTmpDir(root); });
 
 function outputDir(sessionId = SESSION_ID): string { return join(sessions, sessionId, "tool-output"); }
 function onlyFile(suffix: string): string {
@@ -346,14 +348,19 @@ describe("session tool output artifacts", () => {
       chmodSync(data, 0o600);
     }
     unlinkSync(data);
-    symlinkSync(join(root, "missing-output"), data);
-    expect(store.validateReference(SESSION_ID, "tool-output", info)).toBe(false);
-    unlinkSync(data);
     mkdirSync(data, { mode: 0o700 });
     expect(store.validateReference(SESSION_ID, "tool-output", info)).toBe(false);
   });
 
-  it("rejects references when the owned directory is replaced by a symlink", async () => {
+  it.skipIf(!canCreateSymlinks())("refuses a dangling payload symlink", async () => {
+    const info = await saved("owned");
+    const data = onlyFile(".bin");
+    unlinkSync(data);
+    symlinkSync(join(root, "missing-output"), data);
+    expect(store.validateReference(SESSION_ID, "tool-output", info)).toBe(false);
+  });
+
+  it.skipIf(!canCreateSymlinks())("rejects references when the owned directory is replaced by a symlink", async () => {
     const info = await saved("owned");
     const moved = join(sessions, SESSION_ID, "moved-output");
     renameSync(outputDir(), moved);
@@ -370,7 +377,7 @@ describe("session tool output artifacts", () => {
     expect(store.read(SESSION_ID, "tool-output", info)).toBeNull();
   });
 
-  it.each(["root", "session", "output"])("refuses a symlink at the %s directory", async (level) => {
+  it.skipIf(!canCreateSymlinks()).each(["root", "session", "output"])("refuses a symlink at the %s directory", async (level) => {
     const outside = join(root, "outside");
     mkdirSync(outside, { mode: 0o700 });
     if (level === "root") {
@@ -387,7 +394,7 @@ describe("session tool output artifacts", () => {
     expect(readdirSync(outside)).toEqual([]);
   });
 
-  it("does not follow a replaced payload during reads or pruning", async () => {
+  it.skipIf(!canCreateSymlinks())("does not follow a replaced payload during reads or pruning", async () => {
     const info = await saved("original");
     const outside = join(root, "outside.txt");
     writeFileSync(outside, "untouched", { mode: 0o600 });
@@ -501,7 +508,8 @@ describe("session tool output artifacts", () => {
     expect(existsSync(data)).toBe(true);
   });
 
-  it("rejects directory replacement during capture without deleting the replacement", async () => {
+  // An open capture prevents renaming its directory on this host.
+  it.skipIf(process.platform === "win32")("rejects directory replacement during capture without deleting the replacement", async () => {
     const capture = store.start(SESSION_ID, "directory-race");
     capture.append(Buffer.from("before"));
     await capture.waitForDrain();

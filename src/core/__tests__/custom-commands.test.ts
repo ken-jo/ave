@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -58,17 +59,22 @@ describe("custom command files", () => {
     expect(await loadCustomCommand("standup", undefined)).toMatchObject({ scope: "user", body: "Summarize today." });
   });
 
-  it("skips names it cannot type, empty bodies, oversized files and links out of the directory", async () => {
+  it("skips names it cannot type, empty bodies and oversized files", async () => {
     await command(projectDir, "Bad Name", "body");
     await command(projectDir, "empty", "---\ndescription: nothing\n---\n   ");
     await command(projectDir, "huge", "x".repeat(CUSTOM_COMMAND_MAX_BYTES + 1));
+    expect(await listCustomCommands(project)).toEqual([]);
+    for (const name of ["Bad Name", "empty", "huge", "../secret"]) {
+      expect(await loadCustomCommand(name, project)).toBeNull();
+    }
+  });
+
+  it.skipIf(!canCreateSymlinks())("skips links out of the command directory", async () => {
     const outside = join(root, "secret.md");
     await writeFile(outside, "outside body");
     await symlink(outside, join(projectDir, "escape.md"));
     expect(await listCustomCommands(project)).toEqual([]);
-    for (const name of ["Bad Name", "empty", "huge", "escape", "../secret"]) {
-      expect(await loadCustomCommand(name, project)).toBeNull();
-    }
+    expect(await loadCustomCommand("escape", project)).toBeNull();
   });
 
   it("answers no command when neither directory exists", async () => {

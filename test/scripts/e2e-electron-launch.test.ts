@@ -43,7 +43,7 @@ describe("e2e Electron launches", () => {
 
   it("all go through the harness launcher", () => {
     const direct = SUITES.flatMap((suite) => sourceFiles(resolve(ROOT, suite)))
-      .map((path) => relative(ROOT, path))
+      .map((path) => relative(ROOT, path).replaceAll("\\", "/"))
       .filter((path) => path !== HARNESS)
       .filter((path) => DIRECT_LAUNCH.test(readFileSync(path, "utf8")));
     expect(direct).toEqual([]);

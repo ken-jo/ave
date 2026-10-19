@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 /**
  * How a folder source looks and what *Show in Finder* may touch (design
  * §18.4.8, §18.9): the *Local folder* / *Network folder* badge on the
@@ -178,7 +179,7 @@ describe("revealFolder (§18.9)", () => {
     }
   });
 
-  it("says the folder moved when its path now leads to another folder, instead of showing that one", async () => {
+  it.skipIf(!canCreateSymlinks())("says the folder moved when its path now leads to another folder, instead of showing that one", async () => {
     const { harness, view } = await addLocalMarket();
     try {
       const elsewhere = join(dirname(folder), "elsewhere");

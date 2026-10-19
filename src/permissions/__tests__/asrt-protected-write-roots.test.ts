@@ -272,6 +272,7 @@ describe("the plugins root, refused to plugin-owned wraps", () => {
   });
 
   it("is refused without the read floor restated, which a per-command deny replaces", () => {
+    setProcessPlatform("linux");
     expect(() => buildPerCommandSandboxCustomConfig({ denyPluginsRoot: true })).toThrow(/needs denyRead restated/);
   });
 });

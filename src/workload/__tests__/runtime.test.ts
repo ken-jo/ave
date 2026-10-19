@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import {
   chmodSync,
   mkdirSync,
@@ -175,7 +176,8 @@ afterEach(async () => {
   await cleanupTmpDir(root);
 });
 
-describe("brokered workload runtime", () => {
+// The broker requires Unix sockets and POSIX owner-verified capability files.
+describe.skipIf(process.platform === "win32")("brokered workload runtime", () => {
   const authority = (operation: "shell.run" | "shell.start" | "file.read_binary", toolName: "bash" | "view_image") =>
     issueWorkloadToolCorrelationAuthority({
       toolUseId: `tool-${toolName}`,
@@ -366,7 +368,7 @@ describe("brokered workload runtime", () => {
     }
   });
 
-  it("rejects a symlinked capability parent", () => {
+  it.skipIf(!canCreateSymlinks())("rejects a symlinked capability parent", () => {
     const socketPath = join(root, "workload.sock");
     const realParent = join(root, "real-parent");
     const linkedParent = join(root, "linked-parent");

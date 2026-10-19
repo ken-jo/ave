@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 /**
  * Issue #28 P1a — rule files (user-global Store A + per-project files in Ave
  * home), corrupt-data handling, Store B coexistence, and the decision path:
@@ -7,6 +8,19 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const { resolve } = await import("node:path");
+  return {
+    ...actual,
+    // Temporary projects may live inside this checkout in a confined test run.
+    existsSync: (path: import("node:fs").PathLike) => {
+      const fold = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
+      return fold(resolve(String(path))) !== fold(resolve(process.cwd(), ".git")) && actual.existsSync(path);
+    },
+  };
+});
 
 const TEST_HOME = mkdtempSync(join(tmpdir(), "ave-rules-home-"));
 process.env.AVE_HOME = TEST_HOME;
@@ -21,6 +35,7 @@ import {
   readApprovals,
   recordApproval,
   __resetSessionStoreForTest,
+  captureApprovalWorkingDirectory,
 } from "../user-approval-store.js";
 import { resolveUserApprovalVerdict } from "../../shared/permissions-events.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
@@ -214,14 +229,14 @@ describe("decision path", () => {
     const pm = new PermissionManager(permissionsFile);
     await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: join(repo, "packages", "app") });
     expect(projectRulesLocation(dir, join(repo, "packages", "app")).filePath).toBe(projectRulesLocation(dir, repo).filePath);
-    expect(projectRulesLocation(dir, join(repo, "packages", "app")).projectRoot).toBe(realpathSync(repo));
+    expect(projectRulesLocation(dir, join(repo, "packages", "app")).projectRoot).toBe(captureApprovalWorkingDirectory(repo).path);
     await pm.ensureProjectRulesLoaded(repo);
     expect(pm.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: repo })).toMatchObject({ decision: "allow" });
     // Outside a repository the cwd itself is the project.
-    expect(projectRulesLocation(dir, project).projectRoot).toBe(project);
+    expect(projectRulesLocation(dir, project).projectRoot).toBe(captureApprovalWorkingDirectory(project).path);
   });
 
-  it("project rules follow the shell call's own cwd, resolved with realpath", async () => {
+  it.skipIf(!canCreateSymlinks())("project rules follow the shell call's own cwd, resolved with realpath", async () => {
     // The session runs in repo A; the call runs in a nested repo B, reached
     // through a symlink (inside A, so no out-of-directory grant is involved).
     const repoA = join(dir, "a");
@@ -245,7 +260,7 @@ describe("decision path", () => {
     ));
 
     const context = check.mock.calls[0]![4]!;
-    expect(projectRulesLocation(dir, context.projectRulesCwd!).projectRoot).toBe(realpathSync(repoB));
+    expect(projectRulesLocation(dir, context.projectRulesCwd!).projectRoot).toBe(captureApprovalWorkingDirectory(repoB).path);
     expect(context.ruleSubject).toMatchObject({ kind: "shell", cwd: join(repoA, "b-link") });
     expect(check.mock.results[0]!.value).toMatchObject({ decision: "deny" });
     expect(execute).not.toHaveBeenCalled();

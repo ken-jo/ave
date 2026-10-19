@@ -7,6 +7,8 @@
  * refuses it; see plugin-theme-replay.test.ts for the real handler).
  */
 import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+import { resolve } from "node:path";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
@@ -202,8 +204,8 @@ describe("the dock window paints the host theme main sends (real preload, host t
     expect(invoke).not.toHaveBeenCalled();
     // The asset URLs main resolved reach the bridge (the preload resolves nothing itself).
     const bridge = (window as unknown as { aveDock: { pluginShellUrl: string; pluginPreloadUrl: string } }).aveDock;
-    expect(bridge.pluginShellUrl).toBe("file:///assets/plugin-ui-shell.html");
-    expect(bridge.pluginPreloadUrl).toBe("file:///assets/plugin-preload.cjs");
+    expect(bridge.pluginShellUrl).toBe(pathToFileURL(resolve("/assets/plugin-ui-shell.html")).href);
+    expect(bridge.pluginPreloadUrl).toBe(pathToFileURL(resolve("/assets/plugin-preload.cjs")).href);
   });
 
   it("stays in the stylesheet's colours when no theme has been published", async () => {

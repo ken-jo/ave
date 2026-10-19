@@ -417,7 +417,8 @@ describe("seedAveHomeDocs — one offer per packaged version", () => {
     ]);
   });
 
-  it("removes a dated sibling whose bytes are an allowlisted shipped version", () => {
+  // Without O_NOFOLLOW the host deliberately retains existing markers.
+  it.skipIf(process.platform === "win32")("removes a dated sibling whose bytes are an allowlisted shipped version", () => {
     writeRes(
       "AGENTS.md.replaceable-sha256",
       `${sha256("AGENTS v1\n")}\n${sha256("AGENTS v3\n")}\n`,

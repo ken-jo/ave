@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 /**
  * Plugin storage layout — the security boundary inside a plugin root.
  *
@@ -234,7 +235,7 @@ describe("resolvePluginSocketDir", () => {
     // production path for a plugin whose data dir is somewhere else — and the
     // child would then be handed a directory the sandbox never heard of.
     expect(resolvePluginSocketDir("/somewhere/else/plugins/p/data")).toBe(
-      `/somewhere/else/plugins/p/${PLUGIN_OWN_SOCKET_DIR_NAME}`,
+      resolve("/somewhere/else/plugins/p", PLUGIN_OWN_SOCKET_DIR_NAME),
     );
   });
 });
@@ -769,7 +770,7 @@ describe("carryPluginSocketDirs", () => {
       },
     );
 
-    it("empties every other root's discard when one root's discard name is a link", async () => {
+    it.skipIf(!canCreateSymlinks())("empties every other root's discard when one root's discard name is a link", async () => {
       const linked = join(root, "linked");
       const plain = join(root, "plain");
       const outside = join(root, "outside");

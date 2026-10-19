@@ -19,8 +19,9 @@ beforeEach(() => {
 });
 afterEach(async () => cleanupTmpDir(root));
 
+// External key protection requires POSIX ownership and no-follow file opens.
 describe("host authority secret store", () => {
-  it("preserves identity across restart and never regenerates it after wrong-key decryption", () => {
+  it.skipIf(process.platform === "win32")("preserves identity across restart and never regenerates it after wrong-key decryption", () => {
     const secretStore = createHostSecretStore(createNodeSecretEncryption(keyFile), directory);
     const identity = ensureTailnetPairedShareActorSecret(secretStore);
     expect(ensureTailnetPairedShareActorSecret(
@@ -35,7 +36,7 @@ describe("host authority secret store", () => {
     expect(readFileSync(join(directory, files[0]))).toEqual(original);
   });
 
-  it("refuses unavailable keys, legacy formats and tampering without quarantine or overwrite", () => {
+  it.skipIf(process.platform === "win32")("refuses unavailable keys, legacy formats and tampering without quarantine or overwrite", () => {
     const encryption = createNodeSecretEncryption(keyFile);
     const store = createHostSecretStore(encryption, directory);
     store.write("authority", "retained-value");

@@ -310,7 +310,7 @@ describe("pty-manager happy path (fs-contained)", () => {
     // command, so only an assignment inside the wrap reaches the shell.
     expect(command).toBe(`exec /usr/bin/env TMPDIR=${temp} TMP=${temp} TEMP=${temp} /bin/sh -l -i`);
     expect(statSync(temp).isDirectory()).toBe(true);
-    expect(statSync(temp).mode & 0o777).toBe(0o700);
+    if (process.platform !== "win32") expect(statSync(temp).mode & 0o777).toBe(0o700);
     // Written under the HOME the wrap already grants.
     expect(options.filesystem.allowWrite).toContain(sandboxHome);
   });

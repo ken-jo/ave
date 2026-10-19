@@ -16,8 +16,15 @@ beforeEach(() => {
 });
 afterEach(async () => cleanupTmpDir(root));
 
+// External key protection requires POSIX ownership and no-follow file opens.
 describe("protected external key encryption", () => {
-  it("encrypts independently on each write and authenticates empty and Unicode strings", () => {
+  it.runIf(process.platform === "win32")("refuses an external key without reading or modifying it on an unsupported host", () => {
+    const before = readFileSync(keyFile);
+    expect(() => createNodeSecretEncryption(keyFile)).toThrow(/unavailable on this platform/);
+    expect(readFileSync(keyFile)).toEqual(before);
+  });
+
+  it.skipIf(process.platform === "win32")("encrypts independently on each write and authenticates empty and Unicode strings", () => {
     const encryption = createNodeSecretEncryption(keyFile);
     expect(encryption.getSelectedStorageBackend()).toBe("external_key");
     expect(encryption.isEncryptionAvailable()).toBe(true);
@@ -31,7 +38,7 @@ describe("protected external key encryption", () => {
     }
   });
 
-  it("rejects a wrong key, changes to every envelope region, and truncated ciphertext", () => {
+  it.skipIf(process.platform === "win32")("rejects a wrong key, changes to every envelope region, and truncated ciphertext", () => {
     const encryption = createNodeSecretEncryption(keyFile);
     const ciphertext = encryption.encryptString("protected-credential");
     const otherFile = join(root, "other-key");
@@ -59,7 +66,7 @@ describe("protected external key encryption", () => {
     expect(readdirSync(root).filter((name) => !name.endsWith(".lock-anchor"))).toEqual(before);
   });
 
-  it("rejects relative, absent, directory, linked, oversized and unprotected key files without repair", () => {
+  it.skipIf(process.platform === "win32")("rejects relative, absent, directory, linked, oversized and unprotected key files without repair", () => {
     expect(() => createNodeSecretEncryption("key")).toThrow(/absolute/);
     expect(() => createNodeSecretEncryption(join(root, "missing"))).toThrow(SecretKeyFileError);
     expect(() => createNodeSecretEncryption(root)).toThrow(/regular file/);
@@ -83,7 +90,7 @@ describe("protected external key encryption", () => {
     }
   });
 
-  it("accepts an owner read-only key and pins it until the next startup", () => {
+  it.skipIf(process.platform === "win32")("accepts an owner read-only key and pins it until the next startup", () => {
     chmodSync(keyFile, 0o400);
     const encryption = createNodeSecretEncryption(keyFile);
     const ciphertext = encryption.encryptString("secret");
@@ -99,7 +106,7 @@ describe("external-key secret documents", () => {
     path: join(rootPath, "secrets.json"), policy: "packaged", encryption,
   });
 
-  it("persists authenticated ciphertext with its own encoding and preserves it across restart", async () => {
+  it.skipIf(process.platform === "win32")("persists authenticated ciphertext with its own encoding and preserves it across restart", async () => {
     const store = storeAt(root);
     await store.set("api", "server-secret");
     const bytes = readFileSync(store.path, "utf8");
@@ -110,7 +117,7 @@ describe("external-key secret documents", () => {
     expect(readFileSync(store.path, "utf8")).toBe(bytes);
   });
 
-  it("refuses reads, replacement, deletion and migration with the wrong or missing key", async () => {
+  it.skipIf(process.platform === "win32")("refuses reads, replacement, deletion and migration with the wrong or missing key", async () => {
     const store = storeAt(root);
     await store.set("api", "preserved");
     const before = readFileSync(store.path);
@@ -129,7 +136,7 @@ describe("external-key secret documents", () => {
     }
   });
 
-  it("refuses existing desktop and development documents without modifying their bytes or modes", async () => {
+  it.skipIf(process.platform === "win32")("refuses existing desktop and development documents without modifying their bytes or modes", async () => {
     const desktopValue = Buffer.from("desktop-ciphertext").toString("base64");
     const documents = [
       { api: desktopValue },

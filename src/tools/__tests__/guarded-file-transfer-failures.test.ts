@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile, lstat, open, opendir, rmdir, unlink, type FileHandle } from "node:fs/promises";
 import { read } from "node:fs";
 import { join } from "node:path";
@@ -270,7 +271,7 @@ describe("detected replacement and cleanup faults", () => {
     expect(vi.mocked(unlink)).not.toHaveBeenCalledWith(join(destination, "owned"));
   });
 
-  it("detects a swapped destination parent before another mutation", async () => {
+  it.skipIf(!canCreateSymlinks())("detects a swapped destination parent before another mutation", async () => {
     const parent = join(root, "parent");
     await mkdir(parent);
     destination = join(parent, "output");
