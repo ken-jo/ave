@@ -22,7 +22,7 @@ import {
   setInstalledCatalogLoader,
 } from "../messages/index.js";
 import { interpolate, translate } from "../translate.js";
-import { getLocale, setLocale, t } from "../runtime.js";
+import { getLocale, onLocaleChange, setLocale, t } from "../runtime.js";
 
 const PLACEHOLDER_RE = /\{[A-Za-z0-9_.-]+\}/g;
 const TAG_RE = /<\/?[A-Za-z][A-Za-z0-9_-]*(?:\s+[^<>]*)?>/g;
@@ -259,5 +259,28 @@ describe("runtime t()", () => {
     expect(getLocale()).toBe("ko");
     setLocale("de-DE");
     expect(getLocale()).toBe("en");
+  });
+});
+
+describe("onLocaleChange", () => {
+  it("runs every listener even when an earlier one throws", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const seen: string[] = [];
+    const offThrowing = onLocaleChange(() => { throw new Error("menu rebuild failed"); });
+    const offNext = onLocaleChange((locale) => seen.push(locale));
+    try {
+      // The change still lands and the caller is not failed by the listener.
+      expect(setLocale("ko")).toBe("ko");
+      expect(getLocale()).toBe("ko");
+      expect(seen).toEqual(["ko"]);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining("locale-change listener failed for 'ko'"),
+        expect.objectContaining({ message: "menu rebuild failed" }),
+      );
+    } finally {
+      offThrowing();
+      offNext();
+      error.mockRestore();
+    }
   });
 });

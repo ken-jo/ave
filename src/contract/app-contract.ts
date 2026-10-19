@@ -516,6 +516,8 @@ export const CHANNELS = {
     mount: "ave:dock:mount",
     /** Change one card's height. */
     resize: "ave:dock:resize",
+    /** Replace one card's header title (the UI language changed). */
+    retitle: "ave:dock:retitle",
     /** Remove a plugin card. */
     unmount: "ave:dock:unmount",
     /** The host theme changed (`host.theme.changed` payload); the dock repaints its own chrome. */

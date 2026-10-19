@@ -23,6 +23,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 import { pureTool, TestPluginRuntime as PluginRuntime } from "./test-helpers.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { servedAgentPluginsDocument } from "./test-helpers.js";
+import { getLocale, setLocale } from "../../i18n/runtime.js";
 
 type UiEntry = {
   id: string;
@@ -32,6 +33,7 @@ type UiEntry = {
   entry?: string;
   exportName?: string;
   page?: string;
+  locales?: Record<string, { displayName?: string; title?: string; description?: string }>;
 };
 
 function writePlugin(root: string, id: string, ui: UiEntry[]): string {
@@ -200,6 +202,21 @@ describe("resolveFloatingSurface", () => {
       extensionId: "recorder",
       title: "Recorder",
     });
+  });
+
+  it("titles the slot in the current UI language", async () => {
+    const runtime = await runtimeWith([
+      { ...FLOATING, title: "녹음기", locales: { en: { title: "Recorder" } } },
+    ]);
+    const suiteLocale = getLocale();
+    try {
+      setLocale("en");
+      expect(runtime.resolveFloatingSurface("dockfixture", "recorder")).toMatchObject({ title: "Recorder" });
+      setLocale("ko");
+      expect(runtime.resolveFloatingSurface("dockfixture", "recorder")).toMatchObject({ title: "녹음기" });
+    } finally {
+      setLocale(suiteLocale);
+    }
   });
 
   it("does not let a sidebar entry answer for a floating id of the same name", async () => {
