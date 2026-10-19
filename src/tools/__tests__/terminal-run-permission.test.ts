@@ -24,11 +24,12 @@ import {
 } from "../../main/terminal/terminal-blocks.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { isSessionOnlyApprovalMemoryScope, type ApprovalMemory } from "../../shared/permissions-events.js";
+import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
 
 const WINDOW = 7;
 const TAB = "terminal:aaaaaaaa-1";
-const NONCE = "0123456789abcdef0123456789abcdef";
-const mark = (fields: string): string => `\u001b]133;${fields};${NONCE}\u0007`;
+const NONCE = TERMINAL_TEST_NONCE;
+const mark = terminalMarker;
 
 let dir: string;
 let terminalCwd: string;

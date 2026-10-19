@@ -9,6 +9,7 @@ import {
   __resetTerminalBlocksForTest,
 } from "../../main/terminal/terminal-blocks.js";
 import type { ToolExecutionContext } from "../types.js";
+import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
 
 /** Window 1 hosts the session "main"; "child" is its running sub-agent. */
 const WINDOW = 1;
@@ -21,8 +22,8 @@ const ctxFor = (sessionId?: string) =>
 const ctx = ctxFor("main");
 const register = (tabId: string, tracker: TerminalBlockTracker, windowId: number | null = WINDOW) =>
   registerTerminalBlockTracker(tabId, tracker, windowId);
-const NONCE = "0123456789abcdef0123456789abcdef";
-const mark = (fields: string): string => `\u001b]133;${fields};${NONCE}\u0007`;
+const NONCE = TERMINAL_TEST_NONCE;
+const mark = terminalMarker;
 
 function trackerWith(commands: Array<{ command: string; output: string; exit: number }>): TerminalBlockTracker {
   const tracker = new TerminalBlockTracker({ nonce: NONCE });

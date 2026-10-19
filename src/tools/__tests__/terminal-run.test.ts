@@ -18,10 +18,11 @@ import { APPROVAL_MEMORY_SCOPE_METADATA_KEY } from "../approval-memory-context.j
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import type { ApprovalMemoryScope } from "../../shared/permissions-events.js";
 import type { ToolExecutionContext } from "../types.js";
+import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
 
 const WINDOW = 1;
-const NONCE = "0123456789abcdef0123456789abcdef";
-const mark = (fields: string): string => `\u001b]133;${fields};${NONCE}\u0007`;
+const NONCE = TERMINAL_TEST_NONCE;
+const mark = terminalMarker;
 /** A shell that finished a command and shows an empty prompt in `cwd`. */
 const promptIn = (cwd: string): string => `${mark("D;0")}${mark(`P;Cwd=${encodeURIComponent(cwd)}`)}${mark("A")}$ ${mark("B")}`;
 
