@@ -264,6 +264,8 @@ describe("runtime t()", () => {
 
 describe("onLocaleChange", () => {
   it("runs every listener even when an earlier one throws", () => {
+    // Start from a known locale so the switch below is a change whatever ran first.
+    setLocale("en");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const seen: string[] = [];
     const offThrowing = onLocaleChange(() => { throw new Error("menu rebuild failed"); });

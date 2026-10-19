@@ -157,9 +157,13 @@ jobs:
     steps:
       # `clean: true` (git clean -ffdx + reset) wipes the previous run's
       # release/, .cache/ and node_modules/ on a persistent self-hosted runner.
+      # `fetch-depth: 0` brings the release tags: the build's
+      # check:plugin-host-protocol-mirror compares each tagged version's mirror
+      # copy with the schema its tag carries, and refuses a shallow checkout.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
           clean: true
       # Self-hosted machines have no preinstalled toolcache; install Node into
