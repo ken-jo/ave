@@ -696,6 +696,39 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     }
   });
 
+  it("judges the proxy the dial actually reached: a proxy name that resolves remote at the check and loopback at the dial is refused", async (test) => {
+    const upstream = await fakeUpstream();
+    const url = `http://proxy.rebind.test:${upstream.port}`;
+    try {
+      const setup = await withUpstream(test, { http: url, https: url }, true);
+      if (setup === undefined) return;
+      // The check (upstreamForNames: http and https URLs) sees a remote
+      // address; the dial's lookup, the next call, gets this host's loopback.
+      let calls = 0;
+      setDestinationResolverForTesting(async (name) => {
+        if (name !== "proxy.rebind.test") return corpResolver(name);
+        calls += 1;
+        return [{ address: calls <= 2 ? "198.51.100.50" : "127.0.0.1", family: 4 }];
+      });
+      try {
+        expect(await connectThrough(setup.front, setup.proxy, setup.name, "intranet.corp.test:443"))
+          .toMatch(/^HTTP\/1\.1 403 .*upstream proxy on this host resolves names itself/u);
+        expect(calls).toBe(3);
+        calls = 0;
+        expect(await plainHttpThrough(setup.front, setup.proxy, setup.name, "http://wiki.corp.test/"))
+          .toMatch(/^HTTP\/1\.1 403/u);
+        expect(calls).toBe(3);
+        // Nothing was written to the proxy the dial reached.
+        expect(upstream.connects).toEqual([]);
+        expect(setup.asked.map((a) => a.context?.resolution)).toEqual(["upstream", "upstream"]);
+      } finally {
+        await setup.SandboxManager.reset();
+      }
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it("counts an upstream named localhost or at one of this host's interface addresses as on this host", async (test) => {
     const { networkInterfaces } = await import("node:os");
     const own = Object.values(networkInterfaces()).flat().find((i) => i && !i.internal && i.family === "IPv4")?.address;

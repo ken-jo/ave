@@ -49,7 +49,10 @@ the installed package.
    proxy; through a remote one it is forwarded by name and the callback is
    told `resolution: 'upstream'` (unverified); through one on this host
    (loopback, localhost-style names, an interface address) it is refused
-   unless `parentProxy.resolvesNames` trusts it to resolve names. Test seams `setDestinationResolverForTesting` and
+   unless `parentProxy.resolvesNames` trusts it to resolve names. When a name
+   is forwarded, the proxy socket actually connected is judged as well (its
+   remoteAddress must not be this host) before anything is written to it,
+   since the dial resolves the proxy's name again after that check. Test seams `setDestinationResolverForTesting` and
    `setListenerQuarantineForTesting` are named exports of
    dist/sandbox/sandbox-manager.js only (not on SandboxManager, not from the
    package entry) and throw outside the test runner (VITEST unset). `closeInvocationConnections(commandIds, host,
@@ -74,7 +77,7 @@ index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..fe6a09e229bba2148903856733a5f9f9
  export type { SandboxViolationEvent } from './sandbox/macos-sandbox-utils.js';
  export { type SandboxDependencyCheck, LinuxSandboxProfileError, type LinuxSandboxProfileErrorCode, } from './sandbox/linux-sandbox-utils.js';
 diff --git a/dist/sandbox/http-proxy.d.ts b/dist/sandbox/http-proxy.d.ts
-index bb9071e3ab671dd5424e1cbca4e026a7f85688f1..996d0421c8c608a935b87b057140f68b327a0547 100644
+index bb9071e3ab671dd5424e1cbca4e026a7f85688f1..16b80a9e03d4634b887fa6fb53a946d1e82f38e9 100644
 --- a/dist/sandbox/http-proxy.d.ts
 +++ b/dist/sandbox/http-proxy.d.ts
 @@ -8,7 +8,7 @@ import { type TunnelTimeouts } from './tls-terminate-proxy.js';
@@ -82,7 +85,7 @@ index bb9071e3ab671dd5424e1cbca4e026a7f85688f1..996d0421c8c608a935b87b057140f68b
  import type { PlanSigv4 } from './credential-aws-pairs.js';
  import type { ResolvedParentProxy } from './parent-proxy.js';
 -import { type DirectLookup } from './parent-proxy.js';
-+import { type DirectLookup, type ParentDestination } from './parent-proxy.js';
++import { type DirectLookup, type ParentDestination, type ParentHop } from './parent-proxy.js';
  export interface HttpProxyServerOptions {
      /**
       * Host-allowlist decision. `encodedCommand` is the per-command suffix
@@ -100,17 +103,19 @@ index bb9071e3ab671dd5424e1cbca4e026a7f85688f1..996d0421c8c608a935b87b057140f68b
      /**
       * Optional function to get the MITM proxy socket path for a given host.
       * If returns a socket path, the request will be routed through that MITM proxy.
-@@ -149,6 +154,8 @@ export interface HttpProxyServerOptions {
+@@ -149,6 +154,10 @@ export interface HttpProxyServerOptions {
       * resolves the name.
       */
      lookupFor?: DirectLookup;
 +    /** Ave patch: what a parent-proxy request names instead of the client's host (see ParentDestination). */
 +    parentDestination?: ParentDestination;
++    /** Ave patch: how this request dials the parent proxy (see ParentHop). */
++    parentHop?: (socket: Socket | Duplex, host: string, port: number, encodedCommand: string | undefined) => ParentHop;
      /**
       * Per-session bearer token. When set, every CONNECT and absolute-URI
       * request must carry `Proxy-Authorization: Basic
 diff --git a/dist/sandbox/http-proxy.js b/dist/sandbox/http-proxy.js
-index 7ad12c3c8529987ba0a045103b8b30be09df0c99..e53a3b716689cf52315d6291767e882b24c7fde1 100644
+index 7ad12c3c8529987ba0a045103b8b30be09df0c99..a13b43e777e91b17d2293be744e6ceefb113aa91 100644
 --- a/dist/sandbox/http-proxy.js
 +++ b/dist/sandbox/http-proxy.js
 @@ -15,7 +15,7 @@ const ALLOWLIST_DENY = [
@@ -118,7 +123,7 @@ index 7ad12c3c8529987ba0a045103b8b30be09df0c99..e53a3b716689cf52315d6291767e882b
  import { prepareBodySubstitution, } from './body-substitution.js';
  import { isResolvedAddressDenied } from './resolved-address-guard.js';
 -import { canonicalizeHost, connectViaParentProxy, directRequestOptions, dialDirect, formatAuthority, openConnectTunnel, proxyAuthHeader, onUpstreamError, relayResponseHead, selectParentProxyUrl, shouldBypassParentProxy, stripBrackets, stripHopByHop, } from './parent-proxy.js';
-+import { canonicalizeHost, connectViaParentProxy, connectViaParentProxyToFirst, directRequestOptions, dialDirect, formatAuthority, openConnectTunnel, proxyAuthHeader, onUpstreamError, relayResponseHead, selectParentProxyUrl, shouldBypassParentProxy, stripBrackets, stripHopByHop, } from './parent-proxy.js';
++import { canonicalizeHost, connectToParentProxy, connectViaParentProxy, connectViaParentProxyToFirst, directRequestOptions, dialDirect, formatAuthority, openConnectTunnel, proxyAuthHeader, onUpstreamError, relayResponseHead, selectParentProxyUrl, shouldBypassParentProxy, stripBrackets, stripHopByHop, } from './parent-proxy.js';
  const handedIn = new WeakSet();
  /**
   * Mark a socket about to be handed to a proxy server with
@@ -139,7 +144,7 @@ index 7ad12c3c8529987ba0a045103b8b30be09df0c99..e53a3b716689cf52315d6291767e882b
 +                    // Ave patch: the pinned addresses, never the name (see
 +                    // parentDestination), each tried until the upstream opens one.
 +                    upstream = options.parentDestination
-+                        ? await connectViaParentProxyToFirst(parentUrl, options.parentDestination(socket, hostname, port, auth.encodedCommand, false), port)
++                        ? await connectViaParentProxyToFirst(parentUrl, options.parentDestination(socket, hostname, port, auth.encodedCommand, false), port, options.parentHop?.(socket, hostname, port, auth.encodedCommand))
 +                        : await connectViaParentProxy(parentUrl, hostname, port);
                  }
                  else {
@@ -163,7 +168,7 @@ index 7ad12c3c8529987ba0a045103b8b30be09df0c99..e53a3b716689cf52315d6291767e882b
              if (!allowed) {
                  logForDebugging(`HTTP request blocked to ${requestedHost}:${port}`, {
                      level: 'error',
-@@ -748,6 +762,17 @@ export function createHttpProxyServer(options) {
+@@ -748,6 +762,31 @@ export function createHttpProxyServer(options) {
                  });
                  respondUpstreamError(res, err, options.denyHeader);
              };
@@ -178,10 +183,32 @@ index 7ad12c3c8529987ba0a045103b8b30be09df0c99..e53a3b716689cf52315d6291767e882b
 +                    return;
 +                }
 +            }
++            // Ave patch: when the request names a host the upstream resolves,
++            // the proxy actually connected to is judged before the request is
++            // written (see ParentHop.vetPeer), on a socket dialed here.
++            const parentHop = parentUrl ? options.parentHop?.(req.socket, hostname, port, auth.encodedCommand) : undefined;
++            let parentSocket;
++            if (parentHop?.vetPeer) {
++                try {
++                    parentSocket = await connectToParentProxy(parentUrl, parentHop);
++                }
++                catch (err) {
++                    failUpstream(err);
++                    return;
++                }
++            }
              let proxyReq;
              if (mitmSocketPath) {
                  logForDebugging(`Routing HTTP ${req.method} ${hostname}:${port} through MITM proxy at ${mitmSocketPath}`);
-@@ -816,7 +841,7 @@ export function createHttpProxyServer(options) {
+@@ -787,6 +826,7 @@ export function createHttpProxyServer(options) {
+                 proxyReq = requestFn({
+                     hostname: parentHost,
+                     port: parentPort,
++                    ...(parentSocket ? { createConnection: () => parentSocket } : {}),
+                     path: absUrl,
+                     method: req.method,
+                     headers: auth
+@@ -816,7 +856,7 @@ export function createHttpProxyServer(options) {
                  // (see directRequestOptions); the name stays in Host and, for TLS, SNI.
                  let direct;
                  try {
@@ -381,10 +408,28 @@ index 18e2472cb5b5f40b74c31ed9181aaa51b7f3b73a..43c61511641d87c89a005118a2cd388f
                  // unlinking; clear any stale file so listen() doesn't EADDRINUSE.
                  await unlink(path).catch(() => { });
 diff --git a/dist/sandbox/parent-proxy.d.ts b/dist/sandbox/parent-proxy.d.ts
-index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..30792149da1b6217d66f204d0e87769974b6baca 100644
+index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..3b1218390852b6b14b6f589bcaffdeef51342784 100644
 --- a/dist/sandbox/parent-proxy.d.ts
 +++ b/dist/sandbox/parent-proxy.d.ts
-@@ -140,7 +140,26 @@ export declare function isValidHost(h: string): boolean;
+@@ -55,6 +55,8 @@ export interface ConnectTunnelOptions {
+     dial(): Socket;
+     /** Fired when the transport is ready to write (e.g. 'connect'/'secureConnect'). */
+     readyEvent: 'connect' | 'secureConnect';
++    /** Ave patch: judge the connected proxy socket before the CONNECT is written (see ParentHop). */
++    vetPeer?: (socket: Socket) => Error | undefined;
+     destHost: string;
+     destPort: number;
+     authHeader?: string;
+@@ -71,7 +73,7 @@ export declare function openConnectTunnel(opts: ConnectTunnelOptions): Promise<S
+  * Thin wrapper around openConnectTunnel that dials TCP or TLS based on the
+  * proxy URL scheme.
+  */
+-export declare function connectViaParentProxy(proxyUrl: URL, destHost: string, destPort: number): Promise<Socket>;
++export declare function connectViaParentProxy(proxyUrl: URL, destHost: string, destPort: number, hop?: ParentHop): Promise<Socket>;
+ export declare function proxyAuthHeader(proxyUrl: URL): string | undefined;
+ /**
+  * Write an upstream response's status line and headers to the client.
+@@ -140,7 +142,38 @@ export declare function isValidHost(h: string): boolean;
   */
  export declare function canonicalizeHost(h: string): string | undefined;
  /** Per-dial name resolution the proxies are handed: the guard's `lookup` for `port`, refusals recorded. */
@@ -408,28 +453,55 @@ index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..30792149da1b6217d66f204d0e877699
 + * destination in turn, resolving with the first tunnel the upstream opens;
 + * rejects with the last failure when none does.
 + */
-+export declare function connectViaParentProxyToFirst(proxyUrl: URL, destinations: readonly string[], destPort: number): Promise<import('node:net').Socket>;
++export declare function connectViaParentProxyToFirst(proxyUrl: URL, destinations: readonly string[], destPort: number, hop?: ParentHop): Promise<import('node:net').Socket>;
++/**
++ * Ave patch (invocation listeners): how one request dials the parent proxy.
++ * `lookup` resolves the proxy's name; `vetPeer` judges the socket actually
++ * connected (its remoteAddress) before anything is written to it, returning
++ * the error to fail with, or undefined to go on.
++ */
++export type ParentHop = {
++    lookup?: import('node:net').LookupFunction;
++    vetPeer?: (socket: import('node:net').Socket) => Error | undefined;
++};
++/** Ave patch: a connected socket to the parent proxy for a plain-HTTP request, vetted by `hop.vetPeer`. */
++export declare function connectToParentProxy(proxyUrl: URL, hop?: ParentHop): Promise<import('node:net').Socket>;
  /** `host[:port]` as it belongs in a Host header / URL authority: IPv6 bracketed, the default port elided. */
  export declare function formatAuthority(host: string, port: number, defaultPort: number): string;
  export interface DirectRequestOptions {
 diff --git a/dist/sandbox/parent-proxy.js b/dist/sandbox/parent-proxy.js
-index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..b26d1db57a50a28274624f9dc6ed9f10af9cdddf 100644
+index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..a07f6761b86a9195ec35dcff780da62b873f7f8b 100644
 --- a/dist/sandbox/parent-proxy.js
 +++ b/dist/sandbox/parent-proxy.js
-@@ -245,6 +245,24 @@ export function openConnectTunnel(opts) {
+@@ -201,6 +201,11 @@ export function openConnectTunnel(opts) {
+         sock.once('error', fail);
+         sock.once('close', onClose);
+         sock.once(opts.readyEvent, () => {
++            // Ave patch: judge the proxy actually connected to before anything
++            // is sent to it (see ParentHop.vetPeer).
++            const refused = opts.vetPeer?.(sock);
++            if (refused)
++                return fail(refused);
+             sock.write(`CONNECT ${authority} HTTP/1.1\r\n` +
+                 `Host: ${authority}\r\n` +
+                 (opts.authHeader
+@@ -245,23 +250,72 @@ export function openConnectTunnel(opts) {
   * Thin wrapper around openConnectTunnel that dials TCP or TLS based on the
   * proxy URL scheme.
   */
+-export function connectViaParentProxy(proxyUrl, destHost, destPort) {
+-    const proxyHost = stripBrackets(proxyUrl.hostname);
+-    const proxyPort = Number(proxyUrl.port) || (proxyUrl.protocol === 'https:' ? 443 : 80);
 +/**
 + * Ave patch (invocation listeners): CONNECT through the parent proxy to each
 + * destination in turn (a name's vetted addresses), resolving with the first
 + * tunnel the upstream opens; rejects with the last failure when none does.
 + */
-+export async function connectViaParentProxyToFirst(proxyUrl, destinations, destPort) {
++export async function connectViaParentProxyToFirst(proxyUrl, destinations, destPort, hop) {
 +    let lastError = new Error('no destination to CONNECT to');
 +    for (const destination of destinations) {
 +        try {
-+            return await connectViaParentProxy(proxyUrl, destination, destPort);
++            return await connectViaParentProxy(proxyUrl, destination, destPort, hop);
 +        }
 +        catch (error) {
 +            lastError = error;
@@ -438,9 +510,65 @@ index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..b26d1db57a50a28274624f9dc6ed9f10
 +    }
 +    throw lastError;
 +}
- export function connectViaParentProxy(proxyUrl, destHost, destPort) {
-     const proxyHost = stripBrackets(proxyUrl.hostname);
-     const proxyPort = Number(proxyUrl.port) || (proxyUrl.protocol === 'https:' ? 443 : 80);
++export function connectViaParentProxy(proxyUrl, destHost, destPort, hop) {
+     const useTls = proxyUrl.protocol === 'https:';
+     return openConnectTunnel({
+         destHost,
+         destPort,
+         authHeader: proxyAuthHeader(proxyUrl),
+         readyEvent: useTls ? 'secureConnect' : 'connect',
+-        dial: () => useTls
+-            ? tlsConnect({
+-                host: proxyHost,
+-                port: proxyPort,
+-                // SNI must be a hostname, never an IP literal (RFC 6066 §3).
+-                ...(isIP(proxyHost) ? {} : { servername: proxyHost }),
+-            })
+-            : netConnect(proxyPort, proxyHost),
++        vetPeer: hop?.vetPeer,
++        dial: () => dialParentSocket(proxyUrl, hop),
++    });
++}
++/** Ave patch: a TCP or TLS socket to the parent proxy, resolving its name with `hop.lookup` when given. */
++function dialParentSocket(proxyUrl, hop) {
++    const proxyHost = stripBrackets(proxyUrl.hostname);
++    const proxyPort = Number(proxyUrl.port) || (proxyUrl.protocol === 'https:' ? 443 : 80);
++    const lookup = hop?.lookup ? { lookup: hop.lookup } : {};
++    return proxyUrl.protocol === 'https:'
++        ? tlsConnect({
++            host: proxyHost,
++            port: proxyPort,
++            // SNI must be a hostname, never an IP literal (RFC 6066 §3).
++            ...(isIP(proxyHost) ? {} : { servername: proxyHost }),
++            ...lookup,
++        })
++        : netConnect({ port: proxyPort, host: proxyHost, ...lookup });
++}
++/**
++ * Ave patch: a connected socket to the parent proxy for a plain-HTTP request,
++ * judged by `hop.vetPeer` before the request is written to it.
++ */
++export function connectToParentProxy(proxyUrl, hop) {
++    return new Promise((resolve, reject) => {
++        const sock = dialParentSocket(proxyUrl, hop);
++        const readyEvent = proxyUrl.protocol === 'https:' ? 'secureConnect' : 'connect';
++        const fail = (err) => {
++            sock.destroy();
++            reject(err);
++        };
++        sock.setTimeout(CONNECT_TIMEOUT_MS, () => fail(new Error('connect to the parent proxy timed out')));
++        sock.once('error', fail);
++        sock.once(readyEvent, () => {
++            sock.setTimeout(0);
++            sock.removeListener('error', fail);
++            const refused = hop?.vetPeer?.(sock);
++            if (refused)
++                return fail(refused);
++            resolve(sock);
++        });
+     });
+ }
+ // ---------------------------------------------------------------------------
 diff --git a/dist/sandbox/sandbox-config.d.ts b/dist/sandbox/sandbox-config.d.ts
 index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf68d4b71b9 100644
 --- a/dist/sandbox/sandbox-config.d.ts
@@ -661,7 +789,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..55097a1b199f0014a647f6dddf7cfb32
  //# sourceMappingURL=sandbox-manager.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561aae444f5 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4b993dc9464a958cb5d48e07efd9f8b79469b7a9 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -16,17 +16,21 @@ import * as fs from 'fs';
@@ -815,7 +943,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
          // Only `true` allows: an object is how a callback denies with a reason,
          // and a truthiness test here would read every such denial as an allow.
          if (answer === true) {
-@@ -497,11 +582,63 @@ function shouldTerminateTLSForHost(host) {
+@@ -497,11 +582,80 @@ function shouldTerminateTLSForHost(host) {
      }
      return true;
  }
@@ -865,6 +993,23 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
 +        return pinnedLookup(port, pinnedFor(socket, host, port)?.addresses ?? [], attribution(encodedCommand));
 +    };
 +    const parentDestination = (socket, host, port, encodedCommand, plainHttp) => parentDestinationFor(socket, host, port, attribution(encodedCommand), plainHttp);
++    // How the parent proxy is dialed for one request. Its name is resolved
++    // with the destination resolver; when the request forwards a name the
++    // upstream resolves (and the upstream is not trusted to), the proxy the
++    // socket actually reached must not be this host: upstreamForNames judged
++    // the proxy's name before, and the dial resolves it again.
++    const parentHop = (socket, host, port, encodedCommand) => ({
++        lookup: parentProxyLookup,
++        vetPeer: pinnedFor(socket, host, port)?.viaUpstream && !parentProxyResolvesNames
++            ? (peer) => {
++                const address = peer.remoteAddress;
++                if (address !== undefined && !isThisHostAddress(address))
++                    return undefined;
++                recordOutboundDeny(host, port, LOCAL_UPSTREAM_REASON, attribution(encodedCommand));
++                return new ResolvedAddressDeniedError(host, LOCAL_UPSTREAM_REASON, []);
++            }
++            : undefined,
++    });
 +    // Ave patch (invocation listeners): every allowed client socket is kept
 +    // under (key, host, port) so the embedder can close it when the grant
 +    // that allowed it is revoked.
@@ -882,7 +1027,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
          getMitmSocketPath,
          mitmCA,
          shouldTerminateTLS: shouldTerminateTLSForHost,
-@@ -521,7 +658,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -521,7 +675,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          onFilterRequestDenied: ({ method, url, reason, encodedCommand }) => {
              // A refused CONNECT comes with its authority (`host:port`), not a URL.
              const target = method === 'CONNECT' ? url : redactUrlForViolation(url);
@@ -891,13 +1036,14 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
          },
          // TLS-terminated path always gets the injector; the plain-HTTP path
          // only when explicitly opted in. Without the opt-in, a sentinel sent
-@@ -538,19 +675,21 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -538,19 +692,23 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          // injection: the real signature must not travel over plaintext.
          planSigv4: buildSigv4Planner(),
          parentProxy,
 -        lookupFor: directLookup,
 +        lookupFor,
 +        parentDestination,
++        parentHop,
          proxyAuthToken,
      });
 -    socksProxyServer = createSocksProxyServer({
@@ -908,6 +1054,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
 -        lookupFor: directLookup,
 +        lookupFor,
 +        parentDestination,
++        parentHop,
          proxyAuthToken,
          // A SOCKS tunnel is opaque, so the option that keeps opaque CONNECT
          // tunnels off the HTTP side must close this side of the port too.
@@ -918,7 +1065,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
          },
          probeUnauthenticated: async (port, host) => {
              // Explicit deny rules only: an unauthenticated peer must never reach
-@@ -562,17 +701,25 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -562,17 +720,25 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
              for (const entry of config.network.deniedDomains) {
                  if (matchesDomainPatternWithPort(canonical, port, entry)) {
                      const reason = deniedDomainReason(entry);
@@ -945,7 +1092,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +735,542 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,6 +754,558 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -1159,6 +1306,22 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
 +    if (!selectParentProxyUrl(parentProxy, { isHttps: true }) && !selectParentProxyUrl(parentProxy, { isHttps: false }))
 +        return undefined;
 +    return (await upstreamOnThisHost()) && !parentProxyResolvesNames ? 'local' : 'remote';
++}
++/** A `lookup` for dialing the parent proxy, through the destination resolver. */
++function parentProxyLookup(hostname, options, callback) {
++    destinationResolver(hostname).then(answer => {
++        const list = (Array.isArray(answer) ? answer : [])
++            .filter(a => a && typeof a.address === 'string' && isIP(a.address) !== 0)
++            .map(a => ({ address: a.address, family: isIP(a.address) }));
++        if (list.length === 0) {
++            callback(Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), { code: 'ENOTFOUND' }), []);
++            return;
++        }
++        if (options?.all)
++            callback(null, list);
++        else
++            callback(null, list[0].address, list[0].family);
++    }, err => callback(err, []));
 +}
 +const LOCAL_UPSTREAM_REASON = 'the upstream proxy on this host resolves names itself, so a name this host cannot resolve is not forwarded ' +
 +    '(the trusted network.parentProxy.resolvesNames setting lets it)';
@@ -1488,7 +1651,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -616,7 +1299,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +1334,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -1501,7 +1664,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -1515,6 +2203,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2238,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -1511,7 +1674,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +2401,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +2436,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -1533,7 +1696,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1734,23 +2428,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1734,23 +2463,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -1568,7 +1731,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1786,6 +2488,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +2523,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -1576,7 +1739,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,6 +2524,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,6 +2559,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -1585,7 +1748,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
      const platform = getPlatform();
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
-@@ -1989,6 +2694,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +2729,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -1593,7 +1756,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2222,6 +2928,7 @@ async function reset() {
+@@ -2222,6 +2963,7 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -1601,7 +1764,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,6 +2936,22 @@ async function reset() {
+@@ -2229,6 +2971,22 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -1624,7 +1787,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a6d67a6383aabd2b33397983c2cc2561
      maskedFileStore.dispose();
  }
  function getSandboxViolationStore() {
-@@ -2336,6 +3059,9 @@ export const SandboxManager = {
+@@ -2336,6 +3094,9 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
@@ -1696,13 +1859,13 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..301490e2a46c1beb3fdaa6cb5a7ef006
  //# sourceMappingURL=sandbox-schemas.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/socks-proxy.d.ts b/dist/sandbox/socks-proxy.d.ts
-index a4ba5d4f755ff3c47e3c0b005e97eb1e87ea0c2a..b4c28771563478a70dfd9967ddb77592b6190970 100644
+index a4ba5d4f755ff3c47e3c0b005e97eb1e87ea0c2a..421ba713440e92ad18f38a5e8027b1a9b9332f9a 100644
 --- a/dist/sandbox/socks-proxy.d.ts
 +++ b/dist/sandbox/socks-proxy.d.ts
 @@ -1,12 +1,12 @@
  import type { Socket } from 'net';
 -import type { DirectLookup, ResolvedParentProxy } from './parent-proxy.js';
-+import type { DirectLookup, ParentDestination, ResolvedParentProxy } from './parent-proxy.js';
++import type { DirectLookup, ParentDestination, ParentHop, ResolvedParentProxy } from './parent-proxy.js';
  export interface SocksProxyServerOptions {
      /**
       * Host-allowlist decision. `encodedCommand` is the per-command suffix
@@ -1714,17 +1877,19 @@ index a4ba5d4f755ff3c47e3c0b005e97eb1e87ea0c2a..b4c28771563478a70dfd9967ddb77592
      /**
       * Optional upstream HTTP proxy. When present, SOCKS CONNECT requests are
       * tunnelled through the parent's HTTP CONNECT instead of dialing directly.
-@@ -15,6 +15,8 @@ export interface SocksProxyServerOptions {
+@@ -15,6 +15,10 @@ export interface SocksProxyServerOptions {
      parentProxy?: ResolvedParentProxy;
      /** Direct-dial name resolution (see HttpProxyServerOptions.lookupFor); a refusal is answered "not allowed by ruleset". */
      lookupFor?: DirectLookup;
 +    /** Ave patch: what a parent-proxy CONNECT names instead of the client's host (see ParentDestination). */
 +    parentDestination?: ParentDestination;
++    /** Ave patch: how this CONNECT dials the parent proxy (see ParentHop). */
++    parentHop?: (socket: import('node:net').Socket, host: string, port: number, encodedCommand: string | undefined) => ParentHop;
      /**
       * Per-session token (same value as the HTTP proxy's). When set, the
       * server requires SOCKS5 username/password auth and only accepts
 diff --git a/dist/sandbox/socks-proxy.js b/dist/sandbox/socks-proxy.js
-index 760a10b1d1c475a7636ff78092d3c9daaafe7335..b9aac20da360dfcf3d1b2530a7e1a569bcfe5f3d 100644
+index 760a10b1d1c475a7636ff78092d3c9daaafe7335..ab4ee21e4c6b5d14487429ca37c4ab12821fa5ba 100644
 --- a/dist/sandbox/socks-proxy.js
 +++ b/dist/sandbox/socks-proxy.js
 @@ -1,7 +1,7 @@
@@ -1758,7 +1923,7 @@ index 760a10b1d1c475a7636ff78092d3c9daaafe7335..b9aac20da360dfcf3d1b2530a7e1a569
 -            ? connectViaParentProxy(parentUrl, host, port)
 -            : dialDirect(host, port, options.lookupFor?.(port, encodedCommandFromProxyUser(conn.username)));
 +            ? Promise.resolve().then(() => options.parentDestination
-+                ? connectViaParentProxyToFirst(parentUrl, options.parentDestination(conn.socket, host, port, encodedCommand, false), port)
++                ? connectViaParentProxyToFirst(parentUrl, options.parentDestination(conn.socket, host, port, encodedCommand, false), port, options.parentHop?.(conn.socket, host, port, encodedCommand))
 +                : connectViaParentProxy(parentUrl, host, port))
 +            : dialDirect(host, port, options.lookupFor?.(port, encodedCommand, conn.socket, host));
          open
