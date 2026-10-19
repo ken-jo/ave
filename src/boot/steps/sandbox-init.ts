@@ -39,13 +39,14 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
   {
     const {
       initializeAsrtSandbox,
+      subscribeAsrtViolations,
       appOwnedSandboxHomeRoot,
       ensureSandboxPrivateRoot,
       useAppOwnedSandboxTempRoot,
       checkAsrtDependencies,
       isAsrtLinuxRuntimeProbeError,
     } = await import("../../permissions/asrt-sandbox.js");
-    const { setActiveSandboxCapability, setSandboxRequestedAtBoot, setSandboxBootOutcome } =
+    const { setActiveSandboxCapability, setSandboxRequestedAtBoot, setSandboxBootOutcome, detectSandboxCapability } =
       await import("../../permissions/sandbox-capability.js");
     const { sandboxConfinementForPlatform } = await import(
       "../../shared/sandbox-capability-info.js"
@@ -236,6 +237,20 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           // would be visible to every process wrapped before it.
           ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot());
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();
+          // Proxy-deny visibility (egress-deny-monitor.ts): subscribed before
+          // the proxy starts, so no refusal precedes the subscription. ASRT's
+          // violation store is module state and exists before initialize().
+          {
+            const [{ startEgressDenyMonitor }, { emitSandboxAudit }] = await Promise.all([
+              import("../../permissions/egress-deny-monitor.js"),
+              import("../../audit/sandbox-audit-sink.js"),
+            ]);
+            await startEgressDenyMonitor({
+              subscribe: subscribeAsrtViolations,
+              emit: emitSandboxAudit,
+              capability: detectSandboxCapability,
+            });
+          }
           await initializeAsrtSandbox({
             allowedDomains: unionAllowedDomains,
             strictAllowlist: true,

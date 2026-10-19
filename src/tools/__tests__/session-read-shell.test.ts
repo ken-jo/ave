@@ -13,6 +13,7 @@ import { sessionStorePath } from "../../shared/session-store-path.js";
 import { BashTool, spawnWithSandbox } from "../shell-tools.js";
 import { prepareSandboxFixture } from "./support/prepared-shell.js";
 import { buildSafeChildEnv } from "../safe-env.js";
+import { TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 
 let root: string;
 let cwd: string;
@@ -172,6 +173,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     try {
       const { child, confinement } = await spawnConfinedChild({
         command: "/bin/cat", args: [ordinary, transcript], label: "session-read-confined-fixture",
+        egressOwner: TEST_WORKER_EGRESS_OWNER,
         grantMode: "allow-list", tempPrincipal: { kind: "plugin", id: "session-read-fixture" },
         allowRead: [cwd, profile], allowWrite: [cwd], baseEnv: buildSafeChildEnv(),
         onWrapped: () => { wrapped = true; },

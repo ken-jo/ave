@@ -394,6 +394,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
         command: spec.command,
         args,
         label: `worker:${safePlugin}:${safeWorker}:asrt-win`,
+      egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },
         grantMode: "deny-only",
         baseEnv,
         extraEnv: { ...sandboxHome.env },
@@ -515,6 +516,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       command: spec.command,
       args,
       label: `worker:${safePlugin}:${safeWorker}:asrt`,
+      egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },
       grantMode: "allow-list",
       // A worker shares its plugin's temp directory, and no other plugin's.
       tempPrincipal: { kind: "plugin", id: spec.pluginId },

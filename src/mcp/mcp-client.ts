@@ -62,6 +62,7 @@ import {
   cleanupAsrtSandboxAfterCommand,
 } from "../permissions/asrt-sandbox.js";
 import { bundledWrappedEnv, spawnWindowsBundledProcess, wrapBundledCommand } from "../sandbox/wrap-bundled-command.js";
+import type { EgressInvocation } from "../permissions/egress-invocations.js";
 import type { Readable, Writable } from "node:stream";
 import { terminateChildProcess } from "../tools/terminate-child-process.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
@@ -2112,6 +2113,8 @@ class StdioTransport implements McpTransport {
   private asrtCleanupRan = false;
   private wrappedOwner: McpWrappedOwner | null = null;
   private sandboxHomeCleanup: (() => void) | null = null;
+  /** The macOS/Linux wrap's egress token; released with the ASRT cleanup. */
+  private egressInvocation: EgressInvocation | null = null;
   /**
    * Where requests are written and responses read: the process's own pipes,
    * or on Windows with the sandbox on the stdio relay's streams
@@ -2231,7 +2234,7 @@ class StdioTransport implements McpTransport {
 
     let wrapped = false;
     try {
-      const { argv, env } = await wrapBundledCommand({
+      const { argv, env, egress } = await wrapBundledCommand({
         command: spawnCommand.command,
         args: spawnCommand.args,
         sandboxHome,
@@ -2240,8 +2243,10 @@ class StdioTransport implements McpTransport {
         // plugins root it is refused; a server of no plugin reads nothing there.
         ownPluginReads: this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : [],
         tempPrincipal: { kind: "mcp", id: this.config.id },
+        egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: this.config.id },
       });
       wrapped = true;
+      this.egressInvocation = egress;
 
       const [cmd, ...args] = argv;
       if (cmd === undefined) {
@@ -2272,6 +2277,8 @@ class StdioTransport implements McpTransport {
         this.cleanupSandboxHome();
       } else {
         if (wrapped) void cleanupAsrtSandboxAfterCommand();
+        this.egressInvocation?.release();
+        this.egressInvocation = null;
         sandboxHome.cleanup();
       }
       throw err;
@@ -2302,6 +2309,7 @@ class StdioTransport implements McpTransport {
       ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
       allowRead: this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : [],
       allowWrite,
+      egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: this.config.id },
     });
     this.wrappedThroughAsrt = true;
     this.sandboxHomeCleanup = spawned.releaseHold;
@@ -2332,6 +2340,8 @@ class StdioTransport implements McpTransport {
       unmarkMcpServerWrapped(this.config.id, this.wrappedOwner);
       this.wrappedOwner = null;
     }
+    this.egressInvocation?.release();
+    this.egressInvocation = null;
     void cleanupAsrtSandboxAfterCommand();
   }
 

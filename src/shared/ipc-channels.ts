@@ -126,6 +126,10 @@ export const PERMISSIONS = {
   // verbatim ASRT install instructions. Drives the win32 consent panel in
   // PermissionsTab. Non-win32 returns a clean "not-applicable" shape.
   sandboxWindowsStatus: "ave:permissions:sandbox-windows-status",
+  // Read-only (sender-frame-guarded: audit data): the ASRT proxy denies of the
+  // last 24 h, read back from the sandbox audit channel. Drives Settings →
+  // Permissions → Network "Recent denials".
+  egressDenialsRecent: "ave:permissions:egress-denials-recent",
   // MUTATING (sender-frame-guarded): the ONLY user-consented privilege
   // escalation entry point — triggers ASRT installWindowsSandbox's single
   // self-elevating UAC prompt. Never auto-triggered.

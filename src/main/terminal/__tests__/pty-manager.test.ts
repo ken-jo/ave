@@ -21,6 +21,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
+import { egressInvocationOwner } from "../../../permissions/egress-invocations.js";
 
 // ─── ASRT mock — gate + wrap controllable per test ──────────
 let gateActive = true;
@@ -360,6 +361,16 @@ describe("pty-manager happy path (fs-contained)", () => {
     expect(sandboxHomeCleanupMock).toHaveBeenCalled();
     // session dropped after exit.
     expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("wraps the shell under the tab's egress token for the life of the shell", async () => {
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    const [, options] = wrapWorkerCommandMock.mock.calls[0] as [string, { commandId: string }];
+    // A minted token, not the tab id: the id the proxy sees is unguessable.
+    expect(options.commandId).toMatch(/^[0-9a-f]{32}$/);
+    expect(egressInvocationOwner(options.commandId)).toEqual({ kind: "terminal", tabId: "terminal:0000000a-1" });
+    lastPty?.emitExit(0);
+    expect(egressInvocationOwner(options.commandId)).toBeUndefined();
   });
 
   it("is idempotent per tab: a second spawn replays the ring and does not start a second shell", async () => {

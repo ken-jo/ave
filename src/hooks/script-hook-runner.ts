@@ -284,6 +284,7 @@ export async function runOneHookScript(
         cwd,
         allowRead: [confinement.generationRoot],
         allowWrite: [confinement.dataDir],
+        egressOwner: { kind: "worker", role: "hook", pluginId: confinement.pluginId },
       });
     } catch (error) {
       return deny(`sandbox unavailable: ${(error as Error).message}`);
@@ -302,7 +303,8 @@ export async function runOneHookScript(
     try {
       const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
         sandboxHome, allowWrite: [confinement.dataDir], ownPluginReads: [confinement.generationRoot],
-        tempPrincipal: { kind: "plugin", id: confinement.pluginId } });
+        tempPrincipal: { kind: "plugin", id: confinement.pluginId },
+        egressOwner: { kind: "worker", role: "hook", pluginId: confinement.pluginId } });
       [spawnCmd, ...spawnArgs] = wrapped.argv;
       spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, sandboxHome.env);
       let cleaned = false;
@@ -310,6 +312,7 @@ export async function runOneHookScript(
         if (cleaned) return;
         cleaned = true;
         void cleanupAsrtSandboxAfterCommand();
+        wrapped.egress.release();
         sandboxHome.cleanup();
       };
     } catch (error) {

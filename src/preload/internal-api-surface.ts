@@ -903,6 +903,8 @@ export function buildInternalApiSurface() {
     sandboxCapability: async () => ipcRenderer.invoke(PERMISSIONS.sandboxCapability),
     /** Read-only: Windows srt-win install readiness (group + WFP + instructions). */
     sandboxWindowsStatus: async () => ipcRenderer.invoke(PERMISSIONS.sandboxWindowsStatus),
+    /** Read-only: the ASRT proxy denies of the last 24 h, newest first. */
+    egressDenialsRecent: async () => ipcRenderer.invoke(PERMISSIONS.egressDenialsRecent),
     /**
      * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
      * UAC prompt). The ONLY user-consented privilege-escalation entry point —

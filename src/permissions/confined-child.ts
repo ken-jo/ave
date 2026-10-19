@@ -35,6 +35,7 @@ import {
   type SandboxTempPrincipal,
   type WrapOptions,
 } from "./asrt-sandbox.js";
+import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "./egress-invocations.js";
 import { buildSandboxedChildEnv, isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
   assertManagedChildProcessAdmissionOpen,
@@ -132,6 +133,13 @@ export interface ConfinedChildSpec {
   readonly args: readonly string[];
   /** Used for the managed-child registration and in errors. */
   readonly label: string;
+  /**
+   * Whose plugin-owned code this is, for egress attribution: while the sandbox
+   * is active the wrap carries an egress token (`egress-invocations.ts`) minted
+   * for this owner, and every proxy deny of the child is audited under it. The
+   * token lives as long as the child.
+   */
+  readonly egressOwner: WorkerEgressOwner;
   readonly grantMode: ConfinementGrantMode;
   /** Ignored under `deny-only`, where ACLs grant reachability instead. */
   readonly allowRead?: readonly string[];
@@ -283,19 +291,30 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
   const stdio = spec.stdio ?? ["ignore", "pipe", "pipe"];
   if (spec.windowsStdio === "relay") assertRelayableSpec(spec, stdio);
 
-  const { executable, args, wrappedEnv, confinement, relayRequest } = await resolveSpawnLine(spec);
-  spec.assertStillValid?.();
-
-  assertManagedChildProcessAdmissionOpen(spec.label);
-  const child = spawn(executable, args, {
-    stdio,
-    shell: false,
-    windowsHide: true,
-    env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
-    // On the relay the program's directory travels in its request; the relay
-    // itself needs none.
-    ...(spec.cwd !== undefined && relayRequest === undefined ? { cwd: spec.cwd } : {}),
-  });
+  const { executable, args, wrappedEnv, confinement, relayRequest, egress } = await resolveSpawnLine(spec);
+  let child: ChildProcess;
+  try {
+    spec.assertStillValid?.();
+    assertManagedChildProcessAdmissionOpen(spec.label);
+    child = spawn(executable, args, {
+      stdio,
+      shell: false,
+      windowsHide: true,
+      env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
+      // On the relay the program's directory travels in its request; the relay
+      // itself needs none.
+      ...(spec.cwd !== undefined && relayRequest === undefined ? { cwd: spec.cwd } : {}),
+    });
+  } catch (error) {
+    egress?.release();
+    throw error;
+  }
+  if (egress !== undefined) {
+    // The token outlives neither the process nor a spawn that never started.
+    const running = child;
+    running.once("exit", () => egress.release());
+    running.once("error", () => { if (running.pid === undefined) egress.release(); });
+  }
   trackManagedChildProcess(child, { label: spec.label });
   if (relayRequest === undefined) {
     return { child, confinement, stdin: child.stdin, stdout: child.stdout };
@@ -420,6 +439,7 @@ async function resolveSpawnLine(
   wrappedEnv: NodeJS.ProcessEnv;
   confinement: SpawnConfinement;
   relayRequest?: RelayRequest;
+  egress?: EgressInvocation;
 }> {
   if (!isAsrtSandboxActive()) {
     return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
@@ -429,13 +449,23 @@ async function resolveSpawnLine(
   const temp = spec.grantMode === "allow-list" ? ensureSandboxTempPrincipalDir(requireTempPrincipal(spec)) : undefined;
   const launch = relay?.launch ?? (temp ? sandboxTempEnvLaunch(temp.dir, spec.command, spec.args) : spec);
   const { cmdline, binShell } = buildConfinedCommandLine(launch.command, launch.args, relay?.launch ?? spec);
-  const { argv, env } = await wrapWorkerCommand(cmdline, {
-    filesystem: buildFilesystemConfinement(spec, temp),
-    ...(binShell !== undefined ? { binShell } : {}),
-  });
+  const egress = openEgressInvocation(spec.egressOwner);
+  let argv: string[];
+  let env: NodeJS.ProcessEnv;
+  try {
+    ({ argv, env } = await wrapWorkerCommand(cmdline, {
+      filesystem: buildFilesystemConfinement(spec, temp),
+      ...(binShell !== undefined ? { binShell } : {}),
+      commandId: egress.token,
+    }));
+  } catch (error) {
+    egress.release();
+    throw error;
+  }
   spec.onWrapped?.();
   const [executable, ...args] = argv;
   if (executable === undefined) {
+    egress.release();
     throw new Error(`[confined-child] ASRT returned an empty argv for ${spec.label}`);
   }
   return {
@@ -443,6 +473,7 @@ async function resolveSpawnLine(
     args,
     wrappedEnv: env,
     confinement,
+    egress,
     ...(relay !== undefined ? { relayRequest: relay.request } : {}),
   };
 }
