@@ -3,7 +3,8 @@
  * sidecar, torn-line tolerance, and the recovery a load performs when the
  * process that ran the last turn died.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as fsPromises from "node:fs/promises";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,11 @@ import { appendJsonlRecords, turnInflightPath, writeTurnInflightRecord } from ".
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const SESSION = "c0ffee00-1111-2222-3333-444444444444";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, stat: vi.fn(actual.stat) };
+});
 
 let dir: string;
 let mm: MemoryManager;
@@ -80,6 +86,62 @@ describe("appendSessionProgress", () => {
     const ids = (mm.loadSession(SESSION) as Array<{ meta: { messageId: string } }>).map((m) => m.meta.messageId);
     expect(ids).toEqual(["u1", "a1", "r1", "a3"]);
     expect(lines()).toHaveLength(4);
+  });
+
+  it("appends reverse completions and loads every batch in call order without a sidecar", async () => {
+    const calls = ["first", "second", "third"];
+    const assistant = row("parallel", { role: "assistant", content: "", toolCalls: calls.map((id) => ({ id, name: "read_file", input: {} })) });
+    const results = calls.map((id) => row("result-" + id, { role: "tool_result", toolUseId: id, content: id }));
+    const history = [user, assistant];
+    await mm.saveSession(SESSION, history);
+    for (let i = calls.length - 1; i >= 0; i--) {
+      history.splice(2, 0, results[i]);
+      expect(await mm.appendSessionProgress(SESSION, history)).toBe("appended");
+      expect(new MemoryManager({ aveDir: dir }).loadSession(SESSION)).toEqual(history);
+    }
+    expect(lines().slice(2).map((line) => JSON.parse(line).toolUseId)).toEqual([...calls].reverse());
+    // A later round must not rewrite the earlier completion-order group.
+    history.push(round2, row("next-result", { role: "tool_result", toolUseId: "call-2", content: "next round" }));
+    expect(await mm.appendSessionProgress(SESSION, history)).toBe("appended");
+    expect(new MemoryManager({ aveDir: dir }).loadSession(SESSION)).toEqual(history);
+    expect(existsSync(sidecarPath())).toBe(false);
+    // The final save is the normalization point, and later progress remains append-only.
+    await mm.saveSession(SESSION, history);
+    expect(lines().map((line) => JSON.parse(line))).toEqual(history);
+    expect(await mm.appendSessionProgress(SESSION, history)).toBe("unchanged");
+  });
+
+  it("rewrites an open tool tail when an existing result was removed", async () => {
+    const assistant = row("parallel", { role: "assistant", content: "", toolCalls: [
+      { id: "call-1", name: "read_file", input: {} },
+      { id: "call-2", name: "read_file", input: {} },
+    ] });
+    const result2 = row("r2", { role: "tool_result", toolUseId: "call-2", content: "second" });
+    await mm.saveSession(SESSION, [user, assistant, result1, result2]);
+    expect(await mm.appendSessionProgress(SESSION, [user, assistant, result2])).toBe("rewritten");
+    expect(mm.loadSession(SESSION)).toEqual([user, assistant, result2]);
+  });
+
+  it("reads rows and ids together after a supplied history grows during async stat", async () => {
+    await mm.saveSession(SESSION, [user]);
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    let entered!: () => void;
+    let release!: () => void;
+    const entering = new Promise<void>((resolve) => { entered = resolve; });
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(fsPromises.stat).mockImplementationOnce((async (...args) => {
+      entered();
+      await blocked;
+      return Reflect.apply(actual.stat, undefined, args);
+    }) as typeof fsPromises.stat);
+    const history = [user, round1];
+    const progress = mm.appendSessionProgress(SESSION, history);
+    await entering;
+    history.push(result1);
+    release();
+    expect(await progress).toBe("appended");
+    expect(await mm.appendSessionProgress(SESSION, history)).toBe("unchanged");
+    expect(lines().map((line) => JSON.parse(line))).toEqual(history);
   });
 
   it("stores an appended oversized tool_result the way a save does (stub + artifact)", async () => {

@@ -181,6 +181,66 @@ export function isIdPrefix(prefix: readonly string[], ids: readonly string[]): b
   return true;
 }
 
+/** New progress rows, allowing completed results to be inserted into the open tool tail. */
+export function sessionProgressRows(
+  knownIds: readonly string[],
+  ids: readonly string[],
+  messages: readonly unknown[],
+): unknown[] | null {
+  if (isIdPrefix(knownIds, ids)) return messages.slice(knownIds.length);
+
+  let tailStart = messages.length;
+  while (tailStart > 0) {
+    const result = messages[tailStart - 1];
+    if (!isRecord(result) || result.role !== "tool_result") break;
+    tailStart--;
+  }
+  const assistant = messages[tailStart - 1];
+  if (!isRecord(assistant) || assistant.role !== "assistant" || !Array.isArray(assistant.toolCalls)) return null;
+  // Only the active result group may grow in its middle. Edits, compaction,
+  // removed rows and other reordered history still require a full rewrite.
+  if (knownIds.length < tailStart || !isIdPrefix(ids.slice(0, tailStart), knownIds)) return null;
+  const knownTail = knownIds.slice(tailStart);
+  const known = new Set(knownTail);
+  const retained = ids.slice(tailStart).filter((id) => known.has(id));
+  if (retained.length !== knownTail.length || !isIdPrefix(knownTail, retained)) return null;
+  if (new Set(ids).size !== ids.length) return null;
+  const calls = new Set(assistant.toolCalls.flatMap((call) =>
+    isRecord(call) && typeof call.id === "string" ? [call.id] : []));
+  const answered = new Set<string>();
+  for (const result of messages.slice(tailStart)) {
+    if (!isRecord(result) || typeof result.toolUseId !== "string" || !calls.has(result.toolUseId) || answered.has(result.toolUseId)) return null;
+    answered.add(result.toolUseId);
+  }
+  return messages.slice(tailStart).filter((_message, index) => !known.has(ids[tailStart + index]));
+}
+
+/** Project completion-order records into their assistant's call order without changing the file. */
+export function orderToolResultRows(messages: readonly unknown[]): unknown[] {
+  const ordered: unknown[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i];
+    ordered.push(message);
+    if (!isRecord(message) || message.role !== "assistant" || !Array.isArray(message.toolCalls)) continue;
+    const order = new Map(message.toolCalls.flatMap((call, index) =>
+      isRecord(call) && typeof call.id === "string" ? [[call.id, index] as const] : []));
+    let end = i + 1;
+    while (end < messages.length) {
+      const result = messages[end];
+      if (!isRecord(result) || result.role !== "tool_result") break;
+      end++;
+    }
+    const rank = (result: unknown): number => isRecord(result) && typeof result.toolUseId === "string"
+      ? order.get(result.toolUseId) ?? Number.MAX_SAFE_INTEGER
+      : Number.MAX_SAFE_INTEGER;
+    // Stable sorting retains duplicate or unmatched records for the existing
+    // pairing validator; ordering never silently discards a stored row.
+    ordered.push(...messages.slice(i + 1, end).sort((a, b) => rank(a) - rank(b)));
+    i = end - 1;
+  }
+  return ordered;
+}
+
 export interface InterruptedTurnRecoveryText {
   /** Content of the result recorded for a tool call that never returned. */
   toolResultUnknown: string;

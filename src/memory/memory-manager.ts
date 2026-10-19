@@ -8,6 +8,7 @@ export { isValidSessionId } from "../shared/session-id.js";
 
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync, unlinkSync, rmSync, renameSync, watch, type FSWatcher } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
 import { join, resolve, basename } from "node:path";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, replaceUtf8FileAtomicSyncIf, isMissingPathError } from "../lib/atomic-file.js";
@@ -51,20 +52,22 @@ import { SHA256_HEX, sha256Hex } from "../lib/hex-digest-equal.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
 import {
   appendJsonlRecords,
-  isIdPrefix,
+  orderToolResultRows,
   parseTurnInflightRecord,
   recoverInterruptedTurn,
   removeTurnInflightRecord,
   rowIdsOf,
+  sessionProgressRows,
   turnInflightPath,
   writeTurnInflightRecord,
   type TurnInflightPartial,
 } from "./session-turn-journal.js";
 const log = createLogger("memory");
 /**
- * What this process last wrote to each session transcript: the row ids in
- * file order plus the file's size and mtime right after the write. An append
- * is only taken when the ids it was given extend this list AND the file is
+ * What this process last wrote to each session transcript: logical history row
+ * ids plus the file's size and mtime right after the write. Parallel results
+ * reach disk in completion order while these ids stay in call order. An append
+ * is only taken when these ids extend history or its open result group AND the file is
  * still exactly what was written — any other writer (another manager on the
  * same directory, a hand edit) changes size or mtime and forces a rewrite.
  * Keyed by transcript path because auxiliary managers share session dirs.
@@ -2260,12 +2263,14 @@ export class MemoryManager implements PromptMemorySource {
    *
    * `readMessages` yields the whole in-memory history (pass the reader, not a
    * snapshot, from a live turn). When it extends what this
-   * process last wrote (same row ids, in order, file untouched since), only
-   * the new rows are appended — through the same disk transform a save uses,
+   * process last wrote (same row ids, file untouched since), only the new rows
+   * are appended. The open result group may grow in call order while its new
+   * rows reach disk in completion order; load and the final save normalize it.
+   * Appends use the same disk transform a save uses,
    * so an oversized or image-bearing tool_result is stored exactly as a save
    * would store it. Otherwise (compaction rewrote the prefix, a host
    * injection was rolled back, another writer touched the file) the transcript
-   * is rewritten from history. Either way the file then equals history, and
+   * is rewritten from history. Either way the file contains the history, and
    * the turn's final `saveSession` rewrites it with the same row ids, so a
    * completed turn never carries a duplicate.
    *
@@ -2281,24 +2286,29 @@ export class MemoryManager implements PromptMemorySource {
     }
     const targetPath = join(this.sessionsDir, `${sessionId}.jsonl`);
     return withFileLock(targetPath, async () => {
+      const onDisk = await stat(targetPath).catch((err: unknown) => {
+        if (isMissingPathError(err)) return null;
+        throw err;
+      });
       // Read history only once the lock is held. A snapshot taken before
       // waiting could be older than a save that won the lock first, and
       // writing it would undo that save (a rolled-back host injection
-      // reappearing on disk).
+      // reappearing on disk). Read after stat as well: a supplied array may
+      // grow during that await, so ids and appended rows must share one view.
       const messages = typeof readMessages === "function" ? readMessages() : readMessages;
       const ids = rowIdsOf(messages);
       const known = transcriptWriteStates.get(targetPath);
-      const onDisk = statPathIfPresent(targetPath);
+      const rows = ids && known ? sessionProgressRows(known.ids, ids, messages) : null;
       if (
         ids
         && known
         && onDisk
         && onDisk.size === known.size
         && onDisk.mtimeMs === known.mtimeMs
-        && isIdPrefix(known.ids, ids)
+        && rows !== null
       ) {
-        if (ids.length === known.ids.length) return "unchanged";
-        const prepared = this.prepareSessionMessagesForDisk(sessionId, messages.slice(known.ids.length));
+        if (rows.length === 0) return "unchanged";
+        const prepared = this.prepareSessionMessagesForDisk(sessionId, rows);
         const after = await appendJsonlRecords(targetPath, prepared.messages);
         transcriptWriteStates.set(targetPath, { ids, ...after });
         return "appended";
@@ -2625,13 +2635,12 @@ export class MemoryManager implements PromptMemorySource {
         log.warn({ sessionId }, "skipping malformed session line");
       }
     }
-    return stampLegacyRowIds(
+    const recovered = this.recoverLatestCheckpointUserIfMissing(
       sessionId,
-      this.recoverLatestCheckpointUserIfMissing(
-        sessionId,
-        this.withRecoveredInterruptedTurn(sessionId, messages),
-      ).map((message) => this.normalizeStoredOutputCapture(sessionId, message)),
+      this.withRecoveredInterruptedTurn(sessionId, messages),
     );
+    return stampLegacyRowIds(sessionId, orderToolResultRows(recovered)
+      .map((message) => this.normalizeStoredOutputCapture(sessionId, message)));
   }
 
   private recoverLatestCheckpointUserIfMissing(sessionId: string, messages: unknown[]): unknown[] {
