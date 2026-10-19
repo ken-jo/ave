@@ -615,6 +615,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       attachments?: import("../../engine/llm/types.js").UserContentPart[],
       rolePrompt?: ActiveRolePrompt,
       displayText?: string,
+      resumesInterruptedTurn?: true,
     ) => {
       // Edit/resend and history replay reach the provider through this separate
       // main-chat path. Keep their input (including folded text attachments)
@@ -640,6 +641,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
             : {}),
           ...(rolePrompt ? { rolePrompt } : {}),
           ...(displayText !== undefined ? { displayText } : {}),
+          ...(resumesInterruptedTurn ? { resumesInterruptedTurn } : {}),
         },
       );
       await markMainActiveAfterTurn(groupDeps, sanitized.input);
@@ -659,7 +661,18 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const messages = [...(loop.getHistory().getMessages() as GenericMessage[])];
       if (messages.length === 0) return { ok: false, error: "no-user-message" };
       let lastUserIdx = messages.length - 1;
-      if (opts.requireTerminalUser) {
+      // The app exited mid-turn (crash, kill, or quit): the rows the turn
+      // produced are persisted and end in a host-exit interrupted row. Continue
+      // resumes from there instead of re-asking — the model gets everything it
+      // already did, including tool calls whose outcome is unknown, and is told
+      // so. Nothing is truncated and nothing runs until the user asks.
+      const resumeInterrupted = opts.requireTerminalUser && endsInHostExitInterruption(messages);
+      if (resumeInterrupted) {
+        lastUserIdx = -1;
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === "user") { lastUserIdx = i; break; }
+        }
+      } else if (opts.requireTerminalUser) {
         if (messages[lastUserIdx]?.role !== "user") {
           return { ok: false, error: "last-message-not-user" };
         }
@@ -687,6 +700,17 @@ export function registerChatHandlers(deps: IpcDeps): void {
       if (!personaPromptId.ok) return { ok: false, error: personaPromptId.error };
       const personaPrompt = await resolvePersonaRolePrompt(personaPromptStore, personaPromptId.personaPromptId);
       if (!personaPrompt.ok) return { ok: false, error: personaPrompt.error };
+      if (resumeInterrupted) {
+        const result = await runStreamTurn(
+          transport,
+          t("be_conversationLoop.resumeInterruptedTurnInput"),
+          undefined,
+          personaPrompt.rolePrompt,
+          t("be_conversationLoop.resumeInterruptedTurnDisplay"),
+          true,
+        );
+        return { ok: true, result };
+      }
       // Carried forward for the same reason `personaPromptId` is: the replayed row has to
       // look like the row it replaces. Without it a resource turn's fenced body — folded
       // into `lastUserText` by the split above — renders inside the user's own bubble on
@@ -743,6 +767,13 @@ export function registerChatHandlers(deps: IpcDeps): void {
     };
   };
   type GroupTurns = ReturnType<typeof createGroupTurns>;
+  /** The transcript's last row says the turn was cut short by the app exiting. */
+  const endsInHostExitInterruption = (messages: readonly GenericMessage[]): boolean => {
+    const tail = messages[messages.length - 1];
+    return tail?.role === "assistant"
+      && tail.meta?.interrupted === true
+      && tail.meta.interruptedBy === "host-exit";
+  };
 
   interface ChatGroupContext {
     /**

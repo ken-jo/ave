@@ -113,9 +113,12 @@ function AssistantCardImpl({
           {wasInterrupted && !entry.streaming ? (
             <span
               data-testid="assistant-interrupted-badge"
+              data-interrupted-by={entry.interruptedBy ?? "user"}
               className="rounded-full border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-1.5 py-px text-[10px] font-medium normal-case tracking-normal text-warning"
             >
-              {t("assistantCard.interruptedBadge")}
+              {entry.interruptedBy === "host-exit"
+                ? t("assistantCard.interruptedByHostExitBadge")
+                : t("assistantCard.interruptedBadge")}
             </span>
           ) : null}
           {entry.streaming ? <Loader2 className="h-3 w-3 animate-spin" /> : null}

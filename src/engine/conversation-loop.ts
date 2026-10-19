@@ -180,6 +180,8 @@ export class ConversationLoop {
   lastContextInputProjectionTokens = 0;
   /** Current turn's AbortController — abortCurrentTurn() calls .abort() */
   currentAbortController: AbortController | null = null;
+  /** The running turn's crash-durability journal (see turn/turn-journal.ts); null between turns. */
+  activeTurnJournal: import("./turn/turn-journal.js").TurnJournal | null = null;
 
 
 

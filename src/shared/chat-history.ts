@@ -82,6 +82,8 @@ export type SerializedHistoryMessage = {
   systemNotice?: NonNullable<MessageMeta["systemNotice"]>;
   /** User aborted the turn mid-stream; rendered as a badge, never as prose. */
   interrupted?: boolean;
+  /** The interruption was the app exiting mid-turn, not the user's Stop. */
+  interruptedBy?: "host-exit";
 };
 
 export function serializeHistoryMessage(
@@ -120,6 +122,9 @@ export function serializeHistoryMessage(
     ...(meta?.subAgentReport !== undefined ? { subAgentReport: meta.subAgentReport } : {}),
     ...(systemNotice !== undefined ? { systemNotice } : {}),
     ...(meta?.interrupted === true ? { interrupted: true } : {}),
+    ...(meta?.interrupted === true && meta.interruptedBy === "host-exit"
+      ? { interruptedBy: "host-exit" as const }
+      : {}),
   };
   const base = {
     index,
