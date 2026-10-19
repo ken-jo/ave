@@ -58,8 +58,6 @@ export interface ShellEgressContext {
 export interface TerminalEgressOwner {
   readonly kind: "terminal";
   readonly tabId: string;
-  /** The workspace root the tab's shell is anchored to: what "This workspace" keys on. */
-  readonly workspaceRoot: string;
 }
 
 /** What plugin-owned code a confined, non-interactive process runs. */

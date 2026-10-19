@@ -38,7 +38,7 @@ const terminalRequest = (overrides: Partial<EgressTerminalApprovalRequest> = {})
   origin: "terminal",
   tabId: TAB,
   destination: { host: "github.com", port: 443 },
-  scopes: ["once", "tab", "workspace", "always"],
+  scopes: ["once", "tab", "always"],
   network: "public",
   abortSignal: undefined,
   ...overrides,
@@ -211,8 +211,9 @@ describe("a workspace terminal tab's egress ask", () => {
     const sessionSurface = makeWebContents();
     const resolver = vi.fn((_sessionId: string | undefined, terminalTabId?: string) =>
       (terminalTabId === undefined ? sessionSurface : terminalSurface) as never);
-    const gate = new ApprovalGate(resolver, undefined, 5_000, { log: vi.fn() } as never);
-    return { gate, resolver, sessionSurface };
+    const auditLogger = { log: vi.fn() };
+    const gate = new ApprovalGate(resolver, undefined, 5_000, auditLogger as never);
+    return { gate, resolver, sessionSurface, auditLogger };
   }
 
   it("goes to the window that owns the tab, names the tab and no conversation, and offers This tab", async () => {
@@ -224,7 +225,7 @@ describe("a workspace terminal tab's egress ask", () => {
       kind: "egress-host",
       toolName: "terminal",
       args: { host: "github.com", port: 443, tabId: TAB },
-      egressHost: { host: "github.com", port: 443, scopes: ["once", "tab", "workspace", "always"], network: "public", terminalTabId: TAB },
+      egressHost: { host: "github.com", port: 443, scopes: ["once", "tab", "always"], network: "public", terminalTabId: TAB },
     });
     expect(card.sessionId).toBeUndefined();
     expect(resolver).toHaveBeenCalledWith(undefined, TAB);
@@ -232,8 +233,45 @@ describe("a workspace terminal tab's egress ask", () => {
     expect(sentApprovalCards(sessionSurface)).toEqual([]);
     gate.resolveFromDesktopRenderer(card.id, {
       requestId: card.id, choice: "allow-once", egressScope: "tab", nonce: card.nonce, hmac: card.hmac,
-    });
+    }, owner as never);
     await expect(answer).resolves.toEqual({ allow: true, scope: "tab" });
+  });
+
+  it("is listed for, and answered from, only the window that owns the tab", async () => {
+    const owner = makeWebContents();
+    const { gate, sessionSurface, auditLogger } = makeRoutedGate(owner);
+    const answer = createApprovalGateEgressRequester(gate)(terminalRequest());
+    let settled = false;
+    void answer.then(() => { settled = true; });
+    const card = await cardSent(owner);
+    // A reloaded window refetching pending asks: only the owner gets the terminal's.
+    expect(gate.listPendingRendererRequests(sessionSurface as never).map((r) => r.id)).toEqual([]);
+    expect(gate.listPendingRendererRequests().map((r) => r.id)).toEqual([]);
+    expect(gate.listPendingRendererRequests(owner as never).map((r) => r.id)).toEqual([card.id]);
+    // Another window's answer (even with the card's nonce and hmac) is ignored and audited.
+    const decision = { requestId: card.id, choice: "allow-once" as const, egressScope: "always" as const, nonce: card.nonce, hmac: card.hmac };
+    expect(gate.resolveFromDesktopRenderer(card.id, decision, sessionSurface as never)).toBeNull();
+    expect(gate.resolveFromDesktopRenderer(card.id, decision)).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    const rows = auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
+    expect(rows.filter((row) => row.startsWith(`[approval:terminal-owner-required] ${card.id}`))).toHaveLength(2);
+    // The owner can still answer it.
+    gate.resolveFromDesktopRenderer(card.id, { ...decision, egressScope: "once" }, owner as never);
+    await expect(answer).resolves.toEqual({ allow: true, scope: "once" });
+  });
+
+  it("is not answerable by a window once it no longer owns the tab", async () => {
+    const owner = makeWebContents();
+    const { gate } = makeRoutedGate(owner);
+    const answer = createApprovalGateEgressRequester(gate)(terminalRequest());
+    const card = await cardSent(owner);
+    owner.isDestroyed.mockReturnValue(true);
+    expect(gate.resolveFromDesktopRenderer(card.id, {
+      requestId: card.id, choice: "allow-once", egressScope: "once", nonce: card.nonce, hmac: card.hmac,
+    }, owner as never)).toBeNull();
+    gate.disposeAll();
+    await answer.catch(() => undefined);
   });
 
   it("is denied when no window owns the tab (never drawn in another window)", async () => {

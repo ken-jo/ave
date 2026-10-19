@@ -1,9 +1,11 @@
 /**
  * The banner a workspace terminal tab shows when its shell (or anything it
  * started) connects to a host no grant covers (design F): "<host>:<port>
- * blocked" with Deny and an allow per scope the host offered — Allow once,
- * This tab, This workspace, Always; a local or unverified destination is
- * offered only Allow once and This tab, with the card's warning.
+ * blocked" with Deny and an allow per scope the host offered — Allow once
+ * (this one connection), This tab (until the tab's shell exits), Always
+ * (every workspace terminal); a local or unverified destination is offered
+ * only Allow once and This tab, with the card's warning. Terminals have no
+ * This workspace: every tab runs in the app's one default workspace.
  *
  * The connection is held while the banner is up. The host denies it after
  * 120 s without an answer, or at once when the tab closes, and then retires

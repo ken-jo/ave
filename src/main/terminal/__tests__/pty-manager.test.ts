@@ -370,7 +370,7 @@ describe("pty-manager happy path (fs-contained)", () => {
     const [, options] = wrapWorkerCommandMock.mock.calls[0] as [string, { commandId: string }];
     // A minted token, not the tab id: the id the proxy sees is unguessable.
     expect(options.commandId).toMatch(/^[0-9a-f]{32}$/);
-    expect(egressInvocationOwner(options.commandId)).toEqual({ kind: "terminal", tabId: "terminal:0000000a-1", workspaceRoot: ROOT });
+    expect(egressInvocationOwner(options.commandId)).toEqual({ kind: "terminal", tabId: "terminal:0000000a-1" });
     lastPty?.emitExit(0);
     expect(egressInvocationOwner(options.commandId)).toBeUndefined();
   });

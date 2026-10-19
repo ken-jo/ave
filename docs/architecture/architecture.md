@@ -1430,9 +1430,16 @@ a Bash or PowerShell call reaches a host a grant covers, and otherwise
 the person is asked on the approval dock (Deny, Allow once, This
 conversation, This workspace, Always); a workspace terminal tab (always in
 the foreground) reaches a host a grant covers, and otherwise the person is
-asked in a banner in that tab, drawn only in the window that owns the tab
-(Deny, Allow once, This tab, This workspace, Always: "This tab" takes the
-place of "This conversation" and lasts until the tab's shell ends). The
+asked in a banner in that tab, drawn only in, fetched by and answered from
+the window that owns the tab (Deny, Allow once, This tab, Always: a
+terminal's Allow once lets that one connection through and is never held;
+"This tab" takes the place of "This conversation" and lasts until the tab's
+shell exits, including an exit followed by a respawn; terminals have no
+This workspace, since every tab runs in the app's one default workspace,
+which agent shell calls share). A persistent grant records its origin
+(`shell` or `terminal`) and covers only that origin, so a terminal's Always
+never lets an agent's shell call through, nor the reverse; Settings shows the
+origin. Working directories are compared after `canonicalizePathForMatch`. The
 connection is held while the banner is up and denied after 120 s without an
 answer, or at once when the tab closes; connections from one tab to one
 destination share one banner row. While no view of the tab is mounted the

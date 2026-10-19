@@ -79,8 +79,8 @@ beforeEach(() => {
     [SHELL_TOKEN, interactiveShell],
     [OTHER_SHELL_TOKEN, { ...interactiveShell, toolUseId: "toolu_2" }],
     [WORKER_TOKEN, { kind: "worker", role: "worker", pluginId: "fixture_plugin", instanceId: "w1" }],
-    [TERMINAL_TOKEN, { kind: "terminal", tabId: TERMINAL_TAB, workspaceRoot: "/work/project" }],
-    [OTHER_TERMINAL_TOKEN, { kind: "terminal", tabId: OTHER_TERMINAL_TAB, workspaceRoot: "/work/project" }],
+    [TERMINAL_TOKEN, { kind: "terminal", tabId: TERMINAL_TAB }],
+    [OTHER_TERMINAL_TOKEN, { kind: "terminal", tabId: OTHER_TERMINAL_TAB }],
   ]);
   audit = [];
   asked = [];
@@ -173,7 +173,7 @@ describe("egress ask callback — plugin workers", () => {
 
   it("never lets a shell grant reach a worker (I4)", async () => {
     await grants.grant("always", ["once", "conversation", "workspace", "always"], {
-      token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined,
+      token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const,
     }, { host: "github.com", port: 443 });
     const ask = callback();
     expect(await ask({ host: "github.com", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
@@ -215,7 +215,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
       origin: "terminal",
       tabId: TERMINAL_TAB,
       destination: { host: "github.com", port: 443 },
-      scopes: ["once", "tab", "workspace", "always"],
+      scopes: ["once", "tab", "always"],
       network: "public",
     });
     expect(asked[0]).not.toHaveProperty("sessionId");
@@ -231,7 +231,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
   });
 
   it.each([
-    ["public", "github.com", [], "pinned", ["once", "tab", "workspace", "always"]],
+    ["public", "github.com", [], "pinned", ["once", "tab", "always"]],
     ["local (loopback)", "127.0.0.1", [], "pinned", ["once", "tab"]],
     ["local (RFC 1918 by resolution)", "nas.corp.example", ["10.20.30.40"], "pinned", ["once", "tab"]],
     ["local (local-network name)", "printer.local", [], "upstream", ["once", "tab"]],
@@ -281,22 +281,53 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
     expect(asked).toHaveLength(3);
   });
 
-  it("a conversation grant never covers a terminal, and a workspace grant from a terminal covers that workspace's shell calls", async () => {
-    await grants.grant("conversation", ["conversation"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, workspaceRoot: undefined },
+  it("a conversation grant never covers a terminal, and a terminal's Always never covers a shell call, nor the reverse", async () => {
+    await grants.grant("conversation", ["conversation"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
       { host: "github.com", port: 443 });
     const ask = callback();
     expect(await ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
-    answer = async () => ({ allow: true, scope: "workspace" });
+    // Always from the terminal's banner: every terminal tab, no shell call.
+    answer = async () => ({ allow: true, scope: "always" });
     expect(await ask({ host: "registry.npmjs.org", port: 443 }, listener(TERMINAL_TOKEN))).toBe(true);
-    expect(await ask({ host: "registry.npmjs.org", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
+    expect(await ask({ host: "registry.npmjs.org", port: 443 }, listener(OTHER_TERMINAL_TOKEN))).toBe(true);
     expect(asked).toHaveLength(2);
-    expect(await grants.listPersistent()).toEqual([
-      { scope: "workspace", workspaceRoot: "/work/project", host: "registry.npmjs.org", port: 443, grantedAt: expect.any(String) },
+    answer = async () => ({ allow: false, reason: "denied by the user" });
+    expect(await ask({ host: "registry.npmjs.org", port: 443 }, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked).toHaveLength(3);
+    // Always and This workspace from a shell call's card: no terminal tab.
+    answer = async () => ({ allow: true, scope: "always" });
+    expect(await ask({ host: "pypi.org", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
+    answer = async () => ({ allow: true, scope: "workspace" });
+    expect(await ask({ host: "crates.io", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
+    answer = async () => ({ allow: false, reason: "denied by the user" });
+    expect(await ask({ host: "pypi.org", port: 443 }, listener(TERMINAL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
+    expect(await ask({ host: "crates.io", port: 443 }, listener(TERMINAL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked).toHaveLength(7);
+    expect((await grants.listPersistent()).map((grant) => [grant.scope, grant.origin, grant.host])).toEqual([
+      ["always", "terminal", "registry.npmjs.org"],
+      ["always", "shell", "pypi.org"],
+      ["workspace", "shell", "crates.io"],
     ]);
   });
 
+  it("Allow once lets exactly one connection through and is never held: the next connection asks again", async () => {
+    answer = async () => ({ allow: true, scope: "once" });
+    const ask = callback();
+    expect(await ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN))).toBe(true);
+    expect(asked).toHaveLength(1);
+    answer = async () => ({ allow: false, reason: "denied by the user" });
+    expect(await ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked).toHaveLength(2);
+    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([
+      ["allow", "prompt", "once"],
+      ["deny", "prompt", null],
+    ]);
+    expect(grants.listTab()).toEqual([]);
+    expect(await grants.listPersistent()).toEqual([]);
+  });
+
   it("a local destination's This tab grant is offered and kept; a persistent grant never covers it", async () => {
-    await grants.grant("always", ["always"], { token: TERMINAL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined },
+    await grants.grant("always", ["always"], { token: TERMINAL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "terminal" as const },
       { host: "127.0.0.1", port: 8080 });
     answer = async () => ({ allow: true, scope: "tab" });
     const ask = callback();
@@ -321,13 +352,24 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
       [TERMINAL_TAB, "registry.npmjs.org"],
       [OTHER_TERMINAL_TAB, "github.com"],
     ]);
+    // Allow once on the shared banner lets one of the three through; the
+    // other two fold into the next banner, whose This tab covers both.
     releases[0]!({ allow: true, scope: "once" });
     releases[1]!({ allow: false, reason: "denied by the user" });
     releases[2]!({ allow: false, reason: "denied by the user" });
+    await vi.waitFor(() => expect(asked).toHaveLength(4));
+    expect(asked[3]).toMatchObject({ origin: "terminal", tabId: TERMINAL_TAB, destination: { host: "github.com", port: 443 } });
+    releases[3]!({ allow: true, scope: "tab" });
     expect(await Promise.all([first, second, third])).toEqual([true, true, true]);
     expect(await otherHost).toEqual({ allow: false, reason: "denied by the user" });
     expect(await otherTab).toEqual({ allow: false, reason: "denied by the user" });
-    expect(asked).toHaveLength(3);
+    expect(asked).toHaveLength(4);
+    expect(audit.filter((row) => row.destination.host === "github.com" && row.invocation?.kind === "terminal" && (row.invocation as { tabId: string }).tabId === TERMINAL_TAB)
+      .map((row) => [row.decision, row.basis, row.scope])).toEqual([
+      ["allow", "prompt", "once"],
+      ["allow", "prompt", "tab"],
+      ["allow", "prompt", "tab"],
+    ]);
   });
 
   it("denies after 120 s without an answer, with the timeout reason, and a later connection asks again", async () => {
@@ -396,7 +438,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
   });
 
   it("denies without a banner when asks are off, but keeps granted hosts", async () => {
-    await grants.grant("tab", ["tab"], { token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, workspaceRoot: undefined },
+    await grants.grant("tab", ["tab"], { token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, workspaceRoot: undefined, origin: "terminal" as const },
       { host: "registry.npmjs.org", port: 443 });
     askEnabled = false;
     const ask = callback();
@@ -544,7 +586,7 @@ describe("egress ask callback — shell calls", () => {
   });
 
   it("denies without asking when asks are off, but keeps granted hosts", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
       { host: "registry.npmjs.org", port: 443 });
     askEnabled = false;
     const ask = callback();
@@ -672,7 +714,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
   });
 
   it("does not let an Always grant for a name cover it once it resolves to a private address", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
       { host: "rebind.example", port: 443 });
     expect(await callback()({ host: "rebind.example", port: 443 }, listener(SHELL_TOKEN, ["93.184.215.14"]))).toBe(true);
     expect(asked).toHaveLength(0);
@@ -683,7 +725,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
   });
 
   it("treats a name the upstream proxy resolves as unverified: at most this conversation, and an Always grant does not cover it", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
       { host: "intranet.corp.test", port: 443 });
     expect(await callback()({ host: "intranet.corp.test", port: 443 }, listener(SHELL_TOKEN, [], "upstream")))
       .toEqual({ allow: false, reason: "denied by the user" });
@@ -707,7 +749,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
   });
 
   it("never lets a persistent grant cover a local destination", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
       { host: "127.0.0.1", port: 8080 });
     expect(await callback()({ host: "127.0.0.1", port: 8080 }, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toHaveLength(1);

@@ -16,6 +16,7 @@ import { useTranslation } from "../../../../i18n/react.js";
 import type { ApprovalChoice, ApprovalRequest } from "../../types.js";
 import type { EgressGrantScope } from "../../../../shared/egress-grant-scopes.js";
 import type { ApprovalDecisionExtras } from "../../hooks/use-approval.js";
+import { terminalTabLabel } from "../../preview/terminal-tab-labels.js";
 
 export const EGRESS_SCOPE_LABEL_KEYS: Record<EgressGrantScope, string> = {
   once: "egressApprovalCard.allowOnce",
@@ -89,7 +90,7 @@ export function EgressHostApprovalCard({
         <p className="min-w-0 break-words text-xs text-muted-foreground">
           {terminalTabId === undefined
             ? t("egressApprovalCard.conversation", { conversation: conversationLabel })
-            : t("egressApprovalCard.terminalTab", { tab: terminalTabId })}
+            : t("egressApprovalCard.terminalTab", { tab: terminalTabLabel(terminalTabId) ?? t("egressApprovalCard.terminalTabElsewhere") })}
         </p>
       </div>
       <div className="flex min-w-0 flex-wrap gap-2">

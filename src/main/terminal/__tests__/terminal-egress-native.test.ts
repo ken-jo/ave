@@ -8,6 +8,9 @@
  *   - Allow: the tab's banner is asked (origin terminal, its tab id, This tab
  *     offered), curl gets the page, and This tab covers the next curl without
  *     another banner. Closing the tab drops the grant.
+ *   - Allow once: that one curl gets the page; the next curl asks again.
+ *   - This tab is the tab's own: another tab asks, and so does a new shell in
+ *     the same tab after `exit` (the grant ended with the old shell).
  *   - Deny: curl fails.
  *   - No answer: the banner's deadline denies and curl fails.
  *
@@ -17,8 +20,10 @@
  * is refused by the sandbox, and a name resolving to this host is refused by
  * the proxy's resolved-address guard before any ask. The local and
  * unverified classes are covered by the unit tests (egress-ask.test.ts).
- * Without a route to the host the cases are skipped with that reason, or
- * fail where a confinement job requires them (AVE_REQUIRE_SANDBOX_CASES=1).
+ * Without a route to the host the cases are skipped with that reason; where a
+ * confinement job requires them (AVE_REQUIRE_SANDBOX_CASES=1) the precondition
+ * case fails with one plain "network unreachable" message instead, and the
+ * cases themselves are skipped rather than failing one by one.
  */
 import { afterEach, beforeEach, describe, expect, it, type TestContext } from "vitest";
 import { existsSync, mkdtempSync, realpathSync } from "node:fs";
@@ -59,10 +64,12 @@ const CURL = "/usr/bin/curl";
 const HOST = "example.com";
 const PORT = 443;
 const TAB = "terminal:0e9a5c11-1";
+const OTHER_TAB = "terminal:0e9a5c11-2";
 const BODY = "Example Domain";
 
 let dir: string | undefined;
-let output = "";
+/** Each tab's output since the test began. */
+const outputs = new Map<string, string>();
 let stopReleaseListener: (() => void) | undefined;
 
 let reachable: boolean | undefined;
@@ -73,16 +80,20 @@ async function requireNativeCase(context: TestContext): Promise<void> {
     if (sandboxCasesRequired()) throw new Error(`AVE_REQUIRE_SANDBOX_CASES=1 but ${CURL} is missing`);
     context.skip(`${CURL} is missing`);
   }
-  // Control: unconfined, this machine reaches the host at all.
+  // Control: unconfined, this machine reaches the host at all. Where it does
+  // not, the precondition case below reports it; the cases have nothing to measure.
+  if (!(await hostReachable())) context.skip(NETWORK_UNREACHABLE);
+}
+
+const NETWORK_UNREACHABLE = `network unreachable: https://${HOST}/ cannot be fetched from this machine without the sandbox, so the terminal egress cases would measure nothing`;
+
+async function hostReachable(): Promise<boolean> {
   reachable ??= await fetch(`https://${HOST}/`, { signal: AbortSignal.timeout(10_000) }).then((res) => res.ok, () => false);
-  if (!reachable) {
-    if (sandboxCasesRequired()) throw new Error(`AVE_REQUIRE_SANDBOX_CASES=1 but https://${HOST}/ is not reachable, so the terminal egress cases would measure nothing`);
-    context.skip(`https://${HOST}/ is not reachable from this machine`);
-  }
+  return reachable;
 }
 
 beforeEach(() => {
-  output = "";
+  outputs.clear();
 });
 
 afterEach(async () => {
@@ -149,26 +160,27 @@ async function startSandbox(
   return { asked, audit, grants };
 }
 
-async function openTab(): Promise<void> {
+async function openTab(tabId = TAB): Promise<void> {
   setTerminalEmitter((event, payload) => {
-    if (event === "data" && "chunk" in payload && payload.tabId === TAB) output += payload.chunk;
+    if (event === "data" && "chunk" in payload) outputs.set(payload.tabId, (outputs.get(payload.tabId) ?? "") + payload.chunk);
   });
-  const result = await spawnTerminal({ tabId: TAB, cols: 160, rows: 40, ownerWindowId: null });
+  const result = await spawnTerminal({ tabId, cols: 160, rows: 40, ownerWindowId: null });
   expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
 }
 
 /** Type `curl` into the tab and wait for its exit status line. */
-async function curlInTab(marker: string, timeoutMs = 60_000): Promise<{ status: number; text: string }> {
-  const start = output.length;
-  writeTerminal(TAB, `${CURL} -fsS -m 30 https://${HOST}/ ; echo "${marker}=$?"\r`);
+async function curlInTab(marker: string, tabId = TAB, timeoutMs = 60_000): Promise<{ status: number; text: string }> {
+  const output = (): string => outputs.get(tabId) ?? "";
+  const start = output().length;
+  writeTerminal(tabId, `${CURL} -fsS -m 30 https://${HOST}/ ; echo "${marker}=$?"\r`);
   const pattern = new RegExp(`${marker}=(\\d+)`, "u");
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     // The echoed command line holds `${marker}=$?`; only the shell's own
     // output carries a number after the `=`.
-    const match = pattern.exec(output.slice(start));
-    if (match !== null) return { status: Number(match[1]), text: output.slice(start) };
-    if (Date.now() > deadline) throw new Error(`no ${marker} line in the tab's output:\n${output.slice(start).slice(-2000)}`);
+    const match = pattern.exec(output().slice(start));
+    if (match !== null) return { status: Number(match[1]), text: output().slice(start) };
+    if (Date.now() > deadline) throw new Error(`no ${marker} line in the tab's output:\n${output().slice(start).slice(-2000)}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
@@ -176,6 +188,55 @@ async function curlInTab(marker: string, timeoutMs = 60_000): Promise<{ status: 
 const nativePlatform = process.platform === "darwin" || process.platform === "linux";
 
 describe.runIf(nativePlatform)("workspace terminal egress banner (native, design F)", () => {
+  it("can reach the destination at all without the sandbox (the cases' precondition)", async (context) => {
+    if (!(await sandboxCasesRun())) context.skip("ASRT cannot initialize (sandbox dependencies missing)");
+    const ok = await hostReachable();
+    if (!ok && !sandboxCasesRequired()) context.skip(NETWORK_UNREACHABLE);
+    expect(ok, NETWORK_UNREACHABLE).toBe(true);
+  });
+
+  it("Allow once lets that one curl through; the next curl asks again", async (context) => {
+    await requireNativeCase(context);
+    const answers: EgressApprovalAnswer[] = [{ allow: true, scope: "once" }, { allow: false, reason: "denied by the user" }];
+    const harness = await startSandbox(async () => answers.shift() ?? { allow: false, reason: "no more answers" });
+    await openTab();
+    const first = await curlInTab("ONCE_FIRST");
+    expect(first.status, first.text).toBe(0);
+    expect(first.text).toContain(BODY);
+    const second = await curlInTab("ONCE_SECOND");
+    expect(second.status, second.text).not.toBe(0);
+    expect(harness.asked).toHaveLength(2);
+    expect(harness.audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([
+      ["allow", "prompt", "once"],
+      ["deny", "prompt", null],
+    ]);
+    expect(harness.grants.listTab()).toEqual([]);
+  });
+
+  it("This tab covers only its tab, and not a new shell in the same tab after exit", async (context) => {
+    await requireNativeCase(context);
+    const harness = await startSandbox(async () => ({ allow: true, scope: "tab" }));
+    const askedTabs = (): Array<string | undefined> => harness.asked.map((request) => (request.origin === "terminal" ? request.tabId : undefined));
+    try {
+      await openTab(TAB);
+      await openTab(OTHER_TAB);
+      expect((await curlInTab("ISO_1", TAB)).status).toBe(0);
+      expect((await curlInTab("ISO_2", TAB)).status).toBe(0);
+      expect(askedTabs()).toEqual([TAB]);
+      expect((await curlInTab("ISO_3", OTHER_TAB)).status).toBe(0);
+      expect(askedTabs()).toEqual([TAB, OTHER_TAB]);
+      // `exit` ends the tab's shell and its grants; the respawned shell (same
+      // tab id) is a new invocation and is asked again.
+      writeTerminal(TAB, "exit\r");
+      await expect.poll(() => harness.grants.listTab().map((grant) => grant.tabId), { timeout: 15_000 }).toEqual([OTHER_TAB]);
+      await expect.poll(async () => (await spawnTerminal({ tabId: TAB, cols: 160, rows: 40, ownerWindowId: null })).ok, { timeout: 15_000 }).toBe(true);
+      expect((await curlInTab("ISO_4", TAB)).status).toBe(0);
+      expect(askedTabs()).toEqual([TAB, OTHER_TAB, TAB]);
+    } finally {
+      killTerminal(OTHER_TAB);
+    }
+  });
+
   it("asks the tab's banner, then curl succeeds after This tab, which covers the next curl; closing the tab drops it", async (context) => {
     await requireNativeCase(context);
     const harness = await startSandbox(async () => ({ allow: true, scope: "tab" }));
@@ -189,7 +250,7 @@ describe.runIf(nativePlatform)("workspace terminal egress banner (native, design
       tabId: TAB,
       destination: { host: HOST, port: PORT },
       network: "public",
-      scopes: ["once", "tab", "workspace", "always"],
+      scopes: ["once", "tab", "always"],
     });
     expect(harness.grants.listTab()).toEqual([
       { scope: "tab", tabId: TAB, host: HOST, port: PORT, grantedAt: expect.any(String) },

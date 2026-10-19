@@ -931,6 +931,7 @@ function assertEgressHostRequestShape(req: ApprovalRequestInput): void {
     if (!isTerminalTabId(payload.terminalTabId)) throw new Error("approval: terminalTabId is not a terminal tab id");
     if (req.sessionId !== undefined) throw new Error("approval: a terminal tab's egress ask names no conversation");
     if (payload.scopes.includes("conversation")) throw new Error("approval: a terminal tab is offered This tab, not This conversation");
+    if (payload.scopes.includes("workspace")) throw new Error("approval: a terminal tab is never offered This workspace");
   } else if (payload.scopes.includes("tab")) {
     throw new Error("approval: only a terminal tab's egress ask offers This tab");
   }
@@ -1087,6 +1088,11 @@ interface PendingEntry {
   };
   /** The scopes an `egress-host` ask offered, kept host-side for the answer check. */
   egressScopes?: readonly EgressGrantScope[];
+  /**
+   * A workspace terminal tab's egress ask: only the window that owns the tab
+   * may fetch or answer it (`listPendingRendererRequests`, `resolveFromDesktopRenderer`).
+   */
+  egressTerminalTabId?: string;
   /**
    * Issue #799 — approval cache key captured server-side at request emit
    * time. The userApprovalRecord IPC handler reads this via
@@ -2958,7 +2964,12 @@ export class ApprovalGate {
             }),
         ...(fullReq.egressHost === undefined
           ? {}
-          : { egressScopes: [...fullReq.egressHost.scopes] }),
+          : {
+              egressScopes: [...fullReq.egressHost.scopes],
+              ...(fullReq.egressHost.terminalTabId === undefined
+                ? {}
+                : { egressTerminalTabId: fullReq.egressHost.terminalTabId }),
+            }),
         approvalCacheKey: fullReq.approvalCacheKey,
         approvalMemory: fullReq.approvalMemory,
         durableApprovalRecordAllowed,
@@ -3102,12 +3113,23 @@ export class ApprovalGate {
     return this.resolveDecision(requestId, decision, answeredBy, false);
   }
 
-  /** Only the renderer IPC handler may call this after validating its sender. */
+  /**
+   * Only the renderer IPC handler may call this after validating its sender.
+   * `responder` is that sender: a workspace terminal tab's egress ask is
+   * answered only by the window that owns the tab.
+   */
   resolveFromDesktopRenderer(
     requestId: string,
     decision: ApprovalDecision,
+    responder?: WebContents,
   ): ApprovalDecision | null {
-    return this.resolveDecision(requestId, decision, "desk", true);
+    return this.resolveDecision(requestId, decision, "desk", true, responder);
+  }
+
+  /** Whether `contents` is the live window that owns this terminal tab (its asks' only surface). */
+  private isTerminalOwner(terminalTabId: string, contents: WebContents | undefined): boolean {
+    if (contents === undefined || contents.isDestroyed()) return false;
+    return this.resolveSurface?.(undefined, terminalTabId) === contents;
   }
 
   private resolveDecision(
@@ -3115,9 +3137,22 @@ export class ApprovalGate {
     decision: ApprovalDecision,
     answeredBy: ApprovalAnswerer,
     nativeRenderer: boolean,
+    responder?: WebContents,
   ): ApprovalDecision | null {
     const entry = this.pending.get(requestId);
     if (!entry) return null;
+    if (entry.egressTerminalTabId !== undefined && !this.isTerminalOwner(entry.egressTerminalTabId, responder)) {
+      // A terminal tab's ask is drawn in, and answered from, the window that
+      // owns the tab. Another window's answer is ignored and the ask stays
+      // pending for the owner (it can still time out or be closed).
+      this.auditLogger?.log({
+        timestamp: new Date().toISOString(),
+        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:terminal-owner-required] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} -> response-rejected`,
+      });
+      return null;
+    }
     if (entry.hostShellExecutionPermitBinding?.executionMode === "host" && !nativeRenderer) {
       // Signed card contents authenticate a request, not the answering surface.
       // Reject plugin/platform answers while keeping the desktop request pending.
@@ -3335,7 +3370,8 @@ export class ApprovalGate {
 
   /**
    * Every request still waiting on the renderer, in the order it was asked,
-   * exactly as `ave:approval:request` delivered it. A renderer that loaded
+   * exactly as `ave:approval:request` delivered it (a terminal tab's egress
+   * ask only to the window that owns the tab). A renderer that loaded
    * after a request went out subscribed too late to have seen it; this is how
    * it recovers the card instead of leaving the turn to sit out its timeout.
    */
@@ -3343,6 +3379,8 @@ export class ApprovalGate {
     const out: ApprovalRequest[] = [];
     for (const [id, entry] of this.pending) {
       if (entry.rendererRequest === undefined) continue;
+      // A terminal tab's ask goes only to the window that owns the tab.
+      if (entry.egressTerminalTabId !== undefined && !this.isTerminalOwner(entry.egressTerminalTabId, recipient)) continue;
       out.push(entry.rendererRequest);
       // The reader now draws this card too; tell it when the request settles.
       if (recipient) {

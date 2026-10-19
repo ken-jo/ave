@@ -2,7 +2,8 @@
  * Settings → Permissions → Network: the hosts a sandboxed shell may reach
  * without asking because someone chose "This conversation", "This tab" (a
  * workspace terminal), "This workspace" or "Always" on an egress ask, each
- * with a Revoke button. Revoking also
+ * with a Revoke button. A workspace or always grant names its origin (agent
+ * shell calls or workspace terminals): it covers only that origin. Revoking also
  * closes the connections that grant let through that are still open. "Allow
  * once" grants end with their call and are not listed. Plugin workers never
  * use these grants.
@@ -15,6 +16,7 @@ import { formatDateTime } from "../../../../shared/format-time.js";
 import { errorMessage } from "../../../../shared/error-message.js";
 import { formatIpcError } from "../../format-ipc-error.js";
 import { isIpcErrorResult } from "../../types.js";
+import { terminalTabLabel } from "../../preview/terminal-tab-labels.js";
 
 interface EgressGrantsListProps {
   /** Override fetcher for tests. Defaults to window.ave.permission.egressGrantsList. */
@@ -23,10 +25,16 @@ interface EgressGrantsListProps {
   readonly revoker?: (grant: ListedEgressGrant) => Promise<unknown>;
 }
 
+/** Who a persistent grant covers: the agent's shell calls or the workspace terminals (never both). */
+const ORIGIN_LABEL_KEYS = {
+  shell: "permissionsTab.networkGrantOriginShell",
+  terminal: "permissionsTab.networkGrantOriginTerminal",
+} as const;
+
 function grantKey(grant: ListedEgressGrant): string {
   const owner = grant.scope === "conversation" ? grant.sessionId
     : grant.scope === "tab" ? grant.tabId
-    : grant.workspaceRoot ?? "";
+    : `${grant.origin}\n${grant.workspaceRoot ?? ""}`;
   return `${grant.scope}\n${owner}\n${grant.host}\n${grant.port}`;
 }
 
@@ -78,6 +86,7 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
         port: g.port,
         ...(g.scope === "conversation" ? { sessionId: g.sessionId } : {}),
         ...(g.scope === "tab" ? { tabId: g.tabId } : {}),
+        ...(g.scope === "workspace" || g.scope === "always" ? { origin: g.origin } : {}),
         ...((g.scope === "workspace" || g.scope === "always") && g.workspaceRoot !== undefined ? { workspaceRoot: g.workspaceRoot } : {}),
       })))(grant);
       const failed = failureMessage(result);
@@ -114,7 +123,10 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
                 <span className="block min-w-0 break-all font-mono text-[12px]">{`${grant.host}:${grant.port}`}</span>
                 <p className="min-w-0 break-words text-[11px] text-muted-foreground">
                   {grant.scope === "always"
-                    ? translate("permissionsTab.networkGrantScopeAlways", { time: formatDateTime(grant.grantedAt) })
+                    ? translate("permissionsTab.networkGrantScopeAlways", {
+                        origin: translate(ORIGIN_LABEL_KEYS[grant.origin]),
+                        time: formatDateTime(grant.grantedAt),
+                      })
                     : grant.scope === "conversation"
                       ? translate("permissionsTab.networkGrantScopeConversation", {
                           conversation: grant.sessionId,
@@ -122,10 +134,11 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
                         })
                       : grant.scope === "tab"
                         ? translate("permissionsTab.networkGrantScopeTab", {
-                            tab: grant.tabId,
+                            tab: terminalTabLabel(grant.tabId) ?? translate("permissionsTab.networkGrantTabElsewhere"),
                             time: formatDateTime(grant.grantedAt),
                           })
                         : translate("permissionsTab.networkGrantScopeWorkspace", {
+                            origin: translate(ORIGIN_LABEL_KEYS[grant.origin]),
                             workspace: grant.workspaceRoot ?? "",
                             time: formatDateTime(grant.grantedAt),
                           })}

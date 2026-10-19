@@ -337,7 +337,7 @@ describe("permissions IPC handlers", () => {
     Object.assign(sender, { mainFrame: frame });
     const decision = { requestId: "host-approval", choice: "allow-once" };
     await fn({ sender, senderFrame: frame }, decision);
-    expect(deps.approvalGate.resolveFromDesktopRenderer).toHaveBeenCalledWith("host-approval", decision);
+    expect(deps.approvalGate.resolveFromDesktopRenderer).toHaveBeenCalledWith("host-approval", decision, sender);
     expect(deps.approvalGate.resolve).not.toHaveBeenCalled();
     deps.approvalGate.resolveFromDesktopRenderer.mockClear();
     await fn({ sender, senderFrame: { url: frame.url } }, decision);
@@ -1690,7 +1690,8 @@ describe("shell egress grants in Settings", () => {
     Object.assign(sender, { mainFrame: frame });
     const decision = { requestId: "egress-1", choice: "allow-once", egressScope: "workspace", nonce: "n", hmac: "h" };
     await handlers.get(PERMISSIONS.approvalRespond)!({ sender, senderFrame: frame }, decision);
-    expect(deps.approvalGate.resolveFromDesktopRenderer).toHaveBeenCalledWith("egress-1", decision);
+    // The answering window goes to the gate: a terminal tab's ask is answered only from the window that owns the tab.
+    expect(deps.approvalGate.resolveFromDesktopRenderer).toHaveBeenCalledWith("egress-1", decision, sender);
   });
 
   it("lists persistent grants, and reports an unreadable store as an error", async () => {
@@ -1708,14 +1709,18 @@ describe("shell egress grants in Settings", () => {
     const { deps } = await setup();
     egressRuntimeMock.revokeEgressGrant.mockResolvedValueOnce({ removed: true, closed: 2 });
     expect(await invoke(PERMISSIONS.egressGrantRevoke, {
-      scope: "workspace", workspaceRoot: "/work/project", host: "pypi.org", port: 443, intent: USER_INTENT,
+      scope: "workspace", origin: "shell", workspaceRoot: "/work/project", host: "pypi.org", port: 443, intent: USER_INTENT,
     })).toEqual({ ok: true });
     expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenCalledWith({
-      scope: "workspace", workspaceRoot: "/work/project", host: "pypi.org", port: 443,
+      scope: "workspace", origin: "shell", workspaceRoot: "/work/project", host: "pypi.org", port: 443,
     });
     expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-      output: "[egress-grant:revoke] scope=workspace host=pypi.org port=443 removed=true closedConnections=2",
+      output: "[egress-grant:revoke] scope=workspace origin=shell host=pypi.org port=443 removed=true closedConnections=2",
     }));
+    expect(await invoke(PERMISSIONS.egressGrantRevoke, {
+      scope: "always", origin: "terminal", host: "pypi.org", port: 443, intent: USER_INTENT,
+    })).toEqual({ ok: true });
+    expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenLastCalledWith({ scope: "always", origin: "terminal", host: "pypi.org", port: 443 });
     expect(await invoke(PERMISSIONS.egressGrantRevoke, {
       scope: "conversation", sessionId: "session-1", host: "pypi.org", port: 443, intent: USER_INTENT,
     })).toEqual({ ok: true });
@@ -1725,7 +1730,7 @@ describe("shell egress grants in Settings", () => {
     })).toEqual({ ok: true });
     expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenLastCalledWith({ scope: "tab", tabId: "terminal:0a1b2c3d-1", host: "pypi.org", port: 443 });
     egressRuntimeMock.revokeEgressGrant.mockResolvedValueOnce({ removed: false, closed: 0 });
-    expect(await invoke(PERMISSIONS.egressGrantRevoke, { scope: "always", host: "pypi.org", port: 443, intent: USER_INTENT }))
+    expect(await invoke(PERMISSIONS.egressGrantRevoke, { scope: "always", origin: "shell", host: "pypi.org", port: 443, intent: USER_INTENT }))
       .toMatchObject({ ok: false, error: "not-found" });
   });
 
@@ -1737,14 +1742,18 @@ describe("shell egress grants in Settings", () => {
     for (const [payload, error] of [
       [{ scope: "once", host: "pypi.org", port: 443 }, "invalid-egress-grant-scope"],
       [{ scope: "conversation", host: "pypi.org", port: 443 }, "invalid-egress-grant-conversation"],
-      [{ scope: "always", sessionId: "s", host: "pypi.org", port: 443 }, "invalid-egress-grant-conversation"],
-      [{ scope: "always", host: "", port: 443 }, "invalid-egress-grant-destination"],
-      [{ scope: "always", host: "pypi.org", port: "443" }, "invalid-egress-grant-destination"],
-      [{ scope: "workspace", host: "pypi.org", port: 443 }, "invalid-egress-grant-workspace"],
-      [{ scope: "always", workspaceRoot: "/w", host: "pypi.org", port: 443 }, "invalid-egress-grant-workspace"],
+      [{ scope: "always", origin: "shell", sessionId: "s", host: "pypi.org", port: 443 }, "invalid-egress-grant-conversation"],
+      [{ scope: "always", origin: "shell", host: "", port: 443 }, "invalid-egress-grant-destination"],
+      [{ scope: "always", origin: "shell", host: "pypi.org", port: "443" }, "invalid-egress-grant-destination"],
+      [{ scope: "workspace", origin: "shell", host: "pypi.org", port: 443 }, "invalid-egress-grant-workspace"],
+      [{ scope: "always", origin: "shell", workspaceRoot: "/w", host: "pypi.org", port: 443 }, "invalid-egress-grant-workspace"],
+      [{ scope: "always", host: "pypi.org", port: 443 }, "invalid-egress-grant-origin"],
+      [{ scope: "always", origin: "worker", host: "pypi.org", port: 443 }, "invalid-egress-grant-origin"],
+      [{ scope: "workspace", origin: "terminal", workspaceRoot: "/w", host: "pypi.org", port: 443 }, "invalid-egress-grant-origin"],
+      [{ scope: "conversation", origin: "shell", sessionId: "s", host: "pypi.org", port: 443 }, "invalid-egress-grant-origin"],
       [{ scope: "tab", host: "pypi.org", port: 443 }, "invalid-egress-grant-tab"],
       [{ scope: "tab", tabId: "browser:0a1b2c3d-1", host: "pypi.org", port: 443 }, "invalid-egress-grant-tab"],
-      [{ scope: "always", tabId: "terminal:0a1b2c3d-1", host: "pypi.org", port: 443 }, "invalid-egress-grant-tab"],
+      [{ scope: "always", origin: "terminal", tabId: "terminal:0a1b2c3d-1", host: "pypi.org", port: 443 }, "invalid-egress-grant-tab"],
     ] as const) {
       expect(await invoke(PERMISSIONS.egressGrantRevoke, { ...payload, intent: USER_INTENT })).toMatchObject({ ok: false, error });
     }

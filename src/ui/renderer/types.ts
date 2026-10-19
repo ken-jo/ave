@@ -1622,6 +1622,7 @@ export type AvePermissionApi = {
     scope: "conversation" | "tab" | "workspace" | "always";
     host: string;
     port: number;
+    origin?: "shell" | "terminal";
     workspaceRoot?: string;
     sessionId?: string;
     tabId?: string;

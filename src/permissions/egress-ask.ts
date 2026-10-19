@@ -154,83 +154,110 @@ export function egressAllowlistMatches(entries: readonly string[], destination: 
 /** Who a grant for this owner is held for. */
 function grantSubject(token: string, owner: ShellEgressOwner | TerminalEgressOwner): EgressGrantSubject {
   return owner.kind === "shell"
-    ? { token, sessionId: owner.context.sessionId, tabId: undefined, workspaceRoot: owner.context.workspaceRoot }
-    : { token, sessionId: undefined, tabId: owner.tabId, workspaceRoot: owner.workspaceRoot };
+    ? { token, sessionId: owner.context.sessionId, tabId: undefined, workspaceRoot: owner.context.workspaceRoot, origin: "shell" }
+    : { token, sessionId: undefined, tabId: owner.tabId, workspaceRoot: undefined, origin: "terminal" };
 }
 
+/** A terminal connection whose shared "Allow once" another connection already took: it asks again. */
+const ASK_AGAIN = Symbol("ask-again");
+
 export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback {
-  const pendingAsks = new Map<string, Promise<Decision>>();
+  /**
+   * The ask in flight per (invocation, destination). `onceTaken` marks a
+   * terminal's "Allow once" as spent: it lets exactly one connection through.
+   */
+  const pendingAsks = new Map<string, { readonly answer: Promise<Decision>; onceTaken: boolean }>();
   const now = deps.now ?? (() => new Date());
   const terminalAskTimeoutMs = deps.terminalAskTimeoutMs ?? TERMINAL_EGRESS_ASK_TIMEOUT_MS;
 
-  const ask = (
+  const ask = async (
+    token: string,
+    owner: ShellEgressOwner | TerminalEgressOwner,
+    destination: EgressDestination,
+    network: Exclude<EgressDestinationNetwork, "reserved">,
+  ): Promise<Decision | typeof ASK_AGAIN> => {
+    // One card (or banner) per (invocation, destination): a client that opens
+    // several connections to one host while it is up waits on the same answer.
+    // A terminal tab's shell is one invocation, so this coalesces per tab.
+    const key = `${token}\n${destination.host}\n${destination.port}`;
+    let pending = pendingAsks.get(key);
+    if (pending === undefined) {
+      const entry = { answer: startAsk(token, owner, destination, network).finally(() => pendingAsks.delete(key)), onceTaken: false };
+      pendingAsks.set(key, entry);
+      pending = entry;
+    }
+    const decision = await pending.answer;
+    // A terminal's "Allow once" is one connection, never a standing grant: the
+    // first waiter takes it, any other connection that waited on the same
+    // banner goes back to asking.
+    if (owner.kind === "terminal" && decision.allow && decision.scope === "once") {
+      if (pending.onceTaken) return ASK_AGAIN;
+      pending.onceTaken = true;
+    }
+    return decision;
+  };
+
+  const startAsk = async (
     token: string,
     owner: ShellEgressOwner | TerminalEgressOwner,
     destination: EgressDestination,
     network: Exclude<EgressDestinationNetwork, "reserved">,
   ): Promise<Decision> => {
-    // One card (or banner) per (invocation, destination): a client that opens
-    // several connections to one host while it is up waits on the same answer.
-    // A terminal tab's shell is one invocation, so this coalesces per tab.
-    const key = `${token}\n${destination.host}\n${destination.port}`;
-    const pending = pendingAsks.get(key);
-    if (pending !== undefined) return pending;
-    const asking = (async (): Promise<Decision> => {
-      const requester = deps.requester();
-      if (requester === undefined) return deny("prompt", EGRESS_DENY_REASONS.noSurface);
-      const subject = grantSubject(token, owner);
-      const origin: EgressAskOrigin = owner.kind;
-      // Terminals are confined through the same per-invocation listener as
-      // shell tool calls, so their identity is as strong.
-      const scopes = egressScopesForNetwork(egressGrantScopesFor(deps.identityStrength("shell"), origin), network).filter((scope) =>
-        scope === "conversation" ? subject.sessionId !== undefined
-        : scope === "tab" ? subject.tabId !== undefined
-        : scope === "workspace" ? subject.workspaceRoot !== undefined
-        : true);
-      let answer: EgressApprovalAnswer;
-      if (owner.kind === "shell") {
+    const requester = deps.requester();
+    if (requester === undefined) return deny("prompt", EGRESS_DENY_REASONS.noSurface);
+    const subject = grantSubject(token, owner);
+    const origin: EgressAskOrigin = owner.kind;
+    // Terminals are confined through the same per-invocation listener as
+    // shell tool calls, so their identity is as strong.
+    const scopes = egressScopesForNetwork(egressGrantScopesFor(deps.identityStrength("shell"), origin), network).filter((scope) =>
+      scope === "conversation" ? subject.sessionId !== undefined
+      : scope === "tab" ? subject.tabId !== undefined
+      : scope === "workspace" ? subject.workspaceRoot !== undefined
+      : true);
+    let answer: EgressApprovalAnswer;
+    if (owner.kind === "shell") {
+      answer = await requester({
+        origin: "shell",
+        sessionId: owner.context.sessionId,
+        toolName: owner.toolName,
+        toolUseId: owner.toolUseId,
+        destination,
+        scopes,
+        network,
+        abortSignal: deps.abortSignalOf(token),
+      });
+    } else {
+      // The banner holds the connection for a bounded time, then denies; the
+      // tab closing (its shell's signal) ends it at once.
+      const expiry = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        expiry.abort(new Error(EGRESS_DENY_REASONS.terminalTimeout));
+      }, terminalAskTimeoutMs);
+      const tabSignal = deps.abortSignalOf(token);
+      try {
         answer = await requester({
-          origin: "shell",
-          sessionId: owner.context.sessionId,
-          toolName: owner.toolName,
-          toolUseId: owner.toolUseId,
+          origin: "terminal",
+          tabId: owner.tabId,
           destination,
           scopes,
           network,
-          abortSignal: deps.abortSignalOf(token),
+          abortSignal: tabSignal === undefined ? expiry.signal : AbortSignal.any([tabSignal, expiry.signal]),
         });
-      } else {
-        // The banner holds the connection for a bounded time, then denies; the
-        // tab closing (its shell's signal) ends it at once.
-        const expiry = new AbortController();
-        let timedOut = false;
-        const timer = setTimeout(() => {
-          timedOut = true;
-          expiry.abort(new Error(EGRESS_DENY_REASONS.terminalTimeout));
-        }, terminalAskTimeoutMs);
-        const tabSignal = deps.abortSignalOf(token);
-        try {
-          answer = await requester({
-            origin: "terminal",
-            tabId: owner.tabId,
-            destination,
-            scopes,
-            network,
-            abortSignal: tabSignal === undefined ? expiry.signal : AbortSignal.any([tabSignal, expiry.signal]),
-          });
-        } finally {
-          clearTimeout(timer);
-        }
-        if (timedOut && !answer.allow) answer = { allow: false, reason: EGRESS_DENY_REASONS.terminalTimeout };
+      } finally {
+        clearTimeout(timer);
       }
-      if (!answer.allow) return deny("prompt", answer.reason);
-      // A scope the card did not offer is the requester's bug, not a grant.
-      await deps.grants.grant(answer.scope, scopes, subject, destination);
-      deps.grants.noteUse(answer.scope, subject, destination);
-      return allow("prompt", answer.scope);
-    })().finally(() => pendingAsks.delete(key));
-    pendingAsks.set(key, asking);
-    return asking;
+      if (timedOut && !answer.allow) answer = { allow: false, reason: EGRESS_DENY_REASONS.terminalTimeout };
+    }
+    if (!answer.allow) return deny("prompt", answer.reason);
+    // A scope the card did not offer is the requester's bug, not a grant.
+    if (!scopes.includes(answer.scope)) throw new Error(`egress grant: scope ${answer.scope} was not offered`);
+    // A terminal's "Allow once" is spent on the connection that asked; it is never held.
+    if (owner.kind === "terminal" && answer.scope === "once") return allow("prompt", "once");
+    await deps.grants.grant(answer.scope, scopes, subject, destination);
+    deps.grants.noteUse(answer.scope, subject, destination);
+    return allow("prompt", answer.scope);
   };
 
   const decide = async (
@@ -279,20 +306,23 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       case "terminal":
       case "shell": {
         const subject = grantSubject(token, owner);
-        const matched = await deps.grants.matchingScope(subject, destination);
-        // A persistent grant never covers a local or private destination (none
-        // is offered for one; this also holds for a hand-edited file).
-        const granted = matched !== undefined && egressScopesForNetwork([matched], network).length > 0 ? matched : undefined;
-        if (granted !== undefined) {
-          deps.grants.noteUse(granted, subject, destination);
-          return { owner, decision: allow("grant", granted) };
+        for (;;) {
+          const matched = await deps.grants.matchingScope(subject, destination);
+          // A persistent grant never covers a local or private destination (none
+          // is offered for one; this also holds for a hand-edited file).
+          const granted = matched !== undefined && egressScopesForNetwork([matched], network).length > 0 ? matched : undefined;
+          if (granted !== undefined) {
+            deps.grants.noteUse(granted, subject, destination);
+            return { owner, decision: allow("grant", granted) };
+          }
+          if (!deps.shellAskEnabled()) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.askOff) };
+          // A terminal is always in the foreground lane; a shell call says.
+          if (owner.kind === "shell" && owner.context.approvalSurface !== "interactive") {
+            return { owner, decision: deny("policy", EGRESS_DENY_REASONS.headless) };
+          }
+          const decision = await ask(token, owner, destination, network);
+          if (decision !== ASK_AGAIN) return { owner, decision };
         }
-        if (!deps.shellAskEnabled()) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.askOff) };
-        // A terminal is always in the foreground lane; a shell call says.
-        if (owner.kind === "shell" && owner.context.approvalSurface !== "interactive") {
-          return { owner, decision: deny("policy", EGRESS_DENY_REASONS.headless) };
-        }
-        return { owner, decision: await ask(token, owner, destination, network) };
       }
     }
   };

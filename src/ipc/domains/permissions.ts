@@ -398,7 +398,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
-    const { scope, host, port, workspaceRoot, sessionId, tabId } = body;
+    const { scope, origin, host, port, workspaceRoot, sessionId, tabId } = body;
     if (scope !== "conversation" && scope !== "tab" && scope !== "workspace" && scope !== "always") {
       return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be conversation, tab, workspace or always" };
     }
@@ -414,19 +414,25 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (scope === "tab" ? typeof tabId !== "string" || !isTerminalTabId(tabId) : tabId !== undefined) {
       return { ok: false, error: "invalid-egress-grant-tab", message: "revoke: a tab grant names its terminal tabId, no other grant does" };
     }
+    const persistent = scope === "workspace" || scope === "always";
+    if (persistent
+      ? (scope === "workspace" ? origin !== "shell" : origin !== "shell" && origin !== "terminal")
+      : origin !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-origin", message: "revoke: a workspace or always grant names its origin (shell, or terminal for always), no other grant does" };
+    }
     const { revokeEgressGrant } = await import("../../permissions/egress-runtime.js");
     try {
       const { removed, closed } = await revokeEgressGrant(
         scope === "conversation" ? { scope, sessionId: sessionId as string, host, port }
         : scope === "tab" ? { scope, tabId: tabId as string, host, port }
-        : scope === "workspace" ? { scope, workspaceRoot: workspaceRoot as string, host, port }
-        : { scope, host, port },
+        : scope === "workspace" ? { scope, origin: "shell", workspaceRoot: workspaceRoot as string, host, port }
+        : { scope, origin: origin as "shell" | "terminal", host, port },
       );
       auditLogger.log({
         timestamp: new Date().toISOString(),
         sessionId: "settings",
         type: "approval",
-        output: `[egress-grant:revoke] scope=${scope} host=${host} port=${port} removed=${removed} closedConnections=${closed}`,
+        output: `[egress-grant:revoke] scope=${scope}${persistent ? ` origin=${String(origin)}` : ""} host=${host} port=${port} removed=${removed} closedConnections=${closed}`,
       });
       return removed ? { ok: true } : { ok: false, error: "not-found", message: "revoke: no such grant" };
     } catch (error) {
@@ -545,7 +551,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       const nativeRenderer = e.senderFrame === e.sender?.mainFrame &&
         windows.some((window) => window?.webContents === e.sender);
       honoredDecision = nativeRenderer
-        ? approvalGate.resolveFromDesktopRenderer(decision.requestId, decision)
+        ? approvalGate.resolveFromDesktopRenderer(decision.requestId, decision, e.sender)
         : approvalGate.resolve(decision.requestId, decision);
     }
     if (honoredDecision) {

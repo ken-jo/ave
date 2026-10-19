@@ -5,6 +5,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import { EgressHostApprovalCard } from "../permissions/EgressHostApprovalCard.js";
 import { EgressGrantsList } from "../permissions/EgressGrantsList.js";
+import { noteTerminalTabLabel } from "../../preview/terminal-tab-labels.js";
 import type { ApprovalRequest } from "../../types.js";
 import type { ConversationEgressGrant, ListedEgressGrant, PersistentEgressGrant, TabEgressGrant } from "../../../../shared/egress-grant-scopes.js";
 
@@ -111,9 +112,9 @@ describe("EgressGrantsList", () => {
   afterEach(() => { setLocale(previousLocale); });
 
   const workspaceGrant: PersistentEgressGrant = {
-    scope: "workspace", workspaceRoot: "/work/project", host: "pypi.org", port: 443, grantedAt: "2026-10-19T01:00:00.000Z",
+    scope: "workspace", origin: "shell", workspaceRoot: "/work/project", host: "pypi.org", port: 443, grantedAt: "2026-10-19T01:00:00.000Z",
   };
-  const alwaysGrant: PersistentEgressGrant = { scope: "always", host: "github.com", port: 443, grantedAt: "2026-10-19T02:00:00.000Z" };
+  const alwaysGrant: PersistentEgressGrant = { scope: "always", origin: "terminal", host: "github.com", port: 443, grantedAt: "2026-10-19T02:00:00.000Z" };
 
   it("lists persistent grants and revokes the one picked", async () => {
     let grants = [workspaceGrant, alwaysGrant];
@@ -126,9 +127,10 @@ describe("EgressGrantsList", () => {
     await waitFor(() => expect(screen.getAllByTestId("egress-grant-row")).toHaveLength(2));
     const text = screen.getByTestId("egress-grants").textContent ?? "";
     expect(text).toContain("pypi.org:443");
-    expect(text).toContain("Workspace /work/project");
+    // Each persistent grant names the only origin it covers.
+    expect(text).toContain("Agent shell calls · Workspace /work/project");
     expect(text).toContain("github.com:443");
-    expect(text).toContain("All workspaces");
+    expect(text).toContain("Workspace terminals · All workspaces");
     fireEvent.click(screen.getAllByTestId("egress-grant-revoke")[1]!);
     await waitFor(() => expect(screen.getAllByTestId("egress-grant-row")).toHaveLength(1));
     expect(revoker).toHaveBeenCalledWith(alwaysGrant);
@@ -155,6 +157,22 @@ describe("EgressGrantsList", () => {
     }
   });
 
+  it("revokes a persistent grant by its origin too", async () => {
+    let grants: PersistentEgressGrant[] = [alwaysGrant];
+    const egressGrantRevoke = vi.fn(async () => { grants = []; return { ok: true, removed: true, closed: 0 }; });
+    const previous = (window as { ave?: unknown }).ave;
+    (window as { ave?: unknown }).ave = { permission: { egressGrantsList: async () => ({ ok: true, grants }), egressGrantRevoke } };
+    try {
+      render(<EgressGrantsList />);
+      await screen.findByTestId("egress-grant-row");
+      fireEvent.click(screen.getByTestId("egress-grant-revoke"));
+      await screen.findByTestId("egress-grants-empty");
+      expect(egressGrantRevoke).toHaveBeenCalledWith({ scope: "always", origin: "terminal", host: "github.com", port: 443 });
+    } finally {
+      (window as { ave?: unknown }).ave = previous;
+    }
+  });
+
   it("lists a terminal tab grant and revokes it by its tab", async () => {
     const tabGrant: TabEgressGrant = {
       scope: "tab", tabId: "terminal:0a1b2c3d-1", host: "github.com", port: 443, grantedAt: "2026-10-20T03:00:00.000Z",
@@ -167,13 +185,25 @@ describe("EgressGrantsList", () => {
       render(<EgressGrantsList />);
       const row = await screen.findByTestId("egress-grant-row");
       expect(row.textContent).toContain("github.com:443");
-      expect(row.textContent).toContain("Terminal tab terminal:0a1b2c3d-1 · until the tab closes");
+      // A tab this window never showed is named as elsewhere, never by its raw id.
+      expect(row.textContent).toContain("Terminal tab in another window · until its shell exits");
+      expect(row.textContent).not.toContain("terminal:0a1b2c3d-1");
       fireEvent.click(screen.getByTestId("egress-grant-revoke"));
       await screen.findByTestId("egress-grants-empty");
       expect(egressGrantRevoke).toHaveBeenCalledWith({ scope: "tab", host: "github.com", port: 443, tabId: "terminal:0a1b2c3d-1" });
     } finally {
       (window as { ave?: unknown }).ave = previous;
     }
+  });
+
+  it("names a tab this window shows by its visible name", async () => {
+    noteTerminalTabLabel("terminal:0a1b2c3d-4", "Terminal 2");
+    const tabGrant: TabEgressGrant = {
+      scope: "tab", tabId: "terminal:0a1b2c3d-4", host: "github.com", port: 443, grantedAt: "2026-10-20T03:00:00.000Z",
+    };
+    render(<EgressGrantsList fetcher={async () => ({ ok: true, grants: [tabGrant] })} />);
+    const row = await screen.findByTestId("egress-grant-row");
+    expect(row.textContent).toContain("Terminal tab Terminal 2 · until its shell exits");
   });
 
   it("says when nothing is granted", async () => {

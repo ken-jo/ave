@@ -215,6 +215,14 @@ describe("main windows", () => {
       const owned = gate.requestAndWait(egressAsk("egress-owned", "terminal:0a1b2c3d-1"));
       expect(second.webContents.send).toHaveBeenCalledWith("ave:approval:request", expect.objectContaining({ id: "egress-owned" }));
       expect(first.webContents.send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
+      // A reloaded window refetching pending asks gets only its own tabs'; an
+      // answer from the other window is ignored and the ask stays pending.
+      expect(gate.listPendingRendererRequests(first.webContents as never).map((r) => r.id)).toEqual([]);
+      const [card] = gate.listPendingRendererRequests(second.webContents as never);
+      expect(card?.id).toBe("egress-owned");
+      const decision = { requestId: "egress-owned", choice: "allow-once" as const, egressScope: "once" as const, nonce: card!.nonce, hmac: card!.hmac };
+      expect(gate.resolveFromDesktopRenderer("egress-owned", decision, first.webContents as never)).toBeNull();
+      expect(gate.listPendingRendererRequests(second.webContents as never).map((r) => r.id)).toEqual(["egress-owned"]);
       // A tab no live window owns is denied, not shown somewhere else.
       const orphan = await gate.requestAndWait(egressAsk("egress-orphan", "terminal:0a1b2c3d-9"));
       expect(orphan.choice).toBe("deny-once");

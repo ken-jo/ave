@@ -6,15 +6,18 @@
  *
  *   | Scope          | Held                                   | Lifetime                         |
  *   |----------------|----------------------------------------|----------------------------------|
- *   | `once`         | per invocation token, in memory        | until that tool call (or the tab's shell) ends |
+ *   | `once`         | per invocation token, in memory        | until that tool call ends; a terminal's is never held (one connection) |
  *   | `conversation` | per conversation (session id), memory  | until the app restarts           |
- *   | `tab`          | per terminal tab (tab id), memory      | until the tab's shell ends (the tab closes) |
+ *   | `tab`          | per terminal tab (tab id), memory      | until the tab's shell exits (closed, or exited and respawned) |
  *   | `workspace`    | per working directory, on disk         | until revoked in Settings        |
  *   | `always`       | every workspace, on disk               | until revoked in Settings        |
  *
- * Tool calls are offered `conversation`, terminals `tab`
- * (`EGRESS_GRANT_SCOPE_LADDERS`); a subject only ever matches the grants of
- * its own kind for those two, and the workspace and always grants of both.
+ * Tool calls are offered once, conversation, workspace and always; terminals
+ * once, tab and always (`EGRESS_GRANT_SCOPE_LADDERS`). A persistent grant
+ * records its origin (`shell` or `terminal`) and only ever covers a subject
+ * of that origin: a terminal's Always never lets an agent's shell call
+ * through, nor the reverse. Working directories are compared after
+ * `canonicalizePathForMatch`, the canonicalizer the sandbox jails use.
  *
  * A grant names one destination, `host:port`, with the host canonicalised
  * the way a client's request is (lower case, no trailing dot, IPv6 without
@@ -44,6 +47,7 @@ import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { aveHome } from "../shared/ave-home.js";
+import { canonicalizePathForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { maxEgressGrantScope, type EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
 import {
   EGRESS_GRANT_SCOPE_LADDERS,
@@ -61,16 +65,16 @@ import {
  * attribution is this strong, narrowest first. A shared identity (Windows
  * srt-win: one account, one port range) can be presented by another
  * invocation, so a grant there must not outlive the conversation (for a
- * terminal: the tab) that made it. The two ladders differ only in their
- * second rung, so one cap applies to both.
+ * terminal: the tab) that made it: the cap keeps the in-memory rungs only.
  */
 export function egressGrantScopesFor(
   strength: EgressIdentityStrength,
   origin: EgressAskOrigin = "shell",
 ): readonly EgressGrantScope[] {
-  const cap = EGRESS_GRANT_SCOPE_LADDERS.shell.indexOf(maxEgressGrantScope(strength));
-  if (cap < 0) throw new Error(`egress grant: ${maxEgressGrantScope(strength)} is not on the shell ladder`);
-  return EGRESS_GRANT_SCOPE_LADDERS[origin].slice(0, cap + 1);
+  const cap = maxEgressGrantScope(strength);
+  if (cap === "always") return EGRESS_GRANT_SCOPE_LADDERS[origin];
+  if (cap !== "conversation") throw new Error(`egress grant: unsupported scope cap ${cap}`);
+  return EGRESS_GRANT_SCOPE_LADDERS[origin].filter((scope) => !isPersistentScope(scope));
 }
 
 /** One destination: a canonical host and a port. */
@@ -207,8 +211,15 @@ export interface EgressGrantSubject {
   readonly sessionId: string | undefined;
   /** The terminal tab ("This tab"); undefined for a shell tool call. */
   readonly tabId: string | undefined;
-  /** The working directory "This workspace" keys on; undefined when unknown. */
+  /** The working directory "This workspace" keys on; undefined when unknown, and always for a terminal. */
   readonly workspaceRoot: string | undefined;
+  /** Which kind of process asks: the only origin whose persistent grants it matches or makes. */
+  readonly origin: EgressAskOrigin;
+}
+
+/** A working directory in the one form grants are stored and compared in. */
+function canonicalWorkspaceRoot(path: string): string {
+  return canonicalizePathForMatch(path);
 }
 
 export class EgressGrantFileError extends Error {
@@ -247,10 +258,14 @@ function parseGrant(path: string, entry: unknown, index: number): PersistentEgre
     throw new EgressGrantFileError(path, `grants[${index}] ${problem}`);
   };
   if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return fail("is not an object");
-  const { scope, workspaceRoot, host, port, grantedAt, ...extra } = entry as Record<string, unknown>;
+  const { scope, origin, workspaceRoot, host, port, grantedAt, ...extra } = entry as Record<string, unknown>;
   if (Object.keys(extra).length > 0) return fail(`has unknown field ${Object.keys(extra)[0]}`);
   if (scope !== "workspace" && scope !== "always") return fail("has a scope that is neither workspace nor always");
-  if (scope === "workspace" && (typeof workspaceRoot !== "string" || resolve(workspaceRoot) !== workspaceRoot)) {
+  if (origin !== "shell" && origin !== "terminal") return fail("has an origin that is neither shell nor terminal");
+  if (scope === "workspace" && origin !== "shell") return fail("is a workspace grant not made by a shell call");
+  // Shape only: the path is not resolved on disk here, so a directory that
+  // moved later just stops matching instead of making the file unreadable.
+  if (scope === "workspace" && (typeof workspaceRoot !== "string" || foldCanonicalPathSeparators(resolve(workspaceRoot)) !== workspaceRoot)) {
     return fail("is a workspace grant without an absolute, normalised workspaceRoot");
   }
   if (scope === "always" && workspaceRoot !== undefined) return fail("is an always grant with a workspaceRoot");
@@ -258,8 +273,8 @@ function parseGrant(path: string, entry: unknown, index: number): PersistentEgre
   if (!isValidEgressPort(port)) return fail("has an invalid port");
   if (typeof grantedAt !== "string" || Number.isNaN(Date.parse(grantedAt))) return fail("has an invalid grantedAt");
   return scope === "workspace"
-    ? { scope, workspaceRoot: workspaceRoot as string, host, port, grantedAt }
-    : { scope, host, port, grantedAt };
+    ? { scope, origin, workspaceRoot: workspaceRoot as string, host, port, grantedAt }
+    : { scope, origin, host, port, grantedAt };
 }
 
 function defaultEgressGrantFilePath(): string {
@@ -271,7 +286,7 @@ function defaultEgressGrantFilePath(): string {
 function grantUseKey(grant: RevocableEgressGrant): string {
   const owner = grant.scope === "conversation" ? grant.sessionId
     : grant.scope === "tab" ? grant.tabId
-    : grant.scope === "workspace" ? grant.workspaceRoot ?? "" : "";
+    : grant.scope === "workspace" ? `${grant.origin}\n${grant.workspaceRoot ?? ""}` : grant.origin;
   return `${grant.scope}\n${owner}\n${grant.host} ${grant.port}`;
 }
 
@@ -303,15 +318,12 @@ export class EgressGrantStore {
     if (this.once.get(subject.token)?.has(key)) return "once";
     if (subject.sessionId !== undefined && this.conversation.get(subject.sessionId)?.has(key)) return "conversation";
     if (subject.tabId !== undefined && this.tab.get(subject.tabId)?.has(key)) return "tab";
-    const persistent = await this.loadPersistent();
-    const workspaceRoot = subject.workspaceRoot === undefined ? undefined : resolve(subject.workspaceRoot);
-    for (const grant of persistent) {
-      if (grant.host !== destination.host || grant.port !== destination.port) continue;
-      if (grant.scope === "workspace" && grant.workspaceRoot === workspaceRoot && workspaceRoot !== undefined) return "workspace";
-    }
-    for (const grant of persistent) {
-      if (grant.host === destination.host && grant.port === destination.port && grant.scope === "always") return "always";
-    }
+    // Persistent grants of the subject's own origin only.
+    const persistent = (await this.loadPersistent()).filter((grant) =>
+      grant.origin === subject.origin && grant.host === destination.host && grant.port === destination.port);
+    const workspaceRoot = subject.workspaceRoot === undefined ? undefined : canonicalWorkspaceRoot(subject.workspaceRoot);
+    if (workspaceRoot !== undefined && persistent.some((g) => g.scope === "workspace" && g.workspaceRoot === workspaceRoot)) return "workspace";
+    if (persistent.some((g) => g.scope === "always")) return "always";
     return undefined;
   }
 
@@ -335,6 +347,8 @@ export class EgressGrantStore {
     const key = destinationKey(destination);
     switch (scope) {
       case "once":
+        // A terminal's "Allow once" lets one connection through and is never held.
+        if (subject.tabId !== undefined) throw new Error("egress grant: a terminal tab's Allow once is not held");
         addTo(this.once, subject.token, key);
         return;
       case "conversation":
@@ -346,20 +360,23 @@ export class EgressGrantStore {
         addGrant(this.tab, subject.tabId, key, now);
         return;
       case "workspace": {
+        if (subject.origin !== "shell") throw new Error("egress grant: only a shell call can hold a workspace grant");
         if (subject.workspaceRoot === undefined) throw new Error("egress grant: no workspace to grant for");
-        const workspaceRoot = resolve(subject.workspaceRoot);
+        const workspaceRoot = canonicalWorkspaceRoot(subject.workspaceRoot);
         await this.mutatePersistent((grants) => {
-          if (grants.some((g) => g.scope === "workspace" && g.workspaceRoot === workspaceRoot && g.host === destination.host && g.port === destination.port)) return grants;
-          return [...grants, { scope: "workspace", workspaceRoot, host: destination.host, port: destination.port, grantedAt: now.toISOString() }];
+          if (grants.some((g) => g.scope === "workspace" && g.origin === "shell" && g.workspaceRoot === workspaceRoot && g.host === destination.host && g.port === destination.port)) return grants;
+          return [...grants, { scope: "workspace", origin: "shell", workspaceRoot, host: destination.host, port: destination.port, grantedAt: now.toISOString() }];
         });
         return;
       }
-      case "always":
+      case "always": {
+        const origin = subject.origin;
         await this.mutatePersistent((grants) => {
-          if (grants.some((g) => g.scope === "always" && g.host === destination.host && g.port === destination.port)) return grants;
-          return [...grants, { scope: "always", host: destination.host, port: destination.port, grantedAt: now.toISOString() }];
+          if (grants.some((g) => g.scope === "always" && g.origin === origin && g.host === destination.host && g.port === destination.port)) return grants;
+          return [...grants, { scope: "always", origin, host: destination.host, port: destination.port, grantedAt: now.toISOString() }];
         });
         return;
+      }
     }
   }
 
@@ -383,10 +400,10 @@ export class EgressGrantStore {
         break;
       case "workspace":
         if (subject.workspaceRoot === undefined) return;
-        grant = { scope, workspaceRoot: resolve(subject.workspaceRoot), host: destination.host, port: destination.port };
+        grant = { scope, origin: subject.origin, workspaceRoot: canonicalWorkspaceRoot(subject.workspaceRoot), host: destination.host, port: destination.port };
         break;
       case "always":
-        grant = { scope, host: destination.host, port: destination.port };
+        grant = { scope, origin: subject.origin, host: destination.host, port: destination.port };
         break;
     }
     addTo(this.uses, grantUseKey(grant), subject.token);
@@ -456,11 +473,11 @@ export class EgressGrantStore {
   }
 
   /** Remove one persistent grant. Resolves true when it existed. */
-  private async revokePersistent(target: Pick<PersistentEgressGrant, "scope" | "host" | "port" | "workspaceRoot">): Promise<boolean> {
+  private async revokePersistent(target: Pick<PersistentEgressGrant, "scope" | "origin" | "host" | "port" | "workspaceRoot">): Promise<boolean> {
     let removed = false;
     await this.mutatePersistent((grants) => {
       const kept = grants.filter((g) => {
-        const same = g.scope === target.scope && g.host === target.host && g.port === target.port &&
+        const same = g.scope === target.scope && g.origin === target.origin && g.host === target.host && g.port === target.port &&
           (g.scope === "always" || g.workspaceRoot === target.workspaceRoot);
         if (same) removed = true;
         return !same;

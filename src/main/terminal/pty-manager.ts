@@ -213,7 +213,11 @@ function resolveLoginShell(): string {
  * as {@link deriveSandboxWritePaths} so the validated path and the derived jail
  * see bit-identical strings.
  */
-/** The workspace root every terminal is anchored to (its write-jail and its "This workspace" egress grants). */
+/**
+ * The workspace root every terminal is anchored to (its write-jail): the app's
+ * one default workspace, shared with agent shell calls, which is why a
+ * terminal's egress ask offers no "This workspace".
+ */
 function terminalWorkspaceRoot(): string {
   return canonicalizePathForMatch(process.cwd());
 }
@@ -544,7 +548,7 @@ async function spawnNewTerminal(
     // (the shell ended: the tab closed) drops the tab's "This tab" grants.
     const egressAbort = new AbortController();
     const egress = openEgressInvocation(
-      { kind: "terminal", tabId, workspaceRoot: terminalWorkspaceRoot() },
+      { kind: "terminal", tabId },
       { abortSignal: egressAbort.signal },
     );
     const releaseEgress = addCleanup(() => {
