@@ -31,7 +31,7 @@
  * while the panel is closed or another tab is up they wait here, and the
  * window marks the way to them (see `pendingAnswers`).
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ChevronDown, Plus } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
@@ -58,6 +58,8 @@ import { useWorkflowTools } from "../hooks/use-workflow-tools.js";
 import { ApprovalDock } from "./permissions/ApprovalDock.js";
 import { QuestionOverlay } from "./QuestionOverlay.js";
 import { sessionOwnedBy } from "./chat-group-session-registry.js";
+import { formatIpcError } from "../format-ipc-error.js";
+import { errorMessage } from "../../../shared/error-message.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../shared/processing-display-level.js";
 
 /**
@@ -112,6 +114,11 @@ interface SideChatViewProps {
   boundSurface?: BoundSurface | undefined;
   /** The model readiness for a chat with no conversation tile around it. */
   runtime?: SideChatRuntime | undefined;
+  /**
+   * What a chat that is not a pane's acts on, drawn above its composer (the
+   * rail's chip for the window's active terminal or page).
+   */
+  targetChip?: ReactNode;
   /** A stored side chat this panel has been asked to show. */
   openRequest?: SideChatOpenRequest | undefined;
   /**
@@ -143,7 +150,7 @@ interface SideChatViewProps {
   chatGroupId?: string | undefined;
 }
 
-export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSessionIdChange, onSessionClaim, chatGroupId, boundSurface, runtime }: SideChatViewProps) {
+export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSessionIdChange, onSessionClaim, chatGroupId, boundSurface, runtime, targetChip }: SideChatViewProps) {
   const { t } = useTranslation();
   // If side chat is unavailable (preload without the surface), surface a stable
   // disabled state rather than a broken composer.
@@ -170,6 +177,7 @@ export function SideChatView({ api, openRequest, onSessionsChanged, shown = true
       chatGroupId={chatGroupId}
       boundSurface={boundSurface}
       runtime={runtime}
+      targetChip={targetChip}
     />
   );
 }
@@ -185,6 +193,7 @@ function SideChatSession({
   chatGroupId,
   boundSurface,
   runtime: runtimeProp,
+  targetChip,
 }: SideChatViewProps & { sideChat: NonNullable<AveApi["sideChat"]>; shown: boolean }) {
   const { t } = useTranslation();
   const chatContext = useOptionalChatContext();
@@ -246,9 +255,48 @@ function SideChatSession({
     send,
     newSession,
     loadSession,
+    restore,
+    clear,
     abort,
     isCurrentTurnEvent,
   } = useSideChat(api, { onSessionBound: handleSessionBound });
+  // A pane chat is its pane's conversation: it opens on what the pane already
+  // said, read without moving the side loop, and "New" ends it for the pane
+  // instead of switching the loop under another view's turn.
+  const paneTabId = boundSurface?.tabId;
+  const [paneError, setPaneError] = useState<string | null>(null);
+  useEffect(() => {
+    if (paneTabId === undefined) return undefined;
+    let current = true;
+    void sideChat.paneHistory(paneTabId).then((res) => {
+      if (!current) return;
+      if (!res.ok) setPaneError(formatIpcError(res.error, undefined));
+      else if (res.sessionId !== null) restore(res.sessionId, res.messages);
+    }, (err: unknown) => {
+      if (current) setPaneError(errorMessage(err));
+    });
+    return () => {
+      current = false;
+    };
+  }, [sideChat, paneTabId, restore]);
+  const startNew = useCallback(async () => {
+    if (paneTabId === undefined) {
+      await newSession();
+      return;
+    }
+    try {
+      const res = await sideChat.endPaneChat(paneTabId, "new");
+      if (!res.ok) {
+        setPaneError(formatIpcError(res.error, undefined));
+        return;
+      }
+      setPaneError(null);
+      clear();
+    } catch (err) {
+      setPaneError(errorMessage(err));
+    }
+    void onSessionsChanged?.();
+  }, [sideChat, paneTabId, newSession, clear, onSessionsChanged]);
   const tileHidden = chatContext?.hidden === true;
   // Late session-mutation replies cannot restore a claim after teardown.
   useLayoutEffect(() => {
@@ -472,7 +520,7 @@ function SideChatSession({
           variant="ghost"
           size="sm"
           className="h-6 gap-1 px-1.5 text-[11px]"
-          onClick={() => void newSession()}
+          onClick={() => void startNew()}
           // Disabled mid-stream: starting a new session mutates the shared side
           // loop; the main handler aborts the in-flight turn first, but blocking
           // the affordance avoids the surprising "New drops my streaming reply".
@@ -491,6 +539,9 @@ function SideChatSession({
         className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-2"
         data-testid="side-chat-transcript"
       >
+        {paneError ? (
+          <div className="text-xs text-destructive" role="alert" data-testid="side-chat-pane-error">{paneError}</div>
+        ) : null}
         {entries.length === 0 ? (
           <div className="pt-6 text-center text-xs text-muted-foreground">
             {t("chatPreviewRail.sideChat.empty")}
@@ -552,7 +603,7 @@ function SideChatSession({
             />
           </div>
         ) : null}
-        {boundSurface ? <BoundSurfaceChip surface={boundSurface} /> : null}
+        {boundSurface ? <BoundSurfaceChip surface={boundSurface} /> : targetChip}
         <ComposerFrame>
           <Composer
             ref={composerRef}

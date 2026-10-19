@@ -56,7 +56,7 @@ export interface GuestNavigation {
 const NO_NAVIGATION: GuestNavigation = { url: null, title: null, canGoBack: false, canGoForward: false };
 
 /** The live `<webview>` of a tab, once the layer has rendered it. */
-function useWebSurfaceGuest(tabId: string): GuestElement | null {
+export function useWebSurfaceGuest(tabId: string): GuestElement | null {
   return useSyncExternalStore(subscribeWebSurfaces, () => getWebSurfaceElement(tabId)) as GuestElement | null;
 }
 
@@ -65,7 +65,7 @@ function useWebSurfaceGuest(tabId: string): GuestElement | null {
  * changes on its own (links, redirects, SPA routes) — read from the guest's
  * navigation events. Before the guest has attached there is nothing to read.
  */
-function useGuestNavigation(guest: GuestElement | null): GuestNavigation {
+export function useGuestNavigation(guest: GuestElement | null): GuestNavigation {
   const [state, setState] = useState<GuestNavigation>(NO_NAVIGATION);
   useEffect(() => {
     if (!guest) {
@@ -206,7 +206,7 @@ function WebPanelBody({
 }
 
 /** A url's host, or null when it has none. */
-function hostOf(url: string | null): string | null {
+export function hostOf(url: string | null): string | null {
   if (!url) return null;
   try {
     return new URL(url).host || null;

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import type { AveApi } from "../types.js";
 
 /**
@@ -10,7 +10,9 @@ import type { AveApi } from "../types.js";
  * The target follows focus: focusing a pane that shows a terminal or a
  * page, or bringing one to the front of a side panel, makes it the target.
  * Switching to a chat does not change it — the chat is how the user talks
- * ABOUT what they were just looking at. Closing the target clears it.
+ * ABOUT what they were just looking at. The rail's side chat shows it as its
+ * chip (`ActiveSurfaceChip`), whose × drops it until another terminal or page
+ * is shown. Closing the target clears it.
  *
  * One value per window, because main tracks one per window: this store is
  * the single place the window's choice is made, and the one a main-side
@@ -63,9 +65,24 @@ export function clearActiveSurface(): void {
   emit();
 }
 
-/** A surface was closed; when it was the target, there is none. */
+const closedListeners = new Set<(tabId: string) => void>();
+
+/**
+ * A surface was closed; when it was the target, there is none. Every close
+ * site calls this, so it is also where a closed surface is announced (its
+ * pane chat ends with it).
+ */
 export function forgetActiveSurface(tabId: string): void {
   if (active?.tabId === tabId) clearActiveSurface();
+  for (const listener of [...closedListeners]) listener(tabId);
+}
+
+/** Hear of every surface `forgetActiveSurface` is told was closed. */
+export function subscribeSurfaceClosed(listener: (tabId: string) => void): () => void {
+  closedListeners.add(listener);
+  return () => {
+    closedListeners.delete(listener);
+  };
 }
 
 export function getActiveSurface(): ActiveSurface | null {
@@ -77,6 +94,10 @@ export function subscribeActiveSurface(listener: () => void): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+export function useActiveSurface(): ActiveSurface | null {
+  return useSyncExternalStore(subscribeActiveSurface, getActiveSurface);
 }
 
 /**

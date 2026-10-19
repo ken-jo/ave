@@ -423,6 +423,108 @@ describe("main-area terminal and web panels", () => {
     expect(pane().querySelector('[data-testid="pane-chat"]')).toBeNull();
   });
 
+  it("keeps each pane's chat its own conversation: apart from the other pane's, back when reopened, ended with its pane", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true, browserTabs: true });
+    const sideChat = (api as unknown as { sideChat: Record<"send" | "new" | "paneHistory" | "endPaneChat", ReturnType<typeof vi.fn>> }).sideChat;
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    await splitIntoTwoTiles(container);
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(2));
+    const [first, second] = shownSurfaces(container).map((each) => each.tabId!);
+    const pane = (tabId: string) => container.querySelector(`[data-testid="surface-pane"][data-tab-id="${tabId}"]`)!.closest('[data-testid="pane"]')!;
+    const toggle = async (tabId: string) => {
+      await act(async () => { fireEvent.click(pane(tabId).querySelector('[data-testid="pane-action-surface.chat"]')!); });
+    };
+    const chat = (tabId: string) => pane(tabId).querySelector<HTMLElement>('[data-testid="pane-chat"]');
+    const transcript = (tabId: string) => chat(tabId)!.querySelector('[data-testid="side-chat-transcript"]')!.textContent ?? "";
+    const say = async (tabId: string, text: string) => {
+      const input = chat(tabId)!.querySelector<HTMLTextAreaElement>("textarea")!;
+      await act(async () => { fireEvent.change(input, { target: { value: text } }); });
+      await act(async () => {
+        fireEvent.click(chat(tabId)!.querySelector<HTMLButtonElement>('[data-testid="side-chat-action-row"] button:last-child')!);
+      });
+      await waitFor(() => expect(transcript(tabId)).toContain(text));
+    };
+
+    await toggle(first!);
+    await waitFor(() => expect(chat(first!)).not.toBeNull());
+    await say(first!, "first pane question");
+    await toggle(second!);
+    await waitFor(() => expect(chat(second!)).not.toBeNull());
+    await waitFor(() => expect(sideChat.paneHistory).toHaveBeenCalledWith(second));
+    expect(transcript(second!)).not.toContain("first pane question");
+    await say(second!, "second pane question");
+    expect(transcript(first!)).not.toContain("second pane question");
+    expect(sideChat.send.mock.calls.map((call) => (call[4] as { tabId: string }).tabId)).toEqual([first, second]);
+
+    // Closed and opened again, a pane's chat is back on its own conversation.
+    await toggle(first!);
+    expect(chat(first!)).toBeNull();
+    await toggle(first!);
+    await waitFor(() => expect(transcript(first!)).toContain("first pane question"));
+    expect(transcript(first!)).not.toContain("second pane question");
+
+    // "New" in a pane chat starts that pane's chat afresh, not the window-wide one.
+    await act(async () => { fireEvent.click(chat(second!)!.querySelector('[data-testid="side-chat-new"]')!); });
+    await waitFor(() => expect(sideChat.endPaneChat).toHaveBeenCalledWith(second, "new"));
+    expect(sideChat.new).not.toHaveBeenCalled();
+    await waitFor(() => expect(transcript(second!)).not.toContain("second pane question"));
+
+    // Closing the pane ends its chat.
+    await act(async () => { fireEvent.click(pane(first!).querySelector('[data-testid="pane-close"]')!); });
+    await waitFor(() => expect(sideChat.endPaneChat).toHaveBeenCalledWith(first, "closed"));
+  });
+
+  it("points the side chat at the terminal or page last brought into view, and lets the user drop it", async () => {
+    const { container } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true });
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    const mainTerminal = shownSurfaces(container)[0]!.tabId!;
+    const tiles = await splitIntoTwoTiles(container);
+    const chatTile = tiles[1]!.element;
+    await act(async () => {
+      fireEvent.click(chatTile.querySelector('[data-testid="pane-panel-toggle"]')!);
+    });
+    await act(async () => {
+      fireEvent.click(document.querySelector('[data-testid="chat-side-panel-launcher-side-chat"]')!);
+    });
+    const chip = () => document.querySelector<HTMLElement>('[data-testid="side-chat-target"] [data-tab-id]');
+    // Moving to the side chat did not change what it acts on: the terminal shown last.
+    await waitFor(() => expect(chip()?.getAttribute("data-tab-id")).toBe(mainTerminal));
+    expect(chip()!.getAttribute("data-surface-kind")).toBe("terminal");
+
+    await act(async () => { fireEvent.click(document.querySelector('[data-testid="side-chat-target-remove"]')!); });
+    expect(chip()).toBeNull();
+
+    // Focusing the terminal's pane again picks it back up.
+    const terminalPane = container.querySelector(`[data-testid="surface-pane"][data-tab-id="${mainTerminal}"]`)!.closest('[data-testid="pane"]')!;
+    await act(async () => { fireEvent.mouseDown(terminalPane); });
+    await waitFor(() => expect(chip()?.getAttribute("data-tab-id")).toBe(mainTerminal));
+
+    // A terminal brought to the front of the side panel takes over.
+    const add = chatTile.querySelector<HTMLButtonElement>('[data-testid="chat-side-panel-add-tab"]')
+      ?? document.querySelector<HTMLButtonElement>('[data-testid="chat-side-panel-add-tab"]')!;
+    await act(async () => {
+      fireEvent.pointerDown(add, { button: 0, ctrlKey: false });
+      fireEvent.click(add);
+    });
+    await act(async () => { fireEvent.click(document.querySelector('[data-testid="chat-side-panel-launcher-menu-terminal"]')!); });
+    const sideTerminal = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-testid="chat-side-panel-tab-strip"] [data-tab-id^="terminal:"]');
+      expect(el).not.toBeNull();
+      return el!.getAttribute("data-tab-id")!;
+    });
+    await waitFor(() => expect(chip()?.getAttribute("data-tab-id")).toBe(sideTerminal));
+
+    // Closing the target clears it.
+    await act(async () => {
+      // The tab's close control is the last of its row.
+      fireEvent.click(document.querySelector(`[data-testid="chat-side-panel-tab-strip"] [data-tab-id="${sideTerminal}"] > button:last-child`)!);
+    });
+    await waitFor(() => expect(document.querySelector('[data-testid="side-chat-target"]')).toBeNull());
+  });
+
   it("gives a web pane's chat the page's tab and names it by the page", async () => {
     const { container } = await renderApp({ hasApiKey: true, sideChat: true, browserTabs: true });
     await clickSidebarNavRow("features", "sidebar-web");

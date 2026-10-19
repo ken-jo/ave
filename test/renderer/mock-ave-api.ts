@@ -293,6 +293,11 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   emitNotificationClicked: (payload: unknown) => void;
   emitSubscriptionRuntimeStatusUpdated: (event: SubscriptionRuntimeStatusUpdatedEvent) => void;
 } {
+  // Main's pane chats: each pane tab's conversation, as `paneHistory` reads it back.
+  const paneChats = new Map<string, { sessionId: string; messages: Array<{ index: number; role: "user"; content: string }> }>();
+  let mintedPaneChats = 0;
+  let paneChatStreams = 1000;
+  const sideStreamHandlers = new Set<(event: ChatStreamEvent) => void>();
   let settings = overrides.settings ?? MOCK_DEFAULT_SETTINGS;
   let personaPrompts = overrides.personaPrompts ?? [];
   const sessions = (overrides.sessions ?? []).map(sessionRow);
@@ -863,7 +868,31 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
 
     ...(overrides.sideChat ? {
       sideChat: {
-        send: vi.fn(async () => ({ ok: true, result: {} })),
+        // A pane's turn lands in that pane's own conversation, as main keeps it.
+        send: vi.fn(async (input: string, _attachments?: unknown[], _origin?: string, _request?: string, surface?: { tabId: string }) => {
+          if (surface) {
+            const chat = paneChats.get(surface.tabId) ?? { sessionId: `00000000-0000-4000-8000-${String(++mintedPaneChats).padStart(12, "0")}`, messages: [] };
+            chat.messages.push({ index: chat.messages.length, role: "user" as const, content: input });
+            paneChats.set(surface.tabId, chat);
+            // Main announces the turn's session in its prelude and closes the
+            // stream with `done`; the pane chat's turn then reads as finished.
+            const streamId = ++paneChatStreams;
+            for (const handler of [...sideStreamHandlers]) {
+              handler({ type: "user_message", streamId, sessionId: chat.sessionId, sendRequestId: _request, text: input } as ChatStreamEvent);
+              handler({ type: "done", streamId } as ChatStreamEvent);
+            }
+          }
+          return { ok: true, result: {} };
+        }),
+        paneHistory: vi.fn(async (tabId: string) => {
+          const chat = paneChats.get(tabId);
+          return { ok: true, sessionId: chat?.sessionId ?? null, messages: chat ? [...chat.messages] : [] };
+        }),
+        endPaneChat: vi.fn(async (tabId: string, _reason: "new" | "closed") => {
+          const chat = paneChats.get(tabId);
+          paneChats.delete(tabId);
+          return { ok: true, sessionId: chat?.sessionId ?? null };
+        }),
         new: vi.fn(async () => ({ ok: true, sessionId: MOCK_SIDE_CHAT_SESSION_ID })),
         load: vi.fn(async () => ({ ok: true, sessionId: MOCK_SIDE_CHAT_SESSION_ID, messages: [] })),
         getSubAgentTranscript: vi.fn(async (_request: SubAgentTranscriptRequest): Promise<SubAgentTranscriptResult> => ({
@@ -872,7 +901,10 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
         })),
         list: vi.fn(async () => ({ current: null, sessions: [] })),
         abort: vi.fn(async () => ({ ok: true })),
-        onStream: vi.fn(() => () => undefined),
+        onStream: vi.fn((handler: (event: ChatStreamEvent) => void) => {
+          sideStreamHandlers.add(handler);
+          return () => sideStreamHandlers.delete(handler);
+        }),
         onFallback: vi.fn(() => () => undefined),
       },
     } : {}),

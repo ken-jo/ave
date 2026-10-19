@@ -349,13 +349,37 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   // ── bound conversations ───────────────────────────────────────────────
 
   /**
-   * Bind conversation `sessionId` to one tab of `windowId` (a pane's own chat),
-   * or release it (`null`: the conversation was driven from somewhere that is
-   * not bound to a pane).
+   * Bind conversation `sessionId` to one tab of `windowId`: it is that pane's
+   * own chat. A pane holds one conversation at a time, so a conversation the
+   * pane held before is released.
    */
-  bindConversationSurface(sessionId: string, binding: { windowId: number; surface: ActiveWorkspaceSurface } | null): void {
-    if (binding === null) this.boundSurface.delete(sessionId);
-    else this.boundSurface.set(sessionId, { windowId: binding.windowId, surface: { kind: binding.surface.kind, tabId: binding.surface.tabId } });
+  bindConversationSurface(sessionId: string, binding: { windowId: number; surface: ActiveWorkspaceSurface }): void {
+    const previous = this.paneConversation(binding.windowId, binding.surface.tabId);
+    if (previous !== undefined && previous !== sessionId) this.boundSurface.delete(previous);
+    this.boundSurface.set(sessionId, { windowId: binding.windowId, surface: { kind: binding.surface.kind, tabId: binding.surface.tabId } });
+  }
+
+  /** The conversation the pane chat of `tabId` in `windowId` holds, if it has one. */
+  paneConversation(windowId: number, tabId: string): string | undefined {
+    for (const [sessionId, bound] of this.boundSurface) {
+      if (bound.windowId === windowId && bound.surface.tabId === tabId) return sessionId;
+    }
+    return undefined;
+  }
+
+  /** Whether `sessionId` is a pane chat's conversation (bound to a pane's tab). */
+  isPaneConversation(sessionId: string): boolean {
+    return this.boundSurface.has(sessionId);
+  }
+
+  /**
+   * The pane chat of `tabId` in `windowId` is over (its pane closed, or the
+   * user started it afresh): unbind its conversation and say which it was.
+   */
+  releasePaneConversation(windowId: number, tabId: string): string | undefined {
+    const sessionId = this.paneConversation(windowId, tabId);
+    if (sessionId !== undefined) this.boundSurface.delete(sessionId);
+    return sessionId;
   }
 
   /** The surface conversation `sessionId` is bound to in `windowId`, if any. */

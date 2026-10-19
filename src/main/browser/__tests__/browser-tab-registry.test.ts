@@ -399,12 +399,25 @@ describe("a conversation bound to a pane's tab", () => {
     expect(registry.defaultTerminalTabId(1, "main")).toBe("terminal:active");
   });
 
-  it("is scoped to its window and released by an unbound turn", () => {
+  it("is scoped to its window and released when the pane chat ends", () => {
     const registry = twoPages();
     registry.bindConversationSurface("side-chat", { windowId: 2, surface: { kind: "browser", tabId: "browser:pane" } });
     expect(registry.conversationSurface(1, "side-chat")).toBeUndefined();
+    expect(registry.paneConversation(1, "browser:pane")).toBeUndefined();
     registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
-    registry.bindConversationSurface("side-chat", null);
+    expect(registry.paneConversation(1, "browser:pane")).toBe("side-chat");
+    expect(registry.releasePaneConversation(1, "browser:pane")).toBe("side-chat");
+    expect(registry.isPaneConversation("side-chat")).toBe(false);
     expect(registry.defaultBrowserTab(1, "side-chat")).toEqual({ ok: true, handle: "tab-2" });
+  });
+
+  it("holds one conversation per pane: binding a new one releases the pane's last", () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("first", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    registry.bindConversationSurface("other-pane", { windowId: 1, surface: { kind: "browser", tabId: "browser:side" } });
+    registry.bindConversationSurface("second", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    expect(registry.paneConversation(1, "browser:pane")).toBe("second");
+    expect(registry.isPaneConversation("first")).toBe(false);
+    expect(registry.paneConversation(1, "browser:side")).toBe("other-pane");
   });
 });

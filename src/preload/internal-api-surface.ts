@@ -376,11 +376,13 @@ export function buildInternalApiSurface() {
       originSessionId?: string,
       sendRequestId?: string,
       surface?: ActiveWorkspaceSurface,
+      sessionId?: string,
     ) =>
       ipcRenderer.invoke(CHANNELS.sidechat.send, {
         input, attachments, originSessionId,
         ...(sendRequestId !== undefined ? { sendRequestId } : {}),
         ...(surface !== undefined ? { surface } : {}),
+        ...(sessionId !== undefined ? { sessionId } : {}),
       }) as Promise<
         | { ok: true; result: TurnResult }
         | { ok: false; error: string }
@@ -400,6 +402,16 @@ export function buildInternalApiSurface() {
     abort: async (sendRequestId: string) =>
       ipcRenderer.invoke(CHANNELS.sidechat.abort, { sendRequestId }) as Promise<
         { ok: true } | { ok: false; error: string }
+      >,
+    paneHistory: async (tabId: string) =>
+      ipcRenderer.invoke(CHANNELS.sidechat.paneHistory, { tabId }) as Promise<
+        | { ok: true; sessionId: string | null; messages: SerializedHistoryMessage[] }
+        | { ok: false; error: string }
+      >,
+    endPaneChat: async (tabId: string, reason: "new" | "closed") =>
+      ipcRenderer.invoke(CHANNELS.sidechat.endPaneChat, { tabId, reason }) as Promise<
+        | { ok: true; sessionId: string | null }
+        | { ok: false; error: string }
       >,
     onStream: (handler: (event: ChatStreamEvent) => void) => {
       const listener = (_event: unknown, payload: ChatStreamEvent) => handler(payload);

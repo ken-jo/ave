@@ -645,6 +645,8 @@ export type AveApi = {
       sendRequestId?: string,
       /** The pane tab a pane's own chat is bound to; its tools default to that tab. */
       surface?: ActiveWorkspaceSurface,
+      /** The side chat the sending view shows; a turn never lands in a pane's chat by accident. */
+      sessionId?: string,
     ) => Promise<
       | { ok: true; result: unknown }
       | { ok: false; error: string }
@@ -657,6 +659,16 @@ export type AveApi = {
     /** Reads a child of the active side-chat session; optional only in partial fixtures. */
     getSubAgentTranscript?: (request: SubAgentTranscriptRequest) => Promise<SubAgentTranscriptResult>;
     abort: (sendRequestId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+    /** A pane chat's conversation and history, read without moving the side loop. */
+    paneHistory: (tabId: string) => Promise<
+      | { ok: true; sessionId: string | null; messages: SerializedHistoryMessage[] }
+      | { ok: false; error: string }
+    >;
+    /** End a pane chat: `new` starts it afresh, `closed` also archives it. */
+    endPaneChat: (tabId: string, reason: "new" | "closed") => Promise<
+      | { ok: true; sessionId: string | null }
+      | { ok: false; error: string }
+    >;
     onStream: (handler: (event: ChatStreamEvent) => void) => () => void;
     onFallback: (handler: (payload: { from: string; to: string }) => void) => () => void;
   };

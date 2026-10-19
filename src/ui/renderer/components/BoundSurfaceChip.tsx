@@ -1,4 +1,4 @@
-import { Globe, Terminal } from "lucide-react";
+import { Globe, Terminal, X } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 
 /** The pane tab a pane chat is bound to, as its chip names it. */
@@ -14,17 +14,17 @@ export interface BoundSurface {
 }
 
 /**
- * A pane chat's target chip: the terminal or page of the pane this chat sits
- * in, which its tools act on by default. The binding is the pane's, so the
- * chip names it and offers nothing to change it.
+ * A chat's target chip: the terminal or page its tools act on by default.
+ * A pane chat's target is its pane, so its chip offers nothing to change it;
+ * the rail's follows the window's active surface and offers `onRemove` (×).
  */
-export function BoundSurfaceChip({ surface }: { surface: BoundSurface }) {
+export function BoundSurfaceChip({ surface, onRemove }: { surface: BoundSurface; onRemove?: () => void }) {
   const { t } = useTranslation();
   const Icon = surface.kind === "browser" ? Globe : Terminal;
   return (
     <div className="mb-1.5 flex min-w-0" data-testid="side-chat-target">
       <span
-        className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-muted/(--opacity-muted) px-2 py-0.5 text-[11px] text-foreground"
+        className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-muted/(--opacity-muted) py-0.5 pl-2 text-[11px] text-foreground ${onRemove ? "pr-0.5" : "pr-2"}`}
         data-surface-kind={surface.kind}
         data-tab-id={surface.tabId}
         title={t("sideChatTarget.label")}
@@ -35,6 +35,18 @@ export function BoundSurfaceChip({ surface }: { surface: BoundSurface }) {
           <span className="min-w-0 truncate text-muted-foreground" title={surface.detailTitle ?? undefined} data-testid="side-chat-target-detail">
             {surface.detail}
           </span>
+        ) : null}
+        {onRemove ? (
+          <button
+            type="button"
+            className="ml-0.5 shrink-0 rounded-full p-0.5 text-muted-foreground hover:bg-background/(--opacity-muted) hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+            aria-label={t("sideChatTarget.remove")}
+            title={t("sideChatTarget.remove")}
+            data-testid="side-chat-target-remove"
+            onClick={onRemove}
+          >
+            <X className="h-3 w-3" />
+          </button>
         ) : null}
       </span>
     </div>

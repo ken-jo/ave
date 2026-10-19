@@ -53,6 +53,7 @@ import { formatLlmStatusMessage } from "../../../lib/llm-status-message.js";
 import { detectFromStream } from "../../../lib/stream-markers.js";
 import type { UserContentPart } from "../../../engine/llm/types.js";
 import type { ActiveWorkspaceSurface } from "../../../shared/browser-surface.js";
+import type { SerializedHistoryMessage } from "../../../shared/chat-history.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { historyToEntries } from "../utils/history.js";
 import { isTurnStartEntry } from "../utils/classify-turn-entries.js";
@@ -90,6 +91,13 @@ export interface UseSideChat {
   send: (text: string, opts?: SideChatSendOptions) => Promise<void>;
   newSession: () => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
+  /**
+   * Show a stored conversation without moving the host's side loop: a pane
+   * chat reopening on its pane's conversation. Its next turn moves the loop.
+   */
+  restore: (sessionId: string, messages: SerializedHistoryMessage[]) => void;
+  /** Show nothing and hold no session: the next turn starts a fresh one. */
+  clear: () => void;
   abort: () => Promise<void>;
   /**
    * Stale-frame verdict for one side-chat stream frame, shared with every other
@@ -537,7 +545,10 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       // the transcript never hangs on a permanent spinner.
       let pendingSend: ReturnType<NonNullable<AveApi["sideChat"]>["send"]> | null = null;
       try {
-        pendingSend = api.sideChat.send(trimmed, opts?.attachments, opts?.originSessionId, sendRequestId, opts?.surface);
+        pendingSend = api.sideChat.send(
+          trimmed, opts?.attachments, opts?.originSessionId, sendRequestId, opts?.surface,
+          sessionIdRef.current ?? undefined,
+        );
         pendingSendRef.current = pendingSend;
         const result = await pendingSend;
         if (sendGeneration !== sendGenerationRef.current) return;
@@ -694,6 +705,23 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     [api, changeSession],
   );
 
+  const restore = useCallback((id: string, messages: SerializedHistoryMessage[]) => {
+    if (!viewMountedRef.current) return;
+    abandonTurn();
+    sessionChangeIntentRef.current = null;
+    setEntries(historyToEntries(messages));
+    recordSessionId(id);
+  }, [abandonTurn, recordSessionId]);
+
+  const clear = useCallback(() => {
+    if (!viewMountedRef.current) return;
+    abandonTurn();
+    sessionChangeIntentRef.current = null;
+    setEntries([]);
+    sessionIdRef.current = null;
+    setSessionId(null);
+  }, [abandonTurn]);
+
   // Per-turn provider-usage lookup keyed by turn-start index — same derivation
   // as ChatView so the shared TranscriptRenderer's WorkGroup step-count /
   // TurnActionBar cost badge show the SIDE loop's own token/cost totals.
@@ -732,6 +760,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     send,
     newSession,
     loadSession,
+    restore,
+    clear,
     abort,
     isCurrentTurnEvent,
   };

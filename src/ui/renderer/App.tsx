@@ -36,7 +36,7 @@ import type { SideChatRuntime } from "./components/SideChatView.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
-import { forgetActiveSurface, showActiveSurface, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
+import { forgetActiveSurface, showActiveSurface, subscribeSurfaceClosed, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
 import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
 import { attachToComposer } from "./preview/composer-targets.js";
 import { useMainLayout } from "./hooks/use-main-layout.js";
@@ -615,6 +615,16 @@ export function App() {
   // What the side chat acts on is also the tab main's agent tools default to
   // when none is named: one report per window, from the one store.
   useReportActiveSurface(api);
+  // A closed terminal or page ends its pane chat: main stops that chat's turn
+  // and archives its conversation, and the list shows it archived.
+  useEffect(() => subscribeSurfaceClosed((tabId) => {
+    const sideChat = api.sideChat;
+    if (!sideChat) return;
+    void sideChat.endPaneChat(tabId, "closed").then((res) => {
+      if (!res.ok) console.warn(`pane chat for ${tabId} not ended: ${res.error}`);
+      else if (res.sessionId !== null) void refreshSessions();
+    }, (err: unknown) => console.warn(`pane chat for ${tabId} not ended: ${errorMessage(err)}`));
+  }), [api, refreshSessions]);
 
   // The main area's web panels are a host of the agent browser tools' tab
   // operations (`preview/agent-browser-bridge.ts`): select shows the page —

@@ -5,10 +5,29 @@
  * Channels (ALL INTERNAL — never in PUBLIC_CHANNELS / EXTERNAL_MUTATION_CHANNELS):
  *   `ave:sidechat:send`  invoke  renderer→main → TurnResult | { ok:false, error }
  *                        payload `surface` (optional): the pane tab a pane's own
- *                        chat is bound to (`browserTabRegistry` bound conversation)
+ *                        chat is bound to (`browserTabRegistry` bound conversation);
+ *                        `sessionId` (optional): the side chat the sending view shows
  *   `ave:sidechat:new`   invoke  → { ok, sessionId }
  *   `ave:sidechat:load`  invoke  (sessionId) → { ok, sessionId, messages }
  *   `ave:sidechat:abort` invoke { sendRequestId } → { ok }
+ *   `ave:sidechat:pane-history` invoke { tabId } → { ok, sessionId|null, messages }
+ *   `ave:sidechat:end-pane-chat` invoke { tabId, reason } → { ok, sessionId|null }
+ *
+ * PANE CHATS: a terminal or web pane's own chat is its own conversation. The
+ * side loop is one per app, so a pane's conversation is a side-chat SESSION the
+ * host keys by the pane's tab (`browserTabRegistry` bound conversations), and
+ * a turn first moves the loop onto the session it belongs to:
+ *
+ *   send names `surface`                → the pane's session (loaded); none yet,
+ *                                          or its file is gone → a fresh one, bound
+ *   no `surface`, loop holds a non-pane → unchanged: the loop's current session
+ *   no `surface`, loop holds a pane's   → the view's `sessionId` when it is not a
+ *                                          pane's (loaded), else a fresh session
+ *
+ * A send without `surface` never binds or releases a pane's conversation. Only
+ * one side turn runs at a time, app-wide: a send while another view's turn is
+ * streaming is refused with `streaming-active`. Reading a pane's history never
+ * moves the loop; ending a pane chat stops only that conversation's turn.
  *   `ave:sidechat:stream`   event  main→renderer  { streamId, ...frame }
  *   `ave:sidechat:fallback` event  main→renderer  { from, to }
  *
@@ -53,6 +72,7 @@ import type { IpcDeps } from "../types.js";
 import type { SubAgentTranscriptResult } from "../../shared/subagent-transcript.js";
 
 const MAX_SEND_REQUEST_ID_LENGTH = 256;
+const MAX_PANE_TAB_ID_LENGTH = 256;
 const log = createLogger("sidechat");
 
 export function registerSideChatHandlers(deps: IpcDeps): void {
@@ -113,6 +133,14 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.abort, e); return UNAUTHORIZED_FRAME; }
       return unavailable();
     });
+    ipcMain.handle(CHANNELS.sidechat.paneHistory, (e) => {
+      if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.paneHistory, e); return UNAUTHORIZED_FRAME; }
+      return unavailable();
+    });
+    ipcMain.handle(CHANNELS.sidechat.endPaneChat, (e) => {
+      if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.endPaneChat, e); return UNAUTHORIZED_FRAME; }
+      return unavailable();
+    });
     return;
   }
 
@@ -123,6 +151,11 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   let activeSideStreamTurn: Promise<TurnResult> | null = null;
   let activeSideSendRequestId: string | null = null;
   let activeSideSenderId: number | null = null;
+  // The session the in-flight turn runs in: ending a pane chat stops only its own.
+  let activeSideSessionId: string | null = null;
+  // Held from an accepted send's guard until its turn is tracked, across the
+  // session switch that a pane chat's turn may need first.
+  let sideTurnReserved = false;
   const originWritesBySession = new Map<string, Promise<void>>();
   let nextSideStreamId = 0;
 
@@ -148,9 +181,12 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.sidechat.send, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.send, e); return UNAUTHORIZED_FRAME; }
-    const p = (payload ?? {}) as { input?: unknown; attachments?: unknown; originSessionId?: unknown; sendRequestId?: unknown; surface?: unknown };
+    const p = (payload ?? {}) as { input?: unknown; attachments?: unknown; originSessionId?: unknown; sendRequestId?: unknown; surface?: unknown; sessionId?: unknown };
     if (typeof p.input !== "string") {
       return { ok: false as const, error: "invalid-input" };
+    }
+    if (p.sessionId !== undefined && !isValidSessionId(p.sessionId)) {
+      return { ok: false as const, error: "invalid-session-id" };
     }
     // A chat in a terminal or web pane's own panel names that pane's tab on
     // every turn; a chat anywhere else names none.
@@ -181,13 +217,36 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     // refuses the same case with `streaming-active` (its lease returns null);
     // the renderer's interrupt path aborts and awaits the turn first, so a user
     // gesture still goes through.
-    if (activeSideStreamTurn || loop.isSessionTransitioning()) {
+    if (activeSideStreamTurn || sideTurnReserved || loop.isSessionTransitioning()) {
       return { ok: false as const, error: "streaming-active" };
+    }
+    // Move the loop onto the session this turn belongs to (the PANE CHATS table
+    // in this module's doc). The switch is awaited, so the turn is reserved
+    // first: the guard above refuses any send that arrives meanwhile.
+    const target = turnSession(surface === null ? null : { windowId: senderWindow!.id, tabId: surface.tabId }, p.sessionId as string | undefined);
+    if (target.kind !== "current") {
+      sideTurnReserved = true;
+      try {
+        await loop.runSessionTransition("sidechat-turn-session", async (lease) => {
+          if (target.kind === "load" && await loop.loadSession(target.sessionId, lease)) return;
+          // A fresh session, or a pane's whose first turn never reached a file.
+          await loop.newConversation("main", undefined, lease);
+        });
+      } catch (err) {
+        return { ok: false as const, error: (err as Error).message };
+      } finally {
+        sideTurnReserved = false;
+      }
     }
     const win = getMainWindow();
     const streamId = ++nextSideStreamId;
     // Bind the first turn's renderer ownership before tools can publish events.
     const turnSideChatSessionId = loop.getSessionId();
+    // A pane's turn binds its session to the pane before any tool can run, so
+    // the pane's tab is what its tools act on. Other turns leave bindings alone.
+    if (surface !== null) {
+      browserTabRegistry.bindConversationSurface(turnSideChatSessionId, { windowId: senderWindow!.id, surface });
+    }
     const sink: ConversationStreamEventSink = createLegacyChatStreamEventSink(
       buildSink(win?.webContents),
       {
@@ -226,6 +285,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
         activeSideStreamTurn = null;
         activeSideSendRequestId = null;
         activeSideSenderId = null;
+        activeSideSessionId = null;
       }
       // After the turn, never before it. The turn is what gives this side chat
       // a file, and an await between the streaming guard above and the
@@ -249,13 +309,10 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     activeSideStreamTurn = turnPromise;
     activeSideSendRequestId = typeof p.sendRequestId === "string" ? p.sendRequestId : null;
     activeSideSenderId = e.sender.id;
+    activeSideSessionId = turnSideChatSessionId;
     // The window this turn was typed in is the one its terminal/browser tools reach,
     // and the pane tab it was typed beside (if any) is the one they default to.
     setSideChatOwnerContents(e.sender);
-    browserTabRegistry.bindConversationSurface(
-      turnSideChatSessionId,
-      surface === null ? null : { windowId: senderWindow!.id, surface },
-    );
     // A reloaded or crashed renderer loses the request id that scoped abort
     // requires, and page unload skips the hook's teardown cancel. Its document
     // was the turn's only owner, so its departure cancels the turn; otherwise
@@ -294,9 +351,76 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     }
   });
 
+  // A pane chat's running turn is that pane's; a new or loaded side chat in
+  // another view must not stop it (the switch would).
+  const paneTurnRunning = (): boolean =>
+    activeSideSessionId !== null && browserTabRegistry.isPaneConversation(activeSideSessionId);
+
+  /** Where a turn runs: the PANE CHATS table in this module's doc. */
+  const turnSession = (
+    pane: { windowId: number; tabId: string } | null,
+    viewSessionId: string | undefined,
+  ): { kind: "current" } | { kind: "load"; sessionId: string } | { kind: "fresh" } => {
+    const current = loop.getSessionId();
+    if (pane !== null) {
+      const bound = browserTabRegistry.paneConversation(pane.windowId, pane.tabId);
+      if (bound === undefined) return { kind: "fresh" };
+      return bound === current ? { kind: "current" } : { kind: "load", sessionId: bound };
+    }
+    if (!browserTabRegistry.isPaneConversation(current)) return { kind: "current" };
+    return viewSessionId !== undefined && !browserTabRegistry.isPaneConversation(viewSessionId)
+      ? { kind: "load", sessionId: viewSessionId }
+      : { kind: "fresh" };
+  };
+
+  /** `{ tabId }` from a pane-chat request, or undefined when malformed. */
+  const paneTabId = (payload: unknown): string | undefined => {
+    const tabId = payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>).tabId
+      : undefined;
+    return typeof tabId === "string" && tabId.trim().length > 0 && tabId.length <= MAX_PANE_TAB_ID_LENGTH ? tabId : undefined;
+  };
+
+  ipcMain.handle(CHANNELS.sidechat.paneHistory, (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.paneHistory, e); return UNAUTHORIZED_FRAME; }
+    const tabId = paneTabId(payload);
+    const senderWindow = mainWindowForContents(e.sender);
+    if (tabId === undefined || !senderWindow) return { ok: false as const, error: "invalid-surface" };
+    const sessionId = browserTabRegistry.paneConversation(senderWindow.id, tabId);
+    if (sessionId === undefined) return { ok: true as const, sessionId: null, messages: [] };
+    // Read, never switch: another pane's turn may be running in the loop. The
+    // loop's own history is the fresher copy while it holds this session.
+    const messages = sessionId === loop.getSessionId()
+      ? loop.getHistory().getMessages() as GenericMessage[]
+      : (deps.sideChatMemoryManager?.loadSession(sessionId) ?? []) as GenericMessage[];
+    return { ok: true as const, sessionId, messages: messages.map(serializeHistoryMessage) };
+  });
+
+  ipcMain.handle(CHANNELS.sidechat.endPaneChat, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.endPaneChat, e); return UNAUTHORIZED_FRAME; }
+    const tabId = paneTabId(payload);
+    const reason = payload && typeof payload === "object" ? (payload as Record<string, unknown>).reason : undefined;
+    const senderWindow = mainWindowForContents(e.sender);
+    if (tabId === undefined || !senderWindow) return { ok: false as const, error: "invalid-surface" };
+    if (reason !== "new" && reason !== "closed") return { ok: false as const, error: "invalid-input" };
+    const sessionId = browserTabRegistry.releasePaneConversation(senderWindow.id, tabId);
+    if (sessionId === undefined) return { ok: true as const, sessionId: null };
+    if (activeSideSessionId === sessionId) await abortActiveSideTurn();
+    // A closed pane's conversation is kept, archived: it lists with the
+    // archived side chats instead of under nothing. A restart keeps it listed.
+    if (reason === "closed" && deps.sideChatMemoryManager?.hasSessionTranscript(sessionId)) {
+      try {
+        await deps.sideChatMemoryManager.updateSessionRowFields(sessionId, { archivedAt: new Date().toISOString() });
+      } catch (err) {
+        log.warn("pane chat not archived: %s", err);
+      }
+    }
+    return { ok: true as const, sessionId };
+  });
+
   ipcMain.handle(CHANNELS.sidechat.new, async (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.new, e); return UNAUTHORIZED_FRAME; }
-    if (loop.isSessionTransitioning()) return { ok: false as const, error: "streaming-active" };
+    if (loop.isSessionTransitioning() || paneTurnRunning()) return { ok: false as const, error: "streaming-active" };
     // Abort any in-flight turn first so its remaining frames never leak into the
     // fresh session (mirrors abort handler; contrast the prior unguarded call).
     return loop.runSessionTransition("sidechat-new", async (lease) => {
@@ -311,7 +435,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     if (!isValidSessionId(sessionId)) {
       return { ok: false as const, error: "invalid-session-id", messages: [] };
     }
-    if (loop.isSessionTransitioning()) return { ok: false as const, error: "streaming-active", messages: [] };
+    if (loop.isSessionTransitioning() || paneTurnRunning()) return { ok: false as const, error: "streaming-active", messages: [] };
     // Abort any in-flight turn first so its remaining frames never leak into the
     // loaded session's transcript (same concurrency hazard as `new`).
     return loop.runSessionTransition("sidechat-load", async (lease) => {

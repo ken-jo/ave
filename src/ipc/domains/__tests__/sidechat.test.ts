@@ -71,7 +71,7 @@ function makeSideLoop() {
     newConversation: vi.fn(),
     loadSession: vi.fn((_sessionId: string, _lease?: object): boolean | Promise<boolean> => true),
     getSessionId: vi.fn(() => "34fd6270-309d-4e47-878b-75c0742a6ac2"),
-    getHistory: vi.fn(() => ({ getMessages: vi.fn(() => []) })),
+    getHistory: vi.fn(() => ({ getMessages: vi.fn((): unknown[] => []) })),
     listSessions: vi.fn(() => []),
     abortCurrentTurn: vi.fn(),
     isSessionTransitioning: vi.fn(() => transitioning),
@@ -711,16 +711,13 @@ describe("side-chat turns bound to a pane", () => {
   const sessionId = "34fd6270-309d-4e47-878b-75c0742a6ac2";
   beforeEach(() => browserTabRegistry.__reset());
 
-  it("binds the side chat's session to the pane tab its turn names, and releases it on an unbound turn", async () => {
+  it("binds the side chat's session to the pane tab its turn names", async () => {
     register(makeSideLoop(), makeMainLoop());
     const send = handlers.get(CHANNELS.sidechat.send)!;
     await expect(send(ev("file:///index.html"), {
       input: "fill the form", surface: { kind: "browser", tabId: "browser:pane" },
     })).resolves.toMatchObject({ ok: true });
     expect(browserTabRegistry.conversationSurface(7, sessionId)).toEqual({ kind: "browser", tabId: "browser:pane" });
-
-    await expect(send(ev("file:///index.html"), { input: "from the rail" })).resolves.toMatchObject({ ok: true });
-    expect(browserTabRegistry.conversationSurface(7, sessionId)).toBeUndefined();
   });
 
   it.each([
@@ -742,5 +739,246 @@ describe("side-chat turns bound to a pane", () => {
       input: "x", surface: { kind: "terminal", tabId: "terminal:1" },
     })).resolves.toEqual({ ok: false, error: "invalid-surface" });
     expect(side.runTurn).not.toHaveBeenCalled();
+  });
+});
+
+// A side loop that really holds one session at a time: `new` mints one, `load`
+// moves onto a stored one (false for a session with no file), and its history
+// is the held session's.
+const RAIL_SESSION = "11111111-1111-4111-8111-111111111111";
+function makeSessionLoop(files: Record<string, unknown[]>, start = RAIL_SESSION) {
+  const loop = makeSideLoop();
+  let current = start;
+  let minted = 0;
+  loop.getSessionId.mockImplementation(() => current);
+  loop.newConversation.mockImplementation(async () => {
+    minted += 1;
+    current = `00000000-0000-4000-8000-${String(minted).padStart(12, "0")}`;
+  });
+  loop.loadSession.mockImplementation(async (id: string) => {
+    if (!(id in files)) return false;
+    current = id;
+    return true;
+  });
+  loop.getHistory.mockImplementation(() => ({ getMessages: vi.fn(() => files[current] ?? []) }));
+  const sessionOfTurn: string[] = [];
+  loop.runTurn.mockImplementation(async () => {
+    sessionOfTurn.push(current);
+    return { route: "chat" };
+  });
+  return Object.assign(loop, { sessionOfTurn });
+}
+
+function makePaneStore(files: Record<string, unknown[]>) {
+  return {
+    ...makeSideChatStore(),
+    loadSession: vi.fn((id: string) => files[id] ?? null),
+    hasSessionTranscript: vi.fn((id: string) => id in files),
+    updateSessionRowFields: vi.fn(async (_id: string, _fields: Record<string, unknown>) => {}),
+  };
+}
+
+const PANE_A = { kind: "browser", tabId: "browser:w-1" } as const;
+const PANE_B = { kind: "terminal", tabId: "terminal:w-2" } as const;
+const FIRST_FRESH = "00000000-0000-4000-8000-000000000001";
+const SECOND_FRESH = "00000000-0000-4000-8000-000000000002";
+
+describe("pane chats are their own conversations", () => {
+  beforeEach(() => browserTabRegistry.__reset());
+
+  function sendFrom(payload: Record<string, unknown>) {
+    return handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html"), payload);
+  }
+
+  it("starts a pane's first turn in a fresh session bound to that pane", async () => {
+    const loop = makeSessionLoop({ [RAIL_SESSION]: [] });
+    register(loop, makeMainLoop());
+    await expect(sendFrom({ input: "read it", surface: PANE_A })).resolves.toMatchObject({ ok: true });
+    expect(loop.sessionOfTurn).toEqual([FIRST_FRESH]);
+    expect(browserTabRegistry.paneConversation(7, PANE_A.tabId)).toBe(FIRST_FRESH);
+    expect(browserTabRegistry.isPaneConversation(RAIL_SESSION)).toBe(false);
+  });
+
+  it("keeps two panes' conversations apart and moves the loop onto each pane's own", async () => {
+    const files: Record<string, unknown[]> = { [RAIL_SESSION]: [] };
+    const loop = makeSessionLoop(files);
+    register(loop, makeMainLoop());
+    await sendFrom({ input: "page", surface: PANE_A });
+    files[FIRST_FRESH] = [];
+    await sendFrom({ input: "terminal", surface: PANE_B });
+    files[SECOND_FRESH] = [];
+    await sendFrom({ input: "page again", surface: PANE_A });
+    expect(loop.sessionOfTurn).toEqual([FIRST_FRESH, SECOND_FRESH, FIRST_FRESH]);
+    expect(loop.loadSession).toHaveBeenLastCalledWith(FIRST_FRESH, expect.anything());
+    expect(browserTabRegistry.paneConversation(7, PANE_A.tabId)).toBe(FIRST_FRESH);
+    expect(browserTabRegistry.paneConversation(7, PANE_B.tabId)).toBe(SECOND_FRESH);
+    expect(browserTabRegistry.conversationSurface(7, SECOND_FRESH)).toEqual(PANE_B);
+  });
+
+  it("never runs a rail turn in a pane's conversation, and leaves the pane's binding alone", async () => {
+    const files: Record<string, unknown[]> = { [RAIL_SESSION]: [] };
+    const loop = makeSessionLoop(files);
+    register(loop, makeMainLoop());
+    await sendFrom({ input: "page", surface: PANE_A });
+    files[FIRST_FRESH] = [];
+    // The rail view names the side chat it shows: the loop goes back to it.
+    await sendFrom({ input: "rail", sessionId: RAIL_SESSION });
+    await sendFrom({ input: "page", surface: PANE_A });
+    // A rail view holding no session, while the loop holds a pane's: a fresh one.
+    await sendFrom({ input: "fresh rail" });
+    // A rail view that names a pane's conversation does not get into it either.
+    await sendFrom({ input: "page", surface: PANE_A });
+    await sendFrom({ input: "rail into pane", sessionId: FIRST_FRESH });
+    expect(loop.sessionOfTurn).toEqual([FIRST_FRESH, RAIL_SESSION, FIRST_FRESH, SECOND_FRESH, FIRST_FRESH, "00000000-0000-4000-8000-000000000003"]);
+    expect(browserTabRegistry.paneConversation(7, PANE_A.tabId)).toBe(FIRST_FRESH);
+    expect(browserTabRegistry.isPaneConversation(SECOND_FRESH)).toBe(false);
+  });
+
+  it("leaves the loop where it is for a rail turn when the loop holds no pane's conversation", async () => {
+    const loop = makeSessionLoop({ [RAIL_SESSION]: [] });
+    register(loop, makeMainLoop());
+    await sendFrom({ input: "rail", sessionId: "22222222-2222-4222-8222-222222222222" });
+    expect(loop.runSessionTransition).not.toHaveBeenCalled();
+    expect(loop.sessionOfTurn).toEqual([RAIL_SESSION]);
+  });
+
+  it("starts a pane afresh when its conversation never reached a file, and rebinds the pane", async () => {
+    const loop = makeSessionLoop({ [RAIL_SESSION]: [] });
+    register(loop, makeMainLoop());
+    await sendFrom({ input: "page", surface: PANE_A });
+    await sendFrom({ input: "rail", sessionId: RAIL_SESSION });
+    await sendFrom({ input: "page", surface: PANE_A });
+    expect(loop.sessionOfTurn).toEqual([FIRST_FRESH, RAIL_SESSION, SECOND_FRESH]);
+    expect(browserTabRegistry.paneConversation(7, PANE_A.tabId)).toBe(SECOND_FRESH);
+    expect(browserTabRegistry.isPaneConversation(FIRST_FRESH)).toBe(false);
+  });
+
+  it("refuses a second send while the first is still moving the loop onto its session", async () => {
+    const loop = makeSessionLoop({ [RAIL_SESSION]: [] });
+    const switching = deferred<void>();
+    loop.newConversation.mockImplementationOnce(async () => {
+      await switching.promise;
+      loop.getSessionId.mockImplementation(() => FIRST_FRESH);
+    });
+    register(loop, makeMainLoop());
+    const first = sendFrom({ input: "page", surface: PANE_A });
+    const second = sendFrom({ input: "terminal", surface: PANE_B });
+    await expect(second).resolves.toEqual({ ok: false, error: "streaming-active" });
+    switching.resolve();
+    await expect(first).resolves.toMatchObject({ ok: true });
+    expect(loop.runTurn).toHaveBeenCalledTimes(1);
+    expect(browserTabRegistry.paneConversation(7, PANE_A.tabId)).toBe(FIRST_FRESH);
+    expect(browserTabRegistry.paneConversation(7, PANE_B.tabId)).toBeUndefined();
+  });
+
+  it("refuses a malformed session id and runs no turn", async () => {
+    const loop = makeSessionLoop({ [RAIL_SESSION]: [] });
+    register(loop, makeMainLoop());
+    await expect(sendFrom({ input: "x", sessionId: "../escape" })).resolves.toEqual({ ok: false, error: "invalid-session-id" });
+    expect(loop.runTurn).not.toHaveBeenCalled();
+  });
+
+  describe("reading a pane's history", () => {
+    const stored = [{ role: "user", content: "what is on this page?" }];
+
+    it("returns the pane's conversation from the store without moving the loop", async () => {
+      const files: Record<string, unknown[]> = { [RAIL_SESSION]: [] };
+      const loop = makeSessionLoop(files);
+      register(loop, makeMainLoop(), false, makePaneStore({ [FIRST_FRESH]: stored }));
+      await sendFrom({ input: "page", surface: PANE_A });
+      files[FIRST_FRESH] = stored;
+      await sendFrom({ input: "rail", sessionId: RAIL_SESSION });
+      loop.runSessionTransition.mockClear();
+      const result = await handlers.get(CHANNELS.sidechat.paneHistory)!(ev("file:///index.html"), { tabId: PANE_A.tabId });
+      expect(result).toMatchObject({ ok: true, sessionId: FIRST_FRESH, messages: [{ role: "user", content: "what is on this page?" }] });
+      expect(loop.getSessionId()).toBe(RAIL_SESSION);
+      expect(loop.runSessionTransition).not.toHaveBeenCalled();
+    });
+
+    it("reads the loop's own history while it holds the pane's conversation", async () => {
+      const files: Record<string, unknown[]> = { [RAIL_SESSION]: [] };
+      const loop = makeSessionLoop(files);
+      const store = makePaneStore({});
+      register(loop, makeMainLoop(), false, store);
+      await sendFrom({ input: "page", surface: PANE_A });
+      files[FIRST_FRESH] = stored;
+      const result = await handlers.get(CHANNELS.sidechat.paneHistory)!(ev("file:///index.html"), { tabId: PANE_A.tabId });
+      expect(result).toMatchObject({ ok: true, sessionId: FIRST_FRESH, messages: [{ content: "what is on this page?" }] });
+      expect(store.loadSession).not.toHaveBeenCalled();
+    });
+
+    it("has no conversation for a pane that never chatted, nor for another window's pane", async () => {
+      register(makeSessionLoop({ [RAIL_SESSION]: [] }), makeMainLoop());
+      await sendFrom({ input: "page", surface: PANE_A });
+      const read = handlers.get(CHANNELS.sidechat.paneHistory)!;
+      expect(read(ev("file:///index.html"), { tabId: PANE_B.tabId })).toEqual({ ok: true, sessionId: null, messages: [] });
+      expect(read(ev("file:///index.html", 9), { tabId: PANE_A.tabId })).toEqual({ ok: false, error: "invalid-surface" });
+      expect(read(ev("file:///index.html"), { tabId: "" })).toEqual({ ok: false, error: "invalid-surface" });
+    });
+  });
+
+  describe("ending a pane chat", () => {
+    it("releases the pane's conversation for a new one without archiving it", async () => {
+      const files: Record<string, unknown[]> = { [RAIL_SESSION]: [] };
+      const loop = makeSessionLoop(files);
+      const store = makePaneStore({ [FIRST_FRESH]: [] });
+      register(loop, makeMainLoop(), false, store);
+      await sendFrom({ input: "page", surface: PANE_A });
+      files[FIRST_FRESH] = [];
+      await expect(handlers.get(CHANNELS.sidechat.endPaneChat)!(ev("file:///index.html"), { tabId: PANE_A.tabId, reason: "new" }))
+        .resolves.toEqual({ ok: true, sessionId: FIRST_FRESH });
+      expect(store.updateSessionRowFields).not.toHaveBeenCalled();
+      await sendFrom({ input: "page", surface: PANE_A });
+      expect(loop.sessionOfTurn).toEqual([FIRST_FRESH, SECOND_FRESH]);
+    });
+
+    it("archives a closed pane's conversation", async () => {
+      const store = makePaneStore({ [FIRST_FRESH]: [] });
+      register(makeSessionLoop({ [RAIL_SESSION]: [] }), makeMainLoop(), false, store);
+      await sendFrom({ input: "page", surface: PANE_A });
+      await expect(handlers.get(CHANNELS.sidechat.endPaneChat)!(ev("file:///index.html"), { tabId: PANE_A.tabId, reason: "closed" }))
+        .resolves.toEqual({ ok: true, sessionId: FIRST_FRESH });
+      expect(store.updateSessionRowFields).toHaveBeenCalledWith(FIRST_FRESH, { archivedAt: expect.any(String) });
+      expect(browserTabRegistry.paneConversation(7, PANE_A.tabId)).toBeUndefined();
+    });
+
+    it("stops the running turn only when it is that pane's", async () => {
+      const loop = makeSessionLoop({ [RAIL_SESSION]: [] });
+      const running = deferred<{ route: string }>();
+      register(loop, makeMainLoop(), false, makePaneStore({}));
+      await sendFrom({ input: "terminal", surface: PANE_B });
+      loop.runTurn.mockImplementationOnce(async () => running.promise);
+      const turn = sendFrom({ input: "page", surface: PANE_A });
+      await vi.waitFor(() => expect(loop.runTurn).toHaveBeenCalledTimes(2));
+      const end = handlers.get(CHANNELS.sidechat.endPaneChat)!;
+      await end(ev("file:///index.html"), { tabId: PANE_B.tabId, reason: "closed" });
+      expect(loop.abortCurrentTurn).not.toHaveBeenCalled();
+      const ending = end(ev("file:///index.html"), { tabId: PANE_A.tabId, reason: "closed" });
+      await vi.waitFor(() => expect(loop.abortCurrentTurn).toHaveBeenCalledTimes(1));
+      running.resolve({ route: "chat" });
+      await ending;
+      await turn;
+    });
+
+    it("refuses a reason it does not know", async () => {
+      register(makeSessionLoop({ [RAIL_SESSION]: [] }), makeMainLoop(), false, makePaneStore({}));
+      await expect(handlers.get(CHANNELS.sidechat.endPaneChat)!(ev("file:///index.html"), { tabId: PANE_A.tabId, reason: "later" }))
+        .resolves.toEqual({ ok: false, error: "invalid-input" });
+    });
+  });
+
+  it("refuses a new or loaded side chat elsewhere while a pane's turn runs", async () => {
+    const loop = makeSessionLoop({ [RAIL_SESSION]: [] });
+    const running = deferred<{ route: string }>();
+    loop.runTurn.mockImplementationOnce(async () => running.promise);
+    register(loop, makeMainLoop());
+    const turn = sendFrom({ input: "page", surface: PANE_A });
+    await vi.waitFor(() => expect(loop.runTurn).toHaveBeenCalledTimes(1));
+    await expect(handlers.get(CHANNELS.sidechat.new)!(ev("file:///index.html"))).resolves.toEqual({ ok: false, error: "streaming-active" });
+    await expect(handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html"), RAIL_SESSION))
+      .resolves.toEqual({ ok: false, error: "streaming-active", messages: [] });
+    expect(loop.abortCurrentTurn).not.toHaveBeenCalled();
+    running.resolve({ route: "chat" });
+    await turn;
   });
 });

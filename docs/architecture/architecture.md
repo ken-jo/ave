@@ -752,15 +752,28 @@ whose conversation is not in the list — a page that did not reach it, a
 conversation since deleted — is listed in its own right rather than dropped.
 
 A terminal or web pane opens the side chat in its own panel (the header's
-panel toggle), beside the page or terminal, bound to that pane's tab. Each turn
-sent there names the tab (`ave:sidechat:send` `surface`), and main records the
-binding for the side chat's session (`browserTabRegistry` bound conversation).
-The browser tools and `terminal_read` called without a tab id then act on that
+panel toggle), beside the page or terminal, as that pane's own conversation.
+The side loop is one per app, so a pane's conversation is a side-chat session
+main keys by the pane's tab (`browserTabRegistry` bound conversations). Each
+turn sent there names the tab (`ave:sidechat:send` `surface`), and main first
+moves the loop onto that pane's session, or a fresh one it binds to the pane.
+A turn from a conversation's side panel names the session its view shows and
+never runs in a pane's session or changes a pane's binding. Reopening a pane's
+chat reads its history without moving the loop (`ave:sidechat:pane-history`);
+the chat's New and the pane's close end it (`ave:sidechat:end-pane-chat`),
+stopping only that conversation's turn, and a closed pane's conversation is
+archived. Bindings live in main's memory: a reloaded window keeps them, since
+restored tabs keep their ids, and a restart starts each pane afresh. Only one
+side turn runs at a time across the app, so a send while another chat's turn
+streams is refused (`streaming-active`).
+
+The browser tools and `terminal_read` called without a tab id act on the bound
 tab, and sub-agents inherit it through their hosting session; a bound tab that
-is gone, or of the other kind, is an error, never another tab. A turn sent from
-a conversation's side panel names no tab and releases the binding, so those
-tools fall back to the window's active surface. The pane chat claims its
-session's approval cards, so the window's lane does not draw them again.
+is gone, or of the other kind, is an error, never another tab. A conversation
+that is not a pane's acts on the window's active surface, which the side
+panel's chat shows as its target chip; its × drops the target until another
+terminal or page is shown. The pane chat claims its session's approval cards,
+so the window's lane does not draw them again.
 
 ## Extension Runtime
 
