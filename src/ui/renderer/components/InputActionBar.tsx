@@ -563,7 +563,9 @@ function PermissionQuickPicker({
             <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
           </button>
         ) : null}
-        <SandboxCheckboxRow />
+        <SandboxCheckboxRow
+          onOpenPermissions={onOpenPermissions ? () => { setOpen(false); onOpenPermissions(); } : undefined}
+        />
       </PopoverContent>
     </Popover>
   );
@@ -575,6 +577,7 @@ const SANDBOX_CAUSE_KEYS: Record<ShellSandboxUnavailableCause, string> = {
   "missing-ripgrep": "inputActionBar.sandboxCauseMissingRipgrep",
   "dependency-check-failed": "inputActionBar.sandboxCauseDependencyCheckFailed",
   "windows-setup-incomplete": "inputActionBar.sandboxCauseWindowsSetupIncomplete",
+  "windows-sandbox-missing": "inputActionBar.sandboxCauseWindowsSandboxMissing",
   "linux-runtime-probe-failed": "inputActionBar.sandboxCauseLinuxRuntimeProbeFailed",
   "init-failed": "inputActionBar.sandboxCauseInitFailed",
   "platform-unsupported": "inputActionBar.sandboxCausePlatformUnsupported",
@@ -594,6 +597,8 @@ function sandboxStatusText(status: ShellSandboxStatusInfo): string {
       return t("inputActionBar.sandboxStatePendingOff");
     case "unknown":
       return t("inputActionBar.sandboxStateUnknown");
+    case "error":
+      return t("inputActionBar.sandboxStateError");
     case "unavailable":
     case "unsupported":
       return t("inputActionBar.sandboxStateUnavailable", {
@@ -610,6 +615,7 @@ const SANDBOX_STATUS_TONE: Record<ShellSandboxStatusInfo["state"], string> = {
   unknown: "text-muted-foreground",
   unavailable: "text-warning",
   unsupported: "text-warning",
+  error: "text-destructive",
 };
 
 /**
@@ -621,7 +627,7 @@ const SANDBOX_STATUS_TONE: Record<ShellSandboxStatusInfo["state"], string> = {
  * sandbox starts once at boot, so a change shows as pending until a restart
  * instead of claiming it applied.
  */
-function SandboxCheckboxRow() {
+function SandboxCheckboxRow({ onOpenPermissions }: { onOpenPermissions?: () => void }) {
   const { t } = useTranslation();
   const checkboxId = useId();
   const statusId = useId();
@@ -674,7 +680,13 @@ function SandboxCheckboxRow() {
       ? ""
       : sandboxStatusText(status);
   const checked = status !== null && (status.setting || status.envForced);
-  const disabled = busy || status === null || status.state === "unsupported" || status.envForced;
+  const disabled =
+    busy || status === null || status.state === "unsupported" || status.state === "error" || status.envForced;
+  // The one-time Windows administrator setup lives in Settings → Permissions
+  // (it raises a UAC prompt on an explicit click there), so a card that says
+  // the setup is incomplete leads to it rather than leaving the user stuck.
+  const needsWindowsSetup =
+    status?.state === "unavailable" && status.causes.includes("windows-setup-incomplete");
 
   return (
     <div
@@ -708,6 +720,16 @@ function SandboxCheckboxRow() {
         <p role="alert" data-testid="permission-quick-picker-sandbox-error" className="mt-1 pl-6 text-caption text-destructive">
           {t("inputActionBar.sandboxToggleFailed")}
         </p>
+      ) : null}
+      {needsWindowsSetup && onOpenPermissions ? (
+        <button
+          type="button"
+          onClick={onOpenPermissions}
+          data-testid="permission-quick-picker-sandbox-setup"
+          className="mt-1 ml-6 text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-input-bar-focus"
+        >
+          {t("inputActionBar.sandboxOpenWindowsSetup")}
+        </button>
       ) : null}
       {status?.envForced ? (
         <EnvForcedNotice

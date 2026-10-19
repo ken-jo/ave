@@ -25,7 +25,10 @@ export const en = {
   "inputActionBar.sandboxCauseInitFailed": "the sandbox failed to start",
   "inputActionBar.sandboxCausePlatformUnsupported": "not supported on this platform",
   "inputActionBar.sandboxCauseWindowsShellNotContained": "Windows shells run outside the sandbox (path ACL grants are not safe)",
-  "inputActionBar.sandboxCauseShellNotContained": "the active sandbox cannot contain shells",
+  "inputActionBar.sandboxCauseShellNotContained": "the active sandbox cannot contain shells, so shell commands are blocked",
+  "inputActionBar.sandboxCauseWindowsSandboxMissing": "the Windows sandbox (srt-win) is missing from this installation — reinstall Ave",
+  "inputActionBar.sandboxStateError": "Status error — Ave could not determine the sandbox state. See the log.",
+  "inputActionBar.sandboxOpenWindowsSetup": "Open Windows sandbox setup in Settings",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "inputActionBar.attachEnabled": "파일/이미지 첨부 (최대 5개)",
@@ -53,5 +56,8 @@ export const ko: Record<keyof typeof en, string> = {
   "inputActionBar.sandboxCauseInitFailed": "샌드박스 시작 실패",
   "inputActionBar.sandboxCausePlatformUnsupported": "이 플랫폼에서는 지원되지 않음",
   "inputActionBar.sandboxCauseWindowsShellNotContained": "Windows 셸은 샌드박스 밖에서 실행됨 (경로 ACL 부여가 안전하지 않음)",
-  "inputActionBar.sandboxCauseShellNotContained": "활성 샌드박스가 셸을 격리하지 못함",
+  "inputActionBar.sandboxCauseShellNotContained": "활성 샌드박스가 셸을 격리하지 못해 셸 명령이 차단됨",
+  "inputActionBar.sandboxCauseWindowsSandboxMissing": "이 설치본에 Windows 샌드박스(srt-win)가 없음 — Ave를 다시 설치하세요",
+  "inputActionBar.sandboxStateError": "상태 오류 — Ave가 샌드박스 상태를 판단하지 못했습니다. 로그를 확인하세요.",
+  "inputActionBar.sandboxOpenWindowsSetup": "설정에서 Windows 샌드박스 설정 열기",
 };

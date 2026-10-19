@@ -39,20 +39,19 @@ test('the boot gate outcome reaches settings, and the notice matches it', async 
   expect(GATE_ACTIONS).toContain(boot.action);
   expect(boot.reason.length).toBeGreaterThan(0);
   expect(['explicit-env', 'default-settings', 'off']).toContain(boot.onSignal);
-  expect(Array.isArray(boot.dependencyErrors)).toBe(true);
+  expect(Array.isArray(boot.causes)).toBe(true);
+  // Raw dependency messages can carry local paths; they stay in the main log.
+  expect(boot).not.toHaveProperty('dependencyErrors');
   // `abort` throws out of boot, so a running app can never report it.
   expect(boot.action).not.toBe('abort');
 
   const notice = settingsPage.getByTestId('os-sandbox-boot-degraded');
   if (boot.action === 'degrade') {
     await expect(notice).toBeVisible();
-    // Setup failures show localized repair guidance; raw dependency output
-    // belongs in diagnostics rather than in the settings panel.
-    if (boot.dependencyErrors.length > 0) {
+    // Setup failures show localized repair guidance; the raw dependency
+    // output never reaches the renderer, only its classified causes.
+    if (boot.causes.length > 0) {
       await expect(settingsPage.getByTestId('os-sandbox-boot-degraded-detail')).toBeVisible();
-      for (const detail of boot.dependencyErrors) {
-        if (detail) await expect(notice).not.toContainText(detail);
-      }
     }
   } else {
     // `skip` (never turned on) and `activate` (on and working) are both states

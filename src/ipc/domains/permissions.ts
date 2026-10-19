@@ -60,6 +60,7 @@ import type {
   SandboxWindowsStatusInfo,
   SandboxWindowsInstallResult,
   SandboxRuntimeCapabilityInfo,
+  ShellSandboxStatusInfo,
 } from "../../shared/sandbox-capability-info.js";
 import {
   detectPluginWorkerSandboxCapability,
@@ -251,7 +252,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // as unavailable merely because it's off.
   // `enabled` separately reflects the current setting.
   ipcMain.handle(PERMISSIONS.sandboxCapability, async () => {
-    const { sandboxConfinementForPlatform, describeShellSandboxStatus } = await import(
+    const { sandboxConfinementForPlatform, describeShellSandboxStatus, sandboxBootOutcomeView } = await import(
       "../../shared/sandbox-capability-info.js"
     );
     const platform = process.platform;
@@ -306,15 +307,33 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // and powershell tools run under, so "on" means shells are contained, not
     // merely that ASRT is running (Windows Plan B runs shells plain).
     const shellPlan = getHostShellExecutionPlan();
-    const shell = describeShellSandboxStatus({
-      platformSupported: kind !== "none",
-      setting: storedShellSetting,
-      envForced: envForcedValueForSettingsPath("features.osToolSandbox") === true,
-      requestedAtBoot: isShellSandboxRequestedAtBoot(),
-      boot,
-      shellPlanMode: shellPlan.mode,
-      shellPlanFallback: shellPlan.fallbackReason,
-    });
+    const envForced = envForcedValueForSettingsPath("features.osToolSandbox") === true;
+    let shell: ShellSandboxStatusInfo;
+    try {
+      shell = describeShellSandboxStatus({
+        platformSupported: kind !== "none",
+        setting: storedShellSetting,
+        envForced,
+        requestedAtBoot: isShellSandboxRequestedAtBoot(),
+        boot,
+        shellPlanMode: shellPlan.mode,
+        shellPlanFallback: shellPlan.fallbackReason,
+      });
+    } catch (error) {
+      // The boot seal and the shell plan contradict each other — a host bug,
+      // not a user state. It is reported loudly here and on the one row that
+      // depends on it; the rest of this snapshot (and every Settings section
+      // loaded beside it) still describes what the host does observe.
+      const message = errorMessage(error);
+      log.error("sandboxCapability: shell sandbox status contract violated: %s", message);
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "permissions",
+        type: "error",
+        output: `[sandbox-status:contract-violation] ${message}`,
+      });
+      shell = { state: "error", setting: storedShellSetting, envForced, causes: [] };
+    }
     return {
       platform,
       enabled,
@@ -328,7 +347,9 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       // for it: a degraded gate never publishes a capability, so `runtime`
       // reports the same "no OS sandbox configured" it reports when the user
       // never turned the sandbox on.
-      boot,
+      // Raw dependency messages stay main-side (boot log); the renderer gets
+      // the classified causes.
+      boot: boot === null ? null : sandboxBootOutcomeView(boot),
       shell,
       confines: sandboxConfinementForPlatform(platform, kind),
     };

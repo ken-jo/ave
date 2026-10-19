@@ -882,6 +882,8 @@ describe("permission card sandbox checkbox", () => {
     [["linux-runtime-probe-failed"], "bubblewrap을 실행할 수 없음 (시작 점검 실패)"],
     [["windows-setup-incomplete"], "Windows 샌드박스 설정(srt-win)이 완료되지 않음"],
     [["windows-shell-not-contained"], "Windows 셸은 샌드박스 밖에서 실행됨 (경로 ACL 부여가 안전하지 않음)"],
+    [["windows-sandbox-missing"], "이 설치본에 Windows 샌드박스(srt-win)가 없음 — Ave를 다시 설치하세요"],
+    [["shell-not-contained"], "활성 샌드박스가 셸을 격리하지 못해 셸 명령이 차단됨"],
   ])("names the reason when the requested sandbox is unavailable (%j)", async (causes, reason) => {
     sandboxCapability.mockResolvedValue(shellStatus({ state: "unavailable", setting: true, causes }));
     const { getByRole, getByTestId } = await openCard();
@@ -955,5 +957,36 @@ describe("permission card sandbox checkbox", () => {
     expect(getByTestId("permission-quick-picker-sandbox").getAttribute("data-state")).toBe("error");
     expect(getByTestId("permission-quick-picker-sandbox-status").textContent).toBe("샌드박스 상태를 읽지 못했습니다.");
     expect(getByRole("checkbox", { name: "샌드박스" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("shows a host status fault with a destructive tone and no toggle", async () => {
+    sandboxCapability.mockResolvedValue(shellStatus({ state: "error", setting: true }));
+    const { getByRole, getByTestId } = await openCard();
+    expect(getByRole("checkbox", { name: "샌드박스" }).hasAttribute("disabled")).toBe(true);
+    const status = getByTestId("permission-quick-picker-sandbox-status");
+    expect(status.textContent).toBe("상태 오류 — Ave가 샌드박스 상태를 판단하지 못했습니다. 로그를 확인하세요.");
+    expect(status.className).toContain("text-destructive");
+  });
+
+  it("leads to the Settings setup when the Windows sandbox setup is incomplete", async () => {
+    sandboxCapability.mockResolvedValue(shellStatus({ state: "unavailable", setting: true, causes: ["windows-setup-incomplete"] }));
+    const onOpenPermissions = vi.fn();
+    const view = renderBar({ onOpenPermissions });
+    fireEvent.click(view.getByTestId("iab-status-permission"));
+    const link = await view.findByTestId("permission-quick-picker-sandbox-setup");
+    expect(link.textContent).toBe("설정에서 Windows 샌드박스 설정 열기");
+    fireEvent.click(link);
+    expect(onOpenPermissions).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(view.queryByTestId("permission-quick-picker")).toBeNull());
+  });
+
+  it("offers no setup link for causes the Settings setup cannot repair", async () => {
+    sandboxCapability.mockResolvedValue(shellStatus({ state: "unavailable", setting: true, causes: ["windows-sandbox-missing"] }));
+    const view = renderBar({ onOpenPermissions: vi.fn() });
+    fireEvent.click(view.getByTestId("iab-status-permission"));
+    await waitFor(() =>
+      expect(view.getByTestId("permission-quick-picker-sandbox").getAttribute("data-state")).toBe("unavailable"),
+    );
+    expect(view.queryByTestId("permission-quick-picker-sandbox-setup")).toBeNull();
   });
 });

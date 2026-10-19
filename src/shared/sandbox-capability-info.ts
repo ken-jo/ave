@@ -130,6 +130,9 @@ export type SandboxGateReason =
  *   did not name as one of the above (for example running as root).
  * - `windows-setup-incomplete`: the srt-win sandbox user or WFP filters are
  *   not ready — the one-time administrator setup has not completed.
+ * - `windows-sandbox-missing`: the bundled srt-win binary is not where the
+ *   installation put it — a packaging fault that reinstalling Ave repairs, not
+ *   something the administrator setup can fix.
  * - `linux-runtime-probe-failed`: the dependencies are present but the bwrap
  *   runtime probe failed (for example user namespaces are disabled).
  * - `init-failed`: ASRT failed to start for any other reason.
@@ -140,13 +143,16 @@ export type SandboxStartFailureCause =
   | "missing-ripgrep"
   | "dependency-check-failed"
   | "windows-setup-incomplete"
+  | "windows-sandbox-missing"
   | "linux-runtime-probe-failed"
   | "init-failed";
 
 /**
  * Why the shell sandbox is requested for this session but host shells still
- * run without it: a start failure, a platform without a sandbox, or a Windows
- * sandbox that is active but cannot contain one-shot shells.
+ * run without it: a start failure, a platform without a sandbox, a Windows
+ * sandbox that is active but cannot contain one-shot shells, or
+ * (`shell-not-contained`) an active sandbox that cannot contain shells at all,
+ * in which case shell commands are blocked rather than run.
  */
 export type ShellSandboxUnavailableCause =
   | SandboxStartFailureCause
@@ -167,6 +173,9 @@ export type ShellSandboxUnavailableCause =
  * - `unsupported`: this platform has no OS sandbox.
  * - `unknown`: the boot gate has not run in this process, so nothing about
  *   effectiveness can be claimed.
+ * - `error`: the host's observations contradicted each other (see
+ *   {@link describeShellSandboxStatus}); the snapshot reports the fault on this
+ *   row only, so the rest of the sandbox snapshot still loads.
  */
 type ShellSandboxState =
   | "on"
@@ -175,7 +184,8 @@ type ShellSandboxState =
   | "pending-on"
   | "pending-off"
   | "unsupported"
-  | "unknown";
+  | "unknown"
+  | "error";
 
 /** The shell-scope status the sandboxCapability snapshot carries for the permission card. */
 export interface ShellSandboxStatusInfo {
@@ -196,7 +206,7 @@ export interface ShellSandboxStatusInput {
   readonly envForced: boolean;
   /** The shell intent sealed at boot (`isShellSandboxRequestedAtBoot`). */
   readonly requestedAtBoot: boolean;
-  readonly boot: SandboxBootOutcome | null;
+  readonly boot: SandboxBootOutcomeView | null;
   /** The route the host shell execution plan selects for a default shell. */
   readonly shellPlanMode: "asrt" | "plain" | "blocked";
   /** That plan's fallback reason. */
@@ -279,6 +289,24 @@ export interface SandboxBootOutcome {
 }
 
 /**
+ * The boot outcome as the renderer receives it: everything but the raw
+ * dependency messages. Those are ASRT's English free text and can carry local
+ * paths (a binary location, the user name), so they stay in the main-process
+ * log; `causes` carries the same failure as codes the renderer can localize.
+ */
+export type SandboxBootOutcomeView = Omit<SandboxBootOutcome, "dependencyErrors">;
+
+/** Project a sealed boot outcome onto what crosses into the renderer. */
+export function sandboxBootOutcomeView(outcome: SandboxBootOutcome): SandboxBootOutcomeView {
+  return {
+    action: outcome.action,
+    reason: outcome.reason,
+    onSignal: outcome.onSignal,
+    causes: [...outcome.causes],
+  };
+}
+
+/**
  * How strongly the egress proxy knows which invocation opened a connection.
  *
  * - `kernel-channel`: the OS pins each confined process to its own proxy
@@ -342,7 +370,7 @@ export interface SandboxCapabilityInfo {
    * the gate (tests, or a host that never called sandbox init) — absence is not
    * "off", so the renderer must not render it as such.
    */
-  boot?: SandboxBootOutcome | null;
+  boot?: SandboxBootOutcomeView | null;
   /** The shell sandbox as the chat input's permission card shows it. */
   shell: ShellSandboxStatusInfo;
   /** What the sandbox actually confines on this platform when active. */

@@ -16,6 +16,19 @@ function asrtSource(file: string): string {
   );
 }
 
+/**
+ * The message a string or template literal in the runtime's source produces,
+ * found by a fragment of its text, with every `${...}` filled by a sample path
+ * — the string the classifier would actually receive.
+ */
+function emitted(source: string, fragment: string): string {
+  for (const match of source.matchAll(/'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`/g)) {
+    const body = match[1] ?? match[2] ?? "";
+    if (body.includes(fragment)) return body.replace(/\$\{[^}]*\}/g, "/sample/path");
+  }
+  throw new Error(`no literal containing ${JSON.stringify(fragment)} in the installed sandbox runtime`);
+}
+
 describe("classifySandboxDependencyErrors", () => {
   it("names each missing Linux dependency, in order and without repeats", () => {
     expect(classifySandboxDependencyErrors("linux", [
@@ -31,25 +44,44 @@ describe("classifySandboxDependencyErrors", () => {
       .toEqual(["dependency-check-failed"]);
   });
 
-  it("reads every Windows dependency error as incomplete srt-win setup", () => {
+  it("reads Windows user and WFP errors as incomplete srt-win setup", () => {
     expect(classifySandboxDependencyErrors("win32", [
       "Sandbox user is not provisioned (user=false, cred=false)",
       "WFP filters not installed under sublayer x",
     ])).toEqual(["windows-setup-incomplete"]);
   });
 
+  it("names a missing bundled srt-win binary apart from incomplete setup", () => {
+    expect(classifySandboxDependencyErrors("win32", [
+      "windows.srtWin.path is set to 'C:\\Program Files\\Ave\\srt-win.exe' but the file does not exist",
+    ])).toEqual(["windows-sandbox-missing"]);
+  });
+
   it("refuses to classify a check that did not fail", () => {
     expect(() => classifySandboxDependencyErrors("linux", [])).toThrow(/without a dependency error/);
   });
 
-  it("matches the wording the installed sandbox runtime actually emits", () => {
+  it("classifies the messages the installed sandbox runtime actually emits", () => {
     const linux = asrtSource("linux-sandbox-utils.js");
     const manager = asrtSource("sandbox-manager.js");
-    expect(linux).toContain("'bubblewrap (bwrap) not installed'");
-    expect(linux).toContain("`bubblewrap (bwrap) not executable at ${");
-    expect(linux).toContain("'socat not installed'");
-    expect(linux).toContain("`socat not executable at ${");
-    expect(manager).toContain("`ripgrep (${");
-    expect(manager).toContain(") not found`");
+    const windows = asrtSource("windows-sandbox-utils.js");
+    expect(classifySandboxDependencyErrors("linux", [emitted(linux, "bubblewrap (bwrap) not installed")]))
+      .toEqual(["missing-bwrap"]);
+    expect(classifySandboxDependencyErrors("linux", [emitted(linux, "bubblewrap (bwrap) not executable at ")]))
+      .toEqual(["missing-bwrap"]);
+    expect(classifySandboxDependencyErrors("linux", [emitted(linux, "socat not installed")]))
+      .toEqual(["missing-socat"]);
+    expect(classifySandboxDependencyErrors("linux", [emitted(linux, "socat not executable at ")]))
+      .toEqual(["missing-socat"]);
+    expect(classifySandboxDependencyErrors("linux", [emitted(manager, "ripgrep (")]))
+      .toEqual(["missing-ripgrep"]);
+    expect(classifySandboxDependencyErrors("win32", [emitted(windows, "no srt-win path configured")]))
+      .toEqual(["windows-sandbox-missing"]);
+    expect(classifySandboxDependencyErrors("win32", [
+      emitted(windows, "windows.srtWin.path is set to ") + emitted(windows, "not exist"),
+    ])).toEqual(["windows-sandbox-missing"]);
+    expect(classifySandboxDependencyErrors("win32", [emitted(windows, "Sandbox user is not provisioned (user=")]))
+      .toEqual(["windows-setup-incomplete"]);
   });
+;
 });

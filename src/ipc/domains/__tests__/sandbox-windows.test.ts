@@ -529,4 +529,56 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
     });
     expect(await readShell({ osToolSandbox: false })).toMatchObject({ setting: false, envForced: true });
   });
+
+  it("keeps raw dependency messages main-side and sends only the classified causes", async () => {
+    setProcessPlatform("linux");
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    capability.setShellSandboxRequestedAtBoot(true);
+    capability.setSandboxBootOutcome({
+      action: "degrade",
+      reason: "degrade-default-cannot-activate",
+      onSignal: "default-settings",
+      dependencyErrors: ["socat not executable at /home/someone/bin/socat"],
+      causes: ["missing-socat"],
+    });
+    await setup({ osToolSandbox: true });
+    const result = (await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())) as { boot: Record<string, unknown> };
+    expect(result.boot).toEqual({
+      action: "degrade",
+      reason: "degrade-default-cannot-activate",
+      onSignal: "default-settings",
+      causes: ["missing-socat"],
+    });
+    expect(JSON.stringify(result)).not.toContain("/home/someone");
+  });
+
+  it("reports a boot/plan contradiction as an error on the shell row, logged and audited, not a failed snapshot", async () => {
+    setProcessPlatform("darwin");
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    // Activated boot with the shell requested, but no capability published:
+    // the shell plan is plain, which the boot contract rules out.
+    capability.setShellSandboxRequestedAtBoot(true);
+    capability.setSandboxBootOutcome({
+      action: "activate", reason: "deps-present", onSignal: "default-settings", dependencyErrors: [], causes: [],
+    });
+    handlers.clear();
+    const deps = makeDeps({ osToolSandbox: true });
+    const { registerPermissionsHandlers } = await import("../permissions.js");
+    registerPermissionsHandlers(deps as never);
+
+    const result = (await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())) as {
+      platform: string;
+      available: boolean;
+      shell: { state: string; setting: boolean; envForced: boolean; causes: string[] };
+    };
+
+    expect(result.shell).toEqual({ state: "error", setting: true, envForced: false, causes: [] });
+    // The rest of the snapshot is intact.
+    expect(result.platform).toBe("darwin");
+    expect(result.available).toBe(true);
+    expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
+      type: "error",
+      output: expect.stringContaining("[sandbox-status:contract-violation]"),
+    }));
+  });
 });
