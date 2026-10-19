@@ -509,8 +509,8 @@ async function openEgressListener(
     await SandboxManager.openInvocationListener(commandId);
   } catch (error) {
     const message = errorMessage(error);
-    // Ended macOS listeners keep their ports until the sandbox resets, which
-    // for Ave is the next app start.
+    // Ended macOS listeners hold their ports for a quarantine (longer while
+    // their process group lives); an app restart releases them at once.
     const hint = /invocation listeners are held/u.test(message) ? " Restart Ave to release them." : "";
     throw new Error(`${caller}: could not open the invocation's egress listener: ${message}${hint}`);
   }
@@ -531,8 +531,10 @@ export function closeEgressConnections(tokens: readonly string[], host: string, 
 let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
 
 // A released token's listener refuses every further connection from then on.
-onEgressInvocationReleased((token) => {
-  loadedSandboxManagerForRelease?.closeInvocationListener(token);
+// On macOS the ended port stays bound for a quarantine, longer while the
+// invocation's process group still has a process in it.
+onEgressInvocationReleased((token, { processGroup }) => {
+  loadedSandboxManagerForRelease?.closeInvocationListener(token, processGroup === undefined ? undefined : { processGroup });
 });
 
 

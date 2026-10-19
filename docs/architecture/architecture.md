@@ -1400,11 +1400,15 @@ even when `allowAllUnixSockets` lifts the AF_UNIX block (as registering a
 worker socket directory does). On macOS `allowAllUnixSockets` would expose the
 shared bridge socket, so while it is set shell and extension identity is
 `shared`. The proxy refuses a destination that is a proxy front end's port on
-this host, so one invocation cannot hop onto another's listener; with an
-upstream HTTP(S) proxy configured it first resolves the name locally and
-refuses it when any address is loopback or otherwise not permitted. An ended
-invocation's macOS port stays bound, refusing connections, for 30 minutes, and
-its number is never reused. A wrap with `network.allowLocalBinding` is
+this host, so one invocation cannot hop onto another's listener. A
+destination name is resolved once, before the callback decides, and refused
+when it does not resolve or any address is loopback, reserved or this host's;
+the callback sees the addresses, and the connection is pinned to them (a
+direct dial does not resolve again; through an upstream HTTP(S) proxy the
+CONNECT names the address, not the name; plain HTTP by name through an
+upstream is refused), so DNS rebinding cannot move it afterwards. An ended
+invocation's macOS port stays bound, refusing connections, for 30 minutes,
+longer while its process group still runs, and its number is never reused. A wrap with `network.allowLocalBinding` is
 refused, and Ave never sets it. The macOS profile also denies process-info on other processes and
 the `kern.procargs` sysctls, and each non-PTY wrap starts in its own session
 (node-pty already starts one), so a sandboxed process cannot read another
@@ -1421,11 +1425,14 @@ holds the grants, the persistent ones in
 `<AVE_HOME>/permissions/shell-egress-hosts.json`, revocable in Settings →
 Permissions → Network). A background call nobody can answer, asks turned off
 (`features.shellEgressAsk`), or an unreadable grant file is a refusal.
-Destinations are classed by `egressDestinationNetwork()`: link-local, cloud
-metadata, unspecified, multicast and broadcast addresses are refused without
-asking; loopback, `localhost`/`*.localhost`, RFC1918, CGNAT and ULA addresses
-are offered at most This conversation, with a local-network warning on the
-card, and persistent grants never apply to them. Conversation grants are
+Destinations are classed by `egressDestinationNetwork()` on the host and every
+address it resolved to, most restrictive first: link-local, cloud metadata,
+unspecified, multicast and broadcast addresses are refused without asking;
+loopback, `localhost`/`*.localhost`, local-network names (`*.local`,
+`*.localdomain`, `*.home.arpa`, `*.internal`, `*.lan`), RFC1918, CGNAT, ULA
+and site-local addresses are offered at most This conversation, with a local-network warning on the
+card, and persistent grants never apply to them. Only the desktop window
+answers an egress ask; an answer from any other surface leaves it pending. Conversation grants are
 listed and revocable in Settings too, and revoking a grant closes the
 connections it let through that are still open. Each decision, including a
 refusal the proxy made before asking, writes an `egress-decision` sandbox audit

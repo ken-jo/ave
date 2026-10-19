@@ -11,7 +11,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type {
   SandboxAskCallback,
   SandboxAskContext,
@@ -44,6 +44,29 @@ const twoParameters: SandboxAskCallback = async (_params, context?: SandboxAskCo
   context?.attributionKey === "token" && context.identity === "listener";
 type WrapOptions = NonNullable<Parameters<typeof SandboxManager.wrapWithSandbox>[4]>;
 const ttysOption: WrapOptions["ttys"] = ["/dev/ttys001"];
+
+/** The documentation address every `*.example.invalid` test name resolves to. */
+const TEST_ADDRESS = "203.0.113.10";
+
+/**
+ * The proxy resolves each destination name once, before asking; test names
+ * answer with a documentation address so the callback and dial are reached.
+ */
+async function testResolver(name: string): Promise<Array<{ address: string; family: number }>> {
+  if (name.endsWith(".example.invalid")) return [{ address: TEST_ADDRESS, family: 4 }];
+  const { lookup } = await import("node:dns/promises");
+  return lookup(name, { all: true });
+}
+
+beforeEach(async () => {
+  const { SandboxManager: manager } = await import("@anthropic-ai/sandbox-runtime");
+  manager.setDestinationResolverForTesting(testResolver);
+});
+afterEach(async () => {
+  const { SandboxManager: manager } = await import("@anthropic-ai/sandbox-runtime");
+  manager.setDestinationResolverForTesting(undefined);
+  manager.setListenerQuarantineForTesting(undefined);
+});
 
 describe("patched @anthropic-ai/sandbox-runtime", () => {
   it("installs the version the patch is keyed to, with the patch file present", () => {
@@ -103,10 +126,10 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
       /const attributionKey = encodedCommand\s+\? decodeSandboxedCommand\(encodedCommand\)\s+: undefined;/u,
     );
     expect(filter).toMatch(/commandNetworkListsByKey\.get\(attributionKey\)/u);
-    expect(filter).toMatch(/await sandboxAskCallback\(\{ host, port \}, \{ attributionKey, identity \}\)/u);
+    expect(filter).toMatch(/await sandboxAskCallback\(\{ host, port \}, \{ attributionKey, identity, addresses: addresses\.map\(a => a\.address\) \}\)/u);
     // Only an invocation listener's filter says 'listener'; the shared front
     // end's default is the forgeable username.
-    expect(filter.startsWith("async function filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain, identity = 'username')")).toBe(true);
+    expect(filter.startsWith("async function filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain, identity = 'username', addresses = [])")).toBe(true);
     // 0.0.80 allows only on a literal `true` (#591); the patch must not loosen it.
     expect(filter).toMatch(/if \(answer === true\)/u);
     // Ave runs non-strict with an empty allowlist, so the callback is the gate:
@@ -115,7 +138,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(filter).toMatch(/catch \(error\) \{\n[\s\S]{0,200}?return denied\('permission prompt failed'\);\n\s+\}\n\}/u);
     const schemas = readInstalled("dist/sandbox/sandbox-schemas.d.ts");
     expect(schemas).toMatch(
-      /export type SandboxAskContext = \{\s+attributionKey: string \| undefined;\s+\/\*\*[\s\S]*?\*\/\s+identity: 'listener' \| 'username';\s+\};/u,
+      /export type SandboxAskContext = \{\s+attributionKey: string \| undefined;\s+\/\*\*[\s\S]*?\*\/\s+identity: 'listener' \| 'username';\s+\/\*\*[\s\S]*?\*\/\s+addresses: readonly string\[\];\s+\};/u,
     );
     expect(schemas).toMatch(
       /export type SandboxAskCallback = \(params: NetworkHostPattern, context\?: SandboxAskContext\) => Promise<boolean \| \{\s+allow: false;\s+reason: string;\s+\}>;/u,
@@ -126,9 +149,9 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
   it("types the callback so one-parameter callers still fit and two-parameter callers see the key", async () => {
     const params = { host: "example.com", port: 443 };
     await expect(oneParameter(params)).resolves.toBe(true);
-    await expect(twoParameters(params, { attributionKey: "token", identity: "listener" })).resolves.toBe(true);
-    await expect(twoParameters(params, { attributionKey: "token", identity: "username" })).resolves.toBe(false);
-    await expect(twoParameters(params, { attributionKey: undefined, identity: "username" })).resolves.toBe(false);
+    await expect(twoParameters(params, { attributionKey: "token", identity: "listener", addresses: [] })).resolves.toBe(true);
+    await expect(twoParameters(params, { attributionKey: "token", identity: "username", addresses: [] })).resolves.toBe(false);
+    await expect(twoParameters(params, { attributionKey: undefined, identity: "username", addresses: [] })).resolves.toBe(false);
     expect(ttysOption).toEqual(["/dev/ttys001"]);
   });
 
@@ -145,7 +168,9 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(filter).toMatch(/if \(lane\.ended\)\s+return denied\('invocation ended'\);/u);
     expect(filter).toMatch(/if \(encodedCommand !== lane\.encodedKey\)/u);
     expect(filter).toMatch(/localDestinationReason\(host, port\)/u);
-    expect(filter).toMatch(/filterNetworkRequest\(port, host, sandboxAskCallback, lane\.encodedKey, explain, 'listener'\)/u);
+    expect(filter).toMatch(/const resolved = await resolveDestination\(host, port\);/u);
+    expect(filter).toMatch(/filterNetworkRequest\(port, host, sandboxAskCallback, lane\.encodedKey, explain, 'listener', resolved\.addresses\)/u);
+    expect(filter).toMatch(/pinDestination\(socket, host, port, resolved\.addresses\);/u);
     const close = functionBody(manager, /\nfunction closeInvocationListener\(/u);
     // An ended macOS listener keeps its port (tombstone) until reset().
     expect(close).toMatch(/lane\.mux\.server\.on\('connection', socket => socket\.destroy\(\)\);/u);
@@ -155,7 +180,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(manager).toMatch(/\? \(lane\?\.socketPath \?\? getLinuxHttpSocketPath\(\)\)/u);
     const declarations = readInstalled("dist/sandbox/sandbox-manager.d.ts");
     expect(declarations).toMatch(/\n\s+openInvocationListener\(commandId: string\): Promise<\{/u);
-    expect(declarations).toMatch(/\n\s+closeInvocationListener\(commandId: string\): void;/u);
+    expect(declarations).toMatch(/\n\s+closeInvocationListener\(commandId: string, options\?: \{/u);
   });
 
   it("hides the proxy's socket directory in every Linux wrap and keeps proxy backends in it", () => {
@@ -300,8 +325,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       expect(await connectThrough(port!, proxy, decodeURIComponent(proxy.username))).toMatch(/^HTTP\/1\.1 403/u);
       expect(await connectThrough(port!, proxy, "srt")).toMatch(/^HTTP\/1\.1 403/u);
       expect(asked).toEqual([
-        { attributionKey: commandId, identity: "username" },
-        { attributionKey: undefined, identity: "username" },
+        { attributionKey: commandId, identity: "username", addresses: [TEST_ADDRESS] },
+        { attributionKey: undefined, identity: "username", addresses: [TEST_ADDRESS] },
       ]);
     } finally {
       await SandboxManager.reset();
@@ -338,7 +363,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       const firstFront = frontOf(firstListener);
       // Its own key on its own listener: asked, as the listener's.
       expect(await connectThrough(firstFront, proxy, ownName)).toMatch(/^HTTP\/1\.1 403/u);
-      expect(asked).toEqual([{ host: "unlisted.example.invalid", context: { attributionKey: first, identity: "listener" } }]);
+      expect(asked).toEqual([{ host: "unlisted.example.invalid", context: { attributionKey: first, identity: "listener", addresses: [TEST_ADDRESS] } }]);
       // Another key on this listener, and this key on another's: never asked.
       // The proxy username is `srt.` plus the base64 of the commandId.
       expect(ownName).toBe(`srt.${Buffer.from(first).toString("base64")}`);
@@ -419,23 +444,42 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     };
   }
 
-  /** A name that resolves here to a loopback or own-interface address, or undefined. */
-  async function localResolvingName(): Promise<string | undefined> {
-    const { lookup } = await import("node:dns/promises");
-    const { hostname, networkInterfaces } = await import("node:os");
-    const own = new Set(Object.values(networkInterfaces()).flat().map((i) => i?.address.toLowerCase()));
-    for (const name of ["localtest.me", "127.0.0.1.nip.io", hostname()]) {
-      try {
-        const answers = await lookup(name, { all: true });
-        if (answers.some(({ address }) => address.startsWith("127.") || address === "::1" || own.has(address.toLowerCase()))) return name;
-      } catch {
-        // not resolvable here; try the next
-      }
-    }
-    return undefined;
+  /** A resolver whose answer for `name` is the next of `answers` on each call (the last one repeats). */
+  function rebinding(name: string, answers: string[]): { resolver: typeof testResolver; calls: () => number } {
+    let calls = 0;
+    return {
+      calls: () => calls,
+      resolver: async (asked) => {
+        if (asked !== name) return testResolver(asked);
+        const address = answers[Math.min(calls, answers.length - 1)]!;
+        calls += 1;
+        return [{ address, family: address.includes(":") ? 6 : 4 }];
+      },
+    };
   }
 
-  it("with an upstream proxy, refuses a name that resolves to this host before asking or forwarding", async (test) => {
+  /** Send one plain-HTTP request through a proxy front end; resolves to the status line. */
+  async function plainHttpThrough(front: number | string, proxy: URL, username: string, url: string): Promise<string> {
+    const { connect } = await import("node:net");
+    const authorization = Buffer.from(`${username}:${decodeURIComponent(proxy.password)}`).toString("base64");
+    const host = new URL(url).host;
+    return new Promise((resolve, reject) => {
+      const onConnect = (): void => {
+        socket.write(`GET ${url} HTTP/1.1\r\nHost: ${host}\r\nProxy-Authorization: Basic ${authorization}\r\nConnection: close\r\n\r\n`);
+      };
+      const socket = typeof front === "number" ? connect(front, "127.0.0.1", onConnect) : connect(front, onConnect);
+      let head = "";
+      socket.setTimeout(10_000, () => socket.destroy(new Error("proxy did not answer")));
+      socket.on("data", (chunk: Buffer) => {
+        head += chunk.toString("latin1");
+        if (head.includes("\r\n")) socket.end();
+      });
+      socket.on("close", () => resolve(head.split("\r\n")[0] ?? ""));
+      socket.on("error", reject);
+    });
+  }
+
+  it("with an upstream proxy, CONNECTs to the address it vetted, never the name, so a rebinding name cannot reach this host", async (test) => {
     const upstream = await fakeUpstream();
     const asked: Array<{ host: string; context: SandboxAskContext | undefined }> = [];
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
@@ -452,7 +496,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
           },
           async ({ host }, context) => {
             asked.push({ host, context });
-            return host === "allowed.example.invalid";
+            return true;
           },
         );
       } catch (error) {
@@ -465,22 +509,117 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       const proxy = proxyUrlIn(await SandboxManager.wrapWithSandbox("true", undefined, undefined, undefined, { commandId }));
       const name = `srt.${Buffer.from(commandId).toString("base64")}`;
       const front = frontOf(listener);
-      // Control: an allowed public name goes to the upstream.
-      expect(await connectThrough(front, proxy, name, "allowed.example.invalid:443")).toMatch(/^HTTP\/1\.1 200/u);
-      expect(upstream.connects).toEqual(["CONNECT allowed.example.invalid:443 HTTP/1.1"]);
-      const local = await localResolvingName();
-      if (local === undefined) {
-        if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("no name resolves to this host here");
-        test.skip("no name resolves to this host here");
-        return;
-      }
-      const target = `${local}:${SandboxManager.getProxyPort()}`;
-      expect(await connectThrough(front, proxy, name, target)).toMatch(/^HTTP\/1\.1 403/u);
+      const proxyPort = SandboxManager.getProxyPort()!;
+      // A name that answers a public address to the check and this host's
+      // loopback to any later lookup (the upstream's, or a second one here).
+      const rebind = rebinding("rebind.example.test", ["198.51.100.7", "127.0.0.1"]);
+      SandboxManager.setDestinationResolverForTesting(rebind.resolver);
+      expect(await connectThrough(front, proxy, name, `rebind.example.test:${proxyPort}`)).toMatch(/^HTTP\/1\.1 200/u);
+      expect(upstream.connects).toEqual([`CONNECT 198.51.100.7:${proxyPort} HTTP/1.1`]);
+      expect(rebind.calls()).toBe(1);
+      expect(asked).toEqual([{
+        host: "rebind.example.test",
+        context: { attributionKey: commandId, identity: "listener", addresses: ["198.51.100.7"] },
+      }]);
+      // A name that resolves to this host now: refused before asking or forwarding.
+      SandboxManager.setDestinationResolverForTesting(rebinding("local.example.test", ["127.0.0.1"]).resolver);
+      expect(await connectThrough(front, proxy, name, `local.example.test:${proxyPort}`)).toMatch(/^HTTP\/1\.1 403/u);
+      // A name that does not resolve here: nothing could be pinned, so refused.
+      SandboxManager.setDestinationResolverForTesting(async () => {
+        throw Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" });
+      });
+      expect(await connectThrough(front, proxy, name, "split.example.test:443")).toMatch(/^HTTP\/1\.1 403/u);
+      // Plain HTTP by name through the upstream: the absolute-form target
+      // would let the upstream resolve it, so it is refused; a literal goes.
+      SandboxManager.setDestinationResolverForTesting(testResolver);
+      expect(await plainHttpThrough(front, proxy, name, "http://plain.example.invalid/")).toMatch(/^HTTP\/1\.1 403/u);
       expect(upstream.connects).toHaveLength(1);
-      expect(asked.map((a) => a.host)).toEqual(["allowed.example.invalid"]);
+      // Refused before the callback: nobody is asked about a request that cannot be sent.
+      expect(asked.map((a) => a.host)).toEqual(["rebind.example.test"]);
     } finally {
       await SandboxManager.reset();
       await upstream.close();
+    }
+  });
+
+  it("dials the address it vetted on the direct path, without resolving the name again", async (test) => {
+    const { createServer } = await import("node:net");
+    const canary = createServer((socket) => socket.end("CANARY\n"));
+    await new Promise<void>((resolve) => canary.listen(0, "127.0.0.1", resolve));
+    const canaryPort = (canary.address() as import("node:net").AddressInfo).port;
+    const asked: Array<{ host: string; context: SandboxAskContext | undefined }> = [];
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    try {
+      try {
+        // An IP rule lets a name use this loopback address (the guard refuses
+        // loopback for a name otherwise), so the pinned dial has a target.
+        await SandboxManager.initialize(
+          {
+            network: { allowedDomains: [`127.0.0.1:${canaryPort}`], deniedDomains: [] },
+            filesystem: { denyRead: [], allowWrite: [], denyWrite: [] },
+          },
+          async ({ host }, context) => {
+            asked.push({ host, context });
+            return true;
+          },
+        );
+      } catch (error) {
+        if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw error;
+        test.skip(`sandbox-runtime cannot initialize here: ${String(error)}`);
+        return;
+      }
+      const commandId = "f".repeat(16) + "0123456789abcdef";
+      const listener = await SandboxManager.openInvocationListener(commandId);
+      const proxy = proxyUrlIn(await SandboxManager.wrapWithSandbox("true", undefined, undefined, undefined, { commandId }));
+      const rebind = rebinding("pin.example.test", ["127.0.0.1", "198.51.100.9"]);
+      SandboxManager.setDestinationResolverForTesting(rebind.resolver);
+      const name = `srt.${Buffer.from(commandId).toString("base64")}`;
+      expect(await connectThrough(frontOf(listener), proxy, name, `pin.example.test:${canaryPort}`)).toMatch(/^HTTP\/1\.1 200/u);
+      expect(rebind.calls()).toBe(1);
+      expect(asked).toEqual([{
+        host: "pin.example.test",
+        context: { attributionKey: commandId, identity: "listener", addresses: ["127.0.0.1"] },
+      }]);
+    } finally {
+      await SandboxManager.reset();
+      await new Promise<void>((resolve) => canary.close(() => resolve()));
+    }
+  });
+
+  it.runIf(process.platform === "darwin")("keeps an ended listener's port while its process group lives, and releases it once the group is empty", async (test) => {
+    const SandboxManager = await initializeOrSkip(test, []);
+    if (SandboxManager === undefined) return;
+    const { spawn } = await import("node:child_process");
+    const { createServer } = await import("node:net");
+    const group = spawn("/bin/sleep", ["30"], { detached: true, stdio: "ignore" });
+    const bindable = async (port: number): Promise<boolean> => {
+      const probe = createServer();
+      const bound = await new Promise<boolean>((resolve) => {
+        probe.once("error", () => resolve(false));
+        probe.listen(port, "127.0.0.1", () => resolve(true));
+      });
+      if (bound) await new Promise<void>((resolve) => probe.close(() => resolve()));
+      return bound;
+    };
+    try {
+      SandboxManager.setListenerQuarantineForTesting(100);
+      const commandId = "9".repeat(16) + "0123456789abcdef";
+      const listener = await SandboxManager.openInvocationListener(commandId);
+      SandboxManager.closeInvocationListener(commandId, { processGroup: group.pid });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(await bindable(listener.port!)).toBe(false);
+      process.kill(-group.pid!, "SIGKILL");
+      await new Promise((resolve) => group.once("exit", resolve));
+      const deadline = Date.now() + 3_000;
+      let released = false;
+      while (!released && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        released = await bindable(listener.port!);
+      }
+      expect(released).toBe(true);
+    } finally {
+      if (group.exitCode === null && group.signalCode === null) process.kill(-group.pid!, "SIGKILL");
+      await SandboxManager.reset();
     }
   });
 

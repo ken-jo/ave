@@ -84,8 +84,22 @@ export interface EgressInvocation {
   /** The value passed to ASRT as `commandId`. */
   readonly token: string;
   readonly owner: EgressInvocationOwner;
+  /**
+   * The process group the invocation's process leads (its pid, for a child
+   * spawned in its own session or group). Passed to the sandbox when the
+   * token is released, so an ended invocation's listener port is not handed
+   * back while anything that process started is still running. Call it once
+   * the process has started; a non-positive or non-integer pid is a bug.
+   */
+  noteProcessGroup(pgid: number): void;
   /** Forget the token. Idempotent; call it once the process has exited. */
   release(): void;
+}
+
+/** What a release listener learns about the invocation that ended. */
+export interface EgressInvocationRelease {
+  /** The process group noted with `noteProcessGroup`, if any. */
+  readonly processGroup: number | undefined;
 }
 
 interface LiveInvocation {
@@ -94,7 +108,7 @@ interface LiveInvocation {
 }
 
 const live = new Map<string, LiveInvocation>();
-const releaseListeners = new Set<(token: string) => void>();
+const releaseListeners = new Set<(token: string, release: EgressInvocationRelease) => void>();
 
 /** The token length in characters: 16 random bytes, hex-encoded. */
 export const EGRESS_INVOCATION_TOKEN_LENGTH = 32;
@@ -106,14 +120,19 @@ export function openEgressInvocation(owner: EgressInvocationOwner, options: Egre
   while (live.has(token)) token = randomBytes(EGRESS_INVOCATION_TOKEN_LENGTH / 2).toString("hex");
   live.set(token, { owner, abortSignal: options.abortSignal });
   let released = false;
+  let processGroup: number | undefined;
   return {
     token,
     owner,
+    noteProcessGroup: (pgid) => {
+      if (!Number.isInteger(pgid) || pgid <= 1) throw new Error(`egress invocation: invalid process group ${String(pgid)}`);
+      processGroup = pgid;
+    },
     release: () => {
       if (released) return;
       released = true;
       live.delete(token);
-      for (const listener of releaseListeners) listener(token);
+      for (const listener of releaseListeners) listener(token, { processGroup });
     },
   };
 }
@@ -133,7 +152,7 @@ export function egressInvocationAbortSignal(token: string): AbortSignal | undefi
  * The sandbox adapter closes the invocation's proxy listener here and the
  * grant store drops its "Allow once" hosts. Returns the unsubscribe.
  */
-export function onEgressInvocationReleased(listener: (token: string) => void): () => void {
+export function onEgressInvocationReleased(listener: (token: string, release: EgressInvocationRelease) => void): () => void {
   releaseListeners.add(listener);
   return () => releaseListeners.delete(listener);
 }

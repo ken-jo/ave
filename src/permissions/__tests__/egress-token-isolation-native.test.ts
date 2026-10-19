@@ -49,6 +49,8 @@ afterEach(async () => {
 });
 
 const MAC_PYTHON = "/usr/bin/python3";
+const R1_HOST = "r1.example.invalid";
+const R1_ADDRESS = "203.0.113.10";
 
 /**
  * Counts the proxy keys in its own environment and in every other process's
@@ -203,6 +205,12 @@ async function withPair(
       asked.push({ host, context: askContext });
       return { allow: false, reason: "r1 probe" };
     });
+    // The proxy resolves a destination once before asking; the probe's name
+    // answers with a documentation address so the callback is reached.
+    SandboxManager.setDestinationResolverForTesting(async (name) => {
+      if (name !== R1_HOST) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${name}`), { code: "ENOTFOUND" });
+      return [{ address: R1_ADDRESS, family: 4 }];
+    });
     if (options.workerSockets === true) {
       const socketDir = join(dir, "worker-sockets");
       mkdirSync(socketDir);
@@ -223,6 +231,7 @@ async function withPair(
     cleanupAsrtSandboxAfterCommand();
     cleanupAsrtSandboxAfterCommand();
   } finally {
+    SandboxManager.setDestinationResolverForTesting(undefined);
     sleeper?.kill();
     await sleeper?.done;
     victim.release();
@@ -291,7 +300,7 @@ async function impersonationCase(
     // Only the prober's own key on its own listener reaches the callback,
     // which is told the listener vouches for it.
     expect(await connectThrough(proberTarget, proberProxy, ownKey)).toMatch(/^HTTP\/1\.1 403/u);
-    expect(asked).toEqual([{ host: "r1.example.invalid", context: { attributionKey: prober.token, identity: "listener" } }]);
+    expect(asked).toEqual([{ host: R1_HOST, context: { attributionKey: prober.token, identity: "listener", addresses: [R1_ADDRESS] } }]);
 
     if (process.platform === "darwin") {
       // From inside the sandbox the victim's listener is not reachable at
@@ -353,4 +362,59 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("e
     impersonationCase(SHELL, WORKER, context, { workerSockets: true }), 120_000);
   it("with worker sockets registered, a shell holding a worker's key is still not attributed as that worker", (context) =>
     impersonationCase(WORKER, SHELL, context, { workerSockets: true }), 120_000);
+});
+
+describe.runIf(process.platform === "darwin")("ended invocation listener quarantine (macOS, native)", () => {
+  /** Whether a fresh server can bind `port` on loopback right now. */
+  async function bindable(port: number): Promise<boolean> {
+    const { createServer } = await import("node:net");
+    const probe = createServer();
+    const bound = await new Promise<boolean>((resolve) => {
+      probe.once("error", () => resolve(false));
+      probe.listen(port, "127.0.0.1", () => resolve(true));
+    });
+    if (bound) await new Promise<void>((resolve) => probe.close(() => resolve()));
+    return bound;
+  }
+
+  it("keeps a released invocation's port while its noted process group lives, then releases it", async (context) => {
+    await requireNativeCase(context);
+    const egress = openEgressInvocation(SHELL.owner);
+    const group = spawn("/bin/sleep", ["30"], { detached: true, stdio: "ignore" });
+    try {
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: false }, async () => false);
+      SandboxManager.setListenerQuarantineForTesting(100);
+      await wrapToolCommand("true", { commandId: egress.token, filesystem: { allowWrite: [], allowRead: [] } });
+      const { port } = await SandboxManager.openInvocationListener(egress.token);
+      expect(port).toBeTypeOf("number");
+      egress.noteProcessGroup(group.pid!);
+      egress.release();
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      // Past the (shortened) quarantine, but the group still runs: kept.
+      expect(await bindable(port!)).toBe(false);
+      process.kill(-group.pid!, "SIGKILL");
+      await new Promise((resolve) => group.once("exit", resolve));
+      const deadline = Date.now() + 3_000;
+      let released = false;
+      while (!released && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        released = await bindable(port!);
+      }
+      expect(released).toBe(true);
+      cleanupAsrtSandboxAfterCommand();
+    } finally {
+      SandboxManager.setListenerQuarantineForTesting(undefined);
+      if (group.exitCode === null && group.signalCode === null) process.kill(-group.pid!, "SIGKILL");
+      egress.release();
+    }
+  }, 60_000);
+
+  it("refuses to note a process group that is not one", () => {
+    const egress = openEgressInvocation(SHELL.owner);
+    try {
+      for (const pgid of [0, 1, -5, 2.5]) expect(() => egress.noteProcessGroup(pgid)).toThrow(/invalid process group/u);
+    } finally {
+      egress.release();
+    }
+  });
 });

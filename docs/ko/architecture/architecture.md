@@ -1984,8 +1984,10 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   작업 공간 터미널은 탭 배너가 들어오기 전까지 고정 사유로 거절한다.
   link-local·메타데이터·unspecified 주소는 묻지 않고 거절하고, loopback·
   `*.localhost`·사설망(RFC1918/CGNAT/ULA)은 경고와 함께 최대 "이 대화"까지만
-  허용한다. Linux 는 lane 소켓을 비공개 디렉터리에 두고 wrap 마다 tmpfs 로 가린
-  뒤 자기 소켓만 다시 바인드한다.
+  허용한다(이름은 해석된 주소로도 판정). 이름은 묻기 전에 한 번만 해석해 그
+  주소로 고정(pin)하고, upstream proxy 에는 이름 대신 주소로 CONNECT 한다.
+  Linux 는 lane 소켓을 비공개 디렉터리에 두고 wrap 마다 tmpfs 로 가린 뒤 자기
+  소켓만 다시 바인드한다.
 - **Gate**: 두 범위가 하나의 ASRT 런타임을 공유한다. 셸 샌드박스
   (`osToolSandbox`, Settings → 권한, 또는 `AVE_SANDBOX_ENABLED=1`)는 호스트 셸
   (bash·PowerShell 도구, 작업 공간 터미널)을, 익스텐션 격리

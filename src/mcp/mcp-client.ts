@@ -2274,6 +2274,9 @@ class StdioTransport implements McpTransport {
       });
 
       trackManagedChildProcess(this.process, { label: `mcp:${this.config.id}:asrt` });
+      // It leads its own process group: the sandbox keeps the ended
+      // invocation's listener port while anything in that group lives.
+      if (this.process.pid !== undefined) egress.noteProcessGroup(this.process.pid);
       this.processStdin = this.process.stdin;
       this.processStdout = this.process.stdout;
       this.setupProcessHandlers();

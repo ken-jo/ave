@@ -78,16 +78,20 @@ export function canonicalEgressHost(host: string): string | undefined {
 }
 
 /**
- * What kind of network a canonical destination host is on, judged from the
- * host alone (an IP literal or a loopback name; ASRT's resolved-address
- * guard judges the names a direct connection resolves):
+ * What kind of network a destination is on, judged from the canonical host
+ * and from every address it resolved to (ASRT resolves a name once, before
+ * asking, and dials only those addresses, so the decision is made on what is
+ * connected to). The most restrictive answer wins:
  *
  *   - `reserved`: never reachable through the ask, whatever anyone answers —
  *     link-local (where most instance-metadata endpoints live), the cloud
  *     metadata addresses outside it, the unspecified address, multicast and
  *     broadcast.
  *   - `local`: this machine or a private network — loopback and
- *     `localhost`/`*.localhost`, RFC 1918, CGNAT (100.64/10), IPv6 ULA. An
+ *     `localhost`/`*.localhost`, RFC 1918, CGNAT (100.64/10), IPv6 ULA and
+ *     site-local (fec0::/10), and names that only exist on a local network
+ *     (`*.local`, `*.localdomain`, `*.home.arpa`, `*.internal`, `*.lan`,
+ *     `ip6-localhost`, `ip6-loopback`). An
  *     intranet host is a legitimate destination, so it may be asked about,
  *     but a grant for it never outlives the conversation and the card says
  *     what it is.
@@ -105,8 +109,25 @@ const RESERVED_RANGES = [
 ];
 const LOCAL_RANGES = [
   ...LOOPBACK_RANGES,
-  "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7",
+  "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7", "fec0::/10",
 ];
+const LOCAL_NAMES = new Set(["ip6-localhost", "ip6-loopback"]);
+const LOCAL_NAME_SUFFIXES = [".local", ".localdomain", ".home.arpa", ".internal", ".lan"];
+
+function isLocalNetworkName(name: string): boolean {
+  return LOCAL_NAMES.has(name) || LOCAL_NAME_SUFFIXES.some((suffix) => name.endsWith(suffix));
+}
+
+function addressNetwork(address: string): EgressDestinationNetwork {
+  // Before the embedded-IPv4 rule: `::1`'s IPv4-compatible form is 0.0.0.1.
+  if (isLoopbackAddress(address)) return "local";
+  // An address that carries an IPv4 address (NAT64, 6to4, IPv4-compatible)
+  // is delivered to that address, so it is judged by it as well.
+  const forms = [address, embeddedIPv4(address)].filter((a): a is string => a !== undefined);
+  if (forms.some((a) => addressInSet(RESERVED, a))) return "reserved";
+  if (forms.some((a) => isLoopbackAddress(a) || addressInSet(LOCAL, a))) return "local";
+  return "public";
+}
 
 function rangeList(ranges: readonly string[]): BlockList {
   const list = new BlockList();
@@ -118,17 +139,19 @@ function rangeList(ranges: readonly string[]): BlockList {
 const RESERVED = rangeList(RESERVED_RANGES);
 const LOCAL = rangeList(LOCAL_RANGES);
 
-export function egressDestinationNetwork(canonicalHost: string): EgressDestinationNetwork {
-  if (isLoopbackName(canonicalHost)) return "local";
-  if (isIP(canonicalHost) === 0) return "public";
-  // Before the embedded-IPv4 rule: `::1`'s IPv4-compatible form is 0.0.0.1.
-  if (isLoopbackAddress(canonicalHost)) return "local";
-  // An address that carries an IPv4 address (NAT64, 6to4, IPv4-compatible)
-  // is delivered to that address, so it is judged by it as well.
-  const addresses = [canonicalHost, embeddedIPv4(canonicalHost)].filter((a): a is string => a !== undefined);
-  if (addresses.some((a) => addressInSet(RESERVED, a))) return "reserved";
-  if (addresses.some((a) => isLoopbackAddress(a) || addressInSet(LOCAL, a))) return "local";
-  return "public";
+export function egressDestinationNetwork(
+  canonicalHost: string,
+  resolvedAddresses: readonly string[] = [],
+): EgressDestinationNetwork {
+  const judged: EgressDestinationNetwork[] = [];
+  if (isIP(canonicalHost) !== 0) judged.push(addressNetwork(canonicalHost));
+  else if (isLoopbackName(canonicalHost) || isLocalNetworkName(canonicalHost)) judged.push("local");
+  for (const address of resolvedAddresses) {
+    if (isIP(address) === 0) throw new Error(`egress destination: resolved address ${JSON.stringify(address)} is not an IP address`);
+    judged.push(addressNetwork(address));
+  }
+  if (judged.includes("reserved")) return "reserved";
+  return judged.includes("local") ? "local" : "public";
 }
 
 /** The scopes a grant for this kind of destination may take. */

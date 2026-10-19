@@ -90,6 +90,23 @@ describe("egress-host approval requests", () => {
     await expect(answer).resolves.toEqual({ allow: true, scope: "once" });
   });
 
+  it("ignores a deny from outside the desktop window too: only the desktop answers an egress ask", async () => {
+    const { wc, gate, auditLogger } = makeGate();
+    const answer = createApprovalGateEgressRequester(gate)(egressRequest());
+    const card = await cardSent(wc);
+    let settled = false;
+    void answer.then(() => { settled = true; });
+    expect(gate.resolve(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac })).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    const rows = auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
+    expect(rows.some((row) => row.startsWith(`[approval:native-desktop-required] ${card.id}`))).toBe(true);
+    gate.resolveFromDesktopRenderer(card.id, {
+      requestId: card.id, choice: "allow-once", egressScope: "conversation", nonce: card.nonce, hmac: card.hmac,
+    });
+    await expect(answer).resolves.toEqual({ allow: true, scope: "conversation" });
+  });
+
   it("refuses an allow with a scope the card did not offer, or without one", async () => {
     for (const scope of ["always", undefined] as const) {
       const { wc, gate, auditLogger } = makeGate();

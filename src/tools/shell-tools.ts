@@ -2112,6 +2112,9 @@ export async function spawnWithSandbox(
     }
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash:asrt" });
+    // Detached, the child leads its own process group: the sandbox keeps the
+    // ended invocation's listener port while anything in that group lives.
+    if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
 
     const outputCollector = createOutputCollector(child, {
       captureFactory: outputCaptureFactory,
@@ -3238,6 +3241,9 @@ async function spawnPowerShellWithSandbox(
       return;
     }
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell:asrt" });
+    // Detached, the child leads its own process group: the sandbox keeps the
+    // ended invocation's listener port while anything in that group lives.
+    if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
     child.stdout.on("data", outputCollector.collect);

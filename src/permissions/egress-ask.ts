@@ -188,7 +188,13 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };
     }
     const destination: EgressDestination = { host: canonicalHost, port };
-    const network = egressDestinationNetwork(canonicalHost);
+    // ASRT resolved the destination once and will dial exactly these
+    // addresses, so a name is judged by what it resolved to as well.
+    const addresses: unknown = context?.addresses;
+    if (!Array.isArray(addresses) || !addresses.every((a): a is string => typeof a === "string")) {
+      return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };
+    }
+    const network = egressDestinationNetwork(canonicalHost, addresses);
     if (network === "reserved") return { owner, decision: deny("policy", EGRESS_DENY_REASONS.reserved) };
     switch (owner.kind) {
       case "worker":

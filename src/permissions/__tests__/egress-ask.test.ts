@@ -33,7 +33,7 @@ const interactiveShell: ShellEgressOwner = {
   context: { sessionId: "session-1", workspaceRoot: "/work/project", approvalSurface: "interactive" },
 };
 
-const listener = (token: string): SandboxAskContext => ({ attributionKey: token, identity: "listener" });
+const listener = (token: string, addresses: readonly string[] = []): SandboxAskContext => ({ attributionKey: token, identity: "listener", addresses });
 
 let dir: string;
 let grants: EgressGrantStore;
@@ -90,7 +90,7 @@ afterEach(() => {
 describe("egress ask callback — attribution", () => {
   it("denies without asking when the connection names no invocation, an unknown one, or only a username on a kernel-channel host", async () => {
     const ask = callback();
-    expect(await ask({ host: "example.com", port: 443 }, { attributionKey: undefined, identity: "username" }))
+    expect(await ask({ host: "example.com", port: 443 }, { attributionKey: undefined, identity: "username", addresses: [] }))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
     expect(await ask({ host: "example.com", port: 443 }, undefined))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
@@ -98,7 +98,7 @@ describe("egress ask callback — attribution", () => {
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
     // A live shell's key presented on the shared front end: it may have been
     // read off that shell, so it vouches for nobody.
-    expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username" }))
+    expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", addresses: [] }))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
     expect(asked).toEqual([]);
     expect(audit.map((row) => [row.decision, row.basis, row.invocation])).toEqual([
@@ -112,7 +112,7 @@ describe("egress ask callback — attribution", () => {
   it("accepts a username identity only where the identity is shared (Windows until its kernel channel lands)", async () => {
     strength = "shared";
     const ask = callback();
-    expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username" }))
+    expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", addresses: [] }))
       .toBe(true);
   });
 
@@ -127,9 +127,9 @@ describe("egress ask callback — attribution", () => {
       requester: () => undefined,
       audit: () => {},
     });
-    expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username" }))
+    expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", addresses: [] }))
       .toBe(true);
-    expect(await ask({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "username" }))
+    expect(await ask({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "username", addresses: [] }))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
   });
 
@@ -218,7 +218,7 @@ describe("egress ask callback — shell calls", () => {
   it("caps the scopes at This conversation where the identity is shared", async () => {
     strength = "shared";
     const ask = callback();
-    await ask({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "username" });
+    await ask({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "username", addresses: [] });
     expect(asked[0]?.scopes).toEqual(["once", "conversation"]);
   });
 
@@ -426,6 +426,31 @@ describe("egress ask callback — local, private and reserved destinations", () 
     await callback()({ host, port: 8080 }, listener(SHELL_TOKEN));
     expect(asked).toHaveLength(1);
     expect(asked[0]).toMatchObject({ destination: { host: shown, port: 8080 }, scopes: ["once", "conversation"], network: "local" });
+  });
+
+  it("treats a name by what it resolved to: a private address caps it at this conversation and a reserved one refuses it", async () => {
+    await callback()({ host: "nas.corp.example", port: 445 }, listener(SHELL_TOKEN, ["10.20.30.40"]));
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ destination: { host: "nas.corp.example", port: 445 }, scopes: ["once", "conversation"], network: "local" });
+    expect(await callback()({ host: "meta.example", port: 80 }, listener(SHELL_TOKEN, ["169.254.169.254"])))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
+    expect(asked).toHaveLength(1);
+  });
+
+  it("does not let an Always grant for a name cover it once it resolves to a private address", async () => {
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, workspaceRoot: undefined },
+      { host: "rebind.example", port: 443 });
+    expect(await callback()({ host: "rebind.example", port: 443 }, listener(SHELL_TOKEN, ["93.184.215.14"]))).toBe(true);
+    expect(asked).toHaveLength(0);
+    expect(await callback()({ host: "rebind.example", port: 443 }, listener(SHELL_TOKEN, ["192.168.0.10"])))
+      .toEqual({ allow: false, reason: "denied by the user" });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ network: "local", scopes: ["once", "conversation"] });
+  });
+
+  it("refuses a context without the resolved addresses (contract violation)", async () => {
+    expect(await callback()({ host: "example.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener" } as unknown as SandboxAskContext))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.malformed });
   });
 
   it("never lets a persistent grant cover a local destination", async () => {

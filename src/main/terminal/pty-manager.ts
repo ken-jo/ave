@@ -567,6 +567,9 @@ async function spawnNewTerminal(
       pty = ptySpawn(cmd, wrappedArgs, { ...ptyOptions, env: childEnv });
       addCleanup(() => pty.kill("SIGKILL"));
     }
+    // node-pty starts the shell in its own session, so its pid is the
+    // process group the sandbox keeps the ended tab's listener port for.
+    if (process.platform !== "win32" && pty.pid > 1) egress.noteProcessGroup(pty.pid);
 
     let markGone!: () => void;
     const gone = new Promise<void>((resolve) => { markGone = resolve; });

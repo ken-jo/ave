@@ -3149,10 +3149,11 @@ export class ApprovalGate {
     // An egress-host allow names how long it lasts. Only the desktop window
     // may answer one (a grant can outlive the conversation), and the scope
     // must be one the card offered: anything else is a deny, never a guess.
-    if (entry.kind === "egress-host" && decision.choice !== "deny-once" && !nativeRenderer) {
+    if (entry.kind === "egress-host" && !nativeRenderer) {
       // A grant can outlive the conversation, so only the desktop window may
-      // allow one. Any other surface's allow is ignored and the request stays
-      // pending for the desktop, as for a host-shell execution permit.
+      // answer an egress ask, allow or deny: the person at the desktop is the
+      // one asked. Any other surface's answer is ignored and the request
+      // stays pending for the desktop, as for a host-shell execution permit.
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,

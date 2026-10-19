@@ -315,6 +315,9 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     throw error;
   }
   if (egress !== undefined) {
+    // Detached (POSIX), the child leads its own process group: the sandbox
+    // keeps the ended invocation's listener port while that group lives.
+    if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
     // The token outlives neither the process nor a spawn that never started.
     const running = child;
     running.once("exit", () => egress.release());

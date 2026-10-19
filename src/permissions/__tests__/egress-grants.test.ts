@@ -162,9 +162,24 @@ describe("destination networks", () => {
     ["10.0.0.1", "local"], ["172.16.5.5", "local"], ["192.168.0.1", "local"], ["100.64.1.1", "local"], ["fd12::1", "local"],
     ["169.254.169.254", "reserved"], ["fe80::1", "reserved"], ["0.0.0.0", "reserved"], ["::", "reserved"],
     ["224.0.0.1", "reserved"], ["255.255.255.255", "reserved"], ["168.63.129.16", "reserved"], ["fd00:ec2::254", "reserved"],
-    ["64:ff9b::a9fe:a9fe", "reserved"],
+    ["64:ff9b::a9fe:a9fe", "reserved"], ["fec0::1", "local"],
+    ["nas.local", "local"], ["localhost.localdomain", "local"], ["ip6-localhost", "local"], ["router.home.arpa", "local"],
   ] as const)("%s is %s", (host, network) => {
     expect(egressDestinationNetwork(host)).toBe(network);
+  });
+
+  it.each([
+    ["files.corp.example", ["10.1.2.3"], "local"],
+    ["mixed.example", ["93.184.215.14", "192.168.1.5"], "local"],
+    ["v6.example", ["fec0::5"], "local"],
+    ["meta.example", ["93.184.215.14", "169.254.169.254"], "reserved"],
+    ["example.com", ["93.184.215.14"], "public"],
+  ] as const)("judges %s by what it resolved to (%j): %s", (host, addresses, network) => {
+    expect(egressDestinationNetwork(host, addresses)).toBe(network);
+  });
+
+  it("refuses a resolved address that is not an IP address", () => {
+    expect(() => egressDestinationNetwork("example.com", ["example.org"])).toThrow(/not an IP address/u);
   });
 
   it("caps the scopes for a local destination and offers none for a reserved one", () => {
