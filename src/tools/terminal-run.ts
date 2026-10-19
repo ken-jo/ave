@@ -428,7 +428,7 @@ const NOT_READY_REASONS: Record<Exclude<ReturnType<TerminalBlockTracker["promptS
   "command-running": "a command or full-screen program is running in its foreground",
   "between-prompts": "its shell has not shown its next prompt yet",
   "pending-input": "the user is typing at the prompt, pressed a key since it was drawn, or it holds text they typed and have not run",
-  "no-bracketed-paste": "its shell does not take bracketed paste, so typed text could be read as keys; terminal_run needs zsh 5.1 or bash 4.4 or later",
+  "no-bracketed-paste": "its shell does not take bracketed paste, so typed text could be read as keys; terminal_run needs zsh 5.1 or bash 4.4 or later, and zsh without a right-hand prompt (RPROMPT)",
   "vi-editing-mode": "its shell uses vi key bindings, where typed text can be read as editing commands; terminal_run needs emacs key bindings",
   "shell-starting": "its shell is still starting and has not finished its first prompt; retry in a moment",
   "no-prompt-end-marker": "its shell does not mark the end of its prompt (fish), so whether the user is typing there cannot be told; terminal_run needs zsh or bash",

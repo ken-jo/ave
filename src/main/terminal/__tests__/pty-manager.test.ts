@@ -63,8 +63,10 @@ function terminalHandoff(): TerminalTtyHandoff {
   };
 }
 const createHandoffMock = vi.fn<() => Promise<TerminalTtyHandoff>>(() => Promise.resolve(terminalHandoff()));
+let needsInnerPty = false;
 vi.mock("../terminal-tty-platform.js", () => ({
   terminalNeedsOwnTtyGrant: () => needsOwnTtyGrant,
+  terminalNeedsInnerPty: () => needsInnerPty,
 }));
 vi.mock("../terminal-tty-handoff.js", async () => {
   const actual = await vi.importActual<typeof import("../terminal-tty-handoff.js")>("../terminal-tty-handoff.js");
@@ -163,9 +165,22 @@ let foregroundReading: import("../shell-process.js").TerminalForegroundReading =
   foreground: { pid: 9999, command: "zsh", cwd: "/w" },
 };
 const readForegroundMock = vi.fn(async (_ptyPid: number) => foregroundReading);
+/** Linux: what the operating system reports about the sandboxed shell. */
+let sandboxedShellReading: import("../shell-process.js").SandboxedShellReading = { ok: false, reason: "not set" };
+const readSandboxedShellMock = vi.fn(async (_ptyPid: number, _shellName: string, _reportedCwd: string) => sandboxedShellReading);
+const forwardResizeMock = vi.fn(async (_ptyPid: number, _shellName: string) => true);
 vi.mock("../shell-process.js", () => ({
   readTerminalForeground: (ptyPid: number) => readForegroundMock(ptyPid),
+  readSandboxedShell: (ptyPid: number, shellName: string, reportedCwd: string) => readSandboxedShellMock(ptyPid, shellName, reportedCwd),
+  forwardResizeToSandboxedPtyRelay: (ptyPid: number, shellName: string) => forwardResizeMock(ptyPid, shellName),
 }));
+
+// ─── Linux inner pty — the relay check controllable per test ──
+const assertRelayMock = vi.fn(() => Promise.resolve());
+vi.mock("../terminal-inner-pty.js", async () => {
+  const actual = await vi.importActual<typeof import("../terminal-inner-pty.js")>("../terminal-inner-pty.js");
+  return { ...actual, assertInnerPtyRelay: () => assertRelayMock() };
+});
 
 vi.mock("node-pty", () => ({
   spawn: (cmd: string, args: string[], opts: unknown) => ptySpawnMock(cmd, args, opts),
@@ -184,6 +199,7 @@ import {
   setTerminalEmitter,
   typeTerminalCommand,
   verifyTerminalShell,
+  sandboxedShellVerdict,
   __resetTerminalsForTest,
   __terminalSessionCountForTest,
   type TerminalEmit,
@@ -226,6 +242,12 @@ beforeEach(() => {
   wrapWorkerCommandMock.mockClear();
   wrapTerminalCommandMock.mockClear();
   needsOwnTtyGrant = false;
+  needsInnerPty = false;
+  assertRelayMock.mockReset();
+  assertRelayMock.mockImplementation(() => Promise.resolve());
+  readSandboxedShellMock.mockClear();
+  forwardResizeMock.mockReset();
+  forwardResizeMock.mockImplementation(async () => true);
   deliverMock.mockReset();
   deliverMock.mockImplementation(() => Promise.resolve());
   handoffDisposeMock.mockClear();
@@ -1350,5 +1372,137 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
     expect(wrapTerminalCommandMock).not.toHaveBeenCalled();
     expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
     expect(deliverMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("pty-manager on Linux: the shell gets a pty of its own inside the sandbox", () => {
+  const LINUX_TAB = "terminal:0000000f-1";
+  const SHELL_PID = 4321;
+  const shellReading = (overrides: Partial<import("../shell-process.js").SandboxedShell> = {}): import("../shell-process.js").SandboxedShellReading => ({
+    ok: true,
+    shell: {
+      pid: SHELL_PID,
+      nsPid: 3,
+      command: "zsh",
+      foreground: { pgid: SHELL_PID, command: "zsh" },
+      children: [],
+      cwd: "/w",
+      cwdIsReported: true,
+      ...overrides,
+    },
+  });
+
+  beforeEach(() => {
+    needsInnerPty = true;
+    sandboxedShellReading = shellReading();
+    readForegroundMock.mockClear();
+  });
+
+  async function linuxZsh(): Promise<{ pty: FakePty; prompt: (pid?: string) => string }> {
+    vi.stubEnv("SHELL", "/bin/zsh");
+    try {
+      expect((await spawnTerminal({ tabId: LINUX_TAB, ownerWindowId: 3 })).ok).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const [, , opts] = ptySpawnMock.mock.calls.at(-1) as [string, string[], { env: Record<string, string> }];
+    const nonce = spawnedNonce(opts.env);
+    const mark = (fields: string): string => `\u001b]133;${fields};${nonce}\u0007`;
+    const pty = lastPty!;
+    return {
+      pty,
+      prompt: (pid = "3") => `${mark("D;0")}${mark(`P;Cwd=/w;Keys=emacs;Paste=1;B=${"ab".repeat(16)};Pid=${pid}`)}${mark("A")}% \u001b]133;B;${"ab".repeat(16)}\u0007`,
+    };
+  }
+
+  it("runs the login shell under util-linux script, inside the same worker wrap", async () => {
+    vi.stubEnv("SHELL", "/bin/zsh");
+    try {
+      expect((await spawnTerminal({ tabId: LINUX_TAB })).ok).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(assertRelayMock).toHaveBeenCalledTimes(1);
+    expect(wrapTerminalCommandMock).not.toHaveBeenCalled();
+    const [cmdline] = wrapWorkerCommandMock.mock.calls[0] as [string, unknown];
+    // shellQuote is the identity in this file, so the words read as they are.
+    expect(cmdline).toMatch(/^exec \/usr\/bin\/env SHELL=\/bin\/sh \/usr\/bin\/script -q -e -c exec \/usr\/bin\/env SHELL=\/bin\/zsh TMPDIR=\S+ TMP=\S+ TEMP=\S+ \/bin\/zsh -l -i \/dev\/null$/u);
+  });
+
+  it("refuses to start a terminal when the pty relay is missing, before anything is wrapped or spawned", async () => {
+    assertRelayMock.mockImplementation(() => Promise.reject(new Error("The terminal needs util-linux script(1) at /usr/bin/script")));
+    const res = await spawnTerminal({ tabId: LINUX_TAB });
+    expect(res).toMatchObject({ ok: false, reason: "spawn-failed", message: expect.stringMatching(/util-linux script/) });
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+    expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards a resize to the relay, one forward at a time, the last size included", async () => {
+    const { pty } = await linuxZsh();
+    let release!: () => void;
+    forwardResizeMock.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve(true); }));
+    resizeTerminal(LINUX_TAB, 100, 30);
+    resizeTerminal(LINUX_TAB, 110, 31);
+    resizeTerminal(LINUX_TAB, 120, 32);
+    expect(pty.resized).toEqual([[100, 30], [110, 31], [120, 32]]);
+    expect(forwardResizeMock).toHaveBeenCalledTimes(1);
+    release();
+    await vi.waitFor(() => expect(forwardResizeMock).toHaveBeenCalledTimes(2));
+    expect(forwardResizeMock).toHaveBeenLastCalledWith(9999, "zsh");
+  });
+
+  it("does not forward a resize off Linux", async () => {
+    needsInnerPty = false;
+    expect((await spawnTerminal({ tabId: LINUX_TAB })).ok).toBe(true);
+    resizeTerminal(LINUX_TAB, 100, 30);
+    expect(forwardResizeMock).not.toHaveBeenCalled();
+  });
+
+  it("checks the shell through the sandbox's process tree, with the pid the shell reported", async () => {
+    const { pty, prompt } = await linuxZsh();
+    pty.emitData(prompt());
+    await expect(verifyTerminalShell(LINUX_TAB, 3, "/w")).resolves.toEqual({ ok: true, cwd: canonicalizePathForMatch("/w") });
+    expect(readSandboxedShellMock).toHaveBeenCalledWith(9999, "zsh", "/w");
+    expect(readForegroundMock).not.toHaveBeenCalled();
+    // A prompt that reported another pid is not this shell's.
+    pty.emitData(`\r\n${prompt("7")}`);
+    await expect(verifyTerminalShell(LINUX_TAB, 3, "/w")).resolves.toMatchObject({ ok: false, reason: "foreground-not-shell" });
+  });
+
+  it("types an approved command after Ctrl-C reaches the shell through its own pty", async () => {
+    const { pty, prompt } = await linuxZsh();
+    pty.respond = (data) => {
+      if (data === "\u0003") queueMicrotask(() => pty.emitData(`\r\n${prompt()}`));
+      const paste = /^\u001b\[200~([\s\S]*)\u001b\[201~$/u.exec(data);
+      if (paste) queueMicrotask(() => pty.emitData(paste[1]!));
+    };
+    pty.emitData(prompt());
+    await expect(typeTerminalCommand(LINUX_TAB, 3, "ls -la", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
+    expect(pty.written).toEqual(["\u0003", "\u001b[200~ls -la\u001b[201~", "\r"]);
+  });
+
+  it("judges a reading: the reporting shell, in the foreground, idle, in the very directory", () => {
+    expect(sandboxedShellVerdict(shellReading(), "/w", 3)).toEqual({ ok: true, cwd: canonicalizePathForMatch("/w") });
+    // The pid the prompt reported is not the shell found in the process tree, or none was reported.
+    expect(sandboxedShellVerdict(shellReading(), "/w", 2)).toMatchObject({ ok: false, reason: "foreground-not-shell" });
+    expect(sandboxedShellVerdict(shellReading(), "/w", null)).toMatchObject({ ok: false, reason: "foreground-not-shell" });
+    // A program (or a nested shell) holds the shell's terminal.
+    expect(sandboxedShellVerdict(shellReading({ foreground: { pgid: 5000, command: "zsh" } }), "/w", 3)).toMatchObject({
+      ok: false,
+      reason: "foreground-not-shell",
+    });
+    // A background job, or a command still finishing.
+    expect(sandboxedShellVerdict(shellReading({ children: [{ pid: 5001, command: "sleep" }] }), "/w", 3)).toMatchObject({
+      ok: false,
+      reason: "shell-busy",
+      message: expect.stringContaining('"sleep"'),
+    });
+    // A directory only the sandbox has, at a path the host also has.
+    expect(sandboxedShellVerdict(shellReading({ cwdIsReported: false }), "/w", 3)).toMatchObject({ ok: false, reason: "cwd-mismatch" });
+    expect(sandboxedShellVerdict({ ok: false, reason: "the terminal's sandbox is not running" }, "/w", 3)).toMatchObject({
+      ok: false,
+      reason: "cwd-unverified",
+    });
   });
 });

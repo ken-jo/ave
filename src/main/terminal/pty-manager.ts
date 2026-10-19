@@ -22,7 +22,10 @@
  *   inner shell gets a real controlling TTY. On macOS the shell must also be
  *   allowed to SET that TTY (echo off, foreground job), so the pty is spawned
  *   first on a trampoline and the wrap is `wrapTerminalCommand` with the pty's
- *   own slave path, and no other terminal (terminal-tty-handoff.ts).
+ *   own slave path, and no other terminal (terminal-tty-handoff.ts). On
+ *   Linux the sandbox starts in a new session, so the shell runs on a pty of
+ *   its own that util-linux `script` opens inside the sandbox
+ *   (terminal-inner-pty.ts).
  *   Per-command `denyRead`/`denyWrite`
  *   REPLACE the shared boot arrays in ASRT, so we RESTATE
  *   `getDefaultSensitiveReadDenyPaths()` (else the shell regains read of
@@ -59,9 +62,15 @@ import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
 import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { installShellIntegration } from "./shell-integration.js";
-import { readTerminalForeground, type TerminalForegroundReading } from "./shell-process.js";
+import {
+  forwardResizeToSandboxedPtyRelay,
+  readSandboxedShell,
+  readTerminalForeground,
+  type SandboxedShellReading,
+  type TerminalForegroundReading,
+} from "./shell-process.js";
 import type { TerminalTtyHandoff } from "./terminal-tty-handoff.js";
-import { terminalNeedsOwnTtyGrant } from "./terminal-tty-platform.js";
+import { terminalNeedsInnerPty, terminalNeedsOwnTtyGrant } from "./terminal-tty-platform.js";
 import {
   TerminalBlockTracker,
   registerTerminalBlockTracker,
@@ -135,6 +144,14 @@ interface TerminalSession {
   blocks: TerminalBlockTracker;
   /** Program name of the login shell this terminal runs (`zsh`, `bash`, …). */
   shellName: string;
+  /**
+   * Linux: the shell runs on a pty of its own inside the sandbox
+   * (terminal-inner-pty.ts), so it is checked through the sandbox's process
+   * tree and a resize is forwarded to its pty relay.
+   */
+  innerPty: boolean;
+  /** A resize forward to the inner pty's relay is running, and whether another resize came in meanwhile. */
+  resizeForward: { running: boolean; again: boolean };
   /** FIFO scrollback chunks, capped to {@link RING_MAX_BYTES}. */
   ring: string[];
   ringBytes: number;
@@ -229,8 +246,13 @@ function resolveTerminalCwd(
 
 /** The command string ASRT runs under its `-c` wrapper: exec the interactive
  * login shell so it takes over the PTY node-pty allocated for the sandbox
- * wrapper process (fd 0/1/2 inherit down sandbox-exec/bwrap → shell). */
-function buildShellCommand(shell: string, tempDir: string): string {
+ * wrapper process (fd 0/1/2 inherit down sandbox-exec/bwrap → shell), or, on
+ * Linux, `innerPtyCommand` runs it on a pty of its own inside the sandbox. */
+function buildShellCommand(
+  shell: string,
+  tempDir: string,
+  innerPtyCommand?: (shell: string, launch: { command: string; args: string[] }) => string,
+): string {
   // `exec` replaces the wrapper's `/bin/bash -c` shell so there is no extra
   // process layer; `-l -i` = login + interactive (prompt, job control, rc).
   // The temp directory is set inside the wrap, because ASRT writes its own
@@ -238,6 +260,7 @@ function buildShellCommand(shell: string, tempDir: string): string {
   // this terminal is neither granted nor allowed to read. Its own, under its
   // HOME, is both — as the shell tool's bootstrap does.
   const launch = sandboxTempEnvLaunch(tempDir, shell, ["-l", "-i"]);
+  if (innerPtyCommand !== undefined) return innerPtyCommand(shell, launch);
   return `exec ${[launch.command, ...launch.args].map(shellQuote).join(" ")}`;
 }
 
@@ -509,7 +532,16 @@ async function spawnNewTerminal(
   let trampolinePty: IPty | undefined;
   let pendingSession: TerminalSession | undefined;
   try {
-    const cmdline = buildShellCommand(shell, tempDir);
+    let innerPtyCommand: Parameters<typeof buildShellCommand>[2];
+    if (terminalNeedsInnerPty()) {
+      // Loaded on spawn, like the macOS handoff below.
+      const innerPty = await import("./terminal-inner-pty.js");
+      owner.abort.signal.throwIfAborted();
+      await innerPty.assertInnerPtyRelay();
+      owner.abort.signal.throwIfAborted();
+      innerPtyCommand = innerPty.innerPtyShellCommand;
+    }
+    const cmdline = buildShellCommand(shell, tempDir, innerPtyCommand);
     const filesystem = { allowWrite, allowRead, denyRead, denyWrite };
     const ptyOptions = { name: "xterm-256color", cols, rows, cwd };
 
@@ -579,6 +611,8 @@ async function spawnNewTerminal(
       ownerWindowId: options.ownerWindowId ?? null,
       blocks: new TerminalBlockTracker({ nonce: markerNonce, marksPromptEnd }),
       shellName: basename(shell).replace(/^-/u, ""),
+      innerPty: innerPtyCommand !== undefined,
+      resizeForward: { running: false, again: false },
       ring: [],
       ringBytes: 0,
       disposeData: () => {},
@@ -705,6 +739,7 @@ type TerminalNotTypedReason =
   | Exclude<TerminalPromptState, "ready">
   | "no-fresh-prompt"
   | "foreground-not-shell"
+  | "shell-busy"
   | "cwd-unverified"
   | "cwd-mismatch";
 
@@ -714,7 +749,7 @@ export type TypeTerminalCommandResult =
 
 export type VerifyTerminalShellResult =
   | { ok: true; cwd: string }
-  | { ok: false; reason: "no-terminal" | "foreground-not-shell" | "cwd-unverified" | "cwd-mismatch"; message: string };
+  | { ok: false; reason: "no-terminal" | "foreground-not-shell" | "shell-busy" | "cwd-unverified" | "cwd-mismatch"; message: string };
 
 /**
  * How long typing waits for the shell to draw a fresh prompt after the
@@ -734,7 +769,66 @@ export async function verifyTerminalShell(tabId: string, ownerWindowId: number, 
   if (!session || session.exited || session.closing || session.ownerWindowId !== ownerWindowId) {
     return { ok: false, reason: "no-terminal", message: `no running terminal with tabId ${JSON.stringify(tabId)} in this window` };
   }
+  if (session.innerPty) {
+    return sandboxedShellVerdict(
+      await readSandboxedShell(session.pty.pid, session.shellName, reportedCwd),
+      reportedCwd,
+      session.blocks.reportedShellPid(),
+    );
+  }
   return foregroundVerdict(await readTerminalForeground(session.pty.pid), session.pty.pid, session.shellName, reportedCwd);
+}
+
+/**
+ * Judge the reading of a sandboxed Linux terminal's shell
+ * ({@link readSandboxedShell}) for {@link verifyTerminalShell}. The shell was
+ * found by its place in the sandbox's process tree and its name; it must also
+ * be the shell that reported the prompt (`reportedPid`, `$$` from the P
+ * marker, is its pid in its own namespace), hold its own terminal's
+ * foreground, have no process of its own running (a command still finishing,
+ * or a background job that could write to the terminal or, through TIOCSTI on
+ * that terminal, type into the line), and be in the very directory
+ * `reportedCwd` names on the host (same device and inode).
+ */
+export function sandboxedShellVerdict(
+  reading: SandboxedShellReading,
+  reportedCwd: string,
+  reportedPid: number | null,
+): VerifyTerminalShellResult {
+  if (!reading.ok) {
+    return { ok: false, reason: "cwd-unverified", message: `the terminal's shell could not be checked: ${reading.reason}` };
+  }
+  const { shell } = reading;
+  if (reportedPid !== shell.nsPid) {
+    return {
+      ok: false,
+      reason: "foreground-not-shell",
+      message: `the shell that reported the prompt (pid ${reportedPid ?? "unknown"}) is not the terminal's ${shell.command} shell (pid ${shell.nsPid} in its sandbox)`,
+    };
+  }
+  if (shell.foreground.pgid !== shell.pid) {
+    return {
+      ok: false,
+      reason: "foreground-not-shell",
+      message: `the terminal's foreground process is ${JSON.stringify(shell.foreground.command ?? "unknown")}, not its ${shell.command} shell`,
+    };
+  }
+  if (shell.children.length > 0) {
+    const named = shell.children.map((child) => JSON.stringify(child.command)).join(", ");
+    return {
+      ok: false,
+      reason: "shell-busy",
+      message: `the terminal's shell has processes of its own running (${named}): a command still finishing or a background job`,
+    };
+  }
+  if (!shell.cwdIsReported) {
+    return {
+      ok: false,
+      reason: "cwd-mismatch",
+      message: `the terminal reported ${JSON.stringify(reportedCwd)} as its directory, but its shell is in another directory (${JSON.stringify(shell.cwd)}), or one only its sandbox has`,
+    };
+  }
+  return { ok: true, cwd: canonicalizePathForMatch(reportedCwd) };
 }
 
 /**
@@ -948,7 +1042,7 @@ const TERMINAL_NOT_READY_MESSAGES: Record<Exclude<TerminalPromptState, "ready">,
   "command-running": "a command is running in the foreground of the terminal; typed text would go to it",
   "between-prompts": "the terminal's shell is between commands and has not shown its prompt yet",
   "pending-input": "the user is typing at the prompt, pressed a key since it was drawn, or it holds text they typed and have not run",
-  "no-bracketed-paste": "the terminal's shell does not take bracketed paste (zsh 5.1 or bash 4.4 and later do), so typed text could be read as keys",
+  "no-bracketed-paste": "the terminal's shell does not take bracketed paste (zsh 5.1 or bash 4.4 and later do), so typed text could be read as keys; zsh also reports none while a right-hand prompt (RPROMPT) is set",
   "vi-editing-mode": "the terminal's shell uses vi key bindings, where typed text can be read as editing commands",
   "shell-starting": "the terminal's shell is still starting and has not finished its first prompt; retry in a moment",
   "no-prompt-end-marker": "the terminal's shell does not mark the end of its prompt, so typing there cannot be told",
@@ -959,6 +1053,31 @@ export function resizeTerminal(tabId: string, cols: number, rows: number): void 
   const session = sessions.get(tabId);
   if (!session || session.exited || session.closing) return;
   session.pty.resize(clampDim(cols, 80, MAX_COLS), clampDim(rows, 24, MAX_ROWS));
+  if (session.innerPty) forwardResizeToInnerPty(tabId, session);
+}
+
+/**
+ * Tell the inner pty's relay about a resize (terminal-inner-pty.ts). One
+ * forward at a time per terminal: a resize during one (a window being
+ * dragged) is folded into one more forward after it, which reads the size the
+ * outer pty has by then.
+ */
+function forwardResizeToInnerPty(tabId: string, session: TerminalSession): void {
+  const state = session.resizeForward;
+  if (state.running) {
+    state.again = true;
+    return;
+  }
+  state.running = true;
+  state.again = false;
+  void forwardResizeToSandboxedPtyRelay(session.pty.pid, session.shellName)
+    .catch((err: unknown) => {
+      log.warn({ tabId, err: errorMessage(err) }, "terminal: could not forward a resize to the shell's pty");
+    })
+    .finally(() => {
+      state.running = false;
+      if (state.again && !session.exited && !session.closing) forwardResizeToInnerPty(tabId, session);
+    });
 }
 
 /**

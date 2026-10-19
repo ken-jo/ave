@@ -189,6 +189,14 @@ for (const { path, enableVi, expandPrompt, rewritePaste } of SHELLS) {
       await expect(shell.type("echo hi")).resolves.toMatchObject({ ok: false, reason: "vi-editing-mode" });
     }, 30_000);
 
+    it("reports its own pid at every prompt, which terminal_run matches against the process it finds", async () => {
+      const shell = await startShell(path!);
+      expect(shell.tracker.reportedShellPid()).toBe(shell.pty.pid);
+      await ranCommand(shell, await shell.type("true"));
+      await until(() => shell.tracker.promptState() === "ready", 4_000);
+      expect(shell.tracker.reportedShellPid()).toBe(shell.pty.pid);
+    }, 30_000);
+
     it("finds a program, not the shell, in the foreground while a command runs", async () => {
       const shell = await startShell(path!);
       const reading = await readTerminalForeground(shell.pty.pid);
@@ -201,6 +209,17 @@ for (const { path, enableVi, expandPrompt, rewritePaste } of SHELLS) {
     }, 30_000);
   });
 }
+
+describe.runIf(TERMINAL_TEST_ZSH !== undefined)("zsh with a right-hand prompt", () => {
+  it("is refused as taking no paste, not left looking like the user is typing", async () => {
+    const shell = await startShell(TERMINAL_TEST_ZSH!);
+    await ranCommand(shell, await shell.type("RPROMPT='[right]'"));
+    await sleep(USER_INPUT_QUIET_MS + 200);
+    // zle drew the right-hand prompt after B: without Paste=0 this would read as typing forever.
+    expect(shell.tracker.editLineText()).toContain("[right]");
+    await expect(shell.type("echo hi")).resolves.toMatchObject({ ok: false, reason: "no-bracketed-paste" });
+  }, 30_000);
+});
 
 const MACOS_BASH_3 = process.platform === "darwin" && existsSync("/bin/bash")
   && /version 3\./u.test(spawnSync("/bin/bash", ["--version"], { encoding: "utf-8" }).stdout);
