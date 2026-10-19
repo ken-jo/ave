@@ -647,6 +647,14 @@ export interface FeatureFlags {
    * fail-closed signal.
    */
   pluginWorkerConfinement?: boolean;
+  /**
+   * Shell egress asks (proxy-egress PR 4): when a sandboxed Bash or
+   * PowerShell call connects to a host no grant covers, ask the person on the
+   * approval dock (Allow once / This conversation / This workspace / Always,
+   * or Deny once). Off: such connections are denied without asking; granted
+   * hosts still work and plugin workers are unaffected. On by default.
+   */
+  shellEgressAsk?: boolean;
 }
 
 /**

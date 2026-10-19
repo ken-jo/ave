@@ -300,6 +300,11 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       stdio,
       shell: false,
       windowsHide: true,
+      // A wrapped child starts its own process session, so the sandbox
+      // profile's refusal to read other processes' arguments and environment
+      // (the carried ASRT patch) covers this process group too: Seatbelt only
+      // refuses it across sessions.
+      ...(egress !== undefined && process.platform !== "win32" ? { detached: true } : {}),
       env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
       // On the relay the program's directory travels in its request; the relay
       // itself needs none.
@@ -310,6 +315,9 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     throw error;
   }
   if (egress !== undefined) {
+    // Detached (POSIX), the child leads its own process group: the sandbox
+    // keeps the ended invocation's listener port while that group lives.
+    if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
     // The token outlives neither the process nor a spawn that never started.
     const running = child;
     running.once("exit", () => egress.release());

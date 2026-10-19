@@ -13,6 +13,7 @@ import { PluginMarketplaceService } from "../../plugins/marketplace.js";
 import { activeHostApiVendor, createRefreshActiveLlmWildcard } from "./refresh-active-llm-wildcard.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
+import type { WorkerEgressAllowlists } from "../../permissions/egress-runtime.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { aveHome } from "../../shared/ave-home.js";
 
@@ -104,62 +105,51 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
   });
   refreshActiveLlmWildcard();
 
-  // ── ASRT shared network-config union builder + live refresh ──────────────
-  // The shared strict-union allow-list ASRT enforces = the UNION of every
-  // loaded plugin's manifest `networkAccess.allowedDomains` PLUS the host-
-  // resolved DYNAMIC endpoint hostnames (user-configured vendor baseUrls a
-  // sandboxed worker actually reaches — e.g. local-indexer's Azure OpenAI
-  // resource). Both the boot init block (below) and the live-refresh closure
-  // (here) build the union the SAME way so they never drift.
-  const buildSandboxUnionDomains = async (): Promise<string[]> => {
-    const { computeUnionAllowedDomains, normalizeUnionForAsrt, computeDynamicEndpointHosts } =
-      await import("../../permissions/asrt-sandbox.js");
-    const manifestAllowLists = pluginRuntime
-      .listPluginIds()
-      .map((id) => pluginRuntime.getPluginManifest(id)?.networkAccess?.allowedDomains ?? []);
-    const dynamicEndpointHosts = computeDynamicEndpointHosts(settingsService.getAll());
-    return normalizeUnionForAsrt(
-      computeUnionAllowedDomains([...manifestAllowLists, dynamicEndpointHosts], []),
-    );
+  // ── Worker egress allowlists + refresh ───────────────────────────────────
+  // What each plugin worker may reach through the sandbox proxy: its own
+  // extension's manifest `networkAccess.allowedDomains` plus the host-resolved
+  // model endpoints (user-configured vendor baseUrls a worker actually reaches,
+  // e.g. local-indexer's Azure OpenAI resource). The egress ask callback reads
+  // this per connection, so one extension's domains never reach another
+  // extension's worker or a shell (invariant I4); ASRT's own allowedDomains
+  // stays empty.
+  const buildWorkerEgressAllowlists = async (): Promise<WorkerEgressAllowlists> => {
+    const { computeDynamicEndpointHosts } = await import("../../permissions/asrt-sandbox.js");
+    return {
+      byExtension: new Map(
+        pluginRuntime
+          .listPluginIds()
+          .map((id) => [id, pluginRuntime.getPluginManifest(id)?.networkAccess?.allowedDomains ?? []] as const),
+      ),
+      modelEndpointHosts: computeDynamicEndpointHosts(settingsService.getAll()),
+    };
   };
 
-  // Closure invoked by the settings IPC handler when a vendor/embedding
-  // endpoint changes. Recomputes the dynamic-endpoint union and LIVE-SWAPS the
-  // shared ASRT network config so a reconfigured endpoint is enforced/allowed
-  // without an app restart. The network config is a SAFE, GLOBAL live swap
-  // (filterNetworkRequest reads the shared config; updateConfig replaces it).
-  // GATED: no-op when ASRT is not active (gate OFF, or deps-missing/Windows-
-  // not-ready paths where the sandbox was never initialized) — there is no live
-  // config to update, and we must not initialize one outside the boot gate.
+  // Recomputes the worker allowlists: at boot, after plugins load (before any
+  // worker starts), and from the settings / chat IPC handlers when a model
+  // endpoint changes, so a reconfigured endpoint applies without a restart.
+  // GATED: a no-op when ASRT is not active (gate off, deps missing, Windows not
+  // ready), since no sandboxed process exists to reach anything.
   const refreshSandboxNetworkConfig = (): Promise<void> =>
     (async () => {
-      const {
-        isAsrtSandboxActive,
-        updateAsrtSandboxConfig,
-      } = await import(
-        "../../permissions/asrt-sandbox.js"
-      );
+      const [{ isAsrtSandboxActive }, { setWorkerEgressAllowlists }] = await Promise.all([
+        import("../../permissions/asrt-sandbox.js"),
+        import("../../permissions/egress-runtime.js"),
+      ]);
       if (!isAsrtSandboxActive()) return;
-      const allowedDomains = await buildSandboxUnionDomains();
-      // Same trusted shape boot init uses: enforced allow-list + strict, no
-      // weakening flags. Plugin-worker filesystem grants are not kept in the
-      // shared config; Windows worker spawn remains fail-closed until ASRT can
-      // scope allow grants per worker/plugin.
-      await updateAsrtSandboxConfig({
-        allowedDomains,
-        strictAllowlist: true,
-        userDataDir: ctx.host.userDataPath,
-      });
+      const allowlists = await buildWorkerEgressAllowlists();
+      setWorkerEgressAllowlists(allowlists);
       log.info(
-        "boot: ASRT network config live-refreshed (%d union domains)",
-        allowedDomains.length,
+        "boot: worker egress allowlists refreshed (%d extensions, %d model endpoints)",
+        allowlists.byExtension.size,
+        allowlists.modelEndpointHosts.length,
       );
     })().catch((err) => {
-      // Degrade loudly rather than throw: a failed refresh only keeps the
-      // enforced allow-list NARROWER than declared (deny-by-default stands),
-      // and the boot-path awaiter must not brick startup over it.
+      // Degrade loudly rather than throw: a failed refresh keeps the previous
+      // allowlists (deny-by-default stands for anything new), and the
+      // boot-path awaiter must not brick startup over it.
       log.warn(
-        "boot: ASRT network config live-refresh failed: %s",
+        "boot: worker egress allowlist refresh failed: %s",
         errorMessage(err),
       );
     });
@@ -167,6 +157,6 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
   ctx.pluginMarketplace = pluginMarketplace;
   ctx.refreshActiveLlmWildcard = refreshActiveLlmWildcard;
   ctx.disposeRefreshActiveLlmWildcard = disposeRefreshActiveLlmWildcard;
-  ctx.buildSandboxUnionDomains = buildSandboxUnionDomains;
+  ctx.buildWorkerEgressAllowlists = buildWorkerEgressAllowlists;
   ctx.refreshSandboxNetworkConfig = refreshSandboxNetworkConfig;
 }

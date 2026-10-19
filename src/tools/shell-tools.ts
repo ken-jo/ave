@@ -57,7 +57,9 @@ import {
   getBuiltinShellReadPolicy,
   getDefaultSensitiveWriteDenyPaths,
 } from "../permissions/asrt-sandbox.js";
-import { openEgressInvocation } from "../permissions/egress-invocations.js";
+import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
+import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
+import { currentToolExecutionCwd } from "./execution-context.js";
 import {
   getHostShellExecutionPlan,
   isIssuedHostShellExecutionPlan,
@@ -1980,14 +1982,29 @@ interface SpawnResult {
  *     working tree readable — closing the old bwrap/sandbox-exec leak where the
  *     entire HOME was mounted readable.
  *
- * Network egress is governed by the SHARED boot config, NOT per command: boot
- * sets `strictAllowlist: true` + the UNION of every loaded plugin's manifest
- * allow-list (see asrt-sandbox.ts NETWORK ENFORCEMENT MODEL header). Under
- * strict, any out-of-union host is HARD-DENIED at the egress proxy with NO
- * askCb fallthrough — there is no interactive prompt for unmatched hosts.
+ * Network egress is decided per connection by the egress ask callback
+ * (`egress-ask.ts`), through the call's own proxy listener: a host a grant
+ * covers is allowed, any other is asked on the approval dock (denied when
+ * nobody can answer).
  *
  * @internal — only exported for testing.
  */
+/**
+ * What the egress ask needs to know about the shell call being wrapped, read
+ * from the invocation's ambient frames (bound by the executor around
+ * `execute`). Outside an executor frame nobody is waiting on the call, so it
+ * counts as a call nobody can be asked about.
+ */
+function ambientShellEgressContext(): ShellEgressContext {
+  const gate = currentEffectGateContext();
+  return {
+    sessionId: gate?.sessionId,
+    workspaceRoot: currentToolExecutionCwd(),
+    approvalSurface:
+      gate !== undefined && !gate.headless && gate.approvalSurface !== "unavailable" ? "interactive" : "unavailable",
+  };
+}
+
 export async function spawnWithSandbox(
   command: string,
   resolvedCwd: string,
@@ -2018,16 +2035,21 @@ export async function spawnWithSandbox(
   };
 
   const abortController = new AbortController();
+  const wrapAbortSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
   // The invocation's egress token: ASRT records this call's proxy denies under
-  // it, and the deny monitor names the tool call in the audit row. Released
-  // once the child has exited (cleanupAfterTermination) or the spawn failed.
-  const egress = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: preparedShellToolUseId(prepared) });
+  // it, the deny monitor names the tool call in the audit row, and the egress
+  // ask callback finds the conversation it may ask in. Released once the
+  // child has exited (cleanupAfterTermination) or the spawn failed.
+  const egress = openEgressInvocation(
+    { kind: "shell", toolName: "bash", toolUseId: preparedShellToolUseId(prepared), context: ambientShellEgressContext() },
+    { abortSignal: wrapAbortSignal },
+  );
   let wrapped: { argv: string[]; env: NodeJS.ProcessEnv };
   try {
     const binShell = shell.cmd;
     wrapped = await wrapToolCommand(preparedSandboxBootstrap(prepared, { cwdProbe: true }), {
       filesystem,
-      abortSignal: signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal,
+      abortSignal: wrapAbortSignal,
       binShell,
       commandId: egress.token,
     });
@@ -2090,6 +2112,9 @@ export async function spawnWithSandbox(
     }
     const cleanupPreparedAfterTermination = transferPreparedShellInvocation(prepared);
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash:asrt" });
+    // Detached, the child leads its own process group: the sandbox keeps the
+    // ended invocation's listener port while anything in that group lives.
+    if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
 
     const outputCollector = createOutputCollector(child, {
       captureFactory: outputCaptureFactory,
@@ -3140,13 +3165,17 @@ async function spawnPowerShellWithSandbox(
   };
 
   const abortController = new AbortController();
+  const wrapAbortSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
   // The invocation's egress token, as in spawnWithSandbox.
-  const egress = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId });
+  const egress = openEgressInvocation(
+    { kind: "shell", toolName: "powershell", toolUseId, context: ambientShellEgressContext() },
+    { abortSignal: wrapAbortSignal },
+  );
   let wrapped: { argv: string[]; env: NodeJS.ProcessEnv };
   try {
     wrapped = await wrapToolCommand(sandboxCommand, {
       filesystem,
-      abortSignal: signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal,
+      abortSignal: wrapAbortSignal,
       ...(binShell !== undefined ? { binShell } : {}),
       commandId: egress.token,
     });
@@ -3212,6 +3241,9 @@ async function spawnPowerShellWithSandbox(
       return;
     }
     trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:powershell:asrt" });
+    // Detached, the child leads its own process group: the sandbox keeps the
+    // ended invocation's listener port while anything in that group lives.
+    if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
 
     const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress });
     child.stdout.on("data", outputCollector.collect);

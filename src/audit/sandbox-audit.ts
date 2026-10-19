@@ -221,3 +221,43 @@ export function buildSandboxEgressDenyAuditEntry(params: {
     deny: params.deny,
   };
 }
+
+// ─── SandboxEgressDecisionAuditEntry ─────────────────────────────────────────
+
+/** How the egress ask callback reached a decision. */
+export type EgressDecisionBasis =
+  /** A plugin worker reached a host its extension declares (or the host's model endpoint). */
+  | "extension-allowlist"
+  /** A shell reached a host a standing grant covers. */
+  | "grant"
+  /** The person was asked. */
+  | "prompt"
+  /** Refused before any lookup: unattributed, wrong kind of identity, or a rule. */
+  | "policy"
+  /**
+   * Refused by the sandbox proxy itself before the callback was asked (a
+   * deny-listed or malformed host, another invocation's listener, a name
+   * resolving to this host through an upstream proxy). Written by the deny
+   * monitor from ASRT's violation line.
+   */
+  | "sandbox";
+
+/**
+ * One row per decision the egress ask callback makes, on the same daily
+ * sandbox channel. A refusal also produces an `egress-deny` row through
+ * ASRT's violation store; this row adds how it was decided and, for an ask,
+ * what the person chose.
+ */
+export interface SandboxEgressDecisionAuditEntry {
+  timestamp: string;
+  entryKind: "egress-decision";
+  invocation: SandboxEgressDenyInvocation;
+  /** The destination, host DLP-masked like the deny rows. */
+  destination: { host: string; port: number | null };
+  decision: "allow" | "deny";
+  basis: EgressDecisionBasis;
+  /** The grant scope that matched, or the one the person picked; null otherwise. */
+  scope: "once" | "conversation" | "workspace" | "always" | null;
+  /** Why a refusal happened; null for an allow. */
+  reason: string | null;
+}

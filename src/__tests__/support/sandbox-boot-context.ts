@@ -42,11 +42,8 @@ export function createSandboxBootHarness(): SandboxBootHarness {
           ),
         },
         bootAuditLogger: { logSandboxGate, flush },
-        pluginRuntime: {
-          listPluginIds: vi.fn(() => []),
-          getPluginManifest: vi.fn(() => undefined),
-        },
-        buildSandboxUnionDomains: vi.fn(async () => []),
+        approvalGate: { requestAndWait: vi.fn(async () => ({ choice: "deny-once" })) },
+        buildWorkerEgressAllowlists: vi.fn(async () => ({ byExtension: new Map(), modelEndpointHosts: [] })),
       }) as unknown as BootContext,
   };
 }
