@@ -9,9 +9,10 @@
  * - filesystem grants for that one command (`readwritePaths`/`readonlyPaths`/
  *   `deniedPaths`), mapped from the same per-command policy the ASRT wrap gets
  *   ({@link buildMxcShellRequest});
- * - network only to ONE loopback port: MXC's per-container WFP filter permits
- *   egress to the configured `runtimeConfig.networkProxy` endpoint and nothing
- *   else. Ave gives every invocation its own proxy listener
+ * - outbound connections only to ONE loopback port: MXC's per-container WFP
+ *   filter permits egress to the configured `runtimeConfig.networkProxy`
+ *   endpoint and nothing else (name resolution still goes through the host's
+ *   DNS client; see {@link buildMxcShellRequest}). Ave gives every invocation its own proxy listener
  *   (`egress-invocation-listener.ts`), so the port a connection arrives on is
  *   the invocation that opened it, enforced by the kernel rather than by a
  *   username the client presents.
@@ -45,6 +46,7 @@ import { win32 as winPath } from "node:path";
 
 import { errorMessage } from "../shared/error-message.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
+import MXC_PINS from "./mxc-launcher-pins.json" with { type: "json" };
 
 /**
  * The stable MXC configuration schema version every request is written in.
@@ -67,6 +69,16 @@ export type MxcSupport =
 
 /** The architectures MXC ships `wxc-exec.exe` for. */
 const MXC_ARCHES = new Set(["x64", "arm64"]);
+
+/**
+ * The pinned sha256 of the launcher for `arch` (`mxc-launcher-pins.json`, the
+ * same file scripts/fetch-mxc.mjs stages against), or undefined for an arch
+ * MXC does not ship.
+ */
+export function pinnedWxcExecSha256(arch: string): string | undefined {
+  const pins: Readonly<Record<string, string>> = MXC_PINS.wxcExecSha256;
+  return MXC_ARCHES.has(arch) ? pins[arch] : undefined;
+}
 
 /** `<resources>/mxc/<arch>/wxc-exec.exe`, or undefined for an arch MXC does not ship. */
 export function wxcExecPathFor(resourcePath: string, arch: string): string | undefined {
@@ -137,15 +149,43 @@ export interface DetectMxcSupportDeps {
   readonly arch: string;
   /** The app's resource root (`getHostResources().resourcePath`). */
   readonly resourcePath: string;
-  /** `major.minor.build.ubr`, for the Settings reason only; never the gate. */
+  /** `os.release()` (`major.minor.build`), for the Settings reason only; never the gate. */
   readonly windowsBuild: string | null;
   readonly exists: (path: string) => boolean;
+  /** Hex sha256 of a file's contents. */
+  readonly sha256: (path: string) => Promise<string>;
+  /** Run the launcher with its own directory as the working directory. */
   readonly run: (file: string, args: readonly string[], timeoutMs: number) => Promise<MxcRunResult>;
-  /** An existing directory the dry-run request may name as its working directory. */
+  /** An empty directory the probe containers may write (their cwd and LOCALAPPDATA). */
   readonly probeDirectory: string;
+  /** `%SystemRoot%` of the host, for the PowerShell start probe. */
+  readonly systemRoot: string;
 }
 
 const MXC_PROBE_TIMEOUT_MS = 20_000;
+/** A cold Windows PowerShell start inside a fresh container. */
+const MXC_START_PROBE_TIMEOUT_MS = 60_000;
+
+/**
+ * Judge the PowerShell 5.1 start probe: exit 0 is a start. A UI-subsystem
+ * initialization failure (`STATUS_DLL_INIT_FAILED`, 0xC0000142) is what a
+ * non-interactive session produces (measured over SSH), so it is reported as
+ * unverified rather than as a host that cannot run PowerShell.
+ */
+export function classifyMxcStartProbe(
+  code: number | null,
+  stdout: string,
+  stderr: string,
+): { readonly ok: true } | { readonly ok: false; readonly reason: "powershell-start-failed" | "unverified-session"; readonly detail: string } {
+  if (code === 0) return { ok: true };
+  const text = `${stdout}\n${stderr}`;
+  const detail = (text.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? `exit ${String(code)}`).slice(0, 500);
+  // 0xC0000142 as the unsigned exit code, or the launcher's own diagnostic.
+  if (code === 0xc0000142 || /STATUS_DLL_INIT_FAILED|0xC0000142/i.test(text)) {
+    return { ok: false, reason: "unverified-session", detail };
+  }
+  return { ok: false, reason: "powershell-start-failed", detail };
+}
 
 /**
  * Decide, once at boot, whether agent shells can run in MXC on this host.
@@ -153,9 +193,11 @@ const MXC_PROBE_TIMEOUT_MS = 20_000;
  * The OS build number is not the gate: MXC 1.0.0 needs the PSEC 1.1 ingress
  * contract for an identity-less loopback proxy while 1.0.1 relaxes that, so a
  * build floor would be wrong now and drift on the next bump. The gate is what
- * the shipped binary reports: `--probe` must select `base-container`, and
- * `--dry-run` of the exact request shape Ave launches (proxy mode, DACL
- * fallback refused) must validate on that tier.
+ * the shipped binary reports: its sha256 must match the pin, `--probe` must
+ * select `base-container`, `--dry-run` of the exact request shape Ave launches
+ * (proxy mode, DACL fallback refused) must validate on that tier, and System32
+ * Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of
+ * that shape. Any failure leaves the shells on the approved-host route.
  */
 export async function detectMxcSupport(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
   const unavailable = (reason: MxcUnavailableReason, detail: string): MxcSupport => ({
@@ -168,6 +210,13 @@ export async function detectMxcSupport(deps: DetectMxcSupportDeps): Promise<MxcS
   const wxcExec = wxcExecPathFor(deps.resourcePath, deps.arch);
   if (wxcExec === undefined) return unavailable("unsupported-arch", `arch ${deps.arch}`);
   if (!deps.exists(wxcExec)) return unavailable("binary-missing", wxcExec);
+  let digest: string;
+  try {
+    digest = await deps.sha256(wxcExec);
+  } catch (error) {
+    return unavailable("probe-failed", errorMessage(error));
+  }
+  if (digest !== pinnedWxcExecSha256(deps.arch)) return unavailable("launcher-mismatch", `${wxcExec} sha256 ${digest}`);
 
   let probe: MxcRunResult;
   try {
@@ -195,6 +244,33 @@ export async function detectMxcSupport(deps: DetectMxcSupportDeps): Promise<MxcS
   }
   const verdict = parseMxcDryRunOutput(dryRun.code, dryRun.stdout, dryRun.stderr);
   if (!verdict.ok) return unavailable("request-rejected", verdict.detail);
+
+  // A dry run proves the request is accepted, not that the shell starts. Start
+  // the real thing once: System32 Windows PowerShell 5.1 in a container of the
+  // shape every command gets (caller-owned reduced environment, proxy mode).
+  const startRequest = buildMxcShellRequest({
+    commandLine: powerShellMxcCommandLine(deps.systemRoot, "exit 0"),
+    cwd: deps.probeDirectory,
+    grants: { readwrite: [deps.probeDirectory], readonly: [], denied: [] },
+    env: {
+      SYSTEMROOT: deps.systemRoot,
+      LOCALAPPDATA: deps.probeDirectory,
+      TEMP: deps.probeDirectory,
+      TMP: deps.probeDirectory,
+      PATH: `${winPath.join(deps.systemRoot, "System32")};${deps.systemRoot}`,
+    },
+    // Nothing listens there: the probe makes no network call.
+    proxyUrl: "http://127.0.0.1:9",
+    timeoutMs: MXC_START_PROBE_TIMEOUT_MS,
+  });
+  let started: MxcRunResult;
+  try {
+    started = await deps.run(wxcExec, mxcRequestArgs(startRequest), MXC_START_PROBE_TIMEOUT_MS + 5_000);
+  } catch (error) {
+    return unavailable("powershell-start-failed", errorMessage(error));
+  }
+  const start = classifyMxcStartProbe(started.code, started.stdout, started.stderr);
+  if (!start.ok) return unavailable(start.reason, start.detail);
   return { state: "available", windowsBuild: deps.windowsBuild };
 }
 
@@ -359,7 +435,16 @@ const REQUIRED_ENV_KEYS = ["SYSTEMROOT", "LOCALAPPDATA"] as const;
  *   the container to the one port;
  * - `ui.disable: false` because Windows PowerShell 5.1 and node fail
  *   `STATUS_DLL_INIT_FAILED` without Win32k (measured); clipboard and input
- *   injection stay closed.
+ *   injection stay closed. The cost: a contained process can still open
+ *   windows on the user's desktop, so it could draw a convincing fake dialog
+ *   (a password prompt, an "Ave" window). MXC's own docs call this "not the
+ *   lockdown the schema's default implies". Ave does not treat a window from
+ *   a shell command as trusted UI.
+ * - `ingress.default: "allow"` is forced by proxy mode (Model 2): it grants
+ *   `privateNetworkClientServer`, so inbound reachability of a listening
+ *   container rests on Windows Firewall (measured: nothing reached it with
+ *   the default inbound block on). DNS resolution is not proxied: names
+ *   resolve through the host's DNS client (measured).
  */
 export function buildMxcShellRequest(input: MxcShellRequestInput): MxcContainerRequest {
   if (!/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(input.proxyUrl)) {
@@ -428,39 +513,75 @@ export const MXC_BASH_UNAVAILABLE_MESSAGE =
   "for this command. To run it in Git Bash anyway, retry with executionMode \"host\" and a " +
   "justification; that runs it unsandboxed after your approval.";
 
-/** `<resources>/mxc/<arch>/wxc-exec.exe` for this host; throws when it does not ship here. */
+async function sha256OfFile(path: string): Promise<string> {
+  const [{ createHash }, { readFile }] = await Promise.all([import("node:crypto"), import("node:fs/promises")]);
+  return createHash("sha256").update(await readFile(path)).digest("hex");
+}
+
+/** One verification per launcher path per process: boot, then every launch reuses it. */
+const verifiedLaunchers = new Map<string, Promise<string>>();
+
+/**
+ * `<resources>/mxc/<arch>/wxc-exec.exe` for this host, after its sha256 has
+ * matched the pin (once per process). Throws, so the command fails closed,
+ * when MXC does not ship for this arch or the file is not the pinned build.
+ *
+ * Assumption: the installer is per-machine (`nsis.perMachine`), so the file
+ * lives in a directory only administrators can write and cannot be swapped
+ * between this check and a later launch by the signed-in user. A source
+ * checkout's `resources/` is user-writable; that is a developer setup.
+ */
 export async function resolveHostWxcExecPath(): Promise<string> {
   const { getHostResources } = await import("../main/host-resources.js");
   const path = wxcExecPathFor(getHostResources().resourcePath, process.arch);
   if (path === undefined) throw new Error(`Microsoft Execution Containers do not ship for ${process.arch}`);
-  return path;
+  let verified = verifiedLaunchers.get(path);
+  if (verified === undefined) {
+    const pinned = pinnedWxcExecSha256(process.arch);
+    verified = sha256OfFile(path).then((digest) => {
+      if (digest !== pinned) throw new Error(`Microsoft Execution Containers launcher ${path} is not the pinned build`);
+      return path;
+    });
+    verifiedLaunchers.set(path, verified);
+  }
+  return await verified;
 }
 
 /** {@link detectMxcSupport} against this host's shipped binary. */
 export async function detectHostMxcSupport(): Promise<MxcSupport> {
-  const [{ execFile }, { existsSync }, os, { getHostResources }] = await Promise.all([
+  const [{ execFile }, { existsSync }, { mkdtemp, rm }, os, path, { getHostResources }] = await Promise.all([
     import("node:child_process"),
     import("node:fs"),
+    import("node:fs/promises"),
     import("node:os"),
+    import("node:path"),
     import("../main/host-resources.js"),
   ]);
-  return detectMxcSupport({
-    platform: process.platform,
-    arch: process.arch,
-    resourcePath: getHostResources().resourcePath,
-    windowsBuild: process.platform === "win32" ? os.release() : null,
-    exists: existsSync,
-    probeDirectory: os.tmpdir(),
-    run: (file, args, timeoutMs) =>
-      new Promise((resolve, reject) => {
-        execFile(file, [...args], { timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-          const code = error === null ? 0 : typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : null;
-          if (error !== null && code === null) {
-            reject(error);
-            return;
-          }
-          resolve({ code, stdout: String(stdout), stderr: String(stderr) });
-        });
-      }),
-  });
+  // The probe containers write only into a fresh directory of their own.
+  const probeDirectory = process.platform === "win32" ? await mkdtemp(path.join(os.tmpdir(), "ave-mxc-probe-")) : os.tmpdir();
+  try {
+    return await detectMxcSupport({
+      platform: process.platform,
+      arch: process.arch,
+      resourcePath: getHostResources().resourcePath,
+      windowsBuild: process.platform === "win32" ? os.release() : null,
+      exists: existsSync,
+      sha256: sha256OfFile,
+      probeDirectory,
+      systemRoot: process.env["SystemRoot"] ?? process.env["WINDIR"] ?? "C:\\Windows",
+      run: (file, args, timeoutMs) =>
+        new Promise((resolve, reject) => {
+          execFile(file, [...args], { cwd: path.dirname(file), timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+            const code = error === null ? 0 : typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : null;
+            if (error !== null && code === null) {
+              reject(error);
+              return;
+            }
+            resolve({ code, stdout: String(stdout), stderr: String(stderr) });
+          });
+        }),
+    });
+  } finally {
+    if (probeDirectory !== os.tmpdir()) await rm(probeDirectory, { recursive: true, force: true });
+  }
 }

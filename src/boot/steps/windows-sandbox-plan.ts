@@ -11,8 +11,8 @@
  *
  * No row falls back silently: each one is recorded for Settings
  * ({@link SandboxWindowsSubstrateInfo}) and logged at boot. Where MXC is
- * unavailable the egress identity is `shared`, so the egress ask caps grants
- * at "this conversation" (`maxEgressGrantScope`).
+ * unavailable the egress identity is `shared`; the egress ask (PR 4, not yet
+ * wired) is to cap such grants with `maxEgressGrantScope`.
  */
 import type {
   SandboxCapability,
@@ -77,6 +77,15 @@ export function windowsSubstrateWithoutAsrt(substrate: SandboxWindowsSubstrateIn
  * cannot terminate a host process of the same user, and every descendant
  * ends with the command (MXC's job object; also when `wxc-exec.exe` itself
  * is killed).
+ *
+ * `network` means outbound connections: WFP lets the container reach only its
+ * own proxy port (measured). It does not cover name resolution, which goes
+ * through the host's DNS client service (measured: public names resolve inside
+ * the container, so a command can signal through lookups without the proxy),
+ * nor inbound: proxy mode requires `ingress.default: "allow"`
+ * (`privateNetworkClientServer`), and no connection from the host, the LAN,
+ * Tailscale or another container reached a listening container when measured
+ * with Windows Firewall's default inbound blocking on. The reason text says so.
  */
 export function mxcShellCapability(): SandboxCapability {
   return {
@@ -85,7 +94,8 @@ export function mxcShellCapability(): SandboxCapability {
     platform: "win32",
     reason:
       "Microsoft Execution Containers (BaseContainer) — each command in its own container with per-command " +
-      "filesystem grants, network only through its own proxy port, and no process outliving the command",
+      "filesystem grants, outbound connections only through its own proxy port, and no process outliving the " +
+      "command; DNS lookups still go through the host resolver, and inbound relies on Windows Firewall",
     confines: { filesystem: true, process: true, network: true },
   };
 }

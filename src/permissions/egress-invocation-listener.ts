@@ -93,10 +93,13 @@ function refusedIPv6(address: string): string | undefined {
   // carries; judge that address too.
   const embedded = /^(?:::ffff:|::)(\d+\.\d+\.\d+\.\d+)$/.exec(address);
   if (embedded !== null) return refusedIPv4(embedded[1]!);
-  const mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(address);
-  if (mappedHex !== null) {
-    const high = parseInt(mappedHex[1]!, 16);
-    return refusedIPv4(`${high >> 8}.${high & 0xff}.0.0`);
+  // The same in hex (`::ffff:7f00:1`, `::7f00:1`), as WHATWG URL parsing
+  // serializes `[::127.0.0.1]` and `[::ffff:127.0.0.1]`.
+  const embeddedHex = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(address);
+  if (embeddedHex !== null) {
+    const high = parseInt(embeddedHex[1]!, 16);
+    const low = parseInt(embeddedHex[2]!, 16);
+    return refusedIPv4(`${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`);
   }
   return undefined;
 }

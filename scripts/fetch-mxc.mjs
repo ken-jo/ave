@@ -11,6 +11,16 @@
  *   resources/mxc/<arch>/wxc-exec.exe   (gitignored; packaged as mxc/<arch>/wxc-exec.exe)
  *   resources/licenses/mxc/LICENSE.md   (committed; this script checks it is unchanged)
  *
+ * Only the launcher ships. The package's other binaries serve paths Ave never
+ * requests: `winhttp-proxy-shim.exe` is the AppContainer-tier proxy fallback
+ * (elevated, may raise UAC), which MXC refuses for `runtimeConfig.networkProxy`
+ * with egress deny + ingress allow, the only network shape Ave sends, and boot
+ * accepts only a dry run that selects `base-container`; `plm.exe` is the
+ * elevated WPR tracing helper behind `telemetry`, which Ave never enables;
+ * `wslcsdk.dll` and the `wxc-*-daemon` / `wxc-host-prep` binaries serve the
+ * WSL-container, Windows Sandbox, isolation-session and AppContainer+DACL
+ * backends. Every PR 9 measurement ran the launcher alone in its directory.
+ *
  * The tarball is checked against the registry's published sha512 integrity and
  * each launcher against its own sha256, so a moved tag or a swapped file fails
  * the build instead of shipping. Idempotent: a launcher already matching its
@@ -35,15 +45,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-export const MXC_PACKAGE_VERSION = "1.0.0";
+// One source for the pins: the app verifies the shipped launcher against the
+// same file before its first use each boot (src/permissions/mxc-windows.ts).
+const PINS = JSON.parse(await readFile(path.join(PROJECT_ROOT, "src", "permissions", "mxc-launcher-pins.json"), "utf8"));
+export const MXC_PACKAGE_VERSION = PINS.version;
 const TARBALL_URL = `https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-${MXC_PACKAGE_VERSION}.tgz`;
-const TARBALL_SHA512_BASE64 =
-  "7aVR+GHVKveIknZmUtkAEFwUBp61qgEmhJRe1ZyKHJ274yWlKWB/ZfDP/u/whfmDyck0wRNKZN49atlF+SZt2Q==";
-export const WXC_EXEC_SHA256 = Object.freeze({
-  x64: "8a6d1db4dd1846981127d9014741be18b094d07be967765dff6754bda1d40259",
-  arm64: "a1dc1218e26dfae2e463ebede99591ab9b4adcc4efe5d09cc3302b053997244e",
-});
-const LICENSE_SHA256 = "d9a1b1e30d633d5732ea18e3cba9538d293ebc53e1a9e4e96ab739e0c5c4f1cb";
+const TARBALL_SHA512_BASE64 = PINS.tarballSha512Base64;
+export const WXC_EXEC_SHA256 = Object.freeze({ ...PINS.wxcExecSha256 });
+const LICENSE_SHA256 = PINS.licenseSha256;
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");

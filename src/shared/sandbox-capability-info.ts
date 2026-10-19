@@ -165,7 +165,8 @@ export type EgressGrantScope = "once" | "conversation" | "workspace" | "always";
  * The widest egress-grant scope an identity strength can carry. With a shared
  * identity another invocation of the same session can present the id a grant
  * was given to, so a grant must not outlive the conversation it was given in.
- * The egress ask (proxy-egress PR 4) caps the scopes it offers with this.
+ * The egress ask (proxy-egress PR 4) is to cap the scopes it offers with
+ * this; until it does, nothing calls it and no surface claims the cap.
  */
 export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGrantScope {
   return strength === "kernel-channel" ? "always" : "conversation";
@@ -178,7 +179,17 @@ export type SandboxMxcUnavailableReason =
   | "binary-missing"
   | "probe-failed"
   | "tier-unsupported"
-  | "request-rejected";
+  | "request-rejected"
+  /** The shipped launcher's sha256 is not the pinned one (`mxc-launcher-pins.json`). */
+  | "launcher-mismatch"
+  /** Windows PowerShell 5.1 did not start inside a real container on this host. */
+  | "powershell-start-failed"
+  /**
+   * It failed to initialize its UI subsystem (`STATUS_DLL_INIT_FAILED`), which
+   * a non-interactive session (a service, SSH) causes: whether it starts for the
+   * signed-in user is unverified, so MXC is not claimed.
+   */
+  | "unverified-session";
 
 /**
  * Windows only: which substrate carries each kind of process this boot, and

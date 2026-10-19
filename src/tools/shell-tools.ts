@@ -18,7 +18,7 @@ import type {
 import { spawn, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { delimiter, isAbsolute, join, resolve as pathResolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve as pathResolve, win32 as win32Path } from "node:path";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
@@ -3373,7 +3373,10 @@ async function spawnPowerShellInMxc(
     try {
       assertManagedChildProcessAdmissionOpen("tool:powershell:mxc");
       child = spawn(cmd, args, {
-        cwd,
+        // The launcher runs from its own (per-machine, admin-only) directory, so
+        // nothing in the workspace sits beside it; the container's working
+        // directory travels in the request.
+        cwd: win32Path.dirname(cmd),
         stdio: ["ignore", "pipe", "pipe"],
         shell: false,
         windowsHide: true,
@@ -3436,6 +3439,11 @@ async function spawnPowerShellInMxc(
     child.once("close", (code, signal) => { void finish(code, signal); });
     child.on("error", (err) => {
       void (async () => {
+        // A spawn that fails (no pid) may never emit "close": release the
+        // listener, the egress token and the sandbox HOME here. A running
+        // child's error leaves that to "close" (the guard keeps it).
+        lifetime.dispose();
+        await cleanupAfterTermination();
         if (settled) return;
         settled = true;
         const artifactMetadata = await outputCollector.finish(true);

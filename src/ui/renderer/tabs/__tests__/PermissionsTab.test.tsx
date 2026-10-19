@@ -1337,10 +1337,10 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.getByTestId("os-sandbox-windows-bash-note")).toBeTruthy();
     expect(screen.getByTestId("os-sandbox-windows-substrate-extensions").textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
     expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
-    expect(screen.queryByTestId("os-sandbox-windows-grant-cap")).toBeNull();
+    expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
   });
 
-  it("says why MXC is unavailable and that shared-identity grants stop at the conversation", async () => {
+  it("says why MXC is unavailable and that extensions share one proxy identity", async () => {
     const { ave } = installApiWithWindows();
     ave.permission.sandboxCapability.mockResolvedValueOnce({
       platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
@@ -1360,7 +1360,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       reason: t("permissionsTab.osSandboxWindowsMxcReasonTierUnsupported"),
       build: "10.0.22631.4317",
     }));
-    expect(screen.getByTestId("os-sandbox-windows-grant-cap").textContent).toBe(t("permissionsTab.osSandboxWindowsSharedIdentity"));
+    expect(screen.getByTestId("os-sandbox-windows-shared-identity").textContent).toBe(t("permissionsTab.osSandboxWindowsSharedIdentity"));
     expect(screen.queryByTestId("os-sandbox-windows-bash-note")).toBeNull();
   });
 

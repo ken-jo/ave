@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   MXC_BASH_UNAVAILABLE_MESSAGE,
   buildMxcShellRequest,
+  classifyMxcStartProbe,
   detectMxcSupport,
   isWindowsPathAtOrUnder,
   mxcRequestArgs,
   parseMxcDryRunOutput,
   parseMxcProbeOutput,
+  pinnedWxcExecSha256,
   powerShellMxcCommandLine,
   rankMxcFilesystem,
   wxcExecPathFor,
@@ -37,6 +39,10 @@ const DRY_RUN_PASSED = [
 ].join("\r\n");
 const DRY_RUN_PROXY_RULE_REJECTED =
   "Request error\r\nConfiguration parse error: runtimeConfig.networkProxy requires network.egress.default='deny' with no direct allow or deny rules\r\n";
+// What wxc-exec printed when Windows PowerShell 5.1 started in a container over
+// SSH (session 0, 2026-10-19), and its exit code.
+const START_DLL_INIT_FAILED =
+  "The target executable exited with STATUS_DLL_INIT_FAILED (0xC0000142). This often means the sandbox is blocking Win32k system calls (UI subsystem access), which is often required to initialize.";
 const DRY_RUN_NON_LOOPBACK =
   "Request error\r\nWARNING: filesystem path 'D:\\x\\missing' (in 'readwritePaths') does not exist on the host; the backend may fail at mount time\r\n" +
   "Configuration parse error: runtimeConfig.networkProxy must use localhost, 127.0.0.1, or [::1]\r\n";
@@ -76,14 +82,22 @@ describe("parseMxcDryRunOutput", () => {
 
 function deps(overrides: Partial<DetectMxcSupportDeps> & { runs?: Record<string, MxcRunResult | Error> } = {}): DetectMxcSupportDeps & { calls: string[][] } {
   const calls: string[][] = [];
-  const runs = overrides.runs ?? { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER, stderr: "" }, "--dry-run": { code: 0, stdout: DRY_RUN_PASSED, stderr: "" } };
+  const runs: Record<string, MxcRunResult | Error> = {
+    "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER, stderr: "" },
+    "--dry-run": { code: 0, stdout: DRY_RUN_PASSED, stderr: "" },
+    // The real start probe (no --dry-run): PowerShell exits 0.
+    "--config-base64": { code: 0, stdout: "", stderr: "" },
+    ...overrides.runs,
+  };
   return {
     platform: "win32",
     arch: "x64",
     resourcePath: "C:\\Program Files\\Ave\\resources",
-    windowsBuild: "10.0.26300.9711",
+    windowsBuild: "10.0.26300",
     exists: () => true,
-    probeDirectory: "C:\\Users\\u\\AppData\\Roaming\\Ave\\sandbox-temp",
+    sha256: async () => pinnedWxcExecSha256("x64")!,
+    probeDirectory: "C:\\Users\\u\\AppData\\Local\\Temp\\ave-mxc-probe-x",
+    systemRoot: "C:\\Windows",
     run: async (_file, args) => {
       calls.push([...args]);
       const outcome = runs[args[0]!];
@@ -96,16 +110,34 @@ function deps(overrides: Partial<DetectMxcSupportDeps> & { runs?: Record<string,
 }
 
 describe("detectMxcSupport", () => {
-  it("is available when the probe selects base-container and the exact request validates", async () => {
+  it("is available when the launcher is the pinned build, the request validates and PowerShell starts", async () => {
     const d = deps();
-    await expect(detectMxcSupport(d)).resolves.toEqual({ state: "available", windowsBuild: "10.0.26300.9711" });
-    expect(d.calls.map((c) => c[0])).toEqual(["--probe", "--dry-run"]);
+    await expect(detectMxcSupport(d)).resolves.toEqual({ state: "available", windowsBuild: "10.0.26300" });
+    expect(d.calls.map((c) => c[0])).toEqual(["--probe", "--dry-run", "--config-base64"]);
     // The dry run validates the request Ave launches: proxy mode, no DACL fallback.
     const encoded = d.calls[1]![d.calls[1]!.indexOf("--config-base64") + 1]!;
     const request = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
     expect(request.fallback).toEqual({ allowDaclMutation: false });
     expect(request.runtimeConfig.networkProxy).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(request.network).toEqual({ egress: { default: "deny" }, ingress: { default: "allow", hostLoopback: "allow" } });
+    // The start probe is a real container of the same shape running System32 PowerShell 5.1.
+    const start = JSON.parse(Buffer.from(d.calls[2]![1]!, "base64").toString("utf8"));
+    expect(start.process.commandLine).toMatch(/^"C:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe" .* -EncodedCommand /);
+    expect(start.process.inheritDefaultEnv).toBe(false);
+    expect(start.runtimeConfig.networkProxy).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(start.network).toEqual(request.network);
+    expect(start.filesystem.readwritePaths).toEqual(["C:\\Users\\u\\AppData\\Local\\Temp\\ave-mxc-probe-x"]);
+  });
+
+  it("refuses a launcher that is not the pinned build before running it", async () => {
+    const d = deps({ sha256: async () => "0".repeat(64) });
+    await expect(detectMxcSupport(d)).resolves.toMatchObject({ state: "unavailable", reason: "launcher-mismatch" });
+    expect(d.calls).toEqual([]);
+  });
+
+  it("does not claim MXC when PowerShell cannot initialize in this session", async () => {
+    const d = deps({ runs: { "--config-base64": { code: 0xc0000142, stdout: "", stderr: START_DLL_INIT_FAILED } } });
+    await expect(detectMxcSupport(d)).resolves.toMatchObject({ state: "unavailable", reason: "unverified-session" });
   });
 
   it.each([
@@ -115,9 +147,29 @@ describe("detectMxcSupport", () => {
     [{ runs: { "--probe": { code: 1, stdout: "", stderr: "boom" } } }, "probe-failed"],
     [{ runs: { "--probe": new Error("spawn EACCES") } }, "probe-failed"],
     [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace("base-container", "appcontainer-dacl"), stderr: "" } } }, "tier-unsupported"],
-    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER, stderr: "" }, "--dry-run": { code: 1, stdout: DRY_RUN_PROXY_RULE_REJECTED, stderr: "" } } }, "request-rejected"],
+    [{ runs: { "--dry-run": { code: 1, stdout: DRY_RUN_PROXY_RULE_REJECTED, stderr: "" } } }, "request-rejected"],
+    [{ runs: { "--config-base64": { code: 1, stdout: "", stderr: "Access is denied." } } }, "powershell-start-failed"],
+    [{ runs: { "--config-base64": new Error("spawn timeout") } }, "powershell-start-failed"],
+    [{ sha256: async () => { throw new Error("EACCES"); } }, "probe-failed"],
   ])("reports %o as %s, never as available", async (override, reason) => {
     await expect(detectMxcSupport(deps(override))).resolves.toMatchObject({ state: "unavailable", reason });
+  });
+});
+
+describe("classifyMxcStartProbe", () => {
+  it("treats exit 0 as a start and a UI-subsystem init failure as an unverified session", () => {
+    expect(classifyMxcStartProbe(0, "", "")).toEqual({ ok: true });
+    expect(classifyMxcStartProbe(3221225794, "", "")).toMatchObject({ ok: false, reason: "unverified-session" });
+    expect(classifyMxcStartProbe(-1, START_DLL_INIT_FAILED, "")).toMatchObject({ ok: false, reason: "unverified-session" });
+    expect(classifyMxcStartProbe(1, "", "Access is denied.")).toEqual({ ok: false, reason: "powershell-start-failed", detail: "Access is denied." });
+  });
+});
+
+describe("pinnedWxcExecSha256", () => {
+  it("pins the two shipped architectures and nothing else", () => {
+    expect(pinnedWxcExecSha256("x64")).toMatch(/^[0-9a-f]{64}$/);
+    expect(pinnedWxcExecSha256("arm64")).toMatch(/^[0-9a-f]{64}$/);
+    expect(pinnedWxcExecSha256("ia32")).toBeUndefined();
   });
 });
 

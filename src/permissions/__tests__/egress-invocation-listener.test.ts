@@ -79,13 +79,19 @@ describe("refusedInvocationProxyDestination", () => {
     ["[::1]", "loopback destination"],
     ["::ffff:127.0.0.1", "loopback destination"],
     ["::ffff:7f00:1", "loopback destination"],
+    // IPv4-compatible spellings, as URL parsing serializes `[::127.0.0.1]`.
+    ["::127.0.0.1", "loopback destination"],
+    ["::7f00:1", "loopback destination"],
+    ["[::7f00:1]", "loopback destination"],
+    ["::7f12:3456", "loopback destination"],
+    ["::ffff:0:0", "unspecified destination"],
     ["0.0.0.0", "unspecified destination"],
     ["::", "unspecified destination"],
   ])("refuses %s", (host, reason) => {
     expect(refusedInvocationProxyDestination(host)).toBe(reason);
   });
 
-  it.each(["example.com", "10.0.0.5", "192.168.1.10", "1.1.1.1", "[2606:4700::1111]"])("forwards %s to the proxy's own policy", (host) => {
+  it.each(["example.com", "10.0.0.5", "192.168.1.10", "1.1.1.1", "[2606:4700::1111]", "::ffff:808:808", "::a00:5"])("forwards %s to the proxy's own policy", (host) => {
     expect(refusedInvocationProxyDestination(host)).toBeUndefined();
   });
 
@@ -94,6 +100,8 @@ describe("refusedInvocationProxyDestination", () => {
     expect(canonicalDestinationHost("0x7f.1:443")).toBe("127.0.0.1");
     expect(canonicalDestinationHost("http://2130706433/x")).toBe("127.0.0.1");
     expect(canonicalDestinationHost("http://[::ffff:127.0.0.1]/")).toBe("[::ffff:7f00:1]");
+    expect(canonicalDestinationHost("http://[::127.0.0.1]/")).toBe("[::7f00:1]");
+    expect(refusedInvocationProxyDestination(canonicalDestinationHost("http://[::127.0.0.1]/")!)).toBe("loopback destination");
     expect(refusedInvocationProxyDestination(canonicalDestinationHost("2130706433:80")!)).toBe("loopback destination");
   });
 });
@@ -146,6 +154,8 @@ describe("openInvocationProxyListener", () => {
     "CONNECT 2130706433:5883 HTTP/1.1\r\nHost: x\r\n\r\n",
     "GET http://127.0.0.1:5883/ HTTP/1.1\r\nHost: 127.0.0.1:5883\r\nConnection: close\r\n\r\n",
     "GET http://[::1]:5883/ HTTP/1.1\r\nHost: [::1]:5883\r\nConnection: close\r\n\r\n",
+    "CONNECT [::127.0.0.1]:5883 HTTP/1.1\r\nHost: x\r\n\r\n",
+    "GET http://[::127.0.0.1]:5883/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
   ])("refuses a loopback destination before the proxy sees it: %s", async (payload) => {
     const { listener, upstream, refused } = await setup("Basic aWQ=");
     const reply = await rawRequest(listener.port, payload);

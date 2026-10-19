@@ -192,6 +192,9 @@ const MXC_UNAVAILABLE_REASON_KEY = {
   "probe-failed": "permissionsTab.osSandboxWindowsMxcReasonProbeFailed",
   "tier-unsupported": "permissionsTab.osSandboxWindowsMxcReasonTierUnsupported",
   "request-rejected": "permissionsTab.osSandboxWindowsMxcReasonRequestRejected",
+  "launcher-mismatch": "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch",
+  "powershell-start-failed": "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed",
+  "unverified-session": "permissionsTab.osSandboxWindowsMxcReasonUnverifiedSession",
 } as const satisfies Record<SandboxMxcUnavailableReason, string>;
 
 const WINDOWS_INSTALL_OUTCOME_TONE: Record<WindowsInstallOutcomeView["tone"], string> = {
@@ -1432,7 +1435,7 @@ export function PermissionsTab({
                   : t("permissionsTab.osSandboxWindowsExtensionsNone")}
               </p>
               {windowsSubstrate.extensionEgressIdentity === "shared" && windowsSubstrate.extensions === "srt-win" ? (
-                <p data-testid="os-sandbox-windows-grant-cap">{t("permissionsTab.osSandboxWindowsSharedIdentity")}</p>
+                <p data-testid="os-sandbox-windows-shared-identity">{t("permissionsTab.osSandboxWindowsSharedIdentity")}</p>
               ) : null}
             </div>
           ) : null}
