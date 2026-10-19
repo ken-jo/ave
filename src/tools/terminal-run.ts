@@ -57,7 +57,7 @@ import {
 } from "../shared/terminal-command-text.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
+import { caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { t } from "../i18n/index.js";
 import { authorizedApprovalMemoryScope } from "./approval-memory-context.js";
 import { resolveSessionWindow, resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
@@ -68,12 +68,36 @@ const TERMINAL_RUN_TOOL_NAME = "terminal_run";
 const DEFAULT_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitDefaultMs / 1000;
 const MAX_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs / 1000;
 
-/** What typing a command into a terminal reports (pty-manager `typeTerminalCommand`). */
+/**
+ * Type a command into a terminal (pty-manager `typeTerminalCommand`): reset
+ * the line editor, check the shell against the operating system, paste the
+ * line, and press Enter once the edit line shows exactly that line.
+ */
 export type TypeTerminalCommand = (
   tabId: string,
   ownerWindowId: number,
   line: string,
-) => { ok: true; firstBlockId: number } | { ok: false; reason: string; message: string };
+  expectedCwd: string,
+) => Promise<{ ok: true; firstBlockId: number } | { ok: false; reason: string; message: string }>;
+
+/**
+ * Check a terminal's shell against the operating system (pty-manager
+ * `verifyTerminalShell`): its own process holds the terminal, and its real
+ * directory is the one its markers reported.
+ */
+type VerifyTerminalShell = (
+  tabId: string,
+  ownerWindowId: number,
+  reportedCwd: string,
+) => Promise<{ ok: true; cwd: string } | { ok: false; reason: string; message: string }>;
+
+/** What the audit log keeps when a terminal ran something other than the approved command. */
+export interface TerminalCommandMismatch {
+  readonly sessionId: string | undefined;
+  readonly tabId: string;
+  readonly approvedSha256: string;
+  readonly ranSha256: string;
+}
 
 export interface TerminalRunToolDeps extends SessionWindowScopeDeps {
   /** The terminal tab the user is looking at in a window, if a terminal is the active surface. */
@@ -89,6 +113,10 @@ export interface TerminalRunToolDeps extends SessionWindowScopeDeps {
   boundSurface: (windowId: number, hostSessionId: string) => { kind: "terminal" | "browser"; tabId: string } | undefined;
   /** Type one line into a terminal and press Enter. */
   typeCommand: TypeTerminalCommand;
+  /** Check a terminal's shell and directory against the operating system. */
+  verifyShell: VerifyTerminalShell;
+  /** Record, in the audit log, that a terminal ran a different command than approved. */
+  auditMismatch: (mismatch: TerminalCommandMismatch) => void;
 }
 
 /** The tools this module created — the only ones the authorization step treats as terminal commands. */
@@ -129,10 +157,11 @@ const TEXT_PROBLEM_MESSAGES: Record<TerminalCommandTextProblem, string> = {
   "whitespace-run": `command holds more than ${MAX_TERMINAL_COMMAND_WHITESPACE_RUN} whitespace characters in a row, which would push the rest of it out of view`,
   "history-expansion": "command uses shell history expansion (a ! before a word, or a leading ^), which would run text nobody approved; quote or rephrase it",
   comment: "command holds a # comment, which some interactive shells run as text; remove it",
-  "shell-divergent": "command uses a construct an interactive zsh and bash run differently (a command word starting with =, nocorrect, noglob, or the r/fc history re-run); rephrase it",
-  "shell-state": "command would change the shell for the user's later commands (a function definition, an alias, trap, hook, option or key binding, sourced code, or an assignment to a prompt, hook, PATH or IFS variable); terminal_run does not do that",
+  "shell-divergent": "command uses a construct an interactive zsh and bash run differently (a word starting with =, a zsh parameter flag such as $=x or $+x, nocorrect, noglob, -, repeat, an assignment after command or builtin, a command of redirections alone, or the r/fc history re-run); rephrase it",
+  "shell-state": "command would change the shell for the user's later commands (a function definition, an alias, trap, hook, option or key binding, sourced code, an edit or listing of the shell history, or an assignment to a prompt, hook, PATH or IFS variable); terminal_run does not do that",
   "shell-integration": "command refers to the terminal's own shell-integration names (__ave_*), which terminal_run does not expose",
-  "unchecked-construct": "command uses a construct terminal_run cannot check (case, declare, typeset, local, let, ((...)), select, coproc, or a command name taken from a variable); rephrase it with plain commands",
+  "shell-introspection": "command would print the shell's own state (prompt expansion with print -P or ${...@P}, the prompt, hook or line-editor variables such as PS1 or PROMPT_COMMAND, a listing of variables or declarations such as export -p or compgen, vared, or print -z/-s); terminal_run does not expose it",
+  "unchecked-construct": "command uses a construct terminal_run cannot check (case, declare, typeset, local, let, ((...)), select, coproc, a glob with parentheses such as *(...), which zsh runs as glob qualifiers, a command name taken from a variable, or a parameter expansion with zsh flags or bash indirection such as ${(P)x} or ${!x}); rephrase it with plain commands",
   incomplete: "command is not one complete shell command (an open quote, here-document, trailing operator or backslash), so the shell would wait for more input",
 };
 
@@ -155,6 +184,28 @@ function parseInput(raw: unknown): TerminalRunInput {
     ...(input.tabId === undefined ? {} : { tabId: input.tabId as string }),
     waitSeconds: waitSeconds as number,
   };
+}
+
+/** How long a call waits for the shell to report starting the typed command, whatever its waitSeconds. */
+const BLOCK_START_WAIT_MS = 3_000;
+
+/** Wait until block `id` has opened (or the shell exits), `waitMs` passes, or `signal` aborts. */
+function waitForBlockStart(tracker: TerminalBlockTracker, id: number, waitMs: number, signal: AbortSignal | undefined): Promise<void> {
+  const started = (): boolean => tracker.get(id) !== null || tracker.hasExited();
+  if (started() || signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      unsubscribe();
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, waitMs);
+    const unsubscribe = tracker.subscribe(() => {
+      if (started()) finish();
+    });
+    signal?.addEventListener("abort", finish, { once: true });
+  });
 }
 
 /** One page of a block wait: the block once it opened, and whether it finished. */
@@ -206,12 +257,14 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
    * The terminal this call types into and the directory its shell is in.
    * Throws with the reason when there is none to name.
    */
-  const resolveTarget = (input: TerminalRunInput, sessionId: string | undefined): {
+  const resolveTarget = async (input: TerminalRunInput, sessionId: string | undefined): Promise<{
     windowId: number;
     tabId: string;
     tracker: TerminalBlockTracker;
     cwd: string;
-  } => {
+    /** The directory as the operating system resolves it (realpath). */
+    verifiedCwd: string;
+  }> => {
     const scope = resolveSessionWindow(sessionId, deps);
     if (scope === null) {
       throw new Error("terminal_run is available only to a conversation in an app window (or its sub-agents); this session has no terminals");
@@ -244,12 +297,16 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     }
     const cwd = tracker.currentCwd();
     if (cwd === null) throw new Error(`terminal ${tabId} has not reported its working directory yet`);
-    return { windowId, tabId, tracker, cwd };
+    // The directory decides the rules, the project rules and the card: take
+    // it from the markers only when the operating system agrees.
+    const verified = await deps.verifyShell(tabId, windowId, cwd);
+    if (!verified.ok) throw new Error(`terminal ${tabId} cannot take a command: ${verified.message}. Nothing was typed`);
+    return { windowId, tabId, tracker, cwd, verifiedCwd: verified.cwd };
   };
 
-  const approvalMemoryScope = (raw: unknown, ctx?: ToolPolicyContext): ApprovalMemoryScope => {
+  const approvalMemoryScope = async (raw: unknown, ctx?: ToolPolicyContext): Promise<ApprovalMemoryScope> => {
     const input = parseInput(raw);
-    const target = resolveTarget(input, ctx?.sessionId);
+    const target = await resolveTarget(input, ctx?.sessionId);
     return {
       kind: "terminal-command",
       commandSha256: sha256Hex(input.command),
@@ -258,7 +315,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       // The form the allowed-directory list is kept in (allowed-directories.ts),
       // so the card can compare the two as strings: a symlinked $PWD and a
       // case-folding file system both resolve here.
-      cwdForMatch: caseFoldForMatch(canonicalizePathForMatch(target.cwd)),
+      cwdForMatch: caseFoldForMatch(target.verifiedCwd),
     };
   };
 
@@ -286,21 +343,47 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       );
     }
     ctx.abortSignal?.throwIfAborted();
-    const typed = deps.typeCommand(scope.tabId, windowId, input.command);
+    const typed = await deps.typeCommand(scope.tabId, windowId, input.command, scope.cwd);
     if (!typed.ok) {
       return terminalToolFailure(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
     }
+    // Whatever the wait, give the shell time to report starting the command
+    // (its C marker, which records the line it ran), so the line can be checked.
+    await waitForBlockStart(tracker, typed.firstBlockId, BLOCK_START_WAIT_MS, ctx.abortSignal);
     const { block, finished } = await waitForBlock(tracker, typed.firstBlockId, input.waitSeconds * 1000, ctx.abortSignal);
+    if (block === null) {
+      return {
+        ...fenceTerminalData({ tabId: scope.tabId, typed: true, finished, error: t("be_terminalRun.notVerified", { tabId: scope.tabId }) }),
+        isError: true,
+      };
+    }
+    // The shell's own record of what it ran (its C marker) against what was
+    // approved. Typing cannot prove the line editor inserted the text as
+    // written; this can, after the fact.
+    if (block.command.trim() !== input.command.trim()) {
+      deps.auditMismatch({
+        sessionId,
+        tabId: scope.tabId,
+        approvedSha256: sha256Hex(input.command),
+        ranSha256: sha256Hex(block.command),
+      });
+      return {
+        ...fenceTerminalData({
+          tabId: scope.tabId,
+          typed: true,
+          error: t("be_terminalRun.ranDifferentCommand", { tabId: scope.tabId }),
+          finished,
+          block: withOutputBudget([block])[0],
+        }),
+        isError: true,
+      };
+    }
     return fenceTerminalData({
       tabId: scope.tabId,
       typed: true,
       finished,
-      ...(block === null ? {} : { block: withOutputBudget([block])[0] }),
-      ...(finished ? {} : {
-        note: block === null
-          ? t("be_terminalRun.notStarted", { tabId: scope.tabId })
-          : t("be_terminalRun.stillRunning", { tabId: scope.tabId, blockId: block.id }),
-      }),
+      block: withOutputBudget([block])[0],
+      ...(finished ? {} : { note: t("be_terminalRun.stillRunning", { tabId: scope.tabId, blockId: block.id }) }),
     });
   };
 
@@ -344,7 +427,9 @@ const NOT_READY_REASONS: Record<Exclude<ReturnType<TerminalBlockTracker["promptS
   exited: "its shell has exited",
   "command-running": "a command or full-screen program is running in its foreground",
   "between-prompts": "its shell has not shown its next prompt yet",
-  "pending-input": "the user is typing at the prompt, or it holds text they typed and have not run",
+  "pending-input": "the user is typing at the prompt, pressed a key since it was drawn, or it holds text they typed and have not run",
+  "no-bracketed-paste": "its shell does not take bracketed paste, so typed text could be read as keys; terminal_run needs zsh 5.1 or bash 4.4 or later",
+  "vi-editing-mode": "its shell uses vi key bindings, where typed text can be read as editing commands; terminal_run needs emacs key bindings",
   "shell-starting": "its shell is still starting and has not finished its first prompt; retry in a moment",
   "no-prompt-end-marker": "its shell does not mark the end of its prompt (fish), so whether the user is typing there cannot be told; terminal_run needs zsh or bash",
 };

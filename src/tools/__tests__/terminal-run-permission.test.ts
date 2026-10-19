@@ -49,7 +49,7 @@ async function run(
   options: { mode?: "allow" | "default"; rules?: Array<{ pattern: string; action: "allow" | "deny" | "ask" }>; choice?: ApprovalChoice; busy?: boolean } = {},
 ) {
   const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-  tracker.recordOutput(`${mark("D;0")}${mark(`P;Cwd=${terminalCwd}`)}${mark("A")}% ${mark("B")}`);
+  tracker.recordOutput(`${mark("D;0")}${mark(`P;Cwd=${terminalCwd};Keys=emacs;Paste=1`)}${mark("A")}% ${mark("B")}`);
   if (options.busy) tracker.recordOutput(`sleep 60\r\n${mark("C;cmdline_url=sleep%2060")}`);
   registerTerminalBlockTracker(TAB, tracker, WINDOW);
 
@@ -58,9 +58,12 @@ async function run(
   for (const rule of options.rules ?? []) await pm.addRulePersist(rule, { kind: "user" });
   const check = vi.spyOn(pm, "checkDetailed");
   const typed: string[] = [];
-  const typeCommand: TypeTerminalCommand = (_tabId, _windowId, line) => {
+  const typeCommand: TypeTerminalCommand = async (_tabId, _windowId, line) => {
     typed.push(line);
-    return { ok: true, firstBlockId: tracker.nextBlockId() };
+    const firstBlockId = tracker.nextBlockId();
+    // The shell starts it and records the line it ran (its C marker).
+    queueMicrotask(() => tracker.recordOutput(`\r\n${mark(`C;cmdline_url=${encodeURIComponent(line)}`)}`));
+    return { ok: true, firstBlockId };
   };
   const registry = new ToolRegistry();
   registry.register(createTerminalRunTool({
@@ -69,6 +72,8 @@ async function run(
     activeTerminalTabId: () => TAB,
     boundSurface: () => undefined,
     typeCommand,
+    verifyShell: async (_tabId, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
+    auditMismatch: () => {},
   }));
   const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: options.choice ?? "deny-once" }));
   const executor = new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never);
@@ -175,13 +180,16 @@ describe("terminal_run permission", () => {
     expect(String(result.content)).toMatch(/not waiting at an empty prompt: a command or full-screen program is running/);
   });
 
-  it("a remembered allow is session-only and covers the command in that directory", async () => {
+  it("a remembered allow is session-only and covers the command in that terminal and directory", async () => {
     const { request } = await run("npm test");
     const memory = request?.approvalMemory as Extract<ApprovalMemory, { kind: "key" }>;
     expect(memory.kind).toBe("key");
     expect(isSessionOnlyApprovalMemoryScope(memory.scope)).toBe(true);
-    // The key names the command and directory, not the terminal it was typed into.
+    // Each terminal's shell has its own sandbox jail, fixed when it spawned,
+    // so a decision for one terminal is not one for another.
     expect(memory.key).toContain(terminalCwd);
-    expect(memory.key).not.toContain(TAB);
+    expect(memory.key).toContain(TAB);
+    // The directory the card compares is derived, not part of the decision.
+    expect(memory.key).not.toContain("cwdForMatch");
   });
 });

@@ -558,8 +558,11 @@ separate classifier:
   Unlike a `bash` `cwd`, the terminal's own directory is not refused for being
   outside them — the user may have moved the shell anywhere its sandbox
   allows — so only the operands are judged.
-- A remembered decision covers the exact command in that directory, and only
-  for the app session (`terminal-command` scope). A bare `terminal_run` allow
+- A remembered decision covers the exact command in that terminal and that
+  directory, and only for the app session (`terminal-command` scope). The
+  terminal is part of the key because each terminal's jail was fixed when its
+  shell spawned, so the same command in another terminal may run under a
+  different sandbox. A bare `terminal_run` allow
   pattern does not cover every command, because the tool keys policy on its
   command as `bash` does.
 - The reviewer sees the terminal's own substrate: the active ASRT capability
@@ -577,7 +580,30 @@ beside a page has no terminal of its own and fails without a `tabId`, and a
 bound terminal that is gone fails the call. With none of them the call fails;
 it never chooses a terminal itself. Execute types into
 the sealed terminal and refuses when that terminal's shell has moved to another
-directory since approval.
+directory since approval. A pane chat reads the history of, or ends its chat
+with, only a pane tab its own window holds, named by a well-formed tab id.
+
+The directory the shell reports is text on the terminal's output stream, so
+it is checked against the operating system before the rules, the approval
+scope or project rules use it
+([shell-process.ts](../../src/main/terminal/shell-process.ts)). The terminal's
+foreground process group must be the shell itself: the process spawned on
+the pty, matched by pid and program name, so neither a program running in
+front of it nor a nested shell of the same name passes. That process's working
+directory, symlinks resolved, must equal the reported one. On Linux both come from `/proc`. On macOS the
+foreground group comes from `ps`, and the working directory comes from
+`lsof -d cwd`. Node cannot call `proc_pidinfo` without a native addon, and
+`lsof` is the stock unprivileged reader of that call. Other platforms get no
+reading, and the call is refused. The comparison directory in the approval
+scope is the verified one.
+
+On macOS every wrapper before the shell (the pty trampoline, `env`,
+`sandbox-exec`, `bash -c`) execs in place, so the pty's process is the shell.
+On Linux the sandbox runs the shell under `bwrap --new-session --unshare-pid`.
+The shell is then a forked child in its own session and never holds the pty's
+foreground, so `terminal_run` refuses every sandboxed Linux terminal
+(`foreground-not-shell`) until the check can follow the shell into bwrap's
+namespace.
 
 The command is typed only at an empty prompt, as the shell's own command
 markers report it ([terminal-blocks.ts](../../src/main/terminal/terminal-blocks.ts)
@@ -591,7 +617,81 @@ execution:
   (the model is told to retry in a moment);
 - an exited shell or a shell that emits no markers;
 - a shell that does not mark the end of its prompt (fish), which is not
-  supported.
+  supported;
+- a line editor that does not take bracketed paste as plain text, or one with
+  vi key bindings. Each prompt reports both (`Keys=`, `Paste=` in its `P`
+  marker). zsh reports paste only while `zle_bracketed_paste` is set and the
+  `bracketed-paste` and `self-insert` widgets are still the builtins (so
+  `bracketed-paste-magic` and `url-quote-magic` count as no paste). bash
+  reports it while readline has `enable-bracketed-paste on`, which the
+  startup file turns on for bash 4.4 and later. Bash before 4.4, such as
+  macOS `/bin/bash` 3.2, has none.
+
+Typing is a fixed protocol (pty-manager `typeLineAtPrompt`):
+1. Check the prompt state.
+2. Check the shell and its directory with the operating system.
+3. Write Ctrl-C. The tty turns it into SIGINT, which clears the line editor
+   whatever its state: an ESC or Ctrl-X prefix waiting for its next key, a
+   half-typed line. It cannot run anything.
+4. Wait for the fresh prompt, then check the directory and the state again.
+5. Paste the line between bracketed-paste markers, without Enter.
+6. Wait until the line editor's echo of its edit line (wrapping removed) is
+   exactly the approved line, with no key from the user since the prompt. Only
+   then press Enter. Otherwise write Ctrl-C to clear the line and refuse
+   (`edit-line-mismatch`).
+
+Inside a paste, the line editor inserts the text and does not read it as
+keys. Raw typing after a pending ESC ran `[200~echo hi there~` in place of
+`echo hi there` in a real zsh.
+
+Once the shell reports starting the command (its `C` marker, waited for up
+to 3 seconds whatever `waitSeconds` is), the line it recorded is compared with
+the approved text, even while the command is still running. A difference fails
+the call. No `C` marker means the call fails as not verified. It also
+writes an audit row with the session, the terminal and the SHA-256 of both
+texts. Known false-difference sources, both history options that neither
+the terminal's startup file nor the macOS system files set, and that a typed
+command cannot set (options are shell state):
+- bash records the line through `history 1`. Under `HISTCONTROL=ignorespace`
+  (or `ignoreboth`), a line typed with a leading space is not saved, and the
+  record shows the previous line.
+- zsh hands its hook the line as history will save it. Under
+  `HIST_REDUCE_BLANKS`, `echo   a` is recorded as `echo a`.
+
+Both fail closed: the call reports a failure for a command that ran as
+approved.
+
+The markers that the hooks print (`D`, `P`, `A`, `C`) carry a per-terminal
+nonce, so printed text cannot forge them. The nonce reaches the shell in an
+owner-only file in the terminal's sandbox HOME. The startup file reads it into
+an unexported shell variable and deletes the file before the first prompt.
+The nonce is never in the environment, which other processes can read. Only
+the hook functions read it, and they print only to the terminal. bash 4.4 and
+later print `C` from `PS0`, which bash writes before running the line,
+outside any redirection the line makes. A DEBUG trap would run inside a
+group's redirection, so `{ cmd; } > f` would capture the marker.
+
+`B` marks the end of the prompt text, so it comes from the prompt string
+itself: the line editor redraws the prompt on a resize or Ctrl-L without
+running a hook. Prompt expansion can print anything in the prompt string
+(`print -P "$PS1"`, `${PS1@P}`), so `B` never carries the nonce. It carries a
+token the hook draws fresh from `/dev/urandom` for each prompt and announces
+in that prompt's nonce-carrying `P`. The tracker accepts a `B` only with the
+current token, and only while that prompt is up:
+- The first `B` ends the prompt.
+- A repeated `B` is a redraw: the echo starts over, and the prompt count and
+  any typing stay.
+- A `B` printed while a command runs is ordinary output.
+
+A command can therefore print only its own prompt's token, during its run,
+when it is refused, or a stale one afterwards.
+
+Residual risk: a process that is still running while the next prompt is up
+and can read the shell's current state. That means a background job asking
+the shell itself (not a copy made when it forked), or reading the shell's
+memory, such as `/proc/<pid>/mem` under a permissive `ptrace_scope`. The
+validator refuses every way for a command to expand or list shell state (see
+below). Nothing else runs at a prompt except the hooks.
 
 The 1.5-second quiet window is a heuristic. A key written to the PTY shows in
 the echo only after the shell reads it, so an empty echo just after typing
@@ -611,11 +711,36 @@ before any card, with no mode that lets them through:
 - characters a reader cannot see: format and default-ignorable characters,
   non-ASCII spaces, the braille blank, combining marks on ASCII, and
   whitespace runs longer than 16;
-- history expansion (`!word`, a leading `^`, the `r` and `fc` re-run commands);
-- constructs zsh and bash read differently: an unquoted `#` comment, a command
-  word starting with `=`, `nocorrect` and `noglob`. A `#` inside a `${…}`
-  expansion (`${#x}`, `${x#p}`) is an operator, not a comment. The terminal's
-  zsh also runs with `interactivecomments`;
+- history expansion (`!word` outside single quotes and `$'…'`, unescaped; a
+  leading `^`; the `r` and `fc` re-run commands). Inside double quotes both
+  shells expand it, so it stays refused there;
+- constructs zsh and bash read differently:
+  - an unquoted `#` comment. A `#` inside a `${…}` expansion (`${#x}`,
+    `${x#p}`) is an operator, not a comment. The terminal's zsh also runs
+    with `interactivecomments`;
+  - a word starting with `=`, which zsh replaces with a program's path, as an
+    argument, a redirect target or a loop value;
+  - zsh parameter flags: `$=x`, `$+x`, `$~x`, `$^x` and their `${…}` forms;
+  - the precommand modifiers `nocorrect`, `noglob` and `-`;
+  - `repeat` and `foreach`;
+  - an assignment word after `command` or `builtin`;
+  - the clobbering redirect `>!`;
+  - a command made only of redirections, where zsh runs `$NULLCMD` or
+    `$READNULLCMD`.
+
+  A differential test found these
+  ([terminal-command-differential.test.ts](../../src/main/terminal/__tests__/terminal-command-differential.test.ts)).
+  It takes every command of a corpus that the validator accepts and the
+  classifier sees in full: the existing cases and their mutations, about
+  3,000 commands. Each one runs in a real interactive zsh and bash with the
+  terminal's startup file, xtrace on, and a PATH of recording shims. The test
+  fails on any program or builtin that ran without the classifier having
+  evaluated it with those words. That includes commands the classifier
+  marks as hiding code. The terminal's shell reads only its integration
+  startup file and the system's, never the user's own, so aliases, functions
+  and options from the user's startup files do not apply. Aliases and options
+  the user sets by hand in that terminal (such as `setopt extendedglob`) are
+  theirs, and this check does not cover them;
 - anything that would change the shell for the user's later commands:
   - function definitions;
   - assignments to prompt and hook variables, `PATH`, `IFS`, `TMOUT` and
@@ -627,9 +752,22 @@ before any card, with no mode that lets them through:
     history, or source code;
 - references to the shell integration's `__ave_*` names; block records also
   redact the marker nonce, so printed text cannot forge markers;
+- anything that prints the shell's own state:
+  - prompt expansion (`print -P`, `echo -P`, `${…@P}`);
+  - any reference to the prompt, hook or line-editor variables (`PS0`–`PS9`,
+    `PROMPT*`, `RPROMPT*`, `PROMPT_COMMAND`, `*_functions`, `zle_*`,
+    `widgets`), so `echo $PS1` and `printf '%s' "$PS1"` are treated alike;
+  - bash's `${…@A}`/`${…@K}` declaration dumps;
+  - variable listings: `export`, `readonly`, `integer` or `float` with nothing
+    to declare or with `-p`, and `compgen`. `set`, `typeset`, `declare` and
+    `local` are refused already;
+  - `vared`;
+  - `print -z` (the line editor's buffer stack) and `print -s`/`-S` (the
+    history). `history` itself is refused as shell state;
 - a construct the shell analysis does not model (`case`,
-  `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`), and a
-  command name taken from a variable;
+  `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`), a glob
+  with parentheses (zsh glob qualifiers such as `*(e:'cmd':)` and `*(+cmd)`
+  run code), and a command name taken from a variable;
 - an incomplete construct.
 
 The card shows the exact command. It names by code point each character that
