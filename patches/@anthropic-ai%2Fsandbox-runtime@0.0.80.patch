@@ -77,9 +77,11 @@ the installed package.
    session's proxy listeners is dropped, and the socket every proxy route
    actually reaches is judged against those listeners too. The allowed
    connection is dialed over the kept routes in order: a route that fails to
-   connect hands over to the next, a 407 refuses with "upstream proxy
-   requires authentication" (CONNECT status line or plain-HTTP response,
-   never relayed to the client). A loopback destination is always direct, a
+   connect hands over to the next; a policy refusal on a route (its socket
+   reached this host or a listener) ends it, so a recorded refusal is the
+   answer the client gets; a 407 refuses with "upstream proxy requires
+   authentication" (CONNECT status line or plain-HTTP response, never
+   relayed to the client). A loopback destination is always direct, a
    router that throws or answers a malformed route refuses, and an empty
    answer refuses with the router's reason. Without a router the static
    `parentProxy` is turned into the same routes, so behaviour is unchanged.
@@ -911,7 +913,7 @@ index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa
  /**
   * Schema for the access mode of a declared credential source.
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..4b08f6cc991ac65d3083bf801623d7cada0c1467 100644
+index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1d61fc861a457d6147add1d87c13dc754951e1eb 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
 @@ -45,7 +45,47 @@ export type WrapWithSandboxOptions = {
@@ -962,7 +964,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..4b08f6cc991ac65d3083bf801623d7ca
  /**
   * Interface for the sandbox manager API
   */
-@@ -125,6 +165,57 @@ export interface ISandboxManager {
+@@ -125,6 +165,58 @@ export interface ISandboxManager {
       * none. `reset()` removes them all.
       */
      unregisterCommandNetworkLists(commandId: string): void;
@@ -1011,8 +1013,9 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..4b08f6cc991ac65d3083bf801623d7ca
 +     * it). While set it replaces `network.parentProxy` for routing: each
 +     * destination decision asks it once, before the ask callback, and the
 +     * allowed connection is dialed over the answered routes in order (a
-+     * route that fails to connect hands over to the next; a 407 refuses with
-+     * "upstream proxy requires authentication"). A loopback destination is
++     * route that fails to connect hands over to the next; a policy refusal
++     * ends it, and a 407 refuses with "upstream proxy requires
++     * authentication"). A loopback destination is
 +     * always direct; a hook that throws or answers a malformed route refuses
 +     * the destination. Cleared by reset().
 +     */
@@ -1020,7 +1023,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..4b08f6cc991ac65d3083bf801623d7ca
      /**
       * True when the network filter understands an ask callback's
       * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
-@@ -150,4 +241,13 @@ export interface ISandboxManager {
+@@ -150,4 +242,13 @@ export interface ISandboxManager {
   * for this session. This runs outside of the sandbox, on the host machine.
   */
  export declare const SandboxManager: ISandboxManager;
@@ -1036,7 +1039,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..4b08f6cc991ac65d3083bf801623d7ca
  //# sourceMappingURL=sandbox-manager.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..ed7075284189b2778e40747a0d46609041a53993 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f71426dbe1a49675fda344367c300e2dcf441f1b 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -16,17 +16,21 @@ import * as fs from 'fs';
@@ -1278,8 +1281,10 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..ed7075284189b2778e40747a0d466090
 +    };
 +    // Ave patch (upstream routes): dial an allowed CONNECT/SOCKS destination
 +    // over the routes its filter pinned, in order. A route that fails to
-+    // connect hands over to the next; a proxy that asks for credentials (407)
-+    // ends it with a refusal saying so. A destination with no pin is refused.
++    // connect hands over to the next; a policy refusal (a proxy socket that
++    // reached this host or a listener, a refused address) or a proxy that
++    // asks for credentials (407) ends it, so a recorded refusal is always the
++    // answer the client gets. A destination with no pin is refused.
 +    const notDecided = (host, port, encodedCommand) => {
 +        const reason = 'destination was not decided before the dial';
 +        recordOutboundDeny(host, port, reason, attribution(encodedCommand));
@@ -1290,7 +1295,6 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..ed7075284189b2778e40747a0d466090
 +        const pin = pinnedFor(socket, host, port);
 +        if (!pin)
 +            throw notDecided(host, port, encodedCommand);
-+        let denial;
 +        let lastError = new Error(`no route to ${host}:${port}`);
 +        for (const route of pin.routes) {
 +            try {
@@ -1301,14 +1305,15 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..ed7075284189b2778e40747a0d466090
 +            catch (error) {
 +                if (isParentProxyAuthRequired(error))
 +                    throw upstreamAuthRefusal(host, port, attribution(encodedCommand));
++                // A policy refusal (already recorded) is the answer, not a
++                // connection failure: no later route may carry it instead.
 +                if (isResolvedAddressDenied(error))
-+                    denial = error;
-+                else
-+                    lastError = error;
++                    throw error;
++                lastError = error;
 +                logForDebugging(`Route ${describeRoute(route)} to ${host}:${port} failed (${error?.message}); trying the next route`);
 +            }
 +        }
-+        throw denial ?? lastError;
++        throw lastError;
 +    };
 +    // Ave patch (upstream routes): the same for a plain-HTTP request. Resolves
 +    // to `{ kind: 'direct', request }` (options for the request to the
@@ -1321,7 +1326,6 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..ed7075284189b2778e40747a0d466090
 +        if (!pin)
 +            throw notDecided(host, port, encodedCommand);
 +        const authRequired = () => upstreamAuthRefusal(host, port, attribution(encodedCommand));
-+        let denial;
 +        let lastError = new Error(`no route to ${host}:${port}`);
 +        for (const route of pin.routes) {
 +            try {
@@ -1336,13 +1340,12 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..ed7075284189b2778e40747a0d466090
 +            }
 +            catch (error) {
 +                if (isResolvedAddressDenied(error))
-+                    denial = error;
-+                else
-+                    lastError = error;
++                    throw error;
++                lastError = error;
 +                logForDebugging(`Route ${describeRoute(route)} to ${host}:${port} failed (${error?.message}); trying the next route`);
 +            }
 +        }
-+        throw denial ?? lastError;
++        throw lastError;
 +    };
 +    // Ave patch (invocation listeners): every allowed client socket is kept
 +    // under (key, host, port) so the embedder can close it when the grant

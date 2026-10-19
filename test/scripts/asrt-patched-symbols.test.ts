@@ -1081,6 +1081,39 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     }
   });
 
+  it("ends at a policy refusal: a proxy that reaches this host at the dial is refused, and no later route carries the name", async (test) => {
+    const first = await recordingUpstream(200);
+    const second = await recordingUpstream(200);
+    try {
+      const setup = await withRouter(test, async () => ({
+        routes: [
+          { kind: "http", host: "proxy.rebind.test", port: first.port },
+          { kind: "http", host: "127.0.0.1", port: second.port, resolvesNames: true },
+        ],
+      }));
+      if (setup === undefined) return;
+      // The plan sees the proxy name remote; the dial's lookup gets loopback.
+      let calls = 0;
+      setDestinationResolverForTesting(async (name) => {
+        if (name !== "proxy.rebind.test") return corpResolver(name);
+        calls += 1;
+        return [{ address: calls <= 1 ? "198.51.100.50" : "127.0.0.1", family: 4 }];
+      });
+      try {
+        expect(await connectThrough(setup.front, setup.proxy, setup.name, "intranet.corp.test:443"))
+          .toMatch(/^HTTP\/1\.1 403 .*upstream proxy on this host resolves names itself/u);
+        expect(calls).toBe(2);
+        expect(first.requests).toEqual([]);
+        expect(second.requests).toEqual([]);
+      } finally {
+        await setup.SandboxManager.reset();
+      }
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  });
+
   it("drops a route that names one of the proxy's own listeners, and refuses a plain-HTTP name through a proxy route", async (test) => {
     let listenerPort = 0;
     const setup = await withRouter(test, async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: listenerPort }] }));
