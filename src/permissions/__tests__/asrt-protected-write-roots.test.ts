@@ -277,7 +277,8 @@ describe("the plugins root, refused to plugin-owned wraps", () => {
   });
 });
 
-describe("a confined child cannot reach user data through a grant", () => {
+// These live probes require POSIX shells and per-process filesystem isolation.
+describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user data through a grant", () => {
   let root: string;
   let userData: string;
   let partitions: string;

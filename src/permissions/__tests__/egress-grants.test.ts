@@ -3,7 +3,7 @@
  * lists (egress-runtime.ts) and the identity strength that caps the scopes
  * (egress-identity.ts).
  */
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -20,17 +20,23 @@ import { egressIdentityStrength, noteAsrtUnixSocketPolicy } from "../egress-iden
 import { maxEgressGrantScope } from "../../shared/sandbox-capability-info.js";
 import { setWorkerEgressAllowlists, workerEgressAllowedDomains } from "../egress-runtime.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
+import { canonicalizePathForMatch } from "../sensitive-paths.js";
 
 const ALL = ["once", "conversation", "workspace", "always"] as const;
-const subject = { token: "1".repeat(32), sessionId: "session-1", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const };
+const subject = { token: "1".repeat(32), sessionId: "session-1", tabId: undefined, workspaceRoot: "", origin: "shell" as const };
 const github = { host: "github.com", port: 443 };
 
 let dir: string;
 let file: string;
+let workspaceRoot: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "ave-egress-grants-"));
   file = join(dir, "shell-egress-hosts.json");
+  subject.workspaceRoot = join(dir, "project");
+  mkdirSync(subject.workspaceRoot);
+  workspaceRoot = canonicalizePathForMatch(subject.workspaceRoot);
 });
 
 afterEach(() => {
@@ -56,14 +62,14 @@ describe("EgressGrantStore", () => {
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       version: 1,
       grants: [
-        { scope: "workspace", origin: "shell", workspaceRoot: "/work/project", host: "pypi.org", port: 443, grantedAt: "2026-10-19T01:02:03.000Z" },
+        { scope: "workspace", origin: "shell", workspaceRoot, host: "pypi.org", port: 443, grantedAt: "2026-10-19T01:02:03.000Z" },
         { scope: "always", origin: "shell", host: "example.com", port: 443, grantedAt: "2026-10-19T01:02:04.000Z" },
       ],
     });
-    const elsewhere = { token: "4".repeat(32), sessionId: undefined, tabId: undefined, workspaceRoot: "/work/other", origin: "shell" as const };
+    const elsewhere = { token: "4".repeat(32), sessionId: undefined, tabId: undefined, workspaceRoot: join(dir, "other"), origin: "shell" as const };
     expect(await store.matchingScope(elsewhere, { host: "pypi.org", port: 443 })).toBeUndefined();
     expect(await store.matchingScope(elsewhere, { host: "example.com", port: 443 })).toBe("always");
-    expect(await store.matchingScope({ ...elsewhere, workspaceRoot: "/work/project/" }, { host: "pypi.org", port: 443 }))
+    expect(await store.matchingScope({ ...elsewhere, workspaceRoot: `${subject.workspaceRoot}/` }, { host: "pypi.org", port: 443 }))
       .toBe("workspace");
   });
 
@@ -91,9 +97,9 @@ describe("EgressGrantStore", () => {
     await store.grant("workspace", ALL, subject, github);
     await store.grant("always", ALL, subject, github);
     expect((await store.listPersistent()).map((g) => g.scope)).toEqual(["workspace", "always"]);
-    expect((await store.revoke({ scope: "workspace", origin: "shell", host: "github.com", port: 443, workspaceRoot: "/work/other" })).removed)
+    expect((await store.revoke({ scope: "workspace", origin: "shell", host: "github.com", port: 443, workspaceRoot: canonicalizePathForMatch(join(dir, "other")) })).removed)
       .toBe(false);
-    expect((await store.revoke({ scope: "workspace", origin: "shell", host: "github.com", port: 443, workspaceRoot: "/work/project" })).removed)
+    expect((await store.revoke({ scope: "workspace", origin: "shell", host: "github.com", port: 443, workspaceRoot })).removed)
       .toBe(true);
     expect(await store.matchingScope(subject, github)).toBe("always");
     expect((await store.revoke({ scope: "always", origin: "terminal", host: "github.com", port: 443 })).removed).toBe(false);
@@ -151,7 +157,7 @@ describe("conversation grants and what a revoke closes", () => {
     store.noteUse("always", subject, github);
     store.noteUse("once", subject, github);
     store.releaseToken(ended.token);
-    const { removed, tokens } = await store.revoke({ scope: "workspace", origin: "shell", workspaceRoot: "/work/project", host: "github.com", port: 443 });
+    const { removed, tokens } = await store.revoke({ scope: "workspace", origin: "shell", workspaceRoot, host: "github.com", port: 443 });
     expect(removed).toBe(true);
     expect([...tokens].sort()).toEqual([subject.token, other.token].sort());
     // The always grant's use is its own.
@@ -246,15 +252,16 @@ describe("terminal tab grants (design F)", () => {
     expect(await store.matchingScope({ ...tabSubject, token: "a".repeat(32) }, github)).toBeUndefined();
   });
 
-  it("compares working directories after the sandbox's canonicalizer (symlinks resolved)", async () => {
+  // Directory symlink creation may require a privilege the host does not grant.
+  it.skipIf(!canCreateSymlinks("dir"))("compares working directories after the sandbox's canonicalizer (symlinks resolved)", async () => {
     const real = join(dir, "real-project");
     const link = join(dir, "linked-project");
     mkdirSync(real);
-    symlinkSync(real, link);
+    symlinkSync(real, link, "dir");
     const store = new EgressGrantStore(file);
     await store.grant("workspace", ALL, { ...subject, workspaceRoot: link }, github);
     expect(await store.matchingScope({ ...subject, workspaceRoot: real }, github)).toBe("workspace");
-    expect((await store.listPersistent())[0]).toMatchObject({ workspaceRoot: realpathSync.native(real) });
+    expect((await store.listPersistent())[0]).toMatchObject({ workspaceRoot: canonicalizePathForMatch(real) });
   });
 
   it("offers a terminal the tab ladder, capped like the shell's, and only in-memory scopes for a local destination", () => {

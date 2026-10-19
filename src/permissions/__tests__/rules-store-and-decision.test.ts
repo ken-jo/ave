@@ -9,15 +9,20 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const { projectFixture } = vi.hoisted(() => ({ projectFixture: { root: "" } }));
+
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  const { resolve } = await import("node:path");
+  const { resolve, sep } = await import("node:path");
   return {
     ...actual,
-    // Temporary projects may live inside this checkout in a confined test run.
+    // Discover repositories only inside the fixture, independent of host ancestors.
     existsSync: (path: import("node:fs").PathLike) => {
       const fold = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
-      return fold(resolve(String(path))) !== fold(resolve(process.cwd(), ".git")) && actual.existsSync(path);
+      const candidate = fold(resolve(String(path)));
+      const root = fold(resolve(projectFixture.root));
+      if (candidate.endsWith(`${sep}.git`) && !candidate.startsWith(`${root}${sep}`)) return false;
+      return actual.existsSync(path);
     },
   };
 });
@@ -48,16 +53,22 @@ import { BashTool } from "../../tools/shell-tools.js";
 import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
 
 let dir: string;
+let fixtureParent: string;
 let permissionsFile: string;
 let project: string;
 
 beforeEach(() => {
-  dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-rules-")));
+  fixtureParent = realpathSync(mkdtempSync(join(tmpdir(), "ave-rules-")));
+  // Exercise an enclosing repository without depending on the host's layout.
+  mkdirSync(join(fixtureParent, ".git"));
+  dir = join(fixtureParent, "fixture");
+  mkdirSync(dir);
+  projectFixture.root = dir;
   permissionsFile = join(dir, "permissions.json");
   project = join(dir, "project");
   mkdirSync(project);
 });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => rmSync(fixtureParent, { recursive: true, force: true }));
 afterAll(() => rmSync(TEST_HOME, { recursive: true, force: true }));
 
 const shell = (command: string) => ({ ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command } });
