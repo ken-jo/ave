@@ -399,6 +399,13 @@ it("knows every option the installed Linux wrapper can emit", () => {
     "utf8",
   );
   const literals = new Set([...source.matchAll(/'(--[a-z][a-z-]*)'/g)].map((match) => match[1]!));
+  // The extraction relies on ASRT's single-quoted literals. If a release
+  // changed its quote style the set would come back empty or partial, and the
+  // checks below would pass on nothing; 0.0.80 yields 26 distinct literals.
+  for (const known of ["--ro-bind", "--bind", "--tmpfs", "--unshare-net", "--disable-userns"]) {
+    expect(literals.has(known), `extraction missed ${known}`).toBe(true);
+  }
+  expect(literals.size).toBeGreaterThanOrEqual(26);
   /** Options on the bwrap command line, with sample operands. */
   const emitted: Record<string, readonly string[]> = {
     "--new-session": [],
