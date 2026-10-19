@@ -924,7 +924,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
    * Proxy-Authorization header, and answers `status` to every request
    * (`200` keeps a CONNECT tunnel open).
    */
-  async function recordingUpstream(status: 200 | 407): Promise<{ port: number; requests: Array<{ line: string; authorization: string | undefined }>; close: () => Promise<void> }> {
+  async function recordingUpstream(status: 200 | 403 | 407 | 502): Promise<{ port: number; requests: Array<{ line: string; authorization: string | undefined }>; close: () => Promise<void> }> {
     const { createServer } = await import("node:net");
     const requests: Array<{ line: string; authorization: string | undefined }> = [];
     const sockets = new Set<import("node:net").Socket>();
@@ -940,6 +940,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
         const authorization = lines.find((l) => /^proxy-authorization:/iu.test(l))?.replace(/^[^:]+:\s*/u, "");
         requests.push({ line: lines[0] ?? "", authorization });
         if (status === 407) socket.end("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"up\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        else if (status === 403 || status === 502) socket.end(`HTTP/1.1 ${status} ${status === 403 ? "Forbidden" : "Bad Gateway"}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
         else if (!(lines[0] ?? "").startsWith("CONNECT ")) socket.end("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         else socket.write("HTTP/1.1 200 Connection established\r\n\r\n");
       };
@@ -1031,6 +1032,39 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       }
     } finally {
       await good.close();
+    }
+  });
+
+  it("ends at any HTTP answer from an upstream: neither a later proxy nor DIRECT carries what it refused", async (test) => {
+    const refusing = await recordingUpstream(403);
+    const gateway = await recordingUpstream(502);
+    const next = await recordingUpstream(200);
+    try {
+      let routes: Array<{ kind: "direct" } | { kind: "http"; host: string; port: number }> = [];
+      const setup = await withRouter(test, async () => ({ routes }));
+      if (setup === undefined) return;
+      try {
+        routes = [{ kind: "http", host: "127.0.0.1", port: refusing.port }, { kind: "http", host: "127.0.0.1", port: next.port }];
+        expect(await connectThrough(setup.front, setup.proxy, setup.name, "blocked.example.invalid:443"))
+          .toBe("HTTP/1.1 403 upstream proxy refused the connection (HTTP 403)");
+        routes = [{ kind: "http", host: "127.0.0.1", port: gateway.port }, { kind: "http", host: "127.0.0.1", port: next.port }];
+        expect(await connectThrough(setup.front, setup.proxy, setup.name, "unreachable.example.invalid:443"))
+          .toBe("HTTP/1.1 403 upstream proxy refused the connection (HTTP 502)");
+        // `PROXY p; DIRECT`: the proxy's refusal is not bypassed by going direct.
+        routes = [{ kind: "http", host: "127.0.0.1", port: refusing.port }, { kind: "direct" }];
+        expect(await connectThrough(setup.front, setup.proxy, setup.name, "blocked2.example.invalid:443"))
+          .toBe("HTTP/1.1 403 upstream proxy refused the connection (HTTP 403)");
+        expect(next.requests).toEqual([]);
+        expect(refusing.requests.map((r) => r.line)).toEqual([`CONNECT ${TEST_ADDRESS}:443 HTTP/1.1`, `CONNECT ${TEST_ADDRESS}:443 HTTP/1.1`]);
+        expect(JSON.stringify(setup.SandboxManager.getSandboxViolationStore().getViolations()))
+          .toContain("upstream proxy refused the connection (HTTP 403)");
+      } finally {
+        await setup.SandboxManager.reset();
+      }
+    } finally {
+      await refusing.close();
+      await gateway.close();
+      await next.close();
     }
   });
 

@@ -78,12 +78,17 @@ the installed package.
    name over the rest (`resolution: 'upstream'`); a route naming one of the
    session's proxy listeners is dropped, and the socket every proxy route
    actually reaches is judged against those listeners too. The allowed
-   connection is dialed over the kept routes in order: a route that fails to
-   connect hands over to the next; a policy refusal on a route (its socket
-   reached this host or a listener) ends it, so a recorded refusal is the
-   answer the client gets; a 407 refuses with "upstream proxy requires
-   authentication" (CONNECT status line or plain-HTTP response, never
-   relayed to the client). A loopback destination is always direct, a
+   connection is dialed over the kept routes in order: only a route that
+   fails to connect (refused, reset, timed out, proxy name unresolvable)
+   hands over to the next; a policy refusal on a route (its socket reached
+   this host or a listener) ends it, so a recorded refusal is the answer the
+   client gets; a 407 refuses with "upstream proxy requires authentication"
+   (CONNECT status line or plain-HTTP response, never relayed to the
+   client); any other non-2xx CONNECT answer refuses with "upstream proxy
+   refused the connection (HTTP <status>)", so neither a later proxy nor
+   DIRECT carries what an upstream refused (within one route, the next
+   vetted address of the destination is tried only after a connection
+   failure or a 502/503/504). A loopback destination is always direct, a
    router that throws or answers a malformed route refuses, and an empty
    answer refuses with the router's reason. Without a router the static
    `parentProxy` is turned into the same routes, so behaviour is unchanged.
@@ -654,7 +659,7 @@ index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..1403f2659e3fd398b40e50cd7534748c
  export declare function formatAuthority(host: string, port: number, defaultPort: number): string;
  export interface DirectRequestOptions {
 diff --git a/dist/sandbox/parent-proxy.js b/dist/sandbox/parent-proxy.js
-index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..66abe08a188ee2d3773583fb53a9a6202e1eb15a 100644
+index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..122f80bc860eaef5d72b9dd4497e507e665706ff 100644
 --- a/dist/sandbox/parent-proxy.js
 +++ b/dist/sandbox/parent-proxy.js
 @@ -83,7 +83,12 @@ export function resolveParentProxy(cfg) {
@@ -695,7 +700,7 @@ index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..66abe08a188ee2d3773583fb53a9a620
                  }
                  // Re-emit any bytes that arrived after the header terminator.
                  const rest = buf.slice(end + 4);
-@@ -245,23 +258,80 @@ export function openConnectTunnel(opts) {
+@@ -245,23 +258,86 @@ export function openConnectTunnel(opts) {
   * Thin wrapper around openConnectTunnel that dials TCP or TLS based on the
   * proxy URL scheme.
   */
@@ -716,7 +721,13 @@ index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..66abe08a188ee2d3773583fb53a9a620
 +        catch (error) {
 +            // Ave patch (upstream routes): a proxy that wants credentials, or
 +            // one refused for what it is, answers the same for every address.
++            // Another address of the same destination is tried only after a
++            // connection failure or a gateway answer (502/503/504: the
++            // upstream could not reach that address, say IPv6), never after
++            // the upstream's own refusal (4xx), which is final.
 +            if (isParentProxyAuthRequired(error) || error?.code === 'ERR_SRT_RESOLVED_ADDRESS_DENIED')
++                throw error;
++            if (Number.isInteger(error?.proxyStatus) && ![502, 503, 504].includes(error.proxyStatus))
 +                throw error;
 +            lastError = error;
 +            logForDebugging(`Parent proxy CONNECT ${destination}:${destPort} failed (${error?.message}); trying the next address`);
@@ -1053,7 +1064,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1d61fc861a457d6147add1d87c13dc75
  //# sourceMappingURL=sandbox-manager.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bfeea0fc97 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..965fa512575637c4aeea3f23da21c8b4d27d6d60 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -16,17 +16,21 @@ import * as fs from 'fs';
@@ -1323,7 +1334,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
   * canonicalization (`127.1`, a trailing-dot FQDN) would dodge the exclusion
   * and get terminated anyway.
   */
-@@ -497,11 +637,158 @@ function shouldTerminateTLSForHost(host) {
+@@ -497,11 +637,167 @@ function shouldTerminateTLSForHost(host) {
      }
      return true;
  }
@@ -1401,11 +1412,14 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
 +        };
 +    };
 +    // Ave patch (upstream routes): dial an allowed CONNECT/SOCKS destination
-+    // over the routes its filter pinned, in order. A route that fails to
-+    // connect hands over to the next; a policy refusal (a proxy socket that
-+    // reached this host or a listener, a refused address) or a proxy that
-+    // asks for credentials (407) ends it, so a recorded refusal is always the
-+    // answer the client gets. A destination with no pin is refused.
++    // over the routes its filter pinned, in order. Only a route that fails to
++    // connect (refused, reset, timed out, the proxy's name unresolvable)
++    // hands over to the next. Any HTTP answer from an upstream ends it (a 407
++    // as "upstream proxy requires authentication", any other non-2xx as the
++    // upstream's refusal), and so does a policy refusal (a proxy socket that
++    // reached this host or a listener, a refused address), so a recorded
++    // refusal is always the answer the client gets and nothing the upstream
++    // refused goes out by a later route. A destination with no pin is refused.
 +    const notDecided = (host, port, encodedCommand) => {
 +        const reason = 'destination was not decided before the dial';
 +        recordOutboundDeny(host, port, reason, attribution(encodedCommand));
@@ -1426,6 +1440,12 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
 +            catch (error) {
 +                if (isParentProxyAuthRequired(error))
 +                    throw upstreamAuthRefusal(host, port, attribution(encodedCommand));
++                // Any other HTTP answer from the upstream is its decision (a
++                // 403 is its policy, a 5xx says it could not reach the
++                // destination): the next route, DIRECT included, must not carry
++                // what the upstream refused.
++                if (parentProxyStatusOf(error) !== undefined)
++                    throw upstreamStatusRefusal(host, port, parentProxyStatusOf(error), attribution(encodedCommand));
 +                // A policy refusal (already recorded) is the answer, not a
 +                // connection failure: no later route may carry it instead.
 +                if (isResolvedAddressDenied(error))
@@ -1485,7 +1505,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
          getMitmSocketPath,
          mitmCA,
          shouldTerminateTLS: shouldTerminateTLSForHost,
-@@ -521,7 +808,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -521,7 +817,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          onFilterRequestDenied: ({ method, url, reason, encodedCommand }) => {
              // A refused CONNECT comes with its authority (`host:port`), not a URL.
              const target = method === 'CONNECT' ? url : redactUrlForViolation(url);
@@ -1494,7 +1514,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
          },
          // TLS-terminated path always gets the injector; the plain-HTTP path
          // only when explicitly opted in. Without the opt-in, a sentinel sent
-@@ -538,19 +825,26 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -538,19 +834,26 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          // injection: the real signature must not travel over plaintext.
          planSigv4: buildSigv4Planner(),
          parentProxy,
@@ -1526,7 +1546,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
          },
          probeUnauthenticated: async (port, host) => {
              // Explicit deny rules only: an unauthenticated peer must never reach
-@@ -562,17 +856,25 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -562,17 +865,25 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
              for (const entry of config.network.deniedDomains) {
                  if (matchesDomainPatternWithPort(canonical, port, entry)) {
                      const reason = deniedDomainReason(entry);
@@ -1553,7 +1573,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +890,682 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,6 +899,693 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -1768,6 +1788,17 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
 +function upstreamAuthRefusal(host, port, encodedCommand) {
 +    recordOutboundDeny(host, port, UPSTREAM_AUTH_REASON, encodedCommand);
 +    return new ResolvedAddressDeniedError(host, UPSTREAM_AUTH_REASON, []);
++}
++/** Ave patch (upstream routes): the HTTP status a parent proxy answered a CONNECT with, if the error carries one. */
++function parentProxyStatusOf(error) {
++    const status = typeof error === 'object' && error !== null ? error.proxyStatus : undefined;
++    return Number.isInteger(status) ? status : undefined;
++}
++/** Ave patch (upstream routes): the refusal for a parent proxy that answered a CONNECT with a non-2xx status other than 407. */
++function upstreamStatusRefusal(host, port, status, encodedCommand) {
++    const reason = `upstream proxy refused the connection (HTTP ${status})`;
++    recordOutboundDeny(host, port, reason, encodedCommand);
++    return new ResolvedAddressDeniedError(host, reason, []);
 +}
 +/** A route for a debug line: the proxy without its credentials. */
 +function describeRoute(route) {
@@ -2236,7 +2267,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -616,7 +1594,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +1614,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -2249,7 +2280,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -1515,6 +2498,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2518,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -2259,7 +2290,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +2696,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +2716,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -2281,7 +2312,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1734,23 +2723,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1734,23 +2743,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -2316,7 +2347,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1786,6 +2783,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +2803,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -2324,7 +2355,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,6 +2819,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,6 +2839,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -2333,7 +2364,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
      const platform = getPlatform();
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
-@@ -1950,7 +2950,7 @@ function getConfig() {
+@@ -1950,7 +2970,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -2342,7 +2373,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +2989,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +3009,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -2350,7 +2381,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2222,6 +3223,8 @@ async function reset() {
+@@ -2222,6 +3243,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -2359,7 +2390,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,6 +3232,22 @@ async function reset() {
+@@ -2229,6 +3252,22 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -2382,7 +2413,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..db8819e6abddf034aa3f3d41358211bf
      maskedFileStore.dispose();
  }
  function getSandboxViolationStore() {
-@@ -2336,6 +3355,10 @@ export const SandboxManager = {
+@@ -2336,6 +3375,10 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,

@@ -1446,7 +1446,10 @@ answered route is judged as above (a pinned name goes as its vetted literal,
 an unresolvable name skips direct routes and untrusted proxies on this host,
 a route naming one of the proxy's own listeners is dropped and every proxy
 socket is checked against them), and the connection tries the kept routes in
-order. A 407 refuses with "upstream proxy requires authentication" (Basic
+order, handing over only on a connection failure: any HTTP answer from an
+upstream is final (a 403 or 5xx refuses with "upstream proxy refused the
+connection (HTTP <status>)"; a later proxy or DIRECT never carries what it
+refused). A 407 refuses with "upstream proxy requires authentication" (Basic
 credentials from a `user:pass@` URL are sent; NTLM/Kerberos need a local
 helper such as cntlm or px plus the `resolvesNames` opt-in). SOCKS entries
 are skipped with an `egress-route` audit row (ASRT has no SOCKS client); an
