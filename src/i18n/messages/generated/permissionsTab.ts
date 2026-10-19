@@ -306,7 +306,7 @@ export const en = {
 
   // Network section (sandbox proxy denials)
   "permissionsTab.networkTitle": "Network",
-  "permissionsTab.networkDescription": "Connections the sandbox refused. Shell commands, terminal tabs and plugin processes reach only the hosts on the sandbox allow-list; every other connection is refused and recorded here and in the audit log.",
+  "permissionsTab.networkDescription": "Connections the sandbox refused. Shell commands, terminal tabs and extension processes reach only the hosts on the sandbox allow-list; every other connection is refused and recorded here and in the audit log.",
   "permissionsTab.networkDenialsHeading": "Recent denials (24 h)",
   "permissionsTab.networkDenialsRefresh": "Refresh",
   "permissionsTab.networkDenialsLoading": "Loading…",
@@ -317,9 +317,9 @@ export const en = {
   "permissionsTab.networkDenialSourceShell": "{tool} tool call",
   "permissionsTab.networkDenialSourceShellCall": "{tool} tool call {id}",
   "permissionsTab.networkDenialSourceTerminal": "Terminal tab {tab}",
-  "permissionsTab.networkDenialSourcePlugin": "Plugin {plugin}",
-  "permissionsTab.networkDenialSourceWorker": "Plugin {plugin}, worker {worker}",
-  "permissionsTab.networkDenialSourceHook": "Plugin {plugin}, hook",
+  "permissionsTab.networkDenialSourcePlugin": "Extension {plugin}",
+  "permissionsTab.networkDenialSourceWorker": "Extension {plugin}, worker {worker}",
+  "permissionsTab.networkDenialSourceHook": "Extension {plugin}, hook",
   "permissionsTab.networkDenialSourceMcp": "MCP server {server}",
   "permissionsTab.networkDenialSourceUnattributed": "Unattributed",
 } as const;
@@ -597,7 +597,7 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.auditLogHelp": "감사 로그 패널을 열어 최근 7일간의 권한 이벤트를 확인하세요.",
 
   "permissionsTab.networkTitle": "네트워크",
-  "permissionsTab.networkDescription": "샌드박스가 차단한 연결입니다. 셸 명령, 터미널 탭, 플러그인 프로세스는 샌드박스 허용 목록에 있는 호스트에만 연결할 수 있으며, 그 밖의 연결은 차단되어 여기와 감사 로그에 기록됩니다.",
+  "permissionsTab.networkDescription": "샌드박스가 차단한 연결입니다. 셸 명령, 터미널 탭, 익스텐션 프로세스는 샌드박스 허용 목록에 있는 호스트에만 연결할 수 있으며, 그 밖의 연결은 차단되어 여기와 감사 로그에 기록됩니다.",
   "permissionsTab.networkDenialsHeading": "최근 차단 (24시간)",
   "permissionsTab.networkDenialsRefresh": "새로 고침",
   "permissionsTab.networkDenialsLoading": "불러오는 중…",
@@ -608,9 +608,9 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.networkDenialSourceShell": "{tool} 도구 호출",
   "permissionsTab.networkDenialSourceShellCall": "{tool} 도구 호출 {id}",
   "permissionsTab.networkDenialSourceTerminal": "터미널 탭 {tab}",
-  "permissionsTab.networkDenialSourcePlugin": "플러그인 {plugin}",
-  "permissionsTab.networkDenialSourceWorker": "플러그인 {plugin}, 워커 {worker}",
-  "permissionsTab.networkDenialSourceHook": "플러그인 {plugin}, 훅",
+  "permissionsTab.networkDenialSourcePlugin": "익스텐션 {plugin}",
+  "permissionsTab.networkDenialSourceWorker": "익스텐션 {plugin}, 워커 {worker}",
+  "permissionsTab.networkDenialSourceHook": "익스텐션 {plugin}, 훅",
   "permissionsTab.networkDenialSourceMcp": "MCP 서버 {server}",
   "permissionsTab.networkDenialSourceUnattributed": "출처 불명",
 };

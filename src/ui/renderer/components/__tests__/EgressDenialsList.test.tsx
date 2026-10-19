@@ -36,7 +36,7 @@ describe("EgressDenialsList", () => {
     expect(text).toContain("domain not allowed");
     expect(text).toContain("github.com:22");
     expect(text).toContain("Terminal tab terminal:0000000a-1");
-    expect(text).toContain("Plugin acme_notes, worker indexer");
+    expect(text).toContain("Extension acme_notes, worker indexer");
     expect(text).toContain("Unattributed");
     expect(text).toContain("POST https://hooks.example.com/upload/[REDACTED]");
   });
