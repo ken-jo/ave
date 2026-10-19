@@ -58,7 +58,7 @@ import { authorizedApprovalMemoryScope } from "./approval-memory-context.js";
 import { resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
 import { fenceTerminalData, terminalToolFailure, withOutputBudget } from "./terminal-read.js";
 
-export const TERMINAL_RUN_TOOL_NAME = "terminal_run";
+const TERMINAL_RUN_TOOL_NAME = "terminal_run";
 
 const DEFAULT_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitDefaultMs / 1000;
 const MAX_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs / 1000;
