@@ -35,9 +35,10 @@
  *    a program named `NAME=v`), and a command of redirections alone runs
  *    `$NULLCMD` or `$READNULLCMD` (`cat`, a pager) where bash runs nothing;
  *  - a construct the shell analysis does not model (`case`,
- *    `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`), or a
- *    command name taken from a variable, cannot be checked for any of this,
- *    so it is refused too;
+ *    `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`, a glob
+ *    with parentheses, which zsh reads as glob qualifiers that can run code),
+ *    or a command name taken from a variable, cannot be checked for any of
+ *    this, so it is refused too;
  *  - an unfinished construct (an open quote, a here-document, a trailing
  *    operator or backslash) leaves the shell waiting at a continuation prompt
  *    with the terminal half-typed, so the line must parse as one complete
@@ -349,7 +350,12 @@ function statementProblem(statement: ShellStatement): TerminalCommandTextProblem
   }
 }
 
-/** Command substitutions inside words run commands too. */
+/**
+ * Command substitutions inside words run commands too. So does a glob with
+ * parentheses in zsh: `*(e:'cmd':)` and `*(+cmd)` are glob qualifiers that
+ * run code for each match, where bash reads an extended glob (shell-analysis
+ * leaves an ExtGlob word unanalysed).
+ */
 function firstWordsProblem(words: readonly ShellWord[]): TerminalCommandTextProblem | null {
   for (const word of words) {
     for (const part of word.parts) {
@@ -359,6 +365,8 @@ function firstWordsProblem(words: readonly ShellWord[]): TerminalCommandTextProb
       } else if (part.kind === "parameter-choice") {
         const problem = firstWordsProblem([part.operand]);
         if (problem !== null) return problem;
+      } else if (part.kind === "unknown" && /\bExtGlob$/u.test(part.reason)) {
+        return "unchecked-construct";
       }
     }
   }
@@ -366,7 +374,12 @@ function firstWordsProblem(words: readonly ShellWord[]): TerminalCommandTextProb
 }
 
 function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): TerminalCommandTextProblem | null {
-  const nested = firstWordsProblem([...command.words, ...command.assignments.map((a) => a.value), ...command.assignments.flatMap((a) => a.elements ?? [])]);
+  const nested = firstWordsProblem([
+    ...command.words,
+    ...command.assignments.map((a) => a.value),
+    ...command.assignments.flatMap((a) => a.elements ?? []),
+    ...command.redirects.flatMap((r) => [r.target, r.data].filter((w): w is ShellWord => w !== undefined)),
+  ]);
   if (nested !== null) return nested;
   // Redirections alone: zsh runs `$NULLCMD`/`$READNULLCMD` (cat, a pager).
   if (command.words.length === 0 && command.redirects.length > 0) return "shell-divergent";

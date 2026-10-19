@@ -686,12 +686,15 @@ before any card, with no mode that lets them through:
   ([terminal-command-differential.test.ts](../../src/main/terminal/__tests__/terminal-command-differential.test.ts)).
   It takes every command of a corpus that the validator accepts and the
   classifier sees in full: the existing cases and their mutations, about
-  2,400 commands. Each one runs in a real interactive zsh and bash with the
+  3,000 commands. Each one runs in a real interactive zsh and bash with the
   terminal's startup file, xtrace on, and a PATH of recording shims. The test
   fails on any program or builtin that ran without the classifier having
-  evaluated it with those words. The terminal's shell reads only its
-  integration startup file and the system's, never the user's own, so the
-  user's personal aliases and functions do not apply to it;
+  evaluated it with those words. That includes commands the classifier
+  marks as hiding code. The terminal's shell reads only its integration
+  startup file and the system's, never the user's own, so aliases, functions
+  and options from the user's startup files do not apply. Aliases and options
+  the user sets by hand in that terminal (such as `setopt extendedglob`) are
+  theirs, and this check does not cover them;
 - anything that would change the shell for the user's later commands:
   - function definitions;
   - assignments to prompt and hook variables, `PATH`, `IFS`, `TMOUT` and
@@ -704,8 +707,9 @@ before any card, with no mode that lets them through:
 - references to the shell integration's `__ave_*` names; block records also
   redact the marker nonce, so printed text cannot forge markers;
 - a construct the shell analysis does not model (`case`,
-  `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`), and a
-  command name taken from a variable;
+  `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`), a glob
+  with parentheses (zsh glob qualifiers such as `*(e:'cmd':)` and `*(+cmd)`
+  run code), and a command name taken from a variable;
 - an incomplete construct.
 
 The card shows the exact command. It names by code point each character that

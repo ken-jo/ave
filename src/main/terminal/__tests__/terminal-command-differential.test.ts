@@ -3,8 +3,8 @@
  * permission classifier (which reads it as bash, `analyzeShellForRules`) and
  * the interactive shell that actually runs it.
  *
- * Every command of the corpus that the terminal_run validator ACCEPTS and the
- * classifier reports as fully visible (no hidden code) is typed, with the real
+ * Every command of the corpus that the terminal_run validator ACCEPTS (and
+ * the classifier can parse) is typed, with the real
  * typing protocol, into a real interactive zsh and bash on a pseudo-terminal,
  * started with the terminal's shell integration. Each shell has:
  *  - xtrace on, written to a file, with a PS4 that names the running function
@@ -18,7 +18,10 @@
  * shim recorded, each builtin xtrace reports \u2014 is one the classifier
  * evaluated. A command whose words the classifier read as static literals
  * must have run with exactly those words; one with an expansion must have run
- * under the head the classifier named. Anything else is a word the rules never
+ * under the head the classifier named. Commands the classifier marks as
+ * hiding code (a wrapper or interpreter fed a string) are run too: the shims
+ * do not run what they are handed, so what the shell itself runs must still
+ * be visible to the rules. Anything else is a word the rules never
  * saw, and fails the test.
  *
  * Commands that wait for terminal input or end the shell (read, exit, kill,
@@ -165,6 +168,8 @@ const BASE_COMMANDS: readonly string[] = [
   "ls *(e:'touch pwned':)",
   "ls x(e:'touch pwned':)",
   "ls *(+rm)",
+  "echo x > *(e:'touch pwned':)",
+  "echo hi > \"$(touch r)\"",
   "rm x(N)",
   "echo $x:h $x:t",
   "rm $x:h",
@@ -540,6 +545,9 @@ function hasBackgroundJob(command: string): boolean {
 interface Plan {
   readonly candidates: number;
   readonly refused: number;
+  /** Accepted, yet the classifier could not parse it: never allowed, and not run. */
+  readonly unparsed: number;
+  /** Run, and marked by the classifier as hiding code. */
   readonly hidden: number;
   readonly notRun: number;
   readonly runs: ReadonlyArray<{ command: string; commands: readonly Argv[] }>;
@@ -549,13 +557,15 @@ function plan(): Plan {
   const candidates = new Set<string>();
   for (const base of BASE_COMMANDS) for (const mutate of MUTATIONS) candidates.add(mutate(base));
   let refused = 0;
+  let unparsed = 0;
   let hidden = 0;
   let notRun = 0;
   const runs: Array<{ command: string; commands: readonly Argv[] }> = [];
   for (const command of candidates) {
     if (terminalCommandTextProblem(command) !== null) { refused++; continue; }
     const shape = analyzeShellForRules(command);
-    if (!shape.ok || shape.hidden.length > 0) { hidden++; continue; }
+    if (!shape.ok) { unparsed++; continue; }
+    if (shape.hidden.length > 0) hidden++;
     // A background job may run after the prompt returns, past the point its
     // records are read: not run, counted with the others.
     if (hasBackgroundJob(command)) { notRun++; continue; }
@@ -563,7 +573,7 @@ function plan(): Plan {
     if (commands.some((argv) => commandStarts(argv).some((start) => NOT_RUN_HEADS.has(argv[start] ?? "")))) { notRun++; continue; }
     runs.push({ command, commands });
   }
-  return { candidates: candidates.size, refused, hidden, notRun, runs };
+  return { candidates: candidates.size, refused, unparsed, hidden, notRun, runs };
 }
 
 const opened: string[] = [];
@@ -573,7 +583,7 @@ afterAll(() => {
 
 describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated is what the shell runs", () => {
   it("runs no simple command, in zsh or bash, that the permission classifier did not evaluate", async () => {
-    const { candidates, refused, hidden, notRun, runs } = plan();
+    const { candidates, refused, unparsed, hidden, notRun, runs } = plan();
     const shimNames = new Set<string>(["rm", "touch", "sh", "bash", "zsh", "curl", "ls", "git", "make", "npm", "head", "wc", "tee", "diff", "env", "xargs", "sudo", "nohup", "which", "print", "repeat", "pwned", "id"]);
     for (const { commands } of runs) {
       for (const argv of commands) {
@@ -613,7 +623,7 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
       }
     })));
 
-    process.stdout.write(`[terminal_run differential] candidates=${candidates} validator-refused=${refused} classifier-hidden=${hidden} not-run=${notRun} run=${runs.length} x ${SHELLS.length} shells, hung=${hung.length}, stuck=${stuckAfter.length}, mismatches=${mismatches.length}, recorded-differs=${recordedDiffers.length}\n`);
+    process.stdout.write(`[terminal_run differential] candidates=${candidates} validator-refused=${refused} classifier-unparsed=${unparsed} not-run=${notRun} run=${runs.length} (${hidden} hiding code) x ${SHELLS.length} shells, hung=${hung.length}, stuck=${stuckAfter.length}, mismatches=${mismatches.length}, recorded-differs=${recordedDiffers.length}\n`);
     for (const line of [...mismatches, ...recordedDiffers, ...hung.map((h) => `hung ${h}`), ...stuckAfter.map((h) => `stuck ${h}`)]) console.info(line);
     expect(mismatches).toEqual([]);
     expect(recordedDiffers).toEqual([]);
