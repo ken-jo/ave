@@ -186,7 +186,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
 
       // mac/linux: [<shell>, "-c", <wrapped>]; Windows: [srt-win, "exec", ...]
       expect(argv.length).toBeGreaterThanOrEqual(3);
-      expect(argv[1]).toBe(process.platform === "win32" ? "exec" : process.platform === "linux" ? "-pc" : "-c");
+      expect(argv[1]).toBe(process.platform === "win32" ? "exec" : "-c");
 
       const res = await runArgv(argv, env, writeDir);
       cleanupAsrtSandboxAfterCommand();
@@ -295,7 +295,7 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const { argv } = await wrapToolCommand("true");
       try {
-        expect(argv[1]).toBe("-pc");
+        expect(argv[1]).toBe("-c");
         const renderedWrapper = argv[2] ?? "";
         expect(renderedWrapper).toContain("bwrap");
         expect(renderedWrapper).toContain("--unshare-user");
@@ -468,7 +468,7 @@ describe("asrt-sandbox — worker wrap carries only the filesystem jail", () => 
       filesystem: { allowWrite: [], allowRead: [] },
     });
     expect(argv.length).toBeGreaterThanOrEqual(3);
-    expect(argv[1]).toBe(process.platform === "win32" ? "exec" : process.platform === "linux" ? "-pc" : "-c");
+    expect(argv[1]).toBe(process.platform === "win32" ? "exec" : "-c");
   });
 });
 
@@ -1356,7 +1356,7 @@ describe.runIf(process.platform === "linux")("ordinary temporary write policy", 
       const target = join(root, "shared.txt");
       const first = await wrapToolCommand(`printf shared > ${shellQuote(target)}`);
       expect(first.argv[1]).toBe("-c");
-      expect(first.argv[2]).not.toContain("/tmp/claude");
+      expect(/--tmpfs'?\s+'?\/tmp\/claude(?:'|\s|$)/u.test(first.argv[2] ?? "")).toBe(false);
       const written = await runArgv(first.argv, first.env, process.cwd());
       cleanupAsrtSandboxAfterCommand();
       expect(written.code, written.stderr).toBe(0);

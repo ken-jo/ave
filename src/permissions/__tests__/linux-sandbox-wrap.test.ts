@@ -339,23 +339,51 @@ it.runIf(process.platform !== "win32").each(["directory", "file", "symlink"])("p
   if (kind === "symlink") expect(readlinkSync(leaf)).toBe(link);
 });
 
-it.runIf(process.platform === "linux")("shares newly created temp entries with the host and the next sandbox", () => {
+async function wrapSharedTempCommand(command: string) {
+  const generated = await wrapCommandWithSandboxLinux({
+    command,
+    needsNetworkRestriction: false,
+    readConfig: { denyOnly: [], allowWithinDeny: [] },
+    writeConfig: { allowOnly: ["/tmp"], denyWithinAllow: [] },
+    allowAllUnixSockets: true,
+  });
+  return hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", generated], env: {} });
+}
+
+it.runIf(process.platform !== "win32")("accepts a generated shared temp wrapper with quoted command operands", async () => {
+  const command = "printf 'shared bytes' > '/tmp/shared file'";
+  try {
+    const wrapped = await wrapSharedTempCommand(command);
+    const words = execFileSync("/bin/bash", ["-c", `set -- ${wrapped.argv[2]}; printf '%s\\n' "$@"`], {
+      encoding: "utf8",
+    }).trimEnd().split("\n");
+    expect(words.at(-1)).toBe(command);
+  } finally {
+    cleanupBwrapMountPoints();
+  }
+});
+
+it.runIf(process.platform === "linux")("shares newly created temp entries with the host and the next sandbox", async () => {
   const root = mkdtempSync(join(tmpdir(), "ave-shared-temp-"));
   temporaryRoots.push(root);
   const target = join(tmpdir(), `${root.split("/").at(-1)}-new`);
   temporaryRoots.push(target);
-  const run = (command: string) => {
-    const wrapped = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", `bwrap --unshare-user --unshare-pid --ro-bind / / --bind /tmp /tmp --dev /dev --proc /proc -- /bin/sh -c ${shellQuote(command)}`], env: {} });
-    return spawnSync(wrapped.argv[0], wrapped.argv.slice(1), { encoding: "utf8", env: process.env });
+  const run = async (command: string) => {
+    try {
+      const wrapped = await wrapSharedTempCommand(command);
+      return spawnSync(wrapped.argv[0], wrapped.argv.slice(1), { encoding: "utf8", env: process.env });
+    } finally {
+      cleanupBwrapMountPoints();
+    }
   };
-  const first = run(`printf shared > ${shellQuote(target)}`);
+  const first = await run(`printf shared > ${shellQuote(target)}`);
   expect(first.status, first.stderr).toBe(0);
   expect(execFileSync("cat", [target], { encoding: "utf8" })).toBe("shared");
-  const second = run(`cat ${shellQuote(target)}`);
+  const second = await run(`cat ${shellQuote(target)}`);
   expect(second.status, second.stderr).toBe(0);
   expect(second.stdout).toBe("shared");
   writeFileSync(target, "host update");
-  const third = run(`cat ${shellQuote(target)}`);
+  const third = await run(`cat ${shellQuote(target)}`);
   expect(third.status, third.stderr).toBe(0);
   expect(third.stdout).toBe("host update");
 });
