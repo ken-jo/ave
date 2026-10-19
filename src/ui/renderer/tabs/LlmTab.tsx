@@ -1622,13 +1622,6 @@ export function LlmTab(props: LlmTabProps) {
    * and a list that closes one row to open another makes it impossible.
    */
   const [openRowIds, setOpenRowIds] = useState<readonly string[]>([]);
-  /**
-   * Rows whose API-key field the user asked to see. An open card is not a
-   * request to type a key: a subscription-connected provider opens to its
-   * sign-in controls, and a password field already waiting there reads as
-   * "a key is required". The field appears only on an explicit "Set API key".
-   */
-  const [keyEditorRowIds, setKeyEditorRowIds] = useState<readonly string[]>([]);
   /** Rows whose last save was refused, so the row says so instead of closing. */
   const [saveFailedRowIds, setSaveFailedRowIds] = useState<readonly string[]>([]);
   const [addedRowIds, setAddedRowIds] = useState<readonly string[]>([]);
@@ -2499,7 +2492,6 @@ export function LlmTab(props: LlmTabProps) {
    */
   const closeRow = useCallback((rowId: string) => {
     setOpenRowIds((current) => current.filter((id) => id !== rowId));
-    setKeyEditorRowIds((current) => current.filter((id) => id !== rowId));
     setSaveFailedRowIds((current) => current.filter((id) => id !== rowId));
     dropDraft(rowId);
   }, [dropDraft]);
@@ -2587,7 +2579,6 @@ export function LlmTab(props: LlmTabProps) {
     node.scrollIntoView?.({ block: "nearest" });
     const focusTarget = node.querySelector<HTMLElement>('[data-testid="llm-base-url-input"]')
       ?? node.querySelector<HTMLElement>('[data-testid="llm-api-key-input"]')
-      ?? node.querySelector<HTMLElement>('[data-testid="llm-tab:api-key-reveal"]')
       ?? node.querySelector<HTMLElement>("button");
     focusTarget?.focus();
   }, [openFormRowId, openRowIds, rowToReveal, visibleRowKey, visibleRows]);
@@ -2646,7 +2637,6 @@ export function LlmTab(props: LlmTabProps) {
     // the store holds.
     dropDraft(row.id);
     setOpenRowIds((current) => current.filter((rowId) => rowId !== row.id));
-    setKeyEditorRowIds((current) => current.filter((rowId) => rowId !== row.id));
   };
 
   /**
@@ -2667,17 +2657,6 @@ export function LlmTab(props: LlmTabProps) {
     const rowNeedsApiKey = rowRequiresApiKey(row);
     const patchDraft = (next: Partial<ProviderCredentialDraft>) =>
       putDraft({ ...draft, ...next });
-    const rowHasEndpointFields = rowVendorId === "vertex-ai"
-      || endpointIsUserSupplied(rowVendorId, rowInfo, rowEndpointLocked);
-    // A half-typed key that outlived a tab switch keeps its field on screen:
-    // hiding it would leave a dirty card with nothing visible to save.
-    const keyEditorOpen = rowVendorId !== "vertex-ai"
-      && (keyEditorRowIds.includes(row.id) || draft.keyInput !== "");
-    const closeKeyEditor = () => {
-      setKeyEditorRowIds((current) => current.filter((rowId) => rowId !== row.id));
-      setSaveFailedRowIds((current) => current.filter((rowId) => rowId !== row.id));
-      patchDraft({ keyInput: "" });
-    };
     return (
       <div className="space-y-3" data-testid="llm-tab:manual-section">
         {rowVendorId !== "vertex-ai" && endpointIsUserSupplied(rowVendorId, rowInfo, rowEndpointLocked) && (
@@ -2769,47 +2748,26 @@ export function LlmTab(props: LlmTabProps) {
                 </Button>
               )}
             </div>
-            {keyEditorOpen ? (
-              <Input
-                data-testid="llm-api-key-input"
-                type="password"
-                placeholder={rowHasKey ? t("llmTab.replaceKey") : rowInfo.placeholder}
-                value={draft.keyInput}
-                onChange={(e) => patchDraft({ keyInput: e.target.value })}
-              />
-            ) : (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-7 text-xs"
-                data-testid="llm-tab:api-key-reveal"
-                onClick={() => setKeyEditorRowIds((current) =>
-                  current.includes(row.id) ? current : [...current, row.id])}
-              >
-                {rowHasKey ? t("llmTab.replaceApiKey") : t("llmTab.setApiKey")}
-              </Button>
-            )}
+            <Input
+              data-testid="llm-api-key-input"
+              type="password"
+              placeholder={rowHasKey ? t("llmTab.replaceKey") : rowInfo.placeholder}
+              value={draft.keyInput}
+              onChange={(e) => patchDraft({ keyInput: e.target.value })}
+            />
           </div>
         )}
         {/* Save belongs to the card whose fields it commits. A page-level
             button sat below every provider and the "add provider" control, so
             the one thing a half-filled new card needed was the one control
             furthest from it — and it read as committing the whole page. */}
-        {/* Only while there is something to commit: the key field the user
-            asked for, or endpoint fields this row always shows. Cancel on an
-            opened key field puts the field away and keeps the card open;
-            otherwise it abandons the card as before. */}
-        {onSaveProviderCredential && (keyEditorOpen || rowHasEndpointFields) && (
+        {onSaveProviderCredential && (
           <SectionSaveBar
             onSave={() => void saveRowCredential(row)}
             saving={saving}
             settingsLoaded={settingsLoaded}
             dirty={rowCredentialDirty(row.id)}
-            onCancel={() => {
-              if (keyEditorOpen && !rowHasEndpointFields) closeKeyEditor();
-              else closeRow(row.id);
-            }}
+            onCancel={() => closeRow(row.id)}
             testId="llm-tab:save-providers"
           />
         )}
