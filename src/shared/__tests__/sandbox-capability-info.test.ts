@@ -3,7 +3,12 @@
  * per-platform confinement profile that drives the settings toggle text.
  */
 import { describe, it, expect } from "vitest";
-import { sandboxConfinementForPlatform } from "../sandbox-capability-info.js";
+import {
+  describeShellSandboxStatus,
+  sandboxConfinementForPlatform,
+  type SandboxBootOutcome,
+  type ShellSandboxStatusInput,
+} from "../sandbox-capability-info.js";
 
 describe("sandboxConfinementForPlatform", () => {
   it("macOS confines filesystem + process + network (Seatbelt via ASRT — egress contained by the loopback proxy + strict-union allow-list)", () => {
@@ -61,5 +66,104 @@ describe("sandboxConfinementForPlatform", () => {
 
   it("claims REAL network containment on macOS when active (ASRT loopback-proxy floor)", () => {
     expect(sandboxConfinementForPlatform("darwin", "full").network).toBe(true);
+  });
+});
+
+const ACTIVATED: SandboxBootOutcome = {
+  action: "activate",
+  reason: "deps-present",
+  onSignal: "default-settings",
+  dependencyErrors: [],
+  causes: [],
+};
+const SKIPPED: SandboxBootOutcome = {
+  action: "skip",
+  reason: "gate-off",
+  onSignal: "off",
+  dependencyErrors: [],
+  causes: [],
+};
+
+function input(overrides: Partial<ShellSandboxStatusInput>): ShellSandboxStatusInput {
+  return {
+    platformSupported: true,
+    setting: false,
+    envForced: false,
+    requestedAtBoot: false,
+    boot: SKIPPED,
+    shellPlanMode: "plain",
+    shellPlanFallback: "none",
+    ...overrides,
+  };
+}
+
+describe("describeShellSandboxStatus", () => {
+  it("is on only when shells actually run under the sandbox plan", () => {
+    expect(describeShellSandboxStatus(input({
+      setting: true, requestedAtBoot: true, boot: ACTIVATED, shellPlanMode: "asrt",
+    }))).toEqual({ state: "on", setting: true, envForced: false, causes: [] });
+  });
+
+  it("is off when nothing is requested and nothing waits for a restart", () => {
+    expect(describeShellSandboxStatus(input({})).state).toBe("off");
+  });
+
+  it("names every boot failure cause when the requested sandbox did not start", () => {
+    const degraded: SandboxBootOutcome = {
+      action: "degrade",
+      reason: "degrade-default-cannot-activate",
+      onSignal: "default-settings",
+      dependencyErrors: ["bubblewrap (bwrap) not installed", "socat not installed"],
+      causes: ["missing-bwrap", "missing-socat"],
+    };
+    expect(describeShellSandboxStatus(input({
+      setting: true, requestedAtBoot: true, boot: degraded, shellPlanFallback: "requested-sandbox-unavailable",
+    }))).toEqual({ state: "unavailable", setting: true, envForced: false, causes: ["missing-bwrap", "missing-socat"] });
+  });
+
+  it("reports Windows Plan B as unavailable for shells even though ASRT is active", () => {
+    expect(describeShellSandboxStatus(input({
+      setting: true, requestedAtBoot: true, boot: ACTIVATED, shellPlanFallback: "windows-partial-shell-acl-unsafe",
+    }))).toMatchObject({ state: "unavailable", causes: ["windows-shell-not-contained"] });
+  });
+
+  it("is pending-on when the setting was turned on after boot, including a worker-only activation", () => {
+    expect(describeShellSandboxStatus(input({ setting: true })).state).toBe("pending-on");
+    expect(describeShellSandboxStatus(input({ setting: true, boot: ACTIVATED })).state).toBe("pending-on");
+  });
+
+  it("is pending-off while a booted sandbox keeps running after the setting went off", () => {
+    expect(describeShellSandboxStatus(input({
+      requestedAtBoot: true, boot: ACTIVATED, shellPlanMode: "asrt",
+    })).state).toBe("pending-off");
+  });
+
+  it("counts the environment override as a request", () => {
+    expect(describeShellSandboxStatus(input({
+      envForced: true, requestedAtBoot: true, boot: ACTIVATED, shellPlanMode: "asrt",
+    }))).toEqual({ state: "on", setting: false, envForced: true, causes: [] });
+  });
+
+  it("is unsupported on a platform with no OS sandbox, whatever is stored", () => {
+    expect(describeShellSandboxStatus(input({ platformSupported: false, setting: true })))
+      .toMatchObject({ state: "unsupported", causes: ["platform-unsupported"] });
+  });
+
+  it("claims nothing about effectiveness before the boot gate ran", () => {
+    expect(describeShellSandboxStatus(input({ setting: true, boot: null })).state).toBe("unknown");
+  });
+
+  it("fails on a degraded boot that recorded no cause", () => {
+    expect(() => describeShellSandboxStatus(input({
+      setting: true,
+      requestedAtBoot: true,
+      boot: { ...SKIPPED, action: "degrade", reason: "degrade-default-cannot-activate" },
+    }))).toThrow(/recorded no cause/);
+  });
+
+  it("fails when an activated boot left a requested shell plain", () => {
+    expect(() => describeShellSandboxStatus(input({
+      setting: true, requestedAtBoot: true, boot: ACTIVATED,
+    }))).toThrow(/shell plan is plain\/none/);
   });
 });

@@ -13,7 +13,7 @@ import {
   RECENT_EGRESS_DENIALS_WINDOW_HOURS,
   type EgressDenialRow,
 } from "../../shared/egress-denials.js";
-import { resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
+import { envForcedValueForSettingsPath, resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
   isSessionOnlyApprovalMemoryScope,
   type PermissionReviewSuggestionPayload,
@@ -63,7 +63,9 @@ import type {
 import {
   detectPluginWorkerSandboxCapability,
   detectShellSandboxCapability,
+  getHostShellExecutionPlan,
   getSandboxBootOutcome,
+  isShellSandboxRequestedAtBoot,
   type SandboxCapability,
 } from "../../permissions/sandbox-capability.js";
 import {
@@ -248,16 +250,17 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // as unavailable merely because it's off.
   // `enabled` separately reflects the current setting.
   ipcMain.handle(PERMISSIONS.sandboxCapability, async () => {
-    const { sandboxConfinementForPlatform } = await import(
+    const { sandboxConfinementForPlatform, describeShellSandboxStatus } = await import(
       "../../shared/sandbox-capability-info.js"
     );
     const platform = process.platform;
+    const storedShellSetting = deps.settingsService.get("features")?.osToolSandbox ?? false;
     // Must answer the same question boot answered (`shellRequested` in
     // sandbox-init.ts), so it resolves through the registry rather than
     // re-stating which variable forces it on.
     const enabled = resolveEnvBackedBoolean(
       "features.osToolSandbox",
-      deps.settingsService.get("features")?.osToolSandbox ?? false,
+      storedShellSetting,
       process.env,
       false,
     );
@@ -297,6 +300,20 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // sandboxed (and the reverse).
     const runtime = runtimeInfoFromCapability(detectShellSandboxCapability());
     const workerRuntime = runtimeInfoFromCapability(detectPluginWorkerSandboxCapability());
+    const boot = getSandboxBootOutcome();
+    // The route a default host shell takes right now — the same plan the bash
+    // and powershell tools run under, so "on" means shells are contained, not
+    // merely that ASRT is running (Windows Plan B runs shells plain).
+    const shellPlan = getHostShellExecutionPlan();
+    const shell = describeShellSandboxStatus({
+      platformSupported: kind !== "none",
+      setting: storedShellSetting,
+      envForced: envForcedValueForSettingsPath("features.osToolSandbox") === true,
+      requestedAtBoot: isShellSandboxRequestedAtBoot(),
+      boot,
+      shellPlanMode: shellPlan.mode,
+      shellPlanFallback: shellPlan.fallbackReason,
+    });
     return {
       platform,
       enabled,
@@ -310,7 +327,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       // for it: a degraded gate never publishes a capability, so `runtime`
       // reports the same "no OS sandbox configured" it reports when the user
       // never turned the sandbox on.
-      boot: getSandboxBootOutcome(),
+      boot,
+      shell,
       confines: sandboxConfinementForPlatform(platform, kind),
     };
   });

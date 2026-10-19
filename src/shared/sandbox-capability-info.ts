@@ -120,6 +120,131 @@ export type SandboxGateReason =
   | "abort-linux-runtime-probe-failed";
 
 /**
+ * Why a requested sandbox did not start, as a stable code the renderer can
+ * localize. ASRT's own dependency messages are English free text that can carry
+ * local paths, so they stay in the main-process log; boot classifies them once
+ * ({@link SandboxBootOutcome.causes}) and every surface renders the code.
+ * - `missing-bwrap` / `missing-socat` / `missing-ripgrep`: a Linux dependency
+ *   is not installed or not executable.
+ * - `dependency-check-failed`: the dependency check failed for a reason ASRT
+ *   did not name as one of the above (for example running as root).
+ * - `windows-setup-incomplete`: the srt-win sandbox user or WFP filters are
+ *   not ready — the one-time administrator setup has not completed.
+ * - `linux-runtime-probe-failed`: the dependencies are present but the bwrap
+ *   runtime probe failed (for example user namespaces are disabled).
+ * - `init-failed`: ASRT failed to start for any other reason.
+ */
+export type SandboxStartFailureCause =
+  | "missing-bwrap"
+  | "missing-socat"
+  | "missing-ripgrep"
+  | "dependency-check-failed"
+  | "windows-setup-incomplete"
+  | "linux-runtime-probe-failed"
+  | "init-failed";
+
+/**
+ * Why the shell sandbox is requested for this session but host shells still
+ * run without it: a start failure, a platform without a sandbox, or a Windows
+ * sandbox that is active but cannot contain one-shot shells.
+ */
+export type ShellSandboxUnavailableCause =
+  | SandboxStartFailureCause
+  | "platform-unsupported"
+  | "windows-shell-not-contained"
+  | "shell-not-contained";
+
+/**
+ * The shell sandbox as the chat input's permission card shows it.
+ * - `on`: requested, and host shells run inside the sandbox this session.
+ * - `off`: not requested, and nothing is waiting for a restart.
+ * - `unavailable`: requested this session, but shells run without it;
+ *   `causes` says why.
+ * - `pending-on` / `pending-off`: the setting changed after startup. The
+ *   sandbox is initialized once at boot, so the change applies on the next
+ *   start and this session keeps the state it booted with.
+ * - `unsupported`: this platform has no OS sandbox.
+ * - `unknown`: the boot gate has not run in this process, so nothing about
+ *   effectiveness can be claimed.
+ */
+type ShellSandboxState =
+  | "on"
+  | "off"
+  | "unavailable"
+  | "pending-on"
+  | "pending-off"
+  | "unsupported"
+  | "unknown";
+
+/** The shell-scope status the sandboxCapability snapshot carries for the permission card. */
+export interface ShellSandboxStatusInfo {
+  readonly state: ShellSandboxState;
+  /** The stored `features.osToolSandbox` value — what the checkbox writes. */
+  readonly setting: boolean;
+  /** `AVE_SANDBOX_ENABLED=1` turns the shell sandbox on for this run whatever is stored. */
+  readonly envForced: boolean;
+  /** Non-empty exactly when `state` is `unavailable` or `unsupported`. */
+  readonly causes: readonly ShellSandboxUnavailableCause[];
+}
+
+/** What {@link describeShellSandboxStatus} reads. Every field is host-observed. */
+export interface ShellSandboxStatusInput {
+  /** The platform can run an OS sandbox at all (`SandboxCapabilityInfo.available`). */
+  readonly platformSupported: boolean;
+  readonly setting: boolean;
+  readonly envForced: boolean;
+  /** The shell intent sealed at boot (`isShellSandboxRequestedAtBoot`). */
+  readonly requestedAtBoot: boolean;
+  readonly boot: SandboxBootOutcome | null;
+  /** The route the host shell execution plan selects for a default shell. */
+  readonly shellPlanMode: "asrt" | "plain" | "blocked";
+  /** That plan's fallback reason. */
+  readonly shellPlanFallback:
+    | "none"
+    | "windows-partial-shell-acl-unsafe"
+    | "requested-sandbox-unavailable"
+    | "active-sandbox-not-shell-contained";
+}
+
+/**
+ * Decide the shell sandbox state from what the host observed. The one place
+ * that decides it: the IPC snapshot calls it, the renderer only renders the
+ * result. Throws on a combination the boot and plan contracts rule out, so a
+ * drift between them fails here rather than showing a made-up state.
+ */
+export function describeShellSandboxStatus(input: ShellSandboxStatusInput): ShellSandboxStatusInfo {
+  const base = { setting: input.setting, envForced: input.envForced };
+  if (!input.platformSupported) {
+    return { ...base, state: "unsupported", causes: ["platform-unsupported"] };
+  }
+  const requestedNow = input.setting || input.envForced;
+  if (input.boot === null) return { ...base, state: "unknown", causes: [] };
+  // The gate runs once per process, so a setting changed after boot is a
+  // restart away from taking effect, whatever the plan says now.
+  if (requestedNow !== input.requestedAtBoot) {
+    return { ...base, state: requestedNow ? "pending-on" : "pending-off", causes: [] };
+  }
+  if (!requestedNow) return { ...base, state: "off", causes: [] };
+  if (input.shellPlanMode === "asrt") return { ...base, state: "on", causes: [] };
+  if (input.boot.action === "degrade" || input.boot.action === "abort") {
+    if (input.boot.causes.length === 0) {
+      throw new Error(`describeShellSandboxStatus: boot ${input.boot.action} (${input.boot.reason}) recorded no cause`);
+    }
+    return { ...base, state: "unavailable", causes: [...input.boot.causes] };
+  }
+  if (input.shellPlanFallback === "windows-partial-shell-acl-unsafe") {
+    return { ...base, state: "unavailable", causes: ["windows-shell-not-contained"] };
+  }
+  if (input.shellPlanFallback === "active-sandbox-not-shell-contained") {
+    return { ...base, state: "unavailable", causes: ["shell-not-contained"] };
+  }
+  throw new Error(
+    `describeShellSandboxStatus: shell sandbox requested at boot, gate ${input.boot.action}, ` +
+      `but the shell plan is ${input.shellPlanMode}/${input.shellPlanFallback}`,
+  );
+}
+
+/**
  * What the sandbox gate actually decided for THIS process, sealed at boot.
  *
  * The runtime snapshot cannot answer this. When the gate degrades, no capability
@@ -141,6 +266,11 @@ export interface SandboxBootOutcome {
    * did not fail on dependencies.
    */
   readonly dependencyErrors: readonly string[];
+  /**
+   * The same failure as stable codes, classified once at the gate. Non-empty
+   * exactly when `action` is `degrade` or `abort`.
+   */
+  readonly causes: readonly SandboxStartFailureCause[];
 }
 
 /** Runtime snapshot returned to the renderer for startup/runtime honesty. */
@@ -182,6 +312,8 @@ export interface SandboxCapabilityInfo {
    * "off", so the renderer must not render it as such.
    */
   boot?: SandboxBootOutcome | null;
+  /** The shell sandbox as the chat input's permission card shows it. */
+  shell: ShellSandboxStatusInfo;
   /** What the sandbox actually confines on this platform when active. */
   confines: SandboxConfinement;
 }

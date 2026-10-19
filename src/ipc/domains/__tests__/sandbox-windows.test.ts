@@ -435,3 +435,98 @@ describe("sandboxCapability win32 reconcile", () => {
     }
   });
 });
+
+describe("sandboxCapability shell status (the permission card's checkbox)", () => {
+  async function readShell(features: FeatureFixture) {
+    await setup(features);
+    const result = (await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())) as {
+      shell: { state: string; setting: boolean; envForced: boolean; causes: string[] };
+    };
+    return result.shell;
+  }
+
+  afterEach(async () => {
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    capability.__resetActiveSandboxCapabilityForTest();
+    capability.__resetSandboxRequestedAtBootForTest();
+    capability.__resetSandboxBootOutcomeForTest();
+    vi.unstubAllEnvs();
+  });
+
+  it("names the missing Linux dependencies the boot gate recorded", async () => {
+    setProcessPlatform("linux");
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    capability.setShellSandboxRequestedAtBoot(true);
+    capability.setSandboxBootOutcome({
+      action: "degrade",
+      reason: "degrade-default-cannot-activate",
+      onSignal: "default-settings",
+      dependencyErrors: ["bubblewrap (bwrap) not installed", "socat not installed"],
+      causes: ["missing-bwrap", "missing-socat"],
+    });
+    expect(await readShell({ osToolSandbox: true, pluginWorkerConfinement: true })).toEqual({
+      state: "unavailable",
+      setting: true,
+      envForced: false,
+      causes: ["missing-bwrap", "missing-socat"],
+    });
+  });
+
+  it("says a start failure apart from a missing dependency", async () => {
+    setProcessPlatform("linux");
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    capability.setShellSandboxRequestedAtBoot(true);
+    capability.setSandboxBootOutcome({
+      action: "degrade",
+      reason: "degrade-default-cannot-activate",
+      onSignal: "default-settings",
+      dependencyErrors: ["proxy failed to bind"],
+      causes: ["init-failed"],
+    });
+    expect((await readShell({ osToolSandbox: true })).causes).toEqual(["init-failed"]);
+  });
+
+  it("shows a setting turned on after boot as pending a restart, not as on", async () => {
+    setProcessPlatform("darwin");
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    capability.setShellSandboxRequestedAtBoot(false);
+    capability.setSandboxBootOutcome({
+      action: "skip", reason: "gate-off", onSignal: "off", dependencyErrors: [], causes: [],
+    });
+    expect((await readShell({ osToolSandbox: true })).state).toBe("pending-on");
+  });
+
+  it("is on when the shell plan runs shells under ASRT", async () => {
+    setProcessPlatform("darwin");
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    capability.setShellSandboxRequestedAtBoot(true);
+    capability.setActiveSandboxCapability({
+      kind: "asrt",
+      confidence: "verified",
+      platform: "darwin",
+      reason: "ASRT (Seatbelt) active",
+      confines: { filesystem: true, process: true, network: true },
+    });
+    capability.setSandboxBootOutcome({
+      action: "activate", reason: "deps-present", onSignal: "default-settings", dependencyErrors: [], causes: [],
+    });
+    expect(await readShell({ osToolSandbox: true })).toEqual({
+      state: "on", setting: true, envForced: false, causes: [],
+    });
+  });
+
+  it("marks the environment override so the card does not offer a toggle it cannot honour", async () => {
+    setProcessPlatform("darwin");
+    vi.stubEnv("AVE_SANDBOX_ENABLED", "1");
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    capability.setShellSandboxRequestedAtBoot(true);
+    capability.setSandboxBootOutcome({
+      action: "degrade",
+      reason: "degrade-default-cannot-activate",
+      onSignal: "explicit-env",
+      dependencyErrors: ["x"],
+      causes: ["init-failed"],
+    });
+    expect(await readShell({ osToolSandbox: false })).toMatchObject({ setting: false, envForced: true });
+  });
+});
