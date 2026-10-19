@@ -84,9 +84,13 @@ async function approvalMemoryFor(
     : getHostShellExecutionPlanCacheIdentity(hostShellExecutionPlan);
   // Remember the origin policy while handing execute this invocation's live
   // tab and document identity. Cached metadata must never select an old tab.
+  // A terminal command is remembered by command and directory; the terminal
+  // it was typed into is this invocation's target, not part of the decision.
   const memoryScope = scope.kind === "browser-origin"
     ? { kind: scope.kind, origin: scope.origin, tabOpener: scope.tabOpener }
-    : scope.kind === "browser-agent-tabs" ? { kind: scope.kind } : scope;
+    : scope.kind === "browser-agent-tabs" ? { kind: scope.kind }
+      : scope.kind === "terminal-command" ? { kind: scope.kind, commandSha256: scope.commandSha256, cwd: scope.cwd }
+        : scope;
   return Object.freeze({
     kind: "key",
     key: `${tool.name}:${canonicalStringify({ scope: memoryScope, executionPlan })}`,

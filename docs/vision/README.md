@@ -53,9 +53,12 @@ Checked against the code; source files and tests win if this page drifts.
 - **Terminal.** Real interactive PTY terminal tabs rendered with xterm.js
   (`src/main/terminal/pty-manager.ts`,
   `src/ui/renderer/components/PtyTerminalView.tsx`), running inside the OS
-  sandbox. The agent runs commands through its shell tool
-  (`src/tools/shell-tools.ts`). Command blocks, terminal history search, and an
-  agent inside the terminal are goals, not yet shipped.
+  sandbox. Each command is recorded as a block. The agent runs commands
+  through its shell tool (`src/tools/shell-tools.ts`), reads the terminals'
+  blocks with `terminal_read`, and runs an approved command in a visible
+  terminal with `terminal_run` (`src/tools/terminal-read.ts`,
+  `src/tools/terminal-run.ts`). Terminal history search is a goal, not yet
+  shipped.
 - **Extensions.** Manifest-driven plugins, a managed marketplace, git
   marketplaces, MCP servers and MCP app cards, and skills
   ([plugin development](../guides/plugin-development.md)).

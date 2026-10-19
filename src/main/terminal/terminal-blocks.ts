@@ -219,6 +219,54 @@ function cleanCommand(raw: string): string {
 }
 
 /**
+ * Whether the shell is waiting at its prompt for a new command, and if not,
+ * why not. Read before `terminal_run` types a command into a terminal.
+ *  - `ready`: an empty prompt — the last command finished and nothing has
+ *    been typed at the new prompt;
+ *  - `no-shell-integration`: the shell emits no markers, so its state cannot
+ *    be known;
+ *  - `exited`: the shell is gone;
+ *  - `command-running`: a command (or a full-screen program) is in the
+ *    foreground, so typed text would go to it rather than to the shell;
+ *  - `between-prompts`: a command finished and the next prompt has not
+ *    started;
+ *  - `pending-input`: the user has typed at the prompt and not submitted it,
+ *    or typed anything within the last {@link USER_INPUT_QUIET_MS} (keys
+ *    still on their way through the shell have not been echoed yet);
+ *  - `shell-starting`: a shell that marks the end of its prompt (zsh, bash)
+ *    has begun its first prompt but not finished it yet;
+ *  - `no-prompt-end-marker`: the shell marks no end of prompt (fish), so
+ *    typing at its prompt cannot be told from the prompt itself.
+ */
+export type TerminalPromptState =
+  | "ready"
+  | "no-shell-integration"
+  | "exited"
+  | "command-running"
+  | "between-prompts"
+  | "pending-input"
+  | "shell-starting"
+  | "no-prompt-end-marker";
+
+/**
+ * How long after the user's last keystroke the prompt is still treated as in
+ * use: a key written to the PTY reaches the echo only after the shell reads
+ * it, so an empty echo just after typing proves nothing.
+ */
+export const USER_INPUT_QUIET_MS = 1500;
+
+/**
+ * A write made only of replies the terminal emulator sends by itself through
+ * the same input channel as keystrokes: focus in/out (`CSI I`, `CSI O`),
+ * device-attribute, status and cursor-position reports (`CSI ? … c`,
+ * `CSI … n`, `CSI … R`), and OSC/DCS answers to a program's queries. None of
+ * them edits the prompt line. A key — an arrow, a letter, a paste — never
+ * has this shape.
+ */
+const TERMINAL_REPLY =
+  /^(?:\u001b\[[IO]|\u001b\[[?>=]?[0-9;]*[cnR]|\u001b\][0-9]+;[^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001bP[^\u001b]*\u001b\\)+$/u;
+
+/**
  * Turns one terminal's output (and, for the fallback, its typed input) into
  * blocks. One tracker per PTY session.
  */
@@ -238,14 +286,23 @@ export class TerminalBlockTracker {
   /** Echoed input between B and C, used when C carries no command text. */
   private echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
   private exited = false;
+  /** When the user last wrote to this terminal ({@link recordInput}), or null. */
+  private lastInputAt: number | null = null;
+  /** True once the shell has marked the end of a prompt (B). */
+  private sawPromptEnd = false;
+  /** Called after every authenticated marker and on exit (see {@link subscribe}). */
+  private readonly listeners = new Set<() => void>();
 
   private readonly nonce: string;
   private readonly now: () => number;
+  /** Whether this terminal's shell integration marks the end of its prompt (B): zsh and bash do, fish does not. */
+  private readonly marksPromptEnd: boolean;
 
-  constructor(options: { nonce: string; now?: () => number }) {
+  constructor(options: { nonce: string; marksPromptEnd: boolean; now?: () => number }) {
     // An empty nonce would make every bare marker "authenticated".
     if (!options.nonce) throw new Error("TerminalBlockTracker requires a nonce");
     this.nonce = options.nonce;
+    this.marksPromptEnd = options.marksPromptEnd;
     this.now = options.now ?? Date.now;
   }
 
@@ -256,6 +313,53 @@ export class TerminalBlockTracker {
 
   hasExited(): boolean {
     return this.exited;
+  }
+
+  /** The shell's state at this moment, from its markers alone ({@link TerminalPromptState}). */
+  promptState(): TerminalPromptState {
+    if (this.exited) return "exited";
+    if (!this.integrated) return "no-shell-integration";
+    if (this.open) return "command-running";
+    // zsh and bash mark the end of the prompt (B): anything echoed after it is
+    // the user's own typing. fish marks no B, so its prompt phase is the
+    // steady state and typing there cannot be told from the prompt text.
+    if (this.phase === "input") {
+      if (this.echo.text().trim() !== "") return "pending-input";
+      if (this.lastInputAt !== null && this.now() - this.lastInputAt < USER_INPUT_QUIET_MS) return "pending-input";
+      return "ready";
+    }
+    if (this.phase === "prompt") {
+      if (!this.marksPromptEnd) return "no-prompt-end-marker";
+      return this.sawPromptEnd ? "between-prompts" : "shell-starting";
+    }
+    return "between-prompts";
+  }
+
+  /** The working directory the shell last reported, or null before it reported one. */
+  currentCwd(): string | null {
+    return this.cwd;
+  }
+
+  /** The id the next block will get: every block opened after this call has at least this id. */
+  nextBlockId(): number {
+    return this.nextId;
+  }
+
+  /**
+   * Be told when a block opens or closes or the prompt state changes (after
+   * every authenticated marker, and when the shell exits). Returns the
+   * unsubscribe function. A listener runs inside the PTY data callback and
+   * must only record what it needs.
+   */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private notify(): void {
+    for (const listener of [...this.listeners]) listener();
   }
 
   /**
@@ -384,11 +488,15 @@ export class TerminalBlockTracker {
   }
 
   /**
-   * Feed one user input write. Used only by the fallback: before the shell has
-   * shown any marker, an Enter closes the running heuristic block and opens a
-   * new one named after the line on screen.
+   * Feed one user input write. Its time is kept for {@link promptState},
+   * unless the write is only replies the terminal emulator sent on its own
+   * ({@link TERMINAL_REPLY}), which are not the user typing. The
+   * fallback also uses it: before the shell has shown any marker, an Enter
+   * closes the running heuristic block and opens a new one named after the
+   * line on screen.
    */
   recordInput(data: string): void {
+    if (!TERMINAL_REPLY.test(data)) this.lastInputAt = this.now();
     if (this.integrated || !data.includes("\r")) return;
     const line = this.open ? this.open.output.currentLine() : this.idle.currentLine();
     const command = cleanCommand(line || (this.open ? this.open.output.lastNonEmptyLine() : this.idle.lastNonEmptyLine()));
@@ -409,6 +517,7 @@ export class TerminalBlockTracker {
     this.exited = true;
     if (this.open) this.closeOpen(null);
     this.phase = "idle";
+    this.notify();
   }
 
   /** Newest first, completed and running. */
@@ -465,6 +574,7 @@ export class TerminalBlockTracker {
         this.phase = "prompt";
         break;
       case "B":
+        this.sawPromptEnd = true;
         this.echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
         this.phase = "input";
         break;
@@ -495,6 +605,7 @@ export class TerminalBlockTracker {
       default:
         break;
     }
+    this.notify();
     return marker;
   }
 
@@ -514,10 +625,19 @@ export class TerminalBlockTracker {
     }
   }
 
+  /**
+   * A command can print this terminal's marker nonce (the shell holds it in a
+   * variable). Block records go to the agent, and a nonce in the agent's hands
+   * would let printed text forge markers, so the records never carry it.
+   */
+  private redactNonce(text: string): string {
+    return text.includes(this.nonce) ? text.split(this.nonce).join("[terminal-nonce]") : text;
+  }
+
   private snapshotOpen(open: OpenBlock): TerminalBlock {
     return {
       id: open.id,
-      command: open.command,
+      command: this.redactNonce(open.command),
       cwd: open.cwd,
       exitCode: null,
       startedAt: open.startedAt,
@@ -526,7 +646,7 @@ export class TerminalBlockTracker {
       source: open.source,
       outputChars: open.output.chars(),
       truncated: open.output.truncated(),
-      output: open.output.text(),
+      output: this.redactNonce(open.output.text()),
     };
   }
 
