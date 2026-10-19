@@ -28,6 +28,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import { basename, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import * as nodePty from "node-pty";
@@ -41,7 +42,6 @@ import { wrapperPrefixLength } from "../../../permissions/rules/shell-prefix-pol
 import { analyzeShell } from "../../../shared/shell-analysis.js";
 
 const NONCE = "0123456789abcdef0123456789abcdef";
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------------------------------------------------------------------
 // Corpus: the validator's own accepted and refused cases, ordinary commands,

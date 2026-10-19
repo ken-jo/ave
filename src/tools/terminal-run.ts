@@ -85,7 +85,7 @@ export type TypeTerminalCommand = (
  * `verifyTerminalShell`): its own process holds the terminal, and its real
  * directory is the one its markers reported.
  */
-export type VerifyTerminalShell = (
+type VerifyTerminalShell = (
   tabId: string,
   ownerWindowId: number,
   reportedCwd: string,

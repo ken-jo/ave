@@ -699,7 +699,7 @@ export function writeTerminal(tabId: string, data: string): void {
   session.pty.write(data);
 }
 
-export type TerminalNotTypedReason =
+type TerminalNotTypedReason =
   | "no-terminal"
   | Exclude<TerminalPromptState, "ready">
   | "no-fresh-prompt"

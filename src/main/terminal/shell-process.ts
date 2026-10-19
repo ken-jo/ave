@@ -23,7 +23,7 @@ import { execFile } from "node:child_process";
 import { readFile, readlink } from "node:fs/promises";
 import { basename } from "node:path";
 
-export interface TerminalForeground {
+interface TerminalForeground {
   /** The foreground process group id: the shell's pid when the shell holds the terminal. */
   readonly pid: number;
   /** Program name of that process, without a login shell's leading `-`. */

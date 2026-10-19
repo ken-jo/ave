@@ -15,6 +15,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import * as nodePty from "node-pty";
@@ -24,7 +25,6 @@ import { foregroundVerdict, typeLineAtPrompt, type TypeTerminalCommandResult } f
 import { readTerminalForeground } from "../shell-process.js";
 
 const NONCE = "fedcba9876543210fedcba9876543210";
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface LiveShell {
   pty: nodePty.IPty;

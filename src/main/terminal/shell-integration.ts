@@ -8,7 +8,10 @@
  *
  * Each shell reports, around every command it runs (`<n>` is the nonce):
  *   OSC 133;D;<exit>;<n>            the previous command finished (first prompt: nothing open)
- *   OSC 133;P;Cwd=<encoded path>;<n>  the working directory
+ *   OSC 133;P;Cwd=<encoded path>;Keys=<emacs|vi>;Paste=<0|1>;<n>
+ *                                   the working directory, the line editor's
+ *                                   key bindings, and whether it takes
+ *                                   bracketed paste (zsh, bash; fish: Cwd only)
  *   OSC 133;A;<n>                   prompt start
  *   OSC 133;B;<n>                   end of prompt / start of typed input (zsh, bash)
  *   OSC 133;C;cmdline_url=<percent-encoded command>;<n>  output starts
