@@ -10,6 +10,7 @@
     "docs/design/plugin-hostapi-protocol.md",
     "docs/development/knip-baseline.md",
     "docs/ko/app-readme.md",
+    "docs/ko/architecture/architecture.md",
     "docs/ko/guides/local-plugin-development.md",
     "docs/ko/guides/windows-setup.md",
     "docs/protocols/ave-a2a-exact-send-replay.md",

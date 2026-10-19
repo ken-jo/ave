@@ -1061,7 +1061,7 @@ commit or push:
    monorepo).
 3. **Share inside a team.** A team's marketplace is a custom or managed source
    (marketplace design §12, `additional`); publishing to it is case 2. There is no
-   in-app team channel: the agent-hub is decommissioned and the app has no server.
+   in-app team channel: the Agent Hub service is decommissioned and the app has no server.
 
 *Share* is available only while `draft.json.reviewed.treeDigest` equals the digest of
 the current `package/` tree (§4.6 item 3).

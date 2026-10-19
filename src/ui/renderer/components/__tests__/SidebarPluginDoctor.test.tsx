@@ -45,8 +45,8 @@ describe("Sidebar plugin Doctor affordance", () => {
     renderSidebar({
       onSelect,
       failedPluginCards: [{
-        id: "agent-hub",
-        name: "Agent Hub",
+        id: "samplehub",
+        name: "Sample Hub",
         description: "Agent orchestration",
         sampleTools: [],
         capabilities: [],
@@ -57,11 +57,11 @@ describe("Sidebar plugin Doctor affordance", () => {
 
     // The rows live in the Plugins flyout.
     fireEvent.click(screen.getByTestId("sidebar-group-plugins"));
-    const row = await screen.findByTestId(sidebarViewTestId(toPluginDoctorViewKey("agent-hub")));
-    expect(row.textContent).toContain("Agent Hub");
+    const row = await screen.findByTestId(sidebarViewTestId(toPluginDoctorViewKey("samplehub")));
+    expect(row.textContent).toContain("Sample Hub");
     expect(row.textContent).toContain("Doctor");
 
     fireEvent.click(row);
-    expect(onSelect).toHaveBeenCalledWith("plugin-doctor:agent-hub");
+    expect(onSelect).toHaveBeenCalledWith("plugin-doctor:samplehub");
   });
 });

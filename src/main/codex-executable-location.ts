@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promises as fs, type Stats } from "node:fs";
 import { posix, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { isRecord } from "../shared/is-record.js";
 
 const MAX_SYMLINKS = 40;
 const MAX_ACL_OUTPUT_BYTES = 256 * 1024;
@@ -233,10 +234,6 @@ async function assertExtendedAccessRules(inspected: readonly InspectedPath[], pr
     }
   }
   if (seen.size !== inspected.length) throw new CodexExecutableLocationError("Executable access rules are incomplete");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseWindowsSecurity(stdout: string): WindowsSecurityResult {

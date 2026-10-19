@@ -19,7 +19,7 @@ function toast(overrides: Partial<ToastItem> = {}): ToastItem {
   return {
     id: "toast:1",
     severity: "info",
-    message: "agent-hub 설치 중…",
+    message: "samplehub 설치 중…",
     expiresAt: Date.now() + 5000,
     ...overrides,
   };
@@ -72,11 +72,11 @@ describe("StatusBar", () => {
   });
 
   it("renders only the visible toast message on the right slot", () => {
-    const t1 = toast({ id: "toast:1", message: "agent-hub 설치 중…" });
+    const t1 = toast({ id: "toast:1", message: "samplehub 설치 중…" });
     // Only visibleToast (t1) is shown; one more toast is queued (pendingCount=1).
     render(<StatusBar persistent={[]} visibleToast={t1} pendingCount={1} />);
-    expect(screen.getByTestId("status-toast-message")).toHaveTextContent("agent-hub 설치 중…");
-    expect(screen.queryByText("agent-hub 설치 완료")).not.toBeInTheDocument();
+    expect(screen.getByTestId("status-toast-message")).toHaveTextContent("samplehub 설치 중…");
+    expect(screen.queryByText("samplehub 설치 완료")).not.toBeInTheDocument();
     // pending badge shows +1
     expect(screen.getByText("+1")).toBeInTheDocument();
   });
@@ -183,7 +183,7 @@ describe("StatusBar", () => {
     render(
       <StatusBar
         persistent={[]}
-        visibleToast={toast({ id: "toast:i", message: "agent-hub 설치 완료", severity: "success" })}
+        visibleToast={toast({ id: "toast:i", message: "samplehub 설치 완료", severity: "success" })}
         onToastClick={onToastClick}
       />,
     );
