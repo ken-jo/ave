@@ -53,6 +53,12 @@ export declare function chooseNewBranchBase(
 
 export declare function parsePrePushUpdates(input: PrePushInput): PrePushUpdates;
 
+/** Name the branch a `HEAD` update pushes when HEAD is that branch at the pushed commit. */
+export declare function resolveHeadUpdates(
+  parsed: PrePushUpdates,
+  headBranch: () => { ref: string; sha: string } | null,
+): PrePushUpdates;
+
 /**
  * Read git's ref-update list from the hook's stdin. `readable: false` means
  * the list could not be read at all, which is not the same as an empty one.
