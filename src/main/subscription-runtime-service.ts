@@ -1423,10 +1423,10 @@ export class SubscriptionRuntimeService {
           ), safetyEpoch);
         }
         if (isClaudeCodeSubscriptionProviderId(effectiveSelection.provider)) {
-          const executablePath = await this.claudeCodeClient.verifiedExecutable();
+          const executable = await this.claudeCodeClient.verifiedRuntime();
           const paths = this.claudeCodeClient.getRuntimePaths();
           const runtime = this.createClaudeCodeConversationRuntime({
-            executablePath,
+            resolveRuntime: async () => executable,
             runtimeHome: paths.runtimeHome,
             workspaceDir: paths.workspaceDir,
             runtimeTempDir: paths.runtimeTempDir,

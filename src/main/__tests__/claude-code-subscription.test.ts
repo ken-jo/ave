@@ -107,7 +107,6 @@ describe("claude-code subscription contract", () => {
     const claudeCodeClient = {
       getStatus: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
       verify: vi.fn(async () => claudeCodeSubscriptionStatus("ready", "connected", "2.1.0")),
-      verifiedExecutable: vi.fn(async () => "C:\\Tools\\claude.exe"),
       getRuntimePaths: vi.fn(() => ({
         runtimeHome: "C:\\isolated\\claude-home",
         workspaceDir: "C:\\isolated\\claude-workspace",

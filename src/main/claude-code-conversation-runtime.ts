@@ -10,7 +10,6 @@ import { CLAUDE_CODE_SUBSCRIPTION_PROVIDER_ID } from "../shared/claude-code-subs
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
   ClaudeCodeSubscriptionError,
-  resolveClaudeCodeSubscriptionExecutable,
   sanitizedClaudeCodeEnvironment,
   validateClaudeCodeRuntimeDirectories,
 } from "./claude-code-subscription-client.js";
@@ -26,18 +25,19 @@ import { writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import { SubscriptionAttachmentTransportError } from "./subscription-attachment-input.js";
 import type { SubscriptionToolBridge } from "./subscription-tool-bridge.js";
 
+import type { ClaudeCodeExecutable } from "./claude-code-executable.js";
+
 const MAX_QUEUED_EVENTS = 256;
 const HOST_TOOL_ACCEPTED = "Ave accepted the host tool request and will provide its result in the next model round.";
 
 export interface ClaudeCodeConversationRuntimeOptions {
-  readonly executablePath: string;
+  readonly resolveRuntime: () => Promise<ClaudeCodeExecutable>;
   readonly runtimeHome: string;
   readonly workspaceDir: string;
   readonly runtimeTempDir: string;
   readonly bridge: SubscriptionToolBridge;
   readonly spawn?: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
   readonly platform?: NodeJS.Platform;
-  readonly resolveExecutable?: (candidate: string) => Promise<string>;
 }
 
 function operationFailed(): ClaudeCodeSubscriptionError {
@@ -113,11 +113,7 @@ export class ClaudeCodeConversationRuntime {
 
     try {
       await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir]);
-      const executable = await (this.options.resolveExecutable
-        ?? ((path) => resolveClaudeCodeSubscriptionExecutable(path, this.options.platform)))(this.options.executablePath);
-      if (executable !== this.options.executablePath) {
-        throw new ClaudeCodeSubscriptionError("claude-code-runtime-invalid-executable");
-      }
+      const runtime = await this.options.resolveRuntime();
       assertActive();
       const mcpServers = bridge.tools.length ? {
         [CLAUDE_CODE_MCP_SERVER_NAME]: await bridge.startMcpServer().then((mcp) => ({
@@ -145,7 +141,10 @@ export class ClaudeCodeConversationRuntime {
         });
         return HOST_TOOL_ACCEPTED;
       });
-      const spawned = this.spawn(executable, claudeCodePrintArgs(configPath, toolNames), {
+      await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir]);
+      await runtime.verify();
+      assertActive();
+      const spawned = this.spawn(runtime.executable, [...runtime.args, ...claudeCodePrintArgs(configPath, toolNames)], {
         cwd: workspaceDir,
         env: sanitizedClaudeCodeEnvironment(runtimeHome, process.env, this.options.platform, runtimeTempDir),
         stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true,

@@ -16,17 +16,6 @@ export function claudeCodePrintArgs(mcpConfigPath: string, toolNames: readonly s
   ];
 }
 
-/**
- * Every option the print invocation passes, spelled as `claude --help` lists
- * it. A found CLI qualifies only when its help names each one, so a CLI too
- * old for an option Ave relies on is reported before a turn fails on it.
- */
-export function claudeCodeRequiredOptions(): string[] {
-  return [...new Set(claudeCodePrintArgs("mcp.json", ["tool"])
-    .filter((arg) => arg.startsWith("-"))
-    .map((arg) => (arg === "-p" ? "--print" : arg)))];
-}
-
 function invalid(): never {
   throw new Error("claude-code-operation-failed");
 }

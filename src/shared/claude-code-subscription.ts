@@ -42,9 +42,9 @@ export interface ClaudeCodeSubscriptionStatus {
 export type ClaudeCodeSubscriptionErrorCode =
   | "claude-code-runtime-not-configured"
   | "claude-code-runtime-invalid-executable"
-  /** A CLI was found but it is not Claude Code, or lacks an option or auth command Ave uses. */
+  /** A discovered executable failed runtime identity or authentication-command qualification. */
   | "claude-code-runtime-incompatible"
-  /** The CLI found now is not the file verify() proved (an update or reinstall in between). */
+  /** The executable content proof changed or has not passed connected print verification. */
   | "claude-code-runtime-unverified"
   | "claude-code-runtime-unavailable"
   | "claude-code-login-in-progress"

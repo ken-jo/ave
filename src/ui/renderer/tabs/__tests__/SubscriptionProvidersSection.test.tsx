@@ -2,6 +2,7 @@ import "../../../../../test/renderer/setup.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
+import { loadLocaleMessages } from "../../../../i18n/messages/index.js";
 import {
   subscriptionRuntimeDescriptor,
   type SubscriptionRuntimeCapabilities,
@@ -310,7 +311,7 @@ describe("SubscriptionAuthControls", () => {
       />,
     );
     expect(screen.getByTestId("subscription-provider:codex:cli-found"))
-      .toHaveTextContent("Using the Codex CLI 0.163.0 installed on this computer.");
+      .toHaveTextContent("Using the sign-in tool on this computer (version 0.163.0).");
     for (const id of PICKER_TEST_IDS) expect(screen.queryByTestId(`subscription-provider:codex:${id}`)).toBeNull();
     expect(screen.queryByTestId("subscription-provider:codex:install-guidance")).toBeNull();
     fireEvent.click(screen.getByTestId("subscription-provider:codex:login-browser"));
@@ -370,9 +371,52 @@ describe("SubscriptionAuthControls", () => {
       />,
     );
     expect(screen.getByTestId("subscription-provider:claude-code:cli-unavailable"))
-      .toHaveTextContent("The Claude Code CLI on this computer could not be used just now.");
+      .toHaveTextContent("The sign-in tool on this computer could not be used just now.");
     fireEvent.click(screen.getByTestId("subscription-provider:claude-code:check-again"));
     expect(refreshStatus).toHaveBeenCalledWith("claude-code");
+  });
+
+  it.each(["en", "ko"] as const)("keeps ordinary and transient sign-in states neutral in %s", async (locale) => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    const { rerender } = render(<SubscriptionProvidersSection providers={[]} actions={{ refreshStatus: vi.fn() }} />);
+    for (const runtimeId of ["codex", "claude-code"] as const) {
+      for (const connection of ["signed-out", "connected"] as const) {
+        rerender(
+          <SubscriptionProvidersSection
+            providers={[viewFor(runtimeId, { runtime: "ready", connection, version: "1.2.3" })]}
+            actions={{ beginLogin: vi.fn(), logout: vi.fn() }}
+          />,
+        );
+        expect(screen.getByTestId(`subscription-provider:${runtimeId}:cli-found`)).toHaveTextContent(
+          locale === "en"
+            ? "Using the sign-in tool on this computer (version 1.2.3)."
+            : "이 컴퓨터의 로그인 도구를 사용합니다 (버전 1.2.3).",
+        );
+        expect(document.body).not.toHaveTextContent(/Codex|Claude Code/);
+      }
+      rerender(
+        <SubscriptionProvidersSection
+          providers={[viewFor(runtimeId, { runtime: "unavailable", connection: "unknown", errorCode: "subscription-runtime-unavailable" })]}
+          actions={{ refreshStatus: vi.fn() }}
+        />,
+      );
+      expect(screen.getByTestId(`subscription-provider:${runtimeId}:cli-unavailable`)).toHaveTextContent(
+        locale === "en"
+          ? "The sign-in tool on this computer could not be used just now."
+          : "이 컴퓨터의 로그인 도구를 지금 사용할 수 없습니다.",
+      );
+      expect(document.body).not.toHaveTextContent(/Codex|Claude Code/);
+      rerender(
+        <SubscriptionProvidersSection
+          providers={[viewFor(runtimeId, { runtime: "unavailable", connection: "unknown", version: "1.2.3", errorCode: "subscription-runtime-incompatible" })]}
+          actions={{ refreshStatus: vi.fn() }}
+        />,
+      );
+      expect(screen.getByRole("alert")).not.toHaveTextContent(/Codex|Claude Code/);
+      expect(screen.getByTestId(`subscription-provider:${runtimeId}:update-guidance`))
+        .toHaveTextContent(subscriptionRuntimeDescriptor(runtimeId).cliName);
+    }
   });
 
   it("keeps the official runtime picker for a runtime whose executable the user selects (control)", () => {

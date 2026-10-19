@@ -270,20 +270,6 @@ export function SubscriptionAuthControls({
           data-testid={`subscription-provider:${descriptor.id}:error`}
         >
           {t(errorMessageKey(descriptor, status.errorCode))}
-          {descriptor.minimumVersion && discoveredCliNeedsUpdate(status.errorCode) ? (
-            <span className="mt-1 block" data-testid={`subscription-provider:${descriptor.id}:minimum-version`}>
-              {status.version
-                ? t("subscriptionProvidersSection.minimumVersionRequiredFound", {
-                  cli: descriptor.cliName,
-                  minimumVersion: descriptor.minimumVersion,
-                  version: status.version,
-                })
-                : t("subscriptionProvidersSection.minimumVersionRequired", {
-                  cli: descriptor.cliName,
-                  minimumVersion: descriptor.minimumVersion,
-                })}
-            </span>
-          ) : null}
         </p>
       ) : null}
 
@@ -292,7 +278,7 @@ export function SubscriptionAuthControls({
           className="text-xs text-muted-foreground"
           data-testid={`subscription-provider:${descriptor.id}:cli-found`}
         >
-          {t("subscriptionProvidersSection.cliFound", { cli: descriptor.cliName, version: status.version })}
+          {t("subscriptionProvidersSection.cliFound", { version: status.version })}
         </p>
       ) : null}
 
@@ -306,12 +292,18 @@ export function SubscriptionAuthControls({
               ? t("subscriptionProvidersSection.updateGuidance", { cli: descriptor.cliName, plan: descriptor.planName })
               : t("subscriptionProvidersSection.installGuidance", { cli: descriptor.cliName, plan: descriptor.planName })}
           </p>
-          {descriptor.minimumVersion && !cliNeedsUpdate ? (
-            <p>
-              {t("subscriptionProvidersSection.minimumVersionRequired", {
-                cli: descriptor.cliName,
-                minimumVersion: descriptor.minimumVersion,
-              })}
+          {descriptor.minimumVersion ? (
+            <p data-testid={cliNeedsUpdate ? `subscription-provider:${descriptor.id}:minimum-version` : undefined}>
+              {cliNeedsUpdate && status?.version
+                ? t("subscriptionProvidersSection.minimumVersionRequiredFound", {
+                  cli: descriptor.cliName,
+                  minimumVersion: descriptor.minimumVersion,
+                  version: status.version,
+                })
+                : t("subscriptionProvidersSection.minimumVersionRequired", {
+                  cli: descriptor.cliName,
+                  minimumVersion: descriptor.minimumVersion,
+                })}
             </p>
           ) : null}
           <dl className="space-y-1">
@@ -346,7 +338,7 @@ export function SubscriptionAuthControls({
           className="flex flex-wrap items-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground"
           data-testid={`subscription-provider:${descriptor.id}:cli-unavailable`}
         >
-          <p>{t("subscriptionProvidersSection.cliUnavailable", { cli: descriptor.cliName })}</p>
+          <p>{t("subscriptionProvidersSection.cliUnavailable")}</p>
           {checkAgainButton}
         </div>
       ) : null}
