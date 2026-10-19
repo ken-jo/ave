@@ -57,6 +57,7 @@ import {
 } from "../shared/terminal-command-text.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { t } from "../i18n/index.js";
 import { authorizedApprovalMemoryScope } from "./approval-memory-context.js";
 import { resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
@@ -128,7 +129,7 @@ const TEXT_PROBLEM_MESSAGES: Record<TerminalCommandTextProblem, string> = {
   "shell-divergent": "command uses a construct an interactive zsh and bash run differently (a command word starting with =, nocorrect, noglob, or the r/fc history re-run); rephrase it",
   "shell-state": "command would change the shell for the user's later commands (a function definition, an alias, trap, hook, option or key binding, sourced code, or an assignment to a prompt, hook, PATH or IFS variable); terminal_run does not do that",
   "shell-integration": "command refers to the terminal's own shell-integration names (__ave_*), which terminal_run does not expose",
-  "unchecked-construct": "command uses a construct terminal_run cannot check (case, declare, typeset, local, let, ((...)), select or coproc); rephrase it with plain commands",
+  "unchecked-construct": "command uses a construct terminal_run cannot check (case, declare, typeset, local, let, ((...)), select, coproc, or a command name taken from a variable); rephrase it with plain commands",
   incomplete: "command is not one complete shell command (an open quote, here-document, trailing operator or backslash), so the shell would wait for more input",
 };
 
@@ -237,7 +238,16 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
   const approvalMemoryScope = (raw: unknown, ctx?: ToolPolicyContext): ApprovalMemoryScope => {
     const input = parseInput(raw);
     const target = resolveTarget(input, ctx?.sessionId);
-    return { kind: "terminal-command", commandSha256: sha256Hex(input.command), tabId: target.tabId, cwd: target.cwd };
+    return {
+      kind: "terminal-command",
+      commandSha256: sha256Hex(input.command),
+      tabId: target.tabId,
+      cwd: target.cwd,
+      // The form the allowed-directory list is kept in (allowed-directories.ts),
+      // so the card can compare the two as strings: a symlinked $PWD and a
+      // case-folding file system both resolve here.
+      cwdForMatch: caseFoldForMatch(canonicalizePathForMatch(target.cwd)),
+    };
   };
 
   const execute = async (raw: unknown, ctx: ToolExecutionContext): Promise<ToolExecutionResult> => {

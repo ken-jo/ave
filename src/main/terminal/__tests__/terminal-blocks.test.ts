@@ -429,6 +429,22 @@ describe("prompt state (whether a command may be typed now)", () => {
     expect(tracker.promptState()).toBe("pending-input");
   });
 
+  it("does not count the terminal emulator's own replies (focus, device and cursor reports) as the user typing", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true, now: () => 10_000 });
+    tracker.recordOutput(prompt());
+    for (const reply of ["\u001b[I", "\u001b[O", "\u001b[?62;22c", "\u001b[>0;276;0c", "\u001b[0n", "\u001b[12;40R", "\u001b]11;rgb:0000/0000/0000\u0007", "\u001b[I\u001b[O"]) {
+      tracker.recordInput(reply);
+      expect(tracker.promptState()).toBe("ready");
+    }
+    // A key that is not a report still counts: an arrow, a letter, a reply followed by typing.
+    for (const key of ["\u001b[A", "x", "\u001b[Ix"]) {
+      const fresh = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true, now: () => 10_000 });
+      fresh.recordOutput(prompt());
+      fresh.recordInput(key);
+      expect(fresh.promptState()).toBe("pending-input");
+    }
+  });
+
   it("never hands the marker nonce out in a block's command or output", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
     tracker.recordOutput(cycle(`echo ${NONCE}`, `${NONCE}\r\n`, 0));

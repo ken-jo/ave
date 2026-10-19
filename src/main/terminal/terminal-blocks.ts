@@ -256,6 +256,17 @@ export type TerminalPromptState =
 export const USER_INPUT_QUIET_MS = 1500;
 
 /**
+ * A write made only of replies the terminal emulator sends by itself through
+ * the same input channel as keystrokes: focus in/out (`CSI I`, `CSI O`),
+ * device-attribute, status and cursor-position reports (`CSI ? … c`,
+ * `CSI … n`, `CSI … R`), and OSC/DCS answers to a program's queries. None of
+ * them edits the prompt line. A key — an arrow, a letter, a paste — never
+ * has this shape.
+ */
+const TERMINAL_REPLY =
+  /^(?:\u001b\[[IO]|\u001b\[[?>=]?[0-9;]*[cnR]|\u001b\][0-9]+;[^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001bP[^\u001b]*\u001b\\)+$/u;
+
+/**
  * Turns one terminal's output (and, for the fallback, its typed input) into
  * blocks. One tracker per PTY session.
  */
@@ -477,13 +488,15 @@ export class TerminalBlockTracker {
   }
 
   /**
-   * Feed one user input write. Its time is kept for {@link promptState}. The
+   * Feed one user input write. Its time is kept for {@link promptState},
+   * unless the write is only replies the terminal emulator sent on its own
+   * ({@link TERMINAL_REPLY}), which are not the user typing. The
    * fallback also uses it: before the shell has shown any marker, an Enter
    * closes the running heuristic block and opens a new one named after the
    * line on screen.
    */
   recordInput(data: string): void {
-    this.lastInputAt = this.now();
+    if (!TERMINAL_REPLY.test(data)) this.lastInputAt = this.now();
     if (this.integrated || !data.includes("\r")) return;
     const line = this.open ? this.open.output.currentLine() : this.idle.currentLine();
     const command = cleanCommand(line || (this.open ? this.open.output.lastNonEmptyLine() : this.idle.lastNonEmptyLine()));

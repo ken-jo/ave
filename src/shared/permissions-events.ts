@@ -67,8 +67,17 @@ export type ApprovalMemoryScope =
   // directory its shell reported. `tabId` is the concrete target of this
   // invocation (resolved before the card is shown, so switching terminals
   // while it is open cannot retarget it); a remembered decision covers the
-  // command in that directory, for this app session only.
-  | { readonly kind: "terminal-command"; readonly commandSha256: string; readonly tabId: string; readonly cwd: string };
+  // command in that directory, for this app session only. `cwdForMatch` is
+  // that directory as the allowed-directory check compares it (realpath,
+  // case-folded where the file system folds case), for the card's
+  // "outside the allowed folders" note; it is derived from `cwd`.
+  | {
+      readonly kind: "terminal-command";
+      readonly commandSha256: string;
+      readonly tabId: string;
+      readonly cwd: string;
+      readonly cwdForMatch: string;
+    };
 
 /** Who opened a browser tab: the agent (`browser_tab_new`) or the user. */
 export type BrowserTabOpener = "agent" | "user";

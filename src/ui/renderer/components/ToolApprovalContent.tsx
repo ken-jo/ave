@@ -619,12 +619,16 @@ function terminalCommandNotes(
   }
   const context = request.evaluationContext;
   if (context) {
-    const cwd = memory.scope.cwd;
-    const inside = [context.executionCwd, ...context.allowedDirectories].some((dir) => {
+    // Both sides are in the allowed-directory check's form (realpath,
+    // case-folded where the file system folds case): the host resolved the
+    // terminal's directory when it sealed the target, and the list is kept
+    // that way (allowed-directories.ts).
+    const target = memory.scope.cwdForMatch;
+    const inside = context.allowedDirectories.some((dir) => {
       const root = dir.endsWith("/") ? dir.slice(0, -1) : dir;
-      return cwd === root || cwd.startsWith(`${root}/`);
+      return target === root || target.startsWith(`${root}/`);
     });
-    if (!inside) notes.push(t("toolApprovalDialog.terminalOutsideAllowed", { cwd }));
+    if (!inside) notes.push(t("toolApprovalDialog.terminalOutsideAllowed", { cwd: memory.scope.cwd }));
   }
   return notes;
 }

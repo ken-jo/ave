@@ -27,8 +27,9 @@
  *  - zsh reads a command word starting with `=` as a path lookup and
  *    `nocorrect`/`noglob` as precommand modifiers, which bash does not;
  *  - a construct the shell analysis does not model (`case`,
- *    `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`) cannot
- *    be checked for any of this, so it is refused too;
+ *    `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`), or a
+ *    command name taken from a variable, cannot be checked for any of this,
+ *    so it is refused too;
  *  - an unfinished construct (an open quote, a here-document, a trailing
  *    operator or backslash) leaves the shell waiting at a continuation prompt
  *    with the terminal half-typed, so the line must parse as one complete
@@ -37,8 +38,10 @@
  * The command also must not change the shell for the user's later commands:
  * no function definitions, no assignments to the variables a shell runs or
  * resolves later commands through (prompt and hook variables, `PATH`, `IFS`,
- * …), no builtins that install aliases, traps, hooks, options or key
- * bindings, and no reference to the shell integration's own `__ave_*` names
+ * `TMOUT`, …) — with `NAME=value` or through `read`, `mapfile`, `getopts` or
+ * `printf -v` — no builtins that install aliases, traps, hooks, options, key
+ * bindings, limits, a umask, terminal settings or scheduled commands, and no
+ * reference to the shell integration's own `__ave_*` names
  * (its marker nonce among them).
  *
  * Pure: shared by the tool (before any approval is asked) and the PTY write
@@ -88,8 +91,16 @@ const DIVERGENT_COMMAND_WORDS: ReadonlySet<string> = new Set(["nocorrect", "nogl
 const STATE_CHANGING_COMMAND_WORDS: ReadonlySet<string> = new Set([
   "alias", "unalias", "trap", "add-zsh-hook", "autoload", "setopt", "unsetopt", "shopt", "set", "bindkey",
   "zle", "unset", "unfunction", "functions", "enable", "disable", "hash", "source", ".", "exec",
-  "eval", "emulate", "zmodload", "complete", "compdef", "bind",
+  "eval", "emulate", "zmodload", "complete", "compdef", "bind", "umask", "ulimit", "limit", "unlimit", "sched",
+  "stty", "history",
 ]);
+/**
+ * Builtins that assign the variables named by their arguments without
+ * assignment syntax: `read NAME`, `mapfile NAME`, `getopts spec NAME`,
+ * `printf -v NAME`. Every argument naming a variable is judged like the left
+ * side of `NAME=value`.
+ */
+const VARIABLE_SETTING_COMMAND_WORDS: ReadonlySet<string> = new Set(["read", "mapfile", "readarray", "getopts", "printf", "vared"]);
 /** Wrappers that run their first non-option argument as a command in the shell itself. */
 const COMMAND_WRAPPERS: ReadonlySet<string> = new Set(["builtin", "command", "time"]);
 /** Declaration builtins whose `NAME=value` arguments assign in the shell itself. */
@@ -99,7 +110,7 @@ const DECLARATION_COMMAND_WORDS: ReadonlySet<string> = new Set(["export", "decla
  * through: prompt and hook variables, the command search path, word
  * splitting, and startup files.
  */
-const SHELL_STATE_VARIABLES = /^(?:PROMPT_COMMAND|PS[0-9]|PROMPT[0-9]?|RPROMPT[0-9]?|RPS[0-9]|(?:precmd|preexec|chpwd|periodic|zshaddhistory|zshexit)_functions|TRAP[A-Z]+|PATH|path|IFS|CDPATH|cdpath|FPATH|fpath|BASH_ENV|ENV|ZDOTDIR|HISTFILE|HISTCONTROL|HISTIGNORE|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|__ave_\w*)$/u;
+const SHELL_STATE_VARIABLES = /^(?:PROMPT_COMMAND|PS[0-9]|PROMPT[0-9]?|RPROMPT[0-9]?|RPS[0-9]|(?:precmd|preexec|chpwd|periodic|zshaddhistory|zshexit)_functions|TRAP[A-Z]+|PATH|path|IFS|CDPATH|cdpath|FPATH|fpath|BASH_ENV|ENV|ZDOTDIR|HISTFILE|HISTCONTROL|HISTIGNORE|TMOUT|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|__ave_\w*)$/u;
 const ASSIGNMENT_WORD = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=/u;
 
 /** The first reason `command` may not be typed into a terminal, or null when it may. */
@@ -168,6 +179,8 @@ function hasUnquotedComment(command: string): boolean {
   /** Open double quotes and `${` expansions, innermost last. */
   const open: Array<"double-quote" | "parameter"> = [];
   let singleQuoted = false;
+  /** Inside `$'…'`, where a backslash escapes the next character, `\'` included. */
+  let ansiQuoted = false;
   let escaped = false;
   let wordStart = true;
   for (let i = 0; i < chars.length; i++) {
@@ -177,6 +190,11 @@ function hasUnquotedComment(command: string): boolean {
       if (ch === "'") singleQuoted = false;
       continue;
     }
+    if (ansiQuoted) {
+      if (ch === "\\") i++;
+      else if (ch === "'") ansiQuoted = false;
+      continue;
+    }
     if (escaped) {
       escaped = false;
       wordStart = false;
@@ -184,6 +202,12 @@ function hasUnquotedComment(command: string): boolean {
     }
     if (ch === "\\") {
       escaped = true;
+      continue;
+    }
+    if (ch === "$" && chars[i + 1] === "'" && inside !== "double-quote") {
+      ansiQuoted = true;
+      i++;
+      wordStart = false;
       continue;
     }
     if (ch === "$" && chars[i + 1] === "{") {
@@ -213,7 +237,7 @@ function hasUnquotedComment(command: string): boolean {
     if (ch === "#" && wordStart) return true;
     wordStart = /[\s;&|()<>`{}]/u.test(ch);
   }
-  return open.length > 0 || singleQuoted;
+  return open.length > 0 || singleQuoted || ansiQuoted;
 }
 
 function statementProblem(statement: ShellStatement): TerminalCommandTextProblem | null {
@@ -246,7 +270,8 @@ function statementProblem(statement: ShellStatement): TerminalCommandTextProblem
       return statementProblem(statement.condition) ?? statementProblem(statement.body);
     case "unsupported":
       // A construct the analysis does not model (case, declare/typeset/local,
-      // let, ((…)), select, coproc) cannot be checked for the rules above.
+      // let, ((…)), select, coproc) cannot be checked for the rules above;
+      // neither can a command name taken from a variable (commandProblem).
       return "unchecked-construct";
   }
 }
@@ -274,7 +299,8 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
   if (command.assignmentScope === "current" && command.assignments.some((a) => SHELL_STATE_VARIABLES.test(a.name))) {
     return "shell-state";
   }
-  const words = command.words.map((word) => staticShellWord(word) ?? word.source.raw);
+  const staticWords = command.words.map((word) => staticShellWord(word));
+  const words = command.words.map((word, i) => staticWords[i] ?? word.source.raw);
   let index = 0;
   while (index < words.length && COMMAND_WRAPPERS.has(words[index]!)) {
     index++;
@@ -282,8 +308,18 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
   }
   const head = words[index];
   if (head === undefined) return null;
+  // A command name taken from a variable could be any builtin
+  // (`c=alias; $c ls=rm`), so none of the checks below could hold.
+  if (staticWords[index] === undefined) return "unchecked-construct";
   if (head.startsWith("=") || DIVERGENT_COMMAND_WORDS.has(head)) return "shell-divergent";
   if (STATE_CHANGING_COMMAND_WORDS.has(head)) return "shell-state";
+  if (VARIABLE_SETTING_COMMAND_WORDS.has(head) || DECLARATION_COMMAND_WORDS.has(head)) {
+    // A variable name only known at run time could be any of them.
+    if (staticWords.slice(index + 1).some((word) => word === undefined)) return "shell-state";
+  }
+  if (VARIABLE_SETTING_COMMAND_WORDS.has(head)) {
+    return assignedVariableNames(head, words.slice(index + 1)).some((name) => SHELL_STATE_VARIABLES.test(name)) ? "shell-state" : null;
+  }
   if (DECLARATION_COMMAND_WORDS.has(head)) {
     for (const argument of words.slice(index + 1)) {
       const name = ASSIGNMENT_WORD.exec(argument)?.[1] ?? (/^-/u.test(argument) ? undefined : argument);
@@ -292,4 +328,28 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
     }
   }
   return null;
+}
+
+/**
+ * The variables a {@link VARIABLE_SETTING_COMMAND_WORDS} builtin assigns.
+ * Over-inclusive on purpose: for `read`, `mapfile`, `readarray` and `vared`
+ * every word is a candidate (an option's argument such as a prompt or a
+ * delimiter is judged too); zsh's `read 'name?prompt'` names `name`. `printf`
+ * assigns only the name after `-v` (`-v NAME` or `-vNAME`); `getopts` the
+ * second and later words.
+ */
+function assignedVariableNames(head: string, args: readonly string[]): string[] {
+  const nameOf = (word: string): string => word.replace(/^-[A-Za-z]*/u, "").split(/[?[]/u)[0]!;
+  if (head === "printf") {
+    const names: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i]!;
+      if (arg === "--") break;
+      if (arg === "-v" && args[i + 1] !== undefined) names.push(args[i + 1]!);
+      else if (/^-v./u.test(arg)) names.push(arg.slice(2));
+    }
+    return names;
+  }
+  if (head === "getopts") return args.slice(1).map(nameOf);
+  return args.map(nameOf);
 }

@@ -2,6 +2,9 @@
  * terminal_run: type one approved command into a terminal the user can see.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createTerminalRunTool,
   isCanonicalTerminalRunTool,
@@ -93,7 +96,27 @@ describe("terminal_run", () => {
         commandSha256: sha256Hex("npm test"),
         tabId: "terminal:aaaaaaaa-1",
         cwd: "/repo/app",
+        cwdForMatch: "/repo/app",
       });
+    });
+
+    it("seals the directory as the allowed-directory check sees it: symlinks resolved, case folded where the file system folds it", async () => {
+      const real = mkdtempSync(join(tmpdir(), "ave-terminal-run-Real-"));
+      const link = `${real}-Link`;
+      symlinkSync(real, link);
+      try {
+        registerTerminalBlockTracker("terminal:aaaaaaaa-1", readyTracker(link), WINDOW);
+        const tool = createTerminalRunTool(depsWith());
+        const scope = await Promise.resolve(tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" }));
+        const expected = realpathSync.native(real);
+        expect(scope).toMatchObject({
+          cwd: link,
+          cwdForMatch: process.platform === "darwin" || process.platform === "win32" ? expected.toLowerCase() : expected,
+        });
+      } finally {
+        rmSync(link, { force: true });
+        rmSync(real, { recursive: true, force: true });
+      }
     });
 
     it("prefers an explicit tabId, then the conversation's bound terminal, over the active one", async () => {
@@ -212,6 +235,7 @@ describe("terminal_run", () => {
       ["a comment directly after ;", "a;#b", /# comment/],
       ["a comment after a quoted expansion", "echo \"${x#p}\" # ; rm -rf build", /# comment/],
       ["a comment after an expansion holding a quoted brace", "echo ${x:-\"}\"} # ; rm -rf build", /# comment/],
+      ["a comment after an ANSI-C quote holding an escaped quote", "echo $'\\'' # x '", /# comment/],
       ["an =command path lookup", "=rm -rf build", /starting with =/],
       ["an =command behind builtin", "builtin =rm x", /starting with =/],
       ["nocorrect", "nocorrect rm -rf build", /nocorrect/],
@@ -246,6 +270,23 @@ describe("terminal_run", () => {
       ["an exported function", "export -f f", /cannot check/],
       ["state changes inside a substitution", "echo $(alias ls=rm)", /change the shell/],
       ["an alias behind time", "time alias ls=rm", /change the shell/],
+      ["printf -v PATH", "printf -v PATH x", /change the shell/],
+      ["printf -vPATH", "printf -vPATH x", /change the shell/],
+      ["read PATH", "read PATH", /change the shell/],
+      ["read -r IFS", "read -r IFS", /change the shell/],
+      ["zsh read of a prompt variable", "read 'PS1?go'", /change the shell/],
+      ["mapfile PATH", "mapfile PATH", /change the shell/],
+      ["readarray -t IFS", "readarray -t IFS", /change the shell/],
+      ["getopts into PATH", "getopts a PATH", /change the shell/],
+      ["read into a name from a variable", "read \"$v\"", /change the shell/],
+      ["printf -v into a name from a variable", "printf -v \"$v\" x", /change the shell/],
+      ["umask", "umask 000", /change the shell/],
+      ["ulimit", "ulimit -n 10", /change the shell/],
+      ["zsh sched", "sched +1 ls", /change the shell/],
+      ["stty", "stty -echo", /change the shell/],
+      ["history edits", "history -c", /change the shell/],
+      ["a TMOUT assignment", "TMOUT=1", /change the shell/],
+      ["a command name from a variable", "c=alias; $c ls=rm", /cannot check/],
       ["an alias behind command -p", "command -p alias ls=rm", /change the shell/],
       ["a typeset of a prompt", "typeset -g PS1=x", /cannot check/],
       ["a case statement", "case x in a) alias ls=rm;; esac", /cannot check/],
@@ -275,6 +316,11 @@ describe("terminal_run", () => {
         "export FOO=1",
         "echo $((1 + 2))",
         "echo ${#x}",
+        "echo $'it\\'s' ok",
+        "read -r line",
+        "read -p prompt answer",
+        "printf '%s\\n' PATH",
+        "getopts ab opt",
         "echo ${x#p}",
         "echo ${x##p}",
         "echo \"${x%%p}\" ${y:-${z#q}}",
@@ -380,7 +426,7 @@ describe("terminal_run", () => {
   });
 
   it("the authorization step reads the sealed target and refuses an invocation without one", () => {
-    const scope = { kind: "terminal-command", commandSha256: "x", tabId: "terminal:aaaaaaaa-1", cwd: "/repo" } as const;
+    const scope = { kind: "terminal-command", commandSha256: "x", tabId: "terminal:aaaaaaaa-1", cwd: "/repo", cwdForMatch: "/repo" } as const;
     expect(terminalCommandScopeOf({ kind: "key", key: "k", scope })).toBe(scope);
     expect(() => terminalCommandScopeOf({ kind: "args" })).toThrow(/without its sealed terminal target/);
     expect(() => terminalCommandScopeOf(undefined)).toThrow(/without its sealed terminal target/);

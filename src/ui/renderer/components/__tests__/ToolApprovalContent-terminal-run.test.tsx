@@ -32,7 +32,7 @@ function terminalRunRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalR
     approvalMemory: {
       kind: "key",
       key: "terminal_run:command",
-      scope: { kind: "terminal-command", commandSha256: "a".repeat(64), tabId: "terminal:3fa91c0e-2", cwd: "/workspace/project/app" },
+      scope: { kind: "terminal-command", commandSha256: "a".repeat(64), tabId: "terminal:3fa91c0e-2", cwd: "/workspace/project/app", cwdForMatch: "/workspace/project/app" },
     },
     ...overrides,
   };
@@ -106,6 +106,22 @@ describe("ToolApprovalContent terminal_run card", () => {
     unmount();
     render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest({ evaluationContext: evaluationContext(["/workspace/project"]) })} onDecide={vi.fn()} />);
     expect(screen.queryByTestId("approval-terminal-note")).toBeNull();
+  });
+
+  it("compares the directory the host resolved, so a symlinked or differently cased $PWD inside the allowed folders gets no note", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    const request = terminalRunRequest({ evaluationContext: evaluationContext(["/private/tmp/work"]) });
+    const memory = request.approvalMemory as Extract<NonNullable<ApprovalRequest["approvalMemory"]>, { kind: "key" }>;
+    render(
+      <ToolApprovalContent
+        conversationLabel="conversation"
+        open
+        request={{ ...request, approvalMemory: { ...memory, scope: { kind: "terminal-command", commandSha256: "a".repeat(64), tabId: "terminal:3fa91c0e-2", cwd: "/tmp/Work/app", cwdForMatch: "/private/tmp/work/app" } } }}
+        onDecide={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("approval-terminal-note")).toBeNull();
+    expect(screen.getByTestId("approval-terminal-target")).toHaveTextContent("/tmp/Work/app");
   });
 
   it("remembers the command in that directory for this session only", async () => {
