@@ -17,6 +17,7 @@ import { globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, SENSITIVE_PATH_ENTRIES } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
+import { isWindowsPathAtOrUnder } from "./mxc-windows.js";
 import { createLogger } from "../lib/logger.js";
 import type { InvocationProxyUpstream } from "./egress-invocation-listener.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
@@ -529,6 +530,14 @@ function assertCommandId(caller: string, commandId: string): void {
 let _baseTrustedSettings: TrustedSandboxSettings | undefined;
 
 /**
+ * Paths granted on Windows outside the session config, by
+ * {@link grantWindowsWorkerFilesystemAccess}, with how many live grants hold
+ * each. A per-exec deny beneath one must still reach srt-win
+ * ({@link windowsDenyTargets}).
+ */
+const _windowsLiveGrants = new Map<string, number>();
+
+/**
  * Live host-allocated socket DIRECTORIES currently registered for UDS access
  * (see the WORKER UDS header), each with the number of holders that registered
  * it. Each entry contributes a macOS `allowUnixSockets` `(subpath <dir>)`
@@ -846,6 +855,13 @@ export function buildPerCommandSandboxCustomConfig(
   // A per-command deny REPLACES the shared one, so the trusted custom denies
   // are restated here once for every wrap rather than by each composer.
   let hiddenSeccompHelper: string | undefined;
+  // What the wrap may be granted on Windows: per-exec grants are refused
+  // there (see above), so the session's and the live worker grants.
+  const windowsGrants = [
+    ...(filesystem.allowRead ?? _baseTrustedSettings?.allowRead ?? []),
+    ...(filesystem.allowWrite ?? _baseTrustedSettings?.allowWrite ?? []),
+    ..._windowsLiveGrants.keys(),
+  ];
   if (filesystem.denyRead !== undefined) {
     const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
     const denyRead = [...new Set([...filesystem.denyRead, ...pluginRoots, ...(_baseTrustedSettings?.denyRead ?? [])])];
@@ -860,6 +876,7 @@ export function buildPerCommandSandboxCustomConfig(
         [...appOwnedSandboxPrivateRoots(), ...pluginRoots],
       ),
       _baseTrustedSettings?.userDataDir,
+      windowsGrants,
     );
   }
   if (filesystem.allowWrite !== undefined) fs.allowWrite = writeRootsOutsideReadDenies(filesystem.allowWrite, floor);
@@ -870,6 +887,7 @@ export function buildPerCommandSandboxCustomConfig(
         ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite ?? []) : []),
       ],
       _baseTrustedSettings?.userDataDir,
+      windowsGrants,
     );
   }
   if (filesystem.allowRead !== undefined || hiddenSeccompHelper !== undefined) {
@@ -1336,10 +1354,27 @@ function writePersistenceDirectories(): string[] {
  *     Windows 26300), and every later `mkdir` of them failed;
  *   - a POSIX-rooted row (`/etc/shadow`, `/tmp/claude`, …) is dropped. It
  *     resolves against the current drive, and srt-win materialized
- *     `C:\etc\shadow`, `C:\var\spool\cron`, `C:\tmp\claude` and the like.
+ *     `C:\etc\shadow`, `C:\var\spool\cron`, `C:\tmp\claude` and the like;
+ *   - a row in the user profile that no grant covers is dropped. The sandbox
+ *     user has no rights in the profile (its DACL is SYSTEM, Administrators
+ *     and the user), so such a deny takes nothing away, as on MXC
+ *     ({@link rankMxcFilesystem}). And it is what made `acl stamp` time out:
+ *     srt-win also puts an inheritable `(D;OICI;FILE_DELETE_CHILD)` on the
+ *     row's parent, and Windows walks the parent's whole subtree to apply it,
+ *     once per row. Measured on Windows 26300: 25 ms under a small folder,
+ *     5.2 s under a 75 000-entry one, 404 s (and 318 s to restore) under the
+ *     profile. A row outside the profile stays: other drives commonly let
+ *     Authenticated Users in. A grant that covers the profile itself keeps
+ *     every row, and the stamp is slow again. A worker's grant comes after
+ *     the session stamp, so a row beneath one reaches srt-win as a per-exec
+ *     deny of the worker's wrap, which restates the floor.
  * Other platforms get the list unchanged.
  */
-function windowsDenyTargets(paths: readonly string[], userDataDir: string | undefined): string[] {
+function windowsDenyTargets(
+  paths: readonly string[],
+  userDataDir: string | undefined,
+  grants: readonly string[],
+): string[] {
   if (process.platform !== "win32") return [...paths];
   const home = homedir();
   const ave = aveHome();
@@ -1359,6 +1394,7 @@ function windowsDenyTargets(paths: readonly string[], userDataDir: string | unde
   ]);
   return paths
     .filter((path) => !posixRooted.has(path))
+    .filter((path) => !isWindowsPathAtOrUnder(path, home) || grants.some((grant) => isWindowsPathAtOrUnder(path, grant)))
     .map((path) => (!/[\\/]$/.test(path) && directories.has(caseFoldForMatch(path)) ? `${path}\\` : path));
 }
 
@@ -1617,13 +1653,19 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
     }
   }
   const sharedFloor = getProtectedReadDenyPaths(trustedSettings.userDataDir, trustedSettings.denyRead);
+  const allowWrite = writeRootsOutsideReadDenies(trustedSettings.allowWrite ?? [], sharedFloor);
+  const allowRead =
+    trustedSettings.allowRead !== undefined ? readGrantsOutsideReadDenies(trustedSettings.allowRead, sharedFloor, []) : undefined;
+  const windowsGrants = [...allowWrite, ...(allowRead ?? [])];
   const filesystem: FilesystemConfig = {
-    denyRead: windowsDenyTargets(asrtReadDenyPaths(denyReadUnion, appOwnedSandboxPrivateRoots()), trustedSettings.userDataDir),
-    allowWrite: writeRootsOutsideReadDenies(trustedSettings.allowWrite ?? [], sharedFloor),
-    denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir),
-    ...(trustedSettings.allowRead !== undefined
-      ? { allowRead: readGrantsOutsideReadDenies(trustedSettings.allowRead, sharedFloor, []) }
-      : {}),
+    denyRead: windowsDenyTargets(
+      asrtReadDenyPaths(denyReadUnion, appOwnedSandboxPrivateRoots()),
+      trustedSettings.userDataDir,
+      windowsGrants,
+    ),
+    allowWrite,
+    denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir, windowsGrants),
+    ...(allowRead !== undefined ? { allowRead } : {}),
   };
 
   // Windows-only: pin the egress proxy bind range so it matches the WFP permit
@@ -2725,6 +2767,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
       throw err;
     }
   }
+  for (const path of allowRead) _windowsLiveGrants.set(path, (_windowsLiveGrants.get(path) ?? 0) + 1);
 
   let released = false;
   return {
@@ -2733,6 +2776,11 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
     release: () => {
       if (released) return;
       released = true;
+      for (const path of allowRead) {
+        const held = (_windowsLiveGrants.get(path) ?? 0) - 1;
+        if (held > 0) _windowsLiveGrants.set(path, held);
+        else _windowsLiveGrants.delete(path);
+      }
       // Capture srtWin in the closure — the release may run long after the
       // dynamic import scope has gone; it still needs the explicit spawn
       // descriptor (0.0.67 has no implicit vendored fallback).
