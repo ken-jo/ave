@@ -27,7 +27,7 @@ import {
   vi,
 } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -60,6 +60,7 @@ import {
   buildSandboxConfig,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
+  ensureAsrtSharedTempRootExists,
   appOwnedSandboxPrivateRoots,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
@@ -1329,4 +1330,56 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
     },
     60_000,
   );
+});
+
+describe("ASRT's shared temp root, kept present for the deny on it", () => {
+  // On a temp path: the real `/tmp/claude` is shared by everything on the
+  // machine and is not this test's to create or remove.
+  const made: string[] = [];
+  const scratch = (): string => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-shared-temp-root-")));
+    made.push(dir);
+    return dir;
+  };
+  afterAll(() => {
+    for (const dir of made) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("creates the directory on Linux when nothing is there, so the deny is never a mount point ASRT creates and deletes", () => {
+    const root = join(scratch(), "claude");
+    ensureAsrtSharedTempRootExists(root, "linux");
+    expect(statSync(root).isDirectory()).toBe(true);
+  });
+
+  it("leaves whatever is already at the path alone: a directory with its contents, or a file", () => {
+    const dir = join(scratch(), "claude");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "theirs"), "kept");
+    ensureAsrtSharedTempRootExists(dir, "linux");
+    expect(readFileSync(join(dir, "theirs"), "utf-8")).toBe("kept");
+
+    const file = join(scratch(), "claude");
+    writeFileSync(file, "");
+    ensureAsrtSharedTempRootExists(file, "linux");
+    expect(statSync(file).isFile()).toBe(true);
+  });
+
+  it("goes on without it when the parent is missing, as the wrap did before", () => {
+    const root = join(scratch(), "missing-parent", "claude");
+    ensureAsrtSharedTempRootExists(root, "linux");
+    expect(existsSync(root)).toBe(false);
+  });
+
+  it("throws on any other failure rather than hiding it", () => {
+    const parentFile = join(scratch(), "a-file");
+    writeFileSync(parentFile, "");
+    expect(() => ensureAsrtSharedTempRootExists(join(parentFile, "claude"), "linux")).toThrow(/ENOTDIR/u);
+  });
+
+  it("creates nothing off Linux, where the profile is lexical", () => {
+    const root = join(scratch(), "claude");
+    ensureAsrtSharedTempRootExists(root, "darwin");
+    ensureAsrtSharedTempRootExists(root, "win32");
+    expect(existsSync(root)).toBe(false);
+  });
 });

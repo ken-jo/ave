@@ -1238,6 +1238,9 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
   return out;
 }
 
+/** ASRT's per-machine default temp root, which the deny floor names. */
+const ASRT_SHARED_TEMP_ROOT = "/tmp/claude";
+
 /**
  * The SINGLE SOURCE OF TRUTH for the host WRITE deny-floor — the paths a
  * sandboxed shell/tool must NEVER be able to WRITE, even when its write-jail
@@ -1331,7 +1334,7 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     // this list, so denying it also broke every `writeFileSync(join(tmpdir(),
     // …))` in every confined child. `useAppOwnedSandboxTempRoot` moved the temp
     // root under `~/.ave` first, which is what makes the deny survivable.
-    "/tmp/claude",
+    ASRT_SHARED_TEMP_ROOT,
     "/private/tmp/claude",
     join(home, ".npm", "_logs"),
     join(home, ".claude", "debug"),
@@ -1636,6 +1639,7 @@ async function verifyLinuxAsrtRuntime(
   SandboxManager: Awaited<ReturnType<typeof loadSandboxManager>>,
 ): Promise<void> {
   if (process.platform !== "linux") return;
+  ensureAsrtSharedTempRootExists();
 
   const abortController = new AbortController();
   let wrapped = false;
@@ -1809,6 +1813,7 @@ export async function wrapToolCommand(
   // wrap that happened without this would hand the child a `TMPDIR` it is not
   // allowed to write — a broken temp directory with no visible cause. Idempotent.
   useAppOwnedSandboxTempRoot();
+  ensureAsrtSharedTempRootExists();
   assertPerExecFilesystemSupported(options.filesystem, "wrapToolCommand");
   const SandboxManager = await loadSandboxManager();
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
@@ -1847,7 +1852,9 @@ export async function wrapToolCommand(
  * and a `TMPDIR` naming it, set inside the wrap, and none of them is granted
  * the root itself. What this variable still decides is the `TMPDIR` ASRT
  * writes for a wrap that sets none of its own, which it keeps off
- * `/tmp/claude`.
+ * `/tmp/claude`. That path stays on the deny floor, and on Linux it is made
+ * to exist before each wrap ({@link ensureAsrtSharedTempRootExists}) so the
+ * deny never creates and deletes it.
  *
  * Called once, before any wrap, so nothing observes it changing.
  */
@@ -2059,6 +2066,54 @@ export function useAppOwnedSandboxTempRoot(): string {
 }
 
 /**
+ * Codes for which ASRT's shared temp root cannot be made here, and the wrap
+ * goes on as it did before this existed: it is already there (as anything),
+ * or the host's `/tmp` does not let this user create it, in which case a
+ * bwrap mount point could not be created there either.
+ */
+const SHARED_TEMP_ROOT_UNCREATABLE = new Set(["EEXIST", "EACCES", "EPERM", "EROFS", "ENOENT"]);
+
+/**
+ * Make sure ASRT's shared temp root exists before a Linux wrap, so the deny on
+ * it is a read-only bind of a directory that is there.
+ *
+ * WHY THIS APP CREATES A DIRECTORY IT DOES NOT OWN. The deny floor names
+ * `/tmp/claude` (see {@link appOwnedSandboxTempRoot}). When a denied path is
+ * ABSENT and a wrap can write its parent — every sandboxed shell command can
+ * write `/tmp` (`base-allowed-directories.ts`) — ASRT's Linux backend blocks
+ * its creation by mounting `/dev/null` over it: bwrap creates an empty FILE
+ * at `/tmp/claude` on the host as the mount point, and ASRT deletes it after
+ * the command. So every such command created and deleted a path shared by
+ * every process on the machine. ASRT counts its own wraps before deleting a
+ * mount point, but only within one process; another process's wrap that saw
+ * the path, and so binds it, fails with `bwrap: Can't find source path
+ * /tmp/claude` once it is deleted underneath it. Measured: CI run 39283835815
+ * and three of four runs in an ubuntu:24.04 container, where the shell-tool
+ * suite and the confined-plugin suite run in parallel workers. In the app it
+ * is the same with any other ASRT consumer on the machine, which also gets a
+ * FILE where it expects its temp directory while the command runs.
+ *
+ * A directory that is there is never a mount point, so nothing creates or
+ * deletes it, and the deny keeps it read-only to every wrap. It is created
+ * as an ASRT consumer would (default mode), checked before every wrap because
+ * anything on the machine may remove it, and left alone if anything is
+ * already at that path. macOS needs none of this: its profile is lexical and
+ * creates nothing on the host.
+ */
+export function ensureAsrtSharedTempRootExists(
+  path: string = ASRT_SHARED_TEMP_ROOT,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  if (platform !== "linux") return;
+  try {
+    mkdirSync(path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === undefined || !SHARED_TEMP_ROOT_UNCREATABLE.has(code)) throw error;
+  }
+}
+
+/**
  * Wrap a WORKER command (the long-lived plugin worker — MCP/python — that
  * actually performs runtime network egress) for sandboxed execution, returning
  * the `{ argv, env }` the host must spawn. Same wrapping primitive as
@@ -2134,6 +2189,7 @@ async function wrapLongLivedCommand(
   // wrap that happened without this would hand the child a `TMPDIR` it is not
   // allowed to write — a broken temp directory with no visible cause. Idempotent.
   useAppOwnedSandboxTempRoot();
+  ensureAsrtSharedTempRootExists();
   assertPerExecFilesystemSupported(options.filesystem, caller);
   const SandboxManager = await loadSandboxManager();
   // `wrapOptions` is undefined for every wrap but the terminal's.
