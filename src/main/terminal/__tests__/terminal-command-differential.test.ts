@@ -24,6 +24,13 @@
  * be visible to the rules. Anything else is a word the rules never
  * saw, and fails the test.
  *
+ * Each session starts with a command-not-found handler, as Ubuntu's
+ * /etc/bash.bashrc defines one for bash: such a handler runs a program for any
+ * word that is not a command, so terminal_run refuses to type while one is
+ * defined. The harness checks that refusal, then removes the handler as a
+ * user would and runs the corpus; a handler that still ran would show as a
+ * recorded program.
+ *
  * Commands that wait for terminal input or end the shell (read, exit, kill,
  * ...), and background jobs (which may run after their records are read),
  * are not run; the summary counts them.
@@ -32,6 +39,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync
 import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { basename, join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterAll, describe, expect, it } from "vitest";
 import * as nodePty from "node-pty";
 import { installShellIntegration } from "../shell-integration.js";
@@ -41,8 +49,10 @@ import { canonicalizePathForMatch } from "../../../permissions/sensitive-paths.j
 import { terminalCommandTextProblem } from "../../../shared/terminal-command-text.js";
 import { analyzeShellForRules } from "../../../permissions/rules/shell-rule-matcher.js";
 import { wrapperPrefixLength } from "../../../permissions/rules/shell-prefix-policy.js";
-import { analyzeShell } from "../../../shared/shell-analysis.js";
-import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH } from "../../../__tests__/support/terminal-markers.js";
+import { analyzeShell, staticShellWord } from "../../../shared/shell-analysis.js";
+import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, ubuntuLikeNotFoundHandler } from "../../../__tests__/support/terminal-markers.js";
+
+import { TERMINAL_CALLBACK_COMMANDS, TERMINAL_PRINT_DATA_COMMANDS, TERMINAL_PRINTF_DATA_COMMANDS, TERMINAL_PRINTF_UNCHECKED_COMMANDS, TERMINAL_REGISTRY_COMMANDS } from "../../../__tests__/support/terminal-registry-commands.js";
 
 const NONCE = "0123456789abcdef0123456789abcdef";
 
@@ -51,6 +61,20 @@ const NONCE = "0123456789abcdef0123456789abcdef";
 // and constructs where zsh and bash part ways, each then mutated.
 
 const BASE_COMMANDS: readonly string[] = [
+  ...TERMINAL_REGISTRY_COMMANDS,
+  ...TERMINAL_CALLBACK_COMMANDS,
+  ...TERMINAL_PRINT_DATA_COMMANDS,
+  ...TERMINAL_PRINTF_DATA_COMMANDS,
+  ...TERMINAL_PRINTF_UNCHECKED_COMMANDS,
+  "mapfile -t -n1 lines < list",
+  "readarray -tn1 lines < list",
+  "mapfile -dC lines < list",
+  "readarray -d C lines < list",
+  "mapfile -- lines < list",
+  "mapfile lines",
+  "readarray lines",
+  "printf '%%n %s' PATH",
+  "printf -v 'values[0]' '%s' value",
   // The validator's accepted cases (terminal-run.test.ts).
   "echo 'a # b'",
   "echo \"#hash\"",
@@ -249,7 +273,7 @@ const MUTATIONS: ReadonlyArray<(command: string) => string> = [
 
 /** Heads that wait for terminal input, end or replace the shell, or signal it. */
 const NOT_RUN_HEADS: ReadonlySet<string> = new Set([
-  "read", "mapfile", "readarray", "vared", "exit", "logout", "bye", "kill", "suspend", "wait", "fg", "bg", "disown", "exec", "cat",
+  "read", "exit", "logout", "bye", "kill", "suspend", "wait", "fg", "bg", "disown", "cat",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -378,6 +402,7 @@ function makeRig(root: string, shimNames: ReadonlySet<string>): Rig {
   const calls = join(root, "calls");
   for (const dir of [box, shims, calls, join(box, "sub")]) mkdirSync(dir, { recursive: true });
   for (const file of ["a.txt", "x", "list"]) writeFileSync(join(box, file), "");
+  writeFileSync(join(box, "list"), "line\n");
   const shim = join(shims, ".shim");
   writeFileSync(shim, [
     "#!/bin/sh",
@@ -422,6 +447,20 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
   const trace = join(rig.root, `trace-${name}`);
   writeFileSync(trace, "");
   const { env } = installShellIntegration(home, shellPath, { nonce: NONCE, sandboxEnv: { HOME: home, XDG_CONFIG_HOME: join(home, "config") } });
+  // Every session starts as on an Ubuntu desktop, whatever the host: a
+  // command-not-found handler (Ubuntu's /etc/bash.bashrc defines one for
+  // bash) ahead of the integration. Its program records a call like a shim,
+  // so a handler that ever ran would show as a program the rules never saw.
+  const notFoundProgram = join(rig.root, `command-not-found-${name}`);
+  writeFileSync(notFoundProgram, [
+    "#!/bin/sh",
+    `f=$(/usr/bin/mktemp '${rig.calls}/call.XXXXXX') || exit 97`,
+    "printf '%s\\0' command-not-found \"$@\" > \"$f\"",
+    "exit 127",
+    "",
+  ].join("\n"), { mode: 0o755 });
+  const rc = join(home, name === "zsh" ? ".zshrc" : ".bash_profile");
+  writeFileSync(rc, ubuntuLikeNotFoundHandler(name, notFoundProgram) + readFileSync(rc, "utf-8"));
   const pty = nodePty.spawn(shellPath, ["-l", "-i"], {
     cwd: rig.box,
     cols: 200,
@@ -429,7 +468,12 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
     env: { PATH: "/usr/bin:/bin", HOME: home, TERM: "xterm-256color", LANG: TERMINAL_TEST_UTF8_LOCALE, ...env },
   });
   const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-  pty.onData((data) => { tracker.recordOutput(data); });
+  // The shell's latest output, for the report of a command that left it not ready.
+  let recentOutput = "";
+  pty.onData((data) => {
+    tracker.recordOutput(data);
+    recentOutput = (recentOutput + data).slice(-600);
+  });
   const exited = new Promise<void>((resolve) => pty.onExit(() => { tracker.recordExit(); resolve(); }));
   if (!await until(() => tracker.promptEndCount() > 0, 10_000)) throw new Error(`${name} did not start`);
   await sleep(100);
@@ -452,7 +496,7 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
     if (!typed.ok) {
       // The previous command left the shell not ready for the next one:
       // a failure of its own; clear the line and go on.
-      stuck.push(`${name}: ${JSON.stringify(previous)} left the shell ${typed.reason}`);
+      stuck.push(`${name}: ${JSON.stringify(previous)} left the shell ${typed.reason} (edit line ${JSON.stringify(tracker.editLineText())}; output ${JSON.stringify(recentOutput)})`);
       const prompts = tracker.promptEndCount();
       pty.write("\u0003");
       await until(() => tracker.promptEndCount() > prompts, 3_000);
@@ -472,6 +516,26 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
     await until(() => tracker.promptState() === "ready", 3_000);
     return { blockId: typed.firstBlockId, hung: false };
   };
+
+  // terminal_run types nothing while the handler is defined: it runs code for
+  // any word that is not a command. The user removes it for this terminal (a
+  // key they type, not a line terminal_run types), and the run goes on.
+  await until(() => tracker.promptState() !== "shell-starting", 3_000);
+  const refused = await typeLineAtPrompt({
+    blocks: tracker,
+    isLive: () => !tracker.hasExited(),
+    write: (data) => pty.write(data),
+    verify: async () => ({ ok: true, cwd: canonicalizePathForMatch(tracker.currentCwd() ?? "") }),
+    missing: "no terminal",
+  }, "true");
+  if (refused.ok || refused.reason !== "not-found-handler") {
+    throw new Error(`${name}: typing with a command-not-found handler defined was not refused (${JSON.stringify(refused)})`);
+  }
+  const beforeRemoval = tracker.promptEndCount();
+  pty.write(`${name === "zsh" ? "unfunction command_not_found_handler" : "unset -f command_not_found_handle"}\r`);
+  if (!await until(() => tracker.promptEndCount() > beforeRemoval && tracker.promptState() === "ready", 5_000)) {
+    throw new Error(`${name}: the prompt was not ready after the handler was removed (${tracker.promptState()})`);
+  }
 
   // Trace to a file, every program through the shims, in the sandbox. zsh
   // asks before `rm *` (rm_star_silent off) and waits for the user's y/n;
@@ -544,6 +608,26 @@ function hasBackgroundJob(command: string): boolean {
   return found(analysis.program);
 }
 
+/** Array reads run only with a known finite fixture file as standard input. */
+function hasUnboundedArrayRead(command: string): boolean {
+  const analysis = analyzeShell(command, "bash");
+  if (!analysis.ok) return true;
+  const found = (node: unknown): boolean => {
+    if (node === null || typeof node !== "object") return false;
+    if ((node as { kind?: unknown }).kind === "command") {
+      const simple = node as Extract<typeof analysis.program, { kind: "command" }>;
+      const argv = simple.words.map(staticShellWord);
+      if (commandStarts(argv).some((start) => argv[start] === "mapfile" || argv[start] === "readarray")) {
+        return argv.some((word) => word !== undefined && /^-[A-Za-z]*u/u.test(word))
+          || !simple.redirects.some((redirect) => redirect.effect === "read" && !redirect.descriptor
+          && redirect.target !== undefined && ["list", "a.txt", "/dev/null"].includes(staticShellWord(redirect.target) ?? ""));
+      }
+    }
+    return Object.values(node).some(found);
+  };
+  return found(analysis.program);
+}
+
 interface Plan {
   readonly candidates: number;
   readonly refused: number;
@@ -570,7 +654,7 @@ function plan(): Plan {
     if (shape.hidden.length > 0) hidden++;
     // A background job may run after the prompt returns, past the point its
     // records are read: not run, counted with the others.
-    if (hasBackgroundJob(command)) { notRun++; continue; }
+    if (hasBackgroundJob(command) || hasUnboundedArrayRead(command)) { notRun++; continue; }
     const commands = shape.commands.map((c) => c.argv);
     if (commands.some((argv) => commandStarts(argv).some((start) => NOT_RUN_HEADS.has(argv[start] ?? "")))) { notRun++; continue; }
     runs.push({ command, commands });
@@ -584,6 +668,109 @@ afterAll(() => {
 });
 
 describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated is what the shell runs", () => {
+  it("runs mixed formats and refuses unchecked numeric operands before typing", async () => {
+    const { runs } = plan();
+    for (const command of [...TERMINAL_PRINTF_DATA_COMMANDS, ...TERMINAL_PRINT_DATA_COMMANDS]) {
+      expect(runs.some((run) => run.command === command)).toBe(true);
+    }
+    for (const command of TERMINAL_PRINTF_UNCHECKED_COMMANDS) {
+      expect(terminalCommandTextProblem(command)).toBe("shell-state");
+      expect(runs.some((run) => run.command === command)).toBe(false);
+    }
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-printf-")));
+    opened.push(root);
+    for (const shellPath of SHELLS) {
+      const session = await openSession(shellPath, makeRig(join(root, basename(shellPath)), new Set()));
+      try {
+        for (const command of [...TERMINAL_PRINTF_DATA_COMMANDS, ...TERMINAL_PRINT_DATA_COMMANDS]) {
+          const shape = analyzeShellForRules(command);
+          expect(shape.ok).toBe(true);
+          if (!shape.ok) throw new Error("Expected a classified format command");
+          const outcome = await session.run(command);
+          expect(outcome.hung, command).toBe(false);
+          expect(outcome.recorded, command).toBe(command);
+          expect(outcome.executed.length, command).toBeGreaterThan(0);
+          for (const executed of outcome.executed) {
+            expect(shape.commands.some(({ argv }) => covers(argv, executed)), JSON.stringify({ command, executed })).toBe(true);
+          }
+        }
+        expect(session.stuck).toEqual([]);
+      } finally {
+        await session.close();
+      }
+    }
+  });
+
+  it("observes hidden arithmetic in mixed, repeated, positional and star operands", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-printf-arithmetic-")));
+    opened.push(root);
+    const commands = [
+      "printf '%s %d' hello 'printfProbe=7'",
+      "printf '%s %d' hello 42 world 'printfProbe=7'",
+      "printf '%d %% %s' 42 hello 'printfProbe=7' world",
+      "printf '%s %*s' hello 'printfProbe=7' world",
+      "printf '%s %.*s' hello 'printfProbe=7' world",
+      "printf '%s %*.*f' hello 8 2 1.25 world 9 3 'printfProbe=7'",
+      "printf '%s %d' $text 42 'printfProbe=7' 43",
+      "printf '%2$d %1$s' hello 'printfProbe=7'",
+      "printf '%2$*1$d' 8 'printfProbe=7'",
+      "print -rv'values[printfProbe=7]' changed",
+    ].map((command) => ({ command, problem: "shell-state" }));
+    commands.push(...[
+      "print -u 1 -f '%d' 'printfProbe=7'",
+      "builtin print -u 1 -f '%d' 'printfProbe=7'",
+      "print -C 1 -f '%d' 'printfProbe=7'",
+      "print -x 8 -f '%d' 'printfProbe=7'",
+      "print -X 8 -f '%d' 'printfProbe=7'",
+      "print -v output -f '%d' 'printfProbe=7'",
+      "print -Rf '%d' 'printfProbe=7'",
+    ].map((command) => ({ command, problem: "unchecked-construct" })));
+    for (const { command, problem } of commands) {
+      expect(terminalCommandTextProblem(command)).toBe(problem);
+      for (const shellPath of SHELLS) {
+        const result = spawnSync(shellPath, ["-fc", `printfProbe=0; text=; ${command}; printf '\\n%s' "$printfProbe"`], {
+          encoding: "utf-8",
+          cwd: root,
+          env: { ...process.env, HOME: root, ZDOTDIR: root, ENV: "", BASH_ENV: "", LC_ALL: TERMINAL_TEST_UTF8_LOCALE },
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        expect(result.stdout.endsWith(shellPath === ZSH ? "\n7" : "\n0"), JSON.stringify({ shellPath, command, stdout: result.stdout, stderr: result.stderr })).toBe(true);
+      }
+    }
+  });
+
+  it("observes protected destination writes from attached print targets", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-print-target-")));
+    opened.push(root);
+    for (const [command, expected] of [
+      ["print -rvPATH changed", "changed"],
+      ["print -nrvPATH changed", "changed"],
+      ["print -C1 -rvPATH changed", "changed\n"],
+      ["print -RvPATH changed", "changed"],
+    ] as const) {
+      expect(terminalCommandTextProblem(command)).toBe("shell-state");
+      const result = spawnSync(ZSH!, ["-fc", `PATH=original; ${command}; builtin printf '%s' "$PATH"`], {
+        encoding: "utf-8",
+        cwd: root,
+        env: { ...process.env, HOME: root, ZDOTDIR: root, ENV: "", BASH_ENV: "", LC_ALL: TERMINAL_TEST_UTF8_LOCALE },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(result.stdout, command).toBe(expected);
+    }
+  });
+
+  it("runs array reads only with finite fixture input", () => {
+    expect(hasUnboundedArrayRead("mapfile lines")).toBe(true);
+    expect(hasUnboundedArrayRead("readarray -t lines")).toBe(true);
+    expect(hasUnboundedArrayRead("builtin mapfile -t lines < list")).toBe(false);
+    expect(hasUnboundedArrayRead("command readarray lines < /dev/null")).toBe(false);
+    expect(hasUnboundedArrayRead("mapfile lines < /dev/tty")).toBe(true);
+    expect(hasUnboundedArrayRead("mapfile -u1 lines < list")).toBe(true);
+    expect(plan().runs.some(({ command }) => command === "mapfile -t -n1 lines < list")).toBe(true);
+  });
+
   it("runs no simple command, in zsh or bash, that the permission classifier did not evaluate", async () => {
     const { candidates, refused, unparsed, hidden, notRun, runs } = plan();
     const shimNames = new Set<string>(["rm", "touch", "sh", "bash", "zsh", "curl", "ls", "git", "make", "npm", "head", "wc", "tee", "diff", "env", "xargs", "sudo", "nohup", "which", "print", "repeat", "pwned", "id"]);

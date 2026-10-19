@@ -64,7 +64,8 @@
  * Pure: shared by the tool (before any approval is asked) and the PTY write
  * (which re-checks the characters it is handed).
  */
-import { analyzeShell, staticShellWord, type ShellRedirect, type ShellStatement, type ShellWord } from "./shell-analysis.js";
+import { analyzeShell, shellWordHasSingleField, staticShellWord, type ShellRedirect, type ShellStatement, type ShellWord } from "./shell-analysis.js";
+import { analyzeShellTestExpression } from "./shell-test-expression.js";
 
 /** Characters one command may hold — the length a block records (terminal-blocks.ts). */
 export const MAX_TERMINAL_COMMAND_CHARS = 4096;
@@ -109,15 +110,17 @@ const STATE_CHANGING_COMMAND_WORDS: ReadonlySet<string> = new Set([
   "alias", "unalias", "trap", "add-zsh-hook", "autoload", "setopt", "unsetopt", "shopt", "set", "bindkey",
   "zle", "unset", "unfunction", "functions", "enable", "disable", "hash", "source", ".", "exec",
   "eval", "emulate", "zmodload", "complete", "compdef", "bind", "umask", "ulimit", "limit", "unlimit", "sched",
-  "stty", "history",
+  "stty", "history", "compctl", "zstyle",
 ]);
+/** Builtins that evaluate code or arithmetic strings the shell analysis does not read. */
+const UNCHECKED_COMMAND_WORDS: ReadonlySet<string> = new Set(["zpty", "zregexparse", "zformat"]);
 /**
  * Builtins that assign the variables named by their arguments without
  * assignment syntax: `read NAME`, `mapfile NAME`, `getopts spec NAME`,
  * `printf -v NAME`. Every argument naming a variable is judged like the left
  * side of `NAME=value`.
  */
-const VARIABLE_SETTING_COMMAND_WORDS: ReadonlySet<string> = new Set(["read", "mapfile", "readarray", "getopts", "printf", "print"]);
+const VARIABLE_SETTING_COMMAND_WORDS: ReadonlySet<string> = new Set(["read", "mapfile", "readarray", "getopts", "printf", "zparseopts", "wait"]);
 /** Builtins that list the shell's variables or completions, or edit a variable in the line editor. */
 const INTROSPECTION_COMMAND_WORDS: ReadonlySet<string> = new Set(["compgen", "vared"]);
 /** Declaration builtins that list every variable (and its value) when given nothing to declare, or `-p`. */
@@ -127,7 +130,7 @@ const LISTING_DECLARATION_WORDS: ReadonlySet<string> = new Set(["export", "reado
  * Their values are the shell integration's (the prompt prints the B marker
  * of the moment); a command neither reads nor expands them.
  */
-const PROMPT_VARIABLE = /^\{?#?(?:PS[0-9]|PROMPT[0-9]?|RPROMPT[0-9]?|RPS[0-9]|PROMPT_COMMAND|(?:precmd|preexec|chpwd|periodic|zshaddhistory|zshexit)_functions|zle_[A-Za-z_]+|widgets)(?![A-Za-z0-9_])/u;
+const PROMPT_VARIABLE = /^\{?#?(?:PS[0-9]|SPROMPT|PROMPT[0-9]?|RPROMPT[0-9]?|RPS[0-9]|PROMPT_COMMAND|PROMPT_EOL_MARK|prompt|rprompt|(?:precmd|preexec|chpwd|periodic|zshaddhistory|zshexit|zsh_directory_name)_functions|zle_[A-Za-z_]+|widgets)(?![A-Za-z0-9_])/u;
 /** Wrappers that run their first non-option argument as a command in the shell itself. */
 const COMMAND_WRAPPERS: ReadonlySet<string> = new Set(["builtin", "command", "time"]);
 /** Declaration builtins whose `NAME=value` arguments assign in the shell itself. */
@@ -137,7 +140,9 @@ const DECLARATION_COMMAND_WORDS: ReadonlySet<string> = new Set(["export", "decla
  * through: prompt and hook variables, the command search path, word
  * splitting, and startup files.
  */
-const SHELL_STATE_VARIABLES = /^(?:PROMPT_COMMAND|PS[0-9]|PROMPT[0-9]?|RPROMPT[0-9]?|RPS[0-9]|(?:precmd|preexec|chpwd|periodic|zshaddhistory|zshexit)_functions|TRAP[A-Z]+|PATH|path|IFS|CDPATH|cdpath|FPATH|fpath|BASH_ENV|ENV|ZDOTDIR|HISTFILE|HISTCONTROL|HISTIGNORE|TMOUT|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|__ave_\w*)$/u;
+const SHELL_STATE_VARIABLES = /^(?:PROMPT_COMMAND|PROMPT_EOL_MARK|prompt|rprompt|PS[0-9]|SPROMPT|PROMPT[0-9]?|RPROMPT[0-9]?|RPS[0-9]|(?:precmd|preexec|chpwd|periodic|zshaddhistory|zshexit|zsh_directory_name)_functions|TRAP[A-Z]+|PATH|path|IFS|CDPATH|cdpath|FPATH|fpath|BASH_ENV|ENV|ZDOTDIR|HISTFILE|HISTCONTROL|HISTIGNORE|TMOUT|MAIL|MAILCHECK|MAILPATH|mailpath|PERIOD|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|__ave_\w*)$/u;
+/** Executable registries must not be changed, even by command-scoped assignments. */
+const EXECUTABLE_REGISTRY_VARIABLE = /^(?:(?:dis_)?(?:functions|functions_source|aliases|galiases|saliases|builtins|commands)|widgets|BASH_ALIASES|BASH_CMDS)$/u;
 const ASSIGNMENT_WORD = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=/u;
 
 /** The first reason `command` may not be typed into a terminal, or null when it may. */
@@ -343,6 +348,8 @@ function expansionProblem(command: string): TerminalCommandTextProblem | null {
     if (/^\{?[=+~^]/u.test(rest)) return "shell-divergent";
     if (/^\{[^{}]*@[A-Za-z]\}/u.test(rest)) return "shell-introspection";
     if (PROMPT_VARIABLE.test(rest)) return "shell-introspection";
+    const name = /^\{?#?([A-Za-z_][A-Za-z0-9_]*)/u.exec(rest)?.[1];
+    if (name && EXECUTABLE_REGISTRY_VARIABLE.test(name)) return "shell-introspection";
   }
   return null;
 }
@@ -386,6 +393,7 @@ function statementProblem(statement: ShellStatement): TerminalCommandTextProblem
       if (statement.redirects.some(zshRedirectTarget)) return "shell-divergent";
       return statementProblem(statement.body) ?? firstWordsProblem(statement.redirects.flatMap((r) => [r.target, r.data].filter((w): w is ShellWord => w !== undefined)));
     case "for":
+      if (SHELL_STATE_VARIABLES.test(statement.name) || EXECUTABLE_REGISTRY_VARIABLE.test(statement.name)) return "shell-state";
       if ((statement.values ?? []).some(startsWithEquals)) return "shell-divergent";
       return firstWordsProblem(statement.values ?? []) ?? statementProblem(statement.body);
     case "if":
@@ -415,7 +423,7 @@ function firstWordsProblem(words: readonly ShellWord[]): TerminalCommandTextProb
       } else if (part.kind === "parameter-choice") {
         const problem = firstWordsProblem([part.operand]);
         if (problem !== null) return problem;
-      } else if (part.kind === "unknown" && /\bExtGlob$/u.test(part.reason)) {
+      } else if (part.kind === "unknown" && (/\bExtGlob$/u.test(part.reason) || part.reason === "Unsupported arithmetic effects")) {
         return "unchecked-construct";
       }
     }
@@ -440,6 +448,7 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
   if (command.assignmentScope === "current" && command.assignments.some((a) => SHELL_STATE_VARIABLES.test(a.name))) {
     return "shell-state";
   }
+  if (command.assignments.some((a) => EXECUTABLE_REGISTRY_VARIABLE.test(a.name))) return "shell-state";
   const staticWords = command.words.map((word) => staticShellWord(word));
   const words = command.words.map((word, i) => staticWords[i] ?? word.source.raw);
   let index = 0;
@@ -456,12 +465,21 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
   // `command NAME=v cmd`: zsh assigns and runs cmd, bash runs a program named `NAME=v`.
   if (index > 0 && ASSIGNMENT_WORD.test(head)) return "shell-divergent";
   if (STATE_CHANGING_COMMAND_WORDS.has(head)) return "shell-state";
+  if (UNCHECKED_COMMAND_WORDS.has(head)) return "unchecked-construct";
   const args = words.slice(index + 1);
   const staticArgs = staticWords.slice(index + 1);
+  if (head === "print") return printOptionsProblem(staticArgs, command.words.slice(index + 1));
+  if (head === "test" || head === "[") {
+    const form = command.testForm ?? (head === "[" ? "bracket" : "test");
+    if (!analyzeShellTestExpression(form, command.words.slice(index), staticWords.slice(index), "bash").ok) return "unchecked-construct";
+  }
+  // The callback is evaluated as shell text, including when -C is attached
+  // or clustered after -t. Option operands such as -d C are only data.
+  if ((head === "mapfile" || head === "readarray") && hasUncheckedArrayReadOptions(args)) return "shell-state";
   if (INTROSPECTION_COMMAND_WORDS.has(head)) return "shell-introspection";
   // `print -P` and `echo -P` expand prompt escapes; `print -z` pushes onto
   // the line editor's buffer stack and `print -s`/`-S` onto the history.
-  if ((head === "print" || head === "echo") && leadingOptions(args).some((option) => /^-[A-Za-z]*[PzsS]/u.test(option))) {
+  if (head === "echo" && leadingOptions(args).some((option) => /^-[A-Za-z]*[PzsS]/u.test(option))) {
     return "shell-introspection";
   }
   // `export`, `readonly`, `integer`, `float` with nothing to declare, or with
@@ -472,27 +490,128 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
     const declares = command.assignments.length > 0 || options.length < args.length;
     if (!declares || options.some((option) => /^-[A-Za-z]*p/u.test(option))) return "shell-introspection";
   }
-  if (head === "printf" || head === "print") {
+  if (head === "printf") {
     // Only the `-v` operand names a variable; an option taken from a
     // variable could be `-v` itself.
     if (staticArgs[0] === undefined && args.length > 0) return "shell-state";
     const v = args.findIndex((arg, i) => i < leadingOptions(args).length && /^-[A-Za-z]*v$/u.test(arg));
     if (v >= 0 && staticArgs[v + 1] === undefined) return "shell-state";
+    if (hasUncheckedPrintfFormat(staticArgs, command.words.slice(index + 1))) return "shell-state";
   } else if (VARIABLE_SETTING_COMMAND_WORDS.has(head) || DECLARATION_COMMAND_WORDS.has(head)) {
     // A variable name only known at run time could be any of them.
     if (staticArgs.some((word) => word === undefined)) return "shell-state";
   }
   if (VARIABLE_SETTING_COMMAND_WORDS.has(head)) {
-    return assignedVariableNames(head, words.slice(index + 1)).some((name) => SHELL_STATE_VARIABLES.test(name)) ? "shell-state" : null;
+    return assignedVariableNames(head, args).some(isUnsafeAssignedVariableName) ? "shell-state" : null;
   }
   if (DECLARATION_COMMAND_WORDS.has(head)) {
     for (const argument of words.slice(index + 1)) {
       const name = ASSIGNMENT_WORD.exec(argument)?.[1] ?? (/^-/u.test(argument) ? undefined : argument);
-      if (name !== undefined && SHELL_STATE_VARIABLES.test(name)) return "shell-state";
+      if (name !== undefined && (SHELL_STATE_VARIABLES.test(name) || EXECUTABLE_REGISTRY_VARIABLE.test(name))) return "shell-state";
       if (/^-[A-Za-z]*f/u.test(argument)) return "shell-state";
     }
   }
   return null;
+}
+
+/** Read the options before the array operand, consuming each option's own argument. */
+function hasUncheckedArrayReadOptions(args: readonly string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--" || arg === "-" || !arg.startsWith("-")) break;
+    for (let j = 1; j < arg.length; j++) {
+      const option = arg[j]!;
+      if (option === "C") return true;
+      if (option === "t") continue;
+      if (!"dnOsuc".includes(option)) return true;
+      if (j === arg.length - 1) i++;
+      break;
+    }
+  }
+  return false;
+}
+
+/** Read option operands before judging formatted output or prompt/history effects. */
+function printOptionsProblem(args: readonly (string | undefined)[], words: readonly ShellWord[]): TerminalCommandTextProblem | null {
+  let echoOptions = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    // The restricted mode applies to later words, not the rest of this cluster.
+    if (echoOptions && (arg === undefined || !/^-[en]+$/u.test(arg))) break;
+    if (arg === undefined) return "shell-state";
+    if (arg === "--" || arg === "-" || !arg.startsWith("-")) break;
+    for (let offset = 1; offset < arg.length; offset++) {
+      const option = arg[offset]!;
+      if (option === "f") return "unchecked-construct";
+      if ("PzsS".includes(option)) return "shell-introspection";
+      if (option === "R") { echoOptions = true; continue; }
+      if ("uCvxX".includes(option)) {
+        let operand: string | undefined = arg.slice(offset + 1);
+        if (offset === arg.length - 1) {
+          index++;
+          if (index >= args.length || !shellWordHasSingleField(words[index]!)) return "shell-state";
+          operand = args[index];
+        }
+        if (option === "v" && (operand === undefined || isUnsafeAssignedVariableName(operand))) return "shell-state";
+        break;
+      }
+      if (!"abcDeilmnNoOpr".includes(option)) return "unchecked-construct";
+    }
+  }
+  return null;
+}
+
+function isUnsafeAssignedVariableName(name: string): boolean {
+  // Subscripts are arithmetic, even when the name was single quoted:
+  // assigning values[$(cmd)] runs cmd inside the builtin itself.
+  if (/[\[\]$`]/u.test(name.replace(/\[[0-9]+\]$/u, ""))) return true;
+  const base = name.split("[")[0]!;
+  return SHELL_STATE_VARIABLES.test(base) || EXECUTABLE_REGISTRY_VARIABLE.test(base);
+}
+
+/** Formats may assign with %n or evaluate numeric operands as arithmetic. */
+function hasUncheckedPrintfFormat(args: readonly (string | undefined)[], words: readonly ShellWord[]): boolean {
+  let index = 0;
+  while (index < args.length) {
+    const arg = args[index];
+    if (arg === undefined) return true;
+    if (arg === "--") { index++; break; }
+    if (arg === "-v") { index += 2; continue; }
+    if (arg.startsWith("-v")) { index++; continue; }
+    break;
+  }
+  if (index === args.length) return false;
+  const format = args[index];
+  if (format === undefined) return true;
+  const operands: Array<"field" | "number" | "text"> = [];
+  for (let offset = 0; offset < format.length; offset++) {
+    if (format[offset] !== "%") continue;
+    if (format[offset + 1] === "%") { offset++; continue; }
+    // Positional operands and extensions with another format grammar are not
+    // shared by both shells. Unknown or unfinished directives fail closed.
+    const directive = /^%[-+ #0']*(\*|[0-9]+)?(?:\.(\*|[0-9]*))?[hlL]?([diouxXeEfFgGaAbcsqn])/u.exec(format.slice(offset));
+    if (directive === null || directive[3] === "n") return true;
+    if (directive[1] === "*") operands.push("field");
+    if (directive[2] === "*") operands.push("field");
+    operands.push(/[diouxXeEfFgGaA]/u.test(directive[3]!) ? "number" : "text");
+    offset += directive[0].length - 1;
+  }
+  if (operands.every((operand) => operand === "text")) return false;
+  for (let argument = index + 1; argument < args.length; argument++) {
+    // Splitting or removing a text operand could shift later data into a
+    // numeric slot. The format repeats while surplus arguments remain.
+    if (!shellWordHasSingleField(words[argument]!)) return true;
+    const operand = operands[(argument - index - 1) % operands.length];
+    if (operand === "text") continue;
+    const value = args[argument];
+    if (value === undefined) return true;
+    // Width and precision use arithmetic directly; only conversion operands
+    // share the quote-prefixed character literal form in both shells.
+    if (operand === "field") {
+      if (!/^[+-]?(?:0[xX][\da-fA-F]+|[0-9]+)$/u.test(value)) return true;
+    } else if (!/^(?:['"][\s\S]*|[+-]?(?:0[xX][\da-fA-F]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?))$/u.test(value)) return true;
+  }
+  return false;
 }
 
 /** The leading option words of a builtin's arguments, up to `--` or the first operand. */
@@ -514,8 +633,8 @@ function leadingOptions(args: readonly string[]): string[] {
  * second and later words.
  */
 function assignedVariableNames(head: string, args: readonly string[]): string[] {
-  const nameOf = (word: string): string => word.replace(/^-[A-Za-z]*/u, "").split(/[?[]/u)[0]!;
-  if (head === "printf" || head === "print") {
+  const nameOf = (word: string): string => word.replace(/^-[A-Za-z]*/u, "").split("?")[0]!;
+  if (head === "printf") {
     const names: string[] = [];
     for (let i = 0; i < args.length; i++) {
       const arg = args[i]!;
@@ -523,8 +642,13 @@ function assignedVariableNames(head: string, args: readonly string[]): string[] 
       if (/^-[A-Za-z]*v$/u.test(arg) && args[i + 1] !== undefined) names.push(args[i + 1]!);
       else if (/^-v./u.test(arg)) names.push(arg.slice(2));
     }
-    return names;
+    return names.map(nameOf);
   }
   if (head === "getopts") return args.slice(1).map(nameOf);
+  if (head === "wait") return args.flatMap((arg, index) => {
+    const target = /^-[nf]*p(.*)$/u.exec(arg)?.[1];
+    return target === undefined ? [] : [target || args[index + 1] || ""];
+  });
+  if (head === "zparseopts") return args.map((arg) => arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : nameOf(arg));
   return args.map(nameOf);
 }

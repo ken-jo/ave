@@ -831,21 +831,10 @@ function windowsLoopbackLaunchLine(
  *
  *  - WRITE is a real jail, and what THIS SPAWN puts into it is `envelope.write`
  *    plus the throwaway sandbox HOME — no other path is added on this path.
- *    THE CHILD'S ALLOW SET IS LARGER THAN THAT, and not by this spawn's
- *    choice: ASRT composes the write allow-list as
- *    `[...getDefaultWritePaths(), ...userAllowWrite]`, so its own defaults —
- *    the `/dev` entries, `/tmp/claude`, `/private/tmp/claude`,
- *    `<real home>/.npm/_logs`, `<real home>/.claude/debug` — are merged into
- *    every wrap and no argument here removes them. Measured on macOS/arm64
- *    with the sandbox active: a child spawned by this function wrote into all
- *    four of the non-`/dev` paths and the host read the bytes back. Those
- *    paths are per-machine rather than per-plugin, so two confined children
- *    share them. Axis 6 of the admission record (the history of
- *    `out-of-process-plugins.ts` before §9.8 A1 retired its census) carries
- *    the full record, including what closing it would take and why that is
- *    not done here.
- *    Everything below is about the host's decision — which paths THIS SPAWN
- *    grants — rather than about the kernel's final set.
+ *    The runtime adds only device write defaults. All other write roots come
+ *    from host policy, including the principal temp directory added by the
+ *    confinement primitive. Shared temporary and cache paths get no implicit
+ *    grant. The same scope is measured by `confined-plugin-child.test.ts`.
  *    What the host does NOT put in it is `pluginRoot`. A value under this
  *    plugin's bundle root, a value under a SIBLING's bundle under the same
  *    install root, and a value under a bundle root that is itself a symlink out

@@ -20,7 +20,7 @@
  *  - Anything else: no reading, and callers refuse (they never assume).
  */
 import { execFile } from "node:child_process";
-import { readFile, readlink } from "node:fs/promises";
+import { readFile, readlink, readdir } from "node:fs/promises";
 import { basename } from "node:path";
 
 interface TerminalForeground {
@@ -64,6 +64,11 @@ async function readLinux(ptyPid: number): Promise<TerminalForegroundReading> {
   if (!(leader.tpgid > 0)) return { ok: false, reason: "the terminal has no foreground process" };
   const foreground = await linuxStat(leader.tpgid);
   if (foreground.ttyNr !== leader.ttyNr) return { ok: false, reason: "the foreground process is on another terminal" };
+  // Check every task: a child can be owned by a non-leader thread.
+  for (const task of leader.tpgid === ptyPid ? await readdir(`/proc/${ptyPid}/task`) : []) {
+    const children = await readFile(`/proc/${ptyPid}/task/${task}/children`, "utf-8");
+    if (children.trim()) return { ok: false, reason: "the terminal shell has child processes" };
+  }
   const command = programName(await readFile(`/proc/${leader.tpgid}/comm`, "utf-8"));
   const cwd = await readlink(`/proc/${leader.tpgid}/cwd`);
   return { ok: true, foreground: { pid: leader.tpgid, command, cwd } };
@@ -75,6 +80,10 @@ async function readDarwin(ptyPid: number): Promise<TerminalForegroundReading> {
   if (!ttyRaw || !(tpgid > 0)) return { ok: false, reason: "the terminal has no foreground process" };
   const [fgTty, ...commParts] = (await run("/bin/ps", ["-o", "tty=,comm=", "-p", String(tpgid)])).trim().split(/\s+/u);
   if (fgTty !== ttyRaw) return { ok: false, reason: "the foreground process is on another terminal" };
+  const table = await run("/bin/ps", ["-axo", "ppid="]);
+  if (tpgid === ptyPid && table.split(/\s+/u).some((parent) => Number(parent) === ptyPid)) {
+    return { ok: false, reason: "the terminal shell has child processes" };
+  }
   const command = programName(commParts.join(" "));
   // `-Fn`: one `n<path>` line for the cwd descriptor; `-a` ANDs the filters.
   const listing = await run("/usr/sbin/lsof", ["-a", "-n", "-P", "-w", "-p", String(tpgid), "-d", "cwd", "-Fn"]);
