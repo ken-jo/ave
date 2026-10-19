@@ -600,6 +600,9 @@ function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContent
      */
     watch(method: string, params: Record<string, unknown> | undefined): { settle(): Promise<void> } | null {
       if (method !== "Input.dispatchMouseEvent" || params?.type !== "mouseMoved") return null;
+      // Each pointer move measures afresh: an echo that never comes must
+      // leave no earlier offset behind for the press that follows.
+      offset = null;
       const point = { x: params.x, y: params.y };
       let onInput: ((event: unknown, input: PointerEcho) => void) | undefined;
       const echo = new Promise<PointerEcho | null>((resolve) => {

@@ -761,6 +761,7 @@ function adapterFixture(options: { hostKnown?: boolean } = {}) {
   cdp.nodes = page([ax("f", "textbox", "Replacement", { backendDOMNodeId: 5 })]);
   cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { value: true } }] };
   let attached = false;
+  const echo = { on: true };
   const guestEvents = new EventEmitter();
   const debuggerEvents = Object.assign(new EventEmitter(), {
     attach: () => { attached = true; },
@@ -768,7 +769,7 @@ function adapterFixture(options: { hostKnown?: boolean } = {}) {
     sendCommand: async (method: string, params?: Record<string, unknown>) => {
       const result = await cdp.send(method, params);
       // The native echo of a pointer move: the page point and its screen point.
-      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved") {
+      if (echo.on && method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved") {
         const x = params.x as number;
         const y = params.y as number;
         guestEvents.emit("input-event", {}, {
@@ -806,7 +807,7 @@ function adapterFixture(options: { hostKnown?: boolean } = {}) {
       approval: { tabId: tab.handle, origin: scope.origin, documentId: scope.documentId },
     } as unknown as Parameters<typeof actions.pressKey>[0];
   };
-  return { cdp, guest, registry, tab, actions, approve, tool, navigate: (next: string) => {
+  return { cdp, guest, registry, tab, actions, approve, tool, echo, navigate: (next: string) => {
     url = next;
     cdp.frameTree.frame = { ...cdp.frameTree.frame, url, loaderId: "loader-2" };
     registry.navigationStarted(guest.id, url);
@@ -885,6 +886,24 @@ describe("tap placement", () => {
     const hit = cdp.calls.find((call) => call.method === "DOM.getNodeForLocation")!.params!;
     expect([hit.x, hit.y]).toEqual([(move.x as number) + 236, (move.y as number) + 40]);
   });
+
+  it("never presses at an earlier measurement when a later pointer move gets no echo", async () => {
+    const { cdp, actions, approve, echo } = adapterFixture();
+    cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5, value: { type: "string", value: "" } })]);
+    // The page never reports focus, so typing presses again; only the first
+    // pointer move is echoed.
+    cdp.focusLag = Number.POSITIVE_INFINITY;
+    const live = await approve("browser_type");
+    const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)![1]!;
+    let moves = 0;
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved" && ++moves > 1) echo.on = false;
+      return send(method, params);
+    });
+    await expect(actions.type(live, ref, "Ada", {})).rejects.toMatchObject({ code: "no-pointer-position" });
+    expect(cdp.calls.filter((call) => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchStart")).toHaveLength(1);
+  }, 10_000);
 
   it("refuses to press when the page's place in its window is unknown", async () => {
     const { cdp, run } = await clickLink({ hostKnown: false });
