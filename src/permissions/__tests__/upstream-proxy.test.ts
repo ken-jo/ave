@@ -5,6 +5,7 @@ import {
   describeUpstreamProxy,
   environmentProxyConfigured,
   environmentProxyFor,
+  limitConcurrency,
   parseProxyUrl,
   parseStoredProxyCredentials,
   upstreamRoutesFor,
@@ -91,19 +92,46 @@ describe("environment proxy (curl order, both cases)", () => {
     expect(environmentProxyConfigured({ HTTPS_PROXY: "" })).toBe(false);
   });
 
-  it("matches NO_PROXY like ASRT: suffix with domain boundary, leading dot, *, IPs, CIDR, ports ignored, loopback always", () => {
-    expect(bypassesProxy("example.com", "example.com")).toBe(true);
-    expect(bypassesProxy("example.com", "api.example.com")).toBe(true);
-    expect(bypassesProxy("example.com", "notexample.com")).toBe(false);
-    expect(bypassesProxy(".example.com", "example.com")).toBe(true);
-    expect(bypassesProxy("*.example.com", "a.example.com")).toBe(true);
-    expect(bypassesProxy("intranet:8080", "intranet")).toBe(true);
-    expect(bypassesProxy("10.0.0.0/8", "10.1.2.3")).toBe(true);
-    expect(bypassesProxy("192.0.2.7", "192.0.2.7")).toBe(true);
-    expect(bypassesProxy("[2001:db8::1]", "2001:db8::1")).toBe(true);
-    expect(bypassesProxy("*", "anything.test")).toBe(true);
-    expect(bypassesProxy("", "127.0.0.1")).toBe(true);
-    expect(bypassesProxy("", "example.com")).toBe(false);
+  it("matches NO_PROXY in curl's semantics: suffix at a dot boundary, leading and trailing dots ignored, *, IPs, CIDR", () => {
+    expect(bypassesProxy("example.com", "example.com", 443)).toBe(true);
+    expect(bypassesProxy("example.com", "api.example.com", 443)).toBe(true);
+    expect(bypassesProxy("example.com", "notexample.com", 443)).toBe(false);
+    expect(bypassesProxy(".example.com", "example.com", 443)).toBe(true);
+    expect(bypassesProxy("*.example.com", "a.example.com", 443)).toBe(true);
+    // A trailing dot on the entry or on the host is the same name.
+    expect(bypassesProxy("example.com.", "example.com", 443)).toBe(true);
+    expect(bypassesProxy("example.com.", "api.example.com", 443)).toBe(true);
+    expect(bypassesProxy("example.com", "example.com.", 443)).toBe(true);
+    expect(bypassesProxy("10.0.0.0/8", "10.1.2.3", 443)).toBe(true);
+    expect(bypassesProxy("10.0.0.0/8", "11.1.2.3", 443)).toBe(false);
+    expect(bypassesProxy("2001:db8::/32", "2001:db8::5", 443)).toBe(true);
+    expect(bypassesProxy("192.0.2.7", "192.0.2.7", 443)).toBe(true);
+    expect(bypassesProxy("[2001:db8::1]", "2001:db8::1", 443)).toBe(true);
+    // An address entry never matches a name, and a name entry never an address.
+    expect(bypassesProxy("192.0.2.7", "192.0.2.7.example", 443)).toBe(false);
+    expect(bypassesProxy("example.com", "192.0.2.7", 443)).toBe(false);
+    // Blanks separate entries as well as commas; a malformed entry is ignored.
+    expect(bypassesProxy("a.test b.test,,  c.test", "b.test", 443)).toBe(true);
+    expect(bypassesProxy("10.0.0.0/99, bad host", "10.1.2.3", 443)).toBe(false);
+    expect(bypassesProxy("*", "anything.test", 443)).toBe(true);
+    expect(bypassesProxy("a.test, *", "anything.test", 443)).toBe(true);
+    expect(bypassesProxy("", "127.0.0.1", 443)).toBe(true);
+    expect(bypassesProxy("", "localhost", 443)).toBe(true);
+    expect(bypassesProxy("", "example.com", 443)).toBe(false);
+  });
+
+  it("matches a NO_PROXY entry with a port on that port only", () => {
+    expect(bypassesProxy("intranet:8080", "intranet", 8080)).toBe(true);
+    expect(bypassesProxy("intranet:8080", "intranet", 443)).toBe(false);
+    expect(bypassesProxy("example.com:8443", "api.example.com", 8443)).toBe(true);
+    expect(bypassesProxy("example.com:8443", "api.example.com", 443)).toBe(false);
+    expect(bypassesProxy("192.0.2.7:80", "192.0.2.7", 80)).toBe(true);
+    expect(bypassesProxy("192.0.2.7:80", "192.0.2.7", 443)).toBe(false);
+    expect(bypassesProxy("[2001:db8::1]:8080", "2001:db8::1", 8080)).toBe(true);
+    expect(bypassesProxy("[2001:db8::1]:8080", "2001:db8::1", 80)).toBe(false);
+    // A bare IPv6 entry's last group is not a port.
+    expect(bypassesProxy("2001:db8::80", "2001:db8::80", 443)).toBe(true);
+    expect(bypassesProxy("intranet:0, intranet:70000", "intranet", 443)).toBe(false);
   });
 });
 
@@ -128,6 +156,20 @@ describe("upstreamRoutesFor", () => {
     // No variable for plain HTTP: direct, as curl does — never the OS settings.
     expect(await upstreamRoutesFor(d, http("example.com"))).toMatchObject({ routes: [{ kind: "direct" }], source: "environment" });
     expect(resolveProxy).not.toHaveBeenCalled();
+  });
+
+  it("never trusts a proxy from the OS settings or PAC to resolve names, even with the opt-in on", async () => {
+    const d = deps({ resolveProxy: async () => "PROXY 127.0.0.1:3128", settings: { resolvesNames: true } });
+    expect((await upstreamRoutesFor(d, https("example.com"))).routes).toEqual([{ kind: "http", host: "127.0.0.1", port: 3128 }]);
+    // The opt-in still covers a proxy the person named (manual or environment).
+    const manual = deps({ settings: { mode: "manual", manualUrl: "http://127.0.0.1:3128", resolvesNames: true } });
+    expect((await upstreamRoutesFor(manual, https("example.com"))).routes).toEqual([{ kind: "http", host: "127.0.0.1", port: 3128, resolvesNames: true }]);
+  });
+
+  it("honours a NO_PROXY port: a bypass for one port leaves the others on the proxy", async () => {
+    const d = deps({ envVars: { HTTPS_PROXY: "http://proxy.test:3128", NO_PROXY: "git.internal.test:8443" } });
+    expect(await upstreamRoutesFor(d, https("git.internal.test", 8443))).toMatchObject({ routes: [{ kind: "direct" }], source: "environment-bypass" });
+    expect(await upstreamRoutesFor(d, https("git.internal.test", 443))).toMatchObject({ routes: [{ kind: "http", host: "proxy.test", port: 3128 }], source: "environment" });
   });
 
   it("system with a SOCKS environment proxy: refused with the reason, not direct", async () => {
@@ -275,6 +317,54 @@ describe("createUpstreamProxyRouter", () => {
       host: "example.com", port: 443, source: "system",
       skipped: ["SOCKS5 s:1 (a SOCKS proxy, which the sandbox cannot use as an upstream)"],
     });
+  });
+});
+
+describe("limitConcurrency (resolveProxy calls)", () => {
+  it("runs at most `max` at once, queues the rest in order, and refuses beyond the queue", async () => {
+    let active = 0;
+    let peak = 0;
+    const releases: Array<() => void> = [];
+    const started: number[] = [];
+    const limited = limitConcurrency(async (n: number) => {
+      started.push(n);
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      active -= 1;
+      return n * 10;
+    }, 2, 2);
+    const results = [1, 2, 3, 4].map((n) => limited(n));
+    await expect(limited(5)).rejects.toThrow("too many proxy lookups waiting");
+    await Promise.resolve();
+    expect(started).toEqual([1, 2]);
+    while (releases.length > 0 || started.length < 4) {
+      releases.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(await Promise.all(results)).toEqual([10, 20, 30, 40]);
+    expect(started).toEqual([1, 2, 3, 4]);
+    expect(peak).toBe(2);
+  });
+
+  it("caps the router's concurrent resolveProxy calls across distinct destinations", async () => {
+    let active = 0;
+    let peak = 0;
+    const router = createUpstreamProxyRouter({
+      settings: () => ({ ...DEFAULT_UPSTREAM_PROXY }),
+      manualCredentials: () => null,
+      env: () => ({}),
+      maxConcurrentResolves: 3,
+      resolveProxy: async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+        return "DIRECT";
+      },
+    });
+    await Promise.all(Array.from({ length: 12 }, (_, i) => router.router({ host: `h${i}.example.test`, port: 443, scheme: "https" })));
+    expect(peak).toBe(3);
   });
 });
 

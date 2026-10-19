@@ -2000,14 +2000,17 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   기록, `settings:update` 는 거절, 수동 자격 증명은 비밀 저장소에 프록시의
   `scheme://host:port` 에 묶어 두어 그곳에만 보내고, URL 이 다른 origin 으로 바뀌면 알림과 함께 삭제)다. 기본값
   "시스템 설정 사용"은 앱 프로세스의 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/
-  `NO_PROXY`(대소문자, curl 순서)가 있으면 그것을, 없으면 Chromium
+  `NO_PROXY`(대소문자, curl 순서; `NO_PROXY` 와 수동 우회 목록은 curl 규칙에 더해
+  `host:port` 항목이면 그 포트만 우회)가 있으면 그것을, 없으면 Chromium
   `session.resolveProxy`(OS 설정·PAC·WPAD)를 따른다. PAC 는 목적지마다 다른
   목록을 줄 수 있으므로 carried patch part 4 가 정적 `parentProxy` 대신 목적지별
   route hook(`SandboxManager.setParentProxyRouter`, 구현은
   `src/permissions/upstream-proxy.ts`)을 묻고, 각 경로를 위 규칙대로 판정한 뒤
   순서대로 시도한다. 다음 경로로 넘어가는 것은 연결 실패뿐이며, upstream 의
   HTTP 응답(403·5xx 등)은 최종 거절이라 다음 프록시나 DIRECT 로 우회하지 않는다. 407 은 "upstream proxy requires authentication" 으로
-  거절하고(NTLM/Kerberos 는 cntlm·px 같은 로컬 도우미 + `resolvesNames`),
+  거절하고(NTLM/Kerberos 는 cntlm·px 같은 로컬 도우미 + `resolvesNames`; 이 신뢰
+  설정은 설정이나 환경 변수로 지정한 프록시에만 적용되고 PAC·WPAD 답의 프록시에는
+  적용되지 않는다), `resolveProxy` 는 동시에 최대 4 개만 평가하며,
   SOCKS 항목은 `egress-route` 감사 행과 함께 건너뛴다. 답은 (scheme, host,
   port)별 45 초 캐시이며 설정 변경 시 즉시 비우고 열린 샌드박스 연결(직접 연결 포함)을
   모두 닫아, 재시작 없이 적용되고 이전 설정으로 열린 터널이 남지 않는다. 샌드박스

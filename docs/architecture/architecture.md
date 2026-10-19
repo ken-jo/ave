@@ -1434,7 +1434,8 @@ only through the permissions `upstreamProxySet` channel, refused by
 the secret store, bound to the proxy's `scheme://host:port`: sent only to it,
 and removed, with a notice, when the URL changes to another origin). "Use system settings" (the default) takes the app
 process's own `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY` (either case,
-curl's order) when any is set, and otherwise the OS configuration through
+curl's order; `NO_PROXY` and the manual bypass list follow curl's matcher, plus
+`host:port` entries that bypass that port only) when any is set, and otherwise the OS configuration through
 Chromium's `session.resolveProxy` (macOS system settings, Windows
 WinINET/WinHTTP, Linux environment/GNOME/KDE, PAC and WPAD); "Manual" is a
 URL plus a bypass list; "Off" is direct. Because a PAC script can answer
@@ -1453,7 +1454,10 @@ upstream is final (a 403 or 5xx refuses with "upstream proxy refused the
 connection (HTTP <status>)"; a later proxy or DIRECT never carries what it
 refused). A 407 refuses with "upstream proxy requires authentication" (Basic
 credentials from a `user:pass@` URL are sent; NTLM/Kerberos need a local
-helper such as cntlm or px plus the `resolvesNames` opt-in). SOCKS entries
+helper such as cntlm or px plus the `resolvesNames` opt-in, which covers a
+proxy named in Settings or the environment and never one a PAC or WPAD answer
+names, since that answer is network input). `resolveProxy` runs at most four
+evaluations at once. SOCKS entries
 are skipped with an `egress-route` audit row (ASRT has no SOCKS client); an
 answer with nothing usable refuses, never falls back to direct. Answers are
 cached per (scheme, host, port) for 45 s (Electron has no proxy-change

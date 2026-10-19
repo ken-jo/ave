@@ -40,13 +40,13 @@
  * Ave's per-invocation proxy), not to logs or audit rows, not to the renderer
  * (Settings sees whether credentials are sent, never the values).
  */
+import { BlockList, isIP } from "node:net";
 import {
   canonicalizeHost,
   formatAuthority,
   isValidHost,
-  parseNoProxy,
-  shouldBypassParentProxy,
 } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
+import { isLoopbackAddress } from "@anthropic-ai/sandbox-runtime/dist/sandbox/address.js";
 import type { ParentProxyRoute, ParentProxyRouter } from "@anthropic-ai/sandbox-runtime";
 import { parsePacAnswer } from "../shared/pac-proxy.js";
 import {
@@ -155,9 +155,86 @@ function environmentNoProxy(env: NodeJS.ProcessEnv): string {
   return envValue(env, "no_proxy") ?? envValue(env, "NO_PROXY") ?? "";
 }
 
-/** Whether `host` is on a NO_PROXY-style list, by ASRT's own matcher (suffix, leading dot, `*`, CIDR; loopback always). */
-export function bypassesProxy(list: string, host: string): boolean {
-  return shouldBypassParentProxy({ noProxy: parseNoProxy(list) }, host);
+/** One NO_PROXY entry, parsed. */
+type BypassEntry =
+  | { kind: "all" }
+  | { kind: "name"; name: string; port?: number }
+  | { kind: "address"; block: BlockList; port?: number };
+
+function addressBlock(address: string, prefix?: number): BlockList | undefined {
+  const family = isIP(address);
+  if (family === 0) return undefined;
+  const type = family === 4 ? "ipv4" : "ipv6";
+  const max = family === 4 ? 32 : 128;
+  const bits = prefix ?? max;
+  if (!Number.isInteger(bits) || bits < 0 || bits > max) return undefined;
+  const block = new BlockList();
+  block.addSubnet(address, bits, type);
+  return block;
+}
+
+function parseBypassEntry(raw: string): BypassEntry | undefined {
+  let entry = raw.toLowerCase();
+  if (entry === "*") return { kind: "all" };
+  // CIDR (curl 7.86+): `10.0.0.0/8`, `2001:db8::/32`, never with a port.
+  const slash = entry.indexOf("/");
+  if (slash !== -1) {
+    const prefix = entry.slice(slash + 1);
+    if (!/^\d{1,3}$/u.test(prefix)) return undefined;
+    const block = addressBlock(entry.slice(0, slash).replace(/^\[|\]$/gu, ""), Number(prefix));
+    return block === undefined ? undefined : { kind: "address", block };
+  }
+  // A port narrows the entry to that port (`host:8080`, `[v6]:8080`,
+  // `192.0.2.1:8080`); curl has no port form and would never match such an
+  // entry, Go and Python match it on that port only, which is what it says.
+  let port: number | undefined;
+  const bracketed = /^\[([^\]]+)\](?::(\d{1,5}))?$/u.exec(entry);
+  if (bracketed) {
+    entry = bracketed[1]!;
+    if (bracketed[2] !== undefined) port = Number(bracketed[2]);
+  } else if (isIP(entry) === 0) {
+    const withPort = /^(.*):(\d{1,5})$/u.exec(entry);
+    if (withPort) {
+      entry = withPort[1]!;
+      port = Number(withPort[2]);
+    }
+  }
+  if (port !== undefined && (port < 1 || port > 65535)) return undefined;
+  const block = addressBlock(entry);
+  if (block !== undefined) return { kind: "address", block, ...(port !== undefined ? { port } : {}) };
+  // A name: curl ignores a leading and a trailing dot (`*.` is the same as a
+  // leading dot here); it then matches the name and every name under it.
+  const name = entry.replace(/^\*\./u, ".").replace(/^\./u, "").replace(/\.$/u, "");
+  if (name.length === 0 || !isValidHost(name)) return undefined;
+  return { kind: "name", name, ...(port !== undefined ? { port } : {}) };
+}
+
+/**
+ * Whether `host:port` is on a NO_PROXY-style list, in curl's semantics:
+ * entries separated by commas or blanks; `*` matches everything; a name
+ * matches itself and every name under it at a dot boundary (a leading dot,
+ * `*.` and a trailing dot on either side are ignored); an IP address matches
+ * that address and a CIDR range its addresses, for an address destination
+ * only. An entry with a port (`example.com:8080`) matches only that port.
+ * This host's loopback always bypasses.
+ */
+export function bypassesProxy(list: string, host: string, port: number): boolean {
+  const bare = host.replace(/^\[|\]$/gu, "").toLowerCase().replace(/\.$/u, "");
+  if (bare === "localhost" || isLoopbackAddress(bare)) return true;
+  const family = isIP(bare);
+  for (const raw of list.split(/[\s,]+/u)) {
+    if (raw.length === 0) continue;
+    const entry = parseBypassEntry(raw);
+    if (entry === undefined) continue;
+    if (entry.kind === "all") return true;
+    if (entry.port !== undefined && entry.port !== port) continue;
+    if (entry.kind === "address") {
+      if (family !== 0 && entry.block.check(bare, family === 4 ? "ipv4" : "ipv6")) return true;
+    } else if (family === 0 && (bare === entry.name || bare.endsWith(`.${entry.name}`))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** One destination's routes, with what Settings shows about them. */
@@ -188,6 +265,46 @@ export interface UpstreamProxyRouterDeps {
   ttlMs?: number;
   /** At most this many destinations are cached. Default 512. */
   maxEntries?: number;
+  /** At most this many `resolveProxy` calls run at once; more wait. Default 4. */
+  maxConcurrentResolves?: number;
+  /** At most this many wait; beyond that a lookup fails (transient, not cached). Default 256. */
+  maxQueuedResolves?: number;
+}
+
+/**
+ * `fn` with at most `max` calls in flight and at most `maxQueued` waiting;
+ * a call beyond that rejects at once. Each PAC evaluation can run the
+ * script's own DNS lookups, so a burst of new destinations must not fan out
+ * into as many concurrent evaluations.
+ */
+export function limitConcurrency<A, R>(fn: (arg: A) => Promise<R>, max: number, maxQueued: number): (arg: A) => Promise<R> {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  const next = (): void => {
+    while (active < max && queue.length > 0) {
+      active += 1;
+      queue.shift()!();
+    }
+  };
+  return (arg) => new Promise<R>((resolve, reject) => {
+    if (queue.length >= maxQueued) {
+      reject(new Error("too many proxy lookups waiting"));
+      return;
+    }
+    queue.push(() => {
+      let pending: Promise<R>;
+      try {
+        pending = fn(arg);
+      } catch (error) {
+        pending = Promise.reject(error);
+      }
+      pending.then(resolve, reject).finally(() => {
+        active -= 1;
+        next();
+      });
+    });
+    next();
+  });
 }
 
 const SOCKS_SKIP = "a SOCKS proxy, which the sandbox cannot use as an upstream";
@@ -235,7 +352,7 @@ export async function upstreamRoutesFor(
   if (settings.mode === "off") return answer("off", [DIRECT]);
 
   if (settings.mode === "manual") {
-    if (bypassesProxy(settings.bypass, host)) return answer("manual-bypass", [DIRECT]);
+    if (bypassesProxy(settings.bypass, host, port)) return answer("manual-bypass", [DIRECT]);
     const parsed = parseProxyUrl(settings.manualUrl);
     if (!parsed.ok) {
       return answer("manual", [], {
@@ -257,7 +374,7 @@ export async function upstreamRoutesFor(
   if (environmentProxyConfigured(env)) {
     const chosen = environmentProxyFor(env, scheme);
     if (chosen === undefined) return answer("environment", [DIRECT]);
-    if (bypassesProxy(environmentNoProxy(env), host)) return answer("environment-bypass", [DIRECT], { envVar: chosen.name });
+    if (bypassesProxy(environmentNoProxy(env), host, port)) return answer("environment-bypass", [DIRECT], { envVar: chosen.name });
     const parsed = parseProxyUrl(chosen.value);
     if (!parsed.ok) {
       const what = parsed.reason === "socks" ? SOCKS_SKIP : "not a usable proxy URL";
@@ -280,7 +397,10 @@ export async function upstreamRoutesFor(
   const skipped: string[] = [];
   for (const entry of parsePacAnswer(typeof pac === "string" ? pac : "")) {
     if (entry.kind === "direct") entries.push(DIRECT);
-    else if (entry.kind === "proxy") entries.push(proxyRoute(entry.scheme, entry.host, entry.port, undefined, settings.resolvesNames));
+    // Never trusted to resolve names: a PAC or WPAD answer is network input
+    // (any host on the network can serve WPAD), and the opt-in is for a proxy
+    // the person named, in Settings or in the environment.
+    else if (entry.kind === "proxy") entries.push(proxyRoute(entry.scheme, entry.host, entry.port, undefined, false));
     else skipped.push(`${entry.entry} (${entry.reason === "socks" ? SOCKS_SKIP : entry.reason === "malformed" ? "not a usable entry" : "a kind the sandbox cannot use"})`);
   }
   if (entries.length === 0) {
@@ -303,7 +423,10 @@ export interface UpstreamProxyRouter {
   describe(url: string): Promise<UpstreamProxyDiagnostic>;
 }
 
-export function createUpstreamProxyRouter(deps: UpstreamProxyRouterDeps): UpstreamProxyRouter {
+export function createUpstreamProxyRouter(input: UpstreamProxyRouterDeps): UpstreamProxyRouter {
+  const deps: UpstreamProxyRouterDeps = input.resolveProxy === undefined
+    ? input
+    : { ...input, resolveProxy: limitConcurrency(input.resolveProxy, input.maxConcurrentResolves ?? 4, input.maxQueuedResolves ?? 256) };
   const ttlMs = deps.ttlMs ?? 45_000;
   const maxEntries = deps.maxEntries ?? 512;
   const now = deps.now ?? Date.now;

@@ -94,8 +94,7 @@ the installed package.
    router that throws or answers a malformed route refuses, and an empty
    answer refuses with the router's reason. Without a router the static
    `parentProxy` is turned into the same routes, so behaviour is unchanged.
-   `parseNoProxy` is exported so the embedder matches its own bypass lists
-   with the same rules. `closeAllInvocationConnections()` closes every open
+   `closeAllInvocationConnections()` closes every open
    connection the proxy allowed (the embedder calls it when the upstream
    setting changes). reset() clears the router.
 
@@ -586,23 +585,10 @@ index 18e2472cb5b5f40b74c31ed9181aaa51b7f3b73a..43c61511641d87c89a005118a2cd388f
                  // unlinking; clear any stale file so listen() doesn't EADDRINUSE.
                  await unlink(path).catch(() => { });
 diff --git a/dist/sandbox/parent-proxy.d.ts b/dist/sandbox/parent-proxy.d.ts
-index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..1403f2659e3fd398b40e50cd7534748c3f631aab 100644
+index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..0e8c9be26636fba59bb364980ea87e8c69d04523 100644
 --- a/dist/sandbox/parent-proxy.d.ts
 +++ b/dist/sandbox/parent-proxy.d.ts
-@@ -43,6 +43,12 @@ export declare function resolveParentProxy(cfg?: ParentProxyConfig): ResolvedPar
-  * NB: the port is not consulted. NO_PROXY entries of the form `host:port` are
-  * matched by host only (the port suffix is stripped during parsing).
-  */
-+/**
-+ * Ave patch (upstream routes): a NO_PROXY-style list (comma-separated host
-+ * suffixes, `*`, IP literals and CIDR ranges) as the rules
-+ * {@link shouldBypassParentProxy} reads from `resolved.noProxy`.
-+ */
-+export declare function parseNoProxy(raw: string): ResolvedParentProxy['noProxy'];
- export declare function shouldBypassParentProxy(resolved: ResolvedParentProxy, host: string): boolean;
- /**
-  * Pick which parent proxy URL to use for a given destination.
-@@ -55,6 +61,8 @@ export interface ConnectTunnelOptions {
+@@ -55,6 +55,8 @@ export interface ConnectTunnelOptions {
      dial(): Socket;
      /** Fired when the transport is ready to write (e.g. 'connect'/'secureConnect'). */
      readyEvent: 'connect' | 'secureConnect';
@@ -611,7 +597,7 @@ index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..1403f2659e3fd398b40e50cd7534748c
      destHost: string;
      destPort: number;
      authHeader?: string;
-@@ -71,7 +79,7 @@ export declare function openConnectTunnel(opts: ConnectTunnelOptions): Promise<S
+@@ -71,7 +73,7 @@ export declare function openConnectTunnel(opts: ConnectTunnelOptions): Promise<S
   * Thin wrapper around openConnectTunnel that dials TCP or TLS based on the
   * proxy URL scheme.
   */
@@ -620,7 +606,7 @@ index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..1403f2659e3fd398b40e50cd7534748c
  export declare function proxyAuthHeader(proxyUrl: URL): string | undefined;
  /**
   * Write an upstream response's status line and headers to the client.
-@@ -140,7 +148,40 @@ export declare function isValidHost(h: string): boolean;
+@@ -140,7 +142,40 @@ export declare function isValidHost(h: string): boolean;
   */
  export declare function canonicalizeHost(h: string): string | undefined;
  /** Per-dial name resolution the proxies are handed: the guard's `lookup` for `port`, refusals recorded. */
@@ -663,24 +649,10 @@ index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..1403f2659e3fd398b40e50cd7534748c
  export declare function formatAuthority(host: string, port: number, defaultPort: number): string;
  export interface DirectRequestOptions {
 diff --git a/dist/sandbox/parent-proxy.js b/dist/sandbox/parent-proxy.js
-index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..122f80bc860eaef5d72b9dd4497e507e665706ff 100644
+index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..49a49888bce830de074e06660cee47542b4746a3 100644
 --- a/dist/sandbox/parent-proxy.js
 +++ b/dist/sandbox/parent-proxy.js
-@@ -83,7 +83,12 @@ export function resolveParentProxy(cfg) {
-         return undefined;
-     return { httpUrl, httpsUrl, noProxy: parseNoProxy(noProxyRaw) };
- }
--function parseNoProxy(raw) {
-+/**
-+ * Ave patch (upstream routes): exported so the embedder matches its own
-+ * bypass lists (environment NO_PROXY, a configured bypass list) with the
-+ * same rules as {@link shouldBypassParentProxy}.
-+ */
-+export function parseNoProxy(raw) {
-     const rules = {
-         all: false,
-         suffixes: [],
-@@ -201,6 +206,11 @@ export function openConnectTunnel(opts) {
+@@ -201,6 +201,11 @@ export function openConnectTunnel(opts) {
          sock.once('error', fail);
          sock.once('close', onClose);
          sock.once(opts.readyEvent, () => {
@@ -692,7 +664,7 @@ index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..122f80bc860eaef5d72b9dd4497e507e
              sock.write(`CONNECT ${authority} HTTP/1.1\r\n` +
                  `Host: ${authority}\r\n` +
                  (opts.authHeader
-@@ -224,7 +234,10 @@ export function openConnectTunnel(opts) {
+@@ -224,7 +229,10 @@ export function openConnectTunnel(opts) {
                  sock.removeListener('data', onData);
                  const statusLine = buf.slice(0, buf.indexOf('\r\n'));
                  if (!/^HTTP\/1\.[01] 2\d\d(?:\s|$)/.test(statusLine)) {
@@ -704,7 +676,7 @@ index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..122f80bc860eaef5d72b9dd4497e507e
                  }
                  // Re-emit any bytes that arrived after the header terminator.
                  const rest = buf.slice(end + 4);
-@@ -245,23 +258,86 @@ export function openConnectTunnel(opts) {
+@@ -245,23 +253,86 @@ export function openConnectTunnel(opts) {
   * Thin wrapper around openConnectTunnel that dials TCP or TLS based on the
   * proxy URL scheme.
   */
