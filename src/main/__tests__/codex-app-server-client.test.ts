@@ -14,6 +14,13 @@ import { CodexUserRuntimeError, type CodexResolvedRuntime } from "../codex-user-
 import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
+vi.mock("node:child_process", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  if (process.platform !== "win32") return original;
+  const { codexFixtureExecFile } = await import("../../__tests__/support/codex-fixture-security.js");
+  return { ...original, execFile: codexFixtureExecFile(original.execFile) };
+});
+
 interface RpcRequest {
   id?: unknown;
   method?: unknown;
@@ -105,7 +112,7 @@ interface Harness {
 }
 
 const harnesses: Harness[] = [];
-const TEST_RUNTIME_PARENT = process.platform === "win32" ? "C:\\tmp" : tmpdir();
+const TEST_RUNTIME_PARENT = tmpdir();
 
 function createHarness(
   handler: RequestHandler,
