@@ -34,14 +34,14 @@ function egressDenialSourceText(source: EgressDenialSource): string {
     case "terminal":
       return t("permissionsTab.networkDenialSourceTerminal", { tab: source.tabId });
     case "worker": {
-      const plugin = source.pluginId ?? "";
+      const extension = source.pluginId ?? "";
       switch (source.role) {
         case "plugin-child":
-          return t("permissionsTab.networkDenialSourcePlugin", { plugin });
+          return t("permissionsTab.networkDenialSourcePlugin", { extension });
         case "worker":
-          return t("permissionsTab.networkDenialSourceWorker", { plugin, worker: source.instanceId ?? "" });
+          return t("permissionsTab.networkDenialSourceWorker", { extension, worker: source.instanceId ?? "" });
         case "hook":
-          return t("permissionsTab.networkDenialSourceHook", { plugin });
+          return t("permissionsTab.networkDenialSourceHook", { extension });
         case "mcp-server":
           return t("permissionsTab.networkDenialSourceMcp", { server: source.instanceId ?? "" });
       }

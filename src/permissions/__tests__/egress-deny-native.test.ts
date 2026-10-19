@@ -16,6 +16,7 @@ import { join } from "node:path";
 import {
   initializeAsrtSandbox,
   isAsrtSandboxActive,
+  isPluginWorkerConfinementActive,
   resetAsrtSandbox,
   subscribeAsrtViolations,
   cleanupAsrtSandboxAfterCommand,
@@ -23,6 +24,7 @@ import {
 import { startEgressDenyMonitor } from "../egress-deny-monitor.js";
 import { liveEgressInvocationCount } from "../egress-invocations.js";
 import { spawnConfinedChild } from "../confined-child.js";
+import { setPluginWorkerConfinementRequestedAtBoot } from "../sandbox-capability.js";
 import type { SandboxEgressDenyAuditEntry } from "../../audit/sandbox-audit.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 import { spawnWithSandbox } from "../../tools/shell-tools.js";
@@ -36,6 +38,7 @@ let stopMonitor: (() => void) | undefined;
 afterEach(async () => {
   stopMonitor?.();
   stopMonitor = undefined;
+  setPluginWorkerConfinementRequestedAtBoot(false);
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
 });
 
@@ -76,8 +79,12 @@ describe.runIf(nativeCapable)("proxy deny attribution (native)", () => {
 
   it("audits a plugin worker's refused host under the worker", async (context) => {
     if (!(await asrtCanInitialize())) return context.skip();
+    // Plugin-worker confinement is its own boot setting; without it the child
+    // would run unconfined and reach the network.
+    setPluginWorkerConfinementRequestedAtBoot(true);
     const rows = await startStrictSandboxWithMonitor();
-    const { child } = await spawnConfinedChild({
+    expect(isPluginWorkerConfinementActive()).toBe(true);
+    const { child, confinement } = await spawnConfinedChild({
       command: CURL,
       args: ["-sS", "-m", "10", "-o", "/dev/null", "http://example.org/"],
       label: "worker:native_fixture:indexer:asrt",
@@ -86,6 +93,7 @@ describe.runIf(nativeCapable)("proxy deny attribution (native)", () => {
       tempPrincipal: { kind: "plugin", id: "native_fixture" },
       baseEnv: { PATH: "/usr/bin:/bin" },
     });
+    expect(confinement).not.toBe("unconfined");
     await new Promise<void>((resolve) => child.once("close", () => resolve()));
     await cleanupAsrtSandboxAfterCommand();
     const row = rows.find((entry) => entry.deny.host === "example.org");
