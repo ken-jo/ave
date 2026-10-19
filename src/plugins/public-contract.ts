@@ -960,9 +960,10 @@ export interface PluginUiExtension {
    * Per-language overrides of `displayName` / `title` / `description`, keyed
    * by a normalized lower-case BCP-47 tag (`en`, `ko`, `pt-br`). The host
    * resolves against its UI language: the exact tag, then its base language,
-   * then this entry's own fields, then the plugin id. Hosts before this field
-   * reject the key, so a plugin declaring it sets `requires.minAppVersion` to
-   * a release that reads it.
+   * then this entry's own fields, then the plugin id. Requires Ave 0.14.1 or
+   * later: earlier hosts reject the key, so a plugin declaring it (or the
+   * `locales` of a `configSchema` property or of `auth`) sets
+   * `requires.minAppVersion` to `"0.14.1"` or later.
    * @optional
    */
   locales?: Record<string, PluginUiExtensionLocalizedText>;

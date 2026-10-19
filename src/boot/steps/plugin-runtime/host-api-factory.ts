@@ -242,15 +242,8 @@ function floatingDock(host: BootHost, getPluginRuntime: () => PluginRuntime): Fl
     // them. Process-lifetime, like the dock itself. Re-resolving runs the full
     // surface lookup (entry containment included), so an entry rejected at
     // attach is rejected — and audited — again here; that is the lookup's own
-    // rule, not a second one. Isolated so one listener's throw cannot skip the
-    // others in `setLocale`'s loop.
-    onLocaleChange(() => {
-      try {
-        dock.refreshTitles();
-      } catch (error) {
-        log.error({ err: error }, "floating dock titles were not refreshed after a language switch");
-      }
-    });
+    // rule, not a second one.
+    onLocaleChange(() => dock.refreshTitles());
     sharedFloatingDock = dock;
   }
   return sharedFloatingDock;

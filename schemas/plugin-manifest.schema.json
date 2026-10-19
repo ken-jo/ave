@@ -2225,7 +2225,7 @@
     },
     "pluginUiExtensionLocales": {
       "type": "object",
-      "description": "Per-language overrides of this entry's displayName/title/description, keyed by a normalized lower-case BCP-47 tag. The host resolves against its UI language: the exact tag, then its base language, then the entry's own fields, then the plugin id. The entry's own fields stay the baseline for every language the map does not name. Hosts before this field reject the key, so a plugin declaring it sets requires.minAppVersion to a release that reads it.",
+      "description": "Per-language overrides of this entry's displayName/title/description, keyed by a normalized lower-case BCP-47 tag. The host resolves against its UI language: the exact tag, then its base language, then the entry's own fields, then the plugin id. The entry's own fields stay the baseline for every language the map does not name. Requires Ave 0.14.1 or later: earlier hosts reject the key, so a plugin declaring it sets requires.minAppVersion to 0.14.1 or later.",
       "minProperties": 1,
       "maxProperties": 16,
       "propertyNames": {
@@ -2254,7 +2254,7 @@
     },
     "pluginConfigPropertyLocales": {
       "type": "object",
-      "description": "Per-language overrides of this property's title/description, keyed by a normalized lower-case BCP-47 tag; resolved exact tag, then base language, then the property's own fields, then the config key.",
+      "description": "Per-language overrides of this property's title/description, keyed by a normalized lower-case BCP-47 tag; resolved exact tag, then base language, then the property's own fields, then the config key. Requires Ave 0.14.1 or later (requires.minAppVersion 0.14.1 or later).",
       "minProperties": 1,
       "maxProperties": 16,
       "propertyNames": {
@@ -2280,7 +2280,7 @@
     },
     "pluginAuthLocales": {
       "type": "object",
-      "description": "Per-language overrides of auth.label, keyed by a normalized lower-case BCP-47 tag; resolved exact tag, then base language, then the own label, then the plugin name.",
+      "description": "Per-language overrides of auth.label, keyed by a normalized lower-case BCP-47 tag; resolved exact tag, then base language, then the own label, then the plugin name. Requires Ave 0.14.1 or later (requires.minAppVersion 0.14.1 or later).",
       "minProperties": 1,
       "maxProperties": 16,
       "propertyNames": {

@@ -7109,20 +7109,6 @@
           "label": {
             "type": "string"
           },
-          "locales": {
-            "additionalProperties": {
-              "properties": {
-                "label": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "label"
-              ],
-              "type": "object"
-            },
-            "type": "object"
-          },
           "loginTool": {
             "type": "string"
           },
@@ -7296,12 +7282,6 @@
             ],
             "type": "object"
           },
-          "locales": {
-            "additionalProperties": {
-              "$ref": "#/$defs/types/PluginConfigSchemaPropertyLocalizedText"
-            },
-            "type": "object"
-          },
           "maxLength": {
             "type": "number"
           },
@@ -7334,17 +7314,6 @@
         "required": [
           "type"
         ],
-        "type": "object"
-      },
-      "PluginConfigSchemaPropertyLocalizedText": {
-        "properties": {
-          "description": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
         "type": "object"
       },
       "PluginConstructParams": {
@@ -7882,12 +7851,6 @@
             ],
             "type": "string"
           },
-          "locales": {
-            "additionalProperties": {
-              "$ref": "#/$defs/types/PluginUiExtensionLocalizedText"
-            },
-            "type": "object"
-          },
           "page": {
             "type": "string"
           },
@@ -7908,20 +7871,6 @@
           "kind",
           "title"
         ],
-        "type": "object"
-      },
-      "PluginUiExtensionLocalizedText": {
-        "properties": {
-          "description": {
-            "type": "string"
-          },
-          "displayName": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
         "type": "object"
       },
       "PluginUiResourceDecl": {

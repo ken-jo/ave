@@ -829,8 +829,9 @@ Key boundaries:
   dock's slot titles share `src/shared/plugin-view-label.ts` and re-render on a
   language switch. `configSchema` properties (`title`, `description`) and
   `auth` (`label`) accept the same `locales` shape. A host that predates the
-  field refuses the manifest as an unknown key, so an extension declaring it
-  raises `requires.minAppVersion` to a release that reads it;
+  field refuses the manifest as an unknown key: the field requires Ave 0.14.1 or
+  later, and an extension declaring any of these `locales` sets
+  `requires.minAppVersion` to `0.14.1` or later;
 - optional `manifest.onboarding` copy is inert, localized metadata. An extension
   declares one `firstTask` and up to five `highlights`; the host asks each as a
   tile overlay card once and remembers the answer — accept, later, or never — in

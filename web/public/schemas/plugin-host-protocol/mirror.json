@@ -3,15 +3,15 @@
     {
       "protocol": "3",
       "appVersion": "0.14.0",
-      "sha256": "75654f7b348f0a3506bc15d2eec9e231ba40d6f16dffb38822a03d74d076836a",
-      "generatedFrom": "62f897f6d9eed57e20093d3e1caf5c538e250fb3",
+      "sha256": "3e92239b7d7a6ac517040c3cfe6909b1c959edb176af4c3a34f5a2aabea18d7a",
+      "generatedFrom": "85157361e4646fd66651741df75d2d4249fafd13",
       "publishedTag": null
     },
     {
       "protocol": "3",
       "appVersion": "0.14.1",
-      "sha256": "4de7e1020279fcc0b6e1ee9474c03585a7a79f4e2467ac36c76301ab6df2be2a",
-      "generatedFrom": "85efb2fcf658ffabc0238793fe7010989f8f0ce2",
+      "sha256": "90d2ad156e5b78eed8da374241d4cc05aa9d92d284a508384fdba6a85e607a94",
+      "generatedFrom": "86535a296c85e07a5dcb7e9239b179654ee4b9ad",
       "publishedTag": null
     }
   ],

@@ -173,16 +173,9 @@ async function main() {
     });
     // Native menus are built once from `t()` and plugin labels resolved at that
     // moment; a language switch must rebuild them or they keep the old one.
-    // `setLocale` runs its listeners in one synchronous loop inside the
-    // settings broadcast; a throw here must not skip the dock's listener or
-    // fail the settings write that already changed the language.
     onLocaleChange(() => {
-      try {
-        refreshApplicationMenu();
-        refreshTrayMenu();
-      } catch (error) {
-        log.error({ err: error }, "native menus were not rebuilt after a language switch");
-      }
+      refreshApplicationMenu();
+      refreshTrayMenu();
     });
     // Initialise WindowManager before createWindow so registerMainWindow()
     // can be called synchronously inside createWindow().
