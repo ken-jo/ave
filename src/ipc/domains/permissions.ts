@@ -14,7 +14,7 @@ import {
   RECENT_EGRESS_DENIALS_WINDOW_HOURS,
   type EgressDenialRow,
 } from "../../shared/egress-denials.js";
-import { resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
+import { envForcedValueForSettingsPath, resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
   isSessionOnlyApprovalMemoryScope,
   type PermissionReviewSuggestionPayload,
@@ -61,11 +61,14 @@ import type {
   SandboxWindowsStatusInfo,
   SandboxWindowsInstallResult,
   SandboxRuntimeCapabilityInfo,
+  ShellSandboxStatusInfo,
 } from "../../shared/sandbox-capability-info.js";
 import {
   detectPluginWorkerSandboxCapability,
   detectShellSandboxCapability,
+  getHostShellExecutionPlan,
   getSandboxBootOutcome,
+  isShellSandboxRequestedAtBoot,
   type SandboxCapability,
 } from "../../permissions/sandbox-capability.js";
 import {
@@ -250,16 +253,17 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // as unavailable merely because it's off.
   // `enabled` separately reflects the current setting.
   ipcMain.handle(PERMISSIONS.sandboxCapability, async () => {
-    const { sandboxConfinementForPlatform } = await import(
+    const { sandboxConfinementForPlatform, describeShellSandboxStatus, sandboxBootOutcomeView } = await import(
       "../../shared/sandbox-capability-info.js"
     );
     const platform = process.platform;
+    const storedShellSetting = deps.settingsService.get("features")?.osToolSandbox ?? false;
     // Must answer the same question boot answered (`shellRequested` in
     // sandbox-init.ts), so it resolves through the registry rather than
     // re-stating which variable forces it on.
     const enabled = resolveEnvBackedBoolean(
       "features.osToolSandbox",
-      deps.settingsService.get("features")?.osToolSandbox ?? false,
+      storedShellSetting,
       process.env,
       false,
     );
@@ -299,6 +303,38 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // sandboxed (and the reverse).
     const runtime = runtimeInfoFromCapability(detectShellSandboxCapability());
     const workerRuntime = runtimeInfoFromCapability(detectPluginWorkerSandboxCapability());
+    const boot = getSandboxBootOutcome();
+    // The route a default host shell takes right now — the same plan the bash
+    // and powershell tools run under, so "on" means shells are contained, not
+    // merely that ASRT is running (Windows Plan B runs shells plain).
+    const shellPlan = getHostShellExecutionPlan();
+    const envForced = envForcedValueForSettingsPath("features.osToolSandbox") === true;
+    let shell: ShellSandboxStatusInfo;
+    try {
+      shell = describeShellSandboxStatus({
+        platformSupported: kind !== "none",
+        setting: storedShellSetting,
+        envForced,
+        requestedAtBoot: isShellSandboxRequestedAtBoot(),
+        boot,
+        shellPlanMode: shellPlan.mode,
+        shellPlanFallback: shellPlan.fallbackReason,
+      });
+    } catch (error) {
+      // The boot seal and the shell plan contradict each other — a host bug,
+      // not a user state. It is reported loudly here and on the one row that
+      // depends on it; the rest of this snapshot (and every Settings section
+      // loaded beside it) still describes what the host does observe.
+      const message = errorMessage(error);
+      log.error("sandboxCapability: shell sandbox status contract violated: %s", message);
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "permissions",
+        type: "error",
+        output: `[sandbox-status:contract-violation] ${message}`,
+      });
+      shell = { state: "error", setting: storedShellSetting, envForced, causes: [] };
+    }
     return {
       platform,
       enabled,
@@ -312,7 +348,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       // for it: a degraded gate never publishes a capability, so `runtime`
       // reports the same "no OS sandbox configured" it reports when the user
       // never turned the sandbox on.
-      boot: getSandboxBootOutcome(),
+      // Raw dependency messages stay main-side (boot log); the renderer gets
+      // the classified causes.
+      boot: boot === null ? null : sandboxBootOutcomeView(boot),
+      shell,
       confines: sandboxConfinementForPlatform(platform, kind),
     };
   });

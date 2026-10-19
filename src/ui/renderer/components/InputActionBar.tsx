@@ -33,9 +33,10 @@
  *
  * Spec: docs/blueprints/composer-redesign-message-queue.md
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, Brain, Check, ChevronRight, HelpCircle, Lightbulb, Paperclip, Square } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
+import { Checkbox } from "../../../components/ui/checkbox.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { t } from "../../../i18n/runtime.js";
@@ -57,6 +58,12 @@ import type { InputStatusRow } from "../hooks/use-input-status-row.js";
 import type { ExecutionMode, ExecutionModeDisplay } from "../../../shared/permission-mode.js";
 import { EXEC_MODE_OPTIONS } from "../constants.js";
 import { interactiveAutoApproveForExecMode, reviewerModeForExecMode } from "../tabs/PermissionsTab.js";
+import type {
+  ShellSandboxStatusInfo,
+  ShellSandboxUnavailableCause,
+} from "../../../shared/sandbox-capability-info.js";
+import { EnvForcedNotice } from "./EnvForcedNotice.js";
+import { errorMessage } from "../../../shared/error-message.js";
 
 export interface InputActionBarProps {
   // Leading — slash/command picker (folds plugins/mcp/skills inside its own
@@ -556,8 +563,184 @@ function PermissionQuickPicker({
             <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
           </button>
         ) : null}
+        <SandboxCheckboxRow
+          onOpenPermissions={onOpenPermissions ? () => { setOpen(false); onOpenPermissions(); } : undefined}
+        />
       </PopoverContent>
     </Popover>
+  );
+}
+
+const SANDBOX_CAUSE_KEYS: Record<ShellSandboxUnavailableCause, string> = {
+  "missing-bwrap": "inputActionBar.sandboxCauseMissingBwrap",
+  "missing-socat": "inputActionBar.sandboxCauseMissingSocat",
+  "missing-ripgrep": "inputActionBar.sandboxCauseMissingRipgrep",
+  "dependency-check-failed": "inputActionBar.sandboxCauseDependencyCheckFailed",
+  "windows-setup-incomplete": "inputActionBar.sandboxCauseWindowsSetupIncomplete",
+  "windows-sandbox-missing": "inputActionBar.sandboxCauseWindowsSandboxMissing",
+  "linux-runtime-probe-failed": "inputActionBar.sandboxCauseLinuxRuntimeProbeFailed",
+  "init-failed": "inputActionBar.sandboxCauseInitFailed",
+  "platform-unsupported": "inputActionBar.sandboxCausePlatformUnsupported",
+  "windows-shell-not-contained": "inputActionBar.sandboxCauseWindowsShellNotContained",
+  "shell-not-contained": "inputActionBar.sandboxCauseShellNotContained",
+};
+
+function sandboxStatusText(status: ShellSandboxStatusInfo): string {
+  switch (status.state) {
+    case "on":
+      return t("inputActionBar.sandboxStateOn");
+    case "off":
+      return t("inputActionBar.sandboxStateOff");
+    case "pending-on":
+      return t("inputActionBar.sandboxStatePendingOn");
+    case "pending-off":
+      return t("inputActionBar.sandboxStatePendingOff");
+    case "unknown":
+      return t("inputActionBar.sandboxStateUnknown");
+    case "error":
+      return t("inputActionBar.sandboxStateError");
+    case "unavailable":
+    case "unsupported":
+      return t("inputActionBar.sandboxStateUnavailable", {
+        reason: status.causes.map((cause) => t(SANDBOX_CAUSE_KEYS[cause])).join(", "),
+      });
+  }
+}
+
+const SANDBOX_STATUS_TONE: Record<ShellSandboxStatusInfo["state"], string> = {
+  on: "text-muted-foreground",
+  off: "text-muted-foreground",
+  "pending-on": "text-info",
+  "pending-off": "text-info",
+  unknown: "text-muted-foreground",
+  unavailable: "text-warning",
+  unsupported: "text-warning",
+  error: "text-destructive",
+};
+
+/**
+ * The shell sandbox checkbox at the foot of the permission card (design I3:
+ * a silent off or a sandbox that did not start is visible here and one click
+ * away). The host decides the state — `sandboxCapability().shell` — and this
+ * row renders it; a click writes `features.osToolSandbox` and nothing else,
+ * the same write Settings → Permissions makes for the shell toggle. The
+ * sandbox starts once at boot, so a change shows as pending until a restart
+ * instead of claiming it applied.
+ */
+function SandboxCheckboxRow({ onOpenPermissions }: { onOpenPermissions?: () => void }) {
+  const { t } = useTranslation();
+  const checkboxId = useId();
+  const statusId = useId();
+  const [status, setStatus] = useState<ShellSandboxStatusInfo | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const info = await getApi().permission.sandboxCapability();
+      setStatus(info.shell);
+      setLoadFailed(false);
+    } catch (error) {
+      console.warn("[ave] sandbox status read failed: %s", errorMessage(error));
+      setLoadFailed(true);
+    }
+  }, []);
+
+  // Mounted only while the card is open, so this reads on open and follows a
+  // change made in Settings while the card stays up.
+  useEffect(() => {
+    void refresh();
+    return getApi().onSettingsUpdated(() => { void refresh(); });
+  }, [refresh]);
+
+  const toggle = async () => {
+    if (busy || status === null) return;
+    setBusy(true);
+    setSaveFailed(false);
+    try {
+      const res = await getApi().updateSettings({ features: { osToolSandbox: !status.setting } });
+      if (isIpcErrorResult(res)) {
+        console.warn("[ave] sandbox toggle was refused: %s", res.error);
+        setSaveFailed(true);
+        return;
+      }
+      await refresh();
+    } catch (error) {
+      console.warn("[ave] sandbox toggle failed: %s", errorMessage(error));
+      setSaveFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const statusText = loadFailed
+    ? t("inputActionBar.sandboxLoadFailed")
+    : status === null
+      ? ""
+      : sandboxStatusText(status);
+  const checked = status !== null && (status.setting || status.envForced);
+  const disabled =
+    busy || status === null || status.state === "unsupported" || status.envForced;
+  // The one-time Windows administrator setup lives in Settings → Permissions
+  // (it raises a UAC prompt on an explicit click there), so a card that says
+  // the setup is incomplete leads to it rather than leaving the user stuck.
+  const needsWindowsSetup =
+    status?.state === "unavailable" && status.causes.includes("windows-setup-incomplete");
+
+  return (
+    <div
+      className="border-t border-border/(--opacity-medium) px-3 py-2"
+      data-testid="permission-quick-picker-sandbox"
+      data-state={status?.state ?? (loadFailed ? "error" : "loading")}
+    >
+      <div className="flex items-center gap-2">
+        <Checkbox
+          id={checkboxId}
+          checked={checked}
+          disabled={disabled}
+          aria-describedby={statusId}
+          data-testid="permission-quick-picker-sandbox-checkbox"
+          onCheckedChange={() => void toggle()}
+        />
+        <label htmlFor={checkboxId} className="text-sm">
+          {t("inputActionBar.sandboxLabel")}
+        </label>
+      </div>
+      <p
+        id={statusId}
+        role="status"
+        aria-live="polite"
+        data-testid="permission-quick-picker-sandbox-status"
+        className={`mt-1 pl-6 text-caption ${loadFailed ? "text-destructive" : status ? SANDBOX_STATUS_TONE[status.state] : "text-muted-foreground"}`}
+      >
+        {statusText}
+      </p>
+      {saveFailed ? (
+        <p role="alert" data-testid="permission-quick-picker-sandbox-error" className="mt-1 pl-6 text-caption text-destructive">
+          {t("inputActionBar.sandboxToggleFailed")}
+        </p>
+      ) : null}
+      {needsWindowsSetup && onOpenPermissions ? (
+        <button
+          type="button"
+          onClick={onOpenPermissions}
+          data-testid="permission-quick-picker-sandbox-setup"
+          className="mt-1 ml-6 text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-input-bar-focus"
+        >
+          {t("inputActionBar.sandboxOpenWindowsSetup")}
+        </button>
+      ) : null}
+      {status?.envForced ? (
+        <EnvForcedNotice
+          settingsPath="features.osToolSandbox"
+          forcedPaths={["features.osToolSandbox"]}
+          messageKey="permissionsTab.osSandboxEnvForced"
+          testId="permission-quick-picker-sandbox-forced"
+          className="mt-1 pl-6"
+        />
+      ) : null}
+    </div>
   );
 }
 
