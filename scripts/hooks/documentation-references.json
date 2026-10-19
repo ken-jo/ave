@@ -19,6 +19,7 @@
     "resources/agents/explorer.md",
     "resources/agents/planner.md",
     "resources/agents/researcher.md",
+    "resources/licenses/mxc/LICENSE.md",
     "resources/prompts/code-reviewer.md",
     "resources/prompts/coding-assistant.md",
     "resources/prompts/editor.md",
