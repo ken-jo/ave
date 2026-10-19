@@ -5,10 +5,10 @@
  * selects its own tests, a shared module selects the tests of the modules
  * that import it, and a global input falls back to the full suite.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   AFFECTED_TEST_LIMIT,
@@ -41,17 +41,44 @@ function readText(path: string): string | null {
   }
 }
 
-/** Per-module `vitest related` discovery over this tree, as CI runs it. */
-function discoverRelated(paths: string[]): { source: string; tests: string[] }[] | null {
-  const result = spawnSync(process.execPath, [join(root, "scripts/hooks/pre-push-related-tests.mjs"), ...paths], {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.status !== 0) return null;
-  return JSON.parse(result.stdout) as { source: string; tests: string[] }[];
-}
+/**
+ * The modules the real-graph cases change. Their `vitest related` coverage is
+ * discovered once, in one process, before the cases run: discovery builds the
+ * whole suite's module graph, and on the 3-CPU CI slice one discovery per
+ * case took the file past two minutes (PR #10). The cases read the result.
+ */
+const GRAPH_SOURCES = ["src/core/route-engine.ts", "src/shared/escape-html.ts", "src/plugins/runtime/index.ts"];
+let graphCoverage = new Map<string, string[]>();
 
+beforeAll(async () => {
+  const stdout = await new Promise<string>((resolvePromise, reject) => {
+    const child = spawn(process.execPath, [join(root, "scripts/hooks/pre-push-related-tests.mjs"), ...GRAPH_SOURCES], {
+      cwd: root,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) resolvePromise(Buffer.concat(out).toString("utf8"));
+      else reject(new Error(`related-test discovery exited ${code}: ${Buffer.concat(err).toString("utf8").slice(-2000)}`));
+    });
+  });
+  const coverage = JSON.parse(stdout) as { source: string; tests: string[] }[];
+  graphCoverage = new Map(coverage.map(({ source, tests }) => [source, tests]));
+  expect([...graphCoverage.keys()].sort()).toEqual([...GRAPH_SOURCES].sort());
+}, 300_000);
+
+/** Discovery over this tree, as CI runs it, answered from the one discovery above. */
+function discoverRelated(paths: string[]): { source: string; tests: string[] }[] | null {
+  return paths.map((source) => {
+    const tests = graphCoverage.get(source);
+    if (tests === undefined) throw new Error(`${source} is not in GRAPH_SOURCES`);
+    return { source, tests };
+  });
+}
 
 function select(changes: ReturnType<typeof modified>[], discover = discoverRelated) {
   return selectCiTests({ changes, trackedTests, mustRunTests, readText, discoverRelated: discover });
@@ -65,7 +92,7 @@ describe("CI test selection over the real import graph", () => {
     expect(plan.tests).toEqual(expect.arrayContaining(mustRunTests));
     // A leaf change does not drag in the rest of the suite.
     expect(plan.tests.length).toBeLessThan(trackedTests.length / 2);
-  }, 120_000);
+  });
 
   it("selects the tests of a shared module's consumers, not only its direct importers", () => {
     const consumerTest = "src/main/__tests__/link-window-service.test.ts";
@@ -77,7 +104,7 @@ describe("CI test selection over the real import graph", () => {
     expect(plan.mode).toBe("affected");
     expect(plan.tests).toContain("src/shared/__tests__/escape-html.test.ts");
     expect(plan.tests).toContain(consumerTest);
-  }, 120_000);
+  });
 
   it("selects a test that reads a changed module as text, which the import graph does not show", () => {
     // module-size-boundaries.test.ts reads each module it bounds with fs; on
@@ -85,13 +112,12 @@ describe("CI test selection over the real import graph", () => {
     // ceiling and only that test failed.
     const reader = "src/__tests__/module-size-boundaries.test.ts";
     expect(readText(reader)).toContain('"src/plugins/runtime/index.ts"');
-    const related = discoverRelated(["src/plugins/runtime/index.ts"]);
-    expect(related?.[0]?.tests).not.toContain(reader);
+    expect(graphCoverage.get("src/plugins/runtime/index.ts")).not.toContain(reader);
 
     const plan = select([modified("src/plugins/runtime/index.ts")]);
     expect(plan.mode).toBe("affected");
     expect(plan.tests).toContain(reader);
-  }, 120_000);
+  });
 
   it.each([
     "vitest.config.ts",
