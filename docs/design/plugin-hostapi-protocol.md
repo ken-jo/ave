@@ -180,10 +180,17 @@ Both forms go through `spawnConfinedChild` and nowhere else
 | Linux | ASRT bwrap `--bind` / `--unshare-net`, allow-list grant mode | filesystem, process, network | same; UDS reachability `worker-spawn.ts:17-22` |
 | Windows | srt-win, one shared `srt-sandbox` account; deny-only grant mode; holder-PID ACL grants on a plugin child's own directories, a delegated worker's, a bundled hook's and an MCP stdio server's, each for that process's lifetime; the `entry` child runs under `cmd.exe` and speaks over an authenticated loopback connection, and a worker, hook or MCP stdio server runs through the same connection as a stdio relay (§2.3) | filesystem, network, against the host. **No process confinement; no isolation between plugins** (decision 64) | `architecture.md:1018-1020`, `confined-child.ts:43-46`, `out-of-process-plugin.ts:970` |
 
-The child is confined exactly as much as the host is: `features.osToolSandbox` decides for
-the host's own tools, its workers and its plugin children alike; when it is off the child
-is spawned unwrapped and nothing marks it confined, so the reviewer grants no
-sandbox-based relaxation (`out-of-process-plugin.ts:13-21`, `sandbox-gate.ts:20`).
+The child is confined exactly as much as the host's workers are:
+`features.pluginWorkerConfinement` decides for plugin workers, plugin children, plugin
+script hooks and MCP stdio servers alike; `features.osToolSandbox` decides only for the
+host's shells (the bash and PowerShell tools and the workspace terminal) and never for a
+child (split in 0.14.1; the one-time `plugin-worker-confinement-split` settings migration
+carried an existing `osToolSandbox: true` over to both). The environment overrides split
+the same way: `AVE_SANDBOX_ENABLED=1` forces the shell scope only, and
+`AVE_PLUGIN_WORKER_CONFINEMENT=1` forces the worker scope. When worker confinement is off
+the child is spawned unwrapped and nothing marks it confined, so the reviewer grants no
+sandbox-based relaxation (`out-of-process-plugin.ts:13-21`, `sandbox-gate.ts:20`,
+`isPluginWorkerConfinementActive` in `asrt-sandbox.ts`).
 This design does not change that rule. It does add one requirement: a plugin with a
 `process` entry (non-JS) **must** run under a wrap whose published `confines` includes
 `process` (`architecture.md:1017-1020`); when the sandbox is off, or when the substrate
@@ -296,7 +303,7 @@ current inputs or refuses.**
   later access or new worker occurs, the status is set, and a restart is refused until
   the config or the ceiling changes.
 
-When `features.osToolSandbox` is off nothing is enforced and nothing is marked confined
+When `features.pluginWorkerConfinement` is off nothing is enforced and nothing is marked confined
 (as above); the block is still validated, reviewed and consented so an install is not
 re-reviewed when the sandbox is turned on, and the Doctor names the plugin as unconfined.
 
@@ -4570,8 +4577,9 @@ Verified on 2026-10-03, each with the source that proves it.
    (`:1098-1106`) and obtains its child only through `spawnConfinedPluginChild`
    (`:1111-1122`); `observeChild` is its one seam (`:1047`, `:1133-1135`, decision 43).
    The header (`:10-21`) states the rule Admission inherits: "THE CHILD IS CONFINED
-   EXACTLY AS MUCH AS THE HOST IS" — `features.osToolSandbox`
-   (`src/data/settings-defaults.ts:254`, `false`; `src/boot/steps/sandbox-gate.ts:20`)
+   EXACTLY AS MUCH AS THE HOST'S WORKERS ARE" — `features.pluginWorkerConfinement`
+   (`src/data/settings-defaults.ts`, `false`; `src/boot/steps/sandbox-gate.ts:20`; before
+   the 0.14.1 split this was `features.osToolSandbox`, which now covers host shells only)
    off means an `entry` child is spawned unwrapped and nothing marks it confined. The
    `userChosenDirectory` resolver (`resolveUserChosenDirectory`, `:395-480`) refuses a
    non-string (`:405`), a non-absolute value — "A leading `~` lands here" (`:408-427`) —
@@ -4859,7 +4867,7 @@ plugin and by the loaded-plugin row for a running one, with i18n keys in `en.ts`
 "unconfined"` is the **wrap outcome** — the spawn result of `spawnConfinedChild`
 (`src/permissions/confined-child.ts:135`) gains a `confinement` field set from the wrap
 it actually applied, which `spawnConfinedPluginChild` (`out-of-process-plugin.ts:827`)
-passes through — never the global `features.osToolSandbox` setting, so a child spawned
+passes through — never the global `features.pluginWorkerConfinement` setting, so a child spawned
 unwrapped on a host with the setting on is shown as `unconfined`; and
 `PluginConfinementReport = SpawnConfinement | "not-spawned"` is what `LoadedPlugin`,
 `loadFailureInfo` and the card carry — five values, the fifth only for a construction
@@ -5023,8 +5031,8 @@ macOS and Linux confinement jobs and the Windows job (an `entry` child on Window
 common case from now on). **Native verification points:** macOS arm64, Windows x64 and
 Linux arm64 each boot a packaged build with `hello-world`, `templates/extension` and a
 third-party `entry` plugin installed from a folder source, and the Doctor shows
-`arm: child` for each with the platform's confinement; with `features.osToolSandbox`
-off and on.
+`arm: child` for each with the platform's confinement; with
+`features.pluginWorkerConfinement` off and on.
 
 *Lock suites.* `channel-inventory`, `host-renderer-only-channels`, `preload-shape`,
 `format-ipc-error-coverage`, `domain-exports` **unchanged** (no channel, no error
@@ -5699,7 +5707,7 @@ What Ave should not adopt, and why:
 |---|---|---|
 | 1 | The plugin channel is newline-delimited, per the MCP `2026-07-28` stdio binding ("newline-delimited JSON-RPC over a byte stream", [MCP transports](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports)). | An off-the-shelf MCP server library frames that way, and the host's external MCP client already does (`mcp-client.ts:2365-2368`, since `97b400ecf`). The host decoder and the reference runtime switch together (§9.4), so no installed plugin sees it. |
 | 2 | `resolveApiKey` stops exporting the raw key on its default path: `bearer()` leaves the contract, the default result is an opaque `ApiKeyLease`, `hostFetch` gains `init.auth = { lease }`, and a host provider key crosses **through `resolveApiKey`** only under `capabilities: ["secrets:raw-api-key"]` with receipt-bound consent (§4.1.1, §4.1.6). The guarantee is scoped to `resolveApiKey`; own-namespace `getSecret`, `portal`'s partition-cookie export and `readEncrypted` plaintext are the inventoried exceptions (§4.1). | The credential attaches at the egress chokepoint the way partition cookies already do; the capability makes the exception visible to the user and countable by the host. Neither official consumer needs it: `meeting`'s STT egress goes through `hostFetch`, and `local-indexer`'s worker traffic already reaches `hostFetch` through its JS broker, which gains lease attachment (decision 10). The earlier text that said `local-indexer` "forwards the bearer itself" was stale at `6a4d3b3`. |
-| 3 | Out-of-process admission is decided the same way on every platform and for every install source — official, managed, custom, direct, local development, and origin-less legacy entries (`legacy-plugins.ts:90-93`). A code plugin loads out of process under the confinement the host chose for itself: `features.osToolSandbox`, off by default on every platform (`sandbox-gate.ts:20-21`); while it is off the child is spawned unwrapped (`out-of-process-plugin.ts:13-21`). What admission promises is the process boundary — separate heap, no Electron, own crash domain, one structural chokepoint — not OS confinement; OS confinement is whatever the substrate publishes (`architecture.md:1017-1020`): filesystem, process and network on macOS and Linux, filesystem and network on Windows. Only a non-JS `process` entry requires a wrap whose `confines` includes `process`, so it never loads on Windows and does not load anywhere with the sandbox off (§2.2). The Doctor's plugin report names, per plugin, the confinement it runs under. | An earlier draft refused custom and direct code plugins on Windows and admitted official and managed ones. Rejected on evidence: `origin.sourceOrigin` alone is not evidence, because the registry file is user-writable and `src/plugins/registry.ts:300-311` checks only shape, legacy migration binds `official` by plugin id with `artifactSha256: null` (`legacy-plugins.ts:95-124`), and a removed `additional` source leaves `managed` behind, so a sound version would need the host-secret evidence chain (`grants.ts:87-106`); it would grant the official and managed sources a privilege the marketplace design forbids (§10: the badge is the only thing the official source grants; §10.5); it would refuse `portal` and `git` on Windows, since neither is in the official index (`marketplace.json` at `6a4d3b3df` lists `hello-world`, `local-indexer`, `meeting`, `mail`, `assistant`) while `portal` already runs out of process there (`out-of-process-plugins.ts:857`); and its rationale was false by default on every platform, because with the sandbox off macOS and Linux run a custom plugin without process confinement too. |
+| 3 | Out-of-process admission is decided the same way on every platform and for every install source — official, managed, custom, direct, local development, and origin-less legacy entries (`legacy-plugins.ts:90-93`). A code plugin loads out of process under the confinement the host chose for its workers: `features.pluginWorkerConfinement` (`features.osToolSandbox` until the 0.14.1 split; that setting now covers host shells only), off by default on every platform (`sandbox-gate.ts:20-21`); while it is off the child is spawned unwrapped (`out-of-process-plugin.ts:13-21`). What admission promises is the process boundary — separate heap, no Electron, own crash domain, one structural chokepoint — not OS confinement; OS confinement is whatever the substrate publishes (`architecture.md:1017-1020`): filesystem, process and network on macOS and Linux, filesystem and network on Windows. Only a non-JS `process` entry requires a wrap whose `confines` includes `process`, so it never loads on Windows and does not load anywhere with the sandbox off (§2.2). The Doctor's plugin report names, per plugin, the confinement it runs under. | An earlier draft refused custom and direct code plugins on Windows and admitted official and managed ones. Rejected on evidence: `origin.sourceOrigin` alone is not evidence, because the registry file is user-writable and `src/plugins/registry.ts:300-311` checks only shape, legacy migration binds `official` by plugin id with `artifactSha256: null` (`legacy-plugins.ts:95-124`), and a removed `additional` source leaves `managed` behind, so a sound version would need the host-secret evidence chain (`grants.ts:87-106`); it would grant the official and managed sources a privilege the marketplace design forbids (§10: the badge is the only thing the official source grants; §10.5); it would refuse `portal` and `git` on Windows, since neither is in the official index (`marketplace.json` at `6a4d3b3df` lists `hello-world`, `local-indexer`, `meeting`, `mail`, `assistant`) while `portal` already runs out of process there (`out-of-process-plugins.ts:857`); and its rationale was false by default on every platform, because with the sandbox off macOS and Linux run a custom plugin without process confinement too. |
 | 4 | A non-JS `process` entry is in the manifest schema from protocol `1` (`schemas/plugin-manifest.schema.json:1121`). Its runtime and a **narrow** marketplace admission — a sha256-pinned `release` or `archive` artifact recorded in the receipt, a live sandbox whose `confines` includes processes, never Windows, `minAppVersion ≥ 0.13.0` — ship in Publication (0.13.0, §9.7 P3-P4). Out-of-process-by-default admission for every install and the adversarial fixture stay in the Admission step. | The protocol is language-neutral from its first published version. The earlier wording deferred all marketplace admission for `process` to the Admission step, which contradicts the Publication scope (§9.1, §2.1's pinned-artifact rule); what the adversarial fixture must precede is admission of unpinned or unconfined code, and that stays refused on every path (decision 35). |
 | 5 | The deprecation owner of the in-process loader is the organization owner role of `former_org` (the repository's sole maintainer) — a role, recorded as such in `TODO.md` when the wire step starts; ave has no `CODEOWNERS` file. | AGENTS.md requires a named owner and a removal condition for any coexistence (§9.3). |
 | 6 | The protocol schema is canonical in the ave tree at a release tag and vendored like the rest of the contract (§6.3); its `$id` carries the app tag; ave.agent-connector.ai mirrors every copy `mirror.json` records from `web/public/schemas/` (published, candidate or orphan, each frozen against its own hash, §6.1), with `/1/protocol.schema.json` as a documented moving alias for editors. The validate CLI is a `tools/vendor/` bundle built from an ave entry (§10.2). | A release tag plus a sha256 in `contract/sources.json` is what the contract already pins; `tools/vendor.mjs` already holds bundles built from ave entries with a recorded bun version (`vendor.mjs:5-11`); release assets would be a second publication of the same bytes. The tag in `$id` is what keeps an additive revision (§3.3) from changing the bytes behind one identifier, since the site deploys on every `web/**` merge, not on tags. |

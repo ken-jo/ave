@@ -211,7 +211,15 @@ Keep task-specific inventories in issues rather than in this instruction file.
   through its `AbortController`.
 - The OS tool sandbox is opt-in on every platform, per the decision comment beside
   `osToolSandbox` in [settings-defaults.ts](src/data/settings-defaults.ts#L237-L254).
-  On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1` activation failure
+  It has two scopes: `osToolSandbox` confines host shells only (bash, PowerShell,
+  the workspace terminal); `pluginWorkerConfinement` confines plugin workers,
+  plugin children, plugin hooks and MCP stdio servers. Neither decides the other:
+  `AVE_SANDBOX_ENABLED=1` forces the shell scope only and
+  `AVE_PLUGIN_WORKER_CONFINEMENT=1` the worker scope. A shell spawn path gates on
+  `isShellSandboxActive` / `detectShellSandboxCapability`, an extension spawn path
+  on `isPluginWorkerConfinementActive`, never the raw `isAsrtSandboxActive`.
+  On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1` or
+  `AVE_PLUGIN_WORKER_CONFINEMENT=1` activation failure
   aborts startup; settings activation warns and continues without OS isolation
   when unavailable. Windows always warns and continues when unavailable.
   Keep plugin read relaxation conditional on active filesystem confinement
