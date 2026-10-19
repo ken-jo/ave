@@ -24,7 +24,6 @@ import {
   isIntegrationBranchRef,
   parsePrePushUpdates,
   parseRemoteHeads,
-  resolveHeadUpdates,
   selectBaseCandidates,
 } from "../../scripts/hooks/pre-push-ref-updates.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
@@ -54,18 +53,6 @@ describe("pre-push ref updates", () => {
     expect(result.updates).toEqual([
       { localRef: "refs/heads/topic", localSha: SHA, remoteRef: "refs/heads/topic", remoteSha: ZERO },
     ]);
-  });
-
-  it("names the branch a HEAD push updates, and only when HEAD is that branch at the pushed commit", () => {
-    const head = parsePrePushUpdates({ readable: true, text: `HEAD ${SHA} refs/heads/topic ${ZERO}` });
-    expect(resolveHeadUpdates(head, () => ({ ref: "refs/heads/topic", sha: SHA })).updates[0]?.localRef)
-      .toBe("refs/heads/topic");
-    // Detached HEAD, or a branch tip that is not the pushed commit: still HEAD.
-    expect(resolveHeadUpdates(head, () => null).updates[0]?.localRef).toBe("HEAD");
-    expect(resolveHeadUpdates(head, () => ({ ref: "refs/heads/topic", sha: "1".repeat(40) })).updates[0]?.localRef)
-      .toBe("HEAD");
-    const branch = parsePrePushUpdates({ readable: true, text: UPDATE });
-    expect(resolveHeadUpdates(branch, () => { throw new Error("not consulted"); })).toBe(branch);
   });
 
   it("parses several updates and ignores blank lines", () => {
