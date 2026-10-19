@@ -10,6 +10,10 @@ import { hardenLinuxSandboxWrap } from "../linux-sandbox-wrap.js";
 import { deriveSandboxWritePaths } from "../sandbox-write-jail.js";
 
 const priorAveHome = process.env.AVE_HOME;
+
+function isAtOrUnder(path: string, ancestor: string): boolean {
+  return path === ancestor || path.startsWith(`${ancestor}/`);
+}
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {
@@ -51,8 +55,15 @@ it.runIf(process.platform !== "win32")("makes the generated Linux secrets mask r
     const words = execFileSync("/bin/bash", ["-c", `set -- ${wrapped.argv[2]}; printf '%s\\n' "$@"`], {
       encoding: "utf8",
     }).trimEnd().split("\n");
-    const mask = words.findIndex((word, index) => word === "--tmpfs" && words[index + 1] === mountedSecrets);
-    const remount = words.findIndex((word, index) => word === "--remount-ro" && words[index + 1] === mountedSecrets);
+    // ASRT 0.0.79 drops a read-deny mask nested inside another (`secrets`
+    // inside the masked home), so the mask that hides the secrets is the
+    // innermost tmpfs at or above them; that is the one that must end read-only.
+    const covering = words
+      .flatMap((word, index) => (word === "--tmpfs" && isAtOrUnder(mountedSecrets, words[index + 1]!) ? [words[index + 1]!] : []))
+      .sort((a, b) => b.length - a.length)[0];
+    expect(covering).toBeDefined();
+    const mask = words.findIndex((word, index) => word === "--tmpfs" && words[index + 1] === covering);
+    const remount = words.findIndex((word, index) => word === "--remount-ro" && words[index + 1] === covering);
     const nestedWrite = words.findIndex((word, index) => word === "--bind" && words[index + 2] === mountedPluginData);
     const command = words.lastIndexOf("--");
     expect(mask).toBeGreaterThan(0);
@@ -137,13 +148,15 @@ it.skipIf(process.platform === "win32").each([
       const words = execFileSync("/bin/bash", ["-c", `set -- ${wrapped.argv[2]}; printf '%s\\n' "$@"`], {
         encoding: "utf8",
       }).trimEnd().split("\n");
-      for (const mask of masks) {
-        expect(words.some((word, index) => word === "--tmpfs" && words[index + 1] === mask)).toBe(true);
-      }
-      const lastMask = words.findLastIndex((word, index) => word === "--tmpfs" && masks.includes(words[index + 1]));
+      // ASRT 0.0.79 mounts a deny where its path resolves, so both spellings
+      // arrive as one target; the masks are matched by filesystem identity.
+      const maskIdentities = new Set(masks.map((mask) => realpathSync(mask)));
+      const isMask = (target: string | undefined) => target !== undefined && maskIdentities.has(realpathSync(target));
+      expect(words.some((word, index) => word === "--tmpfs" && isMask(words[index + 1]))).toBe(true);
+      const lastMask = words.findLastIndex((word, index) => word === "--tmpfs" && isMask(words[index + 1]));
       const writeBind = words.findLastIndex((word, index) => word === "--bind" && words[index + 2] === write);
       expect(writeBind).toBeGreaterThan(lastMask);
-      expect(words.some((word, index) => word === "--remount-ro" && masks.includes(words[index + 1]))).toBe(false);
+      expect(words.some((word, index) => word === "--remount-ro" && isMask(words[index + 1]))).toBe(false);
     } finally {
       cleanupBwrapMountPoints();
     }
@@ -161,7 +174,8 @@ it.skipIf(process.platform === "win32").each([
       const words = execFileSync("/bin/bash", ["-c", `set -- ${wrapped.argv[2]}; printf '%s\\n' "$@"`], {
         encoding: "utf8",
       }).trimEnd().split("\n");
-      expect(words.some((word, index) => word === "--remount-ro" && secrets.includes(words[index + 1]))).toBe(true);
+      const secretIdentities = new Set(secrets.map((secret) => realpathSync(secret)));
+      expect(words.some((word, index) => word === "--remount-ro" && secretIdentities.has(realpathSync(words[index + 1]!)))).toBe(true);
     } finally {
       cleanupBwrapMountPoints();
     }
@@ -206,6 +220,19 @@ it("remounts a mask that is the final mount at its target", () => {
 it("refuses a wrapper whose mount options cannot be located", () => {
   expect(() => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", "printf unconfined"], env: {} }))
     .toThrow(/bubblewrap/);
+});
+
+// ASRT 0.0.79 moves the mounts of a profile too long for one argument into a
+// file bwrap reads through `--args`, behind a `/bin/sh -c 'exec 3<…'` prefix.
+// The mounts are then not on the line to remount, so the wrap is refused rather
+// than run with its read-deny masks left writable.
+it("refuses a wrapper that passes its mounts to bwrap through a file", () => {
+  const viaArgsFile = [
+    "/bin/sh", "-c", 'exec 3<"$1" && shift && exec "$@"', "srt-args", "/proc/self/fd/9",
+    "bwrap", "--new-session", "--args", "3", "--", "/bin/bash", "-c", "true",
+  ].map((word) => `'${word.replace(/'/g, `'"'"'`)}'`).join(" ");
+  expect(() => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", viaArgsFile], env: {} }))
+    .toThrow(/does not invoke bubblewrap/);
 });
 
 it.each([

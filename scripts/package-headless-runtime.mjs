@@ -16,6 +16,16 @@ import {
 
 export { HEADLESS_FORBIDDEN_INHERITED_ENV };
 
+/**
+ * The standalone server runs on Node 22, at or above the `engines` floor in
+ * package.json (22.12, which @anthropic-ai/sandbox-runtime requires). `version`
+ * is `process.version`, such as `v22.12.0`.
+ */
+export function isSupportedHeadlessNodeVersion(version) {
+  const match = /^v22\.(\d+)\.\d+$/u.exec(version);
+  return match !== null && Number(match[1]) >= 12;
+}
+
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const HEADLESS_RUNTIME_CONTRACTS = Object.freeze({
   workloadBrokerCorrelation: "ave-workload-correlation/v1",
@@ -133,8 +143,8 @@ function main() {
   const sourceIdentity = readBuildSourceIdentity(repository);
   const runtimeEnv = prepareHeadlessLaunchEnv({ ...process.env });
   const runtime = JSON.parse(execFileSync(options.node, ["-p", "JSON.stringify({version:process.version,platform:process.platform,arch:process.arch,modules:process.versions.modules,napi:process.versions.napi,electron:process.versions.electron??null})"], { encoding: "utf8", env: runtimeEnv }));
-  if (runtime.electron !== null || runtime.platform !== "linux" || !runtime.version.startsWith("v22.")) {
-    throw new Error("The server artifact requires the standalone Linux 22.x runtime");
+  if (runtime.electron !== null || runtime.platform !== "linux" || !isSupportedHeadlessNodeVersion(runtime.version)) {
+    throw new Error("The server artifact requires the standalone Linux Node 22.x runtime, 22.12 or later");
   }
   const sourcePackage = JSON.parse(asar.extractFile(archive, "package.json").toString("utf8"));
   const boundary = JSON.parse(asar.extractFile(archive, "dist/src/main/headless-manifest.json").toString("utf8"));
