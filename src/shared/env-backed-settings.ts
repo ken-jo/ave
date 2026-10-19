@@ -90,8 +90,15 @@ export const ENV_BACKED_SETTINGS: readonly EnvBackedSetting[] = Object.freeze([
     forcedValue: forcesOnAt("1"),
   },
   // Already has a control (Permissions → OS tool sandbox); it is here because
-  // the same environment trap applies to it.
+  // the same environment trap applies to it. Shells only since the
+  // plugin-worker split; the worker side has its own variable below, so
+  // neither variable decides the other setting.
   { settingsPath: "features.osToolSandbox", envVar: "AVE_SANDBOX_ENABLED", forcedValue: forcesOnAt("1") },
+  {
+    settingsPath: "features.pluginWorkerConfinement",
+    envVar: "AVE_PLUGIN_WORKER_CONFINEMENT",
+    forcedValue: forcesOnAt("1"),
+  },
   // Chromium's GPU process. Read once, before `app.whenReady()`, so neither
   // side of this pair can change the running app — the control says "next
   // launch" for the same reason the resolver has to read the settings file

@@ -17,7 +17,7 @@
  *
  * Skipped off darwin or when ASRT can't initialize (deps missing / offline).
  */
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { request as httpRequest } from "node:http";
 import { writeFileSync, mkdtempSync, statSync, existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -29,7 +29,11 @@ import {
   resetAsrtSandbox,
 } from "../asrt-sandbox.js";
 import { spawnWorker, type SpawnedWorker } from "../worker-spawn.js";
-import { __resetWrappedPluginWorkersForTest } from "../sandbox-capability.js";
+import {
+  __resetSandboxRequestedAtBootForTest,
+  __resetWrappedPluginWorkersForTest,
+  setPluginWorkerConfinementRequestedAtBoot,
+} from "../sandbox-capability.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
@@ -118,8 +122,12 @@ server.listen(sock, () => {
 let tmpRoot: string | undefined;
 let worker: SpawnedWorker | undefined;
 
+// A worker is wrapped only while plugin-worker confinement was requested at boot.
+beforeEach(() => setPluginWorkerConfinementRequestedAtBoot(true));
+
 afterEach(async () => {
   try {
+    __resetSandboxRequestedAtBootForTest();
     worker?.stop();
     worker = undefined;
     if (isAsrtSandboxActive()) await resetAsrtSandbox();

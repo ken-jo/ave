@@ -78,6 +78,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
   >("../../permissions/asrt-sandbox.js");
   return {
     isAsrtSandboxActive: () => gateActive,
+    isPluginWorkerConfinementActive: () => gateActive,
     wrapWorkerCommand: (command: string, options?: unknown) =>
       wrapWorkerCommandMock(command, options),
     cleanupAsrtSandboxAfterCommand: () => cleanupMock(),

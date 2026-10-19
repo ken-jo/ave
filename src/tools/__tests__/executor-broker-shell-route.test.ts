@@ -8,7 +8,7 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -90,7 +90,7 @@ let root: string;
 beforeEach(() => {
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
-  setSandboxRequestedAtBoot(false);
+  setShellSandboxRequestedAtBoot(false);
   broker.active = true;
   broker.acquire.mockReset();
   broker.acquire.mockResolvedValue(broker.capability);

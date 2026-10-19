@@ -118,22 +118,24 @@ vi.mock("../../../permissions/asrt-windows-support.js", async (importOriginal) =
 
 const invoke = makeRegisteredHandlerInvoker(handlers);
 
-function makeDeps() {
+type FeatureFixture = { osToolSandbox?: boolean; pluginWorkerConfinement?: boolean };
+
+function makeDeps(features: FeatureFixture) {
   return {
     conversationLoop: { permissionManager: { getMode: () => "default", setDeferredEntryAsk: vi.fn() } },
     approvalGate: {},
     auditLogger: { log: vi.fn() },
     toolRegistry: { setDenyRules: vi.fn() },
-    settingsService: { get: vi.fn(() => ({ osToolSandbox: false })) },
+    settingsService: { get: vi.fn(() => features) },
     getAppWindows: vi.fn(() => []),
   };
 }
 
-async function setup() {
+async function setup(features: FeatureFixture = { osToolSandbox: false }) {
   handlers.clear();
   vi.clearAllMocks();
   const { registerPermissionsHandlers } = await import("../permissions.js");
-  registerPermissionsHandlers(makeDeps() as never);
+  registerPermissionsHandlers(makeDeps(features) as never);
 }
 
 const ORIGINAL_PLATFORM = process.platform;
@@ -344,9 +346,42 @@ describe("sandboxCapability win32 reconcile", () => {
     expect(result.potentialReason).toContain("plugins are not isolated from each other");
     expect(result.runtime.available).toBe(false);
     expect(result.runtime.kind).toBe("none");
-    expect(result.runtime.reason).toContain("no OS sandbox configured");
+    expect(result.runtime.reason).toContain("shell sandbox not requested at boot");
     // Partial — fs + egress confined, process not confined.
     expect(result.confines).toEqual({ filesystem: true, process: false, network: true });
+  });
+
+  it.each([
+    [true, false],
+    [false, true],
+    [true, true],
+    [false, false],
+  ])("reports each scope's runtime from its own boot seal (shell=%s, workers=%s)", async (shell, workers) => {
+    setProcessPlatform("linux");
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    capability.setActiveSandboxCapability({
+      kind: "asrt",
+      confidence: "verified",
+      platform: "linux",
+      reason: "ASRT runtime registered at boot",
+      confines: { filesystem: true, process: true, network: true },
+    });
+    capability.setShellSandboxRequestedAtBoot(shell);
+    capability.setPluginWorkerConfinementRequestedAtBoot(workers);
+    try {
+      await setup({ osToolSandbox: shell, pluginWorkerConfinement: workers });
+      const result = (await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())) as {
+        enabled: boolean;
+        runtime: { kind: string };
+        workerRuntime: { kind: string };
+      };
+      expect(result.enabled).toBe(shell);
+      expect(result.runtime.kind).toBe(shell ? "full" : "none");
+      expect(result.workerRuntime.kind).toBe(workers ? "full" : "none");
+    } finally {
+      capability.__resetActiveSandboxCapabilityForTest();
+      capability.__resetSandboxRequestedAtBootForTest();
+    }
   });
 
   it("still reports darwin as full-confine available", async () => {
@@ -366,8 +401,13 @@ describe("sandboxCapability win32 reconcile", () => {
 
   it("reports active runtime separately from platform potential when ASRT is registered", async () => {
     setProcessPlatform("linux");
-    const { setActiveSandboxCapability, __resetActiveSandboxCapabilityForTest } =
-      await import("../../../permissions/sandbox-capability.js");
+    const {
+      setActiveSandboxCapability,
+      setShellSandboxRequestedAtBoot,
+      __resetActiveSandboxCapabilityForTest,
+      __resetSandboxRequestedAtBootForTest,
+    } = await import("../../../permissions/sandbox-capability.js");
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -391,6 +431,7 @@ describe("sandboxCapability win32 reconcile", () => {
       });
     } finally {
       __resetActiveSandboxCapabilityForTest();
+      __resetSandboxRequestedAtBootForTest();
     }
   });
 });

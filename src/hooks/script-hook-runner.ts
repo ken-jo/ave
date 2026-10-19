@@ -59,7 +59,7 @@ import type { DiscoveredHook } from "./hook-discovery.js";
 import type { PluginHookOwner } from "./hook-registry.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
-import { cleanupAsrtSandboxAfterCommand, isAsrtSandboxActive } from "../permissions/asrt-sandbox.js";
+import { cleanupAsrtSandboxAfterCommand, isPluginWorkerConfinementActive } from "../permissions/asrt-sandbox.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
 import {
   bundledWrappedEnv,
@@ -271,7 +271,7 @@ export async function runOneHookScript(
   assertManagedChildProcessAdmissionOpen("hook:script");
   let cleanupWrap: (() => void) | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
-  if (confinement && isAsrtSandboxActive() && process.platform === "win32") {
+  if (confinement && isPluginWorkerConfinementActive() && process.platform === "win32") {
     // srt-win: the hook runs through the stdio relay with an ACL grant on its
     // own generation root (read) and data root (write); see
     // `spawnWindowsBundledProcess`.
@@ -297,7 +297,7 @@ export async function runOneHookScript(
       }
       releaseHold();
     };
-  } else if (confinement && isAsrtSandboxActive()) {
+  } else if (confinement && isPluginWorkerConfinementActive()) {
     const sandboxHome = createSandboxProcessHome();
     try {
       const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,

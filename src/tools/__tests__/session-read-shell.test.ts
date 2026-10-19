@@ -8,7 +8,13 @@ import { shellQuote } from "../../lib/shell-resolver.js";
 import { cleanupAsrtSandboxAfterCommand, getBuiltinShellSessionReadPolicy, initializeAsrtSandbox, isAsrtSandboxActive, registerWorkerUnixSocketDir, resetAsrtSandbox, unregisterWorkerUnixSocketDir, useAppOwnedSandboxTempRoot } from "../../permissions/asrt-sandbox.js";
 import { spawnConfinedChild } from "../../permissions/confined-child.js";
 import { baseAllowedDirectories } from "../../permissions/base-allowed-directories.js";
-import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability } from "../../permissions/sandbox-capability.js";
+import {
+  __resetActiveSandboxCapabilityForTest,
+  __resetSandboxRequestedAtBootForTest,
+  setActiveSandboxCapability,
+  setPluginWorkerConfinementRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
+} from "../../permissions/sandbox-capability.js";
 import { sandboxCasesRun } from "../../plugins/isolation/__tests__/sandbox-cases.js";
 import { sessionStorePath } from "../../shared/session-store-path.js";
 import { BashTool, spawnWithSandbox } from "../shell-tools.js";
@@ -42,9 +48,14 @@ beforeEach(() => {
   vi.stubEnv("AVE_HOME", profile);
   vi.stubEnv("CLAUDE_CODE_TMPDIR", process.env.CLAUDE_CODE_TMPDIR);
   vi.stubEnv("CLAUDE_TMPDIR", process.env.CLAUDE_TMPDIR);
+  // These cases drive the host shell tools and a confined child, which are
+  // wrapped only while their scope was requested at boot.
+  setShellSandboxRequestedAtBoot(true);
+  setPluginWorkerConfinementRequestedAtBoot(true);
 });
 afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
+  __resetSandboxRequestedAtBootForTest();
   __resetActiveSandboxCapabilityForTest();
   vi.unstubAllEnvs();
   await cleanupTmpDir(root);

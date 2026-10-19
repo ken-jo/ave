@@ -30,7 +30,7 @@ import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
@@ -44,7 +44,7 @@ type Substrate = "sandbox-active" | "sandbox-unavailable" | "sandbox-off";
 function arrangeSubstrate(substrate: Substrate): void {
   __resetActiveSandboxCapabilityForTest();
   if (substrate === "sandbox-active") {
-    setSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -53,7 +53,7 @@ function arrangeSubstrate(substrate: Substrate): void {
       confines: { filesystem: true, process: true, network: true },
     });
   } else {
-    setSandboxRequestedAtBoot(substrate === "sandbox-unavailable");
+    setShellSandboxRequestedAtBoot(substrate === "sandbox-unavailable");
   }
 }
 

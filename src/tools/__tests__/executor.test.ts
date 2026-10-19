@@ -66,7 +66,7 @@ import {
   getHostShellExecutionPlan,
   markPluginWorkerWrapped,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
@@ -510,7 +510,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     const bash = new BashTool();
     registry.register(bash);
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
 
     const dir = mkdtempSync(join(tmpdir(), "ave-shell-approval-"));
     try {
@@ -4332,7 +4332,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const bash = new BashTool();
     registry.register(bash);
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-r2r4.json");
     // Force "ask" so the approval gate is invoked and receives the request.

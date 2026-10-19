@@ -19,7 +19,11 @@ import {
   markPluginWorkerWrapped,
   sandboxRelaxesCategory,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
+  setPluginWorkerConfinementRequestedAtBoot,
+  isShellSandboxRequestedAtBoot,
+  isPluginWorkerConfinementRequestedAtBoot,
+  detectShellSandboxCapability,
   unmarkPluginWorkerWrapped,
   type SandboxCapability,
 } from "../sandbox-capability.js";
@@ -105,6 +109,7 @@ describe("sandbox-capability", () => {
 describe("sandbox-capability — setActiveSandboxCapability publish", () => {
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
   });
 
   it("publishes kind='asrt' (verified) so detectSandboxCapability + the reviewer strong-relaxation become reachable when the gate is ON", () => {
@@ -134,6 +139,7 @@ describe("sandbox-capability — setActiveSandboxCapability publish", () => {
   });
 
   it("keeps generic Windows filesystem containment separate from plugin-effect containment", () => {
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -498,7 +504,7 @@ describe("sandbox-capability — boot-sealed host shell plan", () => {
 
   it("reports Windows requested partial host shells as effective none to the reviewer", () => {
     setProcessPlatform("win32");
-    setSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -525,12 +531,67 @@ describe("sandbox-capability — boot-sealed host shell plan", () => {
 
   it("does not turn explicit sandbox-off into the Windows one-shot fallback", () => {
     setProcessPlatform("win32");
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
 
     const plan = getHostShellExecutionPlan();
     expect(plan.mode).toBe("plain");
     expect(plan.fallbackReason).toBe("none");
     expect(plan.requiresExplicitUserApproval).toBe(false);
+  });
+});
+
+describe("sandbox-capability — shell sandbox and plugin-worker confinement are separate scopes", () => {
+  const originalPlatform = process.platform;
+  const fullAsrt = (platform: NodeJS.Platform): SandboxCapability => ({
+    kind: "asrt",
+    confidence: "verified",
+    platform,
+    reason: "ASRT active",
+    confines: { filesystem: true, process: true, network: true },
+  });
+
+  afterEach(() => {
+    __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
+    setProcessPlatform(originalPlatform);
+  });
+
+  it("worker confinement alone (ASRT active for workers) leaves host shells unsandboxed", () => {
+    setProcessPlatform("linux");
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    setActiveSandboxCapability(fullAsrt("linux"));
+
+    expect(isShellSandboxRequestedAtBoot()).toBe(false);
+    expect(detectShellSandboxCapability().kind).toBe("none");
+    expect(isActiveSandboxShellContained()).toBe(false);
+    expect(isActiveSandboxFilesystemContained()).toBe(false);
+    const plan = getHostShellExecutionPlan();
+    expect(plan).toMatchObject({ mode: "plain", requestedSandbox: false, fallbackReason: "none" });
+    expect(plan.requiresExplicitUserApproval).toBe(false);
+    expect(resolveReviewerSandboxCapability("builtin", "bash").kind).toBe("none");
+    // ASRT itself is live: a wrapped worker still reports the real capability.
+    expect(detectSandboxCapability().kind).toBe("asrt");
+  });
+
+  it("the shell sandbox alone sandboxes host shells and does not request worker confinement", () => {
+    setProcessPlatform("linux");
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability(fullAsrt("linux"));
+
+    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
+    expect(detectShellSandboxCapability().kind).toBe("asrt");
+    expect(isActiveSandboxShellContained()).toBe(true);
+    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", requestedSandbox: true });
+    expect(resolveReviewerSandboxCapability("builtin", "bash").kind).toBe("asrt");
+  });
+
+  it("each seal changes only its own scope", () => {
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    expect(isShellSandboxRequestedAtBoot()).toBe(false);
+    setShellSandboxRequestedAtBoot(true);
+    setPluginWorkerConfinementRequestedAtBoot(false);
+    expect(isShellSandboxRequestedAtBoot()).toBe(true);
+    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
   });
 });
 

@@ -20,6 +20,10 @@ import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { createLogger } from "../lib/logger.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
+import {
+  isPluginWorkerConfinementRequestedAtBoot,
+  isShellSandboxRequestedAtBoot,
+} from "./sandbox-capability.js";
 
 import type {
   SandboxRuntimeConfig,
@@ -918,9 +922,35 @@ async function loadSandboxManager() {
  */
 let active = false;
 
-/** Host-tool spawn gate. True once {@link initializeAsrtSandbox} succeeds. */
+/**
+ * Whether the ASRT runtime is initialized in this process. ASRT activates when
+ * the shell sandbox OR plugin-worker confinement was requested, so this alone
+ * does not say a given substrate is confined: a spawn path asks
+ * {@link isShellSandboxActive} or {@link isPluginWorkerConfinementActive}. The
+ * raw state is for the runtime's own plumbing (wrap self-gates, the shared
+ * network config refresh) and for paths that serve both kinds.
+ */
 export function isAsrtSandboxActive(): boolean {
   return active;
+}
+
+/**
+ * Host-shell spawn gate (bash / powershell tools, the workspace terminal):
+ * ASRT is active AND the shell sandbox (`features.osToolSandbox`) was
+ * requested at boot.
+ */
+export function isShellSandboxActive(): boolean {
+  return active && isShellSandboxRequestedAtBoot();
+}
+
+/**
+ * Extension spawn gate (plugin workers, out-of-process plugin children, plugin
+ * script hooks, external MCP stdio servers): ASRT is active AND plugin-worker
+ * confinement (`features.pluginWorkerConfinement`) was requested at boot. The
+ * shell sandbox setting never decides this.
+ */
+export function isPluginWorkerConfinementActive(): boolean {
+  return active && isPluginWorkerConfinementRequestedAtBoot();
 }
 
 /**

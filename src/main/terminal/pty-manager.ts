@@ -50,7 +50,7 @@ import {
   wrapTerminalCommand,
   wrapWorkerCommand,
   cleanupAsrtSandboxAfterCommand,
-  isAsrtSandboxActive,
+  isShellSandboxActive,
   sandboxTempEnvLaunch,
 } from "../../permissions/asrt-sandbox.js";
 import { isActiveSandboxShellContained } from "../../permissions/sandbox-capability.js";
@@ -367,7 +367,7 @@ async function spawnNewTerminal(
   // the active OS sandbox contains shell effects (filesystem + process). No
   // plain-spawn fallback (No-Fallback rule) — a terminal outside shell
   // confinement is strictly more dangerous than a one-shot bash tool. ──
-  if (!isAsrtSandboxActive() || !isActiveSandboxShellContained()) {
+  if (!isShellSandboxActive() || !isActiveSandboxShellContained()) {
     return {
       ok: false,
       reason: "not-shell-contained",

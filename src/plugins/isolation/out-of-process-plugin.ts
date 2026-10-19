@@ -10,9 +10,11 @@
  * `spawnConfinedChild` and nowhere else, and that primitive is where the wrap
  * is decided.
  *
- * THE CHILD IS CONFINED EXACTLY AS MUCH AS THE HOST IS. One setting,
- * `features.osToolSandbox`, says whether this host runs under the OS sandbox;
- * its own tools, its workers and its plugin children all follow it. While it
+ * THE CHILD IS CONFINED EXACTLY AS MUCH AS THE HOST'S WORKERS ARE. One
+ * setting, `features.pluginWorkerConfinement`, says whether extension
+ * processes run under the OS sandbox; plugin workers, MCP stdio servers and
+ * plugin children all follow it (host shells follow `features.osToolSandbox`,
+ * which never decides this). While it
  * is off the child is spawned as given and nothing marks it confined, so the
  * reviewer grants it no sandbox-based relaxation. While it is on, the wrap is
  * mandatory and a plugin that cannot be wrapped does not load. The rule that
@@ -49,7 +51,7 @@ import {
 import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 import {
   cleanupAsrtSandboxAfterCommand,
-  isAsrtSandboxActive,
+  isPluginWorkerConfinementActive,
   outermostContainingRoots,
   pluginGrantPathsBeyondOwnRoots,
   protectedReadDenyCovering,
@@ -997,7 +999,7 @@ export async function spawnConfinedPluginChild(
     // grants no reach beyond it, so making it conditional would buy nothing and
     // would make "the plugin binds and it fails" depend on a list someone has
     // to remember to update.
-    if (isAsrtSandboxActive()) {
+    if (isPluginWorkerConfinementActive()) {
       await registerWorkerUnixSocketDir(socketDir, socketHolder);
       socketDirRegistered = true;
     }
@@ -1018,7 +1020,7 @@ export async function spawnConfinedPluginChild(
     // Both registrations add to ASRT's SHARED allow-list, which exists only
     // while the sandbox does — with it off there is nothing to add to, and the
     // child is not wrapped, so nothing would read the entry.
-    if (isAsrtSandboxActive()) {
+    if (isPluginWorkerConfinementActive()) {
       await registerWorkerUnixSocketDir(workerRunRoot, socketHolder);
       workerRunRootRegistered = true;
     }
@@ -1030,7 +1032,7 @@ export async function spawnConfinedPluginChild(
     // `<AVE_HOME>` in the user profile is nothing: not its entry, not its data.
     // The grant is held to the plugin's own roots, because Windows has no
     // `denyPluginsRoot` to stop an inheriting grant from covering a neighbour.
-    if (process.platform === "win32" && isAsrtSandboxActive()) {
+    if (process.platform === "win32" && isPluginWorkerConfinementActive()) {
       // Each grant names the outermost envelope root only: `srt-win` stamps the
       // ACE on what a path resolves to, and a root nested in another — `data/`
       // under a runtime root that holds it, one chosen directory inside another
@@ -1069,7 +1071,7 @@ export async function spawnConfinedPluginChild(
     // argument, and spoken to over an authenticated loopback connection
     // instead of its pipes (`child-loopback-link.ts`). Everywhere else, and on
     // Windows with the sandbox off, the stdio child is unchanged.
-    const windowsLoopback = spec.launch.kind === "entry" && process.platform === "win32" && isAsrtSandboxActive();
+    const windowsLoopback = spec.launch.kind === "entry" && process.platform === "win32" && isPluginWorkerConfinementActive();
     const launchLine = windowsLoopback
       ? windowsLoopbackLaunchLine(spawnLine.args, baseEnv, extraEnv)
       : { args: spawnLine.args };
@@ -1328,7 +1330,7 @@ export function createOutOfProcessPluginFactory(
     // `entry` launch with the sandbox off), and never on Windows, whose
     // sandbox does not confine process creation (§2.2, §7.3). The deny floor
     // and the wrap stay `spawnConfinedChild`'s.
-    if (spec.launch.kind === "process" && (!isAsrtSandboxActive() || process.platform === "win32")) {
+    if (spec.launch.kind === "process" && (!isPluginWorkerConfinementActive() || process.platform === "win32")) {
       throw new ProcessEntryUnconfinedError();
     }
     const hostApi = context.hostApi as unknown as DispatchableHostApi;

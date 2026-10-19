@@ -4,7 +4,7 @@ import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
   getHostShellExecutionPlan,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import {
   buildHostShellExecutionRoute,
@@ -174,7 +174,7 @@ function terminalResult(
 beforeEach(() => {
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
-  setSandboxRequestedAtBoot(false);
+  setShellSandboxRequestedAtBoot(false);
   backgroundShellManager._resetForTest();
   broker.active = true;
   broker.issued = true;

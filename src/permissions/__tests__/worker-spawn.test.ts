@@ -108,6 +108,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
     root: "/tmp/ave-test-sandbox-tmp",
   }),
   isAsrtSandboxActive: () => gateActive,
+  isPluginWorkerConfinementActive: () => gateActive,
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
