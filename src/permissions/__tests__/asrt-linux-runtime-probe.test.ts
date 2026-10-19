@@ -119,6 +119,7 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
       ["-c", CONFIGURED_LINUX_BWRAP_COMMAND],
       {
         cwd: process.cwd(),
+        windowsHide: true,
         env: { ASRT_PROBE_ENV: "configured" },
         shell: false,
         stdio: "ignore",
