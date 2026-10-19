@@ -15,9 +15,8 @@
  * 2. The text still streaming for the current round lives in a small sidecar,
  *    `sessions/<id>/turn-inflight.json`, replaced atomically at most once
  *    per throttle interval. Its presence is also the proof that a turn was in
- *    flight: the engine deletes it when the turn ends, so a sidecar found by a
- *    process that is not running that turn means the previous process died
- *    mid-turn.
+ *    flight: the engine deletes it after a successful transcript sync at turn
+ *    end. An orphaned sidecar means the turn died or could not save its tail.
  *
  * Load folds the sidecar back in (`recoverInterruptedTurn`): the partial text
  * becomes an interrupted assistant row, a tool call that never got a result
@@ -222,13 +221,18 @@ export function recoverInterruptedTurn(
   const toolAssistantIndex = openToolTailIndex(out);
   if (toolAssistantIndex >= 0) {
     const assistant = out[toolAssistantIndex] as Record<string, unknown>;
-    const answered = new Set(
-      out.slice(toolAssistantIndex + 1)
-        .map((m) => (isRecord(m) && typeof m.toolUseId === "string" ? m.toolUseId : null))
-        .filter((id): id is string => id !== null),
+    const completed = new Map(
+      out.splice(toolAssistantIndex + 1)
+        .filter((m): m is Record<string, unknown> => isRecord(m) && typeof m.toolUseId === "string")
+        .map((m) => [m.toolUseId as string, m] as const),
     );
     for (const call of assistant.toolCalls as unknown[]) {
-      if (!isRecord(call) || typeof call.id !== "string" || answered.has(call.id)) continue;
+      if (!isRecord(call) || typeof call.id !== "string") continue;
+      const result = completed.get(call.id);
+      if (result) {
+        out.push(result);
+        continue;
+      }
       out.push({
         role: "tool_result",
         toolUseId: call.id,

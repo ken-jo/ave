@@ -2334,7 +2334,7 @@ export class MemoryManager implements PromptMemorySource {
     );
   }
 
-  /** Close the turn journal: the turn reached its end and its rows are in the transcript. */
+  /** Deregister the turn, leaving its recovery sidecar until persistence is confirmed. */
   endTurnJournal(sessionId: string): void {
     if (!isValidSessionId(sessionId)) return;
     const path = turnInflightPath(this.sessionsDir, sessionId);
@@ -2344,7 +2344,12 @@ export class MemoryManager implements PromptMemorySource {
       return;
     }
     liveTurnJournals.delete(path);
-    removeTurnInflightRecord(path);
+  }
+
+  /** Remove a sidecar only after its owner confirms the transcript contains the turn. */
+  clearTurnJournal(sessionId: string): void {
+    if (!isValidSessionId(sessionId) || this.isTurnJournalLive(sessionId)) return;
+    removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
   }
 
   private isTurnJournalLive(sessionId: string): boolean {

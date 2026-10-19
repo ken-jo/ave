@@ -27,7 +27,7 @@ const DEFAULT_PARTIAL_INTERVAL_MS = 1_000;
 
 type JournalStore = Pick<
   MemoryManager,
-  "appendSessionProgress" | "beginTurnJournal" | "writeTurnPartial" | "endTurnJournal"
+  "appendSessionProgress" | "beginTurnJournal" | "writeTurnPartial" | "endTurnJournal" | "clearTurnJournal"
 >;
 
 export interface TurnJournalOptions {
@@ -104,15 +104,17 @@ export class TurnJournal {
 
   private onAppend(message: StoredMessage): void {
     const endedRoundId = message.role === "assistant" ? this.roundEnded() : undefined;
-    this.syncRows();
     // A snapshot of the round that just ended must go only AFTER the row that
     // replaces it is on disk — clearing it first would open a window where a
     // death loses the round entirely. A row under the snapshot's own id needs
     // no clear (recovery drops a snapshot whose id is on disk); a notice row
     // under a different id does.
-    if (endedRoundId !== undefined && message.meta.messageId !== endedRoundId) {
-      this.chain = this.chain.then(() => this.clearPartialIfStill(endedRoundId));
-    }
+    this.chain = this.chain.then(async () => {
+      const persisted = await this.syncRows();
+      if (persisted && endedRoundId !== undefined && message.meta.messageId !== endedRoundId) {
+        await this.clearPartialIfStill(endedRoundId);
+      }
+    });
   }
 
   private async clearPartialIfStill(roundId: string): Promise<void> {
@@ -167,18 +169,16 @@ export class TurnJournal {
     });
   }
 
-  private syncRows(): void {
-    // History is read under the transcript lock, not at append time: several
-    // appends in one tick (a round's tool results) collapse into one write, and
-    // a save that took the lock first is never overwritten by an older view.
-    this.chain = this.chain
-      .then(async () => {
-        if (!this.open) return;
-        await this.store.appendSessionProgress(this.sessionId, () => this.history.getMessages());
-      })
-      .catch((err: unknown) => {
-        log.warn("turn progress append failed: %s", err);
-      });
+  private async syncRows(): Promise<boolean> {
+    // Read under the transcript lock, so queued appends never overwrite a newer save.
+    if (!this.open) return false;
+    try {
+      await this.store.appendSessionProgress(this.sessionId, () => this.history.getMessages());
+      return true;
+    } catch (err) {
+      log.warn("turn progress append failed: %s", err);
+      return false;
+    }
   }
 
   /** Writes queued so far have reached the file. */
@@ -187,17 +187,19 @@ export class TurnJournal {
   }
 
   /**
-   * Close the journal at the end of the turn, after the turn's final save.
-   * Removes the in-flight marker: from here the transcript alone is the record.
+   * Deregister at turn end. Remove the recovery sidecar only after a successful
+   * transcript sync, since the turn's best-effort final save may have failed.
    */
   async end(): Promise<void> {
     if (!this.open) return;
     this.history.setAppendObserver(undefined);
     this.roundEnded();
     await this.chain;
+    const persisted = await this.syncRows();
     this.open = false;
     try {
       this.store.endTurnJournal(this.sessionId);
+      if (persisted) this.store.clearTurnJournal(this.sessionId);
     } catch (err) {
       log.warn("turn journal could not close: %s", err);
     }

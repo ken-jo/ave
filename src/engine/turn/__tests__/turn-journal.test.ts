@@ -17,9 +17,10 @@ const SESSION = "7a7a7a7a-1111-2222-3333-444444444444";
 function fakeStore() {
   return {
     appendSessionProgress: vi.fn(async () => "appended" as const),
-    beginTurnJournal: vi.fn(),
-    writeTurnPartial: vi.fn(),
+    beginTurnJournal: vi.fn(async () => undefined),
+    writeTurnPartial: vi.fn(async (_session: string, _startedAt: number, _partial: unknown) => undefined),
     endTurnJournal: vi.fn(),
+    clearTurnJournal: vi.fn(),
   };
 }
 
@@ -74,6 +75,7 @@ describe("TurnJournal partial snapshots", () => {
       beginTurnJournal: vi.fn(),
       writeTurnPartial: vi.fn((_s: string, _t: number, partial: unknown) => { order.push(partial ? "snapshot" : "clear"); }),
       endTurnJournal: vi.fn(),
+      clearTurnJournal: vi.fn(),
     };
     const history = new ConversationHistory();
     const journal = new TurnJournal(store as never, SESSION, history, { partialIntervalMs: 0 });
@@ -86,6 +88,35 @@ describe("TurnJournal partial snapshots", () => {
     expect(order).toEqual(["snapshot", "append", "clear"]);
     await journal.end();
     expect(store.endTurnJournal).toHaveBeenCalledWith(SESSION);
+  });
+
+  it("retains a partial when the replacing row and final transcript sync both fail", async () => {
+    vi.useFakeTimers();
+    const store = fakeStore();
+    store.appendSessionProgress.mockRejectedValue(Object.assign(new Error("write denied"), { code: "EACCES" }));
+    const history = new ConversationHistory();
+    const journal = new TurnJournal(store, SESSION, history, { partialIntervalMs: 0 });
+    await journal.begin();
+    journal.notePartial(() => ({ content: "saved partial" }));
+    await vi.advanceTimersByTimeAsync(1);
+    history.append({ role: "assistant", content: "stream failed", meta: { systemNotice: "stream-error" } });
+    await journal.end();
+    expect(store.writeTurnPartial).toHaveBeenCalledTimes(1);
+    expect(store.writeTurnPartial.mock.calls[0][2]).toMatchObject({ content: "saved partial" });
+    expect(store.endTurnJournal).toHaveBeenCalledWith(SESSION);
+    expect(store.clearTurnJournal).not.toHaveBeenCalled();
+  });
+
+  it("removes the recovery sidecar only after the final transcript sync succeeds", async () => {
+    const store = fakeStore();
+    const history = new ConversationHistory();
+    const journal = new TurnJournal(store, SESSION, history);
+    await journal.begin();
+    history.append({ role: "assistant", content: "complete" });
+    await journal.end();
+    expect(store.clearTurnJournal).toHaveBeenCalledWith(SESSION);
+    expect(store.appendSessionProgress.mock.invocationCallOrder.at(-1)).toBeLessThan(store.endTurnJournal.mock.invocationCallOrder[0]);
+    expect(store.endTurnJournal.mock.invocationCallOrder[0]).toBeLessThan(store.clearTurnJournal.mock.invocationCallOrder[0]);
   });
 });
 

@@ -176,6 +176,24 @@ describe("in-flight sidecar recovery", () => {
     expect(again.map((m) => m.meta.messageId)).toEqual(reloaded.map((m) => m.meta.messageId));
   });
 
+  it("orders completed and unknown results by call id when a later parallel call finished first", async () => {
+    const assistant = row("batch", {
+      role: "assistant",
+      content: "two tools",
+      toolCalls: [
+        { id: "slow", name: "read_file", input: {} },
+        { id: "done", name: "read_file", input: {} },
+      ],
+    });
+    const completed = row("done-result", { role: "tool_result", toolUseId: "done", content: "finished output" });
+    await crashMidTurn([user, assistant, completed]);
+    const restored = new MemoryManager({ aveDir: dir }).loadSession(SESSION) as Array<Record<string, any>>;
+    expect(restored.slice(2, 4)).toEqual([
+      expect.objectContaining({ toolUseId: "slow", isError: true, meta: expect.objectContaining({ toolDisplay: { cancelled: true } }) }),
+      completed,
+    ]);
+  });
+
   it("leaves a bare question alone when the turn died before producing anything", async () => {
     await crashMidTurn([user]);
     expect(new MemoryManager({ aveDir: dir }).loadSession(SESSION)).toEqual([user]);
@@ -187,6 +205,12 @@ describe("in-flight sidecar recovery", () => {
     await mm.writeTurnPartial(SESSION, 1_000, { messageId: "live", content: "아직 스트리밍 중", updatedAt: 1_500 });
     expect(mm.loadSession(SESSION)).toEqual([user]);
     mm.endTurnJournal(SESSION);
+    expect(existsSync(sidecarPath())).toBe(true);
+    expect(new MemoryManager({ aveDir: dir }).loadSession(SESSION)).toEqual([
+      user,
+      expect.objectContaining({ role: "assistant", content: "아직 스트리밍 중" }),
+    ]);
+    mm.clearTurnJournal(SESSION);
     expect(existsSync(sidecarPath())).toBe(false);
   });
 

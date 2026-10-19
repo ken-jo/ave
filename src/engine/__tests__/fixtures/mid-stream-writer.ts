@@ -38,6 +38,9 @@ class KillTestProvider implements LLMProvider {
     process.stdout.write(`ROUND ${round}\n`);
     if (round < toolRounds) {
       yield { type: "text_delta", text: `round ${round} text` };
+      if (round === toolRounds - 1 && mode === "tool-hang") {
+        yield { type: "tool_call", id: "batch-completed", name: "work_tool", input: { round } };
+      }
       yield { type: "tool_call", id: `call-${round}`, name: round === toolRounds - 1 && mode === "tool-hang" ? "hang_tool" : "work_tool", input: { round } };
       yield { type: "message_complete", stopReason: "tool_use" };
       return;

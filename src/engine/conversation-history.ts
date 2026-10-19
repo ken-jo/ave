@@ -36,8 +36,32 @@ export class ConversationHistory {
   }
 
   append(message: GenericMessage): StoredMessage {
+    return this.appendAt(message, this.messages.length);
+  }
+
+  /** Insert a completed result in its assistant's call order, even when siblings finish out of order. */
+  appendToolResult(message: Extract<GenericMessage, { role: "tool_result" }>): StoredMessage {
+    let assistantIndex = this.messages.length - 1;
+    while (assistantIndex >= 0 && this.messages[assistantIndex].role === "tool_result") assistantIndex--;
+    const assistant = this.messages[assistantIndex];
+    const calls = assistant?.role === "assistant" ? assistant.toolCalls ?? [] : [];
+    const order = calls.findIndex((call) => call.id === message.toolUseId);
+    let index = this.messages.length;
+    if (order >= 0) {
+      for (let i = assistantIndex + 1; i < this.messages.length; i++) {
+        const sibling = this.messages[i];
+        if (sibling.role === "tool_result" && calls.findIndex((call) => call.id === sibling.toolUseId) > order) {
+          index = i;
+          break;
+        }
+      }
+    }
+    return this.appendAt(message, index);
+  }
+
+  private appendAt(message: GenericMessage, index: number): StoredMessage {
     const stored = stampMessageId(stampCreatedAt(applyToolResultCap(message)));
-    this.messages.push(stored);
+    this.messages.splice(index, 0, stored);
     this.trim();
     this.appendObserver?.(stored);
     return stored;

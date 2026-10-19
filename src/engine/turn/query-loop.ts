@@ -1948,7 +1948,45 @@ export async function queryLoop(
         round: roundIndex,
         toolNames: toolUsesForExecutor.map((tu) => tu.name),
       });
+      const appendedToolResultIds = new Set<string>();
+      const attachedDirectoryInstructions = liveDirectoryInstructions(self.history.getMessages());
+      const appendToolResult = (tr: ToolResult): void => {
+        if (appendedToolResultIds.has(tr.tool_use_id)) return;
+        const resultMeta = toolResultMeta(
+          tr,
+          toolMetaByUseId.get(tr.tool_use_id),
+          permissionReviewByUseId.get(tr.tool_use_id),
+        );
+        const toolUse = toolUsesForExecutor.find((tu) => tu.id === tr.tool_use_id);
+        const directoryInstructions = directoryInstructionsForToolResult({
+          projectRoot: self.getSessionProjectContext().projectRoot,
+          source: toolMetaByUseId.get(tr.tool_use_id)?.source,
+          toolInput: toolUse?.input,
+          isError: tr.is_error === true,
+          toolResultContent: tr.content,
+          stubbedOnWire: !toolResultContentReachesWire(resultMeta),
+          attached: attachedDirectoryInstructions,
+          gitIgnoreVerdicts: self.gitIgnoreVerdicts,
+        });
+        const meta = directoryInstructions
+          ? { ...resultMeta, directoryInstructions: directoryInstructions.attached }
+          : resultMeta;
+        self.history.appendToolResult({
+          role: "tool_result",
+          toolUseId: tr.tool_use_id,
+          toolName: toolUse?.name,
+          content: directoryInstructions ? `${tr.content}\n\n${directoryInstructions.text}` : tr.content,
+          ...(tr.is_error && { isError: true }),
+          ...("image" in tr && tr.image ? { image: tr.image } : {}),
+          ...(meta ? { meta } : {}),
+        });
+        appendedToolResultIds.add(tr.tool_use_id);
+      };
       const executeOptions = {
+          onToolResult: async (result) => {
+            appendToolResult(result);
+            await self.activeTurnJournal?.settled();
+          },
           callbacks: {
             onToolStart: (name, input, meta) => {
               toolMetaByUseId.set(meta.toolUseId, meta);
@@ -2257,40 +2295,8 @@ export async function queryLoop(
 
       toolErrorsRun += toolResults.filter((tr) => tr.is_error === true).length;
 
-      // tool_result 히스토리 append → loop back
-      // Derived from history, so a file whose carrying row compaction dropped
-      // or stubbed is no longer attached and rides the next touch again.
-      const attachedDirectoryInstructions = liveDirectoryInstructions(self.history.getMessages());
-      for (const tr of toolResults) {
-        const resultMeta = toolResultMeta(
-          tr,
-          toolMetaByUseId.get(tr.tool_use_id),
-          permissionReviewByUseId.get(tr.tool_use_id),
-        );
-        const toolUse = toolUsesForExecutor.find((tu) => tu.id === tr.tool_use_id);
-        const directoryInstructions = directoryInstructionsForToolResult({
-          projectRoot: self.getSessionProjectContext().projectRoot,
-          source: toolMetaByUseId.get(tr.tool_use_id)?.source,
-          toolInput: toolUse?.input,
-          isError: tr.is_error === true,
-          toolResultContent: tr.content,
-          stubbedOnWire: !toolResultContentReachesWire(resultMeta),
-          attached: attachedDirectoryInstructions,
-          gitIgnoreVerdicts: self.gitIgnoreVerdicts,
-        });
-        const meta = directoryInstructions
-          ? { ...resultMeta, directoryInstructions: directoryInstructions.attached }
-          : resultMeta;
-        self.history.append({
-          role: "tool_result",
-          toolUseId: tr.tool_use_id,
-          toolName: toolUse?.name,
-          content: directoryInstructions ? `${tr.content}\n\n${directoryInstructions.text}` : tr.content,
-          ...(tr.is_error && { isError: true }),
-          ...("image" in tr && tr.image ? { image: tr.image } : {}),
-          ...(meta ? { meta } : {}),
-        });
-      }
+      // Synthetic terminal results have no invocation callback; completed calls are already stored.
+      for (const result of toolResults) appendToolResult(result);
       if (abortSignal?.aborted) {
         log.info(
           `queryLoop: EARLY-EXIT(tool-abort) — round=${roundIndex} toolResults=${toolResults.length}`,

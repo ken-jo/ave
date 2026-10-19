@@ -40,7 +40,7 @@ function startWriter(mode: "stream" | "tool-hang", ready: RegExp): { ready: Prom
   const proc = spawn(
     process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath,
     ["--import=tsx", fixture, home, SESSION_ID, String(TOOL_ROUNDS), mode],
-    { cwd: repoRoot, env: { ...process.env, AVE_HOME: home }, stdio: ["ignore", "pipe", "pipe"] },
+    { cwd: repoRoot, env: { ...process.env, HOME: home, AVE_HOME: home }, stdio: ["ignore", "pipe", "pipe"] },
   );
   child = proc;
   let stdout = "";
@@ -118,7 +118,16 @@ describe("SIGKILL mid-turn", () => {
       meta: { interrupted: true, interruptedBy: "host-exit" },
     });
     // Earlier rounds intact.
-    expect(messages.filter((m) => m.role === "tool_result")).toHaveLength(TOOL_ROUNDS);
+    const results = messages.filter((m) => m.role === "tool_result");
+    expect(results).toHaveLength(TOOL_ROUNDS + 1);
+    const completed = results.find((m) => m.toolUseId === "batch-completed");
+    expect(completed).toMatchObject({ content: `work output {"round":${TOOL_ROUNDS - 1}}` });
+    expect(completed?.isError).not.toBe(true);
+    expect(results.slice(-2).map((m) => m.toolUseId)).toEqual(["batch-completed", `call-${TOOL_ROUNDS - 1}`]);
+    expect(messages[1 + (TOOL_ROUNDS - 1) * 2]).toMatchObject({
+      role: "assistant",
+      toolCalls: [expect.objectContaining({ id: "batch-completed" }), expect.objectContaining({ id: `call-${TOOL_ROUNDS - 1}` })],
+    });
     const entries = historyToEntries(messages.map((m, i) => serializeHistoryMessage(m, i)));
     expect(interruptedTurnOffer(entries)).toBe("resume");
   }, 90_000);

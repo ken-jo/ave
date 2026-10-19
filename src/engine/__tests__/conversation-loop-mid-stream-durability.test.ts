@@ -14,7 +14,7 @@
  *      Continue, which resumes from the persisted rows,
  *   5. sub-agent children get the same journal through the same runTurn.
  */
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +27,8 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { turnInflightPath } from "../../memory/session-turn-journal.js";
+import * as journalStorage from "../../memory/session-turn-journal.js";
+import * as atomicFile from "../../lib/atomic-file.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { serializeHistoryMessage } from "../../shared/chat-history.js";
 import { historyToEntries, interruptedTurnOffer } from "../../ui/renderer/utils/history.js";
@@ -88,10 +90,11 @@ function streamThenBlock(text: string, onStreamed: () => void): Step {
   };
 }
 
-function okTool(name: string, output: string) {
+function okTool(name: string, output: string, parallelSafe = false) {
   return createDynamicTool({
     name,
     description: name,
+    parallelSafe,
     source: "builtin",
     category: "read",
     isReadOnly: () => true,
@@ -146,6 +149,100 @@ function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
 }
 
 describe("mid-stream durability", () => {
+  it.each([false, true])("recovers a completed call while its sibling is still running (later call completes first: %s)", async (laterFirst) => {
+    const memoryManager = new MemoryManager({ aveDir: dir });
+    const registry = new ToolRegistry();
+    registry.register(okTool("finished_tool", "finished output", true));
+    let running = false;
+    let release!: () => void;
+    registry.register(createDynamicTool({
+      name: "waiting_tool",
+      description: "waits for release",
+      source: "builtin",
+      category: "read",
+      parallelSafe: true,
+      isReadOnly: () => true,
+      jsonSchema: { type: "object", properties: {} },
+      execute: async () => {
+        running = true;
+        await new Promise<void>((resolve) => { release = resolve; });
+        return { output: "second output", isError: false };
+      },
+    }));
+    // Both can start together; reverse order covers a result inserted ahead of a persisted sibling.
+    const calls: StreamEvent[] = [
+      { type: "tool_call", id: "finished", name: "finished_tool", input: {} },
+      { type: "tool_call", id: "waiting", name: "waiting_tool", input: {} },
+    ];
+    if (laterFirst) calls.reverse();
+    const provider = new ScriptedProvider([
+      [...calls, { type: "message_complete", stopReason: "tool_use" }],
+      [{ type: "text_delta", text: "done" }, { type: "message_complete", stopReason: "end_turn" }],
+    ]);
+    const loop = buildLoop(memoryManager, registry, provider);
+    const turn = loop.runTurn("batch question", undefined, undefined, { inputOrigin: "user-keyboard" });
+    const crashed = mkdtempSync(join(tmpdir(), "ave-batch-crashed-"));
+    try {
+      const transcript = join(dir, "sessions", SESSION_ID + ".jsonl");
+      await waitFor(() => running && existsSync(transcript)
+        && readFileSync(transcript, "utf8").includes('"toolUseId":"finished"'));
+      cpSync(join(dir, "sessions"), join(crashed, "sessions"), { recursive: true });
+      const restored = (new MemoryManager({ aveDir: crashed }).loadSession(SESSION_ID) ?? []) as GenericMessage[];
+      const results = restored.filter((row) => row.role === "tool_result");
+      expect(results.map((row) => row.toolUseId)).toEqual(laterFirst ? ["waiting", "finished"] : ["finished", "waiting"]);
+      expect(results.find((row) => row.toolUseId === "finished")).toMatchObject({ content: "finished output" });
+      expect(results.find((row) => row.toolUseId === "finished")?.isError).not.toBe(true);
+      expect(results.find((row) => row.toolUseId === "waiting")).toMatchObject({ isError: true, meta: { toolDisplay: { cancelled: true } } });
+      expect(restored[1]).toMatchObject({ role: "assistant", toolCalls: calls.map((call) => expect.objectContaining({ id: "id" in call ? call.id : "" })) });
+    } finally {
+      release?.();
+      await turn;
+      await cleanupTmpDir(crashed);
+    }
+    const saved = (new MemoryManager({ aveDir: dir }).loadSession(SESSION_ID) ?? []) as GenericMessage[];
+    expect(saved.filter((row) => row.role === "tool_result").map((row) => row.toolUseId))
+      .toEqual(laterFirst ? ["waiting", "finished"] : ["finished", "waiting"]);
+    expect(provider.seen[1].filter((row) => row.role === "tool_result").map((row) => row.toolUseId))
+      .toEqual(laterFirst ? ["waiting", "finished"] : ["finished", "waiting"]);
+  });
+
+  it.each(["append", "rewrite"] as const)("restores partial text after EACCES blocks the transcript %s and final save", async (writeKind) => {
+    const memoryManager = new MemoryManager({ aveDir: dir });
+    let streamed = false;
+    const loop = buildLoop(memoryManager, new ToolRegistry(), new ScriptedProvider([
+      streamThenBlock("partial text survives denied write", () => { streamed = true; }),
+    ]));
+    const turn = loop.runTurn("write failure", undefined, undefined, { inputOrigin: "user-keyboard" });
+    const sidecar = turnInflightPath(join(dir, "sessions"), SESSION_ID);
+    try {
+      await waitFor(() => streamed && existsSync(sidecar) && JSON.parse(readFileSync(sidecar, "utf8")).partial !== undefined);
+      const transcript = join(dir, "sessions", SESSION_ID + ".jsonl");
+      const denied = Object.assign(new Error("transcript write denied"), { code: "EACCES" });
+      const write = atomicFile.writeUtf8FileAtomicSync;
+      const rewrite = vi.spyOn(atomicFile, "writeUtf8FileAtomicSync").mockImplementation((path, ...args) => {
+        if (path === transcript) throw denied;
+        return write(path, ...args);
+      });
+      const append = vi.spyOn(journalStorage, "appendJsonlRecords").mockRejectedValue(denied);
+      if (writeKind === "rewrite") appendFileSync(transcript, "\n");
+      loop.abortCurrentTurn();
+      await expect(turn).rejects.toMatchObject({ code: "EACCES" });
+      expect(rewrite.mock.calls.some(([path]) => path === transcript)).toBe(true);
+      if (writeKind === "append") expect(append).toHaveBeenCalled();
+      expect(existsSync(sidecar)).toBe(true);
+      expect(JSON.parse(readFileSync(sidecar, "utf8")).partial.content).toBe("partial text survives denied write");
+      vi.restoreAllMocks();
+      const restarted = new MemoryManager({ aveDir: dir });
+      const restored = restarted.loadSession(SESSION_ID) as GenericMessage[];
+      expect(restored.at(-1)).toMatchObject({ role: "assistant", content: "partial text survives denied write", meta: { interrupted: true, interruptedBy: "host-exit" } });
+      await restarted.saveSession(SESSION_ID, restored);
+      expect(existsSync(sidecar)).toBe(false);
+    } finally {
+      loop.abortCurrentTurn();
+      await turn.catch(() => undefined);
+    }
+  });
+
   it("has every completed round and tool_result on disk while the turn is still running, without a save per round", async () => {
     const memoryManager = new MemoryManager({ aveDir: dir });
     const saveSpy = vi.spyOn(memoryManager, "saveSession");
