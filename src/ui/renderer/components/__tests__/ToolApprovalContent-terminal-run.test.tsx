@@ -46,8 +46,9 @@ describe("ToolApprovalContent terminal_run card", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
     showActiveSurface({ kind: "terminal", tabId: "terminal:3fa91c0e-2", label: "Terminal 2", cwd: "/workspace/project/app" });
     render(<ToolApprovalContent conversationLabel="conversation" open request={terminalRunRequest()} onDecide={vi.fn()} />);
-    expect(screen.getAllByText(/npm test -- --watch=false/).length).toBeGreaterThan(0);
     const target = screen.getByTestId("approval-terminal-target");
+    // The exact command is on the always-visible line, not only behind the details toggle.
+    expect(target).toHaveTextContent("npm test -- --watch=false");
     expect(target).toHaveTextContent("Terminal 2");
     expect(target).toHaveTextContent("/workspace/project/app");
   });

@@ -571,20 +571,23 @@ function rememberScopeText(
 }
 
 /**
- * The terminal a `terminal_run` card types into and the directory its shell
- * is in — both sealed by the host before the card was shown. Named the way
+ * The exact command a `terminal_run` card types (as the card's input row
+ * shows it), the terminal it types into and the directory its shell is in —
+ * the last two sealed by the host before the card was shown. Named the way
  * the terminal's tab is labelled when it is the window's active terminal
  * (the usual target), else by its id.
  */
 function terminalTargetText(
   t: (key: string, params?: Record<string, string>) => string,
-  request: Pick<ApprovalRequest, "approvalMemory">,
+  request: Pick<ApprovalRequest, "approvalMemory" | "args">,
 ): string | null {
   const memory = request.approvalMemory;
   if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return null;
+  const command = parseArgs(request.args)?.command;
+  if (typeof command !== "string") return null;
   const active = getActiveSurface();
   const terminal = active?.kind === "terminal" && active.tabId === memory.scope.tabId ? active.label : memory.scope.tabId;
-  return t("toolApprovalDialog.terminalTarget", { terminal, cwd: memory.scope.cwd });
+  return t("toolApprovalDialog.terminalTarget", { command, terminal, cwd: memory.scope.cwd });
 }
 
 /**
