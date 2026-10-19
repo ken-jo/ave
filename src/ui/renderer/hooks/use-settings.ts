@@ -557,7 +557,7 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
     // ids, wrong here: an unrecognised id must show as itself, never borrow
     // another provider's label.
     const vendorLabel = isSubscriptionRuntimeId(subscription.provider)
-      ? subscriptionRuntimeDescriptor(subscription.provider).label
+      ? subscriptionRuntimeDescriptor(subscription.provider).planName
       : subscription.provider;
     choices.unshift({
       kind: "subscription",

@@ -1086,6 +1086,18 @@ function subscriptionCompanyLabel(view: SubscriptionProviderView): string {
   return counterpart ? getVendorInfo(counterpart).label : view.descriptor.planName;
 }
 
+/**
+ * The chooser's group name for a subscription's models: the company and the
+ * plan, so a subscription pick and an API-key pick from the same company
+ * cannot be confused for one another ("OpenAI · ChatGPT subscription").
+ */
+function subscriptionModelsLabel(t: I18nContextValue["t"], view: SubscriptionProviderView): string {
+  return t("subscriptionProvidersSection.subscriptionModels", {
+    company: subscriptionCompanyLabel(view),
+    plan: view.descriptor.planName,
+  });
+}
+
 function apiRouteRowId(route: ConfiguredApiRoute): string {
   return route.presetId ? marketplaceProviderPresetSecretId(route.presetId) : route.vendorId;
 }
@@ -2389,8 +2401,8 @@ export function LlmTab(props: LlmTabProps) {
         options.push({
           value: unifiedValue(view.descriptor.id, ""),
           providerId: view.descriptor.id,
-          providerLabel: subscriptionCompanyLabel(view),
-          vendorLabel: subscriptionCompanyLabel(view),
+          providerLabel: subscriptionModelsLabel(t, view),
+          vendorLabel: subscriptionModelsLabel(t, view),
           modelId: t("llmTab.providerDefaultModel"),
           facts: t("llmTab.modelFixedByProvider"),
           fixed: true,
@@ -2401,8 +2413,8 @@ export function LlmTab(props: LlmTabProps) {
         options.push({
           value: unifiedValue(view.descriptor.id, model.id),
           providerId: view.descriptor.id,
-          providerLabel: subscriptionCompanyLabel(view),
-          vendorLabel: subscriptionCompanyLabel(view),
+          providerLabel: subscriptionModelsLabel(t, view),
+          vendorLabel: subscriptionModelsLabel(t, view),
           modelId: model.label || model.id,
           // A subscription runtime answers the image question itself — the
           // model-name predicate is explicitly bypassed on this route — so the
@@ -2593,11 +2605,17 @@ export function LlmTab(props: LlmTabProps) {
 
   /** Open a row: the key form only when the row is on (or only has) the API-key method. */
   const openRow = useCallback((row: ProviderConnection) => {
+    // A card opened on a defaulted method stays on it while it is open, even
+    // when a status that arrives later would default it elsewhere.
+    const method = rowAuthMethod(row);
+    if (row.subscription && row.apiVendorId && method && !authMethodByRow[row.id]) {
+      setAuthMethodByRow((current) => ({ ...current, [row.id]: method }));
+    }
     if (rowShowsCredentialForm(row)) {
       openRowCredentialForm({ rowId: row.id, vendorId: row.apiVendorId!, presetId: row.presetId ?? "" });
     }
     else setOpenRowIds((current) => current.includes(row.id) ? current : [...current, row.id]);
-  }, [openRowCredentialForm, rowShowsCredentialForm]);
+  }, [authMethodByRow, openRowCredentialForm, rowAuthMethod, rowShowsCredentialForm]);
 
   /**
    * Switch a two-way card to `method`. Picking "API key" starts the key form;
@@ -2716,8 +2734,20 @@ export function LlmTab(props: LlmTabProps) {
     setOpenRowIds((current) => current.filter((rowId) => rowId !== row.id));
   };
 
+  /**
+   * Keep a two-way card on the method the user is acting in. Removing the
+   * credential the default was read from would otherwise move the card to
+   * another method (or to none) under the user's hands.
+   */
+  const pinAuthMethod = (row: ProviderConnection, method: ProviderSignInMethod) => {
+    if (!row.subscription || !row.apiVendorId) return;
+    setAuthMethodByRow((current) => current[row.id] === method ? current : { ...current, [row.id]: method });
+  };
+
   /** Remove the key this row stores. Only ever on an explicit request. */
   const deleteRowKey = (row: ProviderConnection) => {
+    const method = rowAuthMethod(row);
+    if (method) pinAuthMethod(row, method);
     void api.deleteApiKey(rowCredentialId(row)).then(() => {
       if (rowIsActiveApiProvider(row)) setHasKey(false);
       // A row that existed only because of the key it held would otherwise
@@ -2727,6 +2757,9 @@ export function LlmTab(props: LlmTabProps) {
       revealRow(row.id);
       setSettingsRevision((current) => current + 1);
       onSaved();
+    }).catch(() => {
+      // The key is still stored; re-ask the store so the card says so.
+      setSettingsRevision((current) => current + 1);
     });
   };
 
@@ -2777,7 +2810,10 @@ export function LlmTab(props: LlmTabProps) {
               className="h-7 text-xs text-destructive"
               disabled={Boolean(view.busyAction) || view.refreshPending === true}
               data-testid={`llm-tab:other-credential:${row.id}:sign-out`}
-              onClick={() => void Promise.resolve(logout(view.descriptor.id)).catch(() => undefined)}
+              onClick={() => {
+                pinAuthMethod(row, "api");
+                void Promise.resolve(logout(view.descriptor.id)).catch(() => undefined);
+              }}
             >
               {t("subscriptionProvidersSection.signOut")}
             </Button>
@@ -3000,6 +3036,14 @@ export function LlmTab(props: LlmTabProps) {
     );
   };
 
+  /** Whether the subscription's state is the row's state (see `providerRowState`). */
+  const subscriptionSpeaksForRow = (row: ProviderConnection): boolean => {
+    if (!row.subscription) return false;
+    if (!row.apiConfigured) return true;
+    const connection = row.subscription.status?.connection;
+    return connection === "connected" || connection === "pending";
+  };
+
   /**
    * What a subscription row is waiting on, in the row's own words.
    *
@@ -3009,7 +3053,7 @@ export function LlmTab(props: LlmTabProps) {
    */
   const runtimeSentence = (row: ProviderConnection): string | null => {
     const status = row.subscription?.status;
-    if (!row.subscription || !status) return null;
+    if (!row.subscription || !status || !subscriptionSpeaksForRow(row)) return null;
     if (status.runtime === "unavailable") return t("subscriptionProvidersSection.statusRuntimeUnavailable");
     if (status.runtime === "not-configured") {
       return row.subscription.descriptor.executable === "discovered"
@@ -3048,7 +3092,11 @@ export function LlmTab(props: LlmTabProps) {
    * how a column stops being readable straight down.
    */
   const providerRowState = (row: ProviderConnection): ConnectionRowState | null => {
-    const status = row.subscription?.status;
+    // A row with a working API key is not held back by the other method: a
+    // missing or unusable CLI only speaks for the row while the subscription
+    // is the way in (signed in, signing in, or no key to fall back on).
+    const speaks = subscriptionSpeaksForRow(row);
+    const status = speaks ? row.subscription?.status ?? null : null;
     // No word at all while the surface that owns the real state is still
     // answering — guessing "signed out" during the check is how a row lies.
     // "No CLI found" and "the CLI found cannot be used" are answers, though:
@@ -3056,7 +3104,7 @@ export function LlmTab(props: LlmTabProps) {
     // its connection stays unknown for good.
     if (status?.runtime === "not-configured") return "needs-setup";
     if (status?.runtime === "unavailable") return "attention";
-    if (row.subscription && (!status || status.runtime === "checking" || status.connection === "unknown")) {
+    if (speaks && (!status || status.runtime === "checking" || status.connection === "unknown")) {
       return null;
     }
     if (status?.runtime === "unverified") return "needs-setup";
@@ -3267,7 +3315,15 @@ export function LlmTab(props: LlmTabProps) {
                 {row.subscription && rowAuthMethod(row) === "subscription" ? (
                   <SubscriptionAuthControls
                     provider={row.subscription}
-                    actions={subscription.props.actions}
+                    actions={{
+                      ...subscription.props.actions,
+                      // Signing out keeps the card on the subscription, so the
+                      // sign-in buttons come back instead of the card asking again.
+                      logout: (providerId) => {
+                        pinAuthMethod(row, "subscription");
+                        return subscription.props.actions.logout?.(providerId);
+                      },
+                    }}
                   />
                 ) : null}
                 {otherCredentialNote(row)}

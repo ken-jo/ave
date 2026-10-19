@@ -361,6 +361,20 @@ describe("SubscriptionAuthControls", () => {
     for (const id of PICKER_TEST_IDS) expect(screen.queryByTestId(`subscription-provider:claude-code:${id}`)).toBeNull();
   });
 
+  it("offers Check again when a found CLI could not be used for another reason", () => {
+    const refreshStatus = vi.fn();
+    render(
+      <SubscriptionProvidersSection
+        providers={[viewFor("claude-code", { runtime: "unavailable", connection: "unknown" })]}
+        actions={{ refreshStatus }}
+      />,
+    );
+    expect(screen.getByTestId("subscription-provider:claude-code:cli-unavailable"))
+      .toHaveTextContent("The Claude Code CLI on this computer could not be used just now.");
+    fireEvent.click(screen.getByTestId("subscription-provider:claude-code:check-again"));
+    expect(refreshStatus).toHaveBeenCalledWith("claude-code");
+  });
+
   it("keeps the official runtime picker for a runtime whose executable the user selects (control)", () => {
     const configureRuntime = vi.fn();
     render(

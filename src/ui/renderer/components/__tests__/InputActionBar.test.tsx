@@ -791,7 +791,9 @@ describe("model card (status-row model cell)", () => {
     const checked = card.querySelectorAll("[role='option'][aria-selected='true']");
     expect(checked).toHaveLength(1);
     expect(checked[0]?.querySelector("button")?.getAttribute("data-testid")).toBe("model-quick-picker-option:codex");
-    expect(checked[0]?.textContent).toContain("Codex");
+    // The plan's brand, never the runtime's own name.
+    expect(checked[0]?.textContent).toContain("ChatGPT");
+    expect(checked[0]?.textContent).not.toContain("Codex");
     // The API model that happens to share the settings the API path still
     // holds (vendor "openai-compatible", model "qwen3.8-27b-gguf") is listed
     // as an alternative, not marked as the route the chat is actually on.
@@ -842,7 +844,7 @@ describe("model card (status-row model cell)", () => {
     // appears, leaving the primary column visually empty — the label moves
     // there instead when the runtime has no model of its own.
     expect(spans[0]?.textContent).toBe("");
-    expect(spans[1]?.textContent).toBe("Kimi Code");
+    expect(spans[1]?.textContent).toBe("Kimi");
   });
 
   it("carries the reasoning control and the way to the full catalogue", async () => {

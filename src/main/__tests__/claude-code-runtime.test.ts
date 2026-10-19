@@ -1,6 +1,6 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -10,6 +10,7 @@ import { ClaudeCodeConversationRuntime } from "../claude-code-conversation-runti
 import {
   claudeCodeExecutableCandidates,
   ClaudeCodeSubscriptionClient,
+  resolveClaudeCodeSubscriptionExecutable,
   missingClaudeCodeAuthCommands,
   missingClaudeCodeOptions,
   parseClaudeCodeVersion,
@@ -525,6 +526,39 @@ describe("Claude Code CLI discovery", () => {
     expect(h.calls).toEqual([]);
   });
 
+  it("reports a CLI whose probe exits non-zero as incompatible, not as a failed operation", async () => {
+    // An old CLI without an `auth` subcommand answers `auth --help` with an error.
+    const h = discoveryHarness();
+    h.spawn.mockImplementation((_command, args) => {
+      const child = new FakeChild(); children.push(child); h.probes.push([...args]);
+      setImmediate(() => {
+        if (args[0] === "--version") child.stdout.write("1.0.3 (Claude Code)\n");
+        else if (args[0] === "--help") child.stdout.write(QUALIFYING_HELP);
+        child.close(args[0] === "auth" ? 1 : 0);
+      });
+      return child as unknown as ChildProcess;
+    });
+    await expect(h.client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-incompatible" });
+    expect(h.client.getCachedStatus()).toMatchObject({ runtime: "unavailable", version: "1.0.3" });
+  });
+
+  // POSIX execute bits decide "runnable" here; Windows admits only a native `.exe`.
+  it.runIf(process.platform !== "win32")("passes over an entry that is not a runnable file, as a shell would", async () => {
+    const directories = paths();
+    const harness = spawnHarness((child) => { child.send({ loggedIn: false }); child.close(1); }, {});
+    const cli = installedCli(directories.runtimeHome);
+    const broken = join(directories.runtimeHome, "stale", "claude");
+    mkdirSync(join(directories.runtimeHome, "stale"), { recursive: true });
+    writeFileSync(broken, "not runnable");
+    const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
+      candidates: () => [broken, cli.executable],
+      resolveExecutable: (path) => resolveClaudeCodeSubscriptionExecutable(path) });
+    owners.push(client);
+    expect(await client.getStatus()).toMatchObject({ runtime: "unverified", version: "2.1.0" });
+    expect(harness.spawn).toHaveBeenCalledWith(realpathSync(cli.executable), expect.anything(), expect.anything());
+    expect(harness.spawn).not.toHaveBeenCalledWith(expect.stringContaining("stale"), expect.anything(), expect.anything());
+  });
+
   it("asks again after a probe that could not run", async () => {
     const h = discoveryHarness();
     h.spawn.mockImplementationOnce((_command, args) => {
@@ -538,11 +572,12 @@ describe("Claude Code CLI discovery", () => {
 
   it("starts chat only on the binary verify proved", async () => {
     const h = discoveryHarness();
-    await expect(h.client.verifiedExecutable()).rejects.toMatchObject({ code: "claude-code-runtime-unavailable" });
+    await expect(h.client.verifiedExecutable()).rejects.toMatchObject({ code: "claude-code-runtime-unverified" });
     await h.client.verify();
     await expect(h.client.verifiedExecutable()).resolves.toBe(h.executable);
     writeCli(h.executable, "#!/bin/sh\n# reinstalled\n");
-    await expect(h.client.verifiedExecutable()).rejects.toMatchObject({ code: "claude-code-runtime-unavailable" });
+    // An auto-update is a different file: chat asks for a new verification.
+    await expect(h.client.verifiedExecutable()).rejects.toMatchObject({ code: "claude-code-runtime-unverified" });
     expect(await h.client.getStatus()).toMatchObject({ runtime: "unverified" });
   });
 

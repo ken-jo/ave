@@ -44,6 +44,8 @@ export type ClaudeCodeSubscriptionErrorCode =
   | "claude-code-runtime-invalid-executable"
   /** A CLI was found but it is not Claude Code, or lacks an option or auth command Ave uses. */
   | "claude-code-runtime-incompatible"
+  /** The CLI found now is not the file verify() proved (an update or reinstall in between). */
+  | "claude-code-runtime-unverified"
   | "claude-code-runtime-unavailable"
   | "claude-code-login-in-progress"
   | "claude-code-login-failed"

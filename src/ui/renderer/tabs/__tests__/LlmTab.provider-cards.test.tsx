@@ -1775,6 +1775,38 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
       .toHaveTextContent(t("connectionRow.stateNeedsSetup"));
   });
 
+  it("does not hold a working API-key provider back on a CLI that is not installed", async () => {
+    installSubscription([codexView({ status: { runtime: "not-configured", connection: "signed-out", models: [] } })]);
+    await renderTab(makeApi({
+      hasApiKey: storedKeysFor("openai"),
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true,
+        vendor: "openai",
+        endpoint: "https://api.openai.com/v1/models",
+        models: ["gpt-5"],
+        fetchedAt: "2026-01-01T00:00:00.000Z",
+      } satisfies LlmModelListResult),
+    }), { vendor: "openai", model: "gpt-5", hasKey: true });
+    const card = await screen.findByTestId("llm-tab:connection:codex");
+    await waitFor(() => expect(within(card).getByTestId("llm-tab:connection:codex:state")).toHaveTextContent(CONNECTED));
+    expect(card).not.toHaveTextContent(t("subscriptionProvidersSection.statusCliNotFound"));
+  });
+
+  it("keeps the key form on screen after the key it was opened for is deleted", async () => {
+    installSubscription([codexView()]);
+    const api = makeApi({ hasApiKey: storedKeysFor("openai") });
+    api.deleteApiKey = vi.fn().mockResolvedValue(undefined);
+    await renderTab(api, { vendor: "openrouter", model: "" });
+    fireEvent.click(await screen.findByTestId("llm-tab:connection:codex:toggle"));
+    await waitFor(() => expect(method("codex", "api")).toHaveAttribute("aria-checked", "true"));
+    api.hasApiKey = vi.fn().mockResolvedValue(false);
+    fireEvent.click(within(screen.getByTestId("llm-tab:manual-section")).getByRole("button", { name: t("llmTab.delete") }));
+    await waitFor(() => expect(api.deleteApiKey).toHaveBeenCalledWith("openai"));
+    await waitFor(() => expect(screen.getByTestId("llm-tab:api-key-status")).toHaveTextContent(t("llmTab.apiKeyNotSet")));
+    expect(method("codex", "api")).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
+  });
+
   it("offers each company once in 'add a provider', and never a runtime by name", async () => {
     installSubscription([codexView(), claudeCodeView()]);
     await renderTab(makeApi(), { vendor: "openrouter", model: "" });

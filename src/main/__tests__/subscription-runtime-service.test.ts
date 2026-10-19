@@ -1144,5 +1144,8 @@ describe("SubscriptionRuntimeService", () => {
       .toBe("subscription-runtime-incompatible");
     expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-not-configured")))
       .toBe("subscription-runtime-not-configured");
+    // The CLI changed since it was verified: chat is not ready until it is verified again.
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unverified")))
+      .toBe("subscription-chat-unavailable");
   });
 });

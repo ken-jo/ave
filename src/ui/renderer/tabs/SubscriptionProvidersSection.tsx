@@ -239,6 +239,27 @@ export function SubscriptionAuthControls({
   const showGuidance = Boolean(descriptor.installGuidance)
     && (cliMissing || cliNeedsUpdate || (!discovered && needsRuntimeSelection));
   const checking = provider.refreshPending === true || provider.busyAction === "refresh";
+  // A found CLI that could not be used for another reason (a probe that failed
+  // to run, an auth status it could not read) gets the same way back.
+  const cliUnavailable = discovered && runtime === "unavailable" && !cliNeedsUpdate;
+  const checkAgainButton = actions.refreshStatus ? (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      className="h-7 gap-1.5 text-xs"
+      onClick={() => invoke(() => actions.refreshStatus?.(descriptor.id))}
+      disabled={provider.disabled === true || isBusy || checking}
+      data-testid={`subscription-provider:${descriptor.id}:check-again`}
+    >
+      {checking
+        ? <Loader2 className="size-3 animate-spin" aria-hidden={true} />
+        : <RefreshCw className="size-3" aria-hidden={true} />}
+      {checking
+        ? t("subscriptionProvidersSection.checkingAgain")
+        : t("subscriptionProvidersSection.checkAgain")}
+    </Button>
+  ) : null;
 
   return (
     <div className="space-y-3" data-testid={`subscription-provider:${descriptor.id}`}>
@@ -314,26 +335,19 @@ export function SubscriptionAuthControls({
           {discovered ? (
             <div className="flex flex-wrap items-center gap-2">
               <p>{t("subscriptionProvidersSection.installGuidanceAfter")}</p>
-              {actions.refreshStatus ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 gap-1.5 text-xs"
-                  onClick={() => invoke(() => actions.refreshStatus?.(descriptor.id))}
-                  disabled={provider.disabled === true || isBusy || checking}
-                  data-testid={`subscription-provider:${descriptor.id}:check-again`}
-                >
-                  {checking
-                    ? <Loader2 className="size-3 animate-spin" aria-hidden={true} />
-                    : <RefreshCw className="size-3" aria-hidden={true} />}
-                  {checking
-                    ? t("subscriptionProvidersSection.checkingAgain")
-                    : t("subscriptionProvidersSection.checkAgain")}
-                </Button>
-              ) : null}
+              {checkAgainButton}
             </div>
           ) : null}
+        </div>
+      ) : null}
+
+      {cliUnavailable ? (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground"
+          data-testid={`subscription-provider:${descriptor.id}:cli-unavailable`}
+        >
+          <p>{t("subscriptionProvidersSection.cliUnavailable", { cli: descriptor.cliName })}</p>
+          {checkAgainButton}
         </div>
       ) : null}
 

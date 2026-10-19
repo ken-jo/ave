@@ -68,7 +68,8 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
       const activeRuntime = settings.llm?.activeChatRuntime;
       if (activeRuntime?.kind === "subscription" && isSubscriptionRuntimeId(activeRuntime.provider)) {
         const model = typeof activeRuntime.model === "string" ? activeRuntime.model.trim() : "";
-        const label = subscriptionRuntimeDescriptor(activeRuntime.provider).label;
+        // The plan's brand ("ChatGPT", "Claude"), never the runtime's own name.
+        const label = subscriptionRuntimeDescriptor(activeRuntime.provider).planName;
         setVendorModel(model.length > 0 ? `${label} · ${model}` : label);
         return;
       }
