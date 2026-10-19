@@ -22,6 +22,9 @@ import { createLogger } from "../lib/logger.js";
 import type { InvocationProxyUpstream } from "./egress-invocation-listener.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
+import { errorMessage } from "../shared/error-message.js";
+import { onEgressInvocationReleased } from "./egress-invocations.js";
+import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
 import {
   isPluginWorkerConfinementRequestedAtBoot,
   isShellSandboxRequestedAtBoot,
@@ -231,20 +234,17 @@ export function getVendoredJavaProxyAgentJarPath(): string {
  * plugin/project config set any of these flags. Network is deny-by-default: an
  * empty `allowedDomains` means the sandboxed process has no network egress.
  *
- * NOTE on `allowedDomains`: this is the SHARED, enforced egress allow-list
- * (see the NETWORK ENFORCEMENT MODEL header). Boot computes it as the UNION of
- * every loaded, host-validated `manifest.networkAccess.allowedDomains` (∪ an
- * optional trusted host baseline) via {@link computeUnionAllowedDomains}. The
- * union itself is derived from manifests — a trusted seam (the host validated
- * those manifests at install) — but the WEAKENING flags above never are.
+ * NOTE on `allowedDomains`: boot leaves it EMPTY and `strictAllowlist` off,
+ * so every connection reaches the egress ask callback (`egress-ask.ts`), which
+ * decides per connection by who opened it: a plugin worker against its own
+ * extension's declared domains, a shell against its grants or an ask. A domain
+ * placed here would be reachable by every sandboxed process without asking.
  */
 export interface TrustedSandboxSettings {
   /**
-   * The SHARED, ENFORCED egress allow-list. Empty/omitted ⇒ no network egress
-   * (deny-by-default). Set this to the manifest UNION (+ trusted baseline) so
-   * `filterNetworkRequest` allows exactly those domains. With
-   * `strictAllowlist: true` any host not on this list is hard-denied with no
-   * askCb fallthrough. See {@link computeUnionAllowedDomains}.
+   * Domains every sandboxed process may reach without the ask callback. Boot
+   * passes none (see the note above); with `strictAllowlist: true` any other
+   * host is hard-denied before the callback is consulted.
    */
   readonly allowedDomains?: readonly string[];
   /** Domains explicitly denied (takes precedence over allow). */
@@ -281,7 +281,7 @@ export interface TrustedSandboxSettings {
   };
   /**
    * Upstream HTTP/HTTPS proxy the sandbox's egress proxy should chain through
-   * for outbound connections (corporate-proxy passthrough). TRUSTED-ONLY.
+   * for outbound connections (chaining through an upstream proxy). TRUSTED-ONLY.
    *
    * SECURITY (parentProxy is passed explicitly):
    * ASRT's `resolveParentProxy` (parent-proxy.js:46) does
@@ -294,14 +294,25 @@ export interface TrustedSandboxSettings {
    * `network.parentProxy.http`/`.https` explicitly:
    *   - default (this field omitted): empty strings ⇒ ASRT connects directly
    *     and does NOT chain through the host proxy (the secure floor);
-   *   - present: only the explicit, trusted corporate-proxy URLs below are
+   *   - present: only the explicit, trusted upstream-proxy URLs below are
    *     used -- never the ambient host env.
    * This field is the ONLY way to opt a sandbox into a parent proxy.
    */
-  readonly corporateProxy?: {
+  readonly upstreamProxy?: {
     readonly http?: string;
     readonly https?: string;
     readonly noProxy?: string;
+    /**
+     * Trust an upstream proxy that runs on this host (cntlm, px, …) to
+     * resolve names this host cannot. Off (the default), such a name is
+     * refused, with a reason saying so: a proxy on this host resolves the
+     * name itself after Ave's check and could connect back to this host (DNS
+     * rebinding). On, the name is forwarded like to a remote upstream and
+     * treated as unverified (at most This conversation) — accepting that
+     * residual risk. A remote upstream always gets that treatment; names this
+     * host resolves are pinned either way. TRUSTED-ONLY, like the URLs.
+     */
+    readonly resolvesNames?: boolean;
   };
   /**
    * Windows-only sandbox settings (srt-win network backend). TRUSTED-ONLY —
@@ -482,11 +493,72 @@ export interface AttributedWrapOptions extends WrapOptions {
   readonly commandId: string;
 }
 
+/**
+ * `network.allowLocalBinding` opens outbound loopback to every port, which
+ * would let any sandboxed process reach any other invocation's proxy
+ * listener and be attributed to it. Ave never sets it; a config that does is
+ * a bug, refused here (the carried ASRT patch refuses the wrap as well).
+ */
+function assertNoLocalBinding(config: SandboxRuntimeConfig): void {
+  if (config.network.allowLocalBinding === true) {
+    throw new Error("ASRT config: network.allowLocalBinding would void per-invocation egress identity; Ave never sets it");
+  }
+}
+
 function assertCommandId(caller: string, commandId: string): void {
   if (typeof commandId !== "string" || commandId.length < 22) {
     throw new Error(`${caller}: a wrap needs the invocation's egress token as commandId (22 characters or more)`);
   }
 }
+
+/**
+ * Give the invocation its own proxy listener before it is wrapped (macOS and
+ * Linux; the carried ASRT patch). The wrap then pins that listener in the
+ * sandbox profile, and every connection that arrives there is attributed to
+ * this invocation by the kernel-enforced channel, not by the forgeable proxy
+ * username. A listener that cannot be opened (the per-session bound, an
+ * ended invocation) fails the wrap: falling back to the shared port would
+ * hand the ask callback an identity it does not trust, so the invocation
+ * would get no network at all without saying why.
+ */
+async function openEgressListener(
+  SandboxManager: Awaited<ReturnType<typeof loadSandboxManager>>,
+  caller: string,
+  commandId: string,
+): Promise<void> {
+  if (!asrtInvocationListenersSupported()) return;
+  try {
+    await SandboxManager.openInvocationListener(commandId);
+  } catch (error) {
+    const message = errorMessage(error);
+    // Ended macOS listeners hold their ports for a quarantine (longer while
+    // their process group lives); an app restart releases them at once.
+    const hint = /invocation listeners are held/u.test(message) ? " Restart Ave to release them." : "";
+    throw new Error(`${caller}: could not open the invocation's egress listener: ${message}${hint}`);
+  }
+  loadedSandboxManagerForRelease = SandboxManager;
+}
+
+/**
+ * Close every open connection the proxy let through to `host:port` for these
+ * invocations (a revoked grant's tunnels). Returns how many were closed; 0
+ * before any listener was opened (nothing can be open then).
+ */
+export function closeEgressConnections(tokens: readonly string[], host: string, port: number): number {
+  if (tokens.length === 0) return 0;
+  return loadedSandboxManagerForRelease?.closeInvocationConnections(tokens, host, port) ?? 0;
+}
+
+/** Set once a listener has been opened, so a release can close it synchronously. */
+let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
+
+// A released token's listener refuses every further connection from then on.
+// On macOS the ended port stays bound for a quarantine, longer while the
+// invocation's process group still has a process in it.
+onEgressInvocationReleased((token, { processGroup }) => {
+  loadedSandboxManagerForRelease?.closeInvocationListener(token, processGroup === undefined ? undefined : { processGroup });
+});
+
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
@@ -522,8 +594,8 @@ function assertCommandId(caller: string, commandId: string): void {
  */
 
 /**
- * The trusted settings last applied via {@link initializeAsrtSandbox} /
- * {@link updateAsrtSandboxConfig}. Remembered so worker-UDS register/unregister
+ * The trusted settings last applied via {@link initializeAsrtSandbox}.
+ * Remembered so worker-UDS register/unregister
  * can rebuild the SHARED config additively (the manifest egress union, denyRead
  * floor, weakening flags, etc. are preserved). Undefined before the first init.
  */
@@ -1608,17 +1680,18 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
     // `{ http: '', https: '' }`, NOT `{}`.
     //
     // We therefore always set http/https explicitly:
-    //   - default (no trusted corporateProxy): empty strings ⇒ direct-connect,
+    //   - default (no trusted upstreamProxy): empty strings ⇒ direct-connect,
     //     the secure floor — ASRT never inherits the ambient host proxy;
-    //   - present: only the explicit, trusted corporate-proxy URLs are used.
+    //   - present: only the explicit, trusted upstream-proxy URLs are used.
     // `noProxy` carries no inheritance hazard (its only effect is to BYPASS the
     // proxy, never to add egress), so it is set only when explicitly supplied.
     parentProxy: {
-      http: trustedSettings.corporateProxy?.http ?? "",
-      https: trustedSettings.corporateProxy?.https ?? "",
-      ...(trustedSettings.corporateProxy?.noProxy !== undefined
-        ? { noProxy: trustedSettings.corporateProxy.noProxy }
+      http: trustedSettings.upstreamProxy?.http ?? "",
+      https: trustedSettings.upstreamProxy?.https ?? "",
+      ...(trustedSettings.upstreamProxy?.noProxy !== undefined
+        ? { noProxy: trustedSettings.upstreamProxy.noProxy }
         : {}),
+      ...(trustedSettings.upstreamProxy?.resolvesNames === true ? { resolvesNames: true } : {}),
     },
   };
 
@@ -1924,35 +1997,27 @@ async function discardFailedAsrtInitialization(
  * Initialize the ASRT {@link SandboxManager} singleton from TRUSTED settings.
  *
  * Builds the config from trusted settings (network `allowedDomains` is the
- * manifest UNION via {@link computeUnionAllowedDomains}; the WEAKENING flags
- * come from trusted host/user settings ONLY — see {@link TrustedSandboxSettings})
+ * empty `allowedDomains`, non-strict; the WEAKENING flags come from trusted
+ * host/user settings ONLY — see {@link TrustedSandboxSettings})
  * and calls `initialize`, which starts ASRT's proxy/helper machinery and
  * assigns the SHARED `config` that `filterNetworkRequest` enforces against.
- * Idempotent re-initialization is the caller's responsibility; prefer
- * {@link updateAsrtSandboxConfig} to change a live config.
+ * Initializes once per process; a second call throws.
  *
- * askCb SUPERSESSION (corrects WIRING-A #1356): the enforced model is GLOBAL
- * strict hard-deny — boot sets `strictAllowlist: true`. Under strict,
- * `filterNetworkRequest` NEVER calls the askCb: in ASRT 0.0.80 the order is
- * `deniedDomains`, then `allowedDomains`, then the strict deny, and only after
- * that the per-command lists and the callback, so an out-of-union host is
- * refused before either is consulted. The interactive host-tool askCb prompt
- * added in WIRING-A is therefore inert under strict and is NOT passed at boot anymore. `askCb` stays
- * an optional param only for a NON-strict configuration (not used by the
- * shipped enforced model); when `strictAllowlist` is true it is dead weight by
- * design.
+ * NETWORK: boot initializes non-strict with an empty `allowedDomains` and
+ * passes the egress ask callback (`egress-runtime.ts`), so the callback is the
+ * one gate for every connection. In ASRT 0.0.80 the order is `deniedDomains`,
+ * `allowedDomains`, the strict deny (off), the per-command lists (unused: they
+ * are keyed by the forgeable proxy username), then the callback. Each wrap
+ * also gets its own proxy listener (the carried patch's
+ * `openInvocationListener`), and the callback trusts only an identity that
+ * listener vouches for on macOS and Linux.
  *
- * @param askCb  RESERVED FOR NON-STRICT; INERT UNDER STRICT. The shipped model
- *               always sets `strictAllowlist: true`, where ASRT bypasses the
- *               callback entirely (hard-deny). Kept so a future non-strict
- *               configuration has a hook; boot does not pass it. The wiring
- *               test passes a recording callback purely to PROVE strict never
- *               consults it. A non-strict callback must resolve to the literal
+ * @param askCb  The egress ask callback. It must resolve to the literal
  *               `true` to allow: ASRT 0.0.80 denies every other value, truthy
  *               ones included, and reads `{ allow: false, reason }` as a deny
- *               with that reason. Its optional second argument carries the
- *               invocation's `attributionKey` (the carried bun patch; see
- *               test/scripts/asrt-patched-symbols.test.ts).
+ *               with that reason. Its second argument carries the
+ *               invocation's `attributionKey` and how it was learned
+ *               (`identity`); see test/scripts/asrt-patched-symbols.test.ts.
  * @param enableLogMonitor  Forwarded to ASRT (violation log monitor). Default
  *                          off to avoid surprising background activity.
  */
@@ -1964,11 +2029,10 @@ export async function initializeAsrtSandbox(
   // Idempotency guard. The boot gate must decide exactly once;
   // a double-initialize means two boot paths raced or a runtime channel tried
   // to re-seal the sandbox with a different config. Fail loud rather than
-  // silently overwriting the live config — use updateAsrtSandboxConfig to
-  // change a live config.
+  // silently overwriting the live config.
   if (active) {
     throw new Error(
-      "initializeAsrtSandbox: already active — refusing to re-initialize (use updateAsrtSandboxConfig to change a live config)",
+      "initializeAsrtSandbox: already active — refusing to re-initialize",
     );
   }
   const SandboxManager = await loadSandboxManager();
@@ -1979,6 +2043,8 @@ export async function initializeAsrtSandbox(
   _baseTrustedSettings = trustedSettings;
   _workerUnixSocketDirs.clear();
   const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings));
+  assertNoLocalBinding(config);
+  noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
   await SandboxManager.initialize(config, askCb, enableLogMonitor);
   try {
     // Linux's ASRT dependency check only proves executables are installed. Run
@@ -2017,9 +2083,16 @@ export async function checkAsrtDependencies(): Promise<{
 }> {
   if (process.platform === "win32") {
     const mod = await import("@anthropic-ai/sandbox-runtime");
-    return mod.checkWindowsDependenciesAsync({
-      srtWin: mod.resolveSrtWin({ path: getVendoredSrtWinExePath() }),
-    });
+    // A missing bundled binary is a failed check, not a boot crash: ASRT's own
+    // implicit-resolve path reports it the same way, and the gate turns it
+    // into `windows-sandbox-missing` (sandbox-start-failure.ts).
+    let srtWin: ReturnType<typeof mod.resolveSrtWin>;
+    try {
+      srtWin = mod.resolveSrtWin({ path: getVendoredSrtWinExePath() });
+    } catch (error) {
+      return { errors: [errorMessage(error)], warnings: [] };
+    }
+    return mod.checkWindowsDependenciesAsync({ srtWin });
   }
   const SandboxManager = await loadSandboxManager();
   return SandboxManager.checkDependenciesAsync();
@@ -2051,6 +2124,7 @@ export async function wrapToolCommand(
   assertPerExecFilesystemSupported(options.filesystem, "wrapToolCommand");
   assertCommandId("wrapToolCommand", options.commandId);
   const SandboxManager = await loadSandboxManager();
+  await openEgressListener(SandboxManager, "wrapToolCommand", options.commandId);
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
@@ -2315,12 +2389,11 @@ export function useAppOwnedSandboxTempRoot(): string {
  *
  * EGRESS: workers do NOT carry a per-command egress override — the
  * `allowedDomains`/`deniedDomains` channel is INERT per command
- * (`filterNetworkRequest` reads the SHARED config, not `customConfig`; see the
- * module header). Worker egress is ENFORCED by the shared config set at boot:
- * `strictAllowlist: true` + the UNION of every loaded plugin's manifest
- * allow-list. Workers are NON-INTERACTIVE; strict hard-denies any out-of-union
- * host with no askCb fallthrough. The owning plugin's declared domains reach
- * the worker only by being part of that union.
+ * (`filterNetworkRequest` reads the SHARED config, not `customConfig`).
+ * Worker egress is decided by the egress ask callback, attributed through the
+ * worker's own proxy listener: the worker reaches its own extension's
+ * declared domains and the configured model endpoints, and is denied
+ * everything else without a prompt (workers are non-interactive).
  *
  * UDS CONTROL CHANNEL: a worker the HOST connects INBOUND to (an HTTP worker)
  * needs a Unix-domain-socket control channel — loopback TCP is unreachable
@@ -2379,6 +2452,7 @@ async function wrapLongLivedCommand(
   assertPerExecFilesystemSupported(options.filesystem, caller);
   assertCommandId(caller, options.commandId);
   const SandboxManager = await loadSandboxManager();
+  await openEgressListener(SandboxManager, caller, options.commandId);
   // `wrapOptions` (the tty grant) is undefined for every wrap but the terminal's.
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
@@ -2389,48 +2463,6 @@ async function wrapLongLivedCommand(
     { commandId: options.commandId, ...(wrapOptions ?? {}) },
   );
   return applyLinuxReadMaskWriteFloor(wrapped, options.filesystem, () => SandboxManager.cleanupAfterCommand());
-}
-
-/**
- * Compute the SHARED, enforced egress allow-list as the UNION of every loaded,
- * host-validated plugin manifest's `networkAccess.allowedDomains` plus an
- * optional TRUSTED host baseline (default empty). Deduped, order-stable.
- *
- * This is the trusted seam for the network enforcement model: the host
- * validated these manifests at install, so the union is a trusted input to the
- * SHARED ASRT config (set via {@link initializeAsrtSandbox} /
- * {@link updateAsrtSandboxConfig}). Because ASRT's `filterNetworkRequest` reads
- * that shared config, the union is genuinely enforced for BOTH workers and host
- * tools under `strictAllowlist: true`.
- *
- * TRADE-OFF: this is a union, NOT per-worker isolation — see the module header.
- *
- * @param manifestAllowLists  one entry per loaded plugin: its
- *                            `manifest.networkAccess.allowedDomains` (or `[]`).
- * @param trustedBaseline     optional trusted host-settings allow-list for host
- *                            tools; defaults to empty (no baseline egress).
- */
-export function computeUnionAllowedDomains(
-  manifestAllowLists: readonly (readonly string[])[],
-  trustedBaseline: readonly string[] = [],
-): string[] {
-  const seen = new Set<string>();
-  const union: string[] = [];
-  for (const domain of trustedBaseline) {
-    if (typeof domain === "string" && domain.length > 0 && !seen.has(domain)) {
-      seen.add(domain);
-      union.push(domain);
-    }
-  }
-  for (const list of manifestAllowLists) {
-    for (const domain of list) {
-      if (typeof domain === "string" && domain.length > 0 && !seen.has(domain)) {
-        seen.add(domain);
-        union.push(domain);
-      }
-    }
-  }
-  return union;
 }
 
 /**
@@ -2557,11 +2589,11 @@ export interface DynamicEndpointSettings {
  *
  * @param settings  TRUSTED host/user settings (or a structural subset). Never a
  *                  plugin/project/MCP-influenced surface — these hosts widen the
- *                  enforced allow-list, so they must originate from trusted
- *                  settings only (same trust seam as the manifest union).
- * @returns bare hostnames (e.g. `my-resource.openai.azure.com`), ready to feed
- *          {@link computeUnionAllowedDomains} alongside the manifest allow-lists
- *          (then {@link normalizeUnionForAsrt} for ASRT's matcher).
+ *                  worker allowlists, so they must originate from trusted
+ *                  settings only (same trust seam as the manifests).
+ * @returns bare hostnames (e.g. `my-resource.openai.azure.com`), which every
+ *          plugin worker's egress allowlist includes (`egress-runtime.ts`,
+ *          then {@link normalizeUnionForAsrt} for the matcher).
  */
 export function computeDynamicEndpointHosts(
   settings: DynamicEndpointSettings | undefined,
@@ -2590,23 +2622,6 @@ export function computeDynamicEndpointHosts(
     hosts.push(host);
   }
   return hosts;
-}
-
-/**
- * Replace the live ASRT config (TRUSTED settings only). Pass-through to
- * `SandboxManager.updateConfig`. Remembers these as the new base settings so a
- * subsequent worker-UDS register/unregister rebuilds additively, and re-applies
- * the CURRENTLY-registered worker UDS dirs onto the new base (a live config
- * refresh must not drop a running worker's control-socket allowance).
- */
-export async function updateAsrtSandboxConfig(
-  trustedSettings: TrustedSandboxSettings,
-): Promise<void> {
-  const SandboxManager = await loadSandboxManager();
-  _baseTrustedSettings = trustedSettings;
-  SandboxManager.updateConfig(
-    buildSandboxConfig(withWorkerUnixSockets(trustedSettings)),
-  );
 }
 
 /**

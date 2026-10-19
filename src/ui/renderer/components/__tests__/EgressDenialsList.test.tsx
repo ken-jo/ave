@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import { EgressDenialsList } from "../permissions/EgressDenialsList.js";
+import { noteTerminalTabLabel } from "../../preview/terminal-tab-labels.js";
 import type { EgressDenialRow } from "../../../../shared/egress-denials.js";
 
 function row(overrides: Partial<EgressDenialRow> = {}): EgressDenialRow {
@@ -24,18 +25,22 @@ describe("EgressDenialsList", () => {
     const fetcher = vi.fn(async () => [
       row(),
       row({ source: { kind: "terminal", tabId: "terminal:0000000a-1" }, deny: { ...row().deny, host: "github.com", port: 22 } }),
+      row({ source: { kind: "terminal", tabId: "terminal:0000000a-2" }, deny: { ...row().deny, host: "pypi.org", port: 443 } }),
       row({ source: { kind: "worker", role: "worker", pluginId: "acme_notes", instanceId: "indexer" }, deny: { ...row().deny, host: "tracker.example" } }),
       row({ source: { kind: "unattributed" }, deny: { ...row().deny, host: "odd.example" } }),
       row({ deny: { action: "http-request", host: "hooks.example.com", port: null, method: "POST", url: "https://hooks.example.com/upload/[REDACTED]", reason: "filtered" } }),
     ]);
+    // A tab this window shows is named as its strip names it; an unknown one by its id.
+    noteTerminalTabLabel("terminal:0000000a-2", "Terminal 2");
     render(<EgressDenialsList fetcher={fetcher} />);
-    await waitFor(() => expect(screen.getAllByTestId("egress-denial-row")).toHaveLength(5));
+    await waitFor(() => expect(screen.getAllByTestId("egress-denial-row")).toHaveLength(6));
     const text = screen.getByTestId("egress-denials").textContent ?? "";
     expect(text).toContain("example.com:443");
     expect(text).toContain("Bash tool call toolu_01FIXTURE");
     expect(text).toContain("domain not allowed");
     expect(text).toContain("github.com:22");
     expect(text).toContain("Terminal tab terminal:0000000a-1");
+    expect(text).toContain("Terminal tab Terminal 2");
     expect(text).toContain("Extension acme_notes, worker indexer");
     expect(text).toContain("Unattributed");
     expect(text).toContain("POST https://hooks.example.com/upload/[REDACTED]");

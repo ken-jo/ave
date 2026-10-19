@@ -130,6 +130,13 @@ export const PERMISSIONS = {
   // last 24 h, read back from the sandbox audit channel. Drives Settings →
   // Permissions → Network "Recent denials".
   egressDenialsRecent: "ave:permissions:egress-denials-recent",
+  // Read-only (sender-frame-guarded): the shell egress grants that outlive a
+  // conversation ("This workspace" and "Always"). Drives Settings →
+  // Permissions → Network "Allowed hosts".
+  egressGrantsList: "ave:permissions:egress-grants-list",
+  // MUTATING (sender-frame-guarded + user-keyboard intent): revoke one of
+  // those grants.
+  egressGrantRevoke: "ave:permissions:egress-grant-revoke",
   // MUTATING (sender-frame-guarded): the ONLY user-consented privilege
   // escalation entry point — triggers ASRT installWindowsSandbox's single
   // self-elevating UAC prompt. Never auto-triggered.

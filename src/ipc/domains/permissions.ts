@@ -8,12 +8,13 @@ import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import type { ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
+import { errorMessage } from "../../shared/error-message.js";
 import {
   RECENT_EGRESS_DENIALS_LIMIT,
   RECENT_EGRESS_DENIALS_WINDOW_HOURS,
   type EgressDenialRow,
 } from "../../shared/egress-denials.js";
-import { resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
+import { envForcedValueForSettingsPath, resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
   isSessionOnlyApprovalMemoryScope,
   type PermissionReviewSuggestionPayload,
@@ -55,16 +56,20 @@ import {
   canonicalStringify,
 } from "../../permissions/user-approval-store.js";
 import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
+import { isTerminalTabId } from "../../shared/tab-id.js";
 import type {
   SandboxWindowsStatusInfo,
   SandboxWindowsInstallResult,
   SandboxRuntimeCapabilityInfo,
+  ShellSandboxStatusInfo,
 } from "../../shared/sandbox-capability-info.js";
 import {
   detectPluginWorkerSandboxCapability,
   detectShellSandboxCapability,
+  getHostShellExecutionPlan,
   getSandboxBootOutcome,
   getWindowsSandboxSubstrate,
+  isShellSandboxRequestedAtBoot,
   type SandboxCapability,
 } from "../../permissions/sandbox-capability.js";
 import {
@@ -249,16 +254,17 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // as unavailable merely because it's off.
   // `enabled` separately reflects the current setting.
   ipcMain.handle(PERMISSIONS.sandboxCapability, async () => {
-    const { sandboxConfinementForPlatform } = await import(
+    const { sandboxConfinementForPlatform, describeShellSandboxStatus, sandboxBootOutcomeView } = await import(
       "../../shared/sandbox-capability-info.js"
     );
     const platform = process.platform;
+    const storedShellSetting = deps.settingsService.get("features")?.osToolSandbox ?? false;
     // Must answer the same question boot answered (`shellRequested` in
     // sandbox-init.ts), so it resolves through the registry rather than
     // re-stating which variable forces it on.
     const enabled = resolveEnvBackedBoolean(
       "features.osToolSandbox",
-      deps.settingsService.get("features")?.osToolSandbox ?? false,
+      storedShellSetting,
       process.env,
       false,
     );
@@ -298,6 +304,38 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // sandboxed (and the reverse).
     const runtime = runtimeInfoFromCapability(detectShellSandboxCapability());
     const workerRuntime = runtimeInfoFromCapability(detectPluginWorkerSandboxCapability());
+    const boot = getSandboxBootOutcome();
+    // The route a default host shell takes right now — the same plan the bash
+    // and powershell tools run under, so "on" means shells are contained, not
+    // merely that ASRT is running (Windows Plan B runs shells plain).
+    const shellPlan = getHostShellExecutionPlan();
+    const envForced = envForcedValueForSettingsPath("features.osToolSandbox") === true;
+    let shell: ShellSandboxStatusInfo;
+    try {
+      shell = describeShellSandboxStatus({
+        platformSupported: kind !== "none",
+        setting: storedShellSetting,
+        envForced,
+        requestedAtBoot: isShellSandboxRequestedAtBoot(),
+        boot,
+        shellPlanMode: shellPlan.mode,
+        shellPlanFallback: shellPlan.fallbackReason,
+      });
+    } catch (error) {
+      // The boot seal and the shell plan contradict each other — a host bug,
+      // not a user state. It is reported loudly here and on the one row that
+      // depends on it; the rest of this snapshot (and every Settings section
+      // loaded beside it) still describes what the host does observe.
+      const message = errorMessage(error);
+      log.error("sandboxCapability: shell sandbox status contract violated: %s", message);
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "permissions",
+        type: "error",
+        output: `[sandbox-status:contract-violation] ${message}`,
+      });
+      shell = { state: "error", setting: storedShellSetting, envForced, causes: [] };
+    }
     return {
       platform,
       enabled,
@@ -311,7 +349,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       // for it: a degraded gate never publishes a capability, so `runtime`
       // reports the same "no OS sandbox configured" it reports when the user
       // never turned the sandbox on.
-      boot: getSandboxBootOutcome(),
+      // Raw dependency messages stay main-side (boot log); the renderer gets
+      // the classified causes.
+      boot: boot === null ? null : sandboxBootOutcomeView(boot),
+      shell,
       // Windows: which substrate carries shells and extensions this boot and
       // how strongly their egress is attributed (proxy-egress PR 9).
       windowsSubstrate: platform === "win32" ? getWindowsSandboxSubstrate() : null,
@@ -339,6 +380,68 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       limit: RECENT_EGRESS_DENIALS_LIMIT,
     });
     return rows.map((row) => ({ timestamp: row.timestamp, source: row.invocation, deny: row.deny }));
+  });
+
+  // read-only, sender-frame-guarded — the shell egress grants that outlive a
+  // call (conversation, terminal tab, workspace, always), for Settings →
+  // Permissions → Network.
+  ipcMain.handle(PERMISSIONS.egressGrantsList, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantsList, e); return UNAUTHORIZED_FRAME; }
+    const { listEgressGrants } = await import("../../permissions/egress-runtime.js");
+    try {
+      return { ok: true as const, grants: await listEgressGrants() };
+    } catch (error) {
+      return { ok: false as const, error: "egress-grant-store-unreadable", message: errorMessage(error) };
+    }
+  });
+
+  // MUTATING (sender-frame-guarded + user-keyboard intent): revoke one shell
+  // egress grant. The payload names it exactly; anything else is refused.
+  ipcMain.handle(PERMISSIONS.egressGrantRevoke, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantRevoke, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const { scope, origin, host, port, workspaceRoot, sessionId, tabId } = body;
+    if (scope !== "conversation" && scope !== "tab" && scope !== "workspace" && scope !== "always") {
+      return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be conversation, tab, workspace or always" };
+    }
+    if (typeof host !== "string" || host.length === 0 || typeof port !== "number" || !Number.isInteger(port)) {
+      return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: host and port are required" };
+    }
+    if (scope === "workspace" ? typeof workspaceRoot !== "string" : workspaceRoot !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-workspace", message: "revoke: a workspace grant names its workspaceRoot, no other grant does" };
+    }
+    if (scope === "conversation" ? typeof sessionId !== "string" || sessionId.length === 0 : sessionId !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-conversation", message: "revoke: a conversation grant names its sessionId, no other grant does" };
+    }
+    if (scope === "tab" ? typeof tabId !== "string" || !isTerminalTabId(tabId) : tabId !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-tab", message: "revoke: a tab grant names its terminal tabId, no other grant does" };
+    }
+    const persistent = scope === "workspace" || scope === "always";
+    if (persistent
+      ? (scope === "workspace" ? origin !== "shell" : origin !== "shell" && origin !== "terminal")
+      : origin !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-origin", message: "revoke: a workspace or always grant names its origin (shell, or terminal for always), no other grant does" };
+    }
+    const { revokeEgressGrant } = await import("../../permissions/egress-runtime.js");
+    try {
+      const { removed, closed } = await revokeEgressGrant(
+        scope === "conversation" ? { scope, sessionId: sessionId as string, host, port }
+        : scope === "tab" ? { scope, tabId: tabId as string, host, port }
+        : scope === "workspace" ? { scope, origin: "shell", workspaceRoot: workspaceRoot as string, host, port }
+        : { scope, origin: origin as "shell" | "terminal", host, port },
+      );
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "settings",
+        type: "approval",
+        output: `[egress-grant:revoke] scope=${scope}${persistent ? ` origin=${String(origin)}` : ""} host=${host} port=${port} removed=${removed} closedConnections=${closed}`,
+      });
+      return removed ? { ok: true } : { ok: false, error: "not-found", message: "revoke: no such grant" };
+    } catch (error) {
+      return { ok: false, error: "egress-grant-store-unreadable", message: errorMessage(error) };
+    }
   });
 
   // MUTATING (sender-frame-guarded + user-keyboard intent) — the SINGLE
@@ -452,7 +555,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       const nativeRenderer = e.senderFrame === e.sender?.mainFrame &&
         windows.some((window) => window?.webContents === e.sender);
       honoredDecision = nativeRenderer
-        ? approvalGate.resolveFromDesktopRenderer(decision.requestId, decision)
+        ? approvalGate.resolveFromDesktopRenderer(decision.requestId, decision, e.sender)
         : approvalGate.resolve(decision.requestId, decision);
     }
     if (honoredDecision) {

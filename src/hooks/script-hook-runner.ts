@@ -61,6 +61,7 @@ import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { cleanupAsrtSandboxAfterCommand, isPluginWorkerConfinementActive } from "../permissions/asrt-sandbox.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
+import type { EgressInvocation } from "../permissions/egress-invocations.js";
 import {
   bundledWrappedEnv,
   spawnWindowsBundledProcess,
@@ -270,6 +271,7 @@ export async function runOneHookScript(
 
   assertManagedChildProcessAdmissionOpen("hook:script");
   let cleanupWrap: (() => void) | undefined;
+  let wrappedEgress: EgressInvocation | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
   if (confinement && isPluginWorkerConfinementActive() && process.platform === "win32") {
     // srt-win: the hook runs through the stdio relay with an ACL grant on its
@@ -307,6 +309,7 @@ export async function runOneHookScript(
         egressOwner: { kind: "worker", role: "hook", pluginId: confinement.pluginId } });
       [spawnCmd, ...spawnArgs] = wrapped.argv;
       spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, sandboxHome.env);
+      wrappedEgress = wrapped.egress;
       let cleaned = false;
       cleanupWrap = () => {
         if (cleaned) return;
@@ -340,6 +343,11 @@ export async function runOneHookScript(
         label: "hook:script",
         killProcessGroup: process.platform !== "win32",
       });
+    }
+    // Detached (POSIX), the hook leads its own process group: the sandbox
+    // keeps the ended invocation's listener port while that group lives.
+    if (wrappedEgress !== undefined && process.platform !== "win32" && child.pid !== undefined) {
+      wrappedEgress.noteProcessGroup(child.pid);
     }
     // Through the relay the hook's input and output are the relay's streams,
     // not the child's own pipes (`spawnWindowsBundledProcess`).

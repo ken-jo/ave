@@ -1382,9 +1382,88 @@ neither sampled nor dropped, so their volume is bounded only by the refused
 process's connection rate and lifetime. The shell tools append ASRT's
 `<sandbox_violations>` block to their output so the model reads why a host
 failed, and Settings → Permissions → Network lists the last 24 hours of
-refusals from that audit channel. This is attribution, not policy: the
-network policy is still the strict allow-list set at boot, with no ask
-callback.
+refusals from that audit channel.
+
+The token is a label; what identifies an invocation to the policy is the
+channel its connections arrive on (`src/permissions/egress-identity.ts`). On
+macOS and Linux every wrap first opens its own proxy front end
+(`SandboxManager.openInvocationListener`, part 3 of the carried 0.0.80 bun
+patch): a loopback port that the wrap's Seatbelt profile alone may reach, or a
+socket path bound into that wrap's bwrap in place of the shared bridge socket.
+A connection that arrives there reaches the ask callback with
+`identity: "listener"`, and the callback (`src/permissions/egress-ask.ts`)
+denies anything that did not, so a token read off another process opens
+nothing. On Linux every lane socket and every proxy backend socket lives in
+one private 0700 directory, and each wrap mounts a tmpfs over that directory
+and binds back only its own lane socket, so no wrap can see another's socket
+even when `allowAllUnixSockets` lifts the AF_UNIX block (as registering a
+worker socket directory does). On macOS `allowAllUnixSockets` would expose the
+shared bridge socket, so while it is set shell and extension identity is
+`shared`. The proxy refuses a destination that is a proxy front end's port on
+this host, so one invocation cannot hop onto another's listener. A
+destination name is resolved once, before the callback decides, and refused
+when any address is loopback, reserved or this host's; the callback sees the
+addresses, and the connection is pinned to them (a direct dial does not
+resolve again; through an upstream HTTP(S) proxy the CONNECT names the
+address, trying each in turn, not the name; plain HTTP by name through an
+upstream is refused), so DNS rebinding cannot move it afterwards. A name this
+host cannot resolve (owner decision 2026-10-19) is refused without an
+upstream; through a remote upstream it is forwarded by name and the callback
+is told `resolution: "upstream"`, which Ave treats as `unverified` (at most
+This conversation, a card note that the proxy decides the address,
+persistent grants ignored); through an upstream on this host (loopback,
+`localhost`-style names, or one of this host's addresses, e.g. cntlm or px)
+it is refused with a reason, unless the trusted `upstreamProxy.resolvesNames`
+setting gives that upstream the remote treatment, which accepts the residual
+risk that the local proxy resolves the name to this host after the check. An ended
+invocation's macOS port stays bound, refusing connections, for 30 minutes,
+longer while its process group still runs, and its number is never reused. A wrap with `network.allowLocalBinding` is
+refused, and Ave never sets it. The macOS profile also denies process-info on other processes and
+the `kern.procargs` sysctls, and each non-PTY wrap starts in its own session
+(node-pty already starts one), so a sandboxed process cannot read another
+process's environment.
+
+ASRT runs non-strict with an empty `allowedDomains`, so the callback decides
+every connection: a plugin worker reaches its own extension's declared
+domains and the configured model endpoints, nothing else, and is never asked;
+a Bash or PowerShell call reaches a host a grant covers, and otherwise
+the person is asked on the approval dock (Deny, Allow once, This
+conversation, This workspace, Always); a workspace terminal tab (always in
+the foreground) reaches a host a grant covers, and otherwise the person is
+asked in a banner in that tab, drawn only in, fetched by and answered from
+the window that owns the tab (Deny, Allow once, This tab, Always: a
+terminal's Allow once lets that one connection through and is never held;
+"This tab" takes the place of "This conversation" and lasts until the tab's
+shell exits, including an exit followed by a respawn; terminals have no
+This workspace, since every tab runs in the app's one default workspace,
+which agent shell calls share). A persistent grant records its origin
+(`shell` or `terminal`) and covers only that origin, so a terminal's Always
+never lets an agent's shell call through, nor the reverse; Settings shows the
+origin. Working directories are compared after `canonicalizePathForMatch`. The
+connection is held while the banner is up and denied after 120 s without an
+answer, or at once when the tab closes; connections from one tab to one
+destination share one banner row. While no view of the tab is mounted the
+ask is drawn on the focused pane's lane instead
+(`src/ui/renderer/components/permissions/TerminalEgressBanner.tsx`).
+`src/permissions/egress-grants.ts` holds the grants, the persistent ones in
+`<AVE_HOME>/permissions/shell-egress-hosts.json`, revocable in Settings →
+Permissions → Network. A background call nobody can answer, asks turned off
+(`features.shellEgressAsk`), or an unreadable grant file is a refusal.
+Destinations are classed by `egressDestinationNetwork()` on the host and every
+address it resolved to, most restrictive first: link-local, cloud metadata,
+unspecified, multicast and broadcast addresses are refused without asking;
+loopback, `localhost`/`*.localhost`, local-network names (`*.local`,
+`*.localdomain`, `*.home.arpa`, `*.internal`, `*.lan`), RFC1918, CGNAT, ULA
+and site-local addresses are offered at most This conversation (a terminal:
+This tab), with a local-network warning on the card, and persistent grants
+never apply to them. Only the desktop window
+answers an egress ask; an answer from any other surface leaves it pending. Conversation and
+tab grants are listed and revocable in Settings too, and revoking a grant closes the
+connections it let through that are still open. Each decision, including a
+refusal the proxy made before asking, writes an `egress-decision` sandbox audit
+row. Where the identity is
+only the proxy username (Windows srt-win, `egressIdentityStrength() ===
+"shared"`), grants stop at This conversation (a terminal: This tab).
 
 `spawnWorker` is the only host primitive that can establish that worker-backed
 plugin substrate. macOS and Linux workers use an ASRT-wrapped Unix-domain-socket

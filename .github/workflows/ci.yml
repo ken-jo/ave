@@ -464,6 +464,11 @@ jobs:
       # `AVE_REQUIRE_SANDBOX_CASES=1` is what stops that from being a silent
       # arrangement: if the sandbox cannot initialize here, the cases FAIL
       # instead of reporting a measurement they never took.
+      # terminal-egress-native.test.ts also needs the runner to reach
+      # https://example.com (a real public host: a local server cannot stand in
+      # for one behind the sandbox's proxy). Without that route its
+      # precondition case fails with one "network unreachable: …" assertion and
+      # its cases are skipped; that failure is the runner's network, not Ave.
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -476,6 +481,9 @@ jobs:
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
           src/permissions/__tests__/egress-deny-native.test.ts
+          src/permissions/__tests__/egress-token-isolation-native.test.ts
+          src/main/terminal/__tests__/terminal-egress-native.test.ts
+          test/scripts/asrt-patched-symbols.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts
           src/tools/__tests__/registry-meta-governance.test.ts
@@ -591,6 +599,8 @@ jobs:
           python-version: "3.12"
       # With the flag set, a case that cannot initialise the sandbox FAILS
       # instead of returning green, so a green job is a measurement.
+      # terminal-egress-native.test.ts needs https://example.com: without a
+      # route it fails once with "network unreachable: …" (see the macOS job).
       - name: Run Linux confinement regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -604,3 +614,6 @@ jobs:
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
           src/permissions/__tests__/egress-deny-native.test.ts
+          src/permissions/__tests__/egress-token-isolation-native.test.ts
+          src/main/terminal/__tests__/terminal-egress-native.test.ts
+          test/scripts/asrt-patched-symbols.test.ts

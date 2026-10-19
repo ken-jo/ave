@@ -16,6 +16,7 @@ import type { EgressDenialRow, EgressDenialSource } from "../../../../shared/egr
 import { formatDateTime } from "../../../../shared/format-time.js";
 import { errorMessage } from "../../../../shared/error-message.js";
 import { isIpcErrorResult } from "../../types.js";
+import { terminalTabLabel } from "../../preview/terminal-tab-labels.js";
 
 interface EgressDenialsListProps {
   /** Override fetcher for tests. Defaults to window.ave.permission.egressDenialsRecent. */
@@ -32,7 +33,9 @@ function egressDenialSourceText(source: EgressDenialSource): string {
         : t("permissionsTab.networkDenialSourceShellCall", { tool, id: source.toolUseId });
     }
     case "terminal":
-      return t("permissionsTab.networkDenialSourceTerminal", { tab: source.tabId });
+      // The tab's visible name where this window showed it; otherwise its id
+      // (a denial can outlive the tab, and the id is what the audit row names).
+      return t("permissionsTab.networkDenialSourceTerminal", { tab: terminalTabLabel(source.tabId) ?? source.tabId });
     case "worker": {
       const extension = source.pluginId ?? "";
       switch (source.role) {

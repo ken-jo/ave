@@ -1,6 +1,6 @@
-Two backports and one Ave-only change onto @anthropic-ai/sandbox-runtime
-0.0.80. Drop each part when a released version carries it (or, for part 3,
-when Ave adopts an upstream MXC backend), and the whole patch (and the
+Two backports and two Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
+Drop each part when a released version carries it (or, for part 4, when Ave
+adopts an upstream MXC backend), and the whole patch (and the
 patchedDependencies entry in package.json) when every part is gone.
 test/scripts/asrt-patched-symbols.test.ts fails if any part is missing from
 the installed package.
@@ -18,7 +18,52 @@ the installed package.
    one process-wide proxy cannot tell which of them opened the connection it
    is asked about. Carried regardless of upstream review (owner 2026-10-19).
 
-3. Ave-only (no upstream PR yet; upstream's MXC backend is draft #427/#713):
+3. Invocation listeners (Ave, upstream proposal drafted in the PR that added
+   it; related to sandbox-runtime#160): `SandboxManager.openInvocationListener`
+   gives one invocation its own proxy front end (a loopback port on macOS that
+   the wrap's Seatbelt profile alone allows, a socket path on Linux bound into
+   that bwrap), attributes its connections from the listener rather than the
+   forgeable proxy username (`SandboxAskContext.identity`), refuses requests
+   for any proxy listener's own port on loopback or this host's own
+   addresses (so one invocation cannot hop onto another's listener through
+   the proxy), and bounds the count. An ended listener's macOS port stays
+   bound for a quarantine period (30 minutes), longer while the invocation's
+   process group (`closeInvocationListener(id, { processGroup })`) still has
+   a process in it, up to 24 hours; then it is released, its number is never
+   handed out again and is still refused as a hop target. On Linux
+   every lane socket and every mux HTTP backend socket lives in one private
+   0700 directory, and every Linux wrap mounts a tmpfs over that directory and
+   binds back only its own lane socket, so no wrap can reach another
+   invocation's socket even when allowAllUnixSockets lifts the AF_UNIX block.
+   A destination name is resolved once, before the ask callback, and refused
+   when any address is one the resolved-address guard refuses; the callback is told the addresses
+   (`SandboxAskContext.addresses`) and the connection is pinned to them: a
+   direct dial uses them instead of resolving again, and a parent-proxy
+   CONNECT names an address literal instead of the name, trying the vetted
+   addresses in turn (IPv4 first) until the upstream opens one (SNI inside
+   the tunnel is the client's). So neither DNS rebinding between the check and
+   the dial nor the upstream's own resolution reaches an address the guard
+   refuses. A plain-HTTP request by name through a parent proxy is refused
+   (its absolute-form target cannot be pinned without breaking virtual
+   hosting). A name this host cannot resolve is refused without a parent
+   proxy; through a remote one it is forwarded by name and the callback is
+   told `resolution: 'upstream'` (unverified); through one on this host
+   (loopback, localhost-style names, an interface address) it is refused
+   unless `parentProxy.resolvesNames` trusts it to resolve names. When a name
+   is forwarded, the proxy socket actually connected is judged as well (its
+   remoteAddress must not be this host) before anything is written to it,
+   since the dial resolves the proxy's name again after that check. Test seams `setDestinationResolverForTesting` and
+   `setListenerQuarantineForTesting` are named exports of
+   dist/sandbox/sandbox-manager.js only (not on SandboxManager, not from the
+   package entry) and throw outside the test runner (VITEST unset). `closeInvocationConnections(commandIds, host,
+   port)` closes the open client connections those invocations made to a
+   destination (the embedder calls it when it revokes a grant). The macOS
+   profile also
+   denies process-info on other processes and the kern.procargs sysctls
+   (defense in depth for #160, which the embedder pairs with a new session per
+   wrap).
+
+4. Ave-only (no upstream PR yet; upstream's MXC backend is draft #427/#713):
    `windows.externalConfinement: "embedder"` lets initialize() run the proxy
    on Windows without the srt-win account, its WFP fence or its session
    ACLs, for an embedder that confines its Windows children itself. Ave sets
@@ -29,7 +74,7 @@ the installed package.
    it when upstream ships an MXC backend Ave adopts.
 
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..fe6a09e229bba2148903856733a5f9f9049329b9 100644
+index 46dc273..fe6a09e 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -3,7 +3,7 @@ export type { WrapWithSandboxOptions } from './sandbox/sandbox-manager.js';
@@ -41,8 +86,198 @@ index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..fe6a09e229bba2148903856733a5f9f9
  export type { FilterRequestCallback, RequestDecision, RequestInfo, MutateForwardedHeaders, } from './sandbox/request-filter.js';
  export type { SandboxViolationEvent } from './sandbox/macos-sandbox-utils.js';
  export { type SandboxDependencyCheck, LinuxSandboxProfileError, type LinuxSandboxProfileErrorCode, } from './sandbox/linux-sandbox-utils.js';
+diff --git a/dist/sandbox/http-proxy.d.ts b/dist/sandbox/http-proxy.d.ts
+index bb9071e..16b80a9 100644
+--- a/dist/sandbox/http-proxy.d.ts
++++ b/dist/sandbox/http-proxy.d.ts
+@@ -8,7 +8,7 @@ import { type TunnelTimeouts } from './tls-terminate-proxy.js';
+ import { type GetBodySubstitutions } from './body-substitution.js';
+ import type { PlanSigv4 } from './credential-aws-pairs.js';
+ import type { ResolvedParentProxy } from './parent-proxy.js';
+-import { type DirectLookup } from './parent-proxy.js';
++import { type DirectLookup, type ParentDestination, type ParentHop } from './parent-proxy.js';
+ export interface HttpProxyServerOptions {
+     /**
+      * Host-allowlist decision. `encodedCommand` is the per-command suffix
+@@ -24,7 +24,12 @@ export interface HttpProxyServerOptions {
+      * `explain`, called before a refusal, gives the reason: the status phrase
+      * a refused CONNECT is answered with.
+      */
+-    filter(port: number, host: string, socket: Socket | Duplex, encodedCommand?: string, explain?: (reason: string) => void): Promise<boolean> | boolean;
++    /**
++     * Ave patch: `plainHttpViaParent` is true for a plain-HTTP request that
++     * goes through the parent proxy (its absolute-form target names the host,
++     * which the upstream resolves itself).
++     */
++    filter(port: number, host: string, socket: Socket | Duplex, encodedCommand?: string, explain?: (reason: string) => void, plainHttpViaParent?: boolean): Promise<boolean> | boolean;
+     /**
+      * Optional function to get the MITM proxy socket path for a given host.
+      * If returns a socket path, the request will be routed through that MITM proxy.
+@@ -149,6 +154,10 @@ export interface HttpProxyServerOptions {
+      * resolves the name.
+      */
+     lookupFor?: DirectLookup;
++    /** Ave patch: what a parent-proxy request names instead of the client's host (see ParentDestination). */
++    parentDestination?: ParentDestination;
++    /** Ave patch: how this request dials the parent proxy (see ParentHop). */
++    parentHop?: (socket: Socket | Duplex, host: string, port: number, encodedCommand: string | undefined) => ParentHop;
+     /**
+      * Per-session bearer token. When set, every CONNECT and absolute-URI
+      * request must carry `Proxy-Authorization: Basic
+diff --git a/dist/sandbox/http-proxy.js b/dist/sandbox/http-proxy.js
+index 7ad12c3..a13b43e 100644
+--- a/dist/sandbox/http-proxy.js
++++ b/dist/sandbox/http-proxy.js
+@@ -15,7 +15,7 @@ const ALLOWLIST_DENY = [
+ import { peekForClientHello, terminateAndForward, } from './tls-terminate-proxy.js';
+ import { prepareBodySubstitution, } from './body-substitution.js';
+ import { isResolvedAddressDenied } from './resolved-address-guard.js';
+-import { canonicalizeHost, connectViaParentProxy, directRequestOptions, dialDirect, formatAuthority, openConnectTunnel, proxyAuthHeader, onUpstreamError, relayResponseHead, selectParentProxyUrl, shouldBypassParentProxy, stripBrackets, stripHopByHop, } from './parent-proxy.js';
++import { canonicalizeHost, connectToParentProxy, connectViaParentProxy, connectViaParentProxyToFirst, directRequestOptions, dialDirect, formatAuthority, openConnectTunnel, proxyAuthHeader, onUpstreamError, relayResponseHead, selectParentProxyUrl, shouldBypassParentProxy, stripBrackets, stripHopByHop, } from './parent-proxy.js';
+ const handedIn = new WeakSet();
+ /**
+  * Mark a socket about to be handed to a proxy server with
+@@ -300,7 +300,7 @@ export function createHttpProxyServer(options) {
+             // the (already-validated, so practically unreachable) case where
+             // canonicalization fails, so the two layers can never disagree.
+             const hostname = canonicalizeHost(requestedHost) ?? requestedHost;
+-            const lookup = options.lookupFor?.(port, auth.encodedCommand);
++            const lookup = options.lookupFor?.(port, auth.encodedCommand, socket, hostname);
+             // Decide upstream route:
+             //   in-process TLS termination
+             //   > external MITM unix socket
+@@ -461,7 +461,11 @@ export function createHttpProxyServer(options) {
+                     });
+                 }
+                 else if (parentUrl) {
+-                    upstream = await connectViaParentProxy(parentUrl, hostname, port);
++                    // Ave patch: the pinned addresses, never the name (see
++                    // parentDestination), each tried until the upstream opens one.
++                    upstream = options.parentDestination
++                        ? await connectViaParentProxyToFirst(parentUrl, options.parentDestination(socket, hostname, port, auth.encodedCommand, false), port, options.parentHop?.(socket, hostname, port, auth.encodedCommand))
++                        : await connectViaParentProxy(parentUrl, hostname, port);
+                 }
+                 else {
+                     upstream = await dialDirect(hostname, port, lookup);
+@@ -580,7 +584,17 @@ export function createHttpProxyServer(options) {
+             const defaultPort = isHttps ? 443 : 80;
+             const requestedHost = stripBrackets(url.hostname);
+             const port = url.port ? parseInt(url.port, 10) : defaultPort;
+-            const allowed = await options.filter(port, requestedHost, req.socket, auth.encodedCommand);
++            // Ave patch: through a parent proxy a plain-HTTP request names its
++            // host in the absolute-form target, which the upstream resolves
++            // itself. The filter is told, so it refuses a name it would have
++            // pinned before anybody is asked (see destinationRefusal).
++            const parentHost = canonicalizeHost(requestedHost) ?? requestedHost;
++            const plainHttpViaParent = Boolean(options.parentDestination &&
++                options.parentProxy &&
++                !options.getMitmSocketPath?.(parentHost) &&
++                !shouldBypassParentProxy(options.parentProxy, parentHost) &&
++                selectParentProxyUrl(options.parentProxy, { isHttps }));
++            const allowed = await options.filter(port, requestedHost, req.socket, auth.encodedCommand, undefined, plainHttpViaParent);
+             if (!allowed) {
+                 logForDebugging(`HTTP request blocked to ${requestedHost}:${port}`, {
+                     level: 'error',
+@@ -748,6 +762,31 @@ export function createHttpProxyServer(options) {
+                 });
+                 respondUpstreamError(res, err, options.denyHeader);
+             };
++            if (parentUrl && options.parentDestination) {
++                // Ave patch: the same rule after the decision (an address
++                // literal, or a name the upstream resolves; never a pinned name).
++                try {
++                    options.parentDestination(req.socket, hostname, port, auth.encodedCommand, true);
++                }
++                catch (err) {
++                    failUpstream(err);
++                    return;
++                }
++            }
++            // Ave patch: when the request names a host the upstream resolves,
++            // the proxy actually connected to is judged before the request is
++            // written (see ParentHop.vetPeer), on a socket dialed here.
++            const parentHop = parentUrl ? options.parentHop?.(req.socket, hostname, port, auth.encodedCommand) : undefined;
++            let parentSocket;
++            if (parentHop?.vetPeer) {
++                try {
++                    parentSocket = await connectToParentProxy(parentUrl, parentHop);
++                }
++                catch (err) {
++                    failUpstream(err);
++                    return;
++                }
++            }
+             let proxyReq;
+             if (mitmSocketPath) {
+                 logForDebugging(`Routing HTTP ${req.method} ${hostname}:${port} through MITM proxy at ${mitmSocketPath}`);
+@@ -787,6 +826,7 @@ export function createHttpProxyServer(options) {
+                 proxyReq = requestFn({
+                     hostname: parentHost,
+                     port: parentPort,
++                    ...(parentSocket ? { createConnection: () => parentSocket } : {}),
+                     path: absUrl,
+                     method: req.method,
+                     headers: auth
+@@ -816,7 +856,7 @@ export function createHttpProxyServer(options) {
+                 // (see directRequestOptions); the name stays in Host and, for TLS, SNI.
+                 let direct;
+                 try {
+-                    direct = await directRequestOptions(hostname, port, options.lookupFor?.(port, auth.encodedCommand), isHttps);
++                    direct = await directRequestOptions(hostname, port, options.lookupFor?.(port, auth.encodedCommand, req.socket, hostname), isHttps);
+                 }
+                 catch (err) {
+                     failUpstream(err);
+diff --git a/dist/sandbox/linux-sandbox-utils.d.ts b/dist/sandbox/linux-sandbox-utils.d.ts
+index 53c4a26..3a43a5f 100644
+--- a/dist/sandbox/linux-sandbox-utils.d.ts
++++ b/dist/sandbox/linux-sandbox-utils.d.ts
+@@ -16,6 +16,12 @@ export interface LinuxSandboxParams {
+      *  `command`. See MacOSSandboxParams.commandId. */
+     commandId?: string;
+     needsNetworkRestriction: boolean;
++    /**
++     * Ave patch (invocation listeners): the proxy's private socket directory.
++     * The wrap mounts an empty tmpfs over it and binds back only
++     * `httpSocketPath` when that lies inside it.
++     */
++    privateSocketDir?: string;
+     httpSocketPath?: string;
+     socksSocketPath?: string;
+     httpProxyPort?: number;
+diff --git a/dist/sandbox/linux-sandbox-utils.js b/dist/sandbox/linux-sandbox-utils.js
+index b3acba6..e5376da 100644
+--- a/dist/sandbox/linux-sandbox-utils.js
++++ b/dist/sandbox/linux-sandbox-utils.js
+@@ -2851,7 +2851,7 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
+  * inheritable sets.
+  */
+ export async function wrapCommandWithSandboxLinux(params) {
+-    const { command, commandId, needsNetworkRestriction, httpSocketPath, socksSocketPath, httpProxyPort, socksProxyPort, proxyAuthToken, caCertPath, javaAgentJarPath, unsetEnvVars, setEnvVars, maskedFileBinds, maskedFileStoreDir, enableWeakerNestedSandbox, allowNestedUserNamespaces, allowAllUnixSockets, binShell, ripgrepConfig = { command: 'rg' }, mandatoryDenySearchDepth = DEFAULT_MANDATORY_DENY_SEARCH_DEPTH, allowGitConfig = false, gitSafeDirectories, seccompConfig, bwrapPath, socatPath, observeSocketPath, abortSignal, } = params;
++    const { command, commandId, needsNetworkRestriction, privateSocketDir, httpSocketPath, socksSocketPath, httpProxyPort, socksProxyPort, proxyAuthToken, caCertPath, javaAgentJarPath, unsetEnvVars, setEnvVars, maskedFileBinds, maskedFileStoreDir, enableWeakerNestedSandbox, allowNestedUserNamespaces, allowAllUnixSockets, binShell, ripgrepConfig = { command: 'rg' }, mandatoryDenySearchDepth = DEFAULT_MANDATORY_DENY_SEARCH_DEPTH, allowGitConfig = false, gitSafeDirectories, seccompConfig, bwrapPath, socatPath, observeSocketPath, abortSignal, } = params;
+     // bubblewrap takes no patterns, so every path here is a name. The literal
+     // lists are folded into the lists they belong to, once, so that nothing
+     // below can read a list and miss them; a pattern in `allowOnly` that is no
+@@ -3029,6 +3029,18 @@ export async function wrapCommandWithSandboxLinux(params) {
+         };
+         // Always bind /dev
+         bwrapArgs.push('--dev', '/dev');
++        // Ave patch (invocation listeners): after every filesystem bind, so no
++        // allowWrite/allowRead entry can re-expose it. The proxy's private
++        // socket directory becomes an empty tmpfs, and only this wrap's own
++        // listener socket (when it has one) is bound back: another
++        // invocation's listener or a proxy backend cannot be opened from here,
++        // even with AF_UNIX sockets allowed.
++        if (privateSocketDir) {
++            bwrapArgs.push('--tmpfs', privateSocketDir);
++            if (needsNetworkRestriction && httpSocketPath?.startsWith(`${privateSocketDir}/`)) {
++                bwrapArgs.push('--bind', httpSocketPath, httpSocketPath);
++            }
++        }
+         // ========== PID NAMESPACE ISOLATION ==========
+         // IMPORTANT: These must come AFTER filesystem binds for nested bwrap to work
+         // By default, always unshare PID namespace and mount fresh /proc.
 diff --git a/dist/sandbox/macos-sandbox-utils.d.ts b/dist/sandbox/macos-sandbox-utils.d.ts
-index 8af5e03041b27d060b0027278fb0567745b06f2f..cb475685df0ae8d5ae7d00d9009ba2f1f1679ad6 100644
+index 8af5e03..cb47568 100644
 --- a/dist/sandbox/macos-sandbox-utils.d.ts
 +++ b/dist/sandbox/macos-sandbox-utils.d.ts
 @@ -48,6 +48,8 @@ export interface MacOSSandboxParams {
@@ -62,7 +297,7 @@ index 8af5e03041b27d060b0027278fb0567745b06f2f..cb475685df0ae8d5ae7d00d9009ba2f1
  //# sourceMappingURL=macos-sandbox-utils.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/macos-sandbox-utils.js b/dist/sandbox/macos-sandbox-utils.js
-index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..f176ead01242377afdf2ef9d35a6f9bb14841d70 100644
+index 0e598b6..2743f04 100644
 --- a/dist/sandbox/macos-sandbox-utils.js
 +++ b/dist/sandbox/macos-sandbox-utils.js
 @@ -750,7 +750,7 @@ function generateWriteRules(config, logTag, allowGitConfig, writeRoots) {
@@ -74,7 +309,21 @@ index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..f176ead01242377afdf2ef9d35a6f9bb
      const profile = [
          '(version 1)',
          `(deny default (with message "${logTag}"))`,
-@@ -1032,6 +1032,16 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
+@@ -762,6 +762,13 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
+         '(allow process-exec)',
+         '(allow process-fork)',
+         '(allow process-info* (target same-sandbox))',
++        // Ave patch (invocation listeners, defense in depth): without these two
++        // a sandboxed process reads any same-uid process's argv and environment
++        // through sysctl(KERN_PROCARGS2), which Seatbelt does not gate on its
++        // own (sandbox-runtime#160). Together they refuse it for processes in
++        // another process session; the embedder starts each wrap in its own.
++        '(deny process-info* (target others))',
++        '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
+         '(allow signal (target same-sandbox))',
+         '(allow mach-priv-task-port (target same-sandbox))',
+         '',
+@@ -1032,6 +1039,16 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
          profile.push('  (regex #"^/dev/ttys")');
          profile.push(')');
      }
@@ -91,7 +340,7 @@ index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..f176ead01242377afdf2ef9d35a6f9bb
      return profile.join('\n');
  }
  /**
-@@ -1040,11 +1050,27 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
+@@ -1040,11 +1057,27 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
  function escapePath(pathStr) {
      return JSON.stringify(pathStr);
  }
@@ -120,7 +369,7 @@ index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..f176ead01242377afdf2ef9d35a6f9bb
      // SBPL cannot redirect a read to different bytes, so whole-file masking
      // degrades to read-deny on macOS: the sandboxed process gets EPERM
      // instead of the sentinel. The DYLD interposer (a later step) lifts
-@@ -1098,6 +1124,7 @@ export function wrapCommandWithSandboxMacOS(params) {
+@@ -1098,6 +1131,7 @@ export function wrapCommandWithSandboxMacOS(params) {
          allowLocalBinding,
          allowMachLookup,
          allowPty,
@@ -128,8 +377,349 @@ index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..f176ead01242377afdf2ef9d35a6f9bb
          allowGitConfig,
          enableWeakerNetworkIsolation,
          allowAppleEvents,
+diff --git a/dist/sandbox/mux-proxy.d.ts b/dist/sandbox/mux-proxy.d.ts
+index 7034511..6b1678f 100644
+--- a/dist/sandbox/mux-proxy.d.ts
++++ b/dist/sandbox/mux-proxy.d.ts
+@@ -24,6 +24,8 @@ export interface MuxProxyOptions {
+      * platforms (unix socket needs no port).
+      */
+     httpBackendPortRange?: readonly [number, number];
++    /** Ave patch (invocation listeners): where the HTTP backend's unix socket lives (default: the OS temp dir). */
++    backendSocketDir?: string;
+ }
+ export interface MuxProxyServer {
+     /** The front-end TCP listener. Call `.listen()` on this. */
+diff --git a/dist/sandbox/mux-proxy.js b/dist/sandbox/mux-proxy.js
+index 18e2472..43c6151 100644
+--- a/dist/sandbox/mux-proxy.js
++++ b/dist/sandbox/mux-proxy.js
+@@ -19,9 +19,9 @@ import { closeAfterFlush } from './tls-terminate-proxy.js';
+ const SOCKS_FIRST_BYTES = new Set([0x04, 0x05]);
+ const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 10000;
+ let backendSeq = 0;
+-function unixSocketPath() {
++function unixSocketPath(dir = tmpdir()) {
+     // Keep it short — macOS sun_path is 104 bytes.
+-    return join(tmpdir(), `srt-mux-${process.pid}-${(backendSeq++).toString(36)}.sock`);
++    return join(dir, `srt-mux-${process.pid}-${(backendSeq++).toString(36)}.sock`);
+ }
+ /**
+  * Single-port proxy front-end that dispatches each connection to either the
+@@ -123,7 +123,9 @@ export function createMuxProxyServer(opts) {
+         },
+         async listenHttpBackend() {
+             if (!isWindows) {
+-                const path = unixSocketPath();
++                // Ave patch (invocation listeners): `backendSocketDir` keeps the
++                // backend in the private socket directory a Linux wrap hides.
++                const path = unixSocketPath(opts.backendSocketDir);
+                 // A prior process with the same PID may have crashed without
+                 // unlinking; clear any stale file so listen() doesn't EADDRINUSE.
+                 await unlink(path).catch(() => { });
+diff --git a/dist/sandbox/parent-proxy.d.ts b/dist/sandbox/parent-proxy.d.ts
+index c3c6fcb..3b12183 100644
+--- a/dist/sandbox/parent-proxy.d.ts
++++ b/dist/sandbox/parent-proxy.d.ts
+@@ -55,6 +55,8 @@ export interface ConnectTunnelOptions {
+     dial(): Socket;
+     /** Fired when the transport is ready to write (e.g. 'connect'/'secureConnect'). */
+     readyEvent: 'connect' | 'secureConnect';
++    /** Ave patch: judge the connected proxy socket before the CONNECT is written (see ParentHop). */
++    vetPeer?: (socket: Socket) => Error | undefined;
+     destHost: string;
+     destPort: number;
+     authHeader?: string;
+@@ -71,7 +73,7 @@ export declare function openConnectTunnel(opts: ConnectTunnelOptions): Promise<S
+  * Thin wrapper around openConnectTunnel that dials TCP or TLS based on the
+  * proxy URL scheme.
+  */
+-export declare function connectViaParentProxy(proxyUrl: URL, destHost: string, destPort: number): Promise<Socket>;
++export declare function connectViaParentProxy(proxyUrl: URL, destHost: string, destPort: number, hop?: ParentHop): Promise<Socket>;
+ export declare function proxyAuthHeader(proxyUrl: URL): string | undefined;
+ /**
+  * Write an upstream response's status line and headers to the client.
+@@ -140,7 +142,38 @@ export declare function isValidHost(h: string): boolean;
+  */
+ export declare function canonicalizeHost(h: string): string | undefined;
+ /** Per-dial name resolution the proxies are handed: the guard's `lookup` for `port`, refusals recorded. */
+-export type DirectLookup = (port: number, encodedCommand?: string) => LookupFunction;
++/**
++ * Ave patch (invocation listeners): with the client `socket` and the canonical
++ * `host`, the lookup answers with the addresses the filter pinned for that
++ * destination on that socket (a name with no pin is refused).
++ */
++export type DirectLookup = (port: number, encodedCommand?: string, socket?: import('node:net').Socket, host?: string) => LookupFunction;
++/**
++ * Ave patch (invocation listeners): the destinations a parent-proxy request
++ * may name, tried in order until the upstream accepts one. An address literal
++ * as is; a name as the addresses the filter pinned for it on this client
++ * socket, IPv4 first. Throws a ResolvedAddressDeniedError for a name with no
++ * pin and, with `plainHttp`, for any name.
++ */
++export type ParentDestination = (socket: import('node:net').Socket, host: string, port: number, encodedCommand: string | undefined, plainHttp: boolean) => readonly string[];
++/**
++ * Ave patch (invocation listeners): CONNECT through the parent proxy to each
++ * destination in turn, resolving with the first tunnel the upstream opens;
++ * rejects with the last failure when none does.
++ */
++export declare function connectViaParentProxyToFirst(proxyUrl: URL, destinations: readonly string[], destPort: number, hop?: ParentHop): Promise<import('node:net').Socket>;
++/**
++ * Ave patch (invocation listeners): how one request dials the parent proxy.
++ * `lookup` resolves the proxy's name; `vetPeer` judges the socket actually
++ * connected (its remoteAddress) before anything is written to it, returning
++ * the error to fail with, or undefined to go on.
++ */
++export type ParentHop = {
++    lookup?: import('node:net').LookupFunction;
++    vetPeer?: (socket: import('node:net').Socket) => Error | undefined;
++};
++/** Ave patch: a connected socket to the parent proxy for a plain-HTTP request, vetted by `hop.vetPeer`. */
++export declare function connectToParentProxy(proxyUrl: URL, hop?: ParentHop): Promise<import('node:net').Socket>;
+ /** `host[:port]` as it belongs in a Host header / URL authority: IPv6 bracketed, the default port elided. */
+ export declare function formatAuthority(host: string, port: number, defaultPort: number): string;
+ export interface DirectRequestOptions {
+diff --git a/dist/sandbox/parent-proxy.js b/dist/sandbox/parent-proxy.js
+index 1f39c77..a07f676 100644
+--- a/dist/sandbox/parent-proxy.js
++++ b/dist/sandbox/parent-proxy.js
+@@ -201,6 +201,11 @@ export function openConnectTunnel(opts) {
+         sock.once('error', fail);
+         sock.once('close', onClose);
+         sock.once(opts.readyEvent, () => {
++            // Ave patch: judge the proxy actually connected to before anything
++            // is sent to it (see ParentHop.vetPeer).
++            const refused = opts.vetPeer?.(sock);
++            if (refused)
++                return fail(refused);
+             sock.write(`CONNECT ${authority} HTTP/1.1\r\n` +
+                 `Host: ${authority}\r\n` +
+                 (opts.authHeader
+@@ -245,23 +250,72 @@ export function openConnectTunnel(opts) {
+  * Thin wrapper around openConnectTunnel that dials TCP or TLS based on the
+  * proxy URL scheme.
+  */
+-export function connectViaParentProxy(proxyUrl, destHost, destPort) {
+-    const proxyHost = stripBrackets(proxyUrl.hostname);
+-    const proxyPort = Number(proxyUrl.port) || (proxyUrl.protocol === 'https:' ? 443 : 80);
++/**
++ * Ave patch (invocation listeners): CONNECT through the parent proxy to each
++ * destination in turn (a name's vetted addresses), resolving with the first
++ * tunnel the upstream opens; rejects with the last failure when none does.
++ */
++export async function connectViaParentProxyToFirst(proxyUrl, destinations, destPort, hop) {
++    let lastError = new Error('no destination to CONNECT to');
++    for (const destination of destinations) {
++        try {
++            return await connectViaParentProxy(proxyUrl, destination, destPort, hop);
++        }
++        catch (error) {
++            lastError = error;
++            logForDebugging(`Parent proxy CONNECT ${destination}:${destPort} failed (${error?.message}); trying the next address`);
++        }
++    }
++    throw lastError;
++}
++export function connectViaParentProxy(proxyUrl, destHost, destPort, hop) {
+     const useTls = proxyUrl.protocol === 'https:';
+     return openConnectTunnel({
+         destHost,
+         destPort,
+         authHeader: proxyAuthHeader(proxyUrl),
+         readyEvent: useTls ? 'secureConnect' : 'connect',
+-        dial: () => useTls
+-            ? tlsConnect({
+-                host: proxyHost,
+-                port: proxyPort,
+-                // SNI must be a hostname, never an IP literal (RFC 6066 §3).
+-                ...(isIP(proxyHost) ? {} : { servername: proxyHost }),
+-            })
+-            : netConnect(proxyPort, proxyHost),
++        vetPeer: hop?.vetPeer,
++        dial: () => dialParentSocket(proxyUrl, hop),
++    });
++}
++/** Ave patch: a TCP or TLS socket to the parent proxy, resolving its name with `hop.lookup` when given. */
++function dialParentSocket(proxyUrl, hop) {
++    const proxyHost = stripBrackets(proxyUrl.hostname);
++    const proxyPort = Number(proxyUrl.port) || (proxyUrl.protocol === 'https:' ? 443 : 80);
++    const lookup = hop?.lookup ? { lookup: hop.lookup } : {};
++    return proxyUrl.protocol === 'https:'
++        ? tlsConnect({
++            host: proxyHost,
++            port: proxyPort,
++            // SNI must be a hostname, never an IP literal (RFC 6066 §3).
++            ...(isIP(proxyHost) ? {} : { servername: proxyHost }),
++            ...lookup,
++        })
++        : netConnect({ port: proxyPort, host: proxyHost, ...lookup });
++}
++/**
++ * Ave patch: a connected socket to the parent proxy for a plain-HTTP request,
++ * judged by `hop.vetPeer` before the request is written to it.
++ */
++export function connectToParentProxy(proxyUrl, hop) {
++    return new Promise((resolve, reject) => {
++        const sock = dialParentSocket(proxyUrl, hop);
++        const readyEvent = proxyUrl.protocol === 'https:' ? 'secureConnect' : 'connect';
++        const fail = (err) => {
++            sock.destroy();
++            reject(err);
++        };
++        sock.setTimeout(CONNECT_TIMEOUT_MS, () => fail(new Error('connect to the parent proxy timed out')));
++        sock.once('error', fail);
++        sock.once(readyEvent, () => {
++            sock.setTimeout(0);
++            sock.removeListener('error', fail);
++            const refused = hop?.vetPeer?.(sock);
++            if (refused)
++                return fail(refused);
++            resolve(sock);
++        });
+     });
+ }
+ // ---------------------------------------------------------------------------
+diff --git a/dist/sandbox/sandbox-config.d.ts b/dist/sandbox/sandbox-config.d.ts
+index 6a929a0..ab869df 100644
+--- a/dist/sandbox/sandbox-config.d.ts
++++ b/dist/sandbox/sandbox-config.d.ts
+@@ -43,14 +43,17 @@ declare const ParentProxyConfigSchema: z.ZodObject<{
+     http: z.ZodOptional<z.ZodString>;
+     https: z.ZodOptional<z.ZodString>;
+     noProxy: z.ZodOptional<z.ZodString>;
++    resolvesNames: z.ZodOptional<z.ZodBoolean>;
+ }, "strip", z.ZodTypeAny, {
+     http?: string | undefined;
+     https?: string | undefined;
+     noProxy?: string | undefined;
++    resolvesNames?: boolean | undefined;
+ }, {
+     http?: string | undefined;
+     https?: string | undefined;
+     noProxy?: string | undefined;
++    resolvesNames?: boolean | undefined;
+ }>;
+ /**
+  * Schema for the access mode of a declared credential source.
+@@ -673,14 +676,17 @@ export declare const NetworkConfigSchema: z.ZodObject<{
+         http: z.ZodOptional<z.ZodString>;
+         https: z.ZodOptional<z.ZodString>;
+         noProxy: z.ZodOptional<z.ZodString>;
++        resolvesNames: z.ZodOptional<z.ZodBoolean>;
+     }, "strip", z.ZodTypeAny, {
+         http?: string | undefined;
+         https?: string | undefined;
+         noProxy?: string | undefined;
++        resolvesNames?: boolean | undefined;
+     }, {
+         http?: string | undefined;
+         https?: string | undefined;
+         noProxy?: string | undefined;
++        resolvesNames?: boolean | undefined;
+     }>>;
+ }, "strip", z.ZodTypeAny, {
+     allowedDomains: string[];
+@@ -716,6 +722,7 @@ export declare const NetworkConfigSchema: z.ZodObject<{
+         http?: string | undefined;
+         https?: string | undefined;
+         noProxy?: string | undefined;
++        resolvesNames?: boolean | undefined;
+     } | undefined;
+ }, {
+     allowedDomains: string[];
+@@ -751,6 +758,7 @@ export declare const NetworkConfigSchema: z.ZodObject<{
+         http?: string | undefined;
+         https?: string | undefined;
+         noProxy?: string | undefined;
++        resolvesNames?: boolean | undefined;
+     } | undefined;
+ }>;
+ /**
+@@ -1014,14 +1022,17 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+             http: z.ZodOptional<z.ZodString>;
+             https: z.ZodOptional<z.ZodString>;
+             noProxy: z.ZodOptional<z.ZodString>;
++            resolvesNames: z.ZodOptional<z.ZodBoolean>;
+         }, "strip", z.ZodTypeAny, {
+             http?: string | undefined;
+             https?: string | undefined;
+             noProxy?: string | undefined;
++            resolvesNames?: boolean | undefined;
+         }, {
+             http?: string | undefined;
+             https?: string | undefined;
+             noProxy?: string | undefined;
++            resolvesNames?: boolean | undefined;
+         }>>;
+     }, "strip", z.ZodTypeAny, {
+         allowedDomains: string[];
+@@ -1057,6 +1068,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+             http?: string | undefined;
+             https?: string | undefined;
+             noProxy?: string | undefined;
++            resolvesNames?: boolean | undefined;
+         } | undefined;
+     }, {
+         allowedDomains: string[];
+@@ -1092,6 +1104,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+             http?: string | undefined;
+             https?: string | undefined;
+             noProxy?: string | undefined;
++            resolvesNames?: boolean | undefined;
+         } | undefined;
+     }>;
+     filesystem: z.ZodObject<{
+@@ -1499,6 +1512,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+             http?: string | undefined;
+             https?: string | undefined;
+             noProxy?: string | undefined;
++            resolvesNames?: boolean | undefined;
+         } | undefined;
+     };
+     filesystem: {
+@@ -1619,6 +1633,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+             http?: string | undefined;
+             https?: string | undefined;
+             noProxy?: string | undefined;
++            resolvesNames?: boolean | undefined;
+         } | undefined;
+     };
+     filesystem: {
+@@ -1739,6 +1754,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+             http?: string | undefined;
+             https?: string | undefined;
+             noProxy?: string | undefined;
++            resolvesNames?: boolean | undefined;
+         } | undefined;
+     };
+     filesystem: {
+@@ -1859,6 +1875,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+             http?: string | undefined;
+             https?: string | undefined;
+             noProxy?: string | undefined;
++            resolvesNames?: boolean | undefined;
+         } | undefined;
+     };
+     filesystem: {
+diff --git a/dist/sandbox/sandbox-config.js b/dist/sandbox/sandbox-config.js
+index d52e0f8..2f993be 100644
+--- a/dist/sandbox/sandbox-config.js
++++ b/dist/sandbox/sandbox-config.js
+@@ -110,6 +110,12 @@ const ParentProxyConfigSchema = z.object({
+         .optional()
+         .describe('Comma-separated NO_PROXY list (hostname suffixes and CIDR ranges). ' +
+         'Matching destinations connect directly instead of via the parent proxy.'),
++    resolvesNames: z
++        .boolean()
++        .optional()
++        .describe('Ave patch. Trust an upstream proxy on this host to resolve names this host cannot: ' +
++        'such names are then forwarded by name, as they are to a remote upstream, instead of refused. ' +
++        'The upstream then decides the address after the check.'),
+ });
+ /**
+  * Schema for the access mode of a declared credential source.
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..fc7e15a055880253139097ca93dc93258e35a4d4 100644
+index 5c46e7a..55097a1 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
 @@ -45,6 +45,13 @@ export type WrapWithSandboxOptions = {
@@ -146,11 +736,73 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..fc7e15a055880253139097ca93dc9325
  };
  /**
   * Interface for the sandbox manager API
+@@ -125,6 +132,46 @@ export interface ISandboxManager {
+      * none. `reset()` removes them all.
+      */
+     unregisterCommandNetworkLists(commandId: string): void;
++    /**
++     * Ave patch (invocation listeners). Open a proxy front end for one
++     * invocation: `{ port }` on macOS (the wrap's profile allows outbound
++     * loopback to it alone), `{ socketPath }` on Linux (bound into that
++     * invocation's bwrap). Connections to it are attributed to `commandId`
++     * from the listener, refused when the proxy username names another key,
++     * and refused for any proxy listener's port on loopback or this host's
++     * own addresses (no hop onto another invocation's listener). Throws on
++     * Windows, without the local proxy, for an ended invocation, and past a
++     * per-session bound. A wrap with this `commandId` uses it; a wrap fails
++     * if `network.allowLocalBinding` is set.
++     */
++    openInvocationListener(commandId: string): Promise<{
++        port: number;
++        socketPath?: undefined;
++    } | {
++        port?: undefined;
++        socketPath: string;
++    }>;
++    /**
++     * Ave patch (invocation listeners). Refuse every further connection to
++     * the invocation's listener. On macOS its port stays bound, refusing
++     * connections, for a 30-minute quarantine (see `processGroup`), and its
++     * number is never handed to a later invocation. No-op for an unknown id.
++     */
++    closeInvocationListener(commandId: string, options?: {
++        /**
++         * The invocation's process group (its leader's pid, for a child
++         * started in its own session or group). On macOS the ended port is
++         * then released only once that group is empty after the quarantine,
++         * extended while it is not, up to 24 hours.
++         */
++        processGroup?: number;
++    }): void;
++    /**
++     * Ave patch (invocation listeners). Close every open connection the proxy
++     * allowed to `host:port` for these commandIds (CONNECT and SOCKS tunnels,
++     * keep-alive request sockets). Returns how many were closed.
++     */
++    closeInvocationConnections(commandIds: readonly string[], host: string, port: number): number;
+     /**
+      * True when the network filter understands an ask callback's
+      * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
+@@ -150,4 +197,13 @@ export interface ISandboxManager {
+  * for this session. This runs outside of the sandbox, on the host machine.
+  */
+ export declare const SandboxManager: ISandboxManager;
++/**
++ * Ave patch, test seams: not on SandboxManager and not exported from the
++ * package entry; they throw outside the test runner (VITEST unset).
++ */
++export declare function setDestinationResolverForTesting(resolver: ((name: string) => Promise<readonly {
++    address: string;
++    family?: number;
++}[]>) | undefined): void;
++export declare function setListenerQuarantineForTesting(ms: number | undefined): void;
+ //# sourceMappingURL=sandbox-manager.d.ts.map
+\ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f2a907ac3c0515701101ea1e24bb945e34782fda 100644
+index 810b0aa..73bbbf0 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
-@@ -16,7 +16,7 @@ import * as fs from 'fs';
+@@ -16,17 +16,21 @@ import * as fs from 'fs';
  import { randomBytes } from 'node:crypto';
  import { WorkingDirectoryChanged, wrapCommandWithSandboxLinux, initializeLinuxNetworkBridge, checkLinuxDependencies, cleanupBwrapMountPoints, linuxGetCwdMandatoryDenyPaths, } from './linux-sandbox-utils.js';
  import { expandReadDenyGlobLinuxSteps } from './read-deny-glob.js';
@@ -159,7 +811,112 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f2a907ac3c0515701101ea1e24bb945e
  import { startLinuxSandboxViolationMonitor, } from './linux-violation-monitor.js';
  import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
  import { getDefaultWritePaths, containsGlobChars, globBaseDirIsRoot, globPatternBaseDir, normalizePathForSandbox, removeTrailingGlobSuffix, walkGlobPatternSteps, workingDirectory, finish, finishInTurns, attributionKeyFor, decodeSandboxedCommand, encodeSandboxedCommand, } from './sandbox-utils.js';
-@@ -353,8 +353,11 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+ import { ownInstallWarning } from './own-files.js';
+ import { SandboxViolationStore, sanitizeDenialReason, sanitizeUnregisteredCommandKey, shouldIgnoreViolation, } from './sandbox-violation-store.js';
+-import { canonicalizeHost, isValidHost, redactUrl, resolveParentProxy, } from './parent-proxy.js';
++import { canonicalizeHost, isValidHost, redactUrl, resolveParentProxy, selectParentProxyUrl, shouldBypassParentProxy, } from './parent-proxy.js';
+ import { ALLOWED_DOMAIN_ENTRY_MESSAGE, isValidAllowedDomainEntry, matchesDomainPattern, matchesDomainPatternWithPort, stripDomainPatternPort, } from './domain-pattern.js';
+-import { createResolvedAddressGuard, isResolvedAddressDenied, } from './resolved-address-guard.js';
+-import { EOL } from 'node:os';
+-import { dirname } from 'node:path';
++import { createResolvedAddressGuard, isResolvedAddressDenied, ResolvedAddressDeniedError, } from './resolved-address-guard.js';
++import { EOL, tmpdir } from 'node:os';
++import { dirname, join as joinPath } from 'node:path';
++import { BlockList, isIP } from 'node:net';
++import { promises as dnsPromises } from 'node:dns';
++import { addRange, embeddedIPv4, isLoopbackAddress, isLoopbackName, LOOPBACK_RANGES } from './address.js';
++import { localInterfaceAddresses } from './resolved-address-guard.js';
+ import { getJavaProxyAgentJarPathAsync } from './java-proxy-agent.js';
+ import { getApplySeccompBinaryPathAsync } from './generate-seccomp-filter.js';
+ // ============================================================================
+@@ -47,6 +51,8 @@ let ownInstallLogged = false;
+ let logMonitorShutdown;
+ let linuxMonitor;
+ let parentProxy;
++/** Ave patch: the trusted `network.parentProxy.resolvesNames` opt-in (see upstreamForNames). */
++let parentProxyResolvesNames = false;
+ /** Read live through {@link directLookup}, so a config update applies to the next dial. */
+ let resolvedAddressGuard = createResolvedAddressGuard();
+ let mitmCA;
+@@ -84,6 +90,68 @@ let windowsWfpVerified = false;
+ // grants/stamps were applied with even if `config` mutated between.
+ let srtWinSpawn;
+ const sandboxViolationStore = new SandboxViolationStore();
++// Ave patch (invocation listeners). The ask callback the shared front end was
++// started with; every invocation listener filters through the same one.
++let invocationAskCallback;
++/**
++ * Ave patch (invocation listeners). Attribution key (decoded commandId) to
++ * its listener: `{ key, encodedKey, ended, mux, http, socks, port?,
++ * socketPath? }`. On macOS an ended listener stays here, bound and refusing
++ * every connection, until reset(): its port must not go back to the OS while
++ * a descendant of the ended invocation (whose profile still names that port)
++ * may be alive, or a later invocation that drew the same port would be
++ * reachable by it. On Linux a listener is a fresh socket path that is never
++ * reused, so an ended one is closed and only its key is kept.
++ */
++const invocationListeners = new Map();
++/** Keys of Linux listeners that have ended: never reopened in this session. */
++const retiredInvocationKeys = new Set();
++/**
++ * Upper bound on the listeners one session holds (open plus, on macOS, ended
++ * ones kept bound). Each holds a descriptor or two; past this the embedder
++ * gets a clear error rather than descriptor exhaustion somewhere else.
++ */
++const MAX_INVOCATION_LISTENERS = 4096;
++/**
++ * How long an ended macOS listener keeps its port bound before it is closed:
++ * longer than any process the ended invocation left behind is expected to
++ * live. Its port number is kept in retiredListenerPorts after that, so no
++ * later listener is ever given it.
++ */
++const INVOCATION_LISTENER_QUARANTINE_MS = 30 * 60 * 1000;
++/**
++ * Upper bound on the quarantine when the invocation's process group is still
++ * alive at each deadline: a reused group id must not hold a port forever.
++ */
++const INVOCATION_LISTENER_QUARANTINE_MAX_MS = 24 * 60 * 60 * 1000;
++/** Whether any process is left in process group `pgid` (only ESRCH means empty). */
++function processGroupAlive(pgid) {
++    try {
++        process.kill(-pgid, 0);
++        return true;
++    }
++    catch (error) {
++        return error?.code !== 'ESRCH';
++    }
++}
++/** macOS ports of listeners that have ended: never handed to another listener. */
++const retiredListenerPorts = new Set();
++/**
++ * Ave patch (invocation listeners). The private directory (mode 0700) that
++ * holds every proxy socket this session serves on macOS and Linux: Linux
++ * listener sockets and the HTTP backends behind every front end. A Linux wrap
++ * mounts an empty tmpfs over it and binds only its own listener socket back,
++ * so no sandboxed process can open another invocation's socket even when
++ * AF_UNIX sockets are allowed.
++ */
++let privateSocketDir;
++function ensurePrivateSocketDir() {
++    if (privateSocketDir === undefined) {
++        privateSocketDir = fs.mkdtempSync(joinPath(tmpdir(), 'srt-sock-'));
++        fs.chmodSync(privateSocketDir, 0o700);
++    }
++    return privateSocketDir;
++}
+ // Per-session sentinel↔real-value map for masked credentials. Lives only in
+ // process memory; never written to disk or logged. Cleared on reset().
+ const sentinelRegistry = new SentinelRegistry();
+@@ -300,7 +368,7 @@ function deniedDomainReason(entry) {
+     const own = Object.prototype.hasOwnProperty.call(reasons, entry);
+     return (own ? reasons[entry] : undefined) ?? 'host is on the deny list';
+ }
+-async function filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain) {
++async function filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain, identity = 'username', addresses = [], viaUpstream = false) {
+     const denied = (reason) => {
+         recordOutboundDeny(host, port, reason, encodedCommand);
+         explain?.(reason);
+@@ -353,8 +421,11 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
      // Coming after both configured lists, it lifts the default deny for that
      // one command and never a configured deniedDomains entry. The username is
      // presented by the sandboxed client: see registerCommandNetworkLists.
@@ -173,7 +930,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f2a907ac3c0515701101ea1e24bb945e
          : undefined;
      for (const allowedDomain of perCommand?.allowedDomains ?? []) {
          if (matchesDomainPatternWithPort(canonicalHost, port, allowedDomain)) {
-@@ -369,7 +372,10 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+@@ -369,7 +440,21 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
      logForDebugging(`No matching rule, asking user: ${host}:${port}`);
      try {
          // Held as unknown: a JavaScript caller is not bound by the declared type.
@@ -181,11 +938,743 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f2a907ac3c0515701101ea1e24bb945e
 +        // Backport of anthropics/sandbox-runtime#735: the key the per-command
 +        // lists and the violation store use, so the callback can tell which
 +        // invocation opened the connection.
-+        const answer = await sandboxAskCallback({ host, port }, { attributionKey });
++        // Ave patch (invocation listeners): `identity` says how the key was
++        // learned. 'listener' is the port (macOS) or socket path (Linux) the
++        // connection arrived on, which the sandbox profile pins for one
++        // invocation; 'username' is what the client presented and can forge.
++        // `addresses` are what the connection will be dialed to (pinned);
++        // `resolution: 'upstream'` means the upstream proxy resolves the name.
++        const answer = await sandboxAskCallback({ host, port }, {
++            attributionKey,
++            identity,
++            addresses: addresses.map(a => a.address),
++            resolution: viaUpstream ? 'upstream' : 'pinned',
++        });
          // Only `true` allows: an object is how a callback denies with a reason,
          // and a truthiness test here would read every such denial as an allow.
          if (answer === true) {
-@@ -705,7 +711,17 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -497,11 +582,80 @@ function shouldTerminateTLSForHost(host) {
+     }
+     return true;
+ }
+-async function startMuxProxyServer(sandboxAskCallback, portRange) {
++/**
++ * The HTTP and SOCKS proxy servers behind one front end. `lane` is an
++ * invocation listener (see openInvocationListener) or undefined for the
++ * shared front end. A lane's servers attribute every connection, decision and
++ * violation to the lane's own key, never to the proxy username.
++ */
++function createProxyServers(sandboxAskCallback, lane) {
+     const injectCredentials = buildCredentialInjector();
+     const injectBodyCredentials = buildBodyCredentialInjector();
+-    httpProxyServer = createHttpProxyServer({
+-        filter: (port, host, _socket, encodedCommand, explain) => filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain),
++    const attribution = (encodedCommand) => lane ? lane.encodedKey : encodedCommand;
++    const filter = lane
++        ? invocationListenerFilter(lane, sandboxAskCallback)
++        : async (port, host, encodedCommand, explain, socket, plainHttpViaParent) => {
++            // A proxy front end is never a destination, through any front end.
++            const local = localDestinationReason(host, port);
++            if (local !== undefined) {
++                recordOutboundDeny(host, port, local, encodedCommand);
++                explain?.(local);
++                return false;
++            }
++            const resolved = await resolveDestination(host, port);
++            const refusal = destinationRefusal(host, resolved, plainHttpViaParent);
++            if (refusal !== undefined) {
++                recordOutboundDeny(host, port, refusal, encodedCommand);
++                explain?.(refusal);
++                return false;
++            }
++            const allowed = await filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain, 'username', resolved.addresses, resolved.viaUpstream);
++            if (allowed && socket)
++                pinDestination(socket, host, port, resolved);
++            return allowed;
++        };
++    // A dial from a client socket uses what its filter pinned; a name with no
++    // pin there is refused rather than resolved again.
++    const lookupFor = (port, encodedCommand, socket, host) => {
++        if (socket === undefined || host === undefined)
++            return directLookup(port, attribution(encodedCommand));
++        const canonical = canonicalizeHost(host) ?? host;
++        if (isIP(canonical) !== 0)
++            return directLookup(port, attribution(encodedCommand));
++        return pinnedLookup(port, pinnedFor(socket, host, port)?.addresses ?? [], attribution(encodedCommand));
++    };
++    const parentDestination = (socket, host, port, encodedCommand, plainHttp) => parentDestinationFor(socket, host, port, attribution(encodedCommand), plainHttp);
++    // How the parent proxy is dialed for one request. Its name is resolved
++    // with the destination resolver; when the request forwards a name the
++    // upstream resolves (and the upstream is not trusted to), the proxy the
++    // socket actually reached must not be this host: upstreamForNames judged
++    // the proxy's name before, and the dial resolves it again.
++    const parentHop = (socket, host, port, encodedCommand) => ({
++        lookup: parentProxyLookup,
++        vetPeer: pinnedFor(socket, host, port)?.viaUpstream && !parentProxyResolvesNames
++            ? (peer) => {
++                const address = peer.remoteAddress;
++                if (address !== undefined && !isThisHostAddress(address))
++                    return undefined;
++                recordOutboundDeny(host, port, LOCAL_UPSTREAM_REASON, attribution(encodedCommand));
++                return new ResolvedAddressDeniedError(host, LOCAL_UPSTREAM_REASON, []);
++            }
++            : undefined,
++    });
++    // Ave patch (invocation listeners): every allowed client socket is kept
++    // under (key, host, port) so the embedder can close it when the grant
++    // that allowed it is revoked.
++    const trackedFilter = async (port, host, encodedCommand, explain, socket, plainHttpViaParent) => {
++        const allowed = await filter(port, host, encodedCommand, explain, socket, plainHttpViaParent);
++        if (allowed && socket) {
++            const encoded = attribution(encodedCommand);
++            if (encoded)
++                trackConnection(decodeSandboxedCommand(encoded), host, port, socket);
++        }
++        return allowed;
++    };
++    const http = createHttpProxyServer({
++        filter: (port, host, socket, encodedCommand, explain, plainHttpViaParent) => trackedFilter(port, host, encodedCommand, explain, socket, plainHttpViaParent),
+         getMitmSocketPath,
+         mitmCA,
+         shouldTerminateTLS: shouldTerminateTLSForHost,
+@@ -521,7 +675,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+         onFilterRequestDenied: ({ method, url, reason, encodedCommand }) => {
+             // A refused CONNECT comes with its authority (`host:port`), not a URL.
+             const target = method === 'CONNECT' ? url : redactUrlForViolation(url);
+-            recordProxyViolation(`deny http-request ${method} ${target} (${reason})`, encodedCommand);
++            recordProxyViolation(`deny http-request ${method} ${target} (${reason})`, attribution(encodedCommand));
+         },
+         // TLS-terminated path always gets the injector; the plain-HTTP path
+         // only when explicitly opted in. Without the opt-in, a sentinel sent
+@@ -538,19 +692,23 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+         // injection: the real signature must not travel over plaintext.
+         planSigv4: buildSigv4Planner(),
+         parentProxy,
+-        lookupFor: directLookup,
++        lookupFor,
++        parentDestination,
++        parentHop,
+         proxyAuthToken,
+     });
+-    socksProxyServer = createSocksProxyServer({
+-        filter: (port, host, encodedCommand) => filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand),
++    const socks = createSocksProxyServer({
++        filter: (port, host, encodedCommand, socket) => trackedFilter(port, host, encodedCommand, undefined, socket),
+         parentProxy,
+-        lookupFor: directLookup,
++        lookupFor,
++        parentDestination,
++        parentHop,
+         proxyAuthToken,
+         // A SOCKS tunnel is opaque, so the option that keeps opaque CONNECT
+         // tunnels off the HTTP side must close this side of the port too.
+         refuseOpaqueTunnels: config?.network.refuseOpaqueTunnels,
+         onTunnelRefused: (port, host, encodedCommand) => {
+-            recordProxyViolation(`deny socks-tunnel ${host}:${port} (refuseOpaqueTunnels)`, encodedCommand);
++            recordProxyViolation(`deny socks-tunnel ${host}:${port} (refuseOpaqueTunnels)`, attribution(encodedCommand));
+         },
+         probeUnauthenticated: async (port, host) => {
+             // Explicit deny rules only: an unauthenticated peer must never reach
+@@ -562,17 +720,25 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+             for (const entry of config.network.deniedDomains) {
+                 if (matchesDomainPatternWithPort(canonical, port, entry)) {
+                     const reason = deniedDomainReason(entry);
+-                    recordOutboundDeny(host, port, reason);
++                    recordOutboundDeny(host, port, reason, lane?.encodedKey);
+                     return { deniedReason: reason };
+                 }
+             }
+             return {};
+         },
+     });
++    return { http, socks };
++}
++async function startMuxProxyServer(sandboxAskCallback, portRange) {
++    invocationAskCallback = sandboxAskCallback;
++    const servers = createProxyServers(sandboxAskCallback, undefined);
++    httpProxyServer = servers.http;
++    socksProxyServer = servers.socks;
+     muxProxyServer = createMuxProxyServer({
+         httpServer: httpProxyServer,
+         handleSocksConnection: s => socksProxyServer.handleConnection(s),
+         httpBackendPortRange: portRange,
++        backendSocketDir: getPlatform() === 'windows' ? undefined : ensurePrivateSocketDir(),
+     });
+     const mux = muxProxyServer;
+     // Backend first so the front-end never accepts a connection that would
+@@ -588,6 +754,558 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+     logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
+     return muxPort;
+ }
++/**
++ * Ave patch (invocation listeners). Why a destination may not be reached
++ * through an invocation listener whatever the policy says: every listener
++ * lives on loopback, so a proxy that dialed one of them on a sandboxed
++ * client's behalf would hand the client a host-side socket into another
++ * invocation's listener, attributed to that invocation. So a destination
++ * that is this host (a loopback name or literal, the unspecified address, an
++ * address on one of its interfaces) on a port one of this session's proxy
++ * front ends listens on is refused. Other local ports (a local model server)
++ * stay a policy decision.
++ */
++const LOCAL_DESTINATIONS = (() => {
++    const list = new BlockList();
++    for (const range of [...LOOPBACK_RANGES, '0.0.0.0/8', '::/128']) {
++        if (!addRange(list, range))
++            throw new Error(`invalid built-in range ${range}`);
++    }
++    return list;
++})();
++function proxyListenerPorts() {
++    const ports = new Set();
++    const shared = muxProxyServer?.getPort();
++    if (shared !== undefined)
++        ports.add(shared);
++    for (const lane of invocationListeners.values()) {
++        if (lane.port !== undefined)
++            ports.add(lane.port);
++    }
++    for (const port of retiredListenerPorts)
++        ports.add(port);
++    return ports;
++}
++function localDestinationReason(host, port) {
++    if (!proxyListenerPorts().has(port))
++        return undefined;
++    const canonical = canonicalizeHost(host) ?? host;
++    if (isLoopbackName(canonical))
++        return 'sandbox proxy listener';
++    const family = isIP(canonical);
++    if (family === 0)
++        return undefined;
++    const addresses = [canonical];
++    const embedded = family === 6 ? embeddedIPv4(canonical) : undefined;
++    if (embedded)
++        addresses.push(embedded);
++    for (const address of addresses) {
++        const fam = isIP(address) === 6 ? 'ipv6' : 'ipv4';
++        if (isLoopbackAddress(address) || LOCAL_DESTINATIONS.check(address, fam))
++            return 'sandbox proxy listener';
++        if (localInterfaceAddresses().some(own => own.toLowerCase() === address.toLowerCase()))
++            return 'sandbox proxy listener';
++    }
++    return undefined;
++}
++/** Ave patch (invocation listeners): open allowed client sockets by `key\nhost\nport`. */
++const liveConnections = new Map();
++function connectionKey(key, host, port) {
++    return `${key}\n${canonicalizeHost(host) ?? host}\n${port}`;
++}
++function trackConnection(key, host, port, socket) {
++    const id = connectionKey(key, host, port);
++    let set = liveConnections.get(id);
++    if (!set)
++        liveConnections.set(id, (set = new Set()));
++    set.add(socket);
++    socket.once('close', () => {
++        set.delete(socket);
++        if (set.size === 0 && liveConnections.get(id) === set)
++            liveConnections.delete(id);
++    });
++}
++/**
++ * Ave patch (invocation listeners). Close every open connection the proxy
++ * allowed to `host:port` for the given commandIds (tunnels and keep-alive
++ * request sockets alike), e.g. when the grant that allowed them is revoked.
++ * Resolves to how many were closed.
++ */
++function closeInvocationConnections(commandIds, host, port) {
++    let closed = 0;
++    for (const commandId of commandIds) {
++        if (typeof commandId !== 'string')
++            continue;
++        const id = connectionKey(decodeSandboxedCommand(encodeSandboxedCommand(commandId)), host, port);
++        for (const socket of liveConnections.get(id) ?? []) {
++            socket.destroy();
++            closed++;
++        }
++        liveConnections.delete(id);
++    }
++    return closed;
++}
++/**
++ * Ave patch (invocation listeners). One resolution per destination, pinned.
++ *
++ * A name is resolved once, in the filter, before the ask callback runs; every
++ * address must be one the resolved-address guard permits (no loopback for a
++ * non-loopback name, link-local, metadata, unspecified, multicast, broadcast
++ * or this host's own addresses). The callback is told the addresses
++ * (`SandboxAskContext.addresses`), so it decides on what will be dialed, and
++ * an allowed connection is pinned to them: the direct dial's lookup returns
++ * the pinned addresses instead of resolving again, and a parent-proxy CONNECT
++ * carries the pinned address literal instead of the name (the client's TLS
++ * inside the tunnel still names the host, so SNI is unchanged). Without the
++ * pin, a name could answer differently between the check and the dial (DNS
++ * rebinding), or the upstream could resolve it to something this host would
++ * refuse, such as its own loopback with another invocation's listener on it.
++ * A name that does not resolve here is refused: nothing could be pinned. A
++ * plain-HTTP request by name through a parent proxy is refused too: the
++ * upstream reads the host from the absolute-form target, so it cannot be
++ * pinned without breaking virtual hosting (an address literal still goes).
++ */
++const resolveWithSystem = (name) => dnsPromises.lookup(name, { all: true, verbatim: true });
++let destinationResolver = resolveWithSystem;
++let quarantineMsForTesting;
++/**
++ * Test seams. Not on SandboxManager and not exported from the package entry;
++ * imported by file path from tests only, and refused outside the test runner,
++ * since replacing the resolver would replace the address vetting itself.
++ */
++function assertTestRunner(seam) {
++    if (process.env.VITEST !== 'true') {
++        throw new Error(`${seam} is a test seam and is available only under the test runner`);
++    }
++}
++/** Test seam: shorten the listener quarantine (undefined restores it). */
++export function setListenerQuarantineForTesting(ms) {
++    assertTestRunner('setListenerQuarantineForTesting');
++    quarantineMsForTesting = ms;
++}
++/** Test seam: resolve destination names with `resolver` (undefined restores the system resolver). */
++export function setDestinationResolverForTesting(resolver) {
++    assertTestRunner('setDestinationResolverForTesting');
++    destinationResolver = resolver ?? resolveWithSystem;
++}
++/** Pinned addresses of allowed destinations, per client socket and `host\nport`. */
++const pinnedDestinations = new WeakMap();
++function pinKey(host, port) {
++    return `${canonicalizeHost(host) ?? host}\n${port}`;
++}
++function pinDestination(socket, host, port, resolved) {
++    let pins = pinnedDestinations.get(socket);
++    if (!pins)
++        pinnedDestinations.set(socket, (pins = new Map()));
++    pins.set(pinKey(host, port), { addresses: resolved.addresses, viaUpstream: resolved.viaUpstream === true });
++}
++function pinnedFor(socket, host, port) {
++    return socket ? pinnedDestinations.get(socket)?.get(pinKey(host, port)) : undefined;
++}
++/** The filter's refusal for a destination, or undefined to go on and decide it. */
++function destinationRefusal(host, resolved, plainHttpViaParent) {
++    if (resolved.reason !== undefined)
++        return resolved.reason;
++    // Plain HTTP through an upstream names the host in its absolute-form
++    // target, which the upstream resolves itself: only an address literal, or
++    // a name the upstream is trusted to resolve anyway, can go.
++    if (plainHttpViaParent && !resolved.viaUpstream && isIP(canonicalizeHost(host) ?? host) === 0)
++        return 'plain HTTP by name cannot be pinned through the parent proxy';
++    return undefined;
++}
++/** Names that mean this host however a resolver answers them. */
++const THIS_HOST_NAMES = new Set(['localhost', 'localhost.localdomain', 'ip6-localhost', 'ip6-loopback']);
++/** Whether `address` is this host: loopback, unspecified, or one of its interface addresses. */
++function isThisHostAddress(address) {
++    const forms = [address, embeddedIPv4(address)].filter(a => a !== undefined);
++    return forms.some(a => isLoopbackAddress(a) ||
++        a === '0.0.0.0' || a === '::' ||
++        localInterfaceAddresses().some(own => own.toLowerCase() === a.toLowerCase()));
++}
++/** Whether the proxy at `url` runs on this host (a name that cannot be resolved counts as this host). */
++async function proxyUrlOnThisHost(url) {
++    const host = canonicalizeHost(url.hostname) ?? url.hostname;
++    if (THIS_HOST_NAMES.has(host) || host.endsWith('.localhost'))
++        return true;
++    if (isIP(host) !== 0)
++        return isThisHostAddress(host);
++    try {
++        const answer = await destinationResolver(host);
++        const addresses = (Array.isArray(answer) ? answer : []).map(a => a?.address).filter(a => typeof a === 'string');
++        return addresses.length === 0 || addresses.some(isThisHostAddress);
++    }
++    catch {
++        return true;
++    }
++}
++/** Whether any configured upstream proxy runs on this host. */
++async function upstreamOnThisHost() {
++    if (!parentProxy)
++        return false;
++    for (const url of [parentProxy.httpUrl, parentProxy.httpsUrl]) {
++        if (url && await proxyUrlOnThisHost(url))
++            return true;
++    }
++    return false;
++}
++/**
++ * Ave patch (owner decision 2026-10-19). A name this host cannot resolve, on
++ * a route through an upstream proxy: 'remote' forwards the name and lets the
++ * upstream resolve it (the callback is told `resolution: 'upstream'`, so the
++ * embedder can treat it as unverified); 'local' refuses it, since an upstream
++ * on this host resolves names itself and could hand the connection back to
++ * this host after the check (the trusted `parentProxy.resolvesNames` opt-in
++ * gives such an upstream the remote treatment); undefined when no upstream
++ * applies to the name.
++ */
++async function upstreamForNames(canonical) {
++    if (!parentProxy || shouldBypassParentProxy(parentProxy, canonical))
++        return undefined;
++    if (!selectParentProxyUrl(parentProxy, { isHttps: true }) && !selectParentProxyUrl(parentProxy, { isHttps: false }))
++        return undefined;
++    return (await upstreamOnThisHost()) && !parentProxyResolvesNames ? 'local' : 'remote';
++}
++/** A `lookup` for dialing the parent proxy, through the destination resolver. */
++function parentProxyLookup(hostname, options, callback) {
++    destinationResolver(hostname).then(answer => {
++        const list = (Array.isArray(answer) ? answer : [])
++            .filter(a => a && typeof a.address === 'string' && isIP(a.address) !== 0)
++            .map(a => ({ address: a.address, family: isIP(a.address) }));
++        if (list.length === 0) {
++            callback(Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), { code: 'ENOTFOUND' }), []);
++            return;
++        }
++        if (options?.all)
++            callback(null, list);
++        else
++            callback(null, list[0].address, list[0].family);
++    }, err => callback(err, []));
++}
++const LOCAL_UPSTREAM_REASON = 'the upstream proxy on this host resolves names itself, so a name this host cannot resolve is not forwarded ' +
++    '(the trusted network.parentProxy.resolvesNames setting lets it)';
++/** What a name this host could not resolve gets: forwarded by name to a remote upstream, or refused. */
++async function unresolvedDestination(canonical) {
++    const upstream = await upstreamForNames(canonical);
++    if (upstream === 'remote')
++        return { addresses: [], viaUpstream: true };
++    if (upstream === 'local')
++        return { reason: LOCAL_UPSTREAM_REASON };
++    return { reason: 'destination name did not resolve' };
++}
++/**
++ * `{ addresses }` to decide on and dial (pinned), `{ addresses: [], viaUpstream }`
++ * for a name the upstream will resolve, or `{ reason }` to refuse.
++ */
++async function resolveDestination(host, port) {
++    const canonical = canonicalizeHost(host) ?? host;
++    const family = isIP(canonical);
++    if (family !== 0)
++        return { addresses: [{ address: canonical, family }] };
++    let answer;
++    try {
++        answer = await destinationResolver(canonical);
++    }
++    catch {
++        return unresolvedDestination(canonical);
++    }
++    const addresses = (Array.isArray(answer) ? answer : [])
++        .filter(a => a && typeof a.address === 'string' && isIP(a.address) !== 0)
++        .map(a => ({ address: a.address, family: isIP(a.address) }));
++    if (addresses.length === 0)
++        return unresolvedDestination(canonical);
++    for (const { address } of addresses) {
++        if (!resolvedAddressGuard.permits(canonical, address, port))
++            return { reason: 'destination resolves to this host or a reserved address' };
++        if (proxyListenerPorts().has(port) && localDestinationReason(address, port) !== undefined)
++            return { reason: 'sandbox proxy listener' };
++    }
++    return { addresses };
++}
++/** A direct dial's lookup that answers with the pinned addresses, re-vetted against the current guard. */
++function pinnedLookup(port, addresses, encodedCommand) {
++    return (hostname, options, callback) => {
++        const kept = addresses.filter(a => resolvedAddressGuard.permits(hostname, a.address, port));
++        if (kept.length === 0) {
++            const err = new ResolvedAddressDeniedError(hostname, 'resolved to a refused address', addresses.map(a => a.address));
++            recordOutboundDeny(hostname, port, err.reason, encodedCommand);
++            callback(err, []);
++            return;
++        }
++        if (options?.all)
++            callback(null, kept);
++        else
++            callback(null, kept[0].address, kept[0].family);
++    };
++}
++/**
++ * The destinations a parent-proxy request may name, to try in order: an
++ * address literal as is, a name as its pinned, re-vetted addresses (IPv4
++ * first: an upstream that cannot reach IPv6 still gets a usable one). Throws
++ * a ResolvedAddressDeniedError (the proxies answer it as a policy refusal)
++ * for a name with no pin, and for any name on the plain-HTTP path.
++ */
++function parentDestinationFor(socket, host, port, encodedCommand, plainHttp) {
++    const canonical = canonicalizeHost(host) ?? host;
++    if (isIP(canonical) !== 0)
++        return [canonical];
++    const refuse = (reason) => {
++        recordOutboundDeny(host, port, reason, encodedCommand);
++        return new ResolvedAddressDeniedError(host, reason, []);
++    };
++    const pinned = pinnedFor(socket, host, port);
++    // A name the upstream resolves (owner decision: a remote upstream, or
++    // one trusted to resolve names) goes as the name.
++    if (pinned?.viaUpstream)
++        return [canonical];
++    if (plainHttp)
++        throw refuse('plain HTTP by name cannot be pinned through the parent proxy');
++    const kept = (pinned?.addresses ?? []).filter(a => resolvedAddressGuard.permits(canonical, a.address, port));
++    if (kept.length === 0)
++        throw refuse('destination was not resolved before the parent proxy');
++    return [...kept.filter(a => a.family === 4), ...kept.filter(a => a.family !== 4)].map(a => a.address);
++}
++/**
++ * Ave patch (invocation listeners). The filter for connections that arrived
++ * on one invocation's listener. The listener is the identity: the client's
++ * proxy username must name the same invocation (a second, independent check;
++ * on Linux it is what a process that can open another invocation's socket
++ * path still lacks), and the decision is attributed to the listener's key.
++ */
++function invocationListenerFilter(lane, sandboxAskCallback) {
++    return async (port, host, encodedCommand, explain, socket, plainHttpViaParent) => {
++        const denied = (reason) => {
++            recordOutboundDeny(host, port, reason, lane.encodedKey);
++            explain?.(reason);
++            return false;
++        };
++        if (lane.ended)
++            return denied('invocation ended');
++        if (encodedCommand !== lane.encodedKey)
++            return denied('proxy username does not match the listener');
++        const local = localDestinationReason(host, port);
++        if (local !== undefined)
++            return denied(local);
++        const resolved = await resolveDestination(host, port);
++        const refusal = destinationRefusal(host, resolved, plainHttpViaParent);
++        if (refusal !== undefined)
++            return denied(refusal);
++        const allowed = await filterNetworkRequest(port, host, sandboxAskCallback, lane.encodedKey, explain, 'listener', resolved.addresses, resolved.viaUpstream);
++        if (allowed && socket)
++            pinDestination(socket, host, port, resolved);
++        return allowed;
++    };
++}
++function invocationListenerKey(commandId, caller) {
++    const key = typeof commandId === 'string'
++        ? decodeSandboxedCommand(encodeSandboxedCommand(commandId))
++        : '';
++    if (key.replace(/\ufffd/g, '').length < MIN_NETWORK_LISTS_COMMAND_ID_LENGTH) {
++        throw new Error(`${caller}: commandId must be a string of at least ` +
++            `${MIN_NETWORK_LISTS_COMMAND_ID_LENGTH} characters (16 random bytes or more).`);
++    }
++    return key;
++}
++function listenOn(server, ...args) {
++    return new Promise((resolve, reject) => {
++        server.once('error', reject);
++        server.listen(...args, () => {
++            server.removeListener('error', reject);
++            resolve();
++        });
++    });
++}
++/**
++ * Ave patch (invocation listeners). Open a proxy front end that belongs to
++ * one invocation and resolve to where it listens: `{ port }` on macOS (the
++ * wrap's Seatbelt profile then allows outbound loopback to that port only),
++ * `{ socketPath }` on Linux (bound into that invocation's bwrap in place of
++ * the shared bridge socket). A connection that arrives there is attributed
++ * to `commandId` from the listener alone, and the ask callback is told so
++ * with `identity: 'listener'`. Wrap the invocation with the same `commandId`
++ * after this resolves; close it with closeInvocationListener when the
++ * invocation ends. Idempotent for an open listener; an ended one is never
++ * reopened.
++ */
++async function openInvocationListener(commandId) {
++    const key = invocationListenerKey(commandId, 'openInvocationListener');
++    const platform = getPlatform();
++    if (platform !== 'macos' && platform !== 'linux') {
++        throw new Error(`openInvocationListener: not supported on ${platform}`);
++    }
++    if (!(await waitForNetworkInitialization()) || !muxProxyServer) {
++        throw new Error('openInvocationListener: the sandbox proxy is not running ' +
++            '(not initialized, or network.httpProxyPort names an external proxy)');
++    }
++    const existing = invocationListeners.get(key);
++    if (existing) {
++        if (existing.ended)
++            throw new Error('openInvocationListener: this invocation has ended');
++        await existing.ready;
++        return existing.port !== undefined ? { port: existing.port } : { socketPath: existing.socketPath };
++    }
++    if (retiredInvocationKeys.has(key)) {
++        throw new Error('openInvocationListener: this invocation has ended');
++    }
++    if (invocationListeners.size >= MAX_INVOCATION_LISTENERS) {
++        throw new Error(`openInvocationListener: ${MAX_INVOCATION_LISTENERS} invocation listeners ` +
++            `are held in this sandbox session; reset the sandbox to release them`);
++    }
++    const lane = { key, encodedKey: encodeSandboxedCommand(commandId), ended: false };
++    invocationListeners.set(key, lane);
++    lane.ready = (async () => {
++        const { http, socks } = createProxyServers(invocationAskCallback, lane);
++        const mux = createMuxProxyServer({
++            httpServer: http,
++            handleSocksConnection: s => socks.handleConnection(s),
++            backendSocketDir: ensurePrivateSocketDir(),
++        });
++        Object.assign(lane, { http, socks, mux });
++        await mux.listenHttpBackend();
++        if (platform === 'macos') {
++            // A port an ended listener held is never given to another one: a
++            // process the ended invocation left behind may still dial it.
++            for (let attempt = 0;; attempt++) {
++                await listenOn(mux.server, 0, '127.0.0.1');
++                lane.port = mux.getPort();
++                if (lane.port === undefined)
++                    throw new Error('openInvocationListener: listener has no port');
++                if (!retiredListenerPorts.has(lane.port))
++                    break;
++                await new Promise(resolve => mux.server.close(() => resolve()));
++                if (attempt >= 32)
++                    throw new Error('openInvocationListener: no unretired loopback port');
++            }
++        }
++        else {
++            const socketPath = joinPath(ensurePrivateSocketDir(), `${randomBytes(12).toString('hex')}.sock`);
++            await listenOn(mux.server, socketPath);
++            lane.socketPath = socketPath;
++        }
++        mux.unref();
++    })();
++    try {
++        await lane.ready;
++    }
++    catch (error) {
++        invocationListeners.delete(key);
++        retiredInvocationKeys.add(key);
++        void disposeInvocationListener(lane);
++        throw error;
++    }
++    if (lane.ended) {
++        throw new Error('openInvocationListener: this invocation ended while its listener opened');
++    }
++    return lane.port !== undefined ? { port: lane.port } : { socketPath: lane.socketPath };
++}
++/** Close every server of a listener (its front end included). */
++async function disposeInvocationListener(lane) {
++    // The HTTP server's connections first (see forceCloseHttpServer), then
++    // the front end, which closes the HTTP backend's listener as well.
++    await Promise.all([
++        lane.http ? forceCloseHttpServer(lane.http) : undefined,
++        lane.socks?.close().catch(() => { }),
++    ]);
++    if (lane.mux)
++        await lane.mux.close().catch(() => { });
++    if (lane.socketPath) {
++        try {
++            fs.rmSync(lane.socketPath, { force: true });
++        }
++        catch {
++            // best effort: the path is never reused either way
++        }
++    }
++}
++/**
++ * Ave patch (invocation listeners). End an invocation's listener: from now
++ * on every connection to it is refused. On macOS the front end stays bound
++ * for the quarantine, longer while `options.processGroup` still has a
++ * process in it (see INVOCATION_LISTENER_QUARANTINE_MS); its proxy servers and their open
++ * connections are closed. Synchronous in effect; a no-op for an unknown key.
++ */
++function closeInvocationListener(commandId, options) {
++    if (typeof commandId !== 'string')
++        return;
++    const processGroup = Number.isInteger(options?.processGroup) && options.processGroup > 1
++        ? options.processGroup
++        : undefined;
++    const key = decodeSandboxedCommand(encodeSandboxedCommand(commandId));
++    const lane = invocationListeners.get(key);
++    if (!lane || lane.ended)
++        return;
++    lane.ended = true;
++    void (async () => {
++        try {
++            await lane.ready;
++        }
++        catch {
++            return;
++        }
++        if (getPlatform() === 'macos' && lane.mux) {
++            // Tombstone: keep the port, refuse whatever connects to it.
++            lane.mux.server.removeAllListeners('connection');
++            lane.mux.server.on('connection', socket => socket.destroy());
++            const closing = [forceCloseHttpServer(lane.http)];
++            if (lane.socks)
++                closing.push(lane.socks.close().catch(() => { }));
++            await Promise.all(closing);
++            // The backend's socket file goes with its server; only the front
++            // end's port is kept, for the quarantine.
++            lane.mux.removeBackendSocketSync();
++            // The port is released once the quarantine has passed and no
++            // process is left in the invocation's process group (when the
++            // embedder named it); a live group extends it, up to the maximum.
++            const endedAt = Date.now();
++            const armRelease = () => {
++                const release = setTimeout(() => {
++                    if (invocationListeners.get(key) !== lane)
++                        return;
++                    if (processGroup !== undefined &&
++                        processGroupAlive(processGroup) &&
++                        Date.now() - endedAt + INVOCATION_LISTENER_QUARANTINE_MS <= INVOCATION_LISTENER_QUARANTINE_MAX_MS) {
++                        armRelease();
++                        return;
++                    }
++                    invocationListeners.delete(key);
++                    retiredInvocationKeys.add(key);
++                    if (lane.port !== undefined)
++                        retiredListenerPorts.add(lane.port);
++                    lane.mux.server.close();
++                }, quarantineMsForTesting ?? INVOCATION_LISTENER_QUARANTINE_MS);
++                release.unref?.();
++                lane.quarantine = release;
++            };
++            armRelease();
++            return;
++        }
++        invocationListeners.delete(key);
++        retiredInvocationKeys.add(key);
++        await disposeInvocationListener(lane);
++    })();
++}
++/** The open listener for a wrap's commandId, or undefined. Throws for an ended one. */
++function invocationListenerForWrap(commandId) {
++    if (commandId === undefined)
++        return undefined;
++    const key = decodeSandboxedCommand(encodeSandboxedCommand(commandId));
++    if (retiredInvocationKeys.has(key))
++        throw new Error('wrapWithSandbox: the invocation listener for this commandId has ended');
++    const lane = invocationListeners.get(key);
++    if (!lane)
++        return undefined;
++    if (lane.ended)
++        throw new Error('wrapWithSandbox: the invocation listener for this commandId has ended');
++    if (lane.port === undefined && lane.socketPath === undefined)
++        throw new Error('wrapWithSandbox: the invocation listener for this commandId is still opening');
++    // allowLocalBinding opens outbound loopback to every port, which would
++    // let this invocation reach any other invocation's listener: the
++    // listener would no longer identify it.
++    if (getAllowLocalBinding()) {
++        throw new Error('wrapWithSandbox: network.allowLocalBinding cannot be combined with an ' +
++            'invocation listener (it allows loopback to every listener)');
++    }
++    return lane;
++}
+ // ============================================================================
+ // Public Module Functions (will be exported via namespace)
+ // ============================================================================
+@@ -616,7 +1334,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+     // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
+     // start our own listeners (which will later shadow those vars in the child).
+     parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
++    parentProxyResolvesNames = runtimeConfig.network.parentProxy?.resolvesNames === true;
+     if (parentProxy) {
++        // Ave patch: say up front whether the upstream counts as this host
++        // (decided again at use, since its name may resolve differently later).
++        void upstreamOnThisHost().then(local => logForDebugging(`Parent proxy is ${local ? 'on this host' : 'remote'}` +
++            (local && parentProxyResolvesNames ? ' (trusted to resolve names)' : '')));
+         logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
+             `https=${redactUrl(parentProxy.httpsUrl)}`);
+     }
+@@ -705,7 +1428,17 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // sandboxed child can be spawned. Doing this at initialize() (not
      // wrap-time) means the host gets a single actionable error before
      // any per-exec work happens, instead of exit-15 on every command.
@@ -204,7 +1693,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f2a907ac3c0515701101ea1e24bb945e
          // Resolve once (stats disk); captured module-level for wrap/reset.
          srtWinSpawn = resolveSrtWin(runtimeConfig.windows?.srtWin);
          const srtWin = srtWinSpawn;
-@@ -992,6 +1008,12 @@ function checkDependenciesCommon(ripgrepConfig) {
+@@ -992,6 +1725,12 @@ function checkDependenciesCommon(ripgrepConfig) {
          errors.push(...linuxDeps.errors);
          warnings.push(...linuxDeps.warnings);
      }
@@ -217,7 +1706,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f2a907ac3c0515701101ea1e24bb945e
      else if (platform === 'windows') {
          let srtWin;
          try {
-@@ -1515,6 +1537,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2254,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -227,7 +1716,29 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f2a907ac3c0515701101ea1e24bb945e
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1734,6 +1759,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +2452,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+     const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
+     const gitSafeDirectories = getGitSafeDirectories(customConfig);
+     switch (platform) {
+-        case 'macos':
++        case 'macos': {
++            // Ave patch (invocation listeners): the invocation's own port, so
++            // the profile allows loopback to that port and no other.
++            const lane = needsNetworkProxy ? invocationListenerForWrap(commandId) : undefined;
+             // macOS sandbox profile supports glob patterns directly, no ripgrep needed
+             return wrapCommandWithSandboxMacOS({
+                 command,
+                 commandId,
+                 needsNetworkRestriction,
+                 // Only pass proxy ports if proxy is running (when there are domains to filter)
+-                httpProxyPort: needsNetworkProxy ? getProxyPort() : undefined,
+-                socksProxyPort: needsNetworkProxy ? getSocksProxyPort() : undefined,
++                httpProxyPort: needsNetworkProxy ? (lane?.port ?? getProxyPort()) : undefined,
++                socksProxyPort: needsNetworkProxy ? (lane?.port ?? getSocksProxyPort()) : undefined,
+                 proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
+                 caCertPath: mitmCA?.trustBundlePath,
+                 javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
+@@ -1734,23 +2479,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -235,7 +1746,42 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f2a907ac3c0515701101ea1e24bb945e
                  allowGitConfig: getAllowGitConfig(),
                  gitSafeDirectories,
                  enableWeakerNetworkIsolation: getEnableWeakerNetworkIsolation(),
-@@ -1821,7 +1847,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+                 allowAppleEvents: getAllowAppleEvents(),
+                 binShell,
+             });
+-        case 'linux':
++        }
++        case 'linux': {
++            // Ave patch (invocation listeners): the invocation's own socket in
++            // place of the shared bridge socket.
++            const lane = needsNetworkProxy ? invocationListenerForWrap(commandId) : undefined;
+             return wrapCommandWithSandboxLinux({
+                 command,
+                 commandId,
+                 needsNetworkRestriction,
++                // Ave patch (invocation listeners): hidden in every wrap; the
++                // wrap's own listener socket, if any, is bound back into it.
++                privateSocketDir,
+                 // Only pass socket paths if proxy is running (when there are domains to filter)
+                 httpSocketPath: needsNetworkProxy
+-                    ? getLinuxHttpSocketPath()
++                    ? (lane?.socketPath ?? getLinuxHttpSocketPath())
+                     : undefined,
+                 socksSocketPath: needsNetworkProxy
+-                    ? getLinuxSocksSocketPath()
++                    ? (lane?.socketPath ?? getLinuxSocksSocketPath())
+                     : undefined,
+                 httpProxyPort: needsNetworkProxy
+                     ? managerContext?.httpProxyPort
+@@ -1786,6 +2539,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+                     return startOver();
+                 throw err;
+             });
++        }
+         case 'windows':
+             // Windows wraps to an argv array, not a shell string. Forcing
+             // callers through wrapWithSandboxArgv() means they spawn with
+@@ -1821,7 +2575,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -252,11 +1798,60 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..f2a907ac3c0515701101ea1e24bb945e
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
              config?.network?.allowedDomains !== undefined;
+@@ -1989,6 +2752,7 @@ function updateConfig(newConfig) {
+     // effect only on re-initialize. This keeps the state consistent for the
+     // next initialize() call.
+     parentProxy = resolveParentProxy(newConfig.network.parentProxy);
++    parentProxyResolvesNames = newConfig.network.parentProxy?.resolvesNames === true;
+     logForDebugging('Sandbox configuration updated');
+ }
+ /**
+@@ -2222,6 +2986,7 @@ async function reset() {
+     managerContext = undefined;
+     initializationPromise = undefined;
+     parentProxy = undefined;
++    parentProxyResolvesNames = false;
+     resolvedAddressGuard = createResolvedAddressGuard();
+     mitmCA = undefined;
+     javaAgentJarPath = undefined;
+@@ -2229,6 +2994,22 @@ async function reset() {
+     awsPairRegistry.clear();
+     commandTextsByKey.clear();
+     commandNetworkListsByKey.clear();
++    // Ave patch (invocation listeners): the session is over, so every
++    // listener (ended ones kept bound on macOS included) goes.
++    const lanes = [...invocationListeners.values()];
++    invocationListeners.clear();
++    retiredInvocationKeys.clear();
++    retiredListenerPorts.clear();
++    liveConnections.clear();
++    for (const lane of lanes)
++        if (lane.quarantine)
++            clearTimeout(lane.quarantine);
++    invocationAskCallback = undefined;
++    await Promise.all(lanes.map(lane => lane.ready?.catch(() => { }).then(() => disposeInvocationListener(lane))));
++    if (privateSocketDir !== undefined) {
++        fs.rmSync(privateSocketDir, { recursive: true, force: true });
++        privateSocketDir = undefined;
++    }
+     maskedFileStore.dispose();
+ }
+ function getSandboxViolationStore() {
+@@ -2336,6 +3117,9 @@ export const SandboxManager = {
+     wrapWithSandboxArgv,
+     registerCommandNetworkLists,
+     unregisterCommandNetworkLists,
++    openInvocationListener,
++    closeInvocationListener,
++    closeInvocationConnections,
+     askCallbackDenyReason: true,
+     cleanupAfterCommand,
+     reset,
 diff --git a/dist/sandbox/sandbox-schemas.d.ts b/dist/sandbox/sandbox-schemas.d.ts
-index 4c0be53fa68af536b0dcf49192421651d7b51476..1e413625b79c4ef43d011f5ac9bfed46e40cdea7 100644
+index 4c0be53..301490e 100644
 --- a/dist/sandbox/sandbox-schemas.d.ts
 +++ b/dist/sandbox/sandbox-schemas.d.ts
-@@ -151,8 +151,30 @@ export type NetworkHostPattern = {
+@@ -151,8 +151,54 @@ export type NetworkHostPattern = {
   * Check `SandboxManager.askCallbackDenyReason` before returning an object:
   * a release without it reads any truthy answer as an allow.
   */
@@ -286,6 +1881,101 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..1e413625b79c4ef43d011f5ac9bfed46
 + */
 +export type SandboxAskContext = {
 +    attributionKey: string | undefined;
++    /**
++     * Ave patch (invocation listeners). How `attributionKey` was learned:
++     * `'listener'` when the connection arrived on the invocation's own
++     * listener (see `SandboxManager.openInvocationListener`), which the
++     * sandbox profile lets that invocation alone reach, and the proxy
++     * username matched it; `'username'` when it arrived on the shared front
++     * end and the key is only what the client presented.
++     */
++    identity: 'listener' | 'username';
++    /**
++     * Ave patch (invocation listeners). The addresses the connection will be
++     * dialed to: the destination resolved once, vetted by the
++     * resolved-address guard, and pinned for the dial (a parent-proxy CONNECT
++     * names the first of them). An address literal is its own single entry.
++     */
++    addresses: readonly string[];
++    /**
++     * Ave patch. `'pinned'`: the connection goes to `addresses` (an address
++     * literal, or a name resolved and vetted here). `'upstream'`: this host
++     * could not resolve the name and a remote upstream proxy (or one trusted
++     * with `parentProxy.resolvesNames`) will; `addresses` is empty and the
++     * address is unverified.
++     */
++    resolution: 'pinned' | 'upstream';
 +};
  //# sourceMappingURL=sandbox-schemas.d.ts.map
 \ No newline at end of file
+diff --git a/dist/sandbox/socks-proxy.d.ts b/dist/sandbox/socks-proxy.d.ts
+index a4ba5d4..421ba71 100644
+--- a/dist/sandbox/socks-proxy.d.ts
++++ b/dist/sandbox/socks-proxy.d.ts
+@@ -1,12 +1,12 @@
+ import type { Socket } from 'net';
+-import type { DirectLookup, ResolvedParentProxy } from './parent-proxy.js';
++import type { DirectLookup, ParentDestination, ParentHop, ResolvedParentProxy } from './parent-proxy.js';
+ export interface SocksProxyServerOptions {
+     /**
+      * Host-allowlist decision. `encodedCommand` is the per-command suffix
+      * parsed from the SOCKS5 username (`srt.<encodedCommand>`), so the
+      * manager can attribute a denial to the invocation that made it.
+      */
+-    filter(port: number, host: string, encodedCommand?: string): Promise<boolean> | boolean;
++    filter(port: number, host: string, encodedCommand?: string, socket?: import("node:net").Socket): Promise<boolean> | boolean;
+     /**
+      * Optional upstream HTTP proxy. When present, SOCKS CONNECT requests are
+      * tunnelled through the parent's HTTP CONNECT instead of dialing directly.
+@@ -15,6 +15,10 @@ export interface SocksProxyServerOptions {
+     parentProxy?: ResolvedParentProxy;
+     /** Direct-dial name resolution (see HttpProxyServerOptions.lookupFor); a refusal is answered "not allowed by ruleset". */
+     lookupFor?: DirectLookup;
++    /** Ave patch: what a parent-proxy CONNECT names instead of the client's host (see ParentDestination). */
++    parentDestination?: ParentDestination;
++    /** Ave patch: how this CONNECT dials the parent proxy (see ParentHop). */
++    parentHop?: (socket: import('node:net').Socket, host: string, port: number, encodedCommand: string | undefined) => ParentHop;
+     /**
+      * Per-session token (same value as the HTTP proxy's). When set, the
+      * server requires SOCKS5 username/password auth and only accepts
+diff --git a/dist/sandbox/socks-proxy.js b/dist/sandbox/socks-proxy.js
+index 760a10b..ab4ee21 100644
+--- a/dist/sandbox/socks-proxy.js
++++ b/dist/sandbox/socks-proxy.js
+@@ -1,7 +1,7 @@
+ import { createServer } from '@pondwader/socks5-server';
+ import { logForDebugging } from '../utils/debug.js';
+ import { isResolvedAddressDenied } from './resolved-address-guard.js';
+-import { canonicalizeHost, connectViaParentProxy, dialDirect, isValidHost, selectParentProxyUrl, shouldBypassParentProxy, } from './parent-proxy.js';
++import { canonicalizeHost, connectViaParentProxy, connectViaParentProxyToFirst, dialDirect, isValidHost, selectParentProxyUrl, shouldBypassParentProxy, } from './parent-proxy.js';
+ import { encodedCommandFromProxyUser, PROXY_AUTH_USER, } from './sandbox-utils.js';
+ // VER, REP=0x01 (general SOCKS server failure), RSV, ATYP=IPv4, 0.0.0.0:0.
+ const SOCKS_REPLY_GENERAL_FAILURE = Buffer.from([5, 1, 0, 1, 0, 0, 0, 0, 0, 0]);
+@@ -44,7 +44,9 @@ export function createSocksProxyServer(options) {
+                 return false;
+             }
+             logForDebugging(`Connection request to ${hostname}:${port}`);
+-            const allowed = await options.filter(port, hostname, encodedCommandFromProxyUser(conn.username));
++            // Ave patch (invocation listeners): the client socket, so an allowed
++            // tunnel can be closed later (closeInvocationConnections).
++            const allowed = await options.filter(port, hostname, encodedCommandFromProxyUser(conn.username), conn.socket);
+             if (!allowed) {
+                 logForDebugging(`Connection blocked to ${hostname}:${port}`, {
+                     level: 'error',
+@@ -83,9 +85,14 @@ export function createSocksProxyServer(options) {
+         const parentUrl = options.parentProxy && !shouldBypassParentProxy(options.parentProxy, host)
+             ? selectParentProxyUrl(options.parentProxy, { isHttps: true })
+             : undefined;
++        // Ave patch: a parent CONNECT names the pinned address, and a direct
++        // dial uses the pinned lookup, both keyed by this client socket.
++        const encodedCommand = encodedCommandFromProxyUser(conn.username);
+         const open = parentUrl
+-            ? connectViaParentProxy(parentUrl, host, port)
+-            : dialDirect(host, port, options.lookupFor?.(port, encodedCommandFromProxyUser(conn.username)));
++            ? Promise.resolve().then(() => options.parentDestination
++                ? connectViaParentProxyToFirst(parentUrl, options.parentDestination(conn.socket, host, port, encodedCommand, false), port, options.parentHop?.(conn.socket, host, port, encodedCommand))
++                : connectViaParentProxy(parentUrl, host, port))
++            : dialDirect(host, port, options.lookupFor?.(port, encodedCommand, conn.socket, host));
+         open
+             .then(upstream => {
+             upstreamRef = upstream;

@@ -241,6 +241,7 @@ export function setSandboxBootOutcome(outcome: SandboxBootOutcome): void {
   _bootOutcome = Object.freeze({
     ...outcome,
     dependencyErrors: Object.freeze([...outcome.dependencyErrors]),
+    causes: Object.freeze([...outcome.causes]),
   });
 }
 

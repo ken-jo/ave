@@ -51,10 +51,8 @@ import {
   wrapToolCommand,
   wrapWorkerCommand,
   cleanupAsrtSandboxAfterCommand,
-  computeUnionAllowedDomains,
   normalizeUnionForAsrt,
   computeDynamicEndpointHosts,
-  updateAsrtSandboxConfig,
   DEFAULT_WINDOWS_PROXY_PORT_RANGE,
   getVendoredSrtWinExePath,
   buildSandboxConfig,
@@ -585,7 +583,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
     expect(httpOk(afterAdd)).toBe(true);
   }, 60_000);
 
-  it("a host derived from a CONFIGURED endpoint (settings → computeDynamicEndpointHosts) is allowed; live-refresh swaps it", async () => {
+  it("a host derived from a CONFIGURED endpoint (settings → computeDynamicEndpointHosts) is allowed, a host from no endpoint is not", async () => {
     if (!(await asrtCanInitialize())) return;
     if (process.platform !== "darwin" && process.platform !== "linux") return;
 
@@ -599,9 +597,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
 
     // Union built from the CONFIGURED endpoint (example.com), normalized for
     // ASRT exactly as boot does.
-    const initialUnion = normalizeUnionForAsrt(
-      computeUnionAllowedDomains([dynamicHostsFor("https://example.com/openai/v1")], []),
-    );
+    const initialUnion = normalizeUnionForAsrt(dynamicHostsFor("https://example.com/openai/v1"));
     expect(initialUnion).toContain("example.com");
 
     await initializeAsrtSandbox({ allowedDomains: initialUnion, strictAllowlist: true });
@@ -616,24 +612,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
     }
     // The configured-endpoint host is reachable; the non-configured one is not.
     expect(httpOk(nonConfiguredDenied)).toBe(false);
-
-    // LIVE-REFRESH: user reconfigures the endpoint to example.org. Recompute the
-    // union from the NEW settings value and swap the live ASRT config (the same
-    // updateAsrtSandboxConfig call refreshSandboxNetworkConfig makes). No
-    // re-initialize — this is the live network swap.
-    const refreshedUnion = normalizeUnionForAsrt(
-      computeUnionAllowedDomains([dynamicHostsFor("https://example.org/openai/v1")], []),
-    );
-    expect(refreshedUnion).toContain("example.org");
-    await updateAsrtSandboxConfig({ allowedDomains: refreshedUnion, strictAllowlist: true });
-
-    // After the live refresh: the NEW configured host is allowed, the OLD one
-    // is now hard-denied — proving the swap took effect with no restart.
-    const newHostAllowed = await curlProbe("https://example.org");
-    const oldHostDenied = await curlProbe("https://example.com");
     await resetAsrtSandbox();
-    expect(httpOk(newHostAllowed)).toBe(true);
-    expect(httpOk(oldHostDenied)).toBe(false);
   }, 60_000);
 });
 
@@ -666,37 +645,6 @@ describe("asrt-sandbox — parentProxy explicit (PR #1356 security MINOR)", () =
       if (prev === undefined) delete process.env.HTTP_PROXY;
       else process.env.HTTP_PROXY = prev;
     }
-  });
-});
-
-describe("asrt-sandbox — computeUnionAllowedDomains (shared-config enforcement seam)", () => {
-  it("unions every plugin's manifest allow-list, deduped and order-stable", () => {
-    const union = computeUnionAllowedDomains([
-      ["a.example", "b.example"],
-      ["b.example", "c.example"],
-      [],
-    ]);
-    expect(union).toEqual(["a.example", "b.example", "c.example"]);
-  });
-
-  it("prepends the trusted host baseline ahead of the manifest union (still deduped)", () => {
-    const union = computeUnionAllowedDomains(
-      [["a.example"], ["base.example"]],
-      ["base.example", "host.example"],
-    );
-    expect(union).toEqual(["base.example", "host.example", "a.example"]);
-  });
-
-  it("empty manifests + empty baseline ⇒ empty union (deny-by-default)", () => {
-    expect(computeUnionAllowedDomains([], [])).toEqual([]);
-    expect(computeUnionAllowedDomains([[], []])).toEqual([]);
-  });
-
-  it("drops empty/non-string entries (defensive against malformed manifest fields)", () => {
-    const union = computeUnionAllowedDomains([
-      ["", "ok.example", undefined as unknown as string],
-    ]);
-    expect(union).toEqual(["ok.example"]);
   });
 });
 
@@ -782,35 +730,6 @@ describe("asrt-sandbox — computeDynamicEndpointHosts (user-configured endpoint
     expect(computeDynamicEndpointHosts(undefined)).toEqual([]);
     expect(computeDynamicEndpointHosts({ llm: {} })).toEqual([]);
   });
-
-  it("the boot union includes BOTH static manifest domains AND dynamic endpoint hosts", () => {
-    // Mirrors the boot wiring: union over [...manifestAllowLists, dynamicHosts].
-    const manifestAllowLists = [["plugin-a.example"], ["plugin-b.example"]];
-    const dynamicHosts = computeDynamicEndpointHosts({
-      llm: { vendors: { "azure-foundry": { baseUrl: "https://res.openai.azure.com" } } },
-    });
-    const union = normalizeUnionForAsrt(
-      computeUnionAllowedDomains([...manifestAllowLists, dynamicHosts], []),
-    );
-    // Static manifest domains present (apex + wildcard) …
-    expect(union).toContain("plugin-a.example");
-    expect(union).toContain("*.plugin-a.example");
-    expect(union).toContain("plugin-b.example");
-    // … AND the host-resolved dynamic endpoint host (apex + wildcard).
-    expect(union).toContain("res.openai.azure.com");
-    expect(union).toContain("*.res.openai.azure.com");
-  });
-
-  it("a union with NO dynamic hosts is unchanged from the static-only union (default-OFF safety)", () => {
-    const manifestAllowLists = [["plugin-a.example"]];
-    const withoutDynamic = normalizeUnionForAsrt(
-      computeUnionAllowedDomains([...manifestAllowLists, []], []),
-    );
-    const staticOnly = normalizeUnionForAsrt(
-      computeUnionAllowedDomains(manifestAllowLists, []),
-    );
-    expect(withoutDynamic).toEqual(staticOnly);
-  });
 });
 
 describe("asrt-sandbox — parentProxy direct-connect floor (PR #1356 MAJOR, corrected)", () => {
@@ -829,7 +748,7 @@ describe("asrt-sandbox — parentProxy direct-connect floor (PR #1356 MAJOR, cor
     const prev = process.env.HTTP_PROXY;
     process.env.HTTP_PROXY = "http://host-proxy.invalid:3128";
     try {
-      // The value buildSandboxConfig emits on the DEFAULT path (no corporateProxy).
+      // The value buildSandboxConfig emits on the DEFAULT path (no upstreamProxy).
       const direct = resolveParentProxy({ http: "", https: "" });
       expect(direct).toBeUndefined(); // direct-connect, no inheritance
 
@@ -846,11 +765,11 @@ describe("asrt-sandbox — parentProxy direct-connect floor (PR #1356 MAJOR, cor
     }
   });
 
-  it("a trusted corporateProxy value is honored (still no host-env inheritance path)", () => {
+  it("a trusted upstreamProxy value is honored (still no host-env inheritance path)", () => {
     const prev = process.env.HTTP_PROXY;
     process.env.HTTP_PROXY = "http://host-proxy.invalid:3128";
     try {
-      // What buildSandboxConfig emits when corporateProxy.http is set.
+      // What buildSandboxConfig emits when upstreamProxy.http is set.
       const corp = resolveParentProxy({ http: "http://corp-proxy.example:8080", https: "" });
       expect(corp?.httpUrl?.href).toContain("corp-proxy.example");
       expect(corp?.httpUrl?.href).not.toContain("host-proxy.invalid");
@@ -858,6 +777,14 @@ describe("asrt-sandbox — parentProxy direct-connect floor (PR #1356 MAJOR, cor
       if (prev === undefined) delete process.env.HTTP_PROXY;
       else process.env.HTTP_PROXY = prev;
     }
+  });
+
+  it("passes the trusted resolvesNames opt-in for an upstream on this host, and only when set", () => {
+    const off = buildSandboxConfig({ allowedDomains: [], upstreamProxy: { http: "http://127.0.0.1:3128" } });
+    expect(off.network.parentProxy).toEqual({ http: "http://127.0.0.1:3128", https: "" });
+    const on = buildSandboxConfig({ allowedDomains: [], upstreamProxy: { http: "http://127.0.0.1:3128", resolvesNames: true } });
+    expect(on.network.parentProxy).toEqual({ http: "http://127.0.0.1:3128", https: "", resolvesNames: true });
+    expect(buildSandboxConfig({ allowedDomains: [] }).network.parentProxy).toEqual({ http: "", https: "" });
   });
 });
 

@@ -1299,7 +1299,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       platform: "win32", enabled: true, available: true, kind: "partial", reason: raw,
       potentialReason: raw, runtime: { available: false, kind: "none", reason: raw },
       confines: { filesystem: true, process: false, network: true },
-      boot: { action: "degrade", reason: "degrade-windows-not-installed", onSignal: "default-settings", dependencyErrors: [raw] },
+      boot: { action: "degrade", reason: "degrade-windows-not-installed", onSignal: "default-settings", causes: ["windows-setup-incomplete"] },
     } as never);
     await act(async () => { render(<PermissionsTab />); });
     expect(document.body.textContent).not.toContain("EACCES");
@@ -1324,7 +1324,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
       runtime: { available: true, kind: "none", reason: "r" },
       confines: { filesystem: true, process: false, network: true },
-      boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", dependencyErrors: [] },
+      boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
       windowsSubstrate: {
         mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false,
         shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel", extensionEgressIdentity: "shared",
@@ -1346,7 +1346,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
       runtime: { available: true, kind: "none", reason: "r" },
       confines: { filesystem: true, process: false, network: true },
-      boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", dependencyErrors: [] },
+      boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
       windowsSubstrate: {
         mxc: { state: "checking" }, windowsBuild: "10.0.26300", srtWinReady: false,
         shells: "approved-host", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
@@ -1365,7 +1365,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
       runtime: { available: false, kind: "none", reason: "r" },
       confines: { filesystem: true, process: false, network: true },
-      boot: { action: "degrade", reason: "degrade-windows-init-failed", onSignal: "default-settings", dependencyErrors: ["x"] },
+      boot: { action: "degrade", reason: "degrade-windows-init-failed", onSignal: "default-settings", causes: ["init-failed"] },
       windowsSubstrate: {
         mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: true,
         shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
@@ -1383,7 +1383,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
       runtime: { available: true, kind: "partial", reason: "r" },
       confines: { filesystem: true, process: false, network: true },
-      boot: { action: "activate", reason: "deps-present", onSignal: "default-settings", dependencyErrors: [] },
+      boot: { action: "activate", reason: "deps-present", onSignal: "default-settings", causes: [] },
       windowsSubstrate: {
         mxc: { state: "unavailable", reason: "tier-unsupported" }, windowsBuild: "10.0.22631.4317", srtWinReady: true,
         shells: "approved-host", extensions: "srt-win", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",

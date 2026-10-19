@@ -67,6 +67,8 @@ import {
   type HostShellExecutionPlanAuditProjection,
 } from "./host-shell-execution-plan.js";
 import { errorMessage } from "../shared/error-message.js";
+import { isEgressGrantScope, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
+import { isTerminalTabId } from "../shared/tab-id.js";
 
 // ─── Args DLP masking ────────────────────────────────
 
@@ -207,7 +209,33 @@ export type ApprovalMode = "default" | "ask_all" | "full_auto";
  * not correspond to a host tool execution.
  */
 export type ApprovalKind =
-  "tool" | "out-of-allowed-dir" | "agent-action" | "rationale";
+  "tool" | "out-of-allowed-dir" | "agent-action" | "rationale" | "egress-host";
+
+/**
+ * The egress-host ask's payload (`kind: "egress-host"`): a sandboxed shell
+ * call or workspace terminal tab wants to reach `host:port`, and the person
+ * picks how long an allow lasts from `scopes`. Built by `egress-approval.ts`.
+ */
+interface EgressHostApproval {
+  readonly host: string;
+  readonly port: number;
+  /** Offered scopes, narrowest first; the answer must name one of them. */
+  readonly scopes: readonly EgressGrantScope[];
+  /**
+   * `local`: this machine or a private network (loopback, RFC 1918, ULA…).
+   * `unverified`: the upstream proxy resolves the name; Ave could not check
+   * the address. For both the card warns, and only Allow once / This
+   * conversation (a terminal: This tab) are offered.
+   */
+  readonly network: "public" | "local" | "unverified";
+  /**
+   * Set when a workspace terminal tab asks: the card is that tab's banner,
+   * drawn in the window that owns the tab (never another one), and the
+   * request names no conversation. Its second scope is `tab`, a shell
+   * call's is `conversation`.
+   */
+  readonly terminalTabId?: string;
+}
 
 export interface ApprovalRequest {
   id: string;
@@ -286,6 +314,8 @@ export interface ApprovalRequest {
     currentAllowed: readonly string[];
     adjacencyWarnings: readonly string[];
   };
+  /** Present iff `kind === "egress-host"`. */
+  egressHost?: EgressHostApproval;
   /**
    * Permission policy P2.5 §9 — trust origin classification
    * (user-keyboard / plugin-emitted / app-emitted / llm-tool-arg / file-content).
@@ -807,6 +837,12 @@ export type ApprovalChoice =
 export interface ApprovalDecision {
   requestId: string;
   choice: ApprovalChoice;
+  /**
+   * For an `egress-host` ask answered `allow-once`: how long the allow lasts,
+   * one of the request's `egressHost.scopes`. Required there, ignored
+   * everywhere else; a missing or unoffered scope makes the answer a deny.
+   */
+  egressScope?: EgressGrantScope;
 
   rememberPattern?: string;
   /**
@@ -868,6 +904,44 @@ export function isHostApprovalRejectedDecision(
     decision !== undefined &&
     hostRejectedApprovalDecisions.has(decision)
   );
+}
+
+/**
+ * An `egress-host` request is fully specified or it is a bug: it carries its
+ * payload with at least one offered scope, offers exactly allow-once and
+ * deny-once, and is never recorded in the user-approval store. Any other kind
+ * carrying the payload is a bug too.
+ */
+function assertEgressHostRequestShape(req: ApprovalRequestInput): void {
+  if (req.kind !== "egress-host") {
+    if (req.egressHost !== undefined) throw new Error("approval: egressHost is only valid on an egress-host request");
+    return;
+  }
+  const payload = req.egressHost;
+  if (payload === undefined || payload.scopes.length === 0 || !payload.scopes.every(isEgressGrantScope)) {
+    throw new Error("approval: an egress-host request needs egressHost with at least one valid scope");
+  }
+  if (payload.network !== "public" && payload.network !== "local" && payload.network !== "unverified") {
+    throw new Error("approval: an egress-host request names its network (public, local or unverified)");
+  }
+  if (payload.network !== "public" && payload.scopes.some((scope) => scope === "workspace" || scope === "always")) {
+    throw new Error("approval: a local, private or unverified destination is never offered a persistent scope");
+  }
+  if (payload.terminalTabId !== undefined) {
+    if (!isTerminalTabId(payload.terminalTabId)) throw new Error("approval: terminalTabId is not a terminal tab id");
+    if (req.sessionId !== undefined) throw new Error("approval: a terminal tab's egress ask names no conversation");
+    if (payload.scopes.includes("conversation")) throw new Error("approval: a terminal tab is offered This tab, not This conversation");
+    if (payload.scopes.includes("workspace")) throw new Error("approval: a terminal tab is never offered This workspace");
+  } else if (payload.scopes.includes("tab")) {
+    throw new Error("approval: only a terminal tab's egress ask offers This tab");
+  }
+  const choices = req.allowedChoices ?? [];
+  if (choices.length !== 2 || !choices.includes("allow-once") || !choices.includes("deny-once")) {
+    throw new Error("approval: an egress-host request offers exactly allow-once and deny-once");
+  }
+  if (req.durableApprovalRecordAllowed !== false) {
+    throw new Error("approval: an egress-host request is never recorded in the user-approval store");
+  }
 }
 
 function markHostApprovalRejectedDecision(
@@ -1012,6 +1086,13 @@ interface PendingEntry {
     candidatePath: string;
     suggestedParent: string | null;
   };
+  /** The scopes an `egress-host` ask offered, kept host-side for the answer check. */
+  egressScopes?: readonly EgressGrantScope[];
+  /**
+   * A workspace terminal tab's egress ask: only the window that owns the tab
+   * may fetch or answer it (`listPendingRendererRequests`, `resolveFromDesktopRenderer`).
+   */
+  egressTerminalTabId?: string;
   /**
    * Issue #799 — approval cache key captured server-side at request emit
    * time. The userApprovalRecord IPC handler reads this via
@@ -1401,7 +1482,11 @@ function verifyApprovalIntegrity(
  * Resolved at request time, not bound at boot: several main windows may be
  * open, and the one open at boot may be closed while another stays.
  */
-export type ApprovalSurfaceResolver = (sessionId: string | undefined) => WebContents | null;
+export type ApprovalSurfaceResolver = (
+  sessionId: string | undefined,
+  /** Set for a workspace terminal tab's ask: the window that owns the tab, or null. */
+  terminalTabId?: string,
+) => WebContents | null;
 
 export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
@@ -1614,9 +1699,16 @@ export class ApprovalGate {
     }
   }
 
-  /** The live renderer that should draw `sessionId`'s card right now, or null. */
-  private liveSurfaceFor(sessionId: string | undefined): WebContents | null {
-    const surface = this.resolveSurface?.(sessionId) ?? null;
+  /**
+   * The live renderer that should draw this request's card right now, or
+   * null: the window showing its conversation, or for a terminal tab's ask
+   * the window that owns the tab.
+   */
+  private liveSurfaceFor(req: { readonly sessionId?: string; readonly egressHost?: EgressHostApproval }): WebContents | null {
+    const terminalTabId = req.egressHost?.terminalTabId;
+    const surface = (terminalTabId === undefined
+      ? this.resolveSurface?.(req.sessionId)
+      : this.resolveSurface?.(req.sessionId, terminalTabId)) ?? null;
     return surface && !surface.isDestroyed() ? surface : null;
   }
 
@@ -2203,6 +2295,7 @@ export class ApprovalGate {
    * The requireExplicit field controls renderer dismiss behavior.
    */
   async requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision> {
+    assertEgressHostRequestShape(req);
     const {
       forceExplicit = false,
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
@@ -2377,7 +2470,7 @@ export class ApprovalGate {
     const executionPlanAudit = boundExecutionPlan ?? suppliedExecutionPlan;
     if (executionPlanAudit?.executionRequest === "host" &&
       (oneShotPermitBinding === undefined || remoteControllerOrigin !== undefined || remoteControllerAuthority !== undefined ||
-        this.liveSurfaceFor(req.sessionId) === null)) {
+        this.liveSurfaceFor(req) === null)) {
       return markHostApprovalRejectedDecision({
         requestId: req.id,
         choice: "deny-once",
@@ -2535,7 +2628,7 @@ export class ApprovalGate {
     }
 
     // §A2: webContents destruction check — deny once if no main window is open.
-    if (this.liveSurfaceFor(fullReq.sessionId) === null) {
+    if (this.liveSurfaceFor(fullReq) === null) {
       const headless = this.headlessDenied !== undefined;
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
@@ -2806,7 +2899,7 @@ export class ApprovalGate {
         this.notifyPendingSettled(fullReq.id, decision);
         const refetchers = this.refetchedBy.get(fullReq.id) ?? [];
         this.refetchedBy.delete(fullReq.id);
-        this.announceSettledToRenderer(fullReq.id, [sentTo, ...refetchers, this.liveSurfaceFor(fullReq.sessionId)]);
+        this.announceSettledToRenderer(fullReq.id, [sentTo, ...refetchers, this.liveSurfaceFor(fullReq)]);
         resolve(decision);
       };
       const timer = setTimeout(() => {
@@ -2868,6 +2961,14 @@ export class ApprovalGate {
                 candidatePath: fullReq.outOfAllowedDir.candidatePath,
                 suggestedParent: fullReq.outOfAllowedDir.suggestedParent,
               },
+            }),
+        ...(fullReq.egressHost === undefined
+          ? {}
+          : {
+              egressScopes: [...fullReq.egressHost.scopes],
+              ...(fullReq.egressHost.terminalTabId === undefined
+                ? {}
+                : { egressTerminalTabId: fullReq.egressHost.terminalTabId }),
             }),
         approvalCacheKey: fullReq.approvalCacheKey,
         approvalMemory: fullReq.approvalMemory,
@@ -2969,7 +3070,7 @@ export class ApprovalGate {
       try {
         // Resolved now, not at boot: the window showing this session, else the
         // primary (or most recently focused) live main window.
-        const surface = this.liveSurfaceFor(fullReq.sessionId);
+        const surface = this.liveSurfaceFor(fullReq);
         if (!surface) throw new Error("Approval surface unavailable");
         sentTo = surface;
         surface.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
@@ -3012,12 +3113,23 @@ export class ApprovalGate {
     return this.resolveDecision(requestId, decision, answeredBy, false);
   }
 
-  /** Only the renderer IPC handler may call this after validating its sender. */
+  /**
+   * Only the renderer IPC handler may call this after validating its sender.
+   * `responder` is that sender: a workspace terminal tab's egress ask is
+   * answered only by the window that owns the tab.
+   */
   resolveFromDesktopRenderer(
     requestId: string,
     decision: ApprovalDecision,
+    responder?: WebContents,
   ): ApprovalDecision | null {
-    return this.resolveDecision(requestId, decision, "desk", true);
+    return this.resolveDecision(requestId, decision, "desk", true, responder);
+  }
+
+  /** Whether `contents` is the live window that owns this terminal tab (its asks' only surface). */
+  private isTerminalOwner(terminalTabId: string, contents: WebContents | undefined): boolean {
+    if (contents === undefined || contents.isDestroyed()) return false;
+    return this.resolveSurface?.(undefined, terminalTabId) === contents;
   }
 
   private resolveDecision(
@@ -3025,9 +3137,22 @@ export class ApprovalGate {
     decision: ApprovalDecision,
     answeredBy: ApprovalAnswerer,
     nativeRenderer: boolean,
+    responder?: WebContents,
   ): ApprovalDecision | null {
     const entry = this.pending.get(requestId);
     if (!entry) return null;
+    if (entry.egressTerminalTabId !== undefined && !this.isTerminalOwner(entry.egressTerminalTabId, responder)) {
+      // A terminal tab's ask is drawn in, and answered from, the window that
+      // owns the tab. Another window's answer is ignored and the ask stays
+      // pending for the owner (it can still time out or be closed).
+      this.auditLogger?.log({
+        timestamp: new Date().toISOString(),
+        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:terminal-owner-required] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} -> response-rejected`,
+      });
+      return null;
+    }
     if (entry.hostShellExecutionPermitBinding?.executionMode === "host" && !nativeRenderer) {
       // Signed card contents authenticate a request, not the answering surface.
       // Reject plugin/platform answers while keeping the desktop request pending.
@@ -3084,6 +3209,44 @@ export class ApprovalGate {
       entry.resolve(forcedDecision);
       return forcedDecision;
     }
+    // An egress-host allow names how long it lasts. Only the desktop window
+    // may answer one (a grant can outlive the conversation), and the scope
+    // must be one the card offered: anything else is a deny, never a guess.
+    if (entry.kind === "egress-host" && !nativeRenderer) {
+      // A grant can outlive the conversation, so only the desktop window may
+      // answer an egress ask, allow or deny: the person at the desktop is the
+      // one asked. Any other surface's answer is ignored and the request
+      // stays pending for the desktop, as for a host-shell execution permit.
+      this.auditLogger?.log({
+        timestamp: new Date().toISOString(),
+        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:native-desktop-required] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} -> response-rejected`,
+      });
+      return null;
+    }
+    if (entry.kind === "egress-host" && decision.choice !== "deny-once") {
+      const offered = entry.egressScopes ?? [];
+      const problem = decision.choice !== "allow-once"
+          ? "egress approval choice must be allow-once with a scope"
+          : decision.egressScope === undefined || !offered.includes(decision.egressScope)
+            ? "egress approval scope not offered"
+            : undefined;
+      if (problem !== undefined) {
+        clearTimeout(entry.timer);
+        this.pending.delete(requestId);
+        this.auditLogger?.log({
+          timestamp: new Date().toISOString(),
+          sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:egress-scope-rejected] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${decision.choice} scope=${decision.egressScope ?? "none"} → deny-once (forced)`,
+        });
+        const forcedDecision: ApprovalDecision = { requestId, choice: "deny-once", rememberPattern: problem };
+        hostRejectedApprovalDecisions.add(forcedDecision);
+        entry.resolve(forcedDecision);
+        return forcedDecision;
+      }
+    }
     // A rationale response is a sealed, one-shot verdict. Do not pass any
     // renderer-provided auxiliary text or structured content to audit or the
     // caller after the authenticated choice has been accepted.
@@ -3119,7 +3282,7 @@ export class ApprovalGate {
       timestamp: new Date().toISOString(),
       sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
       type: "approval",
-      output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}`,
+      output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}${entry.kind === "egress-host" ? ` egressScope=${resolvedDecision.egressScope ?? "none"}` : ""}`,
     });
     entry.resolve(resolvedDecision);
     return resolvedDecision;
@@ -3207,7 +3370,8 @@ export class ApprovalGate {
 
   /**
    * Every request still waiting on the renderer, in the order it was asked,
-   * exactly as `ave:approval:request` delivered it. A renderer that loaded
+   * exactly as `ave:approval:request` delivered it (a terminal tab's egress
+   * ask only to the window that owns the tab). A renderer that loaded
    * after a request went out subscribed too late to have seen it; this is how
    * it recovers the card instead of leaving the turn to sit out its timeout.
    */
@@ -3215,6 +3379,8 @@ export class ApprovalGate {
     const out: ApprovalRequest[] = [];
     for (const [id, entry] of this.pending) {
       if (entry.rendererRequest === undefined) continue;
+      // A terminal tab's ask goes only to the window that owns the tab.
+      if (entry.egressTerminalTabId !== undefined && !this.isTerminalOwner(entry.egressTerminalTabId, recipient)) continue;
       out.push(entry.rendererRequest);
       // The reader now draws this card too; tell it when the request settles.
       if (recipient) {

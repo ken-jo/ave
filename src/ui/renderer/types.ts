@@ -88,6 +88,7 @@ import type {
   SandboxWindowsInstallResult,
 } from "../../shared/sandbox-capability-info.js";
 import type { EgressDenialRow } from "../../shared/egress-denials.js";
+import type { ListedEgressGrant } from "../../shared/egress-grant-scopes.js";
 
 // Re-export MCP types for renderer-side consumers (type-only, no main-process runtime)
 export type { McpServerConfig, McpServerConfigDto, McpServerState };
@@ -1610,6 +1611,22 @@ export type AvePermissionApi = {
    * that opened it ("unattributed" when no live invocation held its key).
    */
   egressDenialsRecent: () => Promise<EgressDenialRow[] | IpcErrorResult>;
+  /** Read-only: the shell egress grants that outlive a call (conversation, terminal tab, workspace, always). */
+  egressGrantsList: () => Promise<
+    | { ok: true; grants: ListedEgressGrant[] }
+    | { ok: false; error: string; message: string }
+    | IpcErrorResult
+  >;
+  /** MUTATING: revoke one shell egress grant. */
+  egressGrantRevoke: (grant: {
+    scope: "conversation" | "tab" | "workspace" | "always";
+    host: string;
+    port: number;
+    origin?: "shell" | "terminal";
+    workspaceRoot?: string;
+    sessionId?: string;
+    tabId?: string;
+  }) => Promise<{ ok: boolean; error?: string; message?: string } | IpcErrorResult>;
   /**
    * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
    * UAC prompt). The ONLY user-consented privilege-escalation entry point —

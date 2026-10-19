@@ -49,6 +49,7 @@ import {
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { AuditPanel } from "../components/permissions/AuditPanel.js";
 import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
+import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { getApi } from "../api-client.js";
@@ -463,7 +464,7 @@ export function PermissionsTab({
       setSandboxCapability(sandboxRes);
       console.warn("[ave] permissions: sandbox diagnostics:",
         sandboxRes.potentialReason ?? sandboxRes.reason, sandboxRes.runtime?.reason,
-        sandboxRes.boot?.dependencyErrors);
+        sandboxRes.boot?.causes, sandboxRes.shell?.state);
       const osSandboxOn = settingsRes.features?.osToolSandbox ?? false;
       setSandboxEnabled(osSandboxOn);
       const workerConfinementOn = settingsRes.features?.pluginWorkerConfinement ?? false;
@@ -991,6 +992,10 @@ export function PermissionsTab({
   // distinct from "restart to apply", which is what an unchanged gate would
   // mean. A gate that never ran (`null`) is NOT reported as either.
   const sandboxBoot = sandboxCapability?.boot ?? null;
+  // The host could not reconcile its own shell sandbox observations. Only the
+  // shell row reports it; the rest of the panel still renders the snapshot.
+  // The toggle stays usable: turning the setting off is what clears it.
+  const shellStatusError = sandboxCapability?.shell?.state === "error";
   const sandboxDegraded =
     sandboxBoot !== null && (sandboxBoot.action === "degrade" || sandboxBoot.action === "abort");
   // Windows: which substrate carries shells and extensions this session.
@@ -1310,6 +1315,11 @@ export function PermissionsTab({
                 {sandboxEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
               </p>
               <p className="text-[11px] text-muted-foreground">{t("permissionsTab.osSandboxShellHint")}</p>
+              {shellStatusError ? (
+                <p role="alert" data-testid="os-sandbox-shell-status-error" className="text-[11px] text-destructive">
+                  {t("permissionsTab.osSandboxShellStatusError")}
+                </p>
+              ) : null}
             </div>
           </div>
           <EnvForcedNotice
@@ -1389,7 +1399,7 @@ export function PermissionsTab({
             >
               <p className="font-medium">{t("permissionsTab.osSandboxBootDegradedHeading")}</p>
               <p>{t("permissionsTab.osSandboxBootDegradedBody")}</p>
-              {sandboxBoot.dependencyErrors.length > 0 ? (
+              {sandboxBoot.causes.length > 0 ? (
                 <p
                   data-testid="os-sandbox-boot-degraded-detail"
                   className="whitespace-pre-line font-mono text-foreground"
@@ -1531,6 +1541,7 @@ export function PermissionsTab({
           title={t("permissionsTab.networkTitle")}
           description={t("permissionsTab.networkDescription")}
         >
+          <EgressGrantsList />
           <EgressDenialsList />
         </SettingsSection>
 

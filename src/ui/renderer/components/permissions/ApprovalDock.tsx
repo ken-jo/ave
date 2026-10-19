@@ -276,7 +276,9 @@ export function ApprovalDock({
   const isRationale = request.kind === "rationale";
   const title = request.kind === "agent-action"
     ? t("toolApprovalDialog.agentActionTitle")
-    : t("toolApprovalDialog.toolApprovalTitle");
+    : request.kind === "egress-host"
+      ? t("egressApprovalCard.dockTitle")
+      : t("toolApprovalDialog.toolApprovalTitle");
   const liveRequestLabel = isRationale ? title : `${title}. ${request.toolName}`;
   const remaining = Math.max(0, queue.length - 1);
 
@@ -390,7 +392,9 @@ export function ApprovalLaneCard({
   const isRationale = request.kind === "rationale";
   const title = request.kind === "agent-action"
     ? t("toolApprovalDialog.agentActionTitle")
-    : t("toolApprovalDialog.toolApprovalTitle");
+    : request.kind === "egress-host"
+      ? t("egressApprovalCard.dockTitle")
+      : t("toolApprovalDialog.toolApprovalTitle");
   const remaining = Math.max(0, queue.length - 1);
   return (
     <section
