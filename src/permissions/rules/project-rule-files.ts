@@ -9,7 +9,7 @@
 import { readFile, mkdir } from "node:fs/promises";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { withFileLock } from "../../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, isMissingPathError, PRIVATE_DIR_MODE } from "../../lib/atomic-file.js";
 import { captureApprovalWorkingDirectory } from "../user-approval-store.js";
@@ -84,7 +84,16 @@ function isRepositoryMarker(marker: string): boolean {
 /** Nearest verified marker below home; uncertain discovery stays at cwd. */
 function projectRootFor(projectCwd: string): string {
   const start = captureApprovalWorkingDirectory(projectCwd).path;
-  const home = captureApprovalWorkingDirectory(homedir()).path;
+  let home: string;
+  try {
+    const homePath = homedir();
+    if (!isAbsolute(homePath)) return start;
+    home = captureApprovalWorkingDirectory(homePath).path;
+    if (dirname(home) === home) return start;
+  } catch {
+    // Without a trustworthy home boundary, project rules stay at cwd.
+    return start;
+  }
   const homeKey = caseFoldForMatch(home);
   for (let dir = start, guard = 0; guard < 256; guard += 1) {
     const dirKey = caseFoldForMatch(dir);

@@ -132,6 +132,22 @@ describe("Store A (user-global permissions.json)", () => {
 });
 
 describe("decision path", () => {
+  it.each([undefined, "", "/"])("can save and evaluate a project rule with HOME=%j", async (home) => {
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    const pm = new PermissionManager(permissionsFile);
+    await pm.addRulePersist({ pattern: "Bash(npm test *)", action: "allow" }, { kind: "project", projectCwd: project });
+    const restarted = new PermissionManager(permissionsFile);
+    await restarted.ensureProjectRulesLoaded(project);
+    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: project }))
+      .toMatchObject({ decision: "allow" });
+    const sibling = join(dir, "sibling");
+    mkdirSync(sibling);
+    await restarted.ensureProjectRulesLoaded(sibling);
+    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ...shell("npm test"), projectRulesCwd: sibling }))
+      .toMatchObject({ decision: "ask" });
+  });
+
   it("Bash allow rules persist, survive restart, and match only via the shell subject", async () => {
     const pm = new PermissionManager(permissionsFile);
     await pm.addRulePersist({ pattern: "Bash(git status *)", action: "allow" }, { kind: "user" });

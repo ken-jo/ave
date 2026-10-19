@@ -31,6 +31,23 @@ afterEach(() => {
 
 describe("project rule root boundaries", () => {
   it.each([
+    { name: "unset", value: undefined, inherits: true },
+    { name: "empty", value: "", inherits: false },
+    { name: "filesystem root", value: "/", inherits: false },
+    { name: "relative", value: "relative-home", inherits: false },
+  ])("handles a $name home environment before repository discovery", ({ value, inherits }) => {
+    const repo = join(home, "repo");
+    const cwd = join(repo, "src");
+    repository(repo);
+    mkdirSync(cwd);
+    vi.stubEnv("HOME", value);
+    vi.stubEnv("USERPROFILE", value);
+    // An unset environment uses the account's absolute home; invalid values
+    // must not let this child inherit an otherwise valid repository identity.
+    expect(projectRulesLocation(root, cwd).projectRoot).toBe(inherits ? repo : cwd);
+  });
+
+  it.each([
     { name: "home repository", marker: "home", cwd: "home/a", expected: "home/a" },
     { name: "exact home", marker: "home", cwd: "home", expected: "home" },
     { name: "repository above home", marker: "", cwd: "home/a", expected: "home/a" },
