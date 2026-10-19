@@ -10,6 +10,8 @@ import type { Locale } from "./i18n";
 export interface HomeCopy {
   meta: { title: string; description: string };
   hero: { eyebrow: string; title: string; sub: string; download: string; docs: string; note: string; pic: Picture };
+  /** The feature tour: its heading, plus the label its stage picture carries. The steps come from each feature page's hero (lib/features.ts). */
+  tour: { eyebrow: string; title: string; body: string; label: string };
   work: { eyebrow: string; title: string; body: string; points: Point[]; pic: Picture };
   surfaces: BentoBlock;
   models: {
@@ -44,6 +46,12 @@ const ko: HomeCopy = {
       k: "app-conversation",
       alt: "Ave 작업 모드. 프로젝트 trail-notes에서 에이전트가 export 명령에 --json 플래그를 넣고 테스트 6개가 통과했다고 답한 대화",
     },
+  },
+  tour: {
+    eyebrow: "기능",
+    title: "다섯 가지로 살펴보는 Ave",
+    body: "브라우저, 터미널, 모델, 플러그인, 보안. 각 기능을 실제 앱 화면과 함께 봅니다.",
+    label: "현재 단계의 앱 화면",
   },
   work: {
     eyebrow: "작업 화면",
@@ -198,6 +206,12 @@ const en: HomeCopy = {
       k: "app-conversation",
       alt: "Ave in work mode: in the trail-notes project, the agent added a --json flag to the export command and reports that all six tests pass",
     },
+  },
+  tour: {
+    eyebrow: "Features",
+    title: "Ave in five parts",
+    body: "The browser, the terminal, models, plugins and security, each shown on the real app.",
+    label: "The app screen for the current step",
   },
   work: {
     eyebrow: "Workbench",

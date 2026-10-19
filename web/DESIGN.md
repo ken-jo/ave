@@ -17,7 +17,7 @@ shows it.
 
 | Page | What it covers |
 | --- | --- |
-| `/` | Hero loop, the workbench, what agents work with, three ways to connect a model, safety, extension kinds, the latest release, download. |
+| `/` | Hero loop, the feature tour (one step per feature page), the workbench, what agents work with, three ways to connect a model, safety, extension kinds, the latest release, download. |
 | `/browser/`, `/terminal/`, `/models/`, `/plugins/`, `/security/` | One feature each: hero shot, a split, a bento of crops, facts or a second split, 5–8 questions, next steps. |
 | `/download/` | One card per system with the first-launch steps, then connecting a model, leading on to the start guide. |
 | `/docs/**` | The guide (`lib/docs.ts`), one template. |
@@ -60,8 +60,9 @@ shows it.
     a caption of about twenty words); *choices* (three equal cards); *facts*
     (three short ruled columns); *kinds* (an icon grid); *questions* (native
     `<details>`); *next steps* (three linked cards).
-12. **Density.** Home about 900 English words and 12 media; feature pages
-    600–700 English words and 6–7 media. Korean pages carry the same content.
+12. **Density.** Home about 1,150 English words and 14 media (the tour adds
+    the five feature pages' hero leads and shots); feature pages 600–700
+    English words and 6–7 media. Korean pages carry the same content.
 
 ## Type and colour
 
@@ -94,9 +95,29 @@ shows it.
 18. **No layout shift.** Every `<img>` and `<video>` has width and height. The
     first picture of a page is eager with high fetch priority and has preload
     links per colour scheme. Everything else loads lazily.
-19. **Motion.** The home hero loop plays muted over its still; under
-    `prefers-reduced-motion: reduce` it is hidden and the still shows. There is
-    no other animation beyond hover colour and a 0.98 press.
+19. **Motion.** Only the home page moves, and it never moves the page: no
+    scroll hijacking, snapping, smooth-scroll takeover or `scrollTo`. The
+    server renders every element visible and final; script only enhances.
+    - The hero loop plays muted over its still; under
+      `prefers-reduced-motion: reduce` it is hidden and the still shows.
+    - **Feature tour** (`components/tour.tsx`). One step per feature page,
+      taken from that page's hero. On screens 1024 px and wider, with script
+      and motion allowed (one media query, `PINNED`, shared by the CSS and the
+      script), each step is a viewport-tall block and a sticky stage beside
+      them holds a framed capture. One scroll progress for the tour drives the
+      frame's position, scale and rotation through a pose per step, the
+      cross-fade between captures, and the current step (`aria-current="step"`
+      on the step, highlighted in the stage's index). A step changes exactly
+      at the middle of its cross-fade. The progress is smoothed by a spring
+      that only follows the scroll position, so scrolling back returns every
+      value to the same frame. Everywhere else (narrow screens, reduced
+      motion, no script) the tour is a plain stack of steps, each with its
+      capture untransformed, and is exactly as long as its content.
+    - **Entrances.** Home sections that start below the fold enter once, their
+      parts one after the other (`components/motion.tsx`). A section on screen
+      at load, or scrolled past, is never hidden; with reduced motion nothing
+      is.
+    - Beyond that: hover colour and a 0.98 press.
 
 ## Copy
 
@@ -109,5 +130,7 @@ shows it.
 ## Libraries
 
 Next.js (static export), React, Tailwind CSS 4 (for the build; the rules are
-hand-written in `app/globals.css`) and `next/font`. Nothing else ships.
+hand-written in `app/globals.css`), `next/font`, and Motion (`motion/react`,
+home page only, through `LazyMotion` with the `domAnimation` features loaded
+after hydration). Nothing else ships; feature pages load no motion code.
 Notices: `THIRD_PARTY_NOTICES.md`.

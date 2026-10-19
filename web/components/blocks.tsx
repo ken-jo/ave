@@ -6,16 +6,25 @@ import { CopyButton } from "./client";
 import { Item } from "./chrome";
 import { Frame, Shot } from "./media";
 
+/**
+ * The element a block wraps each of its parts in. Pages pass `RevealItem`
+ * (components/motion.tsx) to have the parts enter in sequence; the default is
+ * the plain element, so a page that does not animate ships no motion code.
+ */
+export type ItemComponent = (props: { as?: "div" | "article" | "li"; className?: string; children: React.ReactNode }) => React.ReactNode;
+
+const Plain: ItemComponent = ({ as: Tag = "div", className, children }) => <Tag className={className}>{children}</Tag>;
+
 /** Section heading: eyebrow, title, optional lead. */
-export function SecHead({ id, eyebrow, title, body }: { id: string; eyebrow?: string; title: string; body?: string }) {
+export function SecHead({ id, eyebrow, title, body, Item = Plain }: { id: string; eyebrow?: string; title: string; body?: string; Item?: ItemComponent }) {
   return (
-    <div className="sec-head">
+    <Item className="sec-head">
       {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
       <h2 id={id} className="h2">
         {title}
       </h2>
       {body ? <p className="lead">{body}</p> : null}
-    </div>
+    </Item>
   );
 }
 
@@ -52,10 +61,10 @@ export function Split({ id, block, foot }: { id: string; block: SplitBlock; foot
   );
 }
 
-function BentoCard({ card }: { card: Card }) {
+function BentoCard({ card, Item }: { card: Card; Item: ItemComponent }) {
   const cls = ["card", card.w ? `w${card.w}` : ""].filter(Boolean).join(" ");
   return (
-    <article className={cls}>
+    <Item as="article" className={cls}>
       <div className={card.inset ? "card-media pad" : "card-media"}>
         <Shot pic={card.pic} />
       </div>
@@ -63,17 +72,17 @@ function BentoCard({ card }: { card: Card }) {
         <h3 className="h3">{card.title}</h3>
         <p>{card.body}</p>
       </div>
-    </article>
+    </Item>
   );
 }
 
-export function Bento({ id, block, foot }: { id: string; block: BentoBlock; foot?: React.ReactNode }) {
+export function Bento({ id, block, foot, Item = Plain }: { id: string; block: BentoBlock; foot?: React.ReactNode; Item?: ItemComponent }) {
   return (
     <>
-      <SecHead id={id} eyebrow={block.eyebrow} title={block.title} body={block.body} />
+      <SecHead id={id} eyebrow={block.eyebrow} title={block.title} body={block.body} Item={Item} />
       <div className="bento">
         {block.cards.map((c) => (
-          <BentoCard key={c.title} card={c} />
+          <BentoCard key={c.title} card={c} Item={Item} />
         ))}
       </div>
       {foot ? <div className="sec-foot">{foot}</div> : null}
@@ -82,16 +91,16 @@ export function Bento({ id, block, foot }: { id: string; block: BentoBlock; foot
 }
 
 /** A row of short facts, each with a rule above it. */
-export function Facts({ id, title, items }: { id?: string; title?: string; items: { title: string; body: string }[] }) {
+export function Facts({ id, title, items, Item = Plain }: { id?: string; title?: string; items: { title: string; body: string }[]; Item?: ItemComponent }) {
   return (
     <>
-      {title && id ? <SecHead id={id} title={title} /> : null}
+      {title && id ? <SecHead id={id} title={title} Item={Item} /> : null}
       <div className="facts">
         {items.map((f) => (
-          <div key={f.title} className="fact">
+          <Item key={f.title} className="fact">
             <h3 className="h3">{f.title}</h3>
             <p>{f.body}</p>
-          </div>
+          </Item>
         ))}
       </div>
     </>
