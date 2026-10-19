@@ -45,11 +45,29 @@ function safeProcessEnv(): LaunchEnv {
   return env;
 }
 
-export function buildIsolatedElectronEnv(overrides: LaunchEnv): LaunchEnv {
-  return {
-    ...safeProcessEnv(),
-    ...overrides,
-  };
+/**
+ * Chromium switches every e2e Electron launch gets. On macOS, safeStorage
+ * otherwise opens the login Keychain item "Ave Safe Storage", whose ACL does
+ * not match a test Electron, and macOS prompts the machine's owner mid-run.
+ * The mock keychain keeps e2e off the owner's Keychain entirely.
+ */
+export const E2E_CHROMIUM_SWITCHES: readonly string[] = process.platform === "darwin" ? ["--use-mock-keychain"] : [];
+
+/**
+ * The only way an e2e spec launches Electron (test/scripts/e2e-electron-launch.test.mjs
+ * keeps it that way): Playwright's launch with {@link E2E_CHROMIUM_SWITCHES} in front.
+ */
+export function launchElectron(options: Parameters<typeof electron.launch>[0]): ReturnType<typeof electron.launch> {
+  return electron.launch({ ...options, args: [...E2E_CHROMIUM_SWITCHES, ...(options?.args ?? [])] });
+}
+
+/** The allow-listed parent env plus `overrides`; an `undefined` override removes the key. */
+export function buildIsolatedElectronEnv(overrides: LaunchEnv): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries({ ...safeProcessEnv(), ...overrides })) {
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 export function buildE2eBaseSettings(onboardingCompleted = true, locale: "ko" | "en" = "ko",
@@ -243,7 +261,7 @@ export async function launchSeededElectron(opts: {
       "utf-8",
     );
 
-    app = await electron.launch({
+    app = await launchElectron({
       args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox", ...(opts.launchArgs ?? [])],
       env: buildIsolatedElectronEnv({
         HOME: tempHome,

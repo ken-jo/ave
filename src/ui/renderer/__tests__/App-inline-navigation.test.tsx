@@ -68,7 +68,6 @@ describe("App inline navigation", () => {
       expect(container.querySelector('[data-testid="main-pane-shell"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="view-path-current-work-board"]')).not.toBeNull();
     });
-    expect(container.querySelector('[data-testid="main-content-back"]')).toBeNull();
     // Hidden, not unmounted: a tile subscribes to its group's stream when it
     // mounts, so swapping it out for the work board would drop the frames of a
     // turn still in flight — along with the composer draft and scroll position.

@@ -560,8 +560,6 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
       />,
     );
     expect(screen.getByTestId("suggested-replies-ghost")).toBeTruthy();
-    expect(screen.queryByTestId("suggested-replies-chip-row")).toBeNull();
-    expect(screen.queryByTestId("suggested-replies-chip")).toBeNull();
     expect(screen.queryByRole("toolbar")).toBeNull();
   });
 

@@ -1,4 +1,4 @@
-import { _electron as electron, type ElectronApplication, type Page,
+import { type ElectronApplication, type Page,
 } from "playwright";
 import { test as base, expect } from "@playwright/test";
 import path from "node:path";
@@ -8,6 +8,7 @@ import {
   buildE2eBaseSettings,
   buildE2eSecrets,
   buildIsolatedElectronEnv,
+  launchElectron,
 } from "./seeded-electron";
 import { makeTestT, type TestT } from "./i18n.js";
 
@@ -254,7 +255,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       seedViewFixturePlugin,
       seedAlertPlugin,
     );
-    const app = await electron.launch({
+    const app = await launchElectron({
       args: [mainEntry, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({
         ...launchEnv,

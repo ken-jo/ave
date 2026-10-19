@@ -1,4 +1,4 @@
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright';
+import { type ElectronApplication, type Page } from 'playwright';
 import { test as base, expect } from '@playwright/test';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -11,6 +11,7 @@ import {
   buildE2eSecrets,
   buildIsolatedElectronEnv,
   buildLlmSettings,
+  launchElectron,
 } from '../e2e/ui/seeded-electron.js';
 import {
   seedExecutionMode,
@@ -580,7 +581,7 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
       });
     }
 
-    const app = await electron.launch({
+    const app = await launchElectron({
       args: [mainEntry, `--user-data-dir=${userDataDir}`, '--no-sandbox'],
       env: buildIsolatedElectronEnv({
         HOME: userDataDir,

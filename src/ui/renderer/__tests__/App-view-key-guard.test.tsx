@@ -29,7 +29,6 @@ describe("App — view key guard on the activate-view IPC", () => {
     act(() => emitViewActivate("memory"));
 
     await waitFor(() => expect(screen.getByTestId("view-path-current-memory")).toBeTruthy());
-    expect(screen.queryByTestId("main-content-back")).toBeNull();
     // The conversations stay MOUNTED across view navigation — a tile's stream
     // subscription starts when it mounts, so unmounting them to show another
     // view would drop the frames of a turn still running. Hidden, not gone.
@@ -48,7 +47,6 @@ describe("App — view key guard on the activate-view IPC", () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("'hom'")),
     );
     expect(screen.getByTestId(TEST_IDS.chatViewRoot)).toBeTruthy();
-    expect(screen.queryByTestId("main-content-unknown-view")).toBeNull();
   });
 
   it("ignores a detach-only key, which has no inline form to render", async () => {

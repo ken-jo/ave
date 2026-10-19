@@ -165,7 +165,6 @@ describe("InputActionBar (unified bar)", () => {
     expect(picker!.compareDocumentPosition(attach!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // The persona moved INTO the command menu; a second button beside it would
     // split "what shapes the next message" across two controls again.
-    expect(leading.querySelector("[data-testid='iab-assistant-context-button']")).toBeNull();
     expect(leading.querySelectorAll("button")).toHaveLength(2);
     // The ring is NO LONGER in the leading action cluster.
     expect(leading.querySelector("[data-testid='ring-slot']")).toBeNull();
@@ -368,8 +367,6 @@ describe("InputActionBar (unified bar)", () => {
     // …positioned BEFORE the permission cell (reversed row: ring is leftmost).
     const permission = getByTestId("iab-status-permission");
     expect(permission.compareDocumentPosition(ringHost) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
-    // The separate context-percent text cell is gone.
-    expect(row.querySelector("[data-testid='iab-status-context']")).toBeNull();
   });
 
   it("names the model alone in the status row, and keeps the vendor in the accessible name", () => {
@@ -403,9 +400,7 @@ describe("InputActionBar (unified bar)", () => {
   });
 
   it("draws no connection dot and no separator between the model chip and the reasoning bulb", () => {
-    const { getByTestId, queryByTestId } = renderBar();
-    // The "model configured" fact moved to the sidebar's Settings entry.
-    expect(queryByTestId("iab-status-active-dot")).toBeNull();
+    const { getByTestId } = renderBar();
     // Model chip and bulb sit at the row's own gap: no "·" in between, and
     // nothing at all after the bulb.
     const model = getByTestId("iab-status-model");
