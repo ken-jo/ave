@@ -370,10 +370,17 @@ export function buildInternalApiSurface() {
   // unsubscribe fn (the onChatStream pattern). All channels are INTERNAL — an
   // external origin can never reach them (fail-closed isPublicChannel).
   sideChat: {
-    send: async (input: string, attachments?: unknown[], originSessionId?: string, sendRequestId?: string) =>
+    send: async (
+      input: string,
+      attachments?: unknown[],
+      originSessionId?: string,
+      sendRequestId?: string,
+      surface?: ActiveWorkspaceSurface,
+    ) =>
       ipcRenderer.invoke(CHANNELS.sidechat.send, {
         input, attachments, originSessionId,
         ...(sendRequestId !== undefined ? { sendRequestId } : {}),
+        ...(surface !== undefined ? { surface } : {}),
       }) as Promise<
         | { ok: true; result: TurnResult }
         | { ok: false; error: string }

@@ -4,6 +4,8 @@
  *
  * Channels (ALL INTERNAL — never in PUBLIC_CHANNELS / EXTERNAL_MUTATION_CHANNELS):
  *   `ave:sidechat:send`  invoke  renderer→main → TurnResult | { ok:false, error }
+ *                        payload `surface` (optional): the pane tab a pane's own
+ *                        chat is bound to (`browserTabRegistry` bound conversation)
  *   `ave:sidechat:new`   invoke  → { ok, sessionId }
  *   `ave:sidechat:load`  invoke  (sessionId) → { ok, sessionId, messages }
  *   `ave:sidechat:abort` invoke { sendRequestId } → { ok }
@@ -31,7 +33,9 @@ import type { WebContents } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { sendToWebContents } from "../safe-send.js";
-import { setSideChatOwnerContents } from "../../main/app-state.js";
+import { mainWindowForContents, setSideChatOwnerContents } from "../../main/app-state.js";
+import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
+import { parseActiveSurface } from "./browser.js";
 import { createLogger } from "../../lib/logger.js";
 import { createLegacyChatStreamEventSink } from "../../api/platform-conversation-legacy-adapter.js";
 import type { GenericMessage } from "../../engine/llm/types.js";
@@ -144,10 +148,16 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.sidechat.send, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.send, e); return UNAUTHORIZED_FRAME; }
-    const p = (payload ?? {}) as { input?: unknown; attachments?: unknown; originSessionId?: unknown; sendRequestId?: unknown };
+    const p = (payload ?? {}) as { input?: unknown; attachments?: unknown; originSessionId?: unknown; sendRequestId?: unknown; surface?: unknown };
     if (typeof p.input !== "string") {
       return { ok: false as const, error: "invalid-input" };
     }
+    // A chat in a terminal or web pane's own panel names that pane's tab on
+    // every turn; a chat anywhere else names none.
+    const surface = p.surface === undefined ? null : parseActiveSurface(p.surface);
+    if (surface === undefined) return { ok: false as const, error: "invalid-surface" };
+    const senderWindow = mainWindowForContents(e.sender);
+    if (surface !== null && !senderWindow) return { ok: false as const, error: "invalid-surface" };
     if (p.sendRequestId !== undefined && (
       typeof p.sendRequestId !== "string"
       || p.sendRequestId.trim().length === 0
@@ -239,8 +249,13 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     activeSideStreamTurn = turnPromise;
     activeSideSendRequestId = typeof p.sendRequestId === "string" ? p.sendRequestId : null;
     activeSideSenderId = e.sender.id;
-    // The window this turn was typed in is the one its terminal/browser tools reach.
+    // The window this turn was typed in is the one its terminal/browser tools reach,
+    // and the pane tab it was typed beside (if any) is the one they default to.
     setSideChatOwnerContents(e.sender);
+    browserTabRegistry.bindConversationSurface(
+      turnSideChatSessionId,
+      surface === null ? null : { windowId: senderWindow!.id, surface },
+    );
     // A reloaded or crashed renderer loses the request id that scoped abort
     // requires, and page unload skips the hook's teardown cancel. Its document
     // was the turn's only owner, so its departure cancels the turn; otherwise

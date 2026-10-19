@@ -171,8 +171,8 @@ export async function setupWorkflowStores(
           terminalRead: {
             windowIdForHostedSession,
             liveOriginSessionId,
-            activeTerminalTabId: (windowId: number): string | undefined =>
-              browserTabRegistry.activeTerminalTabId(windowId),
+            defaultTerminalTabId: (windowId: number, sessionId: string): string | undefined =>
+              browserTabRegistry.defaultTerminalTabId(windowId, sessionId),
           },
           browser: {
             windowIdForHostedSession,

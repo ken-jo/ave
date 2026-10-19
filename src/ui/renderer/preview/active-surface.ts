@@ -1,17 +1,16 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect } from "react";
 import type { AveApi } from "../types.js";
 
 /**
  * The window's ACTIVE SURFACE — the terminal or web page the user last
- * brought into view — which is what the side chat acts on.
+ * brought into view — which is what an unbound conversation's tools act on
+ * when a call names no tab. A pane's own chat is bound to its pane instead
+ * (`BoundSurfaceChip`, main's bound conversation).
  *
- * Following the agent browser the owner pointed at (Aside), the target
- * follows focus: focusing a pane that shows a terminal or a page, or bringing
- * one to the front of a side panel, makes it the target. Switching to the
- * side chat itself does not change it — the side chat is how the user talks
- * ABOUT what they were just looking at. The user can drop the target (the
- * chip's ×); showing a surface again picks it back up. Closing the target
- * clears it.
+ * The target follows focus: focusing a pane that shows a terminal or a
+ * page, or bringing one to the front of a side panel, makes it the target.
+ * Switching to a chat does not change it — the chat is how the user talks
+ * ABOUT what they were just looking at. Closing the target clears it.
  *
  * One value per window, because main tracks one per window: this store is
  * the single place the window's choice is made, and the one a main-side
@@ -78,10 +77,6 @@ export function subscribeActiveSurface(listener: () => void): () => void {
   return () => {
     listeners.delete(listener);
   };
-}
-
-export function useActiveSurface(): ActiveSurface | null {
-  return useSyncExternalStore(subscribeActiveSurface, getActiveSurface);
 }
 
 /**

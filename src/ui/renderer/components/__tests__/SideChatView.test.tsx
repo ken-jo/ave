@@ -296,7 +296,8 @@ describe("SideChatView — the conversation a side chat belongs to", () => {
     const { api, spies } = makeApi();
     renderView(api, { currentSessionId: "parent-session", hasApiKey: true });
     await startTurn("hello");
-    expect(spies.send).toHaveBeenCalledWith("hello", expect.anything(), "parent-session", expect.any(String));
+    // A rail side chat is bound to no pane, so its turn names no tab.
+    expect(spies.send).toHaveBeenCalledWith("hello", expect.anything(), "parent-session", expect.any(String), undefined);
   });
 
   it("tells the window its conversation list is stale once the turn settles", async () => {

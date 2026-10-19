@@ -1,6 +1,10 @@
 /**
- * SideChatView — the side-chat transcript + composer rendered in the
- * workspace-rail `side-chat` tab.
+ * SideChatView — the side-chat transcript + composer, rendered in two places:
+ * a conversation's workspace-rail `side-chat` tab, and a terminal or web
+ * pane's own chat panel (`PaneChatPanel`). In a pane it is BOUND to that
+ * pane's tab: every turn names the tab, and main defaults the chat's browser
+ * and terminal tools to it (`browserTabRegistry` bound conversation). In the
+ * rail it is bound to nothing and names no tab.
  *
  * Renders through the SHARED `TranscriptRenderer` (the same renderer the main
  * chat uses) so tool calls, thinking, and permission-review status cards appear
@@ -33,7 +37,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 import { TranscriptRenderer } from "./TranscriptRenderer.js";
 import { Composer, ComposerFrame, type ComposerHandle } from "./Composer.js";
-import { ActiveSurfaceChip } from "./ActiveSurfaceChip.js";
+import { BoundSurfaceChip, type BoundSurface } from "./BoundSurfaceChip.js";
 import { registerComposerTarget } from "../preview/composer-targets.js";
 import { ComposerApiKeyChip, resolveComposerRuntimeGates } from "./ChatComposerDock.js";
 import { AttachButton, ShortcutsButton, TurnControlButton } from "./InputActionBar.js";
@@ -48,7 +52,7 @@ import { collectPromptHistory } from "../utils/prompt-history.js";
 import { ATTACH_MAX_COUNT, type Attachment } from "../types/attachments.js";
 import type { AveApi } from "../types.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
-import { useOptionalChatContext } from "../context/ChatContext.js";
+import { useOptionalChatContext, type ChatContextValue } from "../context/ChatContext.js";
 import { useApprovalSurface } from "../hooks/use-approval.js";
 import { useWorkflowTools } from "../hooks/use-workflow-tools.js";
 import { ApprovalDock } from "./permissions/ApprovalDock.js";
@@ -88,8 +92,26 @@ const NO_INLINE_PLUGINS: never[] = [];
 const NO_QUESTIONS: never[] = [];
 const NOOP_SELECT_PLUGIN = () => {};
 
+/**
+ * What the composer needs to know about the model it sends to. Inside a
+ * conversation tile it comes from the tile's chat context; a pane chat, which
+ * has no conversation around it, is handed the window's.
+ */
+export type SideChatRuntime = Pick<ChatContextValue,
+  | "hasApiKey" | "settingsLoaded" | "onOpenSettings"
+  | "subscriptionRuntimePolicy" | "subscriptionImageAttachmentProvider" | "subscriptionFileAttachmentProvider"
+  | "subscriptionUnavailableProvider" | "subscriptionPendingProvider"
+  | "llmVendor" | "llmModel" | "llmRouteModalities" | "processingDisplayLevel" | "usageAvailable">;
+
 interface SideChatViewProps {
   api: AveApi;
+  /**
+   * The terminal or page of the pane this chat sits in (a pane's own chat).
+   * Every turn names it, so the chat's tools act on that pane by default.
+   */
+  boundSurface?: BoundSurface | undefined;
+  /** The model readiness for a chat with no conversation tile around it. */
+  runtime?: SideChatRuntime | undefined;
   /** A stored side chat this panel has been asked to show. */
   openRequest?: SideChatOpenRequest | undefined;
   /**
@@ -121,7 +143,7 @@ interface SideChatViewProps {
   chatGroupId?: string | undefined;
 }
 
-export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSessionIdChange, onSessionClaim, chatGroupId }: SideChatViewProps) {
+export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSessionIdChange, onSessionClaim, chatGroupId, boundSurface, runtime }: SideChatViewProps) {
   const { t } = useTranslation();
   // If side chat is unavailable (preload without the surface), surface a stable
   // disabled state rather than a broken composer.
@@ -146,6 +168,8 @@ export function SideChatView({ api, openRequest, onSessionsChanged, shown = true
       onSessionIdChange={onSessionIdChange}
       onSessionClaim={onSessionClaim}
       chatGroupId={chatGroupId}
+      boundSurface={boundSurface}
+      runtime={runtime}
     />
   );
 }
@@ -159,9 +183,12 @@ function SideChatSession({
   onSessionIdChange,
   onSessionClaim,
   chatGroupId,
+  boundSurface,
+  runtime: runtimeProp,
 }: SideChatViewProps & { sideChat: NonNullable<AveApi["sideChat"]>; shown: boolean }) {
   const { t } = useTranslation();
   const chatContext = useOptionalChatContext();
+  const runtime: SideChatRuntime | null = runtimeProp ?? chatContext;
   // A side chat runs its own session; its approval cards belong in this panel,
   // which holds the claim while hidden as well as while shown.
   const approvals = useApprovalSurface();
@@ -279,8 +306,8 @@ function SideChatSession({
   // Side chat is a second ConversationLoop, not a second credential policy.
   // Read the app-level readiness contract so it cannot bypass a selected
   // subscription login that is still checking, signed out, or unsupported.
-  const hasApiKey = chatContext?.hasApiKey ?? null;
-  const subscriptionRuntimePolicy = chatContext?.subscriptionRuntimePolicy;
+  const hasApiKey = runtime?.hasApiKey ?? null;
+  const subscriptionRuntimePolicy = runtime?.subscriptionRuntimePolicy;
   const {
     runtimeImageAttachmentProvider,
     runtimeFileAttachmentProvider,
@@ -292,15 +319,15 @@ function SideChatSession({
     draftHasUnsupportedAttachment,
   } = resolveComposerRuntimeGates({
     subscriptionRuntimePolicy,
-    subscriptionImageAttachmentProvider: chatContext?.subscriptionImageAttachmentProvider,
-    subscriptionFileAttachmentProvider: chatContext?.subscriptionFileAttachmentProvider,
-    settingsLoaded: chatContext?.settingsLoaded,
-    subscriptionUnavailableProvider: chatContext?.subscriptionUnavailableProvider,
-    subscriptionPendingProvider: chatContext?.subscriptionPendingProvider,
+    subscriptionImageAttachmentProvider: runtime?.subscriptionImageAttachmentProvider,
+    subscriptionFileAttachmentProvider: runtime?.subscriptionFileAttachmentProvider,
+    settingsLoaded: runtime?.settingsLoaded,
+    subscriptionUnavailableProvider: runtime?.subscriptionUnavailableProvider,
+    subscriptionPendingProvider: runtime?.subscriptionPendingProvider,
     attachments,
-    llmVendor: chatContext?.llmVendor,
-    llmModel: chatContext?.llmModel,
-    llmRouteModalities: chatContext?.llmRouteModalities,
+    llmVendor: runtime?.llmVendor,
+    llmModel: runtime?.llmModel,
+    llmRouteModalities: runtime?.llmRouteModalities,
   });
   // The side loop runs no local slash commands, so a missing credential blocks
   // the field outright — there is no keyless "/" path to keep open.
@@ -336,13 +363,19 @@ function SideChatSession({
   // file — so it rides along on every send rather than on a separate call the
   // panel would have to know when to make.
   const originSessionId = chatContext?.currentSessionId;
+  // Named on every turn: a pane chat's tools act on its pane's tab.
+  const boundKind = boundSurface?.kind;
+  const boundTabId = boundSurface?.tabId;
   const handleAsk = useCallback(
     (
       text: string,
       _intent?: UserKeyboardIntentSnapshot,
       opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto" },
     ) => {
-      const origin = originSessionId ? { originSessionId } : {};
+      const origin = {
+        ...(originSessionId ? { originSessionId } : {}),
+        ...(boundKind !== undefined && boundTabId !== undefined ? { surface: { kind: boundKind, tabId: boundTabId } } : {}),
+      };
       const settle = (turn: Promise<void>) => turn.finally(() => void onSessionsChanged?.());
       if (opts?.inputOrigin === "queue-auto") {
         return settle(send(text, { injectHint: opts.injectHint, inputOrigin: "queue-auto", ...origin }));
@@ -356,7 +389,7 @@ function SideChatSession({
         ...origin,
       }));
     },
-    [send, attachments, originSessionId, onSessionsChanged],
+    [send, attachments, originSessionId, boundKind, boundTabId, onSessionsChanged],
   );
 
   // A stored side chat the sidebar asked this panel to show. Keyed on the
@@ -468,9 +501,9 @@ function SideChatSession({
             streaming={isStreaming}
             currentSessionId={sessionId ?? "side-chat"}
             turnSummaryByTurnStart={turnSummaryByTurnStart}
-            showTokenCostBadge={chatContext?.usageAvailable !== false}
+            showTokenCostBadge={runtime?.usageAvailable !== false}
             processingDisplayLevel={
-              chatContext?.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL
+              runtime?.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL
             }
           />
         )}
@@ -509,17 +542,17 @@ function SideChatSession({
             above the input box. `hasApiKey` is the app's readiness verdict, so a
             keyless-ready session never shows it and `null` (probe unresolved)
             stays silent. */}
-        {hasApiKey === false && chatContext ? (
+        {hasApiKey === false && runtime ? (
           <div className="mb-1.5 flex justify-end" data-testid="side-chat-api-key-chip-slot">
             <ComposerApiKeyChip
-              onOpenSettings={chatContext.onOpenSettings}
+              onOpenSettings={runtime.onOpenSettings}
               subscriptionRuntimePolicy={subscriptionRuntimePolicy}
-              subscriptionUnavailableProvider={chatContext.subscriptionUnavailableProvider}
-              subscriptionPendingProvider={chatContext.subscriptionPendingProvider}
+              subscriptionUnavailableProvider={runtime.subscriptionUnavailableProvider}
+              subscriptionPendingProvider={runtime.subscriptionPendingProvider}
             />
           </div>
         ) : null}
-        <ActiveSurfaceChip />
+        {boundSurface ? <BoundSurfaceChip surface={boundSurface} /> : null}
         <ComposerFrame>
           <Composer
             ref={composerRef}

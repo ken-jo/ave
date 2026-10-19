@@ -52,6 +52,7 @@ import {
 import { formatLlmStatusMessage } from "../../../lib/llm-status-message.js";
 import { detectFromStream } from "../../../lib/stream-markers.js";
 import type { UserContentPart } from "../../../engine/llm/types.js";
+import type { ActiveWorkspaceSurface } from "../../../shared/browser-surface.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { historyToEntries } from "../utils/history.js";
 import { isTurnStartEntry } from "../utils/classify-turn-entries.js";
@@ -71,6 +72,8 @@ interface SideChatSendOptions {
    * turn is still running, interrupts it first — the main composer's rule.
    */
   inputOrigin?: "queue-auto";
+  /** The pane tab this chat is bound to (a pane's own chat), named on every turn. */
+  surface?: ActiveWorkspaceSurface;
   /**
    * The conversation this side chat belongs to. Sent on every turn; the host
    * records it once, on the turn that first gives the side chat a file, and the
@@ -534,7 +537,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       // the transcript never hangs on a permanent spinner.
       let pendingSend: ReturnType<NonNullable<AveApi["sideChat"]>["send"]> | null = null;
       try {
-        pendingSend = api.sideChat.send(trimmed, opts?.attachments, opts?.originSessionId, sendRequestId);
+        pendingSend = api.sideChat.send(trimmed, opts?.attachments, opts?.originSessionId, sendRequestId, opts?.surface);
         pendingSendRef.current = pendingSend;
         const result = await pendingSend;
         if (sendGeneration !== sendGenerationRef.current) return;

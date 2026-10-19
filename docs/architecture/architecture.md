@@ -751,6 +751,17 @@ chat a file. The sidebar draws the row under that conversation. A side chat
 whose conversation is not in the list — a page that did not reach it, a
 conversation since deleted — is listed in its own right rather than dropped.
 
+A terminal or web pane opens the side chat in its own panel (the header's
+panel toggle), beside the page or terminal, bound to that pane's tab. Each turn
+sent there names the tab (`ave:sidechat:send` `surface`), and main records the
+binding for the side chat's session (`browserTabRegistry` bound conversation).
+The browser tools and `terminal_read` called without a tab id then act on that
+tab, and sub-agents inherit it through their hosting session; a bound tab that
+is gone, or of the other kind, is an error, never another tab. A turn sent from
+a conversation's side panel names no tab and releases the binding, so those
+tools fall back to the window's active surface. The pane chat claims its
+session's approval cards, so the window's lane does not draw them again.
+
 ## Extension Runtime
 
 Extension installation and runtime behavior are governed by manifest declarations,

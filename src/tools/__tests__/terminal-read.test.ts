@@ -175,7 +175,10 @@ describe("terminal_read", () => {
   it("defaults blockId/limit to the active terminal, marks it in the listing, and lets tabId win", async () => {
     register("terminal:1", trackerWith([{ command: "echo one", output: "one\n", exit: 0 }]));
     register("terminal:2", trackerWith([{ command: "echo two", output: "two\n", exit: 0 }]));
-    const withActive: TerminalReadToolDeps = { ...deps, activeTerminalTabId: (windowId) => (windowId === WINDOW ? "terminal:2" : undefined) };
+    const withActive: TerminalReadToolDeps = {
+      ...deps,
+      defaultTerminalTabId: (windowId, sessionId) => (windowId === WINDOW && sessionId === "main" ? "terminal:2" : undefined),
+    };
     const run = async (input: unknown) => {
       const result = await createTerminalReadTool(withActive).execute(input, ctx);
       return bodyOf(result.output as string, result.isError);

@@ -40,7 +40,14 @@ vi.mock("../../safe-send.js", () => ({
   }),
 }));
 
+// The window a sender belongs to: renderer contents with id 1 are window 7's.
+vi.mock("../../../main/app-state.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../main/app-state.js")>(),
+  mainWindowForContents: vi.fn((contents: { id?: number }) => (contents?.id === 1 ? { id: 7 } : null)),
+}));
+
 import { registerSideChatHandlers } from "../sidechat.js";
+import { browserTabRegistry } from "../../../main/browser/browser-tab-registry.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { deferred } from "../../../__tests__/test-helpers.js";
 
@@ -697,5 +704,43 @@ describe("side-chat parentage", () => {
     expect(result).toMatchObject({ ok: true });
     expect(side.runTurn).toHaveBeenCalledTimes(1);
     expect(store.saveSessionMetadata).not.toHaveBeenCalled();
+  });
+});
+
+describe("side-chat turns bound to a pane", () => {
+  const sessionId = "34fd6270-309d-4e47-878b-75c0742a6ac2";
+  beforeEach(() => browserTabRegistry.__reset());
+
+  it("binds the side chat's session to the pane tab its turn names, and releases it on an unbound turn", async () => {
+    register(makeSideLoop(), makeMainLoop());
+    const send = handlers.get(CHANNELS.sidechat.send)!;
+    await expect(send(ev("file:///index.html"), {
+      input: "fill the form", surface: { kind: "browser", tabId: "browser:pane" },
+    })).resolves.toMatchObject({ ok: true });
+    expect(browserTabRegistry.conversationSurface(7, sessionId)).toEqual({ kind: "browser", tabId: "browser:pane" });
+
+    await expect(send(ev("file:///index.html"), { input: "from the rail" })).resolves.toMatchObject({ ok: true });
+    expect(browserTabRegistry.conversationSurface(7, sessionId)).toBeUndefined();
+  });
+
+  it.each([
+    [{ kind: "window", tabId: "x" }],
+    [{ kind: "browser", tabId: "" }],
+    ["browser:pane"],
+  ])("refuses a malformed surface %j and runs no turn", async (surface) => {
+    const side = makeSideLoop();
+    register(side, makeMainLoop());
+    await expect(handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html"), { input: "x", surface }))
+      .resolves.toEqual({ ok: false, error: "invalid-surface" });
+    expect(side.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("refuses a surface from a sender that is no main window", async () => {
+    const side = makeSideLoop();
+    register(side, makeMainLoop());
+    await expect(handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 9), {
+      input: "x", surface: { kind: "terminal", tabId: "terminal:1" },
+    })).resolves.toEqual({ ok: false, error: "invalid-surface" });
+    expect(side.runTurn).not.toHaveBeenCalled();
   });
 });

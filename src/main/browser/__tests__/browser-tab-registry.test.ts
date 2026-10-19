@@ -360,3 +360,51 @@ describe("native injected touch attribution", () => {
     expect(signal.aborted).toBe(true);
   });
 });
+
+describe("a conversation bound to a pane's tab", () => {
+  function twoPages() {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "browser:pane", webContentsId: 11 });
+    registry.guestAttached(new FakeGuest(12), 1);
+    registry.bindTab(1, { tabId: "browser:side", webContentsId: 12 });
+    // The window's active surface is the OTHER page.
+    registry.setActiveSurface(1, { kind: "browser", tabId: "browser:side" });
+    return registry;
+  }
+
+  it("defaults its browser tools to the bound tab, not the window's active one", () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    expect(registry.defaultBrowserTab(1, "side-chat")).toEqual({ ok: true, handle: "tab-1" });
+    // An unbound conversation still follows the window's active surface.
+    expect(registry.defaultBrowserTab(1, "main")).toEqual({ ok: true, handle: "tab-2" });
+  });
+
+  it("fails clearly, never falling back to another tab, when the bound page is gone", () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    registry.guestDestroyed(11);
+    const result = registry.defaultBrowserTab(1, "side-chat");
+    expect(result.ok).toBe(false);
+    expect(result).toMatchObject({ error: expect.stringContaining("bound to is closed") });
+  });
+
+  it("has no default page for a chat bound to a terminal, and reads that terminal", () => {
+    const registry = twoPages();
+    registry.setActiveSurface(1, { kind: "terminal", tabId: "terminal:active" });
+    registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "terminal", tabId: "terminal:pane" } });
+    expect(registry.defaultBrowserTab(1, "side-chat")).toMatchObject({ ok: false, error: expect.stringContaining("bound to a terminal") });
+    expect(registry.defaultTerminalTabId(1, "side-chat")).toBe("terminal:pane");
+    expect(registry.defaultTerminalTabId(1, "main")).toBe("terminal:active");
+  });
+
+  it("is scoped to its window and released by an unbound turn", () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("side-chat", { windowId: 2, surface: { kind: "browser", tabId: "browser:pane" } });
+    expect(registry.conversationSurface(1, "side-chat")).toBeUndefined();
+    registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    registry.bindConversationSurface("side-chat", null);
+    expect(registry.defaultBrowserTab(1, "side-chat")).toEqual({ ok: true, handle: "tab-2" });
+  });
+});

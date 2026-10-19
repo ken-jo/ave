@@ -26,6 +26,12 @@
  *
  * ACTIVE SURFACE. Per window, the browser/terminal tab the user is looking at
  * — a hint tools default to when no tab is named, never an authority.
+ *
+ * BOUND CONVERSATION. A chat opened in a terminal or web pane's own panel is
+ * bound to that pane's tab: each of its turns names the tab, and its tools
+ * default to that tab instead of the window's active surface. A bound tab that
+ * is gone is an error, never a reason to act on another tab. Sub-agents reach
+ * the binding through their hosting conversation's session.
  */
 import type { WebContents } from "electron";
 import type {
@@ -72,6 +78,13 @@ export interface BrowserTabRendererLink {
   sendTabOp(windowId: number, request: BrowserTabOpRequest): boolean;
   sendControl(windowId: number, state: BrowserTabControlState): void;
 }
+
+/** The tab a conversation's browser tools act on when none is named — or why there is none. */
+export type DefaultBrowserTab =
+  | { readonly ok: true; readonly handle: string }
+  | { readonly ok: false; readonly error: string };
+
+const NO_SHOWN_BROWSER_TAB = "no browser tab is shown; pass a tabId from browser_tabs or open one with browser_tab_new";
 
 export type BrowserTabOpOutcome =
   | { readonly ok: true; readonly tabId: string }
@@ -122,6 +135,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   // A takeover before bind must also prevent a pending new-tab request from granting ownership later.
   private readonly userOwnedTabs = new Set<string>();
   private readonly activeSurface = new Map<number, ActiveWorkspaceSurface>();
+  private readonly boundSurface = new Map<string, { windowId: number; surface: ActiveWorkspaceSurface }>();
   private readonly pending = new Map<string, PendingTabOp>();
   private nextAttachment = 0;
   private readonly injectedTouches = new Map<number, { pressed: boolean; down: boolean; shown: boolean }>();
@@ -332,6 +346,57 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return tab && this.isLive(tab) ? tab.handle : undefined;
   }
 
+  // ── bound conversations ───────────────────────────────────────────────
+
+  /**
+   * Bind conversation `sessionId` to one tab of `windowId` (a pane's own chat),
+   * or release it (`null`: the conversation was driven from somewhere that is
+   * not bound to a pane).
+   */
+  bindConversationSurface(sessionId: string, binding: { windowId: number; surface: ActiveWorkspaceSurface } | null): void {
+    if (binding === null) this.boundSurface.delete(sessionId);
+    else this.boundSurface.set(sessionId, { windowId: binding.windowId, surface: { kind: binding.surface.kind, tabId: binding.surface.tabId } });
+  }
+
+  /** The surface conversation `sessionId` is bound to in `windowId`, if any. */
+  conversationSurface(windowId: number, sessionId: string): ActiveWorkspaceSurface | undefined {
+    const bound = this.boundSurface.get(sessionId);
+    return bound && bound.windowId === windowId ? bound.surface : undefined;
+  }
+
+  /**
+   * The tab a conversation's browser tools act on when the call names none: the
+   * tab its pane chat is bound to, else the window's active browser tab. A
+   * binding that cannot be honoured is an error, never another tab.
+   */
+  defaultBrowserTab(windowId: number, sessionId: string): DefaultBrowserTab {
+    const bound = this.conversationSurface(windowId, sessionId);
+    if (bound === undefined) {
+      const active = this.activeBrowserTab(windowId);
+      return active === undefined ? { ok: false, error: NO_SHOWN_BROWSER_TAB } : { ok: true, handle: active };
+    }
+    if (bound.kind !== "browser") {
+      return { ok: false, error: "this chat is bound to a terminal, not a page; pass a tabId from browser_tabs to act on a page" };
+    }
+    const handle = this.handleByWindowTab.get(windowTabKey(windowId, bound.tabId));
+    const tab = handle === undefined ? undefined : this.tabs.get(handle);
+    if (!tab || !this.isLive(tab)) {
+      return { ok: false, error: "the page this chat is bound to is closed or has not loaded; nothing was done" };
+    }
+    return { ok: true, handle: tab.handle };
+  }
+
+  /**
+   * The terminal a conversation's terminal tools read when the call names none:
+   * the terminal its pane chat is bound to, none for a chat bound to a page,
+   * else the window's active terminal.
+   */
+  defaultTerminalTabId(windowId: number, sessionId: string): string | undefined {
+    const bound = this.conversationSurface(windowId, sessionId);
+    if (bound !== undefined) return bound.kind === "terminal" ? bound.tabId : undefined;
+    return this.activeTerminalTabId(windowId);
+  }
+
   // ── lookups ────────────────────────────────────────────────────────────
 
   /** A live tab by handle, in any window. For approval hooks, which have no session. */
@@ -449,6 +514,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.handleByWindowTab.clear();
     this.userOwnedTabs.clear();
     this.activeSurface.clear();
+    this.boundSurface.clear();
     this.pending.clear();
     this.injectedTouches.clear();
     this.link = null;

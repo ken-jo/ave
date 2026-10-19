@@ -643,6 +643,8 @@ export type AveApi = {
       originSessionId?: string,
       /** Opaque correlation echoed in the user prelude and used for scoped cancellation. */
       sendRequestId?: string,
+      /** The pane tab a pane's own chat is bound to; its tools default to that tab. */
+      surface?: ActiveWorkspaceSurface,
     ) => Promise<
       | { ok: true; result: unknown }
       | { ok: false; error: string }
