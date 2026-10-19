@@ -12,7 +12,7 @@
  * the right commit — a confusing way to learn there was nothing to do.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
@@ -28,6 +28,7 @@ import {
   selectBaseCandidates,
 } from "../../scripts/hooks/pre-push-ref-updates.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
+import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
 const ZERO = "0".repeat(40);
 const SHA = "5e544ff8f30aa915be9e0d9e66db564cf1e192f4";
@@ -139,7 +140,7 @@ describe("new-branch base", () => {
     expect(isIntegrationBranchRef(ref)).toBe(expected);
   });
 
-  it("measures a sub-branch from its integration branch while the default tracking ref is stale", () => {
+  it("measures a sub-branch from its integration branch while the default tracking ref is stale", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "pre-push-base-")));
     const env = gitFixtureEnv(root);
     const git = (cwd: string, args: string[]) => execFileSync("git", ["-C", cwd, ...args], { env, encoding: "utf8" }).trim();
@@ -207,7 +208,7 @@ describe("new-branch base", () => {
         ref: "refs/heads/main", count: 1,
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      await cleanupTmpDir(root);
     }
   });
 
