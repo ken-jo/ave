@@ -11,6 +11,7 @@ import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-di
 import { parseTarListing } from "../shared/shell-tar-listing.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { classifySqliteArgumentSlots } from "./shell-sqlite-arguments.js";
+import { CURL_OPTION_TABLE, WGET_OPTION_TABLE, WGETRC_COMMAND_TABLE, type ShellOptionTable } from "./shell-option-tables.js";
 
 export type ShellPathPolicyViolationKind =
   | "dynamic-path"
@@ -290,17 +291,9 @@ const NON_PATH_OPERAND_SPECS: ReadonlyMap<string, NonPathOperandSpec> = new Map<
     firstPositionalIsProgram: true,
     programSuppliedBy: new Set(["-e", "--regexp", "-f", "--file"]),
   }] as [string, NonPathOperandSpec]),
-  ["curl", {
-    valueOptions: new Set(["-w", "--write-out", "-H", "--header", "-d", "--data", "--data-ascii", "--data-binary", "--json"]),
-    pathValueOptions: new Set(["-o", "--output", "-D", "--dump-header", "-K", "--config", "-c", "--cookie-jar", "-T", "--upload-file", "-b", "--cookie", "-E", "--cert"]),
-  }],
   ["sort", {
     valueOptions: new Set(["-k", "--key", "-t", "--field-separator", "-S", "--buffer-size"]),
     pathValueOptions: new Set(["-o", "--output", "-T", "--temporary-directory", "--files0-from"]),
-  }],
-  ["wget", {
-    valueOptions: new Set(["-U", "--user-agent", "--header", "--post-data"]),
-    pathValueOptions: new Set(["-O", "--output-document", "-o", "--output-file", "-a", "--append-output", "-P", "--directory-prefix", "-i", "--input-file", "--post-file"]),
   }],
   ...(["cp", "mv", "install", "ln"] as const).map((verb) => [verb, {
     valueOptions: new Set([
@@ -694,7 +687,7 @@ function classifyUvRunOperandSlots(argv: readonly string[]): OperandSlotClassifi
   }
 
   const childArgv = argv.slice(childIndex);
-  const childVerb = stripCommandPath(childHead).toLowerCase();
+  const childVerb = transferCommandVerb(childHead) ?? stripCommandPath(childHead).toLowerCase();
   const childSlots = classifyOperandSlots(childArgv);
   const programIndices = new Set<number>([childIndex]);
 
@@ -738,12 +731,196 @@ function classifyUvRunOperandSlots(argv: readonly string[]): OperandSlotClassifi
   };
 }
 
+function transferCommandVerb(head: string): "curl" | "wget" | null {
+  const leaf = stripCommandPath(head).toLowerCase();
+  const verb = process.platform === "win32" ? leaf.replace(/\.exe$/, "") : leaf;
+  return verb === "curl" || verb === "wget" ? verb : null;
+}
+
+function ambiguousTransferPath(): never {
+  throw new PathPolicyError({
+    kind: "invalid-path",
+    reason: "Shell path policy: ambiguous structured option path is not supported",
+  });
+}
+
+/** Split form delimiters without splitting quoted filenames or display names. */
+function splitFormValue(value: string, delimiter: string): string[] {
+  const parts: string[] = [];
+  let quoted = false;
+  let start = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i];
+    if (quoted && char === "\\" && /["\\]/.test(value[i + 1] ?? "")) {
+      i += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (!quoted && char === delimiter) {
+      parts.push(value.slice(start, i));
+      start = i + 1;
+    }
+  }
+  if (quoted) ambiguousTransferPath();
+  parts.push(value.slice(start));
+  return parts;
+}
+
+function decodeFormValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed.includes('"')) return trimmed;
+  if (!/^"(?:[^"\\]|\\.)*"$/.test(trimmed)) ambiguousTransferPath();
+  return trimmed.slice(1, -1).replace(/\\(["\\])/g, "$1");
+}
+
+/** Return only actual local references, never a display filename or payload. */
+function transferStructuredPaths(verb: string, option: string, value: string): string[] {
+  if (/[\0\r\n]/.test(value)) ambiguousTransferPath();
+  const file = (path: string): string[] => {
+    if (path.length === 0) ambiguousTransferPath();
+    return path === "-" ? [] : [path];
+  };
+  if (verb === "wget" && (option === "-e" || option === "--execute")) {
+    const match = /^\s*([a-z0-9_-]+)\s*=\s*(.*?)\s*$/i.exec(value);
+    if (!match) ambiguousTransferPath();
+    const name = match[1]!.replace(/[-_]/g, "").toLowerCase();
+    const normalize = (command: string): string => command.replaceAll("_", "");
+    if (WGETRC_COMMAND_TABLE.path.some(command => normalize(command) === name)) return file(match[2]!);
+    if (WGETRC_COMMAND_TABLE.data.some(command => normalize(command) === name)) return [];
+    if (WGETRC_COMMAND_TABLE.structured.some(command => normalize(command) === name)) {
+      return transferStructuredPaths(verb, "--pinnedpubkey", match[2]!);
+    }
+    return ambiguousTransferPath();
+  }
+  if (["--pinnedpubkey", "--proxy-pinnedpubkey"].includes(option)) {
+    return value.startsWith("sha256//") ? [] : file(value);
+  }
+  if (option === "--url") return value.startsWith("@") ? file(value.slice(1)) : operandPaths(value, false, verb);
+  if (["-F", "--form"].includes(option)) {
+    const equals = value.indexOf("=");
+    if (equals < 0) ambiguousTransferPath();
+    const parts = splitFormValue(value.slice(equals + 1), ";");
+    const content = parts[0]!;
+    // Nested multipart grammars are unsupported until their file roles are known.
+    if (/^[()]/.test(content)) ambiguousTransferPath();
+    const paths: string[] = [];
+    const fileContent = /^[<@]/.test(content);
+    if (fileContent) {
+      const files = content.startsWith("@") ? splitFormValue(content.slice(1), ",") : [content.slice(1)];
+      for (const path of files) paths.push(...file(decodeFormValue(path)));
+    }
+    for (const attribute of parts.slice(1)) {
+      // A comma after per-file attributes can introduce another upload. Refuse
+      // that grammar rather than treating a later filename as a media type.
+      if (fileContent && splitFormValue(attribute, ",").length !== 1) ambiguousTransferPath();
+      const match = /^(type|filename|headers|encoder)=(.*)$/.exec(attribute.trim());
+      if (!match) ambiguousTransferPath();
+      const attributeValue = decodeFormValue(match[2]!);
+      if (match[1] === "headers" && attributeValue.startsWith("@")) paths.push(...file(attributeValue.slice(1)));
+    }
+    return paths;
+  }
+  if (["-b", "--cookie"].includes(option)) return value === "" || value.includes("=") ? [] : file(value);
+  if (["-E", "--cert", "--proxy-cert"].includes(option)) {
+    let path = "";
+    for (let i = 0; i < value.length; i += 1) {
+      const char = value[i]!;
+      if (char === "\\" && /[:"\\]/.test(value[i + 1] ?? "")) {
+        path += value[++i]!;
+      } else if (char === ":" && !(i === 1 && /^[a-z]:/i.test(value))) {
+        break;
+      } else {
+        path += char;
+      }
+    }
+    return file(path);
+  }
+  if (["-z", "--time-cond"].includes(option)) return file(value.replace(/^-/, ""));
+  if (option === "--variable") {
+    // These grammars can resolve files or environment values at runtime.
+    return ambiguousTransferPath();
+  }
+  if (option === "--url-query" && value.startsWith("+")) return [];
+  if (["--data-urlencode", "--url-query"].includes(option)) {
+    const at = value.indexOf("@");
+    const equals = value.indexOf("=");
+    return at >= 0 && (equals < 0 || at < equals) ? file(value.slice(at + 1)) : [];
+  }
+  if (["-d", "--data", "--data-ascii", "--data-binary", "--json", "-w", "--write-out", "-H", "--header", "--proxy-header"].includes(option)) {
+    return value.startsWith("@") ? file(value.slice(1)) : [];
+  }
+  return ambiguousTransferPath();
+}
+
+function classifyTransferOperandSlots(argv: readonly string[], verb: string, table: ShellOptionTable): OperandSlotClassification {
+  const nonPathIndices = new Set<number>();
+  const programIndices = new Set<number>();
+  const extraCandidates: { value: string; index: number }[] = [];
+  let optionsEnded = false;
+  type OptionRole = keyof ShellOptionTable;
+  const roles = new Map<string, OptionRole>();
+  for (const role of ["flag", "data", "path", "structured"] as const) {
+    for (const option of table[role]) {
+      roles.set(option, role);
+      if (role === "flag" && option.startsWith("--")) {
+        roles.set(option.startsWith("--no-") ? `--${option.slice(5)}` : `--no-${option.slice(2)}`, role);
+      }
+    }
+  }
+  for (let i = 1; i < argv.length; i += 1) {
+    const token = argv[i]!;
+    if (!optionsEnded && token === "--") {
+      optionsEnded = true;
+      continue;
+    }
+    if (optionsEnded || !token.startsWith("-") || token === "-") continue;
+    const long = token.startsWith("--");
+    const equals = long ? token.indexOf("=") : -1;
+    const name = equals >= 0 ? token.slice(0, equals) : token;
+    // Expanded options resolve variables inside their values at runtime, which
+    // cannot inherit a literal data exemption from the corresponding option.
+    if (verb === "curl" && name.startsWith("--expand-")) ambiguousTransferPath();
+    let options = long || roles.has(token) ? [name] : [...token.slice(1)].map(letter => `-${letter}`);
+    if (long && !roles.has(name) && verb === "wget") {
+      // Long abbreviations have the same file authority as the full option.
+      const matches = [...roles.keys()].filter(option => option.startsWith(name));
+      if (matches.length === 1) options = matches;
+      else if (matches.length > 1) ambiguousTransferPath();
+    }
+    for (let j = 0; j < options.length; j += 1) {
+      const option = options[j]!;
+      const role = roles.get(option);
+      // Only a verified flag can advance the cluster cursor. Unknown arity
+      // leaves the token to operandPaths, which checks every possible suffix.
+      if (role === undefined) break;
+      if (role === "flag") {
+        if (equals >= 0 && (verb !== "wget" || !/^(on|off|yes|no|0|1)$/i.test(token.slice(equals + 1)))) ambiguousTransferPath();
+        if (j === options.length - 1) nonPathIndices.add(i);
+        continue;
+      }
+      const attached = long ? (equals >= 0 ? token.slice(equals + 1) : undefined) : token.slice(j + 2) || undefined;
+      const valueIndex = attached === undefined ? i + 1 : i;
+      const value = attached ?? argv[valueIndex];
+      if (value === undefined) ambiguousTransferPath();
+      // Upload filename globbing happens inside the transfer process, after
+      // shell expansion; a literal glob is not an exact filesystem authority.
+      if (verb === "curl" && ["-T", "--upload-file"].includes(option) && /[\[\]{}]/.test(value)) ambiguousTransferPath();
+      const paths = role === "path" ? [value] : role === "structured" ? transferStructuredPaths(verb, option, value) : [];
+      nonPathIndices.add(i);
+      nonPathIndices.add(valueIndex);
+      if (role === "structured") programIndices.add(valueIndex);
+      extraCandidates.push(...paths.map(path => ({ value: path, index: valueIndex })));
+      i = valueIndex;
+      // The first value option owns the entire suffix, even if it spells flags.
+      break;
+    }
+  }
+  return { nonPathIndices, programIndices, extraCandidates, nestedCommands: [], dynamicExecution: null };
+}
+
 /**
  * Read `argv` (`argv[0]` is the head verb) and say which slots are not paths,
  * plus any path recovered from inside one that is not.
- *
- * `--` ends option parsing, so everything after it is positional — which is how
- * `grep -- -pattern file` keeps naming its file.
+ * `--` ends option parsing, so everything after it is positional.
  */
 function classifyOperandSlots(argv: readonly string[]): OperandSlotClassification {
   const skip = new Set<number>();
@@ -755,7 +932,9 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
   const verbIndex = 0;
   const head = argv[verbIndex];
   if (head === undefined) return empty;
-  const verb = stripCommandPath(head).toLowerCase();
+  const verb = transferCommandVerb(head) ?? stripCommandPath(head).toLowerCase();
+  if (verb === "curl") return classifyTransferOperandSlots(argv, verb, CURL_OPTION_TABLE);
+  if (verb === "wget") return classifyTransferOperandSlots(argv, verb, WGET_OPTION_TABLE);
   if (verb === "uv") {
     const uvRun = classifyUvRunOperandSlots(argv);
     if (uvRun) return uvRun;
@@ -791,11 +970,6 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
    * slot usually holds code.
    */
   const exempts = (value: string, index: number, option?: string): boolean => {
-    // Only these documented curl payload slots interpret @ as file contents.
-    if (verb === "curl" && isFileSigilValue(value)) {
-      if (value !== "@-") extraCandidates.push({ value: value.slice(1), index });
-      return true;
-    }
     if (verb === "openssl" && option && OPENSSL_PASSPHRASE_OPTIONS.has(option) && value.startsWith("file:")) {
       extraCandidates.push({ value: value.slice(5), index });
       return true;
@@ -1054,11 +1228,6 @@ function readOptionValue(
   return null;
 }
 
-/** True when a value carries the `@`-prefixed "contents of this file" sigil. */
-function isFileSigilValue(value: string): boolean {
-  return value.startsWith("@") && value.length > 1;
-}
-
 function buildRecursiveBlockMessage(
   commandToken: string,
   commandName: string,
@@ -1150,7 +1319,7 @@ export function findShellPathPolicyViolation(
         inspectEmbeddedShellPrograms(event, outerSlots);
         return;
       }
-      const verb = stripCommandPath(head);
+      const verb = transferCommandVerb(head) ?? stripCommandPath(head);
       if (event.functionCall) return;
       // The state owner checks cd's destination using its -L/-P semantics.
       // Builtin exit consumes status data, including an unknown status value.
