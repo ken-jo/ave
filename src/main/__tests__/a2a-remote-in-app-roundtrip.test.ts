@@ -182,6 +182,8 @@ class LifecycleRunner implements A2ASubAgentLifecycleRunner {
   private readonly snapshots = new Map<string, A2AWireRunSnapshot>();
   private readonly pending = new Map<string, (value: SubAgentSpawnResult) => void>();
 
+  constructor(private readonly createChildSessionId: () => string = randomUUID) {}
+
   private set(childSessionId: string, taskState: A2AWireRunSnapshot["taskState"], extra: Partial<A2AWireRunSnapshot> = {}): void {
     this.snapshots.set(childSessionId, { childSessionId, title: "Remote peer", taskState, ...extra });
   }
@@ -194,7 +196,7 @@ class LifecycleRunner implements A2ASubAgentLifecycleRunner {
     this.counts.spawns += 1;
     const prompt = String(request.messageText);
     this.prompts.push(prompt);
-    const childSessionId = randomUUID();
+    const childSessionId = this.createChildSessionId();
     this.set(childSessionId, A2ATaskState.WORKING);
     await callbacks.onDurablyLinked({ childSessionId });
     if (prompt.startsWith("complete:")) {
@@ -499,9 +501,10 @@ async function world(options: {
   bearer?: string;
   controlPlane?: (revision: number) => A2ARouteSnapshot;
   dnsAnswer?: { address: string; family: 4 | 6 };
+  createChildSessionId?: () => string;
 } = {}) {
-  const { dnsAnswer = { address: PINNED_PUBLIC_ADDRESS, family: 4 }, ...callerOptions } = options;
-  const receiverState = { remote: memoryNamespace(), tasks: memoryNamespace(), runner: new LifecycleRunner() };
+  const { dnsAnswer = { address: PINNED_PUBLIC_ADDRESS, family: 4 }, createChildSessionId, ...callerOptions } = options;
+  const receiverState = { remote: memoryNamespace(), tasks: memoryNamespace(), runner: new LifecycleRunner(createChildSessionId) };
   let receiver = await startReceiver(receiverState);
   cleanups.push(async () => { await receiver.dispose(); });
   const observed: ObservedRequest[] = [];
@@ -596,10 +599,31 @@ describe("A2A agent-to-agent messaging between two in-app Ave hosts", () => {
     expect(dropped(w.receiver)).toEqual([]);
   });
 
-  it("answers an INPUT_REQUIRED question by continuation and cancels a working task", async () => {
-    const w = await world();
-    const asked = taskOf(await w.outbound.client.execute(initialSend("ask", "ask: which branch should I use?")));
+  it.each(["random UUIDs", "phone-pattern UUIDs"])("answers an INPUT_REQUIRED question by continuation and cancels a working task with %s", async (identityKind) => {
+    const childSessionIds = [
+      "aaaaaaaa-aaaa-4aaa-8aaa-010123456789",
+      "bbbbbbbb-bbbb-4bbb-8bbb-010987654321",
+    ];
+    let childSessionIndex = 0;
+    const w = await world(identityKind === "phone-pattern UUIDs"
+      ? { createChildSessionId: () => childSessionIds[childSessionIndex++]! }
+      : {});
+    const asked = taskOf(await w.outbound.client.execute(initialSend("ask", "ask: which branch should I use? Call 010-1234-5678.")));
     expect(asked.status.state).toBe(A2ATaskState.INPUT_REQUIRED);
+    expect(w.receiver.runner.prompts).toEqual(["ask: which branch should I use? Call 010-****-****."]);
+
+    const read = await w.outbound.client.execute({
+      operationId: "ask-get",
+      attemptId: "ask-get-attempt-1",
+      operation: "get",
+      authorization: { ...authorization, taskId: asked.id, contextId: asked.contextId },
+      lineage,
+      intendedCredentialRevisionId: 11,
+      request: { id: 2, method: A2AJsonRpcMethod.GET_TASK, params: { id: asked.id, historyLength: 0 } },
+    });
+    expect(read.ok).toBe(true);
+    expect(read.ok && (read.result as { status: { state: string } }).status.state)
+      .toBe(A2ATaskState.INPUT_REQUIRED);
 
     const answered = await w.outbound.client.execute({
       operationId: "ask-continue",
@@ -646,7 +670,7 @@ describe("A2A agent-to-agent messaging between two in-app Ave hosts", () => {
     expect(w.receiver.approvals).toHaveLength(4);
     // Only the two initial sends activated exact replay.
     expect(w.observed.map((entry) => entry.headers["a2a-extensions"] ?? null)).toEqual([
-      A2A_EXACT_SEND_REPLAY_URI, null, A2A_EXACT_SEND_REPLAY_URI, null,
+      A2A_EXACT_SEND_REPLAY_URI, null, null, A2A_EXACT_SEND_REPLAY_URI, null,
     ]);
     expect(dropped(w.receiver)).toEqual([]);
   });

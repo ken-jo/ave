@@ -6,8 +6,8 @@ import { join, sep } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InputClassifier } from "../../core/input-classifier.js";
-import { maskSensitiveData } from "../../shared/dlp.js";
-import { createDlpSafeUuid } from "../../shared/dlp-safe-id.js";
+import { createDlpSafeUuid, isSafeStructuralId } from "../../shared/dlp-safe-id.js";
+import * as structuralIds from "../../shared/dlp-safe-id.js";
 import { RouteEngine } from "../../core/route-engine.js";
 import { MemoryManager, type SessionMetadata,
 } from "../../memory/memory-manager.js";
@@ -262,7 +262,12 @@ describe("SubAgentRunner A2A wire security contract", () => {
     expect(runTurn).not.toHaveBeenCalled();
   });
 
-  it("orders durable metadata/link observers before the fixed wire provider provenance", async () => {
+  it.each(["random UUIDs", "phone-pattern UUIDs"])("orders durable metadata/link observers before provider work with %s", async (identityKind) => {
+    if (identityKind === "phone-pattern UUIDs") {
+      vi.spyOn(structuralIds, "createNamespacedSessionId").mockImplementation(
+        (kind, tag) => `${kind}-${tag}-aaaaaaaa-aaaa-4aaa-8aaa-010123456789`,
+      );
+    }
     const events: string[] = [];
     const binding = makeBinding();
     const originalSave = store.saveSessionMetadata.bind(store);
@@ -306,12 +311,12 @@ describe("SubAgentRunner A2A wire security contract", () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(maskSensitiveData(result.childSessionId).detections).toEqual([]);
+    expect(isSafeStructuralId(result.childSessionId)).toBe(true);
     const metadata = store.loadSessionMetadata(result.childSessionId);
     expect(metadata?.a2aWireInternalOrigin).toMatch(/^a2a-wire-[0-9a-f]{8}-/);
     expect(
-      maskSensitiveData(metadata?.a2aWireInternalOrigin ?? "").detections,
-    ).toEqual([]);
+      isSafeStructuralId(metadata?.a2aWireInternalOrigin),
+    ).toBe(true);
     expect(events.slice(0, 4)).toEqual([
       "metadata",
       "barrier",
