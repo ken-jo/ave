@@ -1,12 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SandboxManager, type SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
-import { connect, createServer, type AddressInfo, type Socket } from "node:net";
+import { connect, createServer, Server, Socket, type AddressInfo } from "node:net";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createEgressAskCallback, type EgressApprovalAnswer, type EgressApprovalRequest } from "../egress-ask.js";
 import { EgressGrantStore, type EgressGrantSubject } from "../egress-grants.js";
+import { DEFAULT_WINDOWS_PROXY_PORT_RANGE, getVendoredSrtWinExePath } from "../asrt-sandbox.js";
 import type { EgressInvocationOwner } from "../egress-invocations.js";
 import { createUpstreamProxyRouter } from "../upstream-proxy.js";
 import { DEFAULT_UPSTREAM_PROXY, type UpstreamProxySettings } from "../../shared/upstream-proxy.js";
@@ -34,7 +35,7 @@ const GRANT_CASES = [
 const directories: string[] = [];
 
 beforeEach(async (context) => {
-  if (!(await sandboxCasesRun())) context.skip("sandbox backend is unavailable");
+  if (process.platform !== "win32" && !(await sandboxCasesRun())) context.skip("sandbox backend is unavailable");
 });
 
 afterEach(async () => {
@@ -157,7 +158,43 @@ function routingFixture(port: number, initialMode: "off" | "manual" = "off") {
   };
 }
 
-describe("egress grant class across route replanning", () => {
+// The listener rejects Windows before sandbox initialization, so this contract
+// does not require a live sandbox backend.
+describe.runIf(process.platform === "win32")("egress grant class on Windows without a listener lane", () => {
+  async function expectListenerRefusalWithoutNetworkActivity() {
+    const listenSpy = vi.spyOn(Server.prototype, "listen");
+    const connectSpy = vi.spyOn(Socket.prototype, "connect");
+    try {
+      await expect(SandboxManager.openInvocationListener(TOKEN)).rejects.toThrow(/not supported on windows/);
+      expect(listenSpy).not.toHaveBeenCalled();
+      expect(connectSpy).not.toHaveBeenCalled();
+    } finally {
+      listenSpy.mockRestore();
+      connectSpy.mockRestore();
+    }
+  }
+
+  it("refuses to bind or connect before sandbox initialization", async () => {
+    await expectListenerRefusalWithoutNetworkActivity();
+  });
+
+  it("refuses to open a per-invocation listener and asks nothing", async (context) => {
+    if (!(await sandboxCasesRun())) context.skip("sandbox backend is unavailable");
+    let asked = 0;
+    await SandboxManager.initialize({
+      network: { allowedDomains: [], deniedDomains: [] },
+      filesystem: { denyRead: [], allowWrite: [], denyWrite: [] },
+      windows: {
+        srtWin: { path: getVendoredSrtWinExePath() },
+        proxyPortRange: [...DEFAULT_WINDOWS_PROXY_PORT_RANGE] as [number, number],
+      },
+    }, async () => { asked += 1; return true; });
+    await expectListenerRefusalWithoutNetworkActivity();
+    expect(asked).toBe(0);
+  });
+});
+
+describe.runIf(process.platform !== "win32")("egress grant class across route replanning", () => {
   it.each(GRANT_CASES)("asks the requester before $origin $scope becomes unverified", async ({ origin, scope }) => {
     const approval = approvalFixture(origin);
     const upstream = await recordingUpstream();

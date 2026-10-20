@@ -34,6 +34,17 @@ import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 
+vi.mock("../../lib/shell-resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/shell-resolver.js")>();
+  const shell = actual.resolveShell("bash");
+  // Platform policy cases do not probe interpreters for the simulated host.
+  return {
+    ...actual,
+    resolveShell: () => shell,
+    getBashCapabilities: () => ({ unicodeEscapes: true, prefixAssignmentRhs: "incoming" as const }),
+  };
+});
+
 function shellProbe(execute: (ctx: import("../types.js").ToolExecutionContext) => void): Tool {
   const tool = new BashTool();
   vi.spyOn(tool, "execute").mockImplementation(async (_input, ctx) => {

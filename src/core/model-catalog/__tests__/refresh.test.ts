@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 /**
  * The model catalog refresh and the boot selection it feeds (design §7),
  * offline: the transport is a fixture, DNS answers a public address, and the
@@ -425,7 +426,7 @@ describe("selectBootModelCatalog", () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
-  it.each(["current.json", "entry"])("refuses a linked cache %s", async (name) => {
+  it.skipIf(!canCreateSymlinks()).each(["current.json", "entry"])("refuses a linked cache %s", async (name) => {
     const sha256 = await seedGoodCopy();
     const path = join(dir, name === "entry" ? `${sha256}.json` : name);
     const external = join(dir, "outside.json");
@@ -435,14 +436,14 @@ describe("selectBootModelCatalog", () => {
     expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "bundled" });
   });
 
-  it("refuses a linked cache directory", async () => {
+  it.skipIf(!canCreateSymlinks())("refuses a linked cache directory", async () => {
     await seedGoodCopy();
     const linked = join(dir, "linked");
     symlinkSync(dir, linked, "dir");
     expect(await selectBootModelCatalog({ env: {}, dir: linked, loadBundled })).toMatchObject({ origin: "bundled" });
   });
 
-  it("refuses to publish through a linked cache parent", async () => {
+  it.skipIf(!canCreateSymlinks())("refuses to publish through a linked cache parent", async () => {
     const home = join(dir, "home");
     const outside = join(dir, "outside");
     mkdirSync(home);

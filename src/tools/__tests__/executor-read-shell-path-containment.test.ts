@@ -82,7 +82,7 @@ async function runPluginCommand(
 
 describe("ToolExecutor — shell path containment runs for read-classified commands", () => {
   it("blocks a sensitive-path operand on a command the host classifies as read", async () => {
-    const command = `cat ${join(homedir(), ".ssh", "id_rsa")}`;
+    const command = `cat ${join(homedir(), ".ssh", "id_rsa").replaceAll("\\", "/")}`;
     // Precondition: this really is a `read` verdict — the gate is not being
     // exercised through the old `category === "shell"` branch.
     expect(inspectHostRisk({ source: "plugin", finalInput: { command } })).toBe("read");
@@ -98,7 +98,7 @@ describe("ToolExecutor — shell path containment runs for read-classified comma
   it("blocks a command carried by a non-primary field (script) too", async () => {
     const result = await runPluginCommand({
       command: "cat ./notes.txt",
-      script: `cat ${join(homedir(), ".ssh", "id_rsa")}`,
+      script: `cat ${join(homedir(), ".ssh", "id_rsa").replaceAll("\\", "/")}`,
     });
     expect(result.isError).toBe(true);
     expect(result.content).toContain("Sensitive path");

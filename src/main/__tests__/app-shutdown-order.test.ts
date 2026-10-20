@@ -534,7 +534,7 @@ describe("before-quit listener inventory", () => {
       /\bapp\s*\.\s*(?:on|once|addListener|prependListener|prependOnceListener)\s*\(\s*"before-quit"/u;
     const found = collectSourceFiles(srcRoot, [])
       .filter((file) => registration.test(readFileSync(file, "utf-8")))
-      .map((file) => relative(process.cwd(), file))
+      .map((file) => relative(process.cwd(), file).replaceAll("\\", "/"))
       .sort();
 
     const allowed = [...ALLOWED_LISTENER_FILES.keys()].sort();

@@ -1408,7 +1408,18 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       };
     }
 
-    const resolvedCwd = resolveHostShellWorkingDirectory(ctx.cwd, input.cwd);
+    let resolvedCwd: string;
+    try {
+      if (isWorkloadBrokerActive()) {
+        const runtime = await import("../workload/runtime.js");
+        const capability = await runtime.acquireBrokeredWorkloadCapability(ctx.abortSignal);
+        resolvedCwd = runtime.resolveBrokeredWorkloadPath(capability, input.cwd ?? ".");
+      } else {
+        resolvedCwd = resolveHostShellWorkingDirectory(ctx.cwd, input.cwd);
+      }
+    } catch (error) {
+      return brokerFailureResult(error);
+    }
     // §691: the executor seals the host-shell substrate before permission
     // routing. The supplied plan must come from the live host provider; a
     // structural lookalike cannot downgrade an active ASRT route to plain spawn.
@@ -2094,6 +2105,7 @@ export async function spawnWithSandbox(
     try {
       assertManagedChildProcessAdmissionOpen("tool:bash:asrt");
       child = spawn(cmd, args, {
+        windowsHide: true,
         detached: process.platform !== "win32",
         cwd: resolvedCwd,
         stdio: ["ignore", "pipe", "pipe"],
@@ -2205,6 +2217,7 @@ async function spawnWithTimeout(
     signal?.throwIfAborted();
     assertManagedChildProcessAdmissionOpen("tool:bash");
     const child = spawn(shell.cmd, [...argv], {
+      windowsHide: true,
       detached: process.platform !== "win32",
       cwd,
       stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
@@ -3033,6 +3046,7 @@ async function parsePowerShellAst(command: string): Promise<PowerShellAstSummary
       executable,
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", POWER_SHELL_AST_PARSER],
       {
+        windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
         env: buildSafeChildEnv(),
       },
@@ -3223,6 +3237,7 @@ async function spawnPowerShellWithSandbox(
     try {
       assertManagedChildProcessAdmissionOpen("tool:powershell:asrt");
       child = spawn(cmd, args, {
+        windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
@@ -3320,6 +3335,7 @@ async function spawnPowerShell(
       executable,
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", (prelude ?? "") + command],
       {
+        windowsHide: true,
         detached: process.platform !== "win32",
         cwd,
         stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],

@@ -108,7 +108,7 @@ describe("ToolExecutor background shell session control", () => {
     "still applies containment when a session-control call carries %s",
     async (field) => {
       const result = await kill("owner", {
-        [field]: `cat ${join(homedir(), ".ssh", "id_rsa")}`,
+        [field]: `cat ${join(homedir(), ".ssh", "id_rsa").replaceAll("\\", "/")}`,
       });
 
       expect(result.is_error).toBe(true);

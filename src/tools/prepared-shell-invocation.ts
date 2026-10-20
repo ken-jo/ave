@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { getBashCapabilities, resolveShell, shellEnvForChild, shellPathForHostPath, shellQuote, type ResolvedShellCommand } from "../lib/shell-resolver.js";
 import { createSandboxProcessHome, type SandboxProcessHome } from "../permissions/sandbox-process-home.js";
@@ -48,8 +48,9 @@ export function prepareShellInvocation(identity: ShellInvocationIdentity, signal
   try {
     if (identity.plan.mode === "asrt") {
       home = createSandboxProcessHome();
-      const temporary = join(home.path, "tmp");
-      mkdirSync(temporary, { mode: 0o700 });
+      // The profile may already own a temp root. Atomically create our own
+      // directory rather than trusting any existing entry at a fixed name.
+      const temporary = mkdtempSync(join(home.path, "shell-tmp-"));
       Object.assign(safe, home.env, { TMPDIR: temporary, TMP: temporary, TEMP: temporary });
     }
     // Bash initializes PWD from its actual cwd. Pin the same initial value for

@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -35,7 +36,7 @@ describe("shared execute-time file gate", () => {
     }
   });
 
-  it("reuses canonical ancestor and sensitive-target policy", async () => {
+  it.skipIf(!canCreateSymlinks())("reuses canonical ancestor and sensitive-target policy", async () => {
     const alias = join(root, "alias");
     await symlink(context.cwd, alias);
     expect(ensureFileAccess(join(alias, "new.bin"), context, "write")).toBeNull();

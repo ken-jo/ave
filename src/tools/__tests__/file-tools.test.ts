@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
@@ -1003,7 +1004,7 @@ describe("apply_patch tool", () => {
     expect(existsSync(join(workDir, "README.md"))).toBe(true);
   });
 
-  it("refuses two sections that reach one file through a symlink", async () => {
+  it.skipIf(!canCreateSymlinks())("refuses two sections that reach one file through a symlink", async () => {
     await readFirst("src/a.ts");
     symlinkSync(join(workDir, "src", "a.ts"), join(workDir, "alias.ts"));
     const result = await new ApplyPatchTool().execute(patchOf(

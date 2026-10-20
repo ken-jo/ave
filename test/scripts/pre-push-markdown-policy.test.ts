@@ -11,6 +11,7 @@ import {
 import { checkPushedDocumentation } from "../../scripts/hooks/pre-push-document-safety.mjs";
 import { packagedDocumentInputs } from "../../scripts/lib/document-consumer-guard.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
+import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
 const root = resolve(import.meta.dirname, "../..");
 const inventory = JSON.parse(readFileSync(resolve(root, "scripts/hooks/documentation-references.json"), "utf8")) as {
@@ -18,7 +19,7 @@ const inventory = JSON.parse(readFileSync(resolve(root, "scripts/hooks/documenta
   referencedOnly: string[];
   readers: Record<string, string[]>;
 };
-const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], {
+const git = (...args: string[]) => execFileSync("git", ["-c", `safe.directory=${root.replaceAll("\\", "/")}`, "-C", root, ...args], {
   encoding: "utf8", env: gitFixtureEnv(root),
 });
 const fixtureGit = (repo: string, args: string[], source = process.env) =>
@@ -149,7 +150,7 @@ describe("documentation impact policy", () => {
     }
   });
 
-  it("uses the same policy for the Git diff command", () => {
+  it("uses the same policy for the Git diff command", async () => {
     const repo = mkdtempSync(join(tmpdir(), "docs-impact-"));
     const cli = resolve(root, "scripts/hooks/classify-docs-diff.mjs");
     const runGit = (...args: string[]) => fixtureGit(repo, args);
@@ -193,11 +194,11 @@ describe("documentation impact policy", () => {
         expect(fixtureCli(repo, cli, executableBase)).toBe("docs_only=false\n");
       }
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      await cleanupTmpDir(repo);
     }
   });
 
-  it("checks committed documentation even with an empty index", () => {
+  it("checks committed documentation even with an empty index", async () => {
     const repo = mkdtempSync(join(tmpdir(), "pushed-doc-safety-"));
     const runGit = (...args: string[]) => fixtureGit(repo, args);
     try {
@@ -221,11 +222,11 @@ describe("documentation impact policy", () => {
       expect(() => checkPushedDocumentation(repo, [{ baseSha: whitespaceSha, localSha: markerSha, path: "docs/guide.md" }]))
         .toThrow(/merge marker|pushed diff failed/);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      await cleanupTmpDir(repo);
     }
   });
 
-  it("keeps hook Git overrides away from fixture refs, index, and config", () => {
+  it("keeps hook Git overrides away from fixture refs, index, and config", async () => {
     const directory = mkdtempSync(join(tmpdir(), "git-fixture-isolation-"));
     const sentinel = join(directory, "sentinel");
     const fixture = join(directory, "fixture");
@@ -283,7 +284,7 @@ describe("documentation impact policy", () => {
         expect(metadata()).toEqual(before);
       }
     } finally {
-      rmSync(directory, { recursive: true, force: true });
+      await cleanupTmpDir(directory);
     }
   });
 
@@ -321,7 +322,7 @@ describe("documentation impact policy", () => {
     }
   });
 
-  it("runs the full CI suite for pushes and fails closed on missing PR bases", () => {
+  it("runs the full CI suite for pushes and fails closed on missing PR bases", async () => {
     const repo = mkdtempSync(join(tmpdir(), "docs-ci-event-"));
     const cli = resolve(root, "scripts/hooks/classify-docs-diff.mjs");
     try {
@@ -363,7 +364,7 @@ describe("documentation impact policy", () => {
       expect(workflow.match(/EVENT_NAME: \$\{\{ github\.event_name \}\}/g)).toHaveLength(jobs);
       expect(workflow.match(/classify-docs-diff\.mjs "\$BASE_SHA" HEAD "\$EVENT_NAME"/g)).toHaveLength(jobs);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      await cleanupTmpDir(repo);
     }
   });
 

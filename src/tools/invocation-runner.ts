@@ -972,7 +972,11 @@ export async function runToolInvocation(
         legacyPlan: hostShellExecutionPlan,
         toolName: hostShellToolName,
         command: hostShellInput.command,
-        cwd: resolveHostShellWorkingDirectory(executionCwd, hostShellInput.cwd),
+        cwd: brokeredWorkloadCapability === null
+          ? resolveHostShellWorkingDirectory(executionCwd, hostShellInput.cwd)
+          : (await import("../workload/runtime.js")).resolveBrokeredWorkloadPath(
+              brokeredWorkloadCapability, hostShellInput.cwd ?? ".",
+            ),
         unresolvedRequirementKind,
         timeoutSeconds: hostShellInput.timeoutSeconds,
         background: hostShellInput.runInBackground,

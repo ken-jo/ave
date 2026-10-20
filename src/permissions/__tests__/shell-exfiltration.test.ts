@@ -430,7 +430,7 @@ describe("security review: the floor does not depend on which command reads", ()
   });
 
   it("a glob reaches a sensitive name only when it exists there, a brace always", () => {
-    const home = mkdtempSync(join(tmpdir(), "ave-glob-"));
+    const home = mkdtempSync(join(tmpdir(), "ave-glob-")).replaceAll("\\", "/");
     try {
       mkdirSync(join(home, ".ssh"));
       writeFileSync(join(home, ".ssh", "config"), "");

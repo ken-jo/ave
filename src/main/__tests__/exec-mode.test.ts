@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 /**
  * Headless one-shot CLI: flag parsing, the stdout contract, the auto-deny
  * approval policy, and the exit-code mapping.
@@ -9,7 +10,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 
 import {
@@ -340,13 +341,14 @@ describe("parseExecFlags", () => {
   });
 
   it("accepts a paired workload broker and defers guest cwd host stat", () => {
+    const cwd = resolve(LAUNCH_CWD, "unmounted-workload");
     const request = expectRequest(parseExecFlags([
       "--exec=hi",
-      "--exec-cwd=/app",
+      `--exec-cwd=${cwd}`,
       "--exec-workload-broker=/run/ave/workload.sock",
       "--exec-workload-capability=/run/ave/capability.json",
     ], LAUNCH_CWD));
-    expect(request.turn?.cwd).toBe("/app");
+    expect(request.turn?.cwd).toBe(cwd);
     expect(request.workloadBroker).toEqual({
       socketPath: "/run/ave/workload.sock",
       capabilityPath: "/run/ave/capability.json",
@@ -673,7 +675,7 @@ describe("runExecTurn — headless approvals", () => {
     expect(harness.stderr.text()).toContain("did not bind to the requested project root");
   });
 
-  it("accepts a default-root alias that the session bound as the canonical default", async () => {
+  it.skipIf(!canCreateSymlinks())("accepts a default-root alias that the session bound as the canonical default", async () => {
     const root = mkdtempSync(join(tmpdir(), "ave-exec-alias-"));
     try {
       const alias = join(root, "workspace-link");

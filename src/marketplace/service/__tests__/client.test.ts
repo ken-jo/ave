@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 /**
  * The service endpoint (design §11): base resolution, the one-move rule, the
  * document's same-origin paths, the policy override, and announcements.
@@ -113,10 +114,10 @@ describe("readPolicyServiceBase", () => {
   it("throws on an ENOTDIR policy path instead of falling back to the public base", async () => {
     const parent = join(dir, "admin");
     writeFileSync(parent, "not a directory");
-    await expect(readPolicyServiceBase(join(parent, "policy.json"))).rejects.toMatchObject({ code: "ENOTDIR" });
+    await expect(readPolicyServiceBase(join(parent, "policy.json"))).rejects.toMatchObject({ code: process.platform === "win32" ? "ENOENT" : "ENOTDIR" });
   });
 
-  it("throws on a dangling policy symlink instead of falling back to the public base", async () => {
+  it.skipIf(!canCreateSymlinks())("throws on a dangling policy symlink instead of falling back to the public base", async () => {
     const path = join(dir, "policy.json");
     symlinkSync(join(dir, "missing-target.json"), path, "file");
     await expect(readPolicyServiceBase(path)).rejects.toMatchObject({ code: "ENOENT" });

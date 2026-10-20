@@ -69,6 +69,7 @@ import {
   parsePrePushUpdates,
   parseRemoteHeads,
   readPrePushInput,
+  resolveHeadUpdates,
   selectBaseCandidates,
 } from "./pre-push-ref-updates.mjs";
 import { checkPushedDocumentation } from "./pre-push-document-safety.mjs";
@@ -183,6 +184,14 @@ function capture(cmd, args, cwd, env = process.env) {
     throw new Error(stderr || `${cmd} ${args.join(" ")} failed`);
   }
   return (result.stdout || "").trim();
+}
+
+/** The branch HEAD names and its tip, or null for a detached HEAD. */
+function headBranch(repoRoot) {
+  const ref = captureOptional("git", ["symbolic-ref", "-q", "HEAD"], repoRoot);
+  if (!ref) return null;
+  const sha = captureOptional("git", ["rev-parse", "--verify", "-q", `${ref}^{commit}`], repoRoot);
+  return sha ? { ref, sha } : null;
 }
 
 function captureOptional(cmd, args, cwd) {
@@ -1115,7 +1124,9 @@ function runAppCommentOnlyChecks(dir) {
 const { stage, repo, remote, remoteLocation } = parseArgs(process.argv.slice(2));
 const repoRoot = resolve(repo);
 const prePushUpdates =
-  stage === "pre-push" ? parsePrePushUpdates(readPrePushInput()) : null;
+  stage === "pre-push"
+    ? resolveHeadUpdates(parsePrePushUpdates(readPrePushInput()), () => headBranch(repoRoot))
+    : null;
 let pushCheckout;
 if (stage === "pre-push") {
   runPushPolicyChecks(repoRoot, prePushUpdates);

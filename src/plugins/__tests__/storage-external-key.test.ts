@@ -19,7 +19,8 @@ beforeEach(() => {
 });
 afterEach(async () => cleanupTmpDir(root));
 
-describe("plugin storage with a configured external key", () => {
+// External key protection requires POSIX ownership and no-follow file opens.
+describe.skipIf(process.platform === "win32")("plugin storage with a configured external key", () => {
   it("round-trips real ciphertext and refuses wrong-key replacement without changing stored bytes", async () => {
     const encryption = createNodeSecretEncryption(keyFile);
     const storage = createPluginStorage("sample", dataDir, encryption);

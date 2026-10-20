@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 /**
  * The boot sweep refuses, in a test process, a sandbox root inside the
  * developer's real `~/.ave` (other than `test-tmp`): what is there belongs to a
@@ -82,7 +83,7 @@ describe("the sandbox sweep in a test process", () => {
     expectNothingRemoved();
   });
 
-  it("refuses a root named by its real path when HOME is reached through a link", async () => {
+  it.skipIf(!canCreateSymlinks())("refuses a root named by its real path when HOME is reached through a link", async () => {
     // HOME is `<link>`, which resolves to the planted home: `/tmp/<x>` against
     // `/private/tmp/<x>` on macOS, here made explicit on every platform.
     const links = mkdtempSync(join(tmpdir(), "ave-sweep-guard-link-"));

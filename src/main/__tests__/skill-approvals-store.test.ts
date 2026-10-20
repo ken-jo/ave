@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 /**
  * SkillApprovalsStore — R2-CR-3 hash-binding regression coverage.
  *
@@ -101,7 +102,7 @@ describe("SkillApprovalsStore — R2-CR-3 hash-binding", () => {
 });
 
 describe("SkillApprovalsStore — atomic-write convergence (feature-namespace authority)", () => {
-  it("does not write through a symlink planted at the predictable ${file}.tmp staging path", async () => {
+  it.skipIf(!canCreateSymlinks())("does not write through a symlink planted at the predictable ${file}.tmp staging path", async () => {
     // Pre-convergence, writeAtomic staged into a FIXED `${filePath}.tmp`. An
     // attacker who can create that sibling plants a symlink there; the old
     // `writeFile` follows it, so the approval JSON lands at the attacker's

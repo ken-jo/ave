@@ -34,6 +34,13 @@ import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } f
 import type { CodexExecutableArtifact } from "../codex-executable-artifact.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 
+vi.mock("node:child_process", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  if (process.platform !== "win32") return original;
+  const { codexFixtureExecFile } = await import("../../__tests__/support/codex-fixture-security.js");
+  return { ...original, execFile: codexFixtureExecFile(original.execFile) };
+});
+
 const imageRuntime = vi.hoisted(() => ({ directory: undefined as string | undefined }));
 vi.mock("../main-paths.js", async (original) => {
   const paths = await original<typeof import("../main-paths.js")>();
@@ -67,7 +74,7 @@ interface Harness {
 }
 
 const harnesses: Harness[] = [];
-const TEST_RUNTIME_PARENT = process.platform === "win32" ? "C:\\tmp" : tmpdir();
+const TEST_RUNTIME_PARENT = tmpdir();
 
 function createHarness(onMessage?: (message: JsonRecord, harness: Harness) => boolean | void): Harness {
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-conversation-runtime-"));

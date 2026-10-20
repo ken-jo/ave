@@ -7,7 +7,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 import { assertElectronNodeVitestRuntime } from "../../scripts/assert-electron-node-vitest.mjs";
-import { normalizeElectronNodeRuntime } from "../../scripts/normalize-electron-node-runtime.mjs";
+import {
+  hideChildConsoles,
+  normalizeElectronNodeRuntime,
+  withHiddenConsole,
+} from "../../scripts/normalize-electron-node-runtime.mjs";
 import { documentGuardImportArgument, guardedNodeOptions } from "../../scripts/lib/document-consumer-node-options.mjs";
 import {
   applyElectronVitestResult,
@@ -395,6 +399,29 @@ describe("Electron Node-mode Vitest runner", () => {
         versions,
       }),
     ).toThrow("[electron-node-normalization-failed]");
+  });
+
+  it("defaults windowsHide for console children of the Windows test runtime only", () => {
+    const callback = () => {};
+    expect(withHiddenConsole(["git"])).toEqual(["git", { windowsHide: true }]);
+    expect(withHiddenConsole(["git", ["status"]])).toEqual(["git", ["status"], { windowsHide: true }]);
+    expect(withHiddenConsole(["git", ["status"], callback])).toEqual(["git", ["status"], { windowsHide: true }, callback]);
+    expect(withHiddenConsole(["echo", callback])).toEqual(["echo", { windowsHide: true }, callback]);
+    const options = { cwd: "x" };
+    expect(withHiddenConsole(["git", [], options])).toEqual(["git", [], { cwd: "x", windowsHide: true }]);
+    expect(options).toEqual({ cwd: "x" });
+    const shown = ["git", [], { windowsHide: false }];
+    expect(withHiddenConsole(shown)).toBe(shown);
+
+    const spawn = vi.fn();
+    const module = { spawn } as unknown as typeof import("node:child_process");
+    const env = { ELECTRON_RUN_AS_NODE: "1" };
+    const target = (platform: string) => ({ platform, env }) as unknown as NodeJS.Process;
+    expect(hideChildConsoles({ target: target("darwin"), module, sync: () => {} })).toBe(false);
+    expect(module.spawn).toBe(spawn);
+    expect(hideChildConsoles({ target: target("win32"), module, sync: () => {} })).toBe(true);
+    module.spawn("git", ["status"]);
+    expect(spawn).toHaveBeenCalledWith("git", ["status"], { windowsHide: true });
   });
 
   it("mirrors exit codes and child termination signals", () => {

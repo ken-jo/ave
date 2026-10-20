@@ -8,7 +8,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, normalize, resolve } from "node:path";
+import { posix, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
@@ -26,6 +26,7 @@ import {
   selectTriggeredLockSuites,
 } from "../../scripts/hooks/pre-push-source-policy.mjs";
 import { messages } from "../../src/i18n/messages/index.js";
+import { parseSourceTexts } from "../../scripts/lib/ts7-ast.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 
@@ -38,6 +39,24 @@ function added(path: string) {
 function deleted(path: string) {
   return { status: "D", oldMode: "100644", newMode: "000000", path };
 }
+
+describe("pre-push source parsing", () => {
+  it("preserves mixed-case input names when reading virtual source bytes", () => {
+    const path = "src/MixedCase/Panel.ts";
+    const text = 'export const title = "panel.title";';
+    const sources = parseSourceTexts(new Map([[path, text]]));
+    expect([...sources.keys()]).toEqual([path]);
+    expect(sources.get(path)?.text).toBe(text);
+  });
+
+  it("refuses inputs that collide on a case-insensitive host", () => {
+    const sources = parseSourceTexts(new Map([
+      ["src/Panel.ts", 'export const title = "panel.title";'],
+      ["src/panel.ts", 'export const title = "other.title";'],
+    ]));
+    expect(sources.size).toBe(process.platform === "win32" ? 0 : 2);
+  });
+});
 
 describe("pre-push fast source tier", () => {
   it("takes a source-only change on the fast tier with its related tests", () => {
@@ -338,7 +357,7 @@ describe("pre-push fast source tier", () => {
     const barrel = "src/contract/app-contract.ts";
     const specifier = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|vi\.mock\(\s*)["'](\.[^"']+)["']/g;
     const resolveModule = (from: string, spec: string) => {
-      const base = normalize(join(dirname(from), spec)).replace(/\.(?:js|mjs)$/, "");
+      const base = posix.normalize(posix.join(posix.dirname(from), spec)).replace(/\.(?:js|mjs)$/, "");
       return [".ts", ".tsx", ".mts", "/index.ts"].map((ext) => base + ext).find((path) => existsSync(resolve(root, path))) ?? null;
     };
     // Comments are stripped first: a JSDoc `{@link import("./x.js")}` is not an import.

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOST_FRAME_URL } from "../../../__tests__/test-helpers.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 
 const { handlers } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -58,7 +59,6 @@ beforeAll(() => {
   writeFileSync(imagePath, PNG);
   writeFileSync(notesPath, "hello");
   writeFileSync(join(root, ".env"), "SECRET=1");
-  symlinkSync(join(root, ".env"), join(root, "innocent.txt"));
   writeFileSync(join(root, "run.exe"), "MZ");
   mkdirSync(join(root, "folder"));
   registerAttachHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => ({}) } as never);
@@ -145,10 +145,9 @@ describe("composer drop token", () => {
     });
   });
 
-  it("refuses a sensitive path, a symlink to one, a blocked type and a folder", async () => {
+  it("refuses a sensitive path, a blocked type and a folder", async () => {
     const reg = await register(7, [
       join(root, ".env"),
-      join(root, "innocent.txt"),
       join(root, "run.exe"),
       join(root, "folder"),
       notesPath,
@@ -156,7 +155,6 @@ describe("composer drop token", () => {
     expect(reg.ok).toBe(true);
     expect(reg.rejected).toEqual([
       { name: ".env", reason: "sensitive-path" },
-      { name: "innocent.txt", reason: "sensitive-path" },
       { name: "run.exe", reason: "denied-extension" },
       { name: "folder", reason: "not-a-file" },
     ]);
@@ -170,7 +168,16 @@ describe("composer drop token", () => {
     });
   });
 
-  it("re-checks a dropped symlink's current target when it is opened or read", async () => {
+  it.skipIf(!canCreateSymlinks())("refuses a symlink to a sensitive path", async () => {
+    const link = join(root, "innocent.txt");
+    symlinkSync(join(root, ".env"), link);
+    expect(await register(7, [link])).toMatchObject({
+      ok: false,
+      rejected: [{ name: "innocent.txt", reason: "sensitive-path" }],
+    });
+  });
+
+  it.skipIf(!canCreateSymlinks())("re-checks a dropped symlink's current target when it is opened or read", async () => {
     const link = join(root, "retarget.txt");
     symlinkSync(notesPath, link);
     const reg = await register(7, [link]);

@@ -76,6 +76,7 @@ describe("tool approval expiration attribution", () => {
       },
     ], {
       sessionId: "approval-expiry-session",
+      executionCwd: workspace,
       ...(signal ? { abortSignal: signal } : {}),
       permissionContext: userPermissionContext({ additionalDirectories: [workspace] }),
     });
