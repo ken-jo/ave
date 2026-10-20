@@ -639,9 +639,9 @@ interface Plan {
   readonly runs: ReadonlyArray<{ command: string; commands: readonly Argv[] }>;
 }
 
-function plan(): Plan {
+function plan(baseCommands: readonly string[] = BASE_COMMANDS): Plan {
   const candidates = new Set<string>();
-  for (const base of BASE_COMMANDS) for (const mutate of MUTATIONS) candidates.add(mutate(base));
+  for (const base of baseCommands) for (const mutate of MUTATIONS) candidates.add(mutate(base));
   let refused = 0;
   let unparsed = 0;
   let hidden = 0;
@@ -669,7 +669,8 @@ afterAll(() => {
 
 describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated is what the shell runs", () => {
   it("runs mixed formats and refuses unchecked numeric operands before typing", async () => {
-    const { runs } = plan();
+    // Focused checks need only their own mutations; the full corpus runs below.
+    const { runs } = plan([...TERMINAL_PRINTF_DATA_COMMANDS, ...TERMINAL_PRINT_DATA_COMMANDS, ...TERMINAL_PRINTF_UNCHECKED_COMMANDS]);
     for (const command of [...TERMINAL_PRINTF_DATA_COMMANDS, ...TERMINAL_PRINT_DATA_COMMANDS]) {
       expect(runs.some((run) => run.command === command)).toBe(true);
     }
@@ -768,7 +769,8 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
     expect(hasUnboundedArrayRead("command readarray lines < /dev/null")).toBe(false);
     expect(hasUnboundedArrayRead("mapfile lines < /dev/tty")).toBe(true);
     expect(hasUnboundedArrayRead("mapfile -u1 lines < list")).toBe(true);
-    expect(plan().runs.some(({ command }) => command === "mapfile -t -n1 lines < list")).toBe(true);
+    const command = "mapfile -t -n1 lines < list";
+    expect(plan([command]).runs.some((run) => run.command === command)).toBe(true);
   });
 
   it("runs no simple command, in zsh or bash, that the permission classifier did not evaluate", async () => {
