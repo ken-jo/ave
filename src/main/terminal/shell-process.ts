@@ -30,6 +30,7 @@
 import { execFile } from "node:child_process";
 import { readdir, readFile, readlink, stat } from "node:fs/promises";
 import { basename } from "node:path";
+import { sameFileIdentity, type FileIdentity } from "../../lib/file-identity.js";
 
 interface TerminalForeground {
   /** The foreground process group id: the shell's pid when the shell holds the terminal. */
@@ -281,7 +282,7 @@ export function parseInnermostNsPid(status: string): number | null {
   return last !== undefined && /^[0-9]+$/u.test(last) ? Number(last) : null;
 }
 
-async function directoryIdentity(path: string): Promise<{ dev: bigint; ino: bigint } | null> {
+async function directoryIdentity(path: string): Promise<FileIdentity | null> {
   try {
     const entry = await stat(path, { bigint: true });
     return entry.isDirectory() ? { dev: entry.dev, ino: entry.ino } : null;
@@ -329,7 +330,7 @@ export async function readSandboxedShell(ptyPid: number, shellName: string, repo
         foreground: { pgid: shell.tpgid, command: snapshot.get(shell.tpgid)?.command ?? null },
         children: chain.busyProcesses.map(({ pid, command }) => ({ pid, command })),
         cwd,
-        cwdIsReported: reported !== null && reported.dev === actual.dev && reported.ino === actual.ino,
+        cwdIsReported: reported !== null && sameFileIdentity(reported, actual),
       },
     };
   } catch (error) {

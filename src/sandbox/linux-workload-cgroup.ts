@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { constants, promises as nodeFs, type Stats } from "node:fs";
+import { constants, promises as nodeFs, type BigIntStats } from "node:fs";
 import { posix as pathPosix } from "node:path";
+import { sameFileIdentity, type FileIdentity } from "../lib/file-identity.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 
@@ -34,7 +35,7 @@ export interface LinuxWorkloadCgroupFs {
   mkdir(path: string): Promise<void>;
   rmdir(path: string): Promise<void>;
   access(path: string, mode: number): Promise<void>;
-  stat(path: string): Promise<Pick<Stats, "dev" | "ino" | "isDirectory">>;
+  stat(path: string): Promise<Pick<BigIntStats, "dev" | "ino" | "isDirectory">>;
 }
 
 interface LinuxWorkloadCgroupProcess {
@@ -139,10 +140,7 @@ export interface LinuxWorkloadCgroupHandle {
   finalize(termination: LinuxWorkloadTermination): Promise<LinuxWorkloadFinalization>;
 }
 
-interface RootIdentity {
-  readonly dev: string;
-  readonly ino: string;
-}
+type RootIdentity = Readonly<FileIdentity>;
 
 interface MountInfo {
   readonly id: string;
@@ -197,7 +195,7 @@ const defaultDependencies: LinuxWorkloadCgroupDependencies = Object.freeze({
     mkdir: (path: string) => nodeFs.mkdir(path),
     rmdir: (path: string) => nodeFs.rmdir(path),
     access: (path: string, mode: number) => nodeFs.access(path, mode),
-    stat: (path: string) => nodeFs.stat(path),
+    stat: (path: string) => nodeFs.stat(path, { bigint: true }),
   }),
   process: Object.freeze({
     platform: process.platform,
@@ -291,15 +289,11 @@ function parseWordSet(value: string): ReadonlySet<string> {
   return new Set(value.trim().split(/\s+/).filter(Boolean).map((word) => word.replace(/^\+/, "")));
 }
 
-function rootIdentity(stats: Pick<Stats, "dev" | "ino">): RootIdentity {
-  return Object.freeze({
-    dev: String(stats.dev),
-    ino: String(stats.ino),
-  });
-}
-
-function sameRootIdentity(left: RootIdentity, right: RootIdentity): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
+function rootIdentity(stats: Pick<BigIntStats, "dev" | "ino">): RootIdentity {
+  if (!sameFileIdentity(stats, stats)) {
+    throw new Error("Delegated workload root requires exact file identity");
+  }
+  return Object.freeze({ dev: stats.dev, ino: stats.ino });
 }
 
 function freezeStringMap(values: Record<string, string>): Readonly<Record<string, string>> {
@@ -374,6 +368,7 @@ async function validateDelegatedRoot(
   const canonicalRoot = await deps.fs.realpath(delegatedRoot);
   const stats = await deps.fs.stat(canonicalRoot);
   if (!stats.isDirectory()) throw new Error("Delegated workload cgroup root is not a directory");
+  const identity = rootIdentity(stats);
   const mount = selectCgroup2Mount(await deps.process.readSelfMountInfo(), canonicalRoot);
   const controllerCgroup = await deps.fs.realpath(resolveControllerCgroup(
     mount,
@@ -444,7 +439,7 @@ async function validateDelegatedRoot(
     delegatedRoot: canonicalRoot,
     mount,
     controllerCgroup,
-    identity: rootIdentity(stats),
+    identity,
   };
 }
 
@@ -490,7 +485,10 @@ export async function issueLinuxWorkloadCgroupCapability(input: {
       mountPoint: validated.mount.mountPoint,
       controllerCgroup: validated.controllerCgroup,
       controllers: REQUIRED_CONTROLLERS,
-      rootIdentity: validated.identity,
+      rootIdentity: {
+        dev: validated.identity.dev.toString(),
+        ino: validated.identity.ino.toString(),
+      },
     } as const;
     const capability: LinuxWorkloadCgroupCapability = Object.freeze({
       version: CAPABILITY_VERSION,
@@ -577,7 +575,7 @@ async function assertCapabilityFresh(
     throw new Error("Delegated workload cgroup mount generation is stale");
   }
   const stats = await context.deps.fs.stat(canonicalRoot);
-  if (!stats.isDirectory() || !sameRootIdentity(rootIdentity(stats), context.rootIdentity)) {
+  if (!stats.isDirectory() || !sameFileIdentity(stats, context.rootIdentity)) {
     throw new Error("Delegated workload cgroup generation is stale");
   }
   const currentControllerCgroup = await context.deps.fs.realpath(resolveControllerCgroup(

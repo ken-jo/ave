@@ -344,7 +344,7 @@ describe("restoring owner access before a staged plugin tree is removed", () => 
       for (const mode of [0o500, 0o000]) {
         const swapped = join(root, `swapped-${mode.toString(8)}`);
         await mkdir(swapped);
-        staleLstat.set(swapped, lstatSync(swapped));
+        staleLstat.set(swapped, lstatSync(swapped, { bigint: true }));
         await rm(swapped, { recursive: true });
         await symlink(outside, swapped);
         await chmod(outside, mode);

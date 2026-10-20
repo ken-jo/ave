@@ -3,6 +3,7 @@ import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 
+import { sameFileIdentity } from "../lib/file-identity.js";
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { retryOnTransientFsLock } from "../lib/transient-fs-lock-retry.js";
 import { assertSafeArtifactSlug } from "./plugin-id.js";
@@ -276,18 +277,18 @@ export async function readRemovalTransactionJournal(
     : 0;
   const handle = await open(path, constants.O_RDONLY | noFollow);
   try {
-    const opened = await handle.stat();
-    const linked = await lstat(path);
-    if (!opened.isFile() || opened.size > MAX_JOURNAL_BYTES
+    const opened = await handle.stat({ bigint: true });
+    const linked = await lstat(path, { bigint: true });
+    if (!opened.isFile() || opened.size > BigInt(MAX_JOURNAL_BYTES)
       || !linked.isFile() || linked.isSymbolicLink()
-      || linked.dev !== opened.dev || linked.ino !== opened.ino) {
+      || !sameFileIdentity(linked, opened)) {
       throw new Error("Invalid removal transaction journal size or ownership");
     }
     const raw = await handle.readFile({ encoding: "utf-8" });
-    const afterRead = await handle.stat();
-    if (afterRead.dev !== opened.dev || afterRead.ino !== opened.ino
-      || afterRead.size !== opened.size || afterRead.mtimeMs !== opened.mtimeMs
-      || Buffer.byteLength(raw, "utf-8") !== opened.size) {
+    const afterRead = await handle.stat({ bigint: true });
+    if (!sameFileIdentity(afterRead, opened)
+      || afterRead.size !== opened.size || afterRead.mtimeNs !== opened.mtimeNs
+      || BigInt(Buffer.byteLength(raw, "utf-8")) !== opened.size) {
       throw new Error("Removal transaction journal changed while reading");
     }
     await assertOwnedTransactionDirectory(paths, transactionId);
