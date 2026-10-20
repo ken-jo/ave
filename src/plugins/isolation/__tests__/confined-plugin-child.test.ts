@@ -138,7 +138,7 @@ import {
   sandboxTempPrincipalDirName,
   type SandboxTempPrincipal,
 } from "../../../permissions/asrt-sandbox.js";
-import { sandboxCasesRun } from "./sandbox-cases.js";
+import { sandboxCasesRun, SANDBOX_DEFAULT_TEMP_ROOT as ASRT_DEFAULT_TEMP_ROOT } from "./sandbox-cases.js";
 import { isPluginChildConfined } from "../../../permissions/sandbox-capability.js";
 import { connect } from "node:net";
 import { createServer } from "node:http";
@@ -204,20 +204,6 @@ const PLUGIN_CODE_BYTES = "the plugin's own code, which it may read and may not 
 const HOST_STORED_TEXT = '{"stored":"by the host"}';
 /** What one child leaves in its own temp directory, so the host reading it back shows the write landed and lasted. */
 const OWN_TEMP_BYTES = "bytes one confined child left in its own temp directory";
-
-/**
- * ASRT's own default temp root — the one this app no longer uses, and now denies.
- *
- * The probe writes here to prove the deny floor refuses it. A write to a
- * directory that is NOT THERE fails too, with `ENOENT`, and that answer proves
- * nothing: it is what a machine with no sandbox history returns whether the
- * floor is in place or not. So the host CREATES the directory before the child
- * runs, which is the condition the deny exists for — another ASRT consumer on
- * the box already made it. Creating it is not litter: it is the standard root
- * any sandboxed run on this machine would create on first use, and it is left
- * empty.
- */
-const ASRT_DEFAULT_TEMP_ROOT = "/tmp/claude";
 
 interface Fixture {
   readonly root: string;
@@ -588,9 +574,6 @@ async function runProbe(
   fx: Fixture,
   envelope: DelegatedWorkerConfinement = baseEnvelope(fx),
 ): Promise<ProbeReport> {
-  // See ASRT_DEFAULT_TEMP_ROOT — the deny is only measurable against a
-  // directory that exists.
-  mkdirSync(ASRT_DEFAULT_TEMP_ROOT, { recursive: true });
   const child = await spawnConfinedPluginChild({
     pluginId: PLUGIN_ID,
     socketDir: resolvePluginSocketDir(fx.pluginDataDir),

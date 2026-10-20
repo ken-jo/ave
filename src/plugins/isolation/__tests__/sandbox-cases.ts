@@ -22,6 +22,16 @@
  * it.
  */
 import { asrtCanInitialize } from "../../../permissions/__tests__/test-helpers.js";
+import { afterAll } from "vitest";
+import { retainDirectoryFixture } from "../../../__tests__/support/nonempty-directory-fixture.js";
+
+export const SANDBOX_DEFAULT_TEMP_ROOT = "/tmp/claude";
+let releaseTempFixture: (() => Promise<void>) | undefined;
+
+afterAll(async () => {
+  await releaseTempFixture?.();
+  releaseTempFixture = undefined;
+});
 
 /** Set by the CI jobs whose green must mean "measured". */
 export function sandboxCasesRequired(): boolean {
@@ -29,7 +39,15 @@ export function sandboxCasesRequired(): boolean {
 }
 
 export async function sandboxCasesRun(): Promise<boolean> {
-  if (await asrtCanInitialize()) return true;
+  if (await asrtCanInitialize()) {
+    if (process.platform === "darwin" || process.platform === "linux") {
+      // Every suite establishes the directory before planning any wrap. A
+      // missing deny path becomes a file mount stub on Linux; creating this
+      // directory later races those stubs and their empty-directory cleanup.
+      releaseTempFixture ??= retainDirectoryFixture(SANDBOX_DEFAULT_TEMP_ROOT);
+    }
+    return true;
+  }
   if (sandboxCasesRequired()) {
     throw new Error(
       "AVE_REQUIRE_SANDBOX_CASES=1 but the ASRT sandbox cannot initialize on this "
