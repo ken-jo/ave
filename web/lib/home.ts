@@ -111,7 +111,7 @@ const ko: HomeCopy = {
   models: {
     title: "모델은 직접 고릅니다",
     body: "API 키, 직접 띄운 서버, 이미 쓰는 구독 가운데 고르세요. 설정의 모델 탭에서 제공자를 추가하고, 실패하면 다음 모델로 넘기는 대체 체인도 만들 수 있습니다.",
-    subs: "ChatGPT 요금제는 내가 설치한 codex CLI를 격리해 실행하는 방식으로, Claude 구독은 내가 고른 공식 claude CLI로 연결합니다. 구독 자격 증명이 API 키로 바뀌는 일은 없습니다.",
+    subs: "ChatGPT 요금제는 내가 설치한 codex CLI를 격리해 실행하는 방식으로, Claude 구독은 내가 설치한 공식 claude CLI를 Ave가 찾아 연결합니다. 구독 자격 증명이 API 키로 바뀌는 일은 없습니다.",
     providers: ["OpenAI", "Claude", "Gemini", "OpenRouter", "OpenAI 호환 서버"],
     local: ["그 밖의 제공자는 마켓플레이스 패키지로"],
   },
@@ -222,7 +222,7 @@ const en: HomeCopy = {
   models: {
     title: "Bring your own model",
     body: "Use an API key, a server you run yourself, or a subscription you already pay for. Add providers in the Model tab of Settings, and set a fallback chain that hands a failed turn to the next model.",
-    subs: "A ChatGPT plan connects through the codex CLI you installed, run in isolation; a Claude subscription through the official claude CLI you choose. Subscription credentials never turn into API keys.",
+    subs: "A ChatGPT plan connects through the codex CLI you installed, run in isolation; a Claude subscription through the official claude CLI you installed, which Ave finds for you. Subscription credentials never turn into API keys.",
     providers: ["OpenAI", "Claude", "Gemini", "OpenRouter", "any OpenAI-compatible server"],
     local: ["more providers as marketplace packages"],
   },

@@ -36,8 +36,8 @@ Ave ships no app-server binary. `src/main/codex-user-runtime.ts` finds the
 `codex` the user installed and qualifies it before either app-server client
 starts it:
 
-1. **Location.** An explicit path chosen in settings wins and is never
-   replaced by discovery when it disappears. Otherwise each fully qualified
+1. **Location.** Ave finds the CLI; the user never picks the file and
+   settings offers no path chooser. Each fully qualified
    PATH entry is tried, then `$CODEX_INSTALL_DIR`, `~/.local/bin`,
    `/opt/homebrew/bin` and `/usr/local/bin`; Windows also checks
    `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` and `%APPDATA%\npm`. Windows
@@ -52,7 +52,7 @@ starts it:
    The npm launcher is followed to its native executable without running a
    shell or interpreter, and its route receives the same checks. An unsafe
    location reports `codex-runtime-unsafe-location`; recovery is to install
-   or choose a CLI whose file and path meet these ownership and write rules.
+   the CLI where its file and path meet these ownership and write rules.
 3. **Private artifact.** Ave copies the admitted executable into a random
    private directory under its isolated runtime home. Exclusive creation,
    no-follow opens where supported, pinned source handles and source
@@ -76,12 +76,18 @@ starts it:
    location, regular-file status, permissions and content hash are checked
    immediately before every probe and app-server spawn.
 
+Capability probes use an empty private temporary home, database and output
+directory, removed on success or failure. They run only the three local commands
+above, with stdin ignored, and do not receive the persistent account home or
+send a model prompt. Account verification remains a separate auth-status read
+without starting a model turn.
+
 `src/main/codex-native-spawn.ts` preserves loader rejection as a start
 failure. Linux subscription startup requires a host runtime exposing
 `process.execve`; the [native host guide](../guides/native-server.md#build-the-artifact)
 states the feature-specific runtime prerequisite. Ave trusts its host installation
 as the source of the bootstrap runtime; CLI candidate admission rules apply to
-discovered or configured CLI paths and their private copies.
+discovered CLI paths and their private copies.
 On Linux, Ave starts a new host runtime process with a static bootstrap, passes the private
 CLI path and arguments as data, and replaces that process through `process.execve`.
 The bootstrap removes its launch-only environment before replacement. A missing API or
@@ -104,11 +110,18 @@ the current account and session. Windows starts the artifact directly through
 The in-memory compatibility cache identifies the CLI and copied helper by
 their SHA-256 content hashes. Changed bytes are checked again even if file
 size and timestamps are preserved. A probe that cannot run is a start failure
-and is retried; it is never read as a compatibility verdict. The settings
-card shows the install methods while no CLI is found, and "Codex CLI 0.152.0+
-required" when the found one is too old or incompatible. These checks do not
+and is retried; it is never read as a compatibility verdict. Settings shows
+one OpenAI provider whose card first asks for the sign-in method ("ChatGPT
+subscription" or "API key"). Under the subscription it shows the install
+methods and a "Check again" action while no CLI is found, the same with
+"Codex CLI 0.152.0+ required" when the found one is too old or incompatible,
+and the found CLI's version otherwise. "Check again" is a status read, which
+runs discovery again. These checks do not
 defend against root or an arbitrary malicious process already running as the
-same user.
+same user. The final digest check and spawn are not atomic: a same-UID or root
+attacker able to modify the private artifact directory can swap its executable
+after that check for one invocation. The content proof assumes that ownership
+boundary holds; it is not an unconditional exact-binary guarantee.
 
 Rejected snapshots are discarded even when their negative verdict is cached.
 After a failed qualification, a cleanup failure evicts its verdict and retains
