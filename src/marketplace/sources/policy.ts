@@ -10,9 +10,10 @@
  * `SOURCE_POLICY_BLOCKED` rather than guessing what a typo meant.
  */
 import { createHash } from "node:crypto";
-import type { Stats } from "node:fs";
+import type { BigIntStats } from "node:fs";
 import { lstat, readFile, stat as fsStat } from "node:fs/promises";
 import { isAdminPolicyFileAbsent } from "../../lib/admin-policy-file.js";
+import { fileIdentityKey } from "../../lib/file-identity.js";
 import { getAdminPolicyPath } from "../../permissions/policy-store.js";
 import { parseStrictJson, StrictJsonError } from "../catalog/strict-json.js";
 import { PACKAGE_KINDS, isPackageName, type PackageKind } from "../catalog/types.js";
@@ -379,7 +380,7 @@ function parsePolicyText(path: string, text: string, platform: NodeJS.Platform):
 }
 
 /** The stat fields {@link statKey} compares. */
-type PolicyFileStat = Pick<Stats, "size" | "mtimeMs" | "ctimeMs" | "ino" | "dev">;
+type PolicyFileStat = Pick<BigIntStats, "size" | "mtimeMs" | "ctimeMs" | "mtimeNs" | "ctimeNs" | "ino" | "dev">;
 
 /**
  * The file system and clock a {@link FilePolicySource} reads through. Production
@@ -396,7 +397,7 @@ export interface PolicyFileAccess {
 }
 
 const NODE_FILE_ACCESS: PolicyFileAccess = {
-  stat: (path) => fsStat(path),
+  stat: (path) => fsStat(path, { bigint: true }),
   lstat: (path) => lstat(path),
   readFile: (path) => readFile(path, "utf8"),
   now: () => Date.now(),
@@ -451,12 +452,13 @@ interface RecordedStat {
  * clearly after the file's last change ({@link RACY_WINDOW_MS}).
  */
 function statKey(info: PolicyFileStat): string {
-  return `${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.ino}:${info.dev}`;
+  return `${fileIdentityKey(info)}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
 }
 
 /** The file changed so close to `readBegan` (or after it) that a rewrite in the same clock tick would leave its stat unchanged. */
 function isRacy(info: PolicyFileStat, readBegan: number): boolean {
-  return Math.max(info.ctimeMs, info.mtimeMs) > readBegan - RACY_WINDOW_MS;
+  const latest = info.ctimeMs > info.mtimeMs ? info.ctimeMs : info.mtimeMs;
+  return latest > BigInt(Math.floor(readBegan - RACY_WINDOW_MS));
 }
 
 async function policyStat(path: string, access: PolicyFileAccess): Promise<string> {

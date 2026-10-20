@@ -479,11 +479,6 @@
     },
     {
       "type": "exports",
-      "file": "src/plugins/plugin-removal-transaction.ts",
-      "name": "readRemovalTransactionJournal"
-    },
-    {
-      "type": "exports",
       "file": "src/plugins/secret-shape.ts",
       "name": "isApiKeyLikeSecretField"
     },

@@ -46,7 +46,6 @@
  * guarantee here runs in the ordinary vitest suite with no network, secret or
  * external service.
  */
-import { randomUUID } from "node:crypto";
 import { request as httpRequest, type IncomingMessage, type RequestOptions } from "node:http";
 import type { request as httpsRequest } from "node:https";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -194,7 +193,8 @@ class LifecycleRunner implements A2ASubAgentLifecycleRunner {
     this.counts.spawns += 1;
     const prompt = String(request.messageText);
     this.prompts.push(prompt);
-    const childSessionId = randomUUID();
+    // Keep fixture IDs reproducible and clear of sensitive-data patterns.
+    const childSessionId = `aaaaaaaa-aaaa-4aaa-8aaa-aaaa${this.counts.spawns.toString(16).padStart(8, "0")}`;
     this.set(childSessionId, A2ATaskState.WORKING);
     await callbacks.onDurablyLinked({ childSessionId });
     if (prompt.startsWith("complete:")) {

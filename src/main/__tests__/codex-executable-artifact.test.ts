@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, constants, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, fstatSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -21,6 +21,43 @@ function fixture(platform: NodeJS.Platform = process.platform) {
 }
 
 describe("private executable artifacts", () => {
+  it.each(["opening", "copying", "hashing"] as const)("refuses an identity change beyond number precision while %s", async (stage) => {
+    const { runtime, source } = fixture();
+    const artifact = stage === "hashing" ? await copyCodexExecutableArtifact(source, runtime) : null;
+    const target = artifact?.executable ?? source;
+    // Preserve the fixture's trusted ancestors while injecting file identity changes.
+    const lstat = vi.mocked(fs.lstat).getMockImplementation?.() ?? fs.lstat.bind(fs);
+    const open = fs.open.bind(fs);
+    const originalIno = 2n ** 60n;
+    vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+      const result = await lstat(...args);
+      if (!result) throw new Error("Expected an existing file entry");
+      if (String(args[0]) === target && args[1]?.bigint === true) {
+        Object.defineProperty(result, "ino", { value: originalIno });
+      }
+      return result;
+    });
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      if (String(args[0]) === target) {
+        let calls = 0;
+        vi.spyOn(handle, "stat").mockImplementation(async () => {
+          const result = fstatSync(handle.fd, { bigint: true });
+          const changed = stage === "opening" || ++calls >= (stage === "copying" ? 3 : 4);
+          Object.defineProperty(result, "ino", { value: originalIno + (changed ? 1n : 0n) });
+          return result;
+        });
+      }
+      return handle;
+    });
+    if (artifact) {
+      await expect(verifyCodexExecutableArtifact(artifact)).rejects.toThrow("Executable changed while hashing");
+    } else {
+      await expect(copyCodexExecutableArtifact(source, runtime)).rejects.toThrow(`Executable changed while ${stage}`);
+      expect(readdirSync(runtime)).toEqual([]);
+    }
+  });
+
   it("hashes while copying, uses exclusive no-follow opens and seals the native copy", async () => {
     const { runtime, source } = fixture();
     const open = vi.spyOn(fs, "open");
