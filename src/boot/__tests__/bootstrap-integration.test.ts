@@ -589,6 +589,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     useAppOwnedSandboxTempRoot: vi.fn(() => "/tmp/ave-test-sandbox-tmp"),
     checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
     isAsrtLinuxRuntimeProbeError: vi.fn(() => false),
+    closeAllEgressConnections: vi.fn(() => 0),
     isAsrtSandboxActive: vi.fn(() => false),
     normalizeUnionForAsrt: vi.fn(() => []),
     computeDynamicEndpointHosts: vi.fn(() => []),

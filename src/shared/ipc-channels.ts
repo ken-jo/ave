@@ -137,6 +137,14 @@ export const PERMISSIONS = {
   // MUTATING (sender-frame-guarded + user-keyboard intent): revoke one of
   // those grants.
   egressGrantRevoke: "ave:permissions:egress-grant-revoke",
+  // Read-only (sender-frame-guarded): the main-owned upstream proxy setting
+  // (no credential values), whether manual credentials are stored, and the
+  // effective upstream for https://example.com. Drives Settings →
+  // Permissions → OS Tool Sandbox "Upstream proxy".
+  upstreamProxyGet: "ave:permissions:upstream-proxy-get",
+  // MUTATING (sender-frame-guarded + user-gesture intent): change it. The
+  // only writer of `upstreamProxy`; `settings:update` refuses the key.
+  upstreamProxySet: "ave:permissions:upstream-proxy-set",
   // MUTATING (sender-frame-guarded): the ONLY user-consented privilege
   // escalation entry point — triggers ASRT installWindowsSandbox's single
   // self-elevating UAC prompt. Never auto-triggered.

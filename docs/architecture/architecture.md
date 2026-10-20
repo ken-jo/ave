@@ -1400,28 +1400,115 @@ even when `allowAllUnixSockets` lifts the AF_UNIX block (as registering a
 worker socket directory does). On macOS `allowAllUnixSockets` would expose the
 shared bridge socket, so while it is set shell and extension identity is
 `shared`. The proxy refuses a destination that is a proxy front end's port on
-this host, so one invocation cannot hop onto another's listener. A
-destination name is resolved once, before the callback decides, and refused
-when any address is loopback, reserved or this host's; the callback sees the
-addresses, and the connection is pinned to them (a direct dial does not
+this host, so one invocation cannot hop onto another's listener. The
+callback is asked in two phases (part 5 of the patch). The name phase comes
+before anything is resolved or routed, so every refusal the name alone
+decides (unattributed, a worker off its list, asks off, nobody to ask, a
+reserved literal) costs no DNS query and no proxy lookup: the
+proxy's lookup is the sandbox's only resolver, and a refused
+`<data>.attacker.example` must not reach the zone's server. An interactive
+card (or a terminal tab's banner) is shown by name, using the class implied by
+the literal address or local-network name, otherwise provisionally `public`.
+Its answer is held, not granted; grants are matched by origin and network class
+in both phases. Only after that provisional allow is the destination name
+resolved once, and refused when any address is
+loopback, reserved or this host's; the resolved phase sees the addresses, an
+answer given on a card for one class (say public) becomes a grant only when
+the destination turned out to be that class (otherwise the card is shown
+again with what it is), and the connection is pinned to them (a direct dial does not
 resolve again; through an upstream HTTP(S) proxy the CONNECT names the
-address, trying each in turn, not the name; plain HTTP by name through an
-upstream is refused), so DNS rebinding cannot move it afterwards. A name this
-host cannot resolve (owner decision 2026-10-19) is refused without an
-upstream; through a remote upstream it is forwarded by name and the callback
+address, trying each in turn, not the name), so DNS rebinding cannot move it
+afterwards. A name this host cannot resolve (owner decision 2026-10-19), and
+a plain-HTTP request by name through an upstream (its absolute-form target
+names the host, which the upstream resolves, so it cannot be pinned), is
+refused without an upstream; through a remote upstream it is forwarded by name and the callback
 is told `resolution: "upstream"`, which Ave treats as `unverified` (at most
 This conversation, a card note that the proxy decides the address,
 persistent grants ignored); through an upstream on this host (loopback,
 `localhost`-style names, or one of this host's addresses, e.g. cntlm or px)
 it is refused with a reason, unless the trusted `upstreamProxy.resolvesNames`
 setting gives that upstream the remote treatment, which accepts the residual
-risk that the local proxy resolves the name to this host after the check. An ended
+risk that the local proxy resolves the name to this host after the check.
+
+Where the upstream comes from (owner decision 2026-10-20) is the main-owned
+`upstreamProxy` setting (Settings → Permissions → OS Tool Sandbox; written
+only through the permissions `upstreamProxySet` channel, refused by
+`settings:update`, absent from the renderer snapshot; manual credentials in
+the secret store, bound to the proxy's scheme, canonical host and effective
+port: sent only to it, and removed, with a notice, when any of those changes).
+An explicitly written port is preserved before URL normalization; only an
+omitted port defaults to 1080 for HTTP or 443 for HTTPS. A scheme-less proxy
+URL means HTTP. "Use system settings" (the default) takes the app
+process's own `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY` (either case,
+lowercase first) when any is set, and otherwise the OS configuration through
+Chromium's `session.resolveProxy` (macOS system settings, Windows
+WinINET/WinHTTP, Linux environment/GNOME/KDE, PAC and WPAD); "Manual" is a
+URL plus a bypass list; "Off" is direct. `NO_PROXY` and the manual bypass list
+follow [current curl master `lib/proxy.c`](https://github.com/curl/curl/blob/master/lib/proxy.c):
+comma-separated domains, IP literals and CIDR ranges, with optional spaces or tabs
+around entries. Spaces alone do not separate entries. Older versions differ:
+[curl 8.7.1 `lib/noproxy.c`](https://github.com/curl/curl/blob/curl-8_7_1/lib/noproxy.c)
+accepts space-separated entries and has different IPv6 CIDR matching, including
+`/0` and prefixes that end within a byte. A bare domain or
+one leading dot matches the domain and its subdomains; `*.` has no wildcard
+meaning. Only the raw complete value `*`, without surrounding whitespace,
+bypasses everything, not a `*` token in a longer list. Entries do not support
+`host:port`; IPv6 entries are unbracketed.
+This host's own destinations remain direct under the separate local-routing
+policy. Because a PAC script can answer
+differently per destination and with a fallback list, the carried patch's
+part 4 replaces ASRT's single static `parentProxy` with a route hook
+(`SandboxManager.setParentProxyRouter`, implemented in
+`src/permissions/upstream-proxy.ts`): asked once per destination decision
+with the canonical host, port and scheme, after the name phase and before
+the resolved phase; every
+answered route is judged as above (a pinned name goes as its vetted literal,
+an unresolvable name skips direct routes and untrusted proxies on this host,
+a route naming one of the proxy's own listeners is dropped and every proxy
+socket is checked against them), and the connection tries the kept routes in
+order, handing over only on a connection failure: every upstream HTTP response
+is final, including non-2xx. A non-2xx CONNECT answer refuses with
+"upstream proxy refused the connection (HTTP <status>)"; a plain-HTTP response
+is relayed unchanged except 407. Neither another address on the same route
+nor a later proxy or DIRECT retries an HTTP response. A 407 refuses with
+"upstream proxy requires authentication" (Basic
+credentials from a `user:pass@` URL are sent; NTLM/Kerberos need a local
+helper such as cntlm or px plus the `resolvesNames` opt-in, which covers a
+proxy named in Settings or the environment and never one a PAC or WPAD answer
+names, since that answer is network input). `resolveProxy` runs at most four
+evaluations at once. SOCKS entries
+are skipped with an `egress-route` audit row (ASRT has no SOCKS client); an
+answer with nothing usable refuses, never falls back to direct. Answers are
+cached per (scheme, host, port) for 45 s (Electron has no proxy-change
+event); an upstream proxy settings write advances the routing generation, clears the cache
+and closes every open sandbox connection (`closeAllInvocationConnections`,
+direct ones included). Pending approval, DNS and route decisions capture that
+generation and check it immediately before any direct or upstream dial,
+including after asynchronous proxy preparation. A stale attempt replans its
+routes under the current generation; an allowed decision is reused only for
+the same destination class, and a changed class is asked again. A denial
+remains final, and repeated configuration churn fails closed. Changes apply
+without a restart and no tunnel outlives the setting that routed it.
+Sandboxed processes see only Ave's per-invocation proxy in their
+environment, never the upstream or its credentials. An ended
 invocation's macOS port stays bound, refusing connections, for 30 minutes,
 longer while its process group still runs, and its number is never reused. A wrap with `network.allowLocalBinding` is
 refused, and Ave never sets it. The macOS profile also denies process-info on other processes and
 the `kern.procargs` sysctls, and each non-PTY wrap starts in its own session
 (node-pty already starts one), so a sandboxed process cannot read another
 process's environment.
+
+To regenerate `patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch`, save its
+explanatory preamble (everything before the first `diff --git`) and run
+`bun patch @anthropic-ai/sandbox-runtime@0.0.80`. Edit the installed package's
+`dist`, save a copy outside the checkout for comparison, then run
+`bun patch --commit node_modules/@anthropic-ai/sandbox-runtime`. Restore the
+updated preamble ahead of the generated diff and run `bun install --lockfile-only`
+to refresh or verify lockfile metadata for the final patch. In a disposable
+clean checkout with the revised manifest, lockfile and patch, run
+`bun install --frozen-lockfile`, then
+`diff -r <saved-dist> node_modules/@anthropic-ai/sandbox-runtime/dist`;
+no differences prove the patch reproduces the edited distribution.
 
 ASRT runs non-strict with an empty `allowedDomains`, so the callback decides
 every connection: a plugin worker reaches its own extension's declared
@@ -1436,10 +1523,14 @@ terminal's Allow once lets that one connection through and is never held;
 "This tab" takes the place of "This conversation" and lasts until the tab's
 shell exits, including an exit followed by a respawn; terminals have no
 This workspace, since every tab runs in the app's one default workspace,
-which agent shell calls share). A persistent grant records its origin
-(`shell` or `terminal`) and covers only that origin, so a terminal's Always
-never lets an agent's shell call through, nor the reverse; Settings shows the
-origin. Working directories are compared after `canonicalizePathForMatch`. The
+which agent shell calls share). Every grant is bound to its origin (`shell` or
+`terminal`) and destination network class (`public`, `local` or `unverified`),
+for Allow once, conversation, tab, workspace and Always scopes. Matching,
+listing, use tracking and revocation preserve both fields, so neither another
+origin nor another class can reuse it. Settings shows the origin and preserves
+the class when revoking. A replan to a
+different class requires a fresh warning and decision before connecting.
+Working directories are compared after `canonicalizePathForMatch`. The
 connection is held while the banner is up and denied after 120 s without an
 answer, or at once when the tab closes; connections from one tab to one
 destination share one banner row. While no view of the tab is mounted the
@@ -1447,7 +1538,11 @@ ask is drawn on the focused pane's lane instead
 (`src/ui/renderer/components/permissions/TerminalEgressBanner.tsx`).
 `src/permissions/egress-grants.ts` holds the grants, the persistent ones in
 `<AVE_HOME>/permissions/shell-egress-hosts.json`, revocable in Settings →
-Permissions → Network. A background call nobody can answer, asks turned off
+Permissions → Network. Version-1 stored grants without `network` match only
+`public`; a valid recorded class is honored and an invalid explicit class is
+rejected. Only `public` destinations are eligible for persistent grants
+(This workspace and Always); recording a class does not extend that eligibility.
+A background call nobody can answer, asks turned off
 (`features.shellEgressAsk`), or an unreadable grant file is a refusal.
 Destinations are classed by `egressDestinationNetwork()` on the host and every
 address it resolved to, most restrictive first: link-local, cloud metadata,

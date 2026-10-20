@@ -1,6 +1,6 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -79,6 +79,7 @@ vi.mock("../../workload/runtime.js", async (importOriginal) => {
     ...actual,
     isWorkloadBrokerActive: () => broker.active,
     acquireBrokeredWorkloadCapability: broker.acquire,
+    resolveBrokeredWorkloadPath: (_capability: unknown, input: string) => posix.resolve(broker.capability.workload.cwd, input),
     isIssuedActiveBrokeredWorkloadCapability: (value: unknown) =>
       broker.active && value === broker.capability,
     executeBrokeredWorkloadRequest: broker.execute,
@@ -110,7 +111,11 @@ afterEach(async () => {
 });
 
 describe("executor broker shell route", () => {
-  it("authorizes and audits the guest request without host preparation, path inspection, or spawn", async () => {
+  it.each([
+    { cwd: "/git", expectedCwd: "/git" },
+    { cwd: "nested", expectedCwd: "/app/nested" },
+    { cwd: undefined, expectedCwd: "/app" },
+  ])("authorizes and audits guest cwd $cwd without host preparation, path inspection, or spawn", async ({ cwd, expectedCwd }) => {
     const registry = new ToolRegistry();
     registry.register(new BashTool());
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
@@ -150,7 +155,7 @@ describe("executor broker shell route", () => {
         name: "bash",
         input: {
           command: "printf broker-only > /logs/result",
-          cwd: "/git",
+          ...(cwd === undefined ? {} : { cwd }),
           timeoutSeconds: 30,
         },
       }],
@@ -175,7 +180,7 @@ describe("executor broker shell route", () => {
       "shell.run",
       {
         command: "printf broker-only > /logs/result",
-        cwd: "/git",
+        cwd: expectedCwd,
         timeoutMs: 30_000,
       },
       expect.objectContaining({ operation: "shell.run", toolName: "bash" }),

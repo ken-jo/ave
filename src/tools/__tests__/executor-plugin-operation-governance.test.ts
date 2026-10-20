@@ -298,6 +298,7 @@ describe("ToolExecutor plugin operation governance", () => {
           }],
           {
             ...invocationOptions,
+            executionCwd: directory,
             permissionContext: {
               ...invocationOptions.permissionContext,
               headless: true,

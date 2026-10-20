@@ -35,7 +35,7 @@ import { shellPathPolicyViolation } from "../../tools/pipeline/path-extraction.j
 import { canonicalizePathForMatch } from "../sensitive-paths.js";
 
 /** Absolute path to a real credential file under the current user's home. */
-const AUTHORIZED_KEYS = join(homedir(), ".ssh", "authorized_keys");
+const AUTHORIZED_KEYS = join(homedir(), ".ssh", "authorized_keys").replaceAll("\\", "/");
 
 function classify(finalInput: Record<string, unknown>) {
   return inspectHostRisk({ source: "plugin", finalInput });
@@ -209,22 +209,18 @@ describe("evasion: a glued short flag hides the write target", () => {
 
   it("path containment resolves the glued value as the real target, not a relative path", () => {
     const root = sandboxRoot();
-    expect(findShellPathPolicyViolation(command, root, root, [], READS_WIDE)).toMatchObject({
-      kind: "sensitive-path",
-      // A violation reports the path in the canonical match form the policy
-      // compares with — identical to the platform form on POSIX, drive-folded
-      // and forward-slashed on Win32. Asserting the raw join would only be
-      // testing which platform the suite runs on.
-      path: canonicalizePathForMatch(AUTHORIZED_KEYS),
-    });
+    const violation = findShellPathPolicyViolation(command, root, root, [], READS_WIDE);
+    expect(violation).toMatchObject({ kind: "sensitive-path" });
+    // Compare identities independently of the host's display separators.
+    expect(canonicalizePathForMatch(violation!.path!)).toBe(canonicalizePathForMatch(AUTHORIZED_KEYS));
     // The decisive case: a glued target whose BASENAME is not itself sensitive.
     // Resolved as a pseudo-relative path it landed inside the sandbox and
     // produced no violation at all; resolved as the real target it is
     // out-of-bounds.
-    const outside = join(homedir(), "Documents", "exfil.txt");
-    expect(
-      findShellPathPolicyViolation(`sort -o${outside} f`, root, root, [], READS_WIDE),
-    ).toMatchObject({ kind: "sandbox-boundary", path: canonicalizePathForMatch(outside) });
+    const outside = join(homedir(), "Documents", "exfil.txt").replaceAll("\\", "/");
+    const outsideViolation = findShellPathPolicyViolation(`sort -o${outside} f`, root, root, [], READS_WIDE);
+    expect(outsideViolation).toMatchObject({ kind: "sandbox-boundary" });
+    expect(canonicalizePathForMatch(outsideViolation!.path!)).toBe(canonicalizePathForMatch(outside));
   });
 
   it("leaves ordinary glued flags read (no path in the glued value)", () => {

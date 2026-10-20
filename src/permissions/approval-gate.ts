@@ -67,7 +67,7 @@ import {
   type HostShellExecutionPlanAuditProjection,
 } from "./host-shell-execution-plan.js";
 import { errorMessage } from "../shared/error-message.js";
-import { isEgressGrantScope, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
+import { isEgressGrantScope, type EgressGrantNetwork, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { isTerminalTabId } from "../shared/tab-id.js";
 
 // ─── Args DLP masking ────────────────────────────────
@@ -227,7 +227,7 @@ interface EgressHostApproval {
    * the address. For both the card warns, and only Allow once / This
    * conversation (a terminal: This tab) are offered.
    */
-  readonly network: "public" | "local" | "unverified";
+  readonly network: EgressGrantNetwork;
   /**
    * Set when a workspace terminal tab asks: the card is that tab's banner,
    * drawn in the window that owns the tab (never another one), and the

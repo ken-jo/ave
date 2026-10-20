@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 /**
  * `getDottedFieldValue` — the selection step both path-argument consumers use.
  *
@@ -98,9 +99,9 @@ describe("patch-envelope path fields", () => {
 
   it("selects the files the patch names for the pipeline's target paths", () => {
     expect(extractTargetFilePaths(toolWith(["patch#patch-envelope"]), { patch }, "/work")).toEqual([
-      "/work/src/a.ts",
-      "/work/src/b.ts",
-      "/work/.env",
+      resolve("/work", "src/a.ts"),
+      resolve("/work", "src/b.ts"),
+      resolve("/work", ".env"),
     ]);
   });
 

@@ -304,7 +304,8 @@ async function impersonationCase(
     // Only the prober's own key on its own listener reaches the callback,
     // which is told the listener vouches for it.
     expect(await connectThrough(proberTarget, proberProxy, ownKey)).toMatch(/^HTTP\/1\.1 403/u);
-    expect(asked).toEqual([{ host: R1_HOST, context: { attributionKey: prober.token, identity: "listener", addresses: [R1_ADDRESS], resolution: "pinned" } }]);
+    // Refused by name (the fixture callback denies): never resolved.
+    expect(asked).toEqual([{ host: R1_HOST, context: { attributionKey: prober.token, identity: "listener", phase: "name" } }]);
 
     if (process.platform === "darwin") {
       // From inside the sandbox the victim's listener is not reachable at

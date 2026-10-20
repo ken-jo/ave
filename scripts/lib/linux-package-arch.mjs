@@ -191,7 +191,7 @@ function auditTreeUnchecked(root, arch, { fileCommand = defaultFileCommand, labe
 
     let nodeAddons = 0;
     for (const { path } of files) {
-      const shown = `${label}/${relative(root, path)}`;
+      const shown = `${label}/${relative(root, path).replaceAll("\\", "/")}`;
       const header = parseElfHeader(readHead(path));
       const isAddon = path.endsWith(".node");
       if (isAddon) nodeAddons += 1;
@@ -225,7 +225,7 @@ function auditTreeUnchecked(root, arch, { fileCommand = defaultFileCommand, labe
     for (const appRoot of appRoots) {
       const rootElves = files.filter(({ path, mode }) =>
         join(path, "..") === appRoot && (mode & 0o111) !== 0 && !/\.so(\.\d+)*$/u.test(path) && parseElfHeader(readHead(path)));
-      if (rootElves.length === 0) violations.push(`${label}/${relative(root, appRoot)}: no executable ELF main binary at the app root`);
+      if (rootElves.length === 0) violations.push(`${label}/${relative(root, appRoot).replaceAll("\\", "/")}: no executable ELF main binary at the app root`);
     }
   } finally {
     rmSync(scratch, { recursive: true, force: true });

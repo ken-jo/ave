@@ -59,7 +59,8 @@ describe("installShellIntegration", () => {
       shell: "zsh",
       env: { ZDOTDIR: home, ...nonceEnv },
     });
-    expect(statSync(join(home, ".zshrc")).mode & 0o777).toBe(0o600);
+    // Owner-only mode bits are enforced by POSIX filesystems.
+    if (process.platform !== "win32") expect(statSync(join(home, ".zshrc")).mode & 0o777).toBe(0o600);
     expect(installShellIntegration(home, "/bin/bash", { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) })).toEqual({ shell: "bash", env: nonceEnv });
     expect(readFileSync(join(home, ".bash_profile"), "utf-8")).toContain("133;C;cmdline_url=");
     expect(installShellIntegration(home, "/usr/bin/fish", { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) })).toEqual({ shell: "fish", env: nonceEnv });

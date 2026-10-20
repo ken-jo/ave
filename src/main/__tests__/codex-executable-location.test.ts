@@ -398,6 +398,31 @@ function windowsFixture(candidate = String.raw`C:\Tools\executable.exe`, directo
 }
 
 describe("native access-rule admission", () => {
+  it.runIf(HOST === "win32")("reads each decoded path separately with the system access-query command", async () => {
+    const fixture = windowsFixture();
+    await assertCodexExecutableLocation(fixture.candidate);
+    const [command, args, options] = vi.mocked(execFile).mock.calls[0]!;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-access-query-")));
+    roots.push(root);
+    const executable = join(root, "odd'; \uD55C\uAE00 $(Write-Output injected).exe");
+    writeFileSync(executable, "fixture");
+    const targets = [root, executable];
+    const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const stdout = await new Promise<string>((resolve, reject) => {
+      childProcess.execFile(command, args!, {
+        ...options,
+        env: { ...options!.env, AVE_EXECUTABLE_ACL_PATHS: JSON.stringify(targets) },
+        encoding: "utf8",
+      }, (error, output) => error ? reject(error) : resolve(output));
+    });
+    const result = JSON.parse(stdout) as { currentSid: string; paths: PathSecurity[] };
+    expect(result.currentSid).toMatch(/^S-1-/);
+    expect(result.paths.map((path) => path.path)).toEqual(targets);
+    expect(result.paths.every((path) => path.daclPresent && path.entries.length > 0)).toBe(true);
+  });
+
   it("checks access rules instead of synthetic uid and permission values", async () => {
     const fixture = windowsFixture();
     fixture.modify((paths) => {

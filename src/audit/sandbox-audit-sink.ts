@@ -23,7 +23,12 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { utcDateKey } from "../shared/local-date.js";
-import type { SandboxAuditEntry, SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry } from "./sandbox-audit.js";
+import type {
+  SandboxAuditEntry,
+  SandboxEgressDecisionAuditEntry,
+  SandboxEgressDenyAuditEntry,
+  SandboxEgressRouteAuditEntry,
+} from "./sandbox-audit.js";
 
 // ─── Sink path ────────────────────────────────────────────────────────────────
 
@@ -64,7 +69,7 @@ function sinkPath(date = new Date()): string {
  * this in a try/catch and log the error without blocking the tool execution.
  */
 export async function emitSandboxAudit(
-  entry: SandboxAuditEntry | SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry,
+  entry: SandboxAuditEntry | SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry | SandboxEgressRouteAuditEntry,
 ): Promise<void> {
   const path = sinkPath();
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });

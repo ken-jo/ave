@@ -88,7 +88,8 @@ async function createValidAudit(): Promise<{ path: string; seals: ReturnType<typ
   return { path: logger.getPermissionAuditLogFile(), seals };
 }
 
-describe("permission audit terminal proof", () => {
+// External key protection requires POSIX ownership and no-follow file opens.
+describe.skipIf(process.platform === "win32")("permission audit terminal proof", () => {
   it("emits a public receipt for a closed AuditLogger chain", async () => {
     const { path } = await createValidAudit();
     const raw = readFileSync(path);
@@ -229,7 +230,8 @@ describe("packaged permission audit self-test", () => {
     vi.stubEnv("AVE_SECRET_KEY_FILE", externalKey);
   });
 
-  it("creates and verifies exactly one challenge-bound row", async () => {
+  // Authority verification requires POSIX file ownership.
+  it.skipIf(process.platform === "win32")("creates and verifies exactly one challenge-bound row", async () => {
     const receipt = await createPermissionAuditSelfTest(CHALLENGE, () => NOW);
     const auditPath = join(home, "proof-home", "audit", receipt.file.name);
     const raw = readFileSync(auditPath);
@@ -251,7 +253,8 @@ describe("packaged permission audit self-test", () => {
     expect(JSON.stringify(receipt)).not.toContain(home);
   });
 
-  it("rejects a reused profile before creating audit authority", async () => {
+  // Authority verification requires POSIX file ownership.
+  it.skipIf(process.platform === "win32")("rejects a reused profile before creating audit authority", async () => {
     writeFileSync(join(process.env.AVE_HOME!, "existing"), "occupied", { mode: 0o600 });
     await expect(createPermissionAuditSelfTest(CHALLENGE)).rejects.toThrow(/fresh AVE_HOME/);
     expect(readdirSync(process.env.AVE_HOME!)).toEqual(["existing"]);

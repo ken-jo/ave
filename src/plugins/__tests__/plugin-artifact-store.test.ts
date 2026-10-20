@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 /**
  * Phase 2 §FU#267 — PluginArtifactStore extracted from marketplace.ts.
  *
@@ -1051,7 +1052,7 @@ describe("PluginArtifactStore — cacheVersionFromManifest", () => {
     }
   });
 
-  it("does not stage through the predictable `<file>.tmp` a planted symlink could redirect", async () => {
+  it.skipIf(!canCreateSymlinks())("does not stage through the predictable `<file>.tmp` a planted symlink could redirect", async () => {
     // The cache writer used a fixed `${filePath}.tmp` + writeFile + rename; the
     // shared atomic writer stages under a random O_EXCL name, so a symlink
     // sitting at the old staging path is neither followed nor renamed over

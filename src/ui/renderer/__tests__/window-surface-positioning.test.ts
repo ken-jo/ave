@@ -74,7 +74,7 @@ function offenders(pattern: RegExp[]): string[] {
   for (const file of listSourceFiles(RENDERER_DIR)) {
     const source = readFileSync(file, "utf8");
     for (const line of source.split("\n")) {
-      if (pattern.some((re) => re.test(line))) hits.add(relative(RENDERER_DIR, file));
+      if (pattern.some((re) => re.test(line))) hits.add(relative(RENDERER_DIR, file).replaceAll("\\", "/"));
     }
   }
   return [...hits].sort();

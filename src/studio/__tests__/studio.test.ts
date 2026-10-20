@@ -461,21 +461,27 @@ describe("Studio drafts and package projections", () => {
     expect(Object.keys(hooks.hooks)).toEqual(["PreToolUse", "PostToolUse", "PermissionRequest"]);
   });
 
+  const executableHookFiles = [
+    { path: "plugin.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      name: "team-kit", version: "1.0.0", description: "A team plugin" })) },
+    { path: "server/run", data: Buffer.from("#!/bin/sh\nexit 0\n"), executable: true },
+    { path: "ai.agent-connector.ave/hooks.json", data: Buffer.from(JSON.stringify({ version: 1, hooks: { SessionStart: [
+      { hooks: [{ type: "command", command: ["./server/run"] }] },
+    ] } })) },
+  ];
+
   it("keeps executable hook bytes and their digest through installed package exports", async () => {
-    const files = [
-      { path: "plugin.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-        name: "team-kit", version: "1.0.0", description: "A team plugin" })) },
-      { path: "server/run", data: Buffer.from("#!/bin/sh\nexit 0\n"), executable: true },
-      { path: "ai.agent-connector.ave/hooks.json", data: Buffer.from(JSON.stringify({ version: 1, hooks: { SessionStart: [
-        { hooks: [{ type: "command", command: ["./server/run"] }] },
-      ] } })) },
-    ];
-    const projected = studioExportFiles(files, true, []);
+    const projected = studioExportFiles(executableHookFiles, true, []);
     const archive = join(root, "executable-hook.zip");
     await writeFile(archive, studioZip(projected));
     const fromZip = await readLocalAgentPlugin(archive);
     expect(fromZip.files.find((file) => file.path === "server/run")?.executable).toBe(true);
     expect(stageLocalAgentPlugin(fromZip.files).contentSha256).toBe(fromZip.treeDigest);
+  });
+
+  // Directory executable bits are unavailable on this host; archive metadata is checked above.
+  it.skipIf(process.platform === "win32")("keeps executable hook bytes and their digest through directory exports", async () => {
+    const projected = studioExportFiles(executableHookFiles, true, []);
     const directory = join(root, "executable-hook");
     for (const file of projected) {
       const full = join(directory, file.path);
@@ -484,7 +490,7 @@ describe("Studio drafts and package projections", () => {
     }
     const fromDirectory = await readLocalAgentPlugin(directory);
     expect(fromDirectory.files.find((file) => file.path === "server/run")?.executable).toBe(true);
-    expect(fromDirectory.treeDigest).toBe(fromZip.treeDigest);
+    expect(fromDirectory.treeDigest).toBe(stageLocalAgentPlugin(executableHookFiles).contentSha256);
   });
 
   it("rejects unknown layouts and package links without importing outside bytes", async () => {

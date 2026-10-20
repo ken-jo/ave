@@ -10,8 +10,9 @@
  *   - `workspace`: this working directory, until revoked in Settings (shell tool calls).
  *   - `always`: every workspace, until revoked in Settings.
  *
- * A persistent grant names the origin that made it (a shell tool call or a
- * workspace terminal) and only ever covers that origin.
+ * A grant covers only the network class shown at approval. A persistent
+ * grant also records its origin (a shell tool call or workspace terminal)
+ * and only ever covers that origin.
  */
 import type { EgressGrantScope } from "./sandbox-capability-info.js";
 
@@ -38,12 +39,21 @@ export function isEgressGrantScope(value: unknown): value is EgressGrantScope {
   return typeof value === "string" && (EGRESS_GRANT_SCOPES as readonly string[]).includes(value);
 }
 
+/** The destination class shown when a grant was approved. */
+export type EgressGrantNetwork = "public" | "local" | "unverified";
+
+export function isEgressGrantNetwork(value: unknown): value is EgressGrantNetwork {
+  return value === "public" || value === "local" || value === "unverified";
+}
+
 /** A "This conversation" grant (held in memory until the app restarts), as Settings lists it. */
 export interface ConversationEgressGrant {
   readonly scope: "conversation";
   readonly sessionId: string;
   readonly host: string;
   readonly port: number;
+  /** Missing only on legacy grants, which cover public destinations exclusively. */
+  readonly network?: EgressGrantNetwork;
   /** ISO time the grant was made. */
   readonly grantedAt: string;
 }
@@ -55,6 +65,8 @@ export interface TabEgressGrant {
   readonly tabId: string;
   readonly host: string;
   readonly port: number;
+  /** Missing only on legacy grants, which cover public destinations exclusively. */
+  readonly network?: EgressGrantNetwork;
   /** ISO time the grant was made. */
   readonly grantedAt: string;
 }
@@ -64,9 +76,9 @@ export type ListedEgressGrant = ConversationEgressGrant | TabEgressGrant | Persi
 
 /** Which grant a revoke names. */
 export type RevocableEgressGrant =
-  | Pick<PersistentEgressGrant, "scope" | "origin" | "host" | "port" | "workspaceRoot">
-  | Pick<ConversationEgressGrant, "scope" | "sessionId" | "host" | "port">
-  | Pick<TabEgressGrant, "scope" | "tabId" | "host" | "port">;
+  | Pick<PersistentEgressGrant, "scope" | "origin" | "host" | "port" | "network" | "workspaceRoot">
+  | Pick<ConversationEgressGrant, "scope" | "sessionId" | "host" | "port" | "network">
+  | Pick<TabEgressGrant, "scope" | "tabId" | "host" | "port" | "network">;
 
 /** A persistent grant, as Settings lists it. */
 export interface PersistentEgressGrant {
@@ -77,6 +89,8 @@ export interface PersistentEgressGrant {
   readonly workspaceRoot?: string;
   readonly host: string;
   readonly port: number;
+  /** Missing only on legacy grants, which cover public destinations exclusively. */
+  readonly network?: EgressGrantNetwork;
   /** ISO time the grant was made. */
   readonly grantedAt: string;
 }

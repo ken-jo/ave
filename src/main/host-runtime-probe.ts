@@ -13,9 +13,9 @@ export function probeHostRuntimeResources(resources: HostResources) {
   const uvRuntimeDir = mkdtempSync(join(tmpdir(), "ave-runtime-check-"));
   try {
     const executable = resolveBundledUvBinaryPath({ uvRuntimeDir });
-    const version = execFileSync(executable, ["--version"], { encoding: "utf8", timeout: 10_000 }).trim();
+    const version = execFileSync(executable, ["--version"], { windowsHide: true, encoding: "utf8", timeout: 10_000 }).trim();
     const uvx = resolveStdioSpawnCommand("uvx", ["--help"], { uvRuntimeDir });
-    execFileSync(uvx.command, uvx.args, { encoding: "utf8", timeout: 10_000 });
+    execFileSync(uvx.command, uvx.args, { windowsHide: true, encoding: "utf8", timeout: 10_000 });
     return {
       uv: { executable, version, sha256: createHash("sha256").update(readFileSync(executable)).digest("hex") },
       uvx: { executable: uvx.command, args: uvx.args, ok: true },

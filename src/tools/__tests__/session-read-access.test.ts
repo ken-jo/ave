@@ -39,7 +39,7 @@ afterEach(async () => {
 
 describe("configured saved-session access", () => {
   it("reads and discovers real history through the public file surfaces outside the project", async () => {
-    expect(getConfiguredSessionReadRoot()).toBe(sessions);
+    expect(getConfiguredSessionReadRoot()).toBe(canonicalizePathForMatch(sessions));
     expect(ensureFileAccess(transcript, context, "read")).toBeNull();
     expect(assertReadableFilePath(transcript, context.cwd, [])).toEqual({ ok: true, resolved: transcript });
     const read = await new ReadFileTool().execute({ path: transcript }, context);

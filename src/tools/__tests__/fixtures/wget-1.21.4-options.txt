@@ -1,0 +1,209 @@
+# Source: https://raw.githubusercontent.com/mirror/wget/v1.21.4/doc/wget.texi
+# Arity source: https://raw.githubusercontent.com/mirror/wget/v1.21.4/src/main.c
+# Arity corrections: src/main.c option_data; legacy -n from the same release.
+-V | doc/wget.texi:418
+--version | doc/wget.texi:419
+-h | doc/wget.texi:422
+--help | doc/wget.texi:423
+-b | doc/wget.texi:426
+--background | doc/wget.texi:427
+-e <command> | doc/wget.texi:432
+--execute <command> | doc/wget.texi:433
+-o <logfile> | doc/wget.texi:448
+--output-file=<logfile> | doc/wget.texi:449
+-a <logfile> | doc/wget.texi:454
+--append-output=<logfile> | doc/wget.texi:455
+-d | doc/wget.texi:461
+--debug | doc/wget.texi:462
+-q | doc/wget.texi:473
+--quiet | doc/wget.texi:474
+-v | doc/wget.texi:478
+--verbose | doc/wget.texi:479
+-nv | doc/wget.texi:483
+--no-verbose | doc/wget.texi:484
+--report-speed=<type> | doc/wget.texi:489
+-i <file> | doc/wget.texi:493
+--input-file=<file> | doc/wget.texi:494
+--input-metalink=<file> | doc/wget.texi:517
+--keep-badhash | doc/wget.texi:522
+--metalink-over-http | doc/wget.texi:528
+--metalink-index=<number> | doc/wget.texi:535
+--preferred-location <location> | doc/wget.texi:544; src/main.c:391 OPT_VALUE
+--xattr | doc/wget.texi:549
+-F | doc/wget.texi:558
+--force-html | doc/wget.texi:559
+-B <URL> | doc/wget.texi:567
+--base=<URL> | doc/wget.texi:568
+--config=<FILE> | doc/wget.texi:582
+--rejected-log=<logfile> | doc/wget.texi:588
+--bind-address=<ADDRESS> | doc/wget.texi:601
+--bind-dns-address=<ADDRESS> | doc/wget.texi:610
+--dns-servers=<ADDRESSES> | doc/wget.texi:620
+-t <number> | doc/wget.texi:631
+--tries=<number> | doc/wget.texi:632
+-O <file> | doc/wget.texi:638
+--output-document=<file> | doc/wget.texi:639
+-nc | doc/wget.texi:677
+--no-clobber | doc/wget.texi:678
+--backups=<backups> | doc/wget.texi:717
+--no-netrc | doc/wget.texi:724
+-c | doc/wget.texi:732
+--continue | doc/wget.texi:733
+--start-pos=<OFFSET> | doc/wget.texi:796
+--progress=<type> | doc/wget.texi:809
+--show-progress | doc/wget.texi:860
+-N | doc/wget.texi:873
+--timestamping | doc/wget.texi:874
+--no-if-modified-since | doc/wget.texi:877
+--no-use-server-timestamps | doc/wget.texi:881
+-S | doc/wget.texi:892
+--server-response | doc/wget.texi:893
+--spider | doc/wget.texi:899
+-T seconds | doc/wget.texi:912
+--timeout=<seconds> | doc/wget.texi:913
+--dns-timeout=<seconds> | doc/wget.texi:932
+--connect-timeout=<seconds> | doc/wget.texi:940
+--read-timeout=<seconds> | doc/wget.texi:947
+--limit-rate=<amount> | doc/wget.texi:961
+-w <seconds> | doc/wget.texi:981
+--wait=<seconds> | doc/wget.texi:982
+--waitretry=<seconds> | doc/wget.texi:997
+--random-wait | doc/wget.texi:1008
+--no-proxy | doc/wget.texi:1027
+-Q <quota> | doc/wget.texi:1037
+--quota=<quota> | doc/wget.texi:1038
+--no-dns-cache | doc/wget.texi:1056
+--restrict-file-names=<modes> | doc/wget.texi:1077
+-4 | doc/wget.texi:1130
+--inet4-only | doc/wget.texi:1131
+-6 | doc/wget.texi:1132
+--inet6-only | doc/wget.texi:1133
+--prefer-family=none/IPv4/IPv6 | doc/wget.texi:1153
+--retry-connrefused | doc/wget.texi:1174
+--user=<user> | doc/wget.texi:1185
+--password=<password> | doc/wget.texi:1186
+--ask-password | doc/wget.texi:1193
+--use-askpass=<command> | doc/wget.texi:1197
+--no-iri | doc/wget.texi:1208
+--local-encoding=<encoding> | doc/wget.texi:1218
+--remote-encoding=<encoding> | doc/wget.texi:1232
+--unlink | doc/wget.texi:1247
+-nd | doc/wget.texi:1258
+--no-directories | doc/wget.texi:1259
+-x | doc/wget.texi:1265
+--force-directories | doc/wget.texi:1266
+-nH | doc/wget.texi:1272
+--no-host-directories | doc/wget.texi:1273
+--protocol-directories | doc/wget.texi:1279
+--cut-dirs=<number> | doc/wget.texi:1285
+-P <prefix> | doc/wget.texi:1318
+--directory-prefix=<prefix> | doc/wget.texi:1319
+--default-page=<name> | doc/wget.texi:1332
+-E | doc/wget.texi:1338
+--adjust-extension | doc/wget.texi:1339
+--http-user=<user> | doc/wget.texi:1374
+--http-password=<password> | doc/wget.texi:1375
+--no-http-keep-alive | doc/wget.texi:1396
+--no-cache | doc/wget.texi:1409
+--no-cookies | doc/wget.texi:1419
+--load-cookies <file> | doc/wget.texi:1430
+--save-cookies <file> | doc/wget.texi:1482
+--keep-session-cookies | doc/wget.texi:1489
+--ignore-length | doc/wget.texi:1508
+--header=<header-line> | doc/wget.texi:1520
+--compression=<type> | doc/wget.texi:1552
+--max-redirect=<number> | doc/wget.texi:1569
+--proxy-user=<user> | doc/wget.texi:1578
+--proxy-password=<password> | doc/wget.texi:1579
+--referer=<url> | doc/wget.texi:1589
+--save-headers | doc/wget.texi:1596
+-U <agent-string> | doc/wget.texi:1601
+--user-agent=<agent-string> | doc/wget.texi:1602
+--post-data=<string> | doc/wget.texi:1625
+--post-file=<file> | doc/wget.texi:1626
+--method=<HTTP-Method> | doc/wget.texi:1694
+--body-data=<Data-String> | doc/wget.texi:1700
+--body-file=<Data-File> | doc/wget.texi:1701
+--content-disposition | doc/wget.texi:1725
+--content-on-error | doc/wget.texi:1741
+--trust-server-names | doc/wget.texi:1747
+--auth-no-challenge | doc/wget.texi:1756
+--retry-on-host-error | doc/wget.texi:1767
+--retry-on-http-error=<code[,code,...]> | doc/wget.texi:1771
+--secure-protocol=<protocol> | doc/wget.texi:1799
+--https-only | doc/wget.texi:1818
+--ciphers <string> | doc/wget.texi:1821; src/main.c:394 OPT_VALUE
+--no-check-certificate | doc/wget.texi:1830
+--certificate=<file> | doc/wget.texi:1860
+--certificate-type=<type> | doc/wget.texi:1867
+--private-key=<file> | doc/wget.texi:1872
+--private-key-type=<type> | doc/wget.texi:1876
+--ca-certificate=<file> | doc/wget.texi:1880
+--ca-directory=<directory> | doc/wget.texi:1888
+--crl-file=<file> | doc/wget.texi:1901
+--pinnedpubkey=file/hashes | doc/wget.texi:1906
+--random-file=<file> | doc/wget.texi:1919
+--egd-file=<file> | doc/wget.texi:1935
+--no-hsts | doc/wget.texi:1954
+--hsts-file=<file> | doc/wget.texi:1960
+--warc-file=<file> | doc/wget.texi:2021
+--warc-header=<string> | doc/wget.texi:2024
+--warc-max-size=<size> | doc/wget.texi:2027
+--warc-cdx | doc/wget.texi:2030
+--warc-dedup=<file> | doc/wget.texi:2033
+--no-warc-compression | doc/wget.texi:2036
+--no-warc-digests | doc/wget.texi:2039
+--no-warc-keep-log | doc/wget.texi:2042
+--warc-tempdir=<dir> | doc/wget.texi:2045
+--ftp-user=<user> | doc/wget.texi:2056
+--ftp-password=<password> | doc/wget.texi:2057
+--no-remove-listing | doc/wget.texi:2077
+--no-glob | doc/wget.texi:2102
+--no-passive-ftp | doc/wget.texi:2122
+--preserve-permissions | doc/wget.texi:2135
+--retr-symlinks | doc/wget.texi:2139
+--ftps-implicit | doc/wget.texi:2162
+--no-ftps-resume-ssl | doc/wget.texi:2174
+--ftps-clear-data-connection | doc/wget.texi:2183
+--ftps-fallback-to-ftp | doc/wget.texi:2188
+-r | doc/wget.texi:2200
+--recursive | doc/wget.texi:2201
+-l <depth> | doc/wget.texi:2205
+--level=<depth> | doc/wget.texi:2206
+--delete-after | doc/wget.texi:2226
+-k | doc/wget.texi:2246
+--convert-links | doc/wget.texi:2247
+--convert-file-only | doc/wget.texi:2287
+-K | doc/wget.texi:2305
+--backup-converted | doc/wget.texi:2306
+-m | doc/wget.texi:2311
+--mirror | doc/wget.texi:2312
+-p | doc/wget.texi:2320
+--page-requisites | doc/wget.texi:2321
+--strict-comments | doc/wget.texi:2398
+-A <acclist> | doc/wget.texi:2435
+--accept <acclist> | doc/wget.texi:2435
+-R <rejlist> | doc/wget.texi:2436
+--reject <rejlist> | doc/wget.texi:2436
+--accept-regex <urlregex> | doc/wget.texi:2445
+--reject-regex <urlregex> | doc/wget.texi:2446
+--regex-type <regextype> | doc/wget.texi:2449
+-D <domain-list> | doc/wget.texi:2454
+--domains=<domain-list> | doc/wget.texi:2455
+--exclude-domains <domain-list> | doc/wget.texi:2459
+--follow-ftp | doc/wget.texi:2464
+--follow-tags=<list> | doc/wget.texi:2469
+--ignore-tags=<list> | doc/wget.texi:2476
+--ignore-case | doc/wget.texi:2497
+-H | doc/wget.texi:2506
+--span-hosts | doc/wget.texi:2507
+-L | doc/wget.texi:2511
+--relative | doc/wget.texi:2512
+-I <list> | doc/wget.texi:2517
+--include-directories=<list> | doc/wget.texi:2518
+-X <list> | doc/wget.texi:2523
+--exclude-directories=<list> | doc/wget.texi:2524
+-np | doc/wget.texi:2529
+--no-parent | doc/wget.texi:2530
+--no-config | doc/wget.texi:200
+-n <letters> | src/main.c:376 required_argument (legacy negation switch)

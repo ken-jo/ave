@@ -64,6 +64,7 @@ import {
   buildPerCommandSandboxCustomConfig,
   getVendoredApplySeccompPath,
   getVendoredJavaProxyAgentJarPath,
+  checkAsrtDependencies,
 } from "../asrt-sandbox.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
@@ -78,7 +79,9 @@ import { preparedShellExecutableReadPaths } from "../../tools/prepared-shell-inv
 // re-implementation that could drift from the package).
 import { matchesDomainPattern } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
 import { resolveParentProxy } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
+import { rankWindowsFsAccess } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+import * as sensitivePaths from "../sensitive-paths.js";
 
 let originalAsrtTestHome: string | undefined;
 let originalAveHome: string | undefined;
@@ -117,11 +120,7 @@ afterEach(async () => {
   }
 });
 
-/**
- * A deny list as these tests read it. On Windows the ASRT boundary gives a
- * directory deny its trailing `\` (srt-win's directory-placeholder signal);
- * compare spellings without it.
- */
+/** Strip the directory marker only for comparisons with the literal floor. */
 function bare(paths: readonly unknown[]): string[] {
   return paths.map((path) => String(path).replace(/[\\/]$/, ""));
 }
@@ -191,6 +190,26 @@ describe("asrt-sandbox — active flag lifecycle (boot-time, no runtime injectio
 });
 
 describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", () => {
+  it.runIf(process.platform === "win32")("stamps an isolated profile without traversing the whole profile", async (context) => {
+    const dependencies = await checkAsrtDependencies();
+    if (dependencies.errors.length > 0) {
+      console.info(`Native ACL stamp timing unavailable: ${dependencies.errors.join("; ")}`);
+      return context.skip(dependencies.errors.join("; "));
+    }
+    if (!(await asrtCanInitialize())) return context.skip("The native sandbox cannot spawn on this host");
+    const work = mkdtempSync(join(tmpdir(), "asrt-stamp-timing-"));
+    try {
+      const started = performance.now();
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, allowWrite: [work] });
+      const elapsed = performance.now() - started;
+      console.info(`Native sandbox initialization including ACL stamp: ${elapsed.toFixed(0)} ms`);
+      expect(elapsed).toBeLessThan(60_000);
+    } finally {
+      if (isAsrtSandboxActive()) await resetAsrtSandbox();
+      await cleanupTmpDir(work);
+    }
+  }, 60_000);
+
   it("returns ASRT argv whose wrapped echo runs and resolves vendor binaries", async () => {
     if (!(await asrtCanInitialize())) return;
 
@@ -205,9 +224,10 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
           : { commandId: TEST_COMMAND_ID, filesystem: { allowWrite: [writeDir], allowRead: [writeDir] } },
       );
 
-      // mac/linux: [<shell>, "-c", <wrapped>]; Windows: [srt-win, "exec", ...]
+      // Unix uses a shell wrapper; the native runtime uses its dispatch flag.
       expect(argv.length).toBeGreaterThanOrEqual(3);
-      expect(argv[1]).toBe(process.platform === "win32" ? "exec" : "-c");
+      if (process.platform === "win32") expect(argv.slice(1, 3)).toEqual(["--srt-win", "exec"]);
+      else expect(argv[1]).toBe("-c");
 
       const res = await runArgv(argv, env, writeDir);
       cleanupAsrtSandboxAfterCommand();
@@ -490,7 +510,8 @@ describe("asrt-sandbox — worker wrap carries only the filesystem jail", () => 
       filesystem: { allowWrite: [], allowRead: [] },
     });
     expect(argv.length).toBeGreaterThanOrEqual(3);
-    expect(argv[1]).toBe(process.platform === "win32" ? "exec" : "-c");
+    if (process.platform === "win32") expect(argv.slice(1, 3)).toEqual(["--srt-win", "exec"]);
+    else expect(argv[1]).toBe("-c");
   });
 });
 
@@ -1053,7 +1074,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       // On macOS the sandbox private roots reach ASRT as exact globs, which it
       // re-emits after the allows minus a wrap's own directory under them.
       const spelled = process.platform === "darwin" && privateRoots.includes(p) ? `${p.slice(0, -1)}[${p.slice(-1)}]` : p;
-      if (reachesAsrt(spelled)) expect(bare(config.filesystem.denyRead)).toContain(spelled);
+      if (reachesAsrt(p)) expect(bare(config.filesystem.denyRead)).toContain(spelled);
     }
     // Secrets is part of the floor (the prior single-entry deny is subsumed).
     expect(bare(config.filesystem.denyRead)).toContain(join(FAKE_AVE_HOME, "secrets"));
@@ -1114,8 +1135,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       expect(denyWrite).toContain(`${join(FAKE_AVE_HOME, "keys")}\\`);
       expect(denyWrite).toContain(join(FAKE_AVE_HOME, "settings.json"));
       // `/etc/shadow` would become `<drive>:\etc\shadow`.
-      expect(denyWrite.filter((p) => p.startsWith("/"))).toEqual([]);
-      expect(config.filesystem.denyRead.map(String).filter((p) => p.startsWith("/"))).toEqual([]);
+      expect(denyWrite).not.toContain("/etc/shadow");
+      expect(config.filesystem.denyRead.map(String)).not.toContain("/etc/shadow");
     } finally {
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
@@ -1123,7 +1144,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     }
   });
 
-  it("Windows: a deny in the profile reaches srt-win only under a grant", () => {
+  it("Windows: a deny in the profile reaches srt-win only when overlapping a grant", () => {
     const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
     const profile = join(tmpdir(), "ave-windeny-profile");
     process.env.AVE_ASRT_TEST_HOME = profile;
@@ -1144,6 +1165,149 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       expect(denies.filter((p) => p.startsWith(profile) && !p.startsWith(work))).toEqual([]);
       // Outside the profile: kept.
       expect(denies).toContain(join(FAKE_AVE_HOME, "settings.json"));
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+    }
+  });
+
+  // Native Windows spelling needs the host's canonical path resolver.
+  it.runIf(ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32").each([
+    ["equal paths", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work\\", "C:\\Users\\sandbox-test\\work", true],
+    ["ancestor denies", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\.config\\project", "C:\\Users\\sandbox-test\\.config", true],
+    ["extended-length grants", "C:\\Users\\sandbox-test", "\\\\?\\C:\\Users\\sandbox-test\\work", "C:\\Users\\sandbox-test\\work\\locked", true],
+    ["extended-length denies", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work", "\\\\?\\C:\\Users\\sandbox-test\\work\\locked", true],
+    ["case folding", "C:\\Users\\sandbox-test", "c:\\users\\SANDBOX-TEST\\WORK", "C:\\Users\\sandbox-test\\work\\locked", true],
+    ["mixed separators", "C:\\Users\\sandbox-test", "C:/Users/sandbox-test/work/", "C:\\Users\\sandbox-test\\work\\locked", true],
+    ["normalized descendants", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work", "C:\\Users\\sandbox-test\\work\\nested\\..\\locked", true],
+    ["normalized escapes", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work", "C:\\Users\\sandbox-test\\work\\..\\locked", false],
+    ["sibling boundaries", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\work", "C:\\Users\\sandbox-test\\work-neighbor\\locked", false],
+    ["drive roots", "C:\\Users\\sandbox-test", "C:\\", "C:\\Users\\sandbox-test\\locked", true],
+    ["profile roots", "C:\\Users\\sandbox-test", "C:\\Users\\sandbox-test\\", "C:\\Users\\sandbox-test\\locked", true],
+    ["network paths", "\\\\server\\profiles\\sandbox-test", "//SERVER/profiles/sandbox-test/work/", "\\\\server\\profiles\\sandbox-test\\work\\locked", true],
+    ["network share boundaries", "\\\\server\\profiles\\sandbox-test", "\\\\server\\profiles\\sandbox-test\\work", "\\\\server\\profiles\\sandbox-test\\work-neighbor\\locked", false],
+  ])("Windows: profile deny coverage respects %s", (_name, profile, grant, target, kept) => {
+    const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
+    process.env.AVE_ASRT_TEST_HOME = profile;
+    setProcessPlatform("win32");
+    try {
+      const config = buildSandboxConfig({
+        allowedDomains: [],
+        allowWrite: [grant],
+        denyRead: [target],
+        denyWrite: [target],
+      });
+      expect(bare(config.filesystem.denyRead).includes(target)).toBe(kept);
+      expect(bare(config.filesystem.denyWrite).includes(target)).toBe(kept);
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+    }
+  });
+
+  it.each([
+    ["equal paths", "work", "work", true],
+    ["ancestor denies", ".config/project", ".config", true],
+    ["descendant denies", "work", "work/locked", true],
+    ["normalized descendants", "work", "work/nested/../locked", true],
+    ["normalized escapes", "work", "work/../locked", false],
+    ["sibling boundaries", "work", "work-neighbor/locked", false],
+    ["unresolved patterns", "work", "other/*", true],
+    ["unresolved short names", "work", "OTHER~1/locked", true],
+    ["unresolved grant patterns", "work/*", "other/locked", true],
+  ] as const)("Windows: native profile deny coverage respects %s", (_name, grantSuffix, targetSuffix, kept) => {
+    const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
+    const profile = join(tmpdir(), "ave-windeny-profile");
+    process.env.AVE_ASRT_TEST_HOME = profile;
+    setProcessPlatform("win32");
+    try {
+      const target = join(profile, ...targetSuffix.split("/"));
+      const config = buildSandboxConfig({
+        allowedDomains: [],
+        allowWrite: [join(profile, ...grantSuffix.split("/"))],
+        denyRead: [target],
+        denyWrite: [target],
+      });
+      expect(bare(config.filesystem.denyRead).includes(target)).toBe(kept);
+      expect(bare(config.filesystem.denyWrite).includes(target)).toBe(kept);
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+    }
+  });
+
+  it.each(["~", "~/.config/project", "~\\.config\\project"])("Windows: raw home grant %s keeps the parent deny", (grant) => {
+    const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
+    const profile = join(tmpdir(), "ave-windeny-profile");
+    process.env.AVE_ASRT_TEST_HOME = profile;
+    setProcessPlatform("win32");
+    try {
+      const target = join(profile, ".config");
+      for (const access of ["allowRead", "allowWrite"] as const) {
+        const config = buildSandboxConfig({
+          allowedDomains: [],
+          [access]: [grant],
+          denyRead: [target],
+        });
+        expect(bare(config.filesystem.denyRead), access).toContain(target);
+        expect(bare(config.filesystem.denyWrite), access).toContain(target);
+      }
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+    }
+  });
+
+  it("Windows: an unproven canonical identity keeps the deny", () => {
+    const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
+    const profile = join(tmpdir(), "ave-windeny-profile");
+    const target = join(profile, "locked");
+    const canonicalize = sensitivePaths.canonicalizePathForMatch;
+    const spy = vi.spyOn(sensitivePaths, "canonicalizePathForMatch").mockImplementation((path) => {
+      if (path === target) throw new Error("Path identity unavailable");
+      return canonicalize(path);
+    });
+    process.env.AVE_ASRT_TEST_HOME = profile;
+    setProcessPlatform("win32");
+    try {
+      const config = buildSandboxConfig({ allowedDomains: [], denyRead: [target], denyWrite: [target] });
+      expect(config.filesystem.denyRead).toContain(target);
+      expect(config.filesystem.denyWrite).toContain(target);
+    } finally {
+      spy.mockRestore();
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+    }
+  });
+
+  it("Windows: a write grant below the profile write floor preserves the parent deny", () => {
+    const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
+    const profile = join(tmpdir(), "ave-windeny-profile");
+    process.env.AVE_ASRT_TEST_HOME = profile;
+    setProcessPlatform("win32");
+    try {
+      const configRoot = join(profile, ".config");
+      const project = join(configRoot, "project");
+      const config = buildSandboxConfig({
+        allowedDomains: [],
+        allowWrite: [project],
+      });
+      expect(config.filesystem.denyWrite).toContain(`${configRoot}\\`);
+      expect(bare(config.filesystem.denyWrite)).not.toContain(join(profile, ".ssh"));
+      const ranked = rankWindowsFsAccess({
+        allowRead: [],
+        allowWrite: [project],
+        denyRead: [],
+        denyWrite: bare(config.filesystem.denyWrite),
+        credentialDeny: [],
+      });
+      expect(ranked.grantWrite).not.toContain(project);
+      expect(ranked.grantRead).toContain(project);
     } finally {
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;

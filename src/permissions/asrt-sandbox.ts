@@ -17,7 +17,6 @@ import { globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, SENSITIVE_PATH_ENTRIES } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
-import { isWindowsPathAtOrUnder } from "./mxc-windows.js";
 import { createLogger } from "../lib/logger.js";
 import type { InvocationProxyUpstream } from "./egress-invocation-listener.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
@@ -38,6 +37,7 @@ import type {
   WindowsConfig,
   WindowsBinShell,
   SandboxAskCallback,
+  ParentProxyRouter,
 } from "@anthropic-ai/sandbox-runtime";
 
 const log = createLogger("asrt-sandbox");
@@ -315,6 +315,17 @@ export interface TrustedSandboxSettings {
     readonly resolvesNames?: boolean;
   };
   /**
+   * The per-destination route hook (carried ASRT patch part 4,
+   * `SandboxManager.setParentProxyRouter`). TRUSTED-ONLY. When present it
+   * replaces {@link upstreamProxy} for routing: ASRT asks it once per
+   * destination decision and dials over the answered routes in order. Boot
+   * passes the router built from the main-owned `upstreamProxy` setting
+   * (`src/permissions/upstream-proxy.ts`); the static `parentProxy` stays
+   * the explicit-empty floor, so the ambient environment is never inherited
+   * by ASRT itself.
+   */
+  readonly upstreamRouter?: ParentProxyRouter;
+  /**
    * Windows-only sandbox settings (srt-win network backend). TRUSTED-ONLY —
    * the proxy port range must agree with what the install flow WFP-permits.
    *
@@ -329,7 +340,7 @@ export interface TrustedSandboxSettings {
     /**
      * Run only the proxy on Windows: srt-win's account, WFP fence and session
      * ACLs are neither required nor touched, and every srt-win wrap refuses
-     * (the carried ASRT patch, part 3). Set by boot only where Microsoft
+     * (the carried ASRT patch, part 6). Set by boot only where Microsoft
      * Execution Containers carry the agent shells and srt-win is not ready
      * (`mxc-windows.ts`); plugin processes then have no confinement substrate
      * and {@link isPluginWorkerConfinementActive} reports false.
@@ -547,6 +558,16 @@ async function openEgressListener(
 export function closeEgressConnections(tokens: readonly string[], host: string, port: number): number {
   if (tokens.length === 0) return 0;
   return loadedSandboxManagerForRelease?.closeInvocationConnections(tokens, host, port) ?? 0;
+}
+
+/**
+ * Close every connection the proxy allowed, for every invocation: when the
+ * upstream proxy setting changes, a tunnel opened through the old upstream
+ * (or direct, before one was required) must not outlive it, as a revoked
+ * grant's connections do not. Returns how many were closed.
+ */
+export function closeAllEgressConnections(): number {
+  return loadedSandboxManagerForRelease?.closeAllInvocationConnections() ?? 0;
 }
 
 /** Set once a listener has been opened, so a release can close it synchronously. */
@@ -1389,7 +1410,7 @@ function electronUserDataDir(userDataDir: string | undefined): string {
       : process.platform === "win32"
         ? join(home, "AppData", "Roaming", "Ave")
         : join(
-            // Linux: mirror Electron's XDG_CONFIG_HOME resolution.
+            // Linux: honor XDG_CONFIG_HOME.
             process.env.XDG_CONFIG_HOME ?? join(home, ".config"),
             "Ave",
           ))
@@ -1427,19 +1448,20 @@ function writePersistenceDirectories(): string[] {
  *   - a POSIX-rooted row (`/etc/shadow`, `/tmp/claude`, …) is dropped. It
  *     resolves against the current drive, and srt-win materialized
  *     `C:\etc\shadow`, `C:\var\spool\cron`, `C:\tmp\claude` and the like;
- *   - a row in the user profile that no grant covers is dropped. The sandbox
+ *   - a row in the user profile disjoint from every grant is dropped. The sandbox
  *     user has no rights in the profile (its DACL is SYSTEM, Administrators
- *     and the user), so such a deny takes nothing away, as on MXC
- *     ({@link rankMxcFilesystem}). And it is what made `acl stamp` time out:
- *     srt-win also puts an inheritable `(D;OICI;FILE_DELETE_CHILD)` on the
- *     row's parent, and Windows walks the parent's whole subtree to apply it,
- *     once per row. Measured on Windows 26300: 25 ms under a small folder,
- *     5.2 s under a 75 000-entry one, 404 s (and 318 s to restore) under the
- *     profile. A row outside the profile stays: other drives commonly let
- *     Authenticated Users in. A grant that covers the profile itself keeps
- *     every row, and the stamp is slow again. A worker's grant comes after
- *     the session stamp, so a row beneath one reaches srt-win as a per-exec
- *     deny of the worker's wrap, which restates the floor.
+ *     and the user), so such a deny takes nothing away. It made `acl stamp`
+ *     time out: srt-win also puts an inheritable `(D;OICI;FILE_DELETE_CHILD)`
+ *     on the row's parent, and Windows walks the parent's whole subtree to
+ *     apply it, once per row. Measured on Windows 26300: 25 ms under a small
+ *     folder, 5.2 s under a 75 000-entry one, 404 s (and 318 s to restore)
+ *     under the profile. A row outside the profile stays: other drives
+ *     commonly let Authenticated Users in. A grant that covers the profile
+ *     itself keeps every row, and the stamp is slow again. A worker's grant
+ *     comes after the session stamp, so an overlapping row reaches srt-win as
+ *     a per-exec deny of the worker's wrap, which restates the floor. Ancestor
+ *     denies must keep their original priority: a child write grant must still
+ *     be downgraded by the runtime's deny ranking before stamp targets narrow.
  * Other platforms get the list unchanged.
  */
 function windowsDenyTargets(
@@ -1449,6 +1471,9 @@ function windowsDenyTargets(
 ): string[] {
   if (process.platform !== "win32") return [...paths];
   const home = homedir();
+  // Match runtime home expansion before judging whether a deny is disjoint.
+  const expandedGrants = grants.map((grant) => grant === "~" ? home
+    : /^~[\\/]/.test(grant) ? home + grant.slice(1) : grant);
   const ave = aveHome();
   const directories = new Set(
     [
@@ -1466,18 +1491,27 @@ function windowsDenyTargets(
   ]);
   return paths
     .filter((path) => !posixRooted.has(path))
-    .filter((path) => !isWindowsPathAtOrUnder(path, home) || grants.some((grant) => isWindowsPathAtOrUnder(path, grant)))
+    .filter((path) => {
+      try {
+        // Use admission's canonical identity, including links and native aliases.
+        // Patterns and unresolved short names cannot prove disjointness.
+        if ([path, ...expandedGrants].some((candidate) => /[\0*?\[\]%]|~\d+(?:\.|[\\/]|$)/
+          .test(candidate.replace(/^\\\\\?\\/, "")))) return true;
+        return !isGrantPathWithin(home, path)
+          || expandedGrants.some((grant) => isGrantPathWithin(grant, path) || isGrantPathWithin(path, grant));
+      } catch {
+        // An unproven identity must never remove a deny.
+        return true;
+      }
+    })
     .map((path) => (!/[\\/]$/.test(path) && directories.has(caseFoldForMatch(path)) ? `${path}\\` : path));
 }
 
 function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string): string[] {
   const home = homedir();
   const ave = aveHome();
-  // Electron userData dir — exact path when provided by a trusted caller;
-  // otherwise derived from os.homedir() + per-platform literal (NO `electron`
-  // import — keeps this module safe for any non-renderer context).
-  // FIX 1 (security MINOR): Linux base honors XDG_CONFIG_HOME, mirroring
-  // Electron's own resolution: `process.env.XDG_CONFIG_HOME || ~/.config`.
+  // Exact runtime data dir when provided by a trusted caller; otherwise
+  // derive the platform default without importing main-process modules.
   const electronUserData = electronUserDataDir(userDataDir);
   const raw = [
     // ── The sensitive-path table, projected to literal absolute paths ──
@@ -1747,7 +1781,7 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
   // config and the WFP rule never desync. Inert on mac/linux — ASRT ignores the
   // `windows` section off Windows, but we only emit it on win32 to keep the
   // config minimal and the non-Windows config shape unchanged.
-  // Part 3 of the carried ASRT patch reads `externalConfinement`; the
+  // Part 6 of the carried ASRT patch reads `externalConfinement`; the
   // package's own WindowsConfig type does not declare it.
   const windows: (WindowsConfig & { externalConfinement?: "embedder" }) | undefined =
     process.platform === "win32"
@@ -2045,6 +2079,9 @@ export async function initializeAsrtSandbox(
   const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings));
   assertNoLocalBinding(config);
   noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
+  // Installed before the proxy starts, so no connection is routed without
+  // it; reset() (including a failed initialization's) clears it.
+  SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
   await SandboxManager.initialize(config, askCb, enableLogMonitor);
   try {
     // Linux's ASRT dependency check only proves executables are installed. Run
@@ -2783,6 +2820,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
       throw err;
     }
   }
+
   for (const path of allowRead) _windowsLiveGrants.set(path, (_windowsLiveGrants.get(path) ?? 0) + 1);
 
   let released = false;

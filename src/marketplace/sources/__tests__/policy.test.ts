@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { lstat, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -61,6 +62,7 @@ const DESIGN_EXAMPLE = {
 describe("loadMarketplacePolicy", () => {
   it("means no restrictions when the file is missing or has no marketplaces section", async () => {
     expect(await loadMarketplacePolicy(join(dir, "absent.json"))).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path: join(dir, "absent.json") });
+    expect(await loadMarketplacePolicy(join(dir, "absent", "nested", "policy.json"))).toMatchObject({ ok: true, policy: EMPTY_MARKETPLACE_POLICY });
     writeFileSync(path, JSON.stringify({ version: 1, requireExplicitApproval: true, managed: false, updatedAt: "x" }));
     expect(await loadMarketplacePolicy(path)).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path });
   });
@@ -69,11 +71,18 @@ describe("loadMarketplacePolicy", () => {
     const parent = join(dir, "admin");
     writeFileSync(parent, "not a directory");
     expect(await loadMarketplacePolicy(join(parent, "policy.json"))).toMatchObject({ ok: false });
+    expect(await loadMarketplacePolicy(join(parent, "nested", "policy.json"))).toMatchObject({ ok: false });
   });
 
-  it("treats a dangling policy symlink as unreadable rather than unrestricted", async () => {
+  it.skipIf(!canCreateSymlinks())("treats a dangling policy symlink as unreadable rather than unrestricted", async () => {
     symlinkSync(join(dir, "missing-target.json"), path, "file");
     expect(await loadMarketplacePolicy(path)).toMatchObject({ ok: false });
+  });
+
+  it.skipIf(!canCreateSymlinks(process.platform === "win32" ? "junction" : "dir"))("treats a dangling policy parent as unreadable", async () => {
+    const parent = join(dir, "linked-parent");
+    symlinkSync(join(dir, "missing-parent"), parent, process.platform === "win32" ? "junction" : "dir");
+    expect(await loadMarketplacePolicy(join(parent, "policy.json"))).toMatchObject({ ok: false });
   });
 
   it("reads the design example and keeps a key listed in both lists as required only", async () => {
@@ -408,12 +417,12 @@ describe("FilePolicySource (§18.6)", () => {
     const update = await source.check();
 
     expect(update?.load).toMatchObject({ ok: false });
-    expect(update?.digest).toBe("unreadable:ENOTDIR");
+    expect(update?.digest).toBe(process.platform === "win32" ? "unreadable:ENOENT" : "unreadable:ENOTDIR");
     source.apply(update!);
     expect(source.load.ok).toBe(false);
   });
 
-  it("refreshes an absent policy to unreadable when a dangling symlink appears", async () => {
+  it.skipIf(!canCreateSymlinks())("refreshes an absent policy to unreadable when a dangling symlink appears", async () => {
     const source = await FilePolicySource.open(path);
     expect(source.digest).toBe("absent");
     symlinkSync(join(dir, "missing-target.json"), path, "file");

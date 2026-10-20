@@ -320,7 +320,7 @@ describe("bash tool", () => {
       writeFileSync(target, "secret", "utf8");
       try {
         const result = await new BashTool().execute(
-          { command: `cat ${target}`, timeoutSeconds: SHELL_TIMEOUT_SECONDS },
+          { command: `cat '${target.replaceAll("\\", "/")}'`, timeoutSeconds: SHELL_TIMEOUT_SECONDS },
           ctx(root),
         );
         expect(result.isError).toBe(true);

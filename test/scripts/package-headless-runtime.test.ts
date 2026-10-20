@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 import {
   HEADLESS_PACKAGED_MARKER_NAME,
   headlessPackagedMarkerPath,
@@ -170,8 +171,14 @@ function readInventory(root: string) {
     packager, root]);
 }
 
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  const previous = process.noAsar;
+  process.noAsar = true;
+  try {
+    for (const root of roots.splice(0)) await cleanupTmpDir(root);
+  } finally {
+    process.noAsar = previous;
+  }
 });
 
 describe("native packaged payload extraction", () => {
