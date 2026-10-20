@@ -710,16 +710,6 @@ export const scenarios: Record<string, ScenarioEntry> = {
     },
   },
 
-  // ---- agent-hub plugin (host sidebar) ------------------------------------------------
-  'agent-hub-my-work': {
-    topic: 'agent-hub-plugin',
-    skip:
-      'No agent-hub plugin bundle exists in this workspace — there is no agent-hub plugin ' +
-      'repo, and no plugin.json anywhere declares a ui extension named my-work / team-board / ' +
-      'agent-hub (verified by scanning every ave-plugin-*/plugin.json). Nothing to side-load.',
-  },
-  'agent-hub-team-board': { topic: 'agent-hub-plugin', skip: 'Same as agent-hub-my-work — no agent-hub bundle exists.' },
-
   // ---- settings (not in the docs shot list by app- prefix, but part of the smoke subset) ----
   // Not a docs-site key — included as an extra smoke-subset target proving the
   // settings surface renders. Not written into the docs `shots` map.
@@ -732,24 +722,12 @@ export const scenarios: Record<string, ScenarioEntry> = {
 };
 
 /**
- * ah-* keys (agent-hub SERVER dashboards) are
- * WEB/server screens per the task's explicit scope — they render in a browser against a separate Next.js app, not the Electron
- * host. Deliberately absent from `scenarios` (not even as skip entries) so
- * the matrix only enumerates keys this harness could ever plausibly own.
- * See README.md "Out of scope: web/server keys" for the full list.
- */
-export const WEB_SERVER_KEYS_OUT_OF_SCOPE = [
-  'ah-dashboard', 'ah-workboard', 'ah-worklog', 'ah-inbox', 'ah-report', 'ah-subscription',
-] as const;
-
-/**
  * meeting-* / local-indexer-* keys depict those plugins' own UI (the meeting
  * panel and minutes, the indexer's folders, scan and search), built from their
  * own repositories. This harness seeds only the fixture plugins under
  * `test/fixtures/e2e-plugins`, so it reads nothing outside this repository, and
  * a fixture cannot honestly stand in for another product's screens. The keys
- * are therefore deliberately absent from `scenarios`, as the web/server keys
- * above are. Their committed images stay as published; reshooting them belongs
+ * are therefore deliberately absent from `scenarios`. Their committed images stay as published; reshooting them belongs
  * to the plugin's own repository.
  */
 export const PLUGIN_REPOSITORY_KEYS_OUT_OF_SCOPE = [

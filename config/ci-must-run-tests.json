@@ -58,6 +58,7 @@
       "src/core/model-catalog/__tests__/cache-concurrency.test.ts",
       "src/data/__tests__/secret-document-store.test.ts",
       "src/data/__tests__/settings-store-shared-secret-lease.test.ts",
+      "src/engine/__tests__/conversation-loop-kill-durability.test.ts",
       "src/engine/telemetry/__tests__/tracing.test.ts",
       "src/main/__tests__/codex-conversation-runtime.test.ts",
       "src/plugins/__tests__/registry-atomicity.test.ts",

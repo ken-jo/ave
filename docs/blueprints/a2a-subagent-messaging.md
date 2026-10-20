@@ -167,7 +167,7 @@ P4-0 closes the documentation/evidence lag after the ph3 runtime, expiry,
 official-TCK, and production-handler smoke changes merged. Ph4 starts from the
 following boundary; it does not reopen ph3's loopback listener contract.
 
-- **P4-1 owner and purpose:** the active public `agent-hub` Node/TypeScript
+- **P4-1 owner and purpose:** the active public Agent Hub Node/TypeScript
   server owns a pure Agent Card registry admission module. It accepts one
   already-retrieved card, validates the
   bounded Ave/A2A v1 subset, and returns an immutable admission result.
@@ -199,19 +199,19 @@ following boundary; it does not reopen ph3's loopback listener contract.
 - **Merge evidence (2026-07-15):** the P4-0 contract landed in
   `ave#1636` as merge commit
   `6a7a777873e04e968d3338bb723fba404e26c928`, and the P4-1 admission core
-  landed in `agent-hub#15` as merge commit
+  landed in the Agent Hub repository's PR 15 as merge commit
   `8856b193b8417e9e4b61421be47904030ab25b2e`.
   The merged implementation remains pure admission with no hidden I/O or
   execution effect: every result is `routable=false`, local
   mailbox/question/resume behavior is unchanged, and D8 remains depth-1.
 - **P4-1 hardening evidence (2026-07-15):** the DEL/C1 control-character
   follow-up landed through
-  `agent-hub#17`. GitHub
+  the Agent Hub repository's PR 17. GitHub
   records its PR `merged_at` as `2026-07-15T07:06:51Z` and its
   `merge_commit_sha` as
   `f8b50e734d92b1ad4590e730820c9c4207331cab`;
   that commit's committer timestamp is `2026-07-15T07:06:50Z`. The related
-  `agent-hub#16` issue
+  Agent Hub issue 16
   was closed with state reason `completed` at `2026-07-15T07:06:52Z`. This
   closes only the P4-1
   input-validation follow-up. It adds no persistence, trust-review workflow,

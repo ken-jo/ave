@@ -12,13 +12,13 @@ import { retryOnTransientFsLock } from "../lib/transient-fs-lock-retry.js";
 
 const COPY_BUFFER_BYTES = 64 * 1024;
 
-interface NativeArtifactFile {
+interface ExecutableArtifactFile {
   readonly executable: string;
   readonly contentHash: string;
 }
 
-export interface CodexExecutableArtifact extends NativeArtifactFile {
-  readonly companion: NativeArtifactFile | null;
+export interface CodexExecutableArtifact extends ExecutableArtifactFile {
+  readonly companion: ExecutableArtifactFile | null;
 }
 
 export class CodexExecutableArtifactError extends Error {
@@ -42,7 +42,7 @@ function unchanged(before: BigIntStats, after: BigIntStats): boolean {
     && before.ctimeNs === after.ctimeNs && before.mtimeNs === after.mtimeNs;
 }
 
-async function openRegularFile(path: string): Promise<FileHandle> {
+export async function openExecutableFile(path: string): Promise<FileHandle> {
   const before = await fs.lstat(path, { bigint: true });
   if (!before.isFile() || before.isSymbolicLink()) throw new CodexExecutableArtifactError();
   const handle = await fs.open(path, constants.O_RDONLY | noFollow());
@@ -56,7 +56,7 @@ async function openRegularFile(path: string): Promise<FileHandle> {
   }
 }
 
-async function hashFile(handle: FileHandle): Promise<string> {
+export async function hashExecutableFile(handle: FileHandle): Promise<string> {
   const before = await handle.stat({ bigint: true });
   const hash = createHash("sha256");
   const buffer = Buffer.alloc(COPY_BUFFER_BYTES);
@@ -73,14 +73,12 @@ async function hashFile(handle: FileHandle): Promise<string> {
   return hash.digest("hex");
 }
 
-async function copyNativeFile(
+export async function copyExecutableFile(
   source: string,
   executable: string,
-  platform: NodeJS.Platform,
-  arch: NodeJS.Architecture,
-): Promise<NativeArtifactFile> {
+): Promise<ExecutableArtifactFile> {
   await assertCodexExecutableLocation(source);
-  const input = await openRegularFile(source);
+  const input = await openExecutableFile(source);
   try {
     const before = await input.stat({ bigint: true });
     const output = await fs.open(executable, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow(), 0o600);
@@ -104,17 +102,26 @@ async function copyNativeFile(
     } finally {
       await output.close();
     }
-    const artifact = Object.freeze({ executable, contentHash: hash.digest("hex") });
-    const copied = await openRegularFile(executable);
-    try {
-      if (!await isNativeExecutableFile(copied, platform, arch)) throw new CodexExecutableArtifactError();
-    } finally {
-      await copied.close();
-    }
-    return artifact;
+    return Object.freeze({ executable, contentHash: hash.digest("hex") });
   } finally {
     await input.close();
   }
+}
+
+export async function copyNativeExecutableFile(
+  source: string,
+  executable: string,
+  platform: NodeJS.Platform,
+  arch: NodeJS.Architecture,
+): Promise<ExecutableArtifactFile> {
+  const artifact = await copyExecutableFile(source, executable);
+  const copied = await openExecutableFile(executable);
+  try {
+    if (!await isNativeExecutableFile(copied, platform, arch)) throw new CodexExecutableArtifactError();
+  } finally {
+    await copied.close();
+  }
+  return artifact;
 }
 
 async function companionSource(source: string, platform: NodeJS.Platform): Promise<string | null> {
@@ -153,11 +160,11 @@ export async function copyCodexExecutableArtifact(
   const directory = await fs.mkdtemp(join(runtimeDirectory, "artifact-"));
   try {
     await assertCodexPrivateRuntimeDirectory(directory);
-    const primary = await copyNativeFile(source, join(directory, platform === "win32" ? "codex.exe" : "codex"), platform, arch);
+    const primary = await copyNativeExecutableFile(source, join(directory, platform === "win32" ? "codex.exe" : "codex"), platform, arch);
     const companion = await companionSource(source, platform);
     const artifact = Object.freeze({
       ...primary,
-      companion: companion === null ? null : await copyNativeFile(
+      companion: companion === null ? null : await copyNativeExecutableFile(
         companion,
         join(directory, platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host"),
         platform,
@@ -179,11 +186,11 @@ export async function verifyCodexExecutableArtifact(artifact: CodexExecutableArt
   for (const file of [artifact, ...(artifact.companion ? [artifact.companion] : [])]) {
     if (dirname(file.executable) !== directory) throw new CodexExecutableArtifactError();
     await assertCodexExecutableLocation(file.executable);
-    const input = await openRegularFile(file.executable);
+    const input = await openExecutableFile(file.executable);
     try {
       const stat = await input.stat({ bigint: true });
       if (stat.nlink !== 1n || (process.platform !== "win32" && (stat.mode & 0o777n) !== 0o500n)
-        || await hashFile(input) !== file.contentHash) {
+        || await hashExecutableFile(input) !== file.contentHash) {
         throw new CodexExecutableArtifactError("Executable artifact changed");
       }
     } finally {

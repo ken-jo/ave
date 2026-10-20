@@ -18,7 +18,7 @@
  *     it records the address the transport pinned, then hands the request to
  *     the loopback listener over plain HTTP and surfaces the socket's connect
  *     as the TLS handshake. Certificate validation is therefore not exercised;
- *   - the route control plane (formerly Agent Hub): an in-process resolver
+ *   - the route control plane (formerly a separate hub service): an in-process resolver
  *     that issues the same no-store snapshot shape;
  *   - the sub-agent's LLM work: a deterministic `LifecycleRunner` at the
  *     runner boundary, so task state transitions are exact;

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promises as fs, type Stats } from "node:fs";
 import { posix, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { isRecord } from "../shared/is-record.js";
 
 const MAX_SYMLINKS = 40;
 const MAX_ACL_OUTPUT_BYTES = 256 * 1024;
@@ -118,7 +119,8 @@ function assertPosixOwnership(path: InspectedPath): void {
   if (uid === undefined || (path.stat.uid !== 0 && path.stat.uid !== uid)) {
     throw new CodexExecutableLocationError("Executable path has an untrusted owner");
   }
-  if (!path.stat.isSymbolicLink() && (path.stat.mode & 0o022) !== 0) {
+  const stickyRootDirectory = path.stat.isDirectory() && path.stat.uid === 0 && (path.stat.mode & 0o1000) !== 0;
+  if (!path.stat.isSymbolicLink() && (path.stat.mode & 0o022) !== 0 && !stickyRootDirectory) {
     throw new CodexExecutableLocationError("Executable path is writable by another account");
   }
 }
@@ -235,10 +237,6 @@ async function assertExtendedAccessRules(inspected: readonly InspectedPath[], pr
   if (seen.size !== inspected.length) throw new CodexExecutableLocationError("Executable access rules are incomplete");
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function parseWindowsSecurity(stdout: string): WindowsSecurityResult {
   let value: unknown;
   try {
@@ -353,4 +351,12 @@ export async function assertCodexPrivateRuntimeDirectory(candidate: string): Pro
   } else if (process.platform === "darwin") {
     await assertExtendedAccessRules(inspected, leaf.path);
   }
+}
+
+/** Check a package directory and every route component with the shared trust policy. */
+export async function assertExecutableDirectory(candidate: string): Promise<void> {
+  const { leaf, inspected } = await inspectLocation(candidate);
+  if (!leaf.stat.isDirectory()) throw new CodexExecutableLocationError("Executable package path is not a directory");
+  if (process.platform === "win32") await assertWindowsSecurity(inspected);
+  else if (process.platform === "darwin") await assertExtendedAccessRules(inspected);
 }

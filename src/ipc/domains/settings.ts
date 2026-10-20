@@ -38,7 +38,13 @@ import type {
   MarketplaceSettings,
   ShortcutSettings,
   AppSettings,
+  SettingsService,
 } from "../../data/settings-store.js";
+import type { ActiveChatModel } from "../../shared/active-chat-model.js";
+import {
+  resolveMainActiveChatModel,
+  type ActiveChatModelSettingsReader,
+} from "../../engine/turn/active-chat-model.js";
 import type {
   CodexSubscriptionActionResult,
   CodexSubscriptionDeviceCodeResult,
@@ -230,13 +236,24 @@ function normalizeSubscriptionModel(value: unknown): string | undefined | null {
 /**
  * The settings shape the renderer sees. Authoritative remote route lineage
  * (`a2aRemote`) is main-only and never projected to the renderer; every other
- * field crosses as-is, so the renderer's `AppSettings` is exactly this type.
+ * stored field crosses as-is, so the renderer's `AppSettings` is exactly this
+ * type.
+ *
+ * `activeChatModel` is the one derived field. A vendor block always names a
+ * model, so the stored settings cannot say whether chat has a model at all;
+ * only main, which holds the secret store, can. Every renderer surface that
+ * names the active model reads it from here.
  */
-export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote">;
+export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote"> & {
+  readonly activeChatModel: ActiveChatModel;
+};
 
-function rendererSettingsSnapshot(snapshot: AppSettings): RendererSettingsSnapshot {
+export function rendererSettingsSnapshot(
+  settingsService: ActiveChatModelSettingsReader & Pick<SettingsService, "getAll">,
+  snapshot: AppSettings = settingsService.getAll(),
+): RendererSettingsSnapshot {
   const { a2aRemote: _mainOnly, ...projected } = structuredClone(snapshot);
-  return projected;
+  return { ...projected, activeChatModel: resolveMainActiveChatModel(settingsService) };
 }
 
 /** Shared by every handler that mutates settings and must re-broadcast the
@@ -274,7 +291,7 @@ export async function broadcastSettingsSnapshot(
     return;
   }
   if (localeLoaded) setLocale(nextLocale);
-  broadcastToAppWindows(deps, SETTINGS.updated, rendererSettingsSnapshot(snapshot));
+  broadcastToAppWindows(deps, SETTINGS.updated, rendererSettingsSnapshot(deps.settingsService, snapshot));
 }
 
 /**
@@ -782,7 +799,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   };
 
   // read-only — no sender guard needed
-  ipcMain.handle(CHANNELS.settings.get, () => rendererSettingsSnapshot(settingsService.getAll()));
+  ipcMain.handle(CHANNELS.settings.get, () => rendererSettingsSnapshot(settingsService));
 
   // Read-only, and presence only: the answer is a list of settings paths the
   // environment is forcing ON, never the value of any variable. A control that
@@ -1149,7 +1166,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       auditSubscriptionMutation("choose-runtime", "invalid", "rejected", "subscription-provider-not-supported");
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
-    if (!subscriptionRuntimeDescriptor(providerValue).requiresExecutable) {
+    // A discovered CLI (codex, claude) is found by Ave, never picked: no dialog.
+    if (subscriptionRuntimeDescriptor(providerValue).executable !== "user-selected") {
       auditSubscriptionMutation("choose-runtime", providerValue, "rejected", "subscription-provider-not-supported");
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
@@ -1179,6 +1197,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     }
     if (!isSubscriptionRuntimeId(providerValue)) {
       auditSubscriptionMutation("forget-runtime", "invalid", "rejected", "subscription-provider-not-supported");
+      return { ok: false as const, error: "subscription-provider-not-supported" as const };
+    }
+    if (subscriptionRuntimeDescriptor(providerValue).executable !== "user-selected") {
+      auditSubscriptionMutation("forget-runtime", providerValue, "rejected", "subscription-provider-not-supported");
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
     const result = await runSubscriptionMutation(providerValue, (runtime, provider) => runtime.forgetExecutable(provider));

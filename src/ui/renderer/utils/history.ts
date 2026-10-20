@@ -142,6 +142,7 @@ export function historyToEntries(
           : {}),
         ...(m.createdAt !== undefined ? { createdAt: m.createdAt } : {}),
         ...(m.messageId !== undefined ? { messageId: m.messageId } : {}),
+        restored: true,
       });
     } else if (m.role === "assistant") {
       const text = textContent(m.content);
@@ -171,6 +172,9 @@ export function historyToEntries(
           ? { systemNotice: m.systemNotice }
           : {}),
         ...(m.interrupted === true ? { interrupted: true } : {}),
+        ...(m.interrupted === true && m.interruptedBy === "host-exit"
+          ? { interruptedBy: "host-exit" as const }
+          : {}),
       });
 
       if (m.toolCalls?.length) {
@@ -321,4 +325,30 @@ function isReplayableSystemNotice(
   "interrupted"
 > {
   return value === "context-error" || value === "stream-error";
+}
+
+/**
+ * What the composer should offer for a session whose last turn never finished
+ * in the app run that started it:
+ *
+ * - `resume`: the turn was cut short by the app exiting (crash, kill, quit) and
+ *   its rows are on disk ending in a host-exit interrupted row — Continue picks
+ *   up from everything already persisted.
+ * - `rerun`: the user's question was persisted and nothing after it — the app
+ *   went away before the first token — so Continue asks it again.
+ *
+ * Only state rebuilt from disk qualifies (`restored` user bubbles, host-exit
+ * rows), so a turn that simply failed in front of the user never shows it.
+ */
+export function interruptedTurnOffer(entries: readonly ChatEntry[]): "resume" | "rerun" | null {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (entry.kind === "assistant") {
+      return entry.interrupted === true && entry.interruptedBy === "host-exit" ? "resume" : null;
+    }
+    if (entry.kind === "user") {
+      return entry.restored === true && entry.injectHint === undefined ? "rerun" : null;
+    }
+  }
+  return null;
 }

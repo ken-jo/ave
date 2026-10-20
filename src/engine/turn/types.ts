@@ -308,6 +308,12 @@ export interface RunTurnOptions {
    */
   displayText?: string;
   /**
+   * The user row this turn appends is Continue after a turn the app's exit
+   * interrupted: a host-written instruction, not a new request. Stamped on the
+   * row so the session keeps the title of what the user actually asked.
+   */
+  resumesInterruptedTurn?: true;
+  /**
    * Identity to stamp on the user row this turn appends. Supplied by the
    * caller that already announced the row on the timeline, so the row the
    * surface is showing and the row stored here are the same row.

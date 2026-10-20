@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
-import { copyCodexExecutableArtifact, verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
+import { copyCodexExecutableArtifact, copyExecutableFile, verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -55,6 +55,29 @@ describe("private executable artifacts", () => {
     } else {
       await expect(copyCodexExecutableArtifact(source, runtime)).rejects.toThrow(`Executable changed while ${stage}`);
       expect(readdirSync(runtime)).toEqual([]);
+    }
+  });
+
+  it("hashes and seals a script copy with exclusive no-follow opens", async () => {
+    const { runtime, source } = fixture();
+    const script = Buffer.from("#!/usr/bin/env node\nexport const value = 1;\n");
+    writeFileSync(source, script);
+    const open = vi.spyOn(fs, "open");
+    const destination = join(runtime, "module.js");
+    const artifact = await copyExecutableFile(source, destination);
+    expect(artifact).toEqual({
+      executable: destination,
+      contentHash: createHash("sha256").update(script).digest("hex"),
+    });
+    expect(readFileSync(destination)).toEqual(script);
+    const creation = open.mock.calls.find(([, flags]) => typeof flags === "number" && (flags & constants.O_CREAT) !== 0)!;
+    expect(Number(creation[1]) & constants.O_EXCL).toBe(constants.O_EXCL);
+    expect(creation[2]).toBe(0o600);
+    if (process.platform !== "win32") {
+      const sourceOpen = open.mock.calls.find(([path]) => String(path) === source)!;
+      expect(Number(sourceOpen[1]) & constants.O_NOFOLLOW).toBe(constants.O_NOFOLLOW);
+      expect(Number(creation[1]) & constants.O_NOFOLLOW).toBe(constants.O_NOFOLLOW);
+      expect(statSync(destination).mode & 0o777).toBe(0o500);
     }
   });
 

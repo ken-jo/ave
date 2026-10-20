@@ -244,11 +244,13 @@ describe("ToolExecutor.executeOne success shape", () => {
     const executor = new ToolExecutor(registry, undefined, new PermissionManager("/tmp/nonexistent-shape2.json"));
 
     const onToolEnd = vi.fn();
+    const onToolResult = vi.fn();
     const results = await executor.executeAll(
       [{ id: "tu-shape-2", name: "shape_ui", input: {} }],
       {
         sessionId: "sess-shape-ui",
         callbacks: { onToolEnd },
+        onToolResult,
         permissionContext: userPermissionContext(),
       },
     );
@@ -257,6 +259,7 @@ describe("ToolExecutor.executeOne success shape", () => {
     expect(r.content).toBe("rendered");
     expect(r.uiPayload).toEqual(uiPayload);
     expect(r.rawResult).toEqual(rawResult);
+    expect(onToolResult).toHaveBeenCalledExactlyOnceWith(r);
     expect(r.is_error).toBeUndefined();
     // onToolEnd(name, content, isError, meta, uiPayload, durationMs)
     const call = onToolEnd.mock.calls.at(-1);

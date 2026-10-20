@@ -25,6 +25,29 @@ import type { ChatEntry } from "../../../src/lib/chat-stream-state.js";
 
 
 describe("useChatState", () => {
+  it("shows the Continue bubble while resuming an interrupted turn", async () => {
+    const { api } = makeMockAveApi();
+    const { result } = renderHook(() => useChatState(api as unknown as AveApi, () => {}));
+    await act(async () => {
+      await result.current.handleContinueFromLastUser("sess-1", { userBubble: "Continue" });
+    });
+    expect(api.chatContinueLastUser).toHaveBeenCalledWith("sess-1");
+    expect(result.current.entries.filter((e) => e.kind === "user")).toEqual([
+      expect.objectContaining({ kind: "user", text: "Continue" }),
+    ]);
+  });
+
+  it("removes the Continue bubble when the host refuses the resume", async () => {
+    const { api } = makeMockAveApi();
+    api.chatContinueLastUser.mockResolvedValueOnce({ ok: false, error: "busy" } as never);
+    const { result } = renderHook(() => useChatState(api as unknown as AveApi, () => {}));
+    await act(async () => {
+      await result.current.handleContinueFromLastUser("sess-1", { userBubble: "Continue" });
+    });
+    expect(result.current.entries.some((e) => e.kind === "user")).toBe(false);
+    expect(result.current.entries.at(-1)).toMatchObject({ kind: "assistant" });
+  });
+
   it("subscribes to onChatStream on mount", () => {
     const { api } = makeMockAveApi();
     renderHook(() => useChatState(api as unknown as AveApi, () => {}));
@@ -800,7 +823,7 @@ describe("useCurrentSession (streaming guard)", () => {
     expect(api.chatSessionHistory).toHaveBeenCalledWith("other-sess");
 
     expect(setEntries).toHaveBeenCalledWith([
-      { kind: "user", text: "작업 순서 확인" },
+      { kind: "user", text: "작업 순서 확인", restored: true },
       { kind: "reasoning", text: "검색 계획", streaming: false },
       expect.objectContaining({ kind: "tool_group", status: "done" }),
       { kind: "assistant", text: "중간 답변", streaming: false, route: undefined, restored: true },
@@ -829,7 +852,7 @@ describe("useCurrentSession (streaming guard)", () => {
     });
 
     expect(setEntries).toHaveBeenCalledWith([
-      { kind: "user", text: "이전 질문" },
+      { kind: "user", text: "이전 질문", restored: true },
       { kind: "assistant", text: "이전 답변", streaming: false, route: undefined, restored: true },
     ]);
   });
@@ -858,7 +881,7 @@ describe("useCurrentSession (streaming guard)", () => {
       await result.current.handleLoadSession("manual-sess", applyLoaded);
     });
 
-    expect(applyLoaded).toHaveBeenCalledWith([{ kind: "user", text: "manual session" }]);
+    expect(applyLoaded).toHaveBeenCalledWith([{ kind: "user", text: "manual session", restored: true }]);
     expect(result.current.currentSessionId).toBe("manual-sess");
 
     await act(async () => {
