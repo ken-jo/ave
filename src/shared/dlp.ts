@@ -839,7 +839,7 @@ function luhnValid(num: string): boolean {
   return sum % 10 === 0;
 }
 
-type PiiKind = "SSN_KR" | "EMAIL" | "PHONE_KR" | "PHONE_US" | "CREDIT_CARD";
+type PiiKind = "SSN_KR" | "EMAIL" | "PHONE_KR" | "PHONE_US" | "PHONE_INTL" | "CREDIT_CARD";
 
 /**
  * One shared PII detector. DETECTION (the pattern plus an optional validity
@@ -874,7 +874,8 @@ export interface PiiPattern {
  *    inside a longer digit string is not misread as a resident-registration
  *    number;
  *  - both the dashed and the dashless mobile form are matched, across the wider
- *    carrier-prefix range, plus the US phone shape;
+ *    carrier-prefix range, plus the US phone shape and plus-prefixed
+ *    international tokens with visual separators;
  *  - card candidates span the wider digit-length range and are gated by Luhn, so
  *    a non-card digit run of card length is left intact.
  *
@@ -896,6 +897,18 @@ export const PII_PATTERNS: PiiPattern[] = [
     pattern: /[a-zA-Z0-9._%+-]+@([\w.-]+\.\w+)/g,
     maskShape: (_m, domain) => `***@${domain}`,
     redactToken: "[REDACTED:EMAIL]",
+  },
+  {
+    kind: "PHONE_INTL",
+    nameKey: "be_dlp.patternPhoneNumber",
+    // Screen plus-prefixed tokens of 8–15 digits, not subscriber validity.
+    // Whitespace can end a field; uninterrupted overlong numbers cannot match.
+    pattern: /(?<![\p{L}\p{N}_+.-])\+[1-9](?:[ \t().-]{0,3}\d){7,14}(?![\p{L}\p{N}_+]|[.-][\p{L}\p{N}_]|[().-]{0,3}\d)/gu,
+    valid: (m) => !/^\+(?:19|20)\d{2}[-./]?(?:0[1-9]|1[0-2])[-./]?(?:0[1-9]|[12]\d|3[01])(?:$|[ \t])/.test(m)
+      && !(/^\+(?:\d{1,3}\.){3}\d{1,3}$/.test(m)
+        && m.slice(1).split(".").every((octet) => Number(octet) <= 255)),
+    maskShape: (m) => m.replace(/\d/g, "*"),
+    redactToken: "[REDACTED:PHONE]",
   },
   {
     kind: "PHONE_KR",
