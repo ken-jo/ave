@@ -18,7 +18,8 @@
  *   A;<n>  prompt start      B;<n>  command input start
  *   C[;cmdline_url=…];<n>    command output start (command text percent-encoded)
  *   D[;<exit>];<n>           command finished
- *   P;Cwd=<encoded path>;<n> the working directory
+ *   P;Cwd=<encoded path>;<n> the working directory (zsh and bash also report
+ *                            Keys=, Paste=, B= and Pid=: see shell-integration.ts)
  *
  * A marker counts only when its last field is this terminal's nonce (see
  * shell-integration.ts): anything a command prints reaches the same stream,
@@ -236,7 +237,9 @@ function cleanCommand(raw: string): string {
  *    does), or typed anything within the last {@link USER_INPUT_QUIET_MS}
  *    (keys still on their way through the shell have not been echoed yet);
  *  - `no-bracketed-paste`: the shell did not report bracketed paste on, so
- *    text written to it would be read as keys rather than inserted;
+ *    text written to it would be read as keys rather than inserted (zsh also
+ *    reports it off while a right-hand prompt is set, whose text after the end
+ *    of the prompt cannot be told from typing);
  *  - `vi-editing-mode`: the shell's line editor uses vi key bindings, where
  *    typed text can be read as editing commands;
  *  - `not-found-handler`: the shell defines a command-not-found handler
@@ -319,6 +322,11 @@ export class TerminalBlockTracker {
    * so it carries this per-prompt token instead of the nonce.
    */
   private promptEndToken: string | null = null;
+  /**
+   * The shell's own pid (`$$`, in its own pid namespace) from its last P
+   * marker, or null when it reported none.
+   */
+  private shellPid: number | null = null;
   /** Called after authenticated markers, user input, and exit (see {@link subscribe}). */
   private readonly listeners = new Set<() => void>();
 
@@ -353,6 +361,11 @@ export class TerminalBlockTracker {
     // the user's own typing. fish marks no B, so its prompt phase is the
     // steady state and typing there cannot be told from the prompt text.
     if (this.phase === "input") {
+      // A line editor the shell reported as taking no paste stays that way for
+      // the whole prompt, so say so before anything the user may still be
+      // doing: zsh reports Paste=0 while a right-hand prompt (RPROMPT) is set,
+      // whose text follows B and would otherwise read as typing forever.
+      if (this.editor !== null && !this.editor.bracketedPaste) return "no-bracketed-paste";
       if (this.echo.text().trim() !== "" || this.inputSincePromptEnd) return "pending-input";
       if (this.lastInputAt !== null && this.now() - this.lastInputAt < USER_INPUT_QUIET_MS) return "pending-input";
       if (this.editor?.bracketedPaste !== true) return "no-bracketed-paste";
@@ -389,6 +402,11 @@ export class TerminalBlockTracker {
    */
   editLineText(): string {
     return this.phase === "input" ? this.echo.text().replace(/[\r\n]/gu, "") : "";
+  }
+
+  /** The pid the shell reported for itself (`$$`) at its last prompt, or null. */
+  reportedShellPid(): number | null {
+    return this.shellPid;
   }
 
   /** The working directory the shell last reported, or null before it reported one. */
@@ -636,6 +654,8 @@ export class TerminalBlockTracker {
           : { keys, bracketedPaste: paste === "1", notFoundHandler: notFound !== "0" };
         const token = params.find((p) => p.startsWith("B="))?.slice("B=".length);
         this.promptEndToken = token !== undefined && /^[0-9a-f]{16,}$/u.test(token) ? token : null;
+        const pid = params.find((p) => p.startsWith("Pid="))?.slice("Pid=".length);
+        this.shellPid = pid !== undefined && /^[1-9][0-9]{0,9}$/u.test(pid) ? Number(pid) : null;
         break;
       }
       case "A":

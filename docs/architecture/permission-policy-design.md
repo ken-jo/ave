@@ -590,7 +590,7 @@ scope or project rules use it
 foreground process group must be the shell itself: the process spawned on
 the pty, matched by pid and program name, so neither a program running in
 front of it nor a nested shell of the same name passes. That process's working
-directory, symlinks resolved, must equal the reported one. On Linux both come from `/proc`. On macOS the
+directory, symlinks resolved, must equal the reported one. On macOS the
 foreground group comes from `ps`, and the working directory comes from
 `lsof -d cwd`. Node cannot call `proc_pidinfo` without a native addon, and
 `lsof` is the stock unprivileged reader of that call. Other platforms get no
@@ -599,11 +599,32 @@ scope is the verified one.
 
 On macOS every wrapper before the shell (the pty trampoline, `env`,
 `sandbox-exec`, `bash -c`) execs in place, so the pty's process is the shell.
-On Linux the sandbox runs the shell under `bwrap --new-session --unshare-pid`.
-The shell is then a forked child in its own session and never holds the pty's
-foreground, so `terminal_run` refuses every sandboxed Linux terminal
-(`foreground-not-shell`) until the check can follow the shell into bwrap's
-namespace.
+On Linux the sandbox runs under `bwrap --new-session --unshare-pid`, kept as
+bubblewrap's defense against TIOCSTI input injection, so nothing in the
+sandbox holds the pty node-pty opened. The shell runs on a pty of its own that
+util-linux `script` opens inside the sandbox
+([terminal-inner-pty.ts](../../src/main/terminal/terminal-inner-pty.ts)), as
+`su --pty` does for the same problem: Ctrl-C, job control and readline
+behave as on any terminal, and a shell on the outer pty (where Ctrl-C killed
+bubblewrap and with it the whole terminal) is never started; a host without
+util-linux `script` gets no terminal, with the reason. The check reads `/proc`:
+- the shell is found by walking down from the pty's process along the one
+  chain the wrap builds (`bwrap`, `bwrap`, `bash` with the runtime's `socat`
+  bridges beside it, `apply-seccomp` twice, `script`, then the shell, by
+  name), one child per step. Only the verified outer bridge launcher's side
+  pids are exempt; extra children under a reaper are refused regardless of
+  their program names;
+- its innermost `NSpid` must equal the `Pid=` (`$$`) the prompt's `P` marker
+  reported, so the markers and the process are the same shell;
+- the foreground group of its own pty must be the shell itself;
+- it must have no child process: a command still finishing, or a background
+  job, which could write to the terminal or type into the line through
+  TIOCSTI on that pty, is refused (`shell-busy`). Any other process on that
+  pty sharing the shell's session or foreground group is also busy, including
+  processes that have been reparented;
+- its working directory must be the reported directory by device and inode,
+  not by path: the sandbox mounts directories of its own (an empty tmpfs over a
+  read-denied one) at paths the host also has.
 
 The command is typed only at an empty prompt, as the shell's own command
 markers report it ([terminal-blocks.ts](../../src/main/terminal/terminal-blocks.ts)
@@ -622,7 +643,11 @@ execution:
   vi key bindings. Each prompt reports both (`Keys=`, `Paste=` in its `P`
   marker). zsh reports paste only while `zle_bracketed_paste` is set and the
   `bracketed-paste` and `self-insert` widgets are still the builtins (so
-  `bracketed-paste-magic` and `url-quote-magic` count as no paste). bash
+  `bracketed-paste-magic` and `url-quote-magic` count as no paste), and
+  reports none while a right-hand prompt (`RPROMPT`) is set: zle draws it
+  after the end of the prompt, where it would read as the user's typing at
+  every prompt. A shell that reported no paste is refused for that before
+  the typing checks below. bash
   reports it while readline has `enable-bracketed-paste on`, which the
   startup file turns on for bash 4.4 and later. Bash before 4.4, such as
   macOS `/bin/bash` 3.2, has none.
@@ -648,7 +673,8 @@ on the same approved line after a prompt reported no handler.
 Typing is a fixed protocol (pty-manager `typeLineAtPrompt`):
 1. Check the prompt state.
 2. Check the shell and its directory with the operating system.
-3. Write Ctrl-C. The tty turns it into SIGINT, which clears the line editor
+3. Write Ctrl-C. The tty (on Linux, the shell's own pty inside the sandbox)
+   turns it into SIGINT, which clears the line editor
    whatever its state: an ESC or Ctrl-X prefix waiting for its next key, a
    half-typed line.
 4. Wait for the fresh prompt, then check the directory and the state again.

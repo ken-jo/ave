@@ -496,6 +496,32 @@ describe("prompt state (whether a command may be typed now)", () => {
     expect(tracker.promptEndCount()).toBe(4);
   });
 
+  it("says no-bracketed-paste, not typing, for a prompt that reported Paste=0 and shows text after its end (zsh RPROMPT)", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true, now: () => 10_000 });
+    // zle draws the right-hand prompt after B: it lands in the edit line's echo.
+    tracker.recordOutput(`${mark("P;Cwd=/w;Keys=emacs;Paste=0")}${mark("A")}% ${mark("B")}\u001b[50C[main]\r\u001b[2C`);
+    expect(tracker.editLineText()).not.toBe("");
+    expect(tracker.promptState()).toBe("no-bracketed-paste");
+    // A prompt that takes paste and shows text after its end is the user's typing.
+    tracker.recordOutput(`\r\n${mark("D;0")}${mark("P;Cwd=/w;Keys=emacs;Paste=1")}${mark("A")}% ${mark("B")}ls`);
+    expect(tracker.promptState()).toBe("pending-input");
+  });
+
+  it("keeps the pid the shell reported at its last prompt", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    expect(tracker.reportedShellPid()).toBeNull();
+    tracker.recordOutput(`${mark("P;Cwd=/w;Keys=emacs;Paste=1;Pid=2")}${mark("A")}% ${mark("B")}`);
+    expect(tracker.reportedShellPid()).toBe(2);
+    for (const bad of ["Pid=0", "Pid=-1", "Pid=2x", "Pid=", "Pid=12345678901"]) {
+      tracker.recordOutput(`\r\n${mark("D;0")}${mark(`P;Cwd=/w;Keys=emacs;Paste=1;${bad}`)}${mark("A")}% ${mark("B")}`);
+      expect(tracker.reportedShellPid()).toBeNull();
+    }
+    // Text a command prints carries no nonce and changes nothing.
+    tracker.recordOutput(`\r\n${mark("D;0")}${mark("P;Cwd=/w;Keys=emacs;Paste=1;Pid=2")}${mark("A")}% ${mark("B")}`);
+    tracker.recordOutput("\u001b]133;P;Cwd=/w;Pid=99;forged\u0007");
+    expect(tracker.reportedShellPid()).toBe(2);
+  });
+
   it("is not ready while the shell has a command-not-found handler, or does not say whether it has one", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
     const promptWith = (fields: string): string => `\r\n${mark("D;0")}${mark(`P;Cwd=/w${fields}`)}${mark("A")}% ${mark("B")}`;

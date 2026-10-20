@@ -536,13 +536,13 @@ jobs:
         # already; install only what is missing so both runner kinds pass.
         run: |
           missing=0
-          for tool in bwrap socat rg xvfb-run; do
+          for tool in bwrap socat rg xvfb-run bash zsh; do
             command -v "$tool" >/dev/null 2>&1 || { echo "missing: $tool"; missing=1; }
           done
           if [ "$missing" = 1 ]; then
-            sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep xvfb
+            sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep xvfb bash zsh
           else
-            echo "bubblewrap, socat, ripgrep and xvfb already installed"
+            echo "bubblewrap, socat, ripgrep, xvfb, bash and zsh already installed"
           fi
       # Ubuntu 24.04 restricts unprivileged user namespaces by default, which
       # strips what bubblewrap needs (ASRT README, "Platform-Specific
@@ -615,3 +615,4 @@ jobs:
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
+          src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts

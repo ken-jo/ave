@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 
 /**
  * Authenticated OSC 133 command markers for tests that feed a terminal block
@@ -37,6 +38,15 @@ export const TERMINAL_TEST_MODERN_BASH = ["/opt/homebrew/bin/bash", "/usr/local/
 
 /** zsh on this machine, if any. */
 export const TERMINAL_TEST_ZSH = ["/bin/zsh", "/usr/bin/zsh"].find((path) => existsSync(path));
+
+/** Poll until `condition` holds, as real-shell tests wait for a shell; throws at the timeout. */
+export async function waitForTerminal(condition: () => boolean, timeoutMs = 8_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("timed out");
+    await sleep(25);
+  }
+}
 
 /**
  * A command-not-found handler as Ubuntu's /etc/bash.bashrc defines it for

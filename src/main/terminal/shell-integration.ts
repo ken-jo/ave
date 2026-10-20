@@ -8,13 +8,14 @@
  *
  * Each shell reports, around every command it runs (`<n>` is the nonce):
  *   OSC 133;D;<exit>;<n>            the previous command finished (first prompt: nothing open)
- *   OSC 133;P;Cwd=<encoded path>;Keys=<emacs|vi>;Paste=<0|1>;NotFound=<0|1>;B=<token>;<n>
+ *   OSC 133;P;Cwd=<encoded path>;Keys=<emacs|vi>;Paste=<0|1>;NotFound=<0|1>;B=<token>;Pid=<$$>;<n>
  *                                   the working directory, the line editor's
  *                                   key bindings, whether it takes bracketed
  *                                   paste, whether a command-not-found handler
  *                                   is defined (it runs code for any word that
- *                                   is not a command), and the token of this
- *                                   prompt's B (zsh, bash; fish: Cwd only)
+ *                                   is not a command), the token of this
+ *                                   prompt's B, and the shell's own pid in its
+ *                                   pid namespace (zsh, bash; fish: Cwd only)
  *   OSC 133;A;<n>                   prompt start
  *   OSC 133;B;<token>               end of prompt / start of typed input (zsh, bash)
  *   OSC 133;C;cmdline_url=<percent-encoded command>;<n>  output starts
@@ -55,6 +56,12 @@
  * except the hooks.
  * The working directory moved from OSC 7 to `P;Cwd=` because OSC 7 has no
  * field for a nonce.
+ *
+ * `Pid=` ties the markers to a process: terminal_run checks it against the
+ * shell the operating system finds in a sandboxed Linux terminal
+ * (pty-manager `sandboxedShellVerdict`). zsh reports `Paste=0` while a
+ * right-hand prompt (`RPROMPT`/`RPS1`) is set: zle draws it after the end of
+ * the prompt (B), where its text would read as typing at every prompt.
  *
  * The command text and the directory are percent-encoded so they can never
  * carry the BEL / ESC that would end the marker, or the `;` that separates its
@@ -137,12 +144,14 @@ const ZSH_RC = (noncePath: string): string => [
   // url-quote-magic would rewrite what is pasted).
   '  [[ "$(bindkey -lL main)" == *vi* ]] && ave_keys=vi',
   '  [[ -n "$zle_bracketed_paste" && "${widgets[bracketed-paste]}" == builtin && "${widgets[self-insert]}" == builtin ]] && ave_paste=1',
+  // A right-hand prompt is drawn after B, where it would read as typing.
+  '  [[ -n "${RPROMPT}${RPS1}" ]] && ave_paste=0',
   // A fresh token for this prompt's B, which the prompt string prints.
   '  ave_token="$(/usr/bin/od -An -N16 -tx1 /dev/urandom 2>/dev/null)"',
   '  ave_token="${ave_token//[^0-9a-f]/}"',
   "  __ave_b=$'\\e]133;B;'\"$ave_token\"$'\\a'",
   '  __ave_encode "$PWD"',
-  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;NotFound=%s;B=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_not_found\" \"$ave_token\" \"$__ave_nonce\" \"$__ave_nonce\"",
+  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;NotFound=%s;B=%s;Pid=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_not_found\" \"$ave_token\" \"$$\" \"$__ave_nonce\" \"$__ave_nonce\"",
   "}",
   "__ave_preexec() {",
   '  __ave_encode "${1[1,' + MAX_ENCODED_COMMAND_CHARS + ']}"',
@@ -202,7 +211,7 @@ const BASH_PROFILE = (noncePath: string): string => [
   '  ave_token="${ave_token//[^0-9a-f]/}"',
   "  __ave_b=$'\\e]133;B;'\"$ave_token\"$'\\a'",
   '  __ave_encode "$PWD"',
-  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;NotFound=%s;B=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_not_found\" \"$ave_token\" \"$__ave_nonce\" \"$__ave_nonce\"",
+  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;NotFound=%s;B=%s;Pid=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_not_found\" \"$ave_token\" \"$$\" \"$__ave_nonce\" \"$__ave_nonce\"",
   "  __ave_at_prompt=1",
   "}",
   "__ave_preexec() {",
