@@ -133,18 +133,21 @@ the installed package.
    overwriting (link() for a non-directory, otherwise only while the name is
    absent); if the name is taken it stays at the private name and is logged.
    Residual limit: Node has no renameat2(RENAME_NOREPLACE/EXCHANGE),
-   funlinkat or openat, so each step is still a path syscall. Only a process
-   that deliberately renames the sandbox's own entries between two
-   consecutive syscalls can still cost an entry: by moving an empty
-   directory onto the reservation before the publishing rename (that empty
-   directory is replaced), by swapping one of the 128-bit private names
-   (staged directory, quarantine) before it is checked or deleted, or by
-   creating an entry at the public name between the absence check and the
-   rename that puts back a moved directory that is not ours (an empty
+   funlinkat or openat, so each step is still a path syscall. An entry can
+   still be lost only in these windows between two consecutive syscalls:
+   any rename that puts an empty directory in place of the reservation
+   (renaming ours away and creating one, or renaming an existing empty
+   directory over it) between the reservation mkdir and the publishing
+   rename replaces that empty directory (a non-empty directory or a
+   non-directory there fails the wrap closed); a swap of one of the 128-bit
+   private names (staged directory before its descriptor is opened,
+   quarantine before it is checked or deleted); or, after a replacement was
+   already moved aside, an entry created at the public name between the
+   absence check and the rename that puts a directory back (an empty
    directory there is replaced; a non-directory likewise where hard links
-   are refused). An accidental concurrent create, replace or atomic save at
-   the target can only skip the cleanup; an entry moved aside and put back
-   is briefly absent from its name.
+   are refused). During cleanup, an accidental concurrent create, replace
+   or atomic save at the target can only skip the cleanup; an entry moved
+   aside and put back is briefly absent from its name.
    Incompatible bind targets still fail closed. Concurrent-wrap cleanup
    remains deferred until all wraps have ended.
 
