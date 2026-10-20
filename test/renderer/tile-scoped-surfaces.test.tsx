@@ -1023,7 +1023,7 @@ describe("a turn parked on an approval, with two tiles", () => {
     }
   });
 
-  it.each(["question", "approval", "child", "closed-child"] as const)("transfers a retained side session's %s ownership on sequential sends and back", async (surface) => {
+  it.each(["question", "approval", "child", "closed-child", "combined", "closed-combined"] as const)("transfers a retained side session's %s ownership on sequential sends and back", async (surface) => {
     const { container, api, emitAskUserQuestion, emitApproval, emitApprovalSettled, emitAgentSpawnEvent } = await renderApp({ hasApiKey: true, sideChat: true });
     const [first, second] = await splitIntoTwoTiles(container);
     const side = api.sideChat as unknown as NonNullable<AveApi["sideChat"]>;
@@ -1043,7 +1043,11 @@ describe("a turn parked on an approval, with two tiles", () => {
       await act(async () => { fireEvent.click(tile.element.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!); });
       await act(async () => { fireEvent.click(tile.element.querySelector(`[data-testid="${chatSidePanelLauncherTestId("side-chat")}"]`)!); });
     }
-    const children = surface === "child" || surface === "closed-child";
+    const hasCombinedSurfaces = surface === "combined" || surface === "closed-combined";
+    const hasQuestion = surface === "question" || hasCombinedSurfaces;
+    const hasApproval = surface === "approval" || hasCombinedSurfaces;
+    const hasChildren = surface === "child" || surface === "closed-child" || hasCombinedSurfaces;
+    const isClosed = surface === "closed-child" || surface === "closed-combined";
     const showTab = async (tile: NonNullable<typeof first>, kind: "subagent" | "side-chat") => {
       await act(async () => {
         const add = tile.element.querySelector('[data-testid="chat-side-panel-add-tab"]')!;
@@ -1064,19 +1068,26 @@ describe("a turn parked on an approval, with two tiles", () => {
     const finish = async (number: number) => {
       const refreshes = vi.mocked(api.chatSessions).mock.calls.length;
       await act(async () => {
-        if (surface === "approval") emitApprovalSettled(`approval-transfer-${number}`);
-        if (surface === "question") for (const handler of questionTimeouts) handler({ requestId: `ask-transfer-${number}` });
+        if (hasApproval) emitApprovalSettled(`approval-transfer-${number}`);
+        if (hasQuestion) for (const handler of questionTimeouts) handler({ requestId: `ask-transfer-${number}` });
+      });
+      await waitFor(() => {
+        expect(container.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(0);
+        expect(container.querySelectorAll('[data-testid="approval-dock"]')).toHaveLength(0);
+      });
+      await act(async () => {
         for (const stream of streams) stream({ type: "done", streamId: number });
         turns[number - 1]!.resolve({ ok: true, result: {} });
         await turns[number - 1]!.promise;
       });
       await waitFor(() => expect(api.chatSessions).toHaveBeenCalledTimes(refreshes + 1));
+      await act(async () => { await vi.mocked(api.chatSessions).mock.results[refreshes]!.value; });
     };
     try {
       for (const number of [1, 2, 3]) {
         const senderIndex = number === 2 ? 1 : 0;
-        if (number === 3 && children) {
-          if (surface === "closed-child") await showTab(first!, "side-chat");
+        if (number === 3 && hasChildren) {
+          if (isClosed) await showTab(first!, "side-chat");
           else await act(async () => { fireEvent.click(first!.element.querySelector('[data-testid="chat-side-panel-tab-side-chat"]')!); });
         }
         const tiles = [first!, second!];
@@ -1089,21 +1100,24 @@ describe("a turn parked on an approval, with two tiles", () => {
         expect(side.send).toHaveBeenCalledTimes(number);
         await act(async () => {
           for (const stream of streams) stream({ type: "user_message", sessionId: MOCK_SIDE_CHAT_SESSION_ID, streamId: number, sendRequestId: vi.mocked(side.send).mock.calls[number - 1]![3] });
-          if (surface === "question") {
+          if (hasQuestion) {
             emitAskUserQuestion({ id: `ask-transfer-${number}`, sessionId: MOCK_SIDE_CHAT_SESSION_ID, createdAt: Date.now(), questions: [{ question: `Question for turn ${number}`, choices: ["Continue", "Stop"] }] });
-          } else if (surface === "approval") {
+          }
+          if (hasApproval) {
             emitApproval(approvalRequest({ id: `approval-transfer-${number}`, sessionId: MOCK_SIDE_CHAT_SESSION_ID }));
-          } else {
+          }
+          if (hasChildren) {
             emitAgentSpawnEvent({ type: "start", spawnId: `child-transfer-${number}`, parentSessionId: MOCK_SIDE_CHAT_SESSION_ID, taskState: A2ATaskState.SUBMITTED, title: `Child from turn ${number}` });
             emitAgentSpawnEvent({ type: "done", spawnId: `child-transfer-${number}`, parentSessionId: MOCK_SIDE_CHAT_SESSION_ID, taskState: A2ATaskState.COMPLETED, title: `Child from turn ${number}`, entries: [], toolCallCount: 0 });
           }
         });
-        if (!children) {
-          const selector = `[data-testid="${surface === "question" ? "question-overlay" : "approval-dock"}"]`;
+        for (const testId of [...(hasQuestion ? ["question-overlay"] : []), ...(hasApproval ? ["approval-dock"] : [])]) {
+          const selector = `[data-testid="${testId}"]`;
           await waitFor(() => expect(sender.querySelectorAll(selector)).toHaveLength(1));
-          expect(peer!.querySelectorAll(selector)).toHaveLength(0);
+          expect(peer?.querySelectorAll(selector) ?? []).toHaveLength(0);
           expect(container.querySelectorAll(selector)).toHaveLength(1);
-        } else if (number >= 2) {
+        }
+        if (hasChildren && number >= 2) {
           await finish(number);
           await showTab(first!, "subagent");
           if (number === 2) await showTab(second!, "subagent");
@@ -1114,11 +1128,12 @@ describe("a turn parked on an approval, with two tiles", () => {
           continue;
         }
         await finish(number);
-        if (number === 1 && surface === "closed-child") {
+        if (number === 1 && isClosed) {
           await showTab(first!, "subagent");
           const tab = first!.element.querySelector('[data-testid="chat-side-panel-tab-side-chat"]')!;
           await act(async () => { fireEvent.click(Array.from(tab.parentElement!.querySelectorAll("button")).at(-1)!); });
           expect(first!.element.querySelector('[data-testid="side-chat-view"]')).toBeNull();
+          expect(childTitles(first!)).toEqual([expect.stringContaining("Child from turn 1")]);
         }
       }
       expect(side.new).not.toHaveBeenCalled();
