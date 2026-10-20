@@ -124,7 +124,12 @@ async function typeAndWait(tabId: string, tracker: TerminalBlockTracker, line: s
   return tracker.get(id)!.output;
 }
 
-const SHELLS = ["/bin/zsh", "/bin/bash"].filter((path) => existsSync(path));
+const REQUIRED_SHELLS = ["/bin/zsh", "/bin/bash"];
+const SHELLS = REQUIRED_SHELLS.filter((path) => existsSync(path));
+if (process.platform === "linux" && process.env.AVE_REQUIRE_SANDBOX_CASES === "1") {
+  const missing = REQUIRED_SHELLS.filter((path) => !existsSync(path));
+  if (missing.length > 0) throw new Error(`Required sandbox shells are missing: ${missing.join(", ")}`);
+}
 
 describe.runIf(process.platform === "linux")("workspace terminal under the Linux sandbox", () => {
   for (const shellPath of SHELLS) {

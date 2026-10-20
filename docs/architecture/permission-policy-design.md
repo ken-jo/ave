@@ -611,13 +611,17 @@ util-linux `script` gets no terminal, with the reason. The check reads `/proc`:
 - the shell is found by walking down from the pty's process along the one
   chain the wrap builds (`bwrap`, `bwrap`, `bash` with the runtime's `socat`
   bridges beside it, `apply-seccomp` twice, `script`, then the shell, by
-  name), one child per step;
+  name), one child per step. Only the verified outer bridge launcher's side
+  pids are exempt; extra children under a reaper are refused regardless of
+  their program names;
 - its innermost `NSpid` must equal the `Pid=` (`$$`) the prompt's `P` marker
   reported, so the markers and the process are the same shell;
 - the foreground group of its own pty must be the shell itself;
 - it must have no child process: a command still finishing, or a background
   job, which could write to the terminal or type into the line through
-  TIOCSTI on that pty, is refused (`shell-busy`);
+  TIOCSTI on that pty, is refused (`shell-busy`). Any other process on that
+  pty sharing the shell's session or foreground group is also busy, including
+  processes that have been reparented;
 - its working directory must be the reported directory by device and inode,
   not by path: the sandbox mounts directories of its own (an empty tmpfs over a
   read-denied one) at paths the host also has.

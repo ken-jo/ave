@@ -164,11 +164,10 @@ async function readProcSnapshot(): Promise<ReadonlyMap<number, ProcEntry>> {
  * The processes the sandbox wrap puts between the pty's process and the pty
  * relay, by program name: bubblewrap (the outer process and its pid-namespace
  * init), the sandbox runtime's `bash -c` script, and `apply-seccomp` (which
- * forks once more into its own pid namespace). `socat` processes are the
- * runtime's proxy bridges, started beside the chain from that script.
+ * forks once more into its own pid namespace). The outer script also starts
+ * proxy bridges, outside the inner reaper's namespace.
  */
 const SANDBOX_WRAPPERS: ReadonlySet<string> = new Set(["bwrap", "bash", "apply-seccomp"]);
-const SANDBOX_SIDE_PROCESSES: ReadonlySet<string> = new Set(["socat"]);
 /** util-linux `script(1)`, which gives the shell its pty inside the sandbox. */
 const INNER_PTY_RELAY = "script";
 /** Bound on the wrapper chain; the measured chain has five wrappers. */
@@ -180,6 +179,8 @@ export type SandboxedShellChain =
       /** The pty relay: one `script` process, or two for util-linux before 2.35, which forks itself once. */
       readonly relay: readonly ProcEntry[];
       readonly shell: ProcEntry;
+      /** Shell children and other processes sharing its terminal session or foreground group. */
+      readonly busyProcesses: readonly ProcEntry[];
     }
   | {
       readonly ok: false;
@@ -192,8 +193,11 @@ export type SandboxedShellChain =
  * Find the terminal's shell in a process snapshot, walking down from the
  * pty's process along the one chain the sandbox wrap builds:
  * `bwrap → bwrap → bash (+ socat) → apply-seccomp → apply-seccomp → script →
- * <shell>`. Every step must have exactly one child besides the runtime's
- * `socat` bridges, every wrapper must be one of {@link SANDBOX_WRAPPERS}, and
+ * <shell>`. Every step must have exactly one child except the verified outer
+ * bridge launcher (`bwrap → bwrap → bash`). Its side children are identified
+ * by their parent and pid, never their program name. Shell descendants cannot
+ * be reparented to that launcher: namespace orphans go to a reaper instead.
+ * Every wrapper must be one of {@link SANDBOX_WRAPPERS}, and
  * the relay's one child must be the shell, by name. Nothing the shell starts
  * can appear above it, so a program in the terminal cannot pose as the shell
  * here; a nested shell is a child of the shell, not of the relay.
@@ -208,11 +212,22 @@ export function findSandboxedShell(
   const top = snapshot.get(ptyPid);
   if (top === undefined || top.command !== "bwrap") return fail("the terminal's sandbox is not running");
   let node: ProcEntry = top;
+  let outerReaperPid: number | undefined;
   for (let depth = 0; ; depth++) {
     if (depth >= MAX_SANDBOX_WRAPPERS) return fail("the terminal's sandbox has more wrapper processes than expected");
-    const next: ProcEntry[] = childrenOf(node.pid).filter((child) => !SANDBOX_SIDE_PROCESSES.has(child.command));
+    const children = childrenOf(node.pid);
+    let next = children;
+    if (depth === 2 && node.command === "bash" && node.ppid === outerReaperPid) {
+      // Only this launcher has side bridges. Nothing under either reaper or
+      // a later wrapper is exempt, even if it adopts a bridge's program name.
+      const continuation = children.filter((child) => child.command === "apply-seccomp" || child.command === INNER_PTY_RELAY);
+      if (continuation.length !== 1) return fail(`the sandbox bridge launcher has no unique continuation among ${children.map((child) => JSON.stringify(child.command)).join(", ")}`);
+      const bridgePids = new Set(children.filter((child) => child.pid !== continuation[0]!.pid).map((child) => child.pid));
+      next = children.filter((child) => !bridgePids.has(child.pid));
+    }
     if (next.length !== 1) return fail(`the sandbox process ${JSON.stringify(node.command)} has ${next.length} children where one was expected`);
     node = next[0]!;
+    if (depth === 0 && node.command === "bwrap") outerReaperPid = node.pid;
     if (node.command === INNER_PTY_RELAY) break;
     if (!SANDBOX_WRAPPERS.has(node.command)) return fail(`unexpected process ${JSON.stringify(node.command)} in the terminal's sandbox`);
   }
@@ -227,7 +242,11 @@ export function findSandboxedShell(
   if (shell.command !== shellName) {
     return fail(`the terminal's pty relay runs ${JSON.stringify(shell.command)}, not its ${shellName} shell`, relay);
   }
-  return { ok: true, relay, shell };
+  const busyProcesses = [...snapshot.values()].filter((entry) => entry.pid !== shell.pid && (
+    entry.ppid === shell.pid
+    || (shell.ttyNr !== 0 && entry.ttyNr === shell.ttyNr && (entry.session === shell.session || entry.pgrp === shell.tpgid))
+  ));
+  return { ok: true, relay, shell, busyProcesses };
 }
 
 /** What the operating system says about a sandboxed Linux terminal's shell ({@link readSandboxedShell}). */
@@ -239,7 +258,7 @@ interface SandboxedShell {
   readonly command: string;
   /** The foreground process group of the shell's own terminal, and that group leader's program when it is known. */
   readonly foreground: { readonly pgid: number; readonly command: string | null };
-  /** Processes whose parent is the shell: a command still running, or a background job. */
+  /** Shell children or other processes sharing its terminal session or foreground group. */
   readonly children: readonly { readonly pid: number; readonly command: string }[];
   /** The shell's working directory as the link names it (for messages; not compared). */
   readonly cwd: string;
@@ -308,7 +327,7 @@ export async function readSandboxedShell(ptyPid: number, shellName: string, repo
         nsPid,
         command: shell.command,
         foreground: { pgid: shell.tpgid, command: snapshot.get(shell.tpgid)?.command ?? null },
-        children: [...snapshot.values()].filter((entry) => entry.ppid === shell.pid).map(({ pid, command }) => ({ pid, command })),
+        children: chain.busyProcesses.map(({ pid, command }) => ({ pid, command })),
         cwd,
         cwdIsReported: reported !== null && reported.dev === actual.dev && reported.ino === actual.ino,
       },

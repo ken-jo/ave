@@ -28,7 +28,7 @@ const MEASURED = [
   entry(544, 541, "apply-seccomp"),
   entry(545, 544, "apply-seccomp"),
   entry(546, 545, "script"),
-  entry(547, 546, "zsh", { ttyNr: 34816, tpgid: 547 }),
+  entry(547, 546, "zsh", { ttyNr: 34816, tpgid: 547, session: 547 }),
 ];
 
 describe("findSandboxedShell", () => {
@@ -41,6 +41,35 @@ describe("findSandboxedShell", () => {
   it("finds the shell while it runs commands: they are its children, below the relay", () => {
     const busy = snapshot(...MEASURED, entry(600, 547, "sleep"), entry(601, 547, "zsh"));
     expect(findSandboxedShell(busy, 538, "zsh")).toMatchObject({ ok: true, shell: { pid: 547 } });
+  });
+
+  it.each([538, 540, 544, 545])("refuses an orphan reparented to wrapper %i regardless of its program name", (parent) => {
+    for (const command of ["reader", "socat"]) {
+      const orphan = entry(600, parent, command, { ttyNr: 34816, pgrp: 547, session: 547, tpgid: 547 });
+      expect(findSandboxedShell(snapshot(...MEASURED, orphan), 538, "zsh")).toMatchObject({ ok: false });
+    }
+  });
+
+  it("exempts only bridge pids at the verified outer launcher, without trusting their names", () => {
+    const renamed = MEASURED.map((process) => process.pid === 542 ? { ...process, command: "bridge" } : process);
+    expect(findSandboxedShell(snapshot(...renamed), 538, "zsh")).toMatchObject({ ok: true, busyProcesses: [] });
+    const misplaced = snapshot(...MEASURED, entry(600, 546, "socat"));
+    expect(findSandboxedShell(misplaced, 538, "zsh")).toMatchObject({ ok: false });
+  });
+
+  it.each(["reader", "socat"])("marks an independently parented %s in the shell's foreground group as busy", (command) => {
+    const peer = entry(600, 1, command, { ttyNr: 34816, pgrp: 547, session: 547, tpgid: 547 });
+    expect(findSandboxedShell(snapshot(...MEASURED, peer), 538, "zsh")).toMatchObject({ ok: true, busyProcesses: [peer] });
+  });
+
+  it("marks another group in the shell's terminal session as busy", () => {
+    const peer = entry(600, 1, "reader", { ttyNr: 34816, pgrp: 600, session: 547, tpgid: 547 });
+    expect(findSandboxedShell(snapshot(...MEASURED, peer), 538, "zsh")).toMatchObject({ ok: true, busyProcesses: [peer] });
+  });
+
+  it("does not confuse another terminal's matching device number with the shell's session", () => {
+    const unrelated = entry(600, 1, "reader", { ttyNr: 34816, pgrp: 600, session: 600, tpgid: 600 });
+    expect(findSandboxedShell(snapshot(...MEASURED, unrelated), 538, "zsh")).toMatchObject({ ok: true, busyProcesses: [] });
   });
 
   it("follows util-linux before 2.35, whose script forks itself once", () => {

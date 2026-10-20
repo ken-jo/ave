@@ -785,8 +785,9 @@ export async function verifyTerminalShell(tabId: string, ownerWindowId: number, 
  * found by its place in the sandbox's process tree and its name; it must also
  * be the shell that reported the prompt (`reportedPid`, `$$` from the P
  * marker, is its pid in its own namespace), hold its own terminal's
- * foreground, have no process of its own running (a command still finishing,
- * or a background job that could write to the terminal or, through TIOCSTI on
+ * foreground, have no child or other process sharing its terminal session or
+ * foreground group (a command still finishing, or a background job that could
+ * write to the terminal or, through TIOCSTI on
  * that terminal, type into the line), and be in the very directory
  * `reportedCwd` names on the host (same device and inode).
  */
@@ -818,7 +819,7 @@ export function sandboxedShellVerdict(
     return {
       ok: false,
       reason: "shell-busy",
-      message: `the terminal's shell has processes of its own running (${named}): a command still finishing or a background job`,
+      message: `the terminal's shell has processes sharing its input (${named}): a command still finishing or a background job`,
     };
   }
   if (!shell.cwdIsReported) {
