@@ -36,7 +36,7 @@ import type { Duplex } from "node:stream";
 import { getWindowsProxyPortRange } from "./asrt-sandbox.js";
 
 /** Where the listener forwards, and as whom. Read once per forwarded request. */
-export interface InvocationProxyUpstream {
+interface InvocationProxyUpstream {
   readonly host: string;
   readonly port: number;
   /** The complete `Proxy-Authorization` header value naming this invocation. */
