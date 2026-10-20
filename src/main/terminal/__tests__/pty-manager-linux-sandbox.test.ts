@@ -95,10 +95,29 @@ async function startSandboxedShell(shellPath: string, tabId: string): Promise<Te
   const spawned = await spawnTerminal({ tabId, ownerWindowId: OWNER, cols: 100, rows: 30 });
   expect(spawned, JSON.stringify(spawned)).toMatchObject({ ok: true });
   const tracker = getTerminalBlockTracker(tabId)!;
-  await until(() => tracker.promptEndCount() > 0, 20_000).catch((error: unknown) => {
-    throw new Error(`${(error as Error).message}; the terminal showed ${JSON.stringify(shown.get(tabId) ?? "")}; exits ${JSON.stringify(exits)}`);
-  });
-  await settle(tracker);
+  try {
+    await until(() => tracker.promptEndCount() > 0, 20_000);
+    await until(() => tracker.promptState() === "ready" || tracker.promptState() === "not-found-handler");
+    // A system startup file may define a handler: the user has a prompt,
+    // while agent typing is refused. Check that refusal before removing the
+    // handler through the user's input path for the rest of these cases.
+    if (tracker.promptState() === "not-found-handler") {
+      const blockId = tracker.nextBlockId();
+      await expect(typeTerminalCommand(tabId, OWNER, "echo agent-must-not-run", tracker.currentCwd()!)).resolves.toMatchObject({
+        ok: false,
+        reason: "not-found-handler",
+      });
+      expect(tracker.nextBlockId()).toBe(blockId);
+      const removeHandler = shellPath.endsWith("/zsh") ? "unfunction command_not_found_handler" : "unset -f command_not_found_handle";
+      await userRuns(tabId, tracker, `echo user-prompt-ready; ${removeHandler}`);
+      await until(() => tracker.get(blockId)?.status === "done");
+      expect(tracker.get(blockId)!.output).toBe("user-prompt-ready\n");
+      expect(tracker.get(blockId)!.exitCode).toBe(0);
+    }
+    await settle(tracker);
+  } catch (error) {
+    throw new Error(`${(error as Error).message}; prompt state ${tracker.promptState()}; prompt ends ${tracker.promptEndCount()}; the terminal showed ${JSON.stringify(shown.get(tabId) ?? "")}; exits ${JSON.stringify(exits)}`);
+  }
   return tracker;
 }
 
