@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, fstatSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,10 +25,12 @@ describe("private executable artifacts", () => {
     const { runtime, source } = fixture();
     const artifact = stage === "hashing" ? await copyCodexExecutableArtifact(source, runtime) : null;
     const target = artifact?.executable ?? source;
+    // Preserve the fixture's trusted ancestors while injecting file identity changes.
+    const lstat = vi.mocked(fs.lstat).getMockImplementation?.() ?? fs.lstat.bind(fs);
     const open = fs.open.bind(fs);
     const originalIno = 2n ** 60n;
     vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
-      const result = lstatSync(...args);
+      const result = await lstat(...args);
       if (!result) throw new Error("Expected an existing file entry");
       if (String(args[0]) === target && args[1]?.bigint === true) {
         Object.defineProperty(result, "ino", { value: originalIno });
