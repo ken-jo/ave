@@ -2,6 +2,7 @@
 export interface ShellOptionTable {
   flag: readonly string[];
   data: readonly string[];
+  optionalData: readonly string[];
   path: readonly string[];
   structured: readonly string[];
 }
@@ -42,7 +43,7 @@ export const CURL_OPTION_TABLE: ShellOptionTable = {
     "--dns-ipv4-addr", "--dns-ipv6-addr", "--dns-servers", "--doh-url", "--engine",
     "--expect100-timeout", "--form-string", "--ech", "--ftp-account", "--ftp-alternative-to-user",
     "--ftp-method", "-P", "--ftp-port", "--ftp-ssl-ccc-mode", "--happy-eyeballs-timeout-ms",
-    "--haproxy-clientip", "-h", "--help", "--hostpubmd5", "--hostpubsha256", "--interface", "--ip-tos",
+    "--haproxy-clientip", "--hostpubmd5", "--hostpubsha256", "--interface", "--ip-tos",
     "--ipfs-gateway", "--keepalive-cnt", "--keepalive-time", "--key-type", "--krb", "--limit-rate",
     "--local-port", "--login-options", "--mail-auth", "--mail-from", "--mail-rcpt", "--max-filesize",
     "--max-redirs", "-m", "--max-time", "--noproxy", "--oauth2-bearer", "--parallel-max",
@@ -57,6 +58,7 @@ export const CURL_OPTION_TABLE: ShellOptionTable = {
     "--tlsauthtype", "--tlspassword", "--tlsuser", "--trace-config", "--upload-flags", "-u", "--user",
     "-A", "--user-agent", "--vlan-priority",
   ],
+  optionalData: ["-h", "--help"],
   path: [
     "--abstract-unix-socket", "--alt-svc", "--cacert", "--capath", "-K", "--config", "-c",
     "--cookie-jar", "--crlfile", "-D", "--dump-header", "--egd-file", "--etag-compare", "--etag-save",
@@ -77,6 +79,7 @@ export const CURL_OPTION_TABLE: ShellOptionTable = {
 // -n takes the legacy negation letters; the documented multi-letter aliases
 // are exact flags, not individual boolean letters for cluster scanning.
 export const WGET_OPTION_TABLE: ShellOptionTable = {
+  optionalData: [],
   flag: [
     "-V", "--version", "-h", "--help", "-b", "--background", "-d", "--debug", "-q", "--quiet", "-v",
     "--verbose", "-nv", "--no-verbose", "--keep-badhash", "--metalink-over-http", "--xattr", "-F",

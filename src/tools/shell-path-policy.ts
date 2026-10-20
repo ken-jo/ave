@@ -1,4 +1,3 @@
-import { fileURLToPath } from "node:url";
 import { isAbsolute } from "node:path";
 import { t } from "../i18n/index.js";
 import { displayShellWord, shellWordHasSingleField, staticShellWord, type ShellWord } from "../shared/shell-analysis.js";
@@ -321,9 +320,14 @@ const NON_PATH_OPERAND_SPECS: ReadonlyMap<string, NonPathOperandSpec> = new Map<
   }] as [string, NonPathOperandSpec]),
 ]);
 
-/**
- * The result of reading a leaf's argument vector for path-operand purposes.
- */
+interface ShellPathCandidate {
+  value: string;
+  index: number;
+  effect?: PathEffect;
+  refuseAfterCheck?: boolean;
+}
+
+/** The result of reading a leaf's argument vector for path-operand purposes. */
 interface OperandSlotClassification {
   /** Indices in `argv` that hold code, a pattern or a format rather than a path. */
   nonPathIndices: ReadonlySet<number>;
@@ -336,7 +340,7 @@ interface OperandSlotClassification {
    * script is a single token, so the filename in `1r /etc/shadow` is reachable
    * no other way.
    */
-  extraCandidates: readonly { value: string; index: number }[];
+  extraCandidates: readonly ShellPathCandidate[];
   /**
    * Command lines carried INSIDE an operand that is otherwise program text —
    * today `sed`'s `e COMMAND`. They are re-entered through the whole policy the
@@ -699,7 +703,7 @@ function classifyUvRunOperandSlots(argv: readonly string[]): OperandSlotClassifi
   for (const index of childSlots.nonPathIndices) nonPathIndices.add(childIndex + index);
   for (const index of childSlots.programIndices ?? []) programIndices.add(childIndex + index);
   extraCandidates.push(...childSlots.extraCandidates.map((candidate) => ({
-    value: candidate.value,
+    ...candidate,
     index: childIndex + candidate.index,
   })));
 
@@ -772,6 +776,33 @@ function decodeFormValue(value: string): string {
   return trimmed.slice(1, -1).replace(/\\(["\\])/g, "$1");
 }
 
+/** Percent escapes are consumed left to right; escaped percent signs are data. */
+function writeOutPaths(value: string): string[] {
+  const paths: string[] = [];
+  for (let i = 0; i < value.length; i += 1) {
+    if (value[i] !== "%") continue;
+    if (value[i + 1] === "%") {
+      i += 1;
+      continue;
+    }
+    const output = value.startsWith("%output", i);
+    if (!output && value[i + 1] !== "{") continue;
+    const open = i + (output ? 7 : 1);
+    if (value[open] !== "{") ambiguousTransferPath();
+    const close = value.indexOf("}", open + 1);
+    if (close < 0) ambiguousTransferPath();
+    const body = value.slice(open + 1, close);
+    if (!body || body.includes("{")) ambiguousTransferPath();
+    if (output) {
+      const path = body.startsWith(">>") ? body.slice(2) : body;
+      if (!path) ambiguousTransferPath();
+      paths.push(path);
+    }
+    i = close;
+  }
+  return paths;
+}
+
 /** Return only actual local references, never a display filename or payload. */
 function transferStructuredPaths(verb: string, option: string, value: string): string[] {
   if (/[\0\r\n]/.test(value)) ambiguousTransferPath();
@@ -795,6 +826,7 @@ function transferStructuredPaths(verb: string, option: string, value: string): s
     return value.startsWith("sha256//") ? [] : file(value);
   }
   if (option === "--url") return value.startsWith("@") ? file(value.slice(1)) : operandPaths(value, false, verb);
+  if (["-w", "--write-out"].includes(option)) return writeOutPaths(value);
   if (["-F", "--form"].includes(option)) {
     const equals = value.indexOf("=");
     if (equals < 0) ambiguousTransferPath();
@@ -845,7 +877,7 @@ function transferStructuredPaths(verb: string, option: string, value: string): s
     const equals = value.indexOf("=");
     return at >= 0 && (equals < 0 || at < equals) ? file(value.slice(at + 1)) : [];
   }
-  if (["-d", "--data", "--data-ascii", "--data-binary", "--json", "-w", "--write-out", "-H", "--header", "--proxy-header"].includes(option)) {
+  if (["-d", "--data", "--data-ascii", "--data-binary", "--json", "-H", "--header", "--proxy-header"].includes(option)) {
     return value.startsWith("@") ? file(value.slice(1)) : [];
   }
   return ambiguousTransferPath();
@@ -854,11 +886,11 @@ function transferStructuredPaths(verb: string, option: string, value: string): s
 function classifyTransferOperandSlots(argv: readonly string[], verb: string, table: ShellOptionTable): OperandSlotClassification {
   const nonPathIndices = new Set<number>();
   const programIndices = new Set<number>();
-  const extraCandidates: { value: string; index: number }[] = [];
+  const extraCandidates: ShellPathCandidate[] = [];
   let optionsEnded = false;
   type OptionRole = keyof ShellOptionTable;
   const roles = new Map<string, OptionRole>();
-  for (const role of ["flag", "data", "path", "structured"] as const) {
+  for (const role of ["flag", "data", "optionalData", "path", "structured"] as const) {
     for (const option of table[role]) {
       roles.set(option, role);
       if (role === "flag" && option.startsWith("--")) {
@@ -900,15 +932,25 @@ function classifyTransferOperandSlots(argv: readonly string[], verb: string, tab
       const attached = long ? (equals >= 0 ? token.slice(equals + 1) : undefined) : token.slice(j + 2) || undefined;
       const valueIndex = attached === undefined ? i + 1 : i;
       const value = attached ?? argv[valueIndex];
+      if (role === "optionalData" && attached === undefined && (value === undefined || value.startsWith("-"))) {
+        nonPathIndices.add(i);
+        break;
+      }
       if (value === undefined) ambiguousTransferPath();
       // Upload filename globbing happens inside the transfer process, after
       // shell expansion; a literal glob is not an exact filesystem authority.
       if (verb === "curl" && ["-T", "--upload-file"].includes(option) && /[\[\]{}]/.test(value)) ambiguousTransferPath();
-      const paths = role === "path" ? [value] : role === "structured" ? transferStructuredPaths(verb, option, value) : [];
+      const writeOut = verb === "curl" && ["-w", "--write-out"].includes(option);
+      const fileFormat = writeOut && value.startsWith("@");
+      if (fileFormat && (value === "@" || value === "@-" || /[\0\r\n]/.test(value))) ambiguousTransferPath();
+      const paths = fileFormat ? [value.slice(1)] : role === "path" ? [value] : role === "structured" ? transferStructuredPaths(verb, option, value) : [];
       nonPathIndices.add(i);
       nonPathIndices.add(valueIndex);
       if (role === "structured") programIndices.add(valueIndex);
-      extraCandidates.push(...paths.map(path => ({ value: path, index: valueIndex })));
+      extraCandidates.push(...paths.map(path => ({
+        value: path, index: valueIndex,
+        ...(fileFormat ? { effect: "read" as const, refuseAfterCheck: true } : writeOut ? { effect: "write" as const } : {}),
+      })));
       i = valueIndex;
       // The first value option owns the entire suffix, even if it spells flags.
       break;
@@ -1381,7 +1423,11 @@ export function findShellPathPolicyViolation(
           }
           for(const path of operandPaths(argument,!optionsEnded,verb))checkPath(path,words[index]!.source.raw,projectedCwd,effect);
         }
-        for(const path of projectedSlots.extraCandidates)checkPath(path.value,words[path.index]!.source.raw,projectedCwd,effect);
+        for(const path of projectedSlots.extraCandidates){
+          checkPath(path.value,words[path.index]!.source.raw,projectedCwd,path.effect ?? effect);
+          // A file-backed format is a read, but can redirect output at runtime.
+          if(path.refuseAfterCheck)ambiguousTransferPath();
+        }
       }
       inspectEmbeddedShellPrograms(event,outerSlots);
     }});
@@ -1394,10 +1440,20 @@ export function findShellPathPolicyViolation(
 }
 
 function operandPaths(value: string, option: boolean, verb: string): string[] {
+  if (["curl", "wget"].includes(verb) && /^file:/i.test(value)) {
+    // This protocol is unsupported by wget and grants no local file authority.
+    if (verb === "wget") return [];
+    // Preserve path components until the filesystem follows links. URL parsing
+    // would normalize parent components before the path policy can inspect them.
+    const match = /^file:(?:\/\/([^/]*))?(.*)$/i.exec(value);
+    if (!match || (match[1] && match[1].toLowerCase() !== "localhost") || /[?#\0\r\n]/.test(value)) ambiguousTransferPath();
+    let path: string;
+    try { path = decodeURIComponent(match[2]!); } catch { return ambiguousTransferPath(); }
+    if (!path || /[\0\r\n]/.test(path) || path.includes("\\")) ambiguousTransferPath();
+    if (process.platform === "win32" && /^\/[a-z]:\//i.test(path)) path = path.slice(1);
+    return [path];
+  }
   if (["curl", "wget"].includes(verb) && /^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
-    if (value.toLowerCase().startsWith("file:")) {
-      try { return [fileURLToPath(value)]; } catch { decline("unresolved file URL"); }
-    }
     return [];
   }
   if (value === "-" && ["cat", "sed", "awk", "head", "tail", "sort", "diff", "tee"].includes(verb)) return [];

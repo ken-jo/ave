@@ -57,6 +57,97 @@ describe("shell-path-policy", () => {
   }
 
   describe("transfer option file references", () => {
+    it.each(["-w", "--write-out"])("checks every output directive in %s", option => {
+      withRoot(root => {
+        for (const target of [".env", ">>.env", "../outside.txt", ">>../outside.txt"]) {
+          for (const format of [`%output{${target}}marker`, `%output{out.txt}ok%output{${target}}marker`, `%%%output{${target}}`]) {
+            expect(validateShellCommandPathPolicy(`curl ${option} '${format}' -o out.txt https://example.invalid/`, root, root, [], false))
+              .toContain(target.includes("outside") ? "Sandbox:" : "Sensitive path:");
+          }
+        }
+      });
+    });
+
+    it.each(["-w", "--write-out"])("preserves literal formats and admitted output directives in %s", option => {
+      withRoot(root => {
+        for (const format of ["%%output{.env}", "%%%%output{.env}", "%{http_code}", "%output{out.txt}marker", "%output{>>out.txt}marker", "%output{first.txt}a%output{second.txt}b"]) {
+          expect(validateShellCommandPathPolicy(`curl ${option} '${format}' -o out.txt https://example.invalid/`, root, root, [], true)).toBeNull();
+        }
+      });
+    });
+
+    it.each(["@fmt.txt", "@-", "%output{out.txt", "%output{}", "%output{>>}", "%output{nested{file}", "%output", "%{http_code"])("refuses unanalyzable write-out format %s", format => {
+      withRoot(root => {
+        for (const option of ["-w", "--write-out="]) {
+          expect(validateShellCommandPathPolicy(`curl ${option}'${format}' https://example.invalid/`, root, root, [], false)).toContain("ambiguous");
+        }
+      });
+    });
+
+    it.each(["", "uv run ", "uv run uv run "])("preserves format read and output write authority through %s", prefix => {
+      withRoot(root => {
+        expect(validateShellCommandPathPolicy(`${prefix}curl -w @../fmt.txt`, root, root, [], false)).toContain("ambiguous");
+        expect(validateShellCommandPathPolicy(`${prefix}curl -w @../fmt.txt`, root, root, [], true)).toContain("Sandbox:");
+        expect(validateShellCommandPathPolicy(`${prefix}curl -w '%output{../outside.txt}'`, root, root, [], false)).toContain("Sandbox:");
+      });
+    });
+
+    it.each(["-h", "--help", "-h all", "--help category", "-hall", "--help=all", "-h --version", "-sh", "--help --write-out '%{http_code}'"])("allows optional help subject: %s", options => {
+      withRoot(root => {
+        expect(validateShellCommandPathPolicy(`curl ${options}`, root, root, [], true)).toBeNull();
+      });
+    });
+
+    it.each(["-h", "--help", "-h all", "--help category"])("retains following option authority after %s", options => {
+      withRoot(root => {
+        expect(validateShellCommandPathPolicy(`curl ${options} -o .env https://example.invalid/`, root, root, [], false)).toContain("Sensitive path:");
+      });
+    });
+
+    it.each(["", "--url "])("checks decoded local URL operands with prefix %s", prefix => {
+      withRoot(root => {
+        for (const url of ["file:.env", "FILE:.env", "file:%2eenv", pathToFileURL(join(root, ".env")).href, pathToFileURL(join(root, ".env")).href.replace("file:///", "file://localhost/")]) {
+          expect(validateShellCommandPathPolicy(`curl ${prefix}'${url}'`, root, root, [], false)).toContain("Sensitive path:");
+        }
+        for (const url of ["file:../outside.txt", "file:%2e%2e/outside.txt", pathToFileURL(join(root, "..", "outside.txt")).href]) {
+          expect(validateShellCommandPathPolicy(`curl ${prefix}'${url}'`, root, root, [], false)).toContain("Sandbox:");
+        }
+        for (const url of ["file:ordinary.txt", pathToFileURL(join(root, "ordinary.txt")).href]) {
+          expect(validateShellCommandPathPolicy(`curl ${prefix}'${url}'`, root, root, [], true)).toBeNull();
+        }
+      });
+    });
+
+    it.each(["file:", "file:%ZZ", "file:%00", "file://other-host/path", "file://localhost:80/path", "file:///path?query", "file:///path#fragment"])("refuses ambiguous local URL %s", url => {
+      withRoot(root => {
+        for (const prefix of ["", "--url "]) {
+          expect(validateShellCommandPathPolicy(`curl ${prefix}'${url}'`, root, root, [], false)).toContain("ambiguous");
+        }
+      });
+    });
+
+    it("resolves URL parent components after following directory links", ({ skip }) => {
+      withRoot(root => withRoot(outside => {
+        const link = join(root, "link");
+        try {
+          symlinkSync(outside, link, "dir");
+        } catch (error) {
+          // Directory symlinks require a capability this host may not grant.
+          if ((error as NodeJS.ErrnoException).code === "EPERM") { skip(); return; }
+          throw error;
+        }
+        const url = `${pathToFileURL(link).href}/%2e%2e/ordinary.txt`;
+        expect(validateShellCommandPathPolicy(`curl '${url}'`, root, root, [], true)).toContain("Sandbox:");
+      }));
+    });
+
+    it.each(["file:.env", "FILE:.env", "file://localhost/.env", "file:///outside/.env"])("grants no local file authority to an unsupported URL protocol: %s", url => {
+      // The downloader does not implement this protocol; it remains URL data.
+      withRoot(root => {
+        expect(validateShellCommandPathPolicy(`wget '${url}'`, root, root, [], true)).toBeNull();
+      });
+    });
+
     it.each([
       ["curl", CURL_OPTION_TABLE, "#012346:ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz"],
       ["wget", WGET_OPTION_TABLE, "46ABDEFHIKLNOPQRSTUVXabcdehiklmnopqrtvwx"],
