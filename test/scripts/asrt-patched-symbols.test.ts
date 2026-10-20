@@ -73,6 +73,27 @@ afterEach(() => {
 });
 
 describe("patched @anthropic-ai/sandbox-runtime", () => {
+  it("records exclusive mount creations and cleans only matching identities without following links", () => {
+    const linux = readInstalled("dist/sandbox/linux-sandbox-utils.js");
+    expect(linux).toContain("const bwrapMountPoints = new Map();");
+    const create = functionBody(linux, /\nfunction createOwnedMountPoint\(/u);
+    expect(create).toContain("fs.openSync(entry, 'wx', 0o444)");
+    expect(create).toContain("fs.fstatSync(fd, { bigint: true })");
+    expect(create).toContain("fs.mkdirSync(entry, { mode: 0o700 })");
+    expect(create).toContain("fs.lstatSync(entry, { bigint: true })");
+    expect(create).toContain("bwrapMountPoints.set(dest, { dev: identity.dev, ino: identity.ino, kind })");
+    expect(functionBody(linux, /\nfunction sameMountPointIdentity\(/u))
+      .toContain("stat.dev === identity.dev && stat.ino === identity.ino");
+    const cleanup = functionBody(linux, /\nexport function cleanupBwrapMountPoints\(/u);
+    expect(cleanup).toContain("fs.lstatSync(mountPoint, { bigint: true })");
+    expect(cleanup).toContain("if (!sameMountPointIdentity(stat, identity)) continue;");
+    expect(cleanup).toContain("identity.kind === MountPointKind.File && stat.isFile() && stat.size === 0n");
+    expect(cleanup).toContain("identity.kind === MountPointKind.Directory && stat.isDirectory()");
+    expect(cleanup).toContain("sameMountPointIdentity(stat, emptyMountSourceIdentity)");
+    expect(cleanup).not.toContain("fs.statSync(");
+    expect(linux).not.toContain("bwrapMountPoints.add(");
+  });
+
   it("installs the version the patch is keyed to, with the patch file present", () => {
     const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf-8")) as {
       dependencies: Record<string, string>;
