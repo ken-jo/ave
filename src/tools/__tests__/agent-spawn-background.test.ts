@@ -3,7 +3,7 @@ import {
   createInMemoryFeatureNamespace as createInMemoryNamespace,
 } from "../../__tests__/test-helpers.js";
 import { A2ATaskState } from "../../shared/a2a.js";
-import { maskSensitiveData } from "../../shared/dlp.js";
+import { isSafeStructuralId } from "../../shared/dlp-safe-id.js";
 import { A2AAgentMessageBus } from "../../engine/a2a-agent-message-bus.js";
 import { A2A_PARENT_RECIPIENT } from "../../engine/a2a-agent-message-envelope.js";
 import { A2AAgentMessageMailbox } from "../../engine/a2a-agent-message-mailbox.js";
@@ -218,8 +218,8 @@ describe("agent_spawn background routing", () => {
     const spawnId = metadata?.spawnId ?? "";
     expect(delivered?.messageId)
       .toMatch(UUID_PATTERN);
-    expect(maskSensitiveData(delivered?.messageId ?? "").detections).toEqual([]);
-    expect(maskSensitiveData(spawnId).detections).toEqual([]);
+    expect(isSafeStructuralId(delivered?.messageId ?? "")).toBe(true);
+    expect(isSafeStructuralId(spawnId)).toBe(true);
     const events = emit.mock.calls.map(([event]) => event as { type: string; spawnId: string });
     expect(events.find((event) => event.type === "start")?.spawnId).toBe(spawnId);
     expect(events.find((event) => event.type === "done")?.spawnId).toBe(spawnId);
