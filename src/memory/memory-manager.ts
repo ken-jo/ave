@@ -45,7 +45,7 @@ import {
 import { SessionSearchIndex, type IndexedSessionInput } from "./session-search-index.js";
 import { isRecord } from "../shared/is-record.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
-import { dlpSafeCandidate } from "../shared/dlp-safe-id.js";
+import { dlpSafeCandidate, isSafeStructuralId } from "../shared/dlp-safe-id.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { SHA256_HEX, sha256Hex } from "../lib/hex-digest-equal.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
@@ -749,7 +749,7 @@ function isValidA2AWireHandlerId(id: unknown): id is string {
 function isValidA2AWireMetadataId(id: unknown): id is string {
   return isValidSessionId(id)
     && id.length <= MAX_A2A_WIRE_ID_CHARS
-    && maskSensitiveData(id).detections.length === 0;
+    && isSafeStructuralId(id);
 }
 
 /**
@@ -775,10 +775,8 @@ const LEGACY_ROW_ID_MAX_COLLISION_ATTEMPTS = 64;
  * ids in a file, and must be derived: see `stampLegacyRowIds` for why.
  *
  * Hashed rather than concatenated because the id is persisted on the next save
- * and read back: the digest is hex, so it cannot carry anything a redaction
- * pass would rewrite, and the DLP check still proves it for the same reason
- * `createDlpSafeUuid` proves its own output — literally the same retry
- * primitive, `dlpSafeCandidate`, with a hashed draw instead of a random one.
+ * and read back. These opaque digests still pass content DLP through
+ * `dlpSafeCandidate`; only complete UUID forms have structural admission.
  * The attempt counter keeps the retry deterministic, so a second read of the
  * same file lands on the same id as the first, and it is also what lets
  * `taken` be honoured without reaching for randomness.

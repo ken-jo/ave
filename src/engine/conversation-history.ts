@@ -242,9 +242,9 @@ function stampCreatedAt(message: GenericMessage): GenericMessage {
  *
  * Idempotent by design: a caller that minted the id before the append (so it
  * could announce the row on the timeline in the same breath) keeps its own,
- * and compaction clones keep theirs. DLP-safe because the id is persisted and
- * re-read — a raw uuid that happened to match a redaction pattern would come
- * back masked and stop resolving.
+ * and compaction clones keep theirs. Complete UUIDs are structural message
+ * keys: content redaction must not rewrite their digit groups and break the
+ * link to the row they name.
  */
 function stampMessageId(message: GenericMessage, taken?: Set<string>): StoredMessage {
   const existing = message.meta?.messageId;
