@@ -335,6 +335,8 @@ interface OperandSlotClassification {
   programIndices?: ReadonlySet<number>;
   /** Fixed child command boundary owned by an execution wrapper. */
   childCommandIndex?: number;
+  /** Proven option position disables automatic transfer configuration. */
+  defaultConfigDisabled?: boolean;
   /**
    * Paths recovered from INSIDE an operand that is otherwise not one. A sed
    * script is a single token, so the filename in `1r /etc/shadow` is reachable
@@ -803,6 +805,12 @@ function writeOutPaths(value: string): string[] {
   return paths;
 }
 
+function readWgetrcCommand(value: string): { name: string; value: string } {
+  const match = /^\s*([a-z0-9_-]+)\s*=\s*(.*?)\s*$/i.exec(value);
+  if (!match) ambiguousTransferPath();
+  return { name: match[1]!.replace(/[-_]/g, "").toLowerCase(), value: match[2]! };
+}
+
 /** Return only actual local references, never a display filename or payload. */
 function transferStructuredPaths(verb: string, option: string, value: string): string[] {
   if (/[\0\r\n]/.test(value)) ambiguousTransferPath();
@@ -811,14 +819,13 @@ function transferStructuredPaths(verb: string, option: string, value: string): s
     return path === "-" ? [] : [path];
   };
   if (verb === "wget" && (option === "-e" || option === "--execute")) {
-    const match = /^\s*([a-z0-9_-]+)\s*=\s*(.*?)\s*$/i.exec(value);
-    if (!match) ambiguousTransferPath();
-    const name = match[1]!.replace(/[-_]/g, "").toLowerCase();
+    const command = readWgetrcCommand(value);
+    const name = command.name;
     const normalize = (command: string): string => command.replaceAll("_", "");
-    if (WGETRC_COMMAND_TABLE.path.some(command => normalize(command) === name)) return file(match[2]!);
+    if (WGETRC_COMMAND_TABLE.path.some(command => normalize(command) === name)) return file(command.value);
     if (WGETRC_COMMAND_TABLE.data.some(command => normalize(command) === name)) return [];
     if (WGETRC_COMMAND_TABLE.structured.some(command => normalize(command) === name)) {
-      return transferStructuredPaths(verb, "--pinnedpubkey", match[2]!);
+      return transferStructuredPaths(verb, "--pinnedpubkey", command.value);
     }
     return ambiguousTransferPath();
   }
@@ -888,9 +895,10 @@ function classifyTransferOperandSlots(argv: readonly string[], verb: string, tab
   const programIndices = new Set<number>();
   const extraCandidates: ShellPathCandidate[] = [];
   let optionsEnded = false;
+  let defaultConfigDisabled = verb === "curl" && (argv[1] === "-q" || argv[1] === "--disable");
   type OptionRole = keyof ShellOptionTable;
   const roles = new Map<string, OptionRole>();
-  for (const role of ["flag", "data", "optionalData", "path", "structured"] as const) {
+  for (const role of ["flag", "data", "optionalData", "path", "config", "structured"] as const) {
     for (const option of table[role]) {
       roles.set(option, role);
       if (role === "flag" && option.startsWith("--")) {
@@ -926,6 +934,7 @@ function classifyTransferOperandSlots(argv: readonly string[], verb: string, tab
       if (role === undefined) break;
       if (role === "flag") {
         if (equals >= 0 && (verb !== "wget" || !/^(on|off|yes|no|0|1)$/i.test(token.slice(equals + 1)))) ambiguousTransferPath();
+        if (verb === "wget" && option === "--no-config" && (equals < 0 || /^(on|yes|1)$/i.test(token.slice(equals + 1)))) defaultConfigDisabled = true;
         if (j === options.length - 1) nonPathIndices.add(i);
         continue;
       }
@@ -943,20 +952,25 @@ function classifyTransferOperandSlots(argv: readonly string[], verb: string, tab
       const writeOut = verb === "curl" && ["-w", "--write-out"].includes(option);
       const fileFormat = writeOut && value.startsWith("@");
       if (fileFormat && (value === "@" || value === "@-" || /[\0\r\n]/.test(value))) ambiguousTransferPath();
-      const paths = fileFormat ? [value.slice(1)] : role === "path" ? [value] : role === "structured" ? transferStructuredPaths(verb, option, value) : [];
+      const rcCommand = verb === "wget" && ["-e", "--execute"].includes(option) ? readWgetrcCommand(value) : undefined;
+      const config = role === "config" || (rcCommand !== undefined
+        && WGETRC_COMMAND_TABLE.config.some(command => command.replaceAll("_", "") === rcCommand.name));
+      const configPath = rcCommand?.value ?? value;
+      if (config && (configPath === "" || configPath === "-" || /[\0\r\n]/.test(configPath))) ambiguousTransferPath();
+      const paths = config ? [configPath] : fileFormat ? [value.slice(1)] : role === "path" ? [value] : role === "structured" ? transferStructuredPaths(verb, option, value) : [];
       nonPathIndices.add(i);
       nonPathIndices.add(valueIndex);
       if (role === "structured") programIndices.add(valueIndex);
       extraCandidates.push(...paths.map(path => ({
         value: path, index: valueIndex,
-        ...(fileFormat ? { effect: "read" as const, refuseAfterCheck: true } : writeOut ? { effect: "write" as const } : {}),
+        ...(config || fileFormat ? { effect: "read" as const, refuseAfterCheck: true } : writeOut ? { effect: "write" as const } : {}),
       })));
       i = valueIndex;
       // The first value option owns the entire suffix, even if it spells flags.
       break;
     }
   }
-  return { nonPathIndices, programIndices, extraCandidates, nestedCommands: [], dynamicExecution: null };
+  return { nonPathIndices, programIndices, extraCandidates, nestedCommands: [], dynamicExecution: null, defaultConfigDisabled };
 }
 
 /**
@@ -1363,6 +1377,17 @@ export function findShellPathPolicyViolation(
       }
       const verb = transferCommandVerb(head) ?? stripCommandPath(head);
       if (event.functionCall) return;
+      if ((verb === "curl" || verb === "wget") && !slots.defaultConfigDisabled) {
+        const selectors = verb === "curl" ? ["CURL_HOME", "XDG_CONFIG_HOME"] : ["WGETRC", "SYSTEM_WGETRC"];
+        const homeSelectors = ["HOME", ...(verb === "curl" && process.platform === "win32" ? ["APPDATA", "USERPROFILE"] : [])];
+        const normalizeName = (name: string): string => process.platform === "win32" ? name.toUpperCase() : name;
+        const redirected = Object.entries(projectedEnvironment).some(([name, value]) => {
+          const normalized = normalizeName(name);
+          return selectors.includes(normalized) || (homeSelectors.includes(normalized)
+            && (value === undefined || value !== Object.entries(facts.environment).find(([key]) => normalizeName(key) === normalized)?.[1]));
+        });
+        if (redirected) decline("transfer configuration environment is unsupported", words[0]);
+      }
       // The state owner checks cd's destination using its -L/-P semantics.
       // Builtin exit consumes status data, including an unknown status value.
       // Expansion effects and redirects were inspected separately. External
@@ -1425,7 +1450,7 @@ export function findShellPathPolicyViolation(
         }
         for(const path of projectedSlots.extraCandidates){
           checkPath(path.value,words[path.index]!.source.raw,projectedCwd,path.effect ?? effect);
-          // A file-backed format is a read, but can redirect output at runtime.
+          // File-backed options are reads, but can redirect output at runtime.
           if(path.refuseAfterCheck)ambiguousTransferPath();
         }
       }

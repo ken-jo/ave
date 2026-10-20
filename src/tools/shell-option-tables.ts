@@ -4,6 +4,7 @@ export interface ShellOptionTable {
   data: readonly string[];
   optionalData: readonly string[];
   path: readonly string[];
+  config: readonly string[];
   structured: readonly string[];
 }
 
@@ -60,12 +61,13 @@ export const CURL_OPTION_TABLE: ShellOptionTable = {
   ],
   optionalData: ["-h", "--help"],
   path: [
-    "--abstract-unix-socket", "--alt-svc", "--cacert", "--capath", "-K", "--config", "-c",
+    "--abstract-unix-socket", "--alt-svc", "--cacert", "--capath", "-c",
     "--cookie-jar", "--crlfile", "-D", "--dump-header", "--egd-file", "--etag-compare", "--etag-save",
     "--hsts", "--key", "--libcurl", "--netrc-file", "-o", "--output", "--output-dir", "--proxy-cacert",
     "--proxy-capath", "--proxy-crlfile", "--proxy-key", "--pubkey", "--random-file", "--ssl-sessions",
     "--stderr", "--trace", "--trace-ascii", "--unix-socket", "-T", "--upload-file",
   ],
+  config: ["-K", "--config"],
   structured: [
     "-E", "--cert", "-b", "--cookie", "-d", "--data", "--data-ascii", "--data-binary",
     "--data-urlencode", "-F", "--form", "-H", "--header", "--json", "--pinnedpubkey",
@@ -117,11 +119,12 @@ export const WGET_OPTION_TABLE: ShellOptionTable = {
   ],
   path: [
     "-o", "--output-file", "-a", "--append-output", "-i", "--input-file", "--input-metalink",
-    "--config", "--rejected-log", "-O", "--output-document", "--use-askpass", "-P",
+    "--rejected-log", "-O", "--output-document", "--use-askpass", "-P",
     "--directory-prefix", "--load-cookies", "--save-cookies", "--post-file", "--body-file",
     "--certificate", "--private-key", "--ca-certificate", "--ca-directory", "--crl-file",
     "--random-file", "--egd-file", "--hsts-file", "--warc-file", "--warc-dedup", "--warc-tempdir", "--default-page",
   ],
+  config: ["--config"],
   structured: [
     "-e", "--execute", "--pinnedpubkey",
   ],
@@ -133,9 +136,10 @@ export const WGETRC_COMMAND_TABLE = {
   path: [
     "ca_certificate", "ca_directory", "certificate", "dir_prefix", "egd_file", "input", "load_cookies",
     "logfile", "output_document", "post_file", "body_file", "private_key", "random_file",
-    "save_cookies", "choose_config", "crl_file", "hsts_file", "input_metalink", "rejected_log",
+    "save_cookies", "crl_file", "hsts_file", "input_metalink", "rejected_log",
     "warc_cdx_dedup", "warc_file", "warc_tempdir", "default_page",
   ],
+  config: ["choose_config"],
   data: [
     "accept", "reject", "add_hostdir", "ask_password", "auth_no_challenge", "background",
     "backup_converted", "backups", "base", "bind_address", "cache", "certificate_type",

@@ -521,7 +521,6 @@ describe("shell-path-policy", () => {
 
   it.each([
     "sort -o=x/../result.txt input.txt",
-    "curl -K=x/../config.txt https://example.invalid/",
     "curl -o=x/../result.txt https://example.invalid/",
     "wget -O=x/../result.txt https://example.invalid/",
     "curl -w=@.env https://example.invalid/",

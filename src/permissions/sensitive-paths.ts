@@ -205,6 +205,13 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: [".docker", "config.json"], kind: "file", why: "Docker registry credentials" },
   { anchor: "home", segments: [".npmrc"], kind: "file", why: "npm registry auth token" },
   { anchor: "home", segments: [".netrc"], kind: "file", why: "generic machine credentials" },
+  { anchor: "home", segments: [".curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "home", segments: ["_curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "home", segments: ["curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "home", segments: [".config", "curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "home", segments: [".wgetrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "root", segments: ["etc", "wgetrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "root", segments: ["usr", "local", "etc", "wgetrc"], kind: "file", why: "automatic transfer options can redirect file access" },
   { anchor: "home", segments: [".pgpass"], kind: "file", why: "PostgreSQL credentials" },
   // ── Shell / tool histories — routinely contain pasted secrets ────────
   { anchor: "home", segments: [".bash_history"], kind: "file", why: "shell history" },
