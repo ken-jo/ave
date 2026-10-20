@@ -5,7 +5,7 @@
  */
 // @vitest-environment jsdom
 import "../../../../../../test/renderer/setup.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { makeMockAveApi } from "../../../../../../test/renderer/mock-ave-api.js";
 import { deferred } from "../../../../../../test/renderer/helpers.js";
@@ -922,8 +922,18 @@ describe("GitMarketplaceTab maintenance", () => {
 
 describe("GitMarketplaceTab Updates card (design §18.9)", () => {
   const meeting = { key: { sourceId: "team", kind: "plugin" as const, name: "meeting" }, displayName: "Meeting", from: "1.0.0", to: "1.1.0" };
-  const checked = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-  const next = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+  const referenceTime = Date.parse("2026-10-19T23:30:00.000Z");
+  const checked = new Date(referenceTime - 5 * 60 * 1000).toISOString();
+  const next = new Date(referenceTime + 6 * 60 * 60 * 1000).toISOString();
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(referenceTime);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   it("says when it checks and when it last did, and opens an update's review from its row", async () => {
     const fake = fakeMarketplace({

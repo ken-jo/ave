@@ -219,8 +219,8 @@ describe("subscription package launch inputs", () => {
   });
 
   it("resolves native batch paths independently of the host operating system", () => {
-    expect(claudeCodeNpmShimTarget("C:\\Users\\someone\\AppData\\Roaming\\npm\\claude.cmd", "win32"))
-      .toBe("C:\\Users\\someone\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js");
+    expect(claudeCodeNpmShimTarget("C:\\Users\\example\\AppData\\Roaming\\npm\\claude.cmd", "win32"))
+      .toBe("C:\\Users\\example\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js");
   });
 
   it("rejects a batch launcher with a different basename", () => {
