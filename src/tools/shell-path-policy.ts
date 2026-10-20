@@ -1377,6 +1377,11 @@ export function findShellPathPolicyViolation(
       }
       const verb = transferCommandVerb(head) ?? stripCommandPath(head);
       if (event.functionCall) return;
+      // Startup config is guarded at the text level only: planting files are
+      // sensitive paths and selector overrides are refused here. A config
+      // written by arbitrary code (python, mv of a directory) while the OS
+      // sandbox is off is outside this gate's guarantee; the OS sandbox's
+      // native deny is the boundary for that case. Commands are not rewritten.
       if ((verb === "curl" || verb === "wget") && !slots.defaultConfigDisabled) {
         const selectors = verb === "curl" ? ["CURL_HOME", "XDG_CONFIG_HOME"] : ["WGETRC", "SYSTEM_WGETRC"];
         const homeSelectors = ["HOME", ...(verb === "curl" && process.platform === "win32" ? ["APPDATA", "USERPROFILE"] : [])];

@@ -50,7 +50,7 @@ describe("transfer configuration authority", () => {
     expect(check(command("../config.cfg"))?.reason).toContain("ambiguous");
   });
 
-  it.each([".curlrc", "_curlrc", ".wgetrc", "curlrc", ".config/curlrc", "etc/wgetrc", "usr/local/etc/wgetrc"])(
+  it.each([".curlrc", "_curlrc", ".wgetrc", "wget.ini", "curlrc", ".config/curlrc", "etc/wgetrc", "usr/local/etc/wgetrc"])(
     "denies writing automatic configuration %s inside an allowed root", path => {
       for (const command of [`echo 'output=x' > ~/${path}`, `tee ~/${path}`, `cp x ~/${path}`]) {
         expect(check(command)?.kind, command).toBe("sensitive-path");
@@ -60,6 +60,7 @@ describe("transfer configuration authority", () => {
 
   it.each([
     "echo 'output=x' > bin/.curlrc", "cp x bin/_curlrc",
+    "echo 'output_document=x' > bin/wget.ini", "cp x bin/wget.ini", "tee C:/tools/wget/wget.ini",
     "tee \"$APPDATA/_curlrc\"", "cp x \"$USERPROFILE/.curlrc\"",
   ])("denies automatic configuration in executable and profile locations: %s", command => {
     expect(check(command, false, { APPDATA: ".", USERPROFILE: "." })?.kind).toBe("sensitive-path");

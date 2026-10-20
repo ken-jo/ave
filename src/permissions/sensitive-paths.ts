@@ -210,6 +210,8 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: ["curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
   { anchor: "home", segments: [".config", "curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
   { anchor: "home", segments: [".wgetrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  // Windows wget reads wget.ini beside its executable; the host guard matches it anywhere.
+  { anchor: "home", segments: ["wget.ini"], kind: "file", why: "automatic transfer options can redirect file access" },
   { anchor: "root", segments: ["etc", "wgetrc"], kind: "file", why: "automatic transfer options can redirect file access" },
   { anchor: "root", segments: ["usr", "local", "etc", "wgetrc"], kind: "file", why: "automatic transfer options can redirect file access" },
   { anchor: "home", segments: [".pgpass"], kind: "file", why: "PostgreSQL credentials" },
