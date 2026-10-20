@@ -46,7 +46,7 @@ import {
 import { SessionSearchIndex, type IndexedSessionInput } from "./session-search-index.js";
 import { isRecord } from "../shared/is-record.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
-import { dlpSafeCandidate } from "../shared/dlp-safe-id.js";
+import { dlpSafeCandidate, isSafeStructuralId } from "../shared/dlp-safe-id.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { SHA256_HEX, sha256Hex } from "../lib/hex-digest-equal.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
@@ -551,6 +551,12 @@ export interface SessionMetadata {
    */
   unreadSince?: string;
   /**
+   * The workspace tab (a terminal or page) whose pane chat this side chat is.
+   * Host-written on the pane's first turn, cleared when the user starts the
+   * pane's chat afresh; a restored pane reopens on the newest unarchived match.
+   */
+  paneTabId?: string;
+  /**
    * Compact number of the checkpoint this session was branched from.
    * Set when a session is created via branchFromCheckpoint().
    * Absent for normal (non-branched) sessions.
@@ -778,7 +784,7 @@ function isValidA2AWireHandlerId(id: unknown): id is string {
 function isValidA2AWireMetadataId(id: unknown): id is string {
   return isValidSessionId(id)
     && id.length <= MAX_A2A_WIRE_ID_CHARS
-    && maskSensitiveData(id).detections.length === 0;
+    && isSafeStructuralId(id);
 }
 
 /**
@@ -804,10 +810,8 @@ const LEGACY_ROW_ID_MAX_COLLISION_ATTEMPTS = 64;
  * ids in a file, and must be derived: see `stampLegacyRowIds` for why.
  *
  * Hashed rather than concatenated because the id is persisted on the next save
- * and read back: the digest is hex, so it cannot carry anything a redaction
- * pass would rewrite, and the DLP check still proves it for the same reason
- * `createDlpSafeUuid` proves its own output — literally the same retry
- * primitive, `dlpSafeCandidate`, with a hashed draw instead of a random one.
+ * and read back. These opaque digests still pass content DLP through
+ * `dlpSafeCandidate`; only complete UUID forms have structural admission.
  * The attempt counter keeps the retry deterministic, so a second read of the
  * same file lands on the same id as the first, and it is also what lets
  * `taken` be honoured without reaching for randomness.
@@ -1359,6 +1363,7 @@ function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata
     goal,
     archivedAt: typeof raw.archivedAt === "string" ? raw.archivedAt : undefined,
     unreadSince: typeof raw.unreadSince === "string" ? raw.unreadSince : undefined,
+    paneTabId: typeof raw.paneTabId === "string" && raw.paneTabId.length > 0 ? raw.paneTabId : undefined,
   };
 }
 
@@ -1420,6 +1425,8 @@ export class MemoryManager implements PromptMemorySource {
    * swap handlers, or downgrade the task into an ordinary resumable sub-agent.
    */
   private readonly detachedWireTerminalTombstones = new Map<string, DetachedWireTerminalTombstone>();
+  /** Pane tab → its unarchived sessions; null until `findPaneSession` first asks. */
+  private paneSessions: Map<string, Set<string>> | null = null;
   private persistentContextWatchers: FSWatcher[] = [];
   private persistentContextReloadTimer: ReturnType<typeof setTimeout> | undefined;
   private persistentContextPollTimer: ReturnType<typeof setInterval> | undefined;
@@ -2925,6 +2932,7 @@ export class MemoryManager implements PromptMemorySource {
         this.rememberDetachedWireTerminal(sessionId, safe);
       }
       writeUtf8FileAtomicSync(targetPath, JSON.stringify(safe, null, 2));
+      this.notePaneSession(sessionId, safe);
     });
     // Metadata (sessionKind/routineId/projectRoot/title) is denormalized into
     // the FTS row (#1500 / E3) — re-index whenever it changes, not just on
@@ -3205,6 +3213,49 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   /**
+   * The conversation of the pane chat for workspace tab `paneTabId`: the newest
+   * unarchived session whose metadata names that tab, or undefined. Answered
+   * from an index of pane tabs built by one metadata scan on first use and
+   * kept by every metadata write and session delete; only the candidates'
+   * transcript files are stat'ed, never read.
+   */
+  findPaneSession(paneTabId: string): string | undefined {
+    let newest: { id: string; mtimeMs: number } | undefined;
+    for (const id of this.paneSessionIndex().get(paneTabId) ?? []) {
+      const stat = statPathIfPresent(join(this.sessionsDir, `${id}.jsonl`));
+      if (!stat) continue;
+      if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { id, mtimeMs: stat.mtimeMs };
+    }
+    return newest?.id;
+  }
+
+  private paneSessionIndex(): Map<string, Set<string>> {
+    if (this.paneSessions) return this.paneSessions;
+    const index = new Map<string, Set<string>>();
+    this.paneSessions = index;
+    for (const file of readdirIfPresent(this.sessionsDir)) {
+      if (!file.endsWith(".meta.json")) continue;
+      const id = file.slice(0, -".meta.json".length);
+      if (isValidSessionId(id)) this.notePaneSession(id, this.loadSessionMetadata(id));
+    }
+    return index;
+  }
+
+  /** Keep the pane index on `sessionId`'s metadata as just written (null: removed). */
+  private notePaneSession(sessionId: string, metadata: SessionMetadata | null): void {
+    const index = this.paneSessions;
+    if (!index) return;
+    for (const [tabId, ids] of index) {
+      if (ids.delete(sessionId) && ids.size === 0) index.delete(tabId);
+    }
+    const tabId = metadata?.paneTabId;
+    if (!tabId || metadata.archivedAt !== undefined) return;
+    const ids = index.get(tabId) ?? new Set<string>();
+    ids.add(sessionId);
+    index.set(tabId, ids);
+  }
+
+  /**
    * Sub-agents spawned by one parent session, newest first.
    *
    * The renderer's sub-agent panel is fed entirely by the live `agent_spawn`
@@ -3218,6 +3269,7 @@ export class MemoryManager implements PromptMemorySource {
    * children, and reading every child's `.jsonl` to render a list would make
    * session load pay for transcripts the user may never open.
    */
+
   listSubAgentSessionsForOrigin(originSessionId: string): RestoredSubAgentSession[] {
     if (!originSessionId) return [];
     return readdirIfPresent(this.sessionsDir)
@@ -3445,6 +3497,7 @@ export class MemoryManager implements PromptMemorySource {
       transcriptWriteStates.delete(jsonlPath);
       const metaPath = join(this.sessionsDir, `${sessionId}.meta.json`);
       unlinkIfPresent(metaPath);
+      this.notePaneSession(sessionId, null);
       const sessionDir = join(this.sessionsDir, sessionId);
       try {
         rmSync(sessionDir, { recursive: true, force: true });

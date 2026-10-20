@@ -8,6 +8,15 @@ import { act, fireEvent, render, renderHook, screen } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { SurfacePane, directoryName, webPanelTitle } from "../MainSurfacePanels.js";
+import type { SideChatRuntime } from "../SideChatView.js";
+import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../../shared/processing-display-level.js";
+
+/** The pane chat's model readiness: a configured API-key model, settings loaded. */
+const CHAT_RUNTIME: SideChatRuntime = {
+  hasApiKey: true, settingsLoaded: true, onOpenSettings: () => {},
+  llmVendor: "openai", llmModel: "test-model", llmRouteModalities: undefined,
+  processingDisplayLevel: DEFAULT_PROCESSING_DISPLAY_LEVEL, usageAvailable: true,
+};
 import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { useMainSurfaces, type MainSurface } from "../../preview/main-surfaces.js";
 import { getWebSurfaces, noteWebSurfaceLocation, setWebSurfaceElement } from "../../preview/web-surfaces.js";
@@ -96,7 +105,7 @@ describe("useMainSurfaces", () => {
     act(() => { page = result.current.create("browser", "https://example.com/"); });
     render(
       <TooltipProvider>
-        <SurfacePane api={makeMockAveApi().api as never} surface={page} paneId="main" frame={{}} onNavigate={() => {}} onCwd={() => {}} />
+        <SurfacePane chatRuntime={CHAT_RUNTIME} api={makeMockAveApi().api as never} surface={page} paneId="main" frame={{}} onNavigate={() => {}} onCwd={() => {}} />
         <WebSurfaceLayer api={makeMockAveApi().api as never} />
       </TooltipProvider>,
     );
@@ -144,7 +153,7 @@ describe("SurfacePane", () => {
     setWebSurfaceElement(tabId, element);
     const unregister = registerBrowserTabHost(api as never, { sessionId: () => null, hasTab: () => false, selectTab: () => {}, closeTab: () => {} });
     try {
-      render(<TooltipProvider><SurfacePane api={api as never} surface={{ kind: "browser", tabId, ordinal: 1, url: guest.url }} paneId="main" frame={{}} onNavigate={navigate} onCwd={() => {}} /></TooltipProvider>);
+      render(<TooltipProvider><SurfacePane chatRuntime={CHAT_RUNTIME} api={api as never} surface={{ kind: "browser", tabId, ordinal: 1, url: guest.url }} paneId="main" frame={{}} onNavigate={navigate} onCwd={() => {}} /></TooltipProvider>);
       expect(screen.queryByTestId("agent-browser-control-badge")).toBeNull();
       await act(async () => {
         if (action === "address") {
@@ -171,7 +180,7 @@ describe("SurfacePane", () => {
     const terminal = terminalApi();
     render(
       <TooltipProvider>
-        <SurfacePane api={{ ...api, terminal } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} onCwd={() => {}} />
+        <SurfacePane chatRuntime={CHAT_RUNTIME} api={{ ...api, terminal } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} onCwd={() => {}} />
       </TooltipProvider>,
     );
     expect(screen.getByTestId("pane-header").textContent).toMatch(/ 2$/);
@@ -183,7 +192,7 @@ describe("SurfacePane", () => {
     const onNavigate = vi.fn();
     render(
       <TooltipProvider>
-        <SurfacePane api={makeMockAveApi({ browserTabs: true }).api as never} surface={surface("browser")} paneId="main" frame={{}} onNavigate={onNavigate} onCwd={() => {}} />
+        <SurfacePane chatRuntime={CHAT_RUNTIME} api={makeMockAveApi({ browserTabs: true }).api as never} surface={surface("browser")} paneId="main" frame={{}} onNavigate={onNavigate} onCwd={() => {}} />
       </TooltipProvider>,
     );
     expect(screen.getByTestId("web-panel-empty")).toBeTruthy();
@@ -219,7 +228,7 @@ describe("SurfacePane", () => {
       const page = { ...surface("browser"), url: "https://a.example/" };
       render(
         <TooltipProvider>
-          <SurfacePane api={api as never} surface={page} paneId="main" frame={{}} onNavigate={onNavigate} onCwd={() => {}} />
+          <SurfacePane chatRuntime={CHAT_RUNTIME} api={api as never} surface={page} paneId="main" frame={{}} onNavigate={onNavigate} onCwd={() => {}} />
         </TooltipProvider>,
       );
       const address = screen.getByTestId("web-panel-address");

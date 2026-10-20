@@ -132,6 +132,7 @@ type TestAppWindow = {
 };
 
 function makeDeps() {
+  const paneLoop = { refreshProvider: vi.fn(), abortCurrentTurn: vi.fn() };
   const llm: TestLlm = {
     provider: "openai",
     vendors: { openai: { model: "gpt-5", baseUrl: null } },
@@ -165,6 +166,8 @@ function makeDeps() {
     },
     conversationLoop: { refreshProvider: vi.fn(), abortCurrentTurn: vi.fn() },
     sideChatConversationLoop: { refreshProvider: vi.fn(), abortCurrentTurn: vi.fn() },
+    // One pane chat's own loop, held while its pane is open.
+    paneChatLoops: { all: () => [paneLoop] },
     auditLogger: { log: vi.fn() },
     getAppWindows: vi.fn<() => TestAppWindow[]>(() => []),
     refreshActiveLlmWildcard: vi.fn(),
@@ -289,6 +292,9 @@ describe("common subscription runtime IPC", () => {
     expect(deps.refreshActiveLlmWildcard).toHaveBeenCalledOnce();
     expect(deps.conversationLoop.abortCurrentTurn).toHaveBeenCalledOnce();
     expect(deps.sideChatConversationLoop.abortCurrentTurn).toHaveBeenCalledOnce();
+    const [paneLoop] = deps.paneChatLoops.all();
+    expect(paneLoop!.refreshProvider).toHaveBeenCalledOnce();
+    expect(paneLoop!.abortCurrentTurn).toHaveBeenCalledOnce();
 
     releasePersistence.resolve();
     await expect(pending).resolves.toMatchObject({ ok: true, status: { provider: "codex" } });

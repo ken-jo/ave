@@ -34,7 +34,7 @@ import { getWindowTerminalBlockTracker, listTerminalBlockTabs } from "../main/te
 import type { TerminalBlock } from "../shared/terminal-blocks.js";
 import { neutralizeFenceClose } from "../shared/fence-sanitizer.js";
 import { t } from "../i18n/index.js";
-import { resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
+import { resolveSessionWindow, resolveSessionWindowId, type SessionWindowScopeDeps } from "./session-window-scope.js";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
@@ -48,8 +48,12 @@ const SUMMARIES_PER_TAB = 10;
 const MAX_RESPONSE_OUTPUT_CHARS = 96 * 1024;
 
 export interface TerminalReadToolDeps extends SessionWindowScopeDeps {
-  /** The terminal tab the user is looking at in a window, if a terminal is the active surface. */
-  activeTerminalTabId?: (windowId: number) => string | undefined;
+  /**
+   * The terminal a conversation reads when a call names none: the terminal its
+   * pane chat is bound to, else the one the user is looking at in the window.
+   * `sessionId` is the conversation the window hosts (a sub-agent's parent).
+   */
+  defaultTerminalTabId?: (windowId: number, sessionId: string) => string | undefined;
 }
 
 /**
@@ -63,7 +67,7 @@ export function resolveTerminalWindowId(
   return resolveSessionWindowId(sessionId, deps);
 }
 
-function failure(error: string) {
+export function terminalToolFailure(error: string) {
   return { output: JSON.stringify({ error }), isError: true };
 }
 
@@ -77,7 +81,7 @@ const TERMINAL_OUTPUT_FENCE_OPEN = '<terminal-output trust="untrusted-terminal-d
  * before the JSON is built (afterwards, the inserted backslash could form an
  * invalid JSON escape such as `\ `).
  */
-function fenced(payload: unknown) {
+export function fenceTerminalData(payload: unknown) {
   return {
     output: [
       TERMINAL_OUTPUT_FENCE_OPEN,
@@ -98,7 +102,7 @@ function neutralizeStrings(value: unknown): unknown {
   return value;
 }
 
-function withOutputBudget(blocks: readonly TerminalBlock[]) {
+export function withOutputBudget(blocks: readonly TerminalBlock[]) {
   let budget = MAX_RESPONSE_OUTPUT_CHARS;
   return blocks.map((block) => {
     const output = block.output.length <= budget
@@ -139,23 +143,24 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
     execute: async (rawInput, ctx) => {
       const input = (rawInput ?? {}) as { tabId?: unknown; blockId?: unknown; limit?: unknown };
       if (input.tabId !== undefined && typeof input.tabId !== "string") {
-        return failure("tabId must be a string");
+        return terminalToolFailure("tabId must be a string");
       }
       if (input.blockId !== undefined && (!Number.isInteger(input.blockId) || (input.blockId as number) < 1)) {
-        return failure("blockId must be a positive integer");
+        return terminalToolFailure("blockId must be a positive integer");
       }
       if (
         input.limit !== undefined
         && (!Number.isInteger(input.limit) || (input.limit as number) < 1 || (input.limit as number) > MAX_LIMIT)
       ) {
-        return failure(`limit must be an integer from 1 to ${MAX_LIMIT}`);
+        return terminalToolFailure(`limit must be an integer from 1 to ${MAX_LIMIT}`);
       }
       const sessionId = typeof ctx?.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
-      const windowId = resolveTerminalWindowId(sessionId, deps);
-      if (windowId === null) {
-        return failure("terminal_read is available only to a conversation in an app window (or its sub-agents); this session has no terminals");
+      const scope = resolveSessionWindow(sessionId, deps);
+      if (scope === null) {
+        return terminalToolFailure("terminal_read is available only to a conversation in an app window (or its sub-agents); this session has no terminals");
       }
-      const activeTabId = deps.activeTerminalTabId?.(windowId);
+      const { windowId } = scope;
+      const activeTabId = deps.defaultTerminalTabId?.(windowId, scope.hostSessionId);
 
       if (input.tabId === undefined && input.blockId === undefined && input.limit === undefined) {
         const terminals = listTerminalBlockTabs(windowId).map(({ tabId, tracker }) => ({
@@ -165,7 +170,7 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
           exited: tracker.hasExited(),
           recentBlocks: tracker.list().slice(0, SUMMARIES_PER_TAB),
         }));
-        return fenced({
+        return fenceTerminalData({
           terminals,
           ...(terminals.length === 0 ? { note: t("be_terminalRead.noTerminals") } : {}),
         });
@@ -175,20 +180,20 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
       // the user is looking at, when there is one.
       const tabId = (input.tabId as string | undefined) ?? activeTabId;
       if (tabId === undefined) {
-        return failure("blockId and limit require tabId when no terminal is active; call terminal_read with no arguments to list terminals");
+        return terminalToolFailure("blockId and limit require tabId when no terminal is active; call terminal_read with no arguments to list terminals");
       }
       // A tab of another window answers exactly like a tab that does not exist.
       const tracker = getWindowTerminalBlockTracker(tabId, windowId);
       if (!tracker) {
-        return failure(`no terminal with tabId ${JSON.stringify(tabId)}; call terminal_read with no arguments to list terminals`);
+        return terminalToolFailure(`no terminal with tabId ${JSON.stringify(tabId)}; call terminal_read with no arguments to list terminals`);
       }
       if (input.blockId !== undefined) {
         const block = tracker.get(input.blockId as number);
-        if (!block) return failure(`no block ${String(input.blockId)} in terminal ${tabId}`);
-        return fenced({ tabId, block: withOutputBudget([block])[0] });
+        if (!block) return terminalToolFailure(`no block ${String(input.blockId)} in terminal ${tabId}`);
+        return fenceTerminalData({ tabId, block: withOutputBudget([block])[0] });
       }
       const limit = (input.limit as number | undefined) ?? DEFAULT_LIMIT;
-      return fenced({
+      return fenceTerminalData({
         tabId,
         shellIntegration: tracker.isIntegrated(),
         blocks: withOutputBudget(tracker.recent(limit)),

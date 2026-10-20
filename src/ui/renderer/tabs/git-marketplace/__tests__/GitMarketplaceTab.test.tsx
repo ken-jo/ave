@@ -209,7 +209,7 @@ describe("GitMarketplaceTab package sheet", () => {
     renderTab(fake);
     fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:process-kit")).getByTestId("git-marketplace:card:state"));
     const sheet = await screen.findByTestId("git-marketplace:sheet");
-    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
     expect(await within(sheet).findByText(/이 사본은 거부되었습니다\. 릴리스를 고정한 마켓플레이스에서 설치하세요\./)).toBeInTheDocument();
   });
@@ -244,12 +244,18 @@ describe("GitMarketplaceTab package sheet", () => {
       } };
     const fake = fakeMarketplace({ sources: [team], entries: [item] });
     fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item, { components }) });
+    const pendingDetail = deferred<Awaited<ReturnType<GitMarketplaceApi["packageDetail"]>>>();
+    fake.market.packageDetail.mockReturnValueOnce(pendingDetail.promise);
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item, { components }) });
     fake.market.executeInstall.mockResolvedValue({ ok: true, value: { key: item.key, version: "1.0.0", action: { action: "install" }, rungs: [], connectionWarning: null } });
     renderTab(fake);
     fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:meeting-kit")).getByTestId("git-marketplace:card:state"));
     const sheet = await screen.findByTestId("git-marketplace:sheet");
-    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    // The sheet opens before its detail response makes the install action available.
+    expect(within(sheet).queryByTestId("git-marketplace:plan")).toBeNull();
+    expect(fake.market.planInstall).not.toHaveBeenCalled();
+    pendingDetail.resolve({ ok: true, value: detail(item, { components }) });
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     const review = await within(sheet).findByTestId("git-marketplace:review");
     expect(review).toHaveTextContent("./server/run");
     fireEvent.click(within(review).getByTestId("git-marketplace:mcp-consent:notes").querySelector('[role="checkbox"]')!);
@@ -268,7 +274,7 @@ describe("GitMarketplaceTab package sheet", () => {
     renderTab(fake);
     fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:hook-kit")).getByTestId("git-marketplace:card:state"));
     const sheet = await screen.findByTestId("git-marketplace:sheet");
-    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     const review = await within(sheet).findByTestId("git-marketplace:review");
     expect(review).toHaveTextContent("운영체제 격리가 없습니다");
     expect(review).toHaveTextContent("${PLUGIN_ROOT}/server/hook.js");
@@ -287,7 +293,7 @@ describe("GitMarketplaceTab package sheet", () => {
     renderTab(fake);
     fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:agent-plugin:hook-kit")).getByTestId("git-marketplace:card:state"));
     const sheet = await screen.findByTestId("git-marketplace:sheet");
-    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     const review = await within(sheet).findByTestId("git-marketplace:review");
     expect(review).toHaveTextContent("Windows 운영체제 샌드박스가 켜져 있는 동안 훅을 실행할 수 없습니다");
     expect(within(review).getByTestId("git-marketplace:hook-consent:0").querySelector('[role="checkbox"]')).toBeDisabled();
@@ -329,7 +335,7 @@ describe("GitMarketplaceTab package sheet", () => {
     expect(await within(sheet).findByText("https://github.com/example/market.git")).toBeInTheDocument();
     expect(within(sheet).getByText("네트워크: api.example.com")).toBeInTheDocument();
 
-    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     await within(sheet).findByTestId("git-marketplace:review");
     expect(fake.market.planInstall).toHaveBeenCalledWith({ sourceId: "team", kind: "plugin", name: "calendar" });
     expect(within(sheet).getByText(/커밋 aaaaaaa에 고정/)).toBeInTheDocument();
@@ -381,7 +387,7 @@ describe("GitMarketplaceTab package sheet", () => {
     fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
     const sheet = await screen.findByTestId("git-marketplace:sheet");
     expect(await within(sheet).findByText("파일 접근: write: config.workspace — Store project data")).toBeInTheDocument();
-    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     await within(sheet).findByTestId("git-marketplace:review");
     expect(within(sheet).getByText("파일 접근: write: config.workspace — Store project data")).toBeInTheDocument();
   });
@@ -739,7 +745,7 @@ describe("GitMarketplaceTab target classes (§18.3, §18.5)", () => {
     renderTab(fake);
     fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
     const sheet = await screen.findByTestId("git-marketplace:sheet");
-    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     await within(sheet).findByTestId("git-marketplace:review");
     expect(within(sheet).queryByTestId("git-marketplace:rung:archive:unencrypted")).toBeNull();
     fireEvent.click(within(sheet).getByTestId("git-marketplace:confirm"));
@@ -1103,7 +1109,7 @@ describe("a package from a folder (§18.4.8)", () => {
     expect(within(sheet).getByText(/폴더의 빌드된 트리/)).not.toHaveTextContent("sha256");
     expect(within(sheet).getByTestId("git-marketplace:delivery-help")).toHaveTextContent("아무것도 내려받거나 이 컴퓨터에서 빌드하지 않으며");
 
-    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
     expect(await within(sheet).findByTestId("git-marketplace:review:not-installed")).toHaveTextContent("node_modules/, package.json, src/");
     expect(within(sheet).getByTestId("git-marketplace:review")).toHaveTextContent("폴더 내용 ccccccc에 고정");
   });

@@ -340,7 +340,7 @@ function sameLlmSettings(left: LLMSettings, right: LLMSettings): boolean {
 
 /** Keep main and side-chat provider instances on the same persisted settings. */
 function refreshChatRuntimeProviders(
-  deps: Pick<IpcDeps, "conversationLoop" | "sideChatConversationLoop">,
+  deps: Pick<IpcDeps, "conversationLoop" | "sideChatConversationLoop" | "paneChatLoops">,
 ): void {
   // Refresh each binding even if another one fails. ConversationLoop clears
   // its provider before rebuilding, so this leaves no stale API-key transport
@@ -353,11 +353,13 @@ function refreshChatRuntimeProviders(
     failed = true;
     firstError = error;
   }
-  try {
-    deps.sideChatConversationLoop?.refreshProvider();
-  } catch (error) {
-    failed = true;
-    firstError ??= error;
+  for (const loop of [deps.sideChatConversationLoop, ...(deps.paneChatLoops?.all() ?? [])]) {
+    try {
+      loop?.refreshProvider();
+    } catch (error) {
+      failed = true;
+      firstError ??= error;
+    }
   }
   if (failed) throw firstError;
 }
@@ -712,6 +714,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       const reason = new Error("active chat runtime changed");
       conversationLoop.abortCurrentTurn?.(reason);
       deps.sideChatConversationLoop?.abortCurrentTurn?.(reason);
+      for (const paneLoop of deps.paneChatLoops?.all() ?? []) paneLoop.abortCurrentTurn?.(reason);
     }
     const persistSelection = settingsService.patch({ llm: { activeChatRuntime } });
     const transitionRevision = ++activeChatRuntimeTransitionRevision;

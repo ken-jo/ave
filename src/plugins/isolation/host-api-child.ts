@@ -87,12 +87,16 @@ import {
   type WireCallLlmOptions,
   type WireResolveApiKeyOptions,
   type WireWorkerHandle,
+  workerSubscriptionIdOfRequest,
   asWireAudioCaptureEvent,
   asWireFloatingPanelEvent,
   type WireFloatingPanelHandle,
   type WireAudioCaptureHandle,
 } from "./host-api-wire.js";
 import { errorMessage } from "../../shared/error-message.js";
+
+const WORKER_PRE_LISTENER_EVENT_MAX = 256;
+const WORKER_PRE_LISTENER_BYTES_MAX = 1024 * 1024;
 
 /** One hostApi member as the child's stub table holds it. */
 export type ChildHostApiMember = (...args: unknown[]) => unknown;
@@ -525,26 +529,71 @@ export function createServiceChildMembers(
       call("resizeFloatingPanel", [String(args[0]), Number(args[1])]),
     spawnWorker: async (...args) => {
       const spec = args[0] as PluginWorkerSpec;
-      const reply = await call("spawnWorker", [spec]);
-      const handle = requireHandle(reply, "spawnWorker") as unknown as WireWorkerHandle;
       const stdout: ((chunk: string) => void)[] = [];
       const stderr: ((chunk: string) => void)[] = [];
       const exit: ((info: { code: number | null; signal: NodeJS.Signals | null }) => void)[] = [];
-      // The handler closes over `dispose`, which is what this call returns.
-      // Safe because a payload can only arrive after `adoptSubscription` has
-      // returned — the host does not know the id until the reply reaches it.
-      const dispose = deps.adoptSubscription("spawnWorker", handle.handleId, (payload) => {
+      let pendingStdout: string[] = [];
+      let pendingStderr: string[] = [];
+      let pendingBytes = 0;
+      let pendingEvents = 0;
+      let backlogError: HostApiBoundaryError | undefined;
+      let handoffComplete = false;
+      let terminalExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+      let disposeAdopted: (() => void) | undefined;
+      let disposed = false;
+      const dispose = (): void => {
+        if (disposed) return;
+        disposed = true;
+        pendingStdout = [];
+        pendingStderr = [];
+        pendingBytes = 0;
+        pendingEvents = 0;
+        stdout.length = 0;
+        stderr.length = 0;
+        exit.length = 0;
+        disposeAdopted?.();
+      };
+      const bufferOutput = (kind: "stdout" | "stderr", chunk: string): void => {
+        if (backlogError || handoffComplete) return;
+        const bytes = chunk.length * 2;
+        if (
+          pendingEvents >= WORKER_PRE_LISTENER_EVENT_MAX
+          || pendingBytes + bytes > WORKER_PRE_LISTENER_BYTES_MAX
+        ) {
+          pendingStdout = [];
+          pendingStderr = [];
+          pendingBytes = 0;
+          pendingEvents = 0;
+          const error = new HostApiBoundaryError(
+            "payload-too-large",
+            "Worker output exceeded the pre-listener buffer.",
+            { limit: WORKER_PRE_LISTENER_BYTES_MAX },
+          );
+          backlogError = error;
+          dispose();
+          return;
+        }
+        (kind === "stdout" ? pendingStdout : pendingStderr).push(chunk);
+        pendingBytes += bytes;
+        pendingEvents += 1;
+      };
+      const handleEvent = (payload: unknown): void => {
+        if (disposed) return;
         const event = asWireWorkerEvent(payload, "spawnWorker(event)");
         if (event.kind === "stdout") {
-          for (const listener of stdout) listener(event.chunk);
+          if (stdout.length === 0) bufferOutput("stdout", event.chunk);
+          else for (const listener of stdout) listener(event.chunk);
           return;
         }
         if (event.kind === "stderr") {
-          for (const listener of stderr) listener(event.chunk);
+          if (stderr.length === 0) bufferOutput("stderr", event.chunk);
+          else for (const listener of stderr) listener(event.chunk);
           return;
         }
+        if (terminalExit) return;
+        terminalExit = { code: event.code, signal: event.signal as NodeJS.Signals | null };
         for (const listener of exit) {
-          listener({ code: event.code, signal: event.signal as NodeJS.Signals | null });
+          listener(terminalExit);
         }
         // This side does NOT let go here. The host owns the process, so the
         // host owns the news that it ended: it releases its own registration
@@ -552,15 +601,62 @@ export function createServiceChildMembers(
         // here as well would be a second authority for one fact, and it was
         // only ever written because a host-side release could not reach the
         // child — which it now can.
-      });
+      };
+      let subscriptionId: string | undefined;
+      let handle: WireWorkerHandle;
+      try {
+        const reply = await call("spawnWorker", [spec], undefined, (id) => {
+          subscriptionId = workerSubscriptionIdOfRequest(id);
+          disposeAdopted = deps.adoptSubscription("spawnWorker", subscriptionId, handleEvent);
+        });
+        handle = requireHandle(reply, "spawnWorker") as unknown as WireWorkerHandle;
+        if (handle.handleId !== subscriptionId) {
+          throw new Error("Worker reply did not match its request registration.");
+        }
+        if (backlogError) throw backlogError;
+      } catch (error) {
+        dispose();
+        throw error;
+      }
       const worker: SpawnedPluginWorker = {
         socketPath: handle.socketPath,
         pid: handle.pid,
         stop: dispose,
-        onStdout: (listener) => void stdout.push(listener),
-        onStderr: (listener) => void stderr.push(listener),
-        onExit: (listener) => void exit.push(listener),
+        onStdout: (listener) => {
+          if (backlogError) throw backlogError;
+          stdout.push(listener);
+          const queued = pendingStdout;
+          pendingStdout = [];
+          pendingEvents -= queued.length;
+          pendingBytes -= queued.reduce((bytes, chunk) => bytes + chunk.length * 2, 0);
+          try {
+            for (const chunk of queued) listener(chunk);
+          } catch (error) {
+            dispose();
+            throw error;
+          }
+        },
+        onStderr: (listener) => {
+          if (backlogError) throw backlogError;
+          stderr.push(listener);
+          const queued = pendingStderr;
+          pendingStderr = [];
+          pendingEvents -= queued.length;
+          pendingBytes -= queued.reduce((bytes, chunk) => bytes + chunk.length * 2, 0);
+          try {
+            for (const chunk of queued) listener(chunk);
+          } catch (error) {
+            dispose();
+            throw error;
+          }
+        },
+        onExit: (listener) => {
+          if (backlogError) throw backlogError;
+          exit.push(listener);
+          if (terminalExit) listener(terminalExit);
+        },
       };
+      handoffComplete = true;
       return worker;
     },
   };

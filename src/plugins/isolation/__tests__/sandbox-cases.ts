@@ -21,17 +21,8 @@
  * turns a silent pass into a failure; nothing about the cases themselves reads
  * it.
  */
+import type { TestContext } from "vitest";
 import { asrtCanInitialize } from "../../../permissions/__tests__/test-helpers.js";
-import { afterAll } from "vitest";
-import { retainDirectoryFixture } from "../../../__tests__/support/nonempty-directory-fixture.js";
-
-export const SANDBOX_DEFAULT_TEMP_ROOT = "/tmp/claude";
-let releaseTempFixture: (() => Promise<void>) | undefined;
-
-afterAll(async () => {
-  await releaseTempFixture?.();
-  releaseTempFixture = undefined;
-});
 
 /** Set by the CI jobs whose green must mean "measured". */
 export function sandboxCasesRequired(): boolean {
@@ -39,15 +30,7 @@ export function sandboxCasesRequired(): boolean {
 }
 
 export async function sandboxCasesRun(): Promise<boolean> {
-  if (await asrtCanInitialize()) {
-    if (process.platform === "darwin" || process.platform === "linux") {
-      // Every suite establishes the directory before planning any wrap. A
-      // missing deny path becomes a file mount stub on Linux; creating this
-      // directory later races those stubs and their empty-directory cleanup.
-      releaseTempFixture ??= retainDirectoryFixture(SANDBOX_DEFAULT_TEMP_ROOT);
-    }
-    return true;
-  }
+  if (await asrtCanInitialize()) return true;
   if (sandboxCasesRequired()) {
     throw new Error(
       "AVE_REQUIRE_SANDBOX_CASES=1 but the ASRT sandbox cannot initialize on this "
@@ -57,4 +40,13 @@ export async function sandboxCasesRun(): Promise<boolean> {
     );
   }
   return false;
+}
+
+/**
+ * Skip the running case, with its reason, where ASRT cannot initialise; fail
+ * instead where a confinement job asks for real sandbox cases
+ * ({@link sandboxCasesRun}).
+ */
+export async function requireSandboxCases(test: TestContext): Promise<void> {
+  if (!(await sandboxCasesRun())) test.skip("ASRT cannot initialize (sandbox dependencies missing)");
 }

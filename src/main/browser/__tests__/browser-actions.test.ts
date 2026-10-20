@@ -4,7 +4,7 @@
  * the snapshot cap, sensitive-field refusal, cancellation, and the
  * cross-origin redirect guard of navigate.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import {
@@ -42,6 +42,8 @@ function page(children: AXNode[]): AXNode[] {
 class FakeCdp implements CdpSession {
   frameTree = { frame: { id: "main", loaderId: "loader-1", url: "https://a.example/form", securityOrigin: "https://a.example" }, childFrames: [] as unknown[] };
   hit = { backendNodeId: 0, frameId: "main" };
+  /** How far the page is scrolled, as the layout metrics report it. */
+  scroll = { x: 0, y: 0 };
   readonly events = new EventEmitter();
   onEvent(listener: (method: string, params: Record<string, unknown>) => void): () => void {
     this.events.on("message", listener);
@@ -68,6 +70,7 @@ class FakeCdp implements CdpSession {
         if (params?.type === "touchEnd") this.pressed = true;
         return {};
       case "Page.getFrameTree": return { frameTree: this.frameTree };
+      case "Page.getLayoutMetrics": return { cssVisualViewport: { pageX: this.scroll.x, pageY: this.scroll.y } };
       case "DOM.getNodeForLocation": return { ...this.hit, backendNodeId: this.hit.backendNodeId || this.nodes.find((node) => node.backendDOMNodeId)?.backendDOMNodeId };
       case "Input.dispatchMouseEvent":
         if (params?.type === "mousePressed") this.pressed = true;
@@ -123,6 +126,9 @@ function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: 
       injected.push(cdp.calls.length);
       return inject();
     },
+    // One page alone: its window's press lock and delivery check are the
+    // adapter's, covered with the window router below.
+    press: (run) => run(),
     releaseFocus: () => {
       released.push(cdp.calls.length);
       cdp.loseFocus();
@@ -749,27 +755,110 @@ describe("focused field and document replacement", () => {
   });
 });
 
-function adapterFixture() {
+/** Where the fixture's window content sits on screen, and where its page sits in that window. */
+const HOST_CONTENT = { x: 1000, y: 500, windowId: 1 };
+const PAGE_IN_WINDOW = { x: 40, y: 60 };
+
+/**
+ * The window's one touch sequence, as measured with two pages in one window:
+ * a lone sequence reaches the page that sent it; a touch start sent while
+ * another page's sequence is open joins that sequence and lands in that page;
+ * the tap is derived after the sequence ends. Each page reports what reaches
+ * it as native input events, marked with the debugger bit.
+ */
+class WindowTouchRouter {
+  private open: FixtureGuest | null = null;
+  /** Touch dispatches are held unanswered (a page busy in its touch handler) until `wake`. */
+  hang = false;
+  private held: Array<() => void> = [];
+  /** The busy page answers: the held dispatches are delivered, in order. */
+  wake(): void {
+    this.hang = false;
+    for (const deliver of this.held.splice(0)) deliver();
+  }
+  dispatch(sender: FixtureGuest, type: string): Promise<void> {
+    if (this.hang) {
+      return new Promise((resolve) => {
+        this.held.push(() => { void this.deliver(sender, type); resolve(); });
+      });
+    }
+    return this.deliver(sender, type);
+  }
+  private deliver(sender: FixtureGuest, type: string): Promise<void> {
+    const marked = { _modifiers: 1 << 23 };
+    if (type === "touchStart") {
+      const to = this.open ?? sender;
+      this.open = to;
+      to.report({ type: "touchStart", ...marked });
+      to.report({ type: "gestureTapDown", _modifiers: 0 });
+    } else if (type === "touchEnd" || type === "touchCancel") {
+      const to = this.open ?? sender;
+      this.open = null;
+      to.report({ type, ...marked });
+      if (type === "touchEnd") {
+        setTimeout(() => {
+          to.report({ type: "gestureShowPress", _modifiers: 0 });
+          to.report({ type: "gestureTap", _modifiers: 0 });
+        }, 5);
+      }
+    }
+    return Promise.resolve();
+  }
+}
+
+/** What the router needs of a page: where its native touch input is reported. */
+interface FixtureGuest { report(input: { type: string; _modifiers: number }): void }
+
+function adapterFixture(options: {
+  hostKnown?: boolean;
+  registry?: BrowserTabRegistry<never>;
+  router?: WindowTouchRouter;
+  guestId?: number;
+  tabId?: string;
+} = {}) {
   const cdp = new FakeCdp();
   cdp.nodes = page([ax("f", "textbox", "Replacement", { backendDOMNodeId: 5 })]);
   cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { value: true } }] };
+  const router = options.router ?? new WindowTouchRouter();
+  const registry = (options.registry ?? new BrowserTabRegistry()) as BrowserTabRegistry<never>;
   let attached = false;
+  const echo = { on: true };
+  const guestEvents = new EventEmitter();
   const debuggerEvents = Object.assign(new EventEmitter(), {
     attach: () => { attached = true; },
     isAttached: () => attached,
-    sendCommand: (method: string, params?: Record<string, unknown>) => cdp.send(method, params),
+    sendCommand: async (method: string, params?: Record<string, unknown>) => {
+      const result = await cdp.send(method, params);
+      // The native echo of a pointer move: the page point and its screen point.
+      if (echo.on && method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved") {
+        const x = params.x as number;
+        const y = params.y as number;
+        guestEvents.emit("input-event", {}, {
+          type: "mouseMove", x, y,
+          globalX: HOST_CONTENT.x + PAGE_IN_WINDOW.x + x,
+          globalY: HOST_CONTENT.y + PAGE_IN_WINDOW.y + y,
+        });
+      }
+      if (method === "Input.dispatchTouchEvent") await router.dispatch(guest, params?.type as string);
+      return result;
+    },
   });
   const mainFrame = { framesInSubtree: [] };
   let url = "https://a.example/form";
-  const guest = {
-    id: 101, isDestroyed: () => false, isLoading: () => false, getURL: () => url, getTitle: () => "Page",
-    mainFrame, focusedFrame: mainFrame, debugger: debuggerEvents,
-  };
-  const registry = new BrowserTabRegistry();
-  registry.guestAttached(guest, 1);
-  registry.bindTab(1, { tabId: "user", webContentsId: guest.id });
-  const tab = registry.liveTab("tab-1")!;
-  const actions = createBrowserPageActions(registry, browserOrigin);
+  const touches: string[] = [];
+  const guest = Object.assign(guestEvents, {
+    id: options.guestId ?? 101, isDestroyed: () => false, isLoading: () => false, getURL: () => url, getTitle: () => "Page",
+    mainFrame, focusedFrame: mainFrame, debugger: debuggerEvents, touches,
+    // What the guest tracking does with a page's native touch input.
+    report: (input: { type: string; _modifiers: number }) => {
+      if (input.type === "touchStart") touches.push("touchStart");
+      registry.userInput(guest.id, input);
+    },
+  });
+  registry.guestAttached(guest as never, 1);
+  registry.bindTab(1, { tabId: options.tabId ?? "user", webContentsId: guest.id });
+  const tab = registry.listTabs(1).map((entry) => registry.liveTab(entry.tabId)!).find((entry) => entry.guest === (guest as never))!;
+  const actions = createBrowserPageActions(registry, browserOrigin, () => (options.hostKnown === false ? null : HOST_CONTENT));
   const tools = createBrowserTools({
     tabs: registry,
     windowIdForHostedSession: () => 1,
@@ -785,7 +874,7 @@ function adapterFixture() {
       approval: { tabId: tab.handle, origin: scope.origin, documentId: scope.documentId },
     } as unknown as Parameters<typeof actions.pressKey>[0];
   };
-  return { cdp, guest, registry, tab, actions, approve, tool, navigate: (next: string) => {
+  return { cdp, guest, registry, router, tab, actions, approve, tool, echo, navigate: (next: string) => {
     url = next;
     cdp.frameTree.frame = { ...cdp.frameTree.frame, url, loaderId: "loader-2" };
     registry.navigationStarted(guest.id, url);
@@ -835,6 +924,187 @@ it.each(["https://a.example/next", "https://b.example/next"])("reports navigatio
   expect(JSON.parse(result.output.split("\n")[2]!)).toMatchObject({ url: destination, origin: browserOrigin(destination) });
   expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent", "Input.dispatchTouchEvent", "Input.dispatchTouchEvent"]);
   expect(tab.opener).toBe(destination.includes("b.example") ? "user" : "agent");
+});
+
+describe("tap placement", () => {
+  async function clickLink(options: { hostKnown?: boolean } = {}) {
+    const fixture = adapterFixture(options);
+    const { cdp, tab, actions, approve } = fixture;
+    cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+    const live = await approve("browser_click");
+    const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)![1]!;
+    return { ...fixture, run: () => actions.click(live, ref), tab };
+  }
+
+  it("presses the page point at the page's place in its window", async () => {
+    const { cdp, run } = await clickLink();
+    await run();
+    const move = cdp.calls.find((call) => call.method === "Input.dispatchMouseEvent")!.params!;
+    const start = cdp.calls.find((call) => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchStart")!.params!;
+    // The pointer move stays a page point; the tap is the same point in window space.
+    expect(start.touchPoints).toEqual([{ x: (move.x as number) + PAGE_IN_WINDOW.x, y: (move.y as number) + PAGE_IN_WINDOW.y, id: 1 }]);
+  });
+
+  it("hit-tests the press point in document space on a scrolled page", async () => {
+    const { cdp, run } = await clickLink();
+    cdp.scroll = { x: 236, y: 40 };
+    await run();
+    const move = cdp.calls.find((call) => call.method === "Input.dispatchMouseEvent")!.params!;
+    const hit = cdp.calls.find((call) => call.method === "DOM.getNodeForLocation")!.params!;
+    expect([hit.x, hit.y]).toEqual([(move.x as number) + 236, (move.y as number) + 40]);
+  });
+
+  it("never presses at an earlier measurement when a later pointer move gets no echo", async () => {
+    const { cdp, actions, approve, echo } = adapterFixture();
+    cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5, value: { type: "string", value: "" } })]);
+    // The page never reports focus, so typing presses again; only the first
+    // pointer move is echoed.
+    cdp.focusLag = Number.POSITIVE_INFINITY;
+    const live = await approve("browser_type");
+    const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)![1]!;
+    let moves = 0;
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved" && ++moves > 1) echo.on = false;
+      return send(method, params);
+    });
+    await expect(actions.type(live, ref, "Ada", {})).rejects.toMatchObject({ code: "no-pointer-position" });
+    expect(cdp.calls.filter((call) => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchStart")).toHaveLength(1);
+  }, 10_000);
+
+  it("refuses to press when the page's place in its window is unknown", async () => {
+    const { cdp, run } = await clickLink({ hostKnown: false });
+    await expect(run()).rejects.toMatchObject({ code: "no-pointer-position" });
+    expect(cdp.inputs()).toEqual([]);
+  });
+});
+
+describe("one press at a time in a window", () => {
+  // A window left wedged by one test would refuse the next test's presses:
+  // every busy page answers before the next test.
+  const routers: WindowTouchRouter[] = [];
+  afterEach(async () => {
+    for (const router of routers.splice(0)) router.wake();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  /** Two pages of one window, each with a link to press. */
+  async function twoPages() {
+    const router = new WindowTouchRouter();
+    routers.push(router);
+    const registry = new BrowserTabRegistry() as BrowserTabRegistry<never>;
+    const pages = [];
+    for (const [guestId, tabId] of [[101, "page-a"], [102, "page-c"]] as const) {
+      const fixture = adapterFixture({ router, registry, guestId, tabId });
+      fixture.cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+      const live = await fixture.approve("browser_click");
+      const ref = /\[ref=(e\d+)\]/.exec((await fixture.actions.snapshot(live, {})).text)![1]!;
+      pages.push({ ...fixture, click: () => fixture.actions.click(live, ref) });
+    }
+    return { router, pages: pages as [typeof pages[0], typeof pages[0]] };
+  }
+  const touchSends = (cdp: FakeCdp) => cdp.calls.filter((call) => call.method === "Input.dispatchTouchEvent").map((call) => call.params?.type);
+
+  it("lands two pages' concurrent clicks each in its own page", async () => {
+    const { pages: [a, c] } = await twoPages();
+    await expect(Promise.all([a.click(), c.click()])).resolves.toEqual([undefined, undefined]);
+    expect(a.guest.touches).toEqual(["touchStart"]);
+    expect(c.guest.touches).toEqual(["touchStart"]);
+  });
+
+  it("fails a press that another page of the window took, never reporting it done", async () => {
+    const { router, pages: [a, c] } = await twoPages();
+    const dispatch = router.dispatch.bind(router);
+    // Another sequence's touch reaches page C while page A's press is open.
+    vi.spyOn(router, "dispatch").mockImplementation((sender, type) => {
+      if (sender === a.guest && type === "touchStart") c.guest.report({ type: "touchStart", _modifiers: 1 << 23 });
+      return dispatch(sender, type);
+    });
+    await expect(a.click()).rejects.toMatchObject({ code: "input-not-delivered", message: expect.stringContaining("another page") });
+  });
+
+  it("fails a press its own page never reported", async () => {
+    const { router, pages: [a] } = await twoPages();
+    vi.spyOn(router, "dispatch").mockResolvedValue(undefined);
+    await expect(a.click()).rejects.toMatchObject({ code: "input-not-delivered", message: expect.stringContaining("did not report") });
+    const result = await a.tool("browser_click").execute({ tabId: a.tab.handle, ref: "e1" }, {
+      cwd: tmpdir(), extraAllowedDirectories: [], metadata: { sessionId: "conversation" },
+    });
+    expect(result.isError).toBe(true);
+  });
+
+  it("ends a press cut off between its touch start and end, so the next press in the window lands", async () => {
+    const { pages: [a, c] } = await twoPages();
+    const send = a.cdp.send.bind(a.cdp);
+    vi.spyOn(a.cdp, "send").mockImplementation(async (method, params) => {
+      const result = await send(method, params);
+      // The user takes over right after the touch start.
+      if (method === "Input.dispatchTouchEvent" && params?.type === "touchStart") a.tab.actions.abort(new Error("the user took over this tab"));
+      return result;
+    });
+    await expect(a.click()).rejects.toMatchObject({ code: "cancelled" });
+    expect(touchSends(a.cdp)).toEqual(["touchStart", "touchCancel"]);
+    await expect(c.click()).resolves.toBeUndefined();
+    expect(c.guest.touches).toEqual(["touchStart"]);
+  });
+
+  it("frees the window from a page that stops answering inside its press, within the press budget", async () => {
+    const { pages: [a, c] } = await twoPages();
+    const send = c.cdp.send.bind(c.cdp);
+    // Page C stops answering the guard's hit test, a read made while its press holds the window.
+    let hung = false;
+    vi.spyOn(c.cdp, "send").mockImplementation((method, params) => {
+      if (method !== "DOM.getNodeForLocation") return send(method, params);
+      hung = true;
+      return new Promise(() => {});
+    });
+    // Settled into a value at once: it fails while page A's click runs.
+    const stuck = c.click().then(() => null, (err: unknown) => err);
+    await vi.waitFor(() => expect(hung).toBe(true));
+    const started = Date.now();
+    await expect(a.click()).resolves.toBeUndefined();
+    // One press budget (5 s) and margin, not the life of the hung page.
+    expect(Date.now() - started).toBeLessThan(6_500);
+    await expect(stuck).resolves.toMatchObject({ code: "input-not-delivered" });
+    expect(a.guest.touches).toEqual(["touchStart"]);
+    expect(c.guest.touches).toEqual([]);
+  }, 15_000);
+
+  /** Page A's touch start and its closing cancel both go unanswered: A's sequence stays open. */
+  async function wedgedByA() {
+    const fixture = await twoPages();
+    fixture.router.hang = true;
+    await expect(fixture.pages[0].click()).rejects.toMatchObject({ code: "input-not-delivered" });
+    return fixture;
+  }
+
+  it("refuses at once, sending nothing, every press in a window whose open sequence was never answered", async () => {
+    const { pages: [a, c] } = await wedgedByA();
+    const before = c.cdp.calls.length;
+    const started = Date.now();
+    await expect(c.click()).rejects.toMatchObject({ code: "window-input-busy" });
+    await expect(a.click()).rejects.toMatchObject({ code: "window-input-busy" });
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(c.cdp.calls.slice(before).filter((call) => call.method.startsWith("Input."))).toEqual([]);
+    expect(c.guest.touches).toEqual([]);
+  }, 20_000);
+
+  it("takes presses again once the busy page answers its cancel", async () => {
+    const { router, pages: [a, c] } = await wedgedByA();
+    router.wake();
+    await vi.waitFor(() => expect(a.guest.touches).toEqual(["touchStart"]));
+    await expect(c.click()).resolves.toBeUndefined();
+    expect(c.guest.touches).toEqual(["touchStart"]);
+  }, 20_000);
+
+  it.each(["did-navigate", "destroyed", "render-process-gone"])("takes presses again once the busy page is gone (%s)", async (event) => {
+    const { pages: [a, c], router } = await wedgedByA();
+    a.guest.emit(event);
+    // A's held dispatches never answer; the window no longer waits for them.
+    router.hang = false;
+    await expect(c.click()).resolves.toBeUndefined();
+    expect(c.guest.touches).toEqual(["touchStart"]);
+  }, 20_000);
 });
 
 it.each(["Enter", "Space"])("finishes after navigation on %s without releasing into the next document", async (key) => {

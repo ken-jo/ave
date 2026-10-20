@@ -39,6 +39,7 @@ const ALLOWED_CDP_METHODS = new Set([
   "Page.enable",
   "Page.captureScreenshot",
   "Page.getFrameTree",
+  "Page.getLayoutMetrics",
   "Page.frameNavigated",
   "Page.frameDetached",
   "DOM.documentUpdated",
@@ -80,6 +81,17 @@ describe("browser tool CDP surface", () => {
     expect(sends.length).toBeGreaterThan(10);
     // The one pass-through is the session wrapper that forwards to webContents.debugger.
     expect(sends.filter((argument) => !/^"[A-Z][A-Za-z]+\.[a-z][A-Za-z]+"$/.test(argument))).toEqual(["method"]);
-    expect(source).toContain("await session.send(method, params)");
+    expect(source).toContain("const sent = session.send(method, params);");
+  });
+
+  it("sends past the action guard only the touch cancel that closes a press", () => {
+    const source = readFileSync(join(REPO, "src/main/browser/browser-actions.ts"), "utf8");
+    const start = source.indexOf("async function targetFor(");
+    const body = source.slice(start, source.indexOf("\n}\n", start));
+    // In the adapter every page call goes through the checked wrapper except
+    // this one, which presses nothing: it only ends the window's open sequence.
+    expect([...body.matchAll(/session\.send\("[^"]+"[^)]*\)/g)].map((match) => match[0])).toEqual([
+      'session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })',
+    ]);
   });
 });

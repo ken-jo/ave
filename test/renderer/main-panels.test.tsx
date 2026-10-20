@@ -237,7 +237,7 @@ describe("main-area terminal and web panels", () => {
     };
   }
 
-  it("moves a side-panel terminal to the main area and back under the same id", async () => {
+  it("moves a side-panel terminal to the main area under the same id", async () => {
     const { container } = await renderApp({ hasApiKey: true });
     const tabId = await openSideTerminal(container);
 
@@ -245,13 +245,8 @@ describe("main-area terminal and web panels", () => {
     await act(async () => { fireEvent.click(move); });
     await waitFor(() => expect(shownSurfaces(container)).toEqual([{ kind: "terminal", tabId }]));
     expect(sideTabIds()).not.toContain(tabId);
-
-    const toSide = container.querySelector<HTMLButtonElement>('[data-testid="surface-pane"]')!
-      .closest('[data-testid="pane"]')!
-      .querySelector<HTMLButtonElement>('[data-testid="pane-action-surface.moveToSide"]')!;
-    await act(async () => { fireEvent.click(toSide); });
-    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(0));
-    await waitFor(() => expect(sideTabIds()).toContain(tabId));
+    // Back to a side panel is a drag of the pane's header (below); the header's
+    // panel toggle opens the pane's own chat instead.
   });
 
   it("drops a dragged side tab on a pane, and a pane's header on the side panel's tabs", async () => {
@@ -387,6 +382,100 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(terminalApi.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: "/work/repo/app" })));
   });
 
+  it("opens a terminal or web pane's own chat beside it, bound to that pane's tab", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true, browserTabs: true });
+    const sideChat = (api as unknown as { sideChat: { send: ReturnType<typeof vi.fn> } }).sideChat;
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    const terminal = shownSurfaces(container)[0]!.tabId!;
+    const pane = () => container.querySelector(`[data-testid="surface-pane"][data-tab-id="${terminal}"]`)!.closest('[data-testid="pane"]')!;
+    const toggle = () => pane().querySelector<HTMLButtonElement>('[data-testid="pane-action-surface.chat"]')!;
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    expect(pane().querySelector('[data-testid="pane-chat"]')).toBeNull();
+
+    await act(async () => { fireEvent.click(toggle()); });
+    // The chat docks inside the pane's own tile, beside the terminal.
+    const chat = await waitFor(() => {
+      const el = pane().querySelector<HTMLElement>('[data-testid="pane-chat"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    expect(chat.getAttribute("data-tab-id")).toBe(terminal);
+    const chip = chat.querySelector<HTMLElement>('[data-testid="side-chat-target"] [data-tab-id]')!;
+    expect(chip.getAttribute("data-tab-id")).toBe(terminal);
+    expect(chip.getAttribute("data-surface-kind")).toBe("terminal");
+    // The binding is the pane's: the chip offers nothing to change it.
+    expect(chat.querySelector('[data-testid="side-chat-target"] button')).toBeNull();
+
+    // Every turn names the pane's tab.
+    const input = chat.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "what failed?" } });
+    });
+    await act(async () => {
+      fireEvent.click(chat.querySelector<HTMLButtonElement>('[data-testid="side-chat-action-row"] button:last-child')!);
+    });
+    await waitFor(() => expect(sideChat.send).toHaveBeenCalled());
+    expect(sideChat.send.mock.calls.at(-1)![4]).toEqual({ kind: "terminal", tabId: terminal });
+
+    await act(async () => { fireEvent.click(toggle()); });
+    expect(pane().querySelector('[data-testid="pane-chat"]')).toBeNull();
+  });
+
+  it("keeps each pane's chat its own conversation: apart from the other pane's, back when reopened, ended with its pane", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true, browserTabs: true });
+    const sideChat = (api as unknown as { sideChat: Record<"send" | "new" | "paneHistory" | "endPaneChat", ReturnType<typeof vi.fn>> }).sideChat;
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    await splitIntoTwoTiles(container);
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(2));
+    const [first, second] = shownSurfaces(container).map((each) => each.tabId!);
+    const pane = (tabId: string) => container.querySelector(`[data-testid="surface-pane"][data-tab-id="${tabId}"]`)!.closest('[data-testid="pane"]')!;
+    const toggle = async (tabId: string) => {
+      await act(async () => { fireEvent.click(pane(tabId).querySelector('[data-testid="pane-action-surface.chat"]')!); });
+    };
+    const chat = (tabId: string) => pane(tabId).querySelector<HTMLElement>('[data-testid="pane-chat"]');
+    const transcript = (tabId: string) => chat(tabId)!.querySelector('[data-testid="side-chat-transcript"]')!.textContent ?? "";
+    const say = async (tabId: string, text: string) => {
+      const input = chat(tabId)!.querySelector<HTMLTextAreaElement>("textarea")!;
+      await act(async () => { fireEvent.change(input, { target: { value: text } }); });
+      await act(async () => {
+        fireEvent.click(chat(tabId)!.querySelector<HTMLButtonElement>('[data-testid="side-chat-action-row"] button:last-child')!);
+      });
+      await waitFor(() => expect(transcript(tabId)).toContain(text));
+    };
+
+    await toggle(first!);
+    await waitFor(() => expect(chat(first!)).not.toBeNull());
+    await say(first!, "first pane question");
+    await toggle(second!);
+    await waitFor(() => expect(chat(second!)).not.toBeNull());
+    await waitFor(() => expect(sideChat.paneHistory).toHaveBeenCalledWith(second));
+    expect(transcript(second!)).not.toContain("first pane question");
+    await say(second!, "second pane question");
+    expect(transcript(first!)).not.toContain("second pane question");
+    expect(sideChat.send.mock.calls.map((call) => (call[4] as { tabId: string }).tabId)).toEqual([first, second]);
+
+    // Closed and opened again, a pane's chat is back on its own conversation.
+    await toggle(first!);
+    expect(chat(first!)).toBeNull();
+    await toggle(first!);
+    await waitFor(() => expect(transcript(first!)).toContain("first pane question"));
+    expect(transcript(first!)).not.toContain("second pane question");
+
+    // "New" in a pane chat starts that pane's chat afresh, not the window-wide one.
+    await act(async () => { fireEvent.click(chat(second!)!.querySelector('[data-testid="side-chat-new"]')!); });
+    await waitFor(() => expect(sideChat.endPaneChat).toHaveBeenCalledWith(second, "new"));
+    expect(sideChat.new).not.toHaveBeenCalled();
+    await waitFor(() => expect(transcript(second!)).not.toContain("second pane question"));
+
+    // Closing the pane ends its chat.
+    await act(async () => { fireEvent.click(pane(first!).querySelector('[data-testid="pane-close"]')!); });
+    await waitFor(() => expect(sideChat.endPaneChat).toHaveBeenCalledWith(first, "closed"));
+  });
+
   it("points the side chat at the terminal or page last brought into view, and lets the user drop it", async () => {
     const { container } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true });
     await clickSidebarNavRow("features", "sidebar-terminal");
@@ -434,6 +523,58 @@ describe("main-area terminal and web panels", () => {
       fireEvent.click(document.querySelector(`[data-testid="chat-side-panel-tab-strip"] [data-tab-id="${sideTerminal}"] > button:last-child`)!);
     });
     await waitFor(() => expect(document.querySelector('[data-testid="side-chat-target"]')).toBeNull());
+  });
+
+  it("shows a pane's chat for the surface it holds now: a page put in a terminal's pane gets its own conversation", async () => {
+    const { container } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true, browserTabs: true });
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    const terminal = shownSurfaces(container)[0]!.tabId!;
+    const pane = () => container.querySelector('[data-testid="surface-pane"]')!.closest('[data-testid="pane"]')!;
+    await act(async () => { fireEvent.click(pane().querySelector('[data-testid="pane-action-surface.chat"]')!); });
+    const chat = () => pane().querySelector<HTMLElement>('[data-testid="pane-chat"]');
+    await waitFor(() => expect(chat()).not.toBeNull());
+    const input = chat()!.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => { fireEvent.change(input, { target: { value: "what did the build print?" } }); });
+    await act(async () => {
+      fireEvent.click(chat()!.querySelector<HTMLButtonElement>('[data-testid="side-chat-action-row"] button:last-child')!);
+    });
+    await waitFor(() => expect(chat()!.textContent).toContain("what did the build print?"));
+
+    // The same pane now shows a page: its chat is the page's, not the terminal's.
+    await clickSidebarNavRow("features", "sidebar-web");
+    const page = await waitFor(() => {
+      const tab = shownSurfaces(container)[0]!.tabId!;
+      expect(tab).not.toBe(terminal);
+      return tab;
+    });
+    const pageChat = await waitFor(() => {
+      const el = pane().querySelector<HTMLElement>(`[data-testid="pane-chat"][data-tab-id="${page}"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(pageChat.textContent).not.toContain("what did the build print?");
+  });
+
+  it("gives a web pane's chat the page's tab and names it by the page", async () => {
+    const { container } = await renderApp({ hasApiKey: true, sideChat: true, browserTabs: true });
+    await clickSidebarNavRow("features", "sidebar-web");
+    const page = shownSurfaces(container)[0]!.tabId!;
+    const address = container.querySelector('[data-testid="web-panel-address"]')!;
+    await act(async () => {
+      fireEvent.change(address, { target: { value: "https://a.example/" } });
+      fireEvent.submit(address.closest("form")!);
+    });
+    const pane = container.querySelector(`[data-testid="surface-pane"][data-tab-id="${page}"]`)!.closest('[data-testid="pane"]')!;
+    await act(async () => { fireEvent.click(pane.querySelector('[data-testid="pane-action-surface.chat"]')!); });
+    const chip = await waitFor(() => {
+      const el = pane.querySelector<HTMLElement>('[data-testid="pane-chat"] [data-testid="side-chat-target"] [data-tab-id]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(chip.getAttribute("data-tab-id")).toBe(page);
+    expect(chip.getAttribute("data-surface-kind")).toBe("browser");
+    expect(chip.textContent).toContain("a.example");
   });
 
   it("attaches a main terminal's block to the composer last typed in — the side chat, here", async () => {
