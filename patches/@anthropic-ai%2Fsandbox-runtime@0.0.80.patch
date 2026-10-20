@@ -63,7 +63,12 @@ the installed package.
    profile also
    denies process-info on other processes and the kern.procargs sysctls
    (defense in depth for #160, which the embedder pairs with a new session per
-   wrap).
+   wrap). `openHostInvocationProxy` (a host-only named export from the manager
+   module) supplies a private authenticated relay for externally confined
+   Windows invocations. Its port and the registered host frontend ports join
+   the same destination and upstream guards; both binds exclude the configured
+   shared proxy range. Its listener identity, refusal records and tracked
+   connections use the same policy and revocation paths as invocation listeners.
 
 4. Upstream routes (Ave): `SandboxManager.setParentProxyRouter(router)`
    replaces the single static `parentProxy` with a per-destination hook. The
@@ -937,7 +942,19 @@ diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.
 index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..dda8ebf6569640dedca8c1aea348b77a5255c2d4 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
-@@ -45,6 +45,51 @@ export type WrapWithSandboxOptions = {
+@@ -1,3 +1,11 @@
++/** Host-owned invocation relay; its credentials and endpoint stay outside confined processes. */
++export declare function openHostInvocationProxy(commandId: string): Promise<{
++    readonly port: number;
++    readonly proxyAuthorization: string;
++    registerPort(port: number): void;
++    recordRefusal(host: string, port: number | undefined, reason: string): void;
++    close(): Promise<void>;
++}>;
+ import { SentinelRegistry } from './credential-sentinel.js';
+ import { MaskedFileStore } from './credential-mask-files.js';
+ import { AwsPairRegistry } from './credential-aws-pairs.js';
+@@ -45,6 +53,51 @@ export type WrapWithSandboxOptions = {
       * reported as the violation's `command`. Defaults to `command`.
       */
      commandText?: string;
@@ -989,7 +1006,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..dda8ebf6569640dedca8c1aea348b77a
  };
  /**
   * Interface for the sandbox manager API
-@@ -125,6 +170,66 @@ export interface ISandboxManager {
+@@ -125,6 +178,66 @@ export interface ISandboxManager {
       * none. `reset()` removes them all.
       */
      unregisterCommandNetworkLists(commandId: string): void;
@@ -1056,7 +1073,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..dda8ebf6569640dedca8c1aea348b77a
      /**
       * True when the network filter understands an ask callback's
       * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
-@@ -150,4 +255,13 @@ export interface ISandboxManager {
+@@ -150,4 +263,13 @@ export interface ISandboxManager {
   * for this session. This runs outside of the sandbox, on the host machine.
   */
  export declare const SandboxManager: ISandboxManager;
@@ -1604,8 +1621,9 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +        parentDestination,
 +        parentHop,
 +        openRoute,
+-        proxyAuthToken,
 +        openPlainHttpRoute,
-         proxyAuthToken,
++        proxyAuthToken: lane?.proxyAuthToken ?? proxyAuthToken,
      });
 -    socksProxyServer = createSocksProxyServer({
 -        filter: (port, host, encodedCommand) => filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand),
@@ -1617,7 +1635,8 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +        parentDestination,
 +        parentHop,
 +        openRoute,
-         proxyAuthToken,
+-        proxyAuthToken,
++        proxyAuthToken: lane?.proxyAuthToken ?? proxyAuthToken,
          // A SOCKS tunnel is opaque, so the option that keeps opaque CONNECT
          // tunnels off the HTTP side must close this side of the port too.
          refuseOpaqueTunnels: config?.network.refuseOpaqueTunnels,
@@ -1654,7 +1673,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +972,735 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,6 +972,814 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -1677,8 +1696,87 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +    }
 +    return list;
 +})();
++/** Host-owned relay ports participate in every destination and upstream guard. */
++const hostInvocationProxies = new Set();
++export async function openHostInvocationProxy(commandId) {
++    if (getPlatform() !== 'windows')
++        throw new Error('openHostInvocationProxy: unsupported platform');
++    const key = invocationListenerKey(commandId, 'openHostInvocationProxy');
++    if (!(await waitForNetworkInitialization()) || !muxProxyServer)
++        throw new Error('openHostInvocationProxy: the sandbox proxy is not running');
++    if (hostInvocationProxies.size >= MAX_INVOCATION_LISTENERS)
++        throw new Error('openHostInvocationProxy: too many invocation relays');
++    const lane = { key, encodedKey: encodeSandboxedCommand(commandId), ended: false, proxyAuthToken: randomBytes(32).toString('hex') };
++    const ports = new Set();
++    let closing;
++    const relay = {
++        ports,
++        close() {
++            lane.ended = true;
++            return closing ??= (async () => {
++                await lane.ready?.catch(() => { });
++                await disposeInvocationListener(lane);
++                hostInvocationProxies.delete(relay);
++            })();
++        },
++    };
++    hostInvocationProxies.add(relay);
++    lane.ready = (async () => {
++        const { http, socks } = createProxyServers(invocationAskCallback, lane);
++        Object.assign(lane, { http, socks });
++        const [start, end] = config?.windows?.proxyPortRange ?? DEFAULT_WINDOWS_PROXY_PORT_RANGE;
++        let accepting = false;
++        http.prependListener('connection', socket => {
++            if (!accepting)
++                socket.destroy();
++        });
++        for (let attempt = 0;; attempt++) {
++            await listenOn(http, 0, '127.0.0.1');
++            lane.port = http.address().port;
++            if (lane.port < start || lane.port > end)
++                break;
++            await new Promise(resolve => http.close(() => resolve()));
++            if (attempt >= 32)
++                throw new Error('openHostInvocationProxy: no port outside the shared proxy range');
++        }
++        ports.add(lane.port);
++        accepting = true;
++        http.unref();
++    })();
++    try {
++        await lane.ready;
++        if (lane.ended)
++            throw new Error('openHostInvocationProxy: invocation ended while opening');
++    }
++    catch (error) {
++        await relay.close();
++        throw error;
++    }
++    return {
++        port: lane.port,
++        proxyAuthorization: `Basic ${Buffer.from(`srt.${lane.encodedKey}:${lane.proxyAuthToken}`).toString('base64')}`,
++        registerPort(port) {
++            const [start, end] = config?.windows?.proxyPortRange ?? DEFAULT_WINDOWS_PROXY_PORT_RANGE;
++            if (lane.ended || !Number.isInteger(port) || port < 1 || port > 65535)
++                throw new Error('openHostInvocationProxy: invalid listener port');
++            if (port >= start && port <= end)
++                throw new Error('openHostInvocationProxy: listener is in the shared proxy range');
++            ports.add(port);
++        },
++        recordRefusal(host, port, reason) {
++            if (port === undefined)
++                recordProxyViolation(`deny http-request CONNECT ${host} (${reason})`, lane.encodedKey);
++            else
++                recordOutboundDeny(host, port, reason, lane.encodedKey);
++        },
++        close: () => relay.close(),
++    };
++}
 +function proxyListenerPorts() {
 +    const ports = new Set();
++    for (const relay of hostInvocationProxies)
++        for (const port of relay.ports)
++            ports.add(port);
 +    const shared = muxProxyServer?.getPort();
 +    if (shared !== undefined)
 +        ports.add(shared);
@@ -2390,7 +2488,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -616,7 +1729,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +1808,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -2403,7 +2501,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -705,7 +1823,17 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -705,7 +1902,17 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // sandboxed child can be spawned. Doing this at initialize() (not
      // wrap-time) means the host gets a single actionable error before
      // any per-exec work happens, instead of exit-15 on every command.
@@ -2422,7 +2520,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
          // Resolve once (stats disk); captured module-level for wrap/reset.
          srtWinSpawn = resolveSrtWin(runtimeConfig.windows?.srtWin);
          const srtWin = srtWinSpawn;
-@@ -992,6 +2120,12 @@ function checkDependenciesCommon(ripgrepConfig) {
+@@ -992,6 +2199,12 @@ function checkDependenciesCommon(ripgrepConfig) {
          errors.push(...linuxDeps.errors);
          warnings.push(...linuxDeps.warnings);
      }
@@ -2435,7 +2533,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      else if (platform === 'windows') {
          let srtWin;
          try {
-@@ -1515,6 +2649,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2728,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -2445,7 +2543,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +2847,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +2926,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -2467,7 +2565,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1734,23 +2874,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1734,23 +2953,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -2502,7 +2600,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1786,6 +2934,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +3013,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -2510,7 +2608,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,7 +2970,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,7 +3049,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -2527,7 +2625,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
              config?.network?.allowedDomains !== undefined;
-@@ -1950,7 +3108,7 @@ function getConfig() {
+@@ -1950,7 +3187,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -2536,7 +2634,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +3147,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +3226,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -2544,7 +2642,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2222,6 +3381,8 @@ async function reset() {
+@@ -2222,6 +3460,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -2553,12 +2651,13 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,6 +3390,22 @@ async function reset() {
+@@ -2229,6 +3469,23 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
 +    // Ave patch (invocation listeners): the session is over, so every
 +    // listener (ended ones kept bound on macOS included) goes.
++    await Promise.all([...hostInvocationProxies].map(relay => relay.close()));
 +    const lanes = [...invocationListeners.values()];
 +    invocationListeners.clear();
 +    retiredInvocationKeys.clear();
@@ -2576,7 +2675,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      maskedFileStore.dispose();
  }
  function getSandboxViolationStore() {
-@@ -2336,6 +3513,11 @@ export const SandboxManager = {
+@@ -2336,6 +3593,11 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,

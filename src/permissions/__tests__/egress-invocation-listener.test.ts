@@ -1,6 +1,7 @@
 import http from "node:http";
 import net from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as asrtSandbox from "../asrt-sandbox.js";
 
 import {
   canonicalDestinationHost,
@@ -55,6 +56,7 @@ function rawRequest(port: number, payload: string): Promise<string> {
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const c of cleanups.splice(0).reverse()) await c();
+  vi.restoreAllMocks();
 });
 
 async function setup(identity: string): Promise<{ listener: InvocationProxyListener; upstream: Awaited<ReturnType<typeof startRecordingUpstream>>; refused: string[] }> {
@@ -107,6 +109,74 @@ describe("refusedInvocationProxyDestination", () => {
 });
 
 describe("openInvocationProxyListener", () => {
+  it.each([60080, 60088, 60089])("releases a tentative bind on shared port %i before retrying", async (blockedPort) => {
+    const originalAddress = http.Server.prototype.address;
+    const close = vi.spyOn(http.Server.prototype, "close");
+    let first = true;
+    vi.spyOn(http.Server.prototype, "address").mockImplementation(function (this: http.Server) {
+      const address = originalAddress.call(this);
+      if (first && address !== null && typeof address !== "string") {
+        first = false;
+        return { ...address, port: blockedPort };
+      }
+      return address;
+    });
+    const listener = await openInvocationProxyListener({ upstream: () => undefined });
+    cleanups.push(listener.close);
+    expect(close).toHaveBeenCalled();
+    const [start, end] = asrtSandbox.DEFAULT_WINDOWS_PROXY_PORT_RANGE;
+    expect(listener.port < start || listener.port > end).toBe(true);
+  });
+
+  it("excludes the configured shared range instead of only the default", async () => {
+    vi.spyOn(asrtSandbox, "getWindowsProxyPortRange").mockReturnValue([41000, 41009]);
+    const originalAddress = http.Server.prototype.address;
+    let first = true;
+    const close = vi.spyOn(http.Server.prototype, "close");
+    vi.spyOn(http.Server.prototype, "address").mockImplementation(function (this: http.Server) {
+      const address = originalAddress.call(this);
+      if (first && address !== null && typeof address !== "string") {
+        first = false;
+        return { ...address, port: 41005 };
+      }
+      return address;
+    });
+    const listener = await openInvocationProxyListener({ upstream: () => undefined });
+    cleanups.push(listener.close);
+    expect(close).toHaveBeenCalled();
+    expect(listener.port < 41000 || listener.port > 41009).toBe(true);
+  });
+
+  it("fails closed after bounded shared-range binds and leaves no listener open", async () => {
+    const originalAddress = http.Server.prototype.address;
+    const servers = new Set<http.Server>();
+    vi.spyOn(http.Server.prototype, "address").mockImplementation(function (this: http.Server) {
+      servers.add(this);
+      const address = originalAddress.call(this);
+      return address !== null && typeof address !== "string" ? { ...address, port: 60088 } : address;
+    });
+    const close = vi.spyOn(http.Server.prototype, "close");
+    await expect(openInvocationProxyListener({ upstream: () => undefined }).then((listener) => {
+      cleanups.push(listener.close);
+      return listener;
+    })).rejects.toThrow(/outside shared proxy port range/);
+    expect(close.mock.calls.length).toBeGreaterThan(1);
+    expect(close.mock.calls.length).toBeLessThanOrEqual(16);
+    expect([...servers].every((server) => !server.listening)).toBe(true);
+  });
+
+  it("does not expose the shell listener to a client restricted to the shared allow range", async () => {
+    const { listener, upstream } = await setup("Basic aWQ=");
+    const [start, end] = asrtSandbox.getWindowsProxyPortRange();
+    const reachablePorts = Array.from({ length: end - start + 1 }, (_, index) => start + index);
+    expect(reachablePorts).not.toContain(listener.port);
+    expect(upstream.seen).toEqual([]);
+    // An admitted client needs no credential: the OS channel supplies identity.
+    const reply = await rawRequest(listener.port, "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n");
+    expect(reply).toMatch(/^HTTP\/1\.1 200/);
+    expect(upstream.seen[0]?.auth).toBe("Basic aWQ=");
+  });
+
   it("stamps its own identity on a plain request and drops the client's", async () => {
     const { listener, upstream } = await setup("Basic aW52b2NhdGlvbi1h");
     const reply = await rawRequest(

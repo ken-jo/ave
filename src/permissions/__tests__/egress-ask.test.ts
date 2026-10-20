@@ -20,6 +20,8 @@ import {
 import { EgressGrantStore, egressDestinationNetwork } from "../egress-grants.js";
 import type { EgressIdentityStrength } from "../../shared/sandbox-capability-info.js";
 import type { EgressInvocationOwner, ShellEgressOwner } from "../egress-invocations.js";
+import { egressIdentityStrength } from "../egress-identity.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 const SHELL_TOKEN = "5".repeat(32);
 const WORKER_TOKEN = "6".repeat(32);
@@ -122,6 +124,38 @@ afterEach(() => {
 });
 
 describe("egress ask callback — attribution", () => {
+  it("offers strong scopes only to the host-owned shell lane on a shared host", async () => {
+    const platform = process.platform;
+    setProcessPlatform("win32");
+    answer = async () => ({ allow: true, scope: "once" });
+    const ask = bothPhases(createEgressAskCallback({
+      identityStrength: egressIdentityStrength,
+      ownerOf: (token) => owners.get(token),
+      abortSignalOf: () => undefined,
+      workerAllowedDomains: () => [],
+      grants,
+      shellAskEnabled: () => true,
+      requester: () => async (request) => { asked.push(request); return answer(request); },
+      audit: () => {},
+    }));
+    try {
+      expect(egressIdentityStrength("shell", { identity: "listener" })).toBe("kernel-channel");
+      expect(egressIdentityStrength("shell", { identity: "username" })).toBe("shared");
+      expect(egressIdentityStrength("shell")).toBe("shared");
+      expect(egressIdentityStrength("extension", { identity: "listener" })).toBe("shared");
+      expect(await ask({ host: "one.example", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
+      expect(await ask({ host: "two.example", port: 443 }, { ...listener(OTHER_SHELL_TOKEN), identity: "username" })).toBe(true);
+      expect(await ask({ host: "three.example", port: 443 }, listener(TERMINAL_TOKEN))).toBe(true);
+      expect(asked.map((request) => request.scopes)).toEqual([
+        ["once", "conversation", "workspace", "always"],
+        ["once", "conversation"],
+        ["once", "tab"],
+      ]);
+    } finally {
+      setProcessPlatform(platform);
+    }
+  });
+
   it("denies without asking when the connection names no invocation, an unknown one, or only a username on a kernel-channel host", async () => {
     const ask = callback();
     expect(await ask({ host: "example.com", port: 443 }, { attributionKey: undefined, identity: "username", addresses: [], resolution: "pinned" }))

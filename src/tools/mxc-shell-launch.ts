@@ -13,14 +13,12 @@
  */
 import { win32 as winPath } from "node:path";
 
-import {
-  asrtInvocationProxyUpstream,
-  getProtectedReadDenyFloor,
-} from "../permissions/asrt-sandbox.js";
+import { getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
 import {
   openInvocationProxyListener,
   type InvocationProxyListener,
 } from "../permissions/egress-invocation-listener.js";
+import { openHostEgressListener } from "../permissions/egress-host-listener.js";
 import {
   buildMxcShellRequest,
   mxcRequestArgs,
@@ -28,9 +26,6 @@ import {
   resolveHostWxcExecPath,
   type ShellFilesystemPolicy,
 } from "../permissions/mxc-windows.js";
-import { createLogger } from "../lib/logger.js";
-
-const log = createLogger("mxc-shell-launch");
 
 export interface MxcShellLaunch {
   /** `wxc-exec.exe` followed by its arguments; spawn with `shell: false`. */
@@ -58,21 +53,19 @@ export interface PrepareMxcShellLaunchInput {
 const MXC_TIMEOUT_MARGIN_MS = 30_000;
 
 export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): Promise<MxcShellLaunch> {
-  const upstream = await asrtInvocationProxyUpstream(input.egressToken);
-  if (upstream === undefined) {
-    throw new Error("the sandbox proxy is not running, so a contained command would have no network path");
-  }
   const wxcExec = await resolveHostWxcExecPath();
   if (!input.exists(wxcExec)) {
     throw new Error(`Microsoft Execution Containers launcher is missing: ${wxcExec}`);
   }
   const grants = rankMxcFilesystem({ ...input.filesystem, protectedFloor: getProtectedReadDenyFloor() }, input.exists);
   let listener: InvocationProxyListener | undefined;
+  const relay = await openHostEgressListener(input.egressToken);
   try {
     listener = await openInvocationProxyListener({
-      upstream: () => upstream,
-      onRefused: (destination, reason) => log.info("refused a %s through an invocation proxy: %s", reason, destination),
+      upstream: () => ({ host: "127.0.0.1", port: relay.port, proxyAuthorization: relay.proxyAuthorization }),
+      onRefused: relay.recordRefusal,
     });
+    relay.registerPort(listener.port);
     const systemRoot = process.env["SystemRoot"] ?? process.env["WINDIR"] ?? "C:\\Windows";
     const env: Record<string, string> = { ...input.env };
     if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;
@@ -88,10 +81,20 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
     return {
       argv: [wxcExec, ...mxcRequestArgs(request)],
       proxyPort: opened.port,
-      release: () => opened.close(),
+      release: async () => {
+        try {
+          await opened.close();
+        } finally {
+          await relay.close();
+        }
+      },
     };
   } catch (error) {
-    await listener?.close();
+    try {
+      await listener?.close();
+    } finally {
+      await relay.close();
+    }
     throw error;
   }
 }

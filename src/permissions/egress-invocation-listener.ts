@@ -28,12 +28,12 @@
  *
  * This module holds no policy of its own beyond that refusal. Which hosts are
  * allowed is still ASRT's decision, under the identity stamped here. It
- * imports only Node built-ins so it can run unchanged in a measurement
- * harness on a Windows host.
+ * excludes the shared extension proxy's reachable ports from its bind choices.
  */
 import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
+import { getWindowsProxyPortRange } from "./asrt-sandbox.js";
 
 /** Where the listener forwards, and as whom. Read once per forwarded request. */
 export interface InvocationProxyUpstream {
@@ -145,11 +145,18 @@ function refuse(socketOrResponse: http.ServerResponse | Duplex, status: number, 
 }
 
 const DEFAULT_MAX_UPSTREAM_HEAD_BYTES = 16 * 1024;
+const MAX_LISTENER_BIND_ATTEMPTS = 16;
 
 export async function openInvocationProxyListener(
   options: OpenInvocationProxyListenerOptions,
 ): Promise<InvocationProxyListener> {
+  const [excludedStart, excludedEnd] = getWindowsProxyPortRange();
+  if (!Number.isInteger(excludedStart) || !Number.isInteger(excludedEnd) ||
+      excludedStart < 1 || excludedEnd > 65535 || excludedStart > excludedEnd) {
+    throw new Error("invalid shared proxy port range");
+  }
   const sockets = new Set<Duplex>();
+  let accepting = false;
   const maxHead = options.maxUpstreamHeadBytes ?? DEFAULT_MAX_UPSTREAM_HEAD_BYTES;
   const report = (destination: string, reason: string): void => {
     try {
@@ -265,24 +272,38 @@ export async function openInvocationProxyListener(
   });
 
   server.on("connection", (socket: net.Socket) => {
+    // A tentative bind inside the shared range must never accept a request.
+    if (!accepting) {
+      socket.destroy();
+      return;
+    }
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
   });
   server.on("clientError", (_err, socket) => socket.destroy());
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolve();
+  let port: number | undefined;
+  for (let attempt = 0; attempt < MAX_LISTENER_BIND_ATTEMPTS; attempt++) {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", reject);
+        resolve();
+      });
     });
-  });
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    server.close();
-    throw new Error("invocation proxy listener has no TCP address");
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      server.close();
+      throw new Error("invocation proxy listener has no TCP address");
+    }
+    if (address.port < excludedStart || address.port > excludedEnd) {
+      port = address.port;
+      break;
+    }
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
-  const port = address.port;
+  if (port === undefined) throw new Error("invocation proxy listener could not bind outside shared proxy port range");
+  accepting = true;
   let closing: Promise<void> | undefined;
   return {
     port,

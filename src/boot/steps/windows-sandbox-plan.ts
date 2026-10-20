@@ -19,8 +19,9 @@
  *
  * No row falls back silently: each one is recorded for Settings
  * ({@link SandboxWindowsSubstrateInfo}) and logged at boot. Where MXC is
- * unavailable the egress identity is `shared`; the egress ask (PR 4, not yet
- * wired) is to cap such grants with `maxEgressGrantScope`.
+ * unavailable the egress identity is `shared`. The recorded shell strength
+ * describes container invocations; username requests and terminals still
+ * have shared identity and their approval scopes remain capped.
  */
 import type {
   SandboxCapability,

@@ -18,7 +18,6 @@ import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, SENSITIVE_PATH_ENTRIES } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { createLogger } from "../lib/logger.js";
-import type { InvocationProxyUpstream } from "./egress-invocation-listener.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -547,13 +546,12 @@ async function openEgressListener(
     const hint = /invocation listeners are held/u.test(message) ? " Restart Ave to release them." : "";
     throw new Error(`${caller}: could not open the invocation's egress listener: ${message}${hint}`);
   }
-  loadedSandboxManagerForRelease = SandboxManager;
 }
 
 /**
  * Close every open connection the proxy let through to `host:port` for these
  * invocations (a revoked grant's tunnels). Returns how many were closed; 0
- * before any listener was opened (nothing can be open then).
+ * before initialization (nothing can be open then).
  */
 export function closeEgressConnections(tokens: readonly string[], host: string, port: number): number {
   if (tokens.length === 0) return 0;
@@ -570,7 +568,7 @@ export function closeAllEgressConnections(): number {
   return loadedSandboxManagerForRelease?.closeAllInvocationConnections() ?? 0;
 }
 
-/** Set once a listener has been opened, so a release can close it synchronously. */
+/** Retained after initialization so revocation can close connections synchronously. */
 let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
 
 // A released token's listener refuses every further connection from then on.
@@ -621,6 +619,11 @@ onEgressInvocationReleased((token, { processGroup }) => {
  * floor, weakening flags, etc. are preserved). Undefined before the first init.
  */
 let _baseTrustedSettings: TrustedSandboxSettings | undefined;
+
+/** The shared loopback range that confined extension processes can reach. */
+export function getWindowsProxyPortRange(): readonly [number, number] {
+  return _baseTrustedSettings?.windows?.proxyPortRange ?? DEFAULT_WINDOWS_PROXY_PORT_RANGE;
+}
 
 /**
  * Paths granted on Windows outside the session config, by
@@ -1099,31 +1102,6 @@ export function isShellSandboxActive(): boolean {
  */
 export function isPluginWorkerConfinementActive(): boolean {
   return active && isPluginWorkerConfinementRequestedAtBoot() && !windowsExternalConfinement;
-}
-
-/**
- * Where a per-invocation proxy listener forwards, and the identity it stamps:
- * ASRT's proxy on this host's loopback, with `Proxy-Authorization` naming
- * `token` (the invocation's `commandId`, `egress-invocations.ts`) under the
- * session's proxy credential. Undefined when the sandbox is not active or the
- * proxy has no port yet.
- *
- * The credential never reaches a confined process: the listener adds it on the
- * host side (`egress-invocation-listener.ts`). ASRT's username format is
- * `srt.<base64 of the first 100 characters of the id>` (`proxyUsernameFor`).
- */
-export async function asrtInvocationProxyUpstream(token: string): Promise<InvocationProxyUpstream | undefined> {
-  if (!active) return undefined;
-  const SandboxManager = await loadSandboxManager();
-  const port = SandboxManager.getProxyPort();
-  const credential = SandboxManager.getProxyAuthToken();
-  if (port === undefined || credential === undefined) return undefined;
-  const username = `srt.${Buffer.from(token.slice(0, 100)).toString("base64")}`;
-  return {
-    host: "127.0.0.1",
-    port,
-    proxyAuthorization: `Basic ${Buffer.from(`${username}:${credential}`).toString("base64")}`,
-  };
 }
 
 /**
@@ -2017,6 +1995,7 @@ async function discardFailedAsrtInitialization(
   SandboxManager: Awaited<ReturnType<typeof loadSandboxManager>>,
 ): Promise<void> {
   active = false;
+  loadedSandboxManagerForRelease = undefined;
   _baseTrustedSettings = undefined;
   _workerUnixSocketDirs.clear();
   try {
@@ -2082,8 +2061,8 @@ export async function initializeAsrtSandbox(
   // Installed before the proxy starts, so no connection is routed without
   // it; reset() (including a failed initialization's) clears it.
   SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
-  await SandboxManager.initialize(config, askCb, enableLogMonitor);
   try {
+    await SandboxManager.initialize(config, askCb, enableLogMonitor);
     // Linux's ASRT dependency check only proves executables are installed. Run
     // the configured wrapper once before publishing the adapter as active so a
     // host that blocks user namespaces/seccomp cannot appear "verified".
@@ -2094,6 +2073,7 @@ export async function initializeAsrtSandbox(
   }
   windowsExternalConfinement =
     process.platform === "win32" && trustedSettings.windows?.externalConfinement === true;
+  loadedSandboxManagerForRelease = SandboxManager;
   active = true;
 }
 
@@ -2892,6 +2872,7 @@ export async function subscribeAsrtViolations(
 export async function resetAsrtSandbox(): Promise<void> {
   const SandboxManager = await loadSandboxManager();
   await SandboxManager.reset();
+  loadedSandboxManagerForRelease = undefined;
   active = false;
   windowsExternalConfinement = false;
   // worker-confinement PR D-1: drop the remembered base settings + live worker

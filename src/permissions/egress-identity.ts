@@ -8,14 +8,8 @@
  *     part 3) that its sandbox alone can reach: Seatbelt pins the port, bwrap
  *     binds the socket path. The ask callback then hears
  *     `identity: "listener"` and refuses anything else.
- *   - Windows: `"shared"` here (srt-win: one account, one proxy, the identity
- *     is the proxy username), which caps grants at "This conversation". The
- *     MXC path (proxy-egress PR 9) gives shells their own endpoint and sets
- *     `shellEgressIdentity` per boot; whichever of the two PRs merges second
- *     sources the win32 shell answer from that substrate, and must make an
- *     MXC shell's connections reach the callback as `identity: "listener"`
- *     (or relax the listener check for that substrate) — a `"kernel-channel"`
- *     shell whose connections arrive as `"username"` is refused.
+ *   - win32: shared unless a shell request arrived through its host-owned
+ *     invocation relay. Terminals and username requests remain shared.
  */
 import type { EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
 
@@ -37,8 +31,11 @@ export function noteAsrtUnixSocketPolicy(allowAllUnixSockets: boolean): void {
   macUnixSocketsOpen = allowAllUnixSockets && process.platform === "darwin";
 }
 
-/** The identity strength of one kind of confined process on this host. */
-export function egressIdentityStrength(kind: "shell" | "extension"): EgressIdentityStrength {
-  void kind;
+/** Identity strength for a runtime-produced ask context; never pass client-provided identity. */
+export function egressIdentityStrength(
+  kind: "shell" | "extension",
+  context?: { readonly identity?: "listener" | "username" },
+): EgressIdentityStrength {
+  if (process.platform === "win32" && kind === "shell" && context?.identity === "listener") return "kernel-channel";
   return asrtInvocationListenersSupported() && !macUnixSocketsOpen ? "kernel-channel" : "shared";
 }
