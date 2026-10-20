@@ -144,6 +144,19 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: rm -f ajv pino
+      # The terminal's real-shell tests (typing, and the differential check of
+      # what zsh and bash run against what the permission rules read) need zsh,
+      # which the Ubuntu image lacks. A runner without passwordless sudo keeps
+      # its own shells and those tests skip zsh.
+      - name: Install zsh for the real-shell terminal tests
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        run: |
+          if command -v zsh >/dev/null; then exit 0; fi
+          if sudo -n true 2>/dev/null; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+          else
+            echo "::notice::zsh is not installed and sudo is unavailable; the zsh real-shell tests skip"
+          fi
       - name: Run the suite and its coverage gate
         if: steps.docs-impact.outputs.docs_only != 'true'
         # The suite resolves entirely from ave/src. Sibling slugs appear
@@ -577,13 +590,13 @@ jobs:
         # already; install only what is missing so both runner kinds pass.
         run: |
           missing=0
-          for tool in bwrap socat rg xvfb-run; do
+          for tool in bwrap socat rg xvfb-run bash zsh; do
             command -v "$tool" >/dev/null 2>&1 || { echo "missing: $tool"; missing=1; }
           done
           if [ "$missing" = 1 ]; then
-            sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep xvfb
+            sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep xvfb bash zsh
           else
-            echo "bubblewrap, socat, ripgrep and xvfb already installed"
+            echo "bubblewrap, socat, ripgrep, xvfb, bash and zsh already installed"
           fi
       # Ubuntu 24.04 restricts unprivileged user namespaces by default, which
       # strips what bubblewrap needs (ASRT README, "Platform-Specific
@@ -659,3 +672,4 @@ jobs:
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
+          src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts

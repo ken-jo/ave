@@ -376,6 +376,12 @@ export interface PendingAnswerInput {
   overlayCards: readonly { originSessionId?: string }[];
   /** The conversation list, for the family of a row and a side chat's parent. */
   sessions: readonly { id: string; family: SessionFamily; originSessionId?: string }[];
+  /**
+   * Whether a surface has claimed `sessionId`'s cards (a side chat in a
+   * terminal or web pane's own panel, which is no tile). That surface draws
+   * them, so the lane must not draw them a second time.
+   */
+  isClaimed: (sessionId: string) => boolean;
 }
 
 /** Every place the attention dot goes, and the requests the focused pane's lane draws. */
@@ -462,7 +468,8 @@ export function pendingAnswers(input: PendingAnswerInput): PendingAnswers {
     }
     const held = tileWithSideChat(input.tiles, request.sessionId) !== undefined
       || tileOwningSession(input.tiles, request.sessionId) !== undefined
-      || listed.has(request.sessionId);
+      || listed.has(request.sessionId)
+      || input.isClaimed(request.sessionId);
     if (held) park(request.sessionId);
     else unattributed.push(request);
   }

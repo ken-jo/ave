@@ -26,6 +26,8 @@ describe("sidechat channels are internal (fail-closed)", () => {
       new: "ave:sidechat:new",
       load: "ave:sidechat:load",
       abort: "ave:sidechat:abort",
+      paneHistory: "ave:sidechat:pane-history",
+      endPaneChat: "ave:sidechat:end-pane-chat",
       getSubAgentTranscript: "ave:sidechat:get-sub-agent-transcript",
       stream: "ave:sidechat:stream",
       fallback: "ave:sidechat:fallback",

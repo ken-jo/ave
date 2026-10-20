@@ -315,13 +315,210 @@ describe("native injected touch attribution", () => {
     registry.userInput(11, { type: "gestureTap", _modifiers: 1 << 25 });
     expect(signal.aborted).toBe(true);
   });
-  it.each(["mouseDown", "keyDown", "touchStart", "gestureTapDown", "gestureScrollBegin", "pointerDown"])("cancels unmarked %s during a marked touch sequence", (type) => {
+  // Measured in the app (Electron on macOS, window in the background): the
+  // gestures derived from an injected touch arrive with no modifiers at all.
+  // Treating them as the user's own taps cancelled every agent click and type.
+  it("matches the derived tap sequence when it carries no modifiers", () => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    registry.userInput(11, { type: "touchStart", _modifiers: 1 << 23 });
+    registry.userInput(11, { type: "gestureTapDown", _modifiers: 0 });
+    registry.userInput(11, { type: "touchMove", _modifiers: 1 << 23 });
+    registry.userInput(11, { type: "touchEnd", _modifiers: 1 << 23 });
+    registry.userInput(11, { type: "gestureShowPress", _modifiers: 0 });
+    registry.userInput(11, { type: "gestureTap", _modifiers: 0 });
+    expect(signal.aborted).toBe(false);
+    registry.userInput(11, { type: "gestureTap", _modifiers: 0 });
+    expect(signal.aborted).toBe(true);
+  });
+  it("cancels a tap gesture with no marked touch before it", () => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    registry.userInput(11, { type: "gestureTapDown", _modifiers: 0 });
+    expect(signal.aborted).toBe(true);
+  });
+  it("cancels a tap gesture carrying a keyboard modifier during a marked touch sequence", () => {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "user", webContentsId: 11 });
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    registry.userInput(11, { type: "touchStart", _modifiers: 1 << 23 });
+    registry.userInput(11, { type: "gestureTapDown", _modifiers: 1 << 1 });
+    expect(signal.aborted).toBe(true);
+  });
+  it.each(["mouseDown", "keyDown", "touchStart", "gestureScrollBegin", "gestureTapCancel", "pointerDown"])("cancels unmarked %s during a marked touch sequence", (type) => {
     const { registry } = setup();
     registry.guestAttached(new FakeGuest(11), 1);
     registry.bindTab(1, { tabId: "user", webContentsId: 11 });
     const signal = registry.liveTab("tab-1")!.actions.signal;
     registry.userInput(11, { type: "touchStart", _modifiers: 1 << 23 });
     registry.userInput(11, { type });
+    expect(signal.aborted).toBe(true);
+  });
+});
+
+describe("a conversation bound to a pane's tab", () => {
+  function twoPages() {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "browser:pane", webContentsId: 11 });
+    registry.guestAttached(new FakeGuest(12), 1);
+    registry.bindTab(1, { tabId: "browser:side", webContentsId: 12 });
+    // The window's active surface is the OTHER page.
+    registry.setActiveSurface(1, { kind: "browser", tabId: "browser:side" });
+    return registry;
+  }
+
+  it("defaults its browser tools to the bound tab, not the window's active one", () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    expect(registry.defaultBrowserTab(1, "side-chat")).toEqual({ ok: true, handle: "tab-1" });
+    // An unbound conversation still follows the window's active surface.
+    expect(registry.defaultBrowserTab(1, "main")).toEqual({ ok: true, handle: "tab-2" });
+  });
+
+  it("fails clearly, never falling back to another tab, when the bound page is gone", () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    registry.guestDestroyed(11);
+    const result = registry.defaultBrowserTab(1, "side-chat");
+    expect(result.ok).toBe(false);
+    expect(result).toMatchObject({ error: expect.stringContaining("bound to is closed") });
+  });
+
+  it("has no default page for a chat bound to a terminal, and reads that terminal", () => {
+    const registry = twoPages();
+    registry.setActiveSurface(1, { kind: "terminal", tabId: "terminal:active" });
+    registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "terminal", tabId: "terminal:pane" } });
+    expect(registry.defaultBrowserTab(1, "side-chat")).toMatchObject({ ok: false, error: expect.stringContaining("bound to a terminal") });
+    expect(registry.defaultTerminalTabId(1, "side-chat")).toBe("terminal:pane");
+    expect(registry.defaultTerminalTabId(1, "main")).toBe("terminal:active");
+  });
+
+  it("is scoped to its window and released when the pane chat ends", () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("side-chat", { windowId: 2, surface: { kind: "browser", tabId: "browser:pane" } });
+    expect(registry.conversationSurface(1, "side-chat")).toBeUndefined();
+    expect(registry.paneConversation(1, "browser:pane")).toBeUndefined();
+    registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    expect(registry.paneConversation(1, "browser:pane")).toBe("side-chat");
+    expect(registry.releasePaneConversation(1, "browser:pane")).toBe("side-chat");
+    expect(registry.isPaneConversation("side-chat")).toBe(false);
+    expect(registry.defaultBrowserTab(1, "side-chat")).toEqual({ ok: true, handle: "tab-2" });
+  });
+
+  it("holds one conversation per pane: binding a new one releases the pane's last", () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("first", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    registry.bindConversationSurface("other-pane", { windowId: 1, surface: { kind: "browser", tabId: "browser:side" } });
+    registry.bindConversationSurface("second", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    expect(registry.paneConversation(1, "browser:pane")).toBe("second");
+    expect(registry.isPaneConversation("first")).toBe(false);
+    expect(registry.paneConversation(1, "browser:side")).toBe("other-pane");
+  });
+
+  it("knows an agent is closing a bound pane's tab, and forgets it once the pane chat ends", async () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    const closing = registry.requestTabOp(1, { op: "close", tabId: "tab-1" });
+    expect(registry.isClosedByAgent(1, "browser:pane")).toBe(true);
+    // Another window's pane with the same id is not the one closing.
+    expect(registry.isClosedByAgent(2, "browser:pane")).toBe(false);
+    registry.guestDestroyed(11);
+    await expect(closing).resolves.toEqual({ ok: true, tabId: "tab-1" });
+    expect(registry.isClosedByAgent(1, "browser:pane")).toBe(true);
+    registry.releasePaneConversation(1, "browser:pane");
+    expect(registry.isClosedByAgent(1, "browser:pane")).toBe(false);
+  });
+
+  it("takes the mark back when the close does not happen, and never marks an unbound tab", async () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    const abort = new AbortController();
+    const closing = registry.requestTabOp(1, { op: "close", tabId: "tab-1" }, { signal: abort.signal });
+    abort.abort();
+    await expect(closing).resolves.toEqual({ ok: false, error: "aborted" });
+    expect(registry.isClosedByAgent(1, "browser:pane")).toBe(false);
+    void registry.requestTabOp(1, { op: "close", tabId: "tab-2" });
+    expect(registry.isClosedByAgent(1, "browser:side")).toBe(false);
+  });
+
+  it("drops every pane binding of a window that is gone, and only that window's", () => {
+    const registry = twoPages();
+    registry.bindConversationSurface("pane-one", { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    registry.bindConversationSurface("pane-two", { windowId: 1, surface: { kind: "terminal", tabId: "terminal:pane" } });
+    registry.bindConversationSurface("elsewhere", { windowId: 2, surface: { kind: "browser", tabId: "browser:pane" } });
+    void registry.requestTabOp(1, { op: "close", tabId: "tab-1" });
+    registry.releaseWindow(1);
+    expect(registry.isPaneConversation("pane-one")).toBe(false);
+    expect(registry.isPaneConversation("pane-two")).toBe(false);
+    expect(registry.isClosedByAgent(1, "browser:pane")).toBe(false);
+    expect(registry.paneConversation(2, "browser:pane")).toBe("elsewhere");
+  });
+});
+
+describe("watching one press's touch input", () => {
+  const MARK = 1 << 23;
+  function windowWithTwoPages() {
+    const { registry } = setup();
+    registry.guestAttached(new FakeGuest(11), 1);
+    registry.bindTab(1, { tabId: "browser:a", webContentsId: 11 });
+    registry.guestAttached(new FakeGuest(12), 1);
+    registry.bindTab(1, { tabId: "browser:c", webContentsId: 12 });
+    registry.guestAttached(new FakeGuest(13), 2);
+    registry.bindTab(2, { tabId: "browser:other-window", webContentsId: 13 });
+    return registry;
+  }
+  const tap = (registry: BrowserTabRegistry<FakeGuest>, guestId: number) => {
+    registry.userInput(guestId, { type: "touchStart", _modifiers: MARK });
+    registry.userInput(guestId, { type: "gestureTapDown", _modifiers: 0 });
+    registry.userInput(guestId, { type: "touchEnd", _modifiers: MARK });
+    registry.userInput(guestId, { type: "gestureShowPress", _modifiers: 0 });
+    registry.userInput(guestId, { type: "gestureTap", _modifiers: 0 });
+  };
+
+  it("reports a press that reached its own page, start to derived tap", () => {
+    const registry = windowWithTwoPages();
+    const watch = registry.watchTouches(11);
+    tap(registry, 11);
+    // Another window's touch is not this window's business.
+    registry.userInput(13, { type: "touchStart", _modifiers: MARK });
+    expect(watch.delivery()).toEqual({ started: true, ended: true, tapped: true, elsewhere: 0 });
+    watch.stop();
+  });
+
+  it("counts a touch another page of the same window took meanwhile", () => {
+    const registry = windowWithTwoPages();
+    const watch = registry.watchTouches(11);
+    registry.userInput(12, { type: "touchStart", _modifiers: MARK });
+    expect(watch.delivery()).toEqual({ started: false, ended: false, tapped: false, elsewhere: 1 });
+    watch.stop();
+  });
+
+  it("reads an unmarked touch as no press of the agent's", () => {
+    const registry = windowWithTwoPages();
+    const watch = registry.watchTouches(11);
+    registry.userInput(11, { type: "touchStart", _modifiers: 0 });
+    expect(watch.delivery().started).toBe(false);
+    watch.stop();
+  });
+
+  it("keeps a delivered press's mark for its own late tap, and reads a later unmarked tap as the user's", async () => {
+    const registry = windowWithTwoPages();
+    const signal = registry.liveTab("tab-1")!.actions.signal;
+    const watch = registry.watchTouches(11);
+    registry.userInput(11, { type: "touchStart", _modifiers: MARK });
+    registry.userInput(11, { type: "gestureTapDown", _modifiers: 0 });
+    registry.userInput(11, { type: "touchEnd", _modifiers: MARK });
+    watch.stop();
+    registry.userInput(11, { type: "gestureShowPress", _modifiers: 0 });
+    registry.userInput(11, { type: "gestureTap", _modifiers: 0 });
+    expect(signal.aborted).toBe(false);
+    registry.userInput(11, { type: "touchStart", _modifiers: 0 });
     expect(signal.aborted).toBe(true);
   });
 });

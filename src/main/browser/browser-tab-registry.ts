@@ -26,6 +26,12 @@
  *
  * ACTIVE SURFACE. Per window, the browser/terminal tab the user is looking at
  * — a hint tools default to when no tab is named, never an authority.
+ *
+ * BOUND CONVERSATION. A chat opened in a terminal or web pane's own panel is
+ * bound to that pane's tab: each of its turns names the tab, and its tools
+ * default to that tab instead of the window's active surface. A bound tab that
+ * is gone is an error, never a reason to act on another tab. Sub-agents reach
+ * the binding through their hosting conversation's session.
  */
 import type { WebContents } from "electron";
 import type {
@@ -37,6 +43,20 @@ import type {
 } from "../../shared/browser-surface.js";
 import type { BrowserTabOpener } from "../../shared/permissions-events.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
+
+/** What one injected press's touch input did, by the guests' own native input events. */
+export interface TouchDeliveryReport {
+  started: boolean;
+  ended: boolean;
+  tapped: boolean;
+  elsewhere: number;
+}
+
+interface TouchWatchState {
+  readonly guestId: number;
+  readonly windowId: number | undefined;
+  readonly report: TouchDeliveryReport;
+}
 
 /** What the registry needs of a guest. Production passes Electron `WebContents`. */
 export interface BrowserGuest {
@@ -73,6 +93,13 @@ export interface BrowserTabRendererLink {
   sendControl(windowId: number, state: BrowserTabControlState): void;
 }
 
+/** The tab a conversation's browser tools act on when none is named — or why there is none. */
+export type DefaultBrowserTab =
+  | { readonly ok: true; readonly handle: string }
+  | { readonly ok: false; readonly error: string };
+
+const NO_SHOWN_BROWSER_TAB = "no browser tab is shown; pass a tabId from browser_tabs or open one with browser_tab_new";
+
 export type BrowserTabOpOutcome =
   | { readonly ok: true; readonly tabId: string }
   | { readonly ok: false; readonly error: "no-window-renderer" | "timeout" | "aborted" | "no-such-tab" };
@@ -98,6 +125,18 @@ const AGENT_INPUT_EVENT_TYPES: ReadonlySet<string> = new Set([
 const DEBUGGER_INPUT_MODIFIER = 1 << 23;
 const DERIVED_TAP_MODIFIERS = 1 << 25;
 
+/**
+ * Whether a tap gesture's modifiers fit one derived from an injected touch.
+ * The derived gestures do not carry the debugger bit; measured in the app,
+ * they arrive with either the derived-tap bit or no modifiers at all. Any
+ * other bit (a held key) is not part of the injected sequence. The sequence
+ * itself — a marked touch first, each gesture once, in order — is what
+ * attributes them; a user's own tap starts with an unmarked touch.
+ */
+function isDerivedTapModifiers(modifiers: number): boolean {
+  return modifiers === 0 || modifiers === DERIVED_TAP_MODIFIERS;
+}
+
 /** Whether an input event type is the user acting on the page (not hovering). */
 export function isUserActionInputType(type: string): boolean {
   return AGENT_INPUT_EVENT_TYPES.has(type);
@@ -110,9 +149,13 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   // A takeover before bind must also prevent a pending new-tab request from granting ownership later.
   private readonly userOwnedTabs = new Set<string>();
   private readonly activeSurface = new Map<number, ActiveWorkspaceSurface>();
+  private readonly boundSurface = new Map<string, { windowId: number; surface: ActiveWorkspaceSurface }>();
+  // Pane tabs an agent asked to close while a conversation was bound to them.
+  private readonly closingByAgent = new Set<string>();
   private readonly pending = new Map<string, PendingTabOp>();
   private nextAttachment = 0;
   private readonly injectedTouches = new Map<number, { pressed: boolean; down: boolean; shown: boolean }>();
+  private readonly touchWatches = new Set<TouchWatchState>();
   private link: BrowserTabRendererLink | null = null;
   private nextHandle = 1;
   private nextRequest = 1;
@@ -223,6 +266,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
    */
   userInput(guestId: number, input?: { type: string; _modifiers?: number }): void {
     const modifiers = input?._modifiers ?? 0;
+    if (input) this.recordTouch(guestId, input.type, modifiers);
     // Native provenance marks the raw injected touch and key events.
     if (input && input.type !== "mouseDown" && (modifiers & DEBUGGER_INPUT_MODIFIER) !== 0) {
       if (input.type === "touchStart") this.injectedTouches.set(guestId, { pressed: true, down: false, shown: false });
@@ -236,7 +280,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const touch = this.injectedTouches.get(guestId);
     // Match only the native tap sequence derived from that marked contact.
     // An unmarked contact, key, mouse or other gesture still cancels below.
-    if (touch && modifiers === DERIVED_TAP_MODIFIERS) {
+    if (touch && isDerivedTapModifiers(modifiers)) {
       if (input?.type === "gestureTapDown" && touch.pressed && !touch.down) {
         touch.down = true;
         return;
@@ -255,6 +299,47 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       if (tab.guest?.id !== guestId) continue;
       tab.actions.abort(new Error("the user took over this tab"));
       tab.actions = new AbortController();
+    }
+  }
+
+  /**
+   * Watch the touch input of `guestId`'s window while one injected press runs:
+   * whether this guest reported the marked touch start and end and the tap
+   * derived from them, and how many touch starts other guests of the window
+   * reported meanwhile (the press landing in the wrong page). `stop` drops
+   * the guest's press mark when none of the press reached it.
+   */
+  watchTouches(guestId: number): { delivery(): TouchDeliveryReport; stop(): void } {
+    const state: TouchWatchState = {
+      guestId,
+      windowId: this.attached.get(guestId)?.windowId,
+      report: { started: false, ended: false, tapped: false, elsewhere: 0 },
+    };
+    this.touchWatches.add(state);
+    return {
+      delivery: () => ({ ...state.report }),
+      stop: () => {
+        this.touchWatches.delete(state);
+        // A press none of whose touch reached this guest leaves no mark to
+        // match a later tap; one that did keeps it for its own late gestures.
+        if (!state.report.started) this.injectedTouches.delete(guestId);
+      },
+    };
+  }
+
+  private recordTouch(guestId: number, type: string, modifiers: number): void {
+    if (this.touchWatches.size === 0) return;
+    const windowId = this.attached.get(guestId)?.windowId;
+    const marked = (modifiers & DEBUGGER_INPUT_MODIFIER) !== 0;
+    for (const watch of this.touchWatches) {
+      if (watch.windowId === undefined || watch.windowId !== windowId) continue;
+      if (guestId !== watch.guestId) {
+        if (type === "touchStart") watch.report.elsewhere++;
+        continue;
+      }
+      if (type === "touchStart" && marked) watch.report.started = true;
+      if (type === "touchEnd" && marked && watch.report.started) watch.report.ended = true;
+      if (type === "gestureTap" && watch.report.ended && isDerivedTapModifiers(modifiers)) watch.report.tapped = true;
     }
   }
 
@@ -320,6 +405,116 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return tab && this.isLive(tab) ? tab.handle : undefined;
   }
 
+  // ── bound conversations ───────────────────────────────────────────────
+
+  /**
+   * Bind conversation `sessionId` to one tab of `windowId`: it is that pane's
+   * own chat. A pane holds one conversation at a time, so a conversation the
+   * pane held before is released.
+   */
+  bindConversationSurface(sessionId: string, binding: { windowId: number; surface: ActiveWorkspaceSurface }): void {
+    const previous = this.paneConversation(binding.windowId, binding.surface.tabId);
+    if (previous !== undefined && previous !== sessionId) this.boundSurface.delete(previous);
+    this.boundSurface.set(sessionId, { windowId: binding.windowId, surface: { kind: binding.surface.kind, tabId: binding.surface.tabId } });
+  }
+
+  /** The conversation the pane chat of `tabId` in `windowId` holds, if it has one. */
+  paneConversation(windowId: number, tabId: string): string | undefined {
+    for (const [sessionId, bound] of this.boundSurface) {
+      if (bound.windowId === windowId && bound.surface.tabId === tabId) return sessionId;
+    }
+    return undefined;
+  }
+
+  /** Whether `sessionId` is a pane chat's conversation (bound to a pane's tab). */
+  isPaneConversation(sessionId: string): boolean {
+    return this.boundSurface.has(sessionId);
+  }
+
+  /**
+   * The pane chat of `tabId` in `windowId` is over (its pane closed, or the
+   * user started it afresh): unbind its conversation and say which it was.
+   */
+  releasePaneConversation(windowId: number, tabId: string): string | undefined {
+    this.closingByAgent.delete(windowTabKey(windowId, tabId));
+    const sessionId = this.paneConversation(windowId, tabId);
+    if (sessionId !== undefined) this.boundSurface.delete(sessionId);
+    return sessionId;
+  }
+
+  /**
+   * An agent's `browser_tab_close` is closing pane tab `tabId`: the turn that
+   * asked keeps running to its end, and the pane chat ends after it.
+   */
+  isClosedByAgent(windowId: number, tabId: string): boolean {
+    return this.closingByAgent.has(windowTabKey(windowId, tabId));
+  }
+
+  /**
+   * The windows that hold tab `tabId` now: as a page, or as a pane whose chat
+   * holds a conversation.
+   */
+  windowsHoldingTab(tabId: string): number[] {
+    const windows = new Set<number>();
+    for (const key of this.handleByWindowTab.keys()) {
+      const separator = key.indexOf("\u0000");
+      if (key.slice(separator + 1) === tabId) windows.add(Number(key.slice(0, separator)));
+    }
+    for (const bound of this.boundSurface.values()) {
+      if (bound.surface.tabId === tabId) windows.add(bound.windowId);
+    }
+    return [...windows];
+  }
+
+  /** A window is gone: none of its panes holds a conversation any more. */
+  releaseWindow(windowId: number): void {
+    for (const [sessionId, bound] of this.boundSurface) {
+      if (bound.windowId === windowId) this.boundSurface.delete(sessionId);
+    }
+    for (const key of this.closingByAgent) {
+      if (key.startsWith(`${windowId}\u0000`)) this.closingByAgent.delete(key);
+    }
+  }
+
+  /** The surface conversation `sessionId` is bound to in `windowId`, if any. */
+  conversationSurface(windowId: number, sessionId: string): ActiveWorkspaceSurface | undefined {
+    const bound = this.boundSurface.get(sessionId);
+    return bound && bound.windowId === windowId ? bound.surface : undefined;
+  }
+
+  /**
+   * The tab a conversation's browser tools act on when the call names none: the
+   * tab its pane chat is bound to, else the window's active browser tab. A
+   * binding that cannot be honoured is an error, never another tab.
+   */
+  defaultBrowserTab(windowId: number, sessionId: string): DefaultBrowserTab {
+    const bound = this.conversationSurface(windowId, sessionId);
+    if (bound === undefined) {
+      const active = this.activeBrowserTab(windowId);
+      return active === undefined ? { ok: false, error: NO_SHOWN_BROWSER_TAB } : { ok: true, handle: active };
+    }
+    if (bound.kind !== "browser") {
+      return { ok: false, error: "this chat is bound to a terminal, not a page; pass a tabId from browser_tabs to act on a page" };
+    }
+    const handle = this.handleByWindowTab.get(windowTabKey(windowId, bound.tabId));
+    const tab = handle === undefined ? undefined : this.tabs.get(handle);
+    if (!tab || !this.isLive(tab)) {
+      return { ok: false, error: "the page this chat is bound to is closed or has not loaded; nothing was done" };
+    }
+    return { ok: true, handle: tab.handle };
+  }
+
+  /**
+   * The terminal a conversation's terminal tools read when the call names none:
+   * the terminal its pane chat is bound to, none for a chat bound to a page,
+   * else the window's active terminal.
+   */
+  defaultTerminalTabId(windowId: number, sessionId: string): string | undefined {
+    const bound = this.conversationSurface(windowId, sessionId);
+    if (bound !== undefined) return bound.kind === "terminal" ? bound.tabId : undefined;
+    return this.activeTerminalTabId(windowId);
+  }
+
   // ── lookups ────────────────────────────────────────────────────────────
 
   /** A live tab by handle, in any window. For approval hooks, which have no session. */
@@ -363,6 +558,18 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (op.op !== "new" && !this.liveTabInWindow(op.tabId, windowId)) {
       return Promise.resolve({ ok: false, error: "no-such-tab" });
     }
+    // Closing a pane's page from an agent turn ends that pane's chat only once
+    // the turn is over (see `isClosedByAgent`); a close that does not happen
+    // takes the mark back.
+    let closingKey: string | undefined;
+    if (op.op === "close") {
+      const rendererTabId = this.tabs.get(op.tabId)!.rendererTabId;
+      const key = windowTabKey(windowId, rendererTabId);
+      if (this.paneConversation(windowId, rendererTabId) !== undefined && !this.closingByAgent.has(key)) {
+        this.closingByAgent.add(key);
+        closingKey = key;
+      }
+    }
     const requestId = `browser-op-${this.nextRequest++}`;
     const request: BrowserTabOpRequest = op.op === "new"
       ? { requestId, op: "new", url: "about:blank", ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }) }
@@ -374,6 +581,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         if (timer !== undefined) clearTimeout(timer);
         options.signal?.removeEventListener("abort", onAbort);
         this.pending.delete(requestId);
+        if (!outcome.ok && closingKey !== undefined) this.closingByAgent.delete(closingKey);
         resolve(outcome);
       };
       // Keep the handle main knows (not the renderer id) for close/select.
@@ -437,8 +645,11 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.handleByWindowTab.clear();
     this.userOwnedTabs.clear();
     this.activeSurface.clear();
+    this.boundSurface.clear();
+    this.closingByAgent.clear();
     this.pending.clear();
     this.injectedTouches.clear();
+    this.touchWatches.clear();
     this.link = null;
     this.nextHandle = 1;
     this.nextRequest = 1;

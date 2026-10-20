@@ -50,6 +50,7 @@ import type {
   BrowserTabOpOutcome,
   BrowserTabRecord,
   BrowserTabView,
+  DefaultBrowserTab,
 } from "../main/browser/browser-tab-registry.js";
 import type { BrowserToolExecutors } from "./browser-tools-execute.js";
 import { t } from "../i18n/index.js";
@@ -59,7 +60,8 @@ interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
   liveTab(handle: string): BrowserTabRecord<G> | undefined;
   liveTabInWindow(handle: string, windowId: number): BrowserTabRecord<G> | undefined;
   listTabs(windowId: number): BrowserTabView[];
-  activeBrowserTab(windowId: number): string | undefined;
+  /** The tab a conversation acts on when a call names none (its pane chat's tab, else the shown one). */
+  defaultBrowserTab(windowId: number, sessionId: string): DefaultBrowserTab;
   requestTabOp(
     windowId: number,
     op: { op: "new"; url: string; sessionId?: string } | { op: "select" | "close"; tabId: string },
@@ -137,7 +139,8 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       const scope = resolveSessionWindow(sessionId, deps);
       if (!scope) return undefined;
       if (input.tabId !== undefined && (typeof input.tabId !== "string" || !BROWSER_TAB_ID_PATTERN.test(input.tabId))) return undefined;
-      const handle = (input.tabId as string | undefined) ?? deps.tabs.activeBrowserTab(scope.windowId);
+      const fallback = input.tabId === undefined ? deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId) : undefined;
+      const handle = (input.tabId as string | undefined) ?? (fallback?.ok ? fallback.handle : undefined);
       if (handle === undefined) return undefined;
       const tab = deps.tabs.liveTabInWindow(handle, scope.windowId);
       if (!tab || !tab.guest) return undefined;

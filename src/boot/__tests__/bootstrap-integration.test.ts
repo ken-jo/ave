@@ -799,6 +799,7 @@ describe("bootstrap() integration lock", () => {
         "memoryMaintenanceCoordinator",
         "memoryManager",
         "notificationService",
+        "paneChatLoops",
         "personaPromptStore",
         "pluginBundleLifecycle",
         "pluginLoopbackManager",

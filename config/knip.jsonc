@@ -124,6 +124,8 @@
     "shadcn"
   ],
   "ignoreBinaries": [
+    // System namespace launcher used by the Linux confinement regressions.
+    "bwrap",
     // The system C compiler that builds the confined-child preload library.
     "cc",
     // Sigstore cosign: the contract bundle uploader verifies a published

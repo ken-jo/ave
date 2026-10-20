@@ -53,6 +53,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     mcpAppModelContext: ctx.mcpAppModelContext,
     conversationLoop: ctx.conversationLoop,
     sideChatConversationLoop: ctx.sideChatConversationLoop,
+    paneChatLoops: ctx.paneChatLoops,
     sideChatMemoryManager: ctx.sideChatMemoryManager,
     // Tiled chat groups resolve their own loop through this. It is assembled
     // by name like everything else here, so leaving it out is how the IPC
@@ -160,6 +161,9 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
         attempt(() => ctx.sideChatConversationLoop.abortCurrentTurn(new Error("application shutdown"),
           ),
         );
+        for (const paneLoop of ctx.paneChatLoops.all()) {
+          attempt(() => paneLoop.abortCurrentTurn(new Error("application shutdown")));
+        }
         attempt(() => ctx.rationaleHostService?.shutdown());
 
         attempt(() => ctx.approvalGate.disposeAll());

@@ -22,7 +22,10 @@
  *   inner shell gets a real controlling TTY. On macOS the shell must also be
  *   allowed to SET that TTY (echo off, foreground job), so the pty is spawned
  *   first on a trampoline and the wrap is `wrapTerminalCommand` with the pty's
- *   own slave path, and no other terminal (terminal-tty-handoff.ts).
+ *   own slave path, and no other terminal (terminal-tty-handoff.ts). On
+ *   Linux the sandbox starts in a new session, so the shell runs on a pty of
+ *   its own that util-linux `script` opens inside the sandbox
+ *   (terminal-inner-pty.ts).
  *   Per-command `denyRead`/`denyWrite`
  *   REPLACE the shared boot arrays in ASRT, so we RESTATE
  *   `getDefaultSensitiveReadDenyPaths()` (else the shell regains read of
@@ -39,7 +42,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import type { IPty } from "node-pty";
 import { createLogger } from "../../lib/logger.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -59,15 +62,24 @@ import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
 import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { installShellIntegration } from "./shell-integration.js";
+import {
+  forwardResizeToSandboxedPtyRelay,
+  readSandboxedShell,
+  readTerminalForeground,
+  type SandboxedShellReading,
+  type TerminalForegroundReading,
+} from "./shell-process.js";
 import type { TerminalTtyHandoff } from "./terminal-tty-handoff.js";
-import { terminalNeedsOwnTtyGrant } from "./terminal-tty-platform.js";
+import { terminalNeedsInnerPty, terminalNeedsOwnTtyGrant } from "./terminal-tty-platform.js";
 import {
   TerminalBlockTracker,
   registerTerminalBlockTracker,
   unregisterTerminalBlockTracker,
   __resetTerminalBlocksForTest,
+  type TerminalPromptState,
 } from "./terminal-blocks.js";
 import { isTerminalTabId } from "../../shared/tab-id.js";
+import { hasOnlyTypeableCharacters, MAX_TERMINAL_COMMAND_CHARS } from "../../shared/terminal-command-text.js";
 
 const log = createLogger("ave");
 
@@ -130,6 +142,16 @@ interface TerminalSession {
   ownerWindowId: number | null;
   /** Command blocks parsed from this PTY's output (terminal-blocks.ts). */
   blocks: TerminalBlockTracker;
+  /** Program name of the login shell this terminal runs (`zsh`, `bash`, …). */
+  shellName: string;
+  /**
+   * Linux: the shell runs on a pty of its own inside the sandbox
+   * (terminal-inner-pty.ts), so it is checked through the sandbox's process
+   * tree and a resize is forwarded to its pty relay.
+   */
+  innerPty: boolean;
+  /** A resize forward to the inner pty's relay is running, and whether another resize came in meanwhile. */
+  resizeForward: { running: boolean; again: boolean };
   /** FIFO scrollback chunks, capped to {@link RING_MAX_BYTES}. */
   ring: string[];
   ringBytes: number;
@@ -224,8 +246,13 @@ function resolveTerminalCwd(
 
 /** The command string ASRT runs under its `-c` wrapper: exec the interactive
  * login shell so it takes over the PTY node-pty allocated for the sandbox
- * wrapper process (fd 0/1/2 inherit down sandbox-exec/bwrap → shell). */
-function buildShellCommand(shell: string, tempDir: string): string {
+ * wrapper process (fd 0/1/2 inherit down sandbox-exec/bwrap → shell), or, on
+ * Linux, `innerPtyCommand` runs it on a pty of its own inside the sandbox. */
+function buildShellCommand(
+  shell: string,
+  tempDir: string,
+  innerPtyCommand?: (shell: string, launch: { command: string; args: string[] }) => string,
+): string {
   // `exec` replaces the wrapper's `/bin/bash -c` shell so there is no extra
   // process layer; `-l -i` = login + interactive (prompt, job control, rc).
   // The temp directory is set inside the wrap, because ASRT writes its own
@@ -233,6 +260,7 @@ function buildShellCommand(shell: string, tempDir: string): string {
   // this terminal is neither granted nor allowed to read. Its own, under its
   // HOME, is both — as the shell tool's bootstrap does.
   const launch = sandboxTempEnvLaunch(tempDir, shell, ["-l", "-i"]);
+  if (innerPtyCommand !== undefined) return innerPtyCommand(shell, launch);
   return `exec ${[launch.command, ...launch.args].map(shellQuote).join(" ")}`;
 }
 
@@ -464,11 +492,15 @@ async function spawnNewTerminal(
   const shell = resolveLoginShell();
   const markerNonce = randomBytes(16).toString("hex");
   let integrationEnv: Record<string, string>;
+  let marksPromptEnd: boolean;
   try {
-    integrationEnv = installShellIntegration(sandboxHome.path, shell, {
+    const integration = installShellIntegration(sandboxHome.path, shell, {
       nonce: markerNonce,
       sandboxEnv: sandboxHome.env,
-    }).env;
+    });
+    integrationEnv = integration.env;
+    // fish's integration marks no end of prompt (shell-integration.ts).
+    marksPromptEnd = integration.shell !== "fish";
   } catch (err) {
     disposeResources();
     return {
@@ -500,7 +532,16 @@ async function spawnNewTerminal(
   let trampolinePty: IPty | undefined;
   let pendingSession: TerminalSession | undefined;
   try {
-    const cmdline = buildShellCommand(shell, tempDir);
+    let innerPtyCommand: Parameters<typeof buildShellCommand>[2];
+    if (terminalNeedsInnerPty()) {
+      // Loaded on spawn, like the macOS handoff below.
+      const innerPty = await import("./terminal-inner-pty.js");
+      owner.abort.signal.throwIfAborted();
+      await innerPty.assertInnerPtyRelay();
+      owner.abort.signal.throwIfAborted();
+      innerPtyCommand = innerPty.innerPtyShellCommand;
+    }
+    const cmdline = buildShellCommand(shell, tempDir, innerPtyCommand);
     const filesystem = { allowWrite, allowRead, denyRead, denyWrite };
     const ptyOptions = { name: "xterm-256color", cols, rows, cwd };
 
@@ -568,7 +609,10 @@ async function spawnNewTerminal(
     const session: TerminalSession = {
       pty,
       ownerWindowId: options.ownerWindowId ?? null,
-      blocks: new TerminalBlockTracker({ nonce: markerNonce }),
+      blocks: new TerminalBlockTracker({ nonce: markerNonce, marksPromptEnd }),
+      shellName: basename(shell).replace(/^-/u, ""),
+      innerPty: innerPtyCommand !== undefined,
+      resizeForward: { running: false, again: false },
       ring: [],
       ringBytes: 0,
       disposeData: () => {},
@@ -689,11 +733,426 @@ export function writeTerminal(tabId: string, data: string): void {
   session.pty.write(data);
 }
 
+type TerminalNotTypedReason =
+  | "edit-line-mismatch"
+  | "no-terminal"
+  | Exclude<TerminalPromptState, "ready">
+  | "no-fresh-prompt"
+  | "foreground-not-shell"
+  | "shell-busy"
+  | "cwd-unverified"
+  | "cwd-mismatch";
+
+export type TypeTerminalCommandResult =
+  | { ok: true; firstBlockId: number }
+  | { ok: false; reason: TerminalNotTypedReason; message: string };
+
+export type VerifyTerminalShellResult =
+  | { ok: true; cwd: string }
+  | { ok: false; reason: "no-terminal" | "foreground-not-shell" | "shell-busy" | "cwd-unverified" | "cwd-mismatch"; message: string };
+
+/**
+ * How long typing waits for the shell to draw a fresh prompt after the
+ * line-editor reset (Ctrl-C at an idle prompt).
+ */
+const FRESH_PROMPT_TIMEOUT_MS = 3_000;
+
+/**
+ * Check what the shell's markers say against the operating system: the
+ * terminal's foreground process must be its own shell (not a program that
+ * printed a prompt), and that shell's real working directory must be the one
+ * the markers reported. Markers are output text; the process table is not.
+ * Returns the shell's directory as the operating system resolves it.
+ */
+export async function verifyTerminalShell(tabId: string, ownerWindowId: number, reportedCwd: string): Promise<VerifyTerminalShellResult> {
+  const session = sessions.get(tabId);
+  if (!session || session.exited || session.closing || session.ownerWindowId !== ownerWindowId) {
+    return { ok: false, reason: "no-terminal", message: `no running terminal with tabId ${JSON.stringify(tabId)} in this window` };
+  }
+  if (session.innerPty) {
+    return sandboxedShellVerdict(
+      await readSandboxedShell(session.pty.pid, session.shellName, reportedCwd),
+      reportedCwd,
+      session.blocks.reportedShellPid(),
+    );
+  }
+  return foregroundVerdict(await readTerminalForeground(session.pty.pid), session.pty.pid, session.shellName, reportedCwd);
+}
+
+/**
+ * Judge the reading of a sandboxed Linux terminal's shell
+ * ({@link readSandboxedShell}) for {@link verifyTerminalShell}. The shell was
+ * found by its place in the sandbox's process tree and its name; it must also
+ * be the shell that reported the prompt (`reportedPid`, `$$` from the P
+ * marker, is its pid in its own namespace), hold its own terminal's
+ * foreground, have no child or other process sharing its terminal session or
+ * foreground group (a command still finishing, or a background job that could
+ * write to the terminal or, through TIOCSTI on
+ * that terminal, type into the line), and be in the very directory
+ * `reportedCwd` names on the host (same device and inode).
+ */
+export function sandboxedShellVerdict(
+  reading: SandboxedShellReading,
+  reportedCwd: string,
+  reportedPid: number | null,
+): VerifyTerminalShellResult {
+  if (!reading.ok) {
+    return { ok: false, reason: "cwd-unverified", message: `the terminal's shell could not be checked: ${reading.reason}` };
+  }
+  const { shell } = reading;
+  if (reportedPid !== shell.nsPid) {
+    return {
+      ok: false,
+      reason: "foreground-not-shell",
+      message: `the shell that reported the prompt (pid ${reportedPid ?? "unknown"}) is not the terminal's ${shell.command} shell (pid ${shell.nsPid} in its sandbox)`,
+    };
+  }
+  if (shell.foreground.pgid !== shell.pid) {
+    return {
+      ok: false,
+      reason: "foreground-not-shell",
+      message: `the terminal's foreground process is ${JSON.stringify(shell.foreground.command ?? "unknown")}, not its ${shell.command} shell`,
+    };
+  }
+  if (shell.children.length > 0) {
+    const named = shell.children.map((child) => JSON.stringify(child.command)).join(", ");
+    return {
+      ok: false,
+      reason: "shell-busy",
+      message: `the terminal's shell has processes sharing its input (${named}): a command still finishing or a background job`,
+    };
+  }
+  if (!shell.cwdIsReported) {
+    return {
+      ok: false,
+      reason: "cwd-mismatch",
+      message: `the terminal reported ${JSON.stringify(reportedCwd)} as its directory, but its shell is in another directory (${JSON.stringify(shell.cwd)}), or one only its sandbox has`,
+    };
+  }
+  return { ok: true, cwd: canonicalizePathForMatch(reportedCwd) };
+}
+
+/**
+ * Judge an operating-system reading of a terminal's foreground process for
+ * {@link verifyTerminalShell}: it must be `shellName`, in `reportedCwd`
+ * (compared after resolving symlinks).
+ */
+export function foregroundVerdict(
+  reading: TerminalForegroundReading,
+  shellPid: number,
+  shellName: string,
+  reportedCwd: string,
+): VerifyTerminalShellResult {
+  if (!reading.ok) {
+    return { ok: false, reason: "cwd-unverified", message: `the terminal's shell could not be checked: ${reading.reason}` };
+  }
+  const { foreground } = reading;
+  // The shell is the process spawned on the pty (its session leader; every
+  // wrapper before it execs in place). A nested shell or any other process
+  // holding the terminal is not it, whatever its name.
+  if (foreground.pid !== shellPid || foreground.command !== shellName) {
+    return {
+      ok: false,
+      reason: "foreground-not-shell",
+      message: `the terminal's foreground process is ${JSON.stringify(foreground.command)}, not its ${shellName} shell`,
+    };
+  }
+  const actual = canonicalizePathForMatch(foreground.cwd);
+  if (canonicalizePathForMatch(reportedCwd) !== actual) {
+    return {
+      ok: false,
+      reason: "cwd-mismatch",
+      message: `the terminal reported ${JSON.stringify(reportedCwd)} as its directory, but its shell is in ${JSON.stringify(foreground.cwd)}`,
+    };
+  }
+  return { ok: true, cwd: actual };
+}
+
+/** Resolves true once the shell finishes drawing a prompt after `since`, false at the timeout or exit. */
+function waitForFreshPrompt(blocks: TerminalBlockTracker, since: number, timeoutMs: number, cancelled: () => boolean = () => false): Promise<boolean> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (value: boolean): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    const unsubscribe = blocks.subscribe(() => {
+      if (blocks.hasExited() || cancelled()) finish(false);
+      else if (blocks.promptEndCount() > since) finish(true);
+    });
+  });
+}
+
+/**
+ * Type one agent command into a terminal and press Enter, as the user would:
+ * the shell echoes it and runs it in the visible terminal. Only for
+ * `terminal_run`, after the invocation was authorized.
+ *
+ * Refused unless the terminal is `ownerWindowId`'s, alive, and its shell is
+ * at an empty prompt ({@link TerminalBlockTracker.promptState}): text typed
+ * while a command or a full-screen program is in the foreground would go to
+ * that program, and text typed after the user's own unfinished input would
+ * join it. `line` must hold no control or invisible characters
+ * (terminal-command-text.ts); one that does is a caller bug and throws.
+ *
+ * A line editor can be in a state no output shows: an ESC or Ctrl-X prefix
+ * waiting for its next key, vi command mode, a key typed ahead during the
+ * last command. Text typed then is read as editing keys, and the shell runs
+ * something other than the approved line. So, in order:
+ *  1. Check the shell against the operating system
+ *     ({@link verifyTerminalShell}): its own process holds the terminal, in
+ *     `expectedCwd` — so the next key reaches the shell, not a program.
+ *  2. Ctrl-C. At an idle prompt the terminal turns it into SIGINT, whatever
+ *     the keymap or a pending prefix: the line editor drops the line and its
+ *     state and draws a fresh prompt. It cannot run anything. bash may wait
+ *     for one more key before it draws that prompt, so Ctrl-C is sent again
+ *     until it does ({@link resetToFreshPrompt}).
+ *  3. Wait for that fresh prompt, and check it is still idle, untouched and
+ *     in the same directory.
+ *  4. Write the line as a bracketed paste (`ESC[200~ … ESC[201~`), which the
+ *     line editor inserts as text and never reads as keys. The shell reported
+ *     bracketed paste on, with the builtin paste widgets, at this prompt
+ *     (promptState).
+ *  5. Press Enter only once the edit line the shell echoes is exactly the
+ *     approved line and the user pressed no key; otherwise clear it (Ctrl-C).
+ *
+ * Returns the id the command's block will have at least, so the caller can
+ * wait for it, and compare the command the shell ran with the approved one.
+ */
+export async function typeTerminalCommand(
+  tabId: string,
+  ownerWindowId: number,
+  line: string,
+  expectedCwd: string,
+): Promise<TypeTerminalCommandResult> {
+  const live = (): TerminalSession | undefined => {
+    const session = sessions.get(tabId);
+    return session && !session.exited && !session.closing && session.ownerWindowId === ownerWindowId ? session : undefined;
+  };
+  const session = live();
+  return typeLineAtPrompt(
+    {
+      blocks: session?.blocks,
+      isLive: () => live() !== undefined,
+      write: (data) => live()?.pty.write(data),
+      verify: () => verifyTerminalShell(tabId, ownerWindowId, expectedCwd),
+      missing: `no running terminal with tabId ${JSON.stringify(tabId)} in this window`,
+    },
+    line,
+    () => log.info({ tabId, chars: line.length }, "terminal: typed an approved agent command"),
+  );
+}
+
+/** The terminal {@link typeLineAtPrompt} types into. */
+export interface PromptTypingTarget {
+  /** Its block tracker, or undefined when there is no such terminal. */
+  readonly blocks: TerminalBlockTracker | undefined;
+  /** Whether it is still open (and still the caller's). */
+  isLive(): boolean;
+  write(data: string): void;
+  /** The operating-system check of its shell ({@link verifyTerminalShell}). */
+  verify(): Promise<VerifyTerminalShellResult>;
+  /** The message when there is no such terminal. */
+  readonly missing: string;
+}
+
+/**
+ * The typing protocol of {@link typeTerminalCommand}, over any terminal:
+ * check, reset (Ctrl-C), wait for the fresh prompt, paste, confirm the edit
+ * line, Enter.
+ */
+export async function typeLineAtPrompt(
+  target: PromptTypingTarget,
+  line: string,
+  onTyped: () => void = () => {},
+): Promise<TypeTerminalCommandResult> {
+  if (!hasOnlyTypeableCharacters(line) || line.length > MAX_TERMINAL_COMMAND_CHARS) {
+    throw new Error("typeTerminalCommand: the line holds characters that cannot be typed as one command");
+  }
+  const notTyped = (reason: TerminalNotTypedReason, message: string): TypeTerminalCommandResult => ({ ok: false, reason, message });
+  const blocks = target.blocks;
+  const check = (): TypeTerminalCommandResult | null => {
+    if (!blocks || !target.isLive()) return notTyped("no-terminal", target.missing);
+    const state = blocks.promptState();
+    return state === "ready" ? null : notTyped(state, TERMINAL_NOT_READY_MESSAGES[state]);
+  };
+
+  const generation = blocks?.userInputGeneration();
+  const interrupted = (): TypeTerminalCommandResult | null =>
+    blocks?.userInputGeneration() !== generation ? notTyped("pending-input", "the user typed while the command was being prepared; no further input was sent") : null;
+  const safeToWrite = async (): Promise<TypeTerminalCommandResult | null> => {
+    const before = interrupted();
+    if (before) return before;
+    const verified = await target.verify();
+    if (!verified.ok) return notTyped(verified.reason, verified.message);
+    return interrupted() ?? (!target.isLive() ? notTyped("no-terminal", target.missing) : null);
+  };
+  const before = check();
+  if (before || !blocks) return before ?? notTyped("no-terminal", target.missing);
+
+  // 1. The operating system agrees: the shell holds the terminal, in the approved directory.
+  const verified = await target.verify();
+  if (!verified.ok) return notTyped(verified.reason, verified.message);
+  const afterCheck = interrupted() ?? check();
+  if (afterCheck) return afterCheck;
+
+  // 2–3. Reset the line editor and wait for the fresh prompt.
+  const resetFailure = await resetToFreshPrompt(blocks, target, safeToWrite, interrupted);
+  if (resetFailure) return resetFailure;
+  const reported = blocks.currentCwd();
+  if (reported === null || canonicalizePathForMatch(reported) !== verified.cwd) {
+    return notTyped("cwd-mismatch", "the terminal's shell changed directory while the command was being prepared");
+  }
+
+  // 4. Recheck the OS after the wait, immediately before the paste.
+  const beforeWrite = await safeToWrite() ?? check();
+  if (beforeWrite) return beforeWrite;
+  const prompt = blocks.promptEndCount();
+  target.write(`\u001b[200~${line}\u001b[201~`);
+  // 5. Enter only once the line editor shows exactly the approved line, as
+  // pasted: a widget that rewrites pasted text (bracketed-paste-magic,
+  // url-quote-magic) or a key the user pressed in between shows here.
+  const shown = await waitForEditLine(blocks, prompt, line, EDIT_LINE_TIMEOUT_MS);
+  if (!shown || !target.isLive() || interrupted()) {
+    if (target.isLive() && !await safeToWrite()) target.write("\u0003");
+    return notTyped("edit-line-mismatch", "the terminal's line editor did not show exactly the approved line after it was pasted, so Enter was not pressed");
+  }
+  const beforeEnter = await safeToWrite();
+  if (beforeEnter) return beforeEnter;
+  if (blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd() || blocks.editLineText() !== line) {
+    return notTyped("edit-line-mismatch", "the terminal prompt or edit line changed before Enter; no further input was sent");
+  }
+  const firstBlockId = blocks.nextBlockId();
+  target.write("\r");
+  onTyped();
+  return { ok: true, firstBlockId };
+}
+
+/**
+ * How long typing waits for a fresh prompt after one Ctrl-C before it sends
+ * another, and how long the prompts must then stay still.
+ */
+const RESET_REPEAT_MS = 500;
+
+/**
+ * Ctrl-C until the shell draws a fresh prompt; refuse if none comes within
+ * {@link FRESH_PROMPT_TIMEOUT_MS}.
+ *
+ * One is not always enough. bash 5.2 (readline 8.2) clears its line on SIGINT
+ * at once, echoing `^C`, but draws the fresh prompt only when the interrupt
+ * breaks its wait for a key. A Ctrl-C that arrives while readline is still
+ * drawing the prompt, before that wait, leaves the cleared line and the `^C`
+ * after the prompt's end marker, and no fresh prompt until the next key
+ * (measured: an ubuntu:24.04 container under load, 20 of 3,017 commands; the
+ * output stopped at `^C ESC[?2004l CR ESC[?2004h`). The next Ctrl-C is that
+ * key. Each resend requires unchanged user input and a new OS check; when more than
+ * one was sent, a prompt drawn for an earlier one can arrive before the last
+ * one's, so the prompts must stay still for a moment before anything is
+ * pasted.
+ */
+async function resetToFreshPrompt(
+  blocks: TerminalBlockTracker,
+  target: PromptTypingTarget,
+  safeToWrite: () => Promise<TypeTerminalCommandResult | null>,
+  interrupted: () => TypeTerminalCommandResult | null,
+): Promise<TypeTerminalCommandResult | null> {
+  const deadline = Date.now() + FRESH_PROMPT_TIMEOUT_MS;
+  const expired = (): TypeTerminalCommandResult => ({ ok: false, reason: "no-fresh-prompt", message: "the terminal's shell did not draw a fresh prompt with a full quiet window within three seconds" });
+  let drawn = false;
+  let sent = 0;
+  while (!drawn) {
+    const unsafe = await safeToWrite();
+    if (unsafe) return unsafe;
+    const left = deadline - Date.now();
+    if (left <= 0) return expired();
+    const fresh = waitForFreshPrompt(blocks, blocks.promptEndCount(), Math.min(RESET_REPEAT_MS, left), () => interrupted() !== null);
+    target.write("\u0003");
+    sent++;
+    drawn = await fresh;
+    const changed = interrupted();
+    if (changed) return changed;
+    if (!target.isLive()) return { ok: false, reason: "no-terminal", message: target.missing };
+  }
+  if (sent > 1) {
+    for (;;) {
+      // A truncated wait is not evidence of quiescence.
+      if (deadline - Date.now() < RESET_REPEAT_MS) return expired();
+      const redrawn = await waitForFreshPrompt(blocks, blocks.promptEndCount(), RESET_REPEAT_MS, () => interrupted() !== null);
+      const changed = interrupted();
+      if (changed) return changed;
+      if (!target.isLive()) return { ok: false, reason: "no-terminal", message: target.missing };
+      if (!redrawn) break;
+    }
+  }
+  return null;
+}
+
+/** How long typing waits for the pasted line to show in the line editor. */
+const EDIT_LINE_TIMEOUT_MS = 2_000;
+
+/**
+ * Wait until the prompt typed at (`prompt`, its end count) shows exactly
+ * `line` in its edit line, with no key from the user since it was drawn.
+ * False on timeout, or when that prompt goes away.
+ */
+async function waitForEditLine(blocks: TerminalBlockTracker, prompt: number, line: string, timeoutMs: number): Promise<boolean> {
+  // Echoed text does not notify subscribers (only markers do), so poll.
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (blocks.promptEndCount() !== prompt || blocks.hasExited() || blocks.typedSincePromptEnd()) return false;
+    if (blocks.editLineText() === line) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+const TERMINAL_NOT_READY_MESSAGES: Record<Exclude<TerminalPromptState, "ready">, string> = {
+  "no-shell-integration": "the terminal's shell reports no command markers, so whether it is waiting at its prompt cannot be told",
+  exited: "the terminal's shell has exited",
+  "command-running": "a command is running in the foreground of the terminal; typed text would go to it",
+  "between-prompts": "the terminal's shell is between commands and has not shown its prompt yet",
+  "pending-input": "the user is typing at the prompt, pressed a key since it was drawn, or it holds text they typed and have not run",
+  "no-bracketed-paste": "the terminal's shell does not take bracketed paste (zsh 5.1 or bash 4.4 and later do), so typed text could be read as keys; zsh also reports none while a right-hand prompt (RPROMPT) is set",
+  "vi-editing-mode": "the terminal's shell uses vi key bindings, where typed text can be read as editing commands",
+  "not-found-handler": "the terminal's shell defines a command-not-found handler; ask the user to run unset -f command_not_found_handle (bash) or unfunction command_not_found_handler (zsh) in this terminal, then retry",
+  "shell-starting": "the terminal's shell is still starting and has not finished its first prompt; retry in a moment",
+  "no-prompt-end-marker": "the terminal's shell does not mark the end of its prompt, so typing there cannot be told",
+};
+
 /** Resize the PTY (FitAddon / ResizeObserver). Clamped, no-op for unknown tab. */
 export function resizeTerminal(tabId: string, cols: number, rows: number): void {
   const session = sessions.get(tabId);
   if (!session || session.exited || session.closing) return;
   session.pty.resize(clampDim(cols, 80, MAX_COLS), clampDim(rows, 24, MAX_ROWS));
+  if (session.innerPty) forwardResizeToInnerPty(tabId, session);
+}
+
+/**
+ * Tell the inner pty's relay about a resize (terminal-inner-pty.ts). One
+ * forward at a time per terminal: a resize during one (a window being
+ * dragged) is folded into one more forward after it, which reads the size the
+ * outer pty has by then.
+ */
+function forwardResizeToInnerPty(tabId: string, session: TerminalSession): void {
+  const state = session.resizeForward;
+  if (state.running) {
+    state.again = true;
+    return;
+  }
+  state.running = true;
+  state.again = false;
+  void forwardResizeToSandboxedPtyRelay(session.pty.pid, session.shellName)
+    .catch((err: unknown) => {
+      log.warn({ tabId, err: errorMessage(err) }, "terminal: could not forward a resize to the shell's pty");
+    })
+    .finally(() => {
+      state.running = false;
+      if (state.again && !session.exited && !session.closing) forwardResizeToInnerPty(tabId, session);
+    });
 }
 
 /**
