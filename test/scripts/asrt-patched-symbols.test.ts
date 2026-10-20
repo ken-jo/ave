@@ -73,24 +73,40 @@ afterEach(() => {
 });
 
 describe("patched @anthropic-ai/sandbox-runtime", () => {
-  it("records exclusive mount creations and cleans only matching identities without following links", () => {
+  it("records exclusive mount creations and deletes only a quarantined matching identity", () => {
     const linux = readInstalled("dist/sandbox/linux-sandbox-utils.js");
     expect(linux).toContain("const bwrapMountPoints = new Map();");
     const create = functionBody(linux, /\nfunction createOwnedMountPoint\(/u);
     expect(create).toContain("fs.openSync(entry, 'wx', 0o444)");
     expect(create).toContain("fs.fstatSync(fd, { bigint: true })");
-    expect(create).toContain("fs.mkdirSync(entry, { mode: 0o700 })");
-    expect(create).toContain("fs.lstatSync(entry, { bigint: true })");
+    expect(create).toContain("identity = publishOwnedDirectory(entry)");
     expect(create).toContain("bwrapMountPoints.set(dest, { dev: identity.dev, ino: identity.ino, kind })");
+    // Directories: identity from a descriptor on a private name, then moved
+    // onto an exclusive reservation.
+    expect(functionBody(linux, /\nfunction directoryIdentity\(/u))
+      .toContain("fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW");
+    const publish = functionBody(linux, /\nfunction publishOwnedDirectory\(/u);
+    expect(publish).toContain("identity = directoryIdentity(staged)");
+    expect(publish).toContain("fs.mkdirSync(entry, { mode: 0o700 })");
+    expect(publish).toContain("fs.renameSync(staged, entry)");
     expect(functionBody(linux, /\nfunction sameMountPointIdentity\(/u))
       .toContain("stat.dev === identity.dev && stat.ino === identity.ino");
+    // Cleanup: move to a private name, check there, delete only that.
+    const remove = functionBody(linux, /\nfunction removeOwnedEntry\(/u);
+    expect(remove).toContain("fs.renameSync(entry, quarantine)");
+    expect(remove).toContain("const moved = fs.lstatSync(quarantine, { bigint: true })");
+    expect(remove).toContain("fs.rmdirSync(quarantine)");
+    expect(remove).toContain("fs.unlinkSync(quarantine)");
+    expect(remove).not.toContain("fs.rmdirSync(entry)");
+    expect(remove).not.toContain("fs.unlinkSync(entry)");
+    const restore = functionBody(linux, /\nfunction restoreQuarantined\(/u);
+    expect(restore).toContain("fs.linkSync(quarantine, entry)");
     const cleanup = functionBody(linux, /\nexport function cleanupBwrapMountPoints\(/u);
-    expect(cleanup).toContain("fs.lstatSync(mountPoint, { bigint: true })");
-    expect(cleanup).toContain("if (!sameMountPointIdentity(stat, identity)) continue;");
-    expect(cleanup).toContain("identity.kind === MountPointKind.File && stat.isFile() && stat.size === 0n");
-    expect(cleanup).toContain("identity.kind === MountPointKind.Directory && stat.isDirectory()");
-    expect(cleanup).toContain("sameMountPointIdentity(stat, emptyMountSourceIdentity)");
+    expect(cleanup).toContain("removeOwnedEntry(mountPoint, identity)");
+    expect(cleanup).toContain("removeOwnedEntry(emptyMountSourceDir, emptyMountSourceIdentity)");
     expect(cleanup).not.toContain("fs.statSync(");
+    expect(cleanup).not.toContain("fs.rmdirSync(");
+    expect(cleanup).not.toContain("fs.unlinkSync(");
     expect(linux).not.toContain("bwrapMountPoints.add(");
   });
 
