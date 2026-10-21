@@ -20,7 +20,9 @@ function fixturePath(key: string): string {
 const fixtureDir = fixturePath("AVE_NATIVE_FIXTURE_DIR");
 const runtimeDir = fixturePath("AVE_NATIVE_FIXTURE_RUNTIME");
 const preload = fixturePath("AVE_NATIVE_FIXTURE_PRELOAD");
-if (process.platform === "darwin") app.setActivationPolicy("regular");
+const fixtureMode = process.env.AVE_NATIVE_FIXTURE_MODE;
+if (fixtureMode !== "cdp" && fixtureMode !== "foreground") throw new Error("Native fixture mode is required");
+if (fixtureMode === "foreground" && process.platform === "darwin") app.setActivationPolicy("regular");
 const actor = { sessionId: "native-fixture-conversation" };
 const rendererTabId = "native-fixture-browser";
 const originalBytes = "immutable fixture bytes\n";
@@ -172,7 +174,7 @@ async function run(action: NativeAction): Promise<NativeActionResult> {
 }
 
 void app.whenReady().then(async () => {
-if (process.platform === "darwin") {
+if (fixtureMode === "foreground" && process.platform === "darwin") {
   const dock = app.dock;
   if (!dock) throw new Error("Native fixture dock is unavailable");
   await dock.show();
@@ -183,8 +185,9 @@ await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 const address = server.address();
 if (!address || typeof address === "string") throw new Error("Native fixture server did not start");
 const origin = `http://127.0.0.1:${address.port}`;
-win = new BrowserWindow({ width: 1180, height: 900, x: 40, y: 40, show: true,
+win = new BrowserWindow({ width: 1180, height: 900, x: 40, y: 40, show: false,
   webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false, sandbox: true, preload } });
+if (fixtureMode === "foreground") win.show(); else win.showInactive();
 win.webContents.on("will-attach-webview", (_event, preferences) => {
   preferences.contextIsolation = true; preferences.sandbox = true; preferences.nodeIntegration = false; delete preferences.preload;
 });
@@ -225,7 +228,7 @@ await actions.prepare({ tab: record(), signal: new AbortController().signal });
 const bootstrapLease = browserTabRegistry.acquireControl(record(), actor);
 try { await actions.navigate({ tab: record(), signal: record().actions.signal, leaseId: bootstrapLease.id }, `${origin}/page`, browserOrigin(`${origin}/page`)!); }
 finally { browserTabRegistry.releaseControl(tabId, bootstrapLease.id); }
-win.show(); app.focus({ steal: true }); win.focus();
+if (fixtureMode === "foreground") { win.show(); app.focus({ steal: true }); win.focus(); }
 
 const fixture: NativeBrowserFixture = { ready: true, run, read: () => read(), close: async () => {
   guest.stop(); await disposeBrowserUploads(); win.destroy();

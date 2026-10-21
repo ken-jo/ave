@@ -13,6 +13,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(HERE, "browser-actions-native");
 const execFileAsync = promisify(execFile);
 // Run this desktop fixture serially through the shared validation budget.
+// Select @cdp without an unlocked desktop; @foreground retains actual OS focus proof.
+type FixtureMode = "cdp" | "foreground";
 let mainOut: string;
 let preloadOut: string;
 
@@ -40,16 +42,17 @@ async function read(app: ElectronApplication): Promise<NativeActionResult> {
   return app.evaluate(async () => (globalThis as unknown as { nativeBrowserFixture: NativeBrowserFixture }).nativeBrowserFixture.read());
 }
 
-async function launch(testInfo: TestInfo): Promise<ElectronApplication> {
+async function launch(testInfo: TestInfo, mode: FixtureMode): Promise<ElectronApplication> {
   const runtime = testInfo.outputPath("runtime");
   await fs.mkdir(runtime, { recursive: true });
   const app = await launchElectron({
     args: [mainOut, `--user-data-dir=${join(runtime, "profile")}`], timeout: 30_000,
-    env: buildIsolatedElectronEnv({ AVE_HOME: join(runtime, "ave-home"), AVE_NATIVE_FIXTURE_DIR: FIXTURE_DIR, AVE_NATIVE_FIXTURE_PRELOAD: preloadOut, AVE_NATIVE_FIXTURE_RUNTIME: runtime }),
+    env: buildIsolatedElectronEnv({ AVE_HOME: join(runtime, "ave-home"), AVE_NATIVE_FIXTURE_DIR: FIXTURE_DIR, AVE_NATIVE_FIXTURE_PRELOAD: preloadOut, AVE_NATIVE_FIXTURE_RUNTIME: runtime, AVE_NATIVE_FIXTURE_MODE: mode }),
   });
   app.process().stderr?.on("data", (data: Buffer) => process.stdout.write(`[native-browser:stderr] ${data}`));
   try {
     await expect.poll(() => app.evaluate(() => (globalThis as unknown as { nativeBrowserFixture?: NativeBrowserFixture }).nativeBrowserFixture?.ready === true), { timeout: 30_000 }).toBe(true);
+    if (mode === "cdp") return app;
     await (await app.firstWindow()).bringToFront();
     if (process.platform === "darwin") {
       const pid = app.process().pid;
@@ -75,8 +78,8 @@ async function close(app: ElectronApplication): Promise<void> {
   await app.close().catch(() => {});
 }
 
-test("native hover reaches the guest element", async ({}, testInfo) => {
-  const app = await launch(testInfo);
+test("@cdp hover reaches the guest element", async ({}, testInfo) => {
+  const app = await launch(testInfo, "cdp");
   try {
     const before = await read(app);
     const result = await run(app, "hover");
@@ -85,8 +88,8 @@ test("native hover reaches the guest element", async ({}, testInfo) => {
   } finally { await close(app); }
 });
 
-test("native pointer drag delivers HTML5 drag payload", async ({}, testInfo) => {
-  const app = await launch(testInfo);
+test("@cdp pointer drag delivers HTML5 drag payload", async ({}, testInfo) => {
+  const app = await launch(testInfo, "cdp");
   try {
     const result = await run(app, "drag");
     expect(result.ok, resultMessage(result)).toBe(true);
@@ -95,8 +98,8 @@ test("native pointer drag delivers HTML5 drag payload", async ({}, testInfo) => 
   } finally { await close(app); }
 });
 
-test("native pointer drag changes a native range value", async ({}, testInfo) => {
-  const app = await launch(testInfo);
+test("@cdp pointer drag changes a native range value", async ({}, testInfo) => {
+  const app = await launch(testInfo, "cdp");
   try {
     const result = await run(app, "slider");
     expect(result.ok, resultMessage(result)).toBe(true);
@@ -104,8 +107,8 @@ test("native pointer drag changes a native range value", async ({}, testInfo) =>
   } finally { await close(app); }
 });
 
-test("native single select proves the final requested value", async ({}, testInfo) => {
-  const app = await launch(testInfo);
+test("@foreground native single select proves the final requested value", async ({}, testInfo) => {
+  const app = await launch(testInfo, "foreground");
   try {
     const result = await run(app, "select");
     expect(result.ok, resultMessage(result)).toBe(true);
@@ -113,8 +116,8 @@ test("native single select proves the final requested value", async ({}, testInf
   } finally { await close(app); }
 });
 
-test("targeted native wheel scrolls the nested container", async ({}, testInfo) => {
-  const app = await launch(testInfo);
+test("@cdp targeted wheel scrolls the nested container", async ({}, testInfo) => {
+  const app = await launch(testInfo, "cdp");
   try {
     const result = await run(app, "scroll");
     expect(result.ok, resultMessage(result)).toBe(true);
@@ -123,8 +126,8 @@ test("targeted native wheel scrolls the nested container", async ({}, testInfo) 
   } finally { await close(app); }
 });
 
-test("full-page capture includes the complete tall guest extent", async ({}, testInfo) => {
-  const app = await launch(testInfo);
+test("@cdp full-page capture includes the complete tall guest extent", async ({}, testInfo) => {
+  const app = await launch(testInfo, "cdp");
   try {
     const result = await run(app, "screenshot");
     expect(result.ok, resultMessage(result)).toBe(true);
@@ -138,8 +141,8 @@ test("full-page capture includes the complete tall guest extent", async ({}, tes
   } finally { await close(app); }
 });
 
-test("picker callback selection uploads immutable fixture bytes to a real server", async ({}, testInfo) => {
-  const app = await launch(testInfo);
+test("@cdp picker callback selection uploads immutable fixture bytes to a real server", async ({}, testInfo) => {
+  const app = await launch(testInfo, "cdp");
   try {
     // The native modal is an explicit boundary: the callback selects a real
     // fixture file; staging, assignment, file lifetime and HTTP delivery ship.
@@ -156,8 +159,8 @@ test("picker callback selection uploads immutable fixture bytes to a real server
   } finally { await close(app); }
 });
 
-test("cancelled picker callback assigns no files or server bytes", async ({}, testInfo) => {
-  const app = await launch(testInfo);
+test("@cdp cancelled picker callback assigns no files or server bytes", async ({}, testInfo) => {
+  const app = await launch(testInfo, "cdp");
   try {
     const result = await run(app, "cancel-upload");
     expect(result.ok, resultMessage(result)).toBe(true);
@@ -167,8 +170,8 @@ test("cancelled picker callback assigns no files or server bytes", async ({}, te
   } finally { await close(app); }
 });
 
-test("native guest intervention persists until explicit main-process resume", async ({}, testInfo) => {
-  const app = await launch(testInfo);
+test("@cdp non-agent click pauses the guest until explicit main-process resume", async ({}, testInfo) => {
+  const app = await launch(testInfo, "cdp");
   try {
     const held = await run(app, "hold-control");
     expect(held.mode).toBe("agent-active");
@@ -180,6 +183,7 @@ test("native guest intervention persists until explicit main-process resume", as
     });
     await page.mouse.click(origin.x + held.oracle.humanPoint.x, origin.y + held.oracle.humanPoint.y);
     await expect.poll(async () => (await read(app)).mode).toBe("human-paused");
+    await expect.poll(async () => (await read(app)).oracle.humanClicks).toBeGreaterThan(held.oracle.humanClicks);
     const blocked = await run(app, "hover");
     expect(blocked.ok, resultMessage(blocked)).toBe(false);
     expect(blocked.error?.message).toContain("paused");
@@ -191,12 +195,18 @@ test("native guest intervention persists until explicit main-process resume", as
   } finally { await close(app); }
 });
 
-test("final activating navigation completes and intermediate select navigation fails", async ({}, testInfo) => {
-  const app = await launch(testInfo);
+test("@cdp final activating click navigation completes", async ({}, testInfo) => {
+  const app = await launch(testInfo, "cdp");
   try {
     const navigated = await run(app, "navigate");
     expect(navigated.ok, resultMessage(navigated)).toBe(true);
     expect(navigated.oracle.url).toMatch(/\/navigated$/);
+  } finally { await close(app); }
+});
+
+test("@foreground intermediate select navigation fails", async ({}, testInfo) => {
+  const app = await launch(testInfo, "foreground");
+  try {
     const changed = await run(app, "select-navigation");
     expect(changed.ok, resultMessage(changed)).toBe(false);
     expect(changed.error?.code).toBe("document-changed");
