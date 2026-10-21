@@ -481,9 +481,8 @@ Important rules:
   preset and nothing opens a saved file); one Save dialog may be pending per
   side browser, and a page origin gets at most 3 download prompts a minute —
   requests beyond either limit are cancelled and logged. Other schemes stay
-  blocked, and only the `clipboard-sanitized-write` permission is granted
-  (`fullscreen` is denied: with no exit hint a page could cover the app and
-  imitate its approval UI).
+  blocked. Site capability decisions are separate from agent control and
+  origin approval; see [Browser And Terminal Workspace](#browser-and-terminal-workspace).
 
 A long turn uses per-call limits and progress guidance. Each API-backed chat call
 is bounded by the route's effective output limit
@@ -768,9 +767,10 @@ is refused there (`session-open-in-pane`). Reopening a pane's chat reads its
 history (`ave:sidechat:pane-history`); the chat's New starts the pane afresh
 and the pane's close ends it (`ave:sidechat:end-pane-chat`), stopping only
 that pane's turn and archiving a closed pane's conversation. A pane that ends
-while its conversation is loading sends nothing (`pane-chat-ended`). A turn
-that closes its own pane's page (`browser_tab_close`) runs to its end before
-its pane chat ends.
+while its conversation is loading sends nothing (`pane-chat-ended`). When an
+authorized `browser_tab_close` destroys an agent-owned pane's page, its turn
+runs to its end before its pane chat ends. Releasing a borrowed user tab keeps
+the page alive.
 
 The browser tools and `terminal_read` called without a tab id act on the bound
 tab, and sub-agents inherit it through their hosting session; a bound tab that
@@ -783,6 +783,115 @@ that is not a pane's acts on the window's active surface, which the side
 panel's chat shows as its target chip; its × drops the target until another
 terminal or page is shown. The pane chat claims its session's approval cards,
 so the window's lane does not draw them again.
+
+## Browser And Terminal Workspace
+
+Chat, browser, and terminal remain simultaneous workspace surfaces. Side/main
+placement is presentation state: moving a pane preserves its live browser guest
+and both terminal lanes. The [workspace guide](../guides/browser-terminal-workspace.md)
+explains the user workflow; [permission policy](permission-policy-design.md#shared-browser-control-and-effects)
+owns consent and effect checks. These contracts describe code behavior; native
+interaction and provider-authentication validation remain separate evidence.
+
+### Browser control and tab lifetime
+
+The browser sandbox and context isolation are always enabled. Agent authority
+is an additional host-owned layer in `src/shared/browser-surface.ts` and
+`src/main/browser/browser-tab-registry.ts`; selecting Human mode never removes
+the browser sandbox. Origin approval authorizes an operation on a page, not a
+complete network firewall for that page.
+
+The registry publishes revisioned state with `human`, `agent-active`, and
+`human-paused` modes. Human page input, Stop, and user navigation invalidate
+pending agent effects and persistently pause mutation. Read-only observation
+still follows normal policy. Only explicit Resume in trusted browser chrome
+can restore eligible control; a tool, navigation, or a later turn cannot resume
+it. Document and control generations bind actions and approvals, so a stale
+approval does not survive pause followed by Resume. Renderers subscribe before
+their initial state fetch and ignore older revisions.
+
+Creator identity is durable and distinct from the current control lease. A
+lease identifies the actual conversation actor, its direct parent when present,
+and an `owned` or `borrowed` lifetime. Window-wide tab discovery grants no
+authority over another conversation's tabs. Conversation-scoped `browser_tabs`
+can include direct children; aggregation uses the stored direct-parent relation,
+not a recursive hosting-window ancestor. Release revokes only the matching
+lease, so a late cleanup cannot release a newer controller.
+
+Agent-created tabs open in the background by default and remain for human
+handoff after a turn. An explicit agent close destroys only a creator-owned tab
+within the authorized owner/direct-parent relationship. Closing a borrowed tab
+through the tool releases its association and reports that the page was retained.
+User chrome close destroys the actual tab; window/app shutdown releases its
+resources.
+
+Native popups enter the registry only through the validated child-window
+callback. They keep the owning window, guarded session, opener relationship,
+and sandbox; they can have a tool handle without a renderer tab slot. Popups
+start with user permission provenance. Discovery or focus does not inherit the
+opener's origin approval or remove sensitive-field restrictions.
+
+### Typed page actions and browser chrome
+
+Browser tools expose typed snapshot, screenshot, navigation, click, text, and
+key operations plus hover, drag, native single-select, targeted scroll, and
+picker-only upload. Schemas and execution both validate operands. Page effects
+recheck the live document, target reference, recipient, and control generation.
+There is no model-facing arbitrary script or generic protocol dispatcher.
+Full-page capture has pixel/byte bounds and fails clearly when exceeded; a crop
+is not reported as a full-page image. Selection verifies the final native value
+and rejects unsupported controls.
+
+The host-owned browser workspace API uses renderer tab IDs and derives window
+ownership from the sender. It provides bookmarks, bounded history, find, zoom,
+site decisions, download status, and tab-card previews. Persistent bookmarks,
+history, and site decisions use `openFeatureNamespace("browser-workspace")`;
+invalid stored state cannot become a permission grant. Download paths and
+history are not disclosed by browser tools merely because the UI lists them.
+Downloads retain native Save consent and prompt-rate limits, with no auto-open.
+
+Site capability checks bind the current requesting origin and owned guest.
+`clipboard-sanitized-write` retains its safe baseline; camera, microphone,
+geolocation, notifications, and fullscreen follow explicit site decisions and
+trusted prompts. Iframes and redirects cannot borrow unrelated origin grants;
+unknown permissions deny.
+
+Preview work is scheduled only for connected, intersecting cards in a visible
+app window. Each window has one capture owner and at most one in-flight capture,
+a bounded tab/document cache, throttling, and reduced image size. Hidden or
+unmounted panels stop scheduling; late results after hide, navigation, or close
+are discarded. Preview never claims the live surface slot, focuses or navigates
+a tab, or retains a closed guest. Hidden/visible capture counts and actual guest
+behavior require runtime validation; this contract is not a measured resource
+improvement.
+
+### Separate terminal lanes
+
+`src/shared/terminal-session.ts` identifies each PTY by `tabId`, required
+`lane: "manual" | "agent"`, and a host-issued `terminalSessionId`. Input,
+resize, output, exit, and block reads carry the same incarnation. A pane unmount
+kills neither lane; closing the tab kills both, and the live-PTY cap counts both.
+
+**Manual · host** runs the native host shell with the user's real HOME/profile
+and validated initial directory. It neither wraps the shell in the agent
+sandbox nor writes integration startup files into the real HOME. Without shell
+integration, current directory and command exit status remain unknown rather
+than inferred from the initial directory or terminal output.
+
+**Agent · isolated** is a distinct companion PTY with a disposable HOME,
+authenticated shell integration, and active filesystem/process confinement.
+`terminal_run` always targets this lane. Approval seals its session incarnation,
+directory, exact command, and containment identity; execution rechecks them
+before typing. No agent bytes, cancellation, or output can redirect to Manual
+or another tab; agent output does not take Manual's focus. A wait timeout means
+the command can still be running, and cancellation of a waiter does not prove
+process cleanup.
+
+An unavailable confined backend leaves Manual usable and Agent explicitly
+unavailable. The current Windows interactive Agent backend cannot attest this
+contract and is unavailable; it never falls back to a host PTY. General sandbox
+availability and unrelated native backend work are not proof of this lane's
+capability.
 
 ## Extension Runtime
 

@@ -1,11 +1,44 @@
 # Permission Policy — Design Document (v2.3)
 
+> **역사 자료:** 아래 버전별 본문은 이전 구현 기록입니다. 현재 권한 계약은
+> [영문 권한 설계](../../architecture/permission-policy-design.md)가 기준이며,
+> 아래의 당시 상태·SDK 설명을 현재 실행 지침으로 사용하지 않습니다.
+
+## 현재 브라우저·터미널 권한 계약 안내
+
+브라우저 기본 샌드박스는 제어 모드와 무관하게 유지합니다. 에이전트 출처 승인은
+전체 브라우저 네트워크 방화벽이나 사이트 장치 권한이 아닙니다. 호스트가 실제
+대화·직계 부모와 제어 임대를 확인하고, 변경 동작마다 출처·문서·대상·제어 세대를
+다시 검사합니다. 사람이 조작하거나 Stop하면 명시적 Resume 전까지 변경이
+중지됩니다. Resume 후에도 이전 승인은 재사용하지 않습니다.
+
+`browser_upload({tabId?, ref})`는 모델이나 렌더러의 호스트 경로를 받지 않습니다.
+에이전트 생성 탭도 명시적 일회 승인을 받고 네이티브 선택기로 파일을 고릅니다.
+작성창 첨부 승인은 업로드 권한이 아닙니다. 호스트는 제한된 불변 바이트 사본과
+대상에 묶인 임대를 관리하며 취소하면 파일을 보내지 않습니다. 팝업은 여는 탭의
+출처 승인을 물려받지 않습니다. 자세한 검사는
+[공유 브라우저 권한](../../architecture/permission-policy-design.md#shared-browser-control-and-effects)을 따릅니다.
+
+`terminal_run`은 `Agent · isolated` 동반 PTY만 사용합니다. 승인은 탭·
+`lane: "agent"`·`terminalSessionId`·검증한 디렉터리·정확한 명령·호스트 격리 식별자에
+묶입니다. 교체된 세션이나 달라진 격리에는 적용되지 않습니다. `Manual · host`의
+실제 HOME·프로필에 에이전트 시작 파일을 쓰거나 명령을 입력하지 않습니다.
+`terminal_read`도 레인과 세션을 구분합니다. 대기 시간 초과는 명령 종료나 정리
+완료가 아닙니다. 격리 실패 시 Manual은 남지만 Agent는 명시적으로 사용 불가이며
+호스트 대체 실행은 없습니다. 현재 Windows 대화형 Agent 레인도 이 상태입니다.
+[현재 터미널 권한](../../architecture/permission-policy-design.md#commands-typed-into-a-workspace-terminal)과
+[한국어 가이드](../guides/browser-terminal-workspace.md)를 참고하세요.
+
+위 내용은 코드 계약이며 실제 UI·공급자 인증 검증 완료를 뜻하지 않습니다.
+
+## 이전 설계 기록
+
 > **플러그인 계약 부분 대체됨:** 아래 SDK 소유 스키마와 배포 순서는 당시의
 > 구현 기록입니다. 현재 플러그인은 앱 릴리스 태그의 호스트 계약 파일을
 > `contract/`에 그대로 복사하고, 새 계약 멤버에는 `requires.minAppVersion`을
 > 설정합니다. 현재 작성 절차는 [설계서 §5.6](../../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors)을 따릅니다.
 
-> **Status:** Accepted v2.3 — implementation landed via PR #643 (v2.2 baseline) + PR #664/#860 (v2.3 reviewer-mode normalization); this document is the operating reference for the live permission stack. (Not "Ratified" because §15 hook-signing path is still a v1 deny-only baseline pending follow-up.)
+> **Status at the time:** Accepted v2.3 — implementation landed via PR #643 (v2.2 baseline) + PR #664/#860 (v2.3 reviewer-mode normalization). Preserved as history; current policy is defined by the English document linked above.
 > **Issue:** #627 (implementation, closed) · #644 (v2.2 ratification) · #664 / #860 (v2.3 reviewer-mode normalization)
 > **Owner:** Permissions stack maintainers (`src/permissions/`, `src/boot/steps/reviewer-wiring.ts`)
 > **Last updated:** 2026-05-17
