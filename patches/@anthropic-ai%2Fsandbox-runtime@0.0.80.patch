@@ -1393,7 +1393,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
   * canonicalization (`127.1`, a trailing-dot FQDN) would dodge the exclusion
   * and get terminated anyway.
   */
-@@ -497,11 +671,206 @@ function shouldTerminateTLSForHost(host) {
+@@ -497,11 +671,223 @@ function shouldTerminateTLSForHost(host) {
      }
      return true;
  }
@@ -1467,6 +1467,10 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +                });
 +            },
 +            vetPeer: (peer) => {
++                // Own the upstream while its CONNECT response is still pending.
++                trackInvocationSocket(lane, peer);
++                if (lane?.ended)
++                    return new Error('invocation ended');
 +                if (!routingIsCurrent(pin?.generation)) return staleRouteError();
 +                const address = peer.remoteAddress;
 +                const onThisHost = address === undefined || isThisHostAddress(address);
@@ -1598,12 +1602,25 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +        }
 +        return allowed;
 +    };
++    // Listener ownership includes pending decisions and both tunnel ends.
++    // Keep lifecycle checks outside the route planner.
++    const invocationRoute = async (socket, ...args) => {
++        if (lane?.ended || socket.destroyed)
++            throw new Error('invocation ended');
++        const upstream = await openRoute(socket, ...args);
++        trackInvocationSocket(lane, upstream);
++        if (lane?.ended || socket.destroyed) {
++            upstream.destroy();
++            throw new Error('invocation ended');
++        }
++        return upstream;
++    };
 +    const http = createHttpProxyServer({
 +        filter: (port, host, socket, encodedCommand, explain, plainHttp) => trackedFilter(port, host, encodedCommand, explain, socket, plainHttp),
          getMitmSocketPath,
          mitmCA,
          shouldTerminateTLS: shouldTerminateTLSForHost,
-@@ -521,7 +890,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -521,7 +907,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          onFilterRequestDenied: ({ method, url, reason, encodedCommand }) => {
              // A refused CONNECT comes with its authority (`host:port`), not a URL.
              const target = method === 'CONNECT' ? url : redactUrlForViolation(url);
@@ -1612,7 +1629,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
          },
          // TLS-terminated path always gets the injector; the plain-HTTP path
          // only when explicitly opted in. Without the opt-in, a sentinel sent
-@@ -538,19 +907,26 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -538,19 +924,26 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          // injection: the real signature must not travel over plaintext.
          planSigv4: buildSigv4Planner(),
          parentProxy,
@@ -1620,7 +1637,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +        lookupFor,
 +        parentDestination,
 +        parentHop,
-+        openRoute,
++        openRoute: lane ? invocationRoute : openRoute,
 -        proxyAuthToken,
 +        openPlainHttpRoute,
 +        proxyAuthToken: lane?.proxyAuthToken ?? proxyAuthToken,
@@ -1634,7 +1651,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +        lookupFor,
 +        parentDestination,
 +        parentHop,
-+        openRoute,
++        openRoute: lane ? invocationRoute : openRoute,
 -        proxyAuthToken,
 +        proxyAuthToken: lane?.proxyAuthToken ?? proxyAuthToken,
          // A SOCKS tunnel is opaque, so the option that keeps opaque CONNECT
@@ -1646,7 +1663,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
          },
          probeUnauthenticated: async (port, host) => {
              // Explicit deny rules only: an unauthenticated peer must never reach
-@@ -562,17 +938,25 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -562,17 +955,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
              for (const entry of config.network.deniedDomains) {
                  if (matchesDomainPatternWithPort(canonical, port, entry)) {
                      const reason = deniedDomainReason(entry);
@@ -1658,6 +1675,8 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
              return {};
          },
      });
++    if (lane)
++        http.on('connection', socket => trackInvocationSocket(lane, socket));
 +    return { http, socks };
 +}
 +async function startMuxProxyServer(sandboxAskCallback, portRange) {
@@ -1673,7 +1692,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +972,814 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,6 +991,839 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -1713,6 +1732,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +        ports,
 +        close() {
 +            lane.ended = true;
++            destroyInvocationSockets(lane);
 +            return closing ??= (async () => {
 +                await lane.ready?.catch(() => { });
 +                await disposeInvocationListener(lane);
@@ -2267,6 +2287,8 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +        if (local !== undefined)
 +            return denied(local);
 +        const resolved = await decideDestination(port, host, sandboxAskCallback, lane.encodedKey, explain, 'listener', plainHttp);
++        if (lane.ended)
++            return denied('invocation ended');
 +        if (resolved === undefined)
 +            return false;
 +        if (socket)
@@ -2339,6 +2361,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +            backendSocketDir: ensurePrivateSocketDir(),
 +        });
 +        Object.assign(lane, { http, socks, mux });
++        mux.server.on('connection', socket => trackInvocationSocket(lane, socket));
 +        await mux.listenHttpBackend();
 +        if (platform === 'macos') {
 +            // A port an ended listener held is never given to another one: a
@@ -2376,10 +2399,30 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +    }
 +    return lane.port !== undefined ? { port: lane.port } : { socketPath: lane.socketPath };
 +}
++function trackInvocationSocket(lane, socket) {
++    if (!lane)
++        return;
++    if (lane.ended) {
++        socket.destroy();
++        return;
++    }
++    const sockets = lane.sockets ??= new Set();
++    if (sockets.has(socket))
++        return;
++    sockets.add(socket);
++    socket.once('close', () => sockets.delete(socket));
++}
++function destroyInvocationSockets(lane) {
++    // HTTP closeAllConnections does not own protocol-upgraded CONNECT sockets.
++    for (const socket of lane.sockets ?? [])
++        socket.destroy();
++    lane.sockets?.clear();
++}
 +/** Close every server of a listener (its front end included). */
 +async function disposeInvocationListener(lane) {
-+    // The HTTP server's connections first (see forceCloseHttpServer), then
-+    // the front end, which closes the HTTP backend's listener as well.
++    lane.ended = true;
++    destroyInvocationSockets(lane);
++    // Close the backend before the front end, which also closes its listener.
 +    await Promise.all([
 +        lane.http ? forceCloseHttpServer(lane.http) : undefined,
 +        lane.socks?.close().catch(() => { }),
@@ -2413,6 +2456,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +    if (!lane || lane.ended)
 +        return;
 +    lane.ended = true;
++    destroyInvocationSockets(lane);
 +    void (async () => {
 +        try {
 +            await lane.ready;
@@ -2488,7 +2532,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -616,7 +1808,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +1852,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -2501,7 +2545,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -705,7 +1902,17 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -705,7 +1946,17 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // sandboxed child can be spawned. Doing this at initialize() (not
      // wrap-time) means the host gets a single actionable error before
      // any per-exec work happens, instead of exit-15 on every command.
@@ -2520,7 +2564,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
          // Resolve once (stats disk); captured module-level for wrap/reset.
          srtWinSpawn = resolveSrtWin(runtimeConfig.windows?.srtWin);
          const srtWin = srtWinSpawn;
-@@ -992,6 +2199,12 @@ function checkDependenciesCommon(ripgrepConfig) {
+@@ -992,6 +2243,12 @@ function checkDependenciesCommon(ripgrepConfig) {
          errors.push(...linuxDeps.errors);
          warnings.push(...linuxDeps.warnings);
      }
@@ -2533,7 +2577,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      else if (platform === 'windows') {
          let srtWin;
          try {
-@@ -1515,6 +2728,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2772,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -2543,7 +2587,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +2926,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +2970,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -2565,7 +2609,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1734,23 +2953,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1734,23 +2997,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -2600,7 +2644,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1786,6 +3013,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +3057,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -2608,7 +2652,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,7 +3049,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,7 +3093,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -2625,7 +2669,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
              config?.network?.allowedDomains !== undefined;
-@@ -1950,7 +3187,7 @@ function getConfig() {
+@@ -1950,7 +3231,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -2634,7 +2678,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +3226,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +3270,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -2642,7 +2686,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2222,6 +3460,8 @@ async function reset() {
+@@ -2222,6 +3504,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -2651,7 +2695,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,6 +3469,23 @@ async function reset() {
+@@ -2229,6 +3513,26 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -2663,9 +2707,12 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
 +    retiredInvocationKeys.clear();
 +    retiredListenerPorts.clear();
 +    liveConnections.clear();
-+    for (const lane of lanes)
++    for (const lane of lanes) {
++        lane.ended = true;
++        destroyInvocationSockets(lane);
 +        if (lane.quarantine)
 +            clearTimeout(lane.quarantine);
++    }
 +    invocationAskCallback = undefined;
 +    await Promise.all(lanes.map(lane => lane.ready?.catch(() => { }).then(() => disposeInvocationListener(lane))));
 +    if (privateSocketDir !== undefined) {
@@ -2675,7 +2722,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..1b17c761483497ec8ac9a7257c9cc49e
      maskedFileStore.dispose();
  }
  function getSandboxViolationStore() {
-@@ -2336,6 +3593,11 @@ export const SandboxManager = {
+@@ -2336,6 +3640,11 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,

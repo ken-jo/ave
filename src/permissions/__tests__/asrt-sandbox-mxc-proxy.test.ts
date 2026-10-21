@@ -1,7 +1,7 @@
 import net from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SandboxManager, type ParentProxyRouter } from "@anthropic-ai/sandbox-runtime";
+import { SandboxManager, type ParentProxyRouter, type SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import {
   closeAllEgressConnections,
   closeEgressConnections,
@@ -25,9 +25,10 @@ afterEach(async () => {
 });
 
 /** A local route endpoint; destination traffic never leaves this process. */
-async function startTunnelUpstream(): Promise<{ port: number; received: string[] }> {
+async function startTunnelUpstream(holdConnect = false) {
   const sockets = new Set<net.Socket>();
   const received: string[] = [];
+  const connects: string[] = [];
   const server = net.createServer((socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
@@ -36,7 +37,9 @@ async function startTunnelUpstream(): Promise<{ port: number; received: string[]
     const onHead = (chunk: Buffer): void => {
       head += chunk.toString("latin1");
       if (!head.includes("\r\n\r\n")) return;
+      connects.push(head);
       socket.off("data", onHead);
+      if (holdConnect) return;
       socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       socket.on("data", (data: Buffer) => {
         received.push(data.toString());
@@ -50,39 +53,135 @@ async function startTunnelUpstream(): Promise<{ port: number; received: string[]
     for (const socket of sockets) socket.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
-  return { port: (server.address() as net.AddressInfo).port, received };
+  return { port: (server.address() as net.AddressInfo).port, received, connects, sockets };
 }
 
-async function startListener(upstreamRouter: ParentProxyRouter): Promise<InvocationProxyListener> {
+async function startRelay(upstreamRouter: ParentProxyRouter, ask: SandboxAskCallback = async () => true) {
   await initializeAsrtSandbox({
     allowedDomains: [],
     windows: { externalConfinement: true, proxyPortRange: [42000, 42009] },
     upstreamRouter,
-  }, async () => true);
+  }, ask);
   const relay = await openHostEgressListener(TOKEN);
   cleanups.push(relay.close);
+  return relay;
+}
+
+async function startListener(upstreamRouter: ParentProxyRouter): Promise<InvocationProxyListener> {
+  const relay = await startRelay(upstreamRouter);
   const listener = await openInvocationProxyListener({ upstream: () => ({ host: "127.0.0.1", ...relay }) });
   relay.registerPort(listener.port);
   cleanups.push(listener.close);
   return listener;
 }
 
-async function openTunnel(listener: InvocationProxyListener): Promise<{ socket: net.Socket; output: () => string }> {
+function connectClient(listener: { port: number; proxyAuthorization?: string }) {
   let output = "";
   const socket = net.connect(listener.port, "127.0.0.1", () => {
-    socket.write(`CONNECT ${DESTINATION.host}:${DESTINATION.port} HTTP/1.1\r\nHost: ${DESTINATION.host}:${DESTINATION.port}\r\n\r\n`);
+    const auth = listener.proxyAuthorization ? `Proxy-Authorization: ${listener.proxyAuthorization}\r\n` : "";
+    socket.write(`CONNECT ${DESTINATION.host}:${DESTINATION.port} HTTP/1.1\r\nHost: ${DESTINATION.host}:${DESTINATION.port}\r\n${auth}\r\n`);
   });
   socket.on("data", (chunk: Buffer) => { output += chunk.toString(); });
   socket.on("error", () => {});
   cleanups.push(async () => { socket.destroy(); });
-  await expect.poll(() => output).toContain("200 Connection Established");
-  socket.write("before-close");
-  await expect.poll(() => output).toContain("before-close");
   return { socket, output: () => output };
+}
+
+async function openTunnel(listener: { port: number; proxyAuthorization?: string }) {
+  const client = connectClient(listener);
+  await expect.poll(client.output).toContain("200 Connection Established");
+  client.socket.write("before-close");
+  await expect.poll(client.output).toContain("before-close");
+  return client;
+}
+
+async function expectPromptClose(closing: Promise<void>): Promise<void> {
+  let closed = false;
+  void closing.then(() => { closed = true; });
+  await expect.poll(() => closed, { timeout: 2_000 }).toBe(true);
+  await closing;
+}
+
+async function expectTunnelStopped(
+  tunnel: Awaited<ReturnType<typeof openTunnel>>,
+  upstream: Awaited<ReturnType<typeof startTunnelUpstream>>,
+): Promise<void> {
+  await expect.poll(() => tunnel.socket.destroyed).toBe(true);
+  expect(tunnel.socket.write("after-close")).toBe(false);
+  await expect.poll(() => upstream.sockets.size).toBe(0);
+  expect(upstream.received).toEqual(["before-close"]);
+  expect(tunnel.output()).not.toContain("after-close");
 }
 
 // The proxy-only boot path supplies confinement externally on this platform.
 describe.skipIf(process.platform !== "win32")("proxy-only connection revocation", () => {
+  it("closes a live CONNECT tunnel promptly when the relay is closed directly", async () => {
+    const upstream = await startTunnelUpstream();
+    const relay = await startRelay(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstream.port }] }));
+    const tunnel = await openTunnel(relay);
+
+    await expectPromptClose(relay.close());
+    await expectTunnelStopped(tunnel, upstream);
+    await expectPromptClose(relay.close());
+  });
+
+  it("refuses a pending approval after the relay is closed directly without dialing upstream", async () => {
+    const upstream = await startTunnelUpstream();
+    let approve!: (allowed: boolean) => void;
+    const approval = new Promise<boolean>((resolve) => { approve = resolve; });
+    const requested = vi.fn();
+    const resolved = vi.fn();
+    const relay = await startRelay(
+      async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstream.port }] }),
+      async (_request, context) => {
+        if (context?.phase !== "resolved") return true;
+        requested();
+        const allowed = await approval;
+        resolved();
+        return allowed;
+      },
+    );
+    const client = connectClient(relay);
+    try {
+      await expect.poll(() => requested.mock.calls.length).toBe(1);
+      const closing = relay.close();
+      approve(true);
+      await expect.poll(() => resolved.mock.calls.length).toBe(1);
+      await expect.poll(() => client.socket.destroyed || client.output().includes("200 Connection Established")).toBe(true);
+      expect(client.output()).not.toContain("200 Connection Established");
+      await expectPromptClose(closing);
+      expect(client.socket.destroyed).toBe(true);
+      expect(upstream.connects).toEqual([]);
+      expect(upstream.received).toEqual([]);
+    } finally {
+      approve(true);
+    }
+  });
+
+  it("resets the runtime promptly with a live CONNECT tunnel and stops traffic", async () => {
+    const upstream = await startTunnelUpstream();
+    const relay = await startRelay(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstream.port }] }));
+    const tunnel = await openTunnel(relay);
+
+    await expectPromptClose(resetAsrtSandbox());
+    await expectTunnelStopped(tunnel, upstream);
+    expect(closeAllEgressConnections()).toBe(0);
+    expect(getWindowsProxyPortRange()).toEqual(DEFAULT_WINDOWS_PROXY_PORT_RANGE);
+  });
+
+  it("closes the upstream socket while its CONNECT response is still pending", async () => {
+    const upstream = await startTunnelUpstream(true);
+    const relay = await startRelay(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstream.port }] }));
+    const client = connectClient(relay);
+    await expect.poll(() => upstream.connects.length).toBe(1);
+
+    await expectPromptClose(relay.close());
+    await expect.poll(() => client.socket.destroyed).toBe(true);
+    await expect.poll(() => upstream.sockets.size, { timeout: 2_000 }).toBe(0);
+    expect(client.output()).not.toContain("200 Connection Established");
+    expect(upstream.received).toEqual([]);
+  });
+
   it("drops an existing forwarded tunnel after its grant is revoked", async () => {
     const upstream = await startTunnelUpstream();
     const listener = await startListener(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstream.port }] }));
