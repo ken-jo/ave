@@ -82,6 +82,16 @@ export interface BrowserGuest {
   getTitle(): string;
 }
 
+/** A document transition invalidated the old page; it grants no further input authority. */
+export class BrowserDocumentChangedError extends Error {
+  readonly code = "browser-document-changed";
+
+  constructor() {
+    super("the browser document changed");
+    this.name = "BrowserDocumentChangedError";
+  }
+}
+
 export interface BrowserTabRecord<G extends BrowserGuest> {
   readonly handle: string;
   readonly windowId: number;
@@ -548,7 +558,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
       tab.documentId++;
-      this.invalidateActions(tab, "the page started navigating");
+      this.invalidateActions(tab, new BrowserDocumentChangedError());
       this.checkProvenance(tab, url);
       this.broadcastControl(tab.windowId);
     }
@@ -558,7 +568,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
       tab.documentId++;
-      this.invalidateActions(tab, "the page document changed");
+      this.invalidateActions(tab, new BrowserDocumentChangedError());
       this.broadcastControl(tab.windowId);
     }
   }
@@ -883,8 +893,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     };
   }
 
-  private invalidateActions(tab: BrowserTabRecord<G>, reason: string): void {
-    tab.actions.abort(new Error(reason));
+  private invalidateActions(tab: BrowserTabRecord<G>, reason: string | Error): void {
+    tab.actions.abort(typeof reason === "string" ? new Error(reason) : reason);
     tab.controlGeneration++;
     if (tab.controlMode !== "human-paused") tab.actions = new AbortController();
   }

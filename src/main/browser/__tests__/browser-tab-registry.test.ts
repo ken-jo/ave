@@ -4,7 +4,7 @@
  * surface hint.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserTabRegistry, isUserActionInputType, type BrowserGuest } from "../browser-tab-registry.js";
+import { BrowserDocumentChangedError, BrowserTabRegistry, isUserActionInputType, type BrowserGuest } from "../browser-tab-registry.js";
 import { parseBrowserTabControlState, parseBrowserTabOpRequest, type BrowserTabControlState, type BrowserTabOpRequest } from "../../../shared/browser-surface.js";
 
 const ACTOR = { sessionId: "conversation" };
@@ -734,11 +734,37 @@ describe("scoped browser control", () => {
     const firstGeneration = tab.controlGeneration;
     registry.navigationStarted(71, "https://a.example/next");
     expect(first.aborted).toBe(true);
+    expect(first.reason).toBeInstanceOf(BrowserDocumentChangedError);
+    expect(first.reason.code).toBe("browser-document-changed");
     expect(tab.controlGeneration).toBeGreaterThan(firstGeneration);
     const next = tab.actions.signal;
     registry.documentChanged(71);
     expect(next.aborted).toBe(true);
+    expect(next.reason).toBeInstanceOf(BrowserDocumentChangedError);
     expect(tab.lease).toBe(lease);
+  });
+
+  it.each(["human-input", "stop", "pause", "release", "closed", "origin-change"])("keeps %s cancellation distinct from document transition", async (kind) => {
+    const { registry, tab, guest } = await owned();
+    const lease = registry.acquireControl(tab, ACTOR);
+    const signal = tab.actions.signal;
+    if (kind === "human-input") registry.userInput(71, { type: "keyDown" });
+    if (kind === "stop") registry.stop(1, "page");
+    if (kind === "pause") registry.pause(1, "page");
+    if (kind === "release") registry.releaseControl(tab.handle, lease.id);
+    if (kind === "closed") registry.guestDestroyed(71);
+    if (kind === "origin-change") {
+      guest.url = "https://b.example/";
+      registry.liveTab(tab.handle);
+    }
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).toBeInstanceOf(Error);
+    expect(signal.reason).not.toBeInstanceOf(BrowserDocumentChangedError);
+    expect(signal.reason).not.toHaveProperty("code", "browser-document-changed");
+    const reason = signal.reason;
+    registry.documentChanged(71);
+    registry.navigationStarted(71, "https://a.example/next");
+    expect(signal.reason).toBe(reason);
   });
 
   it("releases window resources without closing another window's tabs", async () => {
